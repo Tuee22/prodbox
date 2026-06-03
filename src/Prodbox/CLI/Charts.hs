@@ -8,6 +8,7 @@ where
 import Control.Exception (IOException, bracket_, try)
 import Data.Char (toLower)
 import Data.List (intercalate)
+import Data.Map.Strict qualified as Map
 import Data.Text qualified as Text
 import Prodbox.CLI.Command
   ( ChartsCommand (..)
@@ -28,6 +29,7 @@ import Prodbox.Host
   , runHostFirewallGatewayRestrictOptional
   , runHostFirewallGatewayUnrestrict
   )
+import Prodbox.Infra.AwsEksTestStack (withEksKubeconfig)
 import Prodbox.Lib.AwsSubstratePlatform (ensureAwsSubstratePlatformRuntime)
 import Prodbox.Lib.ChartPlatform
   ( ChartDeploymentPlan (..)
@@ -39,10 +41,8 @@ import Prodbox.Lib.ChartPlatform
   , renderChartList
   , renderChartStatus
   , resolveChartSecrets
-  , resolveGatewayEventKeys
   , supportedChartNames
   )
-import Prodbox.Infra.AwsEksTestStack (withEksKubeconfig)
 import Prodbox.Settings
   ( ConfigFile (..)
   , Credentials (..)
@@ -83,23 +83,24 @@ runChartsCommand repoRoot command =
             case secretsResult of
               Left err -> failWith err
               Right chartSecrets -> do
-                eventKeysResult <- resolveGatewayEventKeys repoRoot rootChart
-                case eventKeysResult of
+                -- Sprint 3.13 chunk 16: gateway event keys self-bootstrap
+                -- from the daemon Pod after master-seed acquisition; the
+                -- chart reads them via Helm `lookup`. The host-side
+                -- `resolveGatewayEventKeys` cache is gone.
+                let gatewayEventKeys = Map.empty
+                buildResult <- buildChartDeploymentPlan repoRoot settings rootChart chartSecrets gatewayEventKeys
+                case buildResult of
                   Left err -> failWith err
-                  Right gatewayEventKeys -> do
-                    buildResult <- buildChartDeploymentPlan repoRoot settings rootChart chartSecrets gatewayEventKeys
-                    case buildResult of
-                      Left err -> failWith err
-                      Right plan ->
-                        withSubstrateEnvironment repoRoot settings substrate $ do
-                          platformExit <- ensurePlatformForSubstrate repoRoot settings substrate
-                          case platformExit of
-                            ExitFailure _ -> pure platformExit
-                            ExitSuccess ->
-                              runPlanWithOptions
-                                planOptions
-                                (buildPlan renderChartDeploymentPlan plan)
-                                (applyChartDeployWithPostHook rootChart substrate)
+                  Right plan ->
+                    withSubstrateEnvironment repoRoot settings substrate $ do
+                      platformExit <- ensurePlatformForSubstrate repoRoot settings substrate
+                      case platformExit of
+                        ExitFailure _ -> pure platformExit
+                        ExitSuccess ->
+                          runPlanWithOptions
+                            planOptions
+                            (buildPlan renderChartDeploymentPlan plan)
+                            (applyChartDeployWithPostHook rootChart substrate)
     ChartsDelete chartName substrate confirmed planOptions ->
       case requirePublicRootChartName chartName of
         Left err -> failWith err

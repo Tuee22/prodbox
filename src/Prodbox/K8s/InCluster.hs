@@ -19,6 +19,7 @@ where
 import Control.Exception (IOException, SomeException, try)
 import Data.Aeson (Value (..), eitherDecode, encode, object, (.=))
 import Data.Aeson.Key qualified as Key
+import Data.ByteString qualified as BS
 import Data.ByteString.Lazy qualified as BL
 import Data.ByteString.Lazy.Char8 qualified as BL8
 import Data.Map.Strict (Map)
@@ -106,8 +107,7 @@ loadInClusterCredentials = do
     (_, False, _) ->
       pure
         ( Left
-            ( "in-pod ServiceAccount CA cert not found at " ++ inClusterCaCertPath
-            )
+            ("in-pod ServiceAccount CA cert not found at " ++ inClusterCaCertPath)
         )
     (_, _, False) ->
       pure
@@ -277,26 +277,69 @@ httpGetSecret manager token namespace name = do
             code ->
               pure
                 ( Left
-                    ( "K8s API GET returned " ++ show code ++ ": " ++ truncateBody (responseBody resp)
-                    )
+                    ("K8s API GET returned " ++ show code ++ ": " ++ truncateBody (responseBody resp))
                 )
 
--- | Sprint 3.13 fourth chunk: PUT @/api/v1/namespaces/<ns>/secrets/<name>@
---   with the supplied manifest as the request body. The API server
---   handles create-vs-update server-side. Returns @Right ()@ on 200
---   or 201, @Left@ for any other status.
+-- | Sprint 3.13 fourth chunk + chunk 23 (2026-05-31 fix): create-or-update
+--   a namespaced @v1.Secret@ via the k8s API. The earlier prose claimed
+--   "the API server handles create-vs-update server-side" but that is
+--   only true for @PATCH@ (with @application/apply-patch+yaml@, server-side
+--   apply) or for the legacy three-way merge — plain @PUT@ to
+--   @/api/v1/namespaces/<ns>/secrets/<name>@ returns 404 NotFound when
+--   the named Secret doesn't yet exist (PUT replaces; it doesn't insert).
+--   This function therefore tries @POST /api/v1/namespaces/<ns>/secrets@
+--   first (create); on 409 Conflict it falls back to
+--   @PUT /api/v1/namespaces/<ns>/secrets/<name>@ (update). Returns
+--   @Right ()@ on a 200/201 from either path, @Left@ on any other
+--   non-success status with the response body for diagnostics.
 httpPutSecret
   :: Manager -> Text -> Text -> Text -> Value -> IO (Either String ())
 httpPutSecret manager token namespace name manifest = do
-  let url = secretApiBaseUrl ++ secretApiPath namespace name
+  createResult <- httpRequestSecret manager token "POST" collectionUrl manifest
+  case createResult of
+    Right () -> pure (Right ())
+    Left (code, body)
+      | code == 409 -> do
+          updateResult <-
+            httpRequestSecret manager token "PUT" objectUrl manifest
+          pure $ case updateResult of
+            Right () -> Right ()
+            Left (updateCode, updateBody) ->
+              Left
+                ( "K8s API PUT (fallback after 409) returned "
+                    ++ show updateCode
+                    ++ ": "
+                    ++ truncateBody updateBody
+                )
+      | otherwise ->
+          pure
+            ( Left
+                ("K8s API POST returned " ++ show code ++ ": " ++ truncateBody body)
+            )
+ where
+  collectionUrl =
+    secretApiBaseUrl ++ "/api/v1/namespaces/" ++ Text.unpack namespace ++ "/secrets"
+  objectUrl = secretApiBaseUrl ++ secretApiPath namespace name
+
+-- | Submit a JSON request to the k8s API. Returns @Right ()@ on
+-- 200/201; @Left (statusCode, body)@ on any other status so the caller
+-- can branch on specific codes (e.g. 409 Conflict → PUT fallback).
+httpRequestSecret
+  :: Manager
+  -> Text
+  -> BS.ByteString
+  -> String
+  -> Value
+  -> IO (Either (Int, BL.ByteString) ())
+httpRequestSecret manager token verb url manifest = do
   reqResult <-
     try (parseRequest url) :: IO (Either SomeException Request)
   case reqResult of
-    Left exc -> pure (Left ("parseRequest failed: " ++ show exc))
+    Left exc -> pure (Left (0, BL8.pack ("parseRequest failed: " ++ show exc)))
     Right baseReq -> do
       let req =
             baseReq
-              { method = "PUT"
+              { method = verb
               , requestHeaders =
                   [ ("Authorization", TE.encodeUtf8 ("Bearer " <> token))
                   , ("Content-Type", "application/json")
@@ -307,17 +350,18 @@ httpPutSecret manager token namespace name manifest = do
       respResult <-
         try (httpLbs req manager) :: IO (Either SomeException (Response BL.ByteString))
       case respResult of
-        Left exc -> pure (Left ("HTTP PUT failed: " ++ show exc))
+        Left exc ->
+          pure
+            ( Left
+                ( 0
+                , BL8.pack ("HTTP " ++ show verb ++ " failed: " ++ show exc)
+                )
+            )
         Right resp ->
           case statusCode (responseStatus resp) of
             200 -> pure (Right ())
             201 -> pure (Right ())
-            code ->
-              pure
-                ( Left
-                    ( "K8s API PUT returned " ++ show code ++ ": " ++ truncateBody (responseBody resp)
-                    )
-                )
+            code -> pure (Left (code, responseBody resp))
 
 -- | Truncate the response body for inclusion in error strings so log
 -- lines stay readable when the API server returns a large HTML error page.

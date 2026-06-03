@@ -19,6 +19,7 @@ module Prodbox.Infra.AwsEksTestStack
   )
 where
 
+import Control.Exception (IOException, SomeException, bracket, catch, try)
 import Control.Monad (foldM, forM, when)
 import Data.Aeson
   ( Value (..)
@@ -74,7 +75,6 @@ import Prodbox.Subprocess
   , captureSubprocessResult
   , runSubprocessStreaming
   )
-import Control.Exception (IOException, SomeException, bracket, catch, try)
 import System.Directory
   ( doesFileExist
   , getTemporaryDirectory
@@ -1494,8 +1494,8 @@ drainAwsEksClusterBeforeDestroy repoRoot operationalCredentials = do
                     ++ err
                     ++ "; proceeding to destroy anyway (the destroy is the goal)."
                 )
-      ) ::
-      IO (Either SomeException ())
+      )
+      :: IO (Either SomeException ())
   case drainAttempt of
     Left exc ->
       writeDiagnosticLine

@@ -215,8 +215,16 @@ new sprints across Phases `1`–`4`; the original doctrine-adoption rows are now
 cleanup ledger records the delete-output residue under `Completed`. The May 23, 2026 reopen of
 Phases `2`, `3`, and `4` (Sprints `2.17`, `2.18`, `2.19`, `3.13`, `4.16`, `4.17`, `4.18`)
 addresses the cluster-as-source-of-truth invariant exposed by the May 22 cascade-credentials
-failure; Sprints `2.17` (host-side surface) and `2.18` are `Done`, Sprints `2.19` and `4.17`
-are `Active`, and Sprints `3.13`, `4.16`, and `4.18` are `Planned`. The Pending Removal table
+failure; Sprints `2.17` (host-side surface), `2.18`, `2.19` (live closure on home substrate
+2026-05-30), `2.20`, `2.21` (live file-watch closure 2026-06-02 via chart subPath→directory
+mount fix + reloadLiveConfig event-key re-derivation; drain-completion follow-up tracked
+as Sprint `2.23`), `2.22` (live closure via retry 21), `3.13` (live closure 2026-06-01 via
+`prodbox test all` retry 21 — 16 of 17 validations green; the residual `keycloak-invite`
+failure is owned by Sprint 8.5), and `4.10`/`4.11`/`4.12`/`4.16`/`4.17`/`4.18` are
+`Done` (4.10/4.11/4.12/4.17/4.18 closed via retry 21's per-run Pulumi destroys, AWS EKS
+drain, canonical cascade order, and lifecycle validation). Sprint `4.13` (`prodbox nuke`)
+remains `Active` — code-side done but the live closure gate is an operator-driven
+destructive cycle that automation cannot drive (TTY guard per CLAUDE.md). The Pending Removal table
 in [legacy-tracking-for-deletion.md](legacy-tracking-for-deletion.md) carries the corresponding
 rows.
 

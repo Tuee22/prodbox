@@ -12,6 +12,27 @@ also rewrite `configmap-orders.yaml` to render Dhall and remove env-var-
 sourced credentials from `deployments.yaml`; both depend on the daemon-side
 Dhall import wiring (Sprint 2.19 closure work).
 */}}
+{{- /*
+Sprint 3.13 chunk 16: per-node `event_keys` are read via Helm `lookup`
+of the daemon-self-bootstrapped `gateway-event-keys` Secret. On the
+first install the lookup returns empty and the chart renders an empty
+event_keys list — that's fine because the daemon's own startup loop
+materializes the Secret right after acquiring the master seed; the
+next `helm upgrade` (or any subsequent reconcile) picks up the
+daemon-written values.
+
+On `helm template` (no cluster context) the lookup returns empty too,
+so the rendered manifest is deterministic for golden tests.
+*/ -}}
+{{- $eventKeysSecret := lookup "v1" "Secret" .Release.Namespace "gateway-event-keys" }}
+{{- $nodeAKey := "" }}
+{{- $nodeBKey := "" }}
+{{- $nodeCKey := "" }}
+{{- if $eventKeysSecret }}
+{{- $nodeAKey = index $eventKeysSecret.data "NODE_A_EVENT_KEY" | b64dec }}
+{{- $nodeBKey = index $eventKeysSecret.data "NODE_B_EVENT_KEY" | b64dec }}
+{{- $nodeCKey = index $eventKeysSecret.data "NODE_C_EVENT_KEY" | b64dec }}
+{{- end }}
 {{- range $idx, $nodeId := .Values.nodes.rankedIds }}
 ---
 apiVersion: v1
@@ -31,13 +52,10 @@ data:
       , ca_file = "/ca/ca.crt"
       , orders_file = "/etc/gateway/orders.dhall"
       , event_keys =
-          {{- if $.Values.eventKeys }}
-        [ {{- $first := true -}}
-          {{- range $rankedNodeId, $key := $.Values.eventKeys }}
-          {{- if not $first }},{{ end -}}
-          {{- $first = false }}
-          { name = {{ $rankedNodeId | quote }}, value = {{ $key | quote }} }
-          {{- end }}
+          {{- if $eventKeysSecret }}
+        [ { name = "node-a", value = {{ $nodeAKey | quote }} }
+        , { name = "node-b", value = {{ $nodeBKey | quote }} }
+        , { name = "node-c", value = {{ $nodeCKey | quote }} }
         ]
           {{- else }}
         ([] : List { name : Text, value : Text })

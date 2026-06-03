@@ -19,10 +19,8 @@ import Data.Aeson
   ( Value (..)
   , eitherDecode
   )
-import Data.Aeson.Encode.Pretty qualified as Pretty
 import Data.Aeson.Key qualified as Key
 import Data.Aeson.KeyMap qualified as KeyMap
-import Data.ByteString.Lazy qualified as BL
 import Data.ByteString.Lazy.Char8 qualified as BL8
 import Data.Char (toLower)
 import Data.List (isInfixOf)
@@ -81,8 +79,7 @@ import Prodbox.Subprocess
   , runSubprocessStreaming
   )
 import System.Directory
-  ( createDirectoryIfMissing
-  , doesFileExist
+  ( doesFileExist
   , getTemporaryDirectory
   , removeFile
   )
@@ -487,11 +484,19 @@ pulumiStackOutputSecret projectDir environment outputName = do
 
 -- After a successful aws-ses Pulumi reconcile, fetch the IAM secret access
 -- key for the SMTP user, derive the SES SMTP password via
--- `Prodbox.Ses.SmtpPassword.derivedSesSmtpPassword`, and persist the four
--- chart-secret fields the Keycloak chart's `valuesForKeycloak` rendering
--- looks up: `ses_smtp_endpoint`, `ses_smtp_user`, `ses_smtp_password`, and
--- `ses_smtp_from`. The chart secrets file is namespace-scoped at
--- `.prodbox-state/charts/keycloak/.secrets.json`.
+-- `Prodbox.Ses.SmtpPassword.derivedSesSmtpPassword`, and apply the
+-- `keycloak-smtp` @v1.Secret@ in the @keycloak@ namespace directly via
+-- @kubectl@. The Secret carries the seven @KC_SMTP_*@ fields the chart's
+-- `configmap.yaml` reads via Helm @lookup@ to populate the realm-import
+-- @smtpServer@ block. The IAM secret access key never lands on disk.
+--
+-- Sprint 3.13 chunk 10: replaced the prior
+-- @.prodbox-state/charts/keycloak/.secrets.json@ write with a kubectl
+-- apply so the cluster Secret is the source-of-truth. @helm.sh/resource-policy:
+-- keep@ is stamped on the Secret so a subsequent @charts delete keycloak@
+-- does not delete it, matching the pattern from Sprint 2.19's gateway-minio-creds
+-- closure. The chart's own @keycloak-smtp@ Secret template is removed in the
+-- same chunk so there is no helm-vs-kubectl multi-writer race.
 persistKeycloakSmtpChartSecrets
   :: FilePath
   -> FilePath
@@ -499,7 +504,7 @@ persistKeycloakSmtpChartSecrets
   -> AwsSesStackConfig
   -> AwsSesStackSnapshot
   -> IO (Either String ())
-persistKeycloakSmtpChartSecrets repoRoot projectDir environment stackConfig snapshot = do
+persistKeycloakSmtpChartSecrets _repoRoot projectDir environment stackConfig snapshot = do
   secretResult <- pulumiStackOutputSecret projectDir environment "smtp_iam_secret_access_key"
   case secretResult of
     Left err -> pure (Left err)
@@ -508,59 +513,73 @@ persistKeycloakSmtpChartSecrets repoRoot projectDir environment stackConfig snap
           derivedPassword =
             Text.unpack (derivedSesSmtpPassword region (Text.pack smtpSecret))
           fromAddress = "noreply@" ++ sesStackSenderDomain stackConfig
-          newValues =
-            Map.fromList
-              [ ("ses_smtp_endpoint", sesSnapshotSmtpEndpoint snapshot)
-              , ("ses_smtp_user", sesSnapshotSmtpIamAccessKeyId snapshot)
-              , ("ses_smtp_password", derivedPassword)
-              , ("ses_smtp_from", fromAddress)
-              ]
-      mergeChartSecretsFile repoRoot "keycloak" newValues
+          fields =
+            [ ("KC_SMTP_HOST", sesSnapshotSmtpEndpoint snapshot)
+            , ("KC_SMTP_PORT", "587")
+            , ("KC_SMTP_FROM", fromAddress)
+            , ("KC_SMTP_FROM_DISPLAY_NAME", "prodbox")
+            , ("KC_SMTP_REPLY_TO", fromAddress)
+            , ("KC_SMTP_USER", sesSnapshotSmtpIamAccessKeyId snapshot)
+            , ("KC_SMTP_PASSWORD", derivedPassword)
+            ]
+      applyKeycloakSmtpKubectlSecret fields
 
-mergeChartSecretsFile
-  :: FilePath -> String -> Map String String -> IO (Either String ())
-mergeChartSecretsFile repoRoot namespace newValues = do
-  let namespaceDir = repoRoot </> ".prodbox-state" </> "charts" </> namespace
-      targetPath = namespaceDir </> ".secrets.json"
-  createResult <- try (createDirectoryIfMissing True namespaceDir) :: IO (Either IOException ())
-  case createResult of
-    Left err -> pure (Left ("failed to create chart-secrets directory: " ++ show err))
-    Right () -> do
-      existing <- readChartSecretsFile targetPath
-      case existing of
-        Left err -> pure (Left err)
-        Right currentValues -> do
-          let merged = Map.union newValues currentValues
-          writeResult <-
-            try
-              ( BL.writeFile
-                  targetPath
-                  ( Pretty.encodePretty' chartSecretsPrettyConfig merged
-                      <> BL8.pack "\n"
-                  )
-              )
-              :: IO (Either IOException ())
-          pure $ case writeResult of
-            Left err -> Left ("failed to write chart-secrets file: " ++ show err)
-            Right () -> Right ()
+-- | Apply (create-or-update) the @keycloak-smtp@ Secret in the
+-- @keycloak@ namespace via @kubectl create secret generic … --dry-run=client
+-- -o yaml | kubectl apply -f -@. Mirrors
+-- 'Prodbox.CLI.Rke2.writeGatewayMinioCredsSecret' from Sprint 2.19 (same
+-- @helm.sh/resource-policy: keep@ annotation so @helm uninstall@ doesn't
+-- drop the Secret). The kubectl context is the operator's current
+-- kubeconfig — host-side `aws-ses-resources` is documented as requiring an
+-- already-up cluster (the chart consumers don't exist otherwise).
+applyKeycloakSmtpKubectlSecret :: [(String, String)] -> IO (Either String ())
+applyKeycloakSmtpKubectlSecret fields = do
+  let secretName = "keycloak-smtp"
+      namespace = "keycloak"
+      literalArgs = concatMap (\(k, v) -> " --from-literal=" ++ shellQuoteForBash (k ++ "=" ++ v)) fields
+      script =
+        "kubectl create secret generic "
+          ++ secretName
+          ++ literalArgs
+          ++ " -n "
+          ++ namespace
+          ++ " --dry-run=client -o yaml | kubectl apply -f - && "
+          ++ "kubectl annotate secret "
+          ++ secretName
+          ++ " -n "
+          ++ namespace
+          ++ " helm.sh/resource-policy=keep --overwrite"
+  result <-
+    captureSubprocessResult
+      Subprocess
+        { subprocessPath = "sh"
+        , subprocessArguments = ["-c", script]
+        , subprocessEnvironment = Nothing
+        , subprocessWorkingDirectory = Nothing
+        }
+  pure $ case result of
+    Failure err ->
+      Left ("failed to kubectl-apply keycloak-smtp Secret: " ++ err)
+    Success output ->
+      case processExitCode output of
+        ExitSuccess -> Right ()
+        ExitFailure _ ->
+          Left
+            ( "kubectl apply for keycloak-smtp Secret failed: "
+                ++ trim (processStderr output ++ processStdout output)
+                ++ " (is `kubectl` configured for the operator cluster and is the `keycloak` namespace present? "
+                ++ "run `prodbox rke2 reconcile` and `prodbox charts deploy keycloak` first.)"
+            )
 
-readChartSecretsFile :: FilePath -> IO (Either String (Map String String))
-readChartSecretsFile path = do
-  fileExists <- doesFileExist path
-  if not fileExists
-    then pure (Right Map.empty)
-    else do
-      readResult <- try (BL.readFile path) :: IO (Either IOException BL.ByteString)
-      pure $ case readResult of
-        Left err -> Left ("failed to read chart-secrets file: " ++ show err)
-        Right contents ->
-          case eitherDecode contents :: Either String (Map String String) of
-            Left err -> Left ("failed to parse chart-secrets file " ++ path ++ ": " ++ err)
-            Right values -> Right values
-
-chartSecretsPrettyConfig :: Pretty.Config
-chartSecretsPrettyConfig =
-  Pretty.defConfig {Pretty.confIndent = Pretty.Spaces 2}
+-- | Shell-quote a literal for safe inclusion as a single argument inside an
+-- @sh -c@ script. Wraps in single quotes and escapes embedded single quotes
+-- via the @'\\''@ idiom. Mirrors 'Prodbox.CLI.Rke2.shellQuote' but kept
+-- local to avoid the import cycle.
+shellQuoteForBash :: String -> String
+shellQuoteForBash s = "'" ++ concatMap escape s ++ "'"
+ where
+  escape '\'' = "'\\''"
+  escape c = [c]
 
 runPulumiCommand :: FilePath -> [(String, String)] -> [String] -> IO ExitCode
 runPulumiCommand projectDir environment arguments = do

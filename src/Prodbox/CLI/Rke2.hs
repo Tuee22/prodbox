@@ -56,7 +56,6 @@ import Data.List
   , isPrefixOf
   , nub
   )
-import Data.Map.Strict qualified as Map
 import Data.Maybe (fromMaybe)
 import Data.Text qualified as Text
 import Data.Word (Word8)
@@ -93,9 +92,9 @@ import Prodbox.Host
   )
 import Prodbox.Infra.AwsEksTestStack (awsEksCanonicalClusterName, withEksKubeconfig)
 import Prodbox.Infra.LongLivedPulumiBackend (loadAdminAwsCredentials)
+import Prodbox.Infra.MinioBackend (withMinioPortForward)
 import Prodbox.Lib.ChartPlatform
   ( keycloakVscodeClientId
-  , resolveChartSecrets
   )
 import Prodbox.Lib.EksCustomImagePush
   ( EksCustomImagePushConfig (..)
@@ -131,6 +130,12 @@ import Prodbox.Result (Result (..))
 import Prodbox.Retry
   ( RetryPolicy (..)
   , retryDelayMicros
+  )
+import Prodbox.Secret.Derive (MasterSeed, deriveBase64Url, masterSeed, oidcClientSecretContext)
+import Prodbox.Secret.MasterSeed
+  ( defaultMinioMasterSeedConfig
+  , ensureMasterSeed
+  , renderMasterSeedError
   )
 import Prodbox.Settings
   ( AcmeSection (..)
@@ -934,8 +939,8 @@ runCascadeDrainPhase repoRoot substrate = do
           ( withEksKubeconfig repoRoot $ \kubeconfigPath -> do
               drainEnvVars <- buildDrainEnvironment repoRoot SubstrateAws (Just kubeconfigPath)
               drainAndDecide drainEnvVars
-          ) ::
-          IO (Either SomeException ExitCode)
+          )
+          :: IO (Either SomeException ExitCode)
       case bracketResult of
         Left exc -> do
           writeOutputLine
@@ -2483,25 +2488,124 @@ ensureClusterPlatformRuntime repoRoot settings prodboxId labelValue = do
 
 ensureAdminPublicEdgeRoutes :: FilePath -> ValidatedSettings -> String -> String -> IO ExitCode
 ensureAdminPublicEdgeRoutes repoRoot settings prodboxId labelValue = do
-  chartSecretsResult <- resolveChartSecrets repoRoot "vscode"
-  case chartSecretsResult of
+  -- Sprint 3.13 chunks 11 + 12: the OIDC client secrets (vscode / api /
+  -- websocket / demo-user) are now master-seed-derived and materialized
+  -- by the gateway daemon's `ensure-namespace` handler into the
+  -- `keycloak-oidc-clients` Secret in the `keycloak` namespace. The
+  -- host-side `resolveChartSecrets` cache is gone; this function reads
+  -- `VSCODE_CLIENT_SECRET` (which the harbor / minio admin SecurityPolicies
+  -- both reuse) directly from the cluster Secret via @kubectl@.
+  clientSecretResult <- readKeycloakVscodeClientSecret repoRoot
+  case clientSecretResult of
     Left err -> failWith err
-    Right chartSecrets ->
-      case Map.lookup "keycloak_vscode_client_secret" chartSecrets of
-        Nothing -> failWith "keycloak_vscode_client_secret is required to render admin public-edge routes"
-        Just clientSecret ->
-          withTemporaryJsonManifest
-            "prodbox-admin-public-edge"
-            (adminPublicEdgeManifestItems settings prodboxId labelValue clientSecret)
-            ( \manifestPath -> do
-                outputResult <- captureKubectl repoRoot ["apply", "-f", manifestPath]
-                case outputResult of
-                  Left err -> failWith err
-                  Right output ->
-                    case processExitCode output of
-                      ExitSuccess -> pure ExitSuccess
-                      ExitFailure _ -> failWith ("kubectl apply failed: " ++ outputDetail output)
+    Right clientSecret ->
+      withTemporaryJsonManifest
+        "prodbox-admin-public-edge"
+        (adminPublicEdgeManifestItems settings prodboxId labelValue clientSecret)
+        ( \manifestPath -> do
+            outputResult <- captureKubectl repoRoot ["apply", "-f", manifestPath]
+            case outputResult of
+              Left err -> failWith err
+              Right output ->
+                case processExitCode output of
+                  ExitSuccess -> pure ExitSuccess
+                  ExitFailure _ -> failWith ("kubectl apply failed: " ++ outputDetail output)
+        )
+
+-- | Host-side derivation of the @VSCODE_CLIENT_SECRET@ from the master
+-- seed in MinIO, matching what the gateway daemon writes into the
+-- @keycloak-oidc-clients@ Secret. This function is the
+-- @ensureAdminPublicEdgeRoutes@ ordering fix: that reconciler runs
+-- /during/ platform setup, before any chart deploys, so the
+-- @keycloak-oidc-clients@ Secret doesn't exist yet (the keycloak
+-- namespace doesn't even exist). The host can still derive the
+-- correct value because the master seed is materialized into MinIO
+-- by the gateway-minio bootstrap that runs immediately before
+-- this function, and 'oidcClientSecretContext' /
+-- 'deriveBase64Url' are deterministic over the master seed.
+--
+-- Returns the URL-safe-base64 string Keycloak will register for the
+-- @vscode@ OIDC client, which the harbor and minio admin
+-- @SecurityPolicy@'s reuse as their client secret too.
+readKeycloakVscodeClientSecret :: FilePath -> IO (Either String String)
+readKeycloakVscodeClientSecret repoRoot = do
+  overrideResult <- readHostMasterSeedOverride
+  case overrideResult of
+    Just (Left err) -> pure (Left err)
+    Just (Right seed) -> pure (Right (deriveVscodeClientSecret seed))
+    Nothing -> do
+      credsResult <- resolveGatewayMinioCredentials repoRoot
+      case credsResult of
+        Left err ->
+          pure
+            ( Left
+                ( "could not resolve gateway-minio credentials for master-seed read: "
+                    ++ err
+                )
             )
+        Right (accessKey, secretKey) -> do
+          portForwardResult <- withMinioPortForward $ \localPort -> do
+            let cfg = defaultMinioMasterSeedConfig localPort accessKey secretKey
+            ensureMasterSeed cfg
+          case portForwardResult of
+            Left err ->
+              pure
+                ( Left
+                    ( "could not port-forward to MinIO for master-seed read: "
+                        ++ err
+                    )
+                )
+            Right (Left masterSeedErr) ->
+              pure
+                ( Left
+                    ( "master-seed read failed: "
+                        ++ renderMasterSeedError masterSeedErr
+                    )
+                )
+            Right (Right seed) -> pure (Right (deriveVscodeClientSecret seed))
+ where
+  -- Sprint 3.13 chunk 32: the daemon's Inventory uses the deploy-namespace
+  -- (`vscode` for the vscode root chart's transitive keycloak dep), so the
+  -- host-side derivation must match. Pre-chunk-32 this was hardcoded to
+  -- `"keycloak"` and computed a value Keycloak never registered, breaking
+  -- the harbor/minio admin SecurityPolicy OIDC handshake.
+  deriveVscodeClientSecret seed =
+    Text.unpack (deriveBase64Url seed (oidcClientSecretContext "vscode" "vscode"))
+
+-- | Test-only injection seam mirroring 'PRODBOX_TEST_RESIDUE_ABSENT' /
+-- 'PRODBOX_TEST_RESIDUE_UNREACHABLE' in 'Prodbox.Lifecycle.LiveResidue':
+-- when the env var is set to a 64-character hex string the host-side
+-- master-seed read short-circuits to those bytes instead of port-forwarding
+-- to MinIO. Production never sets this; the integration test harness in
+-- 'fakeRke2Environment' provides a deterministic constant so reconcile
+-- tests can exercise 'ensureAdminPublicEdgeRoutes' without a real MinIO.
+readHostMasterSeedOverride :: IO (Maybe (Either String MasterSeed))
+readHostMasterSeedOverride = do
+  maybeHex <- lookupEnv "PRODBOX_TEST_HOST_MASTER_SEED_HEX"
+  pure $ case maybeHex of
+    Nothing -> Nothing
+    Just hex ->
+      case decodeHex hex of
+        Left err -> Just (Left ("PRODBOX_TEST_HOST_MASTER_SEED_HEX: " ++ err))
+        Right bytes ->
+          case masterSeed bytes of
+            Left err -> Just (Left ("PRODBOX_TEST_HOST_MASTER_SEED_HEX: " ++ err))
+            Right seed -> Just (Right seed)
+
+decodeHex :: String -> Either String BS.ByteString
+decodeHex input
+  | odd (length input) = Left "odd-length hex string"
+  | not (all isHexDigit input) = Left "non-hex characters in input"
+  | otherwise = Right (BS.pack (parsePairs input))
+ where
+  parsePairs [] = []
+  parsePairs (a : b : rest) = fromIntegral (hexValue a * 16 + hexValue b) : parsePairs rest
+  parsePairs _ = []
+  hexValue c
+    | c >= '0' && c <= '9' = fromEnum c - fromEnum '0'
+    | c >= 'a' && c <= 'f' = fromEnum c - fromEnum 'a' + 10
+    | c >= 'A' && c <= 'F' = fromEnum c - fromEnum 'A' + 10
+    | otherwise = 0
 
 adminPublicEdgeManifestItems :: ValidatedSettings -> String -> String -> String -> [Value]
 adminPublicEdgeManifestItems settings prodboxId labelValue clientSecret =
@@ -4252,10 +4356,13 @@ removeManagedKubeconfig = do
                 "left in place because it does not target the local RKE2 API"
 
 renderRetainedStateNotice :: FilePath -> FilePath -> IO ExitCode
-renderRetainedStateNotice repoRoot retainedManualPvRoot = do
+renderRetainedStateNotice _repoRoot retainedManualPvRoot = do
   writeOutputLine "Preserved host state:"
   writeOutputLine ("  - manual PV root: " ++ retainedManualPvRoot)
-  writeOutputLine ("  - retained chart state root: " ++ repoRoot </> ".prodbox-state")
+  -- Sprint 3.13 chunk 16: the @.prodbox-state/charts/@ chart-state root is
+  -- gone; chart secrets and gateway event keys now live in k8s @Secret@s
+  -- materialized by the gateway daemon. Nothing under @.prodbox-state/@
+  -- is preserved by the supported lifecycle any more.
   pure ExitSuccess
 
 reportDeleteStep :: String -> String -> IO ExitCode

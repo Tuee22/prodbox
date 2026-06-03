@@ -18,11 +18,6 @@ module Prodbox.UsersAdmin
   )
 where
 
-import Control.Exception (IOException, try)
-import Data.Aeson (eitherDecodeStrict)
-import Data.ByteString qualified as BS
-import Data.Map.Strict (Map)
-import Data.Map.Strict qualified as Map
 import Data.Text (Text)
 import Data.Text qualified as Text
 import Prodbox.CLI.Command (UsersListStatus (..))
@@ -39,8 +34,10 @@ import Prodbox.Keycloak.Admin
   )
 import Prodbox.Keycloak.Admin qualified as KCAdmin
 import Prodbox.Result (Result (..))
+import Prodbox.Service (HasPg (runPg))
 import Prodbox.Settings (ValidatedSettings)
-import System.FilePath ((</>))
+import Prodbox.Subprocess (processExitCode, processStderr, processStdout)
+import System.Exit (ExitCode (..))
 
 data UserVerificationStatus
   = UserVerified
@@ -56,38 +53,65 @@ data UserSummary = UserSummary
   }
   deriving (Eq, Show)
 
--- | Read the chart-platform-managed `keycloak_admin_password` from
--- `.prodbox-state/charts/keycloak/.secrets.json`. This file is owned by
--- `Prodbox.Lib.ChartPlatform.resolveChartSecrets`; reading it here keeps
--- `Prodbox.UsersAdmin` decoupled from the chart-platform module graph.
+-- | Read the Keycloak admin password from the cluster's @keycloak-runtime@
+-- @Secret@ (namespace @vscode@, key @KEYCLOAK_ADMIN_PASSWORD@). Sprint 3.13
+-- chunks 8 + 28 + 32: the gateway daemon's @ensure-namespace@ handler is the
+-- sole writer of this Secret (the master-seed-derived value lands via the
+-- chart's pre-install Job), so reading it via @kubectl@ is the host-side
+-- analogue of asking the daemon to surface the same derivation. The lookup
+-- namespace is @vscode@ because @prodbox test all@ deploys the @vscode@
+-- root chart, which transitively pulls keycloak into the @vscode@ namespace
+-- (chunk 28's namespace-aware Inventory mirrors this on the daemon side).
+-- The 'FilePath' parameter is retained in the signature for source-compatible
+-- callers; the value is unused.
 loadKeycloakAdminPassword :: FilePath -> IO (Either String Text)
-loadKeycloakAdminPassword repoRoot = do
-  let secretsPath = repoRoot </> ".prodbox-state" </> "charts" </> "keycloak" </> ".secrets.json"
-  attempt <- try (BS.readFile secretsPath)
-  case attempt of
-    Left ioe ->
+loadKeycloakAdminPassword _repoRoot = do
+  result <-
+    runPg
+      [ "get"
+      , "secret"
+      , "keycloak-runtime"
+      , "--namespace"
+      , "vscode"
+      , "-o"
+      , "go-template={{index .data \"KEYCLOAK_ADMIN_PASSWORD\" | base64decode}}"
+      ]
+  case result of
+    Left err ->
       pure
         ( Left
-            ( "could not read "
-                <> secretsPath
-                <> ": "
-                <> show (ioe :: IOException)
-                <> " — run `prodbox charts deploy keycloak` first so the chart-platform secrets exist."
+            ( "could not run `kubectl get secret keycloak-runtime`: "
+                <> show err
+                <> " — is kubectl configured and the cluster reachable?"
             )
         )
-    Right bytes ->
-      case eitherDecodeStrict bytes of
-        Left err -> pure (Left ("could not parse " <> secretsPath <> ": " <> err))
-        Right (raw :: Map String String) ->
-          case Map.lookup "keycloak_admin_password" raw of
-            Nothing ->
-              pure
-                ( Left
-                    ( secretsPath
-                        <> " is missing `keycloak_admin_password`; rerun `prodbox charts deploy keycloak`."
-                    )
+    Right output ->
+      case processExitCode output of
+        ExitFailure _ ->
+          pure
+            ( Left
+                ( "kubectl get secret keycloak-runtime failed: "
+                    <> trim (processStderr output)
+                    <> " — run `prodbox rke2 reconcile` and `prodbox charts deploy keycloak` so the gateway daemon materializes the Secret."
                 )
-            Just value -> pure (Right (Text.pack value))
+            )
+        ExitSuccess ->
+          let raw = trim (processStdout output)
+           in if null raw
+                then
+                  pure
+                    ( Left
+                        ( "kubectl returned an empty KEYCLOAK_ADMIN_PASSWORD;"
+                            <> " the gateway daemon's `ensure-namespace` Job may not have run yet."
+                        )
+                    )
+                else pure (Right (Text.pack raw))
+ where
+  trim =
+    reverse
+      . dropWhile (`elem` (" \t\r\n" :: String))
+      . reverse
+      . dropWhile (`elem` (" \t\r\n" :: String))
 
 -- | Invite a new operator-owned user. Creates the Keycloak user with `enabled: true`,
 -- `emailVerified: false`, and `requiredActions: ["VERIFY_EMAIL", "UPDATE_PASSWORD"]`,

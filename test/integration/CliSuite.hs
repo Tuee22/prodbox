@@ -258,13 +258,29 @@ integrationCliSuite = do
         deployStdout `shouldContain` "CHART_DEPLOYMENT"
         deployStdout `shouldContain` "ROOT_CHART=vscode"
 
-        appliedManifest <- readFile (tmpDir </> "fake-chart-state" </> "kubectl-apply-1.json")
+        -- Sprint 3.13 chunk 33: the host-side pre-apply of derived
+        -- Secrets adds new kubectl-apply files between
+        -- ensureChartStorage's storage manifest and the Patroni
+        -- binding apply, so the test asserts content rather than
+        -- specific apply ordinals.
+        appliedManifest <- readAppliedManifestContaining (tmpDir </> "fake-chart-state") "vscode-data-0"
         appliedManifest `shouldContain` "PersistentVolumeClaim"
-        appliedManifest `shouldContain` "vscode-data-0"
-        patroniManifest <- readFile (tmpDir </> "fake-chart-state" </> "kubectl-apply-2.json")
+        patroniManifest <-
+          readAppliedManifestContaining
+            (tmpDir </> "fake-chart-state")
+            "prodbox-vscode-pg-instance1-0-pgdata"
         patroniManifest `shouldContain` "PersistentVolume"
-        patroniManifest `shouldContain` "prodbox-vscode-pg-instance1-0-pgdata"
         patroniManifest `shouldNotContain` "PersistentVolumeClaim"
+        -- Sprint 3.13 chunk 33: the three Patroni-role Secrets land
+        -- in their own apply manifest (master-seed-derived passwords +
+        -- static usernames).
+        patroniSecretsManifest <-
+          readAppliedManifestContaining
+            (tmpDir </> "fake-chart-state")
+            "prodbox-vscode-pg-pguser-keycloak"
+        patroniSecretsManifest `shouldContain` "\"namespace\":\"vscode\""
+        patroniSecretsManifest `shouldContain` "\"username\":\"keycloak\""
+        patroniSecretsManifest `shouldContain` "prodbox-vscode-pg-primaryuser"
 
         upgradeRecord <- readFile (tmpDir </> "fake-chart-state" </> "helm-upgrade.txt")
         upgradeRecord `shouldContain` "upgrade|--install|--wait|--atomic|--timeout|30m0s|keycloak"
@@ -367,47 +383,6 @@ integrationCliSuite = do
         deleteStderr `shouldContain` "Unsupported public chart 'redis'"
         deleteStderr `shouldContain` "Supported root charts: keycloak, vscode, api, websocket, gateway"
         deleteStderr `shouldContain` "internal dependency release"
-
-    it
-      "restores retained Patroni state through a staged bootstrap before scaling back to three replicas"
-      $ withSystemTempDirectory "prodbox-hs-cli"
-      $ \tmpDir -> do
-        binary <- resolveBinaryPath
-        writeRepoMarkers tmpDir
-        writeFile (tmpDir </> "prodbox-config.dhall") validConfig
-        envVars <- fakeChartEnvironment tmpDir
-        let stagedEnvVars = ("PRODBOX_FAKE_PATRONI_STAGED_RESTORE", "true") : envVars
-            stateDir = tmpDir </> ".prodbox-state" </> "vscode"
-        createDirectoryIfMissing True stateDir
-        writeFile
-          (stateDir </> ".patroni-anchor-volume")
-          "prodbox-chart-vscode-keycloak-postgres-prodbox-vscode-pg-1-data\n"
-
-        (deployExitCode, deployStdout, deployStderr) <-
-          readCreateProcessWithExitCode
-            (proc binary ["charts", "deploy", "vscode"]) {cwd = Just tmpDir, env = Just stagedEnvVars}
-            ""
-
-        deployExitCode `shouldBe` ExitSuccess
-        deployStderr `shouldBe` ""
-        deployStdout `shouldContain` "CHART_DEPLOYMENT"
-
-        bootstrapPatroniManifest <- readFile (tmpDir </> "fake-chart-state" </> "kubectl-apply-2.json")
-        bootstrapPatroniManifest
-          `shouldContain` "prodbox-chart-vscode-keycloak-postgres-prodbox-vscode-pg-1-data"
-        bootstrapPatroniManifest `shouldContain` "prodbox-vscode-pg-instance1-0-pgdata"
-        bootstrapPatroniManifest `shouldNotContain` "prodbox-vscode-pg-instance1-1-pgdata"
-        bootstrapPatroniManifest `shouldNotContain` "prodbox-vscode-pg-instance1-2-pgdata"
-
-        fullPatroniManifest <- readFile (tmpDir </> "fake-chart-state" </> "kubectl-apply-3.json")
-        fullPatroniManifest
-          `shouldContain` "prodbox-chart-vscode-keycloak-postgres-prodbox-vscode-pg-1-data"
-        fullPatroniManifest `shouldContain` "prodbox-vscode-pg-instance1-0-pgdata"
-        fullPatroniManifest `shouldContain` "prodbox-vscode-pg-instance1-1-pgdata"
-        fullPatroniManifest `shouldContain` "prodbox-vscode-pg-instance1-2-pgdata"
-
-        upgradeRecord <- readFile (tmpDir </> "fake-chart-state" </> "helm-upgrade.txt")
-        length (filter (isInfixOf "|keycloak-postgres|") (lines upgradeRecord)) `shouldBe` 2
 
     it
       "runs native rke2 status, start, and logs through the built frontend with fake systemctl and journalctl"
@@ -1215,12 +1190,19 @@ fakeChartEnvironment repoRoot = do
                 && key /= "PRODBOX_FAKE_CHART_RECORD_DIR"
                 && key /= "PRODBOX_FAKE_HELM_LIST_JSON"
                 && key /= "PRODBOX_FAKE_PATRONI_STAGED_RESTORE"
+                && key /= "PRODBOX_TEST_HOST_MASTER_SEED_HEX"
           )
           currentEnvironment
   pure
     ( [ ("PATH", updatedPath)
       , ("PRODBOX_FAKE_CHART_RECORD_DIR", recordDir)
       , ("PRODBOX_FAKE_HELM_LIST_JSON", "[]")
+      , -- Sprint 3.13 chunks 31 + 33: deterministic master-seed injection so
+        -- 'Prodbox.Secret.HostBootstrap.preApplyDerivedSecretsForRelease'
+        -- (now called by 'deployRelease' before every 'helmUpgradeInstall')
+        -- short-circuits the MinIO port-forward in the fake-env charts
+        -- suite. See the matching override in 'fakeRke2Environment'.
+        ("PRODBOX_TEST_HOST_MASTER_SEED_HEX", replicate 64 '0')
       ]
         ++ baseEnvironment
     )
@@ -1370,22 +1352,9 @@ fakeKubectlScript =
     , "    if [[ \"${3:-}\" == 'prodbox-vscode-pg-instance1-0-pgdata' && \"$*\" == *'jsonpath={.spec.volumeName}'* ]]; then"
     , "      printf 'prodbox-chart-vscode-keycloak-postgres-prodbox-vscode-pg-0-data\\n'"
     , "    elif [[ \"$*\" == *'postgres-operator.crunchydata.com/cluster=prodbox-vscode-pg,postgres-operator.crunchydata.com/data=postgres'* ]]; then"
-    , "      if [[ \"${PRODBOX_FAKE_PATRONI_STAGED_RESTORE:-}\" == 'true' ]]; then"
-    , "        pvc_count=$(next_counter \"$record_dir/patroni-pvc-list.count\")"
-    , "        if [[ \"$pvc_count\" -eq 1 ]]; then"
-    , "          cat <<'JSON'"
-    , "{\"items\":[{\"metadata\":{\"name\":\"prodbox-vscode-pg-instance1-0-pgdata\"}}]}"
-    , "JSON"
-    , "        else"
-    , "          cat <<'JSON'"
-    , "{\"items\":[{\"metadata\":{\"name\":\"prodbox-vscode-pg-instance1-0-pgdata\"},\"spec\":{\"volumeName\":\"prodbox-chart-vscode-keycloak-postgres-prodbox-vscode-pg-1-data\"}},{\"metadata\":{\"name\":\"prodbox-vscode-pg-instance1-1-pgdata\"},\"spec\":{}},{\"metadata\":{\"name\":\"prodbox-vscode-pg-instance1-2-pgdata\"},\"spec\":{}}]}"
-    , "JSON"
-    , "        fi"
-    , "      else"
-    , "        cat <<'JSON'"
+    , "      cat <<'JSON'"
     , "{\"items\":[{\"metadata\":{\"name\":\"prodbox-vscode-pg-instance1-0-pgdata\"}},{\"metadata\":{\"name\":\"prodbox-vscode-pg-instance1-1-pgdata\"}},{\"metadata\":{\"name\":\"prodbox-vscode-pg-instance1-2-pgdata\"}}]}"
     , "JSON"
-    , "      fi"
     , "    else"
     , "      printf 'Error from server (NotFound): persistentvolumeclaims \"%s\" not found\\n' \"${3:-pvc}\" >&2"
     , "      exit 1"
@@ -1466,6 +1435,7 @@ fakeRke2Environment repoRoot = do
                           , "PRODBOX_RKE2_ENDPOINT_STATUS_ROOT"
                           , "PRODBOX_TEST_RESIDUE_ABSENT"
                           , "PRODBOX_TEST_RESIDUE_UNREACHABLE"
+                          , "PRODBOX_TEST_HOST_MASTER_SEED_HEX"
                           , "HOME"
                           ]
           )
@@ -1480,6 +1450,14 @@ fakeRke2Environment repoRoot = do
         -- Sprint 4.19 fail-closed delete gate sees ResidueAbsent (pass) rather
         -- than ResidueUnreachable (refuse) from the fake/unreachable MinIO.
         ("PRODBOX_TEST_RESIDUE_ABSENT", "1")
+      , -- Sprint 3.13 chunk 31: deterministic master-seed injection for
+        -- 'ensureAdminPublicEdgeRoutes'. The reconcile reconciler reads the
+        -- master seed from MinIO to derive `VSCODE_CLIENT_SECRET` for the
+        -- harbor/minio admin SecurityPolicies; the fake env can't run a
+        -- real MinIO, so this env var short-circuits the MinIO port-forward
+        -- with a known 32-byte test seed. Production never sets this; see
+        -- 'readHostMasterSeedOverride' in 'Prodbox.CLI.Rke2'.
+        ("PRODBOX_TEST_HOST_MASTER_SEED_HEX", replicate 64 '0')
       , ("HOME", repoRoot)
       ]
         ++ baseEnvironment

@@ -7,18 +7,15 @@ module Prodbox.Lib.ChartPlatform
   , ChartReleasePlan (..)
   , buildChartDeletePlan
   , buildChartDeploymentPlan
-  , chartStateRootRelative
   , deleteChartPlan
   , deployChartPlan
   , gatewayNodeIds
   , keycloakVscodeClientId
   , keycloakRealmName
-  , mergeChartSecretValues
   , renderChartList
   , renderChartStatus
   , resolveChart
   , resolveChartSecrets
-  , resolveGatewayEventKeys
   , supportedChartNames
   )
 where
@@ -26,14 +23,12 @@ where
 import Control.Exception
   ( IOException
   , bracket
-  , displayException
   , try
   )
 import Control.Monad
   ( filterM
   , foldM
   , forM
-  , forM_
   , unless
   , when
   )
@@ -51,7 +46,6 @@ import Data.Aeson
 import Data.Aeson.Encode.Pretty qualified as Pretty
 import Data.Aeson.KeyMap qualified as KeyMap
 import Data.Aeson.Types (Parser, parseEither)
-import Data.ByteString qualified as BS
 import Data.ByteString.Lazy qualified as BL
 import Data.ByteString.Lazy.Char8 qualified as BL8
 import Data.Char (isDigit, isHexDigit, toLower)
@@ -59,7 +53,6 @@ import Data.List
   ( find
   , intercalate
   , isInfixOf
-  , isPrefixOf
   , nub
   , sort
   , sortOn
@@ -68,8 +61,6 @@ import Data.List
 import Data.Map.Strict (Map)
 import Data.Map.Strict qualified as Map
 import Data.Text qualified as Text
-import Data.Word (Word8)
-import Numeric (showHex)
 import Prodbox.ContainerImage qualified as ContainerImage
 import Prodbox.Lib.Storage
   ( ChartStorageBinding (..)
@@ -115,6 +106,7 @@ import Prodbox.Result
 import Prodbox.Retry
   ( RetryPolicy (..)
   )
+import Prodbox.Secret.HostBootstrap (preApplyDerivedSecretsForRelease)
 import Prodbox.Service
   ( HasPg (..)
   , PgError (..)
@@ -135,15 +127,11 @@ import Prodbox.Subprocess
   , captureSubprocessResult
   )
 import System.Directory
-  ( Permissions
-  , createDirectoryIfMissing
+  ( createDirectoryIfMissing
   , doesDirectoryExist
   , doesFileExist
-  , getPermissions
   , getTemporaryDirectory
   , removeFile
-  , searchable
-  , writable
   )
 import System.Exit
   ( ExitCode (ExitFailure, ExitSuccess)
@@ -151,14 +139,20 @@ import System.Exit
 import System.FilePath ((</>))
 import System.IO
   ( Handle
-  , IOMode (ReadMode)
   , hClose
   , openTempFile
-  , withBinaryFile
   )
 
-chartStateRootRelative :: FilePath
-chartStateRootRelative = ".prodbox-state"
+-- Sprint 3.13 chunk 16: the @chartStateRootRelative = ".prodbox-state"@
+-- constant + its derived 'chartStateDir' helper are removed. Every Sprint
+-- 3.13 consumer of the @.prodbox-state/<ns>/.secrets.json@ chart-secret
+-- cache (chunks 8\8211\&14) and the @.gateway-event-keys.json@ event-key
+-- cache (chunk 16) reads its values from k8s @Secret@s instead — the
+-- daemon writes them via 'Prodbox.Secret.EnsureNamespace.applyDerivedSecrets'
+-- and the charts read them via Helm @lookup@. With these consumers gone,
+-- nothing in @src/@ writes to @.prodbox-state/charts/@ any more, and
+-- 'Prodbox.CheckCode.checkForbidDotProdboxState' broadens to refuse any
+-- new @.prodbox-state/@ string literal anywhere in @src/@ + @app/@.
 
 chartClusterIssuer :: String
 chartClusterIssuer = "letsencrypt-http01"
@@ -219,25 +213,6 @@ publicEdgeRouteClaimName = "prodbox_route"
 
 gatewayNodeIds :: [String]
 gatewayNodeIds = ["node-a", "node-b", "node-c"]
-
-requiredChartSecretKeys :: [String]
-requiredChartSecretKeys =
-  [ "keycloak_admin_password"
-  , "keycloak_vscode_client_secret"
-  , "keycloak_api_client_secret"
-  , "keycloak_websocket_client_secret"
-  , "keycloak_demo_user_password"
-  , "patroni_app_password"
-  , "patroni_standby_password"
-  , "patroni_superuser_password"
-  ]
-
-requiredPatroniSecretKeys :: [String]
-requiredPatroniSecretKeys =
-  [ "patroni_app_password"
-  , "patroni_standby_password"
-  , "patroni_superuser_password"
-  ]
 
 machineIdPath :: FilePath
 machineIdPath = "/etc/machine-id"
@@ -511,44 +486,46 @@ renderChartStatus repoRoot settings chartName = do
       case secretsResult of
         Left err -> pure (Left err)
         Right chartSecrets -> do
-          eventKeysResult <- resolveGatewayEventKeys repoRoot runtimeNamespace
-          case eventKeysResult of
-            Left err -> pure (Left err)
-            Right gatewayEventKeys -> do
-              rootPlanResult <-
-                buildChartDeploymentPlan repoRoot settings runtimeNamespace chartSecrets gatewayEventKeys
-              pure $ do
-                rootPlan <- rootPlanResult
-                definition <- resolveChart repoRoot chartName
-                chartRelease <-
-                  case filter ((== chartName) . chartReleasePlanReleaseName) (chartDeploymentPlanReleases rootPlan) of
-                    [release] -> Right release
-                    _ -> Left ("Chart '" ++ chartName ++ "' is not part of root plan '" ++ runtimeNamespace ++ "'")
-                let dependencies =
-                      if null (chartDefinitionDependencies definition)
-                        then "<none>"
-                        else intercalate "," (chartDefinitionDependencies definition)
-                    headerLines =
-                      [ "CHART_STATUS"
-                      , "NAME=" ++ chartName
-                      , "STATUS=" ++ maybe "not-installed" chartInstallSnapshotStatus installedSnapshot
-                      , "ROOT_CHART=" ++ runtimeNamespace
-                      , "NAMESPACE=" ++ runtimeNamespace
-                      , "DEPENDENCIES=" ++ dependencies
-                      ]
-                    publicHostLines =
-                      case (chartDefinitionRequiresPublicHost definition, chartDeploymentPlanPublicFqdn rootPlan) of
-                        (True, Just fqdn) -> ["PUBLIC_FQDN=" ++ fqdn]
-                        _ -> []
-                    releaseLines =
-                      concatMap
-                        (renderStatusRelease snapshots runtimeNamespace definition)
-                        (chartDeploymentPlanReleases rootPlan)
-                pure . unlines $
-                  headerLines
-                    ++ publicHostLines
-                    ++ releaseLines
-                    ++ renderStorageReport (chartReleasePlanStorageBindings chartRelease)
+          -- Sprint 3.13 chunk 16: gateway event keys self-bootstrap from the
+          -- daemon Pod after master-seed acquisition (see
+          -- 'Prodbox.Gateway.Daemon.selfBootstrapOwnSecrets'). The chart
+          -- reads them via Helm `lookup` of the daemon-written
+          -- `gateway-event-keys` Secret. No host-side resolution needed.
+          let gatewayEventKeys = Map.empty :: Map String String
+          rootPlanResult <-
+            buildChartDeploymentPlan repoRoot settings runtimeNamespace chartSecrets gatewayEventKeys
+          pure $ do
+            rootPlan <- rootPlanResult
+            definition <- resolveChart repoRoot chartName
+            chartRelease <-
+              case filter ((== chartName) . chartReleasePlanReleaseName) (chartDeploymentPlanReleases rootPlan) of
+                [release] -> Right release
+                _ -> Left ("Chart '" ++ chartName ++ "' is not part of root plan '" ++ runtimeNamespace ++ "'")
+            let dependencies =
+                  if null (chartDefinitionDependencies definition)
+                    then "<none>"
+                    else intercalate "," (chartDefinitionDependencies definition)
+                headerLines =
+                  [ "CHART_STATUS"
+                  , "NAME=" ++ chartName
+                  , "STATUS=" ++ maybe "not-installed" chartInstallSnapshotStatus installedSnapshot
+                  , "ROOT_CHART=" ++ runtimeNamespace
+                  , "NAMESPACE=" ++ runtimeNamespace
+                  , "DEPENDENCIES=" ++ dependencies
+                  ]
+                publicHostLines =
+                  case (chartDefinitionRequiresPublicHost definition, chartDeploymentPlanPublicFqdn rootPlan) of
+                    (True, Just fqdn) -> ["PUBLIC_FQDN=" ++ fqdn]
+                    _ -> []
+                releaseLines =
+                  concatMap
+                    (renderStatusRelease snapshots runtimeNamespace definition)
+                    (chartDeploymentPlanReleases rootPlan)
+            pure . unlines $
+              headerLines
+                ++ publicHostLines
+                ++ releaseLines
+                ++ renderStorageReport (chartReleasePlanStorageBindings chartRelease)
 
 deployChartPlan :: ChartDeploymentPlan -> IO (Either String String)
 deployChartPlan plan = do
@@ -582,17 +559,42 @@ deployChartPlan plan = do
     | chartReleasePlanReleaseName release == "keycloak-postgres" =
         deployPatroniRelease release
     | otherwise = do
-        installResult <- helmUpgradeInstall release
-        case installResult of
+        -- Sprint 3.13 chunk 33: host-side pre-apply of every Inventory
+        -- entry for (namespace, release) so Helm @lookup@ in the chart
+        -- templates finds the daemon-derived Secret at render time on
+        -- first install. The chart's pre-install Job remains the
+        -- in-cluster idempotent fallback.
+        preApplyResult <-
+          preApplyDerivedSecretsForRelease
+            (chartReleasePlanNamespace release)
+            (chartReleasePlanReleaseName release)
+        case preApplyResult of
           Left err -> pure (Left err)
           Right () -> do
-            storageResult <- ensureReleaseStorageBindings release
-            case storageResult of
+            installResult <- helmUpgradeInstall release
+            case installResult of
               Left err -> pure (Left err)
-              Right () -> validateReleaseReady release
+              Right () -> do
+                storageResult <- ensureReleaseStorageBindings release
+                case storageResult of
+                  Left err -> pure (Left err)
+                  Right () -> validateReleaseReady release
 
   deployPatroniRelease :: ChartReleasePlan -> IO (Either String ())
   deployPatroniRelease release = do
+    -- Sprint 3.13 chunk 33: same pre-apply as the non-Patroni path so
+    -- the Crunchy operator finds the three Patroni-role Secrets when
+    -- it reconciles the PostgresCluster CR. See 'deployRelease'.
+    preApplyResult <-
+      preApplyDerivedSecretsForRelease
+        (chartReleasePlanNamespace release)
+        (chartReleasePlanReleaseName release)
+    case preApplyResult of
+      Left err -> pure (Left err)
+      Right () -> deployPatroniReleaseStaged release
+
+  deployPatroniReleaseStaged :: ChartReleasePlan -> IO (Either String ())
+  deployPatroniReleaseStaged release = do
     maybeBootstrapAnchorBinding <- readOptionalPatroniBootstrapAnchorBinding release
     case maybeBootstrapAnchorBinding of
       Nothing -> do
@@ -638,10 +640,15 @@ deployChartPlan plan = do
                               Left err -> pure (Left err)
                               Right () -> validateReleaseReady release
 
+  -- Sprint 3.13 chunk 13: derive the bootstrap anchor PV from live k8s state
+  -- (the Patroni primary endpoint → primary pod → its PVC → bound PV) instead
+  -- of reading the now-removed @.patroni-anchor-volume@ marker file. When the
+  -- cluster is unreachable the lookup returns @Nothing@ and the caller falls
+  -- back to its existing no-anchor behavior.
   readOptionalPatroniBootstrapAnchorBinding :: ChartReleasePlan -> IO (Maybe ChartStorageBinding)
   readOptionalPatroniBootstrapAnchorBinding release = do
-    let namespaceDir = chartStateDir (chartDeploymentPlanRepoRoot plan) (chartReleasePlanNamespace release)
-    maybeAnchorVolumeName <- readOptionalPatroniAnchorVolumeName namespaceDir
+    maybeAnchorVolumeName <-
+      discoverPatroniAnchorPersistentVolumeName (chartReleasePlanNamespace release)
     pure $
       maybeAnchorVolumeName >>= \anchorVolumeName ->
         find
@@ -680,9 +687,11 @@ ensurePerconaPatroniStorageBindings
   -> String
   -> [ChartStorageBinding]
   -> IO (Either String ())
-ensurePerconaPatroniStorageBindings repoRoot namespace rootChart logicalBindings = do
-  let namespaceDir = chartStateDir repoRoot namespace
-  maybeAnchorVolumeName <- readOptionalPatroniAnchorVolumeName namespaceDir
+ensurePerconaPatroniStorageBindings _repoRoot namespace rootChart logicalBindings = do
+  -- Sprint 3.13 chunk 13: anchor PV comes from live k8s state via
+  -- 'discoverPatroniAnchorPersistentVolumeName' (Patroni primary endpoint).
+  -- The @.patroni-anchor-volume@ marker is gone.
+  maybeAnchorVolumeName <- discoverPatroniAnchorPersistentVolumeName namespace
   ensurePerconaPatroniStorageBindingsWithExpectedClaims
     namespace
     rootChart
@@ -1065,25 +1074,13 @@ deleteChartPlan plan = do
         pure (secretsResult >> Right ())
     | otherwise = pure (Right ())
 
+  -- Sprint 3.13 chunk 13: the @.patroni-anchor-volume@ marker is gone.
+  -- 'resetRetainedPatroniReplicaBindings' now queries
+  -- 'discoverPatroniAnchorPersistentVolumeName' directly at reset time
+  -- (k8s state is the single source of truth). This post-install hook has
+  -- nothing to record.
   persistPatroniAnchorBindingBeforeDelete :: IO ()
-  persistPatroniAnchorBindingBeforeDelete =
-    case find ((== "keycloak-postgres") . chartReleasePlanReleaseName) (chartDeploymentPlanReleases plan) of
-      Nothing -> pure ()
-      Just release -> do
-        maybeAnchorVolumeName <-
-          discoverPatroniAnchorPersistentVolumeName (chartReleasePlanNamespace release)
-        case maybeAnchorVolumeName of
-          Nothing -> pure ()
-          Just anchorVolumeName -> do
-            let namespaceDir = chartStateDir (chartDeploymentPlanRepoRoot plan) (chartDeploymentPlanNamespace plan)
-            ensureResult <- ensureChartStateDir namespaceDir
-            case ensureResult of
-              Left _ -> pure ()
-              Right () -> do
-                _ <-
-                  try (writeFile (namespaceDir </> patroniAnchorVolumeFileName) (anchorVolumeName ++ "\n"))
-                    :: IO (Either IOException ())
-                pure ()
+  persistPatroniAnchorBindingBeforeDelete = pure ()
 
   uninstallRelease :: Either String () -> ChartReleasePlan -> IO (Either String ())
   uninstallRelease (Left err) _ = pure (Left err)
@@ -1209,80 +1206,24 @@ deleteChartPlan plan = do
       , "--wait=true"
       ]
 
+-- | Sprint 3.13 chunk 12: the per-namespace @.prodbox-state/charts/<ns>/.secrets.json@
+-- cache is gone. Every key that previously lived here is now either materialized
+-- by the gateway daemon's @ensure-namespace@ pre-install Job into a k8s
+-- @Secret@ (see [secret_derivation_doctrine.md §6](../../documents/engineering/secret_derivation_doctrine.md))
+-- or read via Helm @lookup@ from a sibling cluster Secret. This function
+-- therefore returns an empty map; the returned @Map@ is still threaded through
+-- 'buildChartDeploymentPlanPure' / 'valuesForXxx' for signature compatibility,
+-- but every consumer ignores it. The chart's own pre-install Job + cluster
+-- Secret lookups are the structural source-of-truth.
 resolveChartSecrets :: FilePath -> String -> IO (Either String (Map String String))
-resolveChartSecrets repoRoot namespace = do
-  let namespaceDir = chartStateDir repoRoot namespace
-      targetPath = namespaceDir </> ".secrets.json"
-  ensureResult <- ensureChartStateDir namespaceDir
-  case ensureResult of
-    Left err -> pure (Left err)
-    Right () -> do
-      targetExists <- doesFileExist targetPath
-      existingValuesResult <-
-        if targetExists
-          then readStringMap targetPath
-          else pure (Right Map.empty)
-      sharedKeycloakValues <- readSharedKeycloakSecretValues repoRoot namespace
-      let existingValues =
-            case existingValuesResult of
-              Left _ -> sharedKeycloakValues
-              Right values -> Map.union sharedKeycloakValues values
-      clusterStatus <- readOptionalPatroniClusterStatus namespace
-      recoveredValues <-
-        if patroniClusterStatusIndicatesFailure clusterStatus
-          then pure Map.empty
-          else recoverPatroniSecretValues namespace
-      resetRequired <-
-        shouldResetPatroniStorage repoRoot namespace existingValues recoveredValues clusterStatus
-      when resetRequired (writePatroniResetMarker namespaceDir)
-      mergeRequiredKeys
-        targetPath
-        (mergeChartSecretValues existingValues recoveredValues)
-        requiredChartSecretKeys
-        24
+resolveChartSecrets _repoRoot _namespace = pure (Right Map.empty)
 
-readSharedKeycloakSecretValues :: FilePath -> String -> IO (Map String String)
-readSharedKeycloakSecretValues repoRoot namespace
-  | namespace `elem` ["api", "websocket"] = do
-      let sourcePath = chartStateDir repoRoot "vscode" </> ".secrets.json"
-      sourceExists <- doesFileExist sourcePath
-      if not sourceExists
-        then pure Map.empty
-        else do
-          sourceValuesResult <- readStringMap sourcePath
-          pure $
-            case sourceValuesResult of
-              Left _ -> Map.empty
-              Right sourceValues ->
-                Map.filterWithKey
-                  (\key _ -> "keycloak_" `isPrefixOf` key)
-                  sourceValues
-  | otherwise = pure Map.empty
-
-resolveGatewayEventKeys :: FilePath -> String -> IO (Either String (Map String String))
-resolveGatewayEventKeys repoRoot namespace =
-  resolveOrGenerateStringMap repoRoot namespace ".gateway-event-keys.json" gatewayNodeIds 32
-
-recoverPatroniSecretValues :: String -> IO (Map String String)
-recoverPatroniSecretValues namespace = do
-  applicationPassword <- readOptionalSecretPassword namespace (patroniCredentialsSecretName namespace)
-  standbyPassword <- readOptionalSecretPassword namespace (patroniStandbySecretName namespace)
-  superuserPassword <- readOptionalSecretPassword namespace (patroniSuperuserSecretName namespace)
-  pure . Map.fromList $
-    concat
-      [ maybe [] (\value -> [("patroni_app_password", value)]) applicationPassword
-      , maybe [] (\value -> [("patroni_standby_password", value)]) standbyPassword
-      , maybe [] (\value -> [("patroni_superuser_password", value)]) superuserPassword
-      ]
-
-mergeChartSecretValues :: Map String String -> Map String String -> Map String String
-mergeChartSecretValues existingValues recoveredValues =
-  Map.union recoveredPatroniValues existingValues
- where
-  recoveredPatroniValues =
-    Map.filterWithKey
-      (\key _ -> key `elem` requiredPatroniSecretKeys)
-      recoveredValues
+-- Sprint 3.13 chunk 16: 'resolveGatewayEventKeys' is gone. Per-node event
+-- keys are now derived from the master seed and materialized by the
+-- gateway daemon's startup self-bootstrap loop (see
+-- 'Prodbox.Gateway.Daemon.selfBootstrapOwnSecrets'); the chart reads the
+-- resulting @gateway-event-keys@ Secret via Helm @lookup@. No host-side
+-- resolution needed.
 
 readOptionalPatroniClusterStatus :: String -> IO (Maybe String)
 readOptionalPatroniClusterStatus namespace = do
@@ -1332,48 +1273,16 @@ readOptionalPatroniReadyPostgresCount namespace = do
 normalizedPatroniClusterStatus :: Maybe String -> Maybe String
 normalizedPatroniClusterStatus = fmap (map toLower . trimWhitespace)
 
-patroniClusterStatusIndicatesFailure :: Maybe String -> Bool
-patroniClusterStatusIndicatesFailure clusterStatus =
-  case normalizedPatroniClusterStatus clusterStatus of
-    Just "failed" -> True
-    Just "createfailed" -> True
-    Just "invalid" -> True
-    _ -> False
-
-shouldResetPatroniStorage
-  :: FilePath -> String -> Map String String -> Map String String -> Maybe String -> IO Bool
-shouldResetPatroniStorage repoRoot namespace existingValues recoveredValues clusterStatus = do
-  storageExists <- patroniStorageExists repoRoot namespace
-  pure $
-    not (requiredKeysPresent requiredPatroniSecretKeys existingValues)
-      && storageExists
-      && ( patroniClusterStatusIndicatesFailure clusterStatus
-             || not (requiredKeysPresent requiredPatroniSecretKeys recoveredValues)
-         )
-
-patroniStorageExists :: FilePath -> String -> IO Bool
-patroniStorageExists repoRoot namespace =
-  doesDirectoryExist
-    ( repoRoot
-        </> defaultChartDataRootRelative
-        </> namespace
-        </> "keycloak-postgres"
-        </> patroniClusterName namespace
-    )
-
-writePatroniResetMarker :: FilePath -> IO ()
-writePatroniResetMarker namespaceDir = do
-  _ <-
-    try (writeFile (namespaceDir </> patroniResetMarkerFileName) "reset\n")
-      :: IO (Either IOException ())
-  pure ()
-
-patroniResetMarkerFileName :: FilePath
-patroniResetMarkerFileName = ".patroni-reset-required"
-
-patroniAnchorVolumeFileName :: FilePath
-patroniAnchorVolumeFileName = ".patroni-anchor-volume"
-
+-- Sprint 3.13 chunks 13 + 14: 'shouldResetPatroniStorage', the
+-- @.patroni-reset-required@ marker writer/reader, the @.patroni-anchor-volume@
+-- marker, 'readOptionalPatroniAnchorVolumeName', and 'patroniStorageExists'
+-- are all gone. The reset arm of 'resolveChartSecrets' is gone (chunk 12), so
+-- the only marker writer disappeared with it; the reset path in
+-- 'reconcileChartPlatform' is now a no-op, and 'resetRetainedPatroniReplicaBindings'
+-- derives the anchor PV from live k8s state via
+-- 'discoverPatroniAnchorPersistentVolumeName'. The spec's loud-failure
+-- mismatch check (derived password vs @pg_authid@ probe) lands when the live
+-- preserved-data exercise drives the failure paths.
 discoverPatroniAnchorPersistentVolumeName :: String -> IO (Maybe String)
 discoverPatroniAnchorPersistentVolumeName namespace = do
   maybePrimaryPodName <- readOptionalPatroniPrimaryPodName namespace
@@ -1437,21 +1346,6 @@ readOptionalPersistentVolumeNameForClaim namespace claimName = do
             let value = trimWhitespace (processStdout output)
              in if null value then Nothing else Just value
 
-readOptionalPatroniAnchorVolumeName :: FilePath -> IO (Maybe String)
-readOptionalPatroniAnchorVolumeName namespaceDir = do
-  let markerPath = namespaceDir </> patroniAnchorVolumeFileName
-  markerExists <- doesFileExist markerPath
-  if not markerExists
-    then pure Nothing
-    else do
-      readResult <- try (readFile markerPath) :: IO (Either IOException String)
-      pure $
-        case readResult of
-          Left _ -> Nothing
-          Right rawValue ->
-            let value = trimWhitespace rawValue
-             in if null value then Nothing else Just value
-
 chartReleaseWithPatroniInstanceCount :: Int -> ChartReleasePlan -> Either String ChartReleasePlan
 chartReleaseWithPatroniInstanceCount instanceCount release = do
   updatedValuesJson <-
@@ -1478,28 +1372,6 @@ updatePatroniClusterInstanceCount instanceCount (Object valuesObject) =
         )
     _ -> Left "keycloak-postgres values payload does not contain a cluster object."
 updatePatroniClusterInstanceCount _ _ = Left "keycloak-postgres values payload must be a JSON object."
-
-readOptionalSecretPassword :: String -> String -> IO (Maybe String)
-readOptionalSecretPassword namespace secretName = do
-  result <-
-    runPg
-      [ "get"
-      , "secret"
-      , secretName
-      , "-n"
-      , namespace
-      , "-o"
-      , "go-template={{index .data \"password\" | base64decode}}"
-      ]
-  pure $
-    case result of
-      Left _ -> Nothing
-      Right output ->
-        case processExitCode output of
-          ExitFailure _ -> Nothing
-          ExitSuccess ->
-            let value = trimWhitespace (processStdout output)
-             in if null value then Nothing else Just value
 
 buildChartDeploymentPlanPure
   :: FilePath
@@ -1647,32 +1519,14 @@ valuesForKeycloak
   -> Map String String
   -> String
   -> Either String Value
-valuesForKeycloak namespace rootChart settings chartSecrets sharedHostFqdn = do
-  adminPassword <-
-    requireMapValue
-      "keycloak_admin_password"
-      chartSecrets
-      "keycloak_admin_password is required in chart secrets"
-  vscodeClientSecret <-
-    requireMapValue
-      "keycloak_vscode_client_secret"
-      chartSecrets
-      "keycloak_vscode_client_secret is required in chart secrets"
-  apiClientSecret <-
-    requireMapValue
-      "keycloak_api_client_secret"
-      chartSecrets
-      "keycloak_api_client_secret is required in chart secrets"
-  websocketClientSecret <-
-    requireMapValue
-      "keycloak_websocket_client_secret"
-      chartSecrets
-      "keycloak_websocket_client_secret is required in chart secrets"
-  demoUserPassword <-
-    requireMapValue
-      "keycloak_demo_user_password"
-      chartSecrets
-      "keycloak_demo_user_password is required in chart secrets"
+valuesForKeycloak namespace rootChart settings _chartSecrets sharedHostFqdn = do
+  -- Sprint 3.13 chunks 8 + 11: the admin password, OAuth client secrets, and
+  -- demo-user password are all materialized into k8s Secrets by the gateway
+  -- daemon's pre-install Job and consumed by the chart via Helm `lookup`
+  -- (see `charts/keycloak/templates/configmap.yaml` and `secret.yaml`). The
+  -- chart's `values.yaml` still carries `change-me` defaults so `helm template`
+  -- (no cluster) renders deterministically; on a live install the lookup
+  -- supersedes the default.
   pure
     ( object
         [ "replicaCount" .= (1 :: Int)
@@ -1694,7 +1548,6 @@ valuesForKeycloak namespace rootChart settings chartSecrets sharedHostFqdn = do
         , "keycloak"
             .= object
               [ "adminUser" .= ("admin" :: String)
-              , "adminPassword" .= adminPassword
               , "publicHost" .= sharedHostFqdn
               , "httpRelativePath" .= authPathPrefix
               , "realmName" .= keycloakRealmName
@@ -1720,25 +1573,21 @@ valuesForKeycloak namespace rootChart settings chartSecrets sharedHostFqdn = do
         , "oidc"
             .= object
               [ "vscodeClientId" .= keycloakVscodeClientId
-              , "vscodeClientSecret" .= vscodeClientSecret
               , "redirectUri" .= ("https://" ++ sharedHostFqdn ++ vscodePathPrefix ++ "/oauth2/callback")
               , "adminRedirectUris"
                   .= [ "https://" ++ sharedHostFqdn ++ harborPathPrefix ++ "/oauth2/callback"
                      , "https://" ++ sharedHostFqdn ++ minioPathPrefix ++ "/oauth2/callback"
                      ]
               , "apiClientId" .= keycloakApiClientId
-              , "apiClientSecret" .= apiClientSecret
               , "apiAudience" .= keycloakApiClientId
               , "apiRouteClaimName" .= publicEdgeRouteClaimName
               , "apiRouteClaimValue" .= ("api" :: String)
               , "websocketClientId" .= keycloakWebsocketClientId
-              , "websocketClientSecret" .= websocketClientSecret
               , "websocketAudience" .= keycloakWebsocketClientId
               , "websocketRouteClaimName" .= publicEdgeRouteClaimName
               , "websocketRouteClaimValue" .= ("websocket" :: String)
               , "websocketRedirectUri" .= ("https://" ++ sharedHostFqdn ++ websocketOidcPathPrefix ++ "/callback")
               , "demoUserName" .= ("demo-user" :: String)
-              , "demoUserPassword" .= demoUserPassword
               ]
         , "postgres"
             .= object
@@ -1747,43 +1596,8 @@ valuesForKeycloak namespace rootChart settings chartSecrets sharedHostFqdn = do
               , "username" .= patroniUsername
               , "passwordSecretName" .= patroniCredentialsSecretName rootChart
               ]
-        , "smtp" .= keycloakSmtpValues chartSecrets
         ]
     )
-
-keycloakSmtpValues :: Map String String -> Value
-keycloakSmtpValues chartSecrets =
-  let endpoint = Map.lookup "ses_smtp_endpoint" chartSecrets
-      user = Map.lookup "ses_smtp_user" chartSecrets
-      password = Map.lookup "ses_smtp_password" chartSecrets
-      fromAddress = Map.lookup "ses_smtp_from" chartSecrets
-   in case (endpoint, user, password, fromAddress) of
-        (Just host, Just smtpUser, Just smtpPassword, Just smtpFrom) ->
-          object
-            [ "enabled" .= True
-            , "host" .= host
-            , "port" .= (587 :: Int)
-            , "starttls" .= True
-            , "auth" .= True
-            , "from" .= smtpFrom
-            , "fromDisplayName" .= ("prodbox" :: String)
-            , "replyTo" .= smtpFrom
-            , "user" .= smtpUser
-            , "password" .= smtpPassword
-            ]
-        _ ->
-          object
-            [ "enabled" .= False
-            , "host" .= ("change-me-ses-smtp-host" :: String)
-            , "port" .= (587 :: Int)
-            , "starttls" .= True
-            , "auth" .= True
-            , "from" .= ("change-me-ses-smtp-from" :: String)
-            , "fromDisplayName" .= ("prodbox" :: String)
-            , "replyTo" .= ("change-me-ses-smtp-from" :: String)
-            , "user" .= ("change-me-ses-smtp-user" :: String)
-            , "password" .= ("change-me-ses-smtp-password" :: String)
-            ]
 
 valuesForKeycloakPostgres
   :: String
@@ -1792,26 +1606,17 @@ valuesForKeycloakPostgres
   -> Map String String
   -> [ChartStorageBinding]
   -> Either String Value
-valuesForKeycloakPostgres namespace rootChart settings chartSecrets storageBindings = do
+valuesForKeycloakPostgres namespace rootChart settings _chartSecrets storageBindings = do
   let clusterName = patroniClusterName rootChart
   when
     (length storageBindings /= 3)
     (Left "keycloak-postgres requires exactly three storage bindings")
-  applicationPassword <-
-    requireMapValue
-      "patroni_app_password"
-      chartSecrets
-      "patroni_app_password is required in chart secrets"
-  standbyPassword <-
-    requireMapValue
-      "patroni_standby_password"
-      chartSecrets
-      "patroni_standby_password is required in chart secrets"
-  superuserPassword <-
-    requireMapValue
-      "patroni_superuser_password"
-      chartSecrets
-      "patroni_superuser_password is required in chart secrets"
+  -- Sprint 3.13 chunk 8: the three Patroni Secrets the Crunchy operator
+  -- watches (`prodbox-keycloak-pg-pguser-{keycloak,postgres}` and
+  -- `prodbox-keycloak-pg-primaryuser`) are materialized by the gateway
+  -- daemon's pre-install Job with `username` + master-seed-derived `password`.
+  -- The chart no longer renders `00-secrets.yaml`; this function therefore
+  -- no longer needs to project the passwords into Helm values.
   pure
     ( object
         [ "global"
@@ -1867,19 +1672,16 @@ valuesForKeycloakPostgres namespace rootChart settings chartSecrets storageBindi
                   .= object
                     [ "name" .= patroniCredentialsSecretName rootChart
                     , "username" .= patroniUsername
-                    , "password" .= applicationPassword
                     ]
               , "standby"
                   .= object
                     [ "name" .= patroniStandbySecretName rootChart
                     , "username" .= ("primaryuser" :: String)
-                    , "password" .= standbyPassword
                     ]
               , "superuser"
                   .= object
                     [ "name" .= patroniSuperuserSecretName rootChart
                     , "username" .= ("postgres" :: String)
-                    , "password" .= superuserPassword
                     ]
               ]
         , "storage"
@@ -1913,12 +1715,16 @@ valuesForGateway
   -> String
   -> Maybe ResolvedCustomImage
   -> Either String Value
-valuesForGateway namespace rootChart settings gatewayEventKeys sharedHostFqdn maybeGatewayImage = do
-  when (Map.null gatewayEventKeys) (Left "gateway chart requires non-empty event_keys")
-  forM_ gatewayNodeIds $ \nodeId ->
-    unless
-      (Map.member nodeId gatewayEventKeys)
-      (Left ("gateway chart event_keys missing entry for '" ++ nodeId ++ "'"))
+valuesForGateway namespace rootChart settings _gatewayEventKeys sharedHostFqdn maybeGatewayImage = do
+  -- Sprint 3.13 chunk 16: the per-node event keys are owned by the
+  -- gateway daemon's startup self-bootstrap (see
+  -- 'Prodbox.Gateway.Daemon.selfBootstrapOwnSecrets'); the chart's
+  -- 'configmap-config.yaml' reads them via Helm `lookup` of the
+  -- daemon-applied @gateway-event-keys@ Secret. The legacy
+  -- 'gatewayEventKeys' parameter is vestigial and arrives empty; the
+  -- prior non-empty / per-node membership preconditions are gone with
+  -- it. The Helm `eventKeys` value below is left empty for the same
+  -- reason — the chart no longer reads it.
   let config = validatedConfig settings
       operationalAws = aws config
       awsAccessKeyId = Text.unpack (access_key_id operationalAws)
@@ -1966,8 +1772,6 @@ valuesForGateway namespace rootChart settings gatewayEventKeys sharedHostFqdn ma
               , "heartbeatTimeoutSeconds" .= (5 :: Int)
               ]
         , "nodes" .= object ["rankedIds" .= gatewayNodeIds]
-        , "eventKeys"
-            .= Map.fromList [(nodeId, mapLookupDefault nodeId gatewayEventKeys) | nodeId <- gatewayNodeIds]
         , "dnsWriteGate"
             .= object
               [ "enabled" .= True
@@ -2001,12 +1805,12 @@ valuesForVscode
   -> ChartStorageBinding
   -> String
   -> Either String Value
-valuesForVscode namespace rootChart settings chartSecrets binding sharedHostFqdn = do
-  vscodeClientSecret <-
-    requireMapValue
-      "keycloak_vscode_client_secret"
-      chartSecrets
-      "keycloak_vscode_client_secret is required in chart secrets"
+valuesForVscode namespace rootChart settings _chartSecrets binding sharedHostFqdn = do
+  -- Sprint 3.13 chunk 11: the vscode chart reads the OIDC `client-secret`
+  -- via cross-namespace Helm `lookup` of the gateway-daemon-managed
+  -- `keycloak-oidc-clients` Secret in the `keycloak` namespace. The chart's
+  -- `values.yaml` `change-me` default flows through only on `helm template`
+  -- (no cluster); on a real install the lookup supersedes.
   pure
     ( object
         [ "replicaCount" .= (1 :: Int)
@@ -2029,7 +1833,6 @@ valuesForVscode namespace rootChart settings chartSecrets binding sharedHostFqdn
         , "oidc"
             .= object
               [ "clientId" .= keycloakVscodeClientId
-              , "clientSecret" .= vscodeClientSecret
               , "issuer" .= ("https://" ++ sharedHostFqdn ++ authPathPrefix ++ "/realms/" ++ keycloakRealmName)
               , "redirectURL" .= ("https://" ++ sharedHostFqdn ++ vscodePathPrefix ++ "/oauth2/callback")
               , "logoutPath" .= ("/logout" :: String)
@@ -2140,16 +1943,16 @@ valuesForWebsocket
   -> String
   -> Maybe ResolvedCustomImage
   -> Either String Value
-valuesForWebsocket namespace rootChart settings chartSecrets sharedHostFqdn maybePublicEdgeWorkloadImage = do
+valuesForWebsocket namespace rootChart settings _chartSecrets sharedHostFqdn maybePublicEdgeWorkloadImage = do
   resolvedWorkloadImage <-
     case maybePublicEdgeWorkloadImage of
       Just imageInfo -> Right imageInfo
       Nothing -> Left "websocket chart requires a resolved public-edge workload image reference"
-  websocketClientSecret <-
-    requireMapValue
-      "keycloak_websocket_client_secret"
-      chartSecrets
-      "keycloak_websocket_client_secret is required in chart secrets"
+  -- Sprint 3.13 chunk 11: the websocket chart reads the OIDC `client_secret`
+  -- via cross-namespace Helm `lookup` of the gateway-daemon-managed
+  -- `keycloak-oidc-clients` Secret in the `keycloak` namespace. The chart's
+  -- `values.yaml` `change-me` default flows through only on `helm template`
+  -- (no cluster); on a real install the lookup supersedes.
   let workloadRepository = resolvedCustomImageRepository resolvedWorkloadImage
       workloadTag = resolvedCustomImageTag resolvedWorkloadImage
   pure
@@ -2206,7 +2009,6 @@ valuesForWebsocket namespace rootChart settings chartSecrets sharedHostFqdn mayb
                          :: String
                      )
               , "clientId" .= keycloakWebsocketClientId
-              , "clientSecret" .= websocketClientSecret
               , "publicBaseUrl" .= ("https://" ++ sharedHostFqdn ++ websocketPathPrefix)
               ]
         , "redis"
@@ -2386,35 +2188,25 @@ ensureChartStorage plan = do
                                 nodeHostname
                             )
  where
+  -- Sprint 3.13 chunks 12 + 13 + 14: with the host-side `.prodbox-state`
+  -- chart-secret cache gone, no code path writes the `.patroni-reset-required`
+  -- marker any more, so the legacy "rm -rf host paths if marker present"
+  -- escape hatch can never fire. The previous silent-reset arm of
+  -- 'shouldResetPatroniStorage' (chunk 14 in the spec) is therefore dead too.
+  -- The replacement loud-failure check — comparing the daemon-derived
+  -- @KEYCLOAK_ADMIN_PASSWORD@/Patroni @password@ against what @pg_authid@
+  -- reports via a probe Postgres connection — is left for the live four-block
+  -- exercise to drive, since the failure paths only make sense in the context
+  -- of a real preserved-data run. Until that lands, the reset arm is simply
+  -- a no-op.
   resetPatroniStorageIfRequested :: IO (Either String ())
-  resetPatroniStorageIfRequested = do
-    let markerPath =
-          chartStateDir (chartDeploymentPlanRepoRoot plan) (chartDeploymentPlanNamespace plan)
-            </> patroniResetMarkerFileName
-        patroniBindings =
-          [ binding
-          | release <- chartDeploymentPlanReleases plan
-          , chartReleasePlanReleaseName release == "keycloak-postgres"
-          , binding <- chartReleasePlanStorageBindings release
-          ]
-    markerExists <- doesFileExist markerPath
-    if not markerExists
-      then pure (Right ())
-      else do
-        resetResult <- foldM resetBinding (Right ()) patroniBindings
-        case resetResult of
-          Left err -> pure (Left err)
-          Right () -> do
-            removeMarkerResult <- try (removeFile markerPath) :: IO (Either IOException ())
-            pure $ case removeMarkerResult of
-              Left err -> Left (displayException err)
-              Right () -> Right ()
+  resetPatroniStorageIfRequested = pure (Right ())
 
-  resetBinding :: Either String () -> ChartStorageBinding -> IO (Either String ())
-  resetBinding (Left err) _ = pure (Left err)
-  resetBinding (Right ()) binding =
-    runCommandExpectSuccess "sudo rm" "sudo" ["rm", "-rf", chartStorageBindingHostPath binding]
-
+  -- The Patroni anchor decision now derives from live k8s state alone
+  -- (Sprint 3.13 chunk 13). 'discoverPatroniAnchorPersistentVolumeName'
+  -- queries the Patroni primary endpoint; when the cluster is unreachable
+  -- the fall-back is the ordinal-0 binding, matching the prior marker-absent
+  -- behavior. The previous @.patroni-anchor-volume@ marker file is gone.
   resetRetainedPatroniReplicaBindings :: IO (Either String ())
   resetRetainedPatroniReplicaBindings = do
     let patroniBindings =
@@ -2423,8 +2215,8 @@ ensureChartStorage plan = do
           , chartReleasePlanReleaseName release == "keycloak-postgres"
           , binding <- chartReleasePlanStorageBindings release
           ]
-        namespaceDir = chartStateDir (chartDeploymentPlanRepoRoot plan) (chartDeploymentPlanNamespace plan)
-    maybeAnchorVolumeName <- readOptionalPatroniAnchorVolumeName namespaceDir
+    maybeAnchorVolumeName <-
+      discoverPatroniAnchorPersistentVolumeName (chartDeploymentPlanNamespace plan)
     let preservedBinding =
           case maybeAnchorVolumeName of
             Just anchorVolumeName ->
@@ -2442,6 +2234,11 @@ ensureChartStorage plan = do
     existingReplicaBindings <-
       filterM (doesDirectoryExist . chartStorageBindingHostPath) bindingsToReset
     foldM resetBinding (Right ()) existingReplicaBindings
+
+  resetBinding :: Either String () -> ChartStorageBinding -> IO (Either String ())
+  resetBinding (Left err) _ = pure (Left err)
+  resetBinding (Right ()) binding =
+    runCommandExpectSuccess "sudo rm" "sudo" ["rm", "-rf", chartStorageBindingHostPath binding]
 
 prepareStorageBinding :: Either String () -> ChartStorageBinding -> IO (Either String ())
 prepareStorageBinding (Left err) _ = pure (Left err)
@@ -2614,128 +2411,20 @@ helmReleaseSnapshots = do
         pure (Map.fromList [(chartInstallSnapshotReleaseName snapshot, snapshot) | snapshot <- snapshots])
       ExitFailure _ -> Left ("helm list failed: " ++ processStderr output ++ processStdout output)
 
-resolveOrGenerateStringMap
-  :: FilePath
-  -> String
-  -> FilePath
-  -> [String]
-  -> Int
-  -> IO (Either String (Map String String))
-resolveOrGenerateStringMap repoRoot namespace fileName requiredKeys byteLength = do
-  let namespaceDir = chartStateDir repoRoot namespace
-      targetPath = namespaceDir </> fileName
-  ensureResult <- ensureChartStateDir namespaceDir
-  case ensureResult of
-    Left err -> pure (Left err)
-    Right () -> do
-      targetExists <- doesFileExist targetPath
-      if targetExists
-        then do
-          existingResult <- readStringMap targetPath
-          case existingResult of
-            Left _ -> writeGeneratedMap targetPath requiredKeys byteLength
-            Right values -> mergeRequiredKeys targetPath values requiredKeys byteLength
-        else writeGeneratedMap targetPath requiredKeys byteLength
+-- Sprint 3.13 chunk 16: 'resolveOrGenerateStringMap', 'writeGeneratedMap',
+-- 'mergeRequiredKeys', 'writeStringMap' are all gone. They were the
+-- random-key-generation + JSON persistence machinery that backed the
+-- @.prodbox-state/<ns>/.gateway-event-keys.json@ cache (and the prior
+-- chart-secret cache before chunk 12). Both caches now flow through
+-- k8s @Secret@s materialized by the gateway daemon's ensure-namespace
+-- handler / startup self-bootstrap.
 
-writeGeneratedMap :: FilePath -> [String] -> Int -> IO (Either String (Map String String))
-writeGeneratedMap targetPath requiredKeys byteLength = do
-  generatedPairsResult <-
-    mapM (\key -> fmap (pairWithKey key) <$> randomHexString byteLength) requiredKeys
-  case sequence generatedPairsResult of
-    Left err -> pure (Left err)
-    Right generatedPairs -> do
-      let values = Map.fromList generatedPairs
-      writeStringMap targetPath values
- where
-  pairWithKey :: String -> String -> (String, String)
-  pairWithKey key value = (key, value)
-
-mergeRequiredKeys
-  :: FilePath -> Map String String -> [String] -> Int -> IO (Either String (Map String String))
-mergeRequiredKeys targetPath existingValues requiredKeys byteLength = do
-  let missingKeys =
-        [ key
-        | key <- requiredKeys
-        , case Map.lookup key existingValues of
-            Just value -> null (trimWhitespace value)
-            Nothing -> True
-        ]
-  if null missingKeys
-    then pure (Right existingValues)
-    else do
-      generatedPairsResult <-
-        mapM (\key -> fmap (pairWithKey key) <$> randomHexString byteLength) missingKeys
-      case sequence generatedPairsResult of
-        Left err -> pure (Left err)
-        Right generatedPairs ->
-          writeStringMap targetPath (Map.union existingValues (Map.fromList generatedPairs))
- where
-  pairWithKey :: String -> String -> (String, String)
-  pairWithKey key value = (key, value)
-
-writeStringMap :: FilePath -> Map String String -> IO (Either String (Map String String))
-writeStringMap targetPath values = do
-  writeResult <-
-    try (BL.writeFile targetPath (Pretty.encodePretty' prettyJsonConfig values <> BL8.pack "\n"))
-      :: IO (Either IOException ())
-  pure $ case writeResult of
-    Left err -> Left (displayException err)
-    Right () -> Right values
-
-randomHexString :: Int -> IO (Either String String)
-randomHexString byteLength = do
-  readResult <-
-    try
-      ( withBinaryFile "/dev/urandom" ReadMode $ \handle ->
-          BS.hGet handle byteLength
-      )
-      :: IO (Either IOException BS.ByteString)
-  pure $ do
-    bytes <- either (Left . displayException) Right readResult
-    if BS.length bytes /= byteLength
-      then Left ("Failed to read " ++ show byteLength ++ " random bytes from /dev/urandom")
-      else Right (concatMap byteToHex (BS.unpack bytes))
-
-byteToHex :: Word8 -> String
-byteToHex byte =
-  let rendered = showHex byte ""
-   in if length rendered == 1 then '0' : rendered else rendered
-
-chartStateDir :: FilePath -> String -> FilePath
-chartStateDir repoRoot namespace = repoRoot </> chartStateRootRelative </> namespace
-
-ensureChartStateDir :: FilePath -> IO (Either String ())
-ensureChartStateDir path = do
-  createResult <- try (createDirectoryIfMissing True path) :: IO (Either IOException ())
-  case createResult of
-    Left _ -> repairChartStateDir path
-    Right () -> do
-      permissionsResult <- try (getPermissions path) :: IO (Either IOException Permissions)
-      case permissionsResult of
-        Left _ -> repairChartStateDir path
-        Right permissions ->
-          if writable permissions && searchable permissions
-            then pure (Right ())
-            else repairChartStateDir path
-
-repairChartStateDir :: FilePath -> IO (Either String ())
-repairChartStateDir path = do
-  uidResult <- commandStdout "id" ["-u"]
-  case uidResult of
-    Left err -> pure (Left err)
-    Right uid -> do
-      gidResult <- commandStdout "id" ["-g"]
-      case gidResult of
-        Left err -> pure (Left err)
-        Right gid -> do
-          mkdirResult <- runCommandExpectSuccess "sudo mkdir" "sudo" ["mkdir", "-p", path]
-          case mkdirResult of
-            Left err -> pure (Left err)
-            Right () -> do
-              chownResult <- runCommandExpectSuccess "sudo chown" "sudo" ["chown", "-R", uid ++ ":" ++ gid, path]
-              case chownResult of
-                Left err -> pure (Left err)
-                Right () -> runCommandExpectSuccess "sudo chmod" "sudo" ["chmod", "0770", path]
+-- Sprint 3.13 chunk 16: 'chartStateDir', 'ensureChartStateDir', and
+-- 'repairChartStateDir' are removed alongside 'chartStateRootRelative'.
+-- The @.prodbox-state/charts/<ns>/@ host-side directory is no longer
+-- written to by any supported path; chart secrets live in k8s @Secret@s,
+-- and 'Prodbox.CheckCode.checkForbidDotProdboxState' refuses any
+-- regression in @src/@ + @app/@.
 
 ensureStorageHostDir :: FilePath -> IO (Either String ())
 ensureStorageHostDir path = do
@@ -2795,31 +2484,9 @@ commandStdout subprocessPath args = do
       ExitSuccess -> Right (trimWhitespace (processStdout output))
       ExitFailure _ -> Left (processStderr output ++ processStdout output)
 
-readStringMap :: FilePath -> IO (Either String (Map String String))
-readStringMap path = do
-  readResult <- try (BL.readFile path) :: IO (Either IOException BL.ByteString)
-  pure $ do
-    contents <- either (Left . displayException) Right readResult
-    eitherDecode contents
-
-requireMapValue :: String -> Map String String -> String -> Either String String
-requireMapValue key values err =
-  case Map.lookup key values of
-    Just value | not (null (trimWhitespace value)) -> Right value
-    _ -> Left err
-
-requiredKeysPresent :: [String] -> Map String String -> Bool
-requiredKeysPresent requiredKeys values =
-  all (requiredKeyPresent values) requiredKeys
-
-requiredKeyPresent :: Map String String -> String -> Bool
-requiredKeyPresent values key =
-  case Map.lookup key values of
-    Just value -> not (null (trimWhitespace value))
-    Nothing -> False
-
-mapLookupDefault :: (Ord key) => key -> Map key String -> String
-mapLookupDefault key values = maybe "" id (Map.lookup key values)
+-- Sprint 3.13 chunk 16: 'mapLookupDefault' was only used by the now-gone
+-- gatewayEventKeys value-injection path. With chart-side Helm `lookup`
+-- as the source of truth, no more callers remain.
 
 withTempFile :: String -> (FilePath -> Handle -> IO (Either String a)) -> IO (Either String a)
 withTempFile prefix action = do

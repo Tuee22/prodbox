@@ -88,8 +88,11 @@ applyDerivedSecrets ops seed namespace entries = go entries []
  where
   go [] acc = pure (Right (reverse acc))
   go (entry : rest) acc = do
-    let value = deriveSecretValueText seed (derivedSecretEntryContext entry)
-        manifest = manifestForEntry entry value
+    let derivedPairs =
+          [ (key, deriveSecretValueText seed context)
+          | (key, context) <- derivedSecretEntryDerivedFields entry
+          ]
+        manifest = manifestForEntry entry derivedPairs
     putResult <- secretOpsPut ops namespace (derivedSecretEntryName entry) manifest
     case putResult of
       Left err ->
@@ -104,16 +107,24 @@ applyDerivedSecrets ops seed namespace entries = go entries []
               )
           )
       Right () -> do
+        -- The wire response surfaces one SHA-256 per @Secret@ object so the
+        -- caller can confirm idempotence; we hash the concatenation of
+        -- @key=<value>@ pairs in the entry's declared order so a Secret
+        -- with multiple derived fields gets one stable digest.
         let entrySha =
               SecretSha256Entry
                 { secretSha256EntryName = derivedSecretEntryName entry
-                , secretSha256EntrySha256 = deriveSecretSha256Hex value
+                , secretSha256EntrySha256 =
+                    deriveSecretSha256Hex
+                      (Text.intercalate "\n" [k <> "=" <> v | (k, v) <- derivedPairs])
                 }
         go rest (entrySha : acc)
 
-  manifestForEntry :: DerivedSecretEntry -> Text -> Value
-  manifestForEntry entry value =
+  manifestForEntry :: DerivedSecretEntry -> [(Text, Text)] -> Value
+  manifestForEntry entry derivedPairs =
     secretManifestJson
       namespace
       (derivedSecretEntryName entry)
-      (Map.singleton (derivedSecretEntryKey entry) value)
+      ( Map.fromList
+          (derivedPairs ++ derivedSecretEntryStaticFields entry)
+      )

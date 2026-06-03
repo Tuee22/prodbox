@@ -1,6 +1,7 @@
 module Prodbox.CheckCode
   ( DoctrineViolation (..)
   , GeneratedSectionRule (..)
+  , checkForbidDotProdboxState
   , doctrineViolationsInPaths
   , extractStringLiterals
   , generatedSectionRules
@@ -401,6 +402,7 @@ haskellStyleViolations repoRoot = do
   envVarConfigViolations <- checkEnvVarConfigReads repoRoot
   testSuiteTypeViolations <- checkTestSuiteInterfaces repoRoot
   createCallSiteViolations <- checkCreateCallSiteCoverage repoRoot
+  forbidDotProdboxStateViolations <- checkForbidDotProdboxState repoRoot
   pure
     ( either pure (const []) thinMainResult
         ++ hlintConfigViolations
@@ -415,6 +417,7 @@ haskellStyleViolations repoRoot = do
         ++ envVarConfigViolations
         ++ testSuiteTypeViolations
         ++ createCallSiteViolations
+        ++ forbidDotProdboxStateViolations
     )
 
 checkHlintDoctrineCoverage :: FilePath -> IO [String]
@@ -855,6 +858,84 @@ checkEnvVarConfigReads repoRoot =
 -- stack scan) or specially-handled bootstrap operations, and scanning
 -- them by raw substring would false-positive on legitimate code. The
 -- scan stays narrow on purpose.
+-- | Sprint 4.18: refuse new @`.prodbox-state/`@ string literals anywhere
+-- in the production Haskell source tree (@src/@ + @app/@). Sprint 3.13
+-- chunks 8–16 erased every supported path that writes to the
+-- @.prodbox-state/@ host-side directory:
+--
+--   * chunks 8–14 — chart-secret cache (@.prodbox-state/<ns>/.secrets.json@):
+--     data-bound chart secrets now flow through k8s @Secret@s materialized
+--     by the gateway daemon's @ensure-namespace@ handler; chart templates
+--     read them via Helm @lookup@.
+--   * chunk 16 — gateway per-node event-key cache
+--     (@.prodbox-state/<ns>/.gateway-event-keys.json@): gateway event keys
+--     derive from the master seed and the daemon self-bootstraps its own
+--     @gateway-event-keys@ Secret at startup; the chart reads them via
+--     Helm @lookup@.
+--
+-- With both caches gone, any new @`.prodbox-state/`@ literal in
+-- production source is by definition a regression of the closed cache
+-- surface.
+--
+-- The scan is intentionally narrow:
+--
+--   * Only Haskell @.hs@ files under @src/@ and @app/@.
+--   * Only string literals (via 'extractStringLiterals') — comments and
+--     docstrings that *mention* @`.prodbox-state/`@ for historical
+--     context are allowed.
+--   * @test/@ is excluded so the unit tests can pin the lint's
+--     fires-on-offending-literal contract with synthetic offenders.
+--   * The lint module itself is excluded — its own pattern string and
+--     diagnostic text contain the very substring it scans for.
+checkForbidDotProdboxState :: FilePath -> IO [String]
+checkForbidDotProdboxState repoRoot = do
+  repoPaths <- listRepoOwnedPaths repoRoot
+  let
+    -- The needle pattern is built at runtime so this lint module's own
+    -- string literals (its scan pattern + diagnostic text) don't
+    -- accidentally trip the scan when it sweeps over @src/@.
+    needle = "." ++ "prodbox-state" ++ "/"
+    -- Production-only scope: only @src/@ and @app/@ Haskell files. Test
+    -- modules legitimately mention the closed cache prefix for
+    -- regression coverage (see the Sprint 4.18 unit tests in
+    -- @test/unit/Main.hs@), so excluding @test/@ here keeps the lint
+    -- narrowly focused on production regressions. The lint module
+    -- itself is also excluded — its own pattern string and diagnostic
+    -- text contain the very substring it scans for.
+    scanPath path =
+      (".hs" `isSuffixOf` path)
+        && any (`isPrefixOf` path) ["src/", "app/"]
+        && path /= forbidLintSelfPath
+  fmap concat $
+    forM
+      [path | path <- repoPaths, scanPath path]
+      ( \relativePath -> do
+          let absolutePath = repoRoot </> relativePath
+          isFile <- doesFileExist absolutePath
+          if not isFile
+            then pure []
+            else do
+              contents <- readFile absolutePath
+              let offenders =
+                    filter (needle `isInfixOf`) (extractStringLiterals contents)
+              pure
+                [ relativePath
+                    ++ " string literal contains the closed prodbox-state "
+                    ++ "prefix (Sprint 3.13 chunks 8\8211\&16 eradicated "
+                    ++ "every host-side cache under it; any new reference "
+                    ++ "is a regression): "
+                    ++ shortenSprintLeak offender
+                | offender <- offenders
+                ]
+      )
+
+-- | The self-exclusion path for 'checkForbidDotProdboxState'. The lint
+-- module's own pattern string and diagnostic text contain the very
+-- substring it scans for, so this module is allowlisted by relative
+-- path.
+forbidLintSelfPath :: FilePath
+forbidLintSelfPath = "src/Prodbox/CheckCode.hs"
+
 checkCreateCallSiteCoverage :: FilePath -> IO [String]
 checkCreateCallSiteCoverage repoRoot = do
   let registeredNames =

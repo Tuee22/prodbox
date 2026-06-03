@@ -2,17 +2,30 @@ global:
   namespace: gateway
   rootChart: gateway
 
-# Sprint 3.13 sixth chunk: namespaces in which the gateway daemon's
-# `POST /v1/secret/ensure-namespace` handler creates derived k8s
-# Secrets. One Role + RoleBinding pair is emitted per entry so the
-# daemon's ServiceAccount has `secrets:get,create,patch` scoped to
-# only the namespaces it actually writes to (per
-# `Prodbox.Secret.Inventory.derivedSecretInventoryFor`). Currently only
-# `keycloak` has any derived inventory; add namespaces here when
-# vscode / api / websocket / gateway gain derived entries.
+# Sprint 3.13 sixth chunk + chunks 16/22/27: namespaces in which the
+# gateway daemon's `POST /v1/secret/ensure-namespace` handler (and
+# Sprint 3.13 chunk 16's startup self-bootstrap path) creates derived
+# k8s Secrets. One Role + RoleBinding pair is emitted per entry so the
+# daemon's ServiceAccount has `secrets:get,create,update,patch` scoped
+# to only the namespaces it actually writes to (per
+# `Prodbox.Secret.Inventory.derivedSecretInventoryFor`).
+#
+# The `gateway` entry authorizes the daemon's own startup self-bootstrap
+# to write `gateway-event-keys` in its own namespace.
+#
+# The `keycloak` + `vscode` entries cover the two namespaces where the
+# keycloak-postgres dependency deploys a Patroni cluster: keycloak chart
+# directly, vscode chart transitively (vscode → keycloak →
+# keycloak-postgres). Both clusters need their three Patroni-role
+# Secrets materialized by the daemon's ensure-namespace handler (chunk
+# 21 made the Inventory entry namespace-aware so the same handler
+# writes prodbox-keycloak-pg-* or prodbox-vscode-pg-* depending on the
+# request's namespace).
 rbac:
   targetNamespaces:
     - keycloak
+    - vscode
+    - gateway
 
 # Pod anti-affinity for HA defaults. Dev mode (suppressing anti-affinity)
 # is controlled by chart_platform.py via _ha_values().
@@ -56,13 +69,6 @@ nodes:
     - node-a
     - node-b
     - node-c
-
-# Per-node HMAC keys for SignedEvent authentication. The chart platform
-# auto-generates these via resolve_chart_secrets() and persists them in
-# .data/<namespace>/.secrets.json so the cluster can be redeployed without
-# losing event signing material.
-# Map of node id -> hex-encoded HMAC key.
-eventKeys: {}
 
 # Route 53 ownership configuration. The dns_write_gate section is mounted
 # into the daemon config so the elected leader keeps the named record

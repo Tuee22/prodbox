@@ -15,6 +15,8 @@ module Prodbox.Secret.Derive
   , PatroniRole (..)
   , patroniRoleContext
   , keycloakAdminContext
+  , keycloakDemoUserContext
+  , oidcClientSecretContext
   , gatewayEventKeyContext
   , derive
   , deriveBase64Url
@@ -90,6 +92,28 @@ patroniRoleContext namespace release role =
 keycloakAdminContext :: Text -> Text
 keycloakAdminContext namespace =
   Text.intercalate ":" ["keycloak", namespace, "admin"]
+
+-- | Canonical context string for the Keycloak demo-user password (Sprint 3.13
+-- chunk 11). Shape: @keycloak:<namespace>:demo-user@. The demo user is seeded
+-- in the realm import (used by the canonical-suite OIDC validations); its
+-- password is not data-bound (Keycloak re-imports the realm on each fresh
+-- install) but is derived from the master seed so the chart's @configmap.yaml@
+-- realm-import JSON can reference the same value the daemon's pre-install Job
+-- materializes into the @keycloak-oidc-clients@ Secret.
+keycloakDemoUserContext :: Text -> Text
+keycloakDemoUserContext namespace =
+  Text.intercalate ":" ["keycloak", namespace, "demo-user"]
+
+-- | Canonical context string for an OIDC client's @client_secret@ (Sprint 3.13
+-- chunk 11). Shape: @oidc:<namespace>:<clientId>@. Same rationale as
+-- 'keycloakDemoUserContext': the OIDC clients are seeded in the realm import,
+-- so their secrets are not strictly data-bound but deriving them from the
+-- master seed gives both the @configmap.yaml@ render and the cross-namespace
+-- workload chart lookups a deterministic value source without any inter-chart
+-- coordination.
+oidcClientSecretContext :: Text -> Text -> Text
+oidcClientSecretContext namespace clientId =
+  Text.intercalate ":" ["oidc", namespace, clientId]
 
 -- | Canonical context string for a gateway peer-event signing key.
 -- Shape: @gateway:<namespace>:<node-id>:event-key@

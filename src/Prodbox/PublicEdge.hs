@@ -28,6 +28,7 @@ import Control.Exception (bracket_)
 import Data.Map.Strict qualified as Map
 import Data.Text (Text)
 import Data.Text qualified as Text
+import Prodbox.Infra.AwsEksTestStack (withEksKubeconfig)
 import Prodbox.Infra.StackOutputs (StackName (..))
 import Prodbox.Lifecycle.LiveResidue
   ( awsEksSubzoneStackName
@@ -43,7 +44,6 @@ import Prodbox.Settings
   , aws
   , validatedConfig
   )
-import Prodbox.Infra.AwsEksTestStack (withEksKubeconfig)
 import Prodbox.Substrate (Substrate (..))
 import System.Environment (lookupEnv, setEnv, unsetEnv)
 

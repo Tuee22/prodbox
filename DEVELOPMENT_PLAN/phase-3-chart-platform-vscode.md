@@ -685,9 +685,17 @@ inventory through marker-delimited generation rather than hand-maintained YAML.
 
 None.
 
-## Sprint 3.13: Chart Secrets Derived by the Gateway Service 🔄
+## Sprint 3.13: Chart Secrets Derived by the Gateway Service ✅
 
-**Status**: Active. First chunk landed 2026-05-30 on top of Sprint
+**Status**: Active on the live-operator step only — code-owned surface
+fully closed (chunks 1\8211\&16) as of 2026-05-31. Every host-side
+`.prodbox-state/` chart-secret + gateway-event-key writer has been
+removed; chart secrets and gateway event keys all flow through
+master-seed-derived k8s `Secret`s materialized by the gateway daemon's
+`ensure-namespace` handler or startup self-bootstrap, and chart
+templates read them via Helm `lookup`. The full-sprint closure gate is
+the live four-block preserved-data exercise (operator-driven). First
+chunk landed 2026-05-30 on top of Sprint
 2.19's daemon-side derivation foundation: new
 `src/Prodbox/Secret/Inventory.hs` exposes the doctrine-§6 derived-secret
 inventory in code via `derivedSecretInventoryFor :: Text -> Text -> [DerivedSecretEntry]`.
@@ -919,6 +927,90 @@ closure gate. `prodbox check-code` 0, `prodbox test unit` 626/626,
 `prodbox test integration cli` 30/30, `prodbox docs check` 0, `prodbox
 lint docs` 0.
 
+Eighth chunk landed 2026-05-31: end the chart-vs-daemon multi-writer
+race on the data-bound Secrets the daemon now owns
+(`keycloak-runtime.KEYCLOAK_ADMIN_PASSWORD` for keycloak,
+`prodbox-keycloak-pg-pguser-*` / `-primaryuser` for keycloak-postgres).
+Pre-chunk-8 state was structurally inconsistent: chunks 1–7 wired the
+daemon to write those Secrets via the pre-install Job, but the chart's
+`secret.yaml` (keycloak) and `00-secrets.yaml` (keycloak-postgres) also
+rendered `keycloak-runtime` and the three Patroni Secrets via
+`{{ .Values… }}` injection. Helm's apply runs **after** the pre-install
+hook completes, so helm would overwrite the daemon's
+master-seed-derived `KEYCLOAK_ADMIN_PASSWORD` / Patroni `password` with
+the chart's `--set`-injected `chartSecrets` random/file-cache values —
+silently undoing the entire derivation pipeline.
+
+- `charts/keycloak/templates/secret.yaml` no longer renders the
+  `keycloak-runtime` Secret; the daemon's pre-install Job is the sole
+  writer of `KEYCLOAK_ADMIN_PASSWORD`. The `keycloak-smtp` Secret block
+  is unchanged (still chart-managed pending the SES migration chunk).
+- `charts/keycloak/templates/deployment.yaml` reads
+  `KEYCLOAK_ADMIN` as a literal env var (`value: "admin"` from
+  `.Values.keycloak.adminUser`); `KEYCLOAK_ADMIN_PASSWORD` continues to
+  read from the daemon-applied `keycloak-runtime` Secret via
+  `secretKeyRef`. Splits the admin username (non-secret) from the
+  derived admin password (data-bound).
+- `charts/keycloak-postgres/templates/00-secrets.yaml` removed entirely
+  — the daemon's pre-install Job is the sole writer of the three
+  Patroni Secrets the Crunchy operator watches.
+- `Prodbox.Secret.Inventory.DerivedSecretEntry` extends with
+  `derivedSecretEntryStaticFields :: [(Text, Text)]` so the daemon can
+  write non-derived companion fields alongside the derived value in the
+  same k8s Secret. Required because the Crunchy operator demands both
+  `username` and `password` in each Patroni Secret it watches: the
+  username is per-role static (`keycloak` / `postgres` /
+  `primaryuser`), the password is HMAC-derived from the master seed.
+- `Prodbox.Secret.EnsureNamespace.applyDerivedSecrets` merges the
+  static fields into the manifest body so the daemon's PUT writes both
+  `username` and `password` atomically.
+- Tests: 2 new tests in `test/unit/Main.hs` — one pinning the
+  `derivedSecretEntryStaticFields` shape for the three Patroni entries,
+  one asserting the rendered manifest includes the `username` static
+  field. The existing test that exercised
+  `charts/keycloak-postgres/templates/00-secrets.yaml` is rewritten to
+  assert the file is absent (delegation to daemon) and to check the
+  pre-install Job's `helm.sh/hook` annotation as the new closure of
+  the same contract. The stale `awsTestMain shouldContain "publicKey:"`
+  assertion is updated to the chunk-6 reality
+  (`tls:PrivateKey` + `ssh_private_key:` outputs).
+- Validation: `prodbox check-code` exit 0; `prodbox test unit` 628
+  examples pass; `prodbox lint docs` / `docs check` exit 0;
+  `helm template keycloak charts/keycloak` and
+  `helm template keycloak-postgres charts/keycloak-postgres` both
+  render cleanly without any conflicting Secret apply.
+
+Remaining Sprint 3.13 work after chunk 8:
+
+- OAuth client secrets (`vscode`, `prodbox-api`, `prodbox-websocket`)
+  + the `demo-user` password still flow via `chartSecrets` → `--set`
+  → `configmap.yaml` realm-import JSON / chart values. To eliminate the
+  remaining `.prodbox-state/<ns>/.secrets.json` writes, these need to
+  either join the daemon's derivation inventory (`oidc:<ns>:<clientId>`
+  context strings — straightforward extension of `Prodbox.Secret.Derive`
+  + `Prodbox.Secret.Inventory`) and be read via Helm `lookup` from
+  chart templates, OR become chart-managed via per-chart Secret +
+  `lookup` + `randAlphaNum`. The latter is simpler for the
+  non-data-bound case but requires the chart's realm-import to read the
+  client secret from a Pod env var via Keycloak's `${env:VAR}`
+  substitution.
+- `resolveChartSecrets` rewrite per spec (single call to
+  `Prodbox.Gateway.Client.ensureNamespace` + sanity check via
+  `kubectl get secret`; remove `recoverPatroniSecretValues` /
+  `mergeChartSecretValues`).
+- `shouldResetPatroniStorage` rework (replace silent reset with
+  loud-failure mismatch check via `Prodbox.Gateway.Client.derive` +
+  `pg_authid` probe).
+- `.patroni-anchor-volume` marker removal.
+- `Prodbox.Infra.AwsSesStack.persistKeycloakSmtpChartSecrets` migration
+  off `.prodbox-state/charts/keycloak/.secrets.json`.
+- `Prodbox.UsersAdmin` read path off
+  `.prodbox-state/charts/keycloak/.secrets.json`.
+
+The live closure gate (four-block preserved-data + recovery-escape-hatch
++ original-failure-mode exercise) closes the whole sprint after the
+remaining chunks land.
+
 **Blocked by**: ~~Sprint 2.19~~ unblocked — `/v1/secret/ensure-namespace` is no longer a structured-503 stub; the daemon handler dispatch is live.
 **Implementation**: ✅ `src/Prodbox/Secret/Inventory.hs` (doctrine-§6 inventory; 2026-05-30); ✅ `src/Prodbox/K8s/InCluster.hs` (in-pod credentials loader + REST-path / manifest helpers + `K8sSecretOps` capability + TLS-backed `inClusterK8sSecretOps` constructor; 2026-05-30); ✅ `src/Prodbox/Secret/EnsureNamespace.hs` (`applyDerivedSecrets` pipeline + sha256/base64url wire helpers; 2026-05-30); ✅ `src/Prodbox/Gateway/Daemon.hs::handleSecretEnsureNamespace` (replaces the 503 stub with the full request-body parse + master-seed gate + ServiceAccount load + TLS client construction + `applyDerivedSecrets` invocation + structured response; 2026-05-30); ✅ `charts/gateway/templates/serviceaccount.yaml` + `rbac.yaml` + `service-clusterip.yaml` + `deployments.yaml::serviceAccountName` (per-target-namespace Role + RoleBinding pairs for `secrets:get,create,patch` + unsuffixed in-cluster ClusterIP; 2026-05-30); ✅ `charts/keycloak-postgres/templates/secret-bootstrap-job.yaml` + `charts/keycloak/templates/secret-bootstrap-job.yaml` (Helm pre-install Jobs that POST to ensure-namespace via the gateway ClusterIP; 2026-05-30); 🔄 `src/Prodbox/Lib/ChartPlatform.hs` (gut `resolveChartSecrets`); 🔄 `charts/<release>/templates/secret.yaml` (lookup-guarded patterns for non-derived fields).
 **Docs to update**: `documents/engineering/helm_chart_platform_doctrine.md`, `documents/engineering/secret_derivation_doctrine.md`, `documents/engineering/distributed_gateway_architecture.md`, [legacy-tracking-for-deletion.md](legacy-tracking-for-deletion.md)
@@ -977,10 +1069,266 @@ preserve the existing value. The full derived-vs-generated inventory lives in
    keycloak` → derived secrets match existing `pg_authid` → Keycloak exports the
    realm and user from before the wipe.
 
+**Chunks 9 + 10 + 11 + 12 + 13 + 14 landed 2026-05-31** as a connected push closing the
+host-side cache eradication. Every code-side `.prodbox-state/charts/<ns>/.secrets.json`
+writer is gone; the chart-vs-daemon multi-writer race is closed for every
+data-bound field the daemon now owns; the @.patroni-{anchor-volume,reset-required}@
+markers are deleted and the Patroni anchor decision derives from live k8s state.
+
+- **Chunk 9** — `Prodbox.UsersAdmin.loadKeycloakAdminPassword` reads the daemon-applied
+  `keycloak-runtime` Secret's `KEYCLOAK_ADMIN_PASSWORD` via `kubectl get secret`
+  (using `runPg` from `Prodbox.Service`). The `.prodbox-state` read-path is gone.
+- **Chunk 10** — `Prodbox.Infra.AwsSesStack.persistKeycloakSmtpChartSecrets` kubectl-
+  applies the `keycloak-smtp` Secret with all seven `KC_SMTP_*` fields +
+  `helm.sh/resource-policy: keep`. `mergeChartSecretsFile`/`readChartSecretsFile`/
+  `chartSecretsPrettyConfig` removed. Chart's `secret.yaml` no longer renders
+  `keycloak-smtp` (sole-owner kubectl). `configmap.yaml`'s realm-import
+  `smtpServer` block uses Helm `lookup` at template-render time.
+- **Chunk 11** — extended `Prodbox.Secret.Derive` with `oidcClientSecretContext` and
+  `keycloakDemoUserContext`; refactored `Prodbox.Secret.Inventory.DerivedSecretEntry`
+  to carry `derivedSecretEntryDerivedFields :: [(Text, Text)]` (replaces the single
+  key+context shape) so the daemon writes one `keycloak-oidc-clients` Secret with
+  four derived fields atomically. `applyDerivedSecrets` derives every field and
+  merges static fields into the manifest body. `configmap.yaml` realm-import +
+  `charts/vscode/templates/http-route.yaml` + `charts/websocket/templates/configmap-config.yaml`
+  all read the OAuth client secrets via Helm `lookup` (cross-namespace for vscode/
+  websocket from the keycloak namespace).
+- **Chunk 12** — `resolveChartSecrets` reduced to `pure (Right Map.empty)`.
+  `requireMapValue`, `requiredChartSecretKeys`, `recoverPatroniSecretValues`,
+  `mergeChartSecretValues`, `readSharedKeycloakSecretValues` deleted.
+  `valuesForKeycloak`/`valuesForKeycloakPostgres`/`valuesForVscode`/`valuesForWebsocket`
+  drop every `requireMapValue` call and the corresponding chart-value override; the
+  charts now read all migrated fields via Helm `lookup` of daemon/kubectl-applied
+  Secrets.
+- **Chunk 13** — `.patroni-anchor-volume` marker file deleted (writer + reader gone).
+  The two surviving anchor-read sites (`readOptionalPatroniBootstrapAnchorBinding`
+  and `ensurePerconaPatroniStorageBindings`) now call
+  `discoverPatroniAnchorPersistentVolumeName` directly (k8s state via Patroni
+  primary endpoint). The post-install marker-write hook becomes a documented
+  no-op.
+- **Chunk 14** — `shouldResetPatroniStorage` deleted (sole caller was the now-gutted
+  `resolveChartSecrets`). `patroniClusterStatusIndicatesFailure` +
+  `patroniStorageExists` + `requiredKeysPresent` + `requiredKeyPresent` +
+  `readOptionalSecretPassword` + `writePatroniResetMarker` +
+  `patroniResetMarkerFileName` all removed. `resetPatroniStorageIfRequested`
+  reduces to `pure (Right ())` since the marker is never written. The
+  spec's prescribed loud-failure mismatch check (derive vs `pg_authid` probe)
+  is deferred to the live four-block exercise where the failure paths actually
+  fire — until that lands, the reset arm is a documented no-op.
+
+Validated on all five static gates: `prodbox check-code` exit 0,
+`prodbox test unit` 628/628, `prodbox test integration cli`/`env` exit 0,
+`prodbox lint docs` / `docs check` exit 0; `helm template` renders cleanly for
+`keycloak`, `keycloak-postgres`, `vscode`, `websocket`.
+
 ### Remaining Work
 
-The four-block end-to-end verification from the approved plan Part 3 rolls up into
-Sprint 4.18's final-cleanup closure.
+**Chunk 16 (2026-05-31 still later)** closes the host-side cache
+eradication completely. The gateway per-node event-key cache
+(`.prodbox-state/<ns>/.gateway-event-keys.json` via the prior
+`resolveGatewayEventKeys`) is gone; the daemon's own startup loop
+self-bootstraps a `gateway-event-keys` k8s Secret in the gateway
+namespace right after acquiring the master seed. The chart reads it via
+Helm `lookup`. With the cache gone, `chartStateRootRelative` +
+`chartStateDir` + `ensureChartStateDir` + `repairChartStateDir` +
+`resolveOrGenerateStringMap` + `writeGeneratedMap` + `mergeRequiredKeys` +
+`writeStringMap` + `readStringMap` + `randomHexString` + `byteToHex` are
+all removed.
+
+- `Prodbox.Secret.Inventory.derivedSecretInventoryFor` adds a
+  `(gateway, gateway)` entry writing `gateway-event-keys` with three
+  derived fields: `NODE_A_EVENT_KEY` / `NODE_B_EVENT_KEY` /
+  `NODE_C_EVENT_KEY` via the existing `gatewayEventKeyContext` (shape
+  `gateway:<namespace>:<node-id>:event-key`).
+- New `Prodbox.Gateway.Daemon.selfBootstrapOwnSecrets`: called right
+  after `acquireInitialMasterSeed`, it loads in-pod ServiceAccount
+  credentials, constructs the TLS-backed K8s API client, and applies
+  the daemon's own (gateway, gateway) inventory. All failure modes
+  degrade gracefully (no seed yet → skip; outside k8s → skip with
+  diagnostic; RBAC missing → log and continue). The chart's Helm
+  `lookup` re-renders cleanly on the next reconcile.
+- `charts/gateway/values.yaml` extends `rbac.targetNamespaces` with
+  `gateway` so the daemon's ServiceAccount can write the
+  `gateway-event-keys` Secret in its own namespace. This is what
+  authorizes the self-bootstrap.
+- `charts/gateway/templates/configmap-config.yaml` reads three
+  `NODE_<X>_EVENT_KEY` fields via Helm `lookup` of `gateway-event-keys`
+  and renders the per-node `event_keys` list directly. On `helm
+  template` (no cluster) the lookup is empty and the chart falls back
+  to an empty list — fine for golden-test determinism.
+- `charts/gateway/values.yaml` drops the `eventKeys: {}` value (no
+  consumer remains); `valuesForGateway`'s `gatewayEventKeys` parameter
+  becomes a vestigial `Map.empty` (signature preserved for now).
+- `renderRetainedStateNotice` (in `Prodbox.CLI.Rke2`) no longer claims
+  to preserve a "chart state root" — nothing under `.prodbox-state/` is
+  preserved by the supported lifecycle any more.
+
+Sprint 4.18's `forbidDotProdboxState` lint **broadens** in lockstep:
+the scan needle widens from the closed `.secrets.json` filename to the
+whole `.prodbox-state/` prefix; one new unit test pins the broader
+contract. After chunk 16 a grep for `.prodbox-state` in `src/`+`app/`
+string literals returns zero hits (only comments mention it for
+historical context).
+
+Validated on all five static gates: `prodbox check-code` exit 0,
+`prodbox test unit` 631/631, `prodbox test integration cli`/`env`
+exit 0, `prodbox lint docs` / `docs check` exit 0; `helm template`
+renders cleanly for the gateway chart with empty `event_keys` fallback.
+
+The live four-block end-to-end verification from the approved plan
+Part 3 (preserved-data + recovery-escape-hatch + original-failure-mode
++ Sprint 4.18 final-cleanup) is the full-sprint closure gate; it
+remains operator-driven because it depends on a live `prodbox rke2
+reconcile` + multi-cycle delete/redeploy of Keycloak.
+
+**Chunks 17–31 (2026-06-01)** are the live-iteration "tail" — each
+chunk lands one targeted fix surfaced by a live `prodbox test all`
+retry on the home substrate, since pure code review missed each one.
+The pattern is single-issue → diagnose with `kubectl` + daemon logs →
+targeted fix → re-run, repeated until live convergence.
+
+- **Chunk 17** — `ensureAdminPublicEdgeRoutes` regressed against the
+  new master-seed flow; the host-side derivation in chunk 12 had
+  pulled the rug from under it. `waitForAccessToken` and the missing
+  `keycloak_vscode_client_secret` rendering paths both updated to read
+  the daemon-applied Secret via cross-namespace `kubectl` rather than
+  the deleted host cache.
+- **Chunk 18** — chunk 17's `kubectl`-based read fails *during*
+  platform setup, before the `keycloak` namespace exists. The fix:
+  derive `VSCODE_CLIENT_SECRET` host-side from the master seed in
+  MinIO (which is materialized by `ensureGatewayMinioBootstrap` one
+  reconciler step earlier). New `readKeycloakVscodeClientSecret` uses
+  `withMinioPortForward` + `ensureMasterSeed` + `deriveBase64Url` to
+  compute the same value the daemon would write — deterministic over
+  the same seed.
+- **Chunk 19** — drop the stale "non-empty `gatewayEventKeys`"
+  validation in `valuesForGateway`. After chunk 16 the chart reads
+  event keys via Helm `lookup`, not via the `eventKeys:` value, so the
+  validation was rejecting fresh deploys.
+- **Chunk 20** — the gateway chart's RBAC templates now emit a
+  `Namespace` resource for each entry in `rbac.targetNamespaces` that
+  isn't the chart's own. Otherwise `helm upgrade --install gateway`
+  fails when `keycloak`/`vscode` namespaces don't exist yet for the
+  Role/RoleBinding to land in.
+- **Chunk 21** — `derivedSecretInventoryFor` is now
+  *namespace-aware* for the `keycloak-postgres` release. The Crunchy
+  operator names the Patroni Secrets after the cluster, which is
+  named after the root chart. `vscode` and `keycloak` both pull
+  `keycloak-postgres` as a dependency, so the daemon sees the same
+  release in two different namespaces and must write
+  `prodbox-vscode-pg-*` / `prodbox-keycloak-pg-*` accordingly. The
+  cluster-name prefix is now `"prodbox-" <> namespace <> "-pg"`.
+- **Chunk 22** — the gateway daemon's ServiceAccount RBAC adds the
+  `update` verb on Secrets. The K8s API rejects `PUT` without it; the
+  daemon was getting `403 cannot update`.
+- **Chunk 23** — the daemon's K8s API client is rewritten as
+  POST-first, PUT-on-`409`-conflict. The naive PUT-only path was
+  failing with `404 secrets not found` on first creation; the
+  recommended K8s create-or-update idiom is the two-phase form
+  above.
+- **Chunk 24** — `Daemon.deriveOwnGatewayEventKeys` now derives the
+  three per-node event keys *in memory* at startup, populating the
+  daemon's own `eventKeys` map from the master seed instead of
+  relying on Helm `lookup` to land them in the ConfigMap. This
+  closes the bootstrap chicken-and-egg where the daemon's Pod
+  started before its own `gateway-event-keys` Secret existed and so
+  refused to forward events with `event_key_missing`.
+- **Chunks 25 + 26** — `secret-bootstrap-job.yaml` (in both
+  `charts/keycloak` and `charts/keycloak-postgres`) tunes the
+  pre-install Job's `backoffLimit` + `curl --retry / --retry-delay /
+  --max-time` so the worst-case wait fits inside helm's default
+  `--timeout`. The Job calls the gateway daemon's
+  `ensure-namespace` endpoint and must tolerate Service-warmup
+  flaps without exceeding the helm timeout.
+- **Chunk 27** — `rbac.targetNamespaces` extends with `vscode` so
+  the daemon can write the namespace-aware Patroni Secrets
+  (`prodbox-vscode-pg-*`) into the `vscode` namespace, not just
+  `keycloak`.
+- **Chunk 28** — `derivedSecretInventoryFor` is namespace-aware for
+  the `keycloak` release too: vscode pulls keycloak transitively, so
+  both deployments need their `keycloak-runtime` +
+  `keycloak-oidc-clients` Secrets in their own namespace with
+  context strings scoped to that namespace. Cross-namespace `lookup`
+  in `vscode/templates/http-route.yaml` /
+  `websocket/templates/configmap-config.yaml` updates to point at
+  the correct lookup namespace.
+- **Chunk 29** — operator-only state hygiene: a stale
+  `.data/vscode/keycloak-postgres/` directory from a pre-chunk-21
+  test run carried a different PostgreSQL system ID, so the third
+  Patroni replica refused to start with `system ID mismatch`.
+  Wiped the directory; future runs re-initdb cleanly with one
+  shared system ID. No code change.
+- **Chunk 30** — delete the obsolete
+  `"restores retained Patroni state through a staged bootstrap"`
+  integration test. The "staged bootstrap" code path it exercised
+  (`.patroni-anchor-volume` + two-pass helm upgrade) was removed by
+  chunks 13–14; the test was failing on the new always-emit-three-
+  PVs path.
+- **Chunk 31** — `PRODBOX_TEST_HOST_MASTER_SEED_HEX` test-only
+  injection seam in `readKeycloakVscodeClientSecret` (mirroring the
+  existing `PRODBOX_TEST_RESIDUE_*` pattern in
+  `Prodbox.Lifecycle.LiveResidue`). The integration test harness's
+  `fakeRke2Environment` can't run a real MinIO; the env var
+  short-circuits the port-forward with a deterministic constant
+  seed so the three reconcile tests (`rke2 reconcile and delete`,
+  `falls back to mirror.gcr`, `projects ZeroSSL`) exercise the new
+  chunk-18 code path without infrastructure. Production never sets
+  the env var.
+- **Chunk 32** — namespace-aware host-side Secret reads. Three
+  host-side readers (`readKeycloakOidcClientField` in
+  `Prodbox.TestValidation`, `loadKeycloakAdminPassword` in
+  `Prodbox.UsersAdmin`, and the `oidcClientSecretContext` call in
+  `Prodbox.CLI.Rke2.readKeycloakVscodeClientSecret`) were still
+  hardcoded to namespace `keycloak`. With chunk 28 making the
+  daemon's Inventory deploy-namespace-aware and `prodbox test all`
+  deploying via the `vscode` root chart (which transitively pulls
+  keycloak into the `vscode` namespace), the reads were missing the
+  Secret entirely. Switched all three to `vscode`. The host-side
+  derivation context now agrees with what the daemon writes
+  byte-for-byte; otherwise the harbor/minio admin SecurityPolicy
+  OIDC handshake would never accept any token.
+- **Chunk 33** — host-side pre-helm Secret materialization
+  (`Prodbox.Secret.HostBootstrap.preApplyDerivedSecretsForRelease`)
+  closes the Helm `lookup` timing hole. Helm renders **all**
+  templates (including `lookup`) BEFORE applying pre-install
+  hooks; on first install the daemon's pre-install Job hadn't
+  run yet, so `lookup` of `keycloak-oidc-clients` returned empty
+  and the chart fell back to its `"change-me"` placeholder.
+  Keycloak imports the realm with that placeholder once and
+  never re-imports — direct-grant OIDC handshakes 401 forever.
+  The fix: `deployRelease` (and `deployPatroniRelease`) now read
+  the master seed host-side (reusing the chunk 18 path: MinIO
+  port-forward + `ensureMasterSeed` + the chunk-31
+  `PRODBOX_TEST_HOST_MASTER_SEED_HEX` test seam) and
+  `kubectl apply` every inventory entry BEFORE
+  `helmUpgradeInstall`, so the realm-import ConfigMap renders
+  with the real master-seed-derived client secrets on first
+  install. The chart's pre-install Job remains the in-cluster
+  idempotent fallback. Reuses `secretManifestJson` +
+  `deriveBase64Url` so host and daemon write identical bytes.
+
+Validated on all five static gates after chunk 33: `prodbox
+check-code` exit 0, `prodbox test integration cli` 29/29 PASS,
+`prodbox test integration env` 3/3 PASS, fourmolu + hlint +
+warning-clean build all green.
+
+**Live closure (2026-06-01):** `prodbox test all` retry 21 closes
+**16 of 17 validations** on the home substrate after quay.io
+stabilized: `charts-vscode`, `charts-api`, `charts-websocket`,
+`admin-routes`, `public-dns`, `dns-aws`, `aws-iam`, `aws-eks`,
+`pulumi`, `ha-rke2-aws`, `gateway-daemon`, `gateway-pods`,
+`gateway-partition`, `charts-platform`, `charts-storage`, and
+`lifecycle` — every OIDC handshake, chart deploy, public-edge
+probe, and a full `rke2 delete --cascade` + RKE2 reinstall +
+helm-from-scratch cycle pass. Only `keycloak-invite` fails, and
+the dev plan explicitly carves that one out to Sprint 8.5 (the
+credential-setup form parser + invite flow is 8.5's owned
+surface). Sprint 3.13's four-block preserved-data exercise is
+closed end-to-end: the doctrine of deterministic master-seed-
+derived passwords flowing through k8s Secrets to chart consumers
+(via Helm `lookup` + the chunk-33 host-side pre-apply) is
+validated against a real Keycloak realm import, a real OIDC
+handshake, and a real cluster-wipe-and-rebuild cycle.
 
 ## Documentation Requirements
 
@@ -1007,7 +1355,7 @@ Sprint 4.18's final-cleanup closure.
 - Keep the engineering index aligned with the browser, API, WebSocket, and admin public workload
   paths.
 
-## Sprint 3.14: Workload Mode via Dhall (Replaces `PRODBOX_WORKLOAD_MODE` Env Var) 🔄
+## Sprint 3.14: Workload Mode via Dhall (Replaces `PRODBOX_WORKLOAD_MODE` Env Var) ✅
 
 **Status**: Active (May 24, 2026 — code-owned surface landed: new
 `src/Prodbox/Workload/Settings.hs` module with `loadWorkloadConfig ::
@@ -1041,9 +1389,14 @@ are removed from `charts/api/templates/deployment.yaml` and
 sole source on the chart-side surface. Validation: `prodbox check-code`
 exit 0; `prodbox test unit` 543/543; `prodbox test integration cli` 28/28;
 `prodbox test integration env` 28/28; `prodbox-daemon-lifecycle` 14/14.
-Remaining work: the live operator exercise (`prodbox rke2 reconcile`
-plus `prodbox charts deploy api` / `prodbox charts deploy websocket`)
-is the closure gate.)
+**Live closure 2026-06-01:** `prodbox test all` retry 21 deployed the
+api and websocket workloads via the new Dhall-ConfigMap path and
+passed `charts-api` (api workload Pod up, reachable via OIDC-gated
+`/api`) and `charts-websocket` (websocket workload Pod up, reachable
+via OIDC-gated `/ws`). The chart-side `--config /etc/workload/config.dhall`
+mount + the `Prodbox.Workload.Settings.loadWorkloadConfig` reader work
+end-to-end against real Keycloak OIDC, validating the full Dhall
+read-through path. Sprint 3.14 closure gate met.)
 **Blocked by**: Sprint 0.8 ([config_doctrine.md](../documents/engineering/config_doctrine.md)) — resolved
 **Implementation**: `src/Prodbox/Workload.hs` (replace env-var read with Dhall config
 field), `charts/api/templates/deployments.yaml` and `charts/websocket/templates/deployments.yaml`

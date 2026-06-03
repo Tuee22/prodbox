@@ -5,11 +5,21 @@ as a Dhall expression (`config.dhall`) per
 this file in-process via the native Haskell `dhall` library through
 `Prodbox.Workload.Settings.loadWorkloadConfig`.
 
-The transitional state keeps the `PRODBOX_WORKLOAD_MODE` / `PRODBOX_*` env
-vars on the Pod alongside this new ConfigMap so the binary can fall back if
-the chart is rolled back. Sprint 3.14 follow-up removes those env vars and
-makes `--config` the sole source.
+Sprint 3.13 chunks 11 + 28: the OIDC `client_secret` is read via
+cross-namespace Helm `lookup` of the gateway-daemon-managed
+`keycloak-oidc-clients` Secret. The keycloak release that registers
+the @prodbox-websocket@ client and materializes the corresponding
+`WEBSOCKET_CLIENT_SECRET` deploys via the vscode root chart's
+transitive dep chain (vscode → keycloak → keycloak-postgres) into the
+@vscode@ namespace, so that's the lookup namespace. On `helm template`
+(no cluster) the lookup returns empty and the chart falls back to the
+`.Values.oidc.clientSecret` placeholder.
 */}}
+{{- $oidcSecret := lookup "v1" "Secret" "vscode" "keycloak-oidc-clients" }}
+{{- $clientSecret := .Values.oidc.clientSecret }}
+{{- if $oidcSecret }}
+{{- $clientSecret = index $oidcSecret.data "WEBSOCKET_CLIENT_SECRET" | b64dec }}
+{{- end }}
 apiVersion: v1
 kind: ConfigMap
 metadata:
@@ -31,7 +41,7 @@ data:
         Some
           { issuer = {{ .Values.oidc.issuer | quote }}
           , client_id = {{ .Values.oidc.clientId | quote }}
-          , client_secret = {{ .Values.oidc.clientSecret | quote }}
+          , client_secret = {{ $clientSecret | quote }}
           , public_base_url = {{ .Values.oidc.publicBaseUrl | quote }}
           , token_endpoint = {{ .Values.oidc.tokenEndpoint | quote }}
           }

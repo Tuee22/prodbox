@@ -17,7 +17,8 @@ import Data.Aeson.KeyMap qualified as KeyMap
 import Data.ByteString qualified as BS
 import Data.ByteString.Lazy.Char8 qualified as BL8
 import Data.IORef
-  ( modifyIORef'
+  ( IORef
+  , modifyIORef'
   , newIORef
   , readIORef
   , writeIORef
@@ -155,6 +156,7 @@ import Prodbox.CheckCode
   , matchesSprintToken
   , pulumiCreateSiteViolations
   )
+import Prodbox.CheckCode qualified
 import Prodbox.ContainerImage qualified as ContainerImage
 import Prodbox.Daemon.Events qualified as DaemonEvents
 import Prodbox.Effect
@@ -247,6 +249,7 @@ import Prodbox.Infra.StackOutputs qualified as StackOutputs
 import Prodbox.K8s
   ( parseKubectlObjectNames
   )
+import Prodbox.K8s.InCluster qualified as InCluster
 import Prodbox.Keycloak.CredentialSetupForm
   ( CredentialSetupForm (..)
   , parseCredentialSetupForm
@@ -259,7 +262,6 @@ import Prodbox.Lib.ChartPlatform
   , ChartReleasePlan (..)
   , buildChartDeletePlan
   , buildChartDeploymentPlan
-  , mergeChartSecretValues
   , resolveChartSecrets
   , supportedChartNames
   )
@@ -303,7 +305,6 @@ import Prodbox.Retry
   ( RetryPolicy (..)
   , retryDelayMicros
   )
-import Prodbox.K8s.InCluster qualified as InCluster
 import Prodbox.Secret.Derive qualified
 import Prodbox.Secret.EnsureNamespace qualified as EnsureNamespace
 import Prodbox.Secret.Inventory qualified as Inventory
@@ -892,19 +893,19 @@ main = mainWithSuite "prodbox-unit" $ do
       awsSecretTemplate `shouldContain` "aws.dhall"
       awsSecretTemplate `shouldNotContain` "prodbox-config.json"
 
-    it "renders retained PostgreSQL credential secrets before the Percona cluster resource" $ do
+    it "delegates Patroni credential Secret ownership to the gateway daemon (Sprint 3.13)" $ do
       repoRoot <- getCurrentDirectory
-      secretsTemplate <-
-        readFile (repoRoot </> "charts" </> "keycloak-postgres" </> "templates" </> "00-secrets.yaml")
+      let secretsTemplatePath =
+            repoRoot </> "charts" </> "keycloak-postgres" </> "templates" </> "00-secrets.yaml"
+      secretsTemplateExists <- doesFileExist secretsTemplatePath
+      secretsTemplateExists `shouldBe` False
+      bootstrapJobTemplate <-
+        readFile
+          (repoRoot </> "charts" </> "keycloak-postgres" </> "templates" </> "secret-bootstrap-job.yaml")
       postgresTemplate <-
         readFile (repoRoot </> "charts" </> "keycloak-postgres" </> "templates" </> "postgresql.yaml")
-
-      secretsTemplate `shouldContain` "kind: Secret"
-      secretsTemplate `shouldContain` ".Values.secrets.application.name"
-      secretsTemplate `shouldContain` ".Values.secrets.superuser.name"
-      secretsTemplate `shouldContain` ".Values.secrets.standby.name"
-      secretsTemplate `shouldContain` "postgres-operator.crunchydata.com/cluster"
-      secretsTemplate `shouldNotContain` "application: spilo"
+      bootstrapJobTemplate `shouldContain` "/v1/secret/ensure-namespace"
+      bootstrapJobTemplate `shouldContain` "helm.sh/hook\": pre-install,pre-upgrade"
       postgresTemplate `shouldContain` "kind: PerconaPGCluster"
       postgresTemplate `shouldContain` "apiVersion: pgv2.percona.com/v2"
 
@@ -964,8 +965,9 @@ main = mainWithSuite "prodbox-unit" $ do
       awsEksMain `shouldNotContain` "std:getenv"
       awsEksInfra `shouldContain` "\"config\", \"set\", \"--stack\", awsEksTestStackName"
       awsTestMain `shouldContain` "operatorCidr:"
-      awsTestMain `shouldContain` "publicKey:"
       awsTestMain `shouldContain` "type: string"
+      awsTestMain `shouldContain` "tls:PrivateKey"
+      awsTestMain `shouldContain` "ssh_private_key:"
       awsTestMain `shouldNotContain` "std:getenv"
       awsTestInfra `shouldContain` "\"config\", \"set\", \"--stack\", awsTestStackName"
 
@@ -2022,8 +2024,14 @@ main = mainWithSuite "prodbox-unit" $ do
                 Just (Object oidcPayload) -> do
                   KeyMap.lookup (Key.fromString "clientId") oidcPayload
                     `shouldBe` Just (String "vscode")
+                  -- Sprint 3.13 chunk 11: vscode chart reads the OIDC
+                  -- client-secret via cross-namespace Helm `lookup` of the
+                  -- daemon-applied `keycloak-oidc-clients` Secret in the
+                  -- `keycloak` namespace. `valuesForVscode` no longer emits
+                  -- `oidc.clientSecret`, so the chart values payload should
+                  -- not carry the key.
                   KeyMap.lookup (Key.fromString "clientSecret") oidcPayload
-                    `shouldBe` Just (String "vscodesecret")
+                    `shouldBe` Nothing
                   KeyMap.lookup (Key.fromString "issuer") oidcPayload
                     `shouldBe` Just (String "https://test.resolvefintech.com/auth/realms/prodbox")
                 _ -> expectationFailure "expected vscode oidc payload"
@@ -2045,51 +2053,25 @@ main = mainWithSuite "prodbox-unit" $ do
             [] -> expectationFailure "expected releases in chart deployment plan"
             _ -> expectationFailure "expected keycloak-postgres, keycloak, and vscode releases"
 
-    it "merges new Patroni secret keys into retained chart secret state" $
-      withSystemTempDirectory "prodbox-chart-secrets" $ \tempRoot -> do
+    -- Sprint 3.13 chunks 12 + 14 closed the host-side `.prodbox-state/charts`
+    -- chart-secret cache. The two prior tests in this slot exercised the
+    -- cache's read/merge + Patroni recovery path against `resolveChartSecrets`
+    -- + `mergeChartSecretValues`; both have been deleted. The invariant
+    -- they were guarding ("host-side secret state is the source of truth")
+    -- is now structurally inverted: the cluster's k8s Secrets (materialized
+    -- by the gateway daemon's `ensure-namespace` handler for data-bound
+    -- fields, and read via Helm `lookup` from chart templates) are the
+    -- source of truth. The check below pins that inversion at the
+    -- ChartPlatform surface — `resolveChartSecrets` no longer reads or
+    -- writes any host-side state.
+    it "resolveChartSecrets returns an empty map regardless of repoRoot state (chunks 12 + 14)" $
+      withSystemTempDirectory "prodbox-chart-secrets-closure" $ \tempRoot -> do
         let namespaceDir = tempRoot </> ".prodbox-state" </> "vscode"
-            secretPath = namespaceDir </> ".secrets.json"
         createDirectoryIfMissing True namespaceDir
-        writeFile
-          secretPath
-          "{\"keycloak_admin_password\":\"adminpass\",\"keycloak_vscode_client_secret\":\"vscodesecret\"}\n"
         result <- resolveChartSecrets tempRoot "vscode"
         case result of
           Left err -> expectationFailure err
-          Right secrets -> do
-            Map.lookup "keycloak_admin_password" secrets `shouldBe` Just "adminpass"
-            Map.lookup "keycloak_vscode_client_secret" secrets `shouldBe` Just "vscodesecret"
-            case Map.lookup "patroni_app_password" secrets of
-              Just value -> value `shouldSatisfy` (not . null)
-              Nothing -> expectationFailure "expected patroni_app_password"
-            case Map.lookup "patroni_standby_password" secrets of
-              Just value -> value `shouldSatisfy` (not . null)
-              Nothing -> expectationFailure "expected patroni_standby_password"
-            case Map.lookup "patroni_superuser_password" secrets of
-              Just value -> value `shouldSatisfy` (not . null)
-              Nothing -> expectationFailure "expected patroni_superuser_password"
-
-    it "prefers live Patroni secret recovery over stale retained Patroni values" $ do
-      let existingSecrets =
-            Map.fromList
-              [ ("keycloak_admin_password", "adminpass")
-              , ("keycloak_vscode_client_secret", "vscodesecret")
-              , ("patroni_app_password", "stale-app")
-              , ("patroni_standby_password", "stale-standby")
-              , ("patroni_superuser_password", "stale-superuser")
-              ]
-          recoveredSecrets =
-            Map.fromList
-              [ ("patroni_app_password", "live-app")
-              , ("patroni_standby_password", "live-standby")
-              , ("patroni_superuser_password", "live-superuser")
-              ]
-          mergedSecrets = mergeChartSecretValues existingSecrets recoveredSecrets
-      Map.lookup "keycloak_admin_password" mergedSecrets `shouldBe` Just "adminpass"
-      Map.lookup "keycloak_vscode_client_secret" mergedSecrets `shouldBe` Just "vscodesecret"
-      Map.lookup "patroni_app_password" mergedSecrets `shouldBe` Just "live-app"
-      Map.lookup "patroni_standby_password" mergedSecrets `shouldBe` Just "live-standby"
-      Map.lookup "patroni_superuser_password" mergedSecrets `shouldBe` Just "live-superuser"
+          Right secrets -> Map.null secrets `shouldBe` True
 
   describe "native gateway helpers" $ do
     it "renders deterministic gateway status output" $ do
@@ -2795,24 +2777,46 @@ main = mainWithSuite "prodbox-unit" $ do
 
     it "every keycloak-postgres entry writes its derived value into the `password` key" $ do
       let entries = Inventory.derivedSecretInventoryFor "keycloak" "keycloak-postgres"
-      map Inventory.derivedSecretEntryKey entries `shouldBe` replicate 3 "password"
+      map (map fst . Inventory.derivedSecretEntryDerivedFields) entries
+        `shouldBe` replicate 3 ["password"]
 
     it "keycloak-postgres context strings match the doctrine §3 patroni shape" $ do
       let entries = Inventory.derivedSecretInventoryFor "keycloak" "keycloak-postgres"
-      map Inventory.derivedSecretEntryContext entries
-        `shouldBe` [ "patroni:keycloak:keycloak-postgres:app"
-                   , "patroni:keycloak:keycloak-postgres:superuser"
-                   , "patroni:keycloak:keycloak-postgres:standby"
+      map (map snd . Inventory.derivedSecretEntryDerivedFields) entries
+        `shouldBe` [ ["patroni:keycloak:keycloak-postgres:app"]
+                   , ["patroni:keycloak:keycloak-postgres:superuser"]
+                   , ["patroni:keycloak:keycloak-postgres:standby"]
                    ]
 
-    it "returns the keycloak admin entry for the keycloak release in the keycloak namespace" $ do
-      let entries = Inventory.derivedSecretInventoryFor "keycloak" "keycloak"
-      entries
-        `shouldBe` [ Inventory.DerivedSecretEntry
-                      { Inventory.derivedSecretEntryName = "keycloak-runtime"
-                      , Inventory.derivedSecretEntryKey = "KEYCLOAK_ADMIN_PASSWORD"
-                      , Inventory.derivedSecretEntryContext = "keycloak:keycloak:admin"
-                      }
+    it
+      "returns the keycloak admin + OAuth-clients entries for the keycloak release in the keycloak namespace"
+      $ do
+        let entries = Inventory.derivedSecretInventoryFor "keycloak" "keycloak"
+        entries
+          `shouldBe` [ Inventory.DerivedSecretEntry
+                         { Inventory.derivedSecretEntryName = "keycloak-runtime"
+                         , Inventory.derivedSecretEntryDerivedFields =
+                             [("KEYCLOAK_ADMIN_PASSWORD", "keycloak:keycloak:admin")]
+                         , Inventory.derivedSecretEntryStaticFields = []
+                         }
+                     , Inventory.DerivedSecretEntry
+                         { Inventory.derivedSecretEntryName = "keycloak-oidc-clients"
+                         , Inventory.derivedSecretEntryDerivedFields =
+                             [ ("VSCODE_CLIENT_SECRET", "oidc:keycloak:vscode")
+                             , ("API_CLIENT_SECRET", "oidc:keycloak:prodbox-api")
+                             , ("WEBSOCKET_CLIENT_SECRET", "oidc:keycloak:prodbox-websocket")
+                             , ("DEMO_USER_PASSWORD", "keycloak:keycloak:demo-user")
+                             ]
+                         , Inventory.derivedSecretEntryStaticFields = []
+                         }
+                     ]
+
+    it "every keycloak-postgres entry carries its Crunchy-required `username` static field" $ do
+      let entries = Inventory.derivedSecretInventoryFor "keycloak" "keycloak-postgres"
+      map Inventory.derivedSecretEntryStaticFields entries
+        `shouldBe` [ [("username", "keycloak")]
+                   , [("username", "postgres")]
+                   , [("username", "primaryuser")]
                    ]
 
     it "returns an empty list for releases without static derived secrets (vscode / api / websocket)" $ do
@@ -2920,22 +2924,30 @@ main = mainWithSuite "prodbox-unit" $ do
                    ]
 
     it "puts each manifest with apiVersion v1 + kind Secret + Opaque type" $ do
+      -- Sprint 3.13 chunk 11 extended the (keycloak, keycloak) inventory from
+      -- one entry to two (keycloak-runtime + keycloak-oidc-clients); the
+      -- handler now PUTs two manifests in order.
       (ops, calls) <- recordingOps
       let entries = Inventory.derivedSecretInventoryFor "keycloak" "keycloak"
       _ <- EnsureNamespace.applyDerivedSecrets ops testSeed "keycloak" entries
       recordedCalls <- reverse <$> readIORef calls
-      case recordedCalls of
-        [(ns, name, manifest)] -> do
-          ns `shouldBe` "keycloak"
-          name `shouldBe` "keycloak-runtime"
-          let rendered = BL8.unpack (encode manifest)
-          rendered `shouldContain` "\"apiVersion\":\"v1\""
-          rendered `shouldContain` "\"kind\":\"Secret\""
-          rendered `shouldContain` "\"type\":\"Opaque\""
-          rendered `shouldContain` "\"KEYCLOAK_ADMIN_PASSWORD\":"
-        _ -> expectationFailure ("expected one call, got " ++ show (length recordedCalls))
+      length recordedCalls `shouldBe` 2
+      let names = [name | (_, name, _) <- recordedCalls]
+      names `shouldBe` ["keycloak-runtime", "keycloak-oidc-clients"]
+      let firstManifest = case recordedCalls of
+            ((_, _, m) : _) -> m
+            _ -> error "unreachable"
+          rendered = BL8.unpack (encode firstManifest)
+      rendered `shouldContain` "\"apiVersion\":\"v1\""
+      rendered `shouldContain` "\"kind\":\"Secret\""
+      rendered `shouldContain` "\"type\":\"Opaque\""
+      rendered `shouldContain` "\"KEYCLOAK_ADMIN_PASSWORD\":"
 
-    it "returns SHA-256 of the derived value (never the plaintext) for each entry" $ do
+    it "returns SHA-256 of the derived inventory (never the plaintext) for each entry" $ do
+      -- Sprint 3.13 chunk 11: per-Secret SHA-256 hashes the concatenation of
+      -- `key=value` pairs in declared order so a Secret with multiple derived
+      -- fields gets one stable digest (rather than only the value of the
+      -- single derived key, which was the pre-chunk-11 contract).
       (ops, _) <- recordingOps
       let entries = Inventory.derivedSecretInventoryFor "keycloak" "keycloak-postgres"
       result <- EnsureNamespace.applyDerivedSecrets ops testSeed "keycloak" entries
@@ -2946,7 +2958,7 @@ main = mainWithSuite "prodbox-unit" $ do
                 EnsureNamespace.deriveSecretValueText
                   testSeed
                   "patroni:keycloak:keycloak-postgres:app"
-              expectedAppSha = EnsureNamespace.deriveSecretSha256Hex derivedAppValue
+              expectedAppSha = EnsureNamespace.deriveSecretSha256Hex ("password=" <> derivedAppValue)
           case inventory of
             (firstEntry : _) ->
               Prodbox.Secret.Wire.secretSha256EntrySha256 firstEntry `shouldBe` expectedAppSha
@@ -2987,6 +2999,18 @@ main = mainWithSuite "prodbox-unit" $ do
       result `shouldBe` Right []
       recordedCalls <- readIORef calls
       recordedCalls `shouldBe` []
+
+    it "writes static fields (e.g. Crunchy `username`) alongside the derived value" $ do
+      (ops, calls) <- recordingOps
+      let entries = Inventory.derivedSecretInventoryFor "keycloak" "keycloak-postgres"
+      _ <- EnsureNamespace.applyDerivedSecrets ops testSeed "keycloak" entries
+      recordedCalls <- reverse <$> readIORef calls
+      case recordedCalls of
+        ((_, _, manifest) : _) -> do
+          let rendered = BL8.unpack (encode manifest)
+          rendered `shouldContain` "\"username\":\"keycloak\""
+          rendered `shouldContain` "\"password\":"
+        _ -> expectationFailure "expected at least one PUT call"
 
   describe "Sprint 2.19 gateway secret-endpoint wire types" $ do
     it "DeriveResponse JSON round-trips through encode/decode" $ do
@@ -4533,6 +4557,62 @@ main = mainWithSuite "prodbox-unit" $ do
       rendered `shouldContain` "| `aws-ses` | LongLived |"
       rendered `shouldContain` "| `operational-iam-user` | Operational |"
       rendered `shouldContain` "| `operational-aws-config` | Operational |"
+
+  describe "Sprint 4.18 forbidDotProdboxState lint" $ do
+    -- This block verifies the lint's regression-resistance contract end-to-end
+    -- by writing a synthetic Haskell module containing a `.prodbox-state/`
+    -- string literal into a temp directory shaped like the repo and running
+    -- the lint against it. The lint must (a) fire on the offending literal
+    -- and (b) skip its own self-reference path. After Sprint 3.13 chunk 16
+    -- the scan was broadened from `.secrets.json` to the whole
+    -- `.prodbox-state/` prefix because every cache under it is closed.
+    it "fires on `.prodbox-state/` string literal in src/-shaped Haskell" $
+      withSystemTempDirectory "prodbox-forbid-dot-state" $ \tempRoot -> do
+        let srcDir = tempRoot </> "src" </> "Prodbox" </> "Probe"
+        createDirectoryIfMissing True srcDir
+        writeFile
+          (srcDir </> "Hit.hs")
+          "module Prodbox.Probe.Hit where\n\
+          \\n\
+          \cachePath :: String\n\
+          \cachePath = \".prodbox-state/charts/keycloak/whatever.json\"\n"
+        violations <- Prodbox.CheckCode.checkForbidDotProdboxState tempRoot
+        length violations `shouldBe` 1
+        head violations `shouldContain` "src/Prodbox/Probe/Hit.hs"
+        head violations `shouldContain` ".prodbox-state/"
+
+    it "fires on the broader `.prodbox-state/` prefix (any subpath, not just .secrets.json)" $
+      withSystemTempDirectory "prodbox-forbid-dot-state-broader" $ \tempRoot -> do
+        let srcDir = tempRoot </> "src" </> "Prodbox" </> "Probe"
+        createDirectoryIfMissing True srcDir
+        writeFile
+          (srcDir </> "EventKeys.hs")
+          "module Prodbox.Probe.EventKeys where\n\
+          \\n\
+          \eventKeysCache :: String\n\
+          \eventKeysCache = \".prodbox-state/gateway/.gateway-event-keys.json\"\n"
+        violations <- Prodbox.CheckCode.checkForbidDotProdboxState tempRoot
+        length violations `shouldBe` 1
+        head violations `shouldContain` ".prodbox-state/"
+
+    it "leaves comments / docstrings that mention `.prodbox-state/` alone" $
+      withSystemTempDirectory "prodbox-forbid-dot-state-comments" $ \tempRoot -> do
+        let srcDir = tempRoot </> "src" </> "Prodbox" </> "Probe"
+        createDirectoryIfMissing True srcDir
+        writeFile
+          (srcDir </> "OnlyComment.hs")
+          "module Prodbox.Probe.OnlyComment where\n\
+          \\n\
+          \-- A doc comment mentioning .prodbox-state/whatever for historical context only.\n\
+          \harmless :: String\n\
+          \harmless = \"nothing to see\"\n"
+        violations <- Prodbox.CheckCode.checkForbidDotProdboxState tempRoot
+        violations `shouldBe` []
+
+    it "returns no violations on the current repo (regression-resistance baseline)" $ do
+      repoRoot <- getCurrentDirectory
+      violations <- Prodbox.CheckCode.checkForbidDotProdboxState repoRoot
+      violations `shouldBe` []
 
   describe "Sprint 4.22 create-call-site coverage lint" $ do
     let registeredNames =

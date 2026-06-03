@@ -2,19 +2,35 @@
 Sprint 3.13 sixth chunk: per-target-namespace Role + RoleBinding pairs
 granting the gateway daemon's ServiceAccount the
 `secrets:get,create,patch` verbs in every namespace whose chart pre-install
-Job calls `POST /v1/secret/ensure-namespace`. The Role lives in the
-target namespace (so the binding is scoped narrowly) but binds the
+Job calls `POST /v1/secret/ensure-namespace` (or whose daemon-side
+startup self-bootstrap writes a Secret). The Role lives in the target
+namespace (so the binding is scoped narrowly) but binds the
 ServiceAccount in the gateway namespace.
 
-Currently only the `keycloak` namespace has any derived-secret inventory
-entries (the three Patroni roles + the Keycloak admin password — see
-`Prodbox.Secret.Inventory.derivedSecretInventoryFor`). When the gateway
-per-node event-key inventory lands and gateway/vscode/api/websocket gain
-derived entries, add their namespaces to the `targetNamespaces` list in
-`values.yaml` and this template emits one Role + RoleBinding pair per
-entry.
+Sprint 3.13 chunk 16 added `gateway` itself to the list (the daemon
+self-bootstraps the gateway-event-keys Secret in its own namespace at
+startup). Sprint 3.13 chunks 8 + 11 cover the `keycloak` namespace
+(Patroni passwords + admin password + OAuth client secrets +
+demo-user password).
+
+Sprint 3.13 chunk 20: this template also emits a Namespace resource
+per target namespace that isn't the chart's own (which Helm
+auto-creates via `--namespace`). The gateway chart deploys BEFORE the
+keycloak chart, so without this emit the keycloak namespace doesn't
+exist yet when the RoleBinding tries to apply against it. A Namespace
+apply is idempotent so subsequent reconciles + the keycloak chart's
+own namespace handling are unaffected.
 */ -}}
 {{- range $.Values.rbac.targetNamespaces }}
+{{- if ne . $.Values.global.namespace }}
+---
+apiVersion: v1
+kind: Namespace
+metadata:
+  name: {{ . }}
+  labels:
+    prodbox.io/created-by: gateway-chart-rbac-bootstrap
+{{- end }}
 ---
 apiVersion: rbac.authorization.k8s.io/v1
 kind: Role
@@ -26,7 +42,14 @@ metadata:
 rules:
   - apiGroups: [""]
     resources: ["secrets"]
-    verbs: ["get", "create", "patch"]
+    # Sprint 3.13 chunk 22: `update` is required because
+    # 'Prodbox.K8s.InCluster.inClusterK8sSecretOps' uses HTTP PUT (which
+    # maps to the k8s `update` verb) for both create-and-replace flows
+    # — the API server picks insert-vs-update server-side. Without
+    # `update` the daemon's selfBootstrapOwnSecrets path and every
+    # subsequent ensure-namespace re-apply hit 403 Forbidden on
+    # already-existing Secrets.
+    verbs: ["get", "create", "update", "patch"]
 ---
 apiVersion: rbac.authorization.k8s.io/v1
 kind: RoleBinding

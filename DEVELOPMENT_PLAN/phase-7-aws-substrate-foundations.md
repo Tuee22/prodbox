@@ -2261,14 +2261,17 @@ nothing-to-do exit, `--destroy-pulumi-residue` with `aws-ses` live) that the uni
 covers via pure helpers and structural assertions but cannot exercise end-to-end without
 real AWS credentials in the operator's hands.
 
-## Sprint 7.8: Operational-Credential Lifecycle via the Managed-Resource Registry 🔄
+## Sprint 7.8: Operational-Credential Lifecycle via the Managed-Resource Registry ✅
 
-**Status**: Active — operational-coverage core landed on the code-owned surface
-(2026-05-28). The two `Operational` resources are now registered and reconciled
-through `reconcileAbsent` inside `prodbox aws teardown`, with `Unreachable` failing
-closed. Not Done: no live `prodbox test all --substrate aws` roll-up has run, and the
-broader `PerRun` ∪ `Operational` merge of the teardown path is deferred to a tracked
-follow-on (the per-run Pulumi residue gating in `applyAwsTeardown` is unchanged).
+**Status**: Done. Live closure 2026-06-01 via `prodbox test all` retry 21:
+the postflight reported `USER_DELETED=true`, `DELETED_ACCESS_KEYS=1`, and
+`POST_RUN_OPERATIONAL_CONFIG_CLEARED=true` — proving the two `Operational`
+resources are reconciled through `reconcileAbsent` end-to-end (operational
+`prodbox` IAM user deleted, `aws.*` config block cleared). Operational-coverage
+core landed on the code-owned surface 2026-05-28. The broader `PerRun` ∪
+`Operational` merge of the teardown path remains tracked as a separate
+follow-on (the per-run Pulumi residue gating in `applyAwsTeardown` is unchanged
+by design).
 **Unblocked by**: Sprint 4.20, Sprint 4.21 (the registry + `reconcileAbsent` now exist
 and are reused here)
 **Implementation**: `src/Prodbox/Aws.hs`, `src/Prodbox/Lifecycle/ResourceRegistry.hs`

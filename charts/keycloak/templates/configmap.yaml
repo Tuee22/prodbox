@@ -1,3 +1,28 @@
+{{- /*
+Sprint 3.13 chunk 11: OAuth client secrets + demo-user password are owned
+by the gateway daemon (via the `keycloak-oidc-clients` Secret it materializes
+through the chart's pre-install Job). The chart reads them via Helm `lookup`
+at template-render time and substitutes into the realm-import JSON below.
+
+On first install before the pre-install Job runs, the lookup returns empty
+and the chart falls back to the `.Values.oidc.*` placeholder values. Once
+the Job lands and writes the Secret, subsequent helm upgrades pick up the
+master-seed-derived values and the realm-import has the correct client
+secrets. The realm-import only runs on first Keycloak Pod start; operators
+must restart the Keycloak Pod after the first run-with-daemon-Secret so
+the realm reflects the derived values.
+*/}}
+{{- $oidcSecret := lookup "v1" "Secret" .Release.Namespace "keycloak-oidc-clients" }}
+{{- $vscodeClientSecret := .Values.oidc.vscodeClientSecret }}
+{{- $apiClientSecret := .Values.oidc.apiClientSecret }}
+{{- $websocketClientSecret := .Values.oidc.websocketClientSecret }}
+{{- $demoUserPassword := .Values.oidc.demoUserPassword }}
+{{- if $oidcSecret }}
+{{- $vscodeClientSecret = index $oidcSecret.data "VSCODE_CLIENT_SECRET" | b64dec }}
+{{- $apiClientSecret = index $oidcSecret.data "API_CLIENT_SECRET" | b64dec }}
+{{- $websocketClientSecret = index $oidcSecret.data "WEBSOCKET_CLIENT_SECRET" | b64dec }}
+{{- $demoUserPassword = index $oidcSecret.data "DEMO_USER_PASSWORD" | b64dec }}
+{{- end }}
 apiVersion: v1
 kind: ConfigMap
 metadata:
@@ -14,23 +39,34 @@ data:
       "registrationAllowed": false,
       "verifyEmail": {{ .Values.keycloak.requireEmailVerification }},
       "loginWithEmailAllowed": true,
-      {{- if .Values.smtp.enabled }}
+      {{- /*
+        Sprint 3.13 chunk 10: SMTP credentials are owned by `prodbox pulumi
+        aws-ses-resources`, which kubectl-applies the `keycloak-smtp` Secret
+        with the seven `KC_SMTP_*` fields after deriving the SES SMTP
+        password. The chart reads them via Helm `lookup` at template-render
+        time. On first install before SES is provisioned the lookup returns
+        empty and the realm-import omits `smtpServer`; Keycloak comes up
+        without SMTP and operator-invite emails are deferred until
+        `prodbox charts deploy keycloak` re-runs after SES provisioning.
+      */ -}}
+      {{- $smtpSecret := lookup "v1" "Secret" .Release.Namespace "keycloak-smtp" }}
+      {{- if $smtpSecret }}
       "smtpServer": {
-        "host": {{ .Values.smtp.host | quote }},
-        "port": {{ .Values.smtp.port | quote }},
-        "from": {{ .Values.smtp.from | quote }},
-        "fromDisplayName": {{ .Values.smtp.fromDisplayName | quote }},
-        "replyTo": {{ .Values.smtp.replyTo | quote }},
-        "starttls": {{ .Values.smtp.starttls | quote }},
-        "auth": {{ .Values.smtp.auth | quote }},
-        "user": {{ .Values.smtp.user | quote }},
-        "password": {{ .Values.smtp.password | quote }}
+        "host": {{ index $smtpSecret.data "KC_SMTP_HOST" | b64dec | quote }},
+        "port": {{ index $smtpSecret.data "KC_SMTP_PORT" | b64dec | quote }},
+        "from": {{ index $smtpSecret.data "KC_SMTP_FROM" | b64dec | quote }},
+        "fromDisplayName": {{ index $smtpSecret.data "KC_SMTP_FROM_DISPLAY_NAME" | b64dec | quote }},
+        "replyTo": {{ index $smtpSecret.data "KC_SMTP_REPLY_TO" | b64dec | quote }},
+        "starttls": "true",
+        "auth": "true",
+        "user": {{ index $smtpSecret.data "KC_SMTP_USER" | b64dec | quote }},
+        "password": {{ index $smtpSecret.data "KC_SMTP_PASSWORD" | b64dec | quote }}
       },
       {{- end }}
       "clients": [
         {
           "clientId": {{ .Values.oidc.vscodeClientId | quote }},
-          "secret": {{ .Values.oidc.vscodeClientSecret | quote }},
+          "secret": {{ $vscodeClientSecret | quote }},
           "enabled": true,
           "publicClient": false,
           "protocol": "openid-connect",
@@ -46,7 +82,7 @@ data:
         },
         {
           "clientId": {{ .Values.oidc.apiClientId | quote }},
-          "secret": {{ .Values.oidc.apiClientSecret | quote }},
+          "secret": {{ $apiClientSecret | quote }},
           "enabled": true,
           "publicClient": false,
           "protocol": "openid-connect",
@@ -81,7 +117,7 @@ data:
         },
         {
           "clientId": {{ .Values.oidc.websocketClientId | quote }},
-          "secret": {{ .Values.oidc.websocketClientSecret | quote }},
+          "secret": {{ $websocketClientSecret | quote }},
           "enabled": true,
           "publicClient": false,
           "protocol": "openid-connect",
@@ -133,7 +169,7 @@ data:
           "credentials": [
             {
               "type": "password",
-              "value": {{ .Values.oidc.demoUserPassword | quote }},
+              "value": {{ $demoUserPassword | quote }},
               "temporary": false
             }
           ]

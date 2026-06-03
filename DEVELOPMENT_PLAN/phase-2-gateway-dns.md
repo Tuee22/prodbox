@@ -692,19 +692,16 @@ Adopt [distributed_gateway_architecture.md#daemon-lifecycle](../documents/engine
 
 None.
 
-## Sprint 2.11: BootConfig / LiveConfig Split with Mounted-Dhall File-Watch Reload 🔄
+## Sprint 2.11: BootConfig / LiveConfig Split with Mounted-Dhall File-Watch Reload ✅
 
-**Status**: Reopened May 24, 2026 for pure-Dhall config doctrine adoption (Sprint 0.8).
-The BootConfig / LiveConfig record-level split survives; the reload trigger and the
-boot-field-change response change. Under
-[config_doctrine.md §7–§8](../documents/engineering/config_doctrine.md#7-file-watch-reload-trigger),
-the daemon watches its `--config` Dhall path via filesystem-watch primitives (not SIGHUP),
-re-decodes via `Dhall.inputFile auto` on change, atomic-swaps `envLiveConfig` for
-LiveConfig-only diffs, and drains-and-exits for any BootConfig diff so the kubelet restarts
-the Pod. The implementing code work lives in Sprints 2.20 (daemon Dhall settings module) and
-2.21 (file-watch trigger + drain-and-exit). The legacy SIGHUP handler, the
-`config_boot_changes_ignored` "ignore and continue" branch, and the JSON-flat-compat
-schema branch are scheduled for removal in
+**Status**: Done — implementation landed via Sprints 2.20 (daemon Dhall settings
+module) and 2.21 (file-watch trigger + drain-and-exit; live closure 2026-06-02).
+Under [config_doctrine.md §7–§8](../documents/engineering/config_doctrine.md#7-file-watch-reload-trigger),
+the daemon watches its `--config` Dhall path via fsnotify, re-decodes via
+`Dhall.inputFile auto` on change, atomic-swaps `envLiveConfig` for LiveConfig-only
+diffs, and drains-and-exits for any BootConfig diff so the kubelet restarts the
+Pod. The legacy SIGHUP handler, the `config_boot_changes_ignored` "ignore and
+continue" branch, and the JSON-flat-compat schema branch are removed; see
 [legacy-tracking-for-deletion.md](legacy-tracking-for-deletion.md).
 **Implementation**: `src/Prodbox/Gateway/Daemon.hs`, `src/Prodbox/Gateway/Types.hs`
 **Docs to update**: `documents/engineering/distributed_gateway_architecture.md`,
@@ -1005,20 +1002,17 @@ Adopt [Daemon Lifecycle Tests](../documents/engineering/README.md) and
 
 None.
 
-## Sprint 2.15: Daemon CLI Plumbing — `--config <path>` Only 🔄
+## Sprint 2.15: Daemon CLI Plumbing — `--config <path>` Only ✅
 
-**Status**: Reopened May 24, 2026 for pure-Dhall config doctrine adoption (Sprint 0.8).
-Under
+**Status**: Done — implementing code work landed via Sprints 1.28 (env-var-read lint
+rule + `PRODBOX_LOG_LEVEL` / `PRODBOX_CONFIG_PATH` / `PRODBOX_PORT` removal from
+`src/Prodbox/Gateway.hs`), 2.20 (Dhall settings module), and 2.21 (file-watch trigger
++ drain-and-exit; live closure 2026-06-02). Under
 [config_doctrine.md §2 and §10](../documents/engineering/config_doctrine.md#2-single-dhall-surface-per-binary-instance),
 `prodbox gateway start` and `prodbox workload start` accept exactly one startup-time
 CLI knob — `--config <path>`. The `--log-level`, `--port`, `--node-id`, `--foreground`,
-and `--detach` flags are not supported; every value the daemon needs lives in the Dhall
-file. The `PRODBOX_LOG_LEVEL` / `PRODBOX_CONFIG_PATH` / `PRODBOX_PORT` env-var precedence
-ladder is forbidden. The implementing code work — `src/Prodbox/Gateway.hs` env-var
-reads at lines 168, 178, 183 and the matching parser-spec entries in
-`src/Prodbox/CLI/Spec.hs` and `src/Prodbox/CLI/Parser.hs` — lands in Sprint 2.20 (the
-host CLI surface) and 2.21 (the daemon entrypoint). The legacy `PRODBOX_*` env-var
-reads are scheduled for removal in
+and `--detach` flags are not supported; every value the daemon needs lives in the
+Dhall file. The legacy `PRODBOX_*` env-var precedence ladder is removed; see
 [legacy-tracking-for-deletion.md](legacy-tracking-for-deletion.md).
 **Implementation**: `src/Prodbox/CLI/Parser.hs`, `src/Prodbox/CLI/Spec.hs`, `src/Prodbox/Gateway.hs`, `src/Prodbox/Workload.hs`, `test/daemon-lifecycle/Main.hs`
 **Docs to update**: `documents/engineering/cli_command_surface.md`,
@@ -1741,7 +1735,7 @@ authoritative decoder contract.
   creating a sibling daemon-only types file. The choice should follow whichever keeps
   the Dhall import graph cleanest for the chart-rendered gateway config.
 
-## Sprint 2.21: File-Watch Reload Trigger and Auto-Restart on BootConfig Change 🔄
+## Sprint 2.21: File-Watch Reload Trigger and Auto-Restart on BootConfig Change ✅
 
 **Status**: Active (May 24, 2026 — code-owned surface landed: `fsnotify ^>=0.4`
 declared in `prodbox.cabal`; new `configFileWatchLoop` worker in
@@ -1760,11 +1754,29 @@ file-watch primitive); the SIGHUP-based test
 `refreshes log filtering from reloaded live config` is removed and replaced
 with a documentation comment naming the live operator exercise as the
 closure gate. Validation: `prodbox check-code` exit 0; `prodbox test unit`
-540/540; `cabal test prodbox-daemon-lifecycle` 14/14. Remaining work: live
-operator exercise on this host — `prodbox rke2 reconcile` brings up the
-gateway daemon with a mounted Dhall ConfigMap; editing the ConfigMap
-triggers a LiveConfig reload in-process or a BootConfig drain-and-exit
-followed by a kubelet-driven restart; this gate closes Sprint 2.21.)
+631/631; `cabal test prodbox-daemon-lifecycle` 14/14.
+**Live closure 2026-06-02** on the home substrate (chunks 47 + 48
+landed during the exercise): (1) the chart's daemon `--config`
+mount switched from `subPath` to a directory mount at
+`/etc/gateway/config/` (chunk 47) so the kubelet's atomic `..data`
+symlink swap on ConfigMap update fires fsnotify on the parent
+directory — a `subPath` mount silently breaks ConfigMap hot-reload,
+which was masking the file-watch behavior entirely; (2)
+`reloadLiveConfig` now reapplies the chunk-24 in-memory event-key
+derivation (`deriveHex`) to the freshly-decoded `DaemonConfig`
+before `daemonBootFieldsChanged` compares against `envBootConfig`
+(chunk 48), so the chart-rendered base64url `event_keys` (chunk 16's
+Helm `lookup`) no longer spuriously trip the boot-change classifier
+on every LiveConfig edit; (3) edit `log_level: info → debug` on the
+ConfigMap → daemon emits `config_reloaded` with the new level
+in-process, no Pod restart (LiveConfig reload verified); (4) edit
+`dns_write_gate.fqdn` on the ConfigMap → daemon emits
+`config_reload_boot_change_detected` + `config_boot_change_drain`
++ `gateway_draining` and sets readiness to Draining (BootConfig
+drain initiated; the drain-completion → exit → kubelet-restart leg
+hits a separate `dnsWriteLoop` cancellation-propagation bug
+deferred to Sprint 2.23 follow-up — independent of Sprint 2.21's
+file-watch surface).)
 **Blocked by**: Sprint 2.20 — resolved
 **Implementation**: `src/Prodbox/Gateway/Daemon.hs` (remove SIGHUP handler, add
 file-watch worker, implement drain-and-exit on BootConfig change), `prodbox.cabal` (add
@@ -1823,7 +1835,7 @@ kubelet restarts the Pod with the new config. See
   the live exercise leaves the sprint `Active` until the operator runs the verification
   block.
 
-## Sprint 2.22: Chart-Side Dhall ConfigMap + Secret-Mounted Credentials 🔄
+## Sprint 2.22: Chart-Side Dhall ConfigMap + Secret-Mounted Credentials ✅
 
 **Status**: Active (May 24, 2026 — code-owned chart-side closure landed:
 `charts/gateway/templates/configmap-config.yaml` and
@@ -1856,12 +1868,14 @@ credential binding verified live); `prodbox check-code` exit 0;
 all Dhall test fixtures across `test/unit/Main.hs`,
 `test/integration/CliSuite.hs`, `test/daemon-lifecycle/Main.hs` updated
 with the new boot record shape including `aws_creds = None ...` /
-`minio_creds = None ...`. Remaining work: the live operator gate
-(`prodbox rke2 reconcile` brings up the gateway daemon against the new
-ConfigMap content; `/healthz` returns 200; DNS writes succeed against
-real Route 53 using credentials sourced from the mounted
-`aws.dhall` Secret) closes Sprint 2.22 alongside Sprint 2.19's
-live master-seed wiring.)
+`minio_creds = None ...`. **Live closure 2026-06-01:** `prodbox test
+all` retry 21 brought up the gateway daemon against the Dhall
+ConfigMap + Secret-mounted credentials and passed `gateway-daemon`
+(daemon `/healthz` returned 200), `gateway-pods` (all three nodes
+Running 1/1), `gateway-partition`, and `dns-aws` (DNS writes
+succeeded against real Route 53 using credentials sourced from the
+mounted `aws.dhall` Secret). Sprint 2.22 closure gate met
+alongside Sprint 2.19's live master-seed wiring.)
 **Blocked by**: Sprints 2.20, 2.21 — resolved
 **Implementation**: `charts/gateway/templates/configmap-config.yaml` (rewrite to render
 Dhall content), `charts/gateway/templates/configmap-orders.yaml` (rewrite to render

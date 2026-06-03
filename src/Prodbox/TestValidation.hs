@@ -99,7 +99,6 @@ import Prodbox.Infra.AwsEksTestStack qualified as AwsEks
 import Prodbox.Infra.AwsTestStack qualified as AwsTest
 import Prodbox.Infra.StackOutputs (StackName (..))
 import Prodbox.Keycloak.Email qualified
-import Prodbox.Lib.ChartPlatform (resolveChartSecrets)
 import Prodbox.Lifecycle.LiveResidue
   ( awsEksTestStackName
   , awsTestStackName
@@ -853,76 +852,76 @@ completeDirectOidcLogin :: FilePath -> ValidatedSettings -> IO (Either String Va
 completeDirectOidcLogin repoRoot settings =
   withTemporaryFilePath repoRoot "prodbox-oidc-cookies" $ \cookieJarPath ->
     withTemporaryFilePath repoRoot "prodbox-oidc-login-body" $ \bodyPath -> do
-      secretsResult <- resolveChartSecrets repoRoot "vscode"
-      case secretsResult of
+      -- Sprint 3.13 chunks 11 + 12: demo-user password lives in the
+      -- daemon-applied @keycloak-oidc-clients@ Secret, not in the gone
+      -- @.prodbox-state@ cache.
+      demoPasswordResult <- readKeycloakOidcClientField repoRoot "DEMO_USER_PASSWORD"
+      case demoPasswordResult of
         Left err -> pure (Left err)
-        Right secrets ->
-          case Map.lookup "keycloak_demo_user_password" secrets of
-            Nothing -> pure (Left "missing keycloak_demo_user_password for direct OIDC validation")
-            Just demoPassword -> do
-              loginPageResult <-
-                runTextCommand
-                  Subprocess
-                    { subprocessPath = "curl"
-                    , subprocessArguments =
-                        [ "-sS"
-                        , "-L"
-                        , "-c"
-                        , cookieJarPath
-                        , "-b"
-                        , cookieJarPath
-                        , "-o"
-                        , bodyPath
-                        , publicRouteUrl settings PublicRouteWebsocket ++ "/oidc/start"
-                        ]
-                    , subprocessEnvironment = Nothing
-                    , subprocessWorkingDirectory = Just repoRoot
-                    }
-              case loginPageResult of
+        Right demoPassword -> do
+          loginPageResult <-
+            runTextCommand
+              Subprocess
+                { subprocessPath = "curl"
+                , subprocessArguments =
+                    [ "-sS"
+                    , "-L"
+                    , "-c"
+                    , cookieJarPath
+                    , "-b"
+                    , cookieJarPath
+                    , "-o"
+                    , bodyPath
+                    , publicRouteUrl settings PublicRouteWebsocket ++ "/oidc/start"
+                    ]
+                , subprocessEnvironment = Nothing
+                , subprocessWorkingDirectory = Just repoRoot
+                }
+          case loginPageResult of
+            Left err -> pure (Left err)
+            Right _ -> do
+              loginBody <- readFile bodyPath
+              case extractLoginFormAction loginBody of
                 Left err -> pure (Left err)
-                Right _ -> do
-                  loginBody <- readFile bodyPath
-                  case extractLoginFormAction loginBody of
+                Right formActionUrl -> do
+                  loginResult <-
+                    runTextCommand
+                      Subprocess
+                        { subprocessPath = "curl"
+                        , subprocessArguments =
+                            [ "-sS"
+                            , "-L"
+                            , "-c"
+                            , cookieJarPath
+                            , "-b"
+                            , cookieJarPath
+                            , "--data-urlencode"
+                            , "username=demo-user"
+                            , "--data-urlencode"
+                            , "password=" ++ demoPassword
+                            , formActionUrl
+                            ]
+                        , subprocessEnvironment = Nothing
+                        , subprocessWorkingDirectory = Just repoRoot
+                        }
+                  case loginResult of
                     Left err -> pure (Left err)
-                    Right formActionUrl -> do
-                      loginResult <-
-                        runTextCommand
-                          Subprocess
-                            { subprocessPath = "curl"
-                            , subprocessArguments =
-                                [ "-sS"
-                                , "-L"
-                                , "-c"
-                                , cookieJarPath
-                                , "-b"
-                                , cookieJarPath
-                                , "--data-urlencode"
-                                , "username=demo-user"
-                                , "--data-urlencode"
-                                , "password=" ++ demoPassword
-                                , formActionUrl
-                                ]
-                            , subprocessEnvironment = Nothing
-                            , subprocessWorkingDirectory = Just repoRoot
-                            }
-                      case loginResult of
-                        Left err -> pure (Left err)
-                        Right _ ->
-                          runJsonCommand
-                            Subprocess
-                              { subprocessPath = "curl"
-                              , subprocessArguments =
-                                  [ "-sS"
-                                  , "-L"
-                                  , "-c"
-                                  , cookieJarPath
-                                  , "-b"
-                                  , cookieJarPath
-                                  , publicRouteUrl settings PublicRouteWebsocket ++ "/oidc/session"
-                                  ]
-                              , subprocessEnvironment = Nothing
-                              , subprocessWorkingDirectory = Just repoRoot
-                              }
+                    Right _ ->
+                      runJsonCommand
+                        Subprocess
+                          { subprocessPath = "curl"
+                          , subprocessArguments =
+                              [ "-sS"
+                              , "-L"
+                              , "-c"
+                              , cookieJarPath
+                              , "-b"
+                              , cookieJarPath
+                              , publicRouteUrl settings PublicRouteWebsocket ++ "/oidc/session"
+                              ]
+                          , subprocessEnvironment = Nothing
+                          , subprocessWorkingDirectory = Just repoRoot
+                          }
 
 openManagedWebsocketConnection
   :: String -> String -> String -> IO (Either String ManagedWebsocketConnection)
@@ -1207,12 +1206,19 @@ waitForAccessToken repoRoot settings secretKey clientId = go tokenFetchAttempts
 
 fetchAccessToken :: FilePath -> ValidatedSettings -> String -> String -> IO (Either String String)
 fetchAccessToken repoRoot settings secretKey clientId = do
-  secretsResult <- resolveChartSecrets repoRoot "vscode"
-  case secretsResult of
+  -- Sprint 3.13 chunks 11 + 12: the OIDC client secrets + demo-user
+  -- password live in the daemon-applied @keycloak-oidc-clients@ Secret
+  -- in the @keycloak@ namespace. The @secretKey@ argument is the
+  -- legacy chart-secret key name; we map it to the corresponding
+  -- daemon-applied field name and read it via @kubectl@.
+  clientSecretResult <- readKeycloakOidcClientField repoRoot (oidcClientSecretFieldFor secretKey)
+  case clientSecretResult of
     Left err -> pure (Left err)
-    Right secrets ->
-      case (Map.lookup secretKey secrets, Map.lookup "keycloak_demo_user_password" secrets) of
-        (Just clientSecret, Just demoPassword) -> do
+    Right clientSecret -> do
+      demoPasswordResult <- readKeycloakOidcClientField repoRoot "DEMO_USER_PASSWORD"
+      case demoPasswordResult of
+        Left err -> pure (Left err)
+        Right demoPassword -> do
           payloadResult <-
             runJsonCommand
               Subprocess
@@ -1240,14 +1246,68 @@ fetchAccessToken repoRoot settings secretKey clientId = do
           case payloadResult of
             Left err -> pure (Left err)
             Right payload -> pure (accessTokenFromPayload payload)
-        _ ->
-          pure
-            ( Left
-                ( "missing required Keycloak secrets for external validation: "
-                    ++ secretKey
-                    ++ " and keycloak_demo_user_password"
+
+-- | Map a legacy host-side chart-secret key name to the corresponding
+-- field in the daemon-applied @keycloak-oidc-clients@ Secret. Sprint 3.13
+-- chunk 11's Inventory uses @VSCODE_CLIENT_SECRET@ / @API_CLIENT_SECRET@ /
+-- @WEBSOCKET_CLIENT_SECRET@ / @DEMO_USER_PASSWORD@; legacy callers still
+-- pass the chart-secret keys (@keycloak_*_client_secret@,
+-- @keycloak_demo_user_password@).
+oidcClientSecretFieldFor :: String -> String
+oidcClientSecretFieldFor "keycloak_vscode_client_secret" = "VSCODE_CLIENT_SECRET"
+oidcClientSecretFieldFor "keycloak_api_client_secret" = "API_CLIENT_SECRET"
+oidcClientSecretFieldFor "keycloak_websocket_client_secret" = "WEBSOCKET_CLIENT_SECRET"
+oidcClientSecretFieldFor "keycloak_demo_user_password" = "DEMO_USER_PASSWORD"
+oidcClientSecretFieldFor other = other
+
+-- | Read a field from the daemon-applied @keycloak-oidc-clients@ Secret
+-- in the @vscode@ namespace via @kubectl get secret@. Sprint 3.13
+-- chunks 11 + 28 + 32: the host-side @.prodbox-state/<ns>/.secrets.json@
+-- cache is gone, and validations read OIDC client secrets directly from
+-- the cluster Secret the gateway daemon materializes via its
+-- @ensure-namespace@ handler. The lookup namespace is @vscode@ because
+-- @prodbox test all@ deploys the @vscode@ root chart, which transitively
+-- pulls keycloak into the @vscode@ namespace (chunk 28's namespace-aware
+-- Inventory mirrors this on the daemon side).
+readKeycloakOidcClientField :: FilePath -> String -> IO (Either String String)
+readKeycloakOidcClientField repoRoot fieldName = do
+  textResult <-
+    runTextCommand
+      Subprocess
+        { subprocessPath = "kubectl"
+        , subprocessArguments =
+            [ "get"
+            , "secret"
+            , "keycloak-oidc-clients"
+            , "--namespace"
+            , "vscode"
+            , "-o"
+            , "go-template={{index .data \"" ++ fieldName ++ "\" | base64decode}}"
+            ]
+        , subprocessEnvironment = Nothing
+        , subprocessWorkingDirectory = Just repoRoot
+        }
+  case textResult of
+    Left err -> pure (Left err)
+    Right raw ->
+      let trimmed =
+            reverse
+              . dropWhile (`elem` (" \t\r\n" :: String))
+              . reverse
+              . dropWhile (`elem` (" \t\r\n" :: String))
+              $ raw
+       in if null trimmed
+            then
+              pure
+                ( Left
+                    ( "kubectl returned an empty `"
+                        ++ fieldName
+                        ++ "` from keycloak-oidc-clients;"
+                        ++ " the daemon's ensure-namespace handler may not have"
+                        ++ " run yet (deploy keycloak chart to trigger)."
+                    )
                 )
-            )
+            else pure (Right trimmed)
 
 accessTokenFromPayload :: Value -> Either String String
 accessTokenFromPayload payload =

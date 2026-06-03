@@ -136,12 +136,12 @@ import Prodbox.Http.Client
   , httpGetText
   , renderHttpError
   )
+import Prodbox.K8s.InCluster qualified as InCluster
 import Prodbox.Result (Result (..))
 import Prodbox.Retry
   ( RetryPolicy (..)
   , retryDelayMicros
   )
-import Prodbox.K8s.InCluster qualified as InCluster
 import Prodbox.Secret.Derive qualified
 import Prodbox.Secret.EnsureNamespace qualified as EnsureNamespace
 import Prodbox.Secret.Inventory qualified as Inventory
@@ -333,10 +333,35 @@ runGatewayDaemon maybeConfigPath restPortOverride logLevel config = withSocketsD
                   -- gracefully: the daemon stays up and @/v1/secret/derive@ returns
                   -- a structured 503 until the seed becomes available.
                   initialMasterSeed <- acquireInitialMasterSeed logLevel config
+                  -- Sprint 3.13 chunk 16: self-bootstrap the gateway's own
+                  -- @gateway-event-keys@ Secret. Solves the chicken-and-egg
+                  -- where the other charts' pre-install Jobs POST to the
+                  -- gateway daemon, but the gateway daemon doesn't exist
+                  -- yet to satisfy its own pre-install Job. Failures degrade
+                  -- gracefully (running outside k8s, RBAC missing, or
+                  -- already-applied): the chart's Helm @lookup@ falls back
+                  -- to placeholder values and the next reconcile retries.
+                  selfBootstrapOwnSecrets logLevel initialMasterSeed
+                  -- Sprint 3.13 chunk 24: derive the gateway's own event
+                  -- keys in-memory from the master seed and inject them
+                  -- into the BootConfig so the runtime peer/heartbeat
+                  -- loops always have valid signing material. The chart's
+                  -- @configmap-config.yaml@ renders BEFORE the daemon
+                  -- writes its self-bootstrap Secret, so the ConfigMap's
+                  -- @event_keys@ list is empty on first install; without
+                  -- this in-memory injection the daemon would log
+                  -- @event_key_missing@ forever and never sign a real
+                  -- peer event. The derivation matches what the daemon's
+                  -- own ensure-namespace handler writes for the
+                  -- @gateway-event-keys@ Secret, so the in-memory and
+                  -- on-cluster values agree by construction.
+                  let derivedEventKeys = deriveOwnGatewayEventKeys initialMasterSeed
+                      configWithDerivedEventKeys =
+                        config {daemonEventKeys = derivedEventKeys}
                   let env =
                         DaemonEnv
                           { envConfigPath = maybeConfigPath
-                          , envBootConfig = config
+                          , envBootConfig = configWithDerivedEventKeys
                           , envOrders = orders
                           , envState = stateVar
                           , envReadiness = readinessVar
@@ -590,11 +615,26 @@ reloadLiveConfig env =
             else pure (Left "config_reload_failed")
         Right newConfig -> do
           currentLiveConfig <- readTVarIO (envLiveConfig env)
-          let bootChanged = daemonBootFieldsChanged (envBootConfig env) newConfig
+          -- Sprint 2.21 chunk: reapply the in-memory event-key derivation
+          -- to the freshly-decoded config before comparing against
+          -- 'envBootConfig'. Chunk 16's chart-side @lookup@ stores
+          -- base64url values in the Secret; chunk 24's in-memory
+          -- derivation uses hex (peer signature verification depends on
+          -- the hex encoding). Without this overlay, every reload
+          -- compares hex-vs-base64url, so 'daemonBootFieldsChanged'
+          -- always returns True and routine 'log_level' edits spuriously
+          -- drain the Pod.
+          let derivedKeys = deriveOwnGatewayEventKeys (envMasterSeed env)
+              newConfigWithDerivedKeys =
+                newConfig {daemonEventKeys = derivedKeys}
+              bootChanged =
+                daemonBootFieldsChanged
+                  (envBootConfig env)
+                  newConfigWithDerivedKeys
               liveConfig =
                 liveConfigFromDaemonConfig
                   (liveLogLevel currentLiveConfig)
-                  newConfig
+                  newConfigWithDerivedKeys
           case validateDaemonTimingAgainstOrders newConfig (envOrders env) of
             Left _ -> pure (Left "config_schema_mismatch")
             Right () ->
@@ -952,6 +992,107 @@ acquireInitialMasterSeed logLevel config =
  where
   defaultMinioLocalPort :: Int
   defaultMinioLocalPort = 9000
+
+-- | Sprint 3.13 chunk 16: at daemon startup, after the master seed has
+-- been acquired, self-materialize the gateway's own derived-secret
+-- inventory ('(\"gateway\", \"gateway\")' in 'Inventory.derivedSecretInventoryFor').
+-- This is the daemon's response to the bootstrap chicken-and-egg: the
+-- other charts (keycloak, keycloak-postgres) materialize their secrets
+-- via a pre-install Job that POSTs to /this/ daemon, but the gateway
+-- chart can't depend on itself the same way. Self-bootstrap puts the
+-- daemon Pod in charge of writing its own k8s Secret as soon as it has
+-- the master seed.
+--
+-- Failure modes are all benign-and-logged:
+--
+--   * No master seed yet — skipped silently; subsequent reload may
+--     succeed once MinIO becomes reachable.
+--   * Outside k8s (no projected ServiceAccount) — skipped with a
+--     diagnostic; the standalone smoke-run path has no @gateway-event-keys@
+--     Secret to write to.
+--   * CA store load fails — skipped with diagnostic.
+--   * RBAC missing or PUT fails — skipped with diagnostic; the operator
+--     can repair RBAC and the next Pod restart retries.
+--
+-- The chart's @configmap-config.yaml@ reads the materialized Secret via
+-- Helm @lookup@, so once the daemon writes the Secret a subsequent
+-- @helm upgrade@ picks up the keys. The peer-event flow itself
+-- tolerates an empty key list (it just won't accept signed events from
+-- peers until both sides hold matching keys).
+-- | Sprint 3.13 chunk 24: derive the gateway's own per-node event keys
+-- in memory from the master seed. The list shape matches what the
+-- daemon's ensure-namespace handler writes into the
+-- @gateway-event-keys@ Secret for external observers, but here we want
+-- the values directly in 'daemonEventKeys' so the runtime peer /
+-- heartbeat loops have signing material from the very first event.
+--
+-- Returns @[]@ when the seed isn't bound yet; the runtime degrades to
+-- the @event_key_missing@ log path until a future config reload re-runs
+-- this with a valid seed.
+--
+-- Canonical node ids match 'Prodbox.Secret.Inventory.derivedSecretInventoryFor'
+-- for @(gateway, gateway)@: @node-a@, @node-b@, @node-c@. The derivation
+-- context follows 'Prodbox.Secret.Derive.gatewayEventKeyContext':
+-- @gateway:gateway:<node-id>:event-key@. The hex encoding matches the
+-- existing daemon @daemonEventKeys@ representation (`deriveHex` rather
+-- than `deriveBase64Url`) so peer signature verification stays
+-- compatible.
+deriveOwnGatewayEventKeys
+  :: Maybe Prodbox.Secret.Derive.MasterSeed -> [(String, String)]
+deriveOwnGatewayEventKeys maybeSeed =
+  case maybeSeed of
+    Nothing -> []
+    Just seed ->
+      [ ( nodeId
+        , Text.unpack
+            ( Prodbox.Secret.Derive.deriveHex
+                seed
+                (Prodbox.Secret.Derive.gatewayEventKeyContext "gateway" (Text.pack nodeId))
+            )
+        )
+      | nodeId <- ["node-a", "node-b", "node-c"]
+      ]
+
+selfBootstrapOwnSecrets :: String -> Maybe Prodbox.Secret.Derive.MasterSeed -> IO ()
+selfBootstrapOwnSecrets logLevel maybeSeed =
+  case maybeSeed of
+    Nothing -> pure ()
+    Just seed -> do
+      credsResult <- InCluster.loadInClusterCredentials
+      case credsResult of
+        Left credsErr ->
+          logAtLevel
+            logLevel
+            Info
+            "self_bootstrap_skipped"
+            [field "reason" credsErr]
+        Right creds -> do
+          opsResult <- InCluster.inClusterK8sSecretOps creds
+          case opsResult of
+            Left opsErr ->
+              logAtLevel
+                logLevel
+                Warn
+                "self_bootstrap_skipped"
+                [field "reason" opsErr]
+            Right ops -> do
+              let inventory = Inventory.derivedSecretInventoryFor "gateway" "gateway"
+              applyResult <- EnsureNamespace.applyDerivedSecrets ops seed "gateway" inventory
+              case applyResult of
+                Left applyErr ->
+                  logAtLevel
+                    logLevel
+                    Warn
+                    "self_bootstrap_failed"
+                    [field "reason" applyErr]
+                Right _ ->
+                  logAtLevel
+                    logLevel
+                    Info
+                    "self_bootstrap_ready"
+                    [ field "secret" ("gateway-event-keys" :: String)
+                    , field "fields" (length inventory)
+                    ]
 
 -- | Sprint 2.19: serve @/v1/secret/derive?context=<ctx>@. Returns 200 with
 -- the URL-safe base64 derived value when the seed is bound; 400 when the

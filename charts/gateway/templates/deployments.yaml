@@ -43,7 +43,7 @@ spec:
           imagePullPolicy: {{ $.Values.image.pullPolicy }}
           args:
             - --config
-            - /etc/gateway/config.dhall
+            - /etc/gateway/config/config.dhall
           ports:
             - name: rest
               containerPort: {{ $.Values.ports.rest }}
@@ -69,8 +69,13 @@ spec:
               subPath: orders.dhall
               readOnly: true
             - name: config
-              mountPath: /etc/gateway/config.dhall
-              subPath: config.dhall
+              # Sprint 2.21: directory-style mount (no subPath) so the
+              # kubelet's atomic `..data` symlink swap on ConfigMap
+              # update fires fsnotify on /etc/gateway/config/. With a
+              # subPath mount the kubelet does NOT propagate ConfigMap
+              # updates to the bound file, which silently breaks the
+              # daemon's file-watch reload loop.
+              mountPath: /etc/gateway/config
               readOnly: true
             - name: aws-secrets
               mountPath: /etc/gateway/secrets/aws.dhall

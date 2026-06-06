@@ -1,19 +1,32 @@
+{-# LANGUAGE OverloadedStrings #-}
+
 module Prodbox.TestRunner
   ( runTests
   , clearOperationalCredsAfterPostflight
+  , PublicEdgeCertificateFailure (..)
+  , awsSubstrateBootstrapCommandArgs
+  , awsPostflightDestroyCommandArgs
+  , publicEdgeCertificateReissueStatusPatch
+  , supportedRuntimeBootstrapNeedsReconcile
+  , supportedRuntimeBootstrapNeedsKeycloakSmtpSync
   )
 where
 
 import Control.Concurrent (threadDelay)
 import Control.Exception
   ( SomeException
+  , bracket_
   , displayException
   , throwIO
   , try
   )
 import Control.Monad (foldM, unless)
+import Data.Aeson (encode, object, (.=))
+import Data.ByteString.Lazy.Char8 qualified as BL8
 import Data.List (dropWhileEnd, isInfixOf, isPrefixOf)
 import Data.Text qualified as Text
+import Data.Time.Clock (getCurrentTime)
+import Data.Time.Format (defaultTimeLocale, formatTime)
 import Prodbox.Aws
   ( runAwsIamHarnessSetup
   , runAwsIamHarnessTeardown
@@ -46,11 +59,30 @@ import Prodbox.EffectInterpreter
   , runEffectDAG
   )
 import Prodbox.Error (fatalError)
+import Prodbox.Infra.AwsEksSubzoneStack
+  ( AwsEksSubzoneStackSnapshot (..)
+  , parseAwsEksSubzoneStackFromOutputs
+  )
+import Prodbox.Infra.AwsEksTestStack (withEksKubeconfig)
+import Prodbox.Infra.AwsSesStack qualified as AwsSesStack
+import Prodbox.Infra.StackOutputs (StackName (..))
+import Prodbox.Lifecycle.LiveResidue
+  ( awsEksSubzoneStackName
+  , fetchPerRunStackOutputs
+  )
 import Prodbox.Prerequisite
   ( prerequisiteRegistry
   )
+import Prodbox.PublicEdge (awsSubstrateHostedZoneIdEnvVar)
 import Prodbox.Result
   ( Result (..)
+  )
+import Prodbox.Settings
+  ( ConfigFile (..)
+  , Credentials (..)
+  , ValidatedSettings (..)
+  , aws
+  , validateAndLoadSettings
   )
 import Prodbox.Subprocess
   ( ProcessOutput (..)
@@ -62,7 +94,7 @@ import Prodbox.Subprocess
 import Prodbox.Substrate (Substrate (..), substrateId)
 import Prodbox.TestPlan
   ( NativeSuitePlan (..)
-  , NativeValidation
+  , NativeValidation (..)
   , TestExecutionMode (..)
   , TestExecutionPlan (..)
   , testExecutionPlan
@@ -70,6 +102,9 @@ import Prodbox.TestPlan
 import Prodbox.TestValidation (runNativeValidation)
 import System.Environment
   ( getEnvironment
+  , lookupEnv
+  , setEnv
+  , unsetEnv
   )
 import System.Exit
   ( ExitCode (..)
@@ -114,6 +149,7 @@ publicEdgeCertificateRepairAttempts = 3
 data PublicEdgeCertificateFailure = PublicEdgeCertificateFailure
   { publicEdgeFailedIssuanceAttempts :: Int
   , publicEdgeNextPrivateKeySecretName :: Maybe String
+  , publicEdgeCertificateObservedGeneration :: Maybe Int
   }
   deriving (Eq, Show)
 
@@ -311,18 +347,39 @@ clearOperationalCredsAfterPostflight destroyExit =
 awsPostflightDestroyActions
   :: FilePath -> [(String, String)] -> NativeSuitePlan -> [IO ExitCode]
 awsPostflightDestroyActions repoRoot environment suitePlan =
-  if nativeRequiresSupportedRuntimePostflight suitePlan
+  case awsPostflightDestroyCommandArgs suitePlan of
+    [] -> []
+    commands ->
+      emitLineAction
+        ( "Auto-destroying per-run AWS Pulumi stacks (aws-eks, "
+            ++ "aws-eks-subzone, aws-test). aws-ses is retained per the "
+            ++ "long-lived cross-substrate shared-infrastructure class."
+        )
+        : map (runNativeCliCommandForExitCode repoRoot environment) commands
+
+awsPostflightDestroyCommandArgs :: NativeSuitePlan -> [[String]]
+awsPostflightDestroyCommandArgs suitePlan =
+  if nativeMayProvisionPerRunAwsStacks suitePlan
     then
-      [ emitLineAction
-          ( "Auto-destroying per-run AWS Pulumi stacks (aws-eks, "
-              ++ "aws-eks-subzone, aws-test). aws-ses is retained per the "
-              ++ "long-lived cross-substrate shared-infrastructure class."
-          )
-      , runNativeCliCommandForExitCode repoRoot environment ["pulumi", "aws-subzone-destroy", "--yes"]
-      , runNativeCliCommandForExitCode repoRoot environment ["pulumi", "eks-destroy", "--yes"]
-      , runNativeCliCommandForExitCode repoRoot environment ["pulumi", "test-destroy", "--yes"]
+      [ ["pulumi", "aws-subzone-destroy", "--yes"]
+      , ["pulumi", "eks-destroy", "--yes"]
+      , ["pulumi", "test-destroy", "--yes"]
       ]
     else []
+
+nativeMayProvisionPerRunAwsStacks :: NativeSuitePlan -> Bool
+nativeMayProvisionPerRunAwsStacks suitePlan =
+  nativeRequiresSupportedRuntimePostflight suitePlan
+    || (nativeSubstrate suitePlan == SubstrateAws && nativeRequiresSupportedRuntimeBootstrap suitePlan)
+    || any validationMayProvisionPerRunAwsStacks (nativeValidations suitePlan)
+
+validationMayProvisionPerRunAwsStacks :: NativeValidation -> Bool
+validationMayProvisionPerRunAwsStacks validation =
+  case validation of
+    ValidationAwsEks -> True
+    ValidationPulumi -> True
+    ValidationHaRke2Aws -> True
+    _ -> False
 
 runNativeSuiteBody :: FilePath -> [(String, String)] -> [String] -> NativeSuitePlan -> IO ExitCode
 runNativeSuiteBody repoRoot environment haskellSuites suitePlan = do
@@ -382,47 +439,73 @@ supportedRuntimeBootstrapActions
 supportedRuntimeBootstrapActions repoRoot environment suitePlan =
   if nativeRequiresSupportedRuntimeBootstrap suitePlan
     then
-      [ emitLineAction phaseOnePointSixMessage
-      , runNativeCliCommandForExitCode repoRoot environment ["rke2", "reconcile"]
-      , runNativeCliCommandForExitCode repoRoot environment ["charts", "delete", "websocket", "--yes"]
-      , runNativeCliCommandForExitCode repoRoot environment ["charts", "delete", "api", "--yes"]
-      , runNativeCliCommandForExitCode repoRoot environment ["charts", "delete", "vscode", "--yes"]
-      , runNativeCliCommandForExitCode repoRoot environment ["charts", "delete", "gateway", "--yes"]
-      , -- Sprint 2.19 closure (2026-05-29): re-ensure the gateway-minio
-        -- Secret + the matching MinIO user AFTER `charts delete gateway`
-        -- (helm uninstall + atomic rollback can delete the Secret despite
-        -- the `helm.sh/resource-policy: keep` annotation) and BEFORE
-        -- `charts deploy gateway` so the Deployment's volume mount can
-        -- bind to a present Secret and the daemon authenticates as a
-        -- user that exists in MinIO. Idempotent: reuses existing Secret
-        -- when present, regenerates when absent; the Job's
-        -- `mc admin user add` / `mc admin policy attach` are no-ops on
-        -- re-run.
-        ensureGatewayMinioBootstrap repoRoot
-      , runNativeCliCommandForExitCode repoRoot environment ["charts", "deploy", "gateway"]
-      , runNativeCliCommandForExitCode repoRoot environment ["charts", "deploy", "vscode"]
-      , runNativeCliCommandForExitCode repoRoot environment ["charts", "deploy", "api"]
-      , runNativeCliCommandForExitCode repoRoot environment ["charts", "deploy", "websocket"]
-      , runWaitForPublicEdgeReady
-          repoRoot
-          environment
-          SubstrateHomeLocal
-          publicEdgeReadyAttempts
-          publicEdgeReadyDelayMicroseconds
-      ]
-        ++ awsSubstrateBootstrapActions repoRoot environment suitePlan
+      let reconcileActions =
+            [ runNativeCliCommandForExitCode repoRoot environment ["rke2", "reconcile"]
+            | supportedRuntimeBootstrapNeedsReconcile suitePlan
+            ]
+       in [emitLineAction phaseOnePointSixMessage]
+            ++ reconcileActions
+            ++ [ runNativeCliCommandForExitCode repoRoot environment ["charts", "delete", "websocket", "--yes"]
+               , runNativeCliCommandForExitCode repoRoot environment ["charts", "delete", "api", "--yes"]
+               , runNativeCliCommandForExitCode repoRoot environment ["charts", "delete", "vscode", "--yes"]
+               , runNativeCliCommandForExitCode repoRoot environment ["charts", "delete", "gateway", "--yes"]
+               , -- Sprint 2.19 closure (2026-05-29): re-ensure the gateway-minio
+                 -- Secret + the matching MinIO user AFTER `charts delete gateway`
+                 -- (helm uninstall + atomic rollback can delete the Secret despite
+                 -- the `helm.sh/resource-policy: keep` annotation) and BEFORE
+                 -- `charts deploy gateway` so the Deployment's volume mount can
+                 -- bind to a present Secret and the daemon authenticates as a
+                 -- user that exists in MinIO. Idempotent: reuses existing Secret
+                 -- when present, regenerates when absent; the Job's
+                 -- `mc admin user add` / `mc admin policy attach` are no-ops on
+                 -- re-run.
+                 ensureGatewayMinioBootstrap repoRoot
+               , syncKeycloakSmtpForSupportedRuntime repoRoot suitePlan
+               , runNativeCliCommandForExitCode repoRoot environment ["charts", "deploy", "gateway"]
+               , runNativeCliCommandForExitCode repoRoot environment ["charts", "deploy", "vscode"]
+               , runNativeCliCommandForExitCode repoRoot environment ["charts", "deploy", "api"]
+               , runNativeCliCommandForExitCode repoRoot environment ["charts", "deploy", "websocket"]
+               , runWaitForPublicEdgeReady
+                   repoRoot
+                   environment
+                   SubstrateHomeLocal
+                   publicEdgeReadyAttempts
+                   publicEdgeReadyDelayMicroseconds
+               ]
+            ++ awsSubstrateBootstrapActions repoRoot environment suitePlan
     else []
 
+supportedRuntimeBootstrapNeedsReconcile :: NativeSuitePlan -> Bool
+supportedRuntimeBootstrapNeedsReconcile suitePlan =
+  nativeRequiresSupportedRuntimeBootstrap suitePlan
+    && not (nativeRequiresIntegrationRunbook suitePlan)
+
+supportedRuntimeBootstrapNeedsKeycloakSmtpSync :: NativeSuitePlan -> Bool
+supportedRuntimeBootstrapNeedsKeycloakSmtpSync suitePlan =
+  nativeRequiresSupportedRuntimeBootstrap suitePlan
+    && ValidationKeycloakInvite `elem` nativeValidations suitePlan
+
+syncKeycloakSmtpForSupportedRuntime :: FilePath -> NativeSuitePlan -> IO ExitCode
+syncKeycloakSmtpForSupportedRuntime repoRoot suitePlan =
+  if supportedRuntimeBootstrapNeedsKeycloakSmtpSync suitePlan
+    then
+      syncKeycloakSmtpForCurrentKubeContext
+        repoRoot
+        "Supported runtime bootstrap: syncing Keycloak SMTP Secret from aws-ses"
+    else pure ExitSuccess
+
 -- | AWS-substrate-specific bootstrap: provision the per-run AWS Pulumi
--- stacks so substrate-aware validations (@charts-vscode --substrate aws@,
--- @public-edge --substrate aws@, the cert-manager DNS01 ACME
--- @ClusterIssuer@) can reach EKS, read the Route 53 subzone's hosted-zone
--- ID, and talk to the validation EC2 nodes. The substrate-platform install
--- in 'Prodbox.Lib.AwsSubstratePlatform.ensureAwsSubstratePlatformRuntime'
--- documents both as preconditions; the test harness owns the provisioning
--- per [CLAUDE.md "AWS Substrate Provisioning Ownership"](../../CLAUDE.md).
--- Idempotent: every @prodbox pulumi <stack>-resources@ entrypoint uses
--- Pulumi's standard @up@ semantics, so repeated calls converge.
+-- stacks and deploy the AWS chart set so substrate-aware validations
+-- (@charts-vscode --substrate aws@, @public-edge --substrate aws@, the
+-- cert-manager DNS01 ACME @ClusterIssuer@) can reach EKS, read the Route
+-- 53 subzone's hosted-zone ID, and talk to the validation EC2 nodes. The
+-- substrate-platform install in
+-- 'Prodbox.Lib.AwsSubstratePlatform.ensureAwsSubstratePlatformRuntime'
+-- documents the Pulumi stacks as preconditions; the test harness owns the
+-- provisioning per [CLAUDE.md "AWS Substrate Provisioning
+-- Ownership"](../../CLAUDE.md). Idempotent: every @prodbox pulumi
+-- <stack>-resources@ entrypoint uses Pulumi's standard @up@ semantics, and
+-- every chart deploy uses Helm's upgrade/install path.
 --
 -- The canonical validation order (@canonicalNativeValidations@ in
 -- 'Prodbox.TestPlan') puts @charts-vscode@ first and @aws-eks@ /
@@ -437,19 +520,130 @@ awsSubstrateBootstrapActions
 awsSubstrateBootstrapActions repoRoot environment suitePlan =
   case nativeSubstrate suitePlan of
     SubstrateHomeLocal -> []
+    SubstrateAws -> [runAwsSubstrateBootstrap repoRoot environment suitePlan]
+
+runAwsSubstrateBootstrap :: FilePath -> [(String, String)] -> NativeSuitePlan -> IO ExitCode
+runAwsSubstrateBootstrap repoRoot environment suitePlan =
+  case awsSubstrateBootstrapCommandArgs suitePlan of
+    [] -> pure ExitSuccess
+    subzoneCommand : remainingCommands -> do
+      subzoneExit <- runNativeCliCommandForExitCode repoRoot environment subzoneCommand
+      case subzoneExit of
+        failure@(ExitFailure _) -> pure failure
+        ExitSuccess -> do
+          hostedZoneResult <- loadAwsSubstrateHostedZoneId repoRoot
+          case hostedZoneResult of
+            Left err -> failWith err
+            Right hostedZoneId -> do
+              setEnv awsSubstrateHostedZoneIdEnvVar hostedZoneId
+              let environmentWithHostedZone =
+                    upsertEnv awsSubstrateHostedZoneIdEnvVar hostedZoneId environment
+              runAwsSubstrateBootstrapAfterSubzone
+                repoRoot
+                environmentWithHostedZone
+                remainingCommands
+
+runAwsSubstrateBootstrapAfterSubzone
+  :: FilePath -> [(String, String)] -> [[String]] -> IO ExitCode
+runAwsSubstrateBootstrapAfterSubzone repoRoot environmentWithHostedZone commands =
+  let (stackCommands, chartCommands) = break isAwsSubstrateChartDeployCommand commands
+   in do
+        stackExit <-
+          runSequentially
+            ( map
+                (runNativeCliCommandForExitCode repoRoot environmentWithHostedZone)
+                stackCommands
+            )
+        case stackExit of
+          failure@(ExitFailure _) -> pure failure
+          ExitSuccess -> do
+            smtpSyncExit <-
+              if null chartCommands
+                then pure ExitSuccess
+                else syncKeycloakSmtpForAwsSubstrate repoRoot
+            case smtpSyncExit of
+              failure@(ExitFailure _) -> pure failure
+              ExitSuccess ->
+                runSequentially
+                  ( map
+                      (runNativeCliCommandForExitCode repoRoot environmentWithHostedZone)
+                      chartCommands
+                  )
+
+isAwsSubstrateChartDeployCommand :: [String] -> Bool
+isAwsSubstrateChartDeployCommand command =
+  case command of
+    ["charts", "deploy", _chartName, "--substrate", "aws"] -> True
+    _ -> False
+
+syncKeycloakSmtpForAwsSubstrate :: FilePath -> IO ExitCode
+syncKeycloakSmtpForAwsSubstrate repoRoot = do
+  settingsResult <- validateAndLoadSettings repoRoot
+  case settingsResult of
+    Left err -> failWith err
+    Right settings ->
+      withEksKubeconfig repoRoot $ \kubeconfigPath -> do
+        let awsCreds = aws (validatedConfig settings)
+            envOverrides =
+              [ ("KUBECONFIG", kubeconfigPath)
+              , ("AWS_ACCESS_KEY_ID", Text.unpack (access_key_id awsCreds))
+              , ("AWS_SECRET_ACCESS_KEY", Text.unpack (secret_access_key awsCreds))
+              , ("AWS_DEFAULT_REGION", Text.unpack (region awsCreds))
+              , ("AWS_REGION", Text.unpack (region awsCreds))
+              ]
+                ++ maybe [] (\tok -> [("AWS_SESSION_TOKEN", Text.unpack tok)]) (session_token awsCreds)
+        previousValues <- mapM (\(name, _) -> lookupEnv name) envOverrides
+        bracket_
+          (mapM_ (\(name, value) -> setEnv name value) envOverrides)
+          (mapM_ restoreOne (zip envOverrides previousValues))
+          ( syncKeycloakSmtpForCurrentKubeContext
+              repoRoot
+              "AWS substrate bootstrap: syncing Keycloak SMTP Secret from aws-ses"
+          )
+ where
+  restoreOne :: ((String, String), Maybe String) -> IO ()
+  restoreOne ((name, _), Nothing) = unsetEnv name
+  restoreOne ((name, _), Just value) = setEnv name value
+
+syncKeycloakSmtpForCurrentKubeContext :: FilePath -> String -> IO ExitCode
+syncKeycloakSmtpForCurrentKubeContext repoRoot message = do
+  writeOutputLine message
+  syncResult <- AwsSesStack.syncKeycloakSmtpChartSecrets repoRoot
+  case syncResult of
+    Left err -> failWith err
+    Right () -> pure ExitSuccess
+
+loadAwsSubstrateHostedZoneId :: FilePath -> IO (Either String String)
+loadAwsSubstrateHostedZoneId repoRoot = do
+  outputsResult <-
+    fetchPerRunStackOutputs repoRoot (StackName (Text.pack awsEksSubzoneStackName))
+  pure $ case outputsResult of
+    Left err ->
+      Left
+        ( "AWS-substrate bootstrap could not read aws-eks-subzone Pulumi outputs "
+            ++ "after provisioning: "
+            ++ err
+        )
+    Right outputs ->
+      case parseAwsEksSubzoneStackFromOutputs outputs of
+        Left err -> Left ("AWS-substrate bootstrap could not parse aws-eks-subzone outputs: " ++ err)
+        Right snapshot -> Right (subzoneSnapshotSubzoneId snapshot)
+
+upsertEnv :: String -> String -> [(String, String)] -> [(String, String)]
+upsertEnv key value environment = (key, value) : filter ((/= key) . fst) environment
+
+awsSubstrateBootstrapCommandArgs :: NativeSuitePlan -> [[String]]
+awsSubstrateBootstrapCommandArgs suitePlan =
+  case nativeSubstrate suitePlan of
+    SubstrateHomeLocal -> []
     SubstrateAws ->
-      [ runNativeCliCommandForExitCode
-          repoRoot
-          environment
-          ["pulumi", "aws-subzone-resources"]
-      , runNativeCliCommandForExitCode
-          repoRoot
-          environment
-          ["pulumi", "eks-resources"]
-      , runNativeCliCommandForExitCode
-          repoRoot
-          environment
-          ["pulumi", "test-resources"]
+      [ ["pulumi", "aws-subzone-resources"]
+      , ["pulumi", "eks-resources"]
+      , ["pulumi", "test-resources"]
+      , ["charts", "deploy", "gateway", "--substrate", "aws"]
+      , ["charts", "deploy", "vscode", "--substrate", "aws"]
+      , ["charts", "deploy", "api", "--substrate", "aws"]
+      , ["charts", "deploy", "websocket", "--substrate", "aws"]
       ]
 
 -- | Post-success suite restore actions: reconcile the local cluster
@@ -659,7 +853,13 @@ maybeRepairPublicEdgeCertificateIssuance repoRoot environment combinedOutput
             Left err -> pure (Left err)
             Right repairTargets ->
               if null repairTargets
-                then pure (Right False)
+                then do
+                  writeOutputLine
+                    ( "Detected failed public-edge certificate issuance ("
+                        ++ show (publicEdgeFailedIssuanceAttempts failureInfo)
+                        ++ " failed attempt(s)); no stale ACME resources remain, triggering immediate reissue."
+                    )
+                  triggerPublicEdgeCertificateReissue repoRoot environment failureInfo
                 else do
                   writeOutputLine
                     ( "Detected failed public-edge certificate issuance ("
@@ -674,19 +874,99 @@ maybeRepairPublicEdgeCertificateIssuance repoRoot environment combinedOutput
                         , subprocessEnvironment = Just environment
                         , subprocessWorkingDirectory = Just repoRoot
                         }
-                  pure $
-                    case deleteResult of
-                      Failure err ->
-                        Left ("failed to start `kubectl` while repairing public-edge certificate issuance: " ++ err)
-                      Success deleteOutput ->
-                        case processExitCode deleteOutput of
-                          ExitFailure _ ->
-                            Left
-                              ( "Failed to delete stale public-edge ACME resources: "
-                                  ++ processStderr deleteOutput
-                                  ++ processStdout deleteOutput
-                              )
-                          ExitSuccess -> Right True
+                  case deleteResult of
+                    Failure err ->
+                      pure
+                        ( Left
+                            ( "failed to start `kubectl` while repairing public-edge certificate issuance: "
+                                ++ err
+                            )
+                        )
+                    Success deleteOutput ->
+                      case processExitCode deleteOutput of
+                        ExitFailure _ ->
+                          pure
+                            ( Left
+                                ( "Failed to delete stale public-edge ACME resources: "
+                                    ++ processStderr deleteOutput
+                                    ++ processStdout deleteOutput
+                                )
+                            )
+                        ExitSuccess ->
+                          triggerPublicEdgeCertificateReissue repoRoot environment failureInfo
+
+triggerPublicEdgeCertificateReissue
+  :: FilePath
+  -> [(String, String)]
+  -> PublicEdgeCertificateFailure
+  -> IO (Either String Bool)
+triggerPublicEdgeCertificateReissue repoRoot environment failureInfo = do
+  now <- getCurrentTime
+  let timestamp = formatTime defaultTimeLocale "%Y-%m-%dT%H:%M:%SZ" now
+      statusPatch = publicEdgeCertificateReissueStatusPatch timestamp failureInfo
+  patchResult <-
+    captureSubprocessResult
+      Subprocess
+        { subprocessPath = "kubectl"
+        , subprocessArguments =
+            [ "-n"
+            , publicEdgeNamespace
+            , "patch"
+            , "certificate"
+            , publicEdgeCertificateName
+            , "--subresource=status"
+            , "--type=merge"
+            , "-p"
+            , statusPatch
+            ]
+        , subprocessEnvironment = Just environment
+        , subprocessWorkingDirectory = Just repoRoot
+        }
+  pure $
+    case patchResult of
+      Failure err ->
+        Left ("failed to start `kubectl` while triggering public-edge certificate reissue: " ++ err)
+      Success patchOutput ->
+        case processExitCode patchOutput of
+          ExitFailure _ ->
+            Left
+              ( "Failed to trigger public-edge certificate reissue: "
+                  ++ processStderr patchOutput
+                  ++ processStdout patchOutput
+              )
+          ExitSuccess -> Right True
+
+publicEdgeCertificateReissueStatusPatch :: String -> PublicEdgeCertificateFailure -> String
+publicEdgeCertificateReissueStatusPatch timestamp failureInfo =
+  BL8.unpack
+    ( encode
+        ( object
+            [ "status"
+                .= object
+                  [ "conditions"
+                      .= [ object
+                             ( baseConditionFields
+                                 ++ maybe
+                                   []
+                                   (\generation -> ["observedGeneration" .= generation])
+                                   (publicEdgeCertificateObservedGeneration failureInfo)
+                             )
+                         ]
+                  ]
+            ]
+        )
+    )
+ where
+  baseConditionFields =
+    [ "type" .= ("Issuing" :: String)
+    , "status" .= ("True" :: String)
+    , "reason" .= ("ManualTrigger" :: String)
+    , "message"
+        .= ( "Certificate renewal manually triggered by prodbox after failed public-edge issuance"
+               :: String
+           )
+    , "lastTransitionTime" .= timestamp
+    ]
 
 loadPublicEdgeCertificateFailure
   :: FilePath
@@ -705,7 +985,7 @@ loadPublicEdgeCertificateFailure repoRoot environment = do
             , publicEdgeCertificateName
             , "--ignore-not-found=true"
             , "-o"
-            , "jsonpath={.status.failedIssuanceAttempts}{\"|\"}{.status.nextPrivateKeySecretName}"
+            , "jsonpath={.status.failedIssuanceAttempts}{\"|\"}{.status.nextPrivateKeySecretName}{\"|\"}{.metadata.generation}"
             ]
         , subprocessEnvironment = Just environment
         , subprocessWorkingDirectory = Just repoRoot
@@ -766,15 +1046,21 @@ loadPublicEdgeRepairTargets repoRoot environment failureInfo = do
 
 parsePublicEdgeCertificateFailure :: String -> Maybe PublicEdgeCertificateFailure
 parsePublicEdgeCertificateFailure stdoutText =
-  case break (== '|') (trimWhitespace stdoutText) of
-    ("", _) -> Nothing
-    (attemptsText, "") ->
-      parseFailure attemptsText Nothing
-    (attemptsText, _ : secretNameText) ->
-      parseFailure attemptsText (normalizeOptionalText secretNameText)
+  case splitOnChar '|' (trimWhitespace stdoutText) of
+    [] -> Nothing
+    [""] -> Nothing
+    attemptsText : secretNameText : generationText : _ ->
+      parseFailure
+        attemptsText
+        (normalizeOptionalText secretNameText)
+        (parsePositiveInt generationText)
+    attemptsText : secretNameText : _ ->
+      parseFailure attemptsText (normalizeOptionalText secretNameText) Nothing
+    attemptsText : _ ->
+      parseFailure attemptsText Nothing Nothing
  where
-  parseFailure :: String -> Maybe String -> Maybe PublicEdgeCertificateFailure
-  parseFailure attemptsText maybeSecretName =
+  parseFailure :: String -> Maybe String -> Maybe Int -> Maybe PublicEdgeCertificateFailure
+  parseFailure attemptsText maybeSecretName maybeGeneration =
     case reads attemptsText of
       [(attemptCount, "")]
         | attemptCount > 0 ->
@@ -782,7 +1068,15 @@ parsePublicEdgeCertificateFailure stdoutText =
               PublicEdgeCertificateFailure
                 { publicEdgeFailedIssuanceAttempts = attemptCount
                 , publicEdgeNextPrivateKeySecretName = maybeSecretName
+                , publicEdgeCertificateObservedGeneration = maybeGeneration
                 }
+      _ -> Nothing
+
+  parsePositiveInt :: String -> Maybe Int
+  parsePositiveInt value =
+    case reads (trimWhitespace value) of
+      [(parsed, "")]
+        | parsed > 0 -> Just parsed
       _ -> Nothing
 
 isPublicEdgeAcmeResource :: String -> Bool
@@ -794,6 +1088,14 @@ isPublicEdgeAcmeResource resourceName =
 nonEmptyLines :: String -> [String]
 nonEmptyLines =
   filter (not . null) . map trimWhitespace . lines
+
+splitOnChar :: Char -> String -> [String]
+splitOnChar separator = go []
+ where
+  go current [] = [reverse current]
+  go current (character : rest)
+    | character == separator = reverse current : go [] rest
+    | otherwise = go (character : current) rest
 
 trimWhitespace :: String -> String
 trimWhitespace = dropWhileEnd isWhitespace . dropWhile isWhitespace

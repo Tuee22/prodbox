@@ -9,11 +9,14 @@ module Prodbox.Infra.MinioBackend
   , minioSecretName
   , minioServiceName
   , withMinioPortForward
+  , withCurrentMinioPortForward
   , readMinioCredentials
   , ensureMinioBackendBucket
   , bucketObjectCount
   , pulumiBackendUrl
   , minioEndpointUrl
+  , localKubeconfigCandidates
+  , firstReadableKubeconfigCandidate
   , resolveLocalKubeconfig
   , minioAwsEnv
   , parseDeletedMinioExportHostPath
@@ -21,7 +24,11 @@ module Prodbox.Infra.MinioBackend
 where
 
 import Control.Concurrent (threadDelay)
-import Control.Exception (bracket)
+import Control.Exception
+  ( IOException
+  , bracket
+  , try
+  )
 import Data.Aeson
   ( Value (..)
   , eitherDecode
@@ -30,6 +37,7 @@ import Data.Aeson.Key qualified as Key
 import Data.Aeson.KeyMap qualified as KeyMap
 import Data.ByteString.Lazy.Char8 qualified as BL8
 import Data.List (isSuffixOf)
+import Data.Maybe (maybeToList)
 import Data.Text qualified as Text
 import Prodbox.CLI.Output (writeOutputLine)
 import Prodbox.Error (AppError)
@@ -48,7 +56,12 @@ import Prodbox.Subprocess
   , startBackgroundProcess
   , stopBackgroundProcess
   )
-import System.Directory (doesFileExist)
+import System.Directory
+  ( Permissions
+  , doesFileExist
+  , getPermissions
+  , readable
+  )
 import System.Environment (getEnvironment, lookupEnv)
 import System.Exit (ExitCode (..))
 import System.FilePath ((</>))
@@ -86,6 +99,9 @@ minioExportMountPath = "/export"
 deletedMountSuffix :: String
 deletedMountSuffix = "//deleted"
 
+localRke2KubeconfigPath :: FilePath
+localRke2KubeconfigPath = "/etc/rancher/rke2/rke2.yaml"
+
 minioEndpointUrl :: Int -> String
 minioEndpointUrl localPort = "http://127.0.0.1:" ++ show localPort
 
@@ -104,20 +120,36 @@ resolveLocalKubeconfig :: IO (Either String FilePath)
 resolveLocalKubeconfig = do
   kubeconfigEnv <- lookupEnv "KUBECONFIG"
   homeDir <- lookupEnv "HOME"
-  let candidates =
-        [ path
-        | Just path <-
-            [ kubeconfigEnv
-            , fmap (</> ".kube" </> "config") homeDir
-            , Just "/etc/rancher/rke2/rke2.yaml"
-            ]
-        ]
-  findFirst candidates
- where
-  findFirst [] = pure (Left "no kubeconfig found for the local RKE2 cluster")
-  findFirst (candidate : rest) = do
-    exists <- doesFileExist candidate
-    if exists then pure (Right candidate) else findFirst rest
+  readableCandidate <-
+    firstReadableKubeconfigCandidate (localKubeconfigCandidates homeDir kubeconfigEnv)
+  pure
+    (maybe (Left "no readable kubeconfig found for the local RKE2 cluster") Right readableCandidate)
+
+-- | Candidate order for the home-local MinIO backend. The per-run Pulumi
+-- backend is anchored in the local RKE2 cluster, so callers must not inherit
+-- an AWS-substrate @KUBECONFIG@ when they open the MinIO port-forward.
+localKubeconfigCandidates :: Maybe FilePath -> Maybe FilePath -> [FilePath]
+localKubeconfigCandidates homeDir kubeconfigEnv =
+  [localRke2KubeconfigPath]
+    ++ maybe [] (\home -> [home </> ".kube" </> "config"]) homeDir
+    ++ maybeToList kubeconfigEnv
+
+firstReadableKubeconfigCandidate :: [FilePath] -> IO (Maybe FilePath)
+firstReadableKubeconfigCandidate [] = pure Nothing
+firstReadableKubeconfigCandidate (candidate : rest) = do
+  candidateUsable <- isReadableFile candidate
+  if candidateUsable
+    then pure (Just candidate)
+    else firstReadableKubeconfigCandidate rest
+
+isReadableFile :: FilePath -> IO Bool
+isReadableFile path = do
+  exists <- doesFileExist path
+  if not exists
+    then pure False
+    else do
+      permissionResult <- try (getPermissions path) :: IO (Either IOException Permissions)
+      pure (either (const False) readable permissionResult)
 
 kubectlEnv :: IO (Either String [(String, String)])
 kubectlEnv = do
@@ -152,23 +184,43 @@ withMinioPortForward action = do
         Left err -> pure (Left err)
         Right () -> do
           let localPort = minioBackendLocalPort
-          bracket
-            ( startBackgroundProcess
-                Subprocess
-                  { subprocessPath = "kubectl"
-                  , subprocessArguments =
-                      [ "port-forward"
-                      , "-n"
-                      , minioNamespace
-                      , "svc/" ++ minioServiceName
-                      , show localPort ++ ":9000"
-                      ]
-                  , subprocessEnvironment = Just environment
-                  , subprocessWorkingDirectory = Nothing
-                  }
-            )
-            cleanupBackgroundProcess
-            (handlePortForwardResult localPort action)
+          withMinioPortForwardEnv (Just environment) localPort action
+
+-- | Port-forward the MinIO Service in the caller's active kubeconfig.
+--
+-- The Pulumi backend helpers use 'withMinioPortForward' above because
+-- backend state is anchored in the home-local RKE2 cluster even while
+-- AWS-substrate tests temporarily switch kubeconfig contexts. Chart
+-- bootstrap paths need the opposite behavior: they read
+-- @gateway-minio-creds@ from the active chart cluster and must write
+-- @master-seed@ into that same cluster's MinIO.
+withCurrentMinioPortForward :: (Int -> IO a) -> IO (Either String a)
+withCurrentMinioPortForward =
+  withMinioPortForwardEnv Nothing minioBackendLocalPort
+
+withMinioPortForwardEnv
+  :: Maybe [(String, String)]
+  -> Int
+  -> (Int -> IO a)
+  -> IO (Either String a)
+withMinioPortForwardEnv environment localPort action =
+  bracket
+    ( startBackgroundProcess
+        Subprocess
+          { subprocessPath = "kubectl"
+          , subprocessArguments =
+              [ "port-forward"
+              , "-n"
+              , minioNamespace
+              , "svc/" ++ minioServiceName
+              , show localPort ++ ":9000"
+              ]
+          , subprocessEnvironment = environment
+          , subprocessWorkingDirectory = Nothing
+          }
+    )
+    cleanupBackgroundProcess
+    (handlePortForwardResult localPort action)
 
 handlePortForwardResult
   :: Int -> (Int -> IO value) -> Either AppError BackgroundProcess -> IO (Either String value)

@@ -5,6 +5,7 @@
 module Main (main) where
 
 import Control.Exception (finally)
+import Control.Monad (forM_)
 import Data.Aeson
   ( Value (..)
   , eitherDecode
@@ -16,6 +17,7 @@ import Data.Aeson.Key qualified as Key
 import Data.Aeson.KeyMap qualified as KeyMap
 import Data.ByteString qualified as BS
 import Data.ByteString.Lazy.Char8 qualified as BL8
+import Data.Either (isRight)
 import Data.IORef
   ( IORef
   , modifyIORef'
@@ -54,7 +56,6 @@ import Prodbox.Aws
   , SessionTokenPromptShape (..)
   , buildIamPolicyDocument
   , categorizePulumiResidue
-  , checkPulumiResidueBeforeTeardown
   , harnessPostflightResiduePolicy
   , longLivedStackNames
   , operationalAwsConfigResidueFromKey
@@ -135,6 +136,7 @@ import Prodbox.CLI.Parser
 import Prodbox.CLI.Pulumi (renderPulumiPlan)
 import Prodbox.CLI.Rke2
   ( MinioImageSource (..)
+  , adminPublicEdgeManifestItems
   , cascadeOrderNarration
   , inferCascadeSubstrate
   , renderMinioChartArgs
@@ -233,6 +235,7 @@ import Prodbox.Host
   )
 import Prodbox.Http.Client qualified
 import Prodbox.Infra.AwsEksTestStack qualified as AwsEks
+import Prodbox.Infra.AwsSesStack qualified as AwsSesStack
 import Prodbox.Infra.AwsTestStack qualified as AwsTest
 import Prodbox.Infra.LongLivedPulumiBackend
   ( LongLivedBackendError (..)
@@ -243,15 +246,19 @@ import Prodbox.Infra.LongLivedPulumiBackend
   , renderDeletePayload
   )
 import Prodbox.Infra.MinioBackend
-  ( parseDeletedMinioExportHostPath
+  ( firstReadableKubeconfigCandidate
+  , localKubeconfigCandidates
+  , parseDeletedMinioExportHostPath
   )
 import Prodbox.Infra.StackOutputs qualified as StackOutputs
 import Prodbox.K8s
   ( parseKubectlObjectNames
   )
 import Prodbox.K8s.InCluster qualified as InCluster
+import Prodbox.Keycloak.Admin qualified
 import Prodbox.Keycloak.CredentialSetupForm
   ( CredentialSetupForm (..)
+  , parseCredentialSetupContinuationLink
   , parseCredentialSetupForm
   , renderCredentialSetupFormPost
   )
@@ -262,7 +269,9 @@ import Prodbox.Lib.ChartPlatform
   , ChartReleasePlan (..)
   , buildChartDeletePlan
   , buildChartDeploymentPlan
+  , buildChartDeploymentPlanForSubstrate
   , resolveChartSecrets
+  , retainedPublicEdgeTlsSecretManifest
   , supportedChartNames
   )
 import Prodbox.Lib.EksContainerdMirror qualified
@@ -271,6 +280,7 @@ import Prodbox.Lib.EksImageMirror qualified
 import Prodbox.Lib.Storage
   ( ChartStorageBinding (..)
   , ChartStorageSpec (..)
+  , chartDynamicStorageManifest
   , storageBinding
   )
 import Prodbox.Lifecycle.K8sDrain
@@ -317,7 +327,8 @@ import Prodbox.Service
   )
 import Prodbox.Ses.SmtpPassword qualified
 import Prodbox.Settings
-  ( ConfigFile (..)
+  ( AwsSubstrateSection (..)
+  , ConfigFile (..)
   , Credentials (..)
   , DeploymentSection (..)
   , DomainSection (..)
@@ -359,11 +370,19 @@ import Prodbox.TestPlan
   , testExecutionPlan
   )
 import Prodbox.TestRunner
-  ( clearOperationalCredsAfterPostflight
+  ( PublicEdgeCertificateFailure (..)
+  , awsPostflightDestroyCommandArgs
+  , awsSubstrateBootstrapCommandArgs
+  , clearOperationalCredsAfterPostflight
+  , publicEdgeCertificateReissueStatusPatch
+  , supportedRuntimeBootstrapNeedsKeycloakSmtpSync
+  , supportedRuntimeBootstrapNeedsReconcile
   )
 import Prodbox.TestValidation
-  ( verifyAwsTestSshReachability
+  ( assertInviteOidcClaims
+  , verifyAwsTestSshReachability
   )
+import Prodbox.UsersAdmin qualified
 import Prodbox.Workload.Settings qualified as WorkloadSettings
 import System.Directory
   ( Permissions (..)
@@ -893,6 +912,16 @@ main = mainWithSuite "prodbox-unit" $ do
       awsSecretTemplate `shouldContain` "aws.dhall"
       awsSecretTemplate `shouldNotContain` "prodbox-config.json"
 
+    it "lets AWS SMTP pre-created namespaces be adopted by the gateway release" $ do
+      repoRoot <- getCurrentDirectory
+      rbacTemplate <-
+        readFile (repoRoot </> "charts" </> "gateway" </> "templates" </> "rbac.yaml")
+
+      rbacTemplate `shouldContain` "app.kubernetes.io/managed-by: Helm"
+      rbacTemplate `shouldContain` "meta.helm.sh/release-name: {{ $.Release.Name | quote }}"
+      rbacTemplate `shouldContain` "meta.helm.sh/release-namespace: {{ $.Release.Namespace | quote }}"
+      rbacTemplate `shouldContain` "helm.sh/resource-policy: keep"
+
     it "delegates Patroni credential Secret ownership to the gateway daemon (Sprint 3.13)" $ do
       repoRoot <- getCurrentDirectory
       let secretsTemplatePath =
@@ -905,6 +934,7 @@ main = mainWithSuite "prodbox-unit" $ do
       postgresTemplate <-
         readFile (repoRoot </> "charts" </> "keycloak-postgres" </> "templates" </> "postgresql.yaml")
       bootstrapJobTemplate `shouldContain` "/v1/secret/ensure-namespace"
+      bootstrapJobTemplate `shouldContain` "127.0.0.1:30080/prodbox/curl-mirror:8.11.0"
       bootstrapJobTemplate `shouldContain` "helm.sh/hook\": pre-install,pre-upgrade"
       postgresTemplate `shouldContain` "kind: PerconaPGCluster"
       postgresTemplate `shouldContain` "apiVersion: pgv2.percona.com/v2"
@@ -1048,9 +1078,9 @@ main = mainWithSuite "prodbox-unit" $ do
                            , "gateway-pods"
                            , "gateway-partition"
                            , "charts-platform"
+                           , "keycloak-invite"
                            , "charts-storage"
                            , "lifecycle"
-                           , "keycloak-invite"
                            ]
             DelegatedSuite _ -> expectationFailure "expected native aggregate test plan"
 
@@ -1090,8 +1120,107 @@ main = mainWithSuite "prodbox-unit" $ do
               nativeRequiresSupportedRuntimePostflight suitePlan `shouldBe` True
               take 4 (map nativeValidationId (nativeValidations suitePlan))
                 `shouldBe` ["charts-vscode", "charts-api", "charts-websocket", "admin-routes"]
-              last (nativeValidations suitePlan) `shouldBe` ValidationKeycloakInvite
+              take 4 (dropWhile (/= ValidationChartsPlatform) (nativeValidations suitePlan))
+                `shouldBe` [ ValidationChartsPlatform
+                           , ValidationKeycloakInvite
+                           , ValidationChartsStorage
+                           , ValidationLifecycle
+                           ]
+              last (nativeValidations suitePlan) `shouldBe` ValidationLifecycle
             DelegatedSuite _ -> expectationFailure "expected native integration-all plan"
+
+    it "bootstraps the AWS substrate by provisioning per-run stacks before deploying the AWS chart set" $ do
+      case testExecutionPlan SubstrateAws TestAll of
+        testPlan ->
+          case testPlanExecutionMode testPlan of
+            NativeSuite suitePlan ->
+              awsSubstrateBootstrapCommandArgs suitePlan
+                `shouldBe` [ ["pulumi", "aws-subzone-resources"]
+                           , ["pulumi", "eks-resources"]
+                           , ["pulumi", "test-resources"]
+                           , ["charts", "deploy", "gateway", "--substrate", "aws"]
+                           , ["charts", "deploy", "vscode", "--substrate", "aws"]
+                           , ["charts", "deploy", "api", "--substrate", "aws"]
+                           , ["charts", "deploy", "websocket", "--substrate", "aws"]
+                           ]
+            DelegatedSuite _ -> expectationFailure "expected native aggregate test plan"
+
+    it "wraps targeted keycloak-invite on home substrate in the managed IAM harness" $ do
+      case testExecutionPlan SubstrateHomeLocal (TestIntegration IntegrationKeycloakInvite) of
+        testPlan ->
+          case testPlanExecutionMode testPlan of
+            NativeSuite suitePlan -> do
+              nativeSuiteId suitePlan `shouldBe` "integration-keycloak-invite"
+              nativeManagedAwsHarnessPolicyTier suitePlan `shouldBe` Just PolicyFull
+              nativeRequiresSupportedRuntimeBootstrap suitePlan `shouldBe` True
+              nativeRequiresSupportedRuntimePostflight suitePlan `shouldBe` False
+              supportedRuntimeBootstrapNeedsKeycloakSmtpSync suitePlan `shouldBe` True
+              awsPostflightDestroyCommandArgs suitePlan `shouldBe` []
+            DelegatedSuite _ -> expectationFailure "expected native keycloak-invite plan"
+
+    it "wraps targeted AWS-substrate validations in the managed IAM harness" $ do
+      case testExecutionPlan SubstrateAws (TestIntegration IntegrationKeycloakInvite) of
+        testPlan ->
+          case testPlanExecutionMode testPlan of
+            NativeSuite suitePlan -> do
+              nativeSuiteId suitePlan `shouldBe` "integration-keycloak-invite"
+              nativeManagedAwsHarnessPolicyTier suitePlan `shouldBe` Just PolicyFull
+              nativeRequiresSupportedRuntimeBootstrap suitePlan `shouldBe` True
+              nativeRequiresSupportedRuntimePostflight suitePlan `shouldBe` False
+              awsPostflightDestroyCommandArgs suitePlan
+                `shouldBe` [ ["pulumi", "aws-subzone-destroy", "--yes"]
+                           , ["pulumi", "eks-destroy", "--yes"]
+                           , ["pulumi", "test-destroy", "--yes"]
+                           ]
+            DelegatedSuite _ -> expectationFailure "expected native keycloak-invite plan"
+
+      case testExecutionPlan SubstrateAws (TestIntegration IntegrationPublicDns) of
+        testPlan ->
+          case testPlanExecutionMode testPlan of
+            NativeSuite suitePlan -> do
+              nativeSuiteId suitePlan `shouldBe` "integration-public-dns"
+              nativeManagedAwsHarnessPolicyTier suitePlan `shouldBe` Just PolicyFull
+              awsPostflightDestroyCommandArgs suitePlan `shouldBe` []
+            DelegatedSuite _ -> expectationFailure "expected native public-dns plan"
+
+    it "does not repeat rke2 reconcile during supported runtime bootstrap after the runbook reconcile" $ do
+      case testExecutionPlan SubstrateAws (TestIntegration IntegrationKeycloakInvite) of
+        testPlan ->
+          case testPlanExecutionMode testPlan of
+            NativeSuite suitePlan -> do
+              nativeRequiresIntegrationRunbook suitePlan `shouldBe` True
+              nativeRequiresSupportedRuntimeBootstrap suitePlan `shouldBe` True
+              supportedRuntimeBootstrapNeedsReconcile suitePlan `shouldBe` False
+            DelegatedSuite _ -> expectationFailure "expected native keycloak-invite plan"
+
+      let bootstrapWithoutRunbook =
+            NativeSuitePlan
+              { nativeSuiteId = "synthetic-bootstrap"
+              , nativeValidations = []
+              , nativeInitialIntegrationGatePrerequisites = []
+              , nativeDeferredIntegrationGatePrerequisites = []
+              , nativeManagedAwsHarnessPolicyTier = Nothing
+              , nativeRequiresIntegrationRunbook = False
+              , nativeRequiresSupportedRuntimeBootstrap = True
+              , nativeRequiresSupportedRuntimePostflight = False
+              , nativeSubstrate = SubstrateHomeLocal
+              }
+      supportedRuntimeBootstrapNeedsReconcile bootstrapWithoutRunbook `shouldBe` True
+
+    it "auto-destroys per-run stacks for targeted AWS-substrate Pulumi validations" $ do
+      case testExecutionPlan SubstrateAws (TestIntegration IntegrationAwsEks) of
+        testPlan ->
+          case testPlanExecutionMode testPlan of
+            NativeSuite suitePlan -> do
+              nativeSuiteId suitePlan `shouldBe` "integration-aws-eks"
+              nativeManagedAwsHarnessPolicyTier suitePlan `shouldBe` Just PolicyFull
+              nativeRequiresSupportedRuntimeBootstrap suitePlan `shouldBe` False
+              awsPostflightDestroyCommandArgs suitePlan
+                `shouldBe` [ ["pulumi", "aws-subzone-destroy", "--yes"]
+                           , ["pulumi", "eks-destroy", "--yes"]
+                           , ["pulumi", "test-destroy", "--yes"]
+                           ]
+            DelegatedSuite _ -> expectationFailure "expected native aws-eks plan"
 
     it "maps cluster-backed named suites to native validations plus prerequisites" $ do
       case testExecutionPlan SubstrateHomeLocal (TestIntegration IntegrationAwsEks) of
@@ -1250,9 +1379,62 @@ main = mainWithSuite "prodbox-unit" $ do
       runnerSource `shouldContain` "publicEdgeReadyDelayMicroseconds = 10000000"
       runnerSource `shouldContain` "publicEdgeCertificateRepairAttempts = 3"
       runnerSource `shouldContain` "Detected failed public-edge certificate issuance"
+      runnerSource `shouldContain` "no stale ACME resources remain, triggering immediate reissue"
       runnerSource `shouldContain` "\"certificaterequest,order,challenge\""
+      runnerSource `shouldContain` "\"--subresource=status\""
+      runnerSource `shouldContain` "Certificate renewal manually triggered by prodbox"
       runnerSource
-        `shouldContain` "\"jsonpath={.status.failedIssuanceAttempts}{\\\"|\\\"}{.status.nextPrivateKeySecretName}\""
+        `shouldContain` "\"jsonpath={.status.failedIssuanceAttempts}{\\\"|\\\"}{.status.nextPrivateKeySecretName}{\\\"|\\\"}{.metadata.generation}\""
+
+    it "renders a valid public-edge certificate reissue status patch" $ do
+      let patch =
+            publicEdgeCertificateReissueStatusPatch
+              "2026-06-06T18:05:00Z"
+              PublicEdgeCertificateFailure
+                { publicEdgeFailedIssuanceAttempts = 1
+                , publicEdgeNextPrivateKeySecretName = Just "public-edge-tls-next"
+                , publicEdgeCertificateObservedGeneration = Just 7
+                }
+      (eitherDecode (BL8.pack patch) :: Either String Value)
+        `shouldSatisfy` isRight
+      patch `shouldContain` "\"observedGeneration\":7"
+      patch `shouldContain` "Certificate renewal manually triggered by prodbox"
+
+    it "retains the public-edge TLS Secret payload without Kubernetes ownership metadata" $ do
+      let sourceSecret =
+            object
+              [ "apiVersion" .= ("v1" :: String)
+              , "kind" .= ("Secret" :: String)
+              , "metadata"
+                  .= object
+                    [ "name" .= ("public-edge-tls" :: String)
+                    , "namespace" .= ("vscode" :: String)
+                    , "uid" .= ("source-uid" :: String)
+                    , "resourceVersion" .= ("123" :: String)
+                    , "ownerReferences"
+                        .= [ object
+                               [ "kind" .= ("Certificate" :: String)
+                               , "name" .= ("public-edge-tls" :: String)
+                               ]
+                           ]
+                    ]
+              , "type" .= ("kubernetes.io/tls" :: String)
+              , "data"
+                  .= object
+                    [ "tls.crt" .= ("encoded-cert" :: String)
+                    , "tls.key" .= ("encoded-key" :: String)
+                    ]
+              ]
+      case retainedPublicEdgeTlsSecretManifest "prodbox" "public-edge-tls-retained" sourceSecret of
+        Left err -> expectationFailure err
+        Right retainedSecret -> do
+          let rendered = BL8.unpack (encode retainedSecret)
+          rendered `shouldContain` "public-edge-tls-retained"
+          rendered `shouldContain` "encoded-cert"
+          rendered `shouldContain` "encoded-key"
+          rendered `shouldNotContain` "ownerReferences"
+          rendered `shouldNotContain` "resourceVersion"
+          rendered `shouldNotContain` "source-uid"
 
     it "waits for stable Harbor endpoints before lifecycle image reconcile begins" $ do
       repoRoot <- getCurrentDirectory
@@ -1303,6 +1485,21 @@ main = mainWithSuite "prodbox-unit" $ do
       interpreterSource `shouldContain` "PULUMI_BACKEND_URL"
       minioSource `shouldContain` "parseDeletedMinioExportHostPath"
       minioSource `shouldContain` "\"rollout\", \"restart\", \"deployment/\" ++ minioDeploymentName"
+
+    it "uses the active chart cluster MinIO port-forward for host-side master-seed bootstrap" $ do
+      repoRoot <- getCurrentDirectory
+      hostBootstrapSource <-
+        readFile (repoRoot </> "src" </> "Prodbox" </> "Secret" </> "HostBootstrap.hs")
+      rke2Source <- readFile (repoRoot </> "src" </> "Prodbox" </> "CLI" </> "Rke2.hs")
+      minioSource <- readFile (repoRoot </> "src" </> "Prodbox" </> "Infra" </> "MinioBackend.hs")
+
+      minioSource `shouldContain` "withCurrentMinioPortForward"
+      minioSource `shouldContain` "subprocessEnvironment = environment"
+      hostBootstrapSource
+        `shouldContain` "import Prodbox.Infra.MinioBackend (withCurrentMinioPortForward)"
+      hostBootstrapSource `shouldContain` "portForwardResult <- withCurrentMinioPortForward"
+      rke2Source `shouldContain` "import Prodbox.Infra.MinioBackend (withCurrentMinioPortForward)"
+      rke2Source `shouldContain` "portForwardResult <- withCurrentMinioPortForward"
 
     it "matches OIDC redirect headers without depending on percent-encoding case" $ do
       repoRoot <- getCurrentDirectory
@@ -1369,6 +1566,34 @@ main = mainWithSuite "prodbox-unit" $ do
       apiTemplate `shouldContain` ".Values.podAnnotations"
       websocketTemplate `shouldContain` ".Values.podAnnotations"
       gatewayTemplate `shouldContain` "$.Values.podAnnotations"
+
+    it "renders API and WebSocket JWT backchannels through Keycloak ReferenceGrants" $ do
+      repoRoot <- getCurrentDirectory
+      apiTemplate <- readFile (repoRoot </> "charts" </> "api" </> "templates" </> "http-route.yaml")
+      websocketTemplate <-
+        readFile (repoRoot </> "charts" </> "websocket" </> "templates" </> "http-route.yaml")
+
+      forM_ [apiTemplate, websocketTemplate] $ \template -> do
+        template `shouldContain` "kind: ReferenceGrant"
+        template `shouldContain` "group: gateway.envoyproxy.io"
+        template `shouldContain` "kind: SecurityPolicy"
+        template `shouldContain` "namespace: {{ .Release.Namespace | quote }}"
+        template `shouldContain` "remoteJWKS:"
+        template `shouldContain` "backendRefs:"
+        template `shouldContain` "namespace: {{ .Values.jwt.jwksBackend.namespace | quote }}"
+        template `shouldContain` "port: {{ .Values.jwt.jwksBackend.servicePort }}"
+
+    it "routes the Keycloak admin API used by operator invites through the auth HTTPRoute" $ do
+      repoRoot <- getCurrentDirectory
+      keycloakGatewayTemplate <-
+        readFile (repoRoot </> "charts" </> "keycloak" </> "templates" </> "gateway.yaml")
+
+      keycloakGatewayTemplate
+        `shouldContain` "value: {{ printf \"%s/realms\" .Values.gateway.authPathPrefix | quote }}"
+      keycloakGatewayTemplate
+        `shouldContain` "value: {{ printf \"%s/admin\" .Values.gateway.authPathPrefix | quote }}"
+      keycloakGatewayTemplate
+        `shouldContain` "value: {{ printf \"%s/resources\" .Values.gateway.authPathPrefix | quote }}"
 
     it "routes chart PostgreSQL service calls through the capability boundary" $ do
       repoRoot <- getCurrentDirectory
@@ -1856,6 +2081,178 @@ main = mainWithSuite "prodbox-unit" $ do
           map chartReleasePlanReleaseName (chartDeploymentPlanReleases plan)
             `shouldBe` ["vscode", "keycloak", "keycloak-postgres"]
 
+    it "renders AWS gateway deployments with the AWS-substrate image tag" $ do
+      result <-
+        buildChartDeploymentPlanForSubstrate
+          SubstrateAws
+          "/tmp/prodbox"
+          (testValidatedSettings "/tmp/prodbox/.data")
+          "gateway"
+          testChartSecrets
+          Map.empty
+      case result of
+        Left err -> expectationFailure err
+        Right plan ->
+          case filter ((== "gateway") . chartReleasePlanReleaseName) (chartDeploymentPlanReleases plan) of
+            [release] ->
+              case eitherDecode (BL8.pack (chartReleasePlanValuesJson release)) :: Either String Value of
+                Right (Object payload) -> do
+                  case KeyMap.lookup (Key.fromString "image") payload of
+                    Just (Object imagePayload) -> do
+                      KeyMap.lookup (Key.fromString "repository") imagePayload
+                        `shouldBe` Just (String "127.0.0.1:30080/prodbox/prodbox-gateway")
+                      KeyMap.lookup (Key.fromString "tag") imagePayload
+                        `shouldBe` Just (String "prodbox-aws-substrate")
+                    _ -> expectationFailure "expected gateway image payload"
+                  case KeyMap.lookup (Key.fromString "dnsWriteGate") payload of
+                    Just (Object dnsPayload) -> do
+                      KeyMap.lookup (Key.fromString "enabled") dnsPayload
+                        `shouldBe` Just (Bool False)
+                      KeyMap.lookup (Key.fromString "zoneId") dnsPayload
+                        `shouldBe` Just (String "")
+                      KeyMap.lookup (Key.fromString "fqdn") dnsPayload
+                        `shouldBe` Just (String "")
+                    _ -> expectationFailure "expected gateway dnsWriteGate payload"
+                Right _ -> expectationFailure "expected gateway values object"
+                Left err -> expectationFailure err
+            _ -> expectationFailure "expected one gateway release"
+
+    it "renders AWS public-edge workload charts with the AWS-substrate image tag" $ do
+      result <-
+        buildChartDeploymentPlanForSubstrate
+          SubstrateAws
+          "/tmp/prodbox"
+          (testValidatedSettings "/tmp/prodbox/.data")
+          "api"
+          testChartSecrets
+          Map.empty
+      case result of
+        Left err -> expectationFailure err
+        Right plan ->
+          case filter ((== "api") . chartReleasePlanReleaseName) (chartDeploymentPlanReleases plan) of
+            [release] ->
+              case eitherDecode (BL8.pack (chartReleasePlanValuesJson release)) :: Either String Value of
+                Right (Object payload) ->
+                  case KeyMap.lookup (Key.fromString "image") payload of
+                    Just (Object imagePayload) -> do
+                      KeyMap.lookup (Key.fromString "repository") imagePayload
+                        `shouldBe` Just (String "127.0.0.1:30080/prodbox/prodbox-public-edge-workload")
+                      KeyMap.lookup (Key.fromString "tag") imagePayload
+                        `shouldBe` Just (String "prodbox-aws-substrate")
+                      case KeyMap.lookup (Key.fromString "jwt") payload of
+                        Just (Object jwtPayload) -> do
+                          KeyMap.lookup (Key.fromString "issuer") jwtPayload
+                            `shouldBe` Just (String "https://aws.test.resolvefintech.com/auth/realms/prodbox")
+                          KeyMap.lookup (Key.fromString "jwksUri") jwtPayload
+                            `shouldBe` Just
+                              ( String
+                                  "http://keycloak.vscode.svc.cluster.local:8080/auth/realms/prodbox/protocol/openid-connect/certs"
+                              )
+                          case KeyMap.lookup (Key.fromString "jwksBackend") jwtPayload of
+                            Just (Object backendPayload) -> do
+                              KeyMap.lookup (Key.fromString "namespace") backendPayload
+                                `shouldBe` Just (String "vscode")
+                              KeyMap.lookup (Key.fromString "serviceName") backendPayload
+                                `shouldBe` Just (String "keycloak")
+                              KeyMap.lookup (Key.fromString "servicePort") backendPayload
+                                `shouldBe` Just (Number 8080)
+                              KeyMap.lookup (Key.fromString "referenceGrantName") backendPayload
+                                `shouldBe` Just (String "api-keycloak-jwks")
+                            _ -> expectationFailure "expected api jwt jwksBackend payload"
+                        _ -> expectationFailure "expected api jwt payload"
+                    _ -> expectationFailure "expected api image payload"
+                Right _ -> expectationFailure "expected api values object"
+                Left err -> expectationFailure err
+            _ -> expectationFailure "expected one api release"
+
+    it "renders AWS websocket plans with internal Keycloak JWKS backchannel values" $ do
+      result <-
+        buildChartDeploymentPlanForSubstrate
+          SubstrateAws
+          "/tmp/prodbox"
+          (testValidatedSettings "/tmp/prodbox/.data")
+          "websocket"
+          testChartSecrets
+          Map.empty
+      case result of
+        Left err -> expectationFailure err
+        Right plan ->
+          case filter ((== "websocket") . chartReleasePlanReleaseName) (chartDeploymentPlanReleases plan) of
+            [release] ->
+              case eitherDecode (BL8.pack (chartReleasePlanValuesJson release)) :: Either String Value of
+                Right (Object payload) ->
+                  case KeyMap.lookup (Key.fromString "jwt") payload of
+                    Just (Object jwtPayload) -> do
+                      KeyMap.lookup (Key.fromString "issuer") jwtPayload
+                        `shouldBe` Just (String "https://aws.test.resolvefintech.com/auth/realms/prodbox")
+                      KeyMap.lookup (Key.fromString "jwksUri") jwtPayload
+                        `shouldBe` Just
+                          ( String
+                              "http://keycloak.vscode.svc.cluster.local:8080/auth/realms/prodbox/protocol/openid-connect/certs"
+                          )
+                      case KeyMap.lookup (Key.fromString "jwksBackend") jwtPayload of
+                        Just (Object backendPayload) -> do
+                          KeyMap.lookup (Key.fromString "namespace") backendPayload
+                            `shouldBe` Just (String "vscode")
+                          KeyMap.lookup (Key.fromString "serviceName") backendPayload
+                            `shouldBe` Just (String "keycloak")
+                          KeyMap.lookup (Key.fromString "servicePort") backendPayload
+                            `shouldBe` Just (Number 8080)
+                          KeyMap.lookup (Key.fromString "referenceGrantName") backendPayload
+                            `shouldBe` Just (String "websocket-keycloak-jwks")
+                        _ -> expectationFailure "expected websocket jwt jwksBackend payload"
+                    _ -> expectationFailure "expected websocket jwt payload"
+                Right _ -> expectationFailure "expected websocket values object"
+                Left err -> expectationFailure err
+            _ -> expectationFailure "expected one websocket release"
+
+    it "renders AWS vscode plans with dynamic gp2 Patroni storage" $ do
+      result <-
+        buildChartDeploymentPlanForSubstrate
+          SubstrateAws
+          "/tmp/prodbox"
+          (testValidatedSettings "/tmp/prodbox/.data")
+          "vscode"
+          testChartSecrets
+          Map.empty
+      case result of
+        Left err -> expectationFailure err
+        Right plan -> do
+          chartDeploymentPlanSubstrate plan `shouldBe` SubstrateAws
+          case filter ((== "keycloak-postgres") . chartReleasePlanReleaseName) (chartDeploymentPlanReleases plan) of
+            [release] ->
+              case eitherDecode (BL8.pack (chartReleasePlanValuesJson release)) :: Either String Value of
+                Right (Object payload) ->
+                  case KeyMap.lookup (Key.fromString "storage") payload of
+                    Just (Object storagePayload) ->
+                      KeyMap.lookup (Key.fromString "className") storagePayload
+                        `shouldBe` Just (String "gp2")
+                    _ -> expectationFailure "expected keycloak-postgres storage payload"
+                Right _ -> expectationFailure "expected keycloak-postgres values object"
+                Left err -> expectationFailure err
+            _ -> expectationFailure "expected one keycloak-postgres release"
+
+    it "renders AWS dynamic storage as PVCs without manual PV hostPath artifacts" $ do
+      let spec =
+            ChartStorageSpec
+              { chartStorageSpecStatefulSetName = "vscode"
+              , chartStorageSpecPersistentVolumeClaimName = "vscode-data-0"
+              , chartStorageSpecStorageSize = "50Gi"
+              , chartStorageSpecOrdinal = 0
+              , chartStorageSpecClaimSuffix = "data"
+              }
+          binding = storageBinding "/tmp/prodbox/.data" "vscode" "vscode" spec
+          manifestJson =
+            BL8.unpack
+              (encode (chartDynamicStorageManifest "vscode" "vscode" "gp2" [binding]))
+      manifestJson `shouldContain` "\"kind\":\"PersistentVolumeClaim\""
+      manifestJson `shouldContain` "\"storageClassName\":\"gp2\""
+      manifestJson `shouldContain` "\"name\":\"vscode-data-0\""
+      manifestJson `shouldNotContain` "\"kind\":\"PersistentVolume\""
+      manifestJson `shouldNotContain` "\"hostPath\""
+      manifestJson `shouldNotContain` "\"volumeName\""
+      manifestJson `shouldNotContain` "\"storageClassName\":\"manual\""
+
     it "builds vscode deployment plans with dependency order and deterministic values" $ do
       result <-
         buildChartDeploymentPlan
@@ -2024,16 +2421,33 @@ main = mainWithSuite "prodbox-unit" $ do
                 Just (Object oidcPayload) -> do
                   KeyMap.lookup (Key.fromString "clientId") oidcPayload
                     `shouldBe` Just (String "vscode")
-                  -- Sprint 3.13 chunk 11: vscode chart reads the OIDC
-                  -- client-secret via cross-namespace Helm `lookup` of the
+                  -- Sprint 3.13 chunks 11 + 28: vscode chart reads the
+                  -- OIDC client-secret via Helm `lookup` of the
                   -- daemon-applied `keycloak-oidc-clients` Secret in the
-                  -- `keycloak` namespace. `valuesForVscode` no longer emits
+                  -- release namespace. `valuesForVscode` no longer emits
                   -- `oidc.clientSecret`, so the chart values payload should
                   -- not carry the key.
                   KeyMap.lookup (Key.fromString "clientSecret") oidcPayload
                     `shouldBe` Nothing
                   KeyMap.lookup (Key.fromString "issuer") oidcPayload
                     `shouldBe` Just (String "https://test.resolvefintech.com/auth/realms/prodbox")
+                  KeyMap.lookup (Key.fromString "authorizationEndpoint") oidcPayload
+                    `shouldBe` Just
+                      ( String
+                          "https://test.resolvefintech.com/auth/realms/prodbox/protocol/openid-connect/auth"
+                      )
+                  KeyMap.lookup (Key.fromString "tokenEndpoint") oidcPayload
+                    `shouldBe` Just
+                      ( String
+                          "http://keycloak.vscode.svc.cluster.local:8080/auth/realms/prodbox/protocol/openid-connect/token"
+                      )
+                  case KeyMap.lookup (Key.fromString "providerBackend") oidcPayload of
+                    Just (Object providerBackendPayload) -> do
+                      KeyMap.lookup (Key.fromString "serviceName") providerBackendPayload
+                        `shouldBe` Just (String "keycloak")
+                      KeyMap.lookup (Key.fromString "servicePort") providerBackendPayload
+                        `shouldBe` Just (Number 8080)
+                    _ -> expectationFailure "expected vscode oidc providerBackend payload"
                 _ -> expectationFailure "expected vscode oidc payload"
               case KeyMap.lookup (Key.fromString "vscode") payload of
                 Just (Object vscodePayload) ->
@@ -3564,6 +3978,25 @@ main = mainWithSuite "prodbox-unit" $ do
             `shouldBe` Residue.ResidueUnreachable
               (Residue.ResidueBackendMinioUnreachable "connection refused")
 
+    it "isMissingLongLivedS3BackendBucketMessage matches Pulumi S3 NoSuchBucket output" $
+      LiveResidue.isMissingLongLivedS3BackendBucketMessage
+        "error listing stacks: could not list bucket: blob (code=NotFound): NoSuchBucket:"
+        `shouldBe` True
+
+    it "residueStatusFromS3Listing treats a missing long-lived state bucket as absent" $
+      let err =
+            StackOutputs.StackOutputsCommandFailed
+              "error listing stacks: could not list bucket: blob (code=NotFound): NoSuchBucket:"
+          status = LiveResidue.residueStatusFromS3Listing "aws-ses" (Left err)
+       in status `shouldBe` Residue.ResidueAbsent
+
+    it "residueStatusFromS3Listing keeps non-missing S3 failures fail-closed" $
+      let err = StackOutputs.StackOutputsCommandFailed "AccessDenied: denied"
+          status = LiveResidue.residueStatusFromS3Listing "aws-ses" (Left err)
+       in status
+            `shouldBe` Residue.ResidueUnreachable
+              (Residue.ResidueBackendS3Unreachable "AccessDenied: denied")
+
     it "canonical stack-name constants match the production names" $ do
       LiveResidue.awsEksTestStackName `shouldBe` "aws-eks-test"
       LiveResidue.awsEksSubzoneStackName `shouldBe` "aws-eks-subzone"
@@ -3787,6 +4220,16 @@ main = mainWithSuite "prodbox-unit" $ do
     it "isAwsCliNoSuchKeyMessage does not match unrelated AWS CLI failures" $
       MasterSeed.isAwsCliNoSuchKeyMessage "Access Denied" `shouldBe` False
 
+    it "isAwsCliHeadObjectForbiddenMessage matches the first-write MinIO HeadObject 403 shape" $ do
+      MasterSeed.isAwsCliHeadObjectForbiddenMessage
+        "An error occurred (403) when calling the HeadObject operation: Forbidden"
+        `shouldBe` True
+
+    it "isAwsCliHeadObjectForbiddenMessage does not match non-head forbidden failures" $
+      MasterSeed.isAwsCliHeadObjectForbiddenMessage
+        "An error occurred (403) when calling the PutObject operation: Forbidden"
+        `shouldBe` False
+
     it "isAwsCliPreconditionFailedMessage matches the canonical 412 blob" $ do
       MasterSeed.isAwsCliPreconditionFailedMessage
         "An error occurred (PreconditionFailed) when calling the PutObject operation"
@@ -3997,11 +4440,35 @@ main = mainWithSuite "prodbox-unit" $ do
       parseKubectlObjectNames "pod/alpha\n\npod/bravo\n"
         `shouldBe` ["pod/alpha", "pod/bravo"]
 
+    it
+      "prefers the local RKE2 kubeconfig over ambient AWS-substrate KUBECONFIG for MinIO backend access"
+      $ localKubeconfigCandidates
+        (Just "/home/operator")
+        (Just "/tmp/aws-eks-kubeconfig")
+        `shouldBe` [ "/etc/rancher/rke2/rke2.yaml"
+                   , "/home/operator/.kube/config"
+                   , "/tmp/aws-eks-kubeconfig"
+                   ]
+
+    it "skips unreadable local kubeconfig candidates before falling back" $
+      withSystemTempDirectory "prodbox-kubeconfig-candidates" $ \tmpDir -> do
+        let unreadableCandidate = tmpDir </> "rke2.yaml"
+            readableCandidate = tmpDir </> "home-kubeconfig.yaml"
+        writeFile unreadableCandidate "apiVersion: v1\n"
+        writeFile readableCandidate "apiVersion: v1\n"
+        originalPermissions <- getPermissions unreadableCandidate
+        setPermissions unreadableCandidate originalPermissions {readable = False}
+        selectedCandidate <-
+          firstReadableKubeconfigCandidate [unreadableCandidate, readableCandidate]
+            `finally` setPermissions unreadableCandidate originalPermissions
+        selectedCandidate `shouldBe` Just readableCandidate
+
   describe "container image mapping" $ do
     it "keeps the supported platform image mirrors on explicit Harbor targets" $ do
       mapM_
         (\expectedPair -> ContainerImage.requiredPublicImagePairs `shouldContain` [expectedPair])
         [ ("ghcr.io/coder/code-server:4.98.2", "127.0.0.1:30080/prodbox/code-server-mirror:4.98.2")
+        , ("docker.io/curlimages/curl:8.11.0", "127.0.0.1:30080/prodbox/curl-mirror:8.11.0")
         , ("docker.io/envoyproxy/gateway:v1.7.2", "127.0.0.1:30080/prodbox/envoy-gateway-mirror:v1.7.2")
         ,
           ( "docker.io/envoyproxy/envoy:distroless-v1.37.0"
@@ -4026,6 +4493,8 @@ main = mainWithSuite "prodbox-unit" $ do
         `shouldBe` Just "127.0.0.1:30080/prodbox/percona-pgbouncer-mirror:1.25.1-1"
       ContainerImage.harborMirrorTargetForSource "docker.io/codercom/code-server:4.98.2"
         `shouldBe` Just "127.0.0.1:30080/prodbox/code-server-mirror:4.98.2"
+      ContainerImage.harborMirrorTargetForSource "docker.io/curlimages/curl:8.11.0"
+        `shouldBe` Just "127.0.0.1:30080/prodbox/curl-mirror:8.11.0"
       ContainerImage.harborMirrorTargetForSource "docker.io/envoyproxy/gateway:v1.7.2"
         `shouldBe` Just "127.0.0.1:30080/prodbox/envoy-gateway-mirror:v1.7.2"
       ContainerImage.harborMirrorTargetForSource "mirror.gcr.io/envoyproxy/gateway:v1.7.2"
@@ -4048,6 +4517,8 @@ main = mainWithSuite "prodbox-unit" $ do
           ]
       ContainerImage.harborMirrorSourceCandidates "ghcr.io/coder/code-server:4.98.2"
         `shouldBe` Just ["ghcr.io/coder/code-server:4.98.2", "docker.io/codercom/code-server:4.98.2"]
+      ContainerImage.harborMirrorSourceCandidates "docker.io/curlimages/curl:8.11.0"
+        `shouldBe` Just ["docker.io/curlimages/curl:8.11.0"]
       ContainerImage.harborMirrorSourceCandidates "docker.io/envoyproxy/gateway:v1.7.2"
         `shouldBe` Just
           [ "docker.io/envoyproxy/gateway:v1.7.2"
@@ -4204,6 +4675,63 @@ main = mainWithSuite "prodbox-unit" $ do
         validationResult `shouldBe` ExitSuccess
         readFile (sshStateDir </> "count") `shouldReturn` "3"
 
+  describe "Keycloak admin base URL" $ do
+    it "derives the default public host from validated settings" $
+      Prodbox.Keycloak.Admin.buildKeycloakBaseUrl (testValidatedSettings "/tmp/prodbox/.data")
+        `shouldBe` "https://test.resolvefintech.com/auth"
+    it "accepts an explicit substrate public host" $
+      Prodbox.Keycloak.Admin.buildKeycloakBaseUrlForHost " aws.test.resolvefintech.com "
+        `shouldBe` "https://aws.test.resolvefintech.com/auth"
+
+  describe "Keycloak realm SMTP reconciliation" $ do
+    let smtpSettings =
+          Prodbox.Keycloak.Admin.RealmSmtpSettings
+            { Prodbox.Keycloak.Admin.realmSmtpHost = "email-smtp.us-west-2.amazonaws.com"
+            , Prodbox.Keycloak.Admin.realmSmtpPort = "587"
+            , Prodbox.Keycloak.Admin.realmSmtpFrom = "noreply@test.resolvefintech.com"
+            , Prodbox.Keycloak.Admin.realmSmtpFromDisplayName = "prodbox"
+            , Prodbox.Keycloak.Admin.realmSmtpReplyTo = "noreply@test.resolvefintech.com"
+            , Prodbox.Keycloak.Admin.realmSmtpUser = "AKIAEXAMPLE"
+            , Prodbox.Keycloak.Admin.realmSmtpPassword = "smtp-pass"
+            }
+        expectedSmtpJson =
+          object
+            [ "host" .= ("email-smtp.us-west-2.amazonaws.com" :: Text.Text)
+            , "port" .= ("587" :: Text.Text)
+            , "from" .= ("noreply@test.resolvefintech.com" :: Text.Text)
+            , "fromDisplayName" .= ("prodbox" :: Text.Text)
+            , "replyTo" .= ("noreply@test.resolvefintech.com" :: Text.Text)
+            , "starttls" .= ("true" :: Text.Text)
+            , "auth" .= ("true" :: Text.Text)
+            , "user" .= ("AKIAEXAMPLE" :: Text.Text)
+            , "password" .= ("smtp-pass" :: Text.Text)
+            ]
+    it "decodes the Kubernetes keycloak-smtp Secret into realm SMTP settings" $ do
+      let secretJson =
+            "{\"data\":{"
+              <> "\"KC_SMTP_HOST\":\"ZW1haWwtc210cC51cy13ZXN0LTIuYW1hem9uYXdzLmNvbQ==\","
+              <> "\"KC_SMTP_PORT\":\"NTg3\","
+              <> "\"KC_SMTP_FROM\":\"bm9yZXBseUB0ZXN0LnJlc29sdmVmaW50ZWNoLmNvbQ==\","
+              <> "\"KC_SMTP_FROM_DISPLAY_NAME\":\"cHJvZGJveA==\","
+              <> "\"KC_SMTP_REPLY_TO\":\"bm9yZXBseUB0ZXN0LnJlc29sdmVmaW50ZWNoLmNvbQ==\","
+              <> "\"KC_SMTP_USER\":\"QUtJQUVYQU1QTEU=\","
+              <> "\"KC_SMTP_PASSWORD\":\"c210cC1wYXNz\""
+              <> "}}"
+      Prodbox.UsersAdmin.decodeKeycloakSmtpSecretJson secretJson `shouldBe` Right smtpSettings
+    it "renders Keycloak's smtpServer representation from the Secret fields" $
+      Prodbox.Keycloak.Admin.realmSmtpSettingsJson smtpSettings `shouldBe` expectedSmtpJson
+    it "patches an existing realm representation without dropping existing fields" $
+      Prodbox.Keycloak.Admin.applyRealmSmtpSettings
+        smtpSettings
+        (object ["realm" .= ("prodbox" :: Text.Text), "enabled" .= True])
+        `shouldBe` Result.Success
+          ( object
+              [ "realm" .= ("prodbox" :: Text.Text)
+              , "enabled" .= True
+              , "smtpServer" .= expectedSmtpJson
+              ]
+          )
+
   describe "Keycloak invite-email parser" $ do
     it "extracts the action-token URL from a plain-text invite email" $
       Prodbox.Keycloak.Email.parseKeycloakInviteLink keycloakInvitePlainFixture
@@ -4211,6 +4739,12 @@ main = mainWithSuite "prodbox-unit" $ do
     it "extracts the action-token URL across a quoted-printable soft-wrap" $
       Prodbox.Keycloak.Email.parseKeycloakInviteLink keycloakInviteQuotedPrintableFixture
         `shouldBe` Right "https://test.resolvefintech.com/auth/realms/prodbox/login-actions/action-token?key=def456"
+    it "deduplicates multipart text/html copies after URL-local quoted-printable normalization" $
+      Prodbox.Keycloak.Email.parseKeycloakInviteLink keycloakInviteMultipartDuplicateFixture
+        `shouldBe` Right "https://test.resolvefintech.com/auth/realms/prodbox/login-actions/action-token?key=ghi789"
+    it "fails fast when the email body contains multiple distinct invite links" $
+      Prodbox.Keycloak.Email.parseKeycloakInviteLink keycloakInviteMultipleDistinctFixture
+        `shouldBe` Left "multiple Keycloak invite links found in email body"
     it "fails fast when the email body contains no invite link" $
       Prodbox.Keycloak.Email.parseKeycloakInviteLink keycloakInviteMissingFixture
         `shouldBe` Left "no Keycloak invite link found in email body"
@@ -4234,6 +4768,39 @@ main = mainWithSuite "prodbox-unit" $ do
           p2 = Prodbox.Ses.SmtpPassword.derivedSesSmtpPassword "us-west-2" sesSmtpPasswordExampleSecret
       p1 `shouldBe` p2
 
+  describe "Keycloak SMTP Secret sync" $ do
+    it "targets every supported Keycloak release namespace" $ do
+      AwsSesStack.keycloakSmtpSecretNamespaces `shouldBe` ["vscode", "keycloak"]
+      let script =
+            AwsSesStack.renderKeycloakSmtpKubectlApplyScript
+              [ ("KC_SMTP_HOST", "email-smtp.us-west-2.amazonaws.com")
+              , ("KC_SMTP_PASSWORD", "pa'ss")
+              ]
+      script `shouldContain` "kubectl create namespace 'vscode'"
+      script `shouldContain` "kubectl create namespace 'keycloak'"
+      script `shouldContain` "kubectl label namespace 'keycloak' 'app.kubernetes.io/managed-by=Helm'"
+      script `shouldContain` "kubectl annotate namespace 'keycloak'"
+      script `shouldContain` "'meta.helm.sh/release-name=gateway'"
+      script `shouldContain` "'meta.helm.sh/release-namespace=gateway'"
+      script `shouldContain` "'helm.sh/resource-policy=keep'"
+      script `shouldContain` "kubectl create secret generic 'keycloak-smtp'"
+      script `shouldContain` " -n 'vscode'"
+      script `shouldContain` " -n 'keycloak'"
+      script `shouldContain` "--from-literal='KC_SMTP_PASSWORD=pa'\\''ss'"
+
+    it "lets aws-ses Route 53 records reconcile over retained records during state repair" $ do
+      repoRoot <- getCurrentDirectory
+      pulumiProgram <- readFile (repoRoot </> "pulumi" </> "aws-ses" </> "Main.yaml")
+      length (filter (== "      allowOverwrite: true") (lines pulumiProgram))
+        `shouldBe` 5
+
+    it "allows Keycloak egress to the configured SES SMTP port" $ do
+      repoRoot <- getCurrentDirectory
+      networkPolicy <-
+        readFile (repoRoot </> "charts" </> "keycloak" </> "templates" </> "networkpolicy.yaml")
+      networkPolicy `shouldContain` "cidr: 0.0.0.0/0"
+      networkPolicy `shouldContain` "port: {{ .Values.smtp.port }}"
+
   describe "Sprint 7.5.c.v.b EKS custom-image push pod" $ do
     let cfg = Prodbox.Lib.EksCustomImagePush.defaultEksCustomImagePushConfig
         manifest = Prodbox.Lib.EksCustomImagePush.eksCustomImagePushPodManifest cfg
@@ -4245,6 +4812,7 @@ main = mainWithSuite "prodbox-unit" $ do
         `shouldBe` "harbor.harbor.svc.cluster.local"
       Prodbox.Lib.EksCustomImagePush.customPushChartRegistryEndpoint cfg `shouldBe` "127.0.0.1:30080"
       Prodbox.Lib.EksCustomImagePush.customPushHarborAdminUser cfg `shouldBe` "admin"
+      Prodbox.Lib.EksCustomImagePush.customPushHarborAdminPassword cfg `shouldBe` "Harbor12345"
     it "pod manifest declares v1 Pod in harbor namespace with sprint label + restartPolicy Never" $ do
       manifestJson `shouldContain` "\"apiVersion\":\"v1\""
       manifestJson `shouldContain` "\"kind\":\"Pod\""
@@ -4256,7 +4824,14 @@ main = mainWithSuite "prodbox-unit" $ do
       manifestJson `shouldContain` "go-containerregistry/crane:debug"
       manifestJson `shouldContain` "\"command\":[\"/busybox/sh\",\"-c\",\"sleep infinity\"]"
       manifestJson `shouldContain` "\"mountPath\":\"/data\""
-      manifestJson `shouldContain` "\"emptyDir\":{\"sizeLimit\":\"4Gi\"}"
+      manifestJson `shouldContain` "\"emptyDir\":{\"sizeLimit\":\"12Gi\"}"
+      manifestJson `shouldContain` "\"memory\":\"4Gi\""
+      manifestJson `shouldContain` "\"ephemeral-storage\":\"12Gi\""
+    it "projects Harbor credentials and authenticates before crane push" $ do
+      manifestJson
+        `shouldContain` "\"name\":\"HARBOR_INTERNAL\",\"value\":\"harbor.harbor.svc.cluster.local\""
+      manifestJson `shouldContain` "\"name\":\"HARBOR_USER\",\"value\":\"admin\""
+      manifestJson `shouldContain` "\"name\":\"HARBOR_PASSWORD\",\"value\":\"Harbor12345\""
     it "rewriteChartRefForInClusterPush swaps the host:port for the in-cluster DNS endpoint" $ do
       Prodbox.Lib.EksCustomImagePush.rewriteChartRefForInClusterPush
         cfg
@@ -4315,8 +4890,9 @@ main = mainWithSuite "prodbox-unit" $ do
     "Sprint 7.5.c.iii AWS-substrate platform orchestration (extended through 7.5.c.iv + 7.5.c.v.b)"
     $ do
       let steps = Prodbox.Lib.AwsSubstratePlatform.awsSubstratePlatformRuntimeStepDescriptions
-      it "sequences the canonical 13 steps in order through the Sprint 7.5.c.v.b custom-image extension" $
-        steps
+      it
+        "sequences the canonical 15 steps in order through the Sprint 7.5.c.v.b custom-image and admin-route extension"
+        $ steps
           `shouldBe` [ "ensureAwsLoadBalancerControllerRuntime"
                      , "ensureAwsSubstrateEnvoyGatewayRuntime"
                      , "ensureAwsSubstrateCertManagerRuntime"
@@ -4330,6 +4906,8 @@ main = mainWithSuite "prodbox-unit" $ do
                      , "ensurePublicEdgeWorkloadImageForSubstrate SubstrateAws"
                      , "ensurePostgresOperatorRuntime"
                      , "ensureMinioRuntime SubstrateAws MinioSteadyStateHarbor"
+                     , "ensureGatewayMinioBootstrap"
+                     , "ensureAdminPublicEdgeRoutes SubstrateAws"
                      ]
       it
         "places the containerd mirror DaemonSet apply before any MinIO or Harbor install (so 127.0.0.1:30080 routes are live)"
@@ -4355,6 +4933,37 @@ main = mainWithSuite "prodbox-unit" $ do
           let perconaIndex = elemIndex "ensurePostgresOperatorRuntime" steps
               steadyIndex = elemIndex "ensureMinioRuntime SubstrateAws MinioSteadyStateHarbor" steps
           perconaIndex `shouldSatisfy` (`indexPrecedes` steadyIndex)
+      it
+        "places gateway MinIO bootstrap after AWS MinIO steady-state so first chart deploy can read/create the master seed"
+        $ do
+          let steadyIndex = elemIndex "ensureMinioRuntime SubstrateAws MinioSteadyStateHarbor" steps
+              bootstrapIndex = elemIndex "ensureGatewayMinioBootstrap" steps
+          steadyIndex `shouldSatisfy` (`indexPrecedes` bootstrapIndex)
+      it
+        "places AWS admin public-edge routes after gateway MinIO bootstrap so the OIDC client secret can be derived"
+        $ do
+          let bootstrapIndex = elemIndex "ensureGatewayMinioBootstrap" steps
+              adminIndex = elemIndex "ensureAdminPublicEdgeRoutes SubstrateAws" steps
+          bootstrapIndex `shouldSatisfy` (`indexPrecedes` adminIndex)
+      it "renders AWS admin routes on the AWS subzone host and issuer" $ do
+        let rendered =
+              BL8.unpack
+                ( encode
+                    ( adminPublicEdgeManifestItems
+                        (testValidatedSettings "/tmp/prodbox/.data")
+                        SubstrateAws
+                        "prodbox-test"
+                        "prodbox-test"
+                        "client-secret"
+                    )
+                )
+        rendered `shouldContain` "\"hostnames\":[\"aws.test.resolvefintech.com\"]"
+        rendered
+          `shouldContain` "\"redirectURL\":\"https://aws.test.resolvefintech.com/harbor/oauth2/callback\""
+        rendered
+          `shouldContain` "\"issuer\":\"https://aws.test.resolvefintech.com/auth/realms/prodbox\""
+        rendered
+          `shouldNotContain` "\"hostnames\":[\"test.resolvefintech.com\"]"
       it
         "places custom-image build steps after image-mirror (Harbor populated) and before Percona (Percona pulls from Harbor)"
         $ do
@@ -4415,6 +5024,8 @@ main = mainWithSuite "prodbox-unit" $ do
       let args = renderMinioChartArgs SubstrateHomeLocal MinioBootstrapPublic
       consecutivePair args "persistence.existingClaim=minio" `shouldBe` True
       consecutivePair args "persistence.size=200Gi" `shouldBe` True
+      consecutivePair args "resources.requests.memory=512Mi" `shouldBe` True
+      consecutivePair args "resources.limits.memory=2Gi" `shouldBe` True
       any ("persistence.storageClass=" `isPrefixOf`) args `shouldBe` False
       consecutivePair args "mode=standalone" `shouldBe` True
     it "Home substrate + steady-state image source: same persistence shape, Harbor-mirrored images" $ do
@@ -4838,6 +5449,18 @@ main = mainWithSuite "prodbox-unit" $ do
       (formPasswordFieldName <$> parsed) `shouldBe` Right "password"
       (formPasswordConfirmFieldName <$> parsed) `shouldBe` Right "password-confirm"
 
+    it "decodes HTML entities in the form action like a browser submit" $ do
+      let encodedActionForm =
+            "<form id=\"kc-passwd-update-form\" \
+            \action=\"https://test.resolvefintech.com/auth/realms/prodbox/login-actions/required-action?session_code=SCODE&amp;execution=UPDATE_PASSWORD&amp;client_id=account\" \
+            \method=\"post\">\
+            \<input type=\"password\" name=\"password\" />\
+            \<input type=\"password\" name=\"password-confirm\" />\
+            \</form>"
+      (formActionUrl <$> parseCredentialSetupForm encodedActionForm)
+        `shouldBe` Right
+          "https://test.resolvefintech.com/auth/realms/prodbox/login-actions/required-action?session_code=SCODE&execution=UPDATE_PASSWORD&client_id=account"
+
     it "collects all hidden inputs verbatim, preserving order" $ do
       let parsed = parseCredentialSetupForm syntheticForm
       (formHiddenFields <$> parsed)
@@ -4850,6 +5473,21 @@ main = mainWithSuite "prodbox-unit" $ do
     it "refuses HTML that lacks the kc-passwd-update-form id" $
       parseCredentialSetupForm "<html><body><form></form></body></html>"
         `shouldSatisfy` leftContains "kc-passwd-update-form"
+
+    it "extracts the Keycloak verify-email continuation link" $ do
+      let verifyEmailPage =
+            "<html><body>\
+            \<p class=\"instruction\">Verify email first</p>\
+            \<a href=\"/auth/realms/prodbox/login-actions/required-action?execution=UPDATE_PASSWORD&amp;client_id=account&amp;tab_id=TID\">Click here</a>\
+            \</body></html>"
+      parseCredentialSetupContinuationLink verifyEmailPage
+        `shouldBe` Right
+          "/auth/realms/prodbox/login-actions/required-action?execution=UPDATE_PASSWORD&client_id=account&tab_id=TID"
+
+    it "refuses continuation pages without a required-action anchor" $
+      parseCredentialSetupContinuationLink
+        "<html><body><a href=\"/auth/realms/prodbox/account\">Account</a></body></html>"
+        `shouldSatisfy` leftContains "required-action anchor"
 
     it "refuses HTML that has only one password input" $ do
       let onlyOnePassword =
@@ -4869,6 +5507,48 @@ main = mainWithSuite "prodbox-unit" $ do
               }
       renderCredentialSetupFormPost form "secret!" "secret!"
         `shouldBe` "session_code=SCODE&client_id=ac+count&password=secret%21&password-confirm=secret%21"
+
+    it "accepts invited-user OIDC claims with email_verified=true" $ do
+      let recipient = "test-invite@example.com"
+          issuer = "https://test.resolvefintech.com/auth/realms/prodbox"
+      assertInviteOidcClaims
+        issuer
+        recipient
+        ( object
+            [ "iss" .= issuer
+            , "email" .= recipient
+            , "email_verified" .= True
+            ]
+        )
+        `shouldBe` Right ()
+
+    it "refuses invited-user OIDC claims when email_verified is false" $ do
+      let recipient = "test-invite@example.com"
+          issuer = "https://test.resolvefintech.com/auth/realms/prodbox"
+      assertInviteOidcClaims
+        issuer
+        recipient
+        ( object
+            [ "iss" .= issuer
+            , "email" .= recipient
+            , "email_verified" .= False
+            ]
+        )
+        `shouldSatisfy` leftContains "email_verified"
+
+    it "refuses invited-user OIDC claims with the wrong email" $ do
+      let recipient = "test-invite@example.com"
+          issuer = "https://test.resolvefintech.com/auth/realms/prodbox"
+      assertInviteOidcClaims
+        issuer
+        recipient
+        ( object
+            [ "iss" .= issuer
+            , "email" .= ("different@example.com" :: String)
+            , "email_verified" .= True
+            ]
+        )
+        `shouldSatisfy` leftContains "email mismatch"
 
   describe "Sprint 4.11 predicate-library labels" $ do
     it "noLiveClusterTaggedAws exposes its label" $
@@ -4991,6 +5671,7 @@ main = mainWithSuite "prodbox-unit" $ do
       plan `shouldContain` "STEP=3 prodbox aws teardown"
       plan `shouldContain` "STEP=4 postflight tag sweep"
       plan `shouldContain` "STEP=5 destroy long-lived `pulumi_state_backend` S3 bucket"
+      plan `shouldContain` "ADMIN_CREDENTIAL_SOURCE=prodbox-config.dhall::aws_admin_for_test_simulation.*"
       plan `shouldContain` "CONFIRMATION_LITERAL=NUKE EVERYTHING"
 
   describe "Sprint 7.7 residue lifecycle partition" $ do
@@ -5416,6 +6097,42 @@ keycloakInviteQuotedPrintableFixture =
         ]
     )
 
+keycloakInviteMultipartDuplicateFixture :: BL8.ByteString
+keycloakInviteMultipartDuplicateFixture =
+  BL8.pack
+    ( unlines
+        [ "From: noreply@test.resolvefintech.com"
+        , "To: invitee@inbox.test.resolvefintech.com"
+        , "Subject: Verify your email"
+        , "Content-Type: multipart/alternative; boundary=\"invite-boundary\""
+        , ""
+        , "--invite-boundary"
+        , "Content-Type: text/plain; charset=UTF-8"
+        , ""
+        , "https://test.resolvefintech.com/auth/realms/prodbox/login-actions/action-token?key=ghi789"
+        , "--invite-boundary"
+        , "Content-Type: text/html; charset=UTF-8"
+        , "Content-Transfer-Encoding: quoted-printable"
+        , ""
+        , "<a href=3D\"https://test.resolvefintech.com/auth/realms/prodbox/login-actions/action-token?key=3Dghi789\">Activate</a>"
+        , "--invite-boundary--"
+        ]
+    )
+
+keycloakInviteMultipleDistinctFixture :: BL8.ByteString
+keycloakInviteMultipleDistinctFixture =
+  BL8.pack
+    ( unlines
+        [ "From: noreply@test.resolvefintech.com"
+        , "To: invitee@inbox.test.resolvefintech.com"
+        , "Subject: Verify your email"
+        , "Content-Type: text/plain; charset=UTF-8"
+        , ""
+        , "https://test.resolvefintech.com/auth/realms/prodbox/login-actions/action-token?key=first-token"
+        , "https://test.resolvefintech.com/auth/realms/prodbox/login-actions/action-token?key=second-token"
+        ]
+    )
+
 keycloakInviteMissingFixture :: BL8.ByteString
 keycloakInviteMissingFixture =
   BL8.pack
@@ -5654,6 +6371,11 @@ testValidatedSettings manualRoot =
                 , region = "us-east-1"
                 }
           , route53 = Route53Section {zone_id = "Z1234567890ABC"}
+          , aws_substrate =
+              AwsSubstrateSection
+                { hosted_zone_id = "ZAWSSUBZONE123"
+                , subzone_name = "aws.test.resolvefintech.com"
+                }
           , domain =
               DomainSection
                 { demo_fqdn = "test.resolvefintech.com"

@@ -29,6 +29,7 @@
 module Prodbox.Keycloak.CredentialSetupForm
   ( CredentialSetupForm (..)
   , parseCredentialSetupForm
+  , parseCredentialSetupContinuationLink
   , renderCredentialSetupFormPost
   )
 where
@@ -77,6 +78,27 @@ parseCredentialSetupForm raw = do
             ++ "); expected two (password + confirm)"
         )
     [] -> Left "credential-setup form has no <input type=\"password\"> fields"
+
+-- | Keycloak 26 renders the VERIFY_EMAIL required action as an
+-- intermediate page with a "click here" anchor to the next required
+-- action. The invite harness follows that anchor with the same cookie
+-- jar before parsing the UPDATE_PASSWORD form.
+parseCredentialSetupContinuationLink :: ByteString -> Either String Text
+parseCredentialSetupContinuationLink raw =
+  case uniqueText (filter isRequiredActionLink (collectAnchorHrefs body)) of
+    [] ->
+      Left "credential-setup continuation link not found (no required-action anchor)"
+    [href] -> Right href
+    links ->
+      Left
+        ( "multiple credential-setup continuation links found ("
+            ++ show (length links)
+            ++ ")"
+        )
+ where
+  body = Text.pack (BS8.unpack raw)
+  isRequiredActionLink href =
+    "/login-actions/required-action" `Text.isInfixOf` href
 
 -- | Build the URL-encoded POST body the form submits when the user
 -- types a new password. Hidden fields are preserved; the two
@@ -221,6 +243,28 @@ collectPasswordInputs body = go body []
                     Left _ -> go afterOpen acc
                 _ -> go afterOpen acc
 
+collectAnchorHrefs :: Text -> [Text]
+collectAnchorHrefs body = go body []
+ where
+  go remaining acc = case Text.breakOn "<a" remaining of
+    (_, "") -> reverse acc
+    (_, rest) ->
+      case Text.breakOn ">" rest of
+        (_, "") -> reverse acc
+        (tagBody, closeAndAfter) ->
+          let openTag = tagBody <> ">"
+              afterOpen = Text.drop 1 closeAndAfter
+           in case requireAttribute "href" openTag of
+                Right href -> go afterOpen (href : acc)
+                Left _ -> go afterOpen acc
+
+uniqueText :: [Text] -> [Text]
+uniqueText = foldr addIfMissing []
+ where
+  addIfMissing value acc
+    | value `elem` acc = acc
+    | otherwise = value : acc
+
 -- | Extract the value of a quoted attribute (@key="value"@) from an
 -- open tag. Accepts arbitrary whitespace between attributes, double
 -- or single quotes, and ignores attributes whose key matches as a
@@ -259,5 +303,13 @@ requireAttribute key tag = go tag
   extractQuotedValue quoteChar content =
     case Text.breakOn (Text.singleton quoteChar) content of
       (value, rest)
-        | not (Text.null rest) -> Right (Text.strip value)
+        | not (Text.null rest) -> Right (decodeHtmlAttributeValue (Text.strip value))
       _ -> Left ("attribute `" ++ Text.unpack key ++ "` is not closed")
+
+decodeHtmlAttributeValue :: Text -> Text
+decodeHtmlAttributeValue =
+  Text.replace "&quot;" "\""
+    . Text.replace "&#39;" "'"
+    . Text.replace "&lt;" "<"
+    . Text.replace "&gt;" ">"
+    . Text.replace "&amp;" "&"

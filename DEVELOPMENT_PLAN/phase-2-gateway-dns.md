@@ -1196,10 +1196,11 @@ remains reasonable as a curl invocation. The `forbidCurlInProductionSources`
 lint and the `toolCurl` prerequisite removal are deferred to Sprint 4.18,
 which owns the final repo-wide cleanup gate.
 
-The pod-internal `curl` references at `src/Prodbox/CLI/Rke2.hs:1414, 1572,
-1705, 3221` are inside Kubernetes Job container specs (using the
-`curlimages/curl:8.11.0` image) and are not in scope for replacement —
-they execute inside containers, not on the host.
+The remaining pod-internal `curl` references are inside Kubernetes Job
+container specs or existing in-cluster containers and are not in scope for
+host-side replacement — they execute inside containers, not on the host.
+Where those Jobs need a curl image after Harbor is available, they use the
+canonical Harbor mirror `127.0.0.1:30080/prodbox/curl-mirror:8.11.0`.
 
 ## Sprint 2.18: 127.0.0.1-Only NodePort Enforcement via host firewall ✅
 
@@ -1737,7 +1738,7 @@ authoritative decoder contract.
 
 ## Sprint 2.21: File-Watch Reload Trigger and Auto-Restart on BootConfig Change ✅
 
-**Status**: Active (May 24, 2026 — code-owned surface landed: `fsnotify ^>=0.4`
+**Status**: Done (May 24, 2026 — code-owned surface landed: `fsnotify ^>=0.4`
 declared in `prodbox.cabal`; new `configFileWatchLoop` worker in
 `src/Prodbox/Gateway/Daemon.hs` subscribes to events on the parent directory
 of the daemon's `--config` path and feeds the existing `envReloadSignals`
@@ -1829,15 +1830,13 @@ kubelet restarts the Pod with the new config. See
 
 ### Remaining Work
 
-- The implementing sprint chooses between `fsnotify` and `hinotify`. The chosen
-  library binding is documented in [config_doctrine.md §7](../documents/engineering/config_doctrine.md#7-file-watch-reload-trigger).
-- The live exercise is the closure gate for this sprint. Code work that lands without
-  the live exercise leaves the sprint `Active` until the operator runs the verification
-  block.
+None. The implementation chose `fsnotify`; the live home-substrate file-watch exercise
+landed on 2026-06-02. The drain-completion cancellation-propagation issue found during
+that exercise is independent follow-up work, not a Sprint `2.21` closure blocker.
 
 ## Sprint 2.22: Chart-Side Dhall ConfigMap + Secret-Mounted Credentials ✅
 
-**Status**: Active (May 24, 2026 — code-owned chart-side closure landed:
+**Status**: Done (May 24, 2026 — code-owned chart-side closure landed:
 `charts/gateway/templates/configmap-config.yaml` and
 `configmap-orders.yaml` render Dhall content;
 `charts/gateway/templates/secret-aws-credentials.yaml` and
@@ -1932,10 +1931,9 @@ for the authoritative mount layout.
 
 ### Remaining Work
 
-- The implementing sprint decides whether to keep the existing Secret names (renaming
-  keys) or introduce new Secret names. The chart-side migration must not break a running
-  cluster on `helm upgrade` — `lookup`-guarded creation patterns preserve credentials
-  across upgrades per the existing chart conventions.
+None. The chart-side migration uses Dhall-fragment Secrets mounted at the canonical
+paths, preserves MinIO credentials across upgrades with `lookup`, and was exercised live
+by `prodbox test all` retry 21 on 2026-06-01.
 
 ## Documentation Requirements
 

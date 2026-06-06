@@ -103,7 +103,9 @@ Integration-selected `prodbox test` commands execute in two phases:
 2. **Phase 1.5 - integration runbook gate**: cluster-backed suites may enforce
    `prodbox rke2 reconcile`.
 3. **Phase 1.6 - supported runtime bootstrap**: aggregate or destructive flows may repair the
-   supported runtime before validation.
+   supported runtime before validation. When Phase 1.5 already ran the runbook reconcile,
+   Phase 1.6 reuses that reconciled local runtime and performs the chart reset/deploy work
+   without repeating the full `prodbox rke2 reconcile` image-publication path.
 4. **Phase 2 - test execution**: run Haskell suites and named validation payloads only after the
    earlier phases succeed.
 
@@ -168,6 +170,7 @@ Session-style hidden setup is not the supported orchestration model for command-
 - resource setup and cleanup ownership for real validations belongs in
   `src/Prodbox/TestValidation.hs` and the relevant infrastructure modules
 - the suite-level managed IAM credential harness for `prodbox test integration aws-iam`,
+  targeted `prodbox test integration <name> --substrate aws` validations,
   `prodbox test integration all`, and `prodbox test all` belongs in
   `src/Prodbox/TestRunner.hs` plus `src/Prodbox/Aws.hs`
 - cleanup doctrine is defined by [Integration Fixture Doctrine](./integration_fixture_doctrine.md)

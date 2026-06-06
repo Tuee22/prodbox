@@ -3,6 +3,7 @@
 module Prodbox.Lib.Storage
   ( ChartStorageBinding (..)
   , ChartStorageSpec (..)
+  , chartDynamicStorageManifest
   , chartStorageClassName
   , chartPersistentVolumeManifest
   , chartStorageManifest
@@ -142,6 +143,43 @@ chartStorageManifest namespace rootChart bindings nodeHostname =
               ]
         ]
     ]
+
+chartDynamicStorageManifest :: String -> String -> String -> [ChartStorageBinding] -> Value
+chartDynamicStorageManifest namespace rootChart storageClassName bindings =
+  object
+    [ "apiVersion" .= ("v1" :: String)
+    , "kind" .= ("List" :: String)
+    , "items" .= (namespaceManifestItem namespace rootChart : map bindingItem bindings)
+    ]
+ where
+  bindingItem binding =
+    object
+      [ "apiVersion" .= ("v1" :: String)
+      , "kind" .= ("PersistentVolumeClaim" :: String)
+      , "metadata"
+          .= object
+            [ "name" .= chartStorageBindingPersistentVolumeClaimName binding
+            , "namespace" .= namespace
+            , "labels"
+                .= object
+                  [ "prodbox.io/chart-root" .= rootChart
+                  , "prodbox.io/statefulset" .= chartStorageBindingStatefulSetName binding
+                  ]
+            ]
+      , "spec"
+          .= object
+            [ "accessModes" .= ["ReadWriteOnce" :: String]
+            , "volumeMode" .= ("Filesystem" :: String)
+            , "storageClassName" .= storageClassName
+            , "resources"
+                .= object
+                  [ "requests"
+                      .= object
+                        [ "storage" .= chartStorageBindingStorageSize binding
+                        ]
+                  ]
+            ]
+      ]
 
 chartPersistentVolumeManifest :: String -> String -> [ChartStorageBinding] -> String -> Value
 chartPersistentVolumeManifest namespace rootChart bindings nodeHostname =

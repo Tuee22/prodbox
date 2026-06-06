@@ -41,16 +41,20 @@ The supported chart doctrine is:
    `keycloak-postgres` release renders a `pgv2.percona.com/v2` `PerconaPGCluster` resource in the
    root chart namespace, and the cluster-wide Percona operator reconciles it.
 4. `keycloak` depends on that namespace-local Patroni cluster.
-5. `vscode` depends on `keycloak`, does not talk directly to PostgreSQL, and targets an
-   Envoy-authenticated public browser path rather than a permanent app-local nginx auth proxy.
+5. `vscode` depends on `keycloak`, does not talk directly to PostgreSQL, targets an
+   Envoy-authenticated public browser path rather than a permanent app-local nginx auth proxy,
+   and keeps Envoy's OIDC provider token exchange on the namespace-local `keycloak` Service.
 6. `api` runs from the shared `prodbox-public-edge-workload` image, keeps its workload resources
    namespace-local in `api`, and targets the shared-host JWT-protected `/api` route by attaching
-   to the shared `public-edge` `Gateway` published from the `vscode` namespace.
+   to the shared `public-edge` `Gateway` published from the `vscode` namespace. Envoy validates
+   JWTs against the public issuer but fetches JWKS through an in-cluster backchannel to
+   `keycloak.vscode.svc.cluster.local`.
 7. `websocket` runs from the shared `prodbox-public-edge-workload` image, keeps its workload and
    `redis` resources namespace-local in `websocket`, owns workload-managed OIDC bootstrap on
    `/ws/oidc`, targets the shared-host JWT-protected `/ws` route by attaching to the shared
    `public-edge` `Gateway` in `vscode`, and currently exchanges tokens through a private in-cluster
-   backchannel to `keycloak.vscode.svc.cluster.local`.
+   backchannel to `keycloak.vscode.svc.cluster.local`. Envoy's JWT JWKS fetch uses the same
+   in-cluster Keycloak service boundary.
 8. The current supported shared public edge is anchored in the `vscode` namespace, where the chart
    platform publishes the shared `Gateway`, listener certificate, and `/auth` Keycloak identity
    route consumed by the shipped browser, API, WebSocket, Harbor, and MinIO surfaces.
@@ -66,6 +70,9 @@ The supported chart doctrine is:
     `app.kubernetes.io/name`, `app.kubernetes.io/managed-by: prodbox`, and
     `prodbox.io/chart-root`, and `prodbox lint chart` validates those invariants together with
     `Chart.yaml` metadata.
+13. Keycloak's NetworkPolicy keeps explicit egress: PostgreSQL, in-namespace Keycloak service
+    traffic, cluster DNS, external HTTPS for issuer/OIDC paths, and the configured SMTP port from
+    `.Values.smtp.port` for SES-backed invite email.
 
 ## 1A. Chart Lint and Route Inventory Generation
 
@@ -103,7 +110,7 @@ the current supported public edge is shared.
 - `prodbox charts deploy vscode` deploys `keycloak-postgres`, `keycloak`, and `vscode` into the
   `vscode` namespace and publishes the shared `public-edge` `Gateway`, the HTTPS listener
   certificate, the redirect-only HTTP listener and route, and the `/auth` Keycloak route used by
-  the supported shared-host edge.
+  the supported shared-host edge and the authenticated `prodbox users` invite API.
 - `prodbox charts deploy api` deploys its workload and JWT `SecurityPolicy` into the `api`
   namespace, then attaches its `HTTPRoute` to the shared `public-edge` `Gateway` in `vscode`
   through a cross-namespace `parentRef`.
@@ -285,10 +292,12 @@ Root charts:
   anchors the shared public-edge `Gateway`, HTTPS certificate, redirect-only HTTP route, and
   `/auth` route there.
 - `api` deploys the JWT-protected public API workload into the `api` namespace and attaches its
-  `HTTPRoute` to the shared `public-edge` `Gateway` in `vscode`.
+  `HTTPRoute` to the shared `public-edge` `Gateway` in `vscode`; its `SecurityPolicy` keeps the
+  public issuer while fetching JWKS from the in-cluster Keycloak service through
+  `remoteJWKS.backendRefs` and a `ReferenceGrant` in `vscode`.
 - `websocket` deploys the Redis-backed public WebSocket workload into the `websocket` namespace,
   attaches its `HTTPRoute` resources to the shared `public-edge` `Gateway` in `vscode`, and uses a
-  private token-endpoint backchannel to `keycloak.vscode.svc.cluster.local`.
+  private token-endpoint and JWT JWKS backchannel to `keycloak.vscode.svc.cluster.local`.
 
 ## 9. Supported Public Auth Model
 
@@ -305,18 +314,28 @@ The supported `vscode` public path is:
 
 The current implementation boundary is:
 
-- `vscode` uses Envoy-managed browser OIDC enforcement through `SecurityPolicy`.
+- `vscode` uses Envoy-managed browser OIDC enforcement through `SecurityPolicy`; browser
+  authorization redirects stay on the public issuer, while Envoy's provider backchannel uses the
+  namespace-local `keycloak` Service on port 8080.
 - `api` uses Envoy-local JWT validation plus route-claim authorization through `SecurityPolicy`,
   with its `HTTPRoute` attached from namespace `api` to the shared `public-edge` `Gateway` in
-  `vscode`.
+  `vscode`; the issuer stays public, while `remoteJWKS` fetches signing keys from the in-cluster
+  Keycloak service through a cross-namespace backend reference granted by `ReferenceGrant`.
 - `websocket` uses workload-managed OIDC bootstrap and cookie-backed session ownership on
   `/ws/oidc`, Envoy-local JWT validation plus route-claim authorization on `/ws`, Redis-backed
   reconnect-safe workload state, readiness-based drain for live upgraded connections, and a private
-  token-endpoint backchannel to `keycloak.vscode.svc.cluster.local`.
+  token-endpoint and JWT JWKS backchannel to `keycloak.vscode.svc.cluster.local`.
 - `keycloak` stays on the shared public hostname under `/auth` and publicly exposes only the
-  identity-route surfaces the shipped browser and workload-managed OIDC flows require; on the
-  current supported public-edge path, the shared `Gateway`, listener certificate, and identity
-  route are anchored in the `vscode` namespace.
+  identity-route surfaces the shipped browser and workload-managed OIDC flows require plus
+  `/auth/admin` for the authenticated operator invite API; on the current supported public-edge
+  path, the shared `Gateway`, listener certificate, and identity route are anchored in the
+  `vscode` namespace.
+- Chart reset must not treat production ACME issuance as disposable chart state. Before deleting
+  the `vscode` namespace, the chart platform copies the issued `vscode/public-edge-tls` Secret to
+  the retained Kubernetes Secret `prodbox/public-edge-tls-retained`; after namespace recreation and
+  before the Keycloak/Gateway chart re-apply, it restores that Secret into `vscode`. This keeps
+  certificate material in Kubernetes while avoiding repeated production ACME orders during normal
+  home-substrate chart resets.
 - Public API and WebSocket workloads still follow the same public-edge doctrine and do not add
   chart-local auth proxies, extra public `Gateway` resources, or a parallel ingress model.
 
@@ -357,9 +376,23 @@ idiom so re-deploys preserve the existing value.
 When `api` or `websocket` deploy as separate root charts, the same gateway-service
 derivation path runs for their namespaces and Helm `lookup` reads the shared
 `keycloak_*` client values from `vscode`'s `keycloak-runtime` Secret as already
-rendered. The `websocket` workload continues to use a private in-cluster token-endpoint
-backchannel to `keycloak.vscode.svc.cluster.local:8080` rather than a second public
-identity surface.
+rendered. The `vscode` SecurityPolicy, API/WebSocket JWT `remoteJWKS` policies, and WebSocket
+workload all keep provider/token/JWKS backchannels in-cluster (`keycloak` Service for
+namespace-local VS Code; the shared `keycloak.vscode.svc.cluster.local:8080` endpoint for
+separately deployed API/WebSocket) rather than depending on a second public identity surface or
+public-load-balancer hairpin behavior. The host-side Harbor/MinIO admin routes use the same
+public-edge rule: substrate-aware public issuer and redirect URLs, plus the shared internal
+Keycloak token endpoint for Envoy's provider exchange. The AWS substrate platform installs those
+admin routes after gateway MinIO bootstrap.
+
+The gateway chart emits Namespace resources for cross-namespace RBAC targets such as `keycloak`
+and `vscode`. If the invite SMTP sync must create those namespaces first so `keycloak-smtp` exists
+before Keycloak's Helm `lookup`, the sync stamps the same Helm ownership metadata (`gateway`
+release in the `gateway` namespace) and the gateway Namespace resources carry
+`helm.sh/resource-policy: keep`. That keeps the pre-sync compatible with Helm adoption while
+preventing gateway uninstall from deleting workload namespaces or retained SMTP Secrets. Existing
+Keycloak realms are still patched by `prodbox users invite` from the same `keycloak-smtp` Secret
+before invite sends, because realm import is first-create only.
 
 ## 11. Planning Ownership
 

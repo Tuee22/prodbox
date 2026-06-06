@@ -725,7 +725,7 @@ interactiveConfigSetupInput repoRoot = do
   demoTtl <- promptInt "Demo DNS TTL seconds" 60
   showAcmeProviderGuidance
   providerIndex <-
-    promptNumberedChoice "Choose the ACME provider number" ["ZeroSSL", "Let's Encrypt"] 0
+    promptNumberedChoice "Choose the ACME provider number" ["ZeroSSL", "Let's Encrypt"] 1
   acmeEmailRaw <- promptText "ACME notification email (certificate expiry notices)" Nothing
   (acmeServerValue, eabKeyIdRaw, eabHmacKeyRaw) <-
     case providerIndex of
@@ -954,10 +954,10 @@ showHostedZoneChoiceGuidance = do
 showAcmeProviderGuidance :: IO ()
 showAcmeProviderGuidance = do
   writeOutputLine "ACME provider guidance:"
-  writeOutputLine "1. ZeroSSL (recommended): open https://app.zerossl.com -> Developer -> EAB"
+  writeOutputLine "1. ZeroSSL: open https://app.zerossl.com -> Developer -> EAB"
   writeOutputLine "   Credentials, then copy the EAB Key ID and HMAC key."
-  writeOutputLine "2. Let's Encrypt: no account or EAB credentials are required; you only need"
-  writeOutputLine "   the notification email below."
+  writeOutputLine "2. Let's Encrypt (recommended): no account or EAB credentials are required;"
+  writeOutputLine "   you only need the notification email below."
   writeOutputLine ""
 
 showPolicyTierGuidance :: IO ()

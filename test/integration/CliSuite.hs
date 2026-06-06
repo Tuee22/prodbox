@@ -283,8 +283,8 @@ integrationCliSuite = do
         patroniSecretsManifest `shouldContain` "prodbox-vscode-pg-primaryuser"
 
         upgradeRecord <- readFile (tmpDir </> "fake-chart-state" </> "helm-upgrade.txt")
-        upgradeRecord `shouldContain` "upgrade|--install|--wait|--atomic|--timeout|30m0s|keycloak"
-        upgradeRecord `shouldContain` "upgrade|--install|--wait|--atomic|--timeout|30m0s|vscode"
+        upgradeRecord `shouldContain` "upgrade|--install|--wait|--timeout|30m0s|keycloak"
+        upgradeRecord `shouldContain` "upgrade|--install|--wait|--timeout|30m0s|vscode"
 
         kubectlRecord <- readFile (tmpDir </> "fake-chart-state" </> "kubectl.txt")
         kubectlRecord `shouldContain` "get|crd|perconapgclusters.pgv2.percona.com|-o|name"
@@ -356,6 +356,34 @@ integrationCliSuite = do
         deleteRecord `shouldContain` "delete|pvc|vscode-data-0|--namespace|vscode"
         deleteRecord `shouldContain` "delete|pv|prodbox-chart-vscode-vscode-vscode-0-data"
         deleteRecord `shouldContain` "delete|namespace|vscode"
+
+    it "stages retained Patroni restore from ordinal-0 host data when no live primary exists" $
+      withSystemTempDirectory "prodbox-hs-cli" $ \tmpDir -> do
+        binary <- resolveBinaryPath
+        writeRepoMarkers tmpDir
+        writeFile (tmpDir </> "prodbox-config.dhall") validConfig
+        createDirectoryIfMissing
+          True
+          (tmpDir </> ".data" </> "vscode" </> "keycloak-postgres" </> "prodbox-vscode-pg" </> "0" </> "data")
+        baseEnvVars <- fakeChartEnvironment tmpDir
+        let envVars = ("PRODBOX_FAKE_PATRONI_STAGED_RESTORE", "true") : baseEnvVars
+
+        (deployExitCode, deployStdout, deployStderr) <-
+          readCreateProcessWithExitCode
+            (proc binary ["charts", "deploy", "vscode"]) {cwd = Just tmpDir, env = Just envVars}
+            ""
+
+        deployExitCode `shouldBe` ExitSuccess
+        deployStderr `shouldBe` ""
+        deployStdout `shouldContain` "CHART_DEPLOYMENT"
+        deployStdout `shouldContain` "ROOT_CHART=vscode"
+
+        upgradeRecord <- readFile (tmpDir </> "fake-chart-state" </> "helm-upgrade.txt")
+        let upgradeLines = lines upgradeRecord
+            keycloakPostgresUpgrades =
+              filter ("|keycloak-postgres|" `isInfixOf`) upgradeLines
+        length keycloakPostgresUpgrades `shouldBe` 2
+        length upgradeLines `shouldBe` 4
 
     it "rejects internal dependency charts on the public charts surface" $
       withSystemTempDirectory "prodbox-hs-cli" $ \tmpDir -> do
@@ -541,6 +569,10 @@ integrationCliSuite = do
         applyAdminRoutes `shouldContain` "minio-console"
         applyAdminRoutes `shouldContain` "harbor-oidc"
         applyAdminRoutes `shouldContain` "minio-oidc"
+        applyAdminRoutes
+          `shouldContain` "https://test.resolvefintech.com/auth/realms/prodbox/protocol/openid-connect/auth"
+        applyAdminRoutes
+          `shouldContain` "http://keycloak.vscode.svc.cluster.local:8080/auth/realms/prodbox/protocol/openid-connect/token"
 
         helmRecord <- readFile (tmpDir </> "fake-rke2-state" </> "helm.txt")
         helmRecord `shouldContain` "repo|add|minio|https://charts.min.io/"
@@ -1190,6 +1222,7 @@ fakeChartEnvironment repoRoot = do
                 && key /= "PRODBOX_FAKE_CHART_RECORD_DIR"
                 && key /= "PRODBOX_FAKE_HELM_LIST_JSON"
                 && key /= "PRODBOX_FAKE_PATRONI_STAGED_RESTORE"
+                && key /= "PRODBOX_FAKE_PATRONI_LIVE_ANCHOR"
                 && key /= "PRODBOX_TEST_HOST_MASTER_SEED_HEX"
           )
           currentEnvironment
@@ -1341,7 +1374,7 @@ fakeKubectlScript =
     , "    fi"
     , "    ;;"
     , "  'get endpoints')"
-    , "    if [[ \"${3:-}\" == 'prodbox-vscode-pg-ha' && \"$*\" == *'jsonpath={.subsets[0].addresses[0].targetRef.name}'* ]]; then"
+    , "    if [[ \"${3:-}\" == 'prodbox-vscode-pg-ha' && \"$*\" == *'jsonpath={.subsets[0].addresses[0].targetRef.name}'* ]] && { [[ \"${PRODBOX_FAKE_PATRONI_LIVE_ANCHOR:-}\" == 'true' ]] || [[ -f \"$record_dir/patroni-ready.count\" ]]; }; then"
     , "      printf 'prodbox-vscode-pg-instance1-0\\n'"
     , "    else"
     , "      printf 'Error from server (NotFound): endpoints \"%s\" not found\\n' \"${3:-endpoints}\" >&2"
@@ -1352,6 +1385,15 @@ fakeKubectlScript =
     , "    if [[ \"${3:-}\" == 'prodbox-vscode-pg-instance1-0-pgdata' && \"$*\" == *'jsonpath={.spec.volumeName}'* ]]; then"
     , "      printf 'prodbox-chart-vscode-keycloak-postgres-prodbox-vscode-pg-0-data\\n'"
     , "    elif [[ \"$*\" == *'postgres-operator.crunchydata.com/cluster=prodbox-vscode-pg,postgres-operator.crunchydata.com/data=postgres'* ]]; then"
+    , "      if [[ \"${PRODBOX_FAKE_PATRONI_STAGED_RESTORE:-}\" == 'true' ]]; then"
+    , "        claim_list_count=$(next_counter \"$record_dir/patroni-claim-list.count\")"
+    , "        if [[ \"$claim_list_count\" -eq 1 ]]; then"
+    , "          cat <<'JSON'"
+    , "{\"items\":[{\"metadata\":{\"name\":\"prodbox-vscode-pg-instance1-0-pgdata\"}}]}"
+    , "JSON"
+    , "          exit 0"
+    , "        fi"
+    , "      fi"
     , "      cat <<'JSON'"
     , "{\"items\":[{\"metadata\":{\"name\":\"prodbox-vscode-pg-instance1-0-pgdata\"}},{\"metadata\":{\"name\":\"prodbox-vscode-pg-instance1-1-pgdata\"}},{\"metadata\":{\"name\":\"prodbox-vscode-pg-instance1-2-pgdata\"}}]}"
     , "JSON"

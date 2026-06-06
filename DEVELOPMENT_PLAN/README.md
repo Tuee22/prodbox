@@ -290,16 +290,10 @@ Validated: `prodbox check-code` exit 0; `prodbox test unit` 628/628;
 `prodbox test integration cli` / `env` exit 0; `prodbox lint docs` /
 `docs check` exit 0; `helm template keycloak charts/keycloak` and
 `helm template keycloak-postgres charts/keycloak-postgres` both render
-cleanly. Sprint 3.13 remains `🔄 Active` — chunk-8 closes one slice of the
-deliverable list (data-bound Patroni + admin password). The remaining
-slices (OAuth client secrets + demo-user password; the host-side
-`resolveChartSecrets` rewrite; `shouldResetPatroniStorage` loud-failure
-rework; `.patroni-anchor-volume` marker removal;
-`AwsSesStack.persistKeycloakSmtpChartSecrets` + `UsersAdmin` migration off
-`.prodbox-state/charts/keycloak/.secrets.json`) are scheduled for follow-on
-chunks. Sprint 4.18's `forbidDotProdboxState` lint stays blocked until
-those `.prodbox-state` writes close. The live four-block preserved-data
-exercise is the full-sprint closure gate.
+cleanly. This chunk-8 snapshot is superseded by the later Sprint 3.13
+closure recorded in the Phase Overview: chunks 9–33 removed the remaining
+OAuth, demo-user, SMTP, Patroni marker, and gateway-event-key cache paths,
+and the live four-block preserved-data exercise closed on 2026-06-01.
 
 **2026-05-31 — Plan-suite doc-sync brings README and 00-overview into agreement
 with the phase-doc truth.** The phase docs had drifted ahead of the live tracker over
@@ -326,8 +320,8 @@ remaining case: Sprints 2.21/2.22 (live RKE2 reconcile + ConfigMap edit + DNS wr
 rewrite); 3.14 (live charts deploy api/websocket); 4.10/4.13/4.17 (live AwsSesStack
 migrate, live nuke, live cascade against running AWS cluster); 4.18 (blocked on 3.13's
 chart-secret cache closure); 7.5.c.v + 7.8 (live `prodbox test all --substrate aws`
-roll-up); 8.5 (live Keycloak credential-setup form-structure capture) + 8.6 (blocked
-on 7.5.c.v + 8.5). The only code-side work that could be attempted in this session —
+roll-up); 8.5 (now local POST/OIDC code + unit proof, with live substrate validation
+remaining) + 8.6 (blocked on live 8.5 + AWS aggregate). The only code-side work that could be attempted in this session —
 Sprint 3.13's host-side `resolveChartSecrets` rewrite — is high-risk (it gut-rewrites
 the chart-deploy secret-injection pipeline + cascades through `shouldResetPatroniStorage`
 and the chart-secret value flow) and cannot be safely validated without the live
@@ -343,7 +337,7 @@ twice leaked AWS resources when the per-run `aws-eks-test` Pulumi destroy hit
 EKS cluster lagging async cleanup) after a 20-minute wait. Two independent gaps caused the leak,
 each now closed:
 
-- **Sprint 4.23 (root cause, 🔄 Active — code-owned surface landed):** the per-run EKS destroy
+- **Sprint 4.23 (root cause, ✅ Done on the code-owned surface):** the per-run EKS destroy
   path did not drain the EKS cluster's AWS-affecting K8s resources before `pulumi destroy`, so it
   raced AWS's ENI cleanup. `src/Prodbox/Infra/AwsEksTestStack.hs::destroyAwsEksTestStackStatus`
   now calls the new best-effort helper `drainAwsEksClusterBeforeDestroy` (deleting LoadBalancer
@@ -395,8 +389,9 @@ helper `harnessPostflightResiduePolicy` + a `Sprint 7.9` unit-test describe bloc
 Validated: `check-code` 0; `test unit` all pass; `test integration cli`/`env` exit 0;
 `docs check`/`lint docs` 0. Separate deferred follow-on (NOT addressed here): the lost
 `aws-ses` Pulumi state (long-lived S3 backend bucket missing) leaving `aws-ses`
-Pulumi-unmanageable until re-imported/re-provisioned. Live `prodbox test all --substrate
-aws` roll-up remains the closure gate.
+Pulumi-unmanageable until re-imported/re-provisioned. Later Phase `8` follow-up work closes
+that state-loss recovery by importing retained SES/S3/IAM resources during `aws-ses-resources`.
+Live `prodbox test all --substrate aws` roll-up remains the closure gate.
 
 **2026-05-28 — Sprint 4.22 follow-on landed: create-call-site coverage lint.** The
 second half of the § 3.1 totality enforcement is now in `check-code`: a new
@@ -777,28 +772,18 @@ crashing — the contract is preserved. Full closure of Sprint 2.19 requires dia
 why the dedicated `prodbox-gateway` MinIO user does not have the HeadObject grant the
 master-seed read needs and is tracked as a Sprint 2.19 follow-up.
 
-**Run-5 (AWS substrate, ~50m) revealed an operator-driven config gap on the
+**Run-5 (AWS substrate, ~50m) revealed the first hosted-zone-ID propagation gap on the
 Sprint 7.5.c.v live path.** `prodbox test all --substrate aws` provisioned the
 EKS cluster + Harbor + MinIO + Percona + Envoy Gateway + cert-manager + AWS LBC
 + workload charts and reached `CLASSIFICATION=ready-for-external-proof`, but the
 first AWS-substrate canonical validation (`charts-vscode --substrate aws`) failed
-immediately with `substrateHostedZoneId: aws_substrate.hosted_zone_id is empty;
---substrate aws runs require aws_substrate.hosted_zone_id per
-development_plan_standards.md § M (no fallback)`. This is by design — the
-no-fallback contract requires the operator to supply the AWS subzone's hosted
-zone ID in `prodbox-config.dhall` before AWS-substrate validations can run.
-
-The operator-driven workflow to close this gap on a fresh AWS substrate run is:
-(1) provision the subzone once via `prodbox pulumi aws-subzone-resources --yes`;
-(2) extract the hosted zone ID from `pulumi stack output --show-secrets
-hosted_zone_id` on the `aws-eks-subzone` stack; (3) set
-`aws_substrate.hosted_zone_id = "Z…"` in `prodbox-config.dhall`; (4)
-re-run `prodbox test all --substrate aws`. The harness postflight destroys the
-subzone with the rest of the per-run stacks, so the ID changes between runs —
-this manual step is required each time. (A code follow-up to read the subzone
-hosted zone ID from a stack-output cache when config is empty is out of scope
-for run-5 and would need explicit doctrine approval to override the no-fallback
-contract in [development_plan_standards.md § M](development_plan_standards.md#substrate-coverage-and-independence-no-fallback).)
+because the just-provisioned subzone ID was not available to downstream validation
+commands. That gap is now closed without violating the no-fallback doctrine:
+the harness reads the live `aws-eks-subzone` Pulumi output after provisioning,
+passes `PRODBOX_AWS_SUBSTRATE_HOSTED_ZONE_ID` to child bootstrap and validation
+commands, and `PublicEdge.resolveSubstrateHostedZoneId` resolves AWS hosted-zone
+data from `aws_substrate.hosted_zone_id`, that harness env var, or the live
+stack output. It still never falls back to the home `route53.zone_id`.
 
 The postflight cleanup left residual AWS resources (`aws-eks-test-vpc`,
 `aws-test-vpc`, and 3 `aws-test-node-*` EC2 instances) on the operator AWS account
@@ -884,9 +869,10 @@ Sprint `4.15` (cascade tolerates absent cluster) closed the same
 day with a live verification on this host: `prodbox rke2 delete
 --cascade --yes` now skips the K8s drain phase cleanly when the
 cluster is already gone and proceeds to the per-run Pulumi destroys.
-The live AwsSesStack admin-credential switch / live cascade
-exercise against a running cluster / live `nuke` exercise are
-scheduled as remaining work for Sprints `4.10`–`4.13`. Phase `8` is `Active` on Sprints
+The live AwsSesStack admin-credential migrate-backend body and live
+cascade exercise against a running cluster remain tracked on the
+Phase 4 ledger; the live `nuke` exercise closed on June 3, 2026.
+Phase `8` is `Active` on Sprints
 `8.5`–`8.6`. **Phase `2`, Phase `3`, and Phase `4` reopened May 23, 2026** to schedule
 the `.prodbox-state/` elimination work surfaced by the May 22 cascade-credentials
 failure on this host: Phase `2` adds Sprints `2.17` (native Haskell HTTP client replaces
@@ -1122,8 +1108,8 @@ Reopened sprints by phase:
   teardown command that refuses non-TTY contexts and requires the typed-confirmation
   literal `NUKE EVERYTHING`. Code frameworks for all four sprints landed May 21, 2026; the
   live operator validations (AwsSesStack admin-credential switch + live migration body,
-  live cascade exercise against a running cluster, live `nuke` exercise) are tracked as
-  remaining work in the respective sprint blocks.
+  live cascade exercise against a running cluster) are tracked as remaining work in the
+  respective sprint blocks; live `nuke` closed on June 3, 2026.
 - Phase 4 — **Sprints 4.14 + 4.15** (added May 21, 2026 from the live
   `prodbox rke2 delete --help` and `--cascade --yes` review):
   Sprint `4.14` enforces the operator vocabulary contract introduced
@@ -1271,12 +1257,12 @@ A sprint can move to `Done` only when all of the following are true:
 | 0 | Planning and Documentation Topology for Haskell Rewrite | ✅ Done (Sprints 0.1–0.8). Sprint 0.8 (May 24, 2026 — pure-Dhall config doctrine adoption) closed on its owned doc-revision surface: `documents/engineering/config_doctrine.md` SSoT created, governed engineering and root docs revised to defer to it, plan suite updated, and the four validation gates exit 0 (`prodbox lint docs`, `prodbox docs check`, `prodbox check-code`, `prodbox test unit` 533/533). The code-implementation work lands in Phase 1 Sprint 1.28, Phase 2 Sprints 2.20/2.21/2.22, and Phase 3 Sprint 3.14. | [phase-0-planning-documentation.md](phase-0-planning-documentation.md) |
 | 1 | Haskell Runtime, CLI, Config, and Pulumi Foundations | ✅ Done (Sprints 1.1–1.28). Sprint 1.28 (May 24, 2026) closed the `dhall` allow-newer + env-var-read lint rule contract: existing `allow-newer: *:base, *:template-haskell` continues to satisfy the `dhall ^>=1.42` transitive deps under GHC 9.14.1; `src/Prodbox/CheckCode.hs::checkEnvVarConfigReads` wired into the doctrine-alignment check; `PRODBOX_LOG_LEVEL` / `PRODBOX_CONFIG_PATH` / `PRODBOX_PORT` env-var reads removed from `src/Prodbox/Gateway.hs`; daemon-lifecycle tests updated to the new sole-CLI-source contract. | [phase-1-runtime-cli-aws-foundations.md](phase-1-runtime-cli-aws-foundations.md) |
 | 2 | Haskell Gateway Runtime and DNS Ownership | ✅ Done (Sprints 2.1–2.16 + 2.17 + 2.18 + 2.19 + 2.20 + 2.21 + 2.22, with Sprint 2.21 closed via live home-substrate file-watch exercise 2026-06-02 — drain-completion cancellation-propagation residual deferred to Sprint 2.23 follow-up). Code-side highlights: ✅ Sprint 2.17 (native Haskell HTTP client replaces curl on the host-side CLI surface, May 23, 2026; TestValidation + RKE2-installer curl callers remain on the ledger as Sprint 4.18 follow-up); ✅ Sprint 2.18 (foundational host-side `host firewall gateway-restrict --port PORT` subcommand + pure rule helpers, May 23, 2026; chart-side NodePort + reconcile wiring land with Sprint 2.19); ✅ Sprint 2.20 (May 24, 2026 — full closure: `Prodbox.Gateway.Types.parseDaemonConfig` removed from the codebase; `Prodbox.Gateway.Settings.loadDaemonConfig` decodes Dhall exclusively via `Dhall.inputFile auto`; `renderGatewayConfigTemplate` emits Dhall (operator `gateway config-gen` produces `.dhall`); all JSON fixtures across `test/unit/Main.hs`, `test/integration/CliSuite.hs`, `test/daemon-lifecycle/Main.hs` migrate to Dhall; goldens updated; 543/543 unit tests, 28/28 integration cli, 28/28 integration env, 14/14 daemon-lifecycle); ✅ Sprint 2.21 (live home-substrate closure 2026-06-02 — `fsnotify ^>=0.4` added; `configFileWatchLoop` worker watches the daemon's `--config` parent directory and feeds `envReloadSignals`; SIGHUP handler removed; BootConfig changes drain-and-exit per doctrine §8; live exercise: chunk 47 switched the chart's `--config` mount from `subPath` to a directory mount so kubelet's atomic `..data` symlink swap fires fsnotify on the parent directory (subPath silently breaks ConfigMap hot-reload); chunk 48 fixed `reloadLiveConfig` to reapply the chunk-24 in-memory `event_keys` derivation to the freshly-decoded config before `daemonBootFieldsChanged` compares, so chart-rendered base64url values no longer spuriously trip the boot-change classifier on every LiveConfig edit; LiveConfig `log_level` edit → in-process `config_reloaded` with no Pod restart; BootConfig `dns_write_gate.fqdn` edit → `config_reload_boot_change_detected` + `config_boot_change_drain` + `gateway_draining` with readiness flipped to Draining. Drain-completion → exit → kubelet-restart leg hits a separate `dnsWriteLoop` cancellation-propagation bug deferred to Sprint 2.23 follow-up, independent of the file-watch surface); ✅ Sprint 2.22 (May 24, 2026 — full code-owned chart-side closure: `configmap-config.yaml` + `configmap-orders.yaml` render Dhall; `secret-aws-credentials.yaml` + `secret-minio-creds.yaml` ship Dhall fragments at `/etc/gateway/secrets/{aws,minio}.dhall` (MinIO credentials persist across upgrades via `lookup` + `randAlphaNum`); `deployments.yaml` removes all `AWS_*` / `MINIO_*` / `GATEWAY_NODE_ID` env vars and mounts the new Dhall Secrets at the canonical paths. `DaemonConfigDhall` extended with `aws_creds` / `minio_creds` sub-records; `DaemonConfig` carries `daemonAwsCreds` / `daemonMinioCreds`; `writeDnsRecord` projects credentials into the aws CLI subprocess env instead of inheriting Pod env. Standalone live decode verified: `prodbox gateway start --config <rendered>.dhall --foreground` follows Dhall imports for aws/minio/orders and starts the daemon. **Live closure 2026-06-01:** `prodbox test all` retry 21 brought up the gateway daemon against the Dhall ConfigMap + Secret-mounted credentials and passed `gateway-daemon` (/healthz=200), `gateway-pods` (all three nodes Running 1/1), `gateway-partition`, and `dns-aws` (DNS writes succeeded against real Route 53 using credentials sourced from the mounted `aws.dhall` Secret).); ✅ Sprint 2.19 (May 30, 2026 — live closure on home substrate via `prodbox test all` run #6: gateway daemon logs `master_seed_ready` against `http://minio.prodbox.svc.cluster.local:9000`; `gateway-minio-creds` Secret + matching MinIO user stay in sync across `delete + reconcile` cycles via the 3-part fix — chart no longer competes as a writer (`secret-minio-creds.yaml` removed), reconcile-written Secret carries `helm.sh/resource-policy: keep`, and `ensureGatewayMinioBootstrap` runs in `supportedRuntimeBootstrapActions` + `supportedRuntimePostflightActions` between `charts delete gateway` and `charts deploy gateway`. All three gateway pods Running 1/1 with 0 restarts; `gateway-daemon`/`gateway-pods`/`gateway-partition` validations green; aggregate roll-up 16/17 (only `keycloak-invite` remains, owned by Sprint 8.5)) | [phase-2-gateway-dns.md](phase-2-gateway-dns.md) |
-| 3 | Haskell Chart Platform and Public Workload Delivery | ✅ Done (Sprints 3.1–3.12); ✅ Sprint 3.13 closed 2026-06-01 with live home-substrate `prodbox test all` retry 21 (16 of 17 validations green including the previously-blocked `lifecycle`; the residual `keycloak-invite` failure is explicitly owned by Sprint 8.5, not 3.13). Code summary: (May 30, 2026 — seven code chunks landed: (1) `Prodbox.Secret.Inventory` doctrine-§6 derived-secret inventory + 7 tests; (2) `Prodbox.K8s.InCluster` in-pod credentials loader + REST-path / manifest helpers + `K8sSecretOps` capability + 7 tests; (3) `Prodbox.Secret.EnsureNamespace.applyDerivedSecrets` pipeline + sha256/base64url wire helpers + 6 tests; (4) TLS-backed `inClusterK8sSecretOps` constructor with in-pod CA store + bearer-token bearer-auth (deps: `tls ^>=2.1`, `crypton-connection ^>=0.4`, `crypton-x509-store ^>=1.6`, `http-client-tls` bump); (5) daemon dispatch wires `handleSecretEnsureNamespace` end-to-end through master-seed gate + ServiceAccount load + TLS client construction + `applyDerivedSecrets` invocation; (6) gateway-chart `serviceaccount.yaml` + `rbac.yaml` per-target-namespace Role/RoleBinding + Pod `serviceAccountName` binding; (7) `charts/gateway/templates/service-clusterip.yaml` unified in-cluster ClusterIP at `gateway.gateway.svc.cluster.local:8443` + `charts/{keycloak,keycloak-postgres}/templates/secret-bootstrap-job.yaml` Helm pre-install hooks POSTing to `/v1/secret/ensure-namespace`. **Chunk 8 (2026-05-31)** ends the chart-vs-daemon multi-writer race on the data-bound Secrets the daemon now owns: pre-chunk-8 state was structurally inconsistent — chunks 1–7 wired the daemon's pre-install Job to write `keycloak-runtime` + the three Patroni Secrets, but the chart's `secret.yaml` (keycloak) and `00-secrets.yaml` (keycloak-postgres) **also** rendered those same Secret names via `--set`-injected `chartSecrets`, and Helm's apply runs **after** the pre-install hook completes, so helm would silently overwrite the daemon's master-seed-derived value with the chart's random/file-cache value. `charts/keycloak/templates/secret.yaml` no longer renders `keycloak-runtime` (daemon is sole writer); `charts/keycloak/templates/deployment.yaml` reads `KEYCLOAK_ADMIN` as literal env var (`value: "admin"`) and keeps `KEYCLOAK_ADMIN_PASSWORD` via secretKeyRef into the daemon-applied Secret; `charts/keycloak-postgres/templates/00-secrets.yaml` removed entirely (daemon owns the three Patroni Secrets the Crunchy operator watches). `Prodbox.Secret.Inventory.DerivedSecretEntry` extends with `derivedSecretEntryStaticFields :: [(Text, Text)]` so the daemon writes the per-role static `username` field (`keycloak` / `postgres` / `primaryuser`) alongside the HMAC-derived `password` in each Patroni Secret atomically (Crunchy requires both fields in the same Secret). `Prodbox.Secret.EnsureNamespace.applyDerivedSecrets` merges static fields into the manifest body. 2 new unit tests; the stale chart-secret test rewritten to assert daemon delegation. Validation: `prodbox check-code` exit 0; `prodbox test unit` 628/628; `prodbox lint docs` / `docs check` exit 0; `helm template` clean for both charts. **Chunks 9 + 10 + 11 + 12 + 13 + 14 (2026-05-31 later session)** close the host-side cache eradication: every `.prodbox-state/charts/<ns>/.secrets.json` writer is gone. UsersAdmin reads via kubectl; AwsSesStack kubectl-applies `keycloak-smtp`; OAuth client secrets + demo-user password join the daemon Inventory in `keycloak-oidc-clients` (DerivedSecretEntry refactored to `derivedSecretEntryDerivedFields :: [(Text, Text)]`); `resolveChartSecrets` reduces to `pure (Right Map.empty)`; entire Patroni-reset+anchor marker scaffolding deleted; surviving anchor-discovery sites query live k8s state. Charts read migrated fields via Helm `lookup` (cross-namespace for vscode/websocket). **Chunk 16 (2026-05-31 still later still)** closes the host-side cache eradication completely: gateway per-node event-keys join the daemon Inventory (`gateway-event-keys` Secret with three `NODE_<X>_EVENT_KEY` fields); daemon's startup `selfBootstrapOwnSecrets` writes its own Secret after acquiring the master seed; rbac.targetNamespaces extends to include gateway; configmap-config.yaml uses Helm `lookup`; `resolveGatewayEventKeys` + `resolveOrGenerateStringMap` + `writeGeneratedMap` + `mergeRequiredKeys` + `writeStringMap` + `readStringMap` + `chartStateRootRelative` + `chartStateDir` + `ensureChartStateDir` + `repairChartStateDir` + `randomHexString` + `byteToHex` all deleted. Sprint 4.18's `forbidDotProdboxState` lint **broadens** in lockstep from `.secrets.json` filename to the whole `.prodbox-state/` prefix; one new unit test pins the broader contract. Live closure gate is the four-block preserved-data + recovery-escape-hatch + original-failure-mode exercise.); 🔄 Sprint 3.14 (May 24, 2026 — code-owned surface landed: new `Prodbox.Workload.Settings` Dhall decoder + `--config` flag on `workload start` + `WorkloadConfigDhall` covering `< Api | Websocket >` mode + optional log_level/port/redis/oidc; `runWorkloadServer` loads the Dhall config once via `resolveWorkloadDhallConfig` and threads `Maybe WorkloadConfigDhall` through every resolver; `PRODBOX_WORKLOAD_MODE` / `PRODBOX_HTTP_PORT` / `PRODBOX_REDIS_HOST` / `PRODBOX_REDIS_PORT` / `PRODBOX_OIDC_*` env vars removed from `charts/api/templates/deployment.yaml` and `charts/websocket/templates/deployment.yaml`; new `charts/api/templates/configmap-config.yaml` + `charts/websocket/templates/configmap-config.yaml` render Dhall content. Live operator exercise (`prodbox rke2 reconcile` + `prodbox charts deploy api` / `prodbox charts deploy websocket`) is the closure gate.) | [phase-3-chart-platform-vscode.md](phase-3-chart-platform-vscode.md) |
-| 4 | Lifecycle Hardening, Pulumi Decoupling, and Python Removal | ✅ Done (Sprints 4.1–4.8; ✅ Sprints 4.10/4.11/4.12 closed 2026-06-01 via live `prodbox test all` retry 21 exercising per-run Pulumi destroys against MinIO, K8s drain against a live AWS EKS cluster, and the canonical cascade order end-to-end; ✅ Sprints 4.14/4.15/4.16/4.17/4.18/4.19/4.20/4.21/4.22/4.23 also Done. Sprint 4.13 (`prodbox nuke`) remains 🔄 — code-side done but its closure gate is an operator-driven destructive cycle that automation cannot drive per CLAUDE.md's TTY-guard). Code frameworks landed May 21, 2026: 4.10 Dhall types + Settings.hs decoder + `LongLivedPulumiBackend` module + `aws-ses-migrate-backend` CLI scaffold; 4.11 `Lifecycle/Preconditions` + `Lifecycle/TagSweep` + `rke2 delete --cascade` / `--allow-pulumi-residue` flags with mutual exclusion; 4.12 `Lifecycle/K8sDrain` module wired into cascade; 4.13 `prodbox nuke` CLI scaffold with TTY guard + typed-confirmation literal + dry-run plan renderer. ✅ Sprint 4.17.a (May 28, 2026 — reorder cascade to doctrine-canonical `confirm-MinIO → drain → per-run destroys → uninstall → sweep`; new `cascadeOrderNarration` constant + 5 unit tests pin the order; live AWS-substrate verification rolls up with Sprint 4.17.b). ✅ Sprint 4.17.b (May 28, 2026 — `runCascadeDrainPhase` substrate-aware via new `buildDrainEnvironment` helper; cascade infers substrate from per-run residue via new pure `inferCascadeSubstrate`; `DrainSkipped` on AWS substrate is now a hard failure; 6 unit tests cover the inference; live AWS-substrate verification is the remaining closure gate). Sprint 4.13's five-step nuke orchestration body landed May 21, 2026 (composes cascade arm → `aws-ses` destroy → operational IAM teardown → postflight tag sweep → long-lived state-bucket destroy in-process, prompting once for admin AWS credentials at the start); Sprint 4.10's `pulumi/aws-ses/Pulumi.yaml` long-lived S3 backend URL declaration landed the same day. AwsSesStack admin-credential switch + migrate-backend body + `aws teardown` predicate library reimplementation + every live operator validation remain pending.); ✅ Sprint 4.14 (operator vocabulary contract enforcement: `Sprint <digit>` leaks removed from CLI help / manpages / completions / generated CLI docs / test goldens; new `checkOperatorVocabulary` scan in `src/Prodbox/CheckCode.hs` refuses regressions; May 21, 2026); ✅ Sprint 4.15 (cascade tolerates absent cluster: new `DrainSkipped String` constructor on `DrainResult`; new `clusterReachable` probe; `runNativeDeleteCascade` treats `DrainSkipped` as success-with-reason and continues to per-run Pulumi destroys; verified live on a host without an rke2 cluster; May 21, 2026); ✅ Sprint 4.16 (`ResidueStatus` source-of-truth swap closed 2026-05-27 on the code-owned surface: new `src/Prodbox/Lifecycle/LiveResidue.hs` exposes `PerRunResidueStatuses` plus `queryPerRunResidueStatuses` / `queryAwsSesResidueStatus` — one shared MinIO port-forward bracket for the three per-run stacks, admin-credentialled S3 query for `aws-ses`; per-stack `<stack>ResidueStatus` now delegates to the live module and the four `<stack>HasLiveResources` boolean predicates are removed; `Prodbox.Aws.checkPulumiResidueBeforeTeardown` splits into the pure `categorizePulumiResidue :: PerRunResidueStatuses -> ResidueStatus -> [(String,String)]` plus an IO wrapper that batches one MinIO + one S3 query; `Prodbox.Lifecycle.Preconditions.noLive{PerRun,LongLived}PulumiStacks` and `Prodbox.CLI.Rke2.runNativeDeleteCascade` use the batch; new test-only env var `PRODBOX_TEST_RESIDUE_ABSENT=1` (documented at the test-fixture boundary, set by `fakeAwsEnvironment` / `fakeAwsHarnessEnvironment`) short-circuits both queries to `ResidueAbsent` for the fake-AWS-CLI integration paths; 17 unit tests rewritten from `writeFakeStackSnapshot tmpDir "<stack>"` + `checkPulumiResidueBeforeTeardown` to synthetic `PerRunResidueStatuses` + `categorizePulumiResidue`; 13 new tests cover the LiveResidue pure helpers and the per-lifecycle-class doctrine asymmetry (per-run unreachable → absent; long-lived unreachable → still-present); validated with `prodbox check-code` exit 0, `prodbox test unit` 567/567 (up from 554), `prodbox test integration cli` 28/28, `prodbox test integration env` 28/28, `prodbox-daemon-lifecycle` 14/14; snapshot file-IO removal is Sprint 4.18 scope; live AWS-substrate regression rolls up with Sprint 7.5.c.v); ✅ Sprint 4.17 (live closure 2026-06-01 via `prodbox test all` retry 21 — cascade narration printed the canonical order, lifecycle validation completed a full home-substrate `rke2 delete --cascade --yes`, and the AWS-substrate validations exercised the cascade with live per-run stacks present; cascade canonical order rewrite landed May 23, 2026 p.m. — `runNativeDeleteCascade` reordered to confirm-MinIO → per-run destroys → drain → uninstall → postflight sweep; new pure helper `perRunCascadeInventory` drives 7 new unit tests; **the postflight tag sweep wiring landed May 23, 2026 later session** — `runCascadePostflightTagSweep` now loads admin credentials via `loadAdminAwsCredentials`, builds the admin AWS env via `adminAwsEnvironment`, and calls `Prodbox.Lifecycle.TagSweep.discoverClusterTaggedAwsResources` with `awsEksCanonicalClusterName` as the cluster filter; empty result reports "clean", non-empty result emits the full `renderTagSweepRefusal` block, cascade returns `ExitSuccess` either way per doctrine §6; 4 new tests cover refusal-block ARN/tag rendering, multi-resource bullet output, empty-list rendering, and `TagSweepInput` shape; live cascade exercise on this host remains as the closure gate); ✅ Sprint 4.18 (live closure 2026-06-01 via `prodbox test all` retry 21's lifecycle validation + `check-code` enforcing the broadened `forbidDotProdboxState` lint; no `.prodbox-state/` writes remain in `src/` + `app/` string literals; six code chunks landed; all `.prodbox-state/` snapshot file IO and SSH/kubeconfig persistence removed from the supported path. Chunk 1 (2026-05-27 a.m.): tarball scratch moved to system tmp dir; `Prodbox.Lifecycle.LiveResidue.fetchPerRunStackOutputs` + `fetchAwsSesStackOutputs` foundation; `resolveSubstrateHostedZoneId` + `verifyAwsEksSnapshot` migrated to live reads. Chunk 2 (2026-05-27 later session): pure parsers `parseAwsTestNodesFromOutputs` + `parseAwsEksTestStackFromOutputs`; `verifyAwsTestSnapshot`, `verifyAwsTestSshReachability`, `ensureAwsSubstratePlatformRuntime` migrated; `PRODBOX_TEST_PER_RUN_OUTPUTS_DIR` test override on `fetchPerRunStackOutputs`. Chunk 3 (2026-05-27 later session): `aws-eks-test` + `aws-test` per-run snapshot caches dropped — `fetchAwsEksTestSnapshotFromBackend` / `fetchAwsTestSnapshotFromBackend` read live from MinIO; every `save`/`load`/`clear` callsite removed; file-IO helpers + `<stack>SnapshotPath` + JSON serialization deleted. Chunk 4 (2026-05-30): `aws-eks-subzone` + `aws-ses` snapshot caches dropped to match; `assertNoXxxStackResidue` drops the unused `Maybe <Snapshot>` parameter on both modules; long-lived S3 read via `fetchAwsSesStackOutputs` replaces local persistence. Chunk 5 (2026-05-30): EKS kubeconfig file at `.prodbox-state/aws-eks-test/kubeconfig` replaced by per-call `withEksKubeconfig :: FilePath -> (FilePath -> IO a) -> IO a` bracket using `aws eks update-kubeconfig --kubeconfig <mktemp>` + `Control.Exception.bracket` cleanup; `materializeAwsEksKubeconfig` + `awsEksTestKubeconfigPath` + `awsEksTestStateDir` + `PublicEdge.substrateKubeconfigPath` removed; `PublicEdge.withSubstrateKubectlEnvironment`, `CLI/Charts.withSubstrateEnvironment`, `TestValidation.withSubstrateKubeconfigEnv` rewritten to wrap actions in `withEksKubeconfig` on AWS substrate; `buildDrainEnvironment` re-shaped to take a `Maybe FilePath` kubeconfig parameter. Chunk 6 (2026-05-30): HA-RKE2 SSH keypair ownership flipped to Pulumi — `pulumi/aws-test/Main.yaml` declares a `tls:PrivateKey` ED25519 resource + exports `ssh_private_key` secret output; new `withAwsTestSshPrivateKey` bracket materializes the key to an `openTempFile` path + chmod 600 + cleans up on all exit paths; `ensureAwsTestSshKey` / `readSshPublicKey` / `awsTestPrivateKeyPath` / `awsTestPublicKeyPath` / `awsTestStateDir` removed; `AwsTestStackConfig` loses `testStackPublicKey`. **`forbidDotProdboxState` lint landed 2026-05-31** as `checkForbidDotProdboxState` in `Prodbox/CheckCode.hs` (wired into `haskellStyleViolations`): scans `src/` + `app/` Haskell string literals via `extractStringLiterals` for the closed `.secrets.json` cache filename; allowlists `CheckCode.hs` (self-reference) + `test/` (legitimate regression coverage); 3 new unit tests pin fires-on-offending-literal + ignores-comments + returns-empty-on-current-repo invariants. **Narrowly scoped** by design — refuses the closed `.secrets.json` cache filename only, not all `.prodbox-state/*` writes, because the gateway per-node event-key cache (`.gateway-event-keys.json` via `resolveGatewayEventKeys`) is still a legitimate writer pending a daemon self-bootstrap follow-on. After that follow-on lands, the lint broadens to refuse any `.prodbox-state/` write path.); ✅ Sprint 4.23 (2026-05-29 — per-run EKS destroy drains the cluster first: `src/Prodbox/Infra/AwsEksTestStack.hs::destroyAwsEksTestStackStatus` now calls the new best-effort `drainAwsEksClusterBeforeDestroy` helper immediately before `pulumi destroy`, deleting LoadBalancer Services + ALB Ingresses + Delete-reclaim PVCs via the per-run EKS cluster's own kubeconfig (reusing `Prodbox.Lifecycle.K8sDrain.drainAwsAffectingK8sResources` + new `buildAwsEksDrainEnv` mirroring `Rke2.buildDrainEnvironment`). Best-effort and safe-on-unreachable: an absent kubeconfig or unreachable cluster skips the drain with a diagnostic. Both harness postflight (`prodbox pulumi eks-destroy --yes`) and cascade (`ResourceRegistry.reconcileAbsent` → `PulumiEksDestroy`) route through this destroy, so the injection covers both. Closes the May 28/29 `DependencyViolation` orphan-ENI leak class. Live closure gate (clean `prodbox test all --substrate aws` whose per-run EKS destroy succeeds without `DependencyViolation`) is the residual.); ✅ Sprint 4.19 (2026-05-28 — `rke2 delete` / `aws teardown` per-run residue gate fails closed on `ResidueUnreachable`: `isResiduePresentOrUnknownPerRun` realigned to its name, `noLivePerRunPulumiStacks` branches on the `ResidueStatus` constructor with a distinct "cannot read per-run Pulumi state backend; do NOT delete `.data/`; or `--allow-pulumi-residue`" refusal; `categorizePulumiResidue` matches; new test-only `PRODBOX_TEST_RESIDUE_UNREACHABLE` override; `--cascade`'s `perRunCascadeInventory` unchanged (graceful degradation + tag-sweep backstop). Closes the silent-pass-on-unreachable defect that let a clean-teardown signal precede a `.data` wipe and orphan live AWS resources. `prodbox check-code` exit 0; `test unit` 578/578; `test integration cli` 30/30; `test integration env` 30/30; live operator verification residual); ✅ Sprint 4.20 (2026-05-28 — managed-resource registry foundation: new `Prodbox.Lifecycle.ResourceClass` SSoT facts (`LifecycleClass` + `resourceLifecycleClasses`); `perRunStackNames`/`longLivedStackNames` derived from it; single `residueBlocksTeardownGate` soundness combinator replacing the per-class `isResiduePresentOrUnknown*` booleans; generalizes 4.11/4.16/4.19 into one pattern per [lifecycle_reconciliation_doctrine.md § 3.1](../documents/engineering/lifecycle_reconciliation_doctrine.md). Behavior-preserving; `check-code` 0, `test unit` 583/583, `test integration cli` 30/30, `test integration env` 30/30. The IO `ManagedResource` record + `reconcileAbsent` move to 4.21 with their consumer); ✅ Sprint 4.21 (2026-05-28 — new `Prodbox.Lifecycle.ResourceRegistry`: `ManagedResource` + `perRunManagedResources` + pure `pairPerRunResidue`/`resourcesToDestroy` + `reconcileAbsent`; `runNativeDeleteCascade` per-run destroy phase routed through `reconcileAbsent` behavior-preservingly; `perRunCascadeInventory` removed. Validated `check-code` 0, `test unit` 584/584, `test integration cli`/`env` 30/30, plus a live `rke2 delete --cascade --yes` smoke on this host (clean exit 0, reconcileAbsent skip-path confirmed). Present→destroy live exercise rolls up with the next AWS-substrate cascade run); ✅ Sprint 4.22 (2026-05-28 — `substrates.md` Resource Lifecycle Classes inventory is a generated section rendered from `resourceLifecycleClasses` via a new `GeneratedSectionRule`, so `docs check` fails on registry↔doc drift; `renderRegisteredResourcesMarkdown` + renderer unit test; `test unit` 585/585. The create-call-site coverage lint follow-on **also landed 2026-05-28**: `checkCreateCallSiteCoverage` scans the two narrow create surfaces — the `Pulumi<Word>Resources` constructors in `CLI/Command.hs` (pure `pulumiCreateSiteViolations` against the `pulumiCreateSiteOwners` map) and the operational-IAM verbs confined to `src/Prodbox/Aws.hs` (pure `iamCreateSiteViolations`); broader generic-`create*`/DNS-record scanning deliberately excluded to avoid false positives; `check-code` 0, `test unit` 600/600 (+6). Together with registry↔doc parity this completes the § 3.1 totality enforcement) | [phase-4-lifecycle-canonical-paths.md](phase-4-lifecycle-canonical-paths.md) |
+| 3 | Haskell Chart Platform and Public Workload Delivery | ✅ Done (Sprints 3.1–3.14). Sprint 3.13 closed 2026-06-01 with live home-substrate `prodbox test all` retry 21 (16 of 17 validations green including the previously-blocked `lifecycle`; the residual `keycloak-invite` failure is explicitly owned by Sprint 8.5, not 3.13). Sprint 3.14 closed in the same run: `charts-api` and `charts-websocket` deployed through the mounted Dhall workload config path and passed their public-edge validations. Code highlights: chart-secret and gateway-event-key caches under `.prodbox-state/` are gone; derived data-bound values flow through gateway/materialized k8s Secrets; API and WebSocket workload mode/config now come from `/etc/workload/config.dhall`; `forbidDotProdboxState` prevents supported-path regressions. | [phase-3-chart-platform-vscode.md](phase-3-chart-platform-vscode.md) |
+| 4 | Lifecycle Hardening, Pulumi Decoupling, and Python Removal | ✅ Done (Sprints 4.1–4.23). Sprints 4.10/4.11/4.12 closed 2026-06-01 via live `prodbox test all` retry 21 exercising per-run Pulumi destroys against MinIO, K8s drain against a live AWS EKS cluster, and the canonical cascade order end-to-end; Sprint 4.13 (`prodbox nuke`) closed 2026-06-03 via live operator TTY run of the five-step total teardown; Sprints 4.14–4.23 are also Done. Code frameworks landed May 21, 2026: 4.10 Dhall types + Settings.hs decoder + `LongLivedPulumiBackend` module + `aws-ses-migrate-backend` CLI scaffold; 4.11 `Lifecycle/Preconditions` + `Lifecycle/TagSweep` + `rke2 delete --cascade` / `--allow-pulumi-residue` flags with mutual exclusion; 4.12 `Lifecycle/K8sDrain` module wired into cascade; 4.13 `prodbox nuke` CLI scaffold with TTY guard + typed-confirmation literal + dry-run plan renderer, later completed with in-process orchestration (cascade arm → `aws-ses` destroy → operational IAM teardown → postflight tag sweep → long-lived state-bucket destroy) loading admin AWS credentials from `aws_admin_for_test_simulation.*`. ✅ Sprint 4.17.a/b closed the doctrine-canonical cascade order and substrate-aware drain; ✅ Sprint 4.18 removed supported-path `.prodbox-state/` snapshot, kubeconfig, and SSH-key persistence; ✅ Sprint 4.23 injects the EKS drain before per-run EKS destroy. Latest Phase 4 validation (2026-06-03): `./.build/prodbox check-code` exit 0, `./.build/prodbox test unit` 634/634, `./.build/prodbox nuke --dry-run` exit 0, live `./.build/prodbox nuke` exit 0. | [phase-4-lifecycle-canonical-paths.md](phase-4-lifecycle-canonical-paths.md) |
 | 5 | Canonical Test Suite | ✅ Done on owned surfaces (Sprints 5.1–5.5) | [phase-5-canonical-test-suite.md](phase-5-canonical-test-suite.md) |
 | 6 | Final Clean-Room Rerun and Zero-Python Handoff | ✅ Done on owned surfaces | [phase-6-clean-room-handoff.md](phase-6-clean-room-handoff.md) |
-| 7 | AWS Substrate Foundations | ✅ Done on legacy surfaces (Sprints 7.1–7.4); 🔄 Active Sprint 7.5 (✅ 7.5.a–7.5.c.iv on their code-owned surfaces, May 17–19, 2026; ✅ 7.5.c.v.b in-cluster custom-image push, May 19, 2026; ✅ 7.5.c.v.c harness preflight residue policy `BypassAllResidueForHarnessRefresh`, May 20, 2026; ✅ 7.5.c.v.d operational IAM policy compaction + S3 grants on SES capture bucket, May 20, 2026; ✅ 7.5.c.v.e read-only SES grants for Sprint 8.4 prereqs, May 20, 2026; ✅ 7.5.c.v.f silent-exit closure on code-owned surface (substrate-aware `prodbox host public-edge --substrate {home-local,aws}` + stderr breadcrumbs on `runNativeValidation`), May 21, 2026; 🔄 Sprint 7.5.c.v live AWS-substrate canonical-suite re-run remains as the residual live operator step); ✅ Sprint 7.6 (orphan-safety refuse-path + auto-destroy postflight, May 19, 2026); ✅ Sprint 7.7 (generalized `aws teardown` + `PulumiResiduePolicy` ADT + admin-credential prompt UX, May 19, 2026); 🔄 Sprint 7.8 (Phase 7 reopened 2026-05-28; unblocked by 4.20/4.21 — operational-coverage core landed 2026-05-28: the operational IAM user + `aws.*` config block are registered `Operational` `ManagedResource`s defined in `Prodbox.Aws` (`operationalManagedResources`, reusing the existing key/policy/user delete paths + a factored-out `clearOperationalAwsConfig`), discovered via the pure `operationalIamUserResidueFromExists` / `operationalAwsConfigResidueFromKey` mappers, and reconciled by `prodbox aws teardown` through `reconcileAbsent`; a dedicated operational gate **fails closed** on `ResidueUnreachable` (AWS IAM unobservable) instead of cascade-skipping, while `listOperationalAccessKeyIds` preserves the `DELETED_ACCESS_KEYS`/`USER_DELETED` result fields. Per [lifecycle_reconciliation_doctrine.md § 3.1](../documents/engineering/lifecycle_reconciliation_doctrine.md); closes the coverage half of the IAM blind spot. `check-code` 0; `test unit` 594/594 (+9, new `Sprint 7.8 operational-resource registry` group); `test integration cli`/`env` 30/30 (fake AWS CLI learned `iam get-user`). Deferred follow-ons: the `PerRun` ∪ `Operational` teardown merge (per-run residue gating unchanged) and the live `prodbox test all --substrate aws` roll-up — status Active, not Done); ✅ Sprint 7.9 (2026-05-29 — harness postflight teardown no longer gates on admin-managed `aws-ses`: `Prodbox.Aws.runAwsIamHarnessTeardown` swaps `BypassPerRunResidueOnly` → `BypassAllResidueForHarnessRefresh` so the postflight clears operational `aws.*` + deletes the operational `prodbox` IAM user unconditionally with respect to Pulumi residue (per-run stacks are destroyed separately by `awsPostflightDestroyActions`; `aws-ses` is admin-managed so it cannot be stranded). New pure SSoT helper `harnessPostflightResiduePolicy` + `Sprint 7.9` unit-test describe block. Closes the operational-IAM-user stranding bug); ✅ Sprint 7.10 (2026-05-29 — harness postflight preserves operational creds when the per-run auto-destroy fails: `src/Prodbox/TestRunner.hs::runWithAwsHarnessCleanup` now runs the operational-credential teardown only when the per-run destroy succeeded, gated by the new pure helper `clearOperationalCredsAfterPostflight :: ExitCode -> Bool` (True iff ExitSuccess). On per-run destroy failure the teardown is held and a diagnostic names the recovery path. Per-run analog of Sprint 7.9. New `Sprint 7.10` unit-test describe block, +2 tests) | [phase-7-aws-substrate-foundations.md](phase-7-aws-substrate-foundations.md) |
-| 8 | Operator-Invited Email Authentication via Keycloak + AWS SES | 🔄 Active (✅ Sprint 8.1 code + doctrine + live SES provisioning + verification May 18, 2026; ✅ Sprint 8.2 Keycloak realm chart + live deploy proof on home substrate May 18, 2026; ✅ Sprint 8.3 CLI surface + live Keycloak admin API HTTP integration; ✅ Sprint 8.4 SES prerequisites; 🔄 Sprint 8.5 suite content + dispatch arm + live invite/capture/link-follow steps + SES SMTP IAM-to-SMTP-password derivation + chart-secrets persistence landed (credential-setup form POST + fresh OIDC login + claim assertions remain operator-driven sub-sprint, blocked on live Keycloak form-structure capture); 🔄 Sprint 8.6 doc parity landed (live cross-substrate proof pending 7.5.c + 8.5 OIDC follow-up closure). Sprints 8.1–8.4 ✅ Done; 8.5–8.6 carry the only remaining live OIDC closure work) | [phase-8-email-invite-auth.md](phase-8-email-invite-auth.md) |
+| 7 | AWS Substrate Foundations | ✅ Done (Sprints 7.1–7.10 on owned surfaces). Sprint 7.5 closed June 5, 2026 after live `./.build/prodbox test all --substrate aws` proved AWS NLB-target Route 53 reconciliation, delegated-subzone cleanup, per-run postflight teardown, Harbor-login retry, Keycloak public-token-endpoint readiness, VS Code OIDC redirect, API/WebSocket in-cluster JWKS backchannels, substrate-aware Harbor/MinIO admin routes, public DNS, destructive lifecycle, and operational IAM/config postflight cleanup. The aggregate run's remaining failure is Phase 8-owned invite-auth closure, not a Phase 7 substrate gap. Sprint 7.8 is also Done on the operational managed-resource registry surface; the `PerRun` ∪ `Operational` teardown merge remains a tracked follow-on, not an open Sprint 7 blocker. | [phase-7-aws-substrate-foundations.md](phase-7-aws-substrate-foundations.md) |
+| 8 | Operator-Invited Email Authentication via Keycloak + AWS SES | 🔄 Active (✅ Sprint 8.1 code + doctrine + live SES provisioning + verification May 18, 2026; ✅ Sprint 8.2 Keycloak realm chart + live deploy proof on home substrate May 18, 2026; ✅ Sprint 8.3 CLI surface + live Keycloak admin API HTTP integration; ✅ Sprint 8.4 SES prerequisites; 🔄 Sprint 8.5 suite content + dispatch arm + live invite/capture/link-follow steps + SES SMTP IAM-to-SMTP-password derivation + chart-secret persistence landed; June 6 credential-setup form POST + fresh invited-user OIDC claim assertions are now wired locally and unit-tested (674/674 after the home SMTP-reconcile, SMTP NetworkPolicy, verify-email continuation, public-edge certificate status-patch renderer, and public-edge TLS Secret retention fixes), with live home/AWS substrate proof still open; 🔄 Sprint 8.6's targeted AWS `keycloak-invite` proof is green after the canonical ordering/substrate-host/public-admin-route/targeted-harness/SMTP-secret-sync/Phase-1.6-restore/namespace-adoption/invite-link-normalization/public-edge-cert-reissue/ACME-provider work: the validation now runs before destructive `ValidationChartsStorage` / `ValidationLifecycle`, targets the selected substrate public FQDN, routes `/auth/admin` to Keycloak for the invite admin API, materializes operational credentials from `aws_admin_for_test_simulation.*`, syncs `keycloak-smtp` before Keycloak renders, syncs the same Secret during invite-aware home runtime bootstrap, patches preserved Keycloak realms from `keycloak-smtp` before invite sends, avoids duplicate local `rke2 reconcile`, adopts SMTP pre-created Keycloak release namespaces, accepts text/html duplicate invite links, repairs failed public-edge certificate issuance, retains the public-edge TLS Secret across chart namespace resets, uses the Let's Encrypt no-EAB ACME path for repository validation, and passes targeted AWS invite capture/link-follow with harness cleanup. AWS aggregate rerun and live Sprint 8.5 POST/OIDC substrate proof remain open; the current home rerun is waiting on the Let's Encrypt duplicate-certificate window after the pre-retention Secret loss.) Sprints 8.1–8.4 ✅ Done; 8.5–8.6 carry the remaining invite-auth closure work. | [phase-8-email-invite-auth.md](phase-8-email-invite-auth.md) |
 
 **Status interpretation**: Phase `0` reopened through Sprints `0.2`–`0.7` to adopt
 [the engineering doctrine docs](../documents/engineering/README.md) and to add the LLM/automation guardrails on
@@ -1287,29 +1273,92 @@ proved the port `80`
 HTTP-to-HTTPS redirect on the existing single-host public edge. The pre-reopen Haskell rewrite
 baseline, clean-room rerun, public-edge proof, and AWS-administration surfaces remain validated
 on the supported Haskell command surface; Phases `5`, `6`, and `7` remain `Done` on their owned
-legacy scope per standards rule E. Phase `7` is **Active** on Sprint `7.5`, which the May 17,
-2026 scoping review split into three sequentially-validatable sub-sprints (`7.5.a`, `7.5.b`,
-`7.5.c`) to bring the AWS substrate to canonical-suite parity with the home substrate. Sprint
-`7.5.b.iii` (substrate-independence doctrine refactor) was added between `7.5.b` and `7.5.c`
-to make the no-fallback contract explicit across the governed doc set and is now `Done`.
-Sprint `7.5.c`'s code follow-up landed May 18, 2026 — `substratePublicFqdn` /
-`substrateHostedZoneId` are fail-fast on empty AWS-substrate config,
-`resolveAwsEksSubzoneStackConfig`'s pre-provision gate requires only `subzone_name`,
-`isAwsSubstrateConfigured` is removed, and the matching legacy-ledger row is moved to
-`Completed`. The May 20 round of code-side closures (Sprints `7.5.c.v.c`, `7.5.c.v.d`,
-`7.5.c.v.e`) unblocked the harness preflight against the long-lived `aws-ses` stack,
-compacted the operational IAM policy under AWS's 2048-byte inline-user-policy cap, and added
-the read-only SES grants the Sprint 8.4 prereqs need. The May 20 live re-run cleared every
-prior gate and entered Phase 2/2 of the suite, but every named `--substrate aws` validation
-body returned silently before producing output. Sprint `7.5.c.v.f` closed that diagnosis
-on May 21, 2026 on its code-owned surface: `prodbox host public-edge --substrate
-{home-local,aws}` threads `Substrate` end-to-end through `runHostPublicEdge`,
-`queryRoute53RecordInZone`, `waitForPublicEdgeReady`, and the four substrate-aware
-public-edge validation bodies, while `runNativeValidation` emits stderr breadcrumbs around
-every body so silent exit is structurally impossible at the runner level. The live
-AWS-substrate canonical-suite re-run (`prodbox test all --substrate aws`) closes Sprint
-`7.5.c.v` and the parent Sprint `7.5.c`; the documented operator workflow lives in
-[phase-7-aws-substrate-foundations.md → Sprint 7.5.c Operator Workflow](phase-7-aws-substrate-foundations.md).
+surfaces. Phase `7`'s AWS-substrate parity work is now closed: the June 5, 2026 live AWS runs
+proved NLB-target Route 53 reconciliation, delegated-subzone cleanup, per-run postflight
+teardown, Harbor-login retry, Keycloak public-token-endpoint readiness, VS Code OIDC redirect,
+API/WebSocket in-cluster JWKS backchannels, substrate-aware Harbor/MinIO admin routes, public
+DNS, destructive lifecycle, and operational IAM/config postflight cleanup. The aggregate run's
+remaining failure belongs to Phase `8`: the first June 5 run scheduled
+`ValidationKeycloakInvite` after destructive `ValidationLifecycle`, the follow-up run reached
+`ValidationKeycloakInvite` before lifecycle but still targeted the home `domain.demo_fqdn` for
+the Keycloak admin token during the AWS-substrate run, and the next run validated the selected
+AWS public FQDN before exposing that the Keycloak public auth route lacked the `/auth/admin`
+match used by the invite admin API. The active fix places `ValidationKeycloakInvite` before
+destructive `ValidationChartsStorage` and `ValidationLifecycle`, passes
+`substratePublicFqdn settings substrate` into the Keycloak admin invite/revoke flow, and routes
+`/auth/admin` to Keycloak. The targeted `keycloak-invite --substrate aws` rerun after the route
+fix exposed the last standalone-run mismatch: named AWS-substrate validation still expected
+pre-populated operational `aws.*` instead of the suite-driven
+`aws_admin_for_test_simulation.*` harness. The runner/planner fix wraps targeted AWS-substrate
+native validations in the managed IAM harness and preserves per-run-stack cleanup before
+operational credential teardown. The follow-up targeted run proved that credential path through
+per-run AWS provisioning and chart deployment, then reached the Keycloak invite-email trigger and
+failed because the fresh EKS cluster had no `keycloak-smtp` Secret in the Keycloak release
+namespace. The current fix syncs the retained long-lived `aws-ses` SMTP outputs into the
+supported Keycloak release namespaces before AWS chart deployment. The June 6 targeted rerun
+proved the hook placement, then failed because the configured long-lived Pulumi state bucket was
+absent; the sync path now runs the same idempotent `ensureLongLivedPulumiStateBucket` precondition
+as `aws-ses-resources` before reading the retained stack. The live `aws-ses-resources` repair
+recreated the long-lived stack state by importing retained SES/S3/IAM resources, rotating stale
+SMTP keys, and restoring `keycloak-smtp` in the supported local release namespaces. The next
+June 6 targeted AWS rerun failed before AWS provisioning during Phase `1.6/2` local restore after
+a duplicate full `rke2 reconcile` repeated Harbor image publication and exhausted the transient
+Harbor login retry window. The active fix keeps Phase `1.5/2` as the single local runbook
+reconcile for suites that already require it and lets Phase `1.6/2` perform the chart reset without
+rerunning local image publication. Local validation for that guard passed with
+`./.build/prodbox test unit` (658/658), `./.build/prodbox check-code`, docs lint/check,
+`git diff --check`, and `./.build/prodbox test integration cli` (30/30). The next targeted AWS
+rerun proved the duplicate-reconcile guard in the live harness, reached AWS chart deployment, and
+then failed at the `gateway` Helm install because SMTP sync had pre-created the `keycloak`
+namespace without the Helm ownership metadata needed for the gateway chart's RBAC Namespace
+resource to adopt it. The active fix stamps gateway-release Helm ownership and
+`helm.sh/resource-policy: keep` on SMTP pre-created Keycloak release namespaces, with matching
+metadata in the gateway chart Namespace resources. The follow-up targeted AWS rerun proved that
+namespace-adoption fix live by moving through gateway install and into the invite validation body,
+then exposed the next Sprint 8.5 parser edge: Keycloak multipart email repeats the same
+action-token URL in text and HTML forms that differ only by URL-local quoted-printable encoding.
+The active parser fix normalizes extracted invite URLs for Keycloak's `=3D` query-delimiter
+encoding and HTML `&amp;` before distinct-link detection. The next targeted AWS rerun was
+interrupted before AWS provisioning because the home-local public-edge certificate repair helper
+deleted stale ACME child resources after a failed order but did not mark the Certificate for
+immediate reissuance. The first harness fix patches the Certificate status with an
+`Issuing=True` manual-trigger condition after stale-resource cleanup; the follow-up live rerun
+showed the same failed-Certificate state can recur after a prior cleanup has already removed every
+stale child resource, so the active no-target branch triggers the same manual reissue patch when
+there is nothing left to delete. Local validation for that no-target branch passed with
+`./.build/prodbox test unit` (661/661), docs lint/check, `git diff --check`,
+`./.build/prodbox check-code`, and `./.build/prodbox test integration cli` (30/30). The follow-up
+targeted AWS rerun reached public-edge readiness with a fresh active ACME Order, then stalled
+because the configured ZeroSSL ACME endpoint returned HTML to cert-manager's new-order flow
+instead of ACME JSON. The active follow-up switches `prodbox-config.dhall` and the guided setup
+default to Let's Encrypt for repository validation while keeping explicit ZeroSSL support for
+operators who verify their endpoint path. Local validation for the ACME switch passed with
+`./.build/prodbox test unit` (661/661), docs lint/check, `git diff --check`,
+`./.build/prodbox check-code`, and `./.build/prodbox test integration cli` (30/30). The first
+targeted AWS rerun after the ACME switch failed before AWS provisioning because local
+DiskPressure caused MetalLB rollout timeout; harness cleanup completed, then generated temp image
+artifacts plus dangling Docker/build cache were pruned. The follow-up targeted AWS rerun recovered
+the local runtime through the harness `rke2 reconcile`, validated MetalLB, Envoy Gateway,
+cert-manager, the Let's Encrypt ClusterIssuer, and Percona readiness, provisioned the per-run AWS
+substrate, deployed `gateway`, `vscode`, `api`, and `websocket`, entered
+`ValidationKeycloakInvite`, captured the SES invite email, parsed and followed the normalized
+invite link, exited the validation body successfully, destroyed per-run AWS stacks with residue
+checks, and cleared operational IAM/config material.
+The follow-up home-substrate Sprint 8.5 POST/OIDC rerun proved the Keycloak 26 verify-email
+continuation handling far enough to re-enter public-edge certificate repair, then exposed a local
+harness bug: the status patch used to trigger immediate cert-manager reissuance was malformed
+JSON. The status patch renderer now uses structured Aeson encoding with a unit decode guard.
+Local validation for that guard passed with `./.build/prodbox test unit` (673/673),
+`git diff --check`, and `./.build/prodbox check-code`; the live home invite rerun remains the
+next ordered gate before AWS POST/OIDC validation. The next live home rerun proved that status
+patch fix and reached cert-manager reissue retry, then hit Let's Encrypt's production
+duplicate-certificate limit for the public-edge hostname. The chart platform now backs up an
+issued `public-edge-tls` Secret into the stable `prodbox` namespace before deleting the `vscode`
+chart namespace and restores it before re-applying the Keycloak/Gateway chart. Local validation
+for that retention fix passed with `./.build/prodbox test unit` (674/674), docs lint/check,
+`git diff --check`, and `./.build/prodbox check-code`; the already-issued Secret had been lost
+before the fix landed, so the live home gate waits for the provider window to reset on
+June 7, 2026 UTC.
 
 Phase `8` was opened May 18, 2026 with the full code + doctrine layer of Sprints
 `8.1`–`8.6` landed in a single session: `pulumi/aws-ses/` (Pulumi program for the
@@ -1318,7 +1367,7 @@ SMTP IAM user); `src/Prodbox/Infra/AwsSesStack.hs` orchestration plus
 `prodbox pulumi aws-ses-resources` / `aws-ses-destroy` CLI surface; the
 `ses : { sender_domain, receive_subdomain, capture_bucket }` block in
 `prodbox-config-types.dhall` and `prodbox-config.dhall`; Keycloak realm chart updates
-(`verifyEmail: true`, `smtpServer`, new `keycloak-smtp` `Opaque` Secret) under
+(`verifyEmail: true`, `smtpServer` from the looked-up `keycloak-smtp` Secret) under
 `charts/keycloak/`; the operator-facing `prodbox users invite|list|revoke` surface in
 `src/Prodbox/CLI/Users.hs` and `src/Prodbox/UsersAdmin.hs`; three new
 prerequisite nodes (`ses_sending_identity_verified`, `ses_receive_rule_set_active`,
@@ -1330,12 +1379,12 @@ variants planned by `src/Prodbox/TestPlan.hs` and dispatched through
 [substrates.md](substrates.md) and
 [documents/engineering/aws_integration_environment_doctrine.md](../documents/engineering/aws_integration_environment_doctrine.md).
 Validated with `prodbox check-code`, `prodbox lint docs`, `prodbox docs check`, and
-`prodbox test unit` (312/312). The residual live operator workflows for Phase `8` are
-parallel to Sprint `7.5.c`'s live workflow: `prodbox aws setup` →
-`prodbox pulumi aws-ses-resources` (Sprint `8.1` live), the Sprint `8.5` Keycloak admin
-API HTTP integration in `src/Prodbox/UsersAdmin.hs` plus the SES capture-bucket polling
-helper in `src/Prodbox/TestValidation.hs::runKeycloakInviteValidation`, and the Sprint
-`8.6` cross-substrate `keycloak-invite` parity flip in [substrates.md](substrates.md).
+`prodbox test unit` (312/312). The residual live operator workflows for Phase `8` are the
+Sprint `8.5` live credential-setup form POST plus fresh OIDC login / claim assertions, and the
+Sprint `8.6` AWS aggregate rerun after the targeted `keycloak-invite --substrate aws` proof
+validated the fixed canonical ordering, selected substrate public FQDN, `/auth/admin` route,
+managed IAM harness, fresh-cluster `keycloak-smtp` sync, Let's Encrypt ACME path, invite
+capture/link follow, and cleanup.
 
 ## Substrate Parity
 
@@ -1352,8 +1401,8 @@ per-run stacks vs long-lived cross-substrate shared infrastructure) live in
 
 | Substrate | Provision | Teardown | Suite parity | Phase ownership |
 |-----------|-----------|----------|--------------|-----------------|
-| Home local | `prodbox rke2 reconcile` + `prodbox charts deploy ...` | `prodbox rke2 delete --yes` | ✅ Full canonical suite, including real Let's Encrypt, OIDC, WebSocket, and public-edge proofs on `test.resolvefintech.com`. Re-verified May 27, 2026 via `prodbox test all` run-4 (~1h35m, all 16 named canonical validations `ExitSuccess` except `keycloak-invite` which is the documented Sprint 8.5 follow-up requiring live Keycloak credential-setup form-structure capture) | [phase-4-lifecycle-canonical-paths.md](phase-4-lifecycle-canonical-paths.md) |
-| AWS | `prodbox pulumi eks-resources` + `prodbox pulumi aws-subzone-resources` + `prodbox pulumi test-resources` | `prodbox pulumi aws-subzone-destroy --yes` + `prodbox pulumi eks-destroy --yes` + `prodbox pulumi test-destroy --yes` | 🔄 Substrate-platform install (13 steps) lands on EKS; harness preflight and IAM policy compaction landed May 20, 2026; substrate-aware validation bodies + stderr-breadcrumb runner landed May 21, 2026 (Sprint `7.5.c.v.f`); live `prodbox test all --substrate aws` re-run rolls up into Sprint `7.5.c.v` | [phase-7-aws-substrate-foundations.md → Sprint 7.5](phase-7-aws-substrate-foundations.md) |
+| Home local | `prodbox rke2 reconcile` + `prodbox charts deploy ...` | `prodbox rke2 delete --yes` | ✅ Full canonical suite, including real Let's Encrypt, OIDC, WebSocket, and public-edge proofs on `test.resolvefintech.com`. Re-verified May 27, 2026 via `prodbox test all` run-4 (~1h35m, all 16 named canonical validations `ExitSuccess` except `keycloak-invite`; Sprint 8.5 now has local POST/OIDC wiring plus SMTP Secret / preserved-realm reconciliation, SMTP NetworkPolicy, verify-email continuation, public-edge certificate status-patch, and public-edge TLS Secret retention unit proof, with a live home-substrate rerun still required after the Let's Encrypt duplicate-certificate window resets) | [phase-4-lifecycle-canonical-paths.md](phase-4-lifecycle-canonical-paths.md) |
+| AWS | `prodbox pulumi eks-resources` + `prodbox pulumi aws-subzone-resources` + `prodbox pulumi test-resources` | `prodbox pulumi aws-subzone-destroy --yes` + `prodbox pulumi eks-destroy --yes` + `prodbox pulumi test-destroy --yes` | ✅ Phase 7-owned substrate parity proved live June 5, 2026 across the 15-step substrate-platform install, AWS public DNS, VS Code/API/WebSocket/admin-route validations, destructive lifecycle, and per-run postflight cleanup. Targeted `keycloak-invite --substrate aws` now also passes invite capture/link-follow with the AWS substrate public FQDN, `/auth/admin` route, managed IAM harness, SMTP sync, and Let's Encrypt ACME path. Aggregate completion is still 🔄 under Phase 8 until the AWS aggregate rerun and live Sprint 8.5 POST/OIDC substrate proof, including preserved-realm SMTP reconciliation, land. | [phase-7-aws-substrate-foundations.md → Sprint 7.5](phase-7-aws-substrate-foundations.md) |
 
 ## Current Plan Status
 
@@ -1362,7 +1411,7 @@ pre-reopen scope (Sprints 1.1–1.5, 2.1–2.8, 3.1–3.7, 4.1–4.4, 5.1–5.4,
 the doctrine-adoption reopen is now closed as well. Current worktree evidence puts Sprints
 `0.7`, `1.6`–`1.27`, `2.9`–`2.16`, `3.8`–`3.12`, `4.5`–`4.8`, `4.14`, `4.15`, `5.5`,
 `7.5.a`/`7.5.b.*`/`7.5.b.iii`/`7.5.c.i`–`7.5.c.iv`/`7.5.c.v.b`/`7.5.c.v.c`/`7.5.c.v.d`/
-`7.5.c.v.e`/`7.5.c.v.f`, `7.6`, `7.7`, and `8.1`–`8.4` in `Done` state on their owned surfaces.
+`7.5.c.v.e`/`7.5.c.v.f`/`7.5.c.v`, `7.6`, `7.7`, `7.8`, `7.9`, `7.10`, and `8.1`–`8.4` in `Done` state on their owned surfaces.
 Sprints `4.10`–`4.13` have their full code bodies landed on their code-owned surfaces (May 21,
 2026: Sprint 4.10's admin-credential switch + in-process migrate-backend body + Pulumi.yaml
 backend URL; Sprint 4.11's full predicate inventory `noLivePerRunPulumiStacks`,
@@ -1378,11 +1427,11 @@ follow-up landed the same day to extend the operational IAM policy with the
 needs (run 3 / run 4 surfaced both gaps via live AWS AccessDenied); after the grants landed the
 `aws-eks` validation provisioned EKS + LB controller IRSA + EBS CSI IRSA + OIDC provider and
 destroyed cleanly. The remaining `Active` work outside Phase `4`
-is: Sprint `7.5.c.v` (live AWS-substrate canonical-suite re-run, operator-driven against live
-AWS) and Sprints `8.5`–`8.6` (live Keycloak credential-setup form-structure capture +
-parser wire-in into `runKeycloakInviteValidation` + cross-substrate parity flip; the
-form-parser scaffold lives in `src/Prodbox/Keycloak/CredentialSetupForm.hs` with synthetic
-fixture). The following implemented baseline surfaces remain current on
+is Sprints `8.5`–`8.6`: live substrate validation of the credential-setup POST / fresh OIDC
+claim assertions, plus
+the AWS aggregate rerun after the targeted AWS `ValidationKeycloakInvite` path passed with the
+selected substrate public FQDN, `/auth/admin`, SMTP sync, Let's Encrypt ACME, invite
+capture/link follow, and cleanup. The following implemented baseline surfaces remain current on
 the supported path:
 
 - `src/Prodbox/Settings.hs` preserves the supported direct `Dhall -> Haskell types` contract by
@@ -1402,13 +1451,15 @@ the supported path:
   `prodbox config compile` are not part of the supported path.
 - The public `config setup` and public `aws ...` surfaces use prompt-driven temporary admin AWS
   credentials (historically called "elevated credentials"), while stored
-  `aws_admin_for_test_simulation.*` remains reserved for test-suite simulation of that prompt
-  input, with the native IAM validation harness as the only supported runtime consumer.
+  `aws_admin_for_test_simulation.*` remains reserved for suite-driven destructive validation and
+  long-lived stack / `prodbox nuke` flows.
 - `src/Prodbox/TestPlan.hs`, `src/Prodbox/TestRunner.hs`, and `src/Prodbox/TestValidation.hs`
-  now route `prodbox test integration aws-iam`, `prodbox test integration all`, and
-  `prodbox test all` through one shared suite-level IAM harness that provisions temporary
-  operational `aws.*` before prerequisite-driven AWS validation begins and clears those
-  credentials again before the suite returns.
+  now route `prodbox test integration aws-iam`, targeted
+  `prodbox test integration <name> --substrate aws` validations, `prodbox test integration all`,
+  and `prodbox test all` through one shared suite-level IAM harness that provisions temporary
+  operational `aws.*` before prerequisite-driven AWS validation begins, destroys validation-owned
+  per-run stacks when the targeted suite may provision them, and clears those credentials again
+  before the suite returns.
 - `src/Prodbox/TestPlan.hs`, `src/Prodbox/TestRunner.hs`, `src/Prodbox/Prerequisite.hs`, and
   `src/Prodbox/EffectInterpreter.hs` now split the aggregate prerequisite model into an initial
   fail-fast gate plus a deferred cluster-backed backend proof, so `prodbox test integration all`
@@ -1564,21 +1615,23 @@ This plan is complete only when all of the following are true:
 4. Public `prodbox config setup` and public `prodbox aws ...` paths can bootstrap all required AWS
    credentials from scratch using temporary admin credentials entered interactively by the
    operator.
-5. `aws_admin_for_test_simulation.*` may be stored in `prodbox-config.dhall` only as the
-   test-suite simulation of the ephemeral temporary-admin credential prompt. The native IAM
-   validation harness is the only supported runtime consumer of that section, and no supported
-   non-test command or runtime helper may read or use it.
-6. `prodbox test integration aws-iam`, `prodbox test integration all`, and `prodbox test all`
-   share one joint idempotent IAM validation harness that deletes any pre-existing dedicated
-   `prodbox` IAM user and all of that user's access keys before provisioning, uses any
-   pre-existing `aws.*` credentials only to discover and delete the IAM user associated with those
-   credentials, proves STS-federated operational credentials with a compact AWS-validation
-   session policy, waits for the dedicated IAM-user credentials to pass STS and repeated Route 53
-   hosted-zone probes, materializes IAM-user operational `aws.*` only from
-   `aws_admin_for_test_simulation.*` to simulate the interactive public CLI workflow because
-   cert-manager Route 53 DNS01 credentials do not support an STS session-token field, and clears
-   operational `aws.*` from `prodbox-config.dhall` before returning so no test-created dedicated
-   IAM user or key survives.
+5. `aws_admin_for_test_simulation.*` may be stored in `prodbox-config.dhall` only for
+   suite-driven destructive validation and long-lived stack / `prodbox nuke` flows. Public
+   `config setup` and public `aws ...` commands still prompt for temporary admin credentials
+   instead of reading that section.
+6. `prodbox test integration aws-iam`, targeted
+   `prodbox test integration <name> --substrate aws` validations,
+   `prodbox test integration all`, and `prodbox test all` share one joint idempotent IAM
+   validation harness that deletes any pre-existing dedicated `prodbox` IAM user and all of that
+   user's access keys before provisioning, uses any pre-existing `aws.*` credentials only to
+   discover and delete the IAM user associated with those credentials, proves STS-federated
+   operational credentials with a compact AWS-validation session policy, waits for the dedicated
+   IAM-user credentials to pass STS and repeated Route 53 hosted-zone probes, materializes
+   IAM-user operational `aws.*` only from `aws_admin_for_test_simulation.*` to simulate the
+   interactive public CLI workflow because cert-manager Route 53 DNS01 credentials do not support
+   an STS session-token field, destroys validation-owned per-run stacks when the targeted suite may
+   provision them, and clears operational `aws.*` from `prodbox-config.dhall` before returning so
+   no test-created dedicated IAM user or key survives.
 7. The operator-facing binary lives at `.build/prodbox`, produced by the canonical
    `cabal build --builddir=.build exe:prodbox` invocation plus a copy step.
 8. Container-side build artifacts live under `/opt/build`, and every repository-owned Dockerfile

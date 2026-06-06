@@ -18,11 +18,16 @@
 Both use public ACME DNS-01 issuance through Route 53. The operator chooses the provider during the
 interactive setup flow.
 
+The guided setup default is Let's Encrypt because it has no EAB dependency and its production ACME
+directory is the stable validation path for repository-owned live tests. ZeroSSL remains supported
+for operators who already manage working EAB credentials and have verified that the ZeroSSL ACME
+directory returns ACME JSON from their environment.
+
 ---
 
 ## 2. ZeroSSL
 
-ZeroSSL is the recommended guided option in `prodbox config setup`.
+ZeroSSL is the explicit EAB-backed option in `prodbox config setup`.
 
 Required preparation:
 
@@ -39,9 +44,9 @@ https://acme.zerossl.com/v2/DV90
 
 Use ZeroSSL when:
 
-1. you want the wizard's default recommended path
-2. you already operate ZeroSSL credentials
-3. you are comfortable storing EAB values in the Dhall config
+1. you already operate ZeroSSL credentials
+2. you are comfortable storing EAB values in the Dhall config
+3. you have verified that `https://acme.zerossl.com/v2/DV90` returns an ACME JSON directory
 
 Supported cluster projection:
 
@@ -57,7 +62,7 @@ Supported cluster projection:
 
 ## 3. Let's Encrypt
 
-Let's Encrypt is the simpler no-account path.
+Let's Encrypt is the recommended no-account path.
 
 Required preparation:
 
@@ -73,9 +78,10 @@ https://acme-v02.api.letsencrypt.org/directory
 
 Use Let's Encrypt when:
 
-1. you want the fewest setup steps
-2. you do not want to manage EAB credentials
-3. you only need the standard public ACME production endpoint
+1. you want the repository validation default
+2. you want the fewest setup steps
+3. you do not want to manage EAB credentials
+4. you only need the standard public ACME production endpoint
 
 ---
 

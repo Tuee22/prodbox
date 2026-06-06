@@ -525,9 +525,13 @@ leaks):
    "harness owns AWS" rule. A live operator cleanup of this class was
    performed 2026-05-28 (see
    [DEVELOPMENT_PLAN/README.md](../../DEVELOPMENT_PLAN/README.md) Closure
-   Status). It is deliberately **not** closed with an AWS-name-scanning
-   detector (an anti-pattern) or an auto-sweep (which would mask genuine
-   leaks).
+   Status). The long-lived `aws-ses` stack is the bounded configured-name
+   exception: `prodbox pulumi aws-ses-resources` can repair missing Pulumi
+   state by importing the retained capture bucket / SMTP IAM user / SES receipt
+   resources and rotating stale SMTP access keys, because those names are
+   operator-configured or hard-coded by the long-lived stack contract. Generic
+   per-run residue remains deliberately **not** closed with an AWS-name-scanning
+   detector (an anti-pattern) or an auto-sweep (which would mask genuine leaks).
 
 This residual is recorded as a class in
 [DEVELOPMENT_PLAN/substrates.md → Resource Lifecycle Classes](../../DEVELOPMENT_PLAN/substrates.md#resource-lifecycle-classes).

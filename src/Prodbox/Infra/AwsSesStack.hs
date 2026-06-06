@@ -3,7 +3,10 @@
 module Prodbox.Infra.AwsSesStack
   ( AwsSesStackSnapshot (..)
   , awsSesStackName
+  , keycloakSmtpSecretNamespaces
+  , renderKeycloakSmtpKubectlApplyScript
   , ensureAwsSesStackResources
+  , syncKeycloakSmtpChartSecrets
   , destroyAwsSesStack
   , awsSesStackResidueStatus
   , assertNoAwsSesStackResidue
@@ -14,7 +17,7 @@ module Prodbox.Infra.AwsSesStack
 where
 
 import Control.Exception (IOException, bracket, try)
-import Control.Monad (foldM)
+import Control.Monad (foldM, forM_, when)
 import Data.Aeson
   ( Value (..)
   , eitherDecode
@@ -23,7 +26,7 @@ import Data.Aeson.Key qualified as Key
 import Data.Aeson.KeyMap qualified as KeyMap
 import Data.ByteString.Lazy.Char8 qualified as BL8
 import Data.Char (toLower)
-import Data.List (isInfixOf)
+import Data.List (intercalate, isInfixOf)
 import Data.Map.Strict (Map)
 import Data.Map.Strict qualified as Map
 import Data.Text qualified as Text
@@ -60,17 +63,17 @@ import Prodbox.Lifecycle.ResidueStatus qualified as ResidueStatus
 import Prodbox.Result (Result (..))
 import Prodbox.Ses.SmtpPassword (derivedSesSmtpPassword)
 import Prodbox.Settings
-  ( Credentials (..)
+  ( ConfigFile
+  , Credentials (..)
   , PulumiStateBackendSection
   , Route53Section (..)
   , SesSection (..)
-  , ValidatedSettings (..)
-  , aws
+  , aws_admin_for_test_simulation
+  , loadConfigFile
   , pulumi_state_backend
   , route53
   , ses
-  , validateAndLoadSettings
-  , validatedConfig
+  , validateAwsBootstrapConfig
   )
 import Prodbox.Subprocess
   ( ProcessOutput (..)
@@ -93,6 +96,25 @@ awsSesStackName = "aws-ses"
 
 awsSesPulumiProjectDir :: FilePath -> FilePath
 awsSesPulumiProjectDir repoRoot = repoRoot </> "pulumi" </> "aws-ses"
+
+sesReceiveRuleSetName :: String
+sesReceiveRuleSetName = "prodbox-receive-rule-set"
+
+sesReceiveRuleName :: String
+sesReceiveRuleName = "prodbox-capture-all-mail"
+
+sesSmtpUserName :: String
+sesSmtpUserName = "prodbox-ses-smtp"
+
+keycloakSmtpSecretName :: String
+keycloakSmtpSecretName = "keycloak-smtp"
+
+-- | Namespaces where the Keycloak release can legitimately run on the
+-- supported chart surface. `prodbox charts deploy keycloak` renders Keycloak
+-- in `keycloak`; the canonical shared-edge stack (`charts deploy vscode`) runs
+-- the transitive Keycloak release in `vscode`.
+keycloakSmtpSecretNamespaces :: [String]
+keycloakSmtpSecretNamespaces = ["vscode", "keycloak"]
 
 -- | Sprint 4.16 typed residue status. Delegates to the live
 -- @pulumi stack ls --json@ source-of-truth query against the
@@ -256,43 +278,49 @@ renderAwsSesStackReport snapshot objectCount =
 
 resolveAwsSesStackConfig :: FilePath -> IO (Either String AwsSesStackConfig)
 resolveAwsSesStackConfig repoRoot = do
-  settingsResult <- validateAndLoadSettings repoRoot
-  pure $ case settingsResult of
+  configResult <- loadConfigFile repoRoot
+  pure $ case configResult of
     Left err -> Left err
-    Right settings ->
-      let parentZoneId = Text.unpack (Text.strip (zone_id (route53 (validatedConfig settings))))
-          sesSection = ses (validatedConfig settings)
-          senderDomainValue = Text.unpack (Text.strip (sender_domain sesSection))
-          receiveSubdomainValue = Text.unpack (Text.strip (receive_subdomain sesSection))
-          captureBucketValue = Text.unpack (Text.strip (capture_bucket sesSection))
-          awsRegionValue =
-            Text.unpack (Text.strip (region (aws (validatedConfig settings))))
-       in if null parentZoneId
-            then Left "route53.zone_id must be set before provisioning the AWS SES stack"
+    Right config -> awsSesStackConfigFromConfig config
+
+awsSesStackConfigFromConfig :: ConfigFile -> Either String AwsSesStackConfig
+awsSesStackConfigFromConfig config = do
+  validateAwsBootstrapConfig config
+  if null parentZoneId
+    then Left "route53.zone_id must be set before provisioning the AWS SES stack"
+    else
+      if null senderDomainValue
+        then Left "ses.sender_domain must be set before provisioning the AWS SES stack"
+        else
+          if null receiveSubdomainValue
+            then
+              Left "ses.receive_subdomain must be set before provisioning the AWS SES stack"
             else
-              if null senderDomainValue
-                then Left "ses.sender_domain must be set before provisioning the AWS SES stack"
+              if null captureBucketValue
+                then
+                  Left "ses.capture_bucket must be set before provisioning the AWS SES stack"
                 else
-                  if null receiveSubdomainValue
+                  if null awsRegionValue
                     then
-                      Left "ses.receive_subdomain must be set before provisioning the AWS SES stack"
+                      Left
+                        "aws_admin_for_test_simulation.region must be set before provisioning the AWS SES stack"
                     else
-                      if null captureBucketValue
-                        then
-                          Left "ses.capture_bucket must be set before provisioning the AWS SES stack"
-                        else
-                          if null awsRegionValue
-                            then
-                              Left "aws.region must be set before provisioning the AWS SES stack"
-                            else
-                              Right
-                                AwsSesStackConfig
-                                  { sesStackParentZoneId = parentZoneId
-                                  , sesStackSenderDomain = senderDomainValue
-                                  , sesStackReceiveSubdomain = receiveSubdomainValue
-                                  , sesStackCaptureBucket = captureBucketValue
-                                  , sesStackAwsRegion = awsRegionValue
-                                  }
+                      Right
+                        AwsSesStackConfig
+                          { sesStackParentZoneId = parentZoneId
+                          , sesStackSenderDomain = senderDomainValue
+                          , sesStackReceiveSubdomain = receiveSubdomainValue
+                          , sesStackCaptureBucket = captureBucketValue
+                          , sesStackAwsRegion = awsRegionValue
+                          }
+ where
+  parentZoneId = Text.unpack (Text.strip (zone_id (route53 config)))
+  sesSection = ses config
+  senderDomainValue = Text.unpack (Text.strip (sender_domain sesSection))
+  receiveSubdomainValue = Text.unpack (Text.strip (receive_subdomain sesSection))
+  captureBucketValue = Text.unpack (Text.strip (capture_bucket sesSection))
+  awsRegionValue =
+    Text.unpack (Text.strip (region (aws_admin_for_test_simulation config)))
 
 syncAwsSesStackConfig :: FilePath -> [(String, String)] -> AwsSesStackConfig -> IO ExitCode
 syncAwsSesStackConfig projectDir environment stackConfig =
@@ -448,9 +476,8 @@ pulumiStackOutputs projectDir environment = do
 -- secret access key surfaces in plaintext. Used only on the
 -- chart-credential persistence path (`persistKeycloakSmtpChartSecrets`)
 -- because the captured value derives the SES SMTP password and is then
--- immediately written into the chart secrets file under
--- `.prodbox-state/charts/keycloak/.secrets.json`. The plaintext value is
--- never persisted to disk by this function.
+-- immediately applied to the cluster-owned `keycloak-smtp` Secret. The
+-- plaintext value is never persisted to disk by this function.
 pulumiStackOutputSecret
   :: FilePath -> [(String, String)] -> String -> IO (Either String String)
 pulumiStackOutputSecret projectDir environment outputName = do
@@ -482,13 +509,82 @@ pulumiStackOutputSecret projectDir environment outputName = do
             )
         ExitSuccess -> Right (trim (processStdout output))
 
+-- | Re-apply the Keycloak SMTP Secret from the already-provisioned long-lived
+-- @aws-ses@ stack into the current Kubernetes context. This is intentionally
+-- separate from 'ensureAwsSesStackResources': per-run clusters are fresh while
+-- the SES stack is retained, so AWS-substrate validation bootstrap must sync
+-- the cluster Secret without mutating the long-lived SES resources.
+syncKeycloakSmtpChartSecrets :: FilePath -> IO (Either String ())
+syncKeycloakSmtpChartSecrets repoRoot = do
+  let projectDir = awsSesPulumiProjectDir repoRoot
+  projectExists <- doesFileExist (projectDir </> "Pulumi.yaml")
+  if not projectExists
+    then pure (Left ("Pulumi AWS SES project missing: " ++ projectDir))
+    else do
+      configResult <- resolveAwsSesStackConfig repoRoot
+      adminResult <- loadAdminAwsCredentials repoRoot
+      backendConfigResult <- loadConfigFile repoRoot
+      case (configResult, adminResult, backendConfigResult) of
+        (Left err, _, _) -> pure (Left err)
+        (_, Left err, _) -> pure (Left err)
+        (_, _, Left err) -> pure (Left err)
+        (Right stackConfig, Right adminCreds, Right backendConfig) -> do
+          let backend = pulumi_state_backend backendConfig
+          baseEnvResult <- pulumiSesAdminBaseEnv repoRoot adminCreds backend
+          case baseEnvResult of
+            Left err -> pure (Left err)
+            Right baseEnvironment -> do
+              bucketResult <- ensureLongLivedPulumiStateBucket repoRoot baseEnvironment backend
+              case bucketResult of
+                Left err -> pure (Left (longLivedBackendErrorMessage err))
+                Right () ->
+                  runSyncKeycloakSmtpChartSecrets repoRoot projectDir baseEnvironment stackConfig
+
+runSyncKeycloakSmtpChartSecrets
+  :: FilePath
+  -> FilePath
+  -> [(String, String)]
+  -> AwsSesStackConfig
+  -> IO (Either String ())
+runSyncKeycloakSmtpChartSecrets repoRoot projectDir baseEnvironment stackConfig = do
+  loginResult <- pulumiLoginQuiet projectDir baseEnvironment
+  case loginResult of
+    Left err -> pure (Left ("pulumi login failed: " ++ err))
+    Right () -> do
+      selectResult <- pulumiStackSelect projectDir baseEnvironment False
+      case selectResult of
+        PulumiStackMissing ->
+          pure
+            ( Left
+                ( "aws-ses stack is not present in the long-lived backend; "
+                    ++ "run `prodbox pulumi aws-ses-resources` before keycloak-invite validation."
+                )
+            )
+        PulumiStackSelectFailed detail ->
+          pure (Left ("pulumi stack select failed: " ++ detail))
+        PulumiStackSelected -> do
+          outputsResult <- pulumiStackOutputs projectDir baseEnvironment
+          case outputsResult of
+            Left err -> pure (Left err)
+            Right outputs ->
+              case snapshotFromOutputs outputs of
+                Left err -> pure (Left err)
+                Right snapshot ->
+                  persistKeycloakSmtpChartSecrets
+                    repoRoot
+                    projectDir
+                    baseEnvironment
+                    stackConfig
+                    snapshot
+
 -- After a successful aws-ses Pulumi reconcile, fetch the IAM secret access
 -- key for the SMTP user, derive the SES SMTP password via
 -- `Prodbox.Ses.SmtpPassword.derivedSesSmtpPassword`, and apply the
--- `keycloak-smtp` @v1.Secret@ in the @keycloak@ namespace directly via
--- @kubectl@. The Secret carries the seven @KC_SMTP_*@ fields the chart's
--- `configmap.yaml` reads via Helm @lookup@ to populate the realm-import
--- @smtpServer@ block. The IAM secret access key never lands on disk.
+-- `keycloak-smtp` @v1.Secret@ in every supported Keycloak release namespace
+-- directly via @kubectl@. The Secret carries the seven @KC_SMTP_*@ fields the
+-- chart's `configmap.yaml` reads via Helm @lookup@ in `.Release.Namespace` to
+-- populate the realm-import @smtpServer@ block. The IAM secret access key never
+-- lands on disk.
 --
 -- Sprint 3.13 chunk 10: replaced the prior
 -- @.prodbox-state/charts/keycloak/.secrets.json@ write with a kubectl
@@ -524,31 +620,18 @@ persistKeycloakSmtpChartSecrets _repoRoot projectDir environment stackConfig sna
             ]
       applyKeycloakSmtpKubectlSecret fields
 
--- | Apply (create-or-update) the @keycloak-smtp@ Secret in the
--- @keycloak@ namespace via @kubectl create secret generic … --dry-run=client
--- -o yaml | kubectl apply -f -@. Mirrors
+-- | Apply (create-or-update) the @keycloak-smtp@ Secret in the supported
+-- Keycloak release namespaces via @kubectl create secret generic …
+-- --dry-run=client -o yaml | kubectl apply -f -@. Mirrors
 -- 'Prodbox.CLI.Rke2.writeGatewayMinioCredsSecret' from Sprint 2.19 (same
 -- @helm.sh/resource-policy: keep@ annotation so @helm uninstall@ doesn't
--- drop the Secret). The kubectl context is the operator's current
--- kubeconfig — host-side `aws-ses-resources` is documented as requiring an
--- already-up cluster (the chart consumers don't exist otherwise).
+-- drop the Secret). The kubectl context is the operator's current kubeconfig.
+-- The namespace create is idempotent and intentionally happens before the
+-- Secret apply so a fresh EKS cluster can receive the SMTP Secret before Helm
+-- renders the Keycloak chart and performs its `lookup`.
 applyKeycloakSmtpKubectlSecret :: [(String, String)] -> IO (Either String ())
 applyKeycloakSmtpKubectlSecret fields = do
-  let secretName = "keycloak-smtp"
-      namespace = "keycloak"
-      literalArgs = concatMap (\(k, v) -> " --from-literal=" ++ shellQuoteForBash (k ++ "=" ++ v)) fields
-      script =
-        "kubectl create secret generic "
-          ++ secretName
-          ++ literalArgs
-          ++ " -n "
-          ++ namespace
-          ++ " --dry-run=client -o yaml | kubectl apply -f - && "
-          ++ "kubectl annotate secret "
-          ++ secretName
-          ++ " -n "
-          ++ namespace
-          ++ " helm.sh/resource-policy=keep --overwrite"
+  let script = renderKeycloakSmtpKubectlApplyScript fields
   result <-
     captureSubprocessResult
       Subprocess
@@ -567,9 +650,49 @@ applyKeycloakSmtpKubectlSecret fields = do
           Left
             ( "kubectl apply for keycloak-smtp Secret failed: "
                 ++ trim (processStderr output ++ processStdout output)
-                ++ " (is `kubectl` configured for the operator cluster and is the `keycloak` namespace present? "
-                ++ "run `prodbox rke2 reconcile` and `prodbox charts deploy keycloak` first.)"
+                ++ " (is `kubectl` configured for the operator cluster? "
+                ++ "run `prodbox rke2 reconcile` or the AWS-substrate bootstrap first.)"
             )
+
+renderKeycloakSmtpKubectlApplyScript :: [(String, String)] -> String
+renderKeycloakSmtpKubectlApplyScript fields =
+  intercalate " && " (concatMap namespaceSteps keycloakSmtpSecretNamespaces)
+ where
+  literalArgs =
+    concatMap
+      (\(k, v) -> " --from-literal=" ++ shellQuoteForBash (k ++ "=" ++ v))
+      fields
+
+  namespaceSteps namespace =
+    [ "kubectl create namespace "
+        ++ shellQuoteForBash namespace
+        ++ " --dry-run=client -o yaml | kubectl apply -f -"
+    , "kubectl label namespace "
+        ++ shellQuoteForBash namespace
+        ++ " "
+        ++ shellQuoteForBash "app.kubernetes.io/managed-by=Helm"
+        ++ " --overwrite"
+    , "kubectl annotate namespace "
+        ++ shellQuoteForBash namespace
+        ++ " "
+        ++ shellQuoteForBash "meta.helm.sh/release-name=gateway"
+        ++ " "
+        ++ shellQuoteForBash "meta.helm.sh/release-namespace=gateway"
+        ++ " "
+        ++ shellQuoteForBash "helm.sh/resource-policy=keep"
+        ++ " --overwrite"
+    , "kubectl create secret generic "
+        ++ shellQuoteForBash keycloakSmtpSecretName
+        ++ literalArgs
+        ++ " -n "
+        ++ shellQuoteForBash namespace
+        ++ " --dry-run=client -o yaml | kubectl apply -f -"
+    , "kubectl annotate secret "
+        ++ shellQuoteForBash keycloakSmtpSecretName
+        ++ " -n "
+        ++ shellQuoteForBash namespace
+        ++ " helm.sh/resource-policy=keep --overwrite"
+    ]
 
 -- | Shell-quote a literal for safe inclusion as a single argument inside an
 -- @sh -c@ script. Wraps in single quotes and escapes embedded single quotes
@@ -672,13 +795,13 @@ ensureAwsSesStackResources repoRoot = do
     else do
       configResult <- resolveAwsSesStackConfig repoRoot
       adminResult <- loadAdminAwsCredentials repoRoot
-      settingsResult <- validateAndLoadSettings repoRoot
-      case (configResult, adminResult, settingsResult) of
+      backendConfigResult <- loadConfigFile repoRoot
+      case (configResult, adminResult, backendConfigResult) of
         (Left err, _, _) -> failWith err
         (_, Left err, _) -> failWith err
         (_, _, Left err) -> failWith err
-        (Right stackConfig, Right adminCreds, Right settings) -> do
-          let backend = pulumi_state_backend (validatedConfig settings)
+        (Right stackConfig, Right adminCreds, Right backendConfig) -> do
+          let backend = pulumi_state_backend backendConfig
           baseEnvResult <- pulumiSesAdminBaseEnv repoRoot adminCreds backend
           case baseEnvResult of
             Left err -> failWith err
@@ -709,40 +832,268 @@ runEnsureAwsSesPulumiCycle repoRoot projectDir baseEnvironment stackConfig = do
   case loginExit of
     ExitFailure _ -> pure (Left "pulumi login failed")
     ExitSuccess -> do
-      selectExit <- pulumiStackSelect projectDir baseEnvironment True
-      case selectExit of
-        PulumiStackMissing ->
-          pure (Left "pulumi stack select reported a missing stack after --create")
+      initialSelect <- pulumiStackSelect projectDir baseEnvironment False
+      case initialSelect of
         PulumiStackSelectFailed detail ->
           pure (Left ("pulumi stack select failed: " ++ detail))
-        PulumiStackSelected -> do
-          syncExit <- syncAwsSesStackConfig projectDir baseEnvironment stackConfig
-          case syncExit of
-            ExitFailure _ -> pure (Left "pulumi config set failed")
-            ExitSuccess -> do
-              upExit <- pulumiUp projectDir baseEnvironment
-              case upExit of
-                ExitFailure _ -> pure (Left "pulumi up failed")
-                ExitSuccess -> do
-                  outputsResult <- pulumiStackOutputs projectDir baseEnvironment
-                  case outputsResult of
+        PulumiStackSelected ->
+          runEnsureAwsSesPulumiUp repoRoot projectDir baseEnvironment stackConfig
+        PulumiStackMissing -> do
+          createSelect <- pulumiStackSelect projectDir baseEnvironment True
+          case createSelect of
+            PulumiStackMissing ->
+              pure (Left "pulumi stack select reported a missing stack after --create")
+            PulumiStackSelectFailed detail ->
+              pure (Left ("pulumi stack select failed: " ++ detail))
+            PulumiStackSelected -> do
+              repairResult <-
+                recoverAwsSesPulumiStateFromLiveResources
+                  projectDir
+                  baseEnvironment
+                  stackConfig
+              case repairResult of
+                Left err -> pure (Left err)
+                Right () ->
+                  runEnsureAwsSesPulumiUp repoRoot projectDir baseEnvironment stackConfig
+
+runEnsureAwsSesPulumiUp
+  :: FilePath
+  -> FilePath
+  -> [(String, String)]
+  -> AwsSesStackConfig
+  -> IO (Either String ())
+runEnsureAwsSesPulumiUp repoRoot projectDir baseEnvironment stackConfig = do
+  syncExit <- syncAwsSesStackConfig projectDir baseEnvironment stackConfig
+  case syncExit of
+    ExitFailure _ -> pure (Left "pulumi config set failed")
+    ExitSuccess -> do
+      upExit <- pulumiUp projectDir baseEnvironment
+      case upExit of
+        ExitFailure _ -> pure (Left "pulumi up failed")
+        ExitSuccess -> do
+          outputsResult <- pulumiStackOutputs projectDir baseEnvironment
+          case outputsResult of
+            Left err -> pure (Left err)
+            Right outputs ->
+              case snapshotFromOutputs outputs of
+                Left err -> pure (Left err)
+                Right snapshot -> do
+                  persistResult <-
+                    persistKeycloakSmtpChartSecrets
+                      repoRoot
+                      projectDir
+                      baseEnvironment
+                      stackConfig
+                      snapshot
+                  case persistResult of
                     Left err -> pure (Left err)
-                    Right outputs ->
-                      case snapshotFromOutputs outputs of
-                        Left err -> pure (Left err)
-                        Right snapshot -> do
-                          persistResult <-
-                            persistKeycloakSmtpChartSecrets
-                              repoRoot
-                              projectDir
-                              baseEnvironment
-                              stackConfig
-                              snapshot
-                          case persistResult of
-                            Left err -> pure (Left err)
-                            Right () -> do
-                              writeOutput (renderAwsSesStackReport snapshot 0)
-                              pure (Right ())
+                    Right () -> do
+                      writeOutput (renderAwsSesStackReport snapshot 0)
+                      pure (Right ())
+
+recoverAwsSesPulumiStateFromLiveResources
+  :: FilePath -> [(String, String)] -> AwsSesStackConfig -> IO (Either String ())
+recoverAwsSesPulumiStateFromLiveResources projectDir environment stackConfig = do
+  bucketExists <-
+    awsCommandSucceeds
+      projectDir
+      environment
+      ["s3api", "head-bucket", "--bucket", sesStackCaptureBucket stackConfig]
+  when bucketExists $
+    writeDiagnosticLine
+      "AWS SES state repair: importing existing capture bucket into the long-lived Pulumi stack"
+  bucketImport <-
+    importIf
+      bucketExists
+      "aws:s3/bucket:Bucket"
+      "captureBucketResource"
+      (sesStackCaptureBucket stackConfig)
+  case bucketImport of
+    Left err -> pure (Left err)
+    Right () -> do
+      userExists <-
+        awsCommandSucceeds
+          projectDir
+          environment
+          ["iam", "get-user", "--user-name", sesSmtpUserName]
+      when userExists $ do
+        writeDiagnosticLine
+          "AWS SES state repair: rotating stale SMTP IAM access keys before Pulumi creates a managed key"
+        deleteExistingSmtpAccessKeysForRepair projectDir environment
+        writeDiagnosticLine
+          "AWS SES state repair: importing existing SMTP IAM user into the long-lived Pulumi stack"
+      userImport <-
+        importIf
+          userExists
+          "aws:iam/user:User"
+          "smtpUser"
+          sesSmtpUserName
+      case userImport of
+        Left err -> pure (Left err)
+        Right () -> do
+          ruleSetExists <-
+            awsCommandSucceeds
+              projectDir
+              environment
+              ["ses", "describe-receipt-rule-set", "--rule-set-name", sesReceiveRuleSetName]
+          when ruleSetExists $
+            writeDiagnosticLine
+              "AWS SES state repair: importing existing SES receipt rule set into the long-lived Pulumi stack"
+          ruleSetImport <-
+            importIf
+              ruleSetExists
+              "aws:ses/receiptRuleSet:ReceiptRuleSet"
+              "receiveRuleSet"
+              sesReceiveRuleSetName
+          case ruleSetImport of
+            Left err -> pure (Left err)
+            Right () -> do
+              ruleExists <-
+                awsCommandSucceeds
+                  projectDir
+                  environment
+                  [ "ses"
+                  , "describe-receipt-rule"
+                  , "--rule-set-name"
+                  , sesReceiveRuleSetName
+                  , "--rule-name"
+                  , sesReceiveRuleName
+                  ]
+              when ruleExists $
+                writeDiagnosticLine
+                  "AWS SES state repair: importing existing SES receipt rule into the long-lived Pulumi stack"
+              importIf
+                ruleExists
+                "aws:ses/receiptRule:ReceiptRule"
+                "receiveRule"
+                (sesReceiveRuleSetName ++ ":" ++ sesReceiveRuleName)
+ where
+  importIf False _ _ _ = pure (Right ())
+  importIf True resourceType resourceName resourceId =
+    pulumiImportResource projectDir environment resourceType resourceName resourceId
+
+deleteExistingSmtpAccessKeysForRepair
+  :: FilePath -> [(String, String)] -> IO ()
+deleteExistingSmtpAccessKeysForRepair projectDir environment = do
+  keysResult <-
+    captureAwsText
+      projectDir
+      environment
+      [ "iam"
+      , "list-access-keys"
+      , "--user-name"
+      , sesSmtpUserName
+      , "--query"
+      , "AccessKeyMetadata[].AccessKeyId"
+      , "--output"
+      , "text"
+      ]
+  case keysResult of
+    Left err ->
+      writeDiagnosticLine ("AWS SES state repair: unable to list stale SMTP keys: " ++ err)
+    Right keys ->
+      forM_ (words keys) $ \keyId -> do
+        deleteResult <-
+          awsCommandResult
+            projectDir
+            environment
+            [ "iam"
+            , "delete-access-key"
+            , "--user-name"
+            , sesSmtpUserName
+            , "--access-key-id"
+            , keyId
+            ]
+        case deleteResult of
+          Right () -> pure ()
+          Left err ->
+            writeDiagnosticLine
+              ("AWS SES state repair: failed to delete stale SMTP key before retry: " ++ err)
+
+pulumiImportResource
+  :: FilePath -> [(String, String)] -> String -> String -> String -> IO (Either String ())
+pulumiImportResource projectDir environment resourceType resourceName resourceId = do
+  result <-
+    runPulumiCommandQuiet
+      projectDir
+      environment
+      [ "import"
+      , "--yes"
+      , "--stack"
+      , awsSesStackName
+      , "--protect=false"
+      , "--non-interactive"
+      , "--suppress-outputs"
+      , resourceType
+      , resourceName
+      , resourceId
+      ]
+  pure $ case result of
+    Left err ->
+      Left
+        ( "pulumi import failed for "
+            ++ resourceName
+            ++ " ("
+            ++ resourceType
+            ++ "): "
+            ++ err
+        )
+    Right () -> Right ()
+
+awsCommandSucceeds :: FilePath -> [(String, String)] -> [String] -> IO Bool
+awsCommandSucceeds workingDir environment arguments = do
+  result <- awsCommandResult workingDir environment arguments
+  pure $ case result of
+    Right () -> True
+    Left _ -> False
+
+awsCommandResult :: FilePath -> [(String, String)] -> [String] -> IO (Either String ())
+awsCommandResult workingDir environment arguments = do
+  result <-
+    captureSubprocessResult
+      Subprocess
+        { subprocessPath = "aws"
+        , subprocessArguments = arguments
+        , subprocessEnvironment = Just environment
+        , subprocessWorkingDirectory = Just workingDir
+        }
+  pure $ case result of
+    Failure err -> Left ("failed to start aws: " ++ err)
+    Success output -> case processExitCode output of
+      ExitSuccess -> Right ()
+      ExitFailure code ->
+        Left
+          ( "aws "
+              ++ unwords arguments
+              ++ " exited with code "
+              ++ show code
+              ++ ": "
+              ++ trim (processStderr output ++ processStdout output)
+          )
+
+captureAwsText :: FilePath -> [(String, String)] -> [String] -> IO (Either String String)
+captureAwsText workingDir environment arguments = do
+  result <-
+    captureSubprocessResult
+      Subprocess
+        { subprocessPath = "aws"
+        , subprocessArguments = arguments
+        , subprocessEnvironment = Just environment
+        , subprocessWorkingDirectory = Just workingDir
+        }
+  pure $ case result of
+    Failure err -> Left ("failed to start aws: " ++ err)
+    Success output -> case processExitCode output of
+      ExitSuccess -> Right (processStdout output)
+      ExitFailure code ->
+        Left
+          ( "aws "
+              ++ unwords arguments
+              ++ " exited with code "
+              ++ show code
+              ++ ": "
+              ++ trim (processStderr output ++ processStdout output)
+          )
 
 destroyAwsSesStack :: FilePath -> Bool -> IO ExitCode
 destroyAwsSesStack repoRoot summary = do
@@ -764,8 +1115,8 @@ destroyAwsSesStackStatus repoRoot summary = do
   currentSnapshot <- fetchAwsSesStackSnapshotFromBackend repoRoot
   let projectDir = awsSesPulumiProjectDir repoRoot
   adminResult <- loadAdminAwsCredentials repoRoot
-  settingsResult <- validateAndLoadSettings repoRoot
-  case (adminResult, settingsResult) of
+  configResult <- loadConfigFile repoRoot
+  case (adminResult, configResult) of
     (Left err, _) ->
       case currentSnapshot of
         Nothing ->
@@ -773,8 +1124,8 @@ destroyAwsSesStackStatus repoRoot summary = do
             (Right "no admin AWS credentials configured and no saved residue snapshot; nothing to destroy")
         Just _ -> pure (Left ("admin AWS credentials required to destroy the AWS SES stack: " ++ err))
     (_, Left err) -> pure (Left err)
-    (Right adminCreds, Right settings) -> do
-      let backend = pulumi_state_backend (validatedConfig settings)
+    (Right adminCreds, Right config) -> do
+      let backend = pulumi_state_backend config
       baseEnvResult <- pulumiSesAdminBaseEnv repoRoot adminCreds backend
       case baseEnvResult of
         Left err -> pure (Left err)
@@ -791,7 +1142,11 @@ runDestroyAwsSesPulumiCycle
 runDestroyAwsSesPulumiCycle repoRoot projectDir baseEnvironment currentSnapshot summary = do
   loginResult <- pulumiLoginEither projectDir baseEnvironment summary
   case loginResult of
-    Left err -> pure (Left ("pulumi login failed: " ++ err))
+    Left err
+      | currentSnapshot == Nothing
+          && LiveResidue.isMissingLongLivedS3BackendBucketMessage err ->
+          pure (Right "already absent from the long-lived Pulumi backend")
+      | otherwise -> pure (Left ("pulumi login failed: " ++ err))
     Right () -> do
       selectExit <- pulumiStackSelect projectDir baseEnvironment False
       case selectExit of
@@ -937,12 +1292,12 @@ migrateAwsSesStackBackend :: FilePath -> IO ExitCode
 migrateAwsSesStackBackend repoRoot = do
   requireInteractiveTty awsSesMigrateBackendGuard
   adminResult <- loadAdminAwsCredentials repoRoot
-  settingsResult <- validateAndLoadSettings repoRoot
-  case (adminResult, settingsResult) of
+  configResult <- loadConfigFile repoRoot
+  case (adminResult, configResult) of
     (Left err, _) -> failWith err
     (_, Left err) -> failWith err
-    (Right adminCreds, Right settings) -> do
-      let backend = pulumi_state_backend (validatedConfig settings)
+    (Right adminCreds, Right config) -> do
+      let backend = pulumi_state_backend config
           projectDir = awsSesPulumiProjectDir repoRoot
       writeOutputLine "AWS_SES_BACKEND_MIGRATION"
       longLivedEnvResult <- pulumiSesAdminBaseEnv repoRoot adminCreds backend

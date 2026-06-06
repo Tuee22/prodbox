@@ -86,9 +86,10 @@ The current repository closes on the implemented self-managed public-edge doctri
    each delivered through shared-host Gateway API `HTTPRoute` resources on
    `test.resolvefintech.com`.
 4. The current supported shared public edge is anchored in the `vscode` namespace: the `vscode`
-   stack publishes the shared `Gateway`, listener certificate, and `/auth` Keycloak identity route,
-   while `api` and `websocket` attach `HTTPRoute` resources from their own namespaces.
-5. Keycloak publishes the identity flow on the shared hostname under `/auth`.
+   stack publishes the shared `Gateway`, listener certificate, and `/auth` Keycloak route, while
+   `api` and `websocket` attach `HTTPRoute` resources from their own namespaces.
+5. Keycloak publishes the identity flow and the authenticated admin API used by `prodbox users`
+   on the shared hostname under `/auth`.
 6. The shared `public-edge` `Gateway` exposes HTTPS on port `443` for application traffic and
    HTTP on port `80` only for a redirect-only `HTTPRoute` that returns a permanent redirect to the
    same shared-host path over HTTPS. Plaintext backend forwarding is unsupported.
@@ -99,9 +100,12 @@ The current repository closes on the implemented self-managed public-edge doctri
 8. `prodbox test integration charts-api` and `prodbox test integration charts-websocket` now
    prove the shipped JWT-only API and Redis-backed WebSocket paths externally, while
    `prodbox test integration admin-routes` proves the Harbor and MinIO auth gates externally.
-9. The current `websocket` workload uses workload-managed OIDC bootstrap on `/ws/oidc` and a
-   private in-cluster token-endpoint backchannel to `keycloak.vscode.svc.cluster.local:8080`; this
-   is a current runtime boundary, not a second public identity surface.
+9. Public browser redirects use the shared-host `/auth` identity route, while non-browser
+   provider backchannels stay in-cluster: VS Code's Envoy `SecurityPolicy` targets the
+   namespace-local `keycloak` Service, API/WebSocket JWT policies fetch JWKS through the shared
+   internal Keycloak endpoint, Harbor/MinIO admin OIDC policies use the shared internal Keycloak
+   token endpoint, and the WebSocket workload uses `keycloak.vscode.svc.cluster.local:8080`.
+   These are current runtime boundaries, not second public identity surfaces.
 
 ## 3. Component Responsibilities
 
@@ -158,6 +162,8 @@ Keycloak responsibilities include:
 - user, role, group, and client management
 - identity and session persistence in PostgreSQL
 - durable identity and session storage behind the public login flow
+- the authenticated admin API consumed by the operator-owned `prodbox users invite|list|revoke`
+  surface
 
 Envoy and application workloads trust tokens issued by Keycloak according to route policy.
 
@@ -305,13 +311,23 @@ Typical fit:
 
 The current worktree ships all three supported public-edge auth shapes:
 
-- `vscode` uses Envoy-managed browser OIDC enforcement through `SecurityPolicy`.
+- `vscode` uses Envoy-managed browser OIDC enforcement through `SecurityPolicy`; the browser-facing
+  authorization endpoint remains on the public issuer, and Envoy's token/provider exchange uses
+  the namespace-local `keycloak` Service on port 8080.
 - `api` uses request-carried bearer JWTs validated locally at Envoy from Keycloak issuer metadata,
-  JWKS, audience, and route claims.
+  JWKS, audience, and route claims. The issuer stays public, while Envoy fetches JWKS from
+  `keycloak.vscode.svc.cluster.local:8080` through `remoteJWKS.backendRefs` plus a
+  `ReferenceGrant` from `api` to the Keycloak Service in `vscode`.
+- Harbor and MinIO admin routes use Envoy-managed browser OIDC enforcement through
+  `SecurityPolicy`, public authorization redirects, and the shared internal Keycloak token
+  endpoint for provider exchange. Their host, issuer, and redirect URL are substrate-aware:
+  home local uses `domain.demo_fqdn`; AWS uses `aws_substrate.subzone_name`. The AWS substrate
+  platform applies these routes after gateway MinIO bootstrap.
 - `websocket` uses workload-managed OIDC bootstrap and cookie-backed session ownership on
   `/ws/oidc`, then a JWT-protected `/ws` upgrade path plus Redis-backed shared state for upgraded
   connections; the current token exchange path uses private in-cluster access to
-  `keycloak.vscode.svc.cluster.local:8080`.
+  `keycloak.vscode.svc.cluster.local:8080`, and its Envoy JWT JWKS fetch uses the same internal
+  service boundary through a `ReferenceGrant` from `websocket` to `vscode`.
 
 The shared-host Keycloak route on `/auth` remains the external identity surface for issuer
 metadata, browser login, and workload-managed redirect flows.
@@ -504,8 +520,10 @@ The supported operational model is:
    shared public hostname and `/auth` path contract.
 5. Proxy headers such as `X-Forwarded-For`, `X-Forwarded-Proto`, and `X-Forwarded-Host` are part
    of the expected backend contract when the workload needs them.
-6. Keycloak health or management endpoints are not a public-route goal by default; the public
-   route is the identity surface users need.
+6. Keycloak health or management endpoints are not a public-route goal by default. The supported
+   public Keycloak route covers browser/OIDC identity paths plus `/auth/admin` for the
+   authenticated operator invite API; other management endpoints stay private unless a future
+   sprint explicitly owns them.
 7. WebSocket workloads need graceful termination that stops new connections, drains existing
    sockets, and relies on readiness withdrawal before process exit.
 
@@ -518,15 +536,18 @@ Lifecycle and chart implications:
 3. The current chart platform ships Keycloak, `vscode`, `api`, and `websocket` on one shared
    public hostname, anchors the shared `Gateway`, listener certificate, and `/auth` Keycloak route
    in the `vscode` namespace, attaches `api` and `websocket` `HTTPRoute` resources through
-   cross-namespace `parentRefs`, keeps the Keycloak public route limited to the identity surfaces
-   browser or OIDC workloads need under `/auth`, and no longer depends on `vscode-nginx`.
+   cross-namespace `parentRefs`, keeps the Keycloak public route limited to browser/OIDC identity
+   paths plus `/auth/admin` for the authenticated `prodbox users` invite API, and no longer depends
+   on `vscode-nginx`.
 4. The Haskell distributed gateway daemon remains a separate chart and runtime surface; it is not
    the Envoy Gateway public edge.
 5. Additional JWT-only API routes, Redis-backed workloads, or WebSocket services must be added
    only when a real workload needs them and must follow this doctrine rather than inventing a
    parallel edge model.
-6. The current `websocket` workload uses a private token-endpoint backchannel to
-   `keycloak.vscode.svc.cluster.local:8080` rather than exposing a second public Keycloak route.
+6. The current `vscode` SecurityPolicy, API/WebSocket JWT `remoteJWKS` policies, Harbor/MinIO
+   admin SecurityPolicies, and `websocket` workload keep token/provider/JWKS backchannels
+   in-cluster rather than exposing a second public Keycloak route or relying on EKS
+   public-load-balancer hairpin behavior.
 
 Typical WebSocket drain flow is:
 

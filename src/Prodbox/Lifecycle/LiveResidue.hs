@@ -37,6 +37,8 @@ module Prodbox.Lifecycle.LiveResidue
   , residueReasonFromMinioError
   , residueReasonFromS3Error
   , residueStatusFromListing
+  , residueStatusFromS3Listing
+  , isMissingLongLivedS3BackendBucketMessage
   , awsEksTestStackName
   , awsEksSubzoneStackName
   , awsTestStackName
@@ -45,6 +47,8 @@ module Prodbox.Lifecycle.LiveResidue
 where
 
 import Control.Exception qualified
+import Data.Char (toLower)
+import Data.List (isInfixOf)
 import Data.Map.Strict (Map)
 import Data.Maybe (isJust)
 import Data.Text qualified as Text
@@ -233,11 +237,8 @@ querySesLive repoRoot = do
               )
           Right backendUrl -> do
             environment <- buildLongLivedBackendEnv adminCreds backendUrl
-            queryOne
-              (repoRoot </> "pulumi" </> "aws-ses")
-              environment
-              awsSesStackName
-              residueReasonFromS3Error
+            result <- listStacks (repoRoot </> "pulumi" </> "aws-ses") environment
+            pure (residueStatusFromS3Listing awsSesStackName result)
 
 -- | Run one @pulumi stack ls --json@ query in the supplied project
 -- directory and translate the response into a 'ResidueStatus'. The
@@ -275,6 +276,34 @@ residueStatusFromListing stackName toReason result = case result of
             , residueStackName = stackName
             }
     | otherwise -> ResidueAbsent
+
+-- | Long-lived S3 backends use a deleted bucket as the authoritative
+-- "nothing to destroy" state during total teardown. Other S3 errors
+-- still fail closed via 'ResidueUnreachable'.
+residueStatusFromS3Listing
+  :: String
+  -> Either StackOutputsError [StackListEntry]
+  -> ResidueStatus
+residueStatusFromS3Listing stackName result = case result of
+  Left err
+    | isMissingLongLivedS3BackendBucketMessage (stackOutputsErrorDetail err) ->
+        ResidueAbsent
+  _ -> residueStatusFromListing stackName residueReasonFromS3Error result
+
+stackOutputsErrorDetail :: StackOutputsError -> String
+stackOutputsErrorDetail err = case err of
+  StackOutputsSubprocessFailed detail -> detail
+  StackOutputsCommandFailed detail -> detail
+  StackOutputsParseFailed detail -> detail
+
+isMissingLongLivedS3BackendBucketMessage :: String -> Bool
+isMissingLongLivedS3BackendBucketMessage detail =
+  "nosuchbucket" `isInfixOf` normalized
+    || ( "could not list bucket" `isInfixOf` normalized
+           && "code=notfound" `isInfixOf` normalized
+       )
+ where
+  normalized = map toLower detail
 
 -- | Map 'StackOutputsError' values onto the MinIO-flavoured
 -- 'ResidueUnreachableReason' (subprocess + command failures → backend

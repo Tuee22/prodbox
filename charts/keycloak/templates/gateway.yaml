@@ -95,6 +95,9 @@ spec:
             value: {{ printf "%s/realms" .Values.gateway.authPathPrefix | quote }}
         - path:
             type: PathPrefix
+            value: {{ printf "%s/admin" .Values.gateway.authPathPrefix | quote }}
+        - path:
+            type: PathPrefix
             value: {{ printf "%s/resources" .Values.gateway.authPathPrefix | quote }}
       backendRefs:
         - name: keycloak

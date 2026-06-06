@@ -21,6 +21,7 @@ module Prodbox.Host
   )
 where
 
+import Control.Exception (SomeException, try)
 import Control.Monad (filterM)
 import Data.Aeson (Value (..), eitherDecode)
 import Data.Aeson.Key qualified as Key
@@ -28,10 +29,19 @@ import Data.Aeson.KeyMap qualified as KeyMap
 import Data.Bits (shiftL, xor, (.&.), (.|.))
 import Data.ByteString.Lazy.Char8 qualified as BL8
 import Data.Char (isAsciiUpper)
+import Data.Maybe (mapMaybe)
 import Data.Set (Set)
 import Data.Set qualified as Set
 import Data.Text qualified as Text
 import Data.Vector qualified as Vector
+import Network.Socket
+  ( AddrInfo (..)
+  , Family (AF_INET)
+  , SockAddr (..)
+  , defaultHints
+  , getAddrInfo
+  , hostAddressToTuple
+  )
 import Numeric (readHex)
 import Prodbox.CLI.Command (HostCommand (..))
 import Prodbox.CLI.Output
@@ -40,8 +50,9 @@ import Prodbox.CLI.Output
   , writeOutputLine
   )
 import Prodbox.Dns
-  ( fetchPublicIp
-  , queryRoute53RecordInZone
+  ( changeRoute53ARecordSetInZone
+  , fetchPublicIp
+  , queryRoute53ARecordValuesInZone
   )
 import Prodbox.Effect (Effect (..))
 import Prodbox.EffectDAG (fromRootIds)
@@ -63,7 +74,7 @@ import Prodbox.Settings
   , validatedConfig
   )
 import Prodbox.Subprocess (ProcessOutput (..), Subprocess (..), captureSubprocessResult)
-import Prodbox.Substrate (Substrate, substrateId)
+import Prodbox.Substrate (Substrate (..), substrateId)
 import System.Directory (doesFileExist, findExecutable)
 import System.Exit (ExitCode (..))
 
@@ -89,9 +100,11 @@ prodboxNamespace :: String
 prodboxNamespace = "prodbox"
 
 data EdgeRuntime = EdgeRuntime
-  { edgePublicIp :: String
+  { edgeSubstrate :: Substrate
+  , edgePublicIp :: String
   , edgePublicHost :: String
-  , edgeRoute53RecordIp :: Maybe String
+  , edgeRoute53RecordIps :: [String]
+  , edgeExpectedDnsRecordIps :: [String]
   , edgeActiveLanInterface :: String
   , edgeActiveLanIpv4 :: String
   , edgeActiveLanCidr :: String
@@ -182,7 +195,7 @@ runHostPublicEdge repoRoot substrate = do
     case publicIpResult of
       Left err -> failWith err
       Right publicIp -> do
-        route53Result <- queryRoute53RecordInZone repoRoot settings hostedZoneId publicHost
+        route53Result <- queryRoute53ARecordValuesInZone repoRoot settings hostedZoneId publicHost
         case firstFailure [toUnit route53Result] of
           Just err -> failWith err
           Nothing -> do
@@ -320,7 +333,7 @@ runHostPublicEdge repoRoot substrate = do
                      , minioSecurityPolicyResult
                      , certificateResult
                      ) of
-                  ( Right route53RecordIp
+                  ( Right route53RecordIps
                     , Right lan
                     , Right envoyGatewayDeploymentDoc
                     , Right gatewayClassDoc
@@ -340,41 +353,58 @@ runHostPublicEdge repoRoot substrate = do
                     , Right minioSecurityPolicyDoc
                     , Right certificateDoc
                     ) -> do
-                      let runtime =
-                            EdgeRuntime
-                              { edgePublicIp = publicIp
-                              , edgePublicHost = publicHost
-                              , edgeRoute53RecordIp = route53RecordIp
-                              , edgeActiveLanInterface = lanInterfaceName lan
-                              , edgeActiveLanIpv4 = lanInterfaceIpv4 lan
-                              , edgeActiveLanCidr = lanNetworkCidr lan
-                              , edgeMetallbPool = lanMetallbPool lan
-                              , edgeMetallbAdvertisementMode = configuredMetallbAdvertisementMode settings
-                              , edgeExpectedLbIp = lanIngressLbIp lan
-                              , edgeEnvoyServiceIp = serviceLoadBalancerIp envoyServiceDoc
-                              , edgeEnvoyServiceHttpPortReady = serviceExposesPort 80 envoyServiceDoc
-                              , edgeEnvoyServiceHttpsPortReady = serviceExposesPort 443 envoyServiceDoc
-                              , edgeEnvoyGatewayDeploymentReady = deploymentReady envoyGatewayDeploymentDoc
-                              , edgeGatewayClassAccepted = gatewayClassAccepted gatewayClassDoc
-                              , edgeGatewayReady = gatewayReady gatewayDoc
-                              , edgeHttpRedirectListenerReady = gatewayListenerReady "http" gatewayDoc
-                              , edgeHttpsListenerReady = gatewayListenerReady "https" gatewayDoc
-                              , edgeHttpRedirectRouteAccepted = httpRouteAccepted httpRedirectRouteDoc
-                              , edgeAuthRouteAccepted = httpRouteAccepted authRouteDoc
-                              , edgeVscodeRouteAccepted = httpRouteAccepted vscodeRouteDoc
-                              , edgeApiRouteAccepted = httpRouteAccepted apiRouteDoc
-                              , edgeWebsocketRouteAccepted = httpRouteAccepted websocketRouteDoc
-                              , edgeHarborRouteAccepted = httpRouteAccepted harborRouteDoc
-                              , edgeMinioRouteAccepted = httpRouteAccepted minioRouteDoc
-                              , edgeVscodeSecurityPolicyAttached = securityPolicyAttached "vscode" vscodeSecurityPolicyDoc
-                              , edgeApiSecurityPolicyAttached = securityPolicyAttached "api" apiSecurityPolicyDoc
-                              , edgeWebsocketSecurityPolicyAttached = securityPolicyAttached "websocket" websocketSecurityPolicyDoc
-                              , edgeHarborSecurityPolicyAttached = securityPolicyAttached "harbor-ui" harborSecurityPolicyDoc
-                              , edgeMinioSecurityPolicyAttached = securityPolicyAttached "minio-console" minioSecurityPolicyDoc
-                              , edgeCertificateReady = certificateReady certificateDoc
-                              }
-                      writeOutput (renderPublicEdgeReport runtime)
-                      pure ExitSuccess
+                      let envoyServiceEndpoint = serviceLoadBalancerIp envoyServiceDoc
+                      expectedDnsRecordIps <-
+                        publicEdgeExpectedDnsRecordIps substrate publicIp envoyServiceEndpoint
+                      reconciledRoute53RecordIpsResult <-
+                        reconcileAwsPublicEdgeDns
+                          repoRoot
+                          settings
+                          hostedZoneId
+                          publicHost
+                          substrate
+                          expectedDnsRecordIps
+                          route53RecordIps
+                      case reconciledRoute53RecordIpsResult of
+                        Left err -> failWith err
+                        Right reconciledRoute53RecordIps -> do
+                          let runtime =
+                                EdgeRuntime
+                                  { edgeSubstrate = substrate
+                                  , edgePublicIp = publicIp
+                                  , edgePublicHost = publicHost
+                                  , edgeRoute53RecordIps = reconciledRoute53RecordIps
+                                  , edgeExpectedDnsRecordIps = expectedDnsRecordIps
+                                  , edgeActiveLanInterface = lanInterfaceName lan
+                                  , edgeActiveLanIpv4 = lanInterfaceIpv4 lan
+                                  , edgeActiveLanCidr = lanNetworkCidr lan
+                                  , edgeMetallbPool = lanMetallbPool lan
+                                  , edgeMetallbAdvertisementMode = configuredMetallbAdvertisementMode settings
+                                  , edgeExpectedLbIp = lanIngressLbIp lan
+                                  , edgeEnvoyServiceIp = envoyServiceEndpoint
+                                  , edgeEnvoyServiceHttpPortReady = serviceExposesPort 80 envoyServiceDoc
+                                  , edgeEnvoyServiceHttpsPortReady = serviceExposesPort 443 envoyServiceDoc
+                                  , edgeEnvoyGatewayDeploymentReady = deploymentReady envoyGatewayDeploymentDoc
+                                  , edgeGatewayClassAccepted = gatewayClassAccepted gatewayClassDoc
+                                  , edgeGatewayReady = gatewayReady gatewayDoc
+                                  , edgeHttpRedirectListenerReady = gatewayListenerReady "http" gatewayDoc
+                                  , edgeHttpsListenerReady = gatewayListenerReady "https" gatewayDoc
+                                  , edgeHttpRedirectRouteAccepted = httpRouteAccepted httpRedirectRouteDoc
+                                  , edgeAuthRouteAccepted = httpRouteAccepted authRouteDoc
+                                  , edgeVscodeRouteAccepted = httpRouteAccepted vscodeRouteDoc
+                                  , edgeApiRouteAccepted = httpRouteAccepted apiRouteDoc
+                                  , edgeWebsocketRouteAccepted = httpRouteAccepted websocketRouteDoc
+                                  , edgeHarborRouteAccepted = httpRouteAccepted harborRouteDoc
+                                  , edgeMinioRouteAccepted = httpRouteAccepted minioRouteDoc
+                                  , edgeVscodeSecurityPolicyAttached = securityPolicyAttached "vscode" vscodeSecurityPolicyDoc
+                                  , edgeApiSecurityPolicyAttached = securityPolicyAttached "api" apiSecurityPolicyDoc
+                                  , edgeWebsocketSecurityPolicyAttached = securityPolicyAttached "websocket" websocketSecurityPolicyDoc
+                                  , edgeHarborSecurityPolicyAttached = securityPolicyAttached "harbor-ui" harborSecurityPolicyDoc
+                                  , edgeMinioSecurityPolicyAttached = securityPolicyAttached "minio-console" minioSecurityPolicyDoc
+                                  , edgeCertificateReady = certificateReady certificateDoc
+                                  }
+                          writeOutput (renderPublicEdgeReport runtime)
+                          pure ExitSuccess
                   _ -> failWith "internal error: host public-edge results were incomplete"
 
 renderPortAvailabilityReport :: [PortStatus] -> String
@@ -405,7 +435,8 @@ renderPublicEdgeReport runtime =
     [ "Public edge diagnostic"
     , "PUBLIC_FQDN=" ++ edgePublicHost runtime
     , "PUBLIC_IP=" ++ edgePublicIp runtime
-    , "PUBLIC_ROUTE53_A_RECORD=" ++ maybe "<missing>" id (edgeRoute53RecordIp runtime)
+    , "PUBLIC_ROUTE53_A_RECORD=" ++ displayDnsRecordIps (edgeRoute53RecordIps runtime)
+    , "PUBLIC_ROUTE53_EXPECTED_A_RECORD=" ++ displayDnsRecordIps (edgeExpectedDnsRecordIps runtime)
     , "PUBLIC_ROUTE53_STATUS=" ++ publicRoute53Status
     , "ACTIVE_LAN_INTERFACE=" ++ edgeActiveLanInterface runtime
     , "ACTIVE_LAN_IPV4=" ++ edgeActiveLanIpv4 runtime
@@ -439,24 +470,19 @@ renderPublicEdgeReport runtime =
     ]
  where
   publicRoute53Status
-    | edgeRoute53RecordIp runtime == Just (edgePublicIp runtime) = "in-sync"
-    | edgeRoute53RecordIp runtime == Nothing = "missing"
+    | null (edgeExpectedDnsRecordIps runtime) = "target-not-ready"
+    | sameDnsRecordSet (edgeRoute53RecordIps runtime) (edgeExpectedDnsRecordIps runtime) = "in-sync"
+    | null (edgeRoute53RecordIps runtime) = "missing"
     | otherwise = "mismatch"
   coreRoutesReady =
     edgeAuthRouteAccepted runtime
       && edgeVscodeRouteAccepted runtime
       && edgeApiRouteAccepted runtime
       && edgeWebsocketRouteAccepted runtime
-  adminRoutesReady =
-    edgeHarborRouteAccepted runtime
-      && edgeMinioRouteAccepted runtime
   corePoliciesReady =
     edgeVscodeSecurityPolicyAttached runtime
       && edgeApiSecurityPolicyAttached runtime
       && edgeWebsocketSecurityPolicyAttached runtime
-  adminPoliciesReady =
-    edgeHarborSecurityPolicyAttached runtime
-      && edgeMinioSecurityPolicyAttached runtime
   redirectReady =
     edgeEnvoyServiceHttpPortReady runtime
       && edgeHttpRedirectListenerReady runtime
@@ -471,22 +497,20 @@ renderPublicEdgeReport runtime =
       && redirectReady
       && httpsListenerReady
       && coreRoutesReady
-      && adminRoutesReady
       && corePoliciesReady
-      && adminPoliciesReady
       && edgeCertificateReady runtime == "true"
       && edgeEnvoyServiceIp runtime /= "<missing>"
       && edgeLoadBalancerIpMatches runtime
   publicDnsStale = publicRoute53Status /= "in-sync"
+  publicDnsTargetReady = not (null (edgeExpectedDnsRecordIps runtime))
   classification
+    | privateEdgeReady && not publicDnsTargetReady = "public-dns-target-not-ready"
     | privateEdgeReady && publicDnsStale = "private-edge-ready-public-dns-stale"
     | edgeCertificateReady runtime /= "true" = "certificate-not-ready"
     | not httpsListenerReady = "https-listener-not-ready"
     | not redirectReady = "http-redirect-not-ready"
     | not corePoliciesReady = "auth-policy-not-ready"
-    | not adminPoliciesReady = "admin-auth-policy-not-ready"
     | not coreRoutesReady = "gateway-route-not-ready"
-    | not adminRoutesReady = "admin-route-not-ready"
     | not (edgeGatewayReady runtime && edgeGatewayClassAccepted runtime) = "gateway-not-ready"
     | not (edgeEnvoyGatewayDeploymentReady runtime) = "envoy-gateway-controller-not-ready"
     | edgeEnvoyServiceIp runtime == "<missing>" = "envoy-service-not-ready"
@@ -494,11 +518,82 @@ renderPublicEdgeReport runtime =
     | not privateEdgeReady = "cluster-edge-not-ready"
     | otherwise = "ready-for-external-proof"
 
+displayDnsRecordIps :: [String] -> String
+displayDnsRecordIps [] = "<missing>"
+displayDnsRecordIps values = commaSeparated values
+
+sameDnsRecordSet :: [String] -> [String] -> Bool
+sameDnsRecordSet actual expected = sortedUnique actual == sortedUnique expected
+
+sortedUnique :: [String] -> [String]
+sortedUnique = Set.toAscList . Set.fromList
+
+publicEdgeExpectedDnsRecordIps :: Substrate -> String -> String -> IO [String]
+publicEdgeExpectedDnsRecordIps substrate publicIp envoyServiceEndpoint =
+  case substrate of
+    SubstrateHomeLocal -> pure [publicIp]
+    SubstrateAws
+      | envoyServiceEndpoint == "<missing>" -> pure []
+      | isIpv4Literal envoyServiceEndpoint -> pure [envoyServiceEndpoint]
+      | otherwise -> resolveHostIpv4Addresses envoyServiceEndpoint
+
+reconcileAwsPublicEdgeDns
+  :: FilePath
+  -> ValidatedSettings
+  -> Text.Text
+  -> String
+  -> Substrate
+  -> [String]
+  -> [String]
+  -> IO (Either String [String])
+reconcileAwsPublicEdgeDns repoRoot settings hostedZoneId publicHost substrate expectedIps currentIps =
+  case substrate of
+    SubstrateHomeLocal -> pure (Right currentIps)
+    SubstrateAws
+      | null expectedIps -> pure (Right currentIps)
+      | sameDnsRecordSet currentIps expectedIps -> pure (Right currentIps)
+      | otherwise -> do
+          writeResult <-
+            changeRoute53ARecordSetInZone repoRoot settings hostedZoneId publicHost expectedIps 60
+          case writeResult of
+            Left err -> pure (Left err)
+            Right () ->
+              queryRoute53ARecordValuesInZone repoRoot settings hostedZoneId publicHost
+
+resolveHostIpv4Addresses :: String -> IO [String]
+resolveHostIpv4Addresses hostname = do
+  result <-
+    try
+      (getAddrInfo (Just defaultHints {addrFamily = AF_INET}) (Just hostname) Nothing)
+      :: IO (Either SomeException [AddrInfo])
+  pure $ case result of
+    Left _ -> []
+    Right infos -> sortedUnique (mapMaybe addrInfoIpv4 infos)
+
+addrInfoIpv4 :: AddrInfo -> Maybe String
+addrInfoIpv4 info =
+  case addrAddress info of
+    SockAddrInet _ hostAddress ->
+      let (a, b, c, d) = hostAddressToTuple hostAddress
+       in Just (show a ++ "." ++ show b ++ "." ++ show c ++ "." ++ show d)
+    _ -> Nothing
+
+isIpv4Literal :: String -> Bool
+isIpv4Literal value =
+  case map readMaybeInt (splitOn '.' value) of
+    [Just a, Just b, Just c, Just d]
+      | all (\segment -> segment >= 0 && segment <= 255) [a, b, c, d] -> True
+    _ -> False
+
 edgeLoadBalancerIpMatches :: EdgeRuntime -> Bool
 edgeLoadBalancerIpMatches runtime =
-  edgeExpectedLbIp runtime /= "<unknown>"
-    && edgeExpectedLbIp runtime /= "<missing>"
-    && edgeEnvoyServiceIp runtime == edgeExpectedLbIp runtime
+  case edgeSubstrate runtime of
+    SubstrateHomeLocal ->
+      edgeExpectedLbIp runtime /= "<unknown>"
+        && edgeExpectedLbIp runtime /= "<missing>"
+        && edgeEnvoyServiceIp runtime == edgeExpectedLbIp runtime
+    SubstrateAws ->
+      edgeEnvoyServiceIp runtime /= "<missing>"
 
 runHostCheckPorts :: IO ExitCode
 runHostCheckPorts = do
@@ -720,7 +815,7 @@ serviceLoadBalancerIp maybeValue =
   case edgeObject maybeValue of
     Just obj ->
       case KeyMap.lookup "items" obj of
-        Just (Array items) | not (Vector.null items) -> firstLoadBalancerIp (Vector.head items)
+        Just (Array items) | not (Vector.null items) -> firstLoadBalancerEndpoint (Vector.head items)
         _ -> "<missing>"
     Nothing -> "<missing>"
 
@@ -888,8 +983,8 @@ numberField obj fieldName =
     Just (Number value) -> round value
     _ -> 0
 
-firstLoadBalancerIp :: Value -> String
-firstLoadBalancerIp value =
+firstLoadBalancerEndpoint :: Value -> String
+firstLoadBalancerEndpoint value =
   case value of
     Object obj ->
       case KeyMap.lookup "status" obj of

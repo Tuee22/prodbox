@@ -71,7 +71,12 @@ spec:
       name: vscode
   oidc:
     provider:
+      backendRefs:
+        - name: {{ .Values.oidc.providerBackend.serviceName | quote }}
+          port: {{ .Values.oidc.providerBackend.servicePort }}
       issuer: {{ .Values.oidc.issuer | quote }}
+      authorizationEndpoint: {{ .Values.oidc.authorizationEndpoint | quote }}
+      tokenEndpoint: {{ .Values.oidc.tokenEndpoint | quote }}
     clientID: {{ .Values.oidc.clientId | quote }}
     clientSecret:
       name: {{ printf "%s-client" .Values.oidc.securityPolicyName | quote }}

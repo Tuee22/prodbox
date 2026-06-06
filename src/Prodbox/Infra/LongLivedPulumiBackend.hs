@@ -83,12 +83,13 @@ longLivedBackendErrorMessage err = case err of
 -- empty.
 --
 -- Long-lived stack operations (`prodbox pulumi aws-ses-resources`,
--- `prodbox pulumi aws-ses-destroy`) authenticate with the admin
--- credential block rather than the operational @aws.*@ block, so the
--- operational @prodbox@ IAM user does not need @s3:GetObject@ /
--- @PutObject@ on the long-lived state bucket. In test simulation the
--- harness materializes the block from the same operator workflow
--- (`prodbox aws setup`) used for operator-interactive flows.
+-- `prodbox pulumi aws-ses-destroy`) and `prodbox nuke`
+-- authenticate with the admin credential block rather than the
+-- operational @aws.*@ block, so the operational @prodbox@ IAM user
+-- does not need @s3:GetObject@ / @PutObject@ on the long-lived state
+-- bucket. In test simulation the harness materializes operational
+-- credentials from the same admin credential class used for
+-- operator-interactive flows.
 loadAdminAwsCredentials :: FilePath -> IO (Either String Credentials)
 loadAdminAwsCredentials repoRoot = do
   configResult <- loadConfigFile repoRoot
@@ -105,7 +106,7 @@ loadAdminAwsCredentials repoRoot = do
                 \aws_admin_for_test_simulation.region must all be set \
                 \in prodbox-config.dhall before long-lived stack operations \
                 \(`prodbox pulumi aws-ses-resources`, `aws-ses-destroy`, \
-                \`aws-ses-migrate-backend`) can authenticate."
+                \`aws-ses-migrate-backend`) or `prodbox nuke` can authenticate."
 
 adminCredentialsConfigured :: Credentials -> Bool
 adminCredentialsConfigured creds =

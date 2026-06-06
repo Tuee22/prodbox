@@ -185,8 +185,8 @@ resources:
         - ${publicSubnet0.id}
         - ${publicSubnet1.id}
       instanceTypes:
-        - t3.medium
-      diskSize: 20
+        - t3.large
+      diskSize: 50
       scalingConfig:
         desiredSize: 2
         minSize: 2

@@ -16,6 +16,9 @@ import Control.Monad (foldM)
 import Data.Aeson
   ( Value (..)
   , eitherDecode
+  , encode
+  , object
+  , (.=)
   )
 import Data.Aeson.Key qualified as Key
 import Data.Aeson.KeyMap qualified as KeyMap
@@ -25,6 +28,9 @@ import Data.List (isInfixOf)
 import Data.Map.Strict qualified as Map
 import Data.Text qualified as Text
 import Data.Vector qualified as Vector
+import Prodbox.AwsEnvironment
+  ( overlayAwsCredentials
+  )
 import Prodbox.CLI.Output
   ( writeDiagnosticLine
   , writeError
@@ -52,6 +58,7 @@ import Prodbox.Lifecycle.ResidueStatus qualified as ResidueStatus
 import Prodbox.Result (Result (..))
 import Prodbox.Settings
   ( AwsSubstrateSection (..)
+  , Credentials
   , Route53Section (..)
   , ValidatedSettings (..)
   , aws
@@ -575,11 +582,20 @@ destroyAwsEksSubzoneStackStatus repoRoot summary = do
                             case syncExit of
                               ExitFailure _ -> pure (Left "pulumi config set failed")
                               ExitSuccess -> do
-                                destroyResult <-
-                                  pulumiDestroyEither projectDir providerEnvironment summary
-                                case destroyResult of
-                                  Left err -> pure (Left ("pulumi destroy failed: " ++ err))
-                                  Right () -> completeDestroy repoRoot projectDir providerEnvironment summary
+                                awsCliEnvironment <- awsCliEnvironmentForCredentials operationalCredentials
+                                cleanupResult <-
+                                  cleanupAwsEksSubzoneRecordSets
+                                    repoRoot
+                                    awsCliEnvironment
+                                    currentSnapshot
+                                case cleanupResult of
+                                  Left err -> pure (Left err)
+                                  Right () -> do
+                                    destroyResult <-
+                                      pulumiDestroyEither projectDir providerEnvironment summary
+                                    case destroyResult of
+                                      Left err -> pure (Left ("pulumi destroy failed: " ++ err))
+                                      Right () -> completeDestroy repoRoot projectDir providerEnvironment summary
                   PulumiStackMissing ->
                     case currentSnapshot of
                       Nothing -> pure (Right "already absent from the local Pulumi backend")
@@ -600,6 +616,143 @@ destroyAwsEksSubzoneStackStatus repoRoot summary = do
             )
     Right (Left err) -> pure (Left err)
     Right (Right status) -> pure (Right status)
+
+awsCliEnvironmentForCredentials :: Credentials -> IO [(String, String)]
+awsCliEnvironmentForCredentials credentials = do
+  baseEnvironment <- getEnvironment
+  pure (overlayAwsCredentials baseEnvironment credentials)
+
+cleanupAwsEksSubzoneRecordSets
+  :: FilePath -> [(String, String)] -> Maybe AwsEksSubzoneStackSnapshot -> IO (Either String ())
+cleanupAwsEksSubzoneRecordSets _repoRoot _environment Nothing = pure (Right ())
+cleanupAwsEksSubzoneRecordSets repoRoot environment (Just snapshot) = do
+  listResult <-
+    captureSubprocessResult
+      Subprocess
+        { subprocessPath = "aws"
+        , subprocessArguments =
+            [ "route53"
+            , "list-resource-record-sets"
+            , "--hosted-zone-id"
+            , subzoneSnapshotSubzoneId snapshot
+            , "--output"
+            , "json"
+            ]
+        , subprocessEnvironment = Just environment
+        , subprocessWorkingDirectory = Just repoRoot
+        }
+  case listResult of
+    Failure err ->
+      pure (Left ("failed to start aws route53 list-resource-record-sets: " ++ err))
+    Success output ->
+      case processExitCode output of
+        ExitFailure _ ->
+          pure (Left ("aws route53 list-resource-record-sets failed: " ++ renderProcessDetail output))
+        ExitSuccess ->
+          case route53RecordSetsToDelete (processStdout output) of
+            Left err -> pure (Left err)
+            Right [] -> pure (Right ())
+            Right recordSets -> do
+              changeResult <-
+                deleteAwsEksSubzoneRecordSets
+                  repoRoot
+                  environment
+                  (subzoneSnapshotSubzoneId snapshot)
+                  recordSets
+              case changeResult of
+                Left err -> pure (Left err)
+                Right changeId ->
+                  waitForRoute53Change repoRoot environment changeId
+
+route53RecordSetsToDelete :: String -> Either String [Value]
+route53RecordSetsToDelete stdoutText = do
+  payload <- eitherDecode (BL8.pack stdoutText) :: Either String Value
+  case payload of
+    Object obj ->
+      case KeyMap.lookup (Key.fromString "ResourceRecordSets") obj of
+        Just (Array records) -> Right (filter isDeletableSubzoneRecordSet (Vector.toList records))
+        _ -> Left "aws route53 list-resource-record-sets JSON missing ResourceRecordSets array"
+    _ -> Left "aws route53 list-resource-record-sets returned a non-object payload"
+
+isDeletableSubzoneRecordSet :: Value -> Bool
+isDeletableSubzoneRecordSet value =
+  case value of
+    Object obj ->
+      case KeyMap.lookup (Key.fromString "Type") obj of
+        Just (String recordType) ->
+          let renderedType = Text.unpack recordType
+           in renderedType /= "NS" && renderedType /= "SOA"
+        _ -> False
+    _ -> False
+
+deleteAwsEksSubzoneRecordSets
+  :: FilePath -> [(String, String)] -> String -> [Value] -> IO (Either String String)
+deleteAwsEksSubzoneRecordSets repoRoot environment hostedZoneId recordSets = do
+  result <-
+    captureSubprocessResult
+      Subprocess
+        { subprocessPath = "aws"
+        , subprocessArguments =
+            [ "route53"
+            , "change-resource-record-sets"
+            , "--hosted-zone-id"
+            , hostedZoneId
+            , "--change-batch"
+            , BL8.unpack (encode (route53DeleteRecordSetsBatch recordSets))
+            , "--query"
+            , "ChangeInfo.Id"
+            , "--output"
+            , "text"
+            ]
+        , subprocessEnvironment = Just environment
+        , subprocessWorkingDirectory = Just repoRoot
+        }
+  pure $ case result of
+    Failure err ->
+      Left ("failed to start aws route53 change-resource-record-sets: " ++ err)
+    Success output ->
+      case processExitCode output of
+        ExitFailure _ ->
+          Left ("aws route53 change-resource-record-sets failed: " ++ renderProcessDetail output)
+        ExitSuccess -> Right (trim (processStdout output))
+
+route53DeleteRecordSetsBatch :: [Value] -> Value
+route53DeleteRecordSetsBatch recordSets =
+  object
+    [ "Comment" .= ("prodbox aws-subzone destroy record cleanup" :: String)
+    , "Changes" .= map deleteChange recordSets
+    ]
+ where
+  deleteChange recordSet =
+    object
+      [ "Action" .= ("DELETE" :: String)
+      , "ResourceRecordSet" .= recordSet
+      ]
+
+waitForRoute53Change :: FilePath -> [(String, String)] -> String -> IO (Either String ())
+waitForRoute53Change repoRoot environment changeId = do
+  result <-
+    captureSubprocessResult
+      Subprocess
+        { subprocessPath = "aws"
+        , subprocessArguments =
+            [ "route53"
+            , "wait"
+            , "resource-record-sets-changed"
+            , "--id"
+            , changeId
+            ]
+        , subprocessEnvironment = Just environment
+        , subprocessWorkingDirectory = Just repoRoot
+        }
+  pure $ case result of
+    Failure err ->
+      Left ("failed to start aws route53 wait resource-record-sets-changed: " ++ err)
+    Success output ->
+      case processExitCode output of
+        ExitSuccess -> Right ()
+        ExitFailure _ ->
+          Left ("aws route53 wait resource-record-sets-changed failed: " ++ renderProcessDetail output)
 
 completeDestroy
   :: FilePath -> FilePath -> [(String, String)] -> Bool -> IO (Either String String)

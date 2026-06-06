@@ -283,7 +283,7 @@ The authoritative substrate inventory is [substrates.md](substrates.md). Today's
 | Substrate | Inventory | Suite parity |
 |-----------|-----------|--------------|
 | Home local | Local RKE2 on the operator host | ✅ Full suite |
-| AWS | Disposable Pulumi stacks `aws-eks-test` and `aws-test` | 🔄 Provisioning + SSH reachability only; suite parity tracked in [phase-7-aws-substrate-foundations.md](phase-7-aws-substrate-foundations.md) |
+| AWS | Disposable Pulumi stacks `aws-eks`, `aws-eks-subzone`, and `aws-test` | 🔄 Phase 7 substrate parity, targeted Phase 8 invite capture/link-follow, and local Sprint 8.5 POST/OIDC unit proof are green; AWS aggregate plus live POST/OIDC parity remain tracked in [phase-8-email-invite-auth.md](phase-8-email-invite-auth.md) |
 
 #### Substrate lifecycle
 

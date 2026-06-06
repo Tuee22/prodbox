@@ -20,12 +20,126 @@
 🔄 **Active** — Sprints `8.1`–`8.4` are ✅ Done on their owned surfaces; Sprints `8.5` and
 `8.6` are 🔄 Active. The shared SES infrastructure is provisioned, the Keycloak realm chart
 is deployed with the operator-invited flow + SES SMTP password derivation, the
-`prodbox users invite|list|revoke` CLI is live, and the `ValidationKeycloakInvite`
-canonical-suite member drives invite → S3 capture → link follow → cleanup end-to-end.
-Remaining work on the owned surface: the Sprint `8.5` credential-setup form POST plus
-fresh OIDC token round-trip and `email_verified=true` claim assertions, and the Sprint
-`8.6` live cross-substrate `keycloak-invite` run that depends on Sprint `7.5.c`'s
-substrate-platform extension landing on the AWS substrate.
+`prodbox users invite|list|revoke` CLI is live, and `ValidationKeycloakInvite` is
+implemented through invite → S3 capture → credential setup → invited-user OIDC claim assertion
+→ cleanup, with the June 6 local unit proof green after the SMTP-reconcile, SMTP
+NetworkPolicy, verify-email continuation, public-edge certificate status-patch renderer, and
+public-edge TLS Secret retention fixes (674/674).
+Remaining work on the owned surface: live home and AWS substrate validation of the Sprint `8.5`
+POST/OIDC body, plus the Sprint `8.6` AWS
+aggregate rerun that exercises the now-green targeted AWS `keycloak-invite` path inside the full
+suite. The Phase 7 AWS substrate
+proof is now closed; the active Sprint `8.6` residual is the Keycloak invite public-edge closure
+exposed by the June 5 AWS aggregate runs.
+The first run scheduled `ValidationKeycloakInvite` after destructive `ValidationLifecycle`;
+the follow-up run reached `ValidationKeycloakInvite` before lifecycle and exposed that the
+admin client still targeted the home `domain.demo_fqdn` instead of the selected substrate public
+FQDN, while `ValidationChartsStorage` also deletes the `vscode` root chart that hosts Keycloak.
+The current aggregate run validated the ordering and `substratePublicFqdn` selection, then
+exposed that the Keycloak chart's public auth `HTTPRoute` omitted the `/auth/admin` path used by
+the operator invite admin API. The first targeted `keycloak-invite --substrate aws` rerun after
+the route fix then failed in phase 1 because the standalone AWS-substrate validation still
+expected pre-populated operational `aws.*`; the targeted-harness fix now wraps targeted
+AWS-substrate validations in the same `aws_admin_for_test_simulation.*`-driven IAM harness as
+aggregate runs. The follow-up targeted AWS run proved that credential materialization path and
+reached the Keycloak admin invite flow, then failed because the per-run EKS cluster did not have
+the retained SES SMTP settings synced into the Keycloak release namespace before Helm rendered the
+realm import. The active fix syncs the long-lived `aws-ses` SMTP outputs into the fresh cluster's
+supported Keycloak release namespaces before AWS chart deployment. The June 6 targeted AWS rerun
+proved the sync hook is invoked before AWS chart deployment, then failed at `pulumi login` because
+the configured long-lived Pulumi state bucket had been removed by the prior total-teardown cycle.
+The active follow-up fix runs the same idempotent `ensureLongLivedPulumiStateBucket` precondition
+on the SMTP sync path before reading the retained `aws-ses` stack. The live `aws-ses-resources`
+repair then imported the retained capture bucket, SMTP IAM user, SES receipt rule set, and receipt
+rule into the recreated long-lived stack, rotated stale SMTP access keys so Pulumi owns a
+recoverable secret again, reconciled overwrite-tolerant Route 53 verification/DKIM/MX records, and
+restored `keycloak-smtp` in both supported local release namespaces. The next June 6 targeted AWS
+rerun failed before AWS provisioning during Phase `1.6/2` local supported-runtime restore after a
+duplicate `rke2 reconcile` repeated Harbor image publication and exhausted the transient Harbor
+login retry window. The active follow-up fix keeps the Phase `1.5/2` runbook reconcile as the
+single local runtime reconcile for suites that already require it, then lets Phase `1.6/2` reset
+and redeploy the supported chart set without rerunning the full local image-publication path. The
+next targeted AWS rerun proved that guard in the live harness, reached AWS chart deployment, and
+then failed at the `gateway` Helm install because the SMTP sync had pre-created the `keycloak`
+namespace without the Helm ownership metadata required for the gateway chart's RBAC Namespace
+resource to adopt it. The active follow-up fix stamps gateway-release Helm ownership and
+`helm.sh/resource-policy: keep` on SMTP pre-created Keycloak release namespaces, and renders the
+same metadata on the gateway chart's RBAC Namespace resources. The next targeted AWS rerun proved
+that namespace-adoption fix live by moving past the gateway install, deploying the AWS chart set,
+and entering the invite validation body. It then failed because the captured Keycloak multipart
+email exposed the same action-token URL in text and HTML forms that differ only by URL-local
+quoted-printable encoding. The active parser fix normalizes extracted invite URLs for
+Keycloak's `=3D` query-delimiter encoding and HTML `&amp;` entity before distinct-link
+detection, while still rejecting genuinely ambiguous emails with multiple distinct links. The
+next targeted AWS rerun was interrupted before AWS provisioning because the home-local
+public-edge certificate reissue helper deleted stale ACME child resources after a failed order
+but did not mark the `Certificate` for immediate reissuance, leaving cert-manager in its failed
+issuance backoff while the readiness loop waited. The active harness fix keeps the stale
+resource cleanup and patches the Certificate status with an `Issuing=True` manual-trigger
+condition after cleanup, and also when a prior cleanup already removed every stale child
+resource, matching cert-manager's manual-renewal behavior without requiring an out-of-band
+operator cleanup. The follow-up targeted AWS rerun reached the public-edge readiness loop again
+with a fresh active ACME Order, then exposed a provider-side issue instead of a stale-resource
+issue: the configured ZeroSSL ACME directory returned Sectigo HTML for both the documented
+directory URL and the `/directory` variant, while Let's Encrypt returned an ACME JSON directory.
+The config/doc fix switches `prodbox-config.dhall` and the guided setup default to the supported
+Let's Encrypt no-EAB path for repository validation, while keeping explicit ZeroSSL support for
+operators who verify that the ZeroSSL endpoint serves ACME JSON from their environment. The first
+targeted AWS rerun after that switch failed before AWS provisioning because the local host had
+entered DiskPressure and MetalLB rollout timed out; cleanup stayed harness-owned, and only
+generated temp image artifacts plus dangling Docker/build cache were pruned. The follow-up
+targeted AWS rerun on June 6 recovered the local runtime through the harness `rke2 reconcile`,
+validated MetalLB/Envoy/cert-manager/Percona readiness with the Let's Encrypt ClusterIssuer,
+provisioned the per-run AWS substrate, deployed the AWS chart set, reached
+`ValidationKeycloakInvite`, captured the SES invite email, parsed and followed the normalized
+invite link, and exited the validation body successfully. Post-run cleanup destroyed the per-run
+AWS stacks with residue checks and cleared the operational IAM/config material.
+The first live home-substrate Sprint `8.5` POST/OIDC rerun reached the Keycloak admin invite body
+and then failed because the local supported-runtime bootstrap had not synced the retained
+`keycloak-smtp` Secret into the `vscode` namespace, so the rendered realm import omitted
+`smtpServer`. The active fix makes invite-aware local supported-runtime bootstrap run the same
+retained `aws-ses` SMTP sync before chart deployment, and makes `prodbox users invite` reconcile
+the existing Keycloak realm's `smtpServer` from the live `keycloak-smtp` Secret before creating the
+invited user. That second step covers preserved Keycloak databases where `--import-realm` has
+already skipped the existing realm. Local validation: `cabal build --builddir=.build exe:prodbox`,
+refreshed `.build/prodbox`, `./.build/prodbox test unit` (669/669), `./.build/prodbox lint docs`,
+`./.build/prodbox docs check`, `git diff --check`, and `./.build/prodbox check-code`.
+The next live home-substrate rerun proved the local SMTP sync and realm patch, then failed in
+Keycloak's SMTP client with a connect timeout to the SES SMTP endpoint. Root cause: the
+Keycloak chart's `NetworkPolicy` allowed external TCP `443` egress but not the configured SMTP
+port. The active chart fix adds egress to `.Values.smtp.port` (currently SES TCP `587`) and a
+unit guard for the network-policy template. Local validation passed with
+`./.build/prodbox test unit` (670/670), `./.build/prodbox lint chart`,
+`./.build/prodbox lint docs`, `./.build/prodbox docs check`, `git diff --check`, and
+`./.build/prodbox check-code`.
+The follow-up live home-substrate rerun proved SMTP delivery by reaching SES capture and invite
+link parsing with the NetworkPolicy fix applied, then failed because Keycloak `26.0.0` renders
+`VERIFY_EMAIL` as an intermediate required-action page with a continuation anchor before the
+`UPDATE_PASSWORD` form. The active harness fix parses that required-action continuation link,
+follows it with the same cookie jar, and then parses/posts the password form. Local validation
+passed with `cabal build --builddir=.build exe:prodbox`, refreshed `.build/prodbox`,
+`./.build/prodbox test unit` (672/672), `git diff --check`, and
+`./.build/prodbox check-code`.
+The next live home-substrate rerun reached the public-edge readiness repair path before the
+invite body and exposed that the certificate reissue status patch renderer emitted malformed JSON
+while marking a failed Certificate for immediate reissuance. The active harness fix renders that
+status patch with Aeson instead of string concatenation and adds a direct unit decode guard.
+Local validation passed with `cabal build --builddir=.build exe:prodbox`, refreshed
+`.build/prodbox`, `./.build/prodbox test unit` (673/673), `git diff --check`, and
+`./.build/prodbox check-code`.
+The follow-up live home-substrate rerun proved the malformed status patch was fixed and reached
+cert-manager reissue retry, then hit the Let's Encrypt production duplicate-certificate limit for
+the public-edge hostname. The active chart-platform fix preserves an issued `public-edge-tls`
+Secret into a retained Kubernetes backup Secret in the `prodbox` namespace before deleting the
+`vscode` chart namespace, then restores it into `vscode` before the Keycloak/Gateway chart is
+re-applied. That keeps certificate material in Kubernetes while preventing routine home chart
+resets from forcing fresh production ACME orders. Local validation passed with
+`cabal build --builddir=.build exe:prodbox`, refreshed `.build/prodbox`,
+`./.build/prodbox test unit` (674/674), `./.build/prodbox lint docs`,
+`./.build/prodbox docs check`, `git diff --check`, and `./.build/prodbox check-code`. The current
+live home retry remains blocked until the provider duplicate-certificate window resets on
+June 7, 2026 UTC, because the already-issued Secret had been deleted before this retention fix
+landed.
 
 Per-sprint status, deliverables, and remaining work are tracked in the sprint blocks
 below. The authoritative status row is in
@@ -173,9 +287,10 @@ DNS records added when the Pulumi program was extended to write the `_amazonses`
 verification record and the three DKIM `_domainkey` CNAMEs into the parent Route 53
 zone — without those Route 53 records the SES sending identity stays in `Pending`
 forever). `pulumi/aws-ses/Main.yaml` and `src/Prodbox/Infra/AwsSesStack.hs` also
-gained an explicit `awsRegion` stack config input (sourced from `aws.region` in
-`prodbox-config.dhall`) so the SES MX target and SMTP endpoint hostnames interpolate
-correctly without depending on the `aws:region` provider config.
+gained an explicit `awsRegion` stack config input (now sourced from
+`aws_admin_for_test_simulation.region` in `prodbox-config.dhall`) so the SES MX target
+and SMTP endpoint hostnames interpolate correctly without depending on the `aws:region`
+provider config.
 
 Validation gate against the live install:
 - `aws ses get-identity-verification-attributes --identities test.resolvefintech.com`
@@ -454,7 +569,7 @@ list consumes these nodes; the integration with `Prodbox.TestPlan` happens there
 
 ## Sprint 8.5: `ValidationKeycloakInvite` Canonical-Suite Content 🔄
 
-**Status**: Active (suite content + dispatch arm + live invite + capture + link-follow steps landed May 18, 2026; credential-setup form parser scaffold landed May 21, 2026 in `src/Prodbox/Keycloak/CredentialSetupForm.hs` with synthetic-fixture unit tests, ready for the live form-structure capture step; credential-setup form POST + fresh OIDC login + claim assertions wire-in to `runKeycloakInviteValidation` remain pending the live capture)
+**Status**: Active (suite content + dispatch arm + live invite + capture + link-follow steps landed May 18, 2026; credential-setup form parser scaffold landed May 21, 2026 in `src/Prodbox/Keycloak/CredentialSetupForm.hs`; June 6, 2026 code wire-in now parses the live credential page, POSTs the generated password with a cookie jar, requests a fresh invited-user OIDC token through `prodbox-api`, and asserts issuer / `email=<recipient>` / `email_verified=true` claims. The June 6 home SMTP-reconcile fix adds invite-aware local `keycloak-smtp` sync plus realm-level SMTP patching before invite sends; the follow-up chart fix permits Keycloak NetworkPolicy egress to the configured SES SMTP port. Local validation for the new POST/OIDC body, SMTP-reconcile path, network-policy guard, Keycloak 26 verify-email continuation parser, public-edge certificate reissue status-patch renderer, and public-edge TLS Secret retention is green; live home and AWS substrate validation remain the current Sprint 8.5 gate, with the current home rerun waiting on the Let's Encrypt duplicate-certificate window after the pre-retention Secret loss.)
 **Blocked by**: Sprints `8.1`, `8.2`, `8.3`, `8.4`
 **Implementation**: `src/Prodbox/TestPlan.hs` (add `ValidationKeycloakInvite` variant and
 `IntegrationKeycloakInvite` integration suite), `src/Prodbox/TestValidation.hs` (add the
@@ -512,25 +627,34 @@ on whichever substrate is active.
   `aws_credentials_valid`, `route53_accessible`, `tool_curl`; deferred prereqs reuse
   `pulumiDeferredPrerequisites` plus the three Sprint 8.4 SES prereqs), and the
   `keycloak-invite` validation id. The validation joins
-  `canonicalNativeValidations` at the end so `prodbox test all` exercises it after the
-  existing canonical suite.
+  `canonicalNativeValidations` immediately after `ValidationChartsPlatform` and before
+  destructive `ValidationChartsStorage` / `ValidationLifecycle` so `prodbox test all
+  --substrate aws` exercises it while the `vscode` root chart, Keycloak deployment, EKS
+  substrate, and Pulumi stack snapshots still exist, and leaves the destructive lifecycle
+  validation last. June 6 follow-up: targeted `IntegrationKeycloakInvite` now requests the
+  suite-level managed AWS harness (`PolicyFull`) on every substrate, because the validation
+  always needs SES/S3/Route 53 credentials; home-substrate targeted runs still schedule no
+  AWS per-run stack destroys.
 - `src/Prodbox/CLI/Command.hs` adds `IntegrationKeycloakInvite` to `IntegrationSuite`.
   `src/Prodbox/CLI/Spec.hs` registers the parser rule and the `integrationLeaf` for
   `prodbox test integration keycloak-invite`.
 - `src/Prodbox/TestValidation.hs` adds the dispatch arm
-  (`ValidationKeycloakInvite -> runKeycloakInviteValidation repoRoot environment`)
-  and the matching `runKeycloakInviteValidation` body. The body currently emits the
-  documented operator workflow as a fail-fast remedy hint: the full end-to-end flow
-  requires the Sprint 8.5 Keycloak admin API HTTP integration in
-  `src/Prodbox/UsersAdmin.hs` plus an S3-polling helper for the SES capture bucket.
+  (`ValidationKeycloakInvite -> runKeycloakInviteValidation repoRoot substrate environment`)
+  and the matching `runKeycloakInviteValidation` body. The body gates on the selected
+  substrate's public edge, calls the Keycloak admin invite/revoke flow through the selected
+  substrate public FQDN, polls the SES capture bucket, parses the invite email, follows the
+  action-token link with a cookie jar, parses and POSTs the credential-setup form, requests a
+  fresh invited-user OIDC token through the public realm token endpoint, asserts issuer /
+  email / `email_verified=true` claims, and deletes the captured email after cleanup.
 - `test/unit/Parser.hs::commandPathOfRequest` covers
   `IntegrationKeycloakInvite -> ["keycloak-invite"]`. The auto-generated parser
   happy-/unhappy-path tests exercise the new leaf.
 - `test/unit/Main.hs` aggregate-suite goldens are updated:
   `nativeInitialIntegrationGatePrerequisites` ends with `route53_accessible`,
   `nativeDeferredIntegrationGatePrerequisites` adds the three SES prereqs,
-  `nativeValidationId`s end with `keycloak-invite`, and `last (nativeValidations
-  suitePlan)` is `ValidationKeycloakInvite`.
+  `nativeValidationId`s place `charts-platform`, `keycloak-invite`, `charts-storage`, and
+  `lifecycle` in that order, and `last (nativeValidations suitePlan)` is
+  `ValidationLifecycle`.
 - Generated CLI artifacts regenerated via `prodbox docs generate`:
   `documents/cli/commands.md` lists `keycloak-invite`, manpages and
   bash/zsh/fish completions carry the new leaf, `test/golden/cli/*` fixtures are
@@ -546,20 +670,33 @@ on whichever substrate is active.
   a unique recipient `test-<hex-nonce>@<ses.receive_subdomain>`, calls
   `Prodbox.UsersAdmin.inviteUser` (live admin-API HTTP), polls the SES capture bucket
   via `Prodbox.Ses.Capture.pollSesCapture` (1 s interval, 60 s deadline), extracts
-  the action-token URL via `Prodbox.Keycloak.Email.parseKeycloakInviteLink`, and
-  follows the link via `followInviteLink` (http-client, asserts 2xx/3xx). Cleanup
-  runs unconditionally: `Prodbox.UsersAdmin.revokeUser <id> --delete` plus
-  `Prodbox.Ses.Capture.deleteCapturedEmail` to remove the captured S3 object.
+  the action-token URL via `Prodbox.Keycloak.Email.parseKeycloakInviteLink`, follows
+  the link with `curl -L` and a temporary cookie jar, follows Keycloak 26's verify-email
+  continuation anchor when present, parses `kc-passwd-update-form` through
+  `Prodbox.Keycloak.CredentialSetupForm`, POSTs the generated password to the form action URL,
+  requests a fresh invited-user token from
+  `/realms/prodbox/protocol/openid-connect/token` through `prodbox-api`, and asserts the
+  selected issuer plus `email=<recipient>` and `email_verified=true` claims. Cleanup runs after
+  the outcome is recorded: `Prodbox.UsersAdmin.revokeUser <id> --delete` plus
+  `Prodbox.Ses.Capture.deleteCapturedEmail` when a capture object was observed.
 - New helpers: `src/Prodbox/Ses/Capture.hs::pollSesCapture` /
   `deleteCapturedEmail` (built on the `aws s3api` subprocess shape already used by
   the Route 53 validators), `src/Prodbox/Keycloak/Email.hs::parseKeycloakInviteLink`
-  (RFC-822 scan with quoted-printable soft-wrap handling; rejects on zero or
-  multiple distinct matches), and `generateInviteNonce` /  `followInviteLink`
-  inlined in `Prodbox.TestValidation`.
+  (RFC-822 scan with quoted-printable soft-wrap handling, URL-local `=3D` /
+  `&amp;` normalization for Keycloak multipart text/html duplicates, and zero /
+  multiple-distinct-link rejection), `src/Prodbox/Keycloak/CredentialSetupForm.hs`
+  (form parser and URL-encoded POST renderer, now decoding HTML attribute entities like a browser
+  submit and extracting Keycloak 26 verify-email continuation links), and the invited-user OIDC
+  claim assertion helpers in `Prodbox.TestValidation`.
 - `test/unit/Main.hs` adds three new fixtures + tests for `parseKeycloakInviteLink`
   (plain-text happy path, quoted-printable soft-wrap, missing-link).
 - Validated with `prodbox check-code` (exit 0), `prodbox lint docs` (exit 0),
   `prodbox docs check` (exit 0), and `prodbox test unit` (315/315) on May 18, 2026.
+- June 6, 2026 parser hardening adds fixtures for the real Keycloak multipart shape:
+  a text/html duplicate whose HTML URL encodes the query delimiter as `=3D`, and a
+  separate multiple-distinct-link failure case. Local validation:
+  `cabal build --builddir=.build exe:prodbox` and `./.build/prodbox test unit`
+  (661/661).
 
 ### SES SMTP Password Derivation Landed (May 18, 2026)
 
@@ -572,47 +709,90 @@ on whichever substrate is active.
   (us-west-2, us-east-1, eu-west-1) plus region-sensitivity and determinism
   invariants.
 - `src/Prodbox/Infra/AwsSesStack.hs::ensureAwsSesStackResources` now persists the
-  derived SMTP password into the Keycloak chart-secrets file immediately after
-  the Pulumi `up` succeeds: `pulumiStackOutputSecret` fetches
-  `smtp_iam_secret_access_key` via `pulumi stack output --show-secrets`,
-  `derivedSesSmtpPassword` derives the password using the configured
-  `aws.region`, and `persistKeycloakSmtpChartSecrets` writes four fields
-  (`ses_smtp_endpoint`, `ses_smtp_user`, `ses_smtp_password`, `ses_smtp_from`)
-  directly into the `keycloak-smtp` k8s Secret in the keycloak namespace
-  (k8s-Secret-as-source-of-truth per Sprint `3.13`; not data-bound, so not
-  derived from the master seed — the SES SMTP password is recomputed from the
-  Pulumi-managed IAM secret access key on each `pulumi up`). The IAM secret
-  access key never lands on disk.
-- `src/Prodbox/Lib/ChartPlatform.hs::valuesForKeycloak` adds a new
-  `keycloakSmtpValues` helper that renders the chart's `smtp` block from the
-  four `ses_smtp_*` chart-secret keys when all four are present. Without them
-  (home substrate before SES Pulumi reconcile), the helper falls through to a
-  disabled-SMTP block carrying the chart's existing placeholder values so chart
-  deploy still functions.
+  derived SMTP password into Kubernetes immediately after the Pulumi `up` succeeds:
+  `pulumiStackOutputSecret` fetches `smtp_iam_secret_access_key` via
+  `pulumi stack output --show-secrets`, `derivedSesSmtpPassword` derives the password
+  using `aws_admin_for_test_simulation.region`, and
+  `persistKeycloakSmtpChartSecrets` applies the seven `KC_SMTP_*` fields directly into
+  the `keycloak-smtp` k8s Secret in every supported Keycloak release namespace
+  (`vscode` for the canonical shared-edge chart stack, `keycloak` for standalone
+  `charts deploy keycloak`). The Secret is k8s-source-of-truth per Sprint `3.13`, is
+  not data-bound, and is recomputed from the Pulumi-managed IAM secret access key on
+  each sync. The IAM secret access key never lands on disk.
+- `src/Prodbox/Infra/AwsSesStack.hs::syncKeycloakSmtpChartSecrets` re-applies the
+  retained long-lived `aws-ses` outputs into the current Kubernetes context without
+  mutating the long-lived SES stack. AWS-substrate validation bootstrap calls this after
+  per-run EKS provisioning and before `charts deploy ... --substrate aws`, so a fresh
+  EKS cluster has `keycloak-smtp` in the Keycloak release namespace before Helm
+  evaluates `charts/keycloak/templates/configmap.yaml`'s `lookup`. Invite-aware home-local
+  supported-runtime bootstrap now calls the same sync before local chart deployment. Because
+  this sync may create `keycloak` / `vscode` before the gateway chart renders its RBAC Namespace
+  resources, it stamps the namespaces with gateway-release Helm ownership metadata and
+  `helm.sh/resource-policy: keep`; the gateway chart renders matching metadata so Helm can
+  adopt those pre-created namespaces without owning their eventual deletion.
+- `src/Prodbox/UsersAdmin.hs::inviteUser` now decodes `keycloak-smtp` from the live
+  `vscode` namespace and calls `src/Prodbox/Keycloak/Admin.hs::ensureRealmSmtpSettings`
+  before user creation. The admin call patches the existing realm representation with the
+  Secret-derived `smtpServer`, covering preserved Keycloak databases where the realm import
+  already skipped the existing realm before SMTP was present.
+- `charts/keycloak/templates/networkpolicy.yaml` permits Keycloak egress to
+  `.Values.smtp.port` in addition to HTTPS, DNS, PostgreSQL, and internal Keycloak traffic, so
+  the SES SMTP client can connect on TCP `587` while the chart retains explicit egress policy.
+- `charts/keycloak/templates/configmap.yaml` reads `keycloak-smtp` from
+  `.Release.Namespace` and renders the realm-import `smtpServer` block only when that
+  Secret exists; missing SMTP remains an explicit deferred-invite state for chart deploys
+  that are not running the invite-auth validation.
 - Validated with `prodbox check-code` (exit 0), `prodbox lint docs` (exit 0),
   `prodbox docs check` (exit 0), and `prodbox test unit` (320/320, up from 315
   through the five new SES SMTP password derivation cases) on May 18, 2026.
 
 ### Remaining Work
 
-- The Sprint 8.5 phase-doc deliverables describe two end-to-end steps that
-  remain operator-driven (must be exercised against a live Keycloak deploy
-  whose credential-setup HTML form structure differs by chart version /
-  required-actions configuration): (5) POSTing the Keycloak credential-setup
-  form with a generated password and asserting the post-activation redirect,
-  and (6) performing a fresh OIDC token request against
-  `/realms/<realm>/protocol/openid-connect/token` with the new credentials and
-  asserting `email_verified=true` plus `email=<recipient>` claims. The form
-  behavior is chart-template-specific and is best landed after a live deploy
-  run captures the form action URL + hidden inputs so the form-parser unit
-  fixtures can match Keycloak's real output. The optional negative path
-  (step 7: revoke-before-activation) lands in the same future sub-sprint.
+- Local validation for the June 6 credential-setup POST / invited-user OIDC claim code path
+  and the home SMTP-reconcile fix passed with `cabal build --builddir=.build exe:prodbox`,
+  refreshed `.build/prodbox`, `./.build/prodbox test unit` (669/669), `./.build/prodbox lint docs`,
+  `./.build/prodbox docs check`, `git diff --check`, and `./.build/prodbox check-code`.
+- Local validation for the SMTP NetworkPolicy fix passed with `./.build/prodbox test unit`
+  (670/670), `./.build/prodbox lint chart`, `./.build/prodbox lint docs`,
+  `./.build/prodbox docs check`, `git diff --check`, and `./.build/prodbox check-code`.
+  The live home rerun then proved SMTP delivery and failed at Keycloak 26's verify-email
+  continuation page before the password form.
+- Local validation for the verify-email continuation fix passed with
+  `cabal build --builddir=.build exe:prodbox`, refreshed `.build/prodbox`,
+  `./.build/prodbox test unit` (672/672), `git diff --check`, and
+  `./.build/prodbox check-code`. The live home rerun then reached public-edge certificate
+  repair before the invite body and failed because the status patch used to trigger immediate
+  cert-manager reissuance was malformed JSON.
+- Local validation for the public-edge certificate reissue status-patch renderer passed with
+  `cabal build --builddir=.build exe:prodbox`, refreshed `.build/prodbox`,
+  `./.build/prodbox test unit` (673/673), `git diff --check`, and
+  `./.build/prodbox check-code`. The live home rerun proved the status patch no longer emits
+  malformed JSON, then hit the Let's Encrypt production duplicate-certificate limit because the
+  already-issued public-edge TLS Secret had been lost during chart namespace reset.
+- Local validation for the public-edge TLS Secret retention fix passed with
+  `cabal build --builddir=.build exe:prodbox`, refreshed `.build/prodbox`,
+  `./.build/prodbox test unit` (674/674), `./.build/prodbox lint docs`,
+  `./.build/prodbox docs check`, `git diff --check`, and `./.build/prodbox check-code`. The live
+  home `keycloak-invite` rerun remains the next gate before Sprint `8.5` moves to AWS validation,
+  but it cannot obtain a fresh production certificate until the provider duplicate-certificate
+  window resets on June 7, 2026 UTC.
+- Exercise `prodbox test integration keycloak-invite` against live home and AWS substrates so the
+  new POST/OIDC body proves against Keycloak's rendered form and public token endpoint.
+- The optional negative path (step 7: revoke-before-activation) remains a follow-on sub-sprint.
 
 ## Sprint 8.6: Per-Substrate Parity for `keycloak-invite` 🔄
 
-**Status**: Active (doc parity rows updated May 18, 2026; live cross-substrate proof pending Sprint 7.5.c live closure + Sprint 8.5 HTTP integration)
-**Blocked by**: Sprints `8.5`, `7.5` (AWS substrate parity from
-[phase-7-aws-substrate-foundations.md](phase-7-aws-substrate-foundations.md))
+**Status**: Active (doc parity rows updated May 18, 2026; June 5 live AWS aggregate and targeted
+runs moved the active residual to canonical validation ordering, substrate public-FQDN selection,
+the Keycloak `/auth/admin` public-route match used by operator invites, and targeted
+AWS-substrate validation credential materialization from `aws_admin_for_test_simulation.*`, then
+to fresh-cluster `keycloak-smtp` sync before AWS Keycloak chart render, Phase `1.6/2` local
+restore deduplication, gateway Namespace adoption for SMTP pre-created Keycloak release
+namespaces, Keycloak multipart invite-link normalization, public-edge certificate reissue repair,
+and Let's Encrypt repository-validation ACME selection. The June 6 targeted AWS
+`keycloak-invite` rerun now passes through invite capture/link-follow and cleanup; AWS aggregate
+rerun plus live Sprint `8.5` POST/OIDC substrate validation remain open.)
+**Blocked by**: Live Sprint `8.5` POST/OIDC substrate validation for full claim assertions
 **Implementation**: `DEVELOPMENT_PLAN/substrates.md`, `DEVELOPMENT_PLAN/system-components.md`
 **Docs to update**: `DEVELOPMENT_PLAN/substrates.md`, `DEVELOPMENT_PLAN/README.md`
 
@@ -649,25 +829,169 @@ parity rows accordingly.
   inventory adds the `keycloak-invite` row naming the AWS-credential, Route 53,
   Sprint 8.4 SES, and pulumi-login prerequisites and the operator-invited
   end-to-end flow.
-- The substrate parity table flip to ✅ on both substrates is blocked on the Sprint
-  `7.5.c` live AWS-substrate canonical-suite proof (Phase 7 operator-driven workflow)
-  and the Sprint 8.5 Keycloak admin API HTTP integration. When both close, this row
-  flips and Phase 8 closes.
+- The June 5, 2026 live AWS aggregate run proved the Phase 7 AWS substrate path through
+  `admin-routes`, `public-dns`, and destructive `lifecycle`, then failed when
+  `ValidationKeycloakInvite` tried to materialize the AWS EKS kubeconfig after
+  `ValidationLifecycle` had already destroyed the `aws-eks-test` stack snapshot. The
+  first code fix moved `ValidationKeycloakInvite` before `ValidationLifecycle`.
+- The follow-up June 5 AWS aggregate run reached `ValidationKeycloakInvite` before
+  `ValidationLifecycle`, then failed while acquiring the Keycloak admin token from the home
+  FQDN (`test.resolvefintech.com`) during an AWS-substrate run. The active code fix gives the
+  Keycloak admin client an explicit public-host entrypoint, calls invite/revoke with
+  `substratePublicFqdn settings substrate`, waits for the substrate-specific public-edge gate,
+  and moves `ValidationKeycloakInvite` before `ValidationChartsStorage` so the validation runs
+  while the `vscode` root chart and Keycloak are still deployed.
+- The next June 5 AWS aggregate run validated that ordering/host fix through
+  `KEYCLOAK_INVITE_PUBLIC_FQDN=aws.test.resolvefintech.com` and then failed at Keycloak user
+  creation with HTTP 404. Root cause: `charts/keycloak/templates/gateway.yaml` routed
+  `/auth/realms` and `/auth/resources`, so token acquisition worked while the admin API path
+  `/auth/admin/realms/<realm>/users` had no matching public-edge route. The active code fix adds
+  the `/auth/admin` match to the Keycloak `HTTPRoute` and a unit guard for the template.
+- The first targeted rerun,
+  `./.build/prodbox test integration keycloak-invite --substrate aws`, failed before provisioning
+  with `settings_loaded ... aws.access_key_id must not be empty`. Root cause: standalone
+  AWS-substrate native validation plans still ran their initial `aws_credentials_valid` prerequisite
+  before the suite-level IAM harness could materialize operational `aws.*` from
+  `aws_admin_for_test_simulation.*`. The active code fix normalizes non-empty native validation
+  suites on `SubstrateAws` into the managed IAM harness and gives the runner a per-run-stack
+  cleanup classifier so targeted AWS-substrate suites that bootstrap or directly provision per-run
+  stacks destroy them before clearing operational credentials.
+- The follow-up targeted AWS rerun proved that mismatch fixed: the run materialized operational
+  `aws.*` from `aws_admin_for_test_simulation.*`, provisioned the per-run AWS substrate, deployed
+  the chart set, selected `KEYCLOAK_INVITE_PUBLIC_FQDN=aws.test.resolvefintech.com`, and reached
+  Keycloak's admin invite-email call. It then failed with Keycloak HTTP 500 because the realm had
+  no configured email sender. Root cause: the retained `aws-ses` stack is account-scoped while the
+  `keycloak-smtp` Kubernetes Secret is per-cluster/per-release-namespace; a fresh EKS cluster did
+  not receive the `KC_SMTP_*` fields in the `vscode` Keycloak release namespace before Helm
+  rendered the realm import. The active code fix syncs the long-lived `aws-ses` SMTP outputs into
+  `vscode` and `keycloak` before AWS chart deployment.
+- The June 6 targeted AWS rerun proved that the SMTP sync hook runs after per-run EKS provisioning
+  and before AWS chart deployment, then failed at `pulumi login` with the configured long-lived
+  Pulumi state bucket absent. Root cause: `syncKeycloakSmtpChartSecrets` read the retained
+  `aws-ses` stack through the long-lived backend but did not run the bucket-ensure precondition
+  that `aws-ses-resources` already uses. The active code fix shares that idempotent
+  `ensureLongLivedPulumiStateBucket` step before login; if the bucket is repaired but the
+  `aws-ses` stack itself is absent, the supported recovery is `prodbox pulumi aws-ses-resources`
+  before re-running `keycloak-invite`.
+- The follow-up live `./.build/prodbox pulumi aws-ses-resources` run repaired the missing-state /
+  retained-resource condition without ad-hoc AWS mutation: it recreated the long-lived state stack,
+  imported the retained capture bucket, SMTP IAM user, SES receipt rule set, and receipt rule,
+  rotated stale SMTP access keys so the stack owns a fresh retrievable secret, reconciled
+  overwrite-tolerant Route 53 records, and restored `keycloak-smtp` in both local supported
+  Keycloak release namespaces.
+- The next June 6 targeted `./.build/prodbox test integration keycloak-invite --substrate aws`
+  rerun failed before AWS provisioning during Phase `1.6/2` local supported-runtime restore. The
+  run completed Phase `1.5/2` runbook reconcile, then repeated the full `rke2 reconcile` in Phase
+  `1.6/2`; that second reconcile repeated local Harbor image publication, exhausted the transient
+  Harbor docker-login retry window, and unwound through the harness cleanup path. Per-run stack
+  destroys reported no live residue and the operational IAM/config teardown completed. The active
+  code fix removes that duplicate Phase `1.6/2` reconcile when Phase `1.5/2` already ran it.
+- Local validation for the Phase `1.6/2` duplicate-reconcile guard passed on June 6, 2026:
+  `cabal build --builddir=.build exe:prodbox`, `./.build/prodbox test unit` (658/658),
+  `./.build/prodbox check-code`, `./.build/prodbox lint docs`,
+  `./.build/prodbox docs check`, `git diff --check`, and
+  `./.build/prodbox test integration cli` (30/30).
+- The follow-up targeted AWS rerun proved the Phase `1.6/2` guard live: after Phase `1.5/2`
+  completed the local runbook reconcile, Phase `1.6/2` reset/deployed charts without rerunning
+  full `rke2 reconcile`; the harness then synced `keycloak-smtp`, provisioned the per-run AWS
+  substrate, and reached AWS chart deployment. It failed at the `gateway` Helm install because the
+  SMTP sync had pre-created `keycloak` without the Helm ownership metadata required for the
+  gateway chart's RBAC Namespace resource to adopt it. Per-run EKS/test stack cleanup and
+  operational IAM/config teardown completed through the harness.
+- Local validation for the namespace-adoption fix passed on June 6, 2026:
+  `cabal build --builddir=.build exe:prodbox`, `helm template gateway charts/gateway --namespace
+  gateway`, `./.build/prodbox test unit` (659/659), `./.build/prodbox lint docs`,
+  `./.build/prodbox docs check`, `git diff --check`, `./.build/prodbox check-code`, and
+  `./.build/prodbox test integration cli` (30/30).
+- The follow-up targeted AWS rerun proved the namespace-adoption fix live: the `gateway`
+  Helm install moved past the prior ownership failure, AWS `vscode`, `api`, and `websocket`
+  chart deployment completed far enough for `ValidationKeycloakInvite` to enter its body, and
+  the run failed at invite-link parsing because the captured Keycloak multipart message exposed
+  the same action-token URL in text and HTML copies that differed only by URL-local
+  quoted-printable encoding. The harness cleanup completed through the documented path:
+  per-run EKS/test stacks were destroyed with residue checks, the operational IAM user/key was
+  removed, and operational `aws.*` config was cleared. The active code fix normalizes extracted
+  invite URLs for Keycloak's `=3D` query-delimiter encoding and HTML `&amp;` before
+  de-duplication, while preserving the multiple-distinct-link failure mode.
+- Local validation for the invite-link parser normalization fix passed on June 6, 2026:
+  `cabal build --builddir=.build exe:prodbox`, refreshed `.build/prodbox`, and
+  `./.build/prodbox test unit` (661/661), `./.build/prodbox lint docs`,
+  `./.build/prodbox docs check`, `git diff --check`, `./.build/prodbox check-code`, and
+  `./.build/prodbox test integration cli` (30/30).
+- The next targeted AWS rerun was interrupted before AWS provisioning because the home-local
+  public-edge readiness gate stalled after an ACME order failure: the existing repair helper
+  deleted stale CertificateRequest/Order/Challenge objects, but the `Certificate` still carried
+  failed-issuance state and no new Order was active. The SIGINT cleanup path completed through
+  the harness: per-run stacks were already absent, the operational IAM user/key was deleted, and
+  operational `aws.*` config was cleared. The active code fix extends the repair helper to patch
+  the `Certificate` status with an `Issuing=True` manual-trigger condition after stale resource
+  deletion so cert-manager starts a fresh CertificateRequest immediately. Initial local
+  validation: `cabal build --builddir=.build exe:prodbox`, refreshed `.build/prodbox`, and
+  `./.build/prodbox test unit` (661/661), `./.build/prodbox lint docs`,
+  `./.build/prodbox docs check`, `git diff --check`, `./.build/prodbox check-code`, and
+  `./.build/prodbox test integration cli` (30/30). The follow-up targeted AWS rerun proved the
+  first half of the repair but remained in the same local certificate readiness loop when the
+  stale ACME children had already been removed before the helper retried. The second harness fix
+  triggers the same `Issuing=True` status patch when the failed Certificate has no remaining
+  stale CertificateRequest/Order/Challenge objects. The second SIGINT cleanup path completed
+  through the harness: per-run stacks were already absent or destroyed, the operational IAM
+  user/key was deleted, and operational `aws.*` config was cleared. Local validation for the
+  no-target branch passed: `cabal build --builddir=.build exe:prodbox`, refreshed
+  `.build/prodbox`, and `./.build/prodbox test unit` (661/661),
+  `./.build/prodbox lint docs`, `./.build/prodbox docs check`, `git diff --check`,
+  `./.build/prodbox check-code`, and `./.build/prodbox test integration cli` (30/30). The AWS
+  targeted rerun reached the public-edge readiness loop again with a fresh active ACME Order,
+  then stalled because the configured ZeroSSL ACME endpoint returned HTML to cert-manager's
+  new-order flow instead of ACME JSON. The SIGINT cleanup path completed through the harness:
+  per-run stacks were already absent or destroyed, the operational IAM user/key was deleted, and
+  operational `aws.*` config was cleared. The active follow-up switches the repo config and
+  `prodbox config setup` default to Let's Encrypt for validation. Local validation passed:
+  `cabal build --builddir=.build exe:prodbox`, refreshed `.build/prodbox`,
+  `./.build/prodbox test unit` (661/661), `./.build/prodbox lint docs`,
+  `./.build/prodbox docs check`, `git diff --check`, `./.build/prodbox check-code`, and
+  `./.build/prodbox test integration cli` (30/30). The first AWS targeted rerun after this switch
+  failed before AWS provisioning because local DiskPressure caused MetalLB rollout timeout. The
+  harness cleanup completed, and only generated temp image artifacts plus dangling Docker/build
+  cache were pruned to restore local disk headroom. The follow-up targeted AWS rerun recovered the
+  local runtime through the harness `rke2 reconcile`, re-published the Harbor image inventory,
+  validated MetalLB, Envoy Gateway, cert-manager, the Let's Encrypt ClusterIssuer, and the Percona
+  operator, then provisioned the per-run AWS substrate. The AWS chart deploy path installed the
+  substrate platform, mirrored/published images into EKS-side Harbor, deployed `gateway`, `vscode`,
+  `api`, and `websocket`, entered `ValidationKeycloakInvite`, found the SES capture, parsed and
+  followed the normalized invite link, and exited the validation body successfully. Postflight
+  cleanup destroyed the per-run AWS stacks with residue checks and cleared operational IAM/config
+  material.
+- Local validation for the fresh-cluster SMTP sync fix passed after the code/doc update:
+  `cabal build --builddir=.build exe:prodbox`, `./.build/prodbox test unit` (657/657),
+  `./.build/prodbox check-code`, `./.build/prodbox lint docs`,
+  `./.build/prodbox docs check`, `git diff --check`,
+  live `./.build/prodbox pulumi aws-ses-resources` state repair, and
+  `./.build/prodbox test integration cli` (30/30).
+- Local validation for the `/auth/admin` route plus targeted AWS-substrate harness fix passed on
+  June 5, 2026: `cabal build --builddir=.build exe:prodbox`, `./.build/prodbox test unit`
+  (655/655), `./.build/prodbox check-code`, `./.build/prodbox lint docs`,
+  `./.build/prodbox docs check`, `git diff --check`, and
+  `./.build/prodbox test integration cli` (30/30).
+- The substrate parity table flip to ✅ on both substrates is still blocked on live substrate
+  validation of the Sprint `8.5` credential-setup form POST / fresh OIDC claim assertions and a
+  fresh AWS aggregate validation run proving the targeted-green harness credential
+  materialization, ordering, host selection, admin-route match, SMTP sync, Let's Encrypt ACME
+  path, invite-link normalization, local preserved-realm SMTP reconciliation, and POST/OIDC body
+  in the full suite. When both close, this row flips and Phase 8 closes.
 
 ### Remaining Work
 
-- Sprint `7.5.c` live AWS-substrate canonical-suite operator workflow (multi-hour real
-  AWS run: `prodbox aws setup` → `pulumi eks-resources` → `pulumi
-  aws-subzone-resources` → copy hosted_zone_id → five `--substrate aws` validations →
-  teardown).
-- Sprint `8.1` live SES infrastructure operator workflow (`prodbox aws setup` →
-  `prodbox pulumi aws-ses-resources` → verify SES identity, MX, receive rule set,
-  S3 capture).
-- Sprint `8.5` Keycloak admin API HTTP integration in `src/Prodbox/UsersAdmin.hs` and
-  the live end-to-end body of `runKeycloakInviteValidation` in
-  `src/Prodbox/TestValidation.hs`.
-- Once all three land, run `prodbox test integration keycloak-invite` on both
-  substrates and flip the substrate-parity rows to ✅ on both substrates.
+- Run an AWS aggregate validation so `ValidationKeycloakInvite` exercises the now-targeted-green
+  path inside the full suite: operational credentials materialize from
+  `aws_admin_for_test_simulation.*`, the validation executes before destructive
+  `ValidationChartsStorage` / `ValidationLifecycle`, uses the selected substrate public FQDN,
+  reaches the Keycloak admin invite-email endpoint, adopts SMTP pre-created Keycloak release
+  namespaces during gateway deployment, uses the Let's Encrypt ACME path, and accepts text/html
+  duplicate copies of the same invite link.
+- Live substrate validation of the Sprint `8.5` credential-setup form POST and fresh OIDC token
+  assertion now wired into `src/Prodbox/TestValidation.hs::runKeycloakInviteValidation`.
+- Run `prodbox test integration keycloak-invite` on both substrates and flip the
+  substrate-parity rows to ✅ on both substrates once the full invite-auth proof closes.
 
 ## Documentation Requirements
 

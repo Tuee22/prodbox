@@ -38,14 +38,11 @@ import Prodbox.Aws
   , PulumiResiduePolicy (..)
   , adminAwsEnvironment
   , applyAwsTeardown
-  , promptAdminCredentialsWithRegionChoice
-  , validateAdminCredentialsInput
   )
 import Prodbox.CLI.Command
   ( NukeOptions (..)
   , PlanOptions (..)
   , PulumiCommand (..)
-  , Rke2DeleteFlags (..)
   )
 import Prodbox.CLI.Interactive
   ( InteractiveGuard (..)
@@ -58,10 +55,11 @@ import Prodbox.CLI.Output
   , writeOutputLine
   )
 import Prodbox.CLI.Pulumi (runPulumiCommand)
-import Prodbox.CLI.Rke2 (runNativeDeleteWithResiduePolicy)
+import Prodbox.CLI.Rke2 (runNativeDeleteCascade)
 import Prodbox.Error (fatalError)
 import Prodbox.Infra.LongLivedPulumiBackend
   ( destroyLongLivedPulumiStateBucket
+  , loadAdminAwsCredentials
   , longLivedBackendErrorMessage
   )
 import Prodbox.Lifecycle.TagSweep
@@ -72,9 +70,8 @@ import Prodbox.Lifecycle.TagSweep
 import Prodbox.Settings
   ( Credentials
   , PulumiStateBackendSection
-  , ValidatedSettings (..)
+  , loadConfigFile
   , pulumi_state_backend
-  , validateAndLoadSettings
   )
 import System.Exit (ExitCode (..))
 import System.IO
@@ -156,34 +153,38 @@ renderNukePlan _repoRoot =
     , "STEP=3 prodbox aws teardown (operational `prodbox` IAM user + access keys)"
     , "STEP=4 postflight tag sweep (any prodbox-tagged AWS residue)"
     , "STEP=5 destroy long-lived `pulumi_state_backend` S3 bucket"
+    , "ADMIN_CREDENTIAL_SOURCE=prodbox-config.dhall::aws_admin_for_test_simulation.*"
     , "STATUS=plan-only"
     , "CONFIRMATION_LITERAL=" ++ confirmationLiteral
     , "ALSO_NOTE=Each step is idempotent on retry; the operator may resume after a partial failure."
     ]
 
--- | Orchestration body. Prompts the operator for admin AWS
--- credentials once at the start (used for steps 3, 4, 5), then runs
--- the five steps in dependency order. Step 1 reuses the existing
--- cascade arm, which already runs the K8s drain. Failure at any
--- step aborts; later steps are idempotent, so the operator may
--- re-run nuke after fixing the failing step.
+-- | Orchestration body. Loads the admin AWS credential block from
+-- @aws_admin_for_test_simulation.*@ in @prodbox-config.dhall@ before
+-- destructive work begins. That is the same credential source used by
+-- long-lived stack operations. Step 1 reuses the existing cascade arm,
+-- which already runs the K8s drain. Failure at any step aborts; later
+-- steps are idempotent, so the operator may re-run nuke after fixing
+-- the failing step.
 runNukeOrchestration :: FilePath -> IO ExitCode
 runNukeOrchestration repoRoot = do
   writeOutputLine ""
-  writeOutputLine "prodbox nuke: prompting once for admin AWS credentials."
-  writeOutputLine "These credentials are used for the SES destroy, the operational IAM"
-  writeOutputLine "user delete, the postflight tag sweep, and the long-lived"
-  writeOutputLine "state-bucket destroy. They are NOT kept after this command exits."
+  writeOutputLine "prodbox nuke: loading admin AWS credentials from aws_admin_for_test_simulation.*."
+  writeOutputLine "That config-backed admin credential source is used for the SES destroy,"
+  writeOutputLine
+    "operational IAM teardown, postflight tag sweep, and long-lived state-bucket destroy."
   writeOutputLine ""
-  rawCredentials <- promptAdminCredentialsWithRegionChoice repoRoot
-  adminCredentials <- validateAdminCredentialsInput rawCredentials
-  settingsResult <- validateAndLoadSettings repoRoot
-  case settingsResult of
-    Left err -> do
-      writeError (fatalError (Text.pack ("nuke aborted while loading settings: " ++ err)))
+  adminResult <- loadAdminAwsCredentials repoRoot
+  configResult <- loadConfigFile repoRoot
+  case (adminResult, configResult) of
+    (Left err, _) -> do
+      writeError (fatalError (Text.pack ("nuke aborted while loading admin credentials: " ++ err)))
       pure (ExitFailure 1)
-    Right settings -> do
-      let backend = pulumi_state_backend (validatedConfig settings)
+    (_, Left err) -> do
+      writeError (fatalError (Text.pack ("nuke aborted while loading config: " ++ err)))
+      pure (ExitFailure 1)
+    (Right adminCredentials, Right config) -> do
+      let backend = pulumi_state_backend config
       runNukeSteps repoRoot adminCredentials backend
 
 runNukeSteps
@@ -247,14 +248,7 @@ abortOrContinue failure@(ExitFailure _) _ = do
 -- which already runs the K8s drain phase before the per-run Pulumi
 -- destroys and cluster uninstall.
 nukeStepCascade :: FilePath -> IO ExitCode
-nukeStepCascade repoRoot =
-  runNativeDeleteWithResiduePolicy
-    repoRoot
-    Rke2DeleteFlags
-      { rke2DeleteYes = True
-      , rke2DeleteCascade = True
-      , rke2DeleteAllowPulumiResidue = False
-      }
+nukeStepCascade = runNativeDeleteCascade
 
 -- | Step 2: destroy the long-lived @aws-ses@ Pulumi stack.
 nukeStepAwsSesDestroy :: FilePath -> IO ExitCode
@@ -265,9 +259,11 @@ nukeStepAwsSesDestroy repoRoot =
 
 -- | Step 3: delete the dedicated operational @prodbox@ IAM user and
 -- clear operational @aws.*@ from the Dhall config. After step 1 + 2
--- there is no Pulumi residue, so 'RefuseOnAnyResidue' is the
--- appropriate policy; the predicate is a safety net rather than a
--- gate operator action.
+-- the destructive cascade and long-lived destroy have already run.
+-- The local MinIO backend may be gone by this point, so total teardown
+-- uses the explicit orphan-accepting policy and relies on the
+-- surrounding cascade + tag-sweep backstops rather than the ordinary
+-- operator teardown refusal.
 nukeStepAwsTeardown :: FilePath -> Credentials -> IO ExitCode
 nukeStepAwsTeardown repoRoot adminCredentials = do
   result <-
@@ -275,7 +271,7 @@ nukeStepAwsTeardown repoRoot adminCredentials = do
       repoRoot
       AwsTeardownInput
         { awsTeardownAdminCredentials = adminCredentials
-        , awsTeardownResiduePolicy = RefuseOnAnyResidue
+        , awsTeardownResiduePolicy = AcceptOrphanResidue
         }
   case result of
     Left err -> do

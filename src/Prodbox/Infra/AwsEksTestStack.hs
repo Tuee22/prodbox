@@ -955,98 +955,204 @@ purgeCanonicalAwsEksResidueIfPresent repoRoot = do
 
 deleteVpcScopedResidue :: FilePath -> AwsEksCanonicalResidue -> IO (Either String ())
 deleteVpcScopedResidue repoRoot residue = do
-  deleteClusterSecurityGroupResult <-
-    runAwsCommandAllowMissing
-      repoRoot
-      ["ec2", "delete-security-group", "--group-id", canonicalResidueClusterSecurityGroupId residue]
-  case deleteClusterSecurityGroupResult of
+  eniDeleteResult <-
+    foldM
+      (deleteDetachedSubnetNetworkInterfacesStep repoRoot)
+      (Right ())
+      (canonicalResidueSubnetIds residue)
+  case eniDeleteResult of
     Left err -> pure (Left err)
     Right () -> do
-      subnetDeleteResult <-
-        foldM
-          (deleteSubnetResidue repoRoot)
-          (Right ())
-          (canonicalResidueSubnetIds residue)
-      case subnetDeleteResult of
+      deleteClusterSecurityGroupResult <-
+        runAwsCommandAllowMissing
+          repoRoot
+          ["ec2", "delete-security-group", "--group-id", canonicalResidueClusterSecurityGroupId residue]
+      case deleteClusterSecurityGroupResult of
         Left err -> pure (Left err)
         Right () -> do
-          routeTableIdResult <-
-            runAwsTextCommandMaybeMissing
-              repoRoot
-              [ "ec2"
-              , "describe-route-tables"
-              , "--filters"
-              , "Name=tag:Name,Values=" ++ awsEksCanonicalPublicRouteTableTagName
-              , "Name=vpc-id,Values=" ++ canonicalResidueVpcId residue
-              , "--query"
-              , "RouteTables[0].RouteTableId"
-              , "--output"
-              , "text"
-              ]
-          case routeTableIdResult of
+          subnetDeleteResult <-
+            foldM
+              (deleteSubnetResidue repoRoot)
+              (Right ())
+              (canonicalResidueSubnetIds residue)
+          case subnetDeleteResult of
             Left err -> pure (Left err)
-            Right maybeRouteTableId -> do
-              routeTableDeleteResult <-
-                case maybeRouteTableId of
-                  Nothing -> pure (Right ())
-                  Just routeTableId ->
-                    runAwsCommandAllowMissing repoRoot ["ec2", "delete-route-table", "--route-table-id", routeTableId]
-              case routeTableDeleteResult of
+            Right () -> do
+              routeTableIdResult <-
+                runAwsTextCommandMaybeMissing
+                  repoRoot
+                  [ "ec2"
+                  , "describe-route-tables"
+                  , "--filters"
+                  , "Name=tag:Name,Values=" ++ awsEksCanonicalPublicRouteTableTagName
+                  , "Name=vpc-id,Values=" ++ canonicalResidueVpcId residue
+                  , "--query"
+                  , "RouteTables[0].RouteTableId"
+                  , "--output"
+                  , "text"
+                  ]
+              case routeTableIdResult of
                 Left err -> pure (Left err)
-                Right () -> do
-                  igwIdResult <-
-                    runAwsTextCommandMaybeMissing
-                      repoRoot
-                      [ "ec2"
-                      , "describe-internet-gateways"
-                      , "--filters"
-                      , "Name=tag:Name,Values=" ++ awsEksCanonicalIgwTagName
-                      , "Name=attachment.vpc-id,Values=" ++ canonicalResidueVpcId residue
-                      , "--query"
-                      , "InternetGateways[0].InternetGatewayId"
-                      , "--output"
-                      , "text"
-                      ]
-                  case igwIdResult of
+                Right maybeRouteTableId -> do
+                  routeTableDeleteResult <-
+                    case maybeRouteTableId of
+                      Nothing -> pure (Right ())
+                      Just routeTableId ->
+                        runAwsCommandAllowMissing repoRoot ["ec2", "delete-route-table", "--route-table-id", routeTableId]
+                  case routeTableDeleteResult of
                     Left err -> pure (Left err)
-                    Right maybeIgwId -> do
-                      igwDeleteResult <-
-                        case maybeIgwId of
-                          Nothing -> pure (Right ())
-                          Just igwId -> do
-                            detachResult <-
-                              runAwsCommandAllowMissing
-                                repoRoot
-                                [ "ec2"
-                                , "detach-internet-gateway"
-                                , "--internet-gateway-id"
-                                , igwId
-                                , "--vpc-id"
-                                , canonicalResidueVpcId residue
-                                ]
-                            case detachResult of
-                              Left err -> pure (Left err)
-                              Right () ->
+                    Right () -> do
+                      igwIdResult <-
+                        runAwsTextCommandMaybeMissing
+                          repoRoot
+                          [ "ec2"
+                          , "describe-internet-gateways"
+                          , "--filters"
+                          , "Name=tag:Name,Values=" ++ awsEksCanonicalIgwTagName
+                          , "Name=attachment.vpc-id,Values=" ++ canonicalResidueVpcId residue
+                          , "--query"
+                          , "InternetGateways[0].InternetGatewayId"
+                          , "--output"
+                          , "text"
+                          ]
+                      case igwIdResult of
+                        Left err -> pure (Left err)
+                        Right maybeIgwId -> do
+                          igwDeleteResult <-
+                            case maybeIgwId of
+                              Nothing -> pure (Right ())
+                              Just igwId -> do
+                                detachResult <-
+                                  runAwsCommandAllowMissing
+                                    repoRoot
+                                    [ "ec2"
+                                    , "detach-internet-gateway"
+                                    , "--internet-gateway-id"
+                                    , igwId
+                                    , "--vpc-id"
+                                    , canonicalResidueVpcId residue
+                                    ]
+                                case detachResult of
+                                  Left err -> pure (Left err)
+                                  Right () ->
+                                    runAwsCommandAllowMissing
+                                      repoRoot
+                                      ["ec2", "delete-internet-gateway", "--internet-gateway-id", igwId]
+                          case igwDeleteResult of
+                            Left err -> pure (Left err)
+                            Right () -> do
+                              vpcDeleteResult <-
                                 runAwsCommandAllowMissing
                                   repoRoot
-                                  ["ec2", "delete-internet-gateway", "--internet-gateway-id", igwId]
-                      case igwDeleteResult of
-                        Left err -> pure (Left err)
-                        Right () -> do
-                          vpcDeleteResult <-
-                            runAwsCommandAllowMissing
-                              repoRoot
-                              ["ec2", "delete-vpc", "--vpc-id", canonicalResidueVpcId residue]
-                          case vpcDeleteResult of
-                            Left err -> pure (Left err)
-                            Right () -> deleteIamRoleResidue repoRoot residue
+                                  ["ec2", "delete-vpc", "--vpc-id", canonicalResidueVpcId residue]
+                              case vpcDeleteResult of
+                                Left err -> pure (Left err)
+                                Right () -> deleteIamRoleResidue repoRoot residue
 
 deleteSubnetResidue :: FilePath -> Either String () -> String -> IO (Either String ())
 deleteSubnetResidue repoRoot acc subnetId =
   case acc of
     Left err -> pure (Left err)
-    Right () ->
-      runAwsCommandAllowMissing repoRoot ["ec2", "delete-subnet", "--subnet-id", subnetId]
+    Right () -> do
+      eniDeleteResult <- deleteDetachedSubnetNetworkInterfaces repoRoot subnetId
+      case eniDeleteResult of
+        Left err -> pure (Left err)
+        Right () ->
+          runAwsCommandAllowMissing repoRoot ["ec2", "delete-subnet", "--subnet-id", subnetId]
+
+purgeDetachedSubnetNetworkInterfacesBeforeDestroy
+  :: FilePath -> Maybe AwsEksTestStackSnapshot -> IO ()
+purgeDetachedSubnetNetworkInterfacesBeforeDestroy repoRoot maybeSnapshot =
+  case maybeSnapshot of
+    Nothing -> pure ()
+    Just snapshot -> do
+      result <-
+        foldM
+          (deleteDetachedSubnetNetworkInterfacesStep repoRoot)
+          (Right ())
+          (eksSnapshotSubnetIds snapshot)
+      case result of
+        Left err ->
+          writeDiagnosticLine
+            ( "Per-run EKS detached ENI cleanup failed before `pulumi destroy`: "
+                ++ err
+                ++ "; proceeding to destroy anyway."
+            )
+        Right () -> pure ()
+
+purgeClusterSecurityGroupBeforeDestroy
+  :: FilePath -> Maybe AwsEksTestStackSnapshot -> IO ()
+purgeClusterSecurityGroupBeforeDestroy repoRoot maybeSnapshot =
+  case maybeSnapshot of
+    Nothing -> pure ()
+    Just snapshot -> do
+      writeDiagnosticLine
+        ( "Per-run EKS security-group cleanup: deleting cluster security group "
+            ++ eksSnapshotClusterSecurityGroupId snapshot
+        )
+      result <-
+        runAwsCommandAllowMissing
+          repoRoot
+          [ "ec2"
+          , "delete-security-group"
+          , "--group-id"
+          , eksSnapshotClusterSecurityGroupId snapshot
+          ]
+      case result of
+        Left err ->
+          writeDiagnosticLine
+            ( "Per-run EKS security-group cleanup failed before `pulumi destroy`: "
+                ++ err
+                ++ "; proceeding to destroy anyway."
+            )
+        Right () -> pure ()
+
+deleteDetachedSubnetNetworkInterfacesStep
+  :: FilePath -> Either String () -> String -> IO (Either String ())
+deleteDetachedSubnetNetworkInterfacesStep repoRoot acc subnetId =
+  case acc of
+    Left err -> pure (Left err)
+    Right () -> deleteDetachedSubnetNetworkInterfaces repoRoot subnetId
+
+deleteDetachedSubnetNetworkInterfaces :: FilePath -> String -> IO (Either String ())
+deleteDetachedSubnetNetworkInterfaces repoRoot subnetId = do
+  eniIdsResult <-
+    runAwsTextCommandMaybeMissing
+      repoRoot
+      [ "ec2"
+      , "describe-network-interfaces"
+      , "--filters"
+      , "Name=subnet-id,Values=" ++ subnetId
+      , "Name=status,Values=available"
+      , "--query"
+      , "NetworkInterfaces[?RequesterManaged==`false`].NetworkInterfaceId"
+      , "--output"
+      , "text"
+      ]
+  case eniIdsResult of
+    Left err -> pure (Left err)
+    Right Nothing -> pure (Right ())
+    Right (Just eniIdsText) ->
+      foldM
+        (deleteDetachedNetworkInterface repoRoot subnetId)
+        (Right ())
+        (words eniIdsText)
+
+deleteDetachedNetworkInterface
+  :: FilePath -> String -> Either String () -> String -> IO (Either String ())
+deleteDetachedNetworkInterface repoRoot subnetId acc eniId =
+  case acc of
+    Left err -> pure (Left err)
+    Right () -> do
+      writeDiagnosticLine
+        ( "Per-run EKS detached ENI cleanup: deleting available network interface "
+            ++ eniId
+            ++ " in subnet "
+            ++ subnetId
+        )
+      runAwsCommandAllowMissing
+        repoRoot
+        ["ec2", "delete-network-interface", "--network-interface-id", eniId]
 
 deleteIamRoleResidue :: FilePath -> AwsEksCanonicalResidue -> IO (Either String ())
 deleteIamRoleResidue repoRoot residue = do
@@ -1369,10 +1475,14 @@ destroyAwsEksTestStackStatus repoRoot summary = do
                                 drainAwsEksClusterBeforeDestroy
                                   repoRoot
                                   operationalCredentials
+                                purgeDetachedSubnetNetworkInterfacesBeforeDestroy repoRoot currentSnapshot
+                                purgeClusterSecurityGroupBeforeDestroy repoRoot currentSnapshot
                                 destroyResult <- pulumiDestroyEither projectDir providerEnvironment summary
                                 case destroyResult of
                                   Left _ -> do
                                     _ <- pulumiRefreshEither projectDir providerEnvironment summary
+                                    purgeDetachedSubnetNetworkInterfacesBeforeDestroy repoRoot currentSnapshot
+                                    purgeClusterSecurityGroupBeforeDestroy repoRoot currentSnapshot
                                     retryResult <- pulumiDestroyEither projectDir providerEnvironment summary
                                     case retryResult of
                                       Left err -> pure (Left ("pulumi destroy failed after refresh: " ++ err))

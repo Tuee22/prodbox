@@ -89,8 +89,8 @@ other prefix falls back to an optional prompt with an explanatory hint. The oper
 longer has to remember when to leave the field blank.
 
 Do not treat `aws_admin_for_test_simulation.*` as the ordinary operator path for this workflow.
-That section exists only for test-suite simulation of the ephemeral temporary-admin credential
-prompt, with the native IAM lifecycle test harness as the only supported runtime consumer. The
+That section is reserved for suite-driven destructive validation and long-lived teardown /
+provisioning flows (`aws-ses` and `prodbox nuke`) that need the same admin credential class. The
 canonical rules live in
 [aws_admin_credentials.md](./aws_admin_credentials.md).
 
@@ -143,8 +143,8 @@ After the wizard succeeds:
 1. delete the temporary admin access key you used for setup
 2. keep the generated `aws.*` operational credentials in `prodbox-config.dhall`
 3. leave `aws_admin_for_test_simulation.*` empty unless you are intentionally preparing the native
-   IAM lifecycle test harness or another repository test that simulates the interactive
-   temporary-admin-credential prompt
+   IAM lifecycle test harness, another repository test that simulates the interactive
+   temporary-admin-credential prompt, a long-lived stack operation, or `prodbox nuke`
 
 Normal `prodbox` runtime uses only the operational `aws.*` section.
 

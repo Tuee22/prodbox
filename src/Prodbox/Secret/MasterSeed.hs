@@ -44,6 +44,7 @@ module Prodbox.Secret.MasterSeed
   , awsS3ApiPutArgs
   , awsS3ApiGetArgs
   , isAwsCliNoSuchKeyMessage
+  , isAwsCliHeadObjectForbiddenMessage
   , isAwsCliPreconditionFailedMessage
   )
 where
@@ -264,6 +265,19 @@ isAwsCliNoSuchKeyMessage :: String -> Bool
 isAwsCliNoSuchKeyMessage message =
   "NoSuchKey" `isInfixOf` message || "Not Found" `isInfixOf` message
 
+-- | Some S3-compatible servers surface a first-read @HeadObject@ miss
+-- as @403 Forbidden@ rather than @NoSuchKey@ when the caller has the
+-- object-level permissions needed for the guarded first write but the
+-- server declines to reveal object absence. Treat only the @HeadObject@
+-- shape as absent; real credential or policy failures still fail during
+-- the subsequent guarded @PutObject@ or authoritative @GetObject@.
+isAwsCliHeadObjectForbiddenMessage :: String -> Bool
+isAwsCliHeadObjectForbiddenMessage message =
+  "HeadObject" `isInfixOf` message
+    && ( "Forbidden" `isInfixOf` message
+           || "403" `isInfixOf` message
+       )
+
 -- | Read the master seed from MinIO if it exists; otherwise generate
 -- 32 fresh bytes and PUT them under @If-None-Match: *@. The PUT can
 -- race against another daemon's first-start; the post-PUT GET
@@ -315,6 +329,7 @@ runHead config = do
               stdoutTxt = processStdout output
               combined = stderrTxt ++ "\n" ++ stdoutTxt
            in if isAwsCliNoSuchKeyMessage combined
+                || isAwsCliHeadObjectForbiddenMessage combined
                 then pure (Right Absent)
                 else pure (Left (MasterSeedGetFailed (trim combined)))
 

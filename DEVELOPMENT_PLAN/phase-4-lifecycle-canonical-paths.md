@@ -888,14 +888,13 @@ Code framework landed May 21, 2026: `prodbox check-code` exits 0;
 
 Blocked by Sprint `4.11`. Blocks Sprint `4.13`.
 
-## Sprint 4.13: `prodbox nuke` Total Teardown 🔄
+## Sprint 4.13: `prodbox nuke` Total Teardown ✅
 
-**Status**: Active on its code-owned surface — CLI scaffold +
-parser + TTY guard + dry-run plan renderer landed May 21, 2026; the
-five-step orchestration body landed May 21, 2026 (composes the
-existing destroy commands in-process); the live end-to-end `nuke`
-exercise remains pending the operator-driven destructive cycle
-against a populated AWS account.
+**Status**: Done. CLI scaffold + parser + TTY guard + dry-run plan
+renderer landed May 21, 2026; the five-step orchestration body landed
+May 21, 2026 (composes the existing destroy commands in-process and
+uses `aws_admin_for_test_simulation.*` as its admin credential
+source); live end-to-end `nuke` closure completed June 3, 2026.
 **Implementation**: `src/Prodbox/CLI/Nuke.hs` (orchestration body
 landed; exports `runNukeCommand`, `confirmationLiteral`,
 `renderNukePlan`, `defaultNukeOptions`); `src/Prodbox/CLI/Command.hs`
@@ -909,11 +908,17 @@ that names the canonical command sequence for automation);
 `destroyLongLivedPulumiStateBucket` + the JSON-Haskell
 `renderDeletePayload` / `purgeRemainingVersions` pipeline that
 empties the versioned bucket before deletion);
-`src/Prodbox/CLI/Rke2.hs` (exports `runNativeDeleteWithResiduePolicy`
-so nuke step 1 can delegate to the cascade arm); `src/Prodbox/Aws.hs`
-(exports `adminAwsEnvironment`, `promptAdminCredentialsWithRegionChoice`,
-`validateAdminCredentialsInput` so the orchestration body can prompt
-once for admin credentials and reuse them across steps 3, 4, 5).
+`src/Prodbox/CLI/Rke2.hs` (exports `runNativeDeleteCascade`
+so nuke step 1 delegates to the actual cascade arm);
+`src/Prodbox/Infra/AwsSesStack.hs` (long-lived SES operations load
+raw Dhall config for non-secret settings, authenticate from
+`aws_admin_for_test_simulation.*`, and source the SES `awsRegion`
+stack config from the same admin block); `src/Prodbox/Lifecycle/LiveResidue.hs`
+(treats `NoSuchBucket` from the long-lived Pulumi S3 backend as
+`ResidueAbsent` while preserving fail-closed behavior for ordinary S3
+errors); `src/Prodbox/Aws.hs` (exports `adminAwsEnvironment` so the
+orchestration body can reuse the config-backed admin credential across
+steps 3, 4, 5).
 **Docs to update**: [`../documents/engineering/lifecycle_reconciliation_doctrine.md`](../documents/engineering/lifecycle_reconciliation_doctrine.md),
 [`../documents/engineering/cli_command_surface.md`](../documents/engineering/cli_command_surface.md),
 [`../CLAUDE.md`](../CLAUDE.md), [`../documents/engineering/README.md`](../documents/engineering/README.md),
@@ -969,17 +974,31 @@ TTY refusal exercised via `nukeInteractiveGuard`. After
 typed-confirmation acceptance, the orchestration body now runs the
 five-step destructive sequence (cascade arm → `aws-ses` destroy →
 operational IAM teardown → postflight tag sweep → long-lived
-state-bucket destroy) in-process, prompting once for admin AWS
-credentials at the start so they are not retyped per step.
+state-bucket destroy) in-process. The admin credential source is
+`prodbox-config.dhall::aws_admin_for_test_simulation.*`, matching the
+long-lived `aws-ses` and state-bucket paths.
+
+2026-06-03 validation refresh: `./.build/prodbox nuke --dry-run`
+exits 0 and renders the expected five-step plan (`rke2 delete
+--cascade` arm, `aws-ses` destroy, operational IAM teardown,
+postflight tag sweep, long-lived state-bucket destroy) plus
+`CONFIRMATION_LITERAL=NUKE EVERYTHING`. The live closure gate also
+completed on June 3, 2026 via `./.build/prodbox nuke` in a TTY with
+the typed literal `NUKE EVERYTHING`: step 1 delegated to
+`runNativeDeleteCascade` and completed against an already-absent local
+cluster; step 2 treated the already-absent long-lived Pulumi S3 backend
+bucket as an idempotent `aws-ses` absence; step 3 cleared the
+operational IAM/config surface under the nuke-owned
+`AcceptOrphanResidue` policy after the cascade; step 4 reported a
+clean postflight tag sweep; step 5 completed the long-lived state-bucket
+destroy idempotently. Validation after the live-run fixes:
+`./.build/prodbox check-code` exit 0, `./.build/prodbox test unit`
+634/634, `./.build/prodbox nuke --dry-run` exit 0, live
+`./.build/prodbox nuke` exit 0.
 
 ### Remaining Work
 
-- Live end-to-end `nuke` (opt-in operator-driven destructive cycle)
-  — pending the live closure. The orchestration body is wired and
-  unit-tested, but the live destructive sequence has not yet been
-  exercised against a populated AWS account.
-
-Blocked by Sprints `4.10`, `4.11`, `4.12`.
+- None.
 
 ## Sprint 4.14: Operator Vocabulary Contract Enforcement ✅
 

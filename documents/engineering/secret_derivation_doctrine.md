@@ -188,7 +188,7 @@ must survive cluster wipes) or chart-generated (non-data-bound, regenerated free
 | `prodbox-<root>-pg-pguser-<role>` | per chart | derived | `patroni:<ns>:<release>:<role>` via gateway service |
 | `keycloak-runtime` (admin field) | `keycloak` | derived | `keycloak:<ns>:admin` via gateway service |
 | Gateway per-node event-key Secret | `<ns>` | derived | `gateway:<ns>:<node-id>:event-key` via gateway service |
-| `keycloak-smtp` | `keycloak` | chart-generated from Pulumi output | re-derived on each `pulumi up` from `aws-ses` IAM secret access key + region via the published AWS SES IAM-to-SMTP algorithm (`src/Prodbox/Ses/SmtpPassword.hs`) |
+| `keycloak-smtp` | `vscode`, `keycloak` | kubectl-applied sync from retained `aws-ses` Pulumi output | re-derived from `aws-ses` IAM secret access key + region via the published AWS SES IAM-to-SMTP algorithm (`src/Prodbox/Ses/SmtpPassword.hs`) after the long-lived Pulumi state bucket has been ensured, then synced into every supported Keycloak release namespace before Keycloak chart render; the sync pre-creates those namespaces with `gateway` Helm ownership metadata so the gateway chart's RBAC Namespace resources can adopt them |
 | `gateway-minio-creds` | gateway namespace | chart-generated | Helm `lookup` + `randAlphaNum`; MinIO root re-grants the `prodbox-gateway` user even if its password rotates, so the bucket contents survive |
 | Internal TLS certs (any chart) | per chart | chart-generated | Helm `genSelfSignedCert` behind `lookup` |
 | Service-account tokens | per chart | k8s-managed | Kubernetes generates and rotates automatically |

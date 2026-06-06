@@ -287,8 +287,9 @@ a sibling Secret). The complete sourcing, mount, and reload contract lives in
 The wizard guides AWS account setup, Route 53 zone selection, ACME provider choice, operational IAM
 bootstrap, and repository-root Dhall authoring. On the supported public path it prompts for one
 temporary admin AWS credential set when needed (historically called "elevated credential");
-`aws_admin_for_test_simulation.*` is reserved only for test-suite simulation of that ephemeral
-prompt input, with the native IAM lifecycle test harness as the only supported runtime consumer.
+`aws_admin_for_test_simulation.*` is reserved for suite-driven destructive validation and
+long-lived teardown/provisioning flows (`aws-ses` and `prodbox nuke`), not the ordinary
+public `aws setup` onboarding prompt.
 
 ### Validation-Required Fields
 
@@ -319,7 +320,7 @@ These fields are not all parser-required, but they matter for normal operation:
 | Config Path | Description |
 |-------------|-------------|
 | `aws.session_token` | Optional AWS session token |
-| `aws_admin_for_test_simulation.*` | Test-suite-only stored simulation of the ephemeral temporary-admin credential prompt; only `prodbox test integration aws-iam` consumes it at runtime |
+| `aws_admin_for_test_simulation.*` | Stored admin credential block for suite-driven destructive validation plus long-lived stack and `prodbox nuke` flows |
 | `domain.demo_ttl` | DNS TTL in seconds |
 | `acme.server` | ACME server URL |
 | `deployment.bootstrap_public_ip_override` | Bootstrap-only DNS A-record IP override |
@@ -448,7 +449,8 @@ inspect/request supported AWS quotas:
 ```
 
 The supported public `aws ...` flow prompts for temporary admin credentials when needed.
-`aws_admin_for_test_simulation.*` is not part of the public operator path.
+`aws_admin_for_test_simulation.*` remains outside the ordinary public `aws setup` prompt path,
+but is the configured admin credential source for long-lived stack operations and `prodbox nuke`.
 
 ### AWS Validation Stacks
 

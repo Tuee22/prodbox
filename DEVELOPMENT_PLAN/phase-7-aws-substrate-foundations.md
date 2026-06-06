@@ -26,9 +26,10 @@ temporary-admin-credential validation harness. Per
 `CommandSpec` source-of-truth split (Sprint 1.6), and the capability classes for AWS subsystems
 (Sprint 1.12) without scheduling a new Sprint 7.X for those concerns.
 
-🔄 **Active (Sprint `7.5`)** — bring the AWS substrate to canonical-suite parity with the home
-substrate. The May 2026 scoping review split Sprint `7.5` into three sub-sprints whose
-deliverables are sized for sequential, separately validatable sessions:
+✅ **Sprint `7.5` Done (live AWS proof, June 5, 2026)** — the AWS substrate now reaches
+canonical-suite parity for the Phase 7-owned substrate and public-edge surfaces. The May 2026
+scoping review split Sprint `7.5` into three sub-sprints whose deliverables were sized for
+sequential, separately validatable sessions:
 
 - **Sprint `7.5.a`** (✅ Done, May 17, 2026) — `Substrate` ADT
   (`SubstrateHomeLocal | SubstrateAws`), `--substrate {home-local|aws}` CLI surface threaded
@@ -65,33 +66,44 @@ deliverables are sized for sequential, separately validatable sessions:
   reconciliation is owned by Sprint `7.5.c`'s validation-arms-refinement budget. Validated
   with `prodbox check-code`, `prodbox lint docs`, `prodbox docs check`, `prodbox test unit`
   (300/300), and the prescribed grep audits.
-- **Sprint `7.5.c`** (🔄 Active) — code follow-up landed May 18, 2026
+- **Sprint `7.5.c`** (✅ Done, June 5, 2026) — code follow-up landed May 18, 2026
   (`substratePublicFqdn` / `substrateHostedZoneId` fail-fast,
   `resolveAwsEksSubzoneStackConfig` pre-provision gate loosened, `isAwsSubstrateConfigured`
   removed, `prodbox-config.dhall` updated with the operator-supplied
-  `aws_substrate.subzone_name`, ledger row moved from Pending to Completed). Live
-  AWS-substrate canonical-suite validation (`charts-vscode`, `charts-api`,
-  `charts-websocket`, `public-dns`, `admin-routes`, public-edge readiness) plus
-  zero-residue teardown scan and Substrate parity table flip in
-  [substrates.md](substrates.md) and [README.md](README.md) remain the operator-driven
-  closing steps.
+  `aws_substrate.subzone_name`, ledger row moved from Pending to Completed). Sprint
+  `7.5.c.v.f` closed the silent-exit defect; the June 5, 2026 live re-run proved
+  AWS public-edge DNS ownership now targets the Envoy NLB and that the subzone/EKS/test
+  per-run stacks tear down with residue checks passing. The final June 5,
+  2026 live run proved the VS Code, API, WebSocket, admin-route, public DNS,
+  and destructive lifecycle validations on AWS: `/vscode` returned the expected
+  Keycloak OIDC redirect, `/api` returned the expected JSON payload,
+  `charts-websocket --substrate aws` exited successfully after its pod restart
+  exercise, Harbor/MinIO admin routes reported accepted `HTTPRoute`s and
+  attached `SecurityPolicy` resources on `aws.test.resolvefintech.com`, and
+  `ValidationLifecycle` destroyed the local cluster while allowing the
+  harness-owned per-run Pulumi residue for postflight. The aggregate run then
+  uncovered Phase 8 invite-auth bugs: `ValidationKeycloakInvite` was scheduled
+  after destructive validations, initially targeted the home public FQDN during
+  an AWS run, and then exposed that the Keycloak public auth route lacked the
+  `/auth/admin` match used by the operator invite admin API. Those residuals
+  are owned by Sprint `8.6`, not by Phase 7.
 
 ## Phase Summary
 
 This phase owns AWS substrate foundations:
 
 1. **AWS substrate foundations (historical, ✅ Done)** — interactive config authoring, policy
-   generation, IAM user management, service-quota automation, and the test-only
+   generation, IAM user management, service-quota automation, and the stored
    temporary-admin-credential harness. The implemented credential boundary is Haskell-owned:
-   public onboarding and public AWS administration prompt for temporary admin credentials, and
-   stored `aws_admin_for_test_simulation.*` exists only for test-suite simulation of that
-   ephemeral prompt input, with the native IAM validation harness as the only supported
-   runtime consumer. The shared suite-level IAM harness keeps the aggregate Pulumi-backend
-   proof behind the visible local runbook and closes the supported aggregate validation path
-   on Haskell-owned AWS-user and config cleanup. Sprint `7.4` is closed on the single-host
-   onboarding and placeholder-domain removal doctrine for `test.resolvefintech.com`.
+   public onboarding and public AWS administration prompt for temporary admin credentials, while
+   stored `aws_admin_for_test_simulation.*` is reserved for suite-driven destructive validation
+   plus long-lived stack / `prodbox nuke` flows. The shared suite-level IAM harness keeps the
+   aggregate Pulumi-backend proof behind the visible local runbook and closes the supported
+   aggregate validation path on Haskell-owned AWS-user and config cleanup. Sprint `7.4` is
+   closed on the single-host onboarding and placeholder-domain removal doctrine for
+   `test.resolvefintech.com`.
 
-2. **AWS substrate parity with the canonical suite (Sprint `7.5`, 🔄 Active, split into
+2. **AWS substrate parity with the canonical suite (Sprint `7.5`, ✅ Done, split into
    `7.5.a`/`7.5.b`/`7.5.c`)** — provision the AWS substrate so it stands up the same chart
    set, ingress, certificates, and DNS records that the home substrate provides today, and
    run the substrate-agnostic canonical-suite validations (`charts-vscode`, `charts-api`,
@@ -120,8 +132,11 @@ subdomain, capture bucket, and the IAM policy granting the runner SES send and S
   native validation harness in `src/Prodbox/TestValidation.hs`.
 - `src/Prodbox/TestPlan.hs` and `src/Prodbox/EffectInterpreter.hs` now gate `aws-iam` on an
   explicit native IAM harness readiness check before the validation body runs. The retired
-  non-test `aws_admin_for_test_simulation.*` recovery path is removed.
-- `src/Prodbox/TestPlan.hs` already routes `prodbox test integration aws-iam`,
+  non-test `aws_admin_for_test_simulation.*` recovery path is removed; later Phase 4 work
+  deliberately reuses the same stored admin block for long-lived stack / `prodbox nuke`
+  teardown flows.
+- `src/Prodbox/TestPlan.hs` already routes `prodbox test integration aws-iam`, targeted
+  `prodbox test integration <name> --substrate aws` validations,
   `prodbox test integration all`, and `prodbox test all` through the same managed IAM harness
   ownership in `src/Prodbox/TestRunner.hs`, while `src/Prodbox/TestValidation.hs` now treats
   the `aws-iam` validation body as an inspection step rather than as the setup/teardown owner.
@@ -132,8 +147,10 @@ subdomain, capture bucket, and the IAM policy granting the runner SES send and S
   keys, using resolvable pre-existing `aws.*` only to discover and delete the IAM user associated
   with those credentials, and clearing operational `aws.*` before fresh provisioning begins.
 - `src/Prodbox/TestRunner.hs` now keeps the managed operational `aws.*` credentials alive for the
-  duration of `prodbox test integration aws-iam`, `prodbox test integration all`, and
-  `prodbox test all`, then clears those credentials again even when later prerequisites fail.
+  duration of `prodbox test integration aws-iam`, targeted
+  `prodbox test integration <name> --substrate aws` validations,
+  `prodbox test integration all`, and `prodbox test all`, then clears those credentials again
+  even when later prerequisites fail.
 - The aggregate runner now reuses the canonical repo-backed Pulumi backend during deferred
   cluster-backed prerequisite checks, so the IAM scope stays isolated to AWS-user and config
   cleanup rather than to ambient host Pulumi login state.
@@ -240,8 +257,10 @@ or operational `aws.*` credentials behind.
 ### Deliverables
 
 - `aws_admin_for_test_simulation` remains isolated from the normal operational `aws.*` section.
-- `prodbox test integration aws-iam`, `prodbox test integration all`, and `prodbox test all`
-  share one joint idempotent IAM validation harness.
+- `prodbox test integration aws-iam`, targeted
+  `prodbox test integration <name> --substrate aws` validations,
+  `prodbox test integration all`, and `prodbox test all` share one joint idempotent IAM
+  validation harness.
 - That shared harness begins by deleting any pre-existing dedicated `prodbox` IAM user and all of
   that user's access keys.
 - When pre-existing operational `aws.*` credentials exist in `prodbox-config.dhall`, the harness
@@ -250,10 +269,10 @@ or operational `aws.*` credentials behind.
 - Real IAM setup and teardown validation closes on the Haskell stack without leaving a dedicated
   `prodbox` IAM user or operational `aws.*` credentials behind.
 - Stored `aws_admin_for_test_simulation.*` remains the single exception to the
-  no-stored-admin-credentials rule and exists only for test-suite simulation of the ephemeral
-  temporary-admin credential prompt.
-- The native IAM validation harness remains the only supported runtime consumer of
-  `aws_admin_for_test_simulation.*`.
+  no-stored-admin-credentials rule and is reserved for suite-driven destructive validation plus
+  long-lived stack / `prodbox nuke` flows.
+- The native IAM validation harness, long-lived stack operations, and `prodbox nuke` are the
+  supported runtime consumers of `aws_admin_for_test_simulation.*`.
 - The shared harness simulates the interactive public CLI workflow by materializing operational
   `aws.*` only from `aws_admin_for_test_simulation.*` for the duration of the validation run.
 - The shared harness clears operational `aws.*` from `prodbox-config.dhall` before returning.
@@ -289,7 +308,9 @@ or operational `aws.*` credentials behind.
   managed operational IAM identity, while `src/Prodbox/TestRunner.hs` owns harness teardown so
   aggregate AWS-backed validations can continue to use the temporary operational credentials until
   suite completion.
-- The retired non-test `aws_admin_for_test_simulation.*` recovery path has been removed.
+- The retired public-command fallback to `aws_admin_for_test_simulation.*` has been removed; public
+  `config setup` and public `aws ...` commands still prompt instead of reading stored admin
+  credentials.
 - `src/Prodbox/TestPlan.hs`, `src/Prodbox/TestRunner.hs`, and `src/Prodbox/Prerequisite.hs` now
   split the aggregate and cluster-backed suite prerequisite contract into an initial fail-fast
   gate plus a deferred backend proof, so `pulumi_logged_in` no longer runs before the visible
@@ -302,7 +323,9 @@ or operational `aws.*` credentials behind.
 - The aggregate IAM proof is sequenced before downstream AWS-backed suites through the named
   prerequisite DAG rather than through ambient host Pulumi login state.
 - The named and aggregate IAM closure gates are implemented on the same native suite path:
-  `prodbox test integration aws-iam`, `prodbox test integration all`, and `prodbox test all`.
+  `prodbox test integration aws-iam`, targeted
+  `prodbox test integration <name> --substrate aws` validations,
+  `prodbox test integration all`, and `prodbox test all`.
   Environment-dependent end-to-end proof remains attached to those commands rather than duplicated
   here as an execution log.
 - `src/Prodbox/CLI/Rke2.hs` now retries transient Harbor `502` / `unexpected EOF` failures during
@@ -981,8 +1004,9 @@ teardown step explicitly.
      pasted from the AWS console, derives the dedicated `prodbox` IAM user via
      STS-federated session, writes operational `aws.*` to `prodbox-config.dhall`. The
      temporary admin credential is not persisted.
-   - **Test-harness simulation path** (reserved for runs driven by
-     `prodbox test integration aws-iam` or `prodbox test all`):
+   - **Config-backed admin path** (reserved for runs driven by
+     `prodbox test integration aws-iam`, `prodbox test all`, or later long-lived teardown /
+     `prodbox nuke` flows):
      `aws_admin_for_test_simulation.*` populated in `prodbox-config.dhall`; consumed
      non-interactively by `runAwsIamHarnessSetup` to simulate the prompt input. The
      same provision-derive-write contract runs.
@@ -1016,16 +1040,16 @@ teardown step explicitly.
 2. `prodbox pulumi eks-resources` provisions the EKS cluster, IRSA, and subnet tags
    (auto-managed per-run stack).
 3. `prodbox pulumi aws-subzone-resources` provisions the per-substrate Route 53
-   subzone and NS delegation in the parent zone (auto-managed per-run stack). The
-   stack snapshot at `.prodbox-state/aws-eks-subzone/` reports the new subzone's
-   hosted zone ID.
-4. Operator copies the reported subzone ID into
-   `prodbox-config.dhall::aws_substrate.hosted_zone_id` so downstream validations (the
-   AWS-substrate ACME `ClusterIssuer`, `public-dns`, `admin-routes`) write into the
-   AWS-substrate's own Route 53 zone. This is a manual config edit.
-5. `prodbox test integration {charts-vscode,charts-api,charts-websocket,public-dns,admin-routes}
+   subzone and NS delegation in the parent zone (auto-managed per-run stack). In
+   harness-driven runs, `TestRunner` reads the live `aws-eks-subzone` Pulumi output
+   immediately after provisioning and passes the hosted-zone ID to downstream child
+   commands via `PRODBOX_AWS_SUBSTRATE_HOSTED_ZONE_ID`; operators may still pin
+   `aws_substrate.hosted_zone_id` in config for standalone diagnostics, but the
+   canonical harness path does not require a manual edit between provision and
+   validation.
+4. `prodbox test integration {charts-vscode,charts-api,charts-websocket,public-dns,admin-routes}
    --substrate aws` runs the five AWS-substrate canonical-suite validations.
-6. `prodbox pulumi aws-subzone-destroy --yes` and `prodbox pulumi eks-destroy --yes`
+5. `prodbox pulumi aws-subzone-destroy --yes` and `prodbox pulumi eks-destroy --yes`
    tear down the per-run stacks (plus `prodbox pulumi test-destroy --yes` if the
    HA-RKE2 EC2 stack was provisioned). Per Sprint `7.6`, the harness postflight does
    this automatically on `prodbox test all` exit; manual invocation is for partial
@@ -1049,14 +1073,15 @@ lifecycle gate behavior:
 - `src/Prodbox/PublicEdge.hs::substratePublicFqdn` and `substrateHostedZoneId` replace
   their home-substrate fallback branches with a fail-fast `error` (or `Either`-returning
   variant called from validated entrypoints) so AWS-substrate runs cannot silently use
-  home values when `aws_substrate.hosted_zone_id` or `aws_substrate.subzone_name` is
-  empty.
+  home values when `aws_substrate.subzone_name` is empty or when no AWS subzone hosted
+  zone ID can be resolved from config, harness env, or live stack output.
 - `src/Prodbox/Infra/AwsEksSubzoneStack.hs::resolveAwsEksSubzoneStackConfig` loosens its
   pre-provision gate to require only `subzone_name` (the value Pulumi actually consumes
-  at provision time); `hosted_zone_id` becomes a post-provision requirement enforced at
-  the validation arm that consumes it. This removes the chicken-and-egg around the
-  initial subzone provisioning while preserving the doctrine that downstream validations
-  fail fast when the value is missing.
+  at provision time); the hosted-zone ID becomes a post-provision value resolved from
+  `aws_substrate.hosted_zone_id`, `PRODBOX_AWS_SUBSTRATE_HOSTED_ZONE_ID`, or the live
+  `aws-eks-subzone` stack output. This removes the chicken-and-egg around the initial
+  subzone provisioning while preserving the doctrine that downstream validations fail
+  fast when no AWS-substrate value is available.
 - The entry in [legacy-tracking-for-deletion.md](legacy-tracking-for-deletion.md) for the
   helper fallback semantics closes when this code follow-up lands.
 
@@ -1064,14 +1089,17 @@ lifecycle gate behavior:
 
 The substrate-aware code surface satisfies the no-fallback doctrine:
 
-- `src/Prodbox/PublicEdge.hs::substratePublicFqdn` and `substrateHostedZoneId` raise
+- `src/Prodbox/PublicEdge.hs::substratePublicFqdn` and `resolveSubstrateHostedZoneId` raise
   fail-fast `error` calls citing
   [development_plan_standards.md → M. Substrate coverage and independence (no fallback)](development_plan_standards.md#substrate-coverage-and-independence-no-fallback)
-  when the AWS-substrate `subzone_name` or `hosted_zone_id` field is empty; the
-  home-substrate branches resolve to `route53.zone_id` and `domain.demo_fqdn`.
+  when the AWS-substrate `subzone_name` is empty or when no AWS hosted-zone ID can
+  be resolved from `aws_substrate.hosted_zone_id`, the harness-provided
+  `PRODBOX_AWS_SUBSTRATE_HOSTED_ZONE_ID`, or the live `aws-eks-subzone` Pulumi
+  output; the home-substrate branches resolve to `route53.zone_id` and
+  `domain.demo_fqdn`.
 - `src/Prodbox/Infra/AwsEksSubzoneStack.hs::resolveAwsEksSubzoneStackConfig` requires
-  only `subzone_name` at pre-provision time; downstream consumers enforce
-  `hosted_zone_id` as a post-provision requirement.
+  only `subzone_name` at pre-provision time; downstream AWS consumers enforce that
+  a hosted-zone ID is available from config, harness env, or live stack output.
 - `src/Prodbox/CLI/Charts.hs::withSubstrateEnvironment` and
   `src/Prodbox/TestValidation.hs::withSubstrateKubeconfigEnv` bracket-set
   `KUBECONFIG` + `AWS_ACCESS_KEY_ID` + `AWS_SECRET_ACCESS_KEY` +
@@ -1131,10 +1159,11 @@ each closes its own validation gate, and the parent flips to ✅ when
 | [`7.5.c.v.d`](#sprint-75cvd-operational-iam-policy-compaction--s3-grants-) | ✅ Done | Operational `prodbox` IAM inline policy compacted to fit under AWS's 2048-byte inline-user-policy cap: explicit `ec2:*` / `eks:*` action lists collapsed to service wildcards; new `SesCaptureBucketRead` / `SesCaptureObjectRead` (S3 grants on the SES capture bucket); policy submission switched to compact `Data.Aeson.encode`. |
 | [`7.5.c.v.e`](#sprint-75cve-read-only-ses-grants-for-sprint-84-prerequisites-) | ✅ Done | New `SesReadOnly` statement (`ses:Describe*` / `Get*` / `List*`) so the harness IAM user can run the Sprint 8.4 `ses_sending_identity_verified` + `ses_receive_rule_set_active` prereq checks. |
 | [`7.5.c.v.f`](#sprint-75cvf-silent-exit-failure-mode-in-substrate-aware-validation-bodies-) | ✅ Done on code-owned surface | Substrate-awareness threaded end-to-end through `prodbox host public-edge --substrate {home-local,aws}`, `runHostPublicEdge`, `queryRoute53RecordInZone`, `waitForPublicEdgeReady`, and the five sibling validation bodies. `runNativeValidation` now emits stderr breadcrumbs around every body so silent exit is structurally impossible at the runner level. Live `--substrate aws` re-run rolls up into Sprint `7.5.c.v`. |
-| [`7.5.c.v`](#sprint-75cv-live-aws-substrate-canonical-suite-proof-) | 🔄 Active | Five `--substrate aws` validations green + harness postflight teardown (Sprint `7.6`); unblocked by `7.5.c.v.f`. |
+| [`7.5.c.v`](#sprint-75cv-live-aws-substrate-canonical-suite-proof-) | ✅ Done | June 5 live runs proved AWS NLB-target DNS reconciliation, home-only gateway `dns_write_gate`, delegated-subzone pre-destroy record cleanup, per-run postflight teardown, Harbor-login retry, Keycloak public-token-endpoint readiness, the fixed VS Code OIDC redirect, API/WebSocket in-cluster JWKS backchannels, substrate-aware Harbor/MinIO admin routes, public DNS, and destructive lifecycle on AWS. The aggregate suite's remaining failure is Phase `8` invite-auth closure: `ValidationKeycloakInvite` must run before destructive `ValidationChartsStorage` / `ValidationLifecycle`, target the selected substrate public FQDN, and reach the Keycloak `/auth/admin` route used by operator invites. |
 
-When 7.5.c.v lands, the substrate parity row in
-[`substrates.md`](substrates.md) flips to ✅ and Sprint `7.5.c` closes.
+Sprint `7.5.c.v` landing flips the substrate parity row in
+[`substrates.md`](substrates.md) to ✅ for the Phase 7-owned substrate surface and closes
+Sprint `7.5.c`.
 
 ## Sprint 7.5.c.i: Substrate-Aware MinIO Chart Values ✅
 
@@ -1434,16 +1463,62 @@ public images for Harbor-mirrored copies.
 
 None on the sprint-owned surface.
 
-## Sprint 7.5.c.v: Live AWS-Substrate Canonical-Suite Proof 🔄
+## Sprint 7.5.c.v: Live AWS-Substrate Canonical-Suite Proof ✅
 
-**Status**: Active — Sprints `7.5.c.v.b`, `7.5.c.v.c`, `7.5.c.v.d`,
-and `7.5.c.v.e` have all landed in code; the May 20, 2026 live
-re-run reached Phase 2/2 of the suite but every named
-`--substrate aws` validation body returned silently before producing
-output. The diagnosis + fix is owned by Sprint `7.5.c.v.f`. The five
-`--substrate aws` integration validations, the gateway chart deploy
-reaching Ready, and the `prodbox test all` substrate-aware run all
-remain pending Sprint `7.5.c.v.f`. First live run (May 19, 2026)
+**Status**: Done — Sprints `7.5.c.v.b`, `7.5.c.v.c`, `7.5.c.v.d`,
+`7.5.c.v.e`, and `7.5.c.v.f` have all landed in code. The June 4,
+2026 live `prodbox test all --substrate aws` re-run proved the
+silent-exit fix and reached chart deploys plus live public-edge
+diagnostics on EKS: `GatewayClass` accepted, `Gateway` ready,
+certificate ready, and the core app routes accepted. That run then
+surfaced Route 53 target drift and delegated-subzone cleanup residue.
+The June 5, 2026 live re-run proved the DNS/subzone fixes: AWS
+`PUBLIC_ROUTE53_STATUS=in-sync` against the resolved Envoy NLB target,
+`aws-subzone-destroy`, `eks-destroy`, and `test-destroy` all reported
+destroyed/residue-check-passed, and the harness cleared operational
+`aws.*` after per-run teardown. The initial remaining residual was the
+first AWS canonical validation: `charts-vscode --substrate aws` reached
+public-edge readiness but `/vscode` returned repeated HTTP 500 responses
+instead of the expected Keycloak OIDC redirect. The worktree added a
+Keycloak public-token-endpoint readiness gate, a longer VS Code redirect
+retry window, bounded Harbor-login retries, and explicit VS Code OIDC
+provider backchannel routing to the namespace-local `keycloak` Service.
+The latest June 5 full AWS retry exercised those fixes: the Harbor-login
+retry no longer blocked runtime restore, the public-token-endpoint
+readiness gate completed before the redirect assertion, AWS chart deploy
+reached public-edge-ready state, and `charts-vscode --substrate aws`
+returned the expected OIDC redirect. The run then failed at
+`charts-api --substrate aws`: `/api` returned HTTP 401 with Envoy's
+`Jwks remote fetch is failed` response, narrowing the residual to the
+API/WebSocket JWT `remoteJWKS` backchannel on EKS. Postflight again
+destroyed the per-run subzone/EKS/test stacks with residue checks
+passing and cleared operational `aws.*`. The next June 5 live retry
+proved the API/WebSocket JWKS fix: `charts-vscode`, `charts-api`, and
+`charts-websocket` all exited successfully on AWS, including the `/api`
+external proof that previously returned Envoy's JWKS fetch failure. That
+run then failed at `admin-routes --substrate aws`: `/harbor` returned
+HTTP/2 404, and `host public-edge --substrate aws` reported
+`HARBOR_HTTPROUTE_ACCEPTED=false` /
+`HARBOR_SECURITY_POLICY_ATTACHED=false` (and the same false diagnostics
+for MinIO). The residual narrowed to AWS substrate-platform install not
+applying the Harbor/MinIO admin HTTPRoutes and, when rendered, using the
+home `domain.demo_fqdn` instead of the AWS subzone host.
+
+The final June 5 live retry rendered internal Keycloak JWKS URIs plus Envoy Gateway
+`remoteJWKS.backendRefs` and `ReferenceGrant`s for the API and WebSocket
+`SecurityPolicy` resources, and extends the AWS platform install with
+substrate-aware Harbor/MinIO admin routes. `Prodbox.PublicEdge` owns the
+shared substrate route/issuer URL helpers; `ensureAdminPublicEdgeRoutes`
+now receives a `Substrate`; and `ensureAwsSubstratePlatformRuntime`
+applies `ensureAdminPublicEdgeRoutes ... SubstrateAws` after
+`ensureGatewayMinioBootstrap`, so the OIDC client secret can be derived
+from the AWS-side master seed and the admin route manifests use
+`aws.test.resolvefintech.com`. That live retry proved `admin-routes
+--substrate aws` and the later Phase 7-owned public-edge / lifecycle
+validations. The aggregate suite then failed only because
+`ValidationKeycloakInvite` was still ordered after destructive
+`ValidationLifecycle`; the ordering fix is owned by Sprint `8.6`.
+First live run (May 19, 2026)
 exercised the substrate-platform install on EKS end-to-end through
 all 11 `ensureAwsSubstratePlatformRuntime` steps and surfaced six
 architectural gaps; five landed as in-flight code fixes in that
@@ -1455,13 +1530,53 @@ trust-policy condition keys stripped of `https://` via
 image tag `:debug`, `/busybox/sh` shebang + command,
 `crane copy --insecure`, `crane auth login --insecure`);
 `src/Prodbox/CLI/Rke2.hs` (new `createHarborProjectsAws` runs the
-project-creation REST calls from an in-cluster pod against
-`harbor.harbor.svc.cluster.local` since the operator host's
-`127.0.0.1:30080` only resolves on RKE2).
-**Docs to update**: `DEVELOPMENT_PLAN/substrates.md`,
-`DEVELOPMENT_PLAN/README.md`,
-`DEVELOPMENT_PLAN/phase-7-aws-substrate-foundations.md`,
-`DEVELOPMENT_PLAN/legacy-tracking-for-deletion.md`.
+project-creation REST calls by `kubectl exec` into the already-running
+`harbor-core` deployment and calling `harbor.harbor.svc.cluster.local`,
+since the operator host's `127.0.0.1:30080` only resolves on RKE2 and a
+new pre-mirror curl pod would create an image-bootstrap cycle);
+`src/Prodbox/Lib/AwsSubstratePlatform.hs` (AWS-specific
+`GatewayClass` / `EnvoyProxy` runtime with AWS Load Balancer
+Controller NLB annotations and Harbor-mirrored Envoy image);
+`src/Prodbox/TestRunner.hs` and `src/Prodbox/PublicEdge.hs` (the
+harness reads the live `aws-eks-subzone` Pulumi output after
+`aws-subzone-resources`, passes
+`PRODBOX_AWS_SUBSTRATE_HOSTED_ZONE_ID` to child bootstrap commands,
+and the public-edge helpers resolve the AWS hosted-zone ID from
+config, harness env, or live stack output without falling back to the
+home zone); `src/Prodbox/Lib/ChartPlatform.hs` (AWS chart plans render
+`aws_substrate.subzone_name`, disable the gateway daemon
+`dns_write_gate` on AWS, and leave the host-side public-edge
+reconciler as the AWS A-record owner);
+`src/Prodbox/Host.hs` and `src/Prodbox/Dns.hs` (`host public-edge
+--substrate aws` reads the complete Route 53 A-record set, resolves
+the Envoy NLB hostname to IPv4 targets, upserts the AWS subzone record
+when the set drifts, and reports current vs expected DNS targets);
+`src/Prodbox/Infra/AwsEksSubzoneStack.hs` (destroy path deletes
+non-NS/SOA record sets in the delegated subzone before Pulumi destroys
+the hosted zone); `src/Prodbox/TestValidation.hs` (`charts-vscode`
+now waits for the public Keycloak token endpoint/realm to be usable
+before expecting Envoy's OIDC filter to redirect `/vscode`, and its
+redirect retry window covers slower AWS OIDC discovery convergence);
+`src/Prodbox/CLI/Rke2.hs` (bounded retry for transient Harbor
+`docker login` `unauthorized` / gateway / connection failures during
+home-runtime restore after Harbor rolls; Harbor/MinIO admin
+`SecurityPolicy` manifests now set explicit public authorization and
+internal Keycloak token endpoints); `src/Prodbox/Lib/ChartPlatform.hs`
+and `charts/vscode/templates/http-route.yaml` (VS Code `SecurityPolicy`
+keeps the public issuer/authorization redirect but sends Envoy's OIDC
+provider token backchannel to the in-cluster `keycloak` Service through
+explicit `provider.backendRefs` plus an internal token endpoint);
+`charts/api/templates/http-route.yaml`,
+`charts/websocket/templates/http-route.yaml`, and
+`src/Prodbox/Lib/ChartPlatform.hs` (API/WebSocket JWT `remoteJWKS` keeps
+the public issuer/audience contract but fetches signing keys from
+`http://keycloak.vscode.svc.cluster.local:8080/.../certs` through
+cross-namespace `backendRefs`, with `ReferenceGrant`s in `vscode` for
+the API and WebSocket namespaces); `src/Prodbox/PublicEdge.hs`,
+`src/Prodbox/CLI/Rke2.hs`, and
+`src/Prodbox/Lib/AwsSubstratePlatform.hs` (substrate-aware admin route
+host/issuer/redirect rendering and AWS platform installation of the
+Harbor/MinIO admin HTTPRoutes after gateway MinIO bootstrap).
 
 ### Objective
 
@@ -1527,13 +1642,11 @@ are fixed and verified live:
    found`). Fixed in `src/Prodbox/CLI/Rke2.hs`: split
    `ensureHarborProjectsForSubstrate` into
    `createHarborProjectsHomeLocal` (the existing host-curl path)
-   and `createHarborProjectsAws` (a one-shot
-   `restartPolicy=Never` pod in the `harbor` namespace running
-   `curl -X POST` against
+   and `createHarborProjectsAws` (`kubectl exec` into the existing
+   `harbor-core` deployment, then `curl -X POST` against
    `http://harbor.harbor.svc.cluster.local/api/v2.0/projects`).
-   Verified live: `harbor-projects-bootstrap` pod ran, returned
-   HTTP 201 for both `prodbox` and `prodbox-gateway`, was cleaned
-   up; image-mirror Job's pushes succeeded.
+   Verified live: the project-creation call returned HTTP 201 for both
+   `prodbox` and `prodbox-gateway`; image-mirror Job's pushes succeeded.
 
 After these five fixes, all 11 substrate-platform steps complete on
 EKS, **including** Percona operator install + steady-state MinIO
@@ -1555,32 +1668,36 @@ provisions successfully, the three Sprint 8.4 SES prereqs pass).
 
 ### Validation
 
-1. `prodbox check-code` exit 0 (current state).
-2. `prodbox test unit` exit 0 (current state, post Sprint
-   `7.5.c.v.c` / `.d` / `.e` additions).
-3. After Sprint `7.5.c.v.f` lands: the five `--substrate aws`
-   integration validations exit 0.
-4. After Sprint `7.5.c.v.f` lands: AWS residue scan returns zero
-   per-run resources (EKS, NAT, EBS, IAM, hosted-zone records,
-   ALBs). The long-lived `aws-ses` stack is intentionally retained
-   per the long-lived cross-substrate shared-infrastructure class.
+1. Local validation for the June 5 AWS VS Code OIDC readiness,
+   Harbor-login retry, in-cluster OIDC-provider-backchannel,
+   API/WebSocket JWKS-backchannel, and AWS admin-route substrate-host fixes
+   passed before the next live AWS run: `cabal build --builddir=.build
+   exe:prodbox`, binary refresh to `.build/prodbox`,
+   `prodbox check-code`, `prodbox test unit` (650/650),
+   `prodbox test integration cli` (30/30), `prodbox lint docs`,
+   `prodbox docs check`, `git diff --check`, server-side
+   `kubectl apply --dry-run=server` of the rendered API/WebSocket
+   manifests, and the unit assertion that AWS admin route manifests render
+   `aws.test.resolvefintech.com` all exited 0.
+2. The five `--substrate aws` integration validations exit 0 under
+   `prodbox test all --substrate aws`; the final June 5 live retry also
+   proved `admin-routes --substrate aws` after the substrate-aware admin-route
+   install.
+3. `host public-edge --substrate aws` reports the Route 53 A-record set
+   `in-sync` with the resolved Envoy NLB IPv4 targets, not the operator
+   host public IP.
+4. AWS residue scan returns zero per-run resources (EKS, NAT, EBS, IAM,
+   hosted-zone records, ALBs). The long-lived `aws-ses` stack is
+   intentionally retained per the long-lived cross-substrate
+   shared-infrastructure class.
 
 ### Remaining Work
 
-Blocked on Sprint `7.5.c.v.f` (silent-exit failure mode in the
-substrate-aware `runChartsVscodeValidation` body when invoked under
-`substrate=aws`). The May 20, 2026 live re-run (after Sprints
-`7.5.c.v.b` / `7.5.c.v.c` / `7.5.c.v.d` / `7.5.c.v.e` landed) reached
-Phase 2/2 with all prior gates clean (cabal unit + integration suites
-green, harness preflight materializing operational `aws.*`, Phase 1
-prereqs including the three Sprint 8.4 SES checks all passing). The
-first named validation header `Validation: charts-vscode
-(substrate=aws)` emitted, then immediately the harness postflight
-`Auto-destroying per-run AWS Pulumi stacks ...` fired — no body
-output, no `Public edge diagnostic` block, no `failWith` stderr
-message. Diagnosis and fix are tracked in
-[`legacy-tracking-for-deletion.md`](legacy-tracking-for-deletion.md)
-under Pending Removal as Sprint `7.5.c.v.f`.
+None on the Phase 7-owned AWS substrate surface. The aggregate AWS run's
+remaining failure is Sprint `8.6`: `ValidationKeycloakInvite` must run before
+destructive `ValidationChartsStorage` / `ValidationLifecycle`, use the selected
+substrate public FQDN, and route Keycloak admin API calls through `/auth/admin`
+while the invite-auth proof still has a live EKS cluster and Pulumi stack snapshot.
 
 ## Sprint 7.5.c.v.b: In-Cluster Custom-Image Build on EKS ✅
 
@@ -1944,18 +2061,14 @@ five share the same `waitForPublicEdgeReady` plumbing.
 
 ### Remaining Work
 
-Code, doctrine alignment, and unit-level guards (golden-test goldens
-for the new `--substrate` parser leaf and the breadcrumb-emitting
-runner shape) landed May 20, 2026. `prodbox check-code` exits 0;
-`prodbox test unit` golden goldens for the JSON command registry and
-the leaf help pages were refreshed via `--accept`. The single
-remaining validation step (a live targeted re-run of
-`./.build/prodbox test integration charts-vscode --substrate aws`)
-is operator-driven against live AWS infrastructure and is folded
-into Sprint `7.5.c.v`'s closure. The `prodbox-config-types.dhall`
-round-trip unit test is unrelated to this sprint and tracks Sprint
-`4.10` (Settings.hs lacks the matching `PulumiStateBackendSection`
-record decoder).
+None on the sprint-owned silent-exit surface. Code, doctrine
+alignment, and unit-level guards (golden-test goldens for the new
+`--substrate` parser leaf and the breadcrumb-emitting runner shape)
+landed May 20, 2026. The June 4, 2026 live
+`prodbox test all --substrate aws` re-run proved the validation bodies
+now enter and emit public-edge diagnostics instead of returning
+silently; the DNS mismatch surfaced by that run and the June 5 VS Code
+OIDC readiness failure are both owned by the parent Sprint `7.5.c.v`.
 
 ## Sprint 7.6: AWS Harness Orphan-Safety Guards ✅
 
@@ -2344,12 +2457,13 @@ Done (fast gates, no live AWS):
   presence/absence accurately (instead of mapping the unhandled command to `Unreachable` and
   refusing); re-running `aws teardown` converges and stale `aws.*` creds reconcile to empty.
 
-Remaining (not run here): live `prodbox test all --substrate aws` roll-up.
+Live roll-up: the June 5, 2026 `prodbox test all --substrate aws` run proved the operational
+postflight on a real account again: after the Phase 7-owned validations and lifecycle passed,
+the harness destroyed the per-run stacks and cleared operational `aws.*` / deleted the
+operational IAM user before surfacing the Sprint `8.6` ordering failure.
 
 ### Remaining Work
 
-- Live `prodbox test all --substrate aws` exercise (rolls up the operational teardown on a real
-  account).
 - The `PerRun` ∪ `Operational` teardown merge (tracked follow-on; per-run residue gating
   unchanged by this sprint).
 
@@ -2422,7 +2536,10 @@ preflight `runAwsIamHarnessSetup` is unchanged (already `BypassAllResidueForHarn
 The lost `aws-ses` Pulumi state (the long-lived S3 backend bucket `prodbox-pulumi-state-long-lived`
 missing, leaving `aws-ses` Pulumi-unmanageable until re-imported / re-provisioned) is a
 **separate** issue. Sprint 7.9 only stops the operational-user stranding; it does not address the
-lost-`aws-ses`-state problem.
+lost-`aws-ses`-state problem. Later Phase `8` follow-up work closes that separate issue by having
+`prodbox pulumi aws-ses-resources` recreate the long-lived backend state, import the retained
+capture bucket / SMTP IAM user / SES receipt resources, rotate stale SMTP access keys, and
+reconcile overwrite-tolerant Route 53 records.
 
 ### Validation
 

@@ -19,21 +19,29 @@
 module Prodbox.Keycloak.Admin
   ( KeycloakClient (..)
   , NewUser (..)
+  , RealmSmtpSettings (..)
   , UserRecord (..)
+  , applyRealmSmtpSettings
   , buildKeycloakBaseUrl
+  , buildKeycloakBaseUrlForHost
   , withKeycloakClient
+  , withKeycloakClientAtPublicHost
   , acquireAdminToken
   , createUser
   , listUsers
   , disableUser
   , deleteUser
+  , ensureRealmSmtpSettings
   , executeActionsEmail
+  , realmSmtpSettingsJson
   )
 where
 
 import Control.Exception (catch)
-import Data.Aeson (FromJSON, ToJSON, Value, eitherDecode, encode, object, (.:), (.:?), (.=))
+import Data.Aeson (FromJSON, ToJSON, Value (..), eitherDecode, encode, object, (.:), (.:?), (.=))
 import Data.Aeson qualified as Aeson
+import Data.Aeson.Key qualified as Key
+import Data.Aeson.KeyMap qualified as KeyMap
 import Data.Aeson.Types (parseEither, parseJSON, withObject)
 import Data.ByteString.Lazy (ByteString)
 import Data.ByteString.Lazy qualified as BL
@@ -78,6 +86,21 @@ data NewUser = NewUser
   }
   deriving (Eq, Show)
 
+-- | Keycloak realm SMTP settings sourced from the cluster-owned @keycloak-smtp@
+-- Secret. Keycloak stores this map on the realm itself; importing the realm only
+-- applies it on first realm creation, so the admin client also patches it before
+-- live invite sends.
+data RealmSmtpSettings = RealmSmtpSettings
+  { realmSmtpHost :: Text
+  , realmSmtpPort :: Text
+  , realmSmtpFrom :: Text
+  , realmSmtpFromDisplayName :: Text
+  , realmSmtpReplyTo :: Text
+  , realmSmtpUser :: Text
+  , realmSmtpPassword :: Text
+  }
+  deriving (Eq, Show)
+
 -- | Inbound user shape from `GET /admin/realms/<realm>/users`. Captures the fields the
 -- `prodbox users list` CLI surface and the `ValidationKeycloakInvite` arm care about;
 -- silently drops fields outside the listed set so the parser is forward-compatible.
@@ -116,7 +139,11 @@ instance ToJSON UserRecord where
 -- the admin client aligned with the chart's `keycloak.httpRelativePath` constant.
 buildKeycloakBaseUrl :: ValidatedSettings -> Text
 buildKeycloakBaseUrl settings =
-  let fqdn = Text.strip (demo_fqdn (domain (validatedConfig settings)))
+  buildKeycloakBaseUrlForHost (demo_fqdn (domain (validatedConfig settings)))
+
+buildKeycloakBaseUrlForHost :: Text -> Text
+buildKeycloakBaseUrlForHost publicHost =
+  let fqdn = Text.strip publicHost
    in "https://" <> fqdn <> "/auth"
 
 -- | Bracket a Keycloak admin client. Constructs a single TLS manager and threads the
@@ -135,12 +162,25 @@ withKeycloakClient
   -- ^ realm name (typically `prodbox`)
   -> (KeycloakClient -> IO a)
   -> IO a
-withKeycloakClient settings adminUser adminPass realm action = do
+withKeycloakClient settings =
+  withKeycloakClientAtPublicHost (demo_fqdn (domain (validatedConfig settings)))
+
+withKeycloakClientAtPublicHost
+  :: Text
+  -> Text
+  -- ^ admin username (defaults to chart's `keycloak.adminUser`, typically `admin`)
+  -> Text
+  -- ^ admin password (from the chart-platform-managed secret store)
+  -> Text
+  -- ^ realm name (typically `prodbox`)
+  -> (KeycloakClient -> IO a)
+  -> IO a
+withKeycloakClientAtPublicHost publicHost adminUser adminPass realm action = do
   manager <- newTlsManager
   action
     KeycloakClient
       { keycloakManager = manager
-      , keycloakBaseUrl = buildKeycloakBaseUrl settings
+      , keycloakBaseUrl = buildKeycloakBaseUrlForHost publicHost
       , keycloakRealm = realm
       , keycloakAdminUser = adminUser
       , keycloakAdminPassword = adminPass
@@ -216,6 +256,79 @@ listUsers client token = do
           { requestHeaders = [(hAuthorization, "Bearer " <> Text.encodeUtf8 token)]
           }
   performJsonRequest "Keycloak user listing" client req parseUserListing
+
+-- | Reconcile the realm-level SMTP map from the cluster-owned Secret before
+-- triggering invite email. This patches an existing realm as well as a freshly
+-- imported one, which covers preserved Keycloak databases where @--import-realm@
+-- has already skipped the realm.
+ensureRealmSmtpSettings :: KeycloakClient -> Text -> RealmSmtpSettings -> IO (Result ())
+ensureRealmSmtpSettings client token smtpSettings = do
+  fetchResult <- fetchRealmRepresentation client token
+  case fetchResult of
+    Failure err -> pure (Failure err)
+    Success realmValue ->
+      case applyRealmSmtpSettings smtpSettings realmValue of
+        Failure err -> pure (Failure err)
+        Success updatedRealm -> putRealmRepresentation client token updatedRealm
+
+fetchRealmRepresentation :: KeycloakClient -> Text -> IO (Result Value)
+fetchRealmRepresentation client token = do
+  let url = realmAdminUrl client
+  reqInit <- parseRequest url
+  let req =
+        reqInit
+          { requestHeaders = [(hAuthorization, "Bearer " <> Text.encodeUtf8 token)]
+          }
+  performJsonRequest "Keycloak realm read" client req Success
+
+putRealmRepresentation :: KeycloakClient -> Text -> Value -> IO (Result ())
+putRealmRepresentation client token payload = do
+  let url = realmAdminUrl client
+  reqInit <- parseRequest url
+  let req =
+        reqInit
+          { method = "PUT"
+          , requestHeaders =
+              [ (hContentType, "application/json")
+              , (hAuthorization, "Bearer " <> Text.encodeUtf8 token)
+              ]
+          , requestBody = RequestBodyLBS (encode payload)
+          }
+  performRawRequest "Keycloak realm SMTP update" client req (expect204 "realm SMTP update")
+
+realmAdminUrl :: KeycloakClient -> String
+realmAdminUrl client =
+  Text.unpack (keycloakBaseUrl client)
+    <> "/admin/realms/"
+    <> Text.unpack (keycloakRealm client)
+
+applyRealmSmtpSettings :: RealmSmtpSettings -> Value -> Result Value
+applyRealmSmtpSettings smtpSettings value =
+  case value of
+    Object obj ->
+      Success
+        ( Object
+            ( KeyMap.insert
+                (Key.fromString "smtpServer")
+                (realmSmtpSettingsJson smtpSettings)
+                obj
+            )
+        )
+    _ -> Failure "Keycloak realm representation was not a JSON object"
+
+realmSmtpSettingsJson :: RealmSmtpSettings -> Value
+realmSmtpSettingsJson smtpSettings =
+  object
+    [ "host" .= realmSmtpHost smtpSettings
+    , "port" .= realmSmtpPort smtpSettings
+    , "from" .= realmSmtpFrom smtpSettings
+    , "fromDisplayName" .= realmSmtpFromDisplayName smtpSettings
+    , "replyTo" .= realmSmtpReplyTo smtpSettings
+    , "starttls" .= ("true" :: Text)
+    , "auth" .= ("true" :: Text)
+    , "user" .= realmSmtpUser smtpSettings
+    , "password" .= realmSmtpPassword smtpSettings
+    ]
 
 -- | Disable a user (`enabled: false`). Keycloak treats this as a soft revoke.
 disableUser :: KeycloakClient -> Text -> Text -> IO (Result ())

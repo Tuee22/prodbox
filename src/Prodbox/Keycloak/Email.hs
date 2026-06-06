@@ -27,13 +27,13 @@ import Data.List (isPrefixOf)
 -- - `Left "multiple Keycloak invite links found in email body"` if >1 distinct match.
 --
 -- Quoted-printable soft-wraps (`=\\r\\n` and `=\\n`) are decoded inline before the
--- scan so URLs broken across MIME lines still parse. `=XX` hex decoding is *not*
--- applied because real Keycloak invites emit HTML with literal `?key=…` query
--- strings — interpreting those as QP would clobber the URL.
+-- scan so URLs broken across MIME lines still parse. After extraction, the URL
+-- is normalized for the encodings Keycloak's multipart HTML body applies around
+-- query delimiters (`=3D` and `&amp;`) before duplicate detection.
 parseKeycloakInviteLink :: ByteString -> Either String String
 parseKeycloakInviteLink raw =
   let decoded = stripSoftWraps (BL8.unpack raw)
-      matches = findInviteUrls decoded
+      matches = map normalizeInviteUrl (findInviteUrls decoded)
    in case dedupe matches of
         [] -> Left "no Keycloak invite link found in email body"
         [single] -> Right single
@@ -60,6 +60,23 @@ trimPunct =
   reverse
     . dropWhile (\c -> c == '.' || c == ',' || c == ';' || c == ':' || c == '!')
     . reverse
+
+normalizeInviteUrl :: String -> String
+normalizeInviteUrl = decodeHtmlAmpersands . decodeQuotedPrintableEquals
+
+decodeQuotedPrintableEquals :: String -> String
+decodeQuotedPrintableEquals [] = []
+decodeQuotedPrintableEquals ('=' : '3' : 'D' : rest) = '=' : decodeQuotedPrintableEquals rest
+decodeQuotedPrintableEquals ('=' : '3' : 'd' : rest) = '=' : decodeQuotedPrintableEquals rest
+decodeQuotedPrintableEquals (c : rest) = c : decodeQuotedPrintableEquals rest
+
+decodeHtmlAmpersands :: String -> String
+decodeHtmlAmpersands [] = []
+decodeHtmlAmpersands input
+  | "&amp;" `isPrefixOf` input = '&' : decodeHtmlAmpersands (drop 5 input)
+  | otherwise =
+      case input of
+        c : rest -> c : decodeHtmlAmpersands rest
 
 infixOfHelper :: String -> String -> Bool
 infixOfHelper needle haystack

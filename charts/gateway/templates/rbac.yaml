@@ -20,6 +20,13 @@ keycloak chart, so without this emit the keycloak namespace doesn't
 exist yet when the RoleBinding tries to apply against it. A Namespace
 apply is idempotent so subsequent reconciles + the keycloak chart's
 own namespace handling are unaffected.
+
+Sprint 8.6: AWS-substrate SMTP sync must create keycloak/vscode
+before this chart renders so the keycloak-smtp Secret can exist for
+Helm lookup. These Namespace manifests therefore declare the Helm
+ownership metadata that the pre-sync stamps onto existing namespaces,
+and use resource-policy keep so gateway uninstall does not delete
+workload namespaces and their retained Secrets.
 */ -}}
 {{- range $.Values.rbac.targetNamespaces }}
 {{- if ne . $.Values.global.namespace }}
@@ -29,7 +36,12 @@ kind: Namespace
 metadata:
   name: {{ . }}
   labels:
+    app.kubernetes.io/managed-by: Helm
     prodbox.io/created-by: gateway-chart-rbac-bootstrap
+  annotations:
+    meta.helm.sh/release-name: {{ $.Release.Name | quote }}
+    meta.helm.sh/release-namespace: {{ $.Release.Namespace | quote }}
+    helm.sh/resource-policy: keep
 {{- end }}
 ---
 apiVersion: rbac.authorization.k8s.io/v1

@@ -6,6 +6,8 @@ module Prodbox.CLI.Rke2
   , acmeClusterIssuerSpec
   , ensureGatewayImagesForSubstrate
   , ensureGatewayMinioBootstrap
+  , ensureAdminPublicEdgeRoutes
+  , adminPublicEdgeManifestItems
   , ensureHarborRegistryRuntime
   , ensureHarborRegistryStorageBackend
   , ensureMinioRuntime
@@ -16,6 +18,7 @@ module Prodbox.CLI.Rke2
   , inferCascadeSubstrate
   , renderNativeInstallPlan
   , renderMinioChartArgs
+  , runNativeDeleteCascade
   , runNativeDeleteWithResiduePolicy
   , runRke2Command
   )
@@ -92,9 +95,10 @@ import Prodbox.Host
   )
 import Prodbox.Infra.AwsEksTestStack (awsEksCanonicalClusterName, withEksKubeconfig)
 import Prodbox.Infra.LongLivedPulumiBackend (loadAdminAwsCredentials)
-import Prodbox.Infra.MinioBackend (withMinioPortForward)
+import Prodbox.Infra.MinioBackend (withCurrentMinioPortForward)
 import Prodbox.Lib.ChartPlatform
-  ( keycloakVscodeClientId
+  ( keycloakRealmName
+  , keycloakVscodeClientId
   )
 import Prodbox.Lib.EksCustomImagePush
   ( EksCustomImagePushConfig (..)
@@ -119,12 +123,13 @@ import Prodbox.PostgresPlatform
   )
 import Prodbox.PublicEdge
   ( PublicEdgeRoute (..)
+  , authPathPrefix
   , harborPathPrefix
-  , identityIssuerUrl
   , minioPathPrefix
-  , publicFqdn
-  , publicRouteUrl
   , substrateHostedZoneId
+  , substrateIdentityIssuerUrl
+  , substratePublicFqdn
+  , substratePublicRouteUrl
   )
 import Prodbox.Result (Result (..))
 import Prodbox.Retry
@@ -691,7 +696,7 @@ applyNativeInstallPlan repoRoot settings (machineId, prodboxId, labelValue) =
     , reconcileDnsBootstrapRecord repoRoot settings
     , ensureMinioRuntime repoRoot SubstrateHomeLocal MinioSteadyStateHarbor
     , ensureGatewayMinioBootstrap repoRoot
-    , ensureAdminPublicEdgeRoutes repoRoot settings prodboxId labelValue
+    , ensureAdminPublicEdgeRoutes repoRoot settings SubstrateHomeLocal prodboxId labelValue
     , reconcileManagedAnnotations repoRoot prodboxId labelValue
     ]
 
@@ -1369,11 +1374,11 @@ renderMinioChartArgs substrate imageSource =
         , "--set"
         , "consoleService.type=ClusterIP"
         , "--set"
-        , "resources.requests.memory=256Mi"
+        , "resources.requests.memory=512Mi"
         , "--set"
         , "resources.requests.cpu=100m"
         , "--set"
-        , "resources.limits.memory=512Mi"
+        , "resources.limits.memory=2Gi"
         ]
    in coreArgs ++ minioSubstratePersistenceArgs substrate
 
@@ -2113,13 +2118,12 @@ createHarborProjectsHomeLocal repoRoot =
     ]
 
 -- | On the AWS substrate the operator host cannot reach Harbor at
--- @127.0.0.1:30080@. Apply a one-shot pod that runs @curl@ from
--- inside the cluster against Harbor's in-cluster DNS endpoint, then
--- wait for it to complete and clean up.
+-- @127.0.0.1:30080@. Exec into the already-running Harbor core pod
+-- and call Harbor's in-cluster DNS endpoint, avoiding a pre-mirror
+-- bootstrap dependency on any additional pod image.
 createHarborProjectsAws :: FilePath -> IO ExitCode
 createHarborProjectsAws repoRoot = do
   let projects = nub harborBootstrapProjects
-      podName = "harbor-projects-bootstrap"
       podNamespace = harborNamespace
       script =
         "set -eu\n"
@@ -2137,82 +2141,22 @@ createHarborProjectsAws repoRoot = do
                   ++ "case \"$code\" in 201|409) echo \"  HTTP $code (ok)\" ;; *) echo \"  HTTP $code (FAIL)\"; exit 1 ;; esac\n"
             )
             projects
-      manifest =
-        object
-          [ "apiVersion" .= ("v1" :: String)
-          , "kind" .= ("Pod" :: String)
-          , "metadata"
-              .= object
-                [ "name" .= podName
-                , "namespace" .= podNamespace
-                ]
-          , "spec"
-              .= object
-                [ "restartPolicy" .= ("Never" :: String)
-                , "containers"
-                    .= [ object
-                           [ "name" .= ("curl" :: String)
-                           , "image" .= ("curlimages/curl:8.11.0" :: String)
-                           , "command" .= (["sh", "-c"] :: [String])
-                           , "args" .= [script]
-                           ]
-                       ]
-                ]
+  runCommand
+    Subprocess
+      { subprocessPath = "kubectl"
+      , subprocessArguments =
+          [ "exec"
+          , "-n"
+          , podNamespace
+          , "deployment/" ++ harborComponentName harborReleaseName "core"
+          , "--"
+          , "sh"
+          , "-c"
+          , script
           ]
-  -- Delete any leftover pod from a prior run so apply doesn't fail on
-  -- an Already-Completed restartPolicy=Never pod.
-  _ <-
-    runCommand
-      Subprocess
-        { subprocessPath = "kubectl"
-        , subprocessArguments =
-            [ "delete"
-            , "pod"
-            , "-n"
-            , podNamespace
-            , podName
-            , "--ignore-not-found"
-            ]
-        , subprocessEnvironment = Nothing
-        , subprocessWorkingDirectory = Just repoRoot
-        }
-  withTemporaryJsonManifest "harbor-projects-pod" [manifest] $ \manifestPath -> do
-    applyExit <-
-      runCommand
-        Subprocess
-          { subprocessPath = "kubectl"
-          , subprocessArguments = ["apply", "-f", manifestPath]
-          , subprocessEnvironment = Nothing
-          , subprocessWorkingDirectory = Just repoRoot
-          }
-    case applyExit of
-      ExitFailure _ -> pure applyExit
-      ExitSuccess -> do
-        waitExit <-
-          runCommand
-            Subprocess
-              { subprocessPath = "kubectl"
-              , subprocessArguments =
-                  [ "wait"
-                  , "--for=jsonpath={.status.phase}=Succeeded"
-                  , "pod/" ++ podName
-                  , "-n"
-                  , podNamespace
-                  , "--timeout=120s"
-                  ]
-              , subprocessEnvironment = Nothing
-              , subprocessWorkingDirectory = Just repoRoot
-              }
-        _ <-
-          runCommand
-            Subprocess
-              { subprocessPath = "kubectl"
-              , subprocessArguments =
-                  ["delete", "pod", "-n", podNamespace, podName, "--ignore-not-found"]
-              , subprocessEnvironment = Nothing
-              , subprocessWorkingDirectory = Just repoRoot
-              }
-        pure waitExit
+      , subprocessEnvironment = Nothing
+      , subprocessWorkingDirectory = Just repoRoot
+      }
 
 harborBootstrapProjects :: [String]
 harborBootstrapProjects =
@@ -2486,8 +2430,9 @@ ensureClusterPlatformRuntime repoRoot settings prodboxId labelValue = do
         , ensurePostgresOperatorRuntime repoRoot prodboxId labelValue
         ]
 
-ensureAdminPublicEdgeRoutes :: FilePath -> ValidatedSettings -> String -> String -> IO ExitCode
-ensureAdminPublicEdgeRoutes repoRoot settings prodboxId labelValue = do
+ensureAdminPublicEdgeRoutes
+  :: FilePath -> ValidatedSettings -> Substrate -> String -> String -> IO ExitCode
+ensureAdminPublicEdgeRoutes repoRoot settings substrate prodboxId labelValue = do
   -- Sprint 3.13 chunks 11 + 12: the OIDC client secrets (vscode / api /
   -- websocket / demo-user) are now master-seed-derived and materialized
   -- by the gateway daemon's `ensure-namespace` handler into the
@@ -2501,7 +2446,7 @@ ensureAdminPublicEdgeRoutes repoRoot settings prodboxId labelValue = do
     Right clientSecret ->
       withTemporaryJsonManifest
         "prodbox-admin-public-edge"
-        (adminPublicEdgeManifestItems settings prodboxId labelValue clientSecret)
+        (adminPublicEdgeManifestItems settings substrate prodboxId labelValue clientSecret)
         ( \manifestPath -> do
             outputResult <- captureKubectl repoRoot ["apply", "-f", manifestPath]
             case outputResult of
@@ -2544,7 +2489,7 @@ readKeycloakVscodeClientSecret repoRoot = do
                 )
             )
         Right (accessKey, secretKey) -> do
-          portForwardResult <- withMinioPortForward $ \localPort -> do
+          portForwardResult <- withCurrentMinioPortForward $ \localPort -> do
             let cfg = defaultMinioMasterSeedConfig localPort accessKey secretKey
             ensureMasterSeed cfg
           case portForwardResult of
@@ -2607,8 +2552,9 @@ decodeHex input
     | c >= 'A' && c <= 'F' = fromEnum c - fromEnum 'A' + 10
     | otherwise = 0
 
-adminPublicEdgeManifestItems :: ValidatedSettings -> String -> String -> String -> [Value]
-adminPublicEdgeManifestItems settings prodboxId labelValue clientSecret =
+adminPublicEdgeManifestItems
+  :: ValidatedSettings -> Substrate -> String -> String -> String -> [Value]
+adminPublicEdgeManifestItems settings substrate prodboxId labelValue clientSecret =
   [ adminOidcClientSecretManifest
       harborNamespace
       harborAdminClientSecretName
@@ -2623,15 +2569,16 @@ adminPublicEdgeManifestItems settings prodboxId labelValue clientSecret =
       harborServicePort
       prodboxId
       labelValue
-      (publicFqdn settings)
+      (substratePublicFqdn settings substrate)
   , adminSecurityPolicyManifest
       harborNamespace
       harborAdminSecurityPolicyName
       harborAdminRouteName
       harborAdminClientSecretName
-      (publicRouteUrl settings PublicRouteHarbor)
+      (substratePublicRouteUrl settings substrate PublicRouteHarbor)
       prodboxId
       labelValue
+      substrate
       settings
   , adminOidcClientSecretManifest
       minioNamespace
@@ -2647,15 +2594,16 @@ adminPublicEdgeManifestItems settings prodboxId labelValue clientSecret =
       minioConsoleServicePort
       prodboxId
       labelValue
-      (publicFqdn settings)
+      (substratePublicFqdn settings substrate)
   , adminSecurityPolicyManifest
       minioNamespace
       minioAdminSecurityPolicyName
       minioAdminRouteName
       minioAdminClientSecretName
-      (publicRouteUrl settings PublicRouteMinio)
+      (substratePublicRouteUrl settings substrate PublicRouteMinio)
       prodboxId
       labelValue
+      substrate
       settings
   ]
 
@@ -2736,9 +2684,10 @@ adminSecurityPolicyManifest
   -> String
   -> String
   -> String
+  -> Substrate
   -> ValidatedSettings
   -> Value
-adminSecurityPolicyManifest namespace policyName routeName secretName baseUrl prodboxId labelValue settings =
+adminSecurityPolicyManifest namespace policyName routeName secretName baseUrl prodboxId labelValue substrate settings =
   object
     [ "apiVersion" .= ("gateway.envoyproxy.io/v1alpha1" :: String)
     , "kind" .= ("SecurityPolicy" :: String)
@@ -2762,7 +2711,7 @@ adminSecurityPolicyManifest namespace policyName routeName secretName baseUrl pr
                  )
           , "oidc"
               .= object
-                [ "provider" .= object ["issuer" .= identityIssuerUrl settings]
+                [ "provider" .= adminOidcProviderManifest settings substrate
                 , "clientID" .= keycloakVscodeClientId
                 , "clientSecret" .= object ["name" .= secretName]
                 , "redirectURL" .= (baseUrl ++ "/oauth2/callback")
@@ -2770,6 +2719,24 @@ adminSecurityPolicyManifest namespace policyName routeName secretName baseUrl pr
                 ]
           ]
     ]
+
+adminOidcProviderManifest :: ValidatedSettings -> Substrate -> Value
+adminOidcProviderManifest settings substrate =
+  object
+    [ "issuer" .= issuer
+    , "authorizationEndpoint" .= (issuer ++ "/protocol/openid-connect/auth")
+    , "tokenEndpoint" .= sharedKeycloakInternalTokenEndpoint
+    ]
+ where
+  issuer = substrateIdentityIssuerUrl settings substrate
+
+sharedKeycloakInternalTokenEndpoint :: String
+sharedKeycloakInternalTokenEndpoint =
+  "http://keycloak.vscode.svc.cluster.local:8080"
+    ++ authPathPrefix
+    ++ "/realms/"
+    ++ keycloakRealmName
+    ++ "/protocol/openid-connect/token"
 
 resolveClusterPlatformLanDefaults :: IO (Either String (String, String))
 resolveClusterPlatformLanDefaults = do
@@ -3775,7 +3742,7 @@ ensureCustomImageVariantsHomeLocal repoRoot imageBuildPlan taggedRefs importRef 
 -- | AWS-substrate custom-image publication path. Builds the image on
 -- the operator host via @docker build@ (which is available locally),
 -- @docker save@'s the image to a tarball, then publishes via an
--- in-cluster crane pod. The @ctr@ import step is intentionally
+-- authenticated in-cluster crane pod. The @ctr@ import step is intentionally
 -- omitted — EKS nodes pull from in-cluster Harbor via the
 -- containerd registry-mirror DaemonSet.
 ensureCustomImageVariantsAws
@@ -3800,7 +3767,8 @@ buildCustomImageHostArchitecture repoRoot imageBuildPlan taggedRefs =
 -- 'Prodbox.Lib.EksCustomImagePush.eksCustomImagePushPodManifest',
 -- @docker save@ the locally-built image to a tarball under the
 -- chart-platform tmp dir, @kubectl cp@ the tarball into the pod,
--- @kubectl exec@ @crane push --insecure@ once per requested tag,
+-- @kubectl exec@ @crane auth login@, @kubectl exec@
+-- @crane push --insecure@ once per requested tag,
 -- then delete the pod.
 pushCustomImageVariantsViaInClusterCrane
   :: FilePath -> String -> [String] -> IO ExitCode
@@ -3888,20 +3856,57 @@ pushCustomImageVariantsViaInClusterCrane repoRoot primaryRef taggedRefs = do
                 case cpExit of
                   ExitFailure _ -> pure cpExit
                   ExitSuccess -> do
-                    pushExits <-
-                      mapM
-                        (pushOneRefViaCranePod cfg podNs podNm podPath repoRoot)
-                        taggedRefs
-                    _ <-
-                      runCommand
-                        Subprocess
-                          { subprocessPath = "kubectl"
-                          , subprocessArguments =
-                              ["delete", "pod", "-n", podNs, podNm, "--ignore-not-found"]
-                          , subprocessEnvironment = Nothing
-                          , subprocessWorkingDirectory = Just repoRoot
-                          }
-                    pure $ firstNonSuccess pushExits
+                    authExit <- authenticateCranePodToHarbor cfg podNs podNm repoRoot
+                    case authExit of
+                      ExitFailure _ -> do
+                        _ <- deleteCranePushPod podNs podNm repoRoot
+                        pure authExit
+                      ExitSuccess -> do
+                        pushExits <-
+                          mapM
+                            (pushOneRefViaCranePod cfg podNs podNm podPath repoRoot)
+                            taggedRefs
+                        _ <- deleteCranePushPod podNs podNm repoRoot
+                        pure $ firstNonSuccess pushExits
+
+authenticateCranePodToHarbor
+  :: EksCustomImagePushConfig -> String -> String -> FilePath -> IO ExitCode
+authenticateCranePodToHarbor cfg podNs podNm repoRoot = do
+  writeOutputLine
+    ( "  crane auth login "
+        ++ customPushHarborInternalEndpoint cfg
+        ++ " --username "
+        ++ customPushHarborAdminUser cfg
+        ++ " --password <redacted>"
+    )
+  runCommand
+    Subprocess
+      { subprocessPath = "kubectl"
+      , subprocessArguments =
+          [ "exec"
+          , "-n"
+          , podNs
+          , podNm
+          , "--"
+          ]
+            ++ [ "/busybox/sh"
+               , "-c"
+               , "/ko-app/crane auth login \"${HARBOR_INTERNAL}\" --username \"${HARBOR_USER}\" --password \"${HARBOR_PASSWORD}\""
+               ]
+      , subprocessEnvironment = Nothing
+      , subprocessWorkingDirectory = Just repoRoot
+      }
+
+deleteCranePushPod :: String -> String -> FilePath -> IO ExitCode
+deleteCranePushPod podNs podNm repoRoot =
+  runCommand
+    Subprocess
+      { subprocessPath = "kubectl"
+      , subprocessArguments =
+          ["delete", "pod", "-n", podNs, podNm, "--ignore-not-found"]
+      , subprocessEnvironment = Nothing
+      , subprocessWorkingDirectory = Just repoRoot
+      }
 
 pushOneRefViaCranePod
   :: EksCustomImagePushConfig
@@ -4190,15 +4195,56 @@ mergeMirrorCandidatePairs = foldl mergePair []
     | otherwise = (existingSources, existingTarget) : mergePair rest (sources, target)
 
 ensureHarborDockerLogin :: FilePath -> IO ExitCode
-ensureHarborDockerLogin repoRoot =
-  runCommand
-    Subprocess
-      { subprocessPath = "docker"
-      , subprocessArguments =
-          ["login", harborRegistryEndpoint, "--username", harborAdminUser, "--password", harborAdminPassword]
-      , subprocessEnvironment = Nothing
-      , subprocessWorkingDirectory = Just repoRoot
-      }
+ensureHarborDockerLogin repoRoot = go (retryPolicyMaxAttempts harborLoginRetryPolicy)
+ where
+  arguments =
+    ["login", harborRegistryEndpoint, "--username", harborAdminUser, "--password", harborAdminPassword]
+
+  go attemptsRemaining = do
+    outputResult <- captureToolOutput repoRoot "docker" arguments
+    case outputResult of
+      Left err -> failWith err
+      Right output ->
+        case processExitCode output of
+          ExitSuccess -> do
+            emitCapturedProcessOutput output
+            pure ExitSuccess
+          ExitFailure _
+            | attemptsRemaining > 1 && isRetryableHarborLoginFailure (outputDetail output) -> do
+                writeDiagnosticLine
+                  ( "Retrying Harbor docker login ("
+                      ++ show (retryPolicyMaxAttempts harborLoginRetryPolicy - attemptsRemaining + 1)
+                      ++ "/"
+                      ++ show (retryPolicyMaxAttempts harborLoginRetryPolicy)
+                      ++ "): "
+                      ++ outputDetail output
+                  )
+                threadDelay
+                  ( retryDelayMicros
+                      harborLoginRetryPolicy
+                      (retryPolicyMaxAttempts harborLoginRetryPolicy - attemptsRemaining)
+                  )
+                go (attemptsRemaining - 1)
+            | otherwise -> do
+                emitCapturedProcessOutput output
+                pure (ExitFailure 1)
+
+isRetryableHarborLoginFailure :: String -> Bool
+isRetryableHarborLoginFailure detail =
+  let lowered = map toLower detail
+   in any
+        (`isInfixOf` lowered)
+        [ "unauthorized"
+        , "502 bad gateway"
+        , "503 service unavailable"
+        , "504 gateway timeout"
+        , "connection reset by peer"
+        , "connection refused"
+        , "tls handshake timeout"
+        , "i/o timeout"
+        , "temporary failure"
+        , "unexpected eof"
+        ]
 
 isHarborHostedImage :: String -> Bool
 isHarborHostedImage imageRef =
@@ -5178,6 +5224,15 @@ customImagePushRetryPolicy :: RetryPolicy
 customImagePushRetryPolicy =
   RetryPolicy
     { retryPolicyMaxAttempts = 3
+    , retryPolicyBaseDelayMicros = 5000000
+    , retryPolicyMultiplier = 1
+    , retryPolicyMaxDelayMicros = 5000000
+    }
+
+harborLoginRetryPolicy :: RetryPolicy
+harborLoginRetryPolicy =
+  RetryPolicy
+    { retryPolicyMaxAttempts = 6
     , retryPolicyBaseDelayMicros = 5000000
     , retryPolicyMultiplier = 1
     , retryPolicyMaxDelayMicros = 5000000

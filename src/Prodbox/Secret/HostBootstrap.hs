@@ -34,14 +34,13 @@ import Control.Exception (SomeException, try)
 import Data.Aeson (Value, encode)
 import Data.ByteString qualified as BS
 import Data.ByteString.Lazy qualified as BL
-import Data.ByteString.Lazy.Char8 qualified as BL8
 import Data.Char (isHexDigit)
 import Data.List (isPrefixOf, tails)
 import Data.Map.Strict qualified as Map
 import Data.Text (Text)
 import Data.Text qualified as Text
 import Data.Word (Word8)
-import Prodbox.Infra.MinioBackend (withMinioPortForward)
+import Prodbox.Infra.MinioBackend (withCurrentMinioPortForward)
 import Prodbox.K8s.InCluster (secretManifestJson)
 import Prodbox.Result (Result (..))
 import Prodbox.Secret.Derive (MasterSeed, deriveBase64Url, masterSeed)
@@ -121,7 +120,7 @@ resolveSeedViaMinio = do
             )
         )
     Right (accessKey, secretKey) -> do
-      portForwardResult <- withMinioPortForward $ \localPort -> do
+      portForwardResult <- withCurrentMinioPortForward $ \localPort -> do
         let cfg = defaultMinioMasterSeedConfig localPort accessKey secretKey
         ensureMasterSeed cfg
       case portForwardResult of

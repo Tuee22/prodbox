@@ -25,7 +25,12 @@ jwt:
   providerName: keycloak
   issuer: https://test.resolvefintech.com/auth/realms/prodbox
   audience: prodbox-websocket
-  jwksUri: https://test.resolvefintech.com/auth/realms/prodbox/protocol/openid-connect/certs
+  jwksUri: http://keycloak.vscode.svc.cluster.local:8080/auth/realms/prodbox/protocol/openid-connect/certs
+  jwksBackend:
+    namespace: vscode
+    serviceName: keycloak
+    servicePort: 8080
+    referenceGrantName: websocket-keycloak-jwks
   routeClaimName: prodbox_route
   routeClaimValue: websocket
 

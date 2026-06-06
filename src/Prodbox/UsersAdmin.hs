@@ -11,26 +11,39 @@
 module Prodbox.UsersAdmin
   ( UserSummary (..)
   , UserVerificationStatus (..)
+  , decodeKeycloakSmtpSecretJson
   , inviteUser
+  , inviteUserAtPublicHost
   , listUsers
   , revokeUser
+  , revokeUserAtPublicHost
   , loadKeycloakAdminPassword
+  , loadKeycloakSmtpSettings
   )
 where
 
+import Data.Aeson (Value (..), eitherDecode)
+import Data.Aeson.Key qualified as Key
+import Data.Aeson.KeyMap qualified as KeyMap
+import Data.ByteString.Base64 qualified as Base64
+import Data.ByteString.Lazy.Char8 qualified as BL8
 import Data.Text (Text)
 import Data.Text qualified as Text
+import Data.Text.Encoding qualified as Text
 import Prodbox.CLI.Command (UsersListStatus (..))
 import Prodbox.Keycloak.Admin
   ( KeycloakClient
   , NewUser (..)
+  , RealmSmtpSettings (..)
   , UserRecord (..)
   , acquireAdminToken
   , createUser
   , deleteUser
   , disableUser
+  , ensureRealmSmtpSettings
   , executeActionsEmail
   , withKeycloakClient
+  , withKeycloakClientAtPublicHost
   )
 import Prodbox.Keycloak.Admin qualified as KCAdmin
 import Prodbox.Result (Result (..))
@@ -113,6 +126,81 @@ loadKeycloakAdminPassword _repoRoot = do
       . reverse
       . dropWhile (`elem` (" \t\r\n" :: String))
 
+-- | Read and decode the cluster-owned Keycloak SMTP Secret. The Secret is
+-- applied by the AWS SES sync path and is the source of truth for the realm
+-- SMTP map used by operator invite emails.
+loadKeycloakSmtpSettings :: FilePath -> IO (Either String RealmSmtpSettings)
+loadKeycloakSmtpSettings _repoRoot = do
+  result <-
+    runPg
+      [ "get"
+      , "secret"
+      , "keycloak-smtp"
+      , "--namespace"
+      , "vscode"
+      , "-o"
+      , "json"
+      ]
+  case result of
+    Left err ->
+      pure
+        ( Left
+            ( "could not run `kubectl get secret keycloak-smtp`: "
+                <> show err
+                <> " — is kubectl configured and the cluster reachable?"
+            )
+        )
+    Right output ->
+      case processExitCode output of
+        ExitFailure _ ->
+          pure
+            ( Left
+                ( "kubectl get secret keycloak-smtp failed: "
+                    <> trim (processStderr output)
+                    <> " — run `prodbox pulumi aws-ses-resources` or an invite-aware test harness so the SES SMTP Secret is synced."
+                )
+            )
+        ExitSuccess ->
+          pure (decodeKeycloakSmtpSecretJson (processStdout output))
+ where
+  trim =
+    reverse
+      . dropWhile (`elem` (" \t\r\n" :: String))
+      . reverse
+      . dropWhile (`elem` (" \t\r\n" :: String))
+
+decodeKeycloakSmtpSecretJson :: String -> Either String RealmSmtpSettings
+decodeKeycloakSmtpSecretJson raw =
+  case eitherDecode (BL8.pack raw) of
+    Left err -> Left ("keycloak-smtp Secret JSON decode failed: " <> err)
+    Right (Object obj) ->
+      case KeyMap.lookup (Key.fromString "data") obj of
+        Just (Object dataObj) ->
+          RealmSmtpSettings
+            <$> requireSecretText dataObj "KC_SMTP_HOST"
+            <*> requireSecretText dataObj "KC_SMTP_PORT"
+            <*> requireSecretText dataObj "KC_SMTP_FROM"
+            <*> requireSecretText dataObj "KC_SMTP_FROM_DISPLAY_NAME"
+            <*> requireSecretText dataObj "KC_SMTP_REPLY_TO"
+            <*> requireSecretText dataObj "KC_SMTP_USER"
+            <*> requireSecretText dataObj "KC_SMTP_PASSWORD"
+        Just _ -> Left "keycloak-smtp Secret `.data` was not a JSON object"
+        Nothing -> Left "keycloak-smtp Secret missing `.data`"
+    Right _ -> Left "keycloak-smtp Secret JSON was not an object"
+
+requireSecretText :: KeyMap.KeyMap Value -> String -> Either String Text
+requireSecretText dataObj fieldName =
+  case KeyMap.lookup (Key.fromString fieldName) dataObj of
+    Nothing -> Left ("keycloak-smtp Secret missing `" <> fieldName <> "`")
+    Just (String encoded) ->
+      case Base64.decode (Text.encodeUtf8 encoded) of
+        Left err -> Left ("keycloak-smtp Secret field `" <> fieldName <> "` was not valid base64: " <> err)
+        Right decoded ->
+          case Text.decodeUtf8' decoded of
+            Left err -> Left ("keycloak-smtp Secret field `" <> fieldName <> "` was not valid UTF-8: " <> show err)
+            Right decodedText -> Right decodedText
+    Just _ -> Left ("keycloak-smtp Secret field `" <> fieldName <> "` was not a string")
+
 -- | Invite a new operator-owned user. Creates the Keycloak user with `enabled: true`,
 -- `emailVerified: false`, and `requiredActions: ["VERIFY_EMAIL", "UPDATE_PASSWORD"]`,
 -- then triggers Keycloak's SES-backed invite email. Returns the created user summary
@@ -120,7 +208,39 @@ loadKeycloakAdminPassword _repoRoot = do
 inviteUser
   :: FilePath -> ValidatedSettings -> String -> Maybe String -> IO (Either String UserSummary)
 inviteUser repoRoot settings email maybeRole =
-  withAdminClient repoRoot settings $ \client token -> do
+  inviteUserWith
+    (withAdminClient repoRoot settings)
+    (loadKeycloakSmtpSettings repoRoot)
+    email
+    maybeRole
+
+inviteUserAtPublicHost
+  :: FilePath -> Text -> String -> Maybe String -> IO (Either String UserSummary)
+inviteUserAtPublicHost repoRoot publicHost email maybeRole =
+  inviteUserWith
+    (withAdminClientAtPublicHost repoRoot publicHost)
+    (loadKeycloakSmtpSettings repoRoot)
+    email
+    maybeRole
+
+inviteUserWith
+  :: ((KeycloakClient -> Text -> IO (Either String UserSummary)) -> IO (Either String UserSummary))
+  -> IO (Either String RealmSmtpSettings)
+  -> String
+  -> Maybe String
+  -> IO (Either String UserSummary)
+inviteUserWith withClient loadSmtpSettings email maybeRole =
+  withClient $ \client token -> do
+    smtpResult <- loadSmtpSettings
+    case smtpResult of
+      Left err -> pure (Left ("Keycloak SMTP settings load failed: " <> err))
+      Right smtpSettings -> do
+        smtpUpdateResult <- ensureRealmSmtpSettings client token smtpSettings
+        case smtpUpdateResult of
+          Failure err -> pure (Left ("Keycloak realm SMTP update failed: " <> err))
+          Success () -> createAndTriggerInvite client token
+ where
+  createAndTriggerInvite client token = do
     let payload =
           NewUser
             { newUserEmail = Text.pack email
@@ -129,22 +249,24 @@ inviteUser repoRoot settings email maybeRole =
     createResult <- createUser client token payload
     case createResult of
       Failure err -> pure (Left ("Keycloak user creation failed: " <> err))
-      Success userId -> do
-        let actions = ["VERIFY_EMAIL", "UPDATE_PASSWORD"]
-        triggerResult <- executeActionsEmail client token userId actions
-        case triggerResult of
-          Failure err -> pure (Left ("Keycloak invite-email trigger failed: " <> err))
-          Success () ->
-            pure
-              ( Right
-                  UserSummary
-                    { userSummaryId = userId
-                    , userSummaryUsername = Text.pack email
-                    , userSummaryEmail = Text.pack email
-                    , userSummaryVerification = UserUnverified
-                    , userSummaryLastLogin = Nothing
-                    }
-              )
+      Success userId -> triggerInviteEmail client token userId
+
+  triggerInviteEmail client token userId = do
+    let actions = ["VERIFY_EMAIL", "UPDATE_PASSWORD"]
+    triggerResult <- executeActionsEmail client token userId actions
+    case triggerResult of
+      Failure err -> pure (Left ("Keycloak invite-email trigger failed: " <> err))
+      Success () ->
+        pure
+          ( Right
+              UserSummary
+                { userSummaryId = userId
+                , userSummaryUsername = Text.pack email
+                , userSummaryEmail = Text.pack email
+                , userSummaryVerification = UserUnverified
+                , userSummaryLastLogin = Nothing
+                }
+          )
 
 -- | List users currently known to Keycloak with their email-verification status.
 listUsers :: FilePath -> ValidatedSettings -> UsersListStatus -> IO (Either String [UserSummary])
@@ -178,7 +300,19 @@ listUsers repoRoot settings status =
 -- `listUsers` first.
 revokeUser :: FilePath -> ValidatedSettings -> String -> Bool -> IO (Either String ())
 revokeUser repoRoot settings ident hardDelete =
-  withAdminClient repoRoot settings $ \client token -> do
+  revokeUserWith (withAdminClient repoRoot settings) ident hardDelete
+
+revokeUserAtPublicHost :: FilePath -> Text -> String -> Bool -> IO (Either String ())
+revokeUserAtPublicHost repoRoot publicHost ident hardDelete =
+  revokeUserWith (withAdminClientAtPublicHost repoRoot publicHost) ident hardDelete
+
+revokeUserWith
+  :: ((KeycloakClient -> Text -> IO (Either String ())) -> IO (Either String ()))
+  -> String
+  -> Bool
+  -> IO (Either String ())
+revokeUserWith withClient ident hardDelete =
+  withClient $ \client token -> do
     userIdResult <- resolveUserId client token (Text.pack ident)
     case userIdResult of
       Left err -> pure (Left err)
@@ -226,6 +360,22 @@ withAdminClient repoRoot settings action = do
     Left err -> pure (Left err)
     Right password ->
       withKeycloakClient settings "admin" password "prodbox" $ \client -> do
+        tokenResult <- acquireAdminToken client
+        case tokenResult of
+          Failure err -> pure (Left ("Keycloak admin token acquisition failed: " <> err))
+          Success token -> action client token
+
+withAdminClientAtPublicHost
+  :: FilePath
+  -> Text
+  -> (KeycloakClient -> Text -> IO (Either String a))
+  -> IO (Either String a)
+withAdminClientAtPublicHost repoRoot publicHost action = do
+  passwordResult <- loadKeycloakAdminPassword repoRoot
+  case passwordResult of
+    Left err -> pure (Left err)
+    Right password ->
+      withKeycloakClientAtPublicHost publicHost "admin" password "prodbox" $ \client -> do
         tokenResult <- acquireAdminToken client
         case tokenResult of
           Failure err -> pure (Left ("Keycloak admin token acquisition failed: " <> err))

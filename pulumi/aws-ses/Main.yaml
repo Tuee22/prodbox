@@ -92,6 +92,7 @@ resources:
       name: _amazonses.${senderDomain}
       type: TXT
       ttl: 300
+      allowOverwrite: true
       records:
         - ${sendingIdentity.verificationToken}
 
@@ -105,6 +106,7 @@ resources:
       name: ${sendingIdentityDkim.dkimTokens[0]}._domainkey.${senderDomain}
       type: CNAME
       ttl: 300
+      allowOverwrite: true
       records:
         - ${sendingIdentityDkim.dkimTokens[0]}.dkim.amazonses.com
   sendingIdentityDkimRecord1:
@@ -114,6 +116,7 @@ resources:
       name: ${sendingIdentityDkim.dkimTokens[1]}._domainkey.${senderDomain}
       type: CNAME
       ttl: 300
+      allowOverwrite: true
       records:
         - ${sendingIdentityDkim.dkimTokens[1]}.dkim.amazonses.com
   sendingIdentityDkimRecord2:
@@ -123,6 +126,7 @@ resources:
       name: ${sendingIdentityDkim.dkimTokens[2]}._domainkey.${senderDomain}
       type: CNAME
       ttl: 300
+      allowOverwrite: true
       records:
         - ${sendingIdentityDkim.dkimTokens[2]}.dkim.amazonses.com
 
@@ -135,6 +139,7 @@ resources:
       name: ${receiveSubdomain}
       type: MX
       ttl: 300
+      allowOverwrite: true
       records:
         - 10 inbound-smtp.${awsRegion}.amazonaws.com
 

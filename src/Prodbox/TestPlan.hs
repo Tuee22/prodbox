@@ -16,7 +16,7 @@ import Prodbox.CLI.Command
   , PolicyTier (..)
   , TestScope (..)
   )
-import Prodbox.Substrate (Substrate)
+import Prodbox.Substrate (Substrate (..))
 
 data NativeValidation
   = ValidationChartsVscode
@@ -327,7 +327,7 @@ testExecutionPlan substrate scope =
               , nativeValidations = [ValidationKeycloakInvite]
               , nativeInitialIntegrationGatePrerequisites = keycloakInviteInitialPrerequisites
               , nativeDeferredIntegrationGatePrerequisites = keycloakInviteDeferredPrerequisites
-              , nativeManagedAwsHarnessPolicyTier = Nothing
+              , nativeManagedAwsHarnessPolicyTier = Just PolicyFull
               , nativeRequiresIntegrationRunbook = True
               , nativeRequiresSupportedRuntimeBootstrap = True
               , nativeRequiresSupportedRuntimePostflight = False
@@ -377,9 +377,9 @@ canonicalNativeValidations =
   , ValidationGatewayPods
   , ValidationGatewayPartition
   , ValidationChartsPlatform
+  , ValidationKeycloakInvite
   , ValidationChartsStorage
   , ValidationLifecycle
-  , ValidationKeycloakInvite
   ]
 
 allInitialIntegrationPrerequisites :: [String]
@@ -518,8 +518,18 @@ nativeExecutionPlan label haskellSuites suitePlan =
   TestExecutionPlan
     { testPlanLabel = label
     , testPlanHaskellSuites = haskellSuites
-    , testPlanExecutionMode = NativeSuite suitePlan
+    , testPlanExecutionMode = NativeSuite (normalizeManagedAwsHarness suitePlan)
     }
+
+normalizeManagedAwsHarness :: NativeSuitePlan -> NativeSuitePlan
+normalizeManagedAwsHarness suitePlan =
+  case ( nativeManagedAwsHarnessPolicyTier suitePlan
+       , nativeSubstrate suitePlan
+       , nativeValidations suitePlan
+       ) of
+    (Nothing, SubstrateAws, _ : _) ->
+      suitePlan {nativeManagedAwsHarnessPolicyTier = Just PolicyFull}
+    _ -> suitePlan
 
 nativeValidationId :: NativeValidation -> String
 nativeValidationId validation =

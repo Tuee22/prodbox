@@ -99,8 +99,8 @@ stripPrefix' (p : ps) (c : cs)
 -- | Render the long-running crane pod manifest that receives the
 -- docker-saved image tarball via @kubectl cp@. The pod uses
 -- @sleep infinity@ so the orchestrator can @kubectl cp@ in the
--- tarball and @kubectl exec@ multiple @crane push@ invocations
--- before deleting the pod.
+-- tarball, @kubectl exec@ a Harbor auth login, and @kubectl exec@
+-- multiple @crane push@ invocations before deleting the pod.
 --
 -- The pod runs with a single emptyDir at @\/data@ as the cp target.
 -- The crane binary is on @PATH@ in the @:debug@ variant via
@@ -154,12 +154,14 @@ eksCustomImagePushPodManifest config =
                          .= object
                            [ "requests"
                                .= object
-                                 [ "cpu" .= ("100m" :: String)
-                                 , "memory" .= ("256Mi" :: String)
+                                 [ "cpu" .= ("250m" :: String)
+                                 , "memory" .= ("1Gi" :: String)
+                                 , "ephemeral-storage" .= ("6Gi" :: String)
                                  ]
                            , "limits"
                                .= object
-                                 [ "memory" .= ("1Gi" :: String)
+                                 [ "memory" .= ("4Gi" :: String)
+                                 , "ephemeral-storage" .= ("12Gi" :: String)
                                  ]
                            ]
                      ]
@@ -167,7 +169,7 @@ eksCustomImagePushPodManifest config =
           , "volumes"
               .= [ object
                      [ "name" .= ("scratch" :: String)
-                     , "emptyDir" .= object ["sizeLimit" .= ("4Gi" :: String)]
+                     , "emptyDir" .= object ["sizeLimit" .= ("12Gi" :: String)]
                      ]
                  ]
           ]

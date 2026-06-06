@@ -8,6 +8,7 @@ module Prodbox.ContainerImage
   , harborCertManagerStartupApiCheckImage
   , harborCertManagerWebhookImage
   , harborCodeServerImage
+  , harborCurlImage
   , harborEnvoyGatewayImage
   , harborEnvoyProxyImage
   , harborFrrImage
@@ -33,6 +34,7 @@ module Prodbox.ContainerImage
   , harborRedisImage
   , normalizeImageRefText
   , parseImageRef
+  , publicCurlImage
   , publicRedisImage
   , renderImageRef
   , requiredPublicImageCandidatePairs
@@ -95,6 +97,12 @@ harborCodeServerImage = harborImageRefFromRepository "code-server-mirror" "4.98.
 
 harborKeycloakImage :: ImageRef
 harborKeycloakImage = harborImageRefFromRepository "keycloak-mirror" "26.0.0"
+
+publicCurlImage :: ImageRef
+publicCurlImage = ImageRef "docker.io" "curlimages/curl" "8.11.0"
+
+harborCurlImage :: ImageRef
+harborCurlImage = harborImageRefFromRepository "curl-mirror" "8.11.0"
 
 publicRedisImage :: ImageRef
 publicRedisImage = ImageRef "docker.io" "library/redis" "7.4.2"
@@ -197,6 +205,10 @@ requiredPublicImageMirrors =
       (ImageRef "quay.io" "keycloak/keycloak" "26.0.0")
       []
       harborKeycloakImage
+  , mirroredPublicImage
+      publicCurlImage
+      []
+      harborCurlImage
   , mirroredPublicImage
       publicRedisImage
       []

@@ -33,7 +33,8 @@ Ownership rules:
    restoration for destructive suites.
 3. AWS-mutating validation flows must clean up resources they create before reporting success.
 4. The suite-level IAM harness in `src/Prodbox/TestRunner.hs` owns setup and teardown of
-   temporary operational `aws.*` for `prodbox test integration aws-iam`,
+   temporary operational `aws.*` for `prodbox test integration aws-iam`, targeted
+   `prodbox test integration <name> --substrate aws` validations,
    `prodbox test integration all`, and `prodbox test all`.
 5. Cleanup failures must be surfaced explicitly to the operator.
 

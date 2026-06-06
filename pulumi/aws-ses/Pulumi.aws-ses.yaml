@@ -1,4 +1,4 @@
-encryptionsalt: v1:gyjivRBasH0=:v1:u5tdC0vNy5nPbOGD:4XYxp0Mm51Y0pi1uMWQG+Qi8uKAVtQ==
+encryptionsalt: v1:tfqnjKriIV4=:v1:5VHnKm5IYiVeztLZ:BOCb1SkZ0bPCqtTq3fsisZ00F8nWzg==
 config:
   prodbox-aws-ses:parentZoneId: Z07495372G135SKEMQJZU
   prodbox-aws-ses:senderDomain: test.resolvefintech.com

@@ -3,6 +3,7 @@
 module Prodbox.TestValidation
   ( runNativeValidation
   , verifyAwsTestSshReachability
+  , assertInviteOidcClaims
   )
 where
 
@@ -12,7 +13,6 @@ import Control.Exception
   , SomeException
   , bracket
   , bracket_
-  , catch
   , displayException
   , finally
   , try
@@ -24,19 +24,17 @@ import Data.Aeson
   )
 import Data.Aeson.Key qualified as Key
 import Data.Aeson.KeyMap qualified as KeyMap
+import Data.ByteString.Base64.URL qualified as Base64Url
 import Data.ByteString.Char8 qualified as BS8
 import Data.ByteString.Lazy qualified as BL
 import Data.CaseInsensitive qualified as CI
 import Data.Char (isAsciiUpper)
-import Data.List (intercalate, isInfixOf, nub, sort)
+import Data.List (intercalate, isInfixOf, isPrefixOf, nub, sort)
 import Data.Map.Strict qualified as Map
 import Data.Text qualified as Text
 import Data.Text.Encoding qualified as TextEncoding
 import Data.Time.Clock.POSIX (getPOSIXTime)
 import Data.Vector qualified as Vector
-import Network.HTTP.Client qualified
-import Network.HTTP.Client.TLS qualified
-import Network.HTTP.Types.Status qualified
 import Network.Socket
   ( Family (AF_INET)
   , SockAddr (..)
@@ -98,6 +96,7 @@ import Prodbox.Gateway.Types
 import Prodbox.Infra.AwsEksTestStack qualified as AwsEks
 import Prodbox.Infra.AwsTestStack qualified as AwsTest
 import Prodbox.Infra.StackOutputs (StackName (..))
+import Prodbox.Keycloak.CredentialSetupForm qualified as CredentialSetupForm
 import Prodbox.Keycloak.Email qualified
 import Prodbox.Lifecycle.LiveResidue
   ( awsEksTestStackName
@@ -106,10 +105,11 @@ import Prodbox.Lifecycle.LiveResidue
   )
 import Prodbox.PublicEdge
   ( PublicEdgeRoute (..)
-  , identityIssuerUrl
   , publicFqdn
   , publicRoutePathPrefix
-  , publicRouteUrl
+  , substrateIdentityIssuerUrl
+  , substratePublicFqdn
+  , substratePublicRouteUrl
   )
 import Prodbox.Result (Result (..))
 import Prodbox.Ses.Capture qualified
@@ -167,7 +167,7 @@ publicEdgeReadyDelayMicroseconds :: Int
 publicEdgeReadyDelayMicroseconds = 10000000
 
 chartsVscodeCurlAttempts :: Int
-chartsVscodeCurlAttempts = 10
+chartsVscodeCurlAttempts = 24
 
 chartsVscodeCurlDelayMicroseconds :: Int
 chartsVscodeCurlDelayMicroseconds = 5000000
@@ -319,7 +319,7 @@ runNativeValidation substrate repoRoot environment validation = do
           , runNativeCliCommandForExitCode repoRoot environment ["rke2", "reconcile"]
           , runNativeCliCommandForExitCode repoRoot environment ["k8s", "health"]
           ]
-      ValidationKeycloakInvite -> runKeycloakInviteValidation repoRoot environment
+      ValidationKeycloakInvite -> runKeycloakInviteValidation repoRoot substrate environment
 
 -- | Wrap a validation action with substrate-aware `KUBECONFIG` plus AWS_*
 -- credentials for the AWS substrate.
@@ -503,12 +503,14 @@ runChartsVscodeValidation repoRoot substrate = do
   case settingsResult of
     Left err -> failWith err
     Right settings -> do
+      let vscodeUrl = substratePublicRouteUrl settings substrate PublicRouteVscode
       readyExit <- waitForPublicEdgeReady repoRoot substrate
       case readyExit of
         ExitFailure _ -> pure readyExit
         ExitSuccess ->
           runSequentially
-            [ assertPublicHttpRedirect repoRoot settings PublicRouteVscode
+            [ assertPublicHttpRedirect repoRoot settings substrate PublicRouteVscode
+            , waitForKeycloakTokenEndpointReady repoRoot settings substrate
             , waitForCommandOutputContainsAll
                 Subprocess
                   { subprocessPath = "curl"
@@ -518,12 +520,12 @@ runChartsVscodeValidation repoRoot substrate = do
                       , "-"
                       , "-o"
                       , "/dev/null"
-                      , publicRouteUrl settings PublicRouteVscode
+                      , vscodeUrl
                       ]
                   , subprocessEnvironment = Nothing
                   , subprocessWorkingDirectory = Just repoRoot
                   }
-                (oidcRedirectFragments settings (publicRouteUrl settings PublicRouteVscode ++ "/oauth2/callback"))
+                (oidcRedirectFragments settings substrate (vscodeUrl ++ "/oauth2/callback"))
                 chartsVscodeCurlAttempts
                 chartsVscodeCurlDelayMicroseconds
             ]
@@ -534,34 +536,41 @@ runChartsApiValidation repoRoot substrate = do
   case settingsResult of
     Left err -> failWith err
     Right settings -> do
+      let apiUrl = substratePublicRouteUrl settings substrate PublicRouteApi
       readyExit <- waitForPublicEdgeReady repoRoot substrate
       case readyExit of
         ExitFailure _ -> pure readyExit
         ExitSuccess -> do
-          apiTokenResult <- waitForAccessToken repoRoot settings "keycloak_api_client_secret" "prodbox-api"
+          apiTokenResult <-
+            waitForAccessToken repoRoot settings substrate "keycloak_api_client_secret" "prodbox-api"
           websocketTokenResult <-
-            waitForAccessToken repoRoot settings "keycloak_websocket_client_secret" "prodbox-websocket"
+            waitForAccessToken
+              repoRoot
+              settings
+              substrate
+              "keycloak_websocket_client_secret"
+              "prodbox-websocket"
           case (apiTokenResult, websocketTokenResult) of
             (Left err, _) -> failWith err
             (_, Left err) -> failWith err
             (Right apiToken, Right websocketToken) ->
               runSequentially
-                [ runKeycloakPublicHostValidation repoRoot settings
+                [ runKeycloakPublicHostValidation repoRoot settings substrate
                 , assertHttpStatusIn
-                    (statusOnlyCurlSpec repoRoot [] (publicRouteUrl settings PublicRouteApi))
+                    (statusOnlyCurlSpec repoRoot [] apiUrl)
                     ["401", "403"]
                 , assertHttpStatusIn
                     ( statusOnlyCurlSpec
                         repoRoot
                         ["-H", "Authorization: Bearer " ++ websocketToken]
-                        (publicRouteUrl settings PublicRouteApi)
+                        apiUrl
                     )
                     ["401", "403"]
                 , assertCommandOutputContainsAll
                     ( jsonCurlSpec
                         repoRoot
                         ["-H", "Authorization: Bearer " ++ apiToken]
-                        (publicRouteUrl settings PublicRouteApi)
+                        apiUrl
                     )
                     ["\"mode\":\"api\"", "\"pod\":\""]
                 ]
@@ -576,16 +585,22 @@ runChartsWebsocketValidation repoRoot environment substrate = do
       case readyExit of
         ExitFailure _ -> pure readyExit
         ExitSuccess -> do
-          apiTokenResult <- waitForAccessToken repoRoot settings "keycloak_api_client_secret" "prodbox-api"
+          apiTokenResult <-
+            waitForAccessToken repoRoot settings substrate "keycloak_api_client_secret" "prodbox-api"
           websocketTokenResult <-
-            waitForAccessToken repoRoot settings "keycloak_websocket_client_secret" "prodbox-websocket"
+            waitForAccessToken
+              repoRoot
+              settings
+              substrate
+              "keycloak_websocket_client_secret"
+              "prodbox-websocket"
           case (apiTokenResult, websocketTokenResult) of
             (Left err, _) -> failWith err
             (_, Left err) -> failWith err
             (Right apiToken, Right websocketToken) -> do
               runSequentially
-                [ runDirectOidcSessionValidation repoRoot settings
-                , runWebsocketUpgradeValidation repoRoot environment settings apiToken websocketToken
+                [ runDirectOidcSessionValidation repoRoot settings substrate
+                , runWebsocketUpgradeValidation repoRoot environment settings substrate apiToken websocketToken
                 ]
 
 data ManagedWebsocketConnection = ManagedWebsocketConnection
@@ -608,32 +623,39 @@ runAdminRoutesValidation repoRoot substrate = do
             [ assertOidcProtectedRoute
                 repoRoot
                 settings
-                (publicRouteUrl settings PublicRouteHarbor)
-                (publicRouteUrl settings PublicRouteHarbor ++ "/oauth2/callback")
+                substrate
+                (substratePublicRouteUrl settings substrate PublicRouteHarbor)
+                (substratePublicRouteUrl settings substrate PublicRouteHarbor ++ "/oauth2/callback")
                 "Harbor admin route did not preserve the shared-host auth contract"
             , assertOidcProtectedRoute
                 repoRoot
                 settings
-                (publicRouteUrl settings PublicRouteMinio)
-                (publicRouteUrl settings PublicRouteMinio ++ "/oauth2/callback")
+                substrate
+                (substratePublicRouteUrl settings substrate PublicRouteMinio)
+                (substratePublicRouteUrl settings substrate PublicRouteMinio ++ "/oauth2/callback")
                 "MinIO admin route did not preserve the shared-host auth contract"
             ]
 
-runKeycloakPublicHostValidation :: FilePath -> ValidatedSettings -> IO ExitCode
-runKeycloakPublicHostValidation repoRoot settings = do
+runKeycloakPublicHostValidation :: FilePath -> ValidatedSettings -> Substrate -> IO ExitCode
+runKeycloakPublicHostValidation repoRoot settings substrate = do
+  let websocketStartUrl = substratePublicRouteUrl settings substrate PublicRouteWebsocket ++ "/oidc/start"
+      websocketCallbackUrl = substratePublicRouteUrl settings substrate PublicRouteWebsocket ++ "/oidc/callback"
+      issuerUrl = substrateIdentityIssuerUrl settings substrate
+      authUrl = substratePublicRouteUrl settings substrate PublicRouteAuth
   redirectExit <-
     assertOidcProtectedRoute
       repoRoot
       settings
-      (publicRouteUrl settings PublicRouteWebsocket ++ "/oidc/start")
-      (publicRouteUrl settings PublicRouteWebsocket ++ "/oidc/callback")
+      substrate
+      websocketStartUrl
+      websocketCallbackUrl
       "direct OIDC redirect did not preserve the shared-host auth contract"
   case redirectExit of
     ExitFailure _ -> pure redirectExit
     ExitSuccess -> do
       metadataResult <-
         runJsonCommand
-          (jsonCurlSpec repoRoot [] (identityIssuerUrl settings ++ "/.well-known/openid-configuration"))
+          (jsonCurlSpec repoRoot [] (issuerUrl ++ "/.well-known/openid-configuration"))
       case metadataResult of
         Left err -> failWith err
         Right metadataPayload ->
@@ -641,14 +663,14 @@ runKeycloakPublicHostValidation repoRoot settings = do
             Left err -> failWith err
             Right (issuerValue, authorizationEndpoint, tokenEndpoint, jwksUriValue) ->
               if and
-                [ issuerValue == identityIssuerUrl settings
-                , (publicRouteUrl settings PublicRouteAuth ++ "/") `isInfixOf` authorizationEndpoint
-                , (publicRouteUrl settings PublicRouteAuth ++ "/") `isInfixOf` tokenEndpoint
-                , (publicRouteUrl settings PublicRouteAuth ++ "/") `isInfixOf` jwksUriValue
+                [ issuerValue == issuerUrl
+                , (authUrl ++ "/") `isInfixOf` authorizationEndpoint
+                , (authUrl ++ "/") `isInfixOf` tokenEndpoint
+                , (authUrl ++ "/") `isInfixOf` jwksUriValue
                 ]
                 then
                   assertHttpStatusIn
-                    (statusOnlyCurlSpec repoRoot [] (publicRouteUrl settings PublicRouteAuth ++ "/health/ready"))
+                    (statusOnlyCurlSpec repoRoot [] (authUrl ++ "/health/ready"))
                     ["404"]
                 else
                   failWith
@@ -661,9 +683,17 @@ runKeycloakPublicHostValidation repoRoot settings = do
                           ]
                     )
 
-runDirectOidcSessionValidation :: FilePath -> ValidatedSettings -> IO ExitCode
-runDirectOidcSessionValidation repoRoot settings = do
-  sessionResult <- completeDirectOidcLogin repoRoot settings
+waitForKeycloakTokenEndpointReady :: FilePath -> ValidatedSettings -> Substrate -> IO ExitCode
+waitForKeycloakTokenEndpointReady repoRoot settings substrate = do
+  tokenResult <-
+    waitForAccessToken repoRoot settings substrate "keycloak_api_client_secret" "prodbox-api"
+  case tokenResult of
+    Left err -> failWith err
+    Right _ -> pure ExitSuccess
+
+runDirectOidcSessionValidation :: FilePath -> ValidatedSettings -> Substrate -> IO ExitCode
+runDirectOidcSessionValidation repoRoot settings substrate = do
+  sessionResult <- completeDirectOidcLogin repoRoot settings substrate
   case sessionResult of
     Left err -> failWith err
     Right sessionPayload ->
@@ -671,7 +701,7 @@ runDirectOidcSessionValidation repoRoot settings = do
         Left err -> failWith err
         Right (carrierValue, issuerValue, maybeUsername) ->
           if carrierValue == "cookie-session"
-            && issuerValue == identityIssuerUrl settings
+            && issuerValue == substrateIdentityIssuerUrl settings substrate
             && maybeUsername == Just "demo-user"
             then pure ExitSuccess
             else
@@ -684,14 +714,15 @@ runWebsocketUpgradeValidation
   :: FilePath
   -> [(String, String)]
   -> ValidatedSettings
+  -> Substrate
   -> String
   -> String
   -> IO ExitCode
-runWebsocketUpgradeValidation repoRoot environment settings apiToken websocketToken = do
+runWebsocketUpgradeValidation repoRoot environment settings substrate apiToken websocketToken = do
   nonce <- validationNonce
   let sessionId = "ws-" ++ nonce
       messageBody = "message-" ++ nonce
-      websocketHost = publicFqdn settings
+      websocketHost = substratePublicFqdn settings substrate
   initialChecksExit <-
     runSequentially
       [ assertHttpStatusIn
@@ -848,8 +879,8 @@ runWebsocketUpgradeValidation repoRoot environment settings apiToken websocketTo
             )
             (closeManagedWebsocketConnection firstConnection)
 
-completeDirectOidcLogin :: FilePath -> ValidatedSettings -> IO (Either String Value)
-completeDirectOidcLogin repoRoot settings =
+completeDirectOidcLogin :: FilePath -> ValidatedSettings -> Substrate -> IO (Either String Value)
+completeDirectOidcLogin repoRoot settings substrate =
   withTemporaryFilePath repoRoot "prodbox-oidc-cookies" $ \cookieJarPath ->
     withTemporaryFilePath repoRoot "prodbox-oidc-login-body" $ \bodyPath -> do
       -- Sprint 3.13 chunks 11 + 12: demo-user password lives in the
@@ -872,7 +903,7 @@ completeDirectOidcLogin repoRoot settings =
                     , cookieJarPath
                     , "-o"
                     , bodyPath
-                    , publicRouteUrl settings PublicRouteWebsocket ++ "/oidc/start"
+                    , substratePublicRouteUrl settings substrate PublicRouteWebsocket ++ "/oidc/start"
                     ]
                 , subprocessEnvironment = Nothing
                 , subprocessWorkingDirectory = Just repoRoot
@@ -917,7 +948,7 @@ completeDirectOidcLogin repoRoot settings =
                               , cookieJarPath
                               , "-b"
                               , cookieJarPath
-                              , publicRouteUrl settings PublicRouteWebsocket ++ "/oidc/session"
+                              , substratePublicRouteUrl settings substrate PublicRouteWebsocket ++ "/oidc/session"
                               ]
                           , subprocessEnvironment = Nothing
                           , subprocessWorkingDirectory = Just repoRoot
@@ -1183,18 +1214,26 @@ splitOnSubstring needle haystack = go [] haystack
           character : trailing ->
             go (character : reversedPrefix) trailing
 
+splitOnChar :: Char -> String -> [String]
+splitOnChar _ [] = [""]
+splitOnChar delimiter value =
+  case break (== delimiter) value of
+    (before, _ : after) -> before : splitOnChar delimiter after
+    (before, []) -> [before]
+
 startsWith :: String -> String -> Bool
 startsWith [] _ = True
 startsWith _ [] = False
 startsWith (left : leftRest) (right : rightRest) =
   left == right && startsWith leftRest rightRest
 
-waitForAccessToken :: FilePath -> ValidatedSettings -> String -> String -> IO (Either String String)
-waitForAccessToken repoRoot settings secretKey clientId = go tokenFetchAttempts
+waitForAccessToken
+  :: FilePath -> ValidatedSettings -> Substrate -> String -> String -> IO (Either String String)
+waitForAccessToken repoRoot settings substrate secretKey clientId = go tokenFetchAttempts
  where
   go :: Int -> IO (Either String String)
   go attemptsLeft = do
-    tokenResult <- fetchAccessToken repoRoot settings secretKey clientId
+    tokenResult <- fetchAccessToken repoRoot settings substrate secretKey clientId
     case tokenResult of
       Right token -> pure (Right token)
       Left err
@@ -1204,8 +1243,9 @@ waitForAccessToken repoRoot settings secretKey clientId = go tokenFetchAttempts
             threadDelay tokenFetchDelayMicroseconds
             go (attemptsLeft - 1)
 
-fetchAccessToken :: FilePath -> ValidatedSettings -> String -> String -> IO (Either String String)
-fetchAccessToken repoRoot settings secretKey clientId = do
+fetchAccessToken
+  :: FilePath -> ValidatedSettings -> Substrate -> String -> String -> IO (Either String String)
+fetchAccessToken repoRoot settings substrate secretKey clientId = do
   -- Sprint 3.13 chunks 11 + 12: the OIDC client secrets + demo-user
   -- password live in the daemon-applied @keycloak-oidc-clients@ Secret
   -- in the @keycloak@ namespace. The @secretKey@ argument is the
@@ -1238,7 +1278,7 @@ fetchAccessToken repoRoot settings secretKey clientId = do
                     , "username=demo-user"
                     , "--data-urlencode"
                     , "password=" ++ demoPassword
-                    , identityIssuerUrl settings ++ "/protocol/openid-connect/token"
+                    , substrateIdentityIssuerUrl settings substrate ++ "/protocol/openid-connect/token"
                     ]
                 , subprocessEnvironment = Nothing
                 , subprocessWorkingDirectory = Just repoRoot
@@ -1386,11 +1426,12 @@ websocketStateSnapshot payload =
 assertOidcProtectedRoute
   :: FilePath
   -> ValidatedSettings
+  -> Substrate
   -> String
   -> String
   -> String
   -> IO ExitCode
-assertOidcProtectedRoute repoRoot settings requestUrl callbackUrl failurePrefix = do
+assertOidcProtectedRoute repoRoot settings substrate requestUrl callbackUrl failurePrefix = do
   redirectResult <-
     runTextCommand
       Subprocess
@@ -1402,21 +1443,21 @@ assertOidcProtectedRoute repoRoot settings requestUrl callbackUrl failurePrefix 
   case redirectResult of
     Left err -> failWith err
     Right redirectHeaders ->
-      if redirectHeadersContainOidcContract settings callbackUrl redirectHeaders
+      if redirectHeadersContainOidcContract settings substrate callbackUrl redirectHeaders
         then pure ExitSuccess
         else failWith (failurePrefix ++ ": " ++ redirectHeaders)
 
-redirectHeadersContainOidcContract :: ValidatedSettings -> String -> String -> Bool
-redirectHeadersContainOidcContract settings callbackUrl redirectHeaders =
+redirectHeadersContainOidcContract :: ValidatedSettings -> Substrate -> String -> String -> Bool
+redirectHeadersContainOidcContract settings substrate callbackUrl redirectHeaders =
   let loweredRedirectHeaders = map toLowerAscii redirectHeaders
-   in all (`isInfixOf` loweredRedirectHeaders) (oidcRedirectFragments settings callbackUrl)
+   in all (`isInfixOf` loweredRedirectHeaders) (oidcRedirectFragments settings substrate callbackUrl)
 
-oidcRedirectFragments :: ValidatedSettings -> String -> [String]
-oidcRedirectFragments settings callbackUrl =
+oidcRedirectFragments :: ValidatedSettings -> Substrate -> String -> [String]
+oidcRedirectFragments settings substrate callbackUrl =
   map
     (map toLowerAscii)
     [ "HTTP/"
-    , "Location: " ++ identityIssuerUrl settings ++ "/protocol/openid-connect/auth"
+    , "Location: " ++ substrateIdentityIssuerUrl settings substrate ++ "/protocol/openid-connect/auth"
     , "redirect_uri=" ++ encodeRedirectUri callbackUrl
     ]
 
@@ -2212,7 +2253,7 @@ verifyConfiguredPublicDnsRecords repoRoot settings publicIp =
     dnsExit <- foldM verifyHost ExitSuccess (configuredPublicHostFqdns settings)
     case dnsExit of
       ExitFailure _ -> pure dnsExit
-      ExitSuccess -> assertPublicHttpRedirect repoRoot settings PublicRouteAuth
+      ExitSuccess -> assertPublicHttpRedirect repoRoot settings SubstrateHomeLocal PublicRouteAuth
  where
   verifyHost :: ExitCode -> String -> IO ExitCode
   verifyHost exitCode fqdn =
@@ -2259,31 +2300,33 @@ verifyConfiguredPublicDnsRecords repoRoot settings publicIp =
                                   ++ show resolvedIps
                               )
 
-assertPublicHttpRedirect :: FilePath -> ValidatedSettings -> PublicEdgeRoute -> IO ExitCode
-assertPublicHttpRedirect repoRoot settings route = do
+assertPublicHttpRedirect
+  :: FilePath -> ValidatedSettings -> Substrate -> PublicEdgeRoute -> IO ExitCode
+assertPublicHttpRedirect repoRoot settings substrate route = do
   result <-
     runTextCommand
       Subprocess
         { subprocessPath = "curl"
-        , subprocessArguments = ["-sS", "-D", "-", "-o", "/dev/null", publicHttpRouteUrl settings route]
+        , subprocessArguments =
+            ["-sS", "-D", "-", "-o", "/dev/null", publicHttpRouteUrl settings substrate route]
         , subprocessEnvironment = Nothing
         , subprocessWorkingDirectory = Just repoRoot
         }
   case result of
     Left err -> failWith err
     Right headers ->
-      if publicHttpRedirectMatches settings route headers
+      if publicHttpRedirectMatches settings substrate route headers
         then pure ExitSuccess
         else failWith ("public HTTP redirect did not target the canonical HTTPS route: " ++ headers)
 
-publicHttpRouteUrl :: ValidatedSettings -> PublicEdgeRoute -> String
-publicHttpRouteUrl settings route =
-  "http://" ++ publicFqdn settings ++ publicRoutePathPrefix route
+publicHttpRouteUrl :: ValidatedSettings -> Substrate -> PublicEdgeRoute -> String
+publicHttpRouteUrl settings substrate route =
+  "http://" ++ substratePublicFqdn settings substrate ++ publicRoutePathPrefix route
 
-publicHttpRedirectMatches :: ValidatedSettings -> PublicEdgeRoute -> String -> Bool
-publicHttpRedirectMatches settings route headers =
+publicHttpRedirectMatches :: ValidatedSettings -> Substrate -> PublicEdgeRoute -> String -> Bool
+publicHttpRedirectMatches settings substrate route headers =
   let lowered = map toLowerAscii headers
-      target = map toLowerAscii ("location: " ++ publicRouteUrl settings route)
+      target = map toLowerAscii ("location: " ++ substratePublicRouteUrl settings substrate route)
       permanentStatus =
         any
           (`isInfixOf` lowered)
@@ -2364,6 +2407,12 @@ requireStringField objectValue key =
     Just (String value) -> Right (textValue value)
     _ -> Left ("missing string field " ++ key)
 
+requireBoolField :: KeyMap.KeyMap Value -> String -> Either String Bool
+requireBoolField objectValue key =
+  case KeyMap.lookup (Key.fromString key) objectValue of
+    Just (Bool value) -> Right value
+    _ -> Left ("missing boolean field " ++ key)
+
 requireStringArrayField :: KeyMap.KeyMap Value -> String -> Either String [String]
 requireStringArrayField objectValue key =
   case KeyMap.lookup (Key.fromString key) objectValue of
@@ -2433,68 +2482,100 @@ failWith message = do
 -- 3. Poll the SES capture bucket via `Prodbox.Ses.Capture.pollSesCapture` for the
 --    inbound message (60 s deadline).
 -- 4. Extract the action-token URL via `Prodbox.Keycloak.Email.parseKeycloakInviteLink`.
--- 5. Follow the link via http-client; assert 2xx (the chart's realm config renders
---    the credential-setup form on this response).
--- 6. Cleanup: `UsersAdmin.revokeUser ident --delete` and `deleteCapturedEmail`.
---
--- The credential-setup form POST + fresh OIDC login + claim assertions documented in
--- the Sprint 8.5 phase doc remain as Sprint-8.5-residual remaining work — those steps
--- exercise chart-specific HTML form behavior and the existing
--- `ValidationChartsVscode` OIDC machinery; landing them is straightforward but adds
--- significant chart-template coupling and is best done after a live deploy run has
--- confirmed the form structure.
-runKeycloakInviteValidation :: FilePath -> [(String, String)] -> IO ExitCode
-runKeycloakInviteValidation repoRoot _environment = do
+-- 5. Follow the link with a cookie jar, parse and POST the Keycloak
+--    credential-setup form with a generated password.
+-- 6. Perform a fresh OIDC password-grant login for the invited user and assert the
+--    token claims include the selected issuer, `email=<recipient>`, and
+--    `email_verified=true`.
+-- 7. Cleanup: `UsersAdmin.revokeUser ident --delete` and `deleteCapturedEmail`.
+runKeycloakInviteValidation :: FilePath -> Substrate -> [(String, String)] -> IO ExitCode
+runKeycloakInviteValidation repoRoot substrate _environment = do
   envResult <- settingsAwsEnvironment repoRoot
   case envResult of
     Left err -> failWith err
     Right (settings, awsEnv) -> do
-      nonce <- generateInviteNonce
-      let subdomain =
-            Text.unpack
-              ( Text.strip
-                  ( Prodbox.Settings.receive_subdomain
-                      (Prodbox.Settings.ses (Prodbox.Settings.validatedConfig settings))
+      readyExit <- waitForPublicEdgeReady repoRoot substrate
+      case readyExit of
+        ExitFailure _ -> pure readyExit
+        ExitSuccess -> do
+          nonce <- generateInviteNonce
+          let subdomain =
+                Text.unpack
+                  ( Text.strip
+                      ( Prodbox.Settings.receive_subdomain
+                          (Prodbox.Settings.ses (Prodbox.Settings.validatedConfig settings))
+                      )
                   )
-              )
-      if null subdomain
-        then
-          failWith
-            "ValidationKeycloakInvite: ses.receive_subdomain must be set in prodbox-config.dhall."
-        else do
-          let recipient = "test-" ++ nonce ++ "@" ++ subdomain
-          writeOutputLine ("KEYCLOAK_INVITE_RECIPIENT=" ++ recipient)
-          inviteResult <- Prodbox.UsersAdmin.inviteUser repoRoot settings recipient Nothing
-          case inviteResult of
-            Left err -> failWith ("invite failed: " ++ err)
-            Right summary -> do
-              let userId = Text.unpack (Prodbox.UsersAdmin.userSummaryId summary)
-              writeOutputLine ("KEYCLOAK_INVITE_USER_ID=" ++ userId)
-              captureResult <-
-                Prodbox.Ses.Capture.pollSesCapture awsEnv settings (Text.pack recipient) 60
-              outcome <- case captureResult of
-                Failure err -> pure (Failure ("S3 capture poll failed: " ++ err))
-                Success captured -> do
-                  let key = Prodbox.Ses.Capture.capturedEmailKey captured
-                  writeOutputLine ("KEYCLOAK_INVITE_S3_KEY=" ++ Text.unpack key)
-                  case Prodbox.Keycloak.Email.parseKeycloakInviteLink
-                    (Prodbox.Ses.Capture.capturedEmailBody captured) of
-                    Left err -> pure (Failure ("invite-link parse failed: " ++ err))
-                    Right inviteUrl -> do
-                      writeOutputLine "KEYCLOAK_INVITE_LINK_PARSED=true"
-                      followResult <- followInviteLink inviteUrl
-                      case followResult of
-                        Failure err -> pure (Failure ("invite link follow failed: " ++ err))
-                        Success () -> do
-                          writeOutputLine "KEYCLOAK_INVITE_LINK_FOLLOWED=true"
-                          pure (Success key)
-              _ <- Prodbox.UsersAdmin.revokeUser repoRoot settings userId True
-              case outcome of
-                Failure err -> failWith err
-                Success key -> do
-                  _ <- Prodbox.Ses.Capture.deleteCapturedEmail awsEnv settings key
-                  writeOutputLine "KEYCLOAK_INVITE_CLEANUP=true"
-                  pure ExitSuccess
+              keycloakPublicHost = substratePublicFqdn settings substrate
+          if null subdomain
+            then
+              failWith
+                "ValidationKeycloakInvite: ses.receive_subdomain must be set in prodbox-config.dhall."
+            else do
+              let recipient = "test-" ++ nonce ++ "@" ++ subdomain
+                  invitePassword = inviteCredentialPassword nonce
+              writeOutputLine ("KEYCLOAK_INVITE_PUBLIC_FQDN=" ++ keycloakPublicHost)
+              writeOutputLine ("KEYCLOAK_INVITE_RECIPIENT=" ++ recipient)
+              inviteResult <-
+                Prodbox.UsersAdmin.inviteUserAtPublicHost
+                  repoRoot
+                  (Text.pack keycloakPublicHost)
+                  recipient
+                  Nothing
+              case inviteResult of
+                Left err -> failWith ("invite failed: " ++ err)
+                Right summary -> do
+                  let userId = Text.unpack (Prodbox.UsersAdmin.userSummaryId summary)
+                  writeOutputLine ("KEYCLOAK_INVITE_USER_ID=" ++ userId)
+                  captureResult <-
+                    Prodbox.Ses.Capture.pollSesCapture awsEnv settings (Text.pack recipient) 60
+                  (outcome, maybeCapturedKey) <- case captureResult of
+                    Failure err -> pure (Failure ("S3 capture poll failed: " ++ err), Nothing)
+                    Success captured -> do
+                      let key = Prodbox.Ses.Capture.capturedEmailKey captured
+                      writeOutputLine ("KEYCLOAK_INVITE_S3_KEY=" ++ Text.unpack key)
+                      flowResult <-
+                        case Prodbox.Keycloak.Email.parseKeycloakInviteLink
+                          (Prodbox.Ses.Capture.capturedEmailBody captured) of
+                          Left err -> pure (Failure ("invite-link parse failed: " ++ err))
+                          Right inviteUrl -> do
+                            writeOutputLine "KEYCLOAK_INVITE_LINK_PARSED=true"
+                            credentialResult <-
+                              completeInviteCredentialSetup repoRoot inviteUrl invitePassword
+                            case credentialResult of
+                              Failure err ->
+                                pure (Failure ("credential setup failed: " ++ err))
+                              Success () -> do
+                                writeOutputLine "KEYCLOAK_INVITE_CREDENTIAL_SET=true"
+                                claimResult <-
+                                  waitForInviteOidcClaims
+                                    repoRoot
+                                    settings
+                                    substrate
+                                    recipient
+                                    invitePassword
+                                case claimResult of
+                                  Left err -> pure (Failure ("OIDC claim assertion failed: " ++ err))
+                                  Right () -> do
+                                    writeOutputLine "KEYCLOAK_INVITE_OIDC_CLAIMS_VERIFIED=true"
+                                    pure (Success ())
+                      pure (flowResult, Just key)
+                  _ <-
+                    Prodbox.UsersAdmin.revokeUserAtPublicHost
+                      repoRoot
+                      (Text.pack keycloakPublicHost)
+                      userId
+                      True
+                  case maybeCapturedKey of
+                    Nothing -> pure ()
+                    Just key -> do
+                      _ <- Prodbox.Ses.Capture.deleteCapturedEmail awsEnv settings key
+                      pure ()
+                  case outcome of
+                    Failure err -> failWith err
+                    Success () -> do
+                      writeOutputLine "KEYCLOAK_INVITE_CLEANUP=true"
+                      pure ExitSuccess
 
 -- | Generate a 16-character lowercase hex nonce from the current `POSIXTime` for
 -- per-test recipient uniqueness. Avoids pulling in a stronger RNG; sub-second
@@ -2505,28 +2586,276 @@ generateInviteNonce = do
   let micros = floor (now * 1e6) :: Integer
   pure (Numeric.showHex micros "")
 
--- | Follow the parsed Keycloak invite URL and assert the response is in the 2xx
--- range. Uses the same TLS manager configuration as `Prodbox.Keycloak.Admin`.
-followInviteLink :: String -> IO (Result ())
-followInviteLink rawUrl =
-  ( do
-      manager <- Network.HTTP.Client.TLS.newTlsManager
-      reqInit <- Network.HTTP.Client.parseRequest rawUrl
-      let req = reqInit {Network.HTTP.Client.method = "GET"}
-      resp <- Network.HTTP.Client.httpLbs req manager
-      let code = Network.HTTP.Types.Status.statusCode (Network.HTTP.Client.responseStatus resp)
-      pure $
-        if code >= 200 && code < 400
-          then Success ()
-          else
-            Failure
-              ( "invite link returned HTTP "
-                  ++ show code
-                  ++ "; expected 2xx/3xx for the Keycloak credential-setup page"
-              )
-  )
-    `catch` \exception ->
-      pure
-        ( Failure
-            ("invite link follow threw HttpException: " ++ show (exception :: Network.HTTP.Client.HttpException))
-        )
+inviteCredentialPassword :: String -> String
+inviteCredentialPassword nonce =
+  "ProdboxInvite-" ++ nonce ++ "!Aa1"
+
+completeInviteCredentialSetup :: FilePath -> String -> String -> IO (Result ())
+completeInviteCredentialSetup repoRoot inviteUrl password =
+  withTemporaryFilePath repoRoot "prodbox-invite-cookies" $ \cookieJarPath ->
+    withTemporaryFilePath repoRoot "prodbox-invite-setup-body" $ \getBodyPath ->
+      withTemporaryFilePath repoRoot "prodbox-invite-setup-post-body" $ \postBodyPath -> do
+        formResult <- fetchInviteCredentialSetupForm repoRoot cookieJarPath getBodyPath inviteUrl
+        case formResult of
+          Failure err -> pure (Failure err)
+          Success form -> do
+            let actionUrl =
+                  resolveCredentialSetupActionUrl
+                    inviteUrl
+                    (Text.unpack (CredentialSetupForm.formActionUrl form))
+                postBody =
+                  BS8.unpack
+                    ( CredentialSetupForm.renderCredentialSetupFormPost
+                        form
+                        (Text.pack password)
+                        (Text.pack password)
+                    )
+            postResult <-
+              runTextCommand
+                Subprocess
+                  { subprocessPath = "curl"
+                  , subprocessArguments =
+                      [ "-sS"
+                      , "-L"
+                      , "--fail-with-body"
+                      , "-c"
+                      , cookieJarPath
+                      , "-b"
+                      , cookieJarPath
+                      , "-H"
+                      , "Content-Type: application/x-www-form-urlencoded"
+                      , "--data-binary"
+                      , postBody
+                      , "-o"
+                      , postBodyPath
+                      , actionUrl
+                      ]
+                  , subprocessEnvironment = Nothing
+                  , subprocessWorkingDirectory = Just repoRoot
+                  }
+            case postResult of
+              Left err -> pure (Failure ("credential-setup form POST failed: " ++ err))
+              Right _ -> pure (Success ())
+
+fetchInviteCredentialSetupForm
+  :: FilePath -> FilePath -> FilePath -> String -> IO (Result CredentialSetupForm.CredentialSetupForm)
+fetchInviteCredentialSetupForm repoRoot cookieJarPath getBodyPath inviteUrl = do
+  getResult <- curlGetWithCookieJar repoRoot cookieJarPath getBodyPath inviteUrl
+  case getResult of
+    Left err -> pure (Failure ("invite link GET failed: " ++ err))
+    Right _ -> do
+      body <- BS8.readFile getBodyPath
+      case CredentialSetupForm.parseCredentialSetupForm body of
+        Right form -> pure (Success form)
+        Left firstErr ->
+          case CredentialSetupForm.parseCredentialSetupContinuationLink body of
+            Left continuationErr ->
+              pure
+                ( Failure
+                    ( "credential-setup form parse failed: "
+                        ++ firstErr
+                        ++ "; continuation link parse failed: "
+                        ++ continuationErr
+                    )
+                )
+            Right continuationHref -> do
+              let continuationUrl =
+                    resolveCredentialSetupActionUrl inviteUrl (Text.unpack continuationHref)
+              writeOutputLine "KEYCLOAK_INVITE_VERIFY_CONTINUATION_FOLLOWED=true"
+              continuationResult <- curlGetWithCookieJar repoRoot cookieJarPath getBodyPath continuationUrl
+              case continuationResult of
+                Left err -> pure (Failure ("credential-setup continuation GET failed: " ++ err))
+                Right _ -> do
+                  continuationBody <- BS8.readFile getBodyPath
+                  case CredentialSetupForm.parseCredentialSetupForm continuationBody of
+                    Left err ->
+                      pure
+                        ( Failure
+                            ( "credential-setup form parse failed after verify-email continuation: "
+                                ++ err
+                            )
+                        )
+                    Right form -> pure (Success form)
+
+curlGetWithCookieJar :: FilePath -> FilePath -> FilePath -> String -> IO (Either String String)
+curlGetWithCookieJar repoRoot cookieJarPath outputPath url =
+  runTextCommand
+    Subprocess
+      { subprocessPath = "curl"
+      , subprocessArguments =
+          [ "-sS"
+          , "-L"
+          , "--fail-with-body"
+          , "-c"
+          , cookieJarPath
+          , "-b"
+          , cookieJarPath
+          , "-o"
+          , outputPath
+          , url
+          ]
+      , subprocessEnvironment = Nothing
+      , subprocessWorkingDirectory = Just repoRoot
+      }
+
+resolveCredentialSetupActionUrl :: String -> String -> String
+resolveCredentialSetupActionUrl inviteUrl actionUrl
+  | "https://" `isPrefixOf` actionUrl = actionUrl
+  | "http://" `isPrefixOf` actionUrl = actionUrl
+  | "/" `isPrefixOf` actionUrl =
+      case originFromUrl inviteUrl of
+        Just origin -> origin ++ actionUrl
+        Nothing -> actionUrl
+  | otherwise =
+      case directoryUrlFromUrl inviteUrl of
+        Just directoryUrl -> directoryUrl ++ actionUrl
+        Nothing -> actionUrl
+
+originFromUrl :: String -> Maybe String
+originFromUrl rawUrl =
+  case splitOnSubstring "://" rawUrl of
+    Just (scheme, afterScheme)
+      | scheme /= "" ->
+          let host = takeWhile (/= '/') afterScheme
+           in if host /= ""
+                then Just (scheme ++ "://" ++ host)
+                else Nothing
+    _ -> Nothing
+
+directoryUrlFromUrl :: String -> Maybe String
+directoryUrlFromUrl rawUrl = do
+  origin <- originFromUrl rawUrl
+  let withoutQuery = takeWhile (/= '?') rawUrl
+      afterOrigin = drop (length origin) withoutQuery
+      directoryPath =
+        reverse
+          ( dropWhile
+              (/= '/')
+              (reverse afterOrigin)
+          )
+  pure (origin ++ directoryPath)
+
+waitForInviteOidcClaims
+  :: FilePath -> ValidatedSettings -> Substrate -> String -> String -> IO (Either String ())
+waitForInviteOidcClaims repoRoot settings substrate recipient password = go tokenFetchAttempts
+ where
+  go attemptsLeft = do
+    result <- fetchInviteOidcClaims repoRoot settings substrate recipient password
+    case result of
+      Right () -> pure (Right ())
+      Left err
+        | attemptsLeft <= 1 -> pure (Left err)
+        | otherwise -> do
+            writeDiagnosticLine ("Waiting for invited-user OIDC claims before retry: " ++ err)
+            threadDelay tokenFetchDelayMicroseconds
+            go (attemptsLeft - 1)
+
+fetchInviteOidcClaims
+  :: FilePath -> ValidatedSettings -> Substrate -> String -> String -> IO (Either String ())
+fetchInviteOidcClaims repoRoot settings substrate recipient password = do
+  clientSecretResult <- readKeycloakOidcClientField repoRoot "API_CLIENT_SECRET"
+  case clientSecretResult of
+    Left err -> pure (Left err)
+    Right clientSecret -> do
+      payloadResult <-
+        runJsonCommand
+          Subprocess
+            { subprocessPath = "curl"
+            , subprocessArguments =
+                [ "-sS"
+                , "--fail-with-body"
+                , "-X"
+                , "POST"
+                , "--data-urlencode"
+                , "grant_type=password"
+                , "--data-urlencode"
+                , "client_id=prodbox-api"
+                , "--data-urlencode"
+                , "client_secret=" ++ clientSecret
+                , "--data-urlencode"
+                , "username=" ++ recipient
+                , "--data-urlencode"
+                , "password=" ++ password
+                , "--data-urlencode"
+                , "scope=openid email profile"
+                , substrateIdentityIssuerUrl settings substrate ++ "/protocol/openid-connect/token"
+                ]
+            , subprocessEnvironment = Nothing
+            , subprocessWorkingDirectory = Just repoRoot
+            }
+      case payloadResult of
+        Left err -> pure (Left err)
+        Right tokenPayload ->
+          pure $ do
+            token <- inviteTokenForClaims tokenPayload
+            claimsPayload <- decodeJwtPayload token
+            assertInviteOidcClaims
+              (substrateIdentityIssuerUrl settings substrate)
+              recipient
+              claimsPayload
+
+inviteTokenForClaims :: Value -> Either String String
+inviteTokenForClaims payload =
+  case payload of
+    Object obj ->
+      case KeyMap.lookup "id_token" obj of
+        Just (String tokenText) -> Right (Text.unpack tokenText)
+        _ ->
+          case KeyMap.lookup "access_token" obj of
+            Just (String tokenText) -> Right (Text.unpack tokenText)
+            _ -> Left "token endpoint response did not contain id_token or access_token"
+    _ -> Left "token endpoint response was not a JSON object"
+
+decodeJwtPayload :: String -> Either String Value
+decodeJwtPayload tokenValue =
+  case splitOnChar '.' tokenValue of
+    [_headerText, payloadText, _signatureText] ->
+      case Base64Url.decode (BS8.pack (padBase64Url payloadText)) of
+        Left _ -> Left "JWT payload was not valid base64url"
+        Right decodedPayload ->
+          case eitherDecode (BL.fromStrict decodedPayload) of
+            Left _ -> Left "JWT payload was not valid JSON"
+            Right payload -> Right payload
+    _ -> Left "JWT did not contain three dot-separated sections"
+
+padBase64Url :: String -> String
+padBase64Url value =
+  value ++ replicate paddingLength '='
+ where
+  remainder = length value `mod` 4
+  paddingLength =
+    case remainder of
+      0 -> 0
+      2 -> 2
+      3 -> 1
+      _ -> 0
+
+assertInviteOidcClaims :: String -> String -> Value -> Either String ()
+assertInviteOidcClaims expectedIssuer expectedEmail payload =
+  case payload of
+    Object obj -> do
+      issuerValue <- requireStringField obj "iss"
+      emailValue <- requireStringField obj "email"
+      emailVerified <- requireBoolField obj "email_verified"
+      if issuerValue /= expectedIssuer
+        then
+          Left
+            ( "OIDC token issuer mismatch: expected "
+                ++ expectedIssuer
+                ++ " but found "
+                ++ issuerValue
+            )
+        else
+          if emailValue /= expectedEmail
+            then
+              Left
+                ( "OIDC token email mismatch: expected "
+                    ++ expectedEmail
+                    ++ " but found "
+                    ++ emailValue
+                )
+            else
+              if emailVerified
+                then Right ()
+                else Left "OIDC token email_verified claim was false"
+    _ -> Left "OIDC token payload was not a JSON object"

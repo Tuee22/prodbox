@@ -148,8 +148,8 @@ The contract does **not** apply to:
 `src/Prodbox/Aws.hs` owns `config setup`. `src/Prodbox/Settings.hs` owns `config show` and
 `config validate`. `prodbox config compile` is not part of the supported command surface. The
 supported public `config setup` path prompts for one temporary admin AWS credential set when
-needed; stored `aws_admin_for_test_simulation.*` remains reserved for test-suite simulation of
-that prompt input, with the native IAM test harness as the only supported runtime consumer.
+needed; stored `aws_admin_for_test_simulation.*` remains reserved for suite-driven destructive
+validation and long-lived stack/`prodbox nuke` flows, not ordinary onboarding.
 
 ### `prodbox aws`
 
@@ -163,7 +163,7 @@ that prompt input, with the native IAM test harness as the only supported runtim
 
 `src/Prodbox/Aws.hs` owns the full public `prodbox aws ...` surface. The supported public contract
 is prompt-driven for temporary admin AWS credentials; stored
-`aws_admin_for_test_simulation.*` is not part of the intended public operator flow.
+`aws_admin_for_test_simulation.*` is not part of the intended public `aws setup` flow.
 
 `prodbox aws teardown` carries the Sprint `7.6` orphan-safety refuse-path: it refuses to delete
 the operational IAM user while any Pulumi-managed stack (`aws-eks`, `aws-eks-subzone`,
@@ -293,6 +293,9 @@ predicate library and the full leak-class inventory.
 surface. `prodbox nuke` is the **only** sanctioned command that destroys long-lived shared
 infrastructure transitively (`aws-ses` stack, the long-lived `pulumi_state_backend` bucket).
 For per-stack teardown of `aws-ses` alone, use `prodbox pulumi aws-ses-destroy --yes`.
+Its admin AWS credential source is `prodbox-config.dhall::aws_admin_for_test_simulation.*`,
+matching the long-lived stack operations and suite-driven destructive validations; it does not
+prompt for admin credentials after the typed confirmation gate.
 
 Discipline (mirrors `aws teardown`):
 
@@ -485,12 +488,13 @@ Named suite commands:
   is selected
 - enforces an initial fail-fast prerequisite gate, visible runbook/bootstrap steps when required,
   and deferred cluster-backed backend proofs such as `pulumi_logged_in` before payload execution
-- provisions the shared IAM harness for `prodbox test integration aws-iam`,
+- provisions the shared IAM harness for `prodbox test integration aws-iam`, targeted
+  `prodbox test integration <name> --substrate aws` validations,
   `prodbox test integration all`, and `prodbox test all` before AWS-backed prerequisite checks
   begin, then clears operational `aws.*` again before the suite returns
 - applies the canonical aggregate ordering
-- keeps stored `aws_admin_for_test_simulation.*` confined to test-suite simulation and the native
-  `aws-iam` harness rather than the public command surface
+- keeps stored `aws_admin_for_test_simulation.*` confined to suite-driven destructive validation
+  and long-lived stack/`nuke` flows rather than the ordinary public onboarding surface
 - performs supported-runtime bootstrap and postflight when required
 - waits for `prodbox host public-edge` to report `CLASSIFICATION=ready-for-external-proof` before
   external `charts-vscode`, `charts-api`, `charts-websocket`, or `admin-routes` proof continues
@@ -530,10 +534,16 @@ runtime roots such as `.build/`, `dist-newstyle/`, and `.data/`.
 `prodbox aws setup`, `prodbox aws teardown`, `prodbox aws check-quotas`,
 `prodbox aws request-quotas`, and the `prodbox charts delete`
 confirmation prompt) reads input from stdin. The **non-interactive
-automation surface** (the test harness — `prodbox test all` and
-`prodbox test integration ...`) reads operational `aws.*` from
-`prodbox-config.dhall`'s `aws_admin_for_test_simulation.*` block through
-the suite-level IAM harness and clears it on suite exit.
+automation surface** (the managed test harness — `prodbox test all`,
+`prodbox test integration all`, `prodbox test integration aws-iam`, and targeted
+`prodbox test integration <name> --substrate aws` validations) reads operational
+`aws.*` from `prodbox-config.dhall`'s `aws_admin_for_test_simulation.*` block
+through the suite-level IAM harness and clears it on suite exit.
+
+`prodbox nuke` is TTY-confirmed because of the typed `NUKE EVERYTHING` guard, but its
+admin AWS credential source is non-prompting: it loads
+`aws_admin_for_test_simulation.*` from `prodbox-config.dhall`, matching the long-lived
+`aws-ses` and state-bucket paths.
 
 The interactive surface **refuses to run when stdin is not a TTY**. Each
 interactive entry point calls `Prodbox.CLI.Interactive.requireInteractiveTty`

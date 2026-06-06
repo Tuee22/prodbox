@@ -16,12 +16,13 @@
 - Public `prodbox config setup` and public `prodbox aws ...` flows obtain temporary admin AWS
   credentials (historically called "elevated credentials") from interactive prompts; they must
   not rely on config-backed `aws_admin_for_test_simulation.*`.
-- `aws_admin_for_test_simulation.*` is the single stored-admin-credential exception and exists
-  only for test-suite simulation of that ephemeral prompt input; the native `aws-iam` validation
-  harness is the only supported runtime consumer.
-- `prodbox test integration aws-iam`, `prodbox test integration all`, and `prodbox test all`
-  share one suite-level IAM harness that provisions operational `aws.*` before prerequisite-driven
-  AWS validation begins and clears those credentials again before the suite returns.
+- `aws_admin_for_test_simulation.*` is the single stored-admin-credential exception and is consumed
+  by suite-driven destructive validation plus the long-lived stack / `prodbox nuke` teardown
+  surfaces that need the same admin credential class.
+- `prodbox test integration aws-iam`, `prodbox test integration <name> --substrate aws`,
+  `prodbox test integration all`, and `prodbox test all` share one suite-level IAM harness that
+  provisions operational `aws.*` before prerequisite-driven AWS validation begins and clears those
+  credentials again before the suite returns.
 - Stateful AWS validation uses explicit credentials rebuilt from decoded settings, not ambient host
   AWS CLI state or shared profile discovery.
 - Existing AWS resources are never valid mutation targets for supported `prodbox` integration
@@ -48,14 +49,16 @@
   `prodbox test all`) does not require separate user approval beyond the original request —
   live AWS spend and shared-infrastructure mutation are *expected* outcomes of asking the
   harness to provision the AWS substrate, not separate gates.
-- Two orphan-safety guards close the `prodbox aws teardown` / `prodbox test all` postflight
+- Two orphan-safety guards close the `prodbox aws teardown` / managed test postflight
   contract (Sprint `7.6`, May 19, 2026): (a) `prodbox aws teardown` **refuses** to delete
   the operational IAM user while any Pulumi-managed stack (`aws-eks`, `aws-eks-subzone`,
   `aws-test`, `aws-ses`) still reports live resources, with an actionable failure message
-  naming the offending stack(s) and the canonical destroy command; (b) the test-runner
-  postflight **auto-destroys** every per-run Pulumi stack on test-run exit (success /
-  failure / Ctrl-C) before clearing operational `aws.*`. The `aws-ses` stack is explicitly
-  excluded from auto-destroy per the long-lived shared-infrastructure class. The
+  naming the offending stack(s) and the canonical destroy command; (b) the managed test-runner
+  postflight **auto-destroys** every per-run Pulumi stack that a suite may have provisioned on
+  test-run exit (success / failure / Ctrl-C) before clearing operational `aws.*`. This applies to
+  aggregate runs and targeted `prodbox test integration <name> --substrate aws` runs that
+  bootstrap or directly provision per-run stacks. The `aws-ses` stack is explicitly excluded from
+  auto-destroy per the long-lived shared-infrastructure class. The
   `--allow-pulumi-residue` flag on `prodbox aws teardown` provides an operator-acknowledged
   escape hatch when recovery from a partial state requires deleting operational creds with
   stacks still up.
@@ -173,8 +176,10 @@ real AWS state, including:
    rely on, plus the credential-boundary rules those validations depend on
 
 The public `prodbox config setup` and `prodbox aws ...` surfaces route through the native Haskell
-frontend and explicit AWS CLI subprocess environments, but only the native IAM validation harness
-may consume stored `aws_admin_for_test_simulation.*` at runtime.
+frontend and explicit AWS CLI subprocess environments, but they prompt for temporary admin
+credentials instead of consuming stored `aws_admin_for_test_simulation.*` at runtime. The stored
+admin block is reserved for managed suite-driven validation, targeted AWS-substrate validation,
+and long-lived stack / `prodbox nuke` teardown surfaces.
 
 ## 2. Authentication Source And Storage Rules
 
@@ -201,15 +206,16 @@ Optional admin validation fields:
 4. `aws_admin_for_test_simulation.region`
 
 Stored admin credentials are otherwise forbidden. `aws_admin_for_test_simulation.*` is the one
-supported exception, and it is reserved for `prodbox test integration aws-iam`,
-aggregate-harness execution of that suite, and repository tests that simulate the interactive
-temporary-admin-credential prompt.
+supported exception, and it is reserved for `prodbox test integration aws-iam`, targeted
+`prodbox test integration <name> --substrate aws` validation, aggregate-harness execution of
+that suite, repository tests that simulate the interactive temporary-admin-credential prompt,
+long-lived `aws-ses` / state-backend operations, and `prodbox nuke`.
 
 Public `prodbox config setup` and public `prodbox aws ...` commands must not consume
 `aws_admin_for_test_simulation.*` from config on the supported path; they prompt for temporary
 admin credentials when needed.
 
-Supported non-interactive validation consumes `aws_admin_for_test_simulation.*` directly; missing
+Supported config-backed admin consumers load `aws_admin_for_test_simulation.*` directly; missing
 admin credentials must fail fast with an actionable config error rather than falling back to
 ambient AWS auth.
 
@@ -266,9 +272,10 @@ Before an AWS-mutating validation runs, the harness must prove:
 1. the system `aws` CLI exists when direct AWS CLI operations are required
 2. decoded settings define usable AWS authentication for the identity the validation will run under
 3. that identity can perform the lifecycle the validation owns
-4. for `aws-iam`, the native IAM harness config is complete enough to materialize operational
-   `aws.*` from `aws_admin_for_test_simulation.*` without falling back to pre-existing
-   operational credentials
+4. for managed suite-driven runs (`aws-iam`, aggregate suites, and targeted
+   `prodbox test integration <name> --substrate aws` validations), the native IAM harness config
+   is complete enough to materialize operational `aws.*` from
+   `aws_admin_for_test_simulation.*` without falling back to pre-existing operational credentials
 
 ### 3.2 Required Check Semantics
 
@@ -280,9 +287,9 @@ The required checks map to:
 3. lifecycle-capability check:
    Route 53 validations must be able to create and fully own a fresh hosted-zone lifecycle;
    Pulumi-backed validations must be able to drive the canonical `prodbox pulumi` command surface
-4. native IAM harness check: `aws-iam` must fail before its validation body when
-   `aws_admin_for_test_simulation.*` is missing, partial, or paired with an otherwise incomplete
-   harness config
+4. native IAM harness check: managed suite-driven runs must fail before their validation bodies
+   when `aws_admin_for_test_simulation.*` is missing, partial, or paired with an otherwise
+   incomplete harness config
 
 ### 3.3 No In-Harness Login
 
@@ -375,15 +382,16 @@ Minimum rule:
    by the named `prodbox pulumi ...` and `prodbox test integration ...` surfaces plus the aggregate
    test suite
 
-### 4.4 Test-Only Admin IAM Harness
+### 4.4 Stored Admin Credential Harness
 
-The IAM lifecycle validation uses the same repository-root Dhall configuration file but a separate
-credential section:
+The IAM lifecycle validation and long-lived teardown surfaces use the same repository-root Dhall
+configuration file but a separate credential section:
 
 1. `aws.*` remains the normal operational identity
 2. `aws_admin_for_test_simulation.*` is the stored simulation of the ephemeral temporary-admin
-   identity used only by `prodbox test integration aws-iam`,
-   `prodbox test integration all`, and `prodbox test all`
+   identity used by `prodbox test integration aws-iam`,
+   `prodbox test integration <name> --substrate aws`, `prodbox test integration all`,
+   `prodbox test all`, long-lived `aws-ses` / state-backend operations, and `prodbox nuke`
 3. the validation must fail fast when `aws_admin_for_test_simulation.*` is missing or partial
 4. public `prodbox config setup` and public `prodbox aws ...` commands remain outside this
    config-backed test harness and use interactive temporary admin credentials instead
@@ -442,7 +450,8 @@ Required patterns:
 
 1. Route 53 lifecycle code attempts teardown after mid-validation failure when safe
 2. Pulumi-backed validations use the public destroy surfaces
-3. Aggregate-suite postflight repair is owned by `prodbox test all`
+3. Managed suite postflight repair is owned by the test runner for aggregate suites and targeted
+   `prodbox test integration <name> --substrate aws` validations
 4. The shared IAM harness still attempts teardown and `aws.*` clearing when prerequisite
    validation fails after harness setup has already materialized operational credentials
 
@@ -535,9 +544,27 @@ the receive subdomain.
 
 The SMTP IAM user's `aws:iam:AccessKey` is exported by the Pulumi stack as
 `smtp_iam_access_key_id` / `smtp_iam_secret_access_key`; the Keycloak chart (Sprint `8.2`)
-consumes the SES IAM-to-SMTP-credentials derivation as a Kubernetes secret. The `ValidationKeycloakInvite`
-canonical-suite member (Sprint `8.5`) reads inbound capture from the S3 bucket via the same
-IAM user (`s3:ListBucket`, `s3:GetObject`, `s3:DeleteObject` on the bucket and its objects).
+consumes the SES IAM-to-SMTP-credentials derivation as a Kubernetes secret. Fresh per-run AWS
+clusters and invite-aware home-runtime bootstraps must sync that retained stack output into the
+current Kubernetes context before Helm renders Keycloak: the test bootstrap reads the long-lived
+`aws-ses` outputs via `aws_admin_for_test_simulation.*`, first running the same idempotent
+`ensureLongLivedPulumiStateBucket` precondition used by `aws-ses-resources`, and applies
+`keycloak-smtp` into the supported Keycloak release namespaces (`vscode` for the canonical
+shared-edge stack, `keycloak` for the standalone root chart). Because Keycloak's realm import does
+not update an already-created realm, `prodbox users invite` also patches the live realm's
+`smtpServer` from `keycloak-smtp` before it sends an execute-actions email. If the long-lived stack
+state is missing while retained fixed-name SES/S3/IAM resources still exist, `aws-ses-resources`
+repairs state by importing the retained capture bucket, SMTP IAM user, SES receipt rule set, and receipt
+rule, rotating stale SMTP access keys so Pulumi owns a fresh retrievable secret, and reconciling
+overwrite-tolerant Route 53 verification/DKIM/MX records. The `ValidationKeycloakInvite`
+canonical-suite member (Sprint `8.5`) reads inbound capture from the S3 bucket via the same IAM
+user (`s3:ListBucket`, `s3:GetObject`, `s3:DeleteObject` on the bucket and its objects).
+In aggregate runs, `ValidationKeycloakInvite` must run before destructive
+`ValidationChartsStorage` and `ValidationLifecycle` so AWS-substrate invite proof still has
+the live `vscode` root chart/Keycloak deployment, a live EKS stack snapshot, and a live
+kubeconfig. The Keycloak chart's shared-host auth `HTTPRoute` must include `/auth/admin` because
+the operator-owned invite flow creates users through the Keycloak admin API after acquiring its
+token from `/auth/realms/master`. `ValidationLifecycle` remains the terminal destructive validation.
 The Pulumi program is the exclusive provisioning surface; ad-hoc `aws ses *` and `aws s3 *`
 mutations are not part of the supported path.
 

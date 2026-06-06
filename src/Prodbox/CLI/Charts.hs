@@ -35,7 +35,7 @@ import Prodbox.Lib.ChartPlatform
   ( ChartDeploymentPlan (..)
   , ChartReleasePlan (..)
   , buildChartDeletePlan
-  , buildChartDeploymentPlan
+  , buildChartDeploymentPlanForSubstrate
   , deleteChartPlan
   , deployChartPlan
   , renderChartList
@@ -88,7 +88,14 @@ runChartsCommand repoRoot command =
                 -- chart reads them via Helm `lookup`. The host-side
                 -- `resolveGatewayEventKeys` cache is gone.
                 let gatewayEventKeys = Map.empty
-                buildResult <- buildChartDeploymentPlan repoRoot settings rootChart chartSecrets gatewayEventKeys
+                buildResult <-
+                  buildChartDeploymentPlanForSubstrate
+                    substrate
+                    repoRoot
+                    settings
+                    rootChart
+                    chartSecrets
+                    gatewayEventKeys
                 case buildResult of
                   Left err -> failWith err
                   Right plan ->

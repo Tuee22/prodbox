@@ -7,6 +7,7 @@ module Prodbox.Lib.ChartPlatform
   , ChartReleasePlan (..)
   , buildChartDeletePlan
   , buildChartDeploymentPlan
+  , buildChartDeploymentPlanForSubstrate
   , deleteChartPlan
   , deployChartPlan
   , gatewayNodeIds
@@ -14,6 +15,7 @@ module Prodbox.Lib.ChartPlatform
   , keycloakRealmName
   , renderChartList
   , renderChartStatus
+  , retainedPublicEdgeTlsSecretManifest
   , resolveChart
   , resolveChartSecrets
   , supportedChartNames
@@ -65,6 +67,7 @@ import Prodbox.ContainerImage qualified as ContainerImage
 import Prodbox.Lib.Storage
   ( ChartStorageBinding (..)
   , ChartStorageSpec (..)
+  , chartDynamicStorageManifest
   , chartPersistentVolumeManifest
   , chartStorageClassName
   , chartStorageManifest
@@ -96,6 +99,7 @@ import Prodbox.PublicEdge
   , harborPathPrefix
   , minioPathPrefix
   , publicFqdn
+  , resolveSubstrateHostedZoneId
   , vscodePathPrefix
   , websocketOidcPathPrefix
   , websocketPathPrefix
@@ -115,7 +119,8 @@ import Prodbox.Service
   , toServiceError
   )
 import Prodbox.Settings
-  ( ConfigFile (..)
+  ( AwsSubstrateSection (..)
+  , ConfigFile (..)
   , Credentials (..)
   , DeploymentSection (..)
   , Route53Section (..)
@@ -126,6 +131,7 @@ import Prodbox.Subprocess
   , Subprocess (..)
   , captureSubprocessResult
   )
+import Prodbox.Substrate (Substrate (..), substrateId)
 import System.Directory
   ( createDirectoryIfMissing
   , doesDirectoryExist
@@ -190,6 +196,12 @@ publicEdgeHttpRedirectRouteName = "public-edge-http-redirect"
 publicEdgeTlsSecretName :: String
 publicEdgeTlsSecretName = "public-edge-tls"
 
+retainedPublicEdgeTlsSecretNamespace :: String
+retainedPublicEdgeTlsSecretNamespace = "prodbox"
+
+retainedPublicEdgeTlsSecretName :: String
+retainedPublicEdgeTlsSecretName = "public-edge-tls-retained"
+
 publicEdgeVscodeListenerName :: String
 publicEdgeVscodeListenerName = "https"
 
@@ -244,6 +256,7 @@ data ChartDeploymentPlan = ChartDeploymentPlan
   , chartDeploymentPlanReleases :: [ChartReleasePlan]
   , chartDeploymentPlanPublicFqdn :: Maybe String
   , chartDeploymentPlanExternalRequirements :: [ChartExternalRequirement]
+  , chartDeploymentPlanSubstrate :: Substrate
   }
   deriving (Eq, Show)
 
@@ -382,23 +395,40 @@ buildChartDeploymentPlan
   -> Map String String
   -> Map String String
   -> IO (Either String ChartDeploymentPlan)
-buildChartDeploymentPlan repoRoot settings chartName chartSecrets gatewayEventKeys = do
+buildChartDeploymentPlan =
+  buildChartDeploymentPlanForSubstrate SubstrateHomeLocal
+
+buildChartDeploymentPlanForSubstrate
+  :: Substrate
+  -> FilePath
+  -> ValidatedSettings
+  -> String
+  -> Map String String
+  -> Map String String
+  -> IO (Either String ChartDeploymentPlan)
+buildChartDeploymentPlanForSubstrate substrate repoRoot settings chartName chartSecrets gatewayEventKeys = do
   let dependencyOrderResult = resolveDependencyOrder repoRoot chartName
   case dependencyOrderResult of
     Left err -> pure (Left err)
     Right releaseOrder -> do
       gatewayImageResult <-
         if "gateway" `elem` releaseOrder
-          then resolveGatewayChartImage
+          then resolveGatewayChartImageForSubstrate substrate
           else pure (Right Nothing)
       publicEdgeWorkloadImageResult <-
         if "api" `elem` releaseOrder || "websocket" `elem` releaseOrder
-          then resolvePublicEdgeWorkloadChartImage
+          then resolvePublicEdgeWorkloadChartImageForSubstrate substrate
+          else pure (Right Nothing)
+      gatewayHostedZoneIdResult <-
+        if "gateway" `elem` releaseOrder
+          then resolveGatewayHostedZoneIdForSubstrate substrate repoRoot settings
           else pure (Right Nothing)
       pure $ do
         maybeGatewayImage <- gatewayImageResult
         maybePublicEdgeWorkloadImage <- publicEdgeWorkloadImageResult
+        maybeGatewayHostedZoneId <- gatewayHostedZoneIdResult
         buildChartDeploymentPlanPure
+          substrate
           repoRoot
           settings
           chartName
@@ -406,6 +436,7 @@ buildChartDeploymentPlan repoRoot settings chartName chartSecrets gatewayEventKe
           gatewayEventKeys
           maybeGatewayImage
           maybePublicEdgeWorkloadImage
+          maybeGatewayHostedZoneId
 
 buildChartDeletePlan
   :: FilePath
@@ -439,6 +470,7 @@ buildChartDeletePlan repoRoot maybeSettings chartName = do
       , chartDeploymentPlanReleases = releases
       , chartDeploymentPlanPublicFqdn = Nothing
       , chartDeploymentPlanExternalRequirements = []
+      , chartDeploymentPlanSubstrate = SubstrateHomeLocal
       }
 
 renderChartList :: FilePath -> ValidatedSettings -> IO (Either String String)
@@ -458,7 +490,7 @@ renderChartList repoRoot settings = do
               either
                 (const Nothing)
                 Just
-                (resolveRootPublicFqdn settings chartName)
+                (resolveRootPublicFqdn SubstrateHomeLocal settings chartName)
             dependencies =
               if null (chartDefinitionDependencies definition)
                 then "<none>"
@@ -550,8 +582,12 @@ deployChartPlan plan = do
               case ensureResult of
                 Left err -> pure (Left err)
                 Right () -> do
-                  deployResult <- foldM deployRelease (Right ()) (chartDeploymentPlanReleases plan)
-                  pure (deployResult >> Right (renderDeployReport plan))
+                  restoreResult <- restorePublicEdgeTlsSecretAfterNamespaceCreate plan
+                  case restoreResult of
+                    Left err -> pure (Left err)
+                    Right () -> do
+                      deployResult <- foldM deployRelease (Right ()) (chartDeploymentPlanReleases plan)
+                      pure (deployResult >> Right (renderDeployReport plan))
  where
   deployRelease :: Either String () -> ChartReleasePlan -> IO (Either String ())
   deployRelease (Left err) _ = pure (Left err)
@@ -591,7 +627,14 @@ deployChartPlan plan = do
         (chartReleasePlanReleaseName release)
     case preApplyResult of
       Left err -> pure (Left err)
-      Right () -> deployPatroniReleaseStaged release
+      Right () ->
+        case chartDeploymentPlanSubstrate plan of
+          SubstrateHomeLocal -> deployPatroniReleaseStaged release
+          SubstrateAws -> do
+            installResult <- helmUpgradeInstall release
+            case installResult of
+              Left err -> pure (Left err)
+              Right () -> validateReleaseReady release
 
   deployPatroniReleaseStaged :: ChartReleasePlan -> IO (Either String ())
   deployPatroniReleaseStaged release = do
@@ -641,22 +684,33 @@ deployChartPlan plan = do
                               Right () -> validateReleaseReady release
 
   -- Sprint 3.13 chunk 13: derive the bootstrap anchor PV from live k8s state
-  -- (the Patroni primary endpoint → primary pod → its PVC → bound PV) instead
-  -- of reading the now-removed @.patroni-anchor-volume@ marker file. When the
-  -- cluster is unreachable the lookup returns @Nothing@ and the caller falls
-  -- back to its existing no-anchor behavior.
+  -- (the Patroni primary endpoint -> primary pod -> its PVC -> bound PV) when
+  -- the previous cluster is still present. After a supported chart delete, the
+  -- only surviving anchor is the retained ordinal-0 host root, so fall back to
+  -- that path before allowing a full three-replica cold bootstrap.
   readOptionalPatroniBootstrapAnchorBinding :: ChartReleasePlan -> IO (Maybe ChartStorageBinding)
   readOptionalPatroniBootstrapAnchorBinding release = do
     maybeAnchorVolumeName <-
       discoverPatroniAnchorPersistentVolumeName (chartReleasePlanNamespace release)
-    pure $
-      maybeAnchorVolumeName >>= \anchorVolumeName ->
-        find
-          ((== anchorVolumeName) . chartStorageBindingPersistentVolumeName)
-          (chartReleasePlanStorageBindings release)
+    case maybeAnchorVolumeName >>= findBindingByVolumeName of
+      Just anchorBinding -> pure (Just anchorBinding)
+      Nothing -> retainedOrdinalZeroAnchorBinding
+   where
+    findBindingByVolumeName anchorVolumeName =
+      find
+        ((== anchorVolumeName) . chartStorageBindingPersistentVolumeName)
+        (chartReleasePlanStorageBindings release)
+
+    retainedOrdinalZeroAnchorBinding = do
+      case find ((== 0) . chartStorageBindingOrdinal) (chartReleasePlanStorageBindings release) of
+        Nothing -> pure Nothing
+        Just binding -> do
+          exists <- doesDirectoryExist (chartStorageBindingHostPath binding)
+          pure (if exists then Just binding else Nothing)
 
   ensureReleaseStorageBindings :: ChartReleasePlan -> IO (Either String ())
   ensureReleaseStorageBindings release
+    | chartDeploymentPlanSubstrate plan == SubstrateAws = pure (Right ())
     | chartReleasePlanReleaseName release == "keycloak-postgres" =
         ensurePerconaPatroniStorageBindings
           (chartDeploymentPlanRepoRoot plan)
@@ -1039,28 +1093,32 @@ patroniClusterReadiness namespace expectedReadyReplicas = do
 
 deleteChartPlan :: ChartDeploymentPlan -> IO (Either String String)
 deleteChartPlan plan = do
-  preserveResult <- preserveChartSecretsBeforeDelete plan
-  case preserveResult of
+  preserveTlsResult <- preservePublicEdgeTlsSecretBeforeDelete plan
+  case preserveTlsResult of
     Left err -> pure (Left err)
     Right () -> do
-      persistPatroniAnchorBindingBeforeDelete
-      uninstallResult <- foldM uninstallRelease (Right ()) (chartDeploymentPlanReleases plan)
-      case uninstallResult of
+      preserveResult <- preserveChartSecretsBeforeDelete plan
+      case preserveResult of
         Left err -> pure (Left err)
         Right () -> do
-          bindingsResult <- foldM deleteReleaseBindings (Right ()) (chartDeploymentPlanReleases plan)
-          case bindingsResult of
+          persistPatroniAnchorBindingBeforeDelete
+          uninstallResult <- foldM uninstallRelease (Right ()) (chartDeploymentPlanReleases plan)
+          case uninstallResult of
             Left err -> pure (Left err)
             Right () -> do
-              namespaceResult <-
-                deleteKubectlObject
-                  [ "delete"
-                  , "namespace"
-                  , chartDeploymentPlanNamespace plan
-                  , "--ignore-not-found=true"
-                  , "--wait=true"
-                  ]
-              pure (namespaceResult >> Right (renderDeleteReport plan))
+              bindingsResult <- foldM deleteReleaseBindings (Right ()) (chartDeploymentPlanReleases plan)
+              case bindingsResult of
+                Left err -> pure (Left err)
+                Right () -> do
+                  namespaceResult <-
+                    deleteKubectlObject
+                      [ "delete"
+                      , "namespace"
+                      , chartDeploymentPlanNamespace plan
+                      , "--ignore-not-found=true"
+                      , "--wait=true"
+                      ]
+                  pure (namespaceResult >> Right (renderDeleteReport plan))
  where
   preserveChartSecretsBeforeDelete :: ChartDeploymentPlan -> IO (Either String ())
   preserveChartSecretsBeforeDelete deletePlan
@@ -1374,23 +1432,26 @@ updatePatroniClusterInstanceCount instanceCount (Object valuesObject) =
 updatePatroniClusterInstanceCount _ _ = Left "keycloak-postgres values payload must be a JSON object."
 
 buildChartDeploymentPlanPure
-  :: FilePath
+  :: Substrate
+  -> FilePath
   -> ValidatedSettings
   -> String
   -> Map String String
   -> Map String String
   -> Maybe ResolvedCustomImage
   -> Maybe ResolvedCustomImage
+  -> Maybe String
   -> Either String ChartDeploymentPlan
-buildChartDeploymentPlanPure repoRoot settings chartName chartSecrets gatewayEventKeys maybeGatewayImage maybePublicEdgeWorkloadImage = do
+buildChartDeploymentPlanPure substrate repoRoot settings chartName chartSecrets gatewayEventKeys maybeGatewayImage maybePublicEdgeWorkloadImage maybeGatewayHostedZoneId = do
   when
-    (chartStorageClassName /= "manual")
+    (substrate == SubstrateHomeLocal && chartStorageClassName /= "manual")
     (Left "Chart platform requires StorageClass 'manual'; dynamic provisioners are not permitted")
+  let storageClassName = chartStorageClassNameForSubstrate substrate
   releaseOrder <- resolveDependencyOrder repoRoot chartName
   definitions <- mapM (resolveChart repoRoot) releaseOrder
   maybePublicFqdn <-
     if any chartDefinitionRequiresPublicHost definitions
-      then Just <$> resolveRootPublicFqdn settings chartName
+      then Just <$> resolveRootPublicFqdn substrate settings chartName
       else Right Nothing
   releases <-
     forM definitions $ \definition -> do
@@ -1400,16 +1461,19 @@ buildChartDeploymentPlanPure repoRoot settings chartName chartSecrets gatewayEve
               (chartStorageSpecsForRelease chartName (chartDefinitionName definition) definition)
       valuesJson <-
         renderReleaseValuesJson
+          substrate
           definition
           chartName
           chartName
           settings
           chartSecrets
           gatewayEventKeys
+          storageClassName
           storageBindings
           maybePublicFqdn
           maybeGatewayImage
           maybePublicEdgeWorkloadImage
+          maybeGatewayHostedZoneId
       pure
         ChartReleasePlan
           { chartReleasePlanChartName = chartDefinitionName definition
@@ -1428,7 +1492,17 @@ buildChartDeploymentPlanPure repoRoot settings chartName chartSecrets gatewayEve
       , chartDeploymentPlanPublicFqdn = maybePublicFqdn
       , chartDeploymentPlanExternalRequirements =
           nub (concatMap chartDefinitionExternalRequirements definitions)
+      , chartDeploymentPlanSubstrate = substrate
       }
+
+chartStorageClassNameForSubstrate :: Substrate -> String
+chartStorageClassNameForSubstrate substrate =
+  case substrate of
+    SubstrateHomeLocal -> chartStorageClassName
+    SubstrateAws -> awsChartStorageClassName
+
+awsChartStorageClassName :: String
+awsChartStorageClassName = "gp2"
 
 resolveDependencyOrder :: FilePath -> String -> Either String [String]
 resolveDependencyOrder repoRoot chartName = do
@@ -1451,11 +1525,25 @@ resolveDependencyOrder repoRoot chartName = do
             (chartDefinitionDependencies definition)
         pure (current : visitedAfter, orderedAfter ++ [current])
 
-resolveRootPublicFqdn :: ValidatedSettings -> String -> Either String String
-resolveRootPublicFqdn settings _chartName = do
-  let fqdn = publicFqdn settings
-  unless (fqdn /= "") (Left "public FQDN must not be empty")
+resolveRootPublicFqdn :: Substrate -> ValidatedSettings -> String -> Either String String
+resolveRootPublicFqdn substrate settings _chartName = do
+  let fqdn =
+        case substrate of
+          SubstrateHomeLocal -> publicFqdn settings
+          SubstrateAws ->
+            Text.unpack (Text.strip (subzone_name (aws_substrate (validatedConfig settings))))
+  unless (fqdn /= "") (Left (substrateId substrate ++ " public FQDN must not be empty"))
   Right fqdn
+
+resolveGatewayHostedZoneIdForSubstrate
+  :: Substrate -> FilePath -> ValidatedSettings -> IO (Either String (Maybe String))
+resolveGatewayHostedZoneIdForSubstrate substrate repoRoot settings =
+  case substrate of
+    SubstrateHomeLocal ->
+      pure (Right (Just (Text.unpack (zone_id (route53 (validatedConfig settings))))))
+    SubstrateAws -> do
+      hostedZoneResult <- resolveSubstrateHostedZoneId repoRoot settings SubstrateAws
+      pure (fmap (Just . Text.unpack) hostedZoneResult)
 
 chartStorageSpecsForRelease :: String -> String -> ChartDefinition -> [ChartStorageSpec]
 chartStorageSpecsForRelease rootChart _releaseName definition =
@@ -1464,23 +1552,33 @@ chartStorageSpecsForRelease rootChart _releaseName definition =
     _ -> chartDefinitionStorage definition
 
 renderReleaseValuesJson
-  :: ChartDefinition
+  :: Substrate
+  -> ChartDefinition
   -> String
   -> String
   -> ValidatedSettings
   -> Map String String
   -> Map String String
+  -> String
   -> [ChartStorageBinding]
   -> Maybe String
   -> Maybe ResolvedCustomImage
   -> Maybe ResolvedCustomImage
+  -> Maybe String
   -> Either String String
-renderReleaseValuesJson definition namespace rootChart settings chartSecrets gatewayEventKeys storageBindings maybePublicFqdn maybeGatewayImage maybePublicEdgeWorkloadImage = do
+renderReleaseValuesJson substrate definition namespace rootChart settings chartSecrets gatewayEventKeys storageClassName storageBindings maybePublicFqdn maybeGatewayImage maybePublicEdgeWorkloadImage maybeGatewayHostedZoneId = do
   values <-
     case chartDefinitionName definition of
       "keycloak-postgres" ->
         case storageBindings of
-          [_, _, _] -> valuesForKeycloakPostgres namespace rootChart settings chartSecrets storageBindings
+          [_, _, _] ->
+            valuesForKeycloakPostgres
+              namespace
+              rootChart
+              settings
+              chartSecrets
+              storageClassName
+              storageBindings
           _ -> Left "keycloak-postgres requires exactly three storage bindings"
       "keycloak" ->
         case maybePublicFqdn of
@@ -1506,9 +1604,19 @@ renderReleaseValuesJson definition namespace rootChart settings chartSecrets gat
             valuesForWebsocket namespace rootChart settings chartSecrets fqdn maybePublicEdgeWorkloadImage
           Nothing -> Left "websocket requires a public host"
       "gateway" ->
-        case maybePublicFqdn of
-          Just fqdn -> valuesForGateway namespace rootChart settings gatewayEventKeys fqdn maybeGatewayImage
-          Nothing -> Left "gateway requires a public host"
+        case (maybePublicFqdn, maybeGatewayHostedZoneId) of
+          (Just fqdn, Just zoneId) ->
+            valuesForGateway
+              substrate
+              namespace
+              rootChart
+              settings
+              gatewayEventKeys
+              fqdn
+              maybeGatewayImage
+              zoneId
+          (Nothing, _) -> Left "gateway requires a public host"
+          (_, Nothing) -> Left "gateway requires a Route 53 hosted zone id"
       _ -> Left ("Unsupported chart definition '" ++ chartDefinitionName definition ++ "'")
   pure (BL8.unpack (Pretty.encodePretty' prettyJsonConfig values))
 
@@ -1604,9 +1712,10 @@ valuesForKeycloakPostgres
   -> String
   -> ValidatedSettings
   -> Map String String
+  -> String
   -> [ChartStorageBinding]
   -> Either String Value
-valuesForKeycloakPostgres namespace rootChart settings _chartSecrets storageBindings = do
+valuesForKeycloakPostgres namespace rootChart settings _chartSecrets storageClassName storageBindings = do
   let clusterName = patroniClusterName rootChart
   when
     (length storageBindings /= 3)
@@ -1686,7 +1795,7 @@ valuesForKeycloakPostgres namespace rootChart settings _chartSecrets storageBind
               ]
         , "storage"
             .= object
-              [ "className" .= chartStorageClassName
+              [ "className" .= storageClassName
               , "size" .= patroniStorageSize
               ]
         , "security"
@@ -1708,14 +1817,16 @@ valuesForKeycloakPostgres namespace rootChart settings _chartSecrets storageBind
     )
 
 valuesForGateway
-  :: String
+  :: Substrate
+  -> String
   -> String
   -> ValidatedSettings
   -> Map String String
   -> String
   -> Maybe ResolvedCustomImage
+  -> String
   -> Either String Value
-valuesForGateway namespace rootChart settings _gatewayEventKeys sharedHostFqdn maybeGatewayImage = do
+valuesForGateway substrate namespace rootChart settings _gatewayEventKeys sharedHostFqdn maybeGatewayImage zoneId = do
   -- Sprint 3.13 chunk 16: the per-node event keys are owned by the
   -- gateway daemon's startup self-bootstrap (see
   -- 'Prodbox.Gateway.Daemon.selfBootstrapOwnSecrets'); the chart's
@@ -1730,12 +1841,13 @@ valuesForGateway namespace rootChart settings _gatewayEventKeys sharedHostFqdn m
       awsAccessKeyId = Text.unpack (access_key_id operationalAws)
       awsSecretAccessKey = Text.unpack (secret_access_key operationalAws)
       awsRegion = Text.unpack (region operationalAws)
-      zoneId = Text.unpack (zone_id (route53 config))
       sessionTokenValue = maybe "" Text.unpack (session_token operationalAws)
   when (null awsAccessKeyId) (Left "gateway chart requires aws_access_key_id in settings")
   when (null awsSecretAccessKey) (Left "gateway chart requires aws_secret_access_key in settings")
   when (null awsRegion) (Left "gateway chart requires aws_region in settings")
-  when (null zoneId) (Left "gateway chart requires route53_zone_id in settings")
+  when
+    (substrate == SubstrateHomeLocal && null zoneId)
+    (Left "gateway chart requires route53_zone_id in settings")
   resolvedGatewayImage <-
     case maybeGatewayImage of
       Just imageInfo -> Right imageInfo
@@ -1772,14 +1884,7 @@ valuesForGateway namespace rootChart settings _gatewayEventKeys sharedHostFqdn m
               , "heartbeatTimeoutSeconds" .= (5 :: Int)
               ]
         , "nodes" .= object ["rankedIds" .= gatewayNodeIds]
-        , "dnsWriteGate"
-            .= object
-              [ "enabled" .= True
-              , "zoneId" .= zoneId
-              , "fqdn" .= sharedHostFqdn
-              , "ttl" .= (60 :: Int)
-              , "awsRegion" .= awsRegion
-              ]
+        , "dnsWriteGate" .= gatewayDnsWriteGateValue substrate zoneId sharedHostFqdn awsRegion
         , "aws"
             .= object
               [ "accessKeyId" .= awsAccessKeyId
@@ -1797,6 +1902,26 @@ valuesForGateway namespace rootChart settings _gatewayEventKeys sharedHostFqdn m
         ]
     )
 
+gatewayDnsWriteGateValue :: Substrate -> String -> String -> String -> Value
+gatewayDnsWriteGateValue substrate zoneId sharedHostFqdn awsRegion =
+  case substrate of
+    SubstrateHomeLocal ->
+      object
+        [ "enabled" .= True
+        , "zoneId" .= zoneId
+        , "fqdn" .= sharedHostFqdn
+        , "ttl" .= (60 :: Int)
+        , "awsRegion" .= awsRegion
+        ]
+    SubstrateAws ->
+      object
+        [ "enabled" .= False
+        , "zoneId" .= ("" :: String)
+        , "fqdn" .= ("" :: String)
+        , "ttl" .= (60 :: Int)
+        , "awsRegion" .= awsRegion
+        ]
+
 valuesForVscode
   :: String
   -> String
@@ -1807,10 +1932,18 @@ valuesForVscode
   -> Either String Value
 valuesForVscode namespace rootChart settings _chartSecrets binding sharedHostFqdn = do
   -- Sprint 3.13 chunk 11: the vscode chart reads the OIDC `client-secret`
-  -- via cross-namespace Helm `lookup` of the gateway-daemon-managed
-  -- `keycloak-oidc-clients` Secret in the `keycloak` namespace. The chart's
-  -- `values.yaml` `change-me` default flows through only on `helm template`
-  -- (no cluster); on a real install the lookup supersedes.
+  -- via Helm `lookup` of the gateway-daemon-managed `keycloak-oidc-clients`
+  -- Secret in the release namespace. The chart's `values.yaml` `change-me`
+  -- default flows through only on `helm template` (no cluster); on a real
+  -- install the lookup supersedes. Keep the browser authorization endpoint on
+  -- the public issuer, but send Envoy's provider backchannel to the in-cluster
+  -- Keycloak Service so EKS never depends on public-NLB hairpin behavior.
+  let keycloakIssuer =
+        "https://" ++ sharedHostFqdn ++ authPathPrefix ++ "/realms/" ++ keycloakRealmName
+      keycloakOidcPath =
+        authPathPrefix ++ "/realms/" ++ keycloakRealmName ++ "/protocol/openid-connect"
+      keycloakInternalBase =
+        "http://keycloak." ++ namespace ++ ".svc.cluster.local:8080"
   pure
     ( object
         [ "replicaCount" .= (1 :: Int)
@@ -1833,7 +1966,14 @@ valuesForVscode namespace rootChart settings _chartSecrets binding sharedHostFqd
         , "oidc"
             .= object
               [ "clientId" .= keycloakVscodeClientId
-              , "issuer" .= ("https://" ++ sharedHostFqdn ++ authPathPrefix ++ "/realms/" ++ keycloakRealmName)
+              , "issuer" .= keycloakIssuer
+              , "authorizationEndpoint" .= (keycloakIssuer ++ "/protocol/openid-connect/auth")
+              , "tokenEndpoint" .= (keycloakInternalBase ++ keycloakOidcPath ++ "/token")
+              , "providerBackend"
+                  .= object
+                    [ "serviceName" .= ("keycloak" :: String)
+                    , "servicePort" .= (8080 :: Int)
+                    ]
               , "redirectURL" .= ("https://" ++ sharedHostFqdn ++ vscodePathPrefix ++ "/oauth2/callback")
               , "logoutPath" .= ("/logout" :: String)
               , "securityPolicyName" .= publicEdgeVscodeSecurityPolicyName
@@ -1886,6 +2026,10 @@ valuesForApi namespace rootChart settings sharedHostFqdn maybePublicEdgeWorkload
       Nothing -> Left "api chart requires a resolved public-edge workload image reference"
   let workloadRepository = resolvedCustomImageRepository resolvedWorkloadImage
       workloadTag = resolvedCustomImageTag resolvedWorkloadImage
+      keycloakIssuer =
+        "https://" ++ sharedHostFqdn ++ authPathPrefix ++ "/realms/" ++ keycloakRealmName
+      keycloakCertsPath =
+        authPathPrefix ++ "/realms/" ++ keycloakRealmName ++ "/protocol/openid-connect/certs"
   pure
     ( object
         [ "replicaCount"
@@ -1915,16 +2059,16 @@ valuesForApi namespace rootChart settings sharedHostFqdn maybePublicEdgeWorkload
             .= object
               [ "securityPolicyName" .= publicEdgeApiSecurityPolicyName
               , "providerName" .= ("keycloak" :: String)
-              , "issuer" .= ("https://" ++ sharedHostFqdn ++ authPathPrefix ++ "/realms/" ++ keycloakRealmName)
+              , "issuer" .= keycloakIssuer
               , "audience" .= keycloakApiClientId
-              , "jwksUri"
-                  .= ( "https://"
-                         ++ sharedHostFqdn
-                         ++ authPathPrefix
-                         ++ "/realms/"
-                         ++ keycloakRealmName
-                         ++ "/protocol/openid-connect/certs"
-                     )
+              , "jwksUri" .= ("http://keycloak.vscode.svc.cluster.local:8080" ++ keycloakCertsPath)
+              , "jwksBackend"
+                  .= object
+                    [ "namespace" .= ("vscode" :: String)
+                    , "serviceName" .= ("keycloak" :: String)
+                    , "servicePort" .= (8080 :: Int)
+                    , "referenceGrantName" .= ("api-keycloak-jwks" :: String)
+                    ]
               , "routeClaimName" .= publicEdgeRouteClaimName
               , "routeClaimValue" .= ("api" :: String)
               ]
@@ -1950,11 +2094,15 @@ valuesForWebsocket namespace rootChart settings _chartSecrets sharedHostFqdn may
       Nothing -> Left "websocket chart requires a resolved public-edge workload image reference"
   -- Sprint 3.13 chunk 11: the websocket chart reads the OIDC `client_secret`
   -- via cross-namespace Helm `lookup` of the gateway-daemon-managed
-  -- `keycloak-oidc-clients` Secret in the `keycloak` namespace. The chart's
-  -- `values.yaml` `change-me` default flows through only on `helm template`
-  -- (no cluster); on a real install the lookup supersedes.
+  -- `keycloak-oidc-clients` Secret in the shared `vscode` namespace. The
+  -- chart's `values.yaml` `change-me` default flows through only on `helm
+  -- template` (no cluster); on a real install the lookup supersedes.
   let workloadRepository = resolvedCustomImageRepository resolvedWorkloadImage
       workloadTag = resolvedCustomImageTag resolvedWorkloadImage
+      keycloakIssuer =
+        "https://" ++ sharedHostFqdn ++ authPathPrefix ++ "/realms/" ++ keycloakRealmName
+      keycloakOidcPath =
+        authPathPrefix ++ "/realms/" ++ keycloakRealmName ++ "/protocol/openid-connect"
   pure
     ( object
         [ "replicaCount"
@@ -1984,28 +2132,26 @@ valuesForWebsocket namespace rootChart settings _chartSecrets sharedHostFqdn may
             .= object
               [ "securityPolicyName" .= publicEdgeWebsocketSecurityPolicyName
               , "providerName" .= ("keycloak" :: String)
-              , "issuer" .= ("https://" ++ sharedHostFqdn ++ authPathPrefix ++ "/realms/" ++ keycloakRealmName)
+              , "issuer" .= keycloakIssuer
               , "audience" .= keycloakWebsocketClientId
-              , "jwksUri"
-                  .= ( "https://"
-                         ++ sharedHostFqdn
-                         ++ authPathPrefix
-                         ++ "/realms/"
-                         ++ keycloakRealmName
-                         ++ "/protocol/openid-connect/certs"
-                     )
+              , "jwksUri" .= ("http://keycloak.vscode.svc.cluster.local:8080" ++ keycloakOidcPath ++ "/certs")
+              , "jwksBackend"
+                  .= object
+                    [ "namespace" .= ("vscode" :: String)
+                    , "serviceName" .= ("keycloak" :: String)
+                    , "servicePort" .= (8080 :: Int)
+                    , "referenceGrantName" .= ("websocket-keycloak-jwks" :: String)
+                    ]
               , "routeClaimName" .= publicEdgeRouteClaimName
               , "routeClaimValue" .= ("websocket" :: String)
               ]
         , "oidc"
             .= object
-              [ "issuer" .= ("https://" ++ sharedHostFqdn ++ authPathPrefix ++ "/realms/" ++ keycloakRealmName)
+              [ "issuer" .= keycloakIssuer
               , "tokenEndpoint"
                   .= ( "http://keycloak.vscode.svc.cluster.local:8080"
-                         ++ authPathPrefix
-                         ++ "/realms/"
-                         ++ keycloakRealmName
-                         ++ "/protocol/openid-connect/token"
+                         ++ keycloakOidcPath
+                         ++ "/token"
                          :: String
                      )
               , "clientId" .= keycloakWebsocketClientId
@@ -2035,13 +2181,29 @@ customImagePodAnnotationsValue maybeRolloutToken =
   object
     (maybe [] (\rolloutToken -> ["prodbox.io/image-build-id" .= rolloutToken]) maybeRolloutToken)
 
-resolveGatewayChartImage :: IO (Either String (Maybe ResolvedCustomImage))
-resolveGatewayChartImage = do
-  resolveCustomImageTag ContainerImage.harborGatewayImageRepository
+resolveGatewayChartImageForSubstrate :: Substrate -> IO (Either String (Maybe ResolvedCustomImage))
+resolveGatewayChartImageForSubstrate substrate =
+  case substrate of
+    SubstrateHomeLocal ->
+      resolveCustomImageTag ContainerImage.harborGatewayImageRepository
+    SubstrateAws ->
+      resolveCustomImageFixedTag
+        ContainerImage.harborGatewayImageRepository
+        awsSubstrateCustomImageTag
 
-resolvePublicEdgeWorkloadChartImage :: IO (Either String (Maybe ResolvedCustomImage))
-resolvePublicEdgeWorkloadChartImage = do
-  resolveCustomImageTag ContainerImage.harborPublicEdgeWorkloadImageRepository
+resolvePublicEdgeWorkloadChartImageForSubstrate
+  :: Substrate -> IO (Either String (Maybe ResolvedCustomImage))
+resolvePublicEdgeWorkloadChartImageForSubstrate substrate =
+  case substrate of
+    SubstrateHomeLocal ->
+      resolveCustomImageTag ContainerImage.harborPublicEdgeWorkloadImageRepository
+    SubstrateAws ->
+      resolveCustomImageFixedTag
+        ContainerImage.harborPublicEdgeWorkloadImageRepository
+        awsSubstrateCustomImageTag
+
+awsSubstrateCustomImageTag :: String
+awsSubstrateCustomImageTag = "prodbox-aws-substrate"
 
 resolveCustomImageTag :: String -> IO (Either String (Maybe ResolvedCustomImage))
 resolveCustomImageTag repository = do
@@ -2067,6 +2229,20 @@ resolveCustomImageTag repository = do
                       }
                 )
             )
+
+resolveCustomImageFixedTag :: String -> String -> IO (Either String (Maybe ResolvedCustomImage))
+resolveCustomImageFixedTag repository imageTag = do
+  maybeRolloutToken <- resolveLocalImageBuildToken (repository ++ ":" ++ imageTag)
+  pure
+    ( Right
+        ( Just
+            ResolvedCustomImage
+              { resolvedCustomImageRepository = repository
+              , resolvedCustomImageTag = imageTag
+              , resolvedCustomImageRolloutToken = maybeRolloutToken
+              }
+        )
+    )
 
 resolveLocalImageBuildToken :: String -> IO (Maybe String)
 resolveLocalImageBuildToken imageRef = do
@@ -2150,43 +2326,58 @@ ensureChartStorage plan = do
         , chartReleasePlanReleaseName release /= "keycloak-postgres"
         , binding <- chartReleasePlanStorageBindings release
         ]
-  if null bindings
-    then
-      applyManifest
-        (namespaceManifest (chartDeploymentPlanNamespace plan) (chartDeploymentPlanRootChart plan))
-    else do
-      resetResult <- resetPatroniStorageIfRequested
-      case resetResult of
-        Left err -> pure (Left err)
-        Right () -> do
-          replicaResetResult <- resetRetainedPatroniReplicaBindings
-          case replicaResetResult of
+  case chartDeploymentPlanSubstrate plan of
+    SubstrateAws ->
+      if null eagerBindings
+        then
+          applyManifest
+            (namespaceManifest (chartDeploymentPlanNamespace plan) (chartDeploymentPlanRootChart plan))
+        else
+          applyManifest
+            ( chartDynamicStorageManifest
+                (chartDeploymentPlanNamespace plan)
+                (chartDeploymentPlanRootChart plan)
+                awsChartStorageClassName
+                eagerBindings
+            )
+    SubstrateHomeLocal ->
+      if null bindings
+        then
+          applyManifest
+            (namespaceManifest (chartDeploymentPlanNamespace plan) (chartDeploymentPlanRootChart plan))
+        else do
+          resetResult <- resetPatroniStorageIfRequested
+          case resetResult of
             Left err -> pure (Left err)
-            Right ()
-              | null eagerBindings ->
-                  applyManifest
-                    ( chartStorageManifest
-                        (chartDeploymentPlanNamespace plan)
-                        (chartDeploymentPlanRootChart plan)
-                        []
-                        ""
-                    )
-              | otherwise -> do
-                  nodeHostnameResult <- singleNodeHostname
-                  case nodeHostnameResult of
-                    Left err -> pure (Left err)
-                    Right nodeHostname -> do
-                      prepareResult <- foldM prepareStorageBinding (Right ()) eagerBindings
-                      case prepareResult of
+            Right () -> do
+              replicaResetResult <- resetRetainedPatroniReplicaBindings
+              case replicaResetResult of
+                Left err -> pure (Left err)
+                Right ()
+                  | null eagerBindings ->
+                      applyManifest
+                        ( chartStorageManifest
+                            (chartDeploymentPlanNamespace plan)
+                            (chartDeploymentPlanRootChart plan)
+                            []
+                            ""
+                        )
+                  | otherwise -> do
+                      nodeHostnameResult <- singleNodeHostname
+                      case nodeHostnameResult of
                         Left err -> pure (Left err)
-                        Right () ->
-                          applyManifest
-                            ( chartStorageManifest
-                                (chartDeploymentPlanNamespace plan)
-                                (chartDeploymentPlanRootChart plan)
-                                eagerBindings
-                                nodeHostname
-                            )
+                        Right nodeHostname -> do
+                          prepareResult <- foldM prepareStorageBinding (Right ()) eagerBindings
+                          case prepareResult of
+                            Left err -> pure (Left err)
+                            Right () ->
+                              applyManifest
+                                ( chartStorageManifest
+                                    (chartDeploymentPlanNamespace plan)
+                                    (chartDeploymentPlanRootChart plan)
+                                    eagerBindings
+                                    nodeHostname
+                                )
  where
   -- Sprint 3.13 chunks 12 + 13 + 14: with the host-side `.prodbox-state`
   -- chart-secret cache gone, no code path writes the `.patroni-reset-required`
@@ -2272,6 +2463,130 @@ namespaceManifest namespace rootChart =
           , "labels" .= object ["prodbox.io/chart-root" .= rootChart]
           ]
     ]
+
+publicEdgeTlsRetentionNamespaceManifest :: Value
+publicEdgeTlsRetentionNamespaceManifest =
+  namespaceManifest retainedPublicEdgeTlsSecretNamespace "public-edge-tls-retention"
+
+planOwnsPublicEdgeCertificate :: ChartDeploymentPlan -> Bool
+planOwnsPublicEdgeCertificate plan =
+  chartDeploymentPlanNamespace plan == "vscode"
+    && any ((== "keycloak") . chartReleasePlanReleaseName) (chartDeploymentPlanReleases plan)
+
+preservePublicEdgeTlsSecretBeforeDelete :: ChartDeploymentPlan -> IO (Either String ())
+preservePublicEdgeTlsSecretBeforeDelete plan
+  | not (planOwnsPublicEdgeCertificate plan) = pure (Right ())
+  | otherwise = do
+      maybeSecretResult <-
+        readOptionalKubernetesSecret
+          (chartDeploymentPlanNamespace plan)
+          publicEdgeTlsSecretName
+      case maybeSecretResult of
+        Left err -> pure (Left err)
+        Right Nothing -> pure (Right ())
+        Right (Just secretValue) ->
+          case retainedPublicEdgeTlsSecretManifest
+            retainedPublicEdgeTlsSecretNamespace
+            retainedPublicEdgeTlsSecretName
+            secretValue of
+            Left err -> pure (Left err)
+            Right retainedSecret -> do
+              namespaceResult <- applyManifest publicEdgeTlsRetentionNamespaceManifest
+              case namespaceResult of
+                Left err -> pure (Left err)
+                Right () -> applyManifest retainedSecret
+
+restorePublicEdgeTlsSecretAfterNamespaceCreate :: ChartDeploymentPlan -> IO (Either String ())
+restorePublicEdgeTlsSecretAfterNamespaceCreate plan
+  | not (planOwnsPublicEdgeCertificate plan) = pure (Right ())
+  | otherwise = do
+      targetResult <-
+        readOptionalKubernetesSecret
+          (chartDeploymentPlanNamespace plan)
+          publicEdgeTlsSecretName
+      case targetResult of
+        Left err -> pure (Left err)
+        Right (Just _) -> pure (Right ())
+        Right Nothing -> do
+          backupResult <-
+            readOptionalKubernetesSecret
+              retainedPublicEdgeTlsSecretNamespace
+              retainedPublicEdgeTlsSecretName
+          case backupResult of
+            Left err -> pure (Left err)
+            Right Nothing -> pure (Right ())
+            Right (Just backupValue) ->
+              case retainedPublicEdgeTlsSecretManifest
+                (chartDeploymentPlanNamespace plan)
+                publicEdgeTlsSecretName
+                backupValue of
+                Left err -> pure (Left err)
+                Right restoredSecret -> applyManifest restoredSecret
+
+readOptionalKubernetesSecret :: String -> String -> IO (Either String (Maybe Value))
+readOptionalKubernetesSecret namespace secretName = do
+  outputResult <-
+    runCaptured
+      ("kubectl get secret " ++ secretName)
+      "kubectl"
+      [ "get"
+      , "secret"
+      , secretName
+      , "--namespace"
+      , namespace
+      , "--ignore-not-found=true"
+      , "-o"
+      , "json"
+      ]
+  pure $ do
+    output <- outputResult
+    case processExitCode output of
+      ExitSuccess ->
+        let stdoutText = trimWhitespace (processStdout output)
+         in if null stdoutText
+              then Right Nothing
+              else
+                either
+                  (Left . ("kubectl get secret returned unexpected JSON payload: " ++))
+                  (Right . Just)
+                  (eitherDecode (BL8.pack stdoutText))
+      ExitFailure _ ->
+        Left
+          ( "kubectl get secret "
+              ++ secretName
+              ++ " failed: "
+              ++ processStderr output
+              ++ processStdout output
+          )
+
+retainedPublicEdgeTlsSecretManifest :: String -> String -> Value -> Either String Value
+retainedPublicEdgeTlsSecretManifest targetNamespace targetName secretValue =
+  parseEither parseSecret secretValue
+ where
+  parseSecret :: Value -> Parser Value
+  parseSecret =
+    withObject "Secret" $ \obj -> do
+      secretType <- obj .:? "type"
+      secretData <- obj .: "data"
+      case secretData of
+        Object _ -> pure ()
+        _ -> fail "Secret.data must be an object"
+      pure $
+        object
+          [ "apiVersion" .= ("v1" :: String)
+          , "kind" .= ("Secret" :: String)
+          , "metadata"
+              .= object
+                [ "name" .= targetName
+                , "namespace" .= targetNamespace
+                , "labels"
+                    .= object
+                      [ "prodbox.io/retained-secret" .= (publicEdgeTlsSecretName :: String)
+                      ]
+                ]
+          , "type" .= maybe "kubernetes.io/tls" id (secretType :: Maybe String)
+          , "data" .= secretData
+          ]
 
 singleNodeHostname :: IO (Either String String)
 singleNodeHostname = do
@@ -2372,7 +2687,6 @@ helmUpgradeInstall release =
         [ "upgrade"
         , "--install"
         , "--wait"
-        , "--atomic"
         , "--timeout"
         , "30m0s"
         , chartReleasePlanReleaseName release
@@ -2383,18 +2697,99 @@ helmUpgradeInstall release =
         , "--values"
         , path
         ]
-    pure $ do
-      output <- outputResult
-      case processExitCode output of
-        ExitSuccess -> Right ()
-        ExitFailure _ ->
-          Left
-            ( "helm upgrade --install "
-                ++ chartReleasePlanReleaseName release
-                ++ " failed: "
-                ++ processStderr output
-                ++ processStdout output
-            )
+    case outputResult of
+      Left err -> pure (Left err)
+      Right output ->
+        case processExitCode output of
+          ExitSuccess -> pure (Right ())
+          ExitFailure _ -> do
+            diagnostics <- helmUpgradeFailureDiagnostics release
+            cleanupResult <-
+              runCaptured
+                ("helm uninstall " ++ chartReleasePlanReleaseName release)
+                "helm"
+                [ "uninstall"
+                , chartReleasePlanReleaseName release
+                , "--namespace"
+                , chartReleasePlanNamespace release
+                , "--wait"
+                ]
+            let cleanupDetail =
+                  case cleanupResult of
+                    Left err -> "\nFailed release cleanup diagnostic:\n" ++ err
+                    Right cleanupOutput
+                      | processExitCode cleanupOutput == ExitSuccess ->
+                          "\nFailed release cleanup: helm uninstall completed."
+                      | otherwise ->
+                          "\nFailed release cleanup diagnostic:\n" ++ renderProcessOutput cleanupOutput
+            pure
+              ( Left
+                  ( "helm upgrade --install "
+                      ++ chartReleasePlanReleaseName release
+                      ++ " failed: "
+                      ++ renderProcessOutput output
+                      ++ diagnostics
+                      ++ cleanupDetail
+                  )
+              )
+
+helmUpgradeFailureDiagnostics :: ChartReleasePlan -> IO String
+helmUpgradeFailureDiagnostics release = do
+  let namespace = chartReleasePlanNamespace release
+      releaseName = chartReleasePlanReleaseName release
+      selector = "app.kubernetes.io/instance=" ++ releaseName
+  outputs <-
+    sequence
+      [ diagnosticCommand
+          "helm status"
+          "helm"
+          ["status", releaseName, "--namespace", namespace]
+      , diagnosticCommand
+          "kubectl get release resources"
+          "kubectl"
+          [ "get"
+          , "deployments,pods,svc"
+          , "-n"
+          , namespace
+          , "-l"
+          , selector
+          , "-o"
+          , "wide"
+          ]
+      , diagnosticCommand
+          "kubectl describe release pods"
+          "kubectl"
+          ["describe", "pods", "-n", namespace, "-l", selector]
+      , diagnosticCommand
+          "kubectl namespace events"
+          "kubectl"
+          [ "get"
+          , "events"
+          , "-n"
+          , namespace
+          , "--sort-by=.lastTimestamp"
+          ]
+      ]
+  pure ("\nRelease diagnostics before cleanup:\n" ++ concat outputs)
+
+diagnosticCommand :: String -> FilePath -> [String] -> IO String
+diagnosticCommand label subprocessPath args = do
+  outputResult <- runCaptured label subprocessPath args
+  pure $
+    unlines
+      [ "== " ++ label ++ " =="
+      , case outputResult of
+          Left err -> err
+          Right output -> renderProcessOutput output
+      ]
+
+renderProcessOutput :: ProcessOutput -> String
+renderProcessOutput output =
+  case filter
+    (/= "")
+    [trimWhitespace (processStderr output), trimWhitespace (processStdout output)] of
+    [] -> "subprocess exited without output"
+    rendered -> intercalate "\n" rendered
 
 helmReleaseSnapshots :: IO (Either String (Map String ChartInstallSnapshot))
 helmReleaseSnapshots = do

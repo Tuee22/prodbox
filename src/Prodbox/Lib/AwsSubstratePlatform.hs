@@ -60,14 +60,16 @@ import Prodbox.CLI.Output
 import Prodbox.CLI.Rke2
   ( MinioImageSource (..)
   , acmeRuntimeManifestWith
+  , ensureAdminPublicEdgeRoutes
   , ensureGatewayImagesForSubstrate
+  , ensureGatewayMinioBootstrap
   , ensureHarborRegistryRuntime
   , ensureHarborRegistryStorageBackend
   , ensureMinioRuntime
   , ensurePostgresOperatorRuntime
   , ensurePublicEdgeWorkloadImageForSubstrate
   )
-import Prodbox.ContainerImage (requiredPublicImagePairs)
+import Prodbox.ContainerImage qualified as ContainerImage
 import Prodbox.Error (fatalError)
 import Prodbox.Infra.AwsEksTestStack
   ( AwsEksTestStackSnapshot (..)
@@ -93,6 +95,7 @@ import Prodbox.Result (Result (..))
 import Prodbox.Settings
   ( ConfigFile (..)
   , Credentials (..)
+  , DeploymentSection (..)
   , ValidatedSettings (..)
   , aws
   )
@@ -294,6 +297,21 @@ waitForDeployment namespace deploymentName =
       , subprocessWorkingDirectory = Nothing
       }
 
+waitForCrdEstablished :: String -> IO ExitCode
+waitForCrdEstablished crdName =
+  runStreaming
+    Subprocess
+      { subprocessPath = "kubectl"
+      , subprocessArguments =
+          [ "wait"
+          , "--for=condition=Established"
+          , "--timeout=300s"
+          , "crd/" ++ crdName
+          ]
+      , subprocessEnvironment = Nothing
+      , subprocessWorkingDirectory = Nothing
+      }
+
 -- Envoy Gateway upstream OCI chart. The home substrate consumes a
 -- Harbor-mirrored variant; on the AWS substrate (no Harbor) we install
 -- directly from the upstream OCI registry so the EKS cluster can pull the
@@ -320,8 +338,9 @@ awsSubstrateEnvoyGatewayNamespace = "envoy-gateway-system"
 -- chart provisions the Envoy Gateway controller deployment plus its
 -- supporting CRDs; the controller picks up `Gateway`/`HTTPRoute` resources
 -- created later by the chart-platform layer.
-ensureAwsSubstrateEnvoyGatewayRuntime :: IO ExitCode
-ensureAwsSubstrateEnvoyGatewayRuntime = do
+ensureAwsSubstrateEnvoyGatewayRuntime
+  :: FilePath -> ValidatedSettings -> String -> String -> IO ExitCode
+ensureAwsSubstrateEnvoyGatewayRuntime repoRoot settings prodboxId labelValue = do
   writeOutputLine
     ( "Installing Envoy Gateway "
         ++ awsSubstrateEnvoyGatewayChartVersion
@@ -352,7 +371,121 @@ ensureAwsSubstrateEnvoyGatewayRuntime = do
   case installExit of
     ExitFailure _ -> pure installExit
     ExitSuccess ->
-      waitForDeployment awsSubstrateEnvoyGatewayNamespace awsSubstrateEnvoyGatewayReleaseName
+      runSequentially
+        [ waitForDeployment awsSubstrateEnvoyGatewayNamespace awsSubstrateEnvoyGatewayReleaseName
+        , waitForCrdEstablished "gatewayclasses.gateway.networking.k8s.io"
+        , waitForCrdEstablished "gateways.gateway.networking.k8s.io"
+        , waitForCrdEstablished "httproutes.gateway.networking.k8s.io"
+        , waitForCrdEstablished "envoyproxies.gateway.envoyproxy.io"
+        , waitForCrdEstablished "securitypolicies.gateway.envoyproxy.io"
+        , applyAwsSubstrateEnvoyGatewayRuntime repoRoot settings prodboxId labelValue
+        ]
+
+publicEdgeGatewayClassName :: String
+publicEdgeGatewayClassName = "prodbox-public-edge"
+
+publicEdgeEnvoyProxyName :: String
+publicEdgeEnvoyProxyName = "prodbox-public-edge"
+
+applyAwsSubstrateEnvoyGatewayRuntime
+  :: FilePath -> ValidatedSettings -> String -> String -> IO ExitCode
+applyAwsSubstrateEnvoyGatewayRuntime repoRoot settings prodboxId labelValue = do
+  writeOutputLine "Applying AWS-substrate Envoy Gateway runtime (GatewayClass + EnvoyProxy)"
+  let manifestList =
+        object
+          [ "apiVersion" .= ("v1" :: String)
+          , "kind" .= ("List" :: String)
+          , "items" .= awsSubstrateEnvoyGatewayRuntimeManifest settings prodboxId labelValue
+          ]
+  withTempJsonFile
+    repoRoot
+    "aws-envoy-gateway-runtime"
+    (encode manifestList)
+    ( \manifestPath ->
+        runStreaming
+          Subprocess
+            { subprocessPath = "kubectl"
+            , subprocessArguments = ["apply", "-f", manifestPath]
+            , subprocessEnvironment = Nothing
+            , subprocessWorkingDirectory = Just repoRoot
+            }
+    )
+
+awsSubstrateEnvoyGatewayRuntimeManifest :: ValidatedSettings -> String -> String -> [Value]
+awsSubstrateEnvoyGatewayRuntimeManifest settings prodboxId labelValue =
+  [ object
+      [ "apiVersion" .= ("gateway.envoyproxy.io/v1alpha1" :: String)
+      , "kind" .= ("EnvoyProxy" :: String)
+      , "metadata"
+          .= object
+            [ "name" .= publicEdgeEnvoyProxyName
+            , "namespace" .= awsSubstrateEnvoyGatewayNamespace
+            , "annotations" .= object [Key.fromString "prodbox.io/id" .= prodboxId]
+            , "labels" .= object [Key.fromString "prodbox.io/id" .= labelValue]
+            ]
+      , "spec"
+          .= object
+            [ "provider"
+                .= object
+                  [ "type" .= ("Kubernetes" :: String)
+                  , "kubernetes"
+                      .= object
+                        [ "envoyDeployment"
+                            .= object
+                              [ "replicas" .= configuredEnvoyGatewayDataPlaneReplicas settings
+                              , "container"
+                                  .= object
+                                    [ "image"
+                                        .= ContainerImage.renderImageRef ContainerImage.harborEnvoyProxyImage
+                                    ]
+                              ]
+                        , "envoyService"
+                            .= object
+                              [ "name" .= ("public-edge" :: String)
+                              , "type" .= ("LoadBalancer" :: String)
+                              , "annotations"
+                                  .= object
+                                    [ Key.fromString "service.beta.kubernetes.io/aws-load-balancer-type"
+                                        .= ("external" :: String)
+                                    , Key.fromString "service.beta.kubernetes.io/aws-load-balancer-nlb-target-type"
+                                        .= ("ip" :: String)
+                                    , Key.fromString "service.beta.kubernetes.io/aws-load-balancer-scheme"
+                                        .= ("internet-facing" :: String)
+                                    , Key.fromString "service.beta.kubernetes.io/aws-load-balancer-ip-address-type"
+                                        .= ("ipv4" :: String)
+                                    ]
+                              , "labels" .= object [Key.fromString "prodbox.io/id" .= labelValue]
+                              ]
+                        ]
+                  ]
+            ]
+      ]
+  , object
+      [ "apiVersion" .= ("gateway.networking.k8s.io/v1" :: String)
+      , "kind" .= ("GatewayClass" :: String)
+      , "metadata"
+          .= object
+            [ "name" .= publicEdgeGatewayClassName
+            , "annotations" .= object [Key.fromString "prodbox.io/id" .= prodboxId]
+            , "labels" .= object [Key.fromString "prodbox.io/id" .= labelValue]
+            ]
+      , "spec"
+          .= object
+            [ "controllerName" .= ("gateway.envoyproxy.io/gatewayclass-controller" :: String)
+            , "parametersRef"
+                .= object
+                  [ "group" .= ("gateway.envoyproxy.io" :: String)
+                  , "kind" .= ("EnvoyProxy" :: String)
+                  , "name" .= publicEdgeEnvoyProxyName
+                  , "namespace" .= awsSubstrateEnvoyGatewayNamespace
+                  ]
+            ]
+      ]
+  ]
+
+configuredEnvoyGatewayDataPlaneReplicas :: ValidatedSettings -> Int
+configuredEnvoyGatewayDataPlaneReplicas settings =
+  maybe 1 fromIntegral (envoy_gateway_data_plane_replicas (deployment (validatedConfig settings)))
 
 -- cert-manager upstream chart. The home substrate consumes Harbor-mirrored
 -- cert-manager controller, webhook, cainjector, acmesolver, and
@@ -526,7 +659,7 @@ ensureAwsSubstratePlatformRuntime
 ensureAwsSubstratePlatformRuntime repoRoot settings prodboxId labelValue = do
   writeOutputLine
     ( "Reconciling AWS-substrate platform (LB Controller + Envoy Gateway "
-        ++ "+ cert-manager + ACME + containerd registry mirror + MinIO + Harbor)"
+        ++ "+ cert-manager + ACME + containerd registry mirror + MinIO + Harbor + admin routes)"
     )
   outputsResult <-
     fetchPerRunStackOutputs repoRoot (StackName (Text.pack awsEksTestStackName))
@@ -551,7 +684,7 @@ ensureAwsSubstratePlatformRuntime repoRoot settings prodboxId labelValue = do
      in if null configured then "us-east-1" else configured
   steps snapshot =
     [ ensureAwsLoadBalancerControllerRuntime repoRoot defaultRegion snapshot
-    , ensureAwsSubstrateEnvoyGatewayRuntime
+    , ensureAwsSubstrateEnvoyGatewayRuntime repoRoot settings prodboxId labelValue
     , ensureAwsSubstrateCertManagerRuntime
     , ensureAwsSubstrateAcmeRuntime repoRoot settings prodboxId labelValue
     , applyEksContainerdMirrorDaemonSet repoRoot
@@ -563,6 +696,8 @@ ensureAwsSubstratePlatformRuntime repoRoot settings prodboxId labelValue = do
     , ensurePublicEdgeWorkloadImageForSubstrate SubstrateAws repoRoot prodboxId
     , ensurePostgresOperatorRuntime repoRoot prodboxId labelValue
     , ensureMinioRuntime repoRoot SubstrateAws MinioSteadyStateHarbor
+    , ensureGatewayMinioBootstrap repoRoot
+    , ensureAdminPublicEdgeRoutes repoRoot settings SubstrateAws prodboxId labelValue
     ]
 
 -- | Pure listing of the orchestration steps
@@ -585,6 +720,8 @@ awsSubstratePlatformRuntimeStepDescriptions =
   , "ensurePublicEdgeWorkloadImageForSubstrate SubstrateAws"
   , "ensurePostgresOperatorRuntime"
   , "ensureMinioRuntime SubstrateAws MinioSteadyStateHarbor"
+  , "ensureGatewayMinioBootstrap"
+  , "ensureAdminPublicEdgeRoutes SubstrateAws"
   ]
 
 -- | Sprint 7.5.c.iv: apply the in-cluster image-mirror Job rendered
@@ -612,7 +749,7 @@ applyEksImageMirrorJob repoRoot = do
         object
           [ "apiVersion" .= ("v1" :: String)
           , "kind" .= ("List" :: String)
-          , "items" .= [eksImageMirrorJobManifest cfg requiredPublicImagePairs]
+          , "items" .= [eksImageMirrorJobManifest cfg ContainerImage.requiredPublicImagePairs]
           ]
   applyExit <-
     withTempJsonFile

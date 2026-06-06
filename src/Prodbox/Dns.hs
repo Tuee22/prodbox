@@ -1,13 +1,15 @@
 {-# LANGUAGE OverloadedStrings #-}
 
 module Prodbox.Dns
-  ( configuredPublicHostFqdns
+  ( changeRoute53ARecordSetInZone
+  , configuredPublicHostFqdns
   , fetchPublicIp
   , preferredApiHostFqdn
   , preferredIdentityHostFqdn
   , preferredPublicHostFqdn
   , preferredWebsocketHostFqdn
   , queryRoute53Record
+  , queryRoute53ARecordValuesInZone
   , queryRoute53RecordInZone
   , renderDnsStatusReport
   , runDnsCommand
@@ -17,6 +19,9 @@ where
 import Data.Aeson
   ( Value (..)
   , eitherDecode
+  , encode
+  , object
+  , (.=)
   )
 import Data.Aeson.KeyMap qualified as KeyMap
 import Data.ByteString.Lazy.Char8 qualified as BL8
@@ -136,6 +141,19 @@ queryRoute53RecordInZone
   -> String
   -> IO (Either String (Maybe String))
 queryRoute53RecordInZone repoRoot settings hostedZoneId fqdn = do
+  valuesResult <- queryRoute53ARecordValuesInZone repoRoot settings hostedZoneId fqdn
+  pure $ case valuesResult of
+    Left err -> Left err
+    Right [] -> Right Nothing
+    Right (firstValue : _) -> Right (Just firstValue)
+
+queryRoute53ARecordValuesInZone
+  :: FilePath
+  -> ValidatedSettings
+  -> Text
+  -> String
+  -> IO (Either String [String])
+queryRoute53ARecordValuesInZone repoRoot settings hostedZoneId fqdn = do
   outputResult <-
     captureSubprocessResult
       Subprocess
@@ -156,48 +174,134 @@ queryRoute53RecordInZone repoRoot settings hostedZoneId fqdn = do
       Failure err -> Left ("failed to start `aws route53 list-resource-record-sets`: " ++ err)
       Success output ->
         case processExitCode output of
-          ExitSuccess -> parseRoute53Record fqdn (processStdout output)
+          ExitSuccess -> parseRoute53RecordValues fqdn (processStdout output)
           ExitFailure _ -> Left ("aws route53 list-resource-record-sets failed: " ++ outputDetail output)
  where
   config = validatedConfig settings
 
-parseRoute53Record :: String -> String -> Either String (Maybe String)
-parseRoute53Record fqdn stdoutText = do
+changeRoute53ARecordSetInZone
+  :: FilePath
+  -> ValidatedSettings
+  -> Text
+  -> String
+  -> [String]
+  -> Int
+  -> IO (Either String ())
+changeRoute53ARecordSetInZone repoRoot settings hostedZoneId fqdn recordValues ttlValue
+  | null recordValues = pure (Left ("refusing to write empty Route 53 A record set for " ++ fqdn))
+  | otherwise = do
+      changeResult <-
+        captureSubprocessResult
+          Subprocess
+            { subprocessPath = "aws"
+            , subprocessArguments =
+                [ "route53"
+                , "change-resource-record-sets"
+                , "--hosted-zone-id"
+                , Text.unpack hostedZoneId
+                , "--change-batch"
+                , BL8.unpack (encode (route53AChangeBatch "UPSERT" fqdn recordValues ttlValue))
+                , "--query"
+                , "ChangeInfo.Id"
+                , "--output"
+                , "text"
+                ]
+            , subprocessEnvironment = Just (awsCliEnvironment (aws config))
+            , subprocessWorkingDirectory = Just repoRoot
+            }
+      case changeResult of
+        Failure err -> pure (Left ("failed to start `aws route53 change-resource-record-sets`: " ++ err))
+        Success changeOutput ->
+          case processExitCode changeOutput of
+            ExitFailure _ -> pure (Left ("aws route53 change-resource-record-sets failed: " ++ outputDetail changeOutput))
+            ExitSuccess -> do
+              waitResult <-
+                captureSubprocessResult
+                  Subprocess
+                    { subprocessPath = "aws"
+                    , subprocessArguments =
+                        [ "route53"
+                        , "wait"
+                        , "resource-record-sets-changed"
+                        , "--id"
+                        , trim (processStdout changeOutput)
+                        ]
+                    , subprocessEnvironment = Just (awsCliEnvironment (aws config))
+                    , subprocessWorkingDirectory = Just repoRoot
+                    }
+              pure $ case waitResult of
+                Failure err -> Left ("failed to start `aws route53 wait resource-record-sets-changed`: " ++ err)
+                Success waitOutput ->
+                  case processExitCode waitOutput of
+                    ExitSuccess -> Right ()
+                    ExitFailure _ -> Left ("aws route53 wait resource-record-sets-changed failed: " ++ outputDetail waitOutput)
+ where
+  config = validatedConfig settings
+
+route53AChangeBatch :: String -> String -> [String] -> Int -> Value
+route53AChangeBatch action fqdn recordValues ttlValue =
+  object
+    [ "Changes"
+        .= [ object
+               [ "Action" .= action
+               , "ResourceRecordSet"
+                   .= object
+                     [ "Name" .= ensureTrailingDot fqdn
+                     , "Type" .= ("A" :: String)
+                     , "TTL" .= ttlValue
+                     , "ResourceRecords" .= map (\value -> object ["Value" .= value]) recordValues
+                     ]
+               ]
+           ]
+    ]
+
+parseRoute53RecordValues :: String -> String -> Either String [String]
+parseRoute53RecordValues fqdn stdoutText = do
   payload <- eitherDecode (BL8.pack stdoutText) :: Either String Value
-  pure (recordIpForFqdn (ensureTrailingDot fqdn) payload)
+  pure (recordIpsForFqdn (ensureTrailingDot fqdn) payload)
 
-recordIpForFqdn :: String -> Value -> Maybe String
-recordIpForFqdn fqdn payload =
+recordIpsForFqdn :: String -> Value -> [String]
+recordIpsForFqdn fqdn payload =
   case payload of
-    Object obj -> do
-      Array records <- KeyMap.lookup "ResourceRecordSets" obj
-      findRecordIp fqdn (Vector.toList records)
-    _ -> Nothing
+    Object obj ->
+      case KeyMap.lookup "ResourceRecordSets" obj of
+        Just (Array records) -> findRecordIps fqdn (Vector.toList records)
+        _ -> []
+    _ -> []
 
-findRecordIp :: String -> [Value] -> Maybe String
-findRecordIp _ [] = Nothing
-findRecordIp fqdn (value : remaining) =
+findRecordIps :: String -> [Value] -> [String]
+findRecordIps _ [] = []
+findRecordIps fqdn (value : remaining) =
   case value of
     Object obj ->
       let nameMatches = KeyMap.lookup "Name" obj == Just (String (Text.pack fqdn))
           typeMatches = KeyMap.lookup "Type" obj == Just (String "A")
        in if nameMatches && typeMatches
-            then firstRecordIp obj
-            else findRecordIp fqdn remaining
-    _ -> findRecordIp fqdn remaining
+            then recordIps obj
+            else findRecordIps fqdn remaining
+    _ -> findRecordIps fqdn remaining
 
-firstRecordIp :: KeyMap.KeyMap Value -> Maybe String
-firstRecordIp obj = do
-  Array records <- KeyMap.lookup "ResourceRecords" obj
-  firstValue <- case Vector.toList records of
-    [] -> Nothing
-    (record : _) -> Just record
-  case firstValue of
+recordIps :: KeyMap.KeyMap Value -> [String]
+recordIps obj =
+  case KeyMap.lookup "ResourceRecords" obj of
+    Just (Array records) -> mapMaybeValue recordValue (Vector.toList records)
+    _ -> []
+
+recordValue :: Value -> Maybe String
+recordValue value =
+  case value of
     Object recordObj ->
       case KeyMap.lookup "Value" recordObj of
-        Just (String value) -> Just (Text.unpack value)
+        Just (String recordText) -> Just (Text.unpack recordText)
         _ -> Nothing
     _ -> Nothing
+
+mapMaybeValue :: (a -> Maybe b) -> [a] -> [b]
+mapMaybeValue _ [] = []
+mapMaybeValue f (value : remaining) =
+  case f value of
+    Nothing -> mapMaybeValue f remaining
+    Just result -> result : mapMaybeValue f remaining
 
 ensureTrailingDot :: String -> String
 ensureTrailingDot value = if null value || last value == '.' then value else value ++ "."

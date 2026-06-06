@@ -27,7 +27,9 @@ chart reconciler surface now treats already-deployed healthy releases as a succe
 rejects the doctrine-forbidden flags and sister commands, chart dry-run plans are rendered and
 golden-covered, the structural-lint implementation is live on `prodbox lint chart`, and the
 marker-delimited route inventory generated from `src/Prodbox/PublicEdge.hs` is now emitted into
-the consuming chart templates.
+the consuming chart templates. Sprint `3.13` closed on 2026-06-01 via the live
+home-substrate preserved-data and lifecycle exercise; Sprint `3.14` closed on the same
+run when `charts-api` and `charts-websocket` proved the Dhall workload config path.
 
 ## Phase Summary
 
@@ -687,7 +689,7 @@ None.
 
 ## Sprint 3.13: Chart Secrets Derived by the Gateway Service ✅
 
-**Status**: Active on the live-operator step only — code-owned surface
+**Status**: Done — code-owned surface
 fully closed (chunks 1\8211\&16) as of 2026-05-31. Every host-side
 `.prodbox-state/` chart-secret + gateway-event-key writer has been
 removed; chart secrets and gateway event keys all flow through
@@ -902,8 +904,10 @@ pre-install Jobs for the two releases with derived inventory entries
   `hook-delete-policy: before-hook-creation,hook-succeeded`) that
   POST `{"namespace":"<release-ns>","release":"<release-name>"}` to
   the gateway's `/v1/secret/ensure-namespace` endpoint via
-  `curlimages/curl:8.10.1` (small + curl-only image). `--retry 5
-  --retry-delay 2 --retry-connrefused` covers transient daemon-pod
+  the canonical Harbor mirror
+  `127.0.0.1:30080/prodbox/curl-mirror:8.11.0` (small +
+  curl-only image). `--retry 12 --retry-delay 5
+  --retry-connrefused` covers transient daemon-pod
   readiness flaps; `--max-time 30` bounds the wait. The Job's
   successful completion is the gate that lets the chart's actual
   Secret manifests (which `lookup` the daemon-applied Secrets)
@@ -1012,7 +1016,7 @@ The live closure gate (four-block preserved-data + recovery-escape-hatch
 remaining chunks land.
 
 **Blocked by**: ~~Sprint 2.19~~ unblocked — `/v1/secret/ensure-namespace` is no longer a structured-503 stub; the daemon handler dispatch is live.
-**Implementation**: ✅ `src/Prodbox/Secret/Inventory.hs` (doctrine-§6 inventory; 2026-05-30); ✅ `src/Prodbox/K8s/InCluster.hs` (in-pod credentials loader + REST-path / manifest helpers + `K8sSecretOps` capability + TLS-backed `inClusterK8sSecretOps` constructor; 2026-05-30); ✅ `src/Prodbox/Secret/EnsureNamespace.hs` (`applyDerivedSecrets` pipeline + sha256/base64url wire helpers; 2026-05-30); ✅ `src/Prodbox/Gateway/Daemon.hs::handleSecretEnsureNamespace` (replaces the 503 stub with the full request-body parse + master-seed gate + ServiceAccount load + TLS client construction + `applyDerivedSecrets` invocation + structured response; 2026-05-30); ✅ `charts/gateway/templates/serviceaccount.yaml` + `rbac.yaml` + `service-clusterip.yaml` + `deployments.yaml::serviceAccountName` (per-target-namespace Role + RoleBinding pairs for `secrets:get,create,patch` + unsuffixed in-cluster ClusterIP; 2026-05-30); ✅ `charts/keycloak-postgres/templates/secret-bootstrap-job.yaml` + `charts/keycloak/templates/secret-bootstrap-job.yaml` (Helm pre-install Jobs that POST to ensure-namespace via the gateway ClusterIP; 2026-05-30); 🔄 `src/Prodbox/Lib/ChartPlatform.hs` (gut `resolveChartSecrets`); 🔄 `charts/<release>/templates/secret.yaml` (lookup-guarded patterns for non-derived fields).
+**Implementation**: ✅ `src/Prodbox/Secret/Inventory.hs` (doctrine-§6 inventory; 2026-05-30); ✅ `src/Prodbox/K8s/InCluster.hs` (in-pod credentials loader + REST-path / manifest helpers + `K8sSecretOps` capability + TLS-backed `inClusterK8sSecretOps` constructor; 2026-05-30); ✅ `src/Prodbox/Secret/EnsureNamespace.hs` (`applyDerivedSecrets` pipeline + sha256/base64url wire helpers; 2026-05-30); ✅ `src/Prodbox/Gateway/Daemon.hs::handleSecretEnsureNamespace` (replaces the 503 stub with the full request-body parse + master-seed gate + ServiceAccount load + TLS client construction + `applyDerivedSecrets` invocation + structured response; 2026-05-30); ✅ `charts/gateway/templates/serviceaccount.yaml` + `rbac.yaml` + `service-clusterip.yaml` + `deployments.yaml::serviceAccountName` (per-target-namespace Role + RoleBinding pairs for `secrets:get,create,patch` + unsuffixed in-cluster ClusterIP; 2026-05-30); ✅ `charts/keycloak-postgres/templates/secret-bootstrap-job.yaml` + `charts/keycloak/templates/secret-bootstrap-job.yaml` (Helm pre-install Jobs that POST to ensure-namespace via the gateway ClusterIP; 2026-05-30); ✅ `src/Prodbox/Lib/ChartPlatform.hs` (`resolveChartSecrets` cache removal); ✅ `charts/<release>/templates/secret.yaml` (lookup-guarded patterns for non-derived fields).
 **Docs to update**: `documents/engineering/helm_chart_platform_doctrine.md`, `documents/engineering/secret_derivation_doctrine.md`, `documents/engineering/distributed_gateway_architecture.md`, [legacy-tracking-for-deletion.md](legacy-tracking-for-deletion.md)
 
 ### Objective
@@ -1121,7 +1125,7 @@ Validated on all five static gates: `prodbox check-code` exit 0,
 `prodbox lint docs` / `docs check` exit 0; `helm template` renders cleanly for
 `keycloak`, `keycloak-postgres`, `vscode`, `websocket`.
 
-### Remaining Work
+### Current Validation State
 
 **Chunk 16 (2026-05-31 still later)** closes the host-side cache
 eradication completely. The gateway per-node event-key cache
@@ -1330,6 +1334,11 @@ derived passwords flowing through k8s Secrets to chart consumers
 validated against a real Keycloak realm import, a real OIDC
 handshake, and a real cluster-wipe-and-rebuild cycle.
 
+### Remaining Work
+
+None. The only failing validation in the closure run was `keycloak-invite`, which is
+owned by Sprint `8.5`.
+
 ## Documentation Requirements
 
 **Engineering docs to create/update:**
@@ -1357,7 +1366,7 @@ handshake, and a real cluster-wipe-and-rebuild cycle.
 
 ## Sprint 3.14: Workload Mode via Dhall (Replaces `PRODBOX_WORKLOAD_MODE` Env Var) ✅
 
-**Status**: Active (May 24, 2026 — code-owned surface landed: new
+**Status**: Done (May 24, 2026 — code-owned surface landed: new
 `src/Prodbox/Workload/Settings.hs` module with `loadWorkloadConfig ::
 FilePath -> IO (Either String WorkloadConfigDhall)` decoder, schema covers
 `mode : < Api | Websocket >` plus optional `log_level` / `workload_port` /
@@ -1445,13 +1454,11 @@ via `Dhall.inputFile auto`.
 
 ### Remaining Work
 
-- All code-owned work is shipped on the workload-binary and chart-side surfaces.
-  Live operator exercise (`prodbox rke2 reconcile` plus `prodbox charts deploy api` /
-  `prodbox charts deploy websocket`) is the only remaining closure gate. The
-  workload-only Dhall schema currently lives inline in
-  `src/Prodbox/Workload/Settings.hs::WorkloadConfigDhall`; promoting it to a
-  sibling `prodbox-workload-types.dhall` is an optional follow-up and not a
-  closure blocker.
+None. The 2026-06-01 live `prodbox test all` retry 21 deployed `api` and `websocket`
+through the mounted Dhall config path and passed both public-edge validations. The
+workload-only Dhall schema remains inline in
+`src/Prodbox/Workload/Settings.hs::WorkloadConfigDhall`; promoting it to a sibling
+`prodbox-workload-types.dhall` remains optional follow-up work, not a closure blocker.
 
 ## Related Documents
 

@@ -4,6 +4,7 @@ module Prodbox.PublicEdge
   ( PublicEdgeRoute (..)
   , adminPublicRoutes
   , apiPathPrefix
+  , awsSubstrateHostedZoneIdEnvVar
   , authPathPrefix
   , canonicalPublicRouteCatalog
   , harborPathPrefix
@@ -16,7 +17,9 @@ module Prodbox.PublicEdge
   , sharedPublicHostFqdns
   , resolveSubstrateHostedZoneId
   , substrateHostedZoneId
+  , substrateIdentityIssuerUrl
   , substratePublicFqdn
+  , substratePublicRouteUrl
   , withSubstrateKubectlEnvironment
   , vscodePathPrefix
   , websocketOidcPathPrefix
@@ -25,9 +28,12 @@ module Prodbox.PublicEdge
 where
 
 import Control.Exception (bracket_)
-import Data.Map.Strict qualified as Map
 import Data.Text (Text)
 import Data.Text qualified as Text
+import Prodbox.Infra.AwsEksSubzoneStack
+  ( AwsEksSubzoneStackSnapshot (..)
+  , parseAwsEksSubzoneStackFromOutputs
+  )
 import Prodbox.Infra.AwsEksTestStack (withEksKubeconfig)
 import Prodbox.Infra.StackOutputs (StackName (..))
 import Prodbox.Lifecycle.LiveResidue
@@ -70,6 +76,9 @@ websocketPathPrefix = "/ws"
 
 websocketOidcPathPrefix :: String
 websocketOidcPathPrefix = websocketPathPrefix ++ "/oidc"
+
+awsSubstrateHostedZoneIdEnvVar :: String
+awsSubstrateHostedZoneIdEnvVar = "PRODBOX_AWS_SUBSTRATE_HOSTED_ZONE_ID"
 
 harborPathPrefix :: String
 harborPathPrefix = "/harbor"
@@ -128,6 +137,14 @@ substratePublicFqdn settings substrate =
                 \development_plan_standards.md \xc2\xa7 M (no fallback)"
             else Text.unpack stripped
 
+substratePublicRouteUrl :: ValidatedSettings -> Substrate -> PublicEdgeRoute -> String
+substratePublicRouteUrl settings substrate route =
+  "https://" ++ substratePublicFqdn settings substrate ++ publicRoutePathPrefix route
+
+substrateIdentityIssuerUrl :: ValidatedSettings -> Substrate -> String
+substrateIdentityIssuerUrl settings substrate =
+  substratePublicRouteUrl settings substrate PublicRouteAuth ++ "/realms/prodbox"
+
 substrateHostedZoneId :: ValidatedSettings -> Substrate -> Text
 substrateHostedZoneId settings substrate =
   case substrate of
@@ -170,28 +187,47 @@ resolveSubstrateHostedZoneId repoRoot settings substrate =
     SubstrateHomeLocal ->
       pure (Right (zone_id (route53 (validatedConfig settings))))
     SubstrateAws -> do
+      envHostedZoneId <- lookupEnv awsSubstrateHostedZoneIdEnvVar
       let configured =
             Text.strip (hosted_zone_id (aws_substrate (validatedConfig settings)))
+          environmentConfigured =
+            maybe "" (Text.strip . Text.pack) envHostedZoneId
       if not (Text.null configured)
         then pure (Right configured)
-        else do
-          -- Sprint 4.18: read the hosted zone ID from the live
-          -- aws-eks-subzone Pulumi outputs rather than the legacy
-          -- `.prodbox-state/aws-eks-subzone/stack-snapshot.json` file.
-          outputsResult <-
-            fetchPerRunStackOutputs repoRoot (StackName (Text.pack awsEksSubzoneStackName))
-          pure $ case outputsResult of
-            Right outputs
-              | Just subzoneId <- Map.lookup "subzone_id" outputs
-              , not (Text.null subzoneId) ->
-                  Right subzoneId
-            _ ->
-              Left
-                "resolveSubstrateHostedZoneId: aws_substrate.hosted_zone_id is \
-                \empty and the live aws-eks-subzone Pulumi backend has no \
-                \subzone_id output. Run `prodbox pulumi aws-subzone-resources \
-                \--yes` to provision the subzone, or set \
-                \aws_substrate.hosted_zone_id in prodbox-config.dhall."
+        else
+          if not (Text.null environmentConfigured)
+            then pure (Right environmentConfigured)
+            else do
+              -- Sprint 4.18: read the hosted zone ID from the live
+              -- aws-eks-subzone Pulumi outputs rather than the legacy
+              -- `.prodbox-state/aws-eks-subzone/stack-snapshot.json` file.
+              outputsResult <-
+                fetchPerRunStackOutputs repoRoot (StackName (Text.pack awsEksSubzoneStackName))
+              pure $ case outputsResult of
+                Left err ->
+                  Left
+                    ( "resolveSubstrateHostedZoneId: aws_substrate.hosted_zone_id is \
+                      \empty and the live aws-eks-subzone Pulumi outputs could not \
+                      \be read: "
+                        ++ err
+                        ++ ". Run `prodbox pulumi aws-subzone-resources` to provision \
+                           \the subzone, or set aws_substrate.hosted_zone_id in \
+                           \prodbox-config.dhall."
+                    )
+                Right outputs ->
+                  case parseAwsEksSubzoneStackFromOutputs outputs of
+                    Right snapshot ->
+                      Right (Text.pack (subzoneSnapshotSubzoneId snapshot))
+                    Left err ->
+                      Left
+                        ( "resolveSubstrateHostedZoneId: aws_substrate.hosted_zone_id is \
+                          \empty and the live aws-eks-subzone Pulumi outputs are \
+                          \incomplete: "
+                            ++ err
+                            ++ ". Run `prodbox pulumi aws-subzone-resources` to provision \
+                               \the subzone, or set aws_substrate.hosted_zone_id in \
+                               \prodbox-config.dhall."
+                        )
 
 -- | Sprint 7.5.c.v follow-up (Sprint 4.18 fifth chunk re-migration):
 -- bracket an IO action with the substrate-specific @KUBECONFIG@ + @AWS_*@

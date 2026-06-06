@@ -32,6 +32,23 @@ spec:
         - name: api
           port: {{ .Values.api.port }}
 ---
+apiVersion: gateway.networking.k8s.io/v1beta1
+kind: ReferenceGrant
+metadata:
+  name: {{ .Values.jwt.jwksBackend.referenceGrantName | quote }}
+  namespace: {{ .Values.jwt.jwksBackend.namespace | quote }}
+  labels:
+    {{- include "api.labels" . | nindent 4 }}
+spec:
+  from:
+    - group: gateway.envoyproxy.io
+      kind: SecurityPolicy
+      namespace: {{ .Release.Namespace | quote }}
+  to:
+    - group: ""
+      kind: Service
+      name: {{ .Values.jwt.jwksBackend.serviceName | quote }}
+---
 apiVersion: gateway.envoyproxy.io/v1alpha1
 kind: SecurityPolicy
 metadata:
@@ -51,6 +68,10 @@ spec:
           - {{ .Values.jwt.audience | quote }}
         remoteJWKS:
           uri: {{ .Values.jwt.jwksUri | quote }}
+          backendRefs:
+            - name: {{ .Values.jwt.jwksBackend.serviceName | quote }}
+              namespace: {{ .Values.jwt.jwksBackend.namespace | quote }}
+              port: {{ .Values.jwt.jwksBackend.servicePort }}
   authorization:
     defaultAction: Deny
     rules:

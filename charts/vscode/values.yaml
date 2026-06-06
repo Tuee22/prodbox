@@ -20,6 +20,11 @@ oidc:
   clientId: vscode
   clientSecret: change-me
   issuer: https://test.resolvefintech.com/auth/realms/prodbox
+  authorizationEndpoint: https://test.resolvefintech.com/auth/realms/prodbox/protocol/openid-connect/auth
+  tokenEndpoint: http://keycloak.vscode.svc.cluster.local:8080/auth/realms/prodbox/protocol/openid-connect/token
+  providerBackend:
+    serviceName: keycloak
+    servicePort: 8080
   redirectURL: https://test.resolvefintech.com/vscode/oauth2/callback
   logoutPath: /logout
   securityPolicyName: vscode-oidc

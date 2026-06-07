@@ -29,9 +29,11 @@ removed, lifecycle forbidden sister commands are rejected at parse time, the lif
 golden-covered, the dedicated `prodbox-pulumi` stanza proves the retained Pulumi-program
 ownership, local ephemeral-stack harness, typed-output contract, and forced-failure cleanup, the
 governed docs and validation call sites reference `reconcile`, and successful
-`prodbox rke2 delete --yes` runs are hermetic — benign upstream uninstall chatter such as
-`Failed to allocate directory watch: Too many open files` is filtered through the lifecycle-local
-quiet path, while non-zero uninstall exits still surface actionable upstream context.
+`prodbox rke2 delete --yes` runs are hermetic for chatter on the uninstaller's own stdout/stderr,
+which the lifecycle-local quiet path filters, while non-zero uninstall exits still surface
+actionable upstream context. (The inotify warning `Failed to allocate directory watch: Too many
+open files` is emitted out-of-band by systemd/journald to the console and is not capturable by the
+quiet path, so it may still appear on a successful run; it is benign — see streaming_doctrine.md §6.)
 
 ## Phase Summary
 
@@ -63,8 +65,11 @@ design — there is no separate "reload running daemons" step in the cascade. Se
   lifecycle-local `captureToolOutput` quiet path plus the expanded
   `isIgnorableRke2DeleteNoiseLine` filter that classifies inotify warnings (`Failed to allocate
   directory watch: Too many open files`), `Cannot find device`, `semodule: not found`, and
-  timestamped `Cleanup completed successfully` lines as benign noise. Non-zero uninstall exits
-  still surface actionable upstream lines through `summarizeRke2DeleteFailure`.
+  timestamped `Cleanup completed successfully` lines as benign noise. (The directory-watch warning
+  is usually emitted out-of-band by systemd/journald to the console rather than on the uninstaller's
+  captured fds, so the quiet path cannot hide it and it may still appear on a successful run; it is
+  benign — see streaming_doctrine.md §6.) Non-zero uninstall exits still surface actionable upstream
+  lines through `summarizeRke2DeleteFailure`.
 - `src/Prodbox/ContainerImage.hs` owns the canonical Harbor targets, required public-image
   inventory, and ordered upstream-candidate lists used during Harbor publication.
 - `src/Prodbox/CLI/Rke2.hs` publishes frontend and gateway custom images through ordinary
@@ -467,9 +472,11 @@ Command](../documents/engineering/cli_command_surface.md#reconcilers-idempotent-
   only the doctrine-owned summary lines remain (`Deleting local RKE2 environment...`, AWS destroy
   dispositions, `Local RKE2 substrate: cleanup complete`, kubeconfig disposition, retained-root
   notice).
-- Benign upstream uninstall chatter on success — including host-specific noise such as `Failed to
-  allocate directory watch: Too many open files` — is classified as ignorable success-path noise
-  and does not surface as an operator-visible red-herring error.
+- Benign upstream uninstall chatter on success that the uninstaller writes to its own stdout/stderr
+  is classified as ignorable success-path noise and does not surface as an operator-visible
+  red-herring error. The inotify warning `Failed to allocate directory watch: Too many open files`
+  is emitted out-of-band by systemd/journald to the console, so the quiet path cannot suppress it
+  and it may still appear on a successful run (benign — see streaming_doctrine.md §6).
 - When the uninstall exits non-zero, `prodbox` still renders actionable failure context through the
   existing summarizer path rather than hiding the upstream failure.
 - The fake uninstall harness in `test/integration/CliSuite.hs` gains both sides of the contract:

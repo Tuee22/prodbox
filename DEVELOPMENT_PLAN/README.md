@@ -868,8 +868,10 @@ sprints. Sprint 0.5 reopened Phase `4` through Sprint `4.8` to harden the
 `prodbox rke2 delete --yes` success-summary contract; Sprint
 `4.8` is now `Done`, the lifecycle-local quiet path captures the upstream uninstall output, the
 expanded `isIgnorableRke2DeleteNoiseLine` filter classifies inotify warnings such as
-`Failed to allocate directory watch: Too many open files` as benign noise, and the integration
-suite proves both the hermetic success contract and the summarized failure path. Sprint 1.2
+`Failed to allocate directory watch: Too many open files` as benign noise (note: this warning is
+usually emitted out-of-band by systemd/journald to the console, so the filter only catches it when
+systemd routes it to the captured stderr — it may still appear on a successful run, benign), and the
+integration suite proves both the hermetic success contract and the summarized failure path. Sprint 1.2
 was revised May 20, 2026 to replace the external `dhall-to-json` subprocess decode bridge
 with in-process decoding through the native Haskell `dhall` library
 (`Dhall.inputFile auto`); the `toolDhall` / `tool_dhall` external-tool prerequisite, the

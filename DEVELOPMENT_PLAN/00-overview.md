@@ -338,8 +338,10 @@ The reopened ranges close on the following sprint sets:
   and sister-command discipline on the lifecycle reconciler so the one-cycle deprecation
   alias preserves only the legacy name, not the forbidden flags (§1781–1803). Sprint
   4.8 hardens `prodbox rke2 delete --yes` so successful runs emit only doctrine-owned summary
-  lines and no longer surface benign upstream uninstall chatter such as `Failed to allocate
-  directory watch: Too many open files` as red-herring operator-visible errors.
+  lines and no longer surface benign upstream uninstall chatter on the uninstaller's own
+  stdout/stderr as red-herring operator-visible errors. (The inotify warning `Failed to allocate
+  directory watch: Too many open files` is emitted out-of-band by systemd/journald to the console,
+  so it may still appear on a successful run; it is benign — see streaming_doctrine.md §6.)
 - Phase 5: Sprint 5.5. The public edge gains a Gateway API HTTP listener on port `80` that
   returns only a permanent redirect to the canonical HTTPS URL, with no plaintext backend route,
   and the public-edge diagnostic plus named external validation prove that behavior. This

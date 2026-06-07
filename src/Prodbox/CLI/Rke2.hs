@@ -4435,6 +4435,11 @@ isIgnorableRke2DeleteNoiseLine line =
         || "cannot find device" `isInfixOf` lowered
         || "failed to reset failed state of unit" `isInfixOf` lowered
         || "semodule: not found" `isInfixOf` lowered
+        -- NOTE: the inotify warning below is usually emitted out-of-band by the systemd
+        -- manager (PID 1) / journald to the console, NOT through the uninstaller's captured
+        -- stdout/stderr. This entry only catches it on the rare path where systemd routes it
+        -- to the captured stderr; it cannot suppress the out-of-band console emission (which
+        -- stays benign and may still appear on a successful run). See streaming_doctrine.md §6.
         || "failed to allocate directory watch" `isInfixOf` lowered
         || "too many open files" `isInfixOf` lowered
         || "if this cluster was upgraded from an older release of the canal cni" `isPrefixOf` lowered

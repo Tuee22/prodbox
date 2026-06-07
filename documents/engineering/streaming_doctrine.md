@@ -64,12 +64,19 @@ noisy upstream uninstaller. Its operator-facing output rule splits cleanly along
   the lifecycle-local quiet path (`captureToolOutput`) and emits only the doctrine-owned summary
   lines — `Deleting local RKE2 environment...`, AWS destroy dispositions,
   `Local RKE2 substrate: cleanup complete`, the kubeconfig disposition, and the retained-root
-  notice. Benign upstream chatter such as `Cannot find device "cni0"`,
-  `semodule: not found`, `Failed to allocate directory watch: Too many open files`, and
-  `Cleanup completed successfully` does not reach the operator terminal.
+  notice. Benign upstream chatter that the uninstaller writes to its **own** stdout/stderr —
+  `Cannot find device "cni0"`, `semodule: not found`, and `Cleanup completed successfully` — does
+  not reach the operator terminal, because `captureToolOutput` swallows those streams on success.
+  The inotify warning `Failed to allocate directory watch: Too many open files` is the one
+  exception: the systemd manager (PID 1) / journald emits it **out-of-band to the console**, not
+  through the uninstaller's captured fds, so `captureToolOutput` cannot intercept it and it MAY
+  still appear interleaved on the operator terminal on an otherwise successful run. It stays benign
+  (teardown still succeeds).
 - Failure path: when the uninstaller exits non-zero, `summarizeRke2DeleteFailure` keeps the last
   actionable lines from stdout and stderr (filtered through `isIgnorableRke2DeleteNoiseLine` so
-  the benign classes above stay out of the summary) and renders them through the `writeError`
+  the benign classes above stay out of the summary — the directory-watch line only reaches that
+  filter on the rare path where systemd routes it to the uninstaller's stderr; its usual
+  out-of-band console emission is never in the captured streams) and renders them through the `writeError`
   boundary so the operator sees the failing command identity.
 
 This rule is scoped to `prodbox rke2 delete --yes`. It does not extend to repo-wide stderr

@@ -239,13 +239,17 @@ and `force-install` are forbidden sister commands rejected at parse time.
 `/usr/local/bin/rke2-uninstall.sh` exits `0`, only the doctrine-owned summary lines reach the
 operator terminal — `Deleting local RKE2 environment...`, the AWS EKS and AWS test stack destroy
 dispositions, `Local RKE2 substrate: cleanup complete`, the kubeconfig disposition, and the
-`Preserved host state:` boundary. Benign upstream uninstall chatter such as
-`Cannot find device "cni0"`, `semodule: not found`, `Failed to allocate directory watch: Too many
-open files`, and `Cleanup completed successfully` is captured through the lifecycle-local quiet
-path in `src/Prodbox/CLI/Rke2.hs` (`captureToolOutput` plus `isIgnorableRke2DeleteNoiseLine`) and
-never surfaces as a red-herring error. When the uninstaller exits non-zero, the actionable upstream
-lines are still surfaced through `summarizeRke2DeleteFailure` so the operator can act on the real
-failure.
+`Preserved host state:` boundary. Benign upstream uninstall chatter the uninstaller writes to its
+own stdout/stderr — `Cannot find device "cni0"`, `semodule: not found`, and
+`Cleanup completed successfully` — is captured through the lifecycle-local quiet path in
+`src/Prodbox/CLI/Rke2.hs` (`captureToolOutput` plus `isIgnorableRke2DeleteNoiseLine`) and never
+surfaces as a red-herring error. The inotify warning `Failed to allocate directory watch: Too many
+open files` is the exception: the systemd manager (PID 1) / journald emits it out-of-band to the
+console rather than through the uninstaller's captured fds, so `captureToolOutput` cannot suppress
+it and it may still appear on the operator terminal on a successful run (benign — teardown still
+succeeds; the filter entry only catches the line on the rare path where systemd routes it to the
+captured stderr). When the uninstaller exits non-zero, the actionable upstream lines are still
+surfaced through `summarizeRke2DeleteFailure` so the operator can act on the real failure.
 
 `prodbox rke2 delete` carries the Sprint `4.11` refuse-path (planned; symmetric to the Sprint
 `7.6` `aws teardown` refuse-path). It refuses to proceed when any per-run Pulumi stack

@@ -714,6 +714,7 @@ integrationCliSuite = do
         deleteStdout `shouldNotContain` "Logged in to fake-rke2"
         deleteStdout `shouldNotContain` "Cannot find device"
         deleteStdout `shouldNotContain` "semodule: not found"
+        -- Capturable-path only: the real inotify warning is out-of-band (see fakeSudoScript NOTE).
         deleteStdout `shouldNotContain` "Failed to allocate directory watch"
         deleteStdout `shouldNotContain` "Too many open files"
         deleteStdout `shouldNotContain` "Cleanup completed successfully"
@@ -748,6 +749,7 @@ integrationCliSuite = do
         deleteStdout `shouldNotContain` "Local RKE2 substrate: cleanup complete"
         deleteStderr `shouldContain` "failed to clean the local RKE2 substrate"
         deleteStderr `shouldContain` "umount: /var/lib/kubelet/pods/abc: target is busy"
+        -- Capturable-path only: the real inotify warning is out-of-band (see fakeSudoScript NOTE).
         deleteStderr `shouldNotContain` "Failed to allocate directory watch"
         deleteStderr `shouldNotContain` "semodule: not found"
         deleteStderr `shouldNotContain` "Cannot find device"
@@ -1583,6 +1585,13 @@ fakeJournalctlScript =
     , "printf 'RKE2_LOG_LINES\\n'"
     ]
 
+-- NOTE: This fake uninstaller emits `Failed to allocate directory watch: Too many open
+-- files` on the child's own stderr (`>&2`), which exercises only the CAPTURABLE path that
+-- `captureToolOutput` suppresses on success / `isIgnorableRke2DeleteNoiseLine` filters on
+-- failure. The real warning is emitted out-of-band by the systemd manager (PID 1) / journald
+-- to the console and is NOT reproduced here, so the `shouldNotContain` assertions below prove
+-- only that the quiet path hides the line when it lands on the uninstaller's own streams —
+-- not that operators never see the out-of-band emission. See streaming_doctrine.md §6.
 fakeSudoScript :: String
 fakeSudoScript =
   unlines

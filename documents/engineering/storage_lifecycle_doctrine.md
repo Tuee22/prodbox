@@ -142,9 +142,13 @@ of clean teardown.
 and stderr through the lifecycle-local quiet path so that successful uninstall runs
 surface only the doctrine-owned summary lines, while non-zero uninstall exits still
 surface actionable upstream context through `summarizeRke2DeleteFailure`. Benign
-upstream chatter — including `Cannot find device`, `semodule: not found`, and
-`Failed to allocate directory watch: Too many open files` — is classified as ignorable
-noise and never appears as a red-herring operator-visible error.
+upstream chatter the uninstaller writes to its own stdout/stderr — `Cannot find device`,
+`semodule: not found`, and `Cleanup completed successfully` — is classified as ignorable
+noise and does not reach the operator on success. The inotify warning
+`Failed to allocate directory watch: Too many open files` is the exception: the systemd
+manager (PID 1) / journald emits it out-of-band to the console, not through the
+uninstaller's captured fds, so the quiet path cannot suppress it and it may still appear
+on the operator terminal on a successful run (benign — teardown still succeeds).
 
 ## 6. Test Expectations
 

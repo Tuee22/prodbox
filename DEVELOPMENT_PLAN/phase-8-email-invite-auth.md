@@ -139,7 +139,9 @@ resets from forcing fresh production ACME orders. Local validation passed with
 `./.build/prodbox docs check`, `git diff --check`, and `./.build/prodbox check-code`. The current
 live home retry remains blocked until the provider duplicate-certificate window resets on
 June 7, 2026 UTC, because the already-issued Secret had been deleted before this retention fix
-landed.
+landed. Sprints `8.7` and `8.8` supersede this in-cluster Secret-retention approach with an
+S3-backed LongLived retention store plus a staging ACME issuer for the high-churn validation loop,
+which removes the production-rate-limit block on the home gate.
 
 Per-sprint status, deliverables, and remaining work are tracked in the sprint blocks
 below. The authoritative status row is in
@@ -993,14 +995,99 @@ parity rows accordingly.
 - Run `prodbox test integration keycloak-invite` on both substrates and flip the
   substrate-parity rows to ✅ on both substrates once the full invite-auth proof closes.
 
+## Sprint 8.7: Chart-Platform Cert Retention Refactor — S3 Restore-Before-Issue + IssuerClass Selection 📋
+
+**Status**: Planned
+**Implementation**: `src/Prodbox/Lib/ChartPlatform.hs`, `src/Prodbox/PublicEdge.hs`
+**Docs to update**: `documents/engineering/helm_chart_platform_doctrine.md`,
+`documents/engineering/envoy_gateway_edge_doctrine.md`,
+`documents/engineering/acme_provider_guide.md`
+
+### Objective
+
+Replace the in-cluster `prodbox/public-edge-tls-retained` Secret store with the S3-backed
+LongLived retention introduced in Sprint `7.11` / registered in Sprint `4.24`; close the
+silent-success gap in `preservePublicEdgeTlsSecretBeforeDelete` (currently `ChartPlatform.hs`
+returns success when the owned cert Secret is absent at preserve time, violating the
+[`lifecycle_reconciliation_doctrine.md` § 3](../documents/engineering/lifecycle_reconciliation_doctrine.md)
+soundness rule); make restore-before-issue run on EVERY rebuild path (including fresh-cluster /
+post-`rke2 delete`), not only the chart-delete→redeploy path; and add an `IssuerClass`
+(`Staging | Production`) resolved through the substrate-aware `PublicEdge` path so the canonical
+suite defaults to `Staging` and production-proof runs request `Production`.
+
+### Deliverables
+
+- S3 put/get retention (production cert only).
+- A typed preserve outcome distinguishing (a) Secret present → retain, (b) Secret absent but
+  `Certificate` exists / issuance in flight → distinct logged state, (c) neither live nor
+  retained → loud log that the next deploy will trigger a fresh order (no silent success).
+- Restore-before-issue wired into deploy independent of how the prior teardown happened.
+- `IssuerClass` threaded to the keycloak chart `Certificate` issuer as a deploy-time value
+  (replacing the hardcoded `clusterIssuer` constant in `charts/keycloak/values.yaml`).
+
+### Validation
+
+These are closure gates (Planned, not yet passed):
+
+1. `prodbox check-code` exit 0.
+2. `prodbox test unit` — the silent gap now surfaces a typed/logged outcome; `IssuerClass`
+   selection suite→Staging / production-proof→Production; S3 retention key scheme;
+   restore-before-issue idempotence.
+3. `prodbox test integration cli`.
+4. `prodbox test integration env`.
+
+### Remaining Work
+
+- Live closure under Sprint `8.8`.
+
+## Sprint 8.8: Live keycloak-invite Gate Closure on Staging + Production Round-Trip 📋
+
+**Status**: Planned
+**Blocked by**: Sprint `4.24`, Sprint `7.11`, Sprint `8.7`
+**Implementation**: exercises `prodbox test all` / `prodbox test integration keycloak-invite`
+(suite content; no new validation added)
+**Docs to update**: `DEVELOPMENT_PLAN/README.md` (Substrate Parity + Phase Overview),
+`DEVELOPMENT_PLAN/substrates.md`
+
+### Objective
+
+Close the ordered home `keycloak-invite` live gate by running it against the STAGING issuer
+(decoupled from the Let's Encrypt production duplicate-certificate limit), then prove AWS parity.
+Separately prove ONE production round-trip: issue the production cert once → retain to the
+long-lived S3 bucket → `prodbox rke2 delete --cascade` → rebuild → confirm restore-before-issue
+lands the Secret and cert-manager does NOT re-order; and confirm `prodbox nuke` is the only path
+that removes the retained production cert. Per
+[development_plan_standards.md § M](development_plan_standards.md) this sprint does NOT own a
+substrate-specific validation — `keycloak-invite` is canonical suite content; `8.8` is the
+invite-auth closure gate that exercises it plus the operational production round-trip.
+
+### Deliverables
+
+- Home `prodbox test all` green including `keycloak-invite` on the staging issuer.
+- Targeted `keycloak-invite --substrate aws` then AWS aggregate green.
+- Documented production round-trip proof.
+- Nuke-only-removes-retained-cert proof.
+
+### Validation
+
+The live runs above; home gate first (ordering), then AWS parity.
+
+### Remaining Work
+
+- This is the live closure gate; Phase `8` stays Active until it lands.
+
 ## Documentation Requirements
 
 **Engineering docs to create/update:**
 
 - `documents/engineering/helm_chart_platform_doctrine.md` — operator-invited Keycloak realm
-  contract and the SES SMTP secret pattern.
+  contract and the SES SMTP secret pattern; the S3-backed LongLived public-edge cert retention
+  + restore-before-issue contract and the deploy-time `IssuerClass` value (Sprint `8.7`).
 - `documents/engineering/envoy_gateway_edge_doctrine.md` — interaction between Envoy auth
-  policy and the new email-verified user state.
+  policy and the new email-verified user state; the substrate-aware `IssuerClass`
+  (`Staging | Production`) resolution on the public-edge path (Sprint `8.7`).
+- `documents/engineering/acme_provider_guide.md` — staging vs production ACME issuer selection
+  for the high-churn validation loop and the one-time production round-trip proof (Sprint `8.7`).
 - `documents/engineering/cli_command_surface.md` — the new `prodbox users invite|list|revoke`
   command family.
 - `documents/engineering/prerequisite_doctrine.md` — the new SES prerequisite nodes.
@@ -1021,6 +1108,10 @@ parity rows accordingly.
   inventory.
 - `phase-5-canonical-test-suite.md` adds `keycloak-invite` to its canonical-suite inventory
   table when Sprint `8.5` closes.
+- `README.md` updates the Substrate Parity and Phase Overview rows when Sprint `8.8` flips
+  `keycloak-invite` to ✅ on both substrates.
+- `substrates.md` flips the `keycloak-invite` substrate-parity rows to ✅ when Sprint `8.8`
+  closes the live gate.
 
 ## Related Documents
 

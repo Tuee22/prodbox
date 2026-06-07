@@ -3,6 +3,7 @@
 **Status**: Authoritative source
 **Supersedes**: N/A
 **Referenced by**: [../../README.md](../../README.md),
+[acme_provider_guide.md](acme_provider_guide.md),
 [../../DEVELOPMENT_PLAN/README.md](../../DEVELOPMENT_PLAN/README.md),
 [../../DEVELOPMENT_PLAN/system-components.md](../../DEVELOPMENT_PLAN/system-components.md),
 [../../DEVELOPMENT_PLAN/legacy-tracking-for-deletion.md](../../DEVELOPMENT_PLAN/legacy-tracking-for-deletion.md),
@@ -330,12 +331,23 @@ The current implementation boundary is:
   `/auth/admin` for the authenticated operator invite API; on the current supported public-edge
   path, the shared `Gateway`, listener certificate, and identity route are anchored in the
   `vscode` namespace.
-- Chart reset must not treat production ACME issuance as disposable chart state. Before deleting
-  the `vscode` namespace, the chart platform copies the issued `vscode/public-edge-tls` Secret to
-  the retained Kubernetes Secret `prodbox/public-edge-tls-retained`; after namespace recreation and
-  before the Keycloak/Gateway chart re-apply, it restores that Secret into `vscode`. This keeps
-  certificate material in Kubernetes while avoiding repeated production ACME orders during normal
-  home-substrate chart resets.
+- Chart reset must not treat production ACME issuance as disposable chart state. The public-edge
+  **production** TLS certificate is reclassified from disposable PerRun chart state to a
+  rate-limit-safe `LongLived` resource (Sprints 4.24/7.11/8.7). Its material is retained in the
+  long-lived `pulumi_state_backend` S3 bucket under the substrate-scoped key
+  `public-edge-tls/<substrate>/<fqdn>`, and restored before every issuance on **all** rebuild
+  paths — including a fresh cluster after `prodbox rke2 delete`, not only the
+  chart-delete→redeploy path that the superseded `vscode/public-edge-tls` →
+  `prodbox/public-edge-tls-retained` in-cluster Secret copy covered. The
+  `preservePublicEdgeTlsSecretBeforeDelete` silent-success gap is closed: the preserve path emits
+  typed/logged outcomes and never reports silent success when the owned certificate is absent (the
+  soundness rule restored in [lifecycle_reconciliation_doctrine.md §3.1](./lifecycle_reconciliation_doctrine.md#31-the-managed-resource-registry-the-reconciler-substrate)).
+  The high-churn canonical validation loop issues against the Let's Encrypt **staging**
+  `ClusterIssuer`; the production certificate is issued once and restored. See
+  [acme_provider_guide.md](./acme_provider_guide.md) for provider choice and the two-issuer
+  (production vs staging) model, and
+  [../../DEVELOPMENT_PLAN/substrates.md → Resource Lifecycle Classes](../../DEVELOPMENT_PLAN/substrates.md#resource-lifecycle-classes)
+  for the lifecycle-class registration; the certificate is removed only by `prodbox nuke`.
 - Public API and WebSocket workloads still follow the same public-edge doctrine and do not add
   chart-local auth proxies, extra public `Gateway` resources, or a parallel ingress model.
 

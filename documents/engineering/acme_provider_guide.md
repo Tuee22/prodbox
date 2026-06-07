@@ -2,7 +2,8 @@
 
 **Status**: Authoritative source
 **Supersedes**: N/A
-**Referenced by**: README.md, DEVELOPMENT_PLAN/phase-7-aws-substrate-foundations.md, documents/engineering/README.md, documents/engineering/aws_account_setup_guide.md
+**Referenced by**: README.md, DEVELOPMENT_PLAN/phase-7-aws-substrate-foundations.md, DEVELOPMENT_PLAN/phase-8-email-invite-auth.md, documents/engineering/README.md, documents/engineering/aws_account_setup_guide.md, documents/engineering/envoy_gateway_edge_doctrine.md, documents/engineering/config_doctrine.md, documents/engineering/helm_chart_platform_doctrine.md, documents/engineering/lifecycle_reconciliation_doctrine.md
+**Generated sections**: none
 
 > **Purpose**: Define the supported ACME provider choices for `prodbox config setup`.
 
@@ -95,8 +96,67 @@ Choose one provider per environment and keep the matching fields coherent:
 
 `prodbox config setup` enforces the supported field combinations before it writes the config.
 
+---
+
+## 5. Production Rate Limits and the Two-Issuer Model
+
+This model is scheduled by Sprints `4.24` / `7.11` / `8.7` in
+[../../DEVELOPMENT_PLAN/README.md](../../DEVELOPMENT_PLAN/README.md); it is documented here ahead
+of implementation.
+
+### The Let's Encrypt production duplicate-certificate limit
+
+Let's Encrypt production enforces a duplicate-certificate rate limit: at most five identical
+certificates per rolling seven-day **provider window** (the same set of FQDNs counts as a
+duplicate regardless of how many times it is ordered). The prodbox canonical test suite is
+designed to repeatedly tear down and rebuild the substrate, so a loop that orders a fresh
+production certificate on every rebuild exhausts this window and then fails to issue.
+
+### Staging for churn, production retained once
+
+The fix renders two cert-manager `ClusterIssuer`s that share one DNS-01 Route 53 solver:
+
+1. `letsencrypt-http01` — the production issuer, built from `acme.server`.
+2. `letsencrypt-staging-http01` — the Let's Encrypt staging issuer, built from a new
+   `acme.staging_server` config field (default
+   `https://acme-staging-v02.api.letsencrypt.org/directory`).
+
+The high-churn canonical validation loop uses the staging issuer. Staging is effectively
+unlimited, runs the identical DNS-01 flow, and returns untrusted certificates — which is
+acceptable for automated gates that only need the issuance path exercised, not browser trust.
+
+The production certificate is issued once and retained as a `LongLived` managed resource in the
+long-lived `pulumi_state_backend` S3 bucket under the substrate-scoped key
+`public-edge-tls/<substrate>/<fqdn>`. It is restored before every issuance, so production is
+genuinely exercised but never re-ordered on each rebuild cycle. For the retention,
+restore-before-issuance, and bucket-key mechanics, see
+[helm_chart_platform_doctrine.md § 10](./helm_chart_platform_doctrine.md#10-required-settings-and-auto-generated-secrets)
+and [envoy_gateway_edge_doctrine.md § 5](./envoy_gateway_edge_doctrine.md#5-authentication-doctrine).
+For the `LongLived` classification in the managed-resource registry and why the retained
+certificate is correctly retained rather than treated as a leak, see
+[lifecycle_reconciliation_doctrine.md § 2](./lifecycle_reconciliation_doctrine.md#2-state-lifetime-rule)
+and
+[../../DEVELOPMENT_PLAN/substrates.md § Resource Lifecycle Classes](../../DEVELOPMENT_PLAN/substrates.md#resource-lifecycle-classes).
+
+### Issuer selection
+
+An `IssuerClass` value selects which `ClusterIssuer` the keycloak chart `Certificate` references
+at deploy time:
+
+1. `Staging` — the canonical suite's high-churn rebuild loop references
+   `letsencrypt-staging-http01`.
+2. `Production` — the production-proof run references `letsencrypt-http01` and exercises the
+   retained, restore-before-issuance production certificate.
+
+Both classes resolve through the same shared DNS-01 Route 53 solver; only the ACME directory and
+the resulting trust differ.
+
 ## Related Documents
 
 - [aws_account_setup_guide.md](./aws_account_setup_guide.md)
 - [cli_command_surface.md](./cli_command_surface.md)
+- [helm_chart_platform_doctrine.md](./helm_chart_platform_doctrine.md)
+- [lifecycle_reconciliation_doctrine.md](./lifecycle_reconciliation_doctrine.md)
+- [envoy_gateway_edge_doctrine.md](./envoy_gateway_edge_doctrine.md)
+- [../../DEVELOPMENT_PLAN/substrates.md](../../DEVELOPMENT_PLAN/substrates.md)
 - [../../DEVELOPMENT_PLAN/phase-7-aws-substrate-foundations.md](../../DEVELOPMENT_PLAN/phase-7-aws-substrate-foundations.md)

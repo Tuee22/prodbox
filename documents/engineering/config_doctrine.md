@@ -4,6 +4,7 @@
 **Supersedes**: N/A
 **Referenced by**: [README.md](./README.md),
 [../../README.md](../../README.md),
+[envoy_gateway_edge_doctrine.md](./envoy_gateway_edge_doctrine.md),
 [../../CLAUDE.md](../../CLAUDE.md),
 [../../AGENTS.md](../../AGENTS.md),
 [../documentation_standards.md](../documentation_standards.md),
@@ -189,6 +190,31 @@ MinIO is unreachable.
 ConfigMap and Secret volume updates land in the Pod via the kubelet's atomic `..data`
 symlink swap. The file-watch reload trigger (Section 7) follows that symlink swap rather
 than the leaf-file `mtime`.
+
+## 6.1 ACME issuer config fields
+
+The `acme` config block carries the ACME-issuance inputs consumed by cert-manager
+`ClusterIssuer` rendering. It is decoded into `AcmeSection` in
+`src/Prodbox/Settings.hs`, declared in `prodbox-config-types.dhall`, and given its default
+in `prodbox-config.dhall`:
+
+| Field | Type | Purpose |
+|---|---|---|
+| `acme.email` | `Text` | expiry-notice email; required and non-empty |
+| `acme.server` | `Text` | production ACME directory URL rendered into the production `ClusterIssuer` |
+| `acme.staging_server` | `Text` | staging ACME directory URL rendered into the staging `ClusterIssuer` |
+| `acme.eab_key_id` | `Optional Text` | EAB key ID (ZeroSSL only) |
+| `acme.eab_hmac_key` | `Optional Text` | EAB HMAC key (ZeroSSL only) |
+
+`acme.staging_server` is an optional field that defaults to
+`https://acme-staging-v02.api.letsencrypt.org/directory`. It has the same shape and
+validation treatment as `acme.server` (a non-empty ACME directory `Text`), and it feeds the
+staging `ClusterIssuer` (`letsencrypt-staging-http01`) that the high-churn canonical
+validation loop deploys against. The issuer-selection model — two `ClusterIssuer`s sharing
+one DNS-01 Route 53 solver and a deploy-time `IssuerClass` (`Staging | Production`) — is
+owned by [acme_provider_guide.md](./acme_provider_guide.md) and
+[envoy_gateway_edge_doctrine.md](./envoy_gateway_edge_doctrine.md). Scheduled for adoption in
+Sprint 7.11.
 
 ## 7. File-watch reload trigger
 

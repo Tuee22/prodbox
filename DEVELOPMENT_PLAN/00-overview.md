@@ -66,8 +66,12 @@ Build a clean-room Haskell `prodbox` repository with:
     `/v1/state` skew reporting, and atomic Orders-promotion coordination keyed off the monotonic
     `orders_version_utc` field.
 15. One self-managed public-edge doctrine where MetalLB exposes Envoy Gateway, Kubernetes Gateway
-    API owns Layer 7 routes, cert-manager owns listener TLS, Keycloak remains the identity
-    provider, every externally reachable app or dashboard lives under the single hostname
+    API owns Layer 7 routes, cert-manager owns listener TLS through two ACME `ClusterIssuer`s — a
+    Let's Encrypt staging issuer for the high-churn canonical validation loop and a production
+    issuer whose issued certificate is a `LongLived`, registry-managed resource retained once in
+    the long-lived `pulumi_state_backend` S3 bucket and restored before every issuance (so rebuild
+    cycles never trip the production duplicate-certificate rate limit), Keycloak remains the
+    identity provider, every externally reachable app or dashboard lives under the single hostname
     `test.resolvefintech.com`, Envoy enforces Keycloak-backed JWT auth and RBAC on explicit path
     prefixes such as `/vscode`, `/api`, `/ws`, `/auth`, and later supported admin paths, and the
     steady-state request path does not synchronously depend on Keycloak or Redis. Port `80`
@@ -157,6 +161,30 @@ prerequisites.
 | 8 | Operator-Invited Email Authentication via Keycloak + AWS SES | Keycloak switches to operator-invited, email-verified auth via AWS SES; shared SES infrastructure (sending identity, receive subdomain, S3 capture bucket) is provisioned cross-substrate; `prodbox users invite|list|revoke` joins the public command surface; `ValidationKeycloakInvite` joins the canonical suite and runs against every substrate |
 
 ## Alignment Status
+
+**2026-06-06 — public-edge TLS certificate reclassified; Phase `4` and Phase `7` reopened,
+Phase `8` extended.** The ordered home `keycloak-invite` gate is blocked by Let's Encrypt's
+production duplicate-certificate limit (window resets 2026-06-07 UTC) after the pre-retention
+`public-edge-tls` Secret was lost. The root cause is a classification bug: the public-edge
+production certificate is treated as disposable `PerRun` chart state even though the
+duplicate-certificate limit makes it a `LongLived`, rate-limited external resource — the TLS
+analogue of the long-lived `aws-ses` identity the harness already carves out of auto-destroy.
+The scheduled refactor routes the high-churn canonical loop through a Let's Encrypt **staging**
+issuer, retains the **production** cert once in the long-lived `pulumi_state_backend` S3 bucket,
+restores it before every issuance, and registers it in the managed-resource registry.
+**Phase `4` reopened** for Sprint `4.24` (the certificate joins the registry as a `LongLived`
+`discover`/`destroy` resource under
+[lifecycle_reconciliation_doctrine.md § 3.1](../documents/engineering/lifecycle_reconciliation_doctrine.md)
+totality). **Phase `7` reopened** for Sprint `7.11` (two ACME `ClusterIssuer`s — production +
+`letsencrypt-staging-http01` — sharing one DNS-01 Route 53 solver, the `acme.staging_server`
+config field, and the substrate-scoped S3 retention store; the substrate-aware extension of
+Sprint `7.5.b`). **Phase `8` is extended** (already Active) with Sprint `8.7` (chart-platform
+retention refactor: close the silent-success gap, S3 restore-before-issue on all rebuild paths,
+`IssuerClass` selection) and Sprint `8.8` (live `keycloak-invite` gate closure on staging plus
+the production round-trip). **Phases `1`, `2`, `3`, `5`, and `6` stay `Done`** — the `Plan`/Apply,
+gateway, chart-platform, and canonical-suite foundations are reused, not changed — per standards
+rule E. The overall handoff stays incomplete until the refactor lands and the home gate passes on
+staging, with AWS parity following.
 
 **2026-05-28 — § 3.1 totality enforcement complete.** Sprint `4.22`'s create-call-site
 coverage lint landed (the follow-on to the already-landed registry ↔ doc parity), completing
@@ -564,7 +592,11 @@ refuse-path + auto-destroy) and Sprint `7.7` (generalized `aws teardown` +
 both `Done` (May 19, 2026). Phase `8` opened May 18, 2026; Sprints `8.1`–`8.4` are `Done`,
 the targeted AWS `keycloak-invite` proof is green, Sprint `8.5` POST/OIDC code has local unit
 proof through the public-edge certificate status-patch guard and TLS Secret retention fix, and
-`8.5`–`8.6` carry the remaining operator-driven live OIDC and aggregate closure work.
+`8.5`–`8.6` carry the remaining operator-driven live OIDC and aggregate closure work. On
+2026-06-06 Phases `4` and `7` reopened again (Sprints `4.24` and `7.11`) and Phase `8` gained
+Sprints `8.7`/`8.8` to reclassify the public-edge production certificate as a `LongLived`,
+rate-limit-safe resource (two ACME issuers, staging-for-churn, S3-retained production cert); see
+the [Alignment Status](#alignment-status) note for the reopening rationale.
 
 - Phase 0 defines the canonical plan suite and cleanup ledger.
 - Phase 1 owns the CLI, direct-Dhall config contract, `.build/prodbox` artifact contract, the

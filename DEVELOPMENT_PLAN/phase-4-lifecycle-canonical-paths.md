@@ -12,7 +12,11 @@
 
 ## Phase Status
 
-✅ **Done** — Sprints `4.1`–`4.4` remain `Done` on lifecycle parity, Python Pulumi removal,
+🔄 **Active** — Phase 4 is reopened for Sprint `4.24`: the public-edge production certificate
+joins the managed-resource registry as a `LongLived` resource. All earlier Phase 4 sprints
+(`4.1`–`4.23`) remain `Done` on their owned surfaces.
+
+✅ **Done (Sprints `4.1`–`4.23`)** — Sprints `4.1`–`4.4` remain `Done` on lifecycle parity, Python Pulumi removal,
 repository-wide Python toolchain removal, and the single-record DNS / single-certificate
 contract. The phase was first reopened by Sprint 0.2 to schedule Sprints `4.5`–`4.7`: rename
 `prodbox rke2 install` → `prodbox rke2 reconcile` per doctrine, apply the Plan / Apply +
@@ -2148,6 +2152,49 @@ zero EKS / VPCs / EC2, only the retained admin-managed IAM users
 failed, a known Sprint 8.5 operator-driven gap, unrelated to this
 sprint).
 
+## Sprint 4.24: Public-Edge Production Certificate Registered as a LongLived Managed Resource [PLANNED]
+
+**Status**: Planned
+**Implementation**: `src/Prodbox/Lifecycle/ResourceRegistry.hs`, `src/Prodbox/Lifecycle/ResourceClass.hs`
+**Docs to update**: `documents/engineering/lifecycle_reconciliation_doctrine.md`,
+`DEVELOPMENT_PLAN/substrates.md`
+
+### Objective
+
+Register the public-edge production TLS certificate — specifically its retained material in the
+long-lived `pulumi_state_backend` S3 bucket — as a typed `ManagedResource` with
+`discover`/`destroy`, classified **LongLived** in `resourceLifecycleClasses` (the same class as
+`aws-ses`). This reclassifies the cert from disposable `PerRun` chart state to a rate-limited
+external resource, so `prodbox check-code` totality
+([lifecycle_reconciliation_doctrine.md § 3.1](../documents/engineering/lifecycle_reconciliation_doctrine.md))
+covers it and it is never auto-destroyed by `prodbox rke2 delete` or `prodbox aws teardown` —
+only by `prodbox nuke` or an explicit destroy. The registration follows the
+`lifecycle_reconciliation_doctrine.md § 3.1` totality + soundness pattern.
+
+### Deliverables
+
+- New `ManagedResource` entry for the retained public-edge production certificate.
+- `LongLived` membership for the certificate in `resourceLifecycleClasses`.
+- `discover` queries the S3 object and returns a distinct not-present versus unreachable
+  outcome, with `Unreachable → refuse` never silently treated as absent.
+- `destroy` removes the retained object.
+- The generated `substrates.md` Resource Lifecycle Classes table re-renders (via
+  `prodbox docs generate`) to include the certificate.
+- `prodbox check-code` create-site/totality coverage of the new resource.
+
+### Validation
+
+1. `prodbox check-code` exits `0`.
+2. `prodbox test unit` covers the registry entry, `discover`/`destroy`, and the soundness gate.
+3. `prodbox docs check` confirms generated lifecycle-class table parity.
+
+These are the closure gates for this Planned sprint, not yet-passed results.
+
+### Remaining Work
+
+The live production round-trip (issue once → retain → cluster wipe → rebuild → restore, no
+re-order) is exercised under Phase 8 Sprint `8.8`.
+
 ## Documentation Requirements
 
 **Engineering docs to create/update:**
@@ -2160,7 +2207,9 @@ sprint).
   success-summary contract.
 - `documents/engineering/lifecycle_reconciliation_doctrine.md` - SSoT for the
   reconciler-with-predicates pattern, the state-lifetime rule, and the leak-class
-  inventory that Sprints `4.10`–`4.13` operationalize.
+  inventory that Sprints `4.10`–`4.13` operationalize; for Sprint `4.24` it also records
+  the public-edge production certificate as a `LongLived` managed resource under the § 3.1
+  totality + soundness pattern.
 - `documents/engineering/code_quality.md` - final non-Python quality gate.
 - `documents/engineering/dependency_management.md` - final Haskell dependency and container-image
   inventory, including the `ghcup` pin and no-symlink doctrine for Haskell-build containers.
@@ -2181,6 +2230,8 @@ sprint).
 **Cross-references to add:**
 
 - Keep lifecycle and AWS IaC doctrine linked from [system-components.md](system-components.md).
+- For Sprint `4.24`, cross-reference [substrates.md](substrates.md) so the regenerated Resource
+  Lifecycle Classes table lists the public-edge production certificate as `LongLived`.
 
 ## Related Documents
 

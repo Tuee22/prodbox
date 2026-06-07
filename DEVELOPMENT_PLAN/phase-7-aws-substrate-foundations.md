@@ -16,6 +16,10 @@
 
 ## Phase Status
 
+🔄 **Reopened for Sprint `7.11`** — Phase 7 reopens to render two ACME `ClusterIssuer`s (staging
++ production) and add a substrate-scoped long-lived production-cert retention store; all earlier
+Phase 7 sprints (`7.1`–`7.10`) stay `Done` on their owned scope.
+
 ✅ **Done on owned surfaces** for the historical foundations work — Sprints `7.1`–`7.4` remain
 closed on interactive onboarding, AWS IAM management, quota automation, and the
 temporary-admin-credential validation harness. Per
@@ -2624,6 +2628,59 @@ Fast gates (no live AWS):
 The pure decision (`clearOperationalCredsAfterPostflight`) is fully unit-tested; the IO wiring in
 `runWithAwsHarnessCleanup` is thin (one gated call). No live AWS required.
 
+## Sprint 7.11: Two ACME ClusterIssuers (Staging + Production) and Substrate-Scoped Long-Lived Cert Retention Store 📋
+
+**Status**: Planned
+**Implementation**: `src/Prodbox/CLI/Rke2.hs` (`acmeClusterIssuerSpec`),
+`src/Prodbox/Settings.hs`, `prodbox-config-types.dhall`, `prodbox-config.dhall`,
+`src/Prodbox/Infra/LongLivedPulumiBackend.hs`
+**Docs to update**: `documents/engineering/acme_provider_guide.md`,
+`documents/engineering/envoy_gateway_edge_doctrine.md`,
+`documents/engineering/config_doctrine.md`, `DEVELOPMENT_PLAN/substrates.md`
+
+### Objective
+
+Decouple the high-churn canonical test loop from Let's Encrypt's production duplicate-certificate
+limit by rendering TWO cert-manager `ClusterIssuer`s from `acmeClusterIssuerSpec` — the existing
+production issuer (`letsencrypt-http01`, `acme.server`) and a new staging issuer
+(`letsencrypt-staging-http01`, `https://acme-staging-v02.api.letsencrypt.org/directory`) —
+sharing one DNS-01 Route 53 solver. The staging endpoint is added as a config field
+`acme.staging_server`. The retained PRODUCTION cert material is stored in the long-lived
+`pulumi_state_backend` S3 bucket under a substrate-scoped key (`public-edge-tls/<substrate>/<fqdn>`),
+reusing the `LongLivedPulumiBackend` access path. This is the substrate-aware extension of the
+Sprint 7.5.b cert-manager DNS-01 ClusterIssuer rendering; the substrate-equivalence doctrine
+(home + AWS both real Let's Encrypt) is preserved.
+
+### Deliverables
+
+- The shared DNS-01 Route 53 solver is factored out so both issuers reuse it.
+- The staging issuer carries its own `privateKeySecretRef` account key.
+- EAB stays production-only.
+- `acme.staging_server` is added to `prodbox-config-types.dhall`, `prodbox-config.dhall`, and
+  `AcmeSection` in `Settings.hs` with the same validation shape as `acme.server` and a hardcoded
+  staging default.
+- A substrate-scoped S3 retention key scheme stores the production cert only — staging certs are
+  disposable and are never written to the long-lived store.
+- The public-edge production cert is added to the [substrates.md](substrates.md) Resource
+  Lifecycle Classes (LongLived). This row is rendered by the GENERATED table driven by
+  `resourceLifecycleClasses` (landed under Phase 4 Sprint 4.24), so it appears after
+  `prodbox docs generate`, not via hand-edit.
+
+### Validation
+
+These are closure gates, not yet passed (sprint is Planned):
+
+1. `prodbox check-code` → exit 0.
+2. `prodbox test unit` → both `ClusterIssuer`s render with the correct `server` values, the
+   staging URL constant is asserted, and the retention key scheme is asserted.
+3. `prodbox test integration cli` / `prodbox test integration env` → the fixtures decode the new
+   `acme.staging_server` field.
+
+### Remaining Work
+
+The live two-issuer + S3-retention behavior is exercised under Phase 8 Sprint 8.8 (home staging
+gate first, then AWS parity, plus the production round-trip).
+
 ## Documentation Requirements
 
 **Engineering docs to create/update:**
@@ -2643,6 +2700,13 @@ The pure decision (`clearOperationalCredsAfterPostflight`) is fully unit-tested;
   stack.
 - `documents/engineering/aws_integration_environment_doctrine.md` - Sprint `7.6` refuse-path +
   auto-destroy doctrine plus the `--allow-pulumi-residue` escape hatch.
+- `documents/engineering/acme_provider_guide.md` - Sprint `7.11` two-issuer model (production
+  `letsencrypt-http01` + staging `letsencrypt-staging-http01`) sharing one DNS-01 Route 53 solver,
+  the `acme.staging_server` config field, and EAB staying production-only.
+- `documents/engineering/envoy_gateway_edge_doctrine.md` - Sprint `7.11` public-edge cert sourcing
+  from the staging vs production issuer and the substrate-scoped production-cert retention store.
+- `documents/engineering/config_doctrine.md` - Sprint `7.11` `acme.staging_server` field, its
+  validation shape, and the hardcoded staging default.
 
 **Product docs to create/update:**
 
@@ -2652,6 +2716,9 @@ The pure decision (`clearOperationalCredsAfterPostflight`) is fully unit-tested;
 
 - Keep the onboarding and AWS administration docs linked from
   [documents/engineering/README.md](../documents/engineering/README.md).
+- Cross-reference [substrates.md](substrates.md) Resource Lifecycle Classes (LongLived) for the
+  Sprint `7.11` public-edge production cert (rendered by the generated `resourceLifecycleClasses`
+  table).
 
 ## Related Documents
 

@@ -14,7 +14,8 @@
 [phase-6-clean-room-handoff.md](phase-6-clean-room-handoff.md),
 [phase-7-aws-substrate-foundations.md](phase-7-aws-substrate-foundations.md),
 [phase-8-email-invite-auth.md](phase-8-email-invite-auth.md),
-[the engineering doctrine docs](../documents/engineering/README.md)
+[the engineering doctrine docs](../documents/engineering/README.md),
+[../documents/engineering/acme_provider_guide.md](../documents/engineering/acme_provider_guide.md)
 **Generated sections**: resource-lifecycle-classes
 
 > **Purpose**: Inventory the substrates against which the canonical test suite runs, the
@@ -66,7 +67,7 @@ for the authoritative doctrine.
 | Provision | `prodbox rke2 reconcile` followed by `prodbox charts deploy <chart>` for the canonical chart set |
 | Teardown | `prodbox rke2 delete --yes` (preserves retained host roots per the lifecycle doctrine) |
 | Inventory | Local RKE2 cluster on the operator host, MetalLB L2/BGP, Envoy Gateway, cert-manager (real Let's Encrypt), Keycloak, Patroni-backed Postgres via the Percona operator, the supported `gateway`, `keycloak`, `vscode`, `api`, and `websocket` charts |
-| Required Config | `route53.zone_id`, `domain.demo_fqdn`, `acme.*` (server, account email, ZeroSSL EAB if applicable), `deployment.*`, `ses.*` (sender_domain, receive_subdomain, capture_bucket — required for `keycloak-invite` validation), `aws_admin_for_test_simulation.*` (for the shared IAM harness and long-lived teardown/provisioning flows). Missing any required field fails fast; the home substrate does not fall back to AWS-substrate values. |
+| Required Config | `route53.zone_id`, `domain.demo_fqdn`, `acme.*` (production `server`, `staging_server` for the high-churn validation loop, account email, ZeroSSL EAB if applicable), `deployment.*`, `ses.*` (sender_domain, receive_subdomain, capture_bucket — required for `keycloak-invite` validation), `aws_admin_for_test_simulation.*` (for the shared IAM harness and long-lived teardown/provisioning flows). Missing any required field fails fast; the home substrate does not fall back to AWS-substrate values. |
 | Prerequisites satisfied | `platform_linux`, `systemd_available`, `supported_ubuntu_2404`, `machine_identity`, `tool_*`, `settings_*`, `aws_iam_harness_ready`, `kubeconfig_*`, `rke2_*`, `k8s_*`, `pulumi_logged_in`, `infra_ready`, `gateway_daemon_acquire`, `aws_credentials_valid`, `route53_*` |
 | Phase ownership (provision/teardown) | [phase-4-lifecycle-canonical-paths.md](phase-4-lifecycle-canonical-paths.md) |
 | Suite parity | ✅ Full canonical suite, including the public-edge proofs that exercise real Let's Encrypt certs, real OIDC redirects through Keycloak, real WebSocket fan-out, and the configured public Route 53 record on `test.resolvefintech.com` |
@@ -139,10 +140,15 @@ with the cluster).
 | `aws-ses` stack (sending identity, DKIM, MX, receive rule set, S3 capture bucket, SMTP IAM user) | `prodbox pulumi aws-ses-resources` | `prodbox pulumi aws-ses-destroy --yes` — **only on explicit invocation**; never auto-destroyed by the test-harness postflight, never destroyed by `prodbox rke2 delete` (any flag); destroyed transitively by `prodbox nuke` (Sprint `4.13`) | Dedicated AWS S3 bucket per `prodbox-config.dhall` `pulumi_state_backend` block (Sprint `4.10`) |
 | Long-lived `pulumi_state_backend` S3 bucket (Sprint `4.10`) | `ensureLongLivedPulumiStateBucket` precondition in `src/Prodbox/Infra/LongLivedPulumiBackend.hs` (idempotent, admin-credentialed) | `prodbox nuke` (Sprint `4.13`) — final pass after all long-lived stacks are gone; never destroyed by `aws teardown` or `rke2 delete` | n/a (the bucket *is* the backend) |
 | Operator-owned Route 53 parent zone for the configured public FQDN | Operator-managed in Route 53 (no `prodbox pulumi` flow) | Operator action against Route 53 — outside the harness surface | n/a |
+| Public-edge **production** TLS certificate material (Sprints `4.24`/`7.11`/`8.7`) | cert-manager via the production ACME `ClusterIssuer` (`letsencrypt-http01`); retained material written to a substrate-scoped key (`public-edge-tls/<substrate>/<fqdn>`) in the long-lived `pulumi_state_backend` S3 bucket and restored before every issuance | `prodbox nuke` only; never destroyed by `aws teardown` or `rke2 delete`; registered as a `LongLived` managed resource (Sprint `4.24`) | Long-lived `pulumi_state_backend` S3 bucket |
 
 Retained by design — not orphaned. SES domain identity + DKIM verification requires 5–30 min
 of DNS propagation per provision; only one receive rule set may be active per AWS account; S3
-bucket names have a ~24-hour reuse cooldown. Per-run re-provision is impractical at suite
+bucket names have a ~24-hour reuse cooldown; the Let's Encrypt **production** duplicate-certificate
+limit (5 identical certs per rolling 7 days) makes a re-issued public-edge production certificate
+the TLS analogue of the SES cooldown — the high-churn canonical loop instead uses the Let's
+Encrypt staging issuer, and the production certificate is issued once and restored from the
+long-lived S3 store on every rebuild. Per-run re-provision is impractical at suite
 cadence. The harness explicitly carves these resources out of postflight auto-destroy so
 operators can run the suite at a sane cadence without rebuilding shared infrastructure each
 time. Pulumi state for the `aws-ses` stack lives in the dedicated long-lived S3 bucket

@@ -88,6 +88,8 @@ cross-substrate shared infrastructure (see
 - [Operational and Delivery Implications](./envoy_gateway_edge_doctrine.md#9-operational-and-delivery-implications)
 - [Recommended Migration and Adoption Path](./envoy_gateway_edge_doctrine.md#10-recommended-migration-and-adoption-path)
 - [Diagnostics and Validation Doctrine](./envoy_gateway_edge_doctrine.md#11-diagnostics-and-validation-doctrine)
+- [ACME Provider Guide](./acme_provider_guide.md)
+- [Let's Encrypt (production vs staging issuer)](./acme_provider_guide.md#3-lets-encrypt)
 - [CLI Command Surface](./cli_command_surface.md)
 - [Helm Chart Platform Doctrine](./helm_chart_platform_doctrine.md)
 - [Local Registry Pipeline](./local_registry_pipeline.md)
@@ -136,6 +138,9 @@ cross-substrate shared infrastructure (see
 - [Helm Chart Platform Doctrine](./helm_chart_platform_doctrine.md)
 - [Chart Storage Contract](./helm_chart_platform_doctrine.md#7-datanamespacereleaseworkloadordinalclaim-host-path-contract)
 - [Delete Semantics](./helm_chart_platform_doctrine.md#8-delete-semantics)
+- [Supported Public Auth Model (public-edge production TLS retention)](./helm_chart_platform_doctrine.md#9-supported-public-auth-model)
+- [ACME Provider Guide](./acme_provider_guide.md)
+- [Managed-Resource Registry (production-cert LongLived registration)](./lifecycle_reconciliation_doctrine.md#31-the-managed-resource-registry-the-reconciler-substrate)
 - [Repo-Local Storage](./storage_lifecycle_doctrine.md#7-repo-local-retained-state-layout)
 - Supported `vscode` path: cluster-backed `prodbox charts` only
 

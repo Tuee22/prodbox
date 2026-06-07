@@ -4,6 +4,7 @@
 **Supersedes**: N/A
 **Referenced by**: [../../CLAUDE.md](../../CLAUDE.md),
 [../../README.md](../../README.md), [the engineering doctrine docs](../../documents/engineering/README.md),
+[acme_provider_guide.md](acme_provider_guide.md),
 [../../DEVELOPMENT_PLAN/phase-4-lifecycle-canonical-paths.md](../../DEVELOPMENT_PLAN/phase-4-lifecycle-canonical-paths.md),
 [../../DEVELOPMENT_PLAN/phase-7-aws-substrate-foundations.md](../../DEVELOPMENT_PLAN/phase-7-aws-substrate-foundations.md),
 [../../DEVELOPMENT_PLAN/substrates.md](../../DEVELOPMENT_PLAN/substrates.md),
@@ -324,6 +325,24 @@ This is the data-oriented "make illegal states unrepresentable"
 answer, not a global state machine: the registry is pure data, every
 `discover` queries the appropriate external authority at the moment of
 use, and crash recovery is just "re-run the reconciler."
+
+The public-edge **production** certificate is a worked example of this
+registration (Sprint 4.24). Its S3-retained material — written to the
+substrate-scoped key `public-edge-tls/<substrate>/<fqdn>` in the
+long-lived `pulumi_state_backend` S3 bucket and restored before every
+issuance — is a registered `LongLived` managed resource with a typed
+`discover` (read the retained object) and `destroy`, and
+`Unreachable → refuse` gate semantics. That soundness rule (§3.1
+invariant 2) is exactly the guarantee restored by closing the
+`ChartPlatform.hs` `preservePublicEdgeTlsSecretBeforeDelete`
+silent-success gap: an unobservable owned certificate must refuse, never
+collapse to "absent/clean." Classified `LongLived` like `aws-ses`, it is
+never auto-destroyed by `prodbox rke2 delete` or `prodbox aws teardown`
+and is removed only by `prodbox nuke`. The certificate lifecycle and the
+production-vs-staging two-issuer model live in
+[acme_provider_guide.md](./acme_provider_guide.md); its lifecycle-class
+row is in
+[../../DEVELOPMENT_PLAN/substrates.md → Resource Lifecycle Classes](../../DEVELOPMENT_PLAN/substrates.md#resource-lifecycle-classes).
 
 The scheduling of this doctrine into code is owned by
 [DEVELOPMENT_PLAN/phase-4-lifecycle-canonical-paths.md](../../DEVELOPMENT_PLAN/phase-4-lifecycle-canonical-paths.md)

@@ -226,6 +226,39 @@ rke2UninstallPath = "/usr/local/bin/rke2-uninstall.sh"
 rke2ServiceName :: String
 rke2ServiceName = "rke2-server.service"
 
+-- | On-disk markers that indicate an RKE2 install is present on this host.
+-- @rke2 delete@ short-circuits to a no-op success only when ALL of these are
+-- absent. Deliberately keyed off install state, not service state: an
+-- installed-but-stopped RKE2 still has a cluster and per-run state on disk to
+-- delete, so it must still flow through the per-run residue gate rather than be
+-- treated as "nothing to delete".
+rke2InstallMarkers :: [FilePath]
+rke2InstallMarkers =
+  [ rke2BinaryPath
+  , rke2UninstallPath
+  , "/var/lib/rancher/rke2"
+  , takeDirectory rke2ConfigPath
+  ]
+
+-- | Operator-facing line emitted when @rke2 delete@ finds no RKE2 install.
+noRke2ClusterMessage :: String
+noRke2ClusterMessage = "No RKE2 cluster to delete."
+
+-- | True when an RKE2 install is present on this host. Honors the
+-- @PRODBOX_TEST_RKE2_PRESENT@ test seam (mirroring the @PRODBOX_TEST_RESIDUE_*@
+-- hooks used by "Prodbox.Lifecycle.LiveResidue") so the suite stays
+-- host-independent: @"1"@ forces present, @"0"@ forces absent, unset probes the
+-- real filesystem markers.
+rke2InstallPresent :: IO Bool
+rke2InstallPresent = do
+  override <- lookupEnv "PRODBOX_TEST_RKE2_PRESENT"
+  case override of
+    Just "1" -> pure True
+    Just "0" -> pure False
+    _ -> or <$> mapM markerExists rke2InstallMarkers
+ where
+  markerExists path = (||) <$> doesFileExist path <*> doesDirectoryExist path
+
 prodboxNamespace :: String
 prodboxNamespace = "prodbox"
 
@@ -561,12 +594,25 @@ runRke2Command repoRoot command =
       requireLinux (runNativeInstall repoRoot planOptions)
     Rke2Delete flags _planOptions ->
       requireLinux $
-        if rke2DeleteYes flags
-          then
-            if rke2DeleteCascade flags
-              then runNativeDeleteCascade repoRoot
-              else runNativeDeleteWithResiduePolicy repoRoot flags
-          else failWith "rke2 delete requires --yes confirmation"
+        if not (rke2DeleteYes flags)
+          then failWith "rke2 delete requires --yes confirmation"
+          else do
+            -- No RKE2 install on this host means there is nothing to delete, so
+            -- short-circuit to a no-op success BEFORE the per-run residue gate.
+            -- An unreachable in-cluster MinIO backend (the gate's fail-closed
+            -- case) is otherwise indistinguishable from "cluster already gone",
+            -- which would wrongly refuse a delete that has nothing to do. The
+            -- gate and --cascade orchestration are unchanged when a cluster
+            -- (even a stopped one) is present.
+            present <- rke2InstallPresent
+            if not present
+              then do
+                writeOutputLine noRke2ClusterMessage
+                pure ExitSuccess
+              else
+                if rke2DeleteCascade flags
+                  then runNativeDeleteCascade repoRoot
+                  else runNativeDeleteWithResiduePolicy repoRoot flags
     Rke2Logs maybeLines ->
       requireLinux $
         case normalizeLogLines maybeLines of

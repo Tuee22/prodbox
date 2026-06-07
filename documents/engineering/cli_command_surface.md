@@ -257,6 +257,14 @@ surfaced through `summarizeRke2DeleteFailure` so the operator can act on the rea
 and the canonical destroy command. Three mutating modes are available; they are mutually
 exclusive at parse time:
 
+Before any of the three modes below, `prodbox rke2 delete` probes for an installed RKE2 (the
+on-disk markers `/usr/local/bin/rke2`, `/usr/local/bin/rke2-uninstall.sh`,
+`/var/lib/rancher/rke2`, `/etc/rancher/rke2`). When none is present — there is no cluster to
+delete — it prints `No RKE2 cluster to delete.` and exits `0` without consulting the residue
+gate or starting the cascade. This is a no-op short-circuit, not a weakening of the fail-closed
+gate: an installed-but-stopped RKE2 still flows through the full path below. See
+[lifecycle_reconciliation_doctrine.md](lifecycle_reconciliation_doctrine.md) §5a.
+
 - (default, no flag) → **refuse** with the actionable per-stack remedy list. The cluster is
   not touched; the operator runs the named `prodbox pulumi <stack>-destroy --yes` commands
   while the MinIO backend for those stacks is still up.

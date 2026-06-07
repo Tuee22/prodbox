@@ -2202,6 +2202,52 @@ These are the closure gates for this Planned sprint, not yet-passed results.
 The live production round-trip (issue once → retain → cluster wipe → rebuild → restore, no
 re-order) is exercised under Phase 8 Sprint `8.8`.
 
+## Sprint 4.25: `rke2 delete` Is a No-Op Success When No RKE2 Cluster Is Installed ✅
+
+**Status**: Done
+**Implementation**: `src/Prodbox/CLI/Rke2.hs`
+**Docs to update**: `documents/engineering/lifecycle_reconciliation_doctrine.md`,
+`documents/engineering/cli_command_surface.md`, `README.md`, `CLAUDE.md`
+
+### Objective
+
+Stop `prodbox rke2 delete` from refusing with the Sprint `4.19` fail-closed residue gate
+("the per-run Pulumi state backend could not be read … cannot confirm destroyed") when the RKE2
+cluster — and with it the in-cluster MinIO state backend — is **already entirely gone**. The
+gate alone cannot distinguish "MinIO transiently unreachable while a cluster still exists" from
+"no cluster at all", so deleting an already-deleted cluster wrongly exits `1`. When there is no
+cluster there is nothing to delete: report `No RKE2 cluster to delete.` and exit `0`.
+
+### Deliverables
+
+- `rke2InstallPresent` (+ `rke2InstallMarkers`, `noRke2ClusterMessage`) in
+  `src/Prodbox/CLI/Rke2.hs`: probe the on-disk RKE2 install markers (`/usr/local/bin/rke2`,
+  `/usr/local/bin/rke2-uninstall.sh`, `/var/lib/rancher/rke2`, `/etc/rancher/rke2`).
+- A no-install short-circuit at the `Rke2Delete` dispatch that precedes the residue gate and the
+  cascade, applied uniformly to the default, `--cascade`, and `--allow-pulumi-residue` forms.
+- Keyed off **install** state, not service state: an installed-but-stopped RKE2 still has a
+  cluster and per-run state on disk and so still flows through the full gate / cascade (the
+  Sprint `4.19` fail-closed behavior is preserved unchanged).
+- `PRODBOX_TEST_RKE2_PRESENT` test seam (mirrors `PRODBOX_TEST_RESIDUE_*`); `fakeRke2Environment`
+  defaults it to `1` so every existing gate/cascade test is unchanged.
+- Integration tests (default + `--cascade`) proving the no-op success even when residue reports
+  `ResidueUnreachable`.
+- Doctrine § 5a documents the carve-out as a no-op short-circuit, categorically distinct from a
+  `Precondition`, and explicitly **not** a relaxation of the fail-closed gate.
+
+### Validation
+
+1. `prodbox check-code` exits `0`.
+2. `prodbox test unit` and `prodbox test integration cli` pass, including the unchanged
+   Sprint `4.19` gate tests and the new no-cluster tests.
+3. `prodbox docs check` confirms doc parity.
+4. Live: `prodbox rke2 delete --yes` (and `--cascade`) on a host with no RKE2 install prints
+   `No RKE2 cluster to delete.` and exits `0`, leaving `.data/` untouched.
+
+### Remaining Work
+
+None — the change is self-contained to the `rke2 delete` dispatch plus its tests and docs.
+
 ## Documentation Requirements
 
 **Engineering docs to create/update:**

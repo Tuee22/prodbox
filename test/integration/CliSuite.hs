@@ -837,6 +837,47 @@ integrationCliSuite = do
         deleteExitCode `shouldBe` ExitSuccess
         deleteStdout `shouldContain` "Deleting local RKE2 environment..."
 
+    it "Sprint 4.25: rke2 delete --yes is a no-op success with no RKE2 install" $
+      withSystemTempDirectory "prodbox-hs-cli" $ \tmpDir -> do
+        binary <- resolveBinaryPath
+        writeRepoMarkers tmpDir
+        writeFile (tmpDir </> "prodbox-config.dhall") validConfigWithBlankOperationalAwsAndConfiguredAdmin
+        -- Reproduce the real "cluster already gone" host: no RKE2 install AND an
+        -- unreachable in-cluster MinIO state backend. The short-circuit must win
+        -- over the residue gate's fail-closed refusal.
+        envVars <- withNoRke2Install <$> fakeRke2Environment tmpDir
+
+        (deleteExitCode, deleteStdout, deleteStderr) <-
+          readCreateProcessWithExitCode
+            (proc binary ["rke2", "delete", "--yes"]) {cwd = Just tmpDir, env = Just envVars}
+            ""
+
+        let combined = deleteStdout ++ deleteStderr
+        deleteExitCode `shouldBe` ExitSuccess
+        combined `shouldContain` "No RKE2 cluster to delete."
+        -- The residue gate never ran, so neither its refusal nor a teardown
+        -- narration may appear.
+        combined `shouldNotContain` "per-run Pulumi state backend"
+        combined `shouldNotContain` "Deleting local RKE2 environment..."
+
+    it "Sprint 4.25: rke2 delete --cascade is a no-op success with no RKE2 install" $
+      withSystemTempDirectory "prodbox-hs-cli" $ \tmpDir -> do
+        binary <- resolveBinaryPath
+        writeRepoMarkers tmpDir
+        writeFile (tmpDir </> "prodbox-config.dhall") validConfigWithBlankOperationalAwsAndConfiguredAdmin
+        envVars <- withNoRke2Install <$> fakeRke2Environment tmpDir
+
+        (deleteExitCode, deleteStdout, deleteStderr) <-
+          readCreateProcessWithExitCode
+            (proc binary ["rke2", "delete", "--yes", "--cascade"]) {cwd = Just tmpDir, env = Just envVars}
+            ""
+
+        let combined = deleteStdout ++ deleteStderr
+        deleteExitCode `shouldBe` ExitSuccess
+        combined `shouldContain` "No RKE2 cluster to delete."
+        -- The cascade orchestration never started.
+        combined `shouldNotContain` "confirm-MinIO"
+
     it "projects ZeroSSL external account binding into the supported ClusterIssuer reconcile" $
       withSystemTempDirectory "prodbox-hs-cli" $ \tmpDir -> do
         binary <- resolveBinaryPath
@@ -1456,6 +1497,23 @@ fakeKubectlScript =
     , "esac"
     ]
 
+-- | Override a fake RKE2 environment to model the real already-deleted-cluster
+-- host: no RKE2 install present, and the in-cluster MinIO residue backend
+-- unreachable. Used by the Sprint 4.25 no-op-success delete tests to prove the
+-- short-circuit wins over the Sprint 4.19 fail-closed residue gate.
+withNoRke2Install :: [(String, String)] -> [(String, String)]
+withNoRke2Install baseEnvVars =
+  ("PRODBOX_TEST_RKE2_PRESENT", "0")
+    : ("PRODBOX_TEST_RESIDUE_UNREACHABLE", "1")
+    : filter (not . overridden . fst) baseEnvVars
+ where
+  overridden key =
+    key
+      `elem` [ "PRODBOX_TEST_RKE2_PRESENT"
+             , "PRODBOX_TEST_RESIDUE_ABSENT"
+             , "PRODBOX_TEST_RESIDUE_UNREACHABLE"
+             ]
+
 fakeRke2Environment :: FilePath -> IO [(String, String)]
 fakeRke2Environment repoRoot = do
   fakeBin <- writeFakeRke2Scripts repoRoot
@@ -1479,6 +1537,7 @@ fakeRke2Environment repoRoot = do
                           , "PRODBOX_RKE2_ENDPOINT_STATUS_ROOT"
                           , "PRODBOX_TEST_RESIDUE_ABSENT"
                           , "PRODBOX_TEST_RESIDUE_UNREACHABLE"
+                          , "PRODBOX_TEST_RKE2_PRESENT"
                           , "PRODBOX_TEST_HOST_MASTER_SEED_HEX"
                           , "HOME"
                           ]
@@ -1494,6 +1553,11 @@ fakeRke2Environment repoRoot = do
         -- Sprint 4.19 fail-closed delete gate sees ResidueAbsent (pass) rather
         -- than ResidueUnreachable (refuse) from the fake/unreachable MinIO.
         ("PRODBOX_TEST_RESIDUE_ABSENT", "1")
+      , -- These reconcile/delete tests model a host with an RKE2 install
+        -- present, so the no-cluster short-circuit in 'rke2 delete' must NOT
+        -- fire and the gate/cascade paths run as before. Production probes the
+        -- real on-disk markers; see 'rke2InstallPresent' in 'Prodbox.CLI.Rke2'.
+        ("PRODBOX_TEST_RKE2_PRESENT", "1")
       , -- Sprint 3.13 chunk 31: deterministic master-seed injection for
         -- 'ensureAdminPublicEdgeRoutes'. The reconcile reconciler reads the
         -- master seed from MinIO to derive `VSCODE_CLIENT_SECRET` for the

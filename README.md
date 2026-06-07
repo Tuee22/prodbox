@@ -62,7 +62,9 @@ validation environments.
   sweeping for cluster-tagged AWS resources after every destructive run; the consolidated doctrine
   lives in
   [documents/engineering/lifecycle_reconciliation_doctrine.md](./documents/engineering/lifecycle_reconciliation_doctrine.md).
-  `prodbox rke2 delete` opens with a refuse-path on live per-run Pulumi stacks; `--cascade` is the
+  `prodbox rke2 delete` opens with a refuse-path on live per-run Pulumi stacks; when no RKE2
+  install is present it short-circuits before that path to a no-op success
+  (`No RKE2 cluster to delete.`, exit 0). `--cascade` is the
   positive-framed "clean teardown" path that orchestrates K8s drain + per-run destroys + cluster
   uninstall + postflight tag sweep. The K8s drain phase tolerates the case where the Kubernetes
   cluster is already absent (partial teardown, first-time provisioning, repeated reruns): a quick
@@ -385,7 +387,8 @@ stacks if they still exist, removes the managed kubeconfig, and preserves `.data
 retained operator-host directory. The per-run Pulumi state in MinIO and the gateway-owned
 master seed both live on MinIO's PV under `.data/minio/...`, so they survive cluster wipes
 whenever `.data/` is preserved. `prodbox` never deletes `.data/`; removing it is an
-operator-only action.
+operator-only action. Invoking `rke2 delete` when no local RKE2 cluster is installed is a
+no-op success (`No RKE2 cluster to delete.`, exit 0), not an error.
 
 ### Chart Stacks
 

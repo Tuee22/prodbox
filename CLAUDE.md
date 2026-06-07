@@ -57,7 +57,9 @@ local-cluster lifecycle on this host.
   the supported, expected operation, not an unauthorized state change.
 - `prodbox rke2 delete --yes` is the canonical teardown. By default it refuses if any per-run
   Pulumi stack (`aws-eks`, `aws-eks-subzone`, `aws-test`) reports live resources, naming each
-  stack and the canonical destroy command. `--cascade` is the recommended "clean teardown" path
+  stack and the canonical destroy command. When no RKE2 cluster is installed at all, it is a
+  no-op success (`No RKE2 cluster to delete.`, exit 0) — it short-circuits before the
+  refuse-path, so an already-deleted cluster is not a blocker. `--cascade` is the recommended "clean teardown" path
   for wipe-and-rebuild cycles: K8s drain + per-run destroys + cluster uninstall + postflight
   tag sweep, all in one atomic operator action. `aws-ses` is never touched by `rke2 delete`
   regardless of flag — its Pulumi state lives in the long-lived

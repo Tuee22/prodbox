@@ -395,11 +395,36 @@ backend / credentials are still up at the point of refusal).
 
 | Command | Preflight predicates | Default on residue |
 |---|---|---|
-| `prodbox rke2 delete` | `noLivePerRunPulumiStacks` | Refuse with list and per-stack destroy command (or run `--cascade` for "orchestrate the full teardown") |
-| `prodbox rke2 delete --cascade` | none at entry — the command **is** the orchestration | Confirm-MinIO → per-run destroys → drain → uninstall → sweep (see §5b) |
+| `prodbox rke2 delete` | §5a no-install short-circuit, then `noLivePerRunPulumiStacks` | Refuse with list and per-stack destroy command (or run `--cascade` for "orchestrate the full teardown") |
+| `prodbox rke2 delete --cascade` | §5a no-install short-circuit, then none at entry — the command **is** the orchestration | Confirm-MinIO → per-run destroys → drain → uninstall → sweep (see §5b) |
 | `prodbox aws teardown` | `noLivePerRunPulumiStacks`, `noLiveLongLivedPulumiStacks` (Sprint 7.6) | Refuse with list and per-stack destroy command |
 | `prodbox pulumi <stack>-destroy` | (none beyond Pulumi's own dependency check) | n/a |
 | `prodbox nuke` | TTY refusal; typed-confirmation literal `NUKE EVERYTHING`; otherwise no residue refusal — the command **is** the total-teardown orchestration | Drain + destroy all stacks + IAM teardown + uninstall + sweep |
+
+### 5a. No-Install Short-Circuit (Sprint 4.25)
+
+`prodbox rke2 delete` opens — in **both** the default and `--cascade` forms — by
+probing whether an RKE2 install is present on the host *before* the preflight
+predicate (or, for `--cascade`, the confirm-MinIO phase) runs. When no install is
+found it prints `No RKE2 cluster to delete.` and exits `0`.
+
+"Present" is the logical OR of the on-disk install markers (`/usr/local/bin/rke2`,
+`/usr/local/bin/rke2-uninstall.sh`, `/var/lib/rancher/rke2`, `/etc/rancher/rke2`),
+evaluated by `rke2InstallPresent` in `src/Prodbox/CLI/Rke2.hs`. The probe keys off
+**install** state, not **service** state: an installed-but-stopped RKE2 still has a
+cluster and per-run state on disk to delete and therefore still flows through the
+full gate / cascade.
+
+This is a **no-op short-circuit** ("there is nothing to delete, so I am done"),
+categorically distinct from a `Precondition` ("I cannot proceed until X is
+satisfied"). It is **not** a relaxation of the Sprint 4.19 fail-closed gate (§4):
+the gate's `ResidueUnreachable → refuse` rule still applies in full whenever an
+RKE2 install exists. The short-circuit only resolves the degenerate case where the
+cluster — and with it the in-cluster MinIO state backend — is already entirely
+gone, which the gate alone cannot distinguish from "MinIO is transiently
+unreachable while a cluster still exists". Because the short-circuit takes no
+destructive action, `.data/` (and any per-run Pulumi state it still holds) is left
+untouched.
 
 ### 5b. Canonical Cascade Order
 

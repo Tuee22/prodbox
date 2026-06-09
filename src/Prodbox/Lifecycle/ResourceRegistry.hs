@@ -14,6 +14,7 @@
 module Prodbox.Lifecycle.ResourceRegistry
   ( ManagedResource (..)
   , perRunManagedResources
+  , longLivedManagedResources
   , pairPerRunResidue
   , resourcesToDestroy
   , reconcileAbsent
@@ -25,8 +26,12 @@ import Prodbox.CLI.Command
   ( PlanOptions (..)
   , PulumiCommand (..)
   )
-import Prodbox.CLI.Output (writeOutputLine)
+import Prodbox.CLI.Output (writeDiagnosticLine, writeOutputLine)
 import Prodbox.CLI.Pulumi (runPulumiCommand)
+import Prodbox.Lifecycle.LiveResidue
+  ( destroyRetainedPublicEdgeTls
+  , publicEdgeTlsResourceName
+  )
 import Prodbox.Lifecycle.ResidueStatus (ResidueStatus, isResiduePresent)
 import Prodbox.Lifecycle.ResourceClass (LifecycleClass (..))
 import System.Exit (ExitCode (..))
@@ -67,6 +72,40 @@ perRunManagedResources =
   ]
  where
   noPlan = PlanOptions False Nothing
+
+-- | Sprint 4.24: the long-lived managed resources whose @destroy@ is
+-- an S3-object operation rather than a @pulumi destroy@. Today this is
+-- the retained public-edge production TLS certificate material in the
+-- long-lived @pulumi_state_backend@ bucket. These are 'LongLived' and
+-- so are never reconciled by @rke2 delete@ / @aws teardown@; @prodbox
+-- nuke@ removes the certificate transitively when it destroys the
+-- whole long-lived bucket, and this registered @destroy@ is the
+-- explicit per-resource path. (The @aws-ses@ long-lived stack keeps
+-- its existing 'Prodbox.CLI.Nuke' Pulumi-destroy wiring.)
+longLivedManagedResources :: [ManagedResource]
+longLivedManagedResources =
+  [ ManagedResource
+      { resourceName = publicEdgeTlsResourceName
+      , resourceClass = LongLived
+      , resourceDestroy = destroyPublicEdgeTlsCertificate
+      }
+  ]
+
+-- | Adapt 'destroyRetainedPublicEdgeTls' (which reports a structured
+-- @Either String ()@) to the 'ManagedResource' @destroy@ shape
+-- (@FilePath -> IO ExitCode@), emitting operator-visible narration.
+destroyPublicEdgeTlsCertificate :: FilePath -> IO ExitCode
+destroyPublicEdgeTlsCertificate repoRoot = do
+  result <- destroyRetainedPublicEdgeTls repoRoot
+  case result of
+    Right () -> do
+      writeOutputLine
+        "Retained public-edge TLS certificate: removed from the long-lived S3 store."
+      pure ExitSuccess
+    Left err -> do
+      writeDiagnosticLine
+        ("Retained public-edge TLS certificate destroy failed: " ++ err)
+      pure (ExitFailure 1)
 
 -- | Pair each per-run managed resource with its freshly-discovered
 -- 'ResidueStatus', in canonical order. The caller resolves all three

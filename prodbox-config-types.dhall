@@ -97,7 +97,7 @@
         }
     , acme =
         { email = ""
-        , server = "https://acme-v02.api.letsencrypt.org/directory"
+        , server = "https://acme.zerossl.com/v2/DV90"
         , eab_key_id = None Text
         , eab_hmac_key = None Text
         }

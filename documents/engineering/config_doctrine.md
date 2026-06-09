@@ -201,20 +201,18 @@ in `prodbox-config.dhall`:
 | Field | Type | Purpose |
 |---|---|---|
 | `acme.email` | `Text` | expiry-notice email; required and non-empty |
-| `acme.server` | `Text` | production ACME directory URL rendered into the production `ClusterIssuer` |
-| `acme.staging_server` | `Text` | staging ACME directory URL rendered into the staging `ClusterIssuer` |
-| `acme.eab_key_id` | `Optional Text` | EAB key ID (ZeroSSL only) |
-| `acme.eab_hmac_key` | `Optional Text` | EAB HMAC key (ZeroSSL only) |
+| `acme.server` | `Text` | ZeroSSL ACME directory URL rendered into the `ClusterIssuer` |
+| `acme.eab_key_id` | `Optional Text` | EAB key ID (required for ZeroSSL) |
+| `acme.eab_hmac_key` | `Optional Text` | EAB HMAC key (required for ZeroSSL) |
 
-`acme.staging_server` is an optional field that defaults to
-`https://acme-staging-v02.api.letsencrypt.org/directory`. It has the same shape and
-validation treatment as `acme.server` (a non-empty ACME directory `Text`), and it feeds the
-staging `ClusterIssuer` (`letsencrypt-staging-http01`) that the high-churn canonical
-validation loop deploys against. The issuer-selection model — two `ClusterIssuer`s sharing
-one DNS-01 Route 53 solver and a deploy-time `IssuerClass` (`Staging | Production`) — is
+`acme.server` is a non-empty ACME directory `Text` that defaults to the ZeroSSL directory
+`https://acme.zerossl.com/v2/DV90` and feeds the single `ClusterIssuer` (`zerossl-http01`).
+ZeroSSL is the only supported ACME provider, so `acme.eab_key_id` / `acme.eab_hmac_key` are
+required and `validateAcmeBinding` rejects a ZeroSSL `acme.server` with either EAB field
+missing. The single-issuer model — one `ClusterIssuer` with a DNS-01 Route 53 solver plus the
+S3-backed retain-and-restore of the issued certificate so rebuilds do not re-order it — is
 owned by [acme_provider_guide.md](./acme_provider_guide.md) and
-[envoy_gateway_edge_doctrine.md](./envoy_gateway_edge_doctrine.md). Scheduled for adoption in
-Sprint 7.11.
+[envoy_gateway_edge_doctrine.md](./envoy_gateway_edge_doctrine.md).
 
 ## 7. File-watch reload trigger
 

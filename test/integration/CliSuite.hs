@@ -878,6 +878,89 @@ integrationCliSuite = do
         -- The cascade orchestration never started.
         combined `shouldNotContain` "confirm-MinIO"
 
+    -- Sprint 8.8: the operator-only `prodbox nuke` total teardown is exercised
+    -- through the same PRODBOX_ALLOW_NON_TTY_INTERACTIVE seam the other
+    -- interactive surfaces (aws setup/teardown, config setup) use, feeding the
+    -- typed confirmation on stdin. The retained public-edge certificate lives
+    -- in the long-lived `pulumi_state_backend` bucket, which only nuke's step 5
+    -- destroys; these prove the confirmation gate and that path.
+    it
+      "Sprint 8.8: nuke --dry-run plans to destroy the long-lived state bucket holding the retained cert"
+      $ withSystemTempDirectory "prodbox-hs-cli"
+      $ \tmpDir -> do
+        binary <- resolveBinaryPath
+        writeRepoMarkers tmpDir
+        writeFile (tmpDir </> "prodbox-config.dhall") validConfigForNuke
+
+        (exitCode, stdoutText, _) <-
+          readCreateProcessWithExitCode
+            (proc binary ["nuke", "--dry-run"]) {cwd = Just tmpDir}
+            ""
+
+        exitCode `shouldBe` ExitSuccess
+        stdoutText `shouldContain` "PRODBOX_NUKE_PLAN"
+        stdoutText `shouldContain` "STEP=5 destroy long-lived `pulumi_state_backend` S3 bucket"
+        stdoutText `shouldContain` "CONFIRMATION_LITERAL=NUKE EVERYTHING"
+
+    it "Sprint 8.8: nuke refuses the total teardown when the typed confirmation is wrong" $
+      withSystemTempDirectory "prodbox-hs-cli" $ \tmpDir -> do
+        binary <- resolveBinaryPath
+        writeRepoMarkers tmpDir
+        writeFile (tmpDir </> "prodbox-config.dhall") validConfigForNuke
+        envVars <- fakeRke2Environment tmpDir
+        let nukeEnv = ("PRODBOX_ALLOW_NON_TTY_INTERACTIVE", "1") : envVars
+
+        (exitCode, _, stderrText) <-
+          readCreateProcessWithExitCode
+            (proc binary ["nuke"]) {cwd = Just tmpDir, env = Just nukeEnv}
+            "destroy please\n"
+
+        exitCode `shouldBe` ExitFailure 1
+        stderrText `shouldContain` "confirmation rejected; nothing destroyed"
+        -- Nothing was destroyed: the orchestration never shelled out to pulumi.
+        pulumiRan <- doesFileExist (tmpDir </> "fake-rke2-state" </> "pulumi.txt")
+        pulumiRan `shouldBe` False
+
+    it
+      "Sprint 8.8: nuke runs the total teardown on the typed confirmation and destroys the retained-cert state bucket"
+      $ withSystemTempDirectory "prodbox-hs-cli"
+      $ \tmpDir -> do
+        binary <- resolveBinaryPath
+        repoRoot <- getCurrentDirectory
+        writeRepoMarkers tmpDir
+        writeFile (tmpDir </> "prodbox-config.dhall") validConfigForNuke
+        -- Step 2 (aws-ses destroy) runs `pulumi` in the aws-ses program dir;
+        -- provide it so the long-lived backend login/destroy can chdir there.
+        createDirectoryIfMissing True (tmpDir </> "pulumi" </> "aws-ses")
+        mapM_
+          ( \name ->
+              copyFile
+                (repoRoot </> "pulumi" </> "aws-ses" </> name)
+                (tmpDir </> "pulumi" </> "aws-ses" </> name)
+          )
+          ["Pulumi.yaml", "Main.yaml", "Pulumi.aws-ses.yaml"]
+        envVars <- fakeRke2Environment tmpDir
+        let nukeEnv = ("PRODBOX_ALLOW_NON_TTY_INTERACTIVE", "1") : envVars
+
+        (exitCode, stdoutText, stderrText) <-
+          readCreateProcessWithExitCode
+            (proc binary ["nuke"]) {cwd = Just tmpDir, env = Just nukeEnv}
+            "NUKE EVERYTHING\n"
+
+        when
+          (exitCode /= ExitSuccess)
+          (expectationFailure (unlines ["nuke stdout:", stdoutText, "nuke stderr:", stderrText]))
+        exitCode `shouldBe` ExitSuccess
+        stdoutText `shouldContain` "step 1/5 cluster cascade complete"
+        stdoutText `shouldContain` "step 2/5 aws-ses destroy complete"
+        stdoutText `shouldContain` "step 3/5 operational IAM teardown complete"
+        stdoutText `shouldContain` "step 4/5 postflight tag sweep complete"
+        -- Step 5 (complete) destroyed the long-lived `pulumi_state_backend`
+        -- bucket where the retained public-edge certificate lives — the only
+        -- path that removes it (per the Sprint 4.24 LongLived classification).
+        stdoutText `shouldContain` "step 5/5 long-lived state-bucket destroy complete"
+        stdoutText `shouldContain` "prodbox nuke: total teardown complete."
+
     it "projects ZeroSSL external account binding into the supported ClusterIssuer reconcile" $
       withSystemTempDirectory "prodbox-hs-cli" $ \tmpDir -> do
         binary <- resolveBinaryPath
@@ -951,8 +1034,9 @@ integrationCliSuite = do
                 , "1"
                 , "1"
                 , ""
-                , "2"
                 , "ops@resolvefintech.com"
+                , "test-eab-key-id"
+                , "test-eab-hmac-key"
                 , "1"
                 , ""
                 , ""
@@ -1446,13 +1530,28 @@ fakeKubectlScript =
     , "    fi"
     , "    ;;"
     , "  'get secret')"
-    , "    if [[ \"$*\" == *'go-template={{index .data \"password\" | base64decode}}'* ]]; then"
+    , "    if [[ \"$*\" == *'--ignore-not-found=true'* ]]; then"
+    , "      # Sprint 8.7 public-edge cert preserve/restore reads the"
+    , "      # public-edge-tls Secret with --ignore-not-found=true. Real kubectl"
+    , "      # returns exit 0 with empty output for an absent resource; the Secret"
+    , "      # is modeled absent in the charts suite, so honor the flag."
+    , "      exit 0"
+    , "    elif [[ \"$*\" == *'go-template={{index .data \"password\" | base64decode}}'* ]]; then"
     , "      printf 'Error from server (NotFound): secrets \"%s\" not found\\n' \"${3:-secret}\" >&2"
     , "      exit 1"
     , "    else"
     , "      printf 'Error from server (NotFound): secrets \"%s\" not found\\n' \"${3:-secret}\" >&2"
     , "      exit 1"
     , "    fi"
+    , "    ;;"
+    , "  'get certificate.cert-manager.io')"
+    , "    if [[ \"$*\" == *'--ignore-not-found=true'* ]]; then"
+    , "      # Sprint 8.7 public-edge cert preserve reads the Certificate with"
+    , "      # --ignore-not-found=true; modeled absent, so exit 0 with empty output."
+    , "      exit 0"
+    , "    fi"
+    , "    printf 'Error from server (NotFound): certificates \"%s\" not found\\n' \"${3:-certificate}\" >&2"
+    , "    exit 1"
     , "    ;;"
     , "  'get pv')"
     , "    printf 'Error from server (NotFound): persistentvolumes \"%s\" not found\\n' \"${3:-pv}\" >&2"
@@ -2127,6 +2226,8 @@ fakeRke2PulumiScript =
     , "  destroy|refresh)"
     , "    printf 'PULUMI_%s\\n' \"${1^^}\""
     , "    ;;"
+    , "  config)"
+    , "    ;;"
     , "  *)"
     , "    printf 'unsupported fake pulumi command: %s\\n' \"$*\" >&2"
     , "    exit 1"
@@ -2148,6 +2249,35 @@ fakeRke2AwsScript =
     , "    ;;"
     , "  *'route53 change-resource-record-sets'*)"
     , "    printf '{\"ChangeInfo\":{\"Status\":\"INSYNC\"}}\\n'"
+    , "    exit 0"
+    , "    ;;"
+    , "  # Sprint 8.8: prodbox nuke step 3 (operational IAM teardown) — the"
+    , "  # operational `prodbox` user is absent in this fixture, so the teardown"
+    , "  # is a no-op."
+    , "  *'sts get-caller-identity'*)"
+    , "    printf '{\"Account\":\"123456789012\",\"UserId\":\"AIDAFAKEADMIN\",\"Arn\":\"arn:aws:iam::123456789012:user/prodbox-admin-temp\"}\\n'"
+    , "    exit 0"
+    , "    ;;"
+    , "  *'iam get-user'*)"
+    , "    printf 'An error occurred (NoSuchEntity) when calling the GetUser operation: The user with name prodbox cannot be found.\\n' >&2"
+    , "    exit 254"
+    , "    ;;"
+    , "  *'iam list-access-keys'*)"
+    , "    printf '{\"AccessKeyMetadata\":[]}\\n'"
+    , "    exit 0"
+    , "    ;;"
+    , "  # Sprint 8.8: prodbox nuke step 4 (postflight tag sweep) — clean."
+    , "  *'resourcegroupstaggingapi get-resources'*)"
+    , "    printf '{\"ResourceTagMappingList\":[]}\\n'"
+    , "    exit 0"
+    , "    ;;"
+    , "  # Sprint 8.8: prodbox nuke step 5 (long-lived state-bucket destroy that"
+    , "  # removes the retained public-edge cert)."
+    , "  *'s3api list-object-versions'*)"
+    , "    printf '{}\\n'"
+    , "    exit 0"
+    , "    ;;"
+    , "  *'s3 rm '*|*'s3api delete-objects'*|*'s3api delete-bucket'*)"
     , "    exit 0"
     , "    ;;"
     , "  *)"
@@ -2506,10 +2636,30 @@ validConfigWithBlankOperationalAwsAndConfiguredAdmin =
     , ", aws_substrate = { hosted_zone_id = \"\", subzone_name = \"\" }"
     , ", ses = { sender_domain = \"\", receive_subdomain = \"\", capture_bucket = \"\" }"
     , ", domain = { demo_fqdn = \"test.resolvefintech.com\", demo_ttl = 60 }"
-    , ", acme = { email = \"test@resolvefintech.com\", server = \"https://acme-staging-v02.api.letsencrypt.org/directory\", eab_key_id = None Text, eab_hmac_key = None Text }"
+    , ", acme = { email = \"test@resolvefintech.com\", server = \"https://acme.zerossl.com/v2/DV90\", eab_key_id = Some \"test-eab-key-id\", eab_hmac_key = Some \"test-eab-hmac-key\" }"
     , ", deployment = " ++ deploymentDhallFragment
     , ", storage = { manual_pv_host_root = \".data\" }"
     , ", pulumi_state_backend = { bucket_name = \"\", region = \"\", key_prefix = \"\" }"
+    , "}"
+    ]
+
+-- | Sprint 8.8: like 'validConfigWithBlankOperationalAwsAndConfiguredAdmin'
+-- but with a populated long-lived @pulumi_state_backend@ bucket, so the
+-- @prodbox nuke@ step-5 state-bucket destroy (which removes the retained
+-- public-edge certificate stored under that bucket) has a bucket to target.
+validConfigForNuke :: String
+validConfigForNuke =
+  unlines
+    [ "{ aws = { access_key_id = \"\", secret_access_key = \"\", session_token = None Text, region = \"us-east-1\" }"
+    , ", aws_admin_for_test_simulation = { access_key_id = \"CONFIGADMINKEY\", secret_access_key = \"config-admin-secret\", session_token = None Text, region = \"us-west-2\" }"
+    , ", route53 = { zone_id = \"Z1234567890ABC\" }"
+    , ", aws_substrate = { hosted_zone_id = \"\", subzone_name = \"\" }"
+    , ", ses = { sender_domain = \"test.resolvefintech.com\", receive_subdomain = \"inbox.test.resolvefintech.com\", capture_bucket = \"prodbox-test-ses-capture\" }"
+    , ", domain = { demo_fqdn = \"test.resolvefintech.com\", demo_ttl = 60 }"
+    , ", acme = { email = \"test@resolvefintech.com\", server = \"https://acme.zerossl.com/v2/DV90\", eab_key_id = Some \"test-eab-key-id\", eab_hmac_key = Some \"test-eab-hmac-key\" }"
+    , ", deployment = " ++ deploymentDhallFragment
+    , ", storage = { manual_pv_host_root = \".data\" }"
+    , ", pulumi_state_backend = { bucket_name = \"prodbox-test-pulumi-long-lived\", region = \"us-west-2\", key_prefix = \"pulumi/\" }"
     , "}"
     ]
 
@@ -2522,7 +2672,7 @@ validConfigWithLeakedOperationalAwsAndConfiguredAdmin =
     , ", aws_substrate = { hosted_zone_id = \"\", subzone_name = \"\" }"
     , ", ses = { sender_domain = \"\", receive_subdomain = \"\", capture_bucket = \"\" }"
     , ", domain = { demo_fqdn = \"test.resolvefintech.com\", demo_ttl = 60 }"
-    , ", acme = { email = \"test@resolvefintech.com\", server = \"https://acme-staging-v02.api.letsencrypt.org/directory\", eab_key_id = None Text, eab_hmac_key = None Text }"
+    , ", acme = { email = \"test@resolvefintech.com\", server = \"https://acme.zerossl.com/v2/DV90\", eab_key_id = Some \"test-eab-key-id\", eab_hmac_key = Some \"test-eab-hmac-key\" }"
     , ", deployment = " ++ deploymentDhallFragment
     , ", storage = { manual_pv_host_root = \".data\" }"
     , ", pulumi_state_backend = { bucket_name = \"\", region = \"\", key_prefix = \"\" }"
@@ -2545,9 +2695,9 @@ configWithAws accessKeyId secretAccessKey sessionTokenValue =
     accessKeyId
     secretAccessKey
     sessionTokenValue
-    "https://acme-staging-v02.api.letsencrypt.org/directory"
-    "None Text"
-    "None Text"
+    "https://acme.zerossl.com/v2/DV90"
+    "Some \"test-eab-key-id\""
+    "Some \"test-eab-hmac-key\""
 
 deploymentDhallFragment :: String
 deploymentDhallFragment =

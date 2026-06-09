@@ -171,22 +171,18 @@ Envoy and application workloads trust tokens issued by Keycloak according to rou
 
 ### cert-manager
 
-cert-manager owns listener TLS material for the public edge. It renders two ACME
-`ClusterIssuer`s that share one DNS-01 Route 53 solver per
+cert-manager owns listener TLS material for the public edge. It renders one ACME
+`ClusterIssuer` with a DNS-01 Route 53 solver per
 [acme_provider_guide.md](./acme_provider_guide.md):
 
-- `letsencrypt-http01` — the production ACME issuer.
-- `letsencrypt-staging-http01` — the Let's Encrypt staging issuer, rendered from the
-  `acme.staging_server` config field documented in
-  [config_doctrine.md](./config_doctrine.md).
+- `zerossl-http01` — the ZeroSSL ACME issuer, built from `acme.server` and EAB-authenticated.
 
-An `IssuerClass` (`Staging | Production`) selects, at chart deploy time, which
-`ClusterIssuer` the keycloak chart `Certificate` references. The high-churn canonical
-validation loop deploys against `Staging` so repeated rebuilds never consume the Let's
-Encrypt production duplicate-certificate rate limit; `Production` is reserved for the one
-retained production listener certificate.
+The keycloak and vscode chart `Certificate`s reference this single issuer
+(`Prodbox.PublicEdge.publicEdgeClusterIssuerName`). Because the canonical validation loop
+repeatedly rebuilds the substrate, the issued certificate is retained and restored before
+issuance (see below) so rebuilds do not re-order it and consume ZeroSSL issuance quota.
 
-The production listener certificate is a **LongLived** managed resource, not disposable
+The public-edge listener certificate is a **LongLived** managed resource, not disposable
 chart state. It is issued once, retained in the long-lived `pulumi_state_backend` S3 bucket
 under a substrate-scoped key, and registered in the managed-resource registry per
 [lifecycle_reconciliation_doctrine.md](./lifecycle_reconciliation_doctrine.md); it is removed
@@ -574,20 +570,19 @@ Lifecycle and chart implications:
    admin SecurityPolicies, and `websocket` workload keep token/provider/JWKS backchannels
    in-cluster rather than exposing a second public Keycloak route or relying on EKS
    public-load-balancer hairpin behavior.
-7. cert-manager renders both ACME `ClusterIssuer`s (`letsencrypt-http01` production and
-   `letsencrypt-staging-http01` staging) on every reconcile; the keycloak chart `Certificate`
-   references whichever issuer the deploy-time `IssuerClass` selects, per
+7. cert-manager renders one ACME `ClusterIssuer` (`zerossl-http01`) on every reconcile; the
+   keycloak and vscode chart `Certificate`s reference it, per
    [acme_provider_guide.md](./acme_provider_guide.md) and
    [helm_chart_platform_doctrine.md](./helm_chart_platform_doctrine.md). The high-churn
-   canonical validation loop deploys with `Staging`; only the one retained production
-   certificate uses `Production`.
-8. The production listener certificate is restored before issuance on every rebuild path
+   canonical validation loop relies on the retained-and-restored public-edge certificate so
+   rebuilds do not re-order it.
+8. The public-edge listener certificate is restored before issuance on every rebuild path
    (`prodbox rke2 reconcile`, `prodbox charts deploy`, and the substrate-platform installs):
    the reconciler reads the retained certificate from the long-lived `pulumi_state_backend`
    S3 bucket under its substrate-scoped key and re-materializes the cert-manager Secret before
-   any ACME `Production` issuance is attempted, so a cluster wipe never triggers a duplicate
-   production issuance against Let's Encrypt. Because it lives in the long-lived bucket and is
-   registered as a LongLived managed resource, the production certificate survives cluster
+   any ZeroSSL ACME issuance is attempted, so a cluster wipe never triggers a re-order against
+   ZeroSSL. Because it lives in the long-lived bucket and is
+   registered as a LongLived managed resource, the public-edge certificate survives cluster
    wipes (`prodbox rke2 delete --cascade`) and is removed only by `prodbox nuke`, per
    [lifecycle_reconciliation_doctrine.md](./lifecycle_reconciliation_doctrine.md). Scheduled
    for adoption in Sprints 4.24 / 7.11 / 8.7.

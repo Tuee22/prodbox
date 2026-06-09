@@ -84,9 +84,9 @@ The development-plan target architecture centers the local public edge on:
 
 - **MetalLB** for self-managed `LoadBalancer` IP allocation
 - **Envoy Gateway** and **Gateway API** for public HTTP(S) routing
-- **cert-manager** for listener TLS, rendering two ACME `ClusterIssuer`s — a Let's Encrypt
-  staging issuer for the high-churn validation loop and a production issuer whose certificate
-  is issued once and retained as a long-lived S3 resource (scheduled by Sprints 4.24/7.11/8.7;
+- **cert-manager** for listener TLS, rendering one ZeroSSL ACME `ClusterIssuer` whose
+  certificate is issued once and retained as a long-lived S3 resource, then restored before
+  every issuance so rebuild cycles never re-order it (Sprints 4.24/7.11/8.7;
   see [DEVELOPMENT_PLAN/README.md](./DEVELOPMENT_PLAN/README.md) and
   [acme_provider_guide.md](./documents/engineering/acme_provider_guide.md))
 - **Keycloak** as the OIDC identity provider
@@ -263,8 +263,8 @@ What this does:
 - `charts deploy websocket` deploys the shared-host WebSocket workload plus its internal Redis
   dependency on `/ws`.
 - `host public-edge` confirms Route 53, Envoy Gateway, Gateway API, and certificate readiness for
-  the shared browser, API, WebSocket, Harbor, and MinIO edge paths (the high-churn validation
-  loop uses the Let's Encrypt staging issuer; see
+  the shared browser, API, WebSocket, Harbor, and MinIO edge paths (the public edge uses the
+  single ZeroSSL ACME issuer with retained-and-restored certificate material; see
   [acme_provider_guide.md](./documents/engineering/acme_provider_guide.md)).
 - `charts deploy gateway` is optional for the separate Haskell distributed gateway daemon and is
   not required to bring up the Envoy Gateway public edge.
@@ -330,8 +330,7 @@ These fields are not all parser-required, but they matter for normal operation:
 | `aws.session_token` | Optional AWS session token |
 | `aws_admin_for_test_simulation.*` | Stored admin credential block for suite-driven destructive validation plus long-lived stack and `prodbox nuke` flows |
 | `domain.demo_ttl` | DNS TTL in seconds |
-| `acme.server` | Production ACME directory URL (the issuer for the once-issued, S3-retained production certificate) |
-| `acme.staging_server` | Optional Let's Encrypt staging ACME directory URL for the high-churn validation loop; defaults to the LE staging endpoint |
+| `acme.server` | ZeroSSL ACME directory URL (the issuer for the once-issued, S3-retained public-edge certificate); defaults to the ZeroSSL endpoint |
 | `deployment.bootstrap_public_ip_override` | Bootstrap-only DNS A-record IP override |
 | `deployment.pulumi_enable_dns_bootstrap` | Bootstrap toggle for DNS reconciliation during the supported flow |
 | `deployment.public_edge_bgp_peers` | Optional BGP peer list when `deployment.public_edge_advertisement_mode = Some "bgp"` |

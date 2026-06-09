@@ -274,7 +274,7 @@ covers only that substrate's row in the parity table in [substrates.md](substrat
 #### Substrates
 
 A substrate is an environment that, for the lifetime of a suite run, stands up the same set of
-DNS records, TLS certificates (real Let's Encrypt via cert-manager), ingress (Envoy Gateway plus
+DNS records, TLS certificates (real ZeroSSL via cert-manager), ingress (Envoy Gateway plus
 MetalLB or the substrate-equivalent), services, and workload charts; provides the prerequisites
 declared in `src/Prodbox/Prerequisite.hs`; and is torn down on suite exit.
 

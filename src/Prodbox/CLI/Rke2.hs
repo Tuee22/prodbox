@@ -126,6 +126,7 @@ import Prodbox.PublicEdge
   , authPathPrefix
   , harborPathPrefix
   , minioPathPrefix
+  , publicEdgeClusterIssuerName
   , substrateHostedZoneId
   , substrateIdentityIssuerUrl
   , substratePublicFqdn
@@ -476,8 +477,10 @@ postgresOperatorChartRef = "percona/pg-operator"
 postgresOperatorChartVersion :: String
 postgresOperatorChartVersion = "2.9.0"
 
-chartClusterIssuer :: String
-chartClusterIssuer = "letsencrypt-http01"
+-- | The cert-manager ACME account-key Secret name. cert-manager stores
+-- the ZeroSSL ACME account registration under this @privateKeySecretRef@.
+zerosslAccountKeySecretName :: String
+zerosslAccountKeySecretName = "zerossl-account-key"
 
 route53CredentialsSecretName :: String
 route53CredentialsSecretName = "route53-credentials"
@@ -3205,13 +3208,15 @@ ensureAcmeRuntime repoRoot settings prodboxId labelValue = do
           ExitFailure _ -> pure applyExit
           ExitSuccess -> do
             issuerWaitEnv <- awsCommandEnvironment currentEnvironment settings
+            -- Wait for the ZeroSSL ClusterIssuer rendered from the manifest
+            -- to become Ready before reporting the ACME runtime up.
             runCommand
               Subprocess
                 { subprocessPath = "kubectl"
                 , subprocessArguments =
                     [ "wait"
                     , "--for=condition=Ready"
-                    , "clusterissuer/" ++ chartClusterIssuer
+                    , "clusterissuer/" ++ publicEdgeClusterIssuerName
                     , "--timeout=300s"
                     ]
                 , subprocessEnvironment = Just issuerWaitEnv
@@ -3232,7 +3237,9 @@ acmeRuntimeManifest substrate settings =
 acmeRuntimeManifestWith
   :: Substrate -> ValidatedSettings -> Text.Text -> String -> String -> [Value]
 acmeRuntimeManifestWith _substrate settings hostedZoneId prodboxId labelValue =
-  route53Secret : maybe [] pure maybeEabSecret ++ [clusterIssuer]
+  route53Secret
+    : maybe [] pure maybeEabSecret
+    ++ [clusterIssuer]
  where
   config = validatedConfig settings
   route53Secret =
@@ -3273,46 +3280,56 @@ acmeRuntimeManifestWith _substrate settings hostedZoneId prodboxId labelValue =
           )
       _ -> Nothing
   clusterIssuer =
+    clusterIssuerResource publicEdgeClusterIssuerName (acmeClusterIssuerSpec settings hostedZoneId)
+  clusterIssuerResource issuerName issuerSpec =
     object
       [ "apiVersion" .= ("cert-manager.io/v1" :: String)
       , "kind" .= ("ClusterIssuer" :: String)
       , "metadata"
           .= object
-            [ "name" .= chartClusterIssuer
+            [ "name" .= issuerName
             , "annotations" .= object [Key.fromString prodboxAnnotationKey .= prodboxId]
             , "labels" .= object [Key.fromString prodboxLabelKey .= labelValue]
             ]
-      , "spec" .= object ["acme" .= acmeClusterIssuerSpec settings hostedZoneId]
+      , "spec" .= object ["acme" .= issuerSpec]
       ]
 
+-- | The DNS-01 Route 53 ACME solver block referenced by the ZeroSSL
+-- 'ClusterIssuer'. Keyed off 'route53CredentialsSecretName' and the
+-- substrate hosted zone.
+acmeRoute53Solver :: Text.Text -> Text.Text -> Value
+acmeRoute53Solver awsRegion hostedZoneId =
+  object
+    [ "dns01"
+        .= object
+          [ "route53"
+              .= object
+                [ "region" .= Text.unpack awsRegion
+                , "hostedZoneID" .= Text.unpack hostedZoneId
+                , "accessKeyIDSecretRef"
+                    .= object
+                      [ "name" .= route53CredentialsSecretName
+                      , "key" .= ("access-key-id" :: String)
+                      ]
+                , "secretAccessKeySecretRef"
+                    .= object
+                      [ "name" .= route53CredentialsSecretName
+                      , "key" .= ("secret-access-key" :: String)
+                      ]
+                ]
+          ]
+    ]
+
+-- | The ZeroSSL ACME @ClusterIssuer@ @spec.acme@ object: the
+-- @acme.server@ directory, the ZeroSSL account key, the DNS-01 Route 53
+-- solver, and the required ZeroSSL external account binding.
 acmeClusterIssuerSpec :: ValidatedSettings -> Text.Text -> Value
 acmeClusterIssuerSpec settings hostedZoneId =
   object $
     [ "server" .= Text.unpack (server acmeConfig)
     , "email" .= Text.unpack (email acmeConfig)
-    , "privateKeySecretRef" .= object ["name" .= ("letsencrypt-account-key" :: String)]
-    , "solvers"
-        .= [ object
-               [ "dns01"
-                   .= object
-                     [ "route53"
-                         .= object
-                           [ "region" .= Text.unpack (region awsConfig)
-                           , "hostedZoneID" .= Text.unpack hostedZoneId
-                           , "accessKeyIDSecretRef"
-                               .= object
-                                 [ "name" .= route53CredentialsSecretName
-                                 , "key" .= ("access-key-id" :: String)
-                                 ]
-                           , "secretAccessKeySecretRef"
-                               .= object
-                                 [ "name" .= route53CredentialsSecretName
-                                 , "key" .= ("secret-access-key" :: String)
-                                 ]
-                           ]
-                     ]
-               ]
-           ]
+    , "privateKeySecretRef" .= object ["name" .= zerosslAccountKeySecretName]
+    , "solvers" .= [acmeRoute53Solver (region awsConfig) hostedZoneId]
     ]
       ++ maybe [] (\binding -> ["externalAccountBinding" .= binding]) externalAccountBinding
  where

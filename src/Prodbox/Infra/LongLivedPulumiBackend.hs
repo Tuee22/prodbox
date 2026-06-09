@@ -23,6 +23,17 @@ module Prodbox.Infra.LongLivedPulumiBackend
   , destroyLongLivedPulumiStateBucket
   , renderDeletePayload
   , withLongLivedPulumiBackendEnv
+
+    -- * Sprint 4.24: object-level access for the retained public-edge TLS cert
+  , listLongLivedObjectKeysUnderPrefix
+  , purgeLongLivedObjectsUnderPrefix
+  , parseObjectKeysPayload
+
+    -- * Sprint 7.11: single-object put/get for the substrate-scoped cert retention store
+  , putLongLivedObject
+  , getLongLivedObject
+  , isLongLivedNoSuchKeyMessage
+  , resolveLongLivedAdminS3Context
   )
 where
 
@@ -37,6 +48,8 @@ import Data.Aeson
 import Data.Aeson.Key qualified as Key
 import Data.Aeson.KeyMap qualified as KeyMap
 import Data.ByteString.Lazy.Char8 qualified as BL8
+import Data.Char (toLower)
+import Data.List (isInfixOf)
 import Data.Text qualified as Text
 import Prodbox.Result (Result (..))
 import Prodbox.Settings
@@ -50,7 +63,7 @@ import Prodbox.Subprocess
   , Subprocess (..)
   , captureSubprocessResult
   )
-import System.Environment (lookupEnv, setEnv, unsetEnv)
+import System.Environment (getEnvironment, lookupEnv, setEnv, unsetEnv)
 import System.Exit (ExitCode (..))
 
 -- | Errors returned by long-lived backend operations. Distinct
@@ -375,21 +388,22 @@ emptyVersionedBucket workingDir environment bucket = do
                 )
             )
         ExitSuccess ->
-          purgeRemainingVersions workingDir environment bucket
+          purgeRemainingVersions workingDir environment bucket Nothing
 
 -- | Purge every remaining object version and delete-marker in the
--- versioned bucket. Lists versions through @aws s3api
--- list-object-versions@, parses the JSON in-process, builds the
--- @delete@ payload, and calls @aws s3api delete-objects@. Iterates
--- to drain truncated pages. Idempotent — does nothing when the
--- bucket has no remaining versions.
+-- versioned bucket (optionally restricted to a key prefix). Lists
+-- versions through @aws s3api list-object-versions@, parses the JSON
+-- in-process, builds the @delete@ payload, and calls @aws s3api
+-- delete-objects@. Iterates to drain truncated pages. Idempotent —
+-- does nothing when the bucket has no remaining versions under the
+-- (optional) prefix.
 purgeRemainingVersions
-  :: FilePath -> [(String, String)] -> String -> IO (Either String ())
-purgeRemainingVersions workingDir environment bucket = go
+  :: FilePath -> [(String, String)] -> String -> Maybe String -> IO (Either String ())
+purgeRemainingVersions workingDir environment bucket prefix = go
  where
   go :: IO (Either String ())
   go = do
-    listResult <- listVersionsPage workingDir environment bucket
+    listResult <- listVersionsPage workingDir environment bucket prefix
     case listResult of
       Left err -> pure (Left err)
       Right [] -> pure (Right ())
@@ -404,8 +418,12 @@ purgeRemainingVersions workingDir environment bucket = go
 type BucketVersion = (String, String)
 
 listVersionsPage
-  :: FilePath -> [(String, String)] -> String -> IO (Either String [BucketVersion])
-listVersionsPage workingDir environment bucket = do
+  :: FilePath
+  -> [(String, String)]
+  -> String
+  -> Maybe String
+  -> IO (Either String [BucketVersion])
+listVersionsPage workingDir environment bucket prefix = do
   result <-
     captureSubprocessResult
       Subprocess
@@ -420,6 +438,7 @@ listVersionsPage workingDir environment bucket = do
             , "--output"
             , "json"
             ]
+              ++ maybe [] (\p -> ["--prefix", p]) prefix
         , subprocessEnvironment = Just environment
         , subprocessWorkingDirectory = Just workingDir
         }
@@ -513,6 +532,227 @@ renderDeletePayload entries =
           ]
       payload = object [Key.fromString "Objects" .= map objectField entries]
    in BL8.unpack (encode payload)
+
+-- | Sprint 4.24: list the object keys under a prefix in the long-lived
+-- @pulumi_state_backend@ bucket. Used by the retained public-edge TLS
+-- certificate managed resource's @discover@ to decide present vs absent.
+-- Returns @Right keys@ on success (empty list when nothing matches),
+-- and @Left detail@ on failure. A @NoSuchBucket@ failure surfaces in
+-- @detail@ so the caller can treat a deleted long-lived backend as the
+-- authoritative "nothing retained" state via
+-- 'Prodbox.Lifecycle.LiveResidue.isMissingLongLivedS3BackendBucketMessage'.
+listLongLivedObjectKeysUnderPrefix
+  :: FilePath
+  -> [(String, String)]
+  -> PulumiStateBackendSection
+  -> String
+  -> IO (Either String [String])
+listLongLivedObjectKeysUnderPrefix workingDir environment section prefix =
+  case longLivedPulumiBackendUrlEither section of
+    Left err -> pure (Left (longLivedBackendErrorMessage err))
+    Right _url -> do
+      let bucket = Text.unpack (Text.strip (psbBucketName section))
+      result <-
+        captureSubprocessResult
+          Subprocess
+            { subprocessPath = "aws"
+            , subprocessArguments =
+                [ "s3api"
+                , "list-objects-v2"
+                , "--bucket"
+                , bucket
+                , "--prefix"
+                , prefix
+                , "--query"
+                , "Contents[].Key"
+                , "--output"
+                , "json"
+                ]
+            , subprocessEnvironment = Just environment
+            , subprocessWorkingDirectory = Just workingDir
+            }
+      pure $ case result of
+        Failure err -> Left ("failed to start `aws s3api list-objects-v2`: " ++ err)
+        Success output -> case processExitCode output of
+          ExitSuccess -> parseObjectKeysPayload (processStdout output)
+          ExitFailure code ->
+            Left
+              ( "`aws s3api list-objects-v2 --bucket "
+                  ++ bucket
+                  ++ " --prefix "
+                  ++ prefix
+                  ++ "` exited with code "
+                  ++ show code
+                  ++ ": "
+                  ++ processStderr output
+                  ++ processStdout output
+              )
+
+-- | Parse the JSON emitted by @aws s3api list-objects-v2 --query
+-- 'Contents[].Key' --output json@: a JSON array of key strings, or
+-- @null@ \/ an empty array when nothing matches the prefix. Public so
+-- the unit suite can pin the shape without a live S3 round-trip.
+parseObjectKeysPayload :: String -> Either String [String]
+parseObjectKeysPayload payload =
+  case eitherDecode (BL8.pack payload) :: Either String Value of
+    Left err -> Left ("failed to decode list-objects-v2 payload: " ++ err)
+    Right Null -> Right []
+    Right (Array entries) ->
+      Right [Text.unpack keyText | String keyText <- foldr (:) [] entries]
+    Right _ -> Right []
+
+-- | Sprint 4.24: purge every object version and delete-marker under a
+-- key prefix in the long-lived @pulumi_state_backend@ bucket. The
+-- @destroy@ action for the retained public-edge TLS certificate managed
+-- resource. Idempotent: a missing bucket (long-lived backend already
+-- gone) returns 'Right ()', and an empty prefix is a no-op.
+purgeLongLivedObjectsUnderPrefix
+  :: FilePath
+  -> [(String, String)]
+  -> PulumiStateBackendSection
+  -> String
+  -> IO (Either String ())
+purgeLongLivedObjectsUnderPrefix workingDir environment section prefix =
+  case longLivedPulumiBackendUrlEither section of
+    Left err -> pure (Left (longLivedBackendErrorMessage err))
+    Right _url -> do
+      let bucket = Text.unpack (Text.strip (psbBucketName section))
+      headResult <- runAwsS3Api workingDir environment ["head-bucket", "--bucket", bucket]
+      case headResult of
+        Left _ -> pure (Right ())
+        Right () -> purgeRemainingVersions workingDir environment bucket (Just prefix)
+
+-- | Sprint 7.11: write a local file to a key in the long-lived
+-- @pulumi_state_backend@ bucket — the @store@ half of the
+-- substrate-scoped public-edge production-certificate retention path.
+-- @aws s3api put-object@ reads the body from a file path, so callers
+-- materialize the cert bytes to a temp file first. Idempotent: a put
+-- overwrites the prior version (the bucket is versioned).
+putLongLivedObject
+  :: FilePath
+  -> [(String, String)]
+  -> PulumiStateBackendSection
+  -> String
+  -- ^ Object key, e.g. @public-edge-tls/\<substrate\>/\<fqdn\>@.
+  -> FilePath
+  -- ^ Local body file to upload.
+  -> IO (Either String ())
+putLongLivedObject workingDir environment section key bodyPath =
+  case longLivedPulumiBackendUrlEither section of
+    Left err -> pure (Left (longLivedBackendErrorMessage err))
+    Right _url -> do
+      let bucket = Text.unpack (Text.strip (psbBucketName section))
+      runAwsS3Api
+        workingDir
+        environment
+        ["put-object", "--bucket", bucket, "--key", key, "--body", bodyPath]
+
+-- | Sprint 7.11: read a key from the long-lived @pulumi_state_backend@
+-- bucket into a local file — the @restore@ half of the retention path.
+-- Returns @Right True@ when the object was written to @outputPath@,
+-- @Right False@ when the key is absent (no retained cert yet — the next
+-- deploy triggers a fresh order), and @Left@ on any other failure
+-- (fail-closed: an unreadable backend is not "absent").
+getLongLivedObject
+  :: FilePath
+  -> [(String, String)]
+  -> PulumiStateBackendSection
+  -> String
+  -> FilePath
+  -- ^ Local path the object body is written to.
+  -> IO (Either String Bool)
+getLongLivedObject workingDir environment section key outputPath =
+  case longLivedPulumiBackendUrlEither section of
+    Left err -> pure (Left (longLivedBackendErrorMessage err))
+    Right _url -> do
+      let bucket = Text.unpack (Text.strip (psbBucketName section))
+      result <-
+        captureSubprocessResult
+          Subprocess
+            { subprocessPath = "aws"
+            , subprocessArguments =
+                ["s3api", "get-object", "--bucket", bucket, "--key", key, outputPath]
+            , subprocessEnvironment = Just environment
+            , subprocessWorkingDirectory = Just workingDir
+            }
+      pure $ case result of
+        Failure err -> Left ("failed to start `aws s3api get-object`: " ++ err)
+        Success output -> case processExitCode output of
+          ExitSuccess -> Right True
+          ExitFailure code
+            | isLongLivedNoSuchKeyMessage (processStderr output) -> Right False
+            | otherwise ->
+                Left
+                  ( "`aws s3api get-object --bucket "
+                      ++ bucket
+                      ++ " --key "
+                      ++ key
+                      ++ "` exited with code "
+                      ++ show code
+                      ++ ": "
+                      ++ processStderr output
+                  )
+
+-- | Sprint 8.7: resolve everything needed for a long-lived bucket
+-- object operation from @prodbox-config.dhall@: the admin AWS @aws
+-- s3api@ environment and the configured 'PulumiStateBackendSection'.
+-- Returns @Left@ (for graceful degradation by the caller) when admin
+-- credentials are not configured, the config cannot be read, or no
+-- long-lived backend bucket is configured — so a chart deploy on a host
+-- without the retention store simply skips retention rather than failing.
+resolveLongLivedAdminS3Context
+  :: FilePath -> IO (Either String ([(String, String)], PulumiStateBackendSection))
+resolveLongLivedAdminS3Context repoRoot = do
+  adminResult <- loadAdminAwsCredentials repoRoot
+  case adminResult of
+    Left err -> pure (Left err)
+    Right adminCreds -> do
+      configResult <- loadConfigFile repoRoot
+      case configResult of
+        Left err -> pure (Left err)
+        Right config -> do
+          let section = pulumi_state_backend config
+          case longLivedPulumiBackendUrlEither section of
+            Left backendErr -> pure (Left (longLivedBackendErrorMessage backendErr))
+            Right _url -> do
+              environment <- buildAdminS3Environment adminCreds
+              pure (Right (environment, section))
+
+-- | Build the @aws s3api@ environment for admin-credentialed long-lived
+-- bucket operations. Mirrors the AWS env projection used by the residue
+-- queries without depending on them.
+buildAdminS3Environment :: Credentials -> IO [(String, String)]
+buildAdminS3Environment adminCreds = do
+  currentEnv <- getEnvironment
+  let path = maybe "" id (lookup "PATH" currentEnv)
+      home = maybe "" id (lookup "HOME" currentEnv)
+      adminRegion = Text.unpack (region adminCreds)
+      sessionTokenEntries = case session_token adminCreds of
+        Just token -> [("AWS_SESSION_TOKEN", Text.unpack token)]
+        Nothing -> []
+  pure
+    ( [ ("AWS_ACCESS_KEY_ID", Text.unpack (access_key_id adminCreds))
+      , ("AWS_SECRET_ACCESS_KEY", Text.unpack (secret_access_key adminCreds))
+      , ("AWS_REGION", adminRegion)
+      , ("AWS_DEFAULT_REGION", adminRegion)
+      , ("AWS_EC2_METADATA_DISABLED", "true")
+      , ("PATH", path)
+      , ("HOME", home)
+      , ("LANG", "C.UTF-8")
+      ]
+        ++ sessionTokenEntries
+    )
+
+-- | Pure: does an @aws s3api get-object@ failure message indicate the
+-- key is simply absent (vs. a real backend failure)? Public so the unit
+-- suite can pin the discrimination. Matches the canonical @NoSuchKey@
+-- blob case-insensitively.
+isLongLivedNoSuchKeyMessage :: String -> Bool
+isLongLivedNoSuchKeyMessage detail =
+  "nosuchkey" `isInfixOf` normalized
+    || ("not found" `isInfixOf` normalized && "key" `isInfixOf` normalized)
+ where
+  normalized = map toLower detail
 
 -- | Bracket the action with the long-lived backend's
 -- @PULUMI_BACKEND_URL@ exported into the process environment, then

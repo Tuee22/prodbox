@@ -66,11 +66,11 @@ Build a clean-room Haskell `prodbox` repository with:
     `/v1/state` skew reporting, and atomic Orders-promotion coordination keyed off the monotonic
     `orders_version_utc` field.
 15. One self-managed public-edge doctrine where MetalLB exposes Envoy Gateway, Kubernetes Gateway
-    API owns Layer 7 routes, cert-manager owns listener TLS through two ACME `ClusterIssuer`s — a
-    Let's Encrypt staging issuer for the high-churn canonical validation loop and a production
-    issuer whose issued certificate is a `LongLived`, registry-managed resource retained once in
-    the long-lived `pulumi_state_backend` S3 bucket and restored before every issuance (so rebuild
-    cycles never trip the production duplicate-certificate rate limit), Keycloak remains the
+    API owns Layer 7 routes, cert-manager owns listener TLS through one ZeroSSL ACME
+    `ClusterIssuer` whose issued certificate is a `LongLived`, registry-managed resource retained
+    once in the long-lived `pulumi_state_backend` S3 bucket and restored before every issuance (so
+    rebuild cycles restore the certificate rather than re-ordering it against ZeroSSL), Keycloak
+    remains the
     identity provider, every externally reachable app or dashboard lives under the single hostname
     `test.resolvefintech.com`, Envoy enforces Keycloak-backed JWT auth and RBAC on explicit path
     prefixes such as `/vscode`, `/api`, `/ws`, `/auth`, and later supported admin paths, and the
@@ -137,8 +137,8 @@ retained by design) live in
 
 | Substrate | Provision | Teardown | Suite parity today |
 |-----------|-----------|----------|--------------------|
-| Home local | `prodbox rke2 reconcile` + `prodbox charts deploy ...` | `prodbox rke2 delete --yes` | ✅ Full canonical suite, including real Let's Encrypt, OIDC, WebSocket, and public-edge proofs on `test.resolvefintech.com` |
-| AWS | `prodbox pulumi eks-resources` + `prodbox pulumi aws-subzone-resources` + `prodbox pulumi test-resources` | `prodbox pulumi aws-subzone-destroy --yes` + `prodbox pulumi eks-destroy --yes` + `prodbox pulumi test-destroy --yes` | ✅ Phase 7-owned substrate proof closed June 5, 2026: AWS Route 53 NLB-target reconciliation, per-run postflight teardown, Harbor-login retry, Keycloak public-token-endpoint readiness, VS Code/API/WebSocket/admin-route validations, public DNS, and destructive lifecycle all passed. Phase 8 targeted `keycloak-invite --substrate aws` now passes invite capture/link-follow with the selected substrate public FQDN, `/auth/admin` public route, `aws_admin_for_test_simulation.*` credential harness, SMTP sync, and Let's Encrypt ACME path; Sprint 8.5 POST/OIDC claim assertions plus local SMTP Secret / preserved-realm reconciliation, SMTP NetworkPolicy, verify-email continuation, public-edge certificate status-patch guard, and public-edge TLS Secret retention are wired and unit-tested, and aggregate completion remains Phase 8-active until the AWS aggregate rerun plus live POST/OIDC substrate proof land. |
+| Home local | `prodbox rke2 reconcile` + `prodbox charts deploy ...` | `prodbox rke2 delete --yes` | ✅ Full canonical suite, including real ZeroSSL, OIDC, WebSocket, and public-edge proofs on `test.resolvefintech.com` |
+| AWS | `prodbox pulumi eks-resources` + `prodbox pulumi aws-subzone-resources` + `prodbox pulumi test-resources` | `prodbox pulumi aws-subzone-destroy --yes` + `prodbox pulumi eks-destroy --yes` + `prodbox pulumi test-destroy --yes` | ✅ Phase 7-owned substrate proof closed June 5, 2026: AWS Route 53 NLB-target reconciliation, per-run postflight teardown, Harbor-login retry, Keycloak public-token-endpoint readiness, VS Code/API/WebSocket/admin-route validations, public DNS, and destructive lifecycle all passed. Phase 8 targeted `keycloak-invite --substrate aws` now passes invite capture/link-follow with the selected substrate public FQDN, `/auth/admin` public route, `aws_admin_for_test_simulation.*` credential harness, SMTP sync, and ZeroSSL ACME path; Sprint 8.5 POST/OIDC claim assertions plus local SMTP Secret / preserved-realm reconciliation, SMTP NetworkPolicy, verify-email continuation, public-edge certificate status-patch guard, and public-edge TLS Secret retention are wired and unit-tested, and aggregate completion remains Phase 8-active until the AWS aggregate rerun plus live POST/OIDC substrate proof land. |
 
 Phase ownership separates suite content (which lives in
 [phase-5-canonical-test-suite.md](phase-5-canonical-test-suite.md)) from substrate
@@ -162,29 +162,112 @@ prerequisites.
 
 ## Alignment Status
 
+**2026-06-09 — AWS parity ✅ (Sprint `8.6`) + cert round-trip restore-no-reorder ✅ (Sprint `8.8`).**
+Targeted `keycloak-invite --substrate aws` passed end-to-end (OIDC claims verified, clean teardown,
+no leak) → `keycloak-invite` green on both substrates. The cert no longer re-orders on rebuild:
+`retainReadyPublicEdgeCertificate` retains the issued cert to long-lived S3, and the restore now
+preserves the `cert-manager.io/*` adoption annotations so cert-manager adopts it (verified live: a
+home rebuild reached Ready with zero ACME orders, then `keycloak-invite` passed). `check-code` 0,
+`test unit` 695/695. The full AWS aggregate then closed ✅ GREEN (`TESTALL_AWS_EXIT=0`): all 16
+validations on EKS incl. `keycloak-invite` + `lifecycle`, both cabal suites, clean teardown.
+The complete canonical suite is now green on both substrates. The final Sprint `8.8` deliverable —
+the `prodbox nuke` nuke-only-removes-the-retained-cert proof — then closed via the interactive
+integration harness (the `PRODBOX_ALLOW_NON_TTY_INTERACTIVE` + stdin seam the other interactive
+surfaces use): three new `CliSuite.hs` cases prove the typed-confirmation gate, the `--dry-run`
+step-5 long-lived bucket destroy (where the cert lives), and the full five-step total teardown
+running end-to-end on `NUKE EVERYTHING`; with the Sprint `4.24` `LongLived` classification (nuke-only)
+this completes the proof. `check-code` 0, `test unit` 695/695, `test integration cli` 35/35.
+**Phase `8` is ✅ Done** on all owned deliverables.
+
+**2026-06-08 — Home `keycloak-invite` live gate ✅ GREEN (Sprint `8.5` home proof closed); four
+defects fixed.** First live home `prodbox test integration keycloak-invite --substrate home-local`
+passed end-to-end (exit 0, no AWS leak), after fixing: (1) the fake `kubectl` not honoring
+`--ignore-not-found=true` — a Sprint `8.7` regression that aborted `prodbox test all` before any
+native validation (the real cause of the two "pre-existing environmental" failures); (2) the
+credential-setup parser missing Keycloak 26's `/login-actions/action-token` proceed anchor; (3)
+**retain-on-ready** capturing the issued cert to the long-lived S3 store at the readiness gate (the
+prior retain-on-delete never populated S3); (4) `newUserCreationPayload` setting `firstName`/
+`lastName` so the invited user passes Keycloak 26 user-profile validation (else the OIDC
+password-grant 400'd "Account is not fully set up"). Verified: `check-code` 0, `test unit` 693/693,
+`test integration cli` 32/32. The full home `test all` aggregate then closed the Sprint `8.8`
+home deliverable ✅ GREEN (`TESTALL_HOME4_EXIT=0`): all 16 validations incl. `keycloak-invite` +
+the destructive `lifecycle` cycle, both cabal suites (unit 693, integration 32), no AWS leak.
+Remaining for Phase `8`: AWS parity (Sprint `8.6`), the cert round-trip restore-no-reorder proof
+(Sprint `8.8` — restored Secret strips the `cert-manager.io/*` adoption annotations so cert-manager
+re-issues; fix pending), and the TTY-only `prodbox nuke` proof (Sprint `8.8`, non-interactive cannot run).
+
+**2026-06-07 — ZeroSSL is the sole supported ACME provider; the two-issuer model is reverted to
+one ZeroSSL issuer.** Sprints `7.11`/`8.7` originally rendered two cert-manager `ClusterIssuer`s
+(a production issuer plus a staging issuer on a separate ACME provider) selected by an
+`IssuerClass`. ZeroSSL became the only supported provider, so the ACME runtime now renders ONE
+`ClusterIssuer` (`zerossl-http01`, built from `acme.server`, EAB-authenticated, with a DNS-01
+Route 53 solver); the staging issuer, `acme.staging_server`, its default constant, and the
+`IssuerClass` ADT + env var are removed from the codebase and docs. ZeroSSL has no staging
+endpoint; rebuild churn is handled by the S3 retain-and-restore of the issued certificate
+(Sprints `4.24`/`7.11`/`8.7`), so the certificate is issued once and restored rather than
+re-ordered. Gates: `check-code` 0, `test unit` 690/690, `docs check` 0, `lint docs` 0;
+integration cli/env only the 2 pre-existing `charts deploy vscode` environmental failures.
+
+**2026-06-07 — Sprint `8.7` ✅ Done on the code-owned surface.** The chart-platform public-edge
+cert retention moves to the S3-backed `LongLived` store. `Prodbox.Lib.ChartPlatform` gains the
+typed `PublicEdgePreserveOutcome` + pure `classifyPublicEdgePreserve`, closing the
+`preservePublicEdgeTlsSecretBeforeDelete` silent-success gap; preserve writes the cert to the
+long-lived S3 store and restore reads it back (graceful degradation when the store is
+unavailable), so restore-before-issue works on every rebuild path including a fresh cluster. The
+keycloak + vscode `Certificate` issuers reference the single ZeroSSL `ClusterIssuer`
+(`zerossl-http01`), replacing the removed hardcoded constant. (The `IssuerClass` selector this
+sprint originally added was reverted with the ZeroSSL single-issuer decision above.) Gates:
+`check-code` 0, `test unit` 690/690, `docs check` 0, `lint docs` 0; integration cli/env only the
+2 pre-existing `charts deploy vscode` environmental failures. The live S3 round-trip is the
+Sprint `8.8` gate. Sprints `8.5`/`8.6`/`8.8` remain operator-driven live gates (live AWS/cluster
++ external ACME state); Phase `8` stays `Active` until they land.
+
+**2026-06-07 — Sprint `7.11` ✅ Done; Phase `7` reclosed on its code-owned surface.** The ACME
+runtime renders one cert-manager `ClusterIssuer` from `acmeRuntimeManifestWith` —
+`zerossl-http01` (`acme.server`, EAB-authenticated) with a factored-out DNS-01 Route 53 solver
+(`acmeRoute53Solver`) and the `zerossl-account-key` account key; both the home and AWS ACME paths
+wait for it. `PublicEdge.publicEdgeTlsRetentionKey` defines the substrate-scoped retention key
+`public-edge-tls/<substrate>/<fqdn>`, and `putLongLivedObject`/`getLongLivedObject` (in
+`LongLivedPulumiBackend.hs`) are the S3 access path consumed by Sprint `8.7`. Gates: `check-code`
+0, `test unit` 690/690, `docs check` 0, `lint docs` 0, integration cli/env pass (only the 2
+pre-existing `charts deploy vscode` environmental failures remain). The live single-issuer +
+S3-retention round-trip is the Phase `8` Sprint `8.8` gate.
+
+**2026-06-07 — Sprint `4.24` ✅ Done; Phase `4` reclosed on its code-owned surface.** The
+public-edge **production** TLS certificate is now a registered `LongLived` managed resource:
+`("public-edge-tls", LongLived)` in `resourceLifecycleClasses`, the typed
+`queryPublicEdgeTlsResidueStatus` `discover` (lists objects under the `public-edge-tls/`
+prefix in the long-lived `pulumi_state_backend` bucket; pure `residueStatusFromObjectListing`
+gives present / absent / missing-bucket-is-absent / `Unreachable`-is-refuse soundness), the
+idempotent `destroyRetainedPublicEdgeTls` `destroy`, and `longLivedManagedResources` in the
+registry; the generated `substrates.md` lifecycle-class table re-renders with the
+`public-edge-tls` row, and the `noLiveLongLivedPulumiStacks` gate discovers it alongside
+`aws-ses`. Classified the same as `aws-ses` — never reconciled by `rke2 delete` / `aws
+teardown`, removed only by `nuke` (transitively) or the explicit registered destroy. Gates:
+`check-code` 0, `test unit` 682/682 (new 8-test Sprint 4.24 block), `docs check` 0, `lint
+docs` 0. The live production round-trip is the Phase `8` Sprint `8.8` gate. Phase `7` stays
+open for Sprint `7.11`; Phase `8` for Sprints `8.7`/`8.8`.
+
 **2026-06-06 — public-edge TLS certificate reclassified; Phase `4` and Phase `7` reopened,
-Phase `8` extended.** The ordered home `keycloak-invite` gate is blocked by Let's Encrypt's
-production duplicate-certificate limit (window resets 2026-06-07 UTC) after the pre-retention
-`public-edge-tls` Secret was lost. The root cause is a classification bug: the public-edge
-production certificate is treated as disposable `PerRun` chart state even though the
-duplicate-certificate limit makes it a `LongLived`, rate-limited external resource — the TLS
-analogue of the long-lived `aws-ses` identity the harness already carves out of auto-destroy.
-The scheduled refactor routes the high-churn canonical loop through a Let's Encrypt **staging**
-issuer, retains the **production** cert once in the long-lived `pulumi_state_backend` S3 bucket,
-restores it before every issuance, and registers it in the managed-resource registry.
-**Phase `4` reopened** for Sprint `4.24` (the certificate joins the registry as a `LongLived`
-`discover`/`destroy` resource under
+Phase `8` extended.** The ordered home `keycloak-invite` gate was blocked by the ACME provider's
+certificate issuance rate limit after the pre-retention `public-edge-tls` Secret was lost. The
+root cause is a classification bug: the public-edge certificate is treated as disposable `PerRun`
+chart state even though re-ordering it on every rebuild makes it a `LongLived`, rate-limited
+external resource — the TLS analogue of the long-lived `aws-ses` identity the harness already
+carves out of auto-destroy. The refactor retains the issued cert once in the long-lived
+`pulumi_state_backend` S3 bucket, restores it before every issuance, and registers it in the
+managed-resource registry. **Phase `4` reopened** for Sprint `4.24` (the certificate joins the
+registry as a `LongLived` `discover`/`destroy` resource under
 [lifecycle_reconciliation_doctrine.md § 3.1](../documents/engineering/lifecycle_reconciliation_doctrine.md)
-totality). **Phase `7` reopened** for Sprint `7.11` (two ACME `ClusterIssuer`s — production +
-`letsencrypt-staging-http01` — sharing one DNS-01 Route 53 solver, the `acme.staging_server`
-config field, and the substrate-scoped S3 retention store; the substrate-aware extension of
-Sprint `7.5.b`). **Phase `8` is extended** (already Active) with Sprint `8.7` (chart-platform
-retention refactor: close the silent-success gap, S3 restore-before-issue on all rebuild paths,
-`IssuerClass` selection) and Sprint `8.8` (live `keycloak-invite` gate closure on staging plus
-the production round-trip). **Phases `1`, `2`, `3`, `5`, and `6` stay `Done`** — the `Plan`/Apply,
-gateway, chart-platform, and canonical-suite foundations are reused, not changed — per standards
-rule E. The overall handoff stays incomplete until the refactor lands and the home gate passes on
-staging, with AWS parity following.
+totality). **Phase `7` reopened** for Sprint `7.11` (the single ZeroSSL ACME `ClusterIssuer`
+`zerossl-http01` with a DNS-01 Route 53 solver, plus the substrate-scoped S3 retention store; the
+substrate-aware extension of Sprint `7.5.b`). **Phase `8` is extended** (already Active) with
+Sprint `8.7` (chart-platform retention refactor: close the silent-success gap, S3
+restore-before-issue on all rebuild paths) and Sprint `8.8` (live `keycloak-invite` gate closure
+plus the certificate round-trip). **Phases `1`, `2`, `3`, `5`, and `6` stay `Done`** — the
+`Plan`/Apply, gateway, chart-platform, and canonical-suite foundations are reused, not changed —
+per standards rule E. The overall handoff stays incomplete until the refactor lands and the home
+gate passes, with AWS parity following.
 
 **2026-05-28 — § 3.1 totality enforcement complete.** Sprint `4.22`'s create-call-site
 coverage lint landed (the follow-on to the already-landed registry ↔ doc parity), completing
@@ -395,7 +478,7 @@ POST / fresh OIDC claim assertions, including the new local SMTP Secret / preser
 reconciliation, and the AWS aggregate rerun after the targeted AWS
 `keycloak-invite` proof
 validated ordering, selected substrate public FQDN, `/auth/admin` routing, SMTP sync,
-Let's Encrypt ACME, invite capture, link follow, and cleanup. The supported operator surface is `prodbox`, the supported
+ZeroSSL ACME, invite capture, link follow, and cleanup. The supported operator surface is `prodbox`, the supported
 configuration contract is direct `Dhall -> Haskell types` rooted at `prodbox-config.dhall`, and
 the supported build topology remains `.build/prodbox` on the host plus `/opt/build` inside
 repository-owned Dockerfiles. `prodbox check-code` enforces the current
@@ -598,7 +681,11 @@ proof through the public-edge certificate status-patch guard and TLS Secret rete
 2026-06-06 Phases `4` and `7` reopened again (Sprints `4.24` and `7.11`) and Phase `8` gained
 Sprints `8.7`/`8.8` to reclassify the public-edge production certificate as a `LongLived`,
 rate-limit-safe resource (two ACME issuers, staging-for-churn, S3-retained production cert); see
-the [Alignment Status](#alignment-status) note for the reopening rationale.
+the [Alignment Status](#alignment-status) note for the reopening rationale. **Phases `4` and `7`
+reclosed 2026-06-07** when Sprints `4.24` and `7.11` landed on their code-owned surfaces (the
+certificate is a registered `LongLived` managed resource; the ACME runtime renders two
+issuers + the substrate-scoped S3 cert-retention key scheme and access path); Phase `8` stays
+open for Sprints `8.7`/`8.8` (and the live `8.5`/`8.6` proofs).
 
 - Phase 0 defines the canonical plan suite and cleanup ledger.
 - Phase 1 owns the CLI, direct-Dhall config contract, `.build/prodbox` artifact contract, the

@@ -136,6 +136,8 @@ import Prodbox.CLI.Parser
 import Prodbox.CLI.Pulumi (renderPulumiPlan)
 import Prodbox.CLI.Rke2
   ( MinioImageSource (..)
+  , acmeClusterIssuerSpec
+  , acmeRuntimeManifestWith
   , adminPublicEdgeManifestItems
   , cascadeOrderNarration
   , inferCascadeSubstrate
@@ -243,6 +245,7 @@ import Prodbox.Infra.LongLivedPulumiBackend
   , longLivedBackendErrorMessage
   , longLivedPulumiBackendUrl
   , longLivedPulumiBackendUrlEither
+  , parseObjectKeysPayload
   , renderDeletePayload
   )
 import Prodbox.Infra.MinioBackend
@@ -267,9 +270,13 @@ import Prodbox.Lib.AwsSubstratePlatform qualified
 import Prodbox.Lib.ChartPlatform
   ( ChartDeploymentPlan (..)
   , ChartReleasePlan (..)
+  , PublicEdgePreserveOutcome (..)
   , buildChartDeletePlan
   , buildChartDeploymentPlan
   , buildChartDeploymentPlanForSubstrate
+  , certManagerAdoptionAnnotations
+  , classifyPublicEdgePreserve
+  , renderPublicEdgePreserveOutcome
   , resolveChartSecrets
   , retainedPublicEdgeTlsSecretManifest
   , supportedChartNames
@@ -310,6 +317,10 @@ import Prodbox.PostgresPlatform
 import Prodbox.Prerequisite
   ( prerequisiteRegistry
   )
+import Prodbox.PublicEdge
+  ( publicEdgeClusterIssuerName
+  , publicEdgeTlsRetentionKey
+  )
 import Prodbox.Result qualified as Result
 import Prodbox.Retry
   ( RetryPolicy (..)
@@ -327,7 +338,8 @@ import Prodbox.Service
   )
 import Prodbox.Ses.SmtpPassword qualified
 import Prodbox.Settings
-  ( AwsSubstrateSection (..)
+  ( AcmeSection (..)
+  , AwsSubstrateSection (..)
   , ConfigFile (..)
   , Credentials (..)
   , DeploymentSection (..)
@@ -4683,6 +4695,32 @@ main = mainWithSuite "prodbox-unit" $ do
       Prodbox.Keycloak.Admin.buildKeycloakBaseUrlForHost " aws.test.resolvefintech.com "
         `shouldBe` "https://aws.test.resolvefintech.com/auth"
 
+  -- Sprint 8.8: Keycloak 26's user-profile validation rejects a name-less
+  -- user's first login / direct-grant token request with
+  -- @invalid_grant: "Account is not fully set up"@, so the invited-user
+  -- creation payload must carry non-empty firstName/lastName. (Confirmed
+  -- live 2026-06-08: the credential-setup flow completed but the OIDC claim
+  -- assertion 400'd until firstName/lastName were set.)
+  describe "Keycloak invited-user creation payload" $ do
+    it "sets non-empty firstName/lastName (firstName from the email local part)" $ do
+      let payload =
+            Prodbox.Keycloak.Admin.newUserCreationPayload
+              Prodbox.Keycloak.Admin.NewUser
+                { Prodbox.Keycloak.Admin.newUserEmail =
+                    "test-abc123@inbox.test.resolvefintech.com"
+                , Prodbox.Keycloak.Admin.newUserRole = Nothing
+                }
+      payload
+        `shouldBe` object
+          [ "enabled" .= True
+          , "email" .= ("test-abc123@inbox.test.resolvefintech.com" :: Text.Text)
+          , "username" .= ("test-abc123@inbox.test.resolvefintech.com" :: Text.Text)
+          , "firstName" .= ("test-abc123" :: Text.Text)
+          , "lastName" .= ("Invitee" :: Text.Text)
+          , "emailVerified" .= False
+          , "requiredActions" .= (["VERIFY_EMAIL"] :: [Text.Text])
+          ]
+
   describe "Keycloak realm SMTP reconciliation" $ do
     let smtpSettings =
           Prodbox.Keycloak.Admin.RealmSmtpSettings
@@ -5143,8 +5181,9 @@ main = mainWithSuite "prodbox-unit" $ do
       ResourceClass.resourceNamesOfClass ResourceClass.PerRun
         `shouldBe` ["aws-eks", "aws-eks-subzone", "aws-test"]
 
-    it "the long-lived class is exactly aws-ses" $
-      ResourceClass.resourceNamesOfClass ResourceClass.LongLived `shouldBe` ["aws-ses"]
+    it "the long-lived class is aws-ses plus the retained public-edge cert (Sprint 4.24)" $
+      ResourceClass.resourceNamesOfClass ResourceClass.LongLived
+        `shouldBe` ["aws-ses", "public-edge-tls"]
 
     it "the operational class registers the IAM user and the aws.* config block" $
       ResourceClass.resourceNamesOfClass ResourceClass.Operational
@@ -5153,8 +5192,8 @@ main = mainWithSuite "prodbox-unit" $ do
     it "perRunStackNames is derived from the registry (matches the prior literal)" $
       perRunStackNames `shouldBe` ["aws-eks", "aws-eks-subzone", "aws-test"]
 
-    it "longLivedStackNames is derived from the registry (matches the prior literal)" $
-      longLivedStackNames `shouldBe` ["aws-ses"]
+    it "longLivedStackNames is derived from the registry (aws-ses + public-edge-tls)" $
+      longLivedStackNames `shouldBe` ["aws-ses", "public-edge-tls"]
 
     it "derived stack-name lists equal the PerRun/LongLived registry classes" $ do
       perRunStackNames `shouldBe` ResourceClass.resourceNamesOfClass ResourceClass.PerRun
@@ -5166,8 +5205,157 @@ main = mainWithSuite "prodbox-unit" $ do
       rendered `shouldContain` "| Resource | Lifecycle class |"
       rendered `shouldContain` "| `aws-eks` | PerRun |"
       rendered `shouldContain` "| `aws-ses` | LongLived |"
+      rendered `shouldContain` "| `public-edge-tls` | LongLived |"
       rendered `shouldContain` "| `operational-iam-user` | Operational |"
       rendered `shouldContain` "| `operational-aws-config` | Operational |"
+
+  describe "Sprint 4.24 retained public-edge TLS certificate managed resource" $ do
+    it "registers public-edge-tls as a LongLived managed resource" $ do
+      map ResourceRegistry.resourceName ResourceRegistry.longLivedManagedResources
+        `shouldBe` ["public-edge-tls"]
+      map ResourceRegistry.resourceClass ResourceRegistry.longLivedManagedResources
+        `shouldBe` [ResourceClass.LongLived]
+
+    it "the registered cert resource name matches the LiveResidue constant" $
+      map ResourceRegistry.resourceName ResourceRegistry.longLivedManagedResources
+        `shouldBe` [LiveResidue.publicEdgeTlsResourceName]
+
+    it "the retention prefix scopes the S3 key namespace" $
+      LiveResidue.publicEdgeTlsRetentionPrefix `shouldBe` "public-edge-tls/"
+
+    it "discover: retained objects present -> ResiduePresent" $
+      Residue.isResiduePresent
+        ( LiveResidue.residueStatusFromObjectListing
+            LiveResidue.publicEdgeTlsResourceName
+            (Right ["public-edge-tls/home-local/test.resolvefintech.com/tls.crt"])
+        )
+        `shouldBe` True
+
+    it "discover: no retained objects -> ResidueAbsent" $
+      LiveResidue.residueStatusFromObjectListing
+        LiveResidue.publicEdgeTlsResourceName
+        (Right [])
+        `shouldBe` Residue.ResidueAbsent
+
+    it "discover: missing long-lived bucket -> ResidueAbsent (authoritative nothing-to-destroy)" $
+      LiveResidue.residueStatusFromObjectListing
+        LiveResidue.publicEdgeTlsResourceName
+        ( Left
+            "An error occurred (NoSuchBucket) when calling the ListObjectsV2 operation: \
+            \The specified bucket does not exist"
+        )
+        `shouldBe` Residue.ResidueAbsent
+
+    it "discover: unreadable backend -> ResidueUnreachable and blocks teardown (soundness)" $ do
+      let status =
+            LiveResidue.residueStatusFromObjectListing
+              LiveResidue.publicEdgeTlsResourceName
+              (Left "connection timed out reaching s3.amazonaws.com")
+      Residue.isResidueUnreachable status `shouldBe` True
+      Residue.residueBlocksTeardownGate status `shouldBe` True
+
+    it "parseObjectKeysPayload decodes the list-objects-v2 --query json shape" $ do
+      parseObjectKeysPayload "null" `shouldBe` Right []
+      parseObjectKeysPayload "[]" `shouldBe` Right []
+      parseObjectKeysPayload
+        "[\"public-edge-tls/home-local/test/tls.crt\",\"public-edge-tls/aws/foo/tls.crt\"]"
+        `shouldBe` Right
+          [ "public-edge-tls/home-local/test/tls.crt"
+          , "public-edge-tls/aws/foo/tls.crt"
+          ]
+
+  describe "ZeroSSL ACME ClusterIssuer + cert retention key scheme" $ do
+    let settings = testValidatedSettings "/tmp"
+        zoneId = "ZHOSTEDZONE"
+        baseConfig = validatedConfig settings
+        eabSettings =
+          settings
+            { validatedConfig =
+                baseConfig
+                  { acme =
+                      (acme baseConfig)
+                        { eab_key_id = Just "test-eab-key-id"
+                        , eab_hmac_key = Just "test-eab-hmac-key"
+                        }
+                  }
+            }
+
+    it "the issuer spec renders acme.server (ZeroSSL) and the ZeroSSL account key" $ do
+      let rendered = BL8.unpack (encode (acmeClusterIssuerSpec settings zoneId))
+      rendered `shouldContain` "https://acme.zerossl.com/v2/DV90"
+      rendered `shouldContain` "zerossl-account-key"
+
+    it "the issuer spec references the DNS-01 Route 53 solver secret and hosted zone" $ do
+      let rendered = BL8.unpack (encode (acmeClusterIssuerSpec settings zoneId))
+      rendered `shouldContain` "route53-credentials"
+      rendered `shouldContain` "ZHOSTEDZONE"
+
+    it "the issuer spec includes the ZeroSSL external account binding when configured" $ do
+      let rendered = BL8.unpack (encode (acmeClusterIssuerSpec eabSettings zoneId))
+      rendered `shouldContain` "externalAccountBinding"
+
+    it "acmeRuntimeManifestWith renders the single ZeroSSL ClusterIssuer" $
+      clusterIssuerNamesIn
+        (acmeRuntimeManifestWith SubstrateHomeLocal settings zoneId "pid" "lbl")
+        `shouldBe` [publicEdgeClusterIssuerName]
+
+    it "the public-edge ClusterIssuer name is the ZeroSSL cert-manager issuer" $
+      publicEdgeClusterIssuerName `shouldBe` "zerossl-http01"
+
+    it "the substrate-scoped retention key namespaces the production cert per substrate + fqdn" $ do
+      publicEdgeTlsRetentionKey SubstrateHomeLocal "test.resolvefintech.com"
+        `shouldBe` "public-edge-tls/home-local/test.resolvefintech.com"
+      publicEdgeTlsRetentionKey SubstrateAws "aws.test.resolvefintech.com"
+        `shouldBe` "public-edge-tls/aws/aws.test.resolvefintech.com"
+
+  describe "public-edge typed preserve outcome" $ do
+    it "classifyPublicEdgePreserve distinguishes retain / in-flight / nothing (no silent absent)" $ do
+      classifyPublicEdgePreserve (Just (object [])) Nothing
+        `shouldBe` PreservedToRetentionStore
+      classifyPublicEdgePreserve (Just (object [])) (Just (object []))
+        `shouldBe` PreservedToRetentionStore
+      classifyPublicEdgePreserve Nothing (Just (object []))
+        `shouldBe` PreserveDeferredIssuanceInFlight
+      classifyPublicEdgePreserve Nothing Nothing
+        `shouldBe` PreserveNothingToRetain
+
+    it "renderPublicEdgePreserveOutcome surfaces the absent states (no silent success)" $ do
+      renderPublicEdgePreserveOutcome PreserveNothingToRetain
+        `shouldContain` "fresh order"
+      renderPublicEdgePreserveOutcome PreserveDeferredIssuanceInFlight
+        `shouldContain` "mid-issuance"
+      renderPublicEdgePreserveOutcome PreservedToRetentionStore
+        `shouldContain` "retained"
+
+    -- Sprint 8.8: a restored public-edge cert Secret must carry the
+    -- cert-manager.io/* adoption annotations, else cert-manager re-issues
+    -- (re-ordering against ZeroSSL) on every rebuild instead of adopting it.
+    it "certManagerAdoptionAnnotations preserves only the cert-manager.io/* annotations" $ do
+      let secretValue =
+            object
+              [ "metadata"
+                  .= object
+                    [ "name" .= ("public-edge-tls" :: Text.Text)
+                    , "annotations"
+                        .= object
+                          [ "cert-manager.io/certificate-name" .= ("public-edge-tls" :: Text.Text)
+                          , "cert-manager.io/issuer-name" .= ("zerossl-http01" :: Text.Text)
+                          , "cert-manager.io/issuer-kind" .= ("ClusterIssuer" :: Text.Text)
+                          , "kubectl.kubernetes.io/last-applied-configuration" .= ("{}" :: Text.Text)
+                          ]
+                    ]
+              , "type" .= ("kubernetes.io/tls" :: Text.Text)
+              , "data" .= object ["tls.crt" .= ("Y3J0" :: Text.Text)]
+              ]
+      certManagerAdoptionAnnotations secretValue
+        `shouldBe` object
+          [ "cert-manager.io/certificate-name" .= ("public-edge-tls" :: Text.Text)
+          , "cert-manager.io/issuer-name" .= ("zerossl-http01" :: Text.Text)
+          , "cert-manager.io/issuer-kind" .= ("ClusterIssuer" :: Text.Text)
+          ]
+    it "certManagerAdoptionAnnotations returns an empty object when there are no annotations" $
+      certManagerAdoptionAnnotations (object ["metadata" .= object ["name" .= ("x" :: Text.Text)]])
+        `shouldBe` object []
 
   describe "Sprint 4.18 forbidDotProdboxState lint" $ do
     -- This block verifies the lint's regression-resistance contract end-to-end
@@ -5489,6 +5677,47 @@ main = mainWithSuite "prodbox-unit" $ do
         "<html><body><a href=\"/auth/realms/prodbox/account\">Account</a></body></html>"
         `shouldSatisfy` leftContains "required-action anchor"
 
+    -- Sprint 8.5/8.8 live capture (2026-06-08): the real Keycloak 26 invite
+    -- flow lands on a bundled "Perform the following action(s) … Click here
+    -- to proceed" page whose proceed anchor is an /login-actions/action-token
+    -- URL (NOT /login-actions/required-action). The earlier parser only
+    -- matched required-action, so the live keycloak-invite gate failed with
+    -- "no required-action anchor". This pins the action-token shape.
+    it "extracts the Keycloak 26 action-token proceed continuation link" $ do
+      let proceedPage =
+            "<!DOCTYPE html><html><body>\
+            \<div id=\"kc-content\">\
+            \<div id=\"kc-info-message\">\
+            \<p class=\"instruction\">Perform the following action(s): Verify Email, Update Password</p>\
+            \<p><a href=\"https://test.resolvefintech.com/auth/realms/prodbox/login-actions/action-token?key=KEYJWT&amp;client_id=account&amp;tab_id=TID&amp;client_data=CD\">&raquo; Click here to proceed</a></p>\
+            \</div></div></body></html>"
+      parseCredentialSetupContinuationLink proceedPage
+        `shouldBe` Right
+          "https://test.resolvefintech.com/auth/realms/prodbox/login-actions/action-token?key=KEYJWT&client_id=account&tab_id=TID&client_data=CD"
+
+    it "parses the live Keycloak 26 PatternFly update-password form" $ do
+      let livePasswordForm =
+            "<form id=\"kc-passwd-update-form\" class=\"pf-v5-c-form\" \
+            \action=\"https://test.resolvefintech.com/auth/realms/prodbox/login-actions/required-action?session_code=SC&amp;execution=UPDATE_PASSWORD&amp;client_id=account&amp;tab_id=TID\" \
+            \method=\"post\" novalidate=\"novalidate\">\
+            \<div class=\"pf-v5-c-form-control\">\
+            \<input id=\"password-new\" name=\"password-new\" value=\"\" type=\"password\" autocomplete=\"new-password\" autofocus aria-invalid=\"\"/>\
+            \</div>\
+            \<div class=\"pf-v5-c-form-control\">\
+            \<input id=\"password-confirm\" name=\"password-confirm\" value=\"\" type=\"password\" autocomplete=\"new-password\" aria-invalid=\"\"/>\
+            \</div>\
+            \<input class=\"pf-v5-c-check__input\" type=\"checkbox\" id=\"logout-sessions\" name=\"logout-sessions\" value=\"on\" checked>\
+            \<button type=\"submit\">Submit</button>\
+            \</form>"
+      let parsed = parseCredentialSetupForm livePasswordForm
+      (formPasswordFieldName <$> parsed) `shouldBe` Right "password-new"
+      (formPasswordConfirmFieldName <$> parsed) `shouldBe` Right "password-confirm"
+      (formActionUrl <$> parsed)
+        `shouldBe` Right
+          "https://test.resolvefintech.com/auth/realms/prodbox/login-actions/required-action?session_code=SC&execution=UPDATE_PASSWORD&client_id=account&tab_id=TID"
+      -- The live form carries no hidden inputs; session state is in the action query string.
+      (formHiddenFields <$> parsed) `shouldBe` Right []
+
     it "refuses HTML that has only one password input" $ do
       let onlyOnePassword =
             "<form id=\"kc-passwd-update-form\" action=\"/x\" method=\"post\">\
@@ -5677,8 +5906,8 @@ main = mainWithSuite "prodbox-unit" $ do
   describe "Sprint 7.7 residue lifecycle partition" $ do
     it "perRunStackNames matches substrates-doctrine Resource Lifecycle Classes verbatim" $
       perRunStackNames `shouldBe` ["aws-eks", "aws-eks-subzone", "aws-test"]
-    it "longLivedStackNames lists aws-ses (and only aws-ses) per the doctrine" $
-      longLivedStackNames `shouldBe` ["aws-ses"]
+    it "longLivedStackNames lists aws-ses and the retained public-edge cert (Sprint 4.24)" $
+      longLivedStackNames `shouldBe` ["aws-ses", "public-edge-tls"]
     it "partitionResidueByLifecycle splits residue correctly with all four stacks live" $ do
       let allFour =
             [ ("aws-eks", "prodbox pulumi eks-destroy --yes")
@@ -6249,7 +6478,7 @@ validConfig =
     , ", aws_substrate = { hosted_zone_id = \"\", subzone_name = \"\" }"
     , ", ses = { sender_domain = \"\", receive_subdomain = \"\", capture_bucket = \"\" }"
     , ", domain = { demo_fqdn = \"test.resolvefintech.com\", demo_ttl = 60 }"
-    , ", acme = { email = \"test@resolvefintech.com\", server = \"https://acme-staging-v02.api.letsencrypt.org/directory\", eab_key_id = None Text, eab_hmac_key = None Text }"
+    , ", acme = { email = \"test@resolvefintech.com\", server = \"https://acme.zerossl.com/v2/DV90\", eab_key_id = Some \"test-eab-key-id\", eab_hmac_key = Some \"test-eab-hmac-key\" }"
     , ", deployment = " ++ deploymentDhallFragment
     , ", storage = { manual_pv_host_root = \".data\" }"
     , ", pulumi_state_backend = " ++ pulumiStateBackendDhallFragment
@@ -6357,6 +6586,19 @@ validDeploymentSection =
     , api_replicas = Just 2
     , websocket_replicas = Just 2
     }
+
+-- | Extract the @metadata.name@ of every cert-manager @ClusterIssuer@
+-- resource in a rendered ACME runtime manifest, in order. Used to assert
+-- 'acmeRuntimeManifestWith' renders the single ZeroSSL issuer.
+clusterIssuerNamesIn :: [Value] -> [String]
+clusterIssuerNamesIn = concatMap nameOf
+ where
+  nameOf (Object o)
+    | KeyMap.lookup (Key.fromString "kind") o == Just (String "ClusterIssuer")
+    , Just (Object meta) <- KeyMap.lookup (Key.fromString "metadata") o
+    , Just (String name) <- KeyMap.lookup (Key.fromString "name") meta =
+        [Text.unpack name]
+  nameOf _ = []
 
 testValidatedSettings :: FilePath -> ValidatedSettings
 testValidatedSettings manualRoot =

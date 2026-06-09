@@ -342,10 +342,11 @@ The current implementation boundary is:
   `preservePublicEdgeTlsSecretBeforeDelete` silent-success gap is closed: the preserve path emits
   typed/logged outcomes and never reports silent success when the owned certificate is absent (the
   soundness rule restored in [lifecycle_reconciliation_doctrine.md §3.1](./lifecycle_reconciliation_doctrine.md#31-the-managed-resource-registry-the-reconciler-substrate)).
-  The high-churn canonical validation loop issues against the Let's Encrypt **staging**
-  `ClusterIssuer`; the production certificate is issued once and restored. See
-  [acme_provider_guide.md](./acme_provider_guide.md) for provider choice and the two-issuer
-  (production vs staging) model, and
+  The high-churn canonical validation loop does not re-order the certificate against a separate test
+  issuer; the single `zerossl-http01` `ClusterIssuer` issues the production certificate once and the
+  S3 retain-and-restore path restores it on every rebuild. See
+  [acme_provider_guide.md](./acme_provider_guide.md#2-zerossl) for the ZeroSSL ACME provider and the
+  single-issuer rebuild-safe certificate retention model, and
   [../../DEVELOPMENT_PLAN/substrates.md → Resource Lifecycle Classes](../../DEVELOPMENT_PLAN/substrates.md#resource-lifecycle-classes)
   for the lifecycle-class registration; the certificate is removed only by `prodbox nuke`.
 - Public API and WebSocket workloads still follow the same public-edge doctrine and do not add

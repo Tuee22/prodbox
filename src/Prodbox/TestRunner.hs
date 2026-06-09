@@ -66,6 +66,10 @@ import Prodbox.Infra.AwsEksSubzoneStack
 import Prodbox.Infra.AwsEksTestStack (withEksKubeconfig)
 import Prodbox.Infra.AwsSesStack qualified as AwsSesStack
 import Prodbox.Infra.StackOutputs (StackName (..))
+import Prodbox.Lib.ChartPlatform
+  ( renderPublicEdgePreserveOutcome
+  , retainReadyPublicEdgeCertificate
+  )
 import Prodbox.Lifecycle.LiveResidue
   ( awsEksSubzoneStackName
   , fetchPerRunStackOutputs
@@ -805,7 +809,21 @@ runWaitForPublicEdgeReady repoRoot environment substrate attempts delayMicroseco
                   ++ show code
               )
           ExitSuccess
-            | publicEdgeReadyClassification `isInfixOf` combinedOutput -> pure ExitSuccess
+            | publicEdgeReadyClassification `isInfixOf` combinedOutput -> do
+                -- Sprint 8.8 retain-on-ready: capture the freshly-issued cert
+                -- to the long-lived S3 store now that it is confirmed ready, so
+                -- every subsequent rebuild restores it instead of re-ordering
+                -- against ZeroSSL. Best-effort: a retention failure never fails
+                -- the run (the cert is already issued and serving).
+                retainOutcome <- retainReadyPublicEdgeCertificate repoRoot substrate
+                case retainOutcome of
+                  Left err ->
+                    writeDiagnosticLine
+                      ("public-edge cert retain-on-ready failed (non-fatal): " ++ err)
+                  Right outcome ->
+                    writeDiagnosticLine
+                      ("public-edge cert retain-on-ready: " ++ renderPublicEdgePreserveOutcome outcome)
+                pure ExitSuccess
             | attemptsLeft <= 1 ->
                 failWith
                   ( "`"

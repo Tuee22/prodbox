@@ -90,7 +90,7 @@ import Prodbox.Lifecycle.LiveResidue
   ( awsEksTestStackName
   , fetchPerRunStackOutputs
   )
-import Prodbox.PublicEdge (resolveSubstrateHostedZoneId)
+import Prodbox.PublicEdge (publicEdgeClusterIssuerName, resolveSubstrateHostedZoneId)
 import Prodbox.Result (Result (..))
 import Prodbox.Settings
   ( ConfigFile (..)
@@ -623,13 +623,15 @@ ensureAwsSubstrateAcmeRuntime repoRoot settings prodboxId labelValue = do
             case applyExit of
               ExitFailure _ -> pure applyExit
               ExitSuccess ->
+                -- Wait for the ZeroSSL ClusterIssuer rendered by
+                -- acmeRuntimeManifestWith to become Ready.
                 runStreaming
                   Subprocess
                     { subprocessPath = "kubectl"
                     , subprocessArguments =
                         [ "wait"
                         , "--for=condition=Ready"
-                        , "clusterissuer/letsencrypt-http01"
+                        , "clusterissuer/" ++ publicEdgeClusterIssuerName
                         , "--timeout=300s"
                         ]
                     , subprocessEnvironment = Nothing

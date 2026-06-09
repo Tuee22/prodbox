@@ -10,6 +10,8 @@ module Prodbox.PublicEdge
   , harborPathPrefix
   , identityIssuerUrl
   , minioPathPrefix
+  , publicEdgeClusterIssuerName
+  , publicEdgeTlsRetentionKey
   , publicFqdn
   , publicRoutePathPrefix
   , publicRouteUrl
@@ -39,6 +41,7 @@ import Prodbox.Infra.StackOutputs (StackName (..))
 import Prodbox.Lifecycle.LiveResidue
   ( awsEksSubzoneStackName
   , fetchPerRunStackOutputs
+  , publicEdgeTlsRetentionPrefix
   )
 import Prodbox.Settings
   ( AwsSubstrateSection (..)
@@ -50,7 +53,7 @@ import Prodbox.Settings
   , aws
   , validatedConfig
   )
-import Prodbox.Substrate (Substrate (..))
+import Prodbox.Substrate (Substrate (..), substrateId)
 import System.Environment (lookupEnv, setEnv, unsetEnv)
 
 data PublicEdgeRoute
@@ -140,6 +143,29 @@ substratePublicFqdn settings substrate =
 substratePublicRouteUrl :: ValidatedSettings -> Substrate -> PublicEdgeRoute -> String
 substratePublicRouteUrl settings substrate route =
   "https://" ++ substratePublicFqdn settings substrate ++ publicRoutePathPrefix route
+
+-- | The single cert-manager ACME @ClusterIssuer@ that the public-edge
+-- @Certificate@ references at chart deploy time. prodbox uses ZeroSSL as
+-- its sole ACME provider, so there is one issuer for every substrate and
+-- every deploy. Must match the issuer name rendered by
+-- @Prodbox.CLI.Rke2.acmeRuntimeManifestWith@. Rebuild cycles avoid
+-- re-ordering the certificate through the S3-backed retention store
+-- ('publicEdgeTlsRetentionKey'), not through a separate test issuer.
+publicEdgeClusterIssuerName :: String
+publicEdgeClusterIssuerName = "zerossl-http01"
+
+-- | Sprint 7.11: the substrate-scoped S3 retention key for the
+-- public-edge **production** TLS certificate material in the long-lived
+-- @pulumi_state_backend@ bucket:
+-- @public-edge-tls/\<substrate\>/\<fqdn\>@. Keying on both the substrate
+-- id and the public FQDN keeps the home-local and AWS production
+-- certificates independent, and groups every retained object under the
+-- @public-edge-tls/@ prefix that the Sprint 4.24 managed-resource
+-- @discover@ / @destroy@ operate over. Staging certificates are
+-- disposable and are never written to this store.
+publicEdgeTlsRetentionKey :: Substrate -> Text -> String
+publicEdgeTlsRetentionKey substrate fqdn =
+  publicEdgeTlsRetentionPrefix ++ substrateId substrate ++ "/" ++ Text.unpack fqdn
 
 substrateIdentityIssuerUrl :: ValidatedSettings -> Substrate -> String
 substrateIdentityIssuerUrl settings substrate =

@@ -31,7 +31,7 @@ cross-substrate shared infrastructure (see
 | [aws_account_setup_guide.md](./aws_account_setup_guide.md) | AWS account creation, hosted-zone preparation, and prompt-driven temporary admin-key workflow for `prodbox config setup` |
 | [aws_admin_credentials.md](./aws_admin_credentials.md) | `aws_admin_for_test_simulation` credential section and lifecycle guidance |
 | [aws_test_environment.md](./aws_test_environment.md) | Shared AWS member-account, DNS, isolation, lifecycle, and auth doctrine for ephemeral multi-project testing |
-| [acme_provider_guide.md](./acme_provider_guide.md) | ZeroSSL vs Let's Encrypt guidance for the interactive onboarding flow |
+| [acme_provider_guide.md](./acme_provider_guide.md) | ZeroSSL ACME guidance for the interactive onboarding flow |
 | [dependency_management.md](./dependency_management.md) | Cabal- and toolchain-level dependency doctrine |
 | [cli_command_surface.md](./cli_command_surface.md) | Canonical operator command matrix |
 | [config_doctrine.md](./config_doctrine.md) | Pure-Dhall config sourcing, mount contract, file-watch reload, and forbidden surfaces for every `prodbox` binary instance |
@@ -89,7 +89,7 @@ cross-substrate shared infrastructure (see
 - [Recommended Migration and Adoption Path](./envoy_gateway_edge_doctrine.md#10-recommended-migration-and-adoption-path)
 - [Diagnostics and Validation Doctrine](./envoy_gateway_edge_doctrine.md#11-diagnostics-and-validation-doctrine)
 - [ACME Provider Guide](./acme_provider_guide.md)
-- [Let's Encrypt (production vs staging issuer)](./acme_provider_guide.md#3-lets-encrypt)
+- [ZeroSSL](./acme_provider_guide.md#2-zerossl)
 - [CLI Command Surface](./cli_command_surface.md)
 - [Helm Chart Platform Doctrine](./helm_chart_platform_doctrine.md)
 - [Local Registry Pipeline](./local_registry_pipeline.md)

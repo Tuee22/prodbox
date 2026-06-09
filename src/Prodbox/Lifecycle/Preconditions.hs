@@ -45,6 +45,7 @@ import Prodbox.Lifecycle.LiveResidue
   ( PerRunResidueStatuses (..)
   , queryAwsSesResidueStatus
   , queryPerRunResidueStatuses
+  , queryPublicEdgeTlsResidueStatus
   )
 import Prodbox.Lifecycle.ResidueStatus qualified as ResidueStatus
 import Prodbox.Lifecycle.TagSweep
@@ -200,19 +201,28 @@ renderPerRunRefusal live unreadable =
              , "`--allow-pulumi-residue` to proceed without this check."
              ]
 
--- | Long-lived cross-substrate shared Pulumi stacks. Today this is
--- @aws-ses@. @prodbox aws teardown@ refuses on these; @prodbox nuke@
--- destroys them instead of refusing.
+-- | Long-lived cross-substrate shared resources: the @aws-ses@ Pulumi
+-- stack and (Sprint 4.24) the retained public-edge production TLS
+-- certificate material in the long-lived @pulumi_state_backend@ bucket.
+-- @prodbox aws teardown@ refuses on these; @prodbox nuke@ destroys them
+-- instead of refusing (the certificate transitively, via the
+-- whole-bucket destroy). Both are checked through the single
+-- 'Prodbox.Lifecycle.ResidueStatus.residueBlocksTeardownGate'
+-- soundness combinator, so an unreachable backend fails closed.
 noLiveLongLivedPulumiStacks :: FilePath -> Precondition
 noLiveLongLivedPulumiStacks repoRoot =
   Precondition
     { preconditionLabel = "noLiveLongLivedPulumiStacks"
     , preconditionCheck = do
         sesStatus <- queryAwsSesResidueStatus repoRoot
+        certStatus <- queryPublicEdgeTlsResidueStatus repoRoot
         let live =
               [ ("aws-ses", "prodbox pulumi aws-ses-destroy --yes")
               | ResidueStatus.residueBlocksTeardownGate sesStatus
               ]
+                ++ [ ("public-edge-tls", "prodbox nuke")
+                   | ResidueStatus.residueBlocksTeardownGate certStatus
+                   ]
         pure $ case live of
           [] -> Right ()
           _ ->

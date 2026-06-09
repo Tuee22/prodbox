@@ -30,6 +30,8 @@ module Prodbox.Lifecycle.LiveResidue
   ( PerRunResidueStatuses (..)
   , queryPerRunResidueStatuses
   , queryAwsSesResidueStatus
+  , queryPublicEdgeTlsResidueStatus
+  , destroyRetainedPublicEdgeTls
   , fetchPerRunStackOutputs
   , fetchAwsSesStackOutputs
 
@@ -38,11 +40,14 @@ module Prodbox.Lifecycle.LiveResidue
   , residueReasonFromS3Error
   , residueStatusFromListing
   , residueStatusFromS3Listing
+  , residueStatusFromObjectListing
   , isMissingLongLivedS3BackendBucketMessage
   , awsEksTestStackName
   , awsEksSubzoneStackName
   , awsTestStackName
   , awsSesStackName
+  , publicEdgeTlsResourceName
+  , publicEdgeTlsRetentionPrefix
   )
 where
 
@@ -53,9 +58,11 @@ import Data.Map.Strict (Map)
 import Data.Maybe (isJust)
 import Data.Text qualified as Text
 import Prodbox.Infra.LongLivedPulumiBackend
-  ( loadAdminAwsCredentials
+  ( listLongLivedObjectKeysUnderPrefix
+  , loadAdminAwsCredentials
   , longLivedBackendErrorMessage
   , longLivedPulumiBackendUrlEither
+  , purgeLongLivedObjectsUnderPrefix
   )
 import Prodbox.Infra.MinioBackend
   ( pulumiBackendUrl
@@ -79,6 +86,7 @@ import Prodbox.Lifecycle.ResidueStatus
   )
 import Prodbox.Settings
   ( Credentials (..)
+  , PulumiStateBackendSection
   , loadConfigFile
   , pulumi_state_backend
   )
@@ -240,6 +248,93 @@ querySesLive repoRoot = do
             result <- listStacks (repoRoot </> "pulumi" </> "aws-ses") environment
             pure (residueStatusFromS3Listing awsSesStackName result)
 
+-- | Sprint 4.24: the canonical managed-resource name and the
+-- substrate-scoped S3 key prefix of the retained public-edge production
+-- TLS certificate material in the long-lived @pulumi_state_backend@
+-- bucket. The full per-substrate key scheme
+-- (@public-edge-tls/\<substrate\>/\<fqdn\>@) is filled in by the chart
+-- platform writers (Sprint 7.11 \/ 8.7); the @discover@ and @destroy@
+-- here operate on the whole prefix, so they observe and remove the
+-- entire retained-cert class regardless of which substrate keys exist.
+publicEdgeTlsResourceName :: String
+publicEdgeTlsResourceName = "public-edge-tls"
+
+publicEdgeTlsRetentionPrefix :: String
+publicEdgeTlsRetentionPrefix = "public-edge-tls/"
+
+-- | Sprint 4.24: live S3 @discover@ for the retained public-edge
+-- production TLS certificate (the 'LongLived' managed resource). Lists
+-- the object keys under 'publicEdgeTlsRetentionPrefix' in the
+-- long-lived @pulumi_state_backend@ bucket and translates the result
+-- into a typed 'ResidueStatus' via 'residueStatusFromObjectListing':
+-- present when any retained object exists, absent when none do (or the
+-- backend bucket is gone), and 'ResidueUnreachable' on any other
+-- credential / config / S3 failure so destructive gates fail closed.
+queryPublicEdgeTlsResidueStatus :: FilePath -> IO ResidueStatus
+queryPublicEdgeTlsResidueStatus repoRoot = do
+  bypass <- isTestResidueAbsentSet
+  if bypass
+    then pure ResidueAbsent
+    else
+      withLongLivedBucketEnv
+        repoRoot
+        ( \section environment ->
+            residueStatusFromObjectListing publicEdgeTlsResourceName
+              <$> listLongLivedObjectKeysUnderPrefix
+                repoRoot
+                environment
+                section
+                publicEdgeTlsRetentionPrefix
+        )
+        (\err -> ResidueUnreachable (ResidueBackendS3Unreachable err))
+
+-- | Sprint 4.24: the @destroy@ action for the retained public-edge
+-- production TLS certificate managed resource — purge every object
+-- under 'publicEdgeTlsRetentionPrefix' from the long-lived
+-- @pulumi_state_backend@ bucket. Idempotent: an already-absent bucket
+-- or empty prefix returns @Right ()@. Invoked only by an explicit
+-- destroy or transitively by @prodbox nuke@'s whole-bucket destroy;
+-- never by @rke2 delete@ or @aws teardown@.
+destroyRetainedPublicEdgeTls :: FilePath -> IO (Either String ())
+destroyRetainedPublicEdgeTls repoRoot =
+  withLongLivedBucketEnv
+    repoRoot
+    ( \section environment ->
+        purgeLongLivedObjectsUnderPrefix
+          repoRoot
+          environment
+          section
+          publicEdgeTlsRetentionPrefix
+    )
+    Left
+
+-- | Shared preamble for object-level operations on the long-lived
+-- @pulumi_state_backend@ bucket: load the admin AWS credentials, load
+-- the config, resolve the backend section + URL, and build the AWS
+-- environment, then run @action@ with the section and environment. Any
+-- credential / config / backend-URL failure short-circuits to
+-- @onError@ applied to the failure detail.
+withLongLivedBucketEnv
+  :: FilePath
+  -> (PulumiStateBackendSection -> [(String, String)] -> IO a)
+  -> (String -> a)
+  -> IO a
+withLongLivedBucketEnv repoRoot action onError = do
+  adminResult <- loadAdminAwsCredentials repoRoot
+  case adminResult of
+    Left err -> pure (onError err)
+    Right adminCreds -> do
+      configResult <- loadConfigFile repoRoot
+      case configResult of
+        Left err -> pure (onError err)
+        Right config ->
+          let section = pulumi_state_backend config
+           in case longLivedPulumiBackendUrlEither section of
+                Left err -> pure (onError (longLivedBackendErrorMessage err))
+                Right backendUrl -> do
+                  environment <- buildLongLivedBackendEnv adminCreds backendUrl
+                  action section environment
+
 -- | Run one @pulumi stack ls --json@ query in the supplied project
 -- directory and translate the response into a 'ResidueStatus'. The
 -- error-mapping function decides whether subprocess failures count as
@@ -289,6 +384,37 @@ residueStatusFromS3Listing stackName result = case result of
     | isMissingLongLivedS3BackendBucketMessage (stackOutputsErrorDetail err) ->
         ResidueAbsent
   _ -> residueStatusFromListing stackName residueReasonFromS3Error result
+
+-- | Sprint 4.24: translate a long-lived S3 object-key listing (from
+-- 'listLongLivedObjectKeysUnderPrefix') into a typed 'ResidueStatus'
+-- for the retained public-edge production TLS certificate. Pure so the
+-- unit suite can pin the present \/ absent \/ unreachable discrimination
+-- without a live S3 round-trip:
+--
+--   * @Right (_:_)@ — retained cert material present.
+--   * @Right []@ — nothing retained (absent).
+--   * @Left detail@ naming a missing bucket — the long-lived backend is
+--     gone, the authoritative "nothing to destroy" during total
+--     teardown (absent), mirroring 'residueStatusFromS3Listing'.
+--   * @Left detail@ otherwise — fail closed as 'ResidueUnreachable' so
+--     'Prodbox.Lifecycle.ResidueStatus.residueBlocksTeardownGate'
+--     refuses rather than silently treating an unreadable backend as
+--     absent.
+residueStatusFromObjectListing :: String -> Either String [String] -> ResidueStatus
+residueStatusFromObjectListing resourceName result = case result of
+  Left detail
+    | isMissingLongLivedS3BackendBucketMessage detail -> ResidueAbsent
+    | otherwise -> ResidueUnreachable (ResidueBackendS3Unreachable detail)
+  Right [] -> ResidueAbsent
+  Right keys ->
+    ResiduePresent
+      ResidueDetails
+        { residueEvidence =
+            "long-lived S3 store holds "
+              ++ show (length keys)
+              ++ " retained public-edge TLS object(s)"
+        , residueStackName = resourceName
+        }
 
 stackOutputsErrorDetail :: StackOutputsError -> String
 stackOutputsErrorDetail err = case err of

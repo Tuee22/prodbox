@@ -2159,10 +2159,22 @@ zero EKS / VPCs / EC2, only the retained admin-managed IAM users
 failed, a known Sprint 8.5 operator-driven gap, unrelated to this
 sprint).
 
-## Sprint 4.24: Public-Edge Production Certificate Registered as a LongLived Managed Resource [PLANNED]
+## Sprint 4.24: Public-Edge Production Certificate Registered as a LongLived Managed Resource ✅
 
-**Status**: Planned
-**Implementation**: `src/Prodbox/Lifecycle/ResourceRegistry.hs`, `src/Prodbox/Lifecycle/ResourceClass.hs`
+**Status**: Done (2026-06-07 on the code-owned surface)
+**Implementation**: `src/Prodbox/Lifecycle/ResourceClass.hs`
+(`("public-edge-tls", LongLived)` in `resourceLifecycleClasses`),
+`src/Prodbox/Lifecycle/ResourceRegistry.hs` (`longLivedManagedResources` +
+the `destroyPublicEdgeTlsCertificate` adapter),
+`src/Prodbox/Lifecycle/LiveResidue.hs` (`queryPublicEdgeTlsResidueStatus`
+`discover`, `destroyRetainedPublicEdgeTls`, the pure
+`residueStatusFromObjectListing`, and the `publicEdgeTlsResourceName` /
+`publicEdgeTlsRetentionPrefix` constants),
+`src/Prodbox/Infra/LongLivedPulumiBackend.hs` (the shared S3 access path:
+`listLongLivedObjectKeysUnderPrefix`, `purgeLongLivedObjectsUnderPrefix`,
+`parseObjectKeysPayload`, and a prefix-aware `listVersionsPage`),
+`src/Prodbox/Lifecycle/Preconditions.hs` (the `noLiveLongLivedPulumiStacks`
+gate now also discovers the certificate)
 **Docs to update**: `documents/engineering/lifecycle_reconciliation_doctrine.md`,
 `DEVELOPMENT_PLAN/substrates.md`
 
@@ -2180,22 +2192,55 @@ only by `prodbox nuke` or an explicit destroy. The registration follows the
 
 ### Deliverables
 
-- New `ManagedResource` entry for the retained public-edge production certificate.
-- `LongLived` membership for the certificate in `resourceLifecycleClasses`.
-- `discover` queries the S3 object and returns a distinct not-present versus unreachable
-  outcome, with `Unreachable → refuse` never silently treated as absent.
-- `destroy` removes the retained object.
+- New `ManagedResource` entry for the retained public-edge production certificate
+  (`longLivedManagedResources` in `ResourceRegistry.hs`, with the
+  `destroyPublicEdgeTlsCertificate` adapter onto the `FilePath -> IO ExitCode`
+  `resourceDestroy` shape). ✅
+- `LongLived` membership for the certificate in `resourceLifecycleClasses` (declared after
+  `aws-ses`). ✅
+- `discover` (`queryPublicEdgeTlsResidueStatus`) queries the long-lived S3 store for objects
+  under the `public-edge-tls/` prefix and returns a distinct not-present versus unreachable
+  outcome via the pure `residueStatusFromObjectListing`: present → `ResiduePresent`, none →
+  `ResidueAbsent`, a missing backend bucket → `ResidueAbsent` (the authoritative
+  nothing-to-destroy during total teardown, mirroring `residueStatusFromS3Listing`), any other
+  S3 failure → `ResidueUnreachable`. `Unreachable → refuse` holds through the single
+  `residueBlocksTeardownGate` soundness combinator; it is never silently treated as absent. ✅
+- `destroy` (`destroyRetainedPublicEdgeTls` → `purgeLongLivedObjectsUnderPrefix`) removes every
+  retained object under the prefix; idempotent (a missing bucket / empty prefix is `Right ()`). ✅
 - The generated `substrates.md` Resource Lifecycle Classes table re-renders (via
-  `prodbox docs generate`) to include the certificate.
-- `prodbox check-code` create-site/totality coverage of the new resource.
+  `prodbox docs generate`) to include `| `public-edge-tls` | LongLived |`. ✅
+- `prodbox check-code` create-site/totality coverage of the new resource — the registry entry
+  flows into `resourceNamesOfClass LongLived` and the `checkCreateCallSiteCoverage` lint; the
+  certificate is correctly *not* a Pulumi create site (S3-object class), so no
+  `pulumiCreateSiteOwners` entry is required. ✅
+
+The certificate is classified the same as `aws-ses`: never reconciled by `prodbox rke2 delete`
+or `prodbox aws teardown` (neither touches the `LongLived` class), and removed only by
+`prodbox nuke` (transitively, when nuke step 5 destroys the whole long-lived
+`pulumi_state_backend` bucket) or by the explicit registered `destroy`. The shared S3
+object-level access path added to `LongLivedPulumiBackend.hs` is the foundation that Sprint
+`7.11` extends with the substrate-scoped write/key scheme.
 
 ### Validation
 
-1. `prodbox check-code` exits `0`.
-2. `prodbox test unit` covers the registry entry, `discover`/`destroy`, and the soundness gate.
-3. `prodbox docs check` confirms generated lifecycle-class table parity.
+Closure gates (passed 2026-06-07):
 
-These are the closure gates for this Planned sprint, not yet-passed results.
+1. `./.build/prodbox check-code` → exit `0`.
+2. `./.build/prodbox test unit` → `682/682` (the new
+   `Sprint 4.24 retained public-edge TLS certificate managed resource` describe block adds
+   8 tests: registry entry + class, name ↔ constant parity, retention-prefix value, and the
+   four-way `residueStatusFromObjectListing` present/absent/missing-bucket/unreachable
+   discrimination — including `residueBlocksTeardownGate` on the unreachable case — plus the
+   `parseObjectKeysPayload` JSON-shape decode). The existing Sprint 4.20 / 7.7 registry tests
+   were updated for the new `LongLived` member.
+3. `./.build/prodbox docs check` → exit `0` (generated lifecycle-class table parity, now
+   including the certificate row).
+4. `./.build/prodbox lint docs` → exit `0`.
+
+`prodbox test integration cli` / `env` were also run; the two failures observed in this
+environment (`CliSuite.hs:256` / `:376`, both `charts deploy vscode` fake-environment flows)
+reproduce identically on the pre-Sprint-4.24 tree and are unrelated to this sprint — the
+`charts deploy` command path imports none of the modules this sprint changed.
 
 ### Remaining Work
 

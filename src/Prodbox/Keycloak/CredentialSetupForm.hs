@@ -4,28 +4,27 @@
 -- form that an invited user lands on after following the
 -- `action-token` link from `execute-actions-email`.
 --
--- The form is rendered by the Keycloak `freemarker` theme and always
--- has the shape:
+-- The live Keycloak 26 form (captured 2026-06-08 against the running
+-- @prodbox@ realm) has the shape:
 --
 -- @
---   <form id="kc-passwd-update-form" action="<token-bound-url>" method="post">
---     <input type="hidden" name="..."  value="...">
---     ...
---     <input type="password" name="password" />
---     <input type="password" name="password-confirm" />
+--   <form id="kc-passwd-update-form" class="pf-v5-c-form"
+--         action="<...\/login-actions\/required-action?session_code=...&execution=UPDATE_PASSWORD&...>"
+--         method="post" novalidate="novalidate">
+--     <input id="password-new" name="password-new" value="" type="password" .../>
+--     <input id="password-confirm" name="password-confirm" value="" type="password" .../>
+--     <input type="checkbox" id="logout-sessions" name="logout-sessions" .../>
 --     <button type="submit">Submit</button>
 --   </form>
 -- @
 --
 -- The parser scans for the @\<form\>@ tag carrying @id="kc-passwd-update-form"@,
 -- extracts its @action@ attribute, collects every @type="hidden"@
--- input as a @(name, value)@ pair, and records the field names of
--- the two @type="password"@ inputs.
---
--- The parser is fixture-driven; the live form shape lands as part
--- of the Sprint 8.5 operator-driven capture step in
--- `DEVELOPMENT_PLAN/phase-8-email-invite-auth.md`. Until then the
--- tests pin the shape against a synthetic Keycloak-shaped fixture.
+-- input as a @(name, value)@ pair (the live form has none — the session
+-- state lives in the @action@ query string), and records the field
+-- names of the two @type="password"@ inputs (live: @password-new@ and
+-- @password-confirm@; the field names are read dynamically, not
+-- hard-coded). Multi-line PatternFly @\<input\>@ markup is handled.
 module Prodbox.Keycloak.CredentialSetupForm
   ( CredentialSetupForm (..)
   , parseCredentialSetupForm
@@ -79,15 +78,22 @@ parseCredentialSetupForm raw = do
         )
     [] -> Left "credential-setup form has no <input type=\"password\"> fields"
 
--- | Keycloak 26 renders the VERIFY_EMAIL required action as an
--- intermediate page with a "click here" anchor to the next required
--- action. The invite harness follows that anchor with the same cookie
--- jar before parsing the UPDATE_PASSWORD form.
+-- | Keycloak 26 renders the bundled required actions (VERIFY_EMAIL +
+-- UPDATE_PASSWORD) as an intermediate "Perform the following action(s)
+-- … Click here to proceed" confirmation page before the
+-- UPDATE_PASSWORD form. The "proceed" anchor is a fresh
+-- @\/login-actions\/action-token@ continuation URL (NOT a
+-- @\/login-actions\/required-action@ URL — that is the form @action@,
+-- not the proceed link). Older theme flows used a
+-- @\/login-actions\/required-action@ anchor, so both shapes are
+-- accepted. The invite harness follows the single matched anchor with
+-- the same cookie jar, then parses the UPDATE_PASSWORD form on the
+-- next page.
 parseCredentialSetupContinuationLink :: ByteString -> Either String Text
 parseCredentialSetupContinuationLink raw =
-  case uniqueText (filter isRequiredActionLink (collectAnchorHrefs body)) of
+  case uniqueText (filter isContinuationLink (collectAnchorHrefs body)) of
     [] ->
-      Left "credential-setup continuation link not found (no required-action anchor)"
+      Left "credential-setup continuation link not found (no action-token/required-action anchor)"
     [href] -> Right href
     links ->
       Left
@@ -97,8 +103,9 @@ parseCredentialSetupContinuationLink raw =
         )
  where
   body = Text.pack (BS8.unpack raw)
-  isRequiredActionLink href =
-    "/login-actions/required-action" `Text.isInfixOf` href
+  isContinuationLink href =
+    "/login-actions/action-token" `Text.isInfixOf` href
+      || "/login-actions/required-action" `Text.isInfixOf` href
 
 -- | Build the URL-encoded POST body the form submits when the user
 -- types a new password. Hidden fields are preserved; the two

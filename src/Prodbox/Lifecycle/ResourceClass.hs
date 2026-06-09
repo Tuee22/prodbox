@@ -54,6 +54,18 @@ resourceLifecycleClasses =
   , ("aws-eks-subzone", PerRun)
   , ("aws-test", PerRun)
   , ("aws-ses", LongLived)
+  , -- Sprint 4.24: the retained public-edge TLS certificate
+    -- material, written to a substrate-scoped key
+    -- (@public-edge-tls/\<substrate\>/\<fqdn\>@) in the long-lived
+    -- @pulumi_state_backend@ S3 bucket. Classified 'LongLived' (the same
+    -- class as @aws-ses@) because re-ordering the certificate on every
+    -- rebuild would consume the ZeroSSL ACME issuance quota; the cert is
+    -- retained and restored instead, making it a rate-limited external
+    -- resource, not disposable @PerRun@ chart state. Unlike the
+    -- other long-lived entry it is an S3 *object* class rather than a
+    -- Pulumi stack; @prodbox nuke@ removes it transitively when it
+    -- destroys the long-lived bucket.
+    ("public-edge-tls", LongLived)
   , ("operational-iam-user", Operational)
   , ("operational-aws-config", Operational)
   ]

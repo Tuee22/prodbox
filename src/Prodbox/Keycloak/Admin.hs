@@ -28,6 +28,7 @@ module Prodbox.Keycloak.Admin
   , withKeycloakClientAtPublicHost
   , acquireAdminToken
   , createUser
+  , newUserCreationPayload
   , listUsers
   , disableUser
   , deleteUser
@@ -221,14 +222,7 @@ createUser client token newUser = do
           <> "/admin/realms/"
           <> Text.unpack (keycloakRealm client)
           <> "/users"
-      payload =
-        object
-          [ "enabled" .= True
-          , "email" .= newUserEmail newUser
-          , "username" .= newUserEmail newUser
-          , "emailVerified" .= False
-          , "requiredActions" .= (["VERIFY_EMAIL"] :: [Text])
-          ]
+      payload = newUserCreationPayload newUser
   reqInit <- parseRequest url
   let req =
         reqInit
@@ -240,6 +234,36 @@ createUser client token newUser = do
           , requestBody = RequestBodyLBS (encode payload)
           }
   performRawRequest "Keycloak user creation" client req handleCreateUserResponse
+
+-- | Pure: the @POST /admin/realms/<realm>/users@ creation payload for an
+-- invited user. Sets non-empty @firstName@/@lastName@ (firstName derived from
+-- the email local part) in addition to the email + @VERIFY_EMAIL@ required
+-- action. This is required because Keycloak 26's user-profile validation
+-- otherwise rejects the invited user's first login / direct-grant token
+-- request with @invalid_grant: "Account is not fully set up"@ — a name-less
+-- user is never \"fully set up\", so the credential-setup flow can complete
+-- yet the OIDC claim assertion still fails. The defaults only need to be
+-- non-empty; the invited user can refine their profile after activation.
+-- Exported for unit testing.
+newUserCreationPayload :: NewUser -> Value
+newUserCreationPayload newUser =
+  object
+    [ "enabled" .= True
+    , "email" .= newUserEmail newUser
+    , "username" .= newUserEmail newUser
+    , "firstName" .= invitedFirstName (newUserEmail newUser)
+    , "lastName" .= ("Invitee" :: Text)
+    , "emailVerified" .= False
+    , "requiredActions" .= (["VERIFY_EMAIL"] :: [Text])
+    ]
+
+-- | Derive a non-empty @firstName@ from an invited user's email (the local
+-- part before @\@@), falling back to @"Invited"@ for a degenerate empty
+-- local part so the Keycloak user is always \"fully set up\".
+invitedFirstName :: Text -> Text
+invitedFirstName email =
+  let localPart = Text.strip (Text.takeWhile (/= '@') email)
+   in if Text.null localPart then "Invited" else localPart
 
 -- | List all users in the configured realm. Forward-compatible: unknown fields are
 -- dropped during decode.

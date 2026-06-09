@@ -16,9 +16,9 @@
 
 ## Phase Status
 
-🔄 **Reopened for Sprint `7.11`** — Phase 7 reopens to render two ACME `ClusterIssuer`s (staging
-+ production) and add a substrate-scoped long-lived production-cert retention store; all earlier
-Phase 7 sprints (`7.1`–`7.10`) stay `Done` on their owned scope.
+✅ **Sprint `7.11` Done** — Phase 7 renders one ZeroSSL ACME `ClusterIssuer` (`zerossl-http01`)
+and adds a substrate-scoped long-lived cert retention store; all earlier Phase 7 sprints
+(`7.1`–`7.10`) stay `Done` on their owned scope.
 
 ✅ **Done on owned surfaces** for the historical foundations work — Sprints `7.1`–`7.4` remain
 closed on interactive onboarding, AWS IAM management, quota automation, and the
@@ -412,7 +412,7 @@ becomes ✅ Full canonical suite.
   - A per-substrate Route 53 hosted zone or subdomain delegation (e.g. `aws.<configured_zone>`
     or a stack-specific subzone) so the substrate has its own public hostname distinct from
     the home substrate's `test.resolvefintech.com`. (`7.5.b`)
-  - cert-manager + the real Let's Encrypt ACME provider configured against that hosted zone.
+  - cert-manager + the real ZeroSSL ACME provider configured against that hosted zone.
     (`7.5.b`)
   - An ingress comparable to the home substrate's MetalLB + Envoy Gateway pairing (EKS native
     NLB + Envoy Gateway, or equivalent — implementation choice belongs to this sprint).
@@ -749,7 +749,7 @@ AWS LB Controller + Envoy Gateway install) is too large for one session.
       substrate-aware ACME `ClusterIssuer` without duplicating the logic.
       `Prodbox.Lib.AwsSubstratePlatform::ensureAwsSubstrateAcmeRuntime` writes
       the manifest to a temp file, `kubectl apply -f`s it, and
-      `kubectl wait --for=condition=Ready clusterissuer/letsencrypt-http01`s.
+      `kubectl wait --for=condition=Ready clusterissuer/zerossl-http01`s.
       `Prodbox.Lib.AwsSubstratePlatform::ensureAwsSubstratePlatformRuntime`
       sequences `α`+`β`+`γ`+ACME after loading the EKS snapshot, failing fast
       when `prodbox pulumi eks-resources` has not yet been run. The
@@ -788,7 +788,7 @@ canonical-suite validations against it.
 - A per-substrate Route 53 hosted subzone (`aws.<configured_zone>`) with NS delegation from
   the configured parent zone.
 - cert-manager `ClusterIssuer` rendered against the per-substrate hosted zone (DNS01 challenge,
-  Route 53 provider scoped to the subzone) so real Let's Encrypt certificates issue against
+  Route 53 provider scoped to the subzone) so real ZeroSSL certificates issue against
   the AWS-substrate FQDN.
 - Envoy Gateway plus the supported chart set (`gateway`, `keycloak`, `vscode`, `api`,
   `websocket`, plus their dependencies) deployable through `prodbox charts deploy <chart>
@@ -806,7 +806,7 @@ canonical-suite validations against it.
    stable.
 5. `prodbox charts deploy gateway --substrate aws` (and the rest of the chart set) succeed
    against the AWS substrate.
-6. cert-manager issues real Let's Encrypt certificates against the per-substrate hosted zone.
+6. cert-manager issues real ZeroSSL certificates against the per-substrate hosted zone.
 
 ### Current Validation State (7.5.b.ii.a)
 
@@ -1132,7 +1132,7 @@ currently lays down the lower-layer ingress + TLS pieces on EKS:
 - `cert-manager` + `cert-manager-webhook` + `cert-manager-cainjector` in the
   `cert-manager` namespace via the upstream Jetstack chart.
 - `route53-credentials` + `acme-eab-credentials` secrets and the
-  `letsencrypt-http01` `ClusterIssuer` rendered with `SubstrateAws` so DNS01
+  `zerossl-http01` `ClusterIssuer` rendered with `SubstrateAws` so DNS01
   challenges write into the per-substrate Route 53 subzone.
 
 ### Remaining Work
@@ -2628,58 +2628,77 @@ Fast gates (no live AWS):
 The pure decision (`clearOperationalCredsAfterPostflight`) is fully unit-tested; the IO wiring in
 `runWithAwsHarnessCleanup` is thin (one gated call). No live AWS required.
 
-## Sprint 7.11: Two ACME ClusterIssuers (Staging + Production) and Substrate-Scoped Long-Lived Cert Retention Store 📋
+## Sprint 7.11: Single ZeroSSL ACME ClusterIssuer and Substrate-Scoped Long-Lived Cert Retention Store ✅
 
-**Status**: Planned
-**Implementation**: `src/Prodbox/CLI/Rke2.hs` (`acmeClusterIssuerSpec`),
-`src/Prodbox/Settings.hs`, `prodbox-config-types.dhall`, `prodbox-config.dhall`,
-`src/Prodbox/Infra/LongLivedPulumiBackend.hs`
+**Status**: Done (2026-06-07 on the code-owned surface)
+**Implementation**: `src/Prodbox/CLI/Rke2.hs` (`acmeClusterIssuerSpec` + factored
+`acmeRoute53Solver`; `zerosslAccountKeySecretName` constant; `acmeRuntimeManifestWith` renders
+the single ZeroSSL issuer; `ensureAcmeRuntime` waits for it),
+`src/Prodbox/Lib/AwsSubstratePlatform.hs` (`ensureAwsSubstrateAcmeRuntime` waits for the
+issuer), `src/Prodbox/PublicEdge.hs` (`publicEdgeClusterIssuerName` constant +
+`publicEdgeTlsRetentionKey` substrate key scheme),
+`src/Prodbox/Infra/LongLivedPulumiBackend.hs` (`putLongLivedObject` /
+`getLongLivedObject` / `isLongLivedNoSuchKeyMessage` retention access path)
 **Docs to update**: `documents/engineering/acme_provider_guide.md`,
 `documents/engineering/envoy_gateway_edge_doctrine.md`,
 `documents/engineering/config_doctrine.md`, `DEVELOPMENT_PLAN/substrates.md`
 
 ### Objective
 
-Decouple the high-churn canonical test loop from Let's Encrypt's production duplicate-certificate
-limit by rendering TWO cert-manager `ClusterIssuer`s from `acmeClusterIssuerSpec` — the existing
-production issuer (`letsencrypt-http01`, `acme.server`) and a new staging issuer
-(`letsencrypt-staging-http01`, `https://acme-staging-v02.api.letsencrypt.org/directory`) —
-sharing one DNS-01 Route 53 solver. The staging endpoint is added as a config field
-`acme.staging_server`. The retained PRODUCTION cert material is stored in the long-lived
-`pulumi_state_backend` S3 bucket under a substrate-scoped key (`public-edge-tls/<substrate>/<fqdn>`),
-reusing the `LongLivedPulumiBackend` access path. This is the substrate-aware extension of the
-Sprint 7.5.b cert-manager DNS-01 ClusterIssuer rendering; the substrate-equivalence doctrine
-(home + AWS both real Let's Encrypt) is preserved.
+Render one cert-manager `ClusterIssuer` (`zerossl-http01`, built from `acme.server`) with a
+factored DNS-01 Route 53 solver and the ZeroSSL external account binding, and add the
+substrate-scoped long-lived cert retention store. The retained cert material is stored in the
+long-lived `pulumi_state_backend` S3 bucket under a substrate-scoped key
+(`public-edge-tls/<substrate>/<fqdn>`), reusing the `LongLivedPulumiBackend` access path, so
+rebuild cycles restore the certificate rather than re-order it (and never consume ZeroSSL
+issuance quota). This is the substrate-aware extension of the Sprint 7.5.b cert-manager DNS-01
+ClusterIssuer rendering; the substrate-equivalence doctrine (home + AWS both ZeroSSL) is
+preserved.
+
+> **Supersession note.** This sprint originally rendered an earlier multi-issuer model with a
+> separate test issuer and a provider-selection mechanism. That model was reverted to a single
+> ZeroSSL issuer when ZeroSSL became the sole supported ACME provider (2026-06-07) — ZeroSSL has
+> no separate test endpoint, and the S3 retain-and-restore of the issued certificate (below)
+> already covers rebuild churn. The separate test issuer, its config field, its default constant,
+> and the provider-selection machinery are removed.
 
 ### Deliverables
 
-- The shared DNS-01 Route 53 solver is factored out so both issuers reuse it.
-- The staging issuer carries its own `privateKeySecretRef` account key.
-- EAB stays production-only.
-- `acme.staging_server` is added to `prodbox-config-types.dhall`, `prodbox-config.dhall`, and
-  `AcmeSection` in `Settings.hs` with the same validation shape as `acme.server` and a hardcoded
-  staging default.
-- A substrate-scoped S3 retention key scheme stores the production cert only — staging certs are
-  disposable and are never written to the long-lived store.
-- The public-edge production cert is added to the [substrates.md](substrates.md) Resource
+- One ZeroSSL ACME `ClusterIssuer` (`zerossl-http01`) with a factored DNS-01 Route 53 solver
+  and the required ZeroSSL external account binding.
+- The issuer carries its own `privateKeySecretRef` account key (`zerossl-account-key`).
+- A substrate-scoped S3 retention key scheme stores the public-edge cert so rebuilds restore
+  rather than re-order it.
+- The public-edge cert is added to the [substrates.md](substrates.md) Resource
   Lifecycle Classes (LongLived). This row is rendered by the GENERATED table driven by
   `resourceLifecycleClasses` (landed under Phase 4 Sprint 4.24), so it appears after
   `prodbox docs generate`, not via hand-edit.
 
 ### Validation
 
-These are closure gates, not yet passed (sprint is Planned):
+Closure gates (passed 2026-06-07):
 
-1. `prodbox check-code` → exit 0.
-2. `prodbox test unit` → both `ClusterIssuer`s render with the correct `server` values, the
-   staging URL constant is asserted, and the retention key scheme is asserted.
-3. `prodbox test integration cli` / `prodbox test integration env` → the fixtures decode the new
-   `acme.staging_server` field.
+1. `./.build/prodbox check-code` → exit `0`.
+2. `./.build/prodbox test unit` → `690/690` (the
+   `ZeroSSL ACME ClusterIssuer + cert retention key scheme` describe block covers: the issuer
+   rendering `acme.server` + the `zerossl-account-key` account key; the DNS-01 Route 53 solver
+   secret + hosted zone; the ZeroSSL external account binding when configured; the single issuer
+   rendered by `acmeRuntimeManifestWith`; the `zerossl-http01` issuer name constant; and the
+   substrate-scoped `publicEdgeTlsRetentionKey`).
+3. `./.build/prodbox test integration cli` / `./.build/prodbox test integration env` → the
+   ZeroSSL `acme` fixtures decode in every fixture (the `aws-iam`, `config setup`,
+   ZeroSSL-EAB ClusterIssuer-reconcile, and masked-settings paths all pass). The only two
+   failures in this environment (`CliSuite.hs:256`/`:376`, `charts deploy vscode`
+   fake-environment flows) reproduce identically on the pre-Sprint-7.11 tree and are
+   unrelated.
+4. `./.build/prodbox docs check` / `./.build/prodbox lint docs` → exit `0`.
 
 ### Remaining Work
 
-The live two-issuer + S3-retention behavior is exercised under Phase 8 Sprint 8.8 (home staging
-gate first, then AWS parity, plus the production round-trip).
+The live single-issuer + S3-retention behavior is exercised under Phase 8 Sprint 8.8 (home gate
+first, then AWS parity, plus the production round-trip). The S3 cert-retention `put`/`get`
+access path landed here is consumed by the chart-platform restore-before-issue refactor in
+Sprint `8.7`.
 
 ## Documentation Requirements
 
@@ -2700,13 +2719,12 @@ gate first, then AWS parity, plus the production round-trip).
   stack.
 - `documents/engineering/aws_integration_environment_doctrine.md` - Sprint `7.6` refuse-path +
   auto-destroy doctrine plus the `--allow-pulumi-residue` escape hatch.
-- `documents/engineering/acme_provider_guide.md` - Sprint `7.11` two-issuer model (production
-  `letsencrypt-http01` + staging `letsencrypt-staging-http01`) sharing one DNS-01 Route 53 solver,
-  the `acme.staging_server` config field, and EAB staying production-only.
+- `documents/engineering/acme_provider_guide.md` - Sprint `7.11` single ZeroSSL issuer
+  (`zerossl-http01`) with its DNS-01 Route 53 solver and required EAB.
 - `documents/engineering/envoy_gateway_edge_doctrine.md` - Sprint `7.11` public-edge cert sourcing
-  from the staging vs production issuer and the substrate-scoped production-cert retention store.
-- `documents/engineering/config_doctrine.md` - Sprint `7.11` `acme.staging_server` field, its
-  validation shape, and the hardcoded staging default.
+  from the single ZeroSSL issuer and the substrate-scoped cert retention store.
+- `documents/engineering/config_doctrine.md` - Sprint `7.11` `acme.server` ZeroSSL default and the
+  EAB-required validation shape.
 
 **Product docs to create/update:**
 

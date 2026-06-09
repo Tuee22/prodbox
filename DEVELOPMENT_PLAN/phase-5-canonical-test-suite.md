@@ -21,7 +21,7 @@ the canonical HTTPS edge.
 
 Per [development_plan_standards.md → M. Test Suite Substrates](development_plan_standards.md#m-test-suite-substrates),
 these validations are **suite content**, not home-substrate-only validations. The home local
-substrate runs them today on real `test.resolvefintech.com` infrastructure (real Let's Encrypt,
+substrate runs them today on real `test.resolvefintech.com` infrastructure (real ZeroSSL,
 real OIDC, real WebSocket fan-out). Bringing the AWS substrate to parity so it runs the same
 validations is tracked in [phase-7-aws-substrate-foundations.md](phase-7-aws-substrate-foundations.md).
 
@@ -39,7 +39,7 @@ validation runs against every substrate that satisfies its declared prerequisite
 between substrates is provision and teardown, not the validation itself.
 
 The suite content owned by this phase covers public DNS delegation, real TLS issuance via
-cert-manager and Let's Encrypt, Envoy Gateway readiness, shared-host application routing
+cert-manager and ZeroSSL, Envoy Gateway readiness, shared-host application routing
 (`/auth`, `/vscode`, `/api`, `/ws`), shared-host admin routing (`/harbor`, `/minio`), HTTP-to-HTTPS
 redirect on port `80`, Keycloak issuer alignment behind Envoy, route-level RBAC, real WebSocket
 upgrade behavior, one-connection-per-pod lifetime, revocation-driven reconnect, and
@@ -110,7 +110,7 @@ Today the home local substrate runs the full suite; the AWS substrate runs only 
   runbook (`rke2 reconcile`), supported-runtime bootstrap (charts deploy + wait for public-edge
   ready), suite execution, optional postflight (charts redeploy + substrate destroy).
 - `src/Prodbox/Prerequisite.hs` owns the prerequisite DAG that gates suite execution.
-- Validations historically named "public-edge proofs" exercise real Let's Encrypt certificates
+- Validations historically named "public-edge proofs" exercise real ZeroSSL certificates
   via cert-manager + ACME, real OIDC redirects through Keycloak, real WebSocket fan-out via
   Redis, and real Route 53 records. The validations themselves are substrate-agnostic; the home
   local substrate is what stands those resources up today.

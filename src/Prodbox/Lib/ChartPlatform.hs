@@ -5,9 +5,12 @@ module Prodbox.Lib.ChartPlatform
   , ChartDeploymentPlan (..)
   , ChartInstallSnapshot (..)
   , ChartReleasePlan (..)
+  , PublicEdgePreserveOutcome (..)
   , buildChartDeletePlan
   , buildChartDeploymentPlan
   , buildChartDeploymentPlanForSubstrate
+  , certManagerAdoptionAnnotations
+  , classifyPublicEdgePreserve
   , deleteChartPlan
   , deployChartPlan
   , gatewayNodeIds
@@ -15,6 +18,8 @@ module Prodbox.Lib.ChartPlatform
   , keycloakRealmName
   , renderChartList
   , renderChartStatus
+  , renderPublicEdgePreserveOutcome
+  , retainReadyPublicEdgeCertificate
   , retainedPublicEdgeTlsSecretManifest
   , resolveChart
   , resolveChartSecrets
@@ -46,6 +51,7 @@ import Data.Aeson
   , (.=)
   )
 import Data.Aeson.Encode.Pretty qualified as Pretty
+import Data.Aeson.Key qualified as Key
 import Data.Aeson.KeyMap qualified as KeyMap
 import Data.Aeson.Types (Parser, parseEither)
 import Data.ByteString.Lazy qualified as BL
@@ -64,6 +70,11 @@ import Data.Map.Strict (Map)
 import Data.Map.Strict qualified as Map
 import Data.Text qualified as Text
 import Prodbox.ContainerImage qualified as ContainerImage
+import Prodbox.Infra.LongLivedPulumiBackend
+  ( getLongLivedObject
+  , putLongLivedObject
+  , resolveLongLivedAdminS3Context
+  )
 import Prodbox.Lib.Storage
   ( ChartStorageBinding (..)
   , ChartStorageSpec (..)
@@ -98,6 +109,8 @@ import Prodbox.PublicEdge
   , authPathPrefix
   , harborPathPrefix
   , minioPathPrefix
+  , publicEdgeClusterIssuerName
+  , publicEdgeTlsRetentionKey
   , publicFqdn
   , resolveSubstrateHostedZoneId
   , vscodePathPrefix
@@ -125,6 +138,7 @@ import Prodbox.Settings
   , DeploymentSection (..)
   , Route53Section (..)
   , ValidatedSettings (..)
+  , validateAndLoadSettings
   )
 import Prodbox.Subprocess
   ( ProcessOutput (..)
@@ -160,8 +174,10 @@ import System.IO
 -- 'Prodbox.CheckCode.checkForbidDotProdboxState' broadens to refuse any
 -- new @.prodbox-state/@ string literal anywhere in @src/@ + @app/@.
 
-chartClusterIssuer :: String
-chartClusterIssuer = "letsencrypt-http01"
+-- The keycloak / vscode chart @Certificate@ issuer is the single ZeroSSL
+-- @ClusterIssuer@ ('Prodbox.PublicEdge.publicEdgeClusterIssuerName').
+-- Rebuild cycles avoid re-ordering the production certificate through the
+-- S3-backed retention store, not through a separate test issuer.
 
 keycloakRealmName :: String
 keycloakRealmName = "prodbox"
@@ -196,11 +212,19 @@ publicEdgeHttpRedirectRouteName = "public-edge-http-redirect"
 publicEdgeTlsSecretName :: String
 publicEdgeTlsSecretName = "public-edge-tls"
 
-retainedPublicEdgeTlsSecretNamespace :: String
-retainedPublicEdgeTlsSecretNamespace = "prodbox"
+-- | The namespace the public-edge production cert Secret lives in (the
+-- canonical shared-edge root chart's namespace). Matches the namespace
+-- gate in 'planOwnsPublicEdgeCertificate'.
+publicEdgeTlsNamespace :: String
+publicEdgeTlsNamespace = "vscode"
 
-retainedPublicEdgeTlsSecretName :: String
-retainedPublicEdgeTlsSecretName = "public-edge-tls-retained"
+-- Sprint 8.7: the in-cluster @prodbox/public-edge-tls-retained@ Secret
+-- store is replaced by the S3-backed long-lived retention store
+-- (`publicEdgeTlsRetentionKey` in the `pulumi_state_backend` bucket), so
+-- the retained production certificate survives a fresh cluster /
+-- post-`rke2 delete` rebuild. The former
+-- @retainedPublicEdgeTlsSecret{Name,Namespace}@ constants and the
+-- @publicEdgeTlsRetentionNamespaceManifest@ are removed.
 
 publicEdgeVscodeListenerName :: String
 publicEdgeVscodeListenerName = "https"
@@ -1096,7 +1120,13 @@ deleteChartPlan plan = do
   preserveTlsResult <- preservePublicEdgeTlsSecretBeforeDelete plan
   case preserveTlsResult of
     Left err -> pure (Left err)
-    Right () -> do
+    -- Sprint 8.7/8.8: the typed outcome (retained / deferred-in-flight /
+    -- nothing-to-retain / store-unavailable) replaces the prior silent
+    -- success-on-absent; any S3 retention has already happened inside the
+    -- preserve step, and the rendered outcome is surfaced in the returned
+    -- delete summary so the "nothing to retain" / "store unavailable" states
+    -- are never silent (the § 3 soundness rule).
+    Right preserveOutcome -> do
       preserveResult <- preserveChartSecretsBeforeDelete plan
       case preserveResult of
         Left err -> pure (Left err)
@@ -1118,7 +1148,14 @@ deleteChartPlan plan = do
                       , "--ignore-not-found=true"
                       , "--wait=true"
                       ]
-                  pure (namespaceResult >> Right (renderDeleteReport plan))
+                  pure
+                    ( namespaceResult
+                        >> Right
+                          ( renderPublicEdgePreserveOutcome preserveOutcome
+                              ++ "\n"
+                              ++ renderDeleteReport plan
+                          )
+                    )
  where
   preserveChartSecretsBeforeDelete :: ChartDeploymentPlan -> IO (Either String ())
   preserveChartSecretsBeforeDelete deletePlan
@@ -1671,7 +1708,7 @@ valuesForKeycloak namespace rootChart settings _chartSecrets sharedHostFqdn = do
               , "websocketListenerName" .= publicEdgeWebsocketListenerName
               , "routeName" .= publicEdgeKeycloakRouteName
               , "tlsSecretName" .= publicEdgeTlsSecretName
-              , "clusterIssuer" .= chartClusterIssuer
+              , "clusterIssuer" .= publicEdgeClusterIssuerName
               , "host" .= sharedHostFqdn
               , "authPathPrefix" .= authPathPrefix
               , "vscodePathPrefix" .= vscodePathPrefix
@@ -1959,7 +1996,7 @@ valuesForVscode namespace rootChart settings _chartSecrets binding sharedHostFqd
               , "name" .= publicEdgeGatewayName
               , "listenerName" .= publicEdgeVscodeListenerName
               , "tlsSecretName" .= publicEdgeTlsSecretName
-              , "clusterIssuer" .= chartClusterIssuer
+              , "clusterIssuer" .= publicEdgeClusterIssuerName
               , "host" .= sharedHostFqdn
               , "pathPrefix" .= vscodePathPrefix
               ]
@@ -2464,37 +2501,168 @@ namespaceManifest namespace rootChart =
           ]
     ]
 
-publicEdgeTlsRetentionNamespaceManifest :: Value
-publicEdgeTlsRetentionNamespaceManifest =
-  namespaceManifest retainedPublicEdgeTlsSecretNamespace "public-edge-tls-retention"
-
 planOwnsPublicEdgeCertificate :: ChartDeploymentPlan -> Bool
 planOwnsPublicEdgeCertificate plan =
   chartDeploymentPlanNamespace plan == "vscode"
     && any ((== "keycloak") . chartReleasePlanReleaseName) (chartDeploymentPlanReleases plan)
 
-preservePublicEdgeTlsSecretBeforeDelete :: ChartDeploymentPlan -> IO (Either String ())
+-- | Sprint 8.7: the cert-manager @Certificate@ resource name for the
+-- public-edge listener (the chart names it after @gateway.tlsSecretName@).
+publicEdgeTlsCertificateName :: String
+publicEdgeTlsCertificateName = publicEdgeTlsSecretName
+
+-- | Sprint 8.7: the typed outcome of attempting to preserve the
+-- public-edge production certificate before a chart-namespace reset.
+-- Replaces the prior silent @Right ()@-on-absent gap with an explicit,
+-- returned classification, so an unobservable owned certificate cannot
+-- collapse to "absent/clean"
+-- (lifecycle_reconciliation_doctrine.md § 3 soundness).
+data PublicEdgePreserveOutcome
+  = -- | The plan does not own the public-edge certificate; nothing to do.
+    PreserveNotOwned
+  | -- | The live cert Secret was present and retained to the long-lived
+    -- S3 store.
+    PreservedToRetentionStore
+  | -- | The live cert Secret was present but the long-lived retention
+    -- store was unavailable (admin creds / bucket / FQDN); the live cert
+    -- is left in place, not backed up. Non-fatal (the deploy proceeds).
+    PreserveSkippedNoRetentionStore !String
+  | -- | No cert Secret yet, but a @Certificate@ is mid-issuance; the next
+    -- deploy restores or re-orders.
+    PreserveDeferredIssuanceInFlight
+  | -- | Neither a cert Secret nor a @Certificate@ exists; the next deploy
+    -- triggers a fresh order.
+    PreserveNothingToRetain
+  deriving (Eq, Show)
+
+-- | Pure: classify the preserve outcome from the observed live state —
+-- the owned cert Secret (if any) and the public-edge @Certificate@ (if
+-- any). Secret present → retain; Secret absent but a @Certificate@
+-- exists → issuance in flight; neither → nothing to retain. Exported for
+-- unit testing.
+classifyPublicEdgePreserve :: Maybe Value -> Maybe Value -> PublicEdgePreserveOutcome
+classifyPublicEdgePreserve maybeSecret maybeCertificate =
+  case (maybeSecret, maybeCertificate) of
+    (Just _, _) -> PreservedToRetentionStore
+    (Nothing, Just _) -> PreserveDeferredIssuanceInFlight
+    (Nothing, Nothing) -> PreserveNothingToRetain
+
+-- | One-line operator-facing rendering of a preserve outcome. Exported
+-- for unit testing and for surfacing through the delete summary so the
+-- "nothing to retain" / "store unavailable" states are never silent.
+renderPublicEdgePreserveOutcome :: PublicEdgePreserveOutcome -> String
+renderPublicEdgePreserveOutcome outcome = case outcome of
+  PreserveNotOwned ->
+    "public-edge cert: not owned by this release; nothing to preserve."
+  PreservedToRetentionStore ->
+    "public-edge cert: retained to the long-lived S3 store."
+  PreserveSkippedNoRetentionStore detail ->
+    "public-edge cert: retention store unavailable ("
+      ++ detail
+      ++ "); live cert left in place, not backed up."
+  PreserveDeferredIssuanceInFlight ->
+    "public-edge cert: no Secret yet but a Certificate is mid-issuance; \
+    \the next deploy restores or re-orders."
+  PreserveNothingToRetain ->
+    "public-edge cert: no Secret and no Certificate; the next deploy \
+    \triggers a fresh order."
+
+preservePublicEdgeTlsSecretBeforeDelete
+  :: ChartDeploymentPlan -> IO (Either String PublicEdgePreserveOutcome)
 preservePublicEdgeTlsSecretBeforeDelete plan
-  | not (planOwnsPublicEdgeCertificate plan) = pure (Right ())
+  | not (planOwnsPublicEdgeCertificate plan) = pure (Right PreserveNotOwned)
   | otherwise = do
       maybeSecretResult <-
         readOptionalKubernetesSecret
           (chartDeploymentPlanNamespace plan)
           publicEdgeTlsSecretName
       case maybeSecretResult of
+        -- An unobservable owned certificate refuses; it never collapses
+        -- to "absent/clean".
         Left err -> pure (Left err)
-        Right Nothing -> pure (Right ())
-        Right (Just secretValue) ->
-          case retainedPublicEdgeTlsSecretManifest
-            retainedPublicEdgeTlsSecretNamespace
-            retainedPublicEdgeTlsSecretName
-            secretValue of
+        Right maybeSecret -> do
+          maybeCertResult <-
+            readOptionalKubernetesCertificate
+              (chartDeploymentPlanNamespace plan)
+              publicEdgeTlsCertificateName
+          case maybeCertResult of
             Left err -> pure (Left err)
-            Right retainedSecret -> do
-              namespaceResult <- applyManifest publicEdgeTlsRetentionNamespaceManifest
-              case namespaceResult of
-                Left err -> pure (Left err)
-                Right () -> applyManifest retainedSecret
+            Right maybeCertificate ->
+              case (classifyPublicEdgePreserve maybeSecret maybeCertificate, maybeSecret) of
+                (PreservedToRetentionStore, Just secretValue) ->
+                  retainPublicEdgeSecretToStore plan secretValue
+                (other, _) -> pure (Right other)
+
+-- | Sprint 8.7: write the live public-edge cert Secret into the
+-- long-lived S3 retention store under the substrate-scoped key. Degrades
+-- gracefully: when the retention store (admin creds / long-lived bucket)
+-- or the deploy FQDN is unavailable, the live cert is left in place and a
+-- non-fatal 'PreserveSkippedNoRetentionStore' is returned — the delete is
+-- not failed, and the certificate still exists in-cluster.
+retainPublicEdgeSecretToStore
+  :: ChartDeploymentPlan -> Value -> IO (Either String PublicEdgePreserveOutcome)
+retainPublicEdgeSecretToStore plan secretValue =
+  case chartDeploymentPlanPublicFqdn plan of
+    Nothing ->
+      pure (Right (PreserveSkippedNoRetentionStore "no public FQDN resolved for the deployment"))
+    Just fqdn ->
+      putPublicEdgeCertToStore
+        (chartDeploymentPlanRepoRoot plan)
+        (chartDeploymentPlanSubstrate plan)
+        fqdn
+        secretValue
+
+-- | Sprint 8.8: the shared S3 write for the public-edge production cert
+-- retention store. Writes @secretValue@ (the full @kubectl get secret -o
+-- json@ payload) under the substrate-scoped retention key
+-- (@public-edge-tls/\<substrate\>/\<fqdn\>@). Degrades to a typed
+-- 'PreserveSkippedNoRetentionStore' when the admin S3 context is unavailable;
+-- only a genuine put failure is fatal ('Left').
+putPublicEdgeCertToStore
+  :: FilePath -> Substrate -> String -> Value -> IO (Either String PublicEdgePreserveOutcome)
+putPublicEdgeCertToStore repoRoot substrate fqdn secretValue = do
+  contextResult <- resolveLongLivedAdminS3Context repoRoot
+  case contextResult of
+    Left detail -> pure (Right (PreserveSkippedNoRetentionStore detail))
+    Right (environment, section) -> do
+      let key = publicEdgeTlsRetentionKey substrate (Text.pack fqdn)
+      putResult <-
+        withTempFile "prodbox-public-edge-tls-retain-" $ \path handle -> do
+          BL.hPutStr handle (Pretty.encodePretty' prettyJsonConfig secretValue)
+          hClose handle
+          putLongLivedObject repoRoot environment section key path
+      pure $ case putResult of
+        Left err -> Left ("public-edge cert retention put failed: " ++ err)
+        Right () -> Right PreservedToRetentionStore
+
+-- | Sprint 8.8: retain the freshly-issued public-edge production cert to the
+-- long-lived S3 store the moment it is confirmed ready (called from the
+-- harness public-edge readiness gate). This closes the vicious cycle where a
+-- cert that issued but was never captured — the prior design only retained on
+-- the next @charts delete@, and flaky ZeroSSL issuance meant the cert was
+-- often absent by then — forced a fresh ZeroSSL order on every rebuild. With
+-- retain-on-ready the first successful issuance is captured immediately, and
+-- 'restorePublicEdgeTlsSecretAfterNamespaceCreate' replays it on every
+-- subsequent rebuild (no re-order). Self-contained: resolves the public FQDN
+-- from config; degrades gracefully (typed outcome) when the cert Secret or
+-- the retention store is unavailable.
+retainReadyPublicEdgeCertificate
+  :: FilePath -> Substrate -> IO (Either String PublicEdgePreserveOutcome)
+retainReadyPublicEdgeCertificate repoRoot substrate = do
+  settingsResult <- validateAndLoadSettings repoRoot
+  case settingsResult of
+    Left err -> pure (Left err)
+    Right settings ->
+      case resolveRootPublicFqdn substrate settings publicEdgeTlsNamespace of
+        Left detail -> pure (Right (PreserveSkippedNoRetentionStore detail))
+        Right fqdn -> do
+          secretResult <-
+            readOptionalKubernetesSecret publicEdgeTlsNamespace publicEdgeTlsSecretName
+          case secretResult of
+            Left err -> pure (Left err)
+            Right Nothing -> pure (Right PreserveNothingToRetain)
+            Right (Just secretValue) ->
+              putPublicEdgeCertToStore repoRoot substrate fqdn secretValue
 
 restorePublicEdgeTlsSecretAfterNamespaceCreate :: ChartDeploymentPlan -> IO (Either String ())
 restorePublicEdgeTlsSecretAfterNamespaceCreate plan
@@ -2506,22 +2674,94 @@ restorePublicEdgeTlsSecretAfterNamespaceCreate plan
           publicEdgeTlsSecretName
       case targetResult of
         Left err -> pure (Left err)
+        -- A live cert is already present; nothing to restore.
         Right (Just _) -> pure (Right ())
-        Right Nothing -> do
-          backupResult <-
-            readOptionalKubernetesSecret
-              retainedPublicEdgeTlsSecretNamespace
-              retainedPublicEdgeTlsSecretName
-          case backupResult of
-            Left err -> pure (Left err)
+        Right Nothing -> restorePublicEdgeSecretFromStore plan
+
+-- | Sprint 8.7: restore the retained public-edge cert from the long-lived
+-- S3 store into the deploy namespace before cert-manager would order a
+-- fresh certificate. Because the S3 store is durable across cluster
+-- lifetime, this restore-before-issue works on EVERY rebuild path —
+-- including a fresh cluster / post-@rke2 delete@ — not just a
+-- chart-delete → redeploy. Degrades gracefully: if the store is
+-- unavailable (no admin creds / bucket on this host) or holds no retained
+-- cert, the deploy proceeds and cert-manager issues a fresh certificate.
+restorePublicEdgeSecretFromStore :: ChartDeploymentPlan -> IO (Either String ())
+restorePublicEdgeSecretFromStore plan =
+  case chartDeploymentPlanPublicFqdn plan of
+    Nothing -> pure (Right ())
+    Just fqdn -> do
+      contextResult <- resolveLongLivedAdminS3Context (chartDeploymentPlanRepoRoot plan)
+      case contextResult of
+        -- No retention store on this host; cert-manager issues fresh.
+        Left _ -> pure (Right ())
+        Right (environment, section) -> do
+          let key =
+                publicEdgeTlsRetentionKey (chartDeploymentPlanSubstrate plan) (Text.pack fqdn)
+          fetchResult <-
+            withTempFile "prodbox-public-edge-tls-restore-" $ \path handle -> do
+              hClose handle
+              getResult <-
+                getLongLivedObject (chartDeploymentPlanRepoRoot plan) environment section key path
+              case getResult of
+                Left err -> pure (Left err)
+                Right False -> pure (Right Nothing)
+                Right True -> do
+                  contents <- BL.readFile path
+                  case eitherDecode contents :: Either String Value of
+                    Left decodeErr ->
+                      pure (Left ("retained public-edge cert decode failed: " ++ decodeErr))
+                    Right value -> pure (Right (Just value))
+          case fetchResult of
+            Left err -> pure (Left ("public-edge cert restore get failed: " ++ err))
+            -- Nothing retained; cert-manager issues fresh on this deploy.
             Right Nothing -> pure (Right ())
-            Right (Just backupValue) ->
+            Right (Just retainedValue) ->
               case retainedPublicEdgeTlsSecretManifest
                 (chartDeploymentPlanNamespace plan)
                 publicEdgeTlsSecretName
-                backupValue of
+                retainedValue of
                 Left err -> pure (Left err)
                 Right restoredSecret -> applyManifest restoredSecret
+
+-- | Read an optional cert-manager @Certificate@ resource as JSON
+-- (@Nothing@ when absent). Mirrors 'readOptionalKubernetesSecret'; used
+-- by the preserve classifier to detect issuance-in-flight.
+readOptionalKubernetesCertificate :: String -> String -> IO (Either String (Maybe Value))
+readOptionalKubernetesCertificate namespace certificateName = do
+  outputResult <-
+    runCaptured
+      ("kubectl get certificate " ++ certificateName)
+      "kubectl"
+      [ "get"
+      , "certificate.cert-manager.io"
+      , certificateName
+      , "--namespace"
+      , namespace
+      , "--ignore-not-found=true"
+      , "-o"
+      , "json"
+      ]
+  pure $ do
+    output <- outputResult
+    case processExitCode output of
+      ExitSuccess ->
+        let stdoutText = trimWhitespace (processStdout output)
+         in if null stdoutText
+              then Right Nothing
+              else
+                either
+                  (Left . ("kubectl get certificate returned unexpected JSON payload: " ++))
+                  (Right . Just)
+                  (eitherDecode (BL8.pack stdoutText))
+      ExitFailure _ ->
+        Left
+          ( "kubectl get certificate "
+              ++ certificateName
+              ++ " failed: "
+              ++ processStderr output
+              ++ processStdout output
+          )
 
 readOptionalKubernetesSecret :: String -> String -> IO (Either String (Maybe Value))
 readOptionalKubernetesSecret namespace secretName = do
@@ -2583,10 +2823,38 @@ retainedPublicEdgeTlsSecretManifest targetNamespace targetName secretValue =
                     .= object
                       [ "prodbox.io/retained-secret" .= (publicEdgeTlsSecretName :: String)
                       ]
+                , -- Sprint 8.8: carry the cert-manager adoption annotations so a
+                  -- restored Secret is adopted by cert-manager instead of
+                  -- triggering a fresh ZeroSSL order on every rebuild.
+                  "annotations" .= certManagerAdoptionAnnotations secretValue
                 ]
           , "type" .= maybe "kubernetes.io/tls" id (secretType :: Maybe String)
           , "data" .= secretData
           ]
+
+-- | Sprint 8.8: the @cert-manager.io/*@ annotations to carry from a retained
+-- public-edge cert Secret onto its restored copy. cert-manager's certificate
+-- trigger policies (@SecretCertificateNameAnnotationsMismatch@ /
+-- @SecretIssuerAnnotationsMismatch@) re-issue a fresh certificate when the
+-- target Secret's @cert-manager.io/certificate-name@ + @issuer-*@ annotations
+-- are missing or mismatched, so a restored Secret that strips them is never
+-- adopted — it re-orders against ZeroSSL on every rebuild. This preserves the
+-- original Secret's @cert-manager.io/*@ annotations (verbatim) so the restored
+-- Secret is recognized as up to date. Pure; exported for unit testing.
+certManagerAdoptionAnnotations :: Value -> Value
+certManagerAdoptionAnnotations secretValue =
+  case secretValue of
+    Object obj -> case KeyMap.lookup "metadata" obj of
+      Just (Object metadata) -> case KeyMap.lookup "annotations" metadata of
+        Just (Object annotations) ->
+          Object
+            ( KeyMap.filterWithKey
+                (\key _ -> "cert-manager.io/" `Text.isPrefixOf` Key.toText key)
+                annotations
+            )
+        _ -> object []
+      _ -> object []
+    _ -> object []
 
 singleNodeHostname :: IO (Either String String)
 singleNodeHostname = do

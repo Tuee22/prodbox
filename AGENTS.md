@@ -149,7 +149,7 @@ for the authoritative inventory:
 - The home local substrate and the AWS substrate stand up the **same set of services**:
   the canonical chart set (`gateway`, `keycloak`, `keycloak-postgres`, `vscode`, `api`,
   `redis`, `websocket`) plus the same supporting platform pieces — MinIO, Harbor, the
-  Percona PostgreSQL operator, Envoy Gateway, cert-manager, real Let's Encrypt via
+  Percona PostgreSQL operator, Envoy Gateway, cert-manager, real ZeroSSL via
   cert-manager DNS01. The two substrates differ in their load-balancer (MetalLB on home,
   AWS Load Balancer Controller on EKS) and their Route 53 hosting (parent zone on home,
   dedicated subzone provisioned by `prodbox pulumi aws-subzone-resources` on AWS).

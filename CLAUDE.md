@@ -209,7 +209,7 @@ S3 bucket-destroy step.
 Both run the canonical chart set (`gateway`, `keycloak`, `keycloak-postgres`,
 `vscode`, `api`, `redis`, `websocket`) plus the same supporting platform pieces:
 MinIO, Harbor, the Percona PostgreSQL operator, Envoy Gateway, cert-manager, real
-Let's Encrypt via cert-manager DNS01. The two substrates differ in their lower-layer
+ZeroSSL via cert-manager DNS01. The two substrates differ in their lower-layer
 load-balancer (MetalLB on home, AWS Load Balancer Controller on EKS) and their
 Route 53 hosting (one parent zone on home, the dedicated subzone provisioned by
 `prodbox pulumi aws-subzone-resources` on AWS) — nothing else.

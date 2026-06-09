@@ -297,10 +297,14 @@ sessionTokenPromptShape accessKeyId
 perRunStackNames :: [String]
 perRunStackNames = ResourceClass.resourceNamesOfClass ResourceClass.PerRun
 
--- | Long-lived cross-substrate shared Pulumi stack names per
--- @DEVELOPMENT_PLAN/substrates.md → Resource Lifecycle Classes@. These
--- are retained by design; the harness must NEVER bypass residue refusal
--- for them. Sprint 4.20: derived from the registry facts.
+-- | Long-lived cross-substrate shared resource names per
+-- @DEVELOPMENT_PLAN/substrates.md → Resource Lifecycle Classes@: the
+-- @aws-ses@ Pulumi stack and (Sprint 4.24) the retained
+-- @public-edge-tls@ production certificate material (an S3 object class,
+-- not a Pulumi stack). These are retained by design; the harness must
+-- NEVER bypass residue refusal for them. Sprint 4.20: derived from the
+-- registry facts so the list cannot drift from the single source of
+-- truth.
 longLivedStackNames :: [String]
 longLivedStackNames = ResourceClass.resourceNamesOfClass ResourceClass.LongLived
 
@@ -379,9 +383,6 @@ defaultAwsRegion = "us-east-1"
 
 zeroSslAcmeServer :: Text
 zeroSslAcmeServer = "https://acme.zerossl.com/v2/DV90"
-
-letsEncryptAcmeServer :: Text
-letsEncryptAcmeServer = "https://acme-v02.api.letsencrypt.org/directory"
 
 prodboxIamUserName :: Text
 prodboxIamUserName = "prodbox"
@@ -724,16 +725,10 @@ interactiveConfigSetupInput repoRoot = do
   writeOutputLine ("The supported public hostname is fixed: " ++ Text.unpack supportedPublicHostname)
   demoTtl <- promptInt "Demo DNS TTL seconds" 60
   showAcmeProviderGuidance
-  providerIndex <-
-    promptNumberedChoice "Choose the ACME provider number" ["ZeroSSL", "Let's Encrypt"] 1
   acmeEmailRaw <- promptText "ACME notification email (certificate expiry notices)" Nothing
-  (acmeServerValue, eabKeyIdRaw, eabHmacKeyRaw) <-
-    case providerIndex of
-      0 -> do
-        keyId <- promptText "ZeroSSL EAB key ID (from ZeroSSL Developer settings)" Nothing
-        hmacKey <- promptSecret "ZeroSSL EAB HMAC key (hidden input)"
-        pure (zeroSslAcmeServer, keyId, hmacKey)
-      _ -> pure (letsEncryptAcmeServer, "", "")
+  eabKeyIdRaw <- promptText "ZeroSSL EAB key ID (from ZeroSSL Developer settings)" Nothing
+  eabHmacKeyRaw <- promptSecret "ZeroSSL EAB HMAC key (hidden input)"
+  let acmeServerValue = zeroSslAcmeServer
   showPolicyTierGuidance
   policyIndex <-
     promptNumberedChoice "Choose the operational IAM policy tier number" ["full", "core"] 0
@@ -953,11 +948,9 @@ showHostedZoneChoiceGuidance = do
 
 showAcmeProviderGuidance :: IO ()
 showAcmeProviderGuidance = do
-  writeOutputLine "ACME provider guidance:"
-  writeOutputLine "1. ZeroSSL: open https://app.zerossl.com -> Developer -> EAB"
-  writeOutputLine "   Credentials, then copy the EAB Key ID and HMAC key."
-  writeOutputLine "2. Let's Encrypt (recommended): no account or EAB credentials are required;"
-  writeOutputLine "   you only need the notification email below."
+  writeOutputLine "ACME provider guidance (ZeroSSL):"
+  writeOutputLine "Open https://app.zerossl.com -> Developer -> EAB Credentials, then copy the"
+  writeOutputLine "EAB Key ID and HMAC key. Both are required for ZeroSSL ACME issuance."
   writeOutputLine ""
 
 showPolicyTierGuidance :: IO ()

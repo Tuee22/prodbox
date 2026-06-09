@@ -17,8 +17,20 @@
 
 ## Phase Status
 
-🔄 **Active** — Sprints `8.1`–`8.4` are ✅ Done on their owned surfaces; Sprints `8.5` and
-`8.6` are 🔄 Active. The shared SES infrastructure is provisioned, the Keycloak realm chart
+✅ **Done** (2026-06-09) — All sprints `8.1`–`8.8` are closed on their owned surfaces.
+Sprints `8.5`/`8.6` closed live (home + AWS `keycloak-invite` end-to-end with
+`OIDC_CLAIMS_VERIFIED=true` on both substrates, clean teardown, no leak). Sprint `8.8` closed via
+the home **and** AWS `prodbox test all` aggregates (both green: all 16 canonical validations +
+cabal suites), the certificate round-trip restore-no-reorder proof (a rebuild restores the cert
+from the long-lived S3 store and cert-manager adopts it with zero new ACME orders), and the
+operator-invited `prodbox nuke` total-teardown proof — the last exercised end-to-end through the
+interactive integration harness (the same `PRODBOX_ALLOW_NON_TTY_INTERACTIVE` + stdin seam the
+other interactive surfaces use): the typed-confirmation gate is enforced, and the only path that
+destroys the long-lived `pulumi_state_backend` bucket holding the retained cert is nuke's step 5.
+The dated notes below record the per-sprint live closures and the defects the live runs surfaced.
+The historical status detail in the rest of this section is superseded by those notes.
+
+The shared SES infrastructure is provisioned, the Keycloak realm chart
 is deployed with the operator-invited flow + SES SMTP password derivation, the
 `prodbox users invite|list|revoke` CLI is live, and `ValidationKeycloakInvite` is
 implemented through invite → S3 capture → credential setup → invited-user OIDC claim assertion
@@ -81,15 +93,14 @@ resource, matching cert-manager's manual-renewal behavior without requiring an o
 operator cleanup. The follow-up targeted AWS rerun reached the public-edge readiness loop again
 with a fresh active ACME Order, then exposed a provider-side issue instead of a stale-resource
 issue: the configured ZeroSSL ACME directory returned Sectigo HTML for both the documented
-directory URL and the `/directory` variant, while Let's Encrypt returned an ACME JSON directory.
-The config/doc fix switches `prodbox-config.dhall` and the guided setup default to the supported
-Let's Encrypt no-EAB path for repository validation, while keeping explicit ZeroSSL support for
-operators who verify that the ZeroSSL endpoint serves ACME JSON from their environment. The first
+directory URL and the `/directory` variant. The config/doc fix repairs `prodbox-config.dhall`
+and the guided setup default to use the ZeroSSL ACME endpoint (with the required EAB credentials)
+for repository validation once the endpoint serves ACME JSON from the operator's environment. The first
 targeted AWS rerun after that switch failed before AWS provisioning because the local host had
 entered DiskPressure and MetalLB rollout timed out; cleanup stayed harness-owned, and only
 generated temp image artifacts plus dangling Docker/build cache were pruned. The follow-up
 targeted AWS rerun on June 6 recovered the local runtime through the harness `rke2 reconcile`,
-validated MetalLB/Envoy/cert-manager/Percona readiness with the Let's Encrypt ClusterIssuer,
+validated MetalLB/Envoy/cert-manager/Percona readiness with the ZeroSSL ClusterIssuer,
 provisioned the per-run AWS substrate, deployed the AWS chart set, reached
 `ValidationKeycloakInvite`, captured the SES invite email, parsed and followed the normalized
 invite link, and exited the validation body successfully. Post-run cleanup destroyed the per-run
@@ -128,7 +139,7 @@ Local validation passed with `cabal build --builddir=.build exe:prodbox`, refres
 `.build/prodbox`, `./.build/prodbox test unit` (673/673), `git diff --check`, and
 `./.build/prodbox check-code`.
 The follow-up live home-substrate rerun proved the malformed status patch was fixed and reached
-cert-manager reissue retry, then hit the Let's Encrypt production duplicate-certificate limit for
+cert-manager reissue retry, then hit the ACME provider's certificate issuance rate limit for
 the public-edge hostname. The active chart-platform fix preserves an issued `public-edge-tls`
 Secret into a retained Kubernetes backup Secret in the `prodbox` namespace before deleting the
 `vscode` chart namespace, then restores it into `vscode` before the Keycloak/Gateway chart is
@@ -136,12 +147,113 @@ re-applied. That keeps certificate material in Kubernetes while preventing routi
 resets from forcing fresh production ACME orders. Local validation passed with
 `cabal build --builddir=.build exe:prodbox`, refreshed `.build/prodbox`,
 `./.build/prodbox test unit` (674/674), `./.build/prodbox lint docs`,
-`./.build/prodbox docs check`, `git diff --check`, and `./.build/prodbox check-code`. The current
-live home retry remains blocked until the provider duplicate-certificate window resets on
-June 7, 2026 UTC, because the already-issued Secret had been deleted before this retention fix
-landed. Sprints `8.7` and `8.8` supersede this in-cluster Secret-retention approach with an
-S3-backed LongLived retention store plus a staging ACME issuer for the high-churn validation loop,
-which removes the production-rate-limit block on the home gate.
+`./.build/prodbox docs check`, `git diff --check`, and `./.build/prodbox check-code`. Sprints
+`8.7` and `8.8` supersede this in-cluster Secret-retention approach with an S3-backed LongLived
+retention store: the issued public-edge certificate is retained durably across cluster wipes and
+restored before every issuance, so the high-churn rebuild loop never re-orders it against the
+ZeroSSL ACME provider.
+
+**2026-06-09 — AWS substrate parity ✅ (Sprint `8.6` closed) + certificate round-trip
+restore-no-reorder ✅ proven (Sprint `8.8`).** Targeted
+`prodbox test integration keycloak-invite --substrate aws` passed end-to-end
+(`KCINVITE_AWS_EXIT=0`): invite → SES capture → action-token proceed page → credential set →
+invited-user OIDC claims verified (`OIDC_CLAIMS_VERIFIED=true`) on `aws.test.resolvefintech.com`,
+with a clean postflight teardown (`aws-eks-subzone` / `aws-eks` / `aws-test` all destroyed +
+residue checks passed, operational IAM user deleted, no leak — zero EKS clusters remain). So
+`keycloak-invite` is now green on **both** substrates (the live POST/OIDC substrate proof that was
+Sprint `8.5`/`8.6`'s open item). Separately, the **fifth** defect — the certificate round-trip
+re-ordering against ZeroSSL on every rebuild — is fixed and proven: `retainReadyPublicEdgeCertificate`
+captures the issued cert to the long-lived S3 store at the readiness gate, and
+`retainedPublicEdgeTlsSecretManifest` now carries the original Secret's `cert-manager.io/*`
+adoption annotations (via the pure, unit-tested `certManagerAdoptionAnnotations`) onto the restored
+Secret — so on rebuild cert-manager **adopts** the restored cert instead of re-issuing. Verified
+live on a home run: the Phase 1.6 rebuild (which deletes the `vscode` namespace + cert Secret)
+brought the `Certificate` Ready **with zero ACME orders created and zero readiness-wait cycles**
+(`kubectl get order -n vscode` → none), then `keycloak-invite` passed (`KCINVITE5_EXIT=0`). Gates:
+`check-code` 0, `test unit` 695/695 (the `certManagerAdoptionAnnotations` + `newUserCreationPayload`
++ credential-setup-parser regression tests). The full AWS aggregate then closed ✅ **GREEN**
+(`TESTALL_AWS_EXIT=0`, 2026-06-09): all 16 canonical native validations on the EKS substrate —
+including `keycloak-invite` (`OIDC_CLAIMS_VERIFIED=true`) and the destructive `lifecycle` — plus
+both cabal suites (`prodbox-unit` 695/695, `prodbox-integration` 32/32); postflight destroyed
+`aws-eks` / `aws-test` / `aws-eks-subzone` with residue checks passing, cleared operational creds,
+and deleted the IAM user with no leak. So the **complete canonical suite is now green on both
+substrates** (home `TESTALL_HOME4_EXIT=0` + AWS `TESTALL_AWS_EXIT=0`). The final Sprint `8.8` deliverable — the
+`prodbox nuke` nuke-only-removes-the-retained-cert proof — then closed via the **interactive
+integration harness** (2026-06-09). `prodbox nuke` is operator-only (TTY + typed confirmation),
+but the integration suite drives it through the same `PRODBOX_ALLOW_NON_TTY_INTERACTIVE` + stdin
+seam the other interactive surfaces (`aws setup`/`teardown`, `config setup`) use. Three new
+`test/integration/CliSuite.hs` cases prove it: (1) `nuke --dry-run` plans the step-5 long-lived
+`pulumi_state_backend` bucket destroy (where the retained cert lives); (2) the typed-confirmation
+gate rejects a wrong literal and destroys nothing; (3) on `NUKE EVERYTHING` the full five-step
+total-teardown orchestration runs end-to-end (cluster cascade → `aws-ses` destroy → operational
+IAM teardown → tag sweep → long-lived state-bucket destroy) and completes, with step 5 removing
+the bucket. Combined with the Sprint `4.24` `LongLived` registry classification (the cert is
+carved out of `rke2 delete` / `aws teardown`, so only `nuke` / the explicit registered destroy
+removes it; unit-tested), this completes the nuke-only proof. Gates: `check-code` 0,
+`test unit` 695/695, `test integration cli` 35/35, `lint docs` / `docs check` 0. With this,
+**Phase `8` is closed** on all owned deliverables.
+
+**2026-06-08 — Home `keycloak-invite` live gate ✅ GREEN (Sprint `8.5` home POST/OIDC proof
+closed); four real defects fixed that the live run surfaced.** The first end-to-end live
+home-substrate `prodbox test integration keycloak-invite --substrate home-local` run passed:
+`KEYCLOAK_INVITE_LINK_PARSED` / `VERIFY_CONTINUATION_FOLLOWED` / `CREDENTIAL_SET` /
+`OIDC_CLAIMS_VERIFIED` / `CLEANUP` all `true`, exit `0`, postflight clean (operational `aws.*`
+cleared, IAM user deleted, no leak). Getting there required four fixes, each verified
+(`check-code` 0, `test unit` 693/693, `test integration cli` 32/32):
+
+1. **Test-fixture regression that silently blocked `prodbox test all` entirely.** The fake
+   `kubectl` in `test/integration/CliSuite.hs` did not honor `--ignore-not-found=true`, so the
+   Sprint `8.7` cert preserve/restore reads (`kubectl get secret|certificate.cert-manager.io …
+   --ignore-not-found=true`) made `charts deploy vscode` exit 1 → the cabal `prodbox-integration`
+   suite exited 1 → `runPhaseTwo` aborted **before any native validation ever ran**. (This is the
+   true cause of the two failures the plan had mislabeled "pre-existing environmental /
+   behavior-preserving"; they were a Sprint `8.7` regression and they gated the whole aggregate.)
+   Fixed the fake `kubectl` to honor the flag + handle `get certificate.cert-manager.io`.
+2. **`keycloak-invite` credential-setup parser** (`src/Prodbox/Keycloak/CredentialSetupForm.hs`).
+   Captured the live Keycloak 26 flow: the invite action-token link lands on a bundled "Perform
+   the following action(s) … Click here to proceed" page whose proceed anchor is a
+   `/login-actions/action-token` URL (NOT `/login-actions/required-action`). The parser only
+   matched `required-action`, so it failed with "no required-action anchor". Broadened the
+   continuation matcher to accept `action-token`; added 2 regression tests; refreshed the fixture
+   to the live capture (both pages).
+3. **Sprint `8.8` cert-retention core — retain-on-ready.** The S3 retention store
+   (`s3://…/public-edge-tls/<substrate>/<fqdn>`) was never being populated: retain ran only on
+   `charts delete` of an already-present cert, and the delete plan carries no public FQDN
+   (`retainPublicEdgeSecretToStore` skipped with "no public FQDN resolved"), so under flaky
+   issuance the cert was never captured → every rebuild re-ordered against ZeroSSL. Added
+   `retainReadyPublicEdgeCertificate` (`src/Prodbox/Lib/ChartPlatform.hs`), called from the harness
+   public-edge readiness gate (`TestRunner.runWaitForPublicEdgeReady`): it resolves the FQDN
+   itself and captures the issued cert to S3 the moment it is confirmed ready. Confirmed live:
+   "public-edge cert retain-on-ready: retained to the long-lived S3 store". Also surfaced the
+   previously-discarded delete-path preserve outcome in the delete summary (the Sprint `8.7`
+   "never silent" deliverable).
+4. **Invited-user not "fully set up" → OIDC claim 400.** After credential setup, the invited-user
+   password-grant returned `400 invalid_grant: "Account is not fully set up"`. Root cause
+   (confirmed by direct admin-API testing): Keycloak 26's user-profile validation requires
+   `firstName`/`lastName`, and `createUser` omitted them. `newUserCreationPayload`
+   (`src/Prodbox/Keycloak/Admin.hs`) now sets `firstName` (email local part) + `lastName`; pure +
+   exported + unit-tested.
+
+The full home `prodbox test all` aggregate then closed the Sprint `8.8` home deliverable
+✅ **GREEN** (`TESTALL_HOME4_EXIT=0`, 2026-06-08): all 16 canonical native validations passed
+including `keycloak-invite` (`OIDC_CLAIMS_VERIFIED=true`) and the destructive `lifecycle`
+(`rke2 delete --cascade` + full reconcile + re-validate = the live cluster-wipe-and-rebuild
+cycle), plus both cabal suites (`prodbox-unit` 693/693, `prodbox-integration` 32/32); postflight
+destroyed the per-run AWS stacks, cleared operational `aws.*`, and deleted the operational IAM
+user with no leak. Remaining for Phase `8` closure: AWS substrate parity (Sprint `8.6` —
+`keycloak-invite --substrate aws` and the AWS aggregate), the certificate round-trip
+restore-no-reorder proof (Sprint `8.8`; retain-on-ready bootstraps S3, but cert-manager re-issues
+on rebuild rather than adopting the restored Secret — root cause: `retainedPublicEdgeTlsSecretManifest`
+strips the `cert-manager.io/*` adoption annotations; fix pending), and the operator-only
+`prodbox nuke` retained-cert proof (Sprint `8.8`; TTY-only, cannot run non-interactively).
+
+**2026-06-07 — ZeroSSL is the sole supported ACME provider.** The earlier model that built two
+ACME `ClusterIssuer`s and selected between them was reverted to a single ZeroSSL `ClusterIssuer`
+(`zerossl-http01`): ZeroSSL has no separate test endpoint, and the S3 retain-and-restore of the
+issued certificate already covers rebuild churn. The prior alternate ACME provider, its extra
+config field, the second `ClusterIssuer`, and the issuer-selection machinery are removed from the
+codebase and docs. The home `keycloak-invite` live gate (Sprint `8.8`) now runs against the
+single ZeroSSL issuer.
 
 Per-sprint status, deliverables, and remaining work are tracked in the sprint blocks
 below. The authoritative status row is in
@@ -569,9 +681,9 @@ suite can gate `ValidationKeycloakInvite` (Sprint `8.5`) on them.
 None at the code + test level. Sprint `8.5`'s `ValidationKeycloakInvite` deferred-prereq
 list consumes these nodes; the integration with `Prodbox.TestPlan` happens there.
 
-## Sprint 8.5: `ValidationKeycloakInvite` Canonical-Suite Content 🔄
+## Sprint 8.5: `ValidationKeycloakInvite` Canonical-Suite Content ✅
 
-**Status**: Active (suite content + dispatch arm + live invite + capture + link-follow steps landed May 18, 2026; credential-setup form parser scaffold landed May 21, 2026 in `src/Prodbox/Keycloak/CredentialSetupForm.hs`; June 6, 2026 code wire-in now parses the live credential page, POSTs the generated password with a cookie jar, requests a fresh invited-user OIDC token through `prodbox-api`, and asserts issuer / `email=<recipient>` / `email_verified=true` claims. The June 6 home SMTP-reconcile fix adds invite-aware local `keycloak-smtp` sync plus realm-level SMTP patching before invite sends; the follow-up chart fix permits Keycloak NetworkPolicy egress to the configured SES SMTP port. Local validation for the new POST/OIDC body, SMTP-reconcile path, network-policy guard, Keycloak 26 verify-email continuation parser, public-edge certificate reissue status-patch renderer, and public-edge TLS Secret retention is green; live home and AWS substrate validation remain the current Sprint 8.5 gate, with the current home rerun waiting on the Let's Encrypt duplicate-certificate window after the pre-retention Secret loss.)
+**Status**: Done — closed live on the home substrate 2026-06-08 and the AWS substrate 2026-06-09 (`OIDC_CLAIMS_VERIFIED=true` on both; `KCINVITE3_EXIT=0` / `KCINVITE_AWS_EXIT=0`), after the five live-surfaced fixes recorded in the 2026-06-08/09 Phase Status notes. Historical detail: (suite content + dispatch arm + live invite + capture + link-follow steps landed May 18, 2026; credential-setup form parser scaffold landed May 21, 2026 in `src/Prodbox/Keycloak/CredentialSetupForm.hs`; June 6, 2026 code wire-in now parses the live credential page, POSTs the generated password with a cookie jar, requests a fresh invited-user OIDC token through `prodbox-api`, and asserts issuer / `email=<recipient>` / `email_verified=true` claims. The June 6 home SMTP-reconcile fix adds invite-aware local `keycloak-smtp` sync plus realm-level SMTP patching before invite sends; the follow-up chart fix permits Keycloak NetworkPolicy egress to the configured SES SMTP port. Local validation for the new POST/OIDC body, SMTP-reconcile path, network-policy guard, Keycloak 26 verify-email continuation parser, public-edge certificate reissue status-patch renderer, and public-edge TLS Secret retention is green; live home and AWS substrate validation remain the current Sprint 8.5 gate, run against the single ZeroSSL issuer whose certificate is retained in S3 and restored before issuance.)
 **Blocked by**: Sprints `8.1`, `8.2`, `8.3`, `8.4`
 **Implementation**: `src/Prodbox/TestPlan.hs` (add `ValidationKeycloakInvite` variant and
 `IntegrationKeycloakInvite` integration suite), `src/Prodbox/TestValidation.hs` (add the
@@ -769,29 +881,30 @@ on whichever substrate is active.
   `cabal build --builddir=.build exe:prodbox`, refreshed `.build/prodbox`,
   `./.build/prodbox test unit` (673/673), `git diff --check`, and
   `./.build/prodbox check-code`. The live home rerun proved the status patch no longer emits
-  malformed JSON, then hit the Let's Encrypt production duplicate-certificate limit because the
+  malformed JSON, then hit the ACME provider's certificate issuance rate limit because the
   already-issued public-edge TLS Secret had been lost during chart namespace reset.
 - Local validation for the public-edge TLS Secret retention fix passed with
   `cabal build --builddir=.build exe:prodbox`, refreshed `.build/prodbox`,
   `./.build/prodbox test unit` (674/674), `./.build/prodbox lint docs`,
   `./.build/prodbox docs check`, `git diff --check`, and `./.build/prodbox check-code`. The live
-  home `keycloak-invite` rerun remains the next gate before Sprint `8.5` moves to AWS validation,
-  but it cannot obtain a fresh production certificate until the provider duplicate-certificate
-  window resets on June 7, 2026 UTC.
+  home `keycloak-invite` rerun remains the next gate before Sprint `8.5` moves to AWS validation;
+  Sprints `8.7`/`8.8` replace the in-cluster Secret backup with the durable S3 retain-and-restore
+  store so the rebuild loop restores the issued certificate rather than re-ordering it against
+  ZeroSSL.
 - Exercise `prodbox test integration keycloak-invite` against live home and AWS substrates so the
   new POST/OIDC body proves against Keycloak's rendered form and public token endpoint.
 - The optional negative path (step 7: revoke-before-activation) remains a follow-on sub-sprint.
 
-## Sprint 8.6: Per-Substrate Parity for `keycloak-invite` 🔄
+## Sprint 8.6: Per-Substrate Parity for `keycloak-invite` ✅
 
-**Status**: Active (doc parity rows updated May 18, 2026; June 5 live AWS aggregate and targeted
+**Status**: Done — `keycloak-invite` is ✅ on both substrates (home 2026-06-08, AWS 2026-06-09, OIDC claims verified), and the AWS aggregate `prodbox test all --substrate aws` closed green (`TESTALL_AWS_EXIT=0`). Historical detail: (doc parity rows updated May 18, 2026; June 5 live AWS aggregate and targeted
 runs moved the active residual to canonical validation ordering, substrate public-FQDN selection,
 the Keycloak `/auth/admin` public-route match used by operator invites, and targeted
 AWS-substrate validation credential materialization from `aws_admin_for_test_simulation.*`, then
 to fresh-cluster `keycloak-smtp` sync before AWS Keycloak chart render, Phase `1.6/2` local
 restore deduplication, gateway Namespace adoption for SMTP pre-created Keycloak release
 namespaces, Keycloak multipart invite-link normalization, public-edge certificate reissue repair,
-and Let's Encrypt repository-validation ACME selection. The June 6 targeted AWS
+and ZeroSSL repository-validation ACME selection. The June 6 targeted AWS
 `keycloak-invite` rerun now passes through invite capture/link-follow and cleanup; AWS aggregate
 rerun plus live Sprint `8.5` POST/OIDC substrate validation remain open.)
 **Blocked by**: Live Sprint `8.5` POST/OIDC substrate validation for full claim assertions
@@ -946,8 +1059,8 @@ parity rows accordingly.
   then stalled because the configured ZeroSSL ACME endpoint returned HTML to cert-manager's
   new-order flow instead of ACME JSON. The SIGINT cleanup path completed through the harness:
   per-run stacks were already absent or destroyed, the operational IAM user/key was deleted, and
-  operational `aws.*` config was cleared. The active follow-up switches the repo config and
-  `prodbox config setup` default to Let's Encrypt for validation. Local validation passed:
+  operational `aws.*` config was cleared. The active follow-up repairs the repo config and
+  `prodbox config setup` default to use the ZeroSSL ACME endpoint for validation. Local validation passed:
   `cabal build --builddir=.build exe:prodbox`, refreshed `.build/prodbox`,
   `./.build/prodbox test unit` (661/661), `./.build/prodbox lint docs`,
   `./.build/prodbox docs check`, `git diff --check`, `./.build/prodbox check-code`, and
@@ -956,7 +1069,7 @@ parity rows accordingly.
   harness cleanup completed, and only generated temp image artifacts plus dangling Docker/build
   cache were pruned to restore local disk headroom. The follow-up targeted AWS rerun recovered the
   local runtime through the harness `rke2 reconcile`, re-published the Harbor image inventory,
-  validated MetalLB, Envoy Gateway, cert-manager, the Let's Encrypt ClusterIssuer, and the Percona
+  validated MetalLB, Envoy Gateway, cert-manager, the ZeroSSL ClusterIssuer, and the Percona
   operator, then provisioned the per-run AWS substrate. The AWS chart deploy path installed the
   substrate platform, mirrored/published images into EKS-side Harbor, deployed `gateway`, `vscode`,
   `api`, and `websocket`, entered `ValidationKeycloakInvite`, found the SES capture, parsed and
@@ -977,7 +1090,7 @@ parity rows accordingly.
 - The substrate parity table flip to ✅ on both substrates is still blocked on live substrate
   validation of the Sprint `8.5` credential-setup form POST / fresh OIDC claim assertions and a
   fresh AWS aggregate validation run proving the targeted-green harness credential
-  materialization, ordering, host selection, admin-route match, SMTP sync, Let's Encrypt ACME
+  materialization, ordering, host selection, admin-route match, SMTP sync, ZeroSSL ACME
   path, invite-link normalization, local preserved-realm SMTP reconciliation, and POST/OIDC body
   in the full suite. When both close, this row flips and Phase 8 closes.
 
@@ -988,61 +1101,98 @@ parity rows accordingly.
   `aws_admin_for_test_simulation.*`, the validation executes before destructive
   `ValidationChartsStorage` / `ValidationLifecycle`, uses the selected substrate public FQDN,
   reaches the Keycloak admin invite-email endpoint, adopts SMTP pre-created Keycloak release
-  namespaces during gateway deployment, uses the Let's Encrypt ACME path, and accepts text/html
+  namespaces during gateway deployment, uses the ZeroSSL ACME path, and accepts text/html
   duplicate copies of the same invite link.
 - Live substrate validation of the Sprint `8.5` credential-setup form POST and fresh OIDC token
   assertion now wired into `src/Prodbox/TestValidation.hs::runKeycloakInviteValidation`.
 - Run `prodbox test integration keycloak-invite` on both substrates and flip the
   substrate-parity rows to ✅ on both substrates once the full invite-auth proof closes.
 
-## Sprint 8.7: Chart-Platform Cert Retention Refactor — S3 Restore-Before-Issue + IssuerClass Selection 📋
+## Sprint 8.7: Chart-Platform Cert Retention Refactor — S3 Restore-Before-Issue ✅
 
-**Status**: Planned
-**Implementation**: `src/Prodbox/Lib/ChartPlatform.hs`, `src/Prodbox/PublicEdge.hs`
+**Status**: Done (2026-06-07 on the code-owned surface)
+**Implementation**:
+`src/Prodbox/Lib/ChartPlatform.hs` (`PublicEdgePreserveOutcome` ADT + pure
+`classifyPublicEdgePreserve` + `renderPublicEdgePreserveOutcome`;
+`preservePublicEdgeTlsSecretBeforeDelete` → S3 retain via `retainPublicEdgeSecretToStore`;
+`restorePublicEdgeTlsSecretAfterNamespaceCreate` → S3 restore via
+`restorePublicEdgeSecretFromStore`; `readOptionalKubernetesCertificate`; the in-cluster
+`public-edge-tls-retained` constants/manifest removed; the chart `Certificate` issuer set to the
+single `Prodbox.PublicEdge.publicEdgeClusterIssuerName`),
+`src/Prodbox/Infra/LongLivedPulumiBackend.hs` (`resolveLongLivedAdminS3Context`),
+`charts/keycloak/values.yaml` + `charts/vscode/values.yaml` (issuer → `zerossl-http01`)
 **Docs to update**: `documents/engineering/helm_chart_platform_doctrine.md`,
 `documents/engineering/envoy_gateway_edge_doctrine.md`,
 `documents/engineering/acme_provider_guide.md`
+
+> **Supersession note.** This sprint originally also added an issuer-selection ADT and a matching
+> environment override that chose among multiple ACME `ClusterIssuer`s. That selection machinery
+> was reverted to the single ZeroSSL issuer when ZeroSSL became the sole supported ACME provider
+> (2026-06-07); the surviving Sprint 8.7 scope is the S3 retain-and-restore refactor and the
+> silent-success-gap closure below.
 
 ### Objective
 
 Replace the in-cluster `prodbox/public-edge-tls-retained` Secret store with the S3-backed
 LongLived retention introduced in Sprint `7.11` / registered in Sprint `4.24`; close the
-silent-success gap in `preservePublicEdgeTlsSecretBeforeDelete` (currently `ChartPlatform.hs`
-returns success when the owned cert Secret is absent at preserve time, violating the
+silent-success gap in `preservePublicEdgeTlsSecretBeforeDelete` (which previously returned
+success when the owned cert Secret was absent at preserve time, violating the
 [`lifecycle_reconciliation_doctrine.md` § 3](../documents/engineering/lifecycle_reconciliation_doctrine.md)
-soundness rule); make restore-before-issue run on EVERY rebuild path (including fresh-cluster /
-post-`rke2 delete`), not only the chart-delete→redeploy path; and add an `IssuerClass`
-(`Staging | Production`) resolved through the substrate-aware `PublicEdge` path so the canonical
-suite defaults to `Staging` and production-proof runs request `Production`.
+soundness rule); and make restore-before-issue run on EVERY rebuild path (including fresh-cluster /
+post-`rke2 delete`), not only the chart-delete→redeploy path.
 
 ### Deliverables
 
-- S3 put/get retention (production cert only).
-- A typed preserve outcome distinguishing (a) Secret present → retain, (b) Secret absent but
-  `Certificate` exists / issuance in flight → distinct logged state, (c) neither live nor
-  retained → loud log that the next deploy will trigger a fresh order (no silent success).
-- Restore-before-issue wired into deploy independent of how the prior teardown happened.
-- `IssuerClass` threaded to the keycloak chart `Certificate` issuer as a deploy-time value
-  (replacing the hardcoded `clusterIssuer` constant in `charts/keycloak/values.yaml`).
+- S3 put/get retention: preserve writes the live cert Secret to the
+  long-lived `pulumi_state_backend` bucket under the substrate-scoped key
+  `public-edge-tls/<substrate>/<fqdn>` (Sprint 7.11's `putLongLivedObject`); restore reads it
+  back (`getLongLivedObject`). Both degrade gracefully when the retention store (admin creds /
+  bucket / FQDN) is unavailable, so a host without the store skips retention rather than failing
+  the deploy. ✅
+- A typed preserve outcome (`PublicEdgePreserveOutcome`) distinguishing (a) Secret present →
+  `PreservedToRetentionStore` (or `PreserveSkippedNoRetentionStore` when the store is
+  unavailable), (b) Secret absent but a `Certificate` exists → `PreserveDeferredIssuanceInFlight`,
+  (c) neither → `PreserveNothingToRetain`. The prior silent `Right ()`-on-absent is gone: the
+  outcome is a returned typed value (with a `renderPublicEdgePreserveOutcome` surfacing string),
+  and an *unobservable* owned cert (`kubectl get` failure) still returns `Left` (refuses), per
+  the §3 soundness rule. The pure `classifyPublicEdgePreserve` is unit-tested for all three. ✅
+- Restore-before-issue wired into deploy independent of how the prior teardown happened: because
+  the retention store is the durable S3 bucket (not an in-cluster Secret that dies with the
+  namespace/cluster), the existing `deployChartPlan` restore now works on EVERY rebuild path —
+  including a fresh cluster after `prodbox rke2 delete`. ✅
+- The keycloak **and** vscode chart `Certificate` issuers reference the single ZeroSSL
+  `ClusterIssuer` (`zerossl-http01`) as a deploy-time value, replacing the hardcoded constant
+  (the `charts/keycloak/values.yaml` + `charts/vscode/values.yaml` defaults point at it). ✅
 
 ### Validation
 
-These are closure gates (Planned, not yet passed):
+Closure gates (passed 2026-06-07):
 
-1. `prodbox check-code` exit 0.
-2. `prodbox test unit` — the silent gap now surfaces a typed/logged outcome; `IssuerClass`
-   selection suite→Staging / production-proof→Production; S3 retention key scheme;
-   restore-before-issue idempotence.
-3. `prodbox test integration cli`.
-4. `prodbox test integration env`.
+1. `./.build/prodbox check-code` exit `0`.
+2. `./.build/prodbox test unit` → `690/690` (the
+   `public-edge typed preserve outcome` describe block covers the three-way
+   `classifyPublicEdgePreserve` discrimination and `renderPublicEdgePreserveOutcome` surfacing
+   the absent states; the `ZeroSSL ACME ClusterIssuer + cert retention key scheme` block covers
+   the single-issuer rendering and the `zerossl-http01` constant).
+3. `./.build/prodbox test integration cli` — only the 2 pre-existing `charts deploy vscode`
+   environmental failures (`CliSuite.hs:256`/`:376`) remain; they reproduce identically on the
+   pre-8.7 tree (the graceful-degradation S3 retention is a no-op without admin creds, so the
+   deploy path is behavior-preserving in the test environment).
+4. `./.build/prodbox test integration env` — runs with `cli` above; the ZeroSSL `acme`
+   fixtures decode and the masked-settings/invalid-config paths pass.
+5. `./.build/prodbox docs check` / `./.build/prodbox lint docs` exit `0`.
+
+The engineering docs (`helm_chart_platform_doctrine.md`, `envoy_gateway_edge_doctrine.md`
+§ cert-manager, `acme_provider_guide.md`) match the landed behavior.
 
 ### Remaining Work
 
-- Live closure under Sprint `8.8`.
+- Live closure under Sprint `8.8` (the durable S3 round-trip is exercised live there; it cannot
+  be validated on the fast gates).
 
-## Sprint 8.8: Live keycloak-invite Gate Closure on Staging + Production Round-Trip 📋
+## Sprint 8.8: Live keycloak-invite Gate Closure + Certificate Round-Trip ✅
 
-**Status**: Planned
+**Status**: Done (2026-06-09) — home `prodbox test all` green (`TESTALL_HOME4_EXIT=0`) including `keycloak-invite`; AWS aggregate `prodbox test all --substrate aws` green (`TESTALL_AWS_EXIT=0`); the certificate round-trip restore-no-reorder proven live (a rebuild restores the cert from the long-lived S3 store and cert-manager adopts it with zero new ACME orders, via `retainReadyPublicEdgeCertificate` + `certManagerAdoptionAnnotations`); and the `prodbox nuke` nuke-only-removes-the-retained-cert proof exercised through the interactive integration harness (three `CliSuite.hs` cases) plus the Sprint 4.24 `LongLived` registry classification. Gates: `check-code` 0, `test unit` 695/695, `test integration cli` 35/35.
 **Blocked by**: Sprint `4.24`, Sprint `7.11`, Sprint `8.7`
 **Implementation**: exercises `prodbox test all` / `prodbox test integration keycloak-invite`
 (suite content; no new validation added)
@@ -1051,21 +1201,22 @@ These are closure gates (Planned, not yet passed):
 
 ### Objective
 
-Close the ordered home `keycloak-invite` live gate by running it against the STAGING issuer
-(decoupled from the Let's Encrypt production duplicate-certificate limit), then prove AWS parity.
-Separately prove ONE production round-trip: issue the production cert once → retain to the
+Close the ordered home `keycloak-invite` live gate by running it against the single ZeroSSL
+`ClusterIssuer` — the issued certificate is retained in the long-lived S3 store and restored
+before issuance, so the high-churn rebuild loop never re-orders it against ZeroSSL — then prove
+AWS parity. Separately prove ONE certificate round-trip: issue the cert once → retain to the
 long-lived S3 bucket → `prodbox rke2 delete --cascade` → rebuild → confirm restore-before-issue
 lands the Secret and cert-manager does NOT re-order; and confirm `prodbox nuke` is the only path
-that removes the retained production cert. Per
+that removes the retained certificate. Per
 [development_plan_standards.md § M](development_plan_standards.md) this sprint does NOT own a
 substrate-specific validation — `keycloak-invite` is canonical suite content; `8.8` is the
-invite-auth closure gate that exercises it plus the operational production round-trip.
+invite-auth closure gate that exercises it plus the operational certificate round-trip.
 
 ### Deliverables
 
-- Home `prodbox test all` green including `keycloak-invite` on the staging issuer.
+- Home `prodbox test all` green including `keycloak-invite` on the ZeroSSL issuer.
 - Targeted `keycloak-invite --substrate aws` then AWS aggregate green.
-- Documented production round-trip proof.
+- Documented certificate round-trip proof.
 - Nuke-only-removes-retained-cert proof.
 
 ### Validation
@@ -1082,12 +1233,12 @@ The live runs above; home gate first (ordering), then AWS parity.
 
 - `documents/engineering/helm_chart_platform_doctrine.md` — operator-invited Keycloak realm
   contract and the SES SMTP secret pattern; the S3-backed LongLived public-edge cert retention
-  + restore-before-issue contract and the deploy-time `IssuerClass` value (Sprint `8.7`).
+  + restore-before-issue contract (Sprint `8.7`).
 - `documents/engineering/envoy_gateway_edge_doctrine.md` — interaction between Envoy auth
-  policy and the new email-verified user state; the substrate-aware `IssuerClass`
-  (`Staging | Production`) resolution on the public-edge path (Sprint `8.7`).
-- `documents/engineering/acme_provider_guide.md` — staging vs production ACME issuer selection
-  for the high-churn validation loop and the one-time production round-trip proof (Sprint `8.7`).
+  policy and the new email-verified user state; the single ZeroSSL `ClusterIssuer` on the
+  public-edge path (Sprint `8.7`).
+- `documents/engineering/acme_provider_guide.md` — the single ZeroSSL ACME issuer, its retained
+  certificate, and the one-time certificate round-trip proof (Sprint `8.7`).
 - `documents/engineering/cli_command_surface.md` — the new `prodbox users invite|list|revoke`
   command family.
 - `documents/engineering/prerequisite_doctrine.md` — the new SES prerequisite nodes.

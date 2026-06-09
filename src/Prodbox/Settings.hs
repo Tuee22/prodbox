@@ -282,6 +282,7 @@ validateAwsBootstrapConfig :: ConfigFile -> Either String ()
 validateAwsBootstrapConfig config = do
   requireNonEmpty "route53.zone_id" (zone_id (route53 config))
   requireNonEmpty "acme.email" (email (acme config))
+  requireNonEmpty "acme.server" (server (acme config))
   validateSupportedPublicHost (demo_fqdn (domain config))
   validateDemoTtl (demo_ttl (domain config))
   validateAcmeBinding (acme config)
@@ -562,7 +563,7 @@ defaultConfigFile =
     , acme =
         AcmeSection
           { email = ""
-          , server = "https://acme-v02.api.letsencrypt.org/directory"
+          , server = "https://acme.zerossl.com/v2/DV90"
           , eab_key_id = Nothing
           , eab_hmac_key = Nothing
           }

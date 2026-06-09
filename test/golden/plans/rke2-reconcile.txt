@@ -4,6 +4,7 @@ MACHINE_ID=machine-id-123
 PRODBOX_ID=prodbox-123
 LABEL_VALUE=prodbox-123
 MANUAL_PV_ROOT=/tmp/prodbox/.data
+STEP=ensure_host_inotify_limits
 STEP=ensure_rke2_server_installed
 STEP=ensure_rke2_ingress_controller
 STEP=enable_rke2_service

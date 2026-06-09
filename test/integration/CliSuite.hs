@@ -481,6 +481,10 @@ integrationCliSuite = do
         when (installExitCode /= ExitSuccess) (expectationFailure installOutput)
         installExitCode `shouldBe` ExitSuccess
         installStdout `shouldContain` "Kubernetes control plane is running"
+        -- The first reconcile host-prep step raises the inotify limits so the
+        -- systemd manager does not exhaust the per-user instance cap during RKE2
+        -- lifecycle operations (see streaming_doctrine.md § 6).
+        installStdout `shouldContain` "Host inotify limits:"
         installStderr
           `shouldContain` "Retrying Harbor publication for mirror target 127.0.0.1:30080/prodbox/code-server-mirror:4.98.2"
 
@@ -525,6 +529,16 @@ integrationCliSuite = do
         sudoRecord `shouldContain` "ctr|--address|"
         sudoRecord
           `shouldContain` "rm|-rf|/var/lib/rancher/rke2|/var/lib/rancher|/etc/rancher/rke2|/usr/local/bin/rke2|/usr/local/bin/rke2-killall.sh|/usr/local/bin/rke2-uninstall.sh"
+
+        -- The first delete host-prep step persists the inotify sysctl drop-in and
+        -- applies it via `sysctl --system` before systemd unwinds the RKE2 units,
+        -- so PID 1 never logs `Failed to allocate directory watch: Too many open
+        -- files` to the console (see streaming_doctrine.md § 6).
+        deleteStdout `shouldContain` "Host inotify limits:"
+        sudoRecord `shouldContain` "/etc/sysctl.d/99-prodbox-inotify.conf"
+        sudoRecord `shouldContain` "sysctl|--system"
+        sysctlRecord <- readFile (tmpDir </> "fake-rke2-state" </> "sysctl.txt")
+        sysctlRecord `shouldContain` "--system"
 
         kubectlRecord <- readFile (tmpDir </> "fake-rke2-state" </> "kubectl.txt")
         kubectlRecord `shouldContain` "cluster-info"
@@ -1689,6 +1703,7 @@ writeFakeRke2Scripts repoRoot = do
   writeExecutable (binDir </> "chmod") fakeRke2ChmodScript
   writeExecutable (binDir </> "rm") fakeRke2RmScript
   writeExecutable (binDir </> "cat") fakeRke2CatScript
+  writeExecutable (binDir </> "sysctl") fakeRke2SysctlScript
   writeExecutable (binDir </> "pulumi") fakeRke2PulumiScript
   writeExecutable (binDir </> "aws") fakeRke2AwsScript
   writeExecutable (binDir </> "bash") fakeRke2BashScript
@@ -2184,6 +2199,16 @@ fakeRke2CatScript =
     , "printf '%s\\n' \"$*\" >> \"$record_dir/cat.txt\""
     , "printf 'cat: %s: No such file or directory\\n' \"${1:-file}\" >&2"
     , "exit 1"
+    ]
+
+fakeRke2SysctlScript :: String
+fakeRke2SysctlScript =
+  unlines
+    [ "#!/bin/bash"
+    , "set -euo pipefail"
+    , "record_dir=${PRODBOX_FAKE_RKE2_RECORD_DIR:?}"
+    , "printf '%s\\n' \"$*\" >> \"$record_dir/sysctl.txt\""
+    , "exit 0"
     ]
 
 fakeRke2PulumiScript :: String

@@ -426,6 +426,27 @@ unreachable while a cluster still exists". Because the short-circuit takes no
 destructive action, `.data/` (and any per-run Pulumi state it still holds) is left
 untouched.
 
+### 5a.1. Inotify Host-Prep (first host-prep step)
+
+Immediately after the §5a no-install short-circuit confirms an RKE2 install is
+present — and **before** the preflight predicate (default form) or the confirm-MinIO
+phase (`--cascade`) — both delete forms run `ensureHostInotifyLimits`. It is the same
+idempotent host-prep step that opens `prodbox rke2 reconcile`: it persists
+`/etc/sysctl.d/99-prodbox-inotify.conf` (`fs.inotify.max_user_instances = 8192`,
+`fs.inotify.max_user_watches = 1048576`) and applies it via `sysctl --system`, writing
+only on drift. The `99-` prefix is deliberate: `sysctl --system` applies drop-ins in
+lexicographic filename order (last wins), and `/usr/lib/sysctl.d/30-tracker.conf` pins
+`max_user_watches = 65536`, so the drop-in must sort after it to take effect. The kernel
+default `max_user_instances = 128` is too low for RKE2 +
+containerd + kubelet (all uid 0), so when systemd (PID 1) unwinds the RKE2 units during
+teardown it would otherwise log `Failed to allocate directory watch: Too many open files`
+to the console. Raising the limit first eliminates that warning at its root rather than
+filtering it after the fact (see
+[streaming_doctrine.md § 6](./streaming_doctrine.md#6-lifecycle-destructive-success-versus-failure-rule)).
+Placing it before the preflight mirrors §5a: it is local-host kernel config, not
+cluster-side or AWS-side work, and it is non-destructive and idempotent, so running it
+ahead of a possible residue refusal is harmless.
+
 ### 5b. Canonical Cascade Order
 
 `prodbox rke2 delete --cascade --yes` orchestrates these phases in order. The order is

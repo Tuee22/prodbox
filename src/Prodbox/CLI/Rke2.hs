@@ -17,6 +17,7 @@ module Prodbox.CLI.Rke2
   , cascadeOrderNarration
   , inferCascadeSubstrate
   , renderNativeInstallPlan
+  , renderInotifySysctlDropIn
   , renderMinioChartArgs
   , runNativeDeleteCascade
   , runNativeDeleteWithResiduePolicy
@@ -220,6 +221,19 @@ rke2KubeconfigPath = "/etc/rancher/rke2/rke2.yaml"
 
 rke2RegistriesPath :: FilePath
 rke2RegistriesPath = "/etc/rancher/rke2/registries.yaml"
+
+-- | Persisted sysctl drop-in that raises the inotify limits so the systemd
+-- manager (PID 1), containerd, and kubelet do not exhaust the per-user
+-- inotify-instance cap during RKE2 lifecycle operations. Written by
+-- 'ensureHostInotifyLimits' as the first reconcile/delete host-prep step.
+--
+-- The @99-@ prefix is load-bearing: @sysctl --system@ (and systemd-sysctl at
+-- boot) applies drop-ins in lexicographic filename order with last-wins
+-- precedence, and @/usr/lib/sysctl.d/30-tracker.conf@ pins
+-- @fs.inotify.max_user_watches = 65536@. A @30-@ prefix would sort before
+-- @30-tracker.conf@ and lose; @99-@ sorts after it and wins.
+inotifyDropInPath :: FilePath
+inotifyDropInPath = "/etc/sysctl.d/99-prodbox-inotify.conf"
 
 rke2UninstallPath :: FilePath
 rke2UninstallPath = "/usr/local/bin/rke2-uninstall.sh"
@@ -613,9 +627,17 @@ runRke2Command repoRoot command =
                 writeOutputLine noRke2ClusterMessage
                 pure ExitSuccess
               else
-                if rke2DeleteCascade flags
-                  then runNativeDeleteCascade repoRoot
-                  else runNativeDeleteWithResiduePolicy repoRoot flags
+                -- Raise the host inotify limits BEFORE systemd unwinds the
+                -- RKE2 units during teardown, so PID 1 does not log
+                -- `Failed to allocate directory watch: Too many open files`
+                -- to the console (see streaming_doctrine.md § 6). Idempotent
+                -- and shared with reconcile; covers both delete paths.
+                runSequentially
+                  [ ensureHostInotifyLimits repoRoot
+                  , if rke2DeleteCascade flags
+                      then runNativeDeleteCascade repoRoot
+                      else runNativeDeleteWithResiduePolicy repoRoot flags
+                  ]
     Rke2Logs maybeLines ->
       requireLinux $
         case normalizeLogLines maybeLines of
@@ -661,6 +683,7 @@ renderNativeInstallPlan repoRoot settings machineId prodboxId labelValue =
     , "PRODBOX_ID=" ++ prodboxId
     , "LABEL_VALUE=" ++ labelValue
     , "MANUAL_PV_ROOT=" ++ resolvedManualPvHostRoot settings
+    , "STEP=ensure_host_inotify_limits"
     , "STEP=ensure_rke2_server_installed"
     , "STEP=ensure_rke2_ingress_controller"
     , "STEP=enable_rke2_service"
@@ -712,7 +735,8 @@ applyNativeInstallPlan
   -> IO ExitCode
 applyNativeInstallPlan repoRoot settings (machineId, prodboxId, labelValue) =
   runSequentially
-    [ ensureRke2ServerInstalled repoRoot
+    [ ensureHostInotifyLimits repoRoot
+    , ensureRke2ServerInstalled repoRoot
     , ensureRke2IngressController repoRoot
     , runCommand
         Subprocess
@@ -4340,6 +4364,60 @@ importImageIntoRke2Containerd repoRoot imageRef = do
                 , subprocessWorkingDirectory = Just repoRoot
                 }
           ]
+
+-- | Persisted content of 'inotifyDropInPath'. Kept deterministic (stable
+-- comment block + trailing newline) so 'ensureHostInotifyLimits' can compare
+-- it byte-for-byte against the on-disk file and no-op when already correct.
+renderInotifySysctlDropIn :: String
+renderInotifySysctlDropIn =
+  unlines
+    [ "# Managed by `prodbox rke2 reconcile`. Raises inotify limits so the systemd"
+    , "# manager (PID 1), containerd, and kubelet do not exhaust the per-user instance"
+    , "# cap during RKE2 lifecycle operations. See"
+    , "# documents/engineering/lifecycle_reconciliation_doctrine.md and"
+    , "# documents/engineering/streaming_doctrine.md §6."
+    , "fs.inotify.max_user_instances = 8192"
+    , "fs.inotify.max_user_watches = 1048576"
+    ]
+
+-- | First reconcile/delete host-prep step: idempotently raise the host inotify
+-- limits via a persisted @/etc/sysctl.d@ drop-in. The kernel default of
+-- @fs.inotify.max_user_instances = 128@ is too low for RKE2 + containerd +
+-- kubelet (all uid 0) running alongside journald and developer tooling; when
+-- the per-user instance cap is exhausted the systemd manager (PID 1) logs
+-- @Failed to allocate directory watch: Too many open files@ directly to the
+-- console during teardown. Raising the limit durably eliminates the warning at
+-- its root rather than filtering it after the fact (see
+-- @documents/engineering/streaming_doctrine.md § 6@). Modeled on
+-- 'ensureRke2RegistriesConfig': write only on drift, then apply live.
+ensureHostInotifyLimits :: FilePath -> IO ExitCode
+ensureHostInotifyLimits repoRoot = do
+  contentResult <- readRootFile repoRoot inotifyDropInPath
+  case contentResult of
+    Left err -> failWith err
+    Right existingContent ->
+      if existingContent == renderInotifySysctlDropIn
+        then do
+          writeOutputLine "Host inotify limits: already raised"
+          pure ExitSuccess
+        else do
+          writeExit <- writeRootFile repoRoot inotifyDropInPath renderInotifySysctlDropIn
+          case writeExit of
+            ExitFailure _ -> pure writeExit
+            ExitSuccess -> do
+              applyResult <- captureToolOutput repoRoot "sudo" ["sysctl", "--system"]
+              case applyResult of
+                Left err ->
+                  failWith ("failed to apply inotify sysctl drop-in: " ++ err)
+                Right output ->
+                  case processExitCode output of
+                    ExitFailure _ ->
+                      failWith
+                        ("failed to apply inotify sysctl drop-in: " ++ outputDetail output)
+                    ExitSuccess -> do
+                      writeOutputLine
+                        "Host inotify limits: raised (max_user_instances=8192, max_user_watches=1048576)"
+                      pure ExitSuccess
 
 ensureRke2RegistriesConfig :: FilePath -> IO ExitCode
 ensureRke2RegistriesConfig repoRoot = do

@@ -141,6 +141,7 @@ import Prodbox.CLI.Rke2
   , adminPublicEdgeManifestItems
   , cascadeOrderNarration
   , inferCascadeSubstrate
+  , renderInotifySysctlDropIn
   , renderMinioChartArgs
   , renderNativeInstallPlan
   )
@@ -796,6 +797,12 @@ main = mainWithSuite "prodbox-unit" $ do
               )
           )
       )
+
+    it "renders the inotify sysctl drop-in with raised limits and a managed-by header" $ do
+      let dropIn = renderInotifySysctlDropIn
+      dropIn `shouldSatisfy` ("fs.inotify.max_user_instances = 8192" `isInfixOf`)
+      dropIn `shouldSatisfy` ("fs.inotify.max_user_watches = 1048576" `isInfixOf`)
+      dropIn `shouldSatisfy` ("Managed by `prodbox rke2 reconcile`" `isInfixOf`)
 
     it "skips plan application on --dry-run while persisting the rendered plan" $
       withSystemTempDirectory "prodbox-plan-options" $ \tmpDir -> do

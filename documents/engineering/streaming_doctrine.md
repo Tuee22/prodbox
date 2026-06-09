@@ -67,11 +67,18 @@ noisy upstream uninstaller. Its operator-facing output rule splits cleanly along
   notice. Benign upstream chatter that the uninstaller writes to its **own** stdout/stderr —
   `Cannot find device "cni0"`, `semodule: not found`, and `Cleanup completed successfully` — does
   not reach the operator terminal, because `captureToolOutput` swallows those streams on success.
-  The inotify warning `Failed to allocate directory watch: Too many open files` is the one
-  exception: the systemd manager (PID 1) / journald emits it **out-of-band to the console**, not
-  through the uninstaller's captured fds, so `captureToolOutput` cannot intercept it and it MAY
-  still appear interleaved on the operator terminal on an otherwise successful run. It stays benign
-  (teardown still succeeds).
+  The inotify warning `Failed to allocate directory watch: Too many open files` was historically
+  the one exception: the systemd manager (PID 1) / journald emits it **out-of-band to the console**,
+  not through the uninstaller's captured fds, so `captureToolOutput` cannot intercept it. The root
+  cause — the kernel default `fs.inotify.max_user_instances = 128` being exhausted by RKE2 +
+  containerd + kubelet (all uid 0) during teardown — is now fixed at its source: both
+  `prodbox rke2 reconcile` and `prodbox rke2 delete` run `ensureHostInotifyLimits` as their first
+  host-prep step, which idempotently persists a `/etc/sysctl.d/99-prodbox-inotify.conf` drop-in
+  (`max_user_instances = 8192`, `max_user_watches = 1048576`) and applies it via `sysctl --system`
+  **before** systemd unwinds the RKE2 units. With the limit raised, PID 1 never hits `EMFILE` and
+  the line is not emitted. The `isIgnorableRke2DeleteNoiseLine` classification below is retained
+  only as defense-in-depth for the transient window on a host that has never run the host-prep
+  step; the line, if it ever appears, stays benign (teardown still succeeds).
 - Failure path: when the uninstaller exits non-zero, `summarizeRke2DeleteFailure` keeps the last
   actionable lines from stdout and stderr (filtered through `isIgnorableRke2DeleteNoiseLine` so
   the benign classes above stay out of the summary — the directory-watch line only reaches that

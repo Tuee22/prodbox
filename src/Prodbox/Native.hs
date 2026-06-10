@@ -1,5 +1,6 @@
 module Prodbox.Native
   ( runNativeCommand
+  , commandPrerequisites
   )
 where
 
@@ -10,7 +11,10 @@ import Prodbox.Aws
   )
 import Prodbox.CLI.Charts (runChartsCommand)
 import Prodbox.CLI.Command
-  ( ConfigCommand (..)
+  ( AwsCommand (..)
+  , ConfigCommand (..)
+  , EdgeCommand (..)
+  , GatewayCommand (..)
   , NativeCommand (..)
   )
 import Prodbox.CLI.Nuke (runNukeCommand)
@@ -19,7 +23,7 @@ import Prodbox.CLI.Output
   , writeOutput
   )
 import Prodbox.CLI.Pulumi (runPulumiCommand)
-import Prodbox.CLI.Rke2 (runRke2Command)
+import Prodbox.CLI.Rke2 (runEdgeCommand, runRke2Command)
 import Prodbox.CLI.Users (runUsersCommand)
 import Prodbox.CheckCode
   ( runCheckCode
@@ -32,6 +36,7 @@ import Prodbox.Gateway (runGatewayCommand)
 import Prodbox.Host (runHostCommand)
 import Prodbox.K8s (runK8sCommand)
 import Prodbox.Lifecycle.Preconditions (noLiveLongLivedPulumiStacksPreflight)
+import Prodbox.PrerequisiteId (PrerequisiteId (..))
 import Prodbox.Settings
   ( renderSettingsDisplay
   , validateAndLoadSettings
@@ -59,6 +64,7 @@ runNativeCommand repoRoot command =
     NativeConfig configCommand -> runConfigCommand repoRoot configCommand
     NativeDns dnsCommand -> runDnsCommand repoRoot dnsCommand
     NativeDocs docsCommand -> runDocsCommand repoRoot docsCommand
+    NativeEdge edgeCommand -> runEdgeCommand repoRoot edgeCommand
     NativeGateway gatewayCommand -> runGatewayCommand repoRoot gatewayCommand
     NativeHost hostCommand -> runHostCommand repoRoot hostCommand
     NativeK8s k8sCommand -> runK8sCommand repoRoot k8sCommand
@@ -70,6 +76,62 @@ runNativeCommand repoRoot command =
     NativeTlaCheck -> runTlaCheck repoRoot
     NativeUsers usersCommand -> runUsersCommand repoRoot usersCommand
     NativeWorkload workloadCommand -> runWorkloadCommand workloadCommand
+
+-- | Phase 4: the declarative single-source-of-truth for the typed
+-- 'PrerequisiteId' set each command's APPLY path requires. The function is
+-- total over 'NativeCommand', so the compiler guarantees every command is
+-- classified — a new command cannot ship without an explicit (possibly
+-- empty) prerequisite declaration.
+--
+-- Deliberately NOT wired into a universal dispatch-level gate: prerequisites
+-- run inside each command's apply path (after @--dry-run@ short-circuits via
+-- 'runPlanWithOptions'), never at dispatch. A dispatch-level gate would break
+-- the Plan/Apply dry-run contract — rendering a plan must not require live
+-- infrastructure (e.g. `charts reconcile --dry-run` renders without a
+-- cluster). This declaration is the SSoT that the apply paths and help/
+-- introspection consult; folding the per-handler prerequisite running onto it
+-- is the remaining follow-up (see legacy-tracking-for-deletion.md).
+commandPrerequisites :: NativeCommand -> [PrerequisiteId]
+commandPrerequisites command =
+  case command of
+    NativeAws awsCommand ->
+      case awsCommand of
+        AwsPolicy _ -> []
+        AwsSetup _ _ -> [AwsIamHarnessReady]
+        AwsTeardown _ _ -> [AwsIamHarnessReady]
+        AwsCheckQuotas -> [AwsCredentialsValid]
+        AwsRequestQuotas _ -> [AwsCredentialsValid]
+    -- Chart reconcile/delete apply against the active cluster.
+    NativeCharts _ -> [K8sClusterReachable]
+    NativeCheckCode -> []
+    NativeConfig _ -> []
+    -- Route 53 inspection needs validated AWS credentials + zone access.
+    NativeDns _ -> [Route53Accessible]
+    NativeDocs _ -> []
+    -- Edge reconcile attaches Route 53 DNS + ZeroSSL TLS to a running cluster.
+    NativeEdge (EdgeReconcile _) -> [K8sClusterReachable, AwsCredentialsValid]
+    NativeGateway gatewayCommand ->
+      case gatewayCommand of
+        GatewayDaemonCommand _ -> [GatewayDaemonAcquire]
+        _ -> []
+    -- Host checks + firewall + `edge status` report state; they self-handle
+    -- absence rather than gating.
+    NativeHost _ -> []
+    -- `cluster health/wait/workload-logs` operate on a reachable cluster.
+    NativeK8s _ -> [K8sClusterReachable]
+    NativeLint _ -> []
+    -- Empty-record pattern (not a `_` binder) so the checkPlanOptionsHonored
+    -- lint does not mistake this classification arm for a dispatch arm that
+    -- drops --dry-run; nuke carries no upstream prerequisite here.
+    NativeNuke {} -> []
+    NativePulumi _ -> [AwsCredentialsValid]
+    -- `cluster` service ops + reconcile (which creates the cluster) carry no
+    -- cluster precondition; the test harness owns its own prerequisite DAG.
+    NativeRke2 _ -> []
+    NativeTest _ -> []
+    NativeTlaCheck -> []
+    NativeUsers _ -> []
+    NativeWorkload _ -> []
 
 runConfigCommand :: FilePath -> ConfigCommand -> IO ExitCode
 runConfigCommand repoRoot configCommand =

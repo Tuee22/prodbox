@@ -154,11 +154,11 @@ renderStackCommandSurfaceMarkdown descriptors =
       ++ stackPulumiStackId descriptor
       ++ "` | `pulumi/"
       ++ stackProjectSubdir descriptor
-      ++ "/` | `prodbox pulumi "
-      ++ stackResourcesCliVerb descriptor
-      ++ "` | `prodbox pulumi "
-      ++ stackDestroyCliVerb descriptor
-      ++ " --yes` | "
+      ++ "/` | `prodbox aws stack "
+      ++ stackCliVerb descriptor
+      ++ " reconcile` | `prodbox aws stack "
+      ++ stackCliVerb descriptor
+      ++ " destroy --yes` | "
       ++ renderClass (stackLifecycleClass descriptor)
       ++ " |"
   renderClass klass = case klass of

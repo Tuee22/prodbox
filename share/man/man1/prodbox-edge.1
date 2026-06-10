@@ -1,0 +1,18 @@
+.TH PRODBOX_edge 1
+.SH NAME
+prodbox-edge \- Public DNS + TLS edge
+.SH SYNOPSIS
+.B prodbox edge
+.SH DESCRIPTION
+The AWS-gated public edge: Route 53 DNS records and ZeroSSL DNS-01 TLS. Requires operational aws.* (run `prodbox aws setup` first).
+.SH SUBCOMMANDS
+.TP
+\fBreconcile\fR
+Reconcile the public edge
+.TP
+\fBstatus\fR
+Check public DNS/TLS edge state
+.SH EXAMPLES
+.TP
+\fBprodbox edge reconcile\fR
+Reconcile the public edge (DNS + TLS).

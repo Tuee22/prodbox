@@ -23,6 +23,7 @@ module Prodbox.Settings
   , supportedPublicHostname
   , validateAwsBootstrapConfig
   , validateAndLoadSettings
+  , validateOperationalAwsCredentials
   , validatePublicEdgeDeployment
   )
 where
@@ -269,25 +270,52 @@ validateConfig :: FilePath -> ConfigFile -> IO (Either String ValidatedSettings)
 validateConfig repoRoot config = do
   resolvedManualRoot <- makeAbsolute (repoRoot </> Text.unpack (manual_pv_host_root (storage config)))
   pure $ do
-    validateAwsBootstrapConfig config
-    requireNonEmpty "aws.access_key_id" (access_key_id (aws config))
-    requireNonEmpty "aws.secret_access_key" (secret_access_key (aws config))
+    -- Local commands (cluster, charts, host, config, gateway) decode and
+    -- validate config WITHOUT requiring operational AWS credentials or the
+    -- Route 53 / ACME public-edge fields. Those belong to the AWS / edge
+    -- tier ('validateAwsBootstrapConfig' / 'validateOperationalAwsCredentials')
+    -- and are validated lazily only when a command actually reaches AWS.
+    validateLocalConfig config
     pure
       ValidatedSettings
         { validatedConfig = config
         , resolvedManualPvHostRoot = resolvedManualRoot
         }
 
+-- | Purely-local config invariants: the supported public hostname, the
+-- demo TTL bounds, the all-set-or-all-empty admin-simulation fixture
+-- shape, and the public-edge deployment knobs. No operational AWS
+-- credentials, Route 53 zone, or ACME account are required here, so a
+-- host with an empty @aws.*@ block still decodes config for every local
+-- cluster command.
+validateLocalConfig :: ConfigFile -> Either String ()
+validateLocalConfig config = do
+  validateSupportedPublicHost (demo_fqdn (domain config))
+  validateDemoTtl (demo_ttl (domain config))
+  validateTestSimulationAdminCredentials (aws_admin_for_test_simulation config)
+  validatePublicEdgeDeployment (deployment config)
+
+-- | The AWS / public-edge tier: everything 'validateLocalConfig' checks
+-- plus the Route 53 zone and ACME account required to provision public
+-- DNS + TLS. Called by AWS-touching flows (the IAM harness, SES, and the
+-- @prodbox aws ...@ surface), never by local cluster commands.
 validateAwsBootstrapConfig :: ConfigFile -> Either String ()
 validateAwsBootstrapConfig config = do
+  validateLocalConfig config
   requireNonEmpty "route53.zone_id" (zone_id (route53 config))
   requireNonEmpty "acme.email" (email (acme config))
   requireNonEmpty "acme.server" (server (acme config))
-  validateSupportedPublicHost (demo_fqdn (domain config))
-  validateDemoTtl (demo_ttl (domain config))
   validateAcmeBinding (acme config)
-  validateTestSimulationAdminCredentials (aws_admin_for_test_simulation config)
-  validatePublicEdgeDeployment (deployment config)
+
+-- | Operational AWS credentials gate. Local commands never call this;
+-- AWS-credential-consuming flows (edge reconcile, the Route 53 checks,
+-- the @AwsCredentialsValid@ prerequisite) call it so an empty @aws.*@
+-- block fails fast with a remedy ("Run @prodbox aws setup@") instead of
+-- an opaque AWS-CLI error.
+validateOperationalAwsCredentials :: ConfigFile -> Either String ()
+validateOperationalAwsCredentials config = do
+  requireNonEmpty "aws.access_key_id" (access_key_id (aws config))
+  requireNonEmpty "aws.secret_access_key" (secret_access_key (aws config))
 
 validatePublicEdgeDeployment :: DeploymentSection -> Either String ()
 validatePublicEdgeDeployment deploymentSection = do

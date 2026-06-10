@@ -55,10 +55,10 @@ Prodbox manages a home Kubernetes cluster with a Haskell command surface.
 **This machine is the home Kubernetes cluster that prodbox manages.** Prodbox owns the full
 local-cluster lifecycle on this host.
 
-- `prodbox rke2 reconcile` is the canonical idempotent reconcile entrypoint. Running it on this
+- `prodbox cluster reconcile` is the canonical idempotent reconcile entrypoint. Running it on this
   machine — including installing RKE2 if it is absent, or reconciling the existing cluster — is
   the supported, expected operation, not an unauthorized state change.
-- `prodbox rke2 delete --yes` is the canonical teardown. By default it refuses if any per-run
+- `prodbox cluster delete --yes` is the canonical teardown. By default it refuses if any per-run
   Pulumi stack (`aws-eks`, `aws-eks-subzone`, `aws-test`) reports live resources, naming each
   stack and the canonical destroy command. When no RKE2 cluster is installed at all, it is a
   no-op success (`No RKE2 cluster to delete.`, exit 0) — it short-circuits before the
@@ -105,7 +105,7 @@ resources the harness no longer needs are destroyed by the harness.
 
 The supported entrypoints are:
 
-- `prodbox pulumi <stack>-resources` / `prodbox pulumi <stack>-destroy --yes` for
+- `prodbox aws stack <stack> reconcile` / `prodbox aws stack <stack> destroy --yes` for
   every Pulumi-managed substrate stack (`aws-eks`, `aws-eks-subzone`, `aws-test`,
   `aws-ses`, and any future AWS substrate stacks).
 - `prodbox aws setup` / `prodbox aws teardown` for the IAM user provisioning loop.
@@ -123,18 +123,18 @@ Rules:
   gap"; the harness handles provisioning before validations run and teardown after.
 - Do not manually clean up AWS resources after a failed run; re-run the harness (its
   destroy paths are idempotent) or use the canonical
-  `prodbox pulumi <stack>-destroy --yes` entrypoint.
+  `prodbox aws stack <stack> destroy --yes` entrypoint.
 - Read-only AWS diagnostics (`aws sts get-caller-identity`, `aws route53
   list-hosted-zones`, console inspection) are the only ad-hoc commands acceptable —
   and only when investigating why the harness reports a failure.
 
 The same rule applies to any operator-account-shared AWS resources (e.g., the Phase 8
 SES sending identity and receive-rule-set): they are owned by their dedicated Pulumi
-program under `pulumi/` and reconciled only through `prodbox pulumi ...`, never by
+program under `pulumi/` and reconciled only through `prodbox aws stack ...`, never by
 hand.
 
-When a `prodbox` AWS subcommand is the documented entrypoint — `prodbox pulumi
-<stack>-resources`, `prodbox pulumi <stack>-destroy --yes`, `prodbox aws setup`,
+When a `prodbox` AWS subcommand is the documented entrypoint — `prodbox aws stack
+<stack> reconcile`, `prodbox aws stack <stack> destroy --yes`, `prodbox aws setup`,
 `prodbox aws teardown`, `prodbox test integration ... --substrate aws`, or
 `prodbox test all` — invoking it does not need separate user approval beyond the
 user's original request. Live AWS spend, EBS / NAT / ALB provisioning, EKS cluster
@@ -156,8 +156,8 @@ added by any `prodbox` code path without first appearing there:
   explicitly carves these resources out of postflight auto-destroy because SES domain
   identity + DKIM verification takes 5–30 min per provision, only one receive rule
   set may be active per AWS account, and S3 bucket names have a ~24-hour reuse
-  cooldown. Destruction is still through the harness (`prodbox pulumi
-  aws-ses-destroy --yes`), just never automatically. A retained SES capture bucket
+  cooldown. Destruction is still through the harness (`prodbox aws stack
+  aws-ses destroy --yes`), just never automatically. A retained SES capture bucket
   or sending identity is **not orphaned** — it is correctly retained per this class.
 
 ## Command Selection: Automation vs Operator-Interactive
@@ -174,12 +174,12 @@ prompts, you have picked the wrong command, not hit a blocker.
 | Run one AWS-substrate validation | `prodbox test integration <name> --substrate aws` | (manual after `aws setup`) |
 | Initialize operational `aws.*` from `aws_admin_for_test_simulation.*` | exercised automatically by `prodbox test ...` preflight | `prodbox aws setup` |
 | Tear down operational `aws.*` + per-run stacks | exercised automatically by `prodbox test ...` postflight | `prodbox aws teardown` |
-| Wipe-and-rebuild the local cluster (leak-safe) | `prodbox rke2 delete --cascade` (already non-interactive) | same |
-| Total teardown including long-lived shared infrastructure | (no automation alias — compose `prodbox pulumi aws-ses-destroy --yes` + `prodbox aws teardown` + `prodbox rke2 delete --cascade` + long-lived state-bucket cleanup individually) | `prodbox nuke` |
-| Provision a Pulumi stack | exercised by the harness; no standalone automation alias | `prodbox pulumi <stack>-resources` |
-| Destroy a Pulumi stack | `prodbox pulumi <stack>-destroy --yes` (already non-interactive) | same |
+| Wipe-and-rebuild the local cluster (leak-safe) | `prodbox cluster delete --cascade` (already non-interactive) | same |
+| Total teardown including long-lived shared infrastructure | (no automation alias — compose `prodbox aws stack aws-ses destroy --yes` + `prodbox aws teardown` + `prodbox cluster delete --cascade` + long-lived state-bucket cleanup individually) | `prodbox nuke` |
+| Provision a Pulumi stack | exercised by the harness; no standalone automation alias | `prodbox aws stack <stack> reconcile` |
+| Destroy a Pulumi stack | `prodbox aws stack <stack> destroy --yes` (already non-interactive) | same |
 | Author repo config | edit `prodbox-config.dhall` against `prodbox-config-types.dhall` | `prodbox config setup` |
-| Inspect AWS state | `aws sts get-caller-identity`, `prodbox aws check-quotas` (after `aws.*` populated) | same |
+| Inspect AWS state | `aws sts get-caller-identity`, `prodbox aws quotas check` (after `aws.*` populated) | same |
 
 The automation path materializes operational `aws.*` from
 `aws_admin_for_test_simulation.*` in `prodbox-config.dhall` via the
@@ -201,8 +201,8 @@ automation equivalent.
 it exists only as an operator-driven total-teardown entrypoint that
 requires the typed confirmation literal `NUKE EVERYTHING`. Automation
 contexts must instead compose the canonical commands individually:
-`prodbox pulumi aws-ses-destroy --yes`, `prodbox aws teardown`,
-`prodbox rke2 delete --cascade`, and (if the long-lived
+`prodbox aws stack aws-ses destroy --yes`, `prodbox aws teardown`,
+`prodbox cluster delete --cascade`, and (if the long-lived
 `pulumi_state_backend` bucket should also be destroyed) the explicit
 S3 bucket-destroy step.
 
@@ -215,12 +215,12 @@ MinIO, Harbor, the Percona PostgreSQL operator, Envoy Gateway, cert-manager, rea
 ZeroSSL via cert-manager DNS01. The two substrates differ in their lower-layer
 load-balancer (MetalLB on home, AWS Load Balancer Controller on EKS) and their
 Route 53 hosting (one parent zone on home, the dedicated subzone provisioned by
-`prodbox pulumi aws-subzone-resources` on AWS) — nothing else.
+`prodbox aws stack aws-subzone reconcile` on AWS) — nothing else.
 
 This means:
 
 - Harbor + MinIO + Percona are installed on **both** substrates. The AWS substrate
-  is not a "no-Harbor" cluster; if `prodbox charts deploy ... --substrate aws`
+  is not a "no-Harbor" cluster; if `prodbox charts reconcile ... --substrate aws`
   fails because chart pods can't reach `127.0.0.1:30080/prodbox/...`, the fix is to
   bring Harbor (and its MinIO storage backend, and the Percona operator) up on EKS
   via the substrate-platform install — not to render different image references.
@@ -230,7 +230,7 @@ This means:
   `Prodbox.Lib.AwsSubstratePlatform` is responsible for making `127.0.0.1:30080`
   resolve on EKS too (via an EKS-side Harbor + node-local registry proxy, mirroring
   the home cluster's NodePort-on-127.0.0.1 pattern).
-- `prodbox host public-edge`, `prodbox charts deploy`, and the canonical
+- `prodbox edge status`, `prodbox charts reconcile`, and the canonical
   `prodbox test integration ... --substrate aws` validations all assume substrate
   equivalence and route through the same chart-platform code paths.
 
@@ -276,7 +276,7 @@ mkdir -p .build
 cp "$(cabal list-bin --builddir=.build exe:prodbox)" .build/prodbox
 chmod +x .build/prodbox
 ./.build/prodbox --help
-./.build/prodbox check-code
+./.build/prodbox dev check
 ./.build/prodbox test unit
 ./.build/prodbox test integration cli
 ./.build/prodbox test integration env

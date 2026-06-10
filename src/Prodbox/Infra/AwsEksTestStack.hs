@@ -1469,7 +1469,7 @@ destroyAwsEksTestStackStatus repoRoot summary = do
                                 -- goal). Extends Sprint 4.17.b's cascade drain
                                 -- to the per-run eks-destroy path, which both
                                 -- the harness postflight
-                                -- (`prodbox pulumi eks-destroy --yes`) and the
+                                -- (`prodbox aws stack eks destroy --yes`) and the
                                 -- cascade (`reconcileAbsent` -> PulumiEksDestroy)
                                 -- route through.
                                 drainAwsEksClusterBeforeDestroy
@@ -1527,7 +1527,7 @@ completeDestroy repoRoot projectDir environment currentSnapshot summary = do
 -- cluster directly via its own kubeconfig instead of the host
 -- substrate's cluster, and is wired into the eks-destroy path so it
 -- covers BOTH the harness postflight
--- (@prodbox pulumi eks-destroy --yes@) and the cascade
+-- (@prodbox aws stack eks destroy --yes@) and the cascade
 -- (@reconcileAbsent@ -> @PulumiEksDestroy@).
 --
 -- The drain is **best-effort and safe when the cluster is
@@ -1548,7 +1548,7 @@ completeDestroy repoRoot projectDir environment currentSnapshot summary = do
 -- 'awsEksTestKubeconfigPath'. Within a single @prodbox test all@ run
 -- (bootstrap -> validations -> postflight destroy) it is present, so the
 -- harness postflight path drains. A standalone
--- @prodbox pulumi eks-destroy --yes@ invocation in a process that never
+-- @prodbox aws stack eks destroy --yes@ invocation in a process that never
 -- ran the ensure step will find no kubeconfig and skip the drain (then
 -- destroy) rather than re-materialize it from the backend snapshot —
 -- the smallest safe version that does not add a backend round-trip just

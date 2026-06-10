@@ -67,19 +67,19 @@ perRunManagedResources =
   [ ManagedResource
       { resourceName = "aws-eks"
       , resourceClass = PerRun
-      , resourceDestroyCommand = "prodbox pulumi eks-destroy --yes"
+      , resourceDestroyCommand = "prodbox aws stack eks destroy --yes"
       , resourceDestroy = \repoRoot -> runPulumiCommand repoRoot (PulumiEksDestroy True noPlan)
       }
   , ManagedResource
       { resourceName = "aws-eks-subzone"
       , resourceClass = PerRun
-      , resourceDestroyCommand = "prodbox pulumi aws-subzone-destroy --yes"
+      , resourceDestroyCommand = "prodbox aws stack aws-subzone destroy --yes"
       , resourceDestroy = \repoRoot -> runPulumiCommand repoRoot (PulumiAwsSubzoneDestroy True noPlan)
       }
   , ManagedResource
       { resourceName = "aws-test"
       , resourceClass = PerRun
-      , resourceDestroyCommand = "prodbox pulumi test-destroy --yes"
+      , resourceDestroyCommand = "prodbox aws stack test destroy --yes"
       , resourceDestroy = \repoRoot -> runPulumiCommand repoRoot (PulumiTestDestroy True noPlan)
       }
   ]
@@ -117,7 +117,7 @@ awsSesPulumiResource =
   ManagedResource
     { resourceName = "aws-ses"
     , resourceClass = LongLived
-    , resourceDestroyCommand = "prodbox pulumi aws-ses-destroy --yes"
+    , resourceDestroyCommand = "prodbox aws stack aws-ses destroy --yes"
     , resourceDestroy = \repoRoot -> runPulumiCommand repoRoot (PulumiAwsSesDestroy True (PlanOptions False Nothing))
     }
 

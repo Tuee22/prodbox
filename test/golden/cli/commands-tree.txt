@@ -3,24 +3,61 @@ prodbox
     policy
     setup
     teardown
-    check-quotas
-    request-quotas
+    quotas
+      check
+      request
+    stack
+      eks
+        reconcile
+        destroy
+      test
+        reconcile
+        destroy
+      aws-subzone
+        reconcile
+        destroy
+      aws-ses
+        reconcile
+        destroy
+        migrate-backend
   charts
     list
     status
-    deploy
+    reconcile
     delete
-  check-code
+  cluster
+    status
+    health
+    start
+    stop
+    restart
+    reconcile
+    delete
+    logs
+    wait
+    workload-logs
   commands
   config
     setup
     show
     validate
+  dev
+    check
+    lint
+      all
+      files
+      docs
+      haskell
+      chart
+    docs
+      check
+      generate
+    tla-check
   dns
     check
-  docs
-    check
-    generate
+  edge
+    reconcile
+    status
   gateway
     start
     status
@@ -33,36 +70,7 @@ prodbox
     firewall
       gateway-restrict
       gateway-unrestrict
-    public-edge
-  k8s
-    health
-    wait
-    logs
-  lint
-    all
-    files
-    docs
-    haskell
-    chart
   nuke
-  pulumi
-    eks-resources
-    eks-destroy
-    test-resources
-    test-destroy
-    aws-subzone-resources
-    aws-subzone-destroy
-    aws-ses-resources
-    aws-ses-destroy
-    aws-ses-migrate-backend
-  rke2
-    status
-    start
-    stop
-    restart
-    reconcile
-    delete
-    logs
   test
     all
     lint
@@ -88,7 +96,6 @@ prodbox
       admin-routes
       public-dns
       keycloak-invite
-  tla-check
   users
     invite
     list

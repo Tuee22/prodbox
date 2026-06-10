@@ -1,0 +1,24 @@
+.TH PRODBOX_dev 1
+.SH NAME
+prodbox-dev \- Developer and CI tooling
+.SH SYNOPSIS
+.B prodbox dev
+.SH DESCRIPTION
+Local development and CI commands: the canonical quality gate, lint surfaces, generated-docs maintenance, and TLA+ checks.
+.SH SUBCOMMANDS
+.TP
+\fBcheck\fR
+Run policy, lint, and type checks
+.TP
+\fBlint\fR
+Doctrine lint surfaces
+.TP
+\fBdocs\fR
+Generated-documentation maintenance
+.TP
+\fBtla-check\fR
+Run TLA+ checks
+.SH EXAMPLES
+.TP
+\fBprodbox dev check\fR
+Run the canonical quality gate.

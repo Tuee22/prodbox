@@ -19,7 +19,7 @@ for the gateway/TLA surfaces are owned by
 [DEVELOPMENT_PLAN/README.md](../../DEVELOPMENT_PLAN/README.md).
 
 The authoritative verification contract distinguishes the formal
-`prodbox tla-check` surface from the separate native
+`prodbox dev tla-check` surface from the separate native
 `prodbox test integration gateway-partition` surface. This document
 describes the model and its correspondence only; current implementation
 closure for those validation paths remains plan-owned.
@@ -320,7 +320,7 @@ The design contract:
 ### Running the Model Checker
 
 ```bash
-prodbox tla-check
+prodbox dev tla-check
 ```
 
 `src/Prodbox/Tla.hs` owns this public entrypoint. It runs TLC 2.18 in a Docker container

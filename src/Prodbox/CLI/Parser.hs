@@ -71,36 +71,36 @@ forbiddenArgvMessage :: [String] -> Maybe String
 forbiddenArgvMessage argv
   | isRke2ForbiddenFlag argv =
       Just
-        "Forbidden lifecycle flags: use `prodbox rke2 reconcile` as the idempotent reconciler; `--force` and `--reinstall` are not supported."
+        "Forbidden lifecycle flags: use `prodbox cluster reconcile` as the idempotent reconciler; `--force` and `--reinstall` are not supported."
   | isRke2ForbiddenSister argv =
       Just
-        "Forbidden lifecycle command: use `prodbox rke2 reconcile`; `install`, `upgrade`, `repair`, and `force-install` are not supported."
+        "Forbidden lifecycle command: use `prodbox cluster reconcile`; `install`, `upgrade`, `repair`, and `force-install` are not supported."
   | isChartsForbiddenFlag argv =
       Just
-        "Forbidden chart reconciler flags: use `prodbox charts deploy` or `prodbox charts delete`; `--force` and `--reinstall` are not supported."
+        "Forbidden chart reconciler flags: use `prodbox charts reconcile` or `prodbox charts delete`; `--force` and `--reinstall` are not supported."
   | isChartsForbiddenSister argv =
       Just
-        "Forbidden chart command: use `prodbox charts deploy` or `prodbox charts delete`; `install`, `upgrade`, `repair`, and `force-install` are not supported."
+        "Forbidden chart command: use `prodbox charts reconcile` or `prodbox charts delete`; `install`, `upgrade`, `repair`, and `force-install` are not supported."
   | otherwise = Nothing
 
 isRke2ForbiddenFlag :: [String] -> Bool
 isRke2ForbiddenFlag argv =
   case argv of
-    "rke2" : commandName : remaining ->
+    "cluster" : commandName : remaining ->
       commandName == "reconcile" && any (`elem` remaining) ["--force", "--reinstall"]
     _ -> False
 
 isRke2ForbiddenSister :: [String] -> Bool
 isRke2ForbiddenSister argv =
   case argv of
-    "rke2" : commandName : _ -> commandName `elem` ["install", "upgrade", "repair", "force-install"]
+    "cluster" : commandName : _ -> commandName `elem` ["install", "upgrade", "repair", "force-install"]
     _ -> False
 
 isChartsForbiddenFlag :: [String] -> Bool
 isChartsForbiddenFlag argv =
   case argv of
     "charts" : commandName : remaining ->
-      commandName `elem` ["deploy", "delete"] && any (`elem` remaining) ["--force", "--reinstall"]
+      commandName `elem` ["reconcile", "delete"] && any (`elem` remaining) ["--force", "--reinstall"]
     _ -> False
 
 isChartsForbiddenSister :: [String] -> Bool

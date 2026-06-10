@@ -32,8 +32,8 @@ main = mainWithSuite "prodbox-pulumi" $ do
       testProgram `shouldContain` "runtime: yaml"
 
     it "keeps the Pulumi CLI surface in the registry-backed parser" $ do
-      findCommandSpec ["pulumi", "eks-resources"] `shouldSatisfy` isJust
-      findCommandSpec ["pulumi", "test-resources"] `shouldSatisfy` isJust
+      findCommandSpec ["aws", "stack", "eks", "reconcile"] `shouldSatisfy` isJust
+      findCommandSpec ["aws", "stack", "test", "reconcile"] `shouldSatisfy` isJust
 
   describe "ephemeral stack harness" $ do
     it "creates unique local stack state, round-trips typed outputs, and cleans up on success" $

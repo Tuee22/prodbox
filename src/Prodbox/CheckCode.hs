@@ -292,7 +292,7 @@ runCheckCode :: FilePath -> IO ExitCode
 runCheckCode repoRoot = do
   baseEnvironment <- getEnvironment
   environment <- addBuildSupportEnvironment repoRoot baseEnvironment
-  writeOutputLine "Running prodbox check-code (policy + formatter + linter + warning-clean build)"
+  writeOutputLine "Running prodbox dev check (policy + formatter + linter + warning-clean build)"
   lintExit <- runLintAll repoRoot environment
   case lintExit of
     ExitFailure _ -> pure lintExit
@@ -490,7 +490,7 @@ runDoctrineAlignmentCheck repoRoot = do
                   ++ "resource:"
               )
                 : violations
-                ++ ["Rerun `./.build/prodbox check-code` after addressing the listed items."]
+                ++ ["Rerun `./.build/prodbox dev check` after addressing the listed items."]
             )
         )
 

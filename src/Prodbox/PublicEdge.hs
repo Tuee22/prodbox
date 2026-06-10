@@ -234,7 +234,7 @@ resolveSubstrateHostedZoneId repoRoot settings substrate =
                   \empty and the live aws-eks-subzone Pulumi outputs could not \
                   \be read: "
                     ++ err
-                    ++ ". Run `prodbox pulumi aws-subzone-resources` to provision \
+                    ++ ". Run `prodbox aws stack aws-subzone reconcile` to provision \
                        \the subzone, or set aws_substrate.hosted_zone_id in \
                        \prodbox-config.dhall."
                 )
@@ -248,7 +248,7 @@ resolveSubstrateHostedZoneId repoRoot settings substrate =
                       \empty and the live aws-eks-subzone Pulumi outputs are \
                       \incomplete: "
                         ++ err
-                        ++ ". Run `prodbox pulumi aws-subzone-resources` to provision \
+                        ++ ". Run `prodbox aws stack aws-subzone reconcile` to provision \
                            \the subzone, or set aws_substrate.hosted_zone_id in \
                            \prodbox-config.dhall."
                     )

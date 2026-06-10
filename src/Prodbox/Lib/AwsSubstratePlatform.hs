@@ -683,12 +683,12 @@ ensureAwsSubstrateAcmeRuntime repoRoot settings prodboxId labelValue = do
 -- converge to the desired state.
 --
 -- Preconditions:
---   * `prodbox pulumi eks-resources` has been run, so the live
+--   * `prodbox aws stack eks reconcile` has been run, so the live
 --     `aws-eks-test` Pulumi stack carries the IAM/IRSA output fields
 --     added in Sprint `7.5.b.ii.b`. Sprint 4.18: this step reads those
 --     fields live from the MinIO Pulumi backend via
 --     `fetchPerRunStackOutputs`, not from a host-side snapshot cache.
---   * `prodbox pulumi aws-subzone-resources` has been run, so
+--   * `prodbox aws stack aws-subzone reconcile` has been run, so
 --     `aws_substrate.hosted_zone_id` and `aws_substrate.subzone_name` in
 --     `prodbox-config.dhall` point at a live Route 53 subzone.
 --   * The caller has `KUBECONFIG` pointed at the EKS cluster (see
@@ -708,7 +708,7 @@ ensureAwsSubstratePlatformRuntime repoRoot settings prodboxId labelValue = do
         ( "AWS-substrate platform install could not read aws-eks-test Pulumi "
             ++ "outputs from the in-cluster MinIO backend: "
             ++ err
-            ++ ". Run `prodbox pulumi eks-resources` first."
+            ++ ". Run `prodbox aws stack eks reconcile` first."
         )
     Right outputs ->
       case parseAwsEksTestStackFromOutputs outputs of

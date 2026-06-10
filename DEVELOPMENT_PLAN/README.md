@@ -30,6 +30,31 @@ govern this plan suite.
 
 ## Closure Status
 
+**2026-06-10 — Command-surface refactor reopens Phases `0`, `1`, and `5`.** A whole-surface
+review found the documented command topology leaked implementation (`rke2`, `pulumi`) and coupled
+local cluster commands to AWS. The refactor: tiers config validation so local commands decode with
+an empty `aws.*` block; splits the AWS-free local **cluster** from the AWS-gated public **edge**
+(`prodbox cluster reconcile` is local-only; `prodbox cluster reconcile --with-edge` /
+`prodbox edge reconcile` attach Route 53 DNS + ZeroSSL TLS); renames/regroups the whole tree
+(`rke2`→`cluster` with `k8s` folded in, new `edge`, `pulumi <stack>-resources/-destroy`→
+`aws stack <name> reconcile/destroy`, `aws check-quotas/request-quotas`→`aws quotas check/request`,
+`check-code`/`lint`/`docs`/`tla-check`→a `dev` group, `charts deploy`→`charts reconcile`); and
+points every prerequisite remedy at the new commands. Per standards rule L each workstream is a new
+sprint in its owning phase, and per rule A the reopen is narrated here. **Phase `0` reopens** for
+Sprint `0.11` (regenerate the CLI command matrix + `StackDescriptor` command-surface table from the
+typed registries; sweep the hand-edited prose in `README.md`, `CLAUDE.md`, `AGENTS.md`, and the
+engineering docs onto the new names). **Phase `1` reopens** for Sprint `1.33` (config-validation
+tiering in `Settings.hs` + the local/edge split extracting the Route 53 DNS-01 issuer and bootstrap
+record into a standalone edge reconcile) and Sprint `1.34` (the full command-tree rename/regroup
+across `Command.hs`/`Spec.hs`/`Parser.hs`/`Native.hs` and the handlers, with the new `EdgeCommand`
+and the `--with-edge` switch). **Phase `5` reopens** for Sprint `5.7` (prerequisite remedy strings
+name the new commands so a missing local cluster fails fast with `Run `prodbox cluster reconcile``,
+plus the regenerated destructive `--dry-run` goldens). **Phases `2`, `3`, `4`, `6`, `7`, and `8`
+stay `✅ Done`** — the gateway runtime, chart platform, lifecycle reconcilers, clean-room contract,
+AWS substrate, and email-auth foundations are reused and renamed, not re-architected. Removed
+command-surface constructors and the `prodbox pulumi`/`check-code` surfaces are registered in
+[legacy-tracking-for-deletion.md](legacy-tracking-for-deletion.md).
+
 **2026-06-09 (later) — Design-intention review reopens Phases `0`, `1`, `2`, `3`, `4`, `5`, and
 `7`.** After Phase `8` closed the canonical suite on both substrates (entry below), a whole-system
 design analysis adjudicated each documented-intention-vs-code divergence toward the structure that

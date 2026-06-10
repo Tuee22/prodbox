@@ -302,7 +302,7 @@ runWithAwsHarnessCleanup repoRoot environment suitePlan body = do
               ++ "required to delete them. Recover with: resolve the "
               ++ "destroy failure (e.g. wait out / clean up the orphan "
               ++ "ENIs behind a DependencyViolation), then "
-              ++ "`prodbox pulumi <stack>-destroy --yes` for each "
+              ++ "`prodbox aws stack <stack> destroy --yes` for each "
               ++ "remaining per-run stack, then `prodbox aws teardown` to "
               ++ "clear the operational credentials."
           )
@@ -355,9 +355,9 @@ awsPostflightDestroyCommandArgs :: NativeSuitePlan -> [[String]]
 awsPostflightDestroyCommandArgs suitePlan =
   if nativeMayProvisionPerRunAwsStacks suitePlan
     then
-      [ ["pulumi", "aws-subzone-destroy", "--yes"]
-      , ["pulumi", "eks-destroy", "--yes"]
-      , ["pulumi", "test-destroy", "--yes"]
+      [ ["aws", "stack", "aws-subzone", "destroy", "--yes"]
+      , ["aws", "stack", "eks", "destroy", "--yes"]
+      , ["aws", "stack", "test", "destroy", "--yes"]
       ]
     else []
 
@@ -455,10 +455,10 @@ supportedRuntimeBootstrapActions repoRoot environment suitePlan =
                  -- re-run.
                  ensureGatewayMinioBootstrap repoRoot
                , syncKeycloakSmtpForSupportedRuntime repoRoot suitePlan
-               , runNativeCliCommandForExitCode repoRoot environment ["charts", "deploy", "gateway"]
-               , runNativeCliCommandForExitCode repoRoot environment ["charts", "deploy", "vscode"]
-               , runNativeCliCommandForExitCode repoRoot environment ["charts", "deploy", "api"]
-               , runNativeCliCommandForExitCode repoRoot environment ["charts", "deploy", "websocket"]
+               , runNativeCliCommandForExitCode repoRoot environment ["charts", "reconcile", "gateway"]
+               , runNativeCliCommandForExitCode repoRoot environment ["charts", "reconcile", "vscode"]
+               , runNativeCliCommandForExitCode repoRoot environment ["charts", "reconcile", "api"]
+               , runNativeCliCommandForExitCode repoRoot environment ["charts", "reconcile", "websocket"]
                , runWaitForPublicEdgeReady
                    repoRoot
                    environment
@@ -567,7 +567,7 @@ runAwsSubstrateBootstrapAfterSubzone repoRoot environmentWithHostedZone commands
 isAwsSubstrateChartDeployCommand :: [String] -> Bool
 isAwsSubstrateChartDeployCommand command =
   case command of
-    ["charts", "deploy", _chartName, "--substrate", "aws"] -> True
+    ["charts", "reconcile", _chartName, "--substrate", "aws"] -> True
     _ -> False
 
 syncKeycloakSmtpForAwsSubstrate :: FilePath -> IO ExitCode
@@ -612,13 +612,13 @@ awsSubstrateBootstrapCommandArgs suitePlan =
   case nativeSubstrate suitePlan of
     SubstrateHomeLocal -> []
     SubstrateAws ->
-      [ ["pulumi", "aws-subzone-resources"]
-      , ["pulumi", "eks-resources"]
-      , ["pulumi", "test-resources"]
-      , ["charts", "deploy", "gateway", "--substrate", "aws"]
-      , ["charts", "deploy", "vscode", "--substrate", "aws"]
-      , ["charts", "deploy", "api", "--substrate", "aws"]
-      , ["charts", "deploy", "websocket", "--substrate", "aws"]
+      [ ["aws", "stack", "aws-subzone", "reconcile"]
+      , ["aws", "stack", "eks", "reconcile"]
+      , ["aws", "stack", "test", "reconcile"]
+      , ["charts", "reconcile", "gateway", "--substrate", "aws"]
+      , ["charts", "reconcile", "vscode", "--substrate", "aws"]
+      , ["charts", "reconcile", "api", "--substrate", "aws"]
+      , ["charts", "reconcile", "websocket", "--substrate", "aws"]
       ]
 
 -- | Post-success suite restore actions: reconcile the local cluster
@@ -649,10 +649,10 @@ supportedRuntimePostflightActions repoRoot environment suitePlan =
         -- `mc admin user add` / `mc admin policy attach` are no-ops on
         -- re-run.
         ensureGatewayMinioBootstrap repoRoot
-      , runNativeCliCommandForExitCode repoRoot environment ["charts", "deploy", "gateway"]
-      , runNativeCliCommandForExitCode repoRoot environment ["charts", "deploy", "vscode"]
-      , runNativeCliCommandForExitCode repoRoot environment ["charts", "deploy", "api"]
-      , runNativeCliCommandForExitCode repoRoot environment ["charts", "deploy", "websocket"]
+      , runNativeCliCommandForExitCode repoRoot environment ["charts", "reconcile", "gateway"]
+      , runNativeCliCommandForExitCode repoRoot environment ["charts", "reconcile", "vscode"]
+      , runNativeCliCommandForExitCode repoRoot environment ["charts", "reconcile", "api"]
+      , runNativeCliCommandForExitCode repoRoot environment ["charts", "reconcile", "websocket"]
       , runWaitForPublicEdgeReady
           repoRoot
           environment

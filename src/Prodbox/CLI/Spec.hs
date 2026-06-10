@@ -51,6 +51,7 @@ import Prodbox.CLI.Command
   , DaemonStatusOptions (..)
   , DnsCommand (..)
   , DocsCommand (..)
+  , EdgeCommand (..)
   , GatewayCommand (..)
   , HostCommand (..)
   , IntegrationSuite (..)
@@ -135,21 +136,17 @@ commandRegistry =
     , children =
         [ awsGroup
         , chartsGroup
-        , checkCodeLeaf
+        , clusterGroup
         , commandsLeaf
         , configGroup
+        , devGroup
         , dnsGroup
-        , docsGroup
+        , edgeGroup
         , gatewayGroup
         , helpLeaf
         , hostGroup
-        , k8sGroup
-        , lintGroup
         , nukeLeaf
-        , pulumiGroup
-        , rke2Group
         , testGroupSpec
-        , tlaCheckLeaf
         , usersGroup
         , workloadGroup
         ]
@@ -230,8 +227,8 @@ parserForPath path =
               RunNative (NativeAws (AwsTeardown planOptions' flags))
           )
           ((,) <$> planOptionsParser <*> awsTeardownFlagsParser)
-    ["aws", "check-quotas"] -> Just (pure (RunNative (NativeAws AwsCheckQuotas)))
-    ["aws", "request-quotas"] ->
+    ["aws", "quotas", "check"] -> Just (pure (RunNative (NativeAws AwsCheckQuotas)))
+    ["aws", "quotas", "request"] ->
       Just $
         fmap
           (RunNative . NativeAws . AwsRequestQuotas)
@@ -239,7 +236,7 @@ parserForPath path =
     ["charts", "list"] -> Just (pure (RunNative (NativeCharts ChartsList)))
     ["charts", "status"] ->
       Just (fmap (RunNative . NativeCharts . ChartsStatus) (strArgument (metavar "CHART")))
-    ["charts", "deploy"] ->
+    ["charts", "reconcile"] ->
       Just $
         fmap
           ( \(chartName, substrate, options') ->
@@ -259,7 +256,7 @@ parserForPath path =
           <*> substrateOptionParser
           <*> yesSwitchParser "Skip confirmation prompt"
           <*> planOptionsParser
-    ["check-code"] -> Just (pure (RunNative NativeCheckCode))
+    ["dev", "check"] -> Just (pure (RunNative NativeCheckCode))
     ["commands"] ->
       Just $
         commandsTreeParser
@@ -278,8 +275,8 @@ parserForPath path =
           )
     ["config", "validate"] -> Just (pure (RunNative (NativeConfig ConfigValidate)))
     ["dns", "check"] -> Just (pure (RunNative (NativeDns DnsCheck)))
-    ["docs", "check"] -> Just (pure (RunNative (NativeDocs DocsCheck)))
-    ["docs", "generate"] -> Just (pure (RunNative (NativeDocs DocsGenerate)))
+    ["dev", "docs", "check"] -> Just (pure (RunNative (NativeDocs DocsCheck)))
+    ["dev", "docs", "generate"] -> Just (pure (RunNative (NativeDocs DocsGenerate)))
     ["gateway", "start"] ->
       Just (fmap (RunNative . NativeGateway . GatewayDaemonCommand) daemonLaunchOptionsParser)
     ["gateway", "status"] ->
@@ -305,10 +302,12 @@ parserForPath path =
       Just (RunNative . NativeHost . HostFirewallGatewayRestrict <$> gatewayNodePortParser)
     ["host", "firewall", "gateway-unrestrict"] ->
       Just (RunNative . NativeHost . HostFirewallGatewayUnrestrict <$> gatewayNodePortParser)
-    ["host", "public-edge"] ->
+    ["edge", "status"] ->
       Just (fmap (RunNative . NativeHost . HostPublicEdge) substrateOptionParser)
-    ["k8s", "health"] -> Just (pure (RunNative (NativeK8s K8sHealth)))
-    ["k8s", "wait"] ->
+    ["edge", "reconcile"] ->
+      Just (fmap (RunNative . NativeEdge . EdgeReconcile) planOptionsParser)
+    ["cluster", "health"] -> Just (pure (RunNative (NativeK8s K8sHealth)))
+    ["cluster", "wait"] ->
       Just $
         fmap
           ( \(timeoutSeconds, namespaces) ->
@@ -326,7 +325,7 @@ parserForPath path =
                 )
               <*> manyStringsOption "namespace" 'n' "Namespace to wait for"
           )
-    ["k8s", "logs"] ->
+    ["cluster", "workload-logs"] ->
       Just $
         fmap
           ( \(namespaces, tailLines) ->
@@ -343,44 +342,44 @@ parserForPath path =
                     )
                 )
           )
-    ["lint", "all"] -> Just (pure (RunNative (NativeLint LintAll)))
-    ["lint", "files"] -> Just (fmap (RunNative . NativeLint . LintFiles) writeSwitchParser)
-    ["lint", "docs"] -> Just (fmap (RunNative . NativeLint . LintDocs) writeSwitchParser)
-    ["lint", "haskell"] -> Just (fmap (RunNative . NativeLint . LintHaskell) writeSwitchParser)
-    ["lint", "chart"] -> Just (pure (RunNative (NativeLint LintChart)))
-    ["pulumi", "eks-resources"] ->
+    ["dev", "lint", "all"] -> Just (pure (RunNative (NativeLint LintAll)))
+    ["dev", "lint", "files"] -> Just (fmap (RunNative . NativeLint . LintFiles) writeSwitchParser)
+    ["dev", "lint", "docs"] -> Just (fmap (RunNative . NativeLint . LintDocs) writeSwitchParser)
+    ["dev", "lint", "haskell"] -> Just (fmap (RunNative . NativeLint . LintHaskell) writeSwitchParser)
+    ["dev", "lint", "chart"] -> Just (pure (RunNative (NativeLint LintChart)))
+    ["aws", "stack", "eks", "reconcile"] ->
       Just (fmap (RunNative . NativePulumi . PulumiEksResources) planOptionsParser)
-    ["pulumi", "eks-destroy"] ->
+    ["aws", "stack", "eks", "destroy"] ->
       Just $
         fmap
           (\(confirmed, planOptions') -> RunNative (NativePulumi (PulumiEksDestroy confirmed planOptions')))
           ((,) <$> yesSwitchParser "Skip confirmation prompts" <*> planOptionsParser)
-    ["pulumi", "test-resources"] ->
+    ["aws", "stack", "test", "reconcile"] ->
       Just (fmap (RunNative . NativePulumi . PulumiTestResources) planOptionsParser)
-    ["pulumi", "test-destroy"] ->
+    ["aws", "stack", "test", "destroy"] ->
       Just $
         fmap
           (\(confirmed, planOptions') -> RunNative (NativePulumi (PulumiTestDestroy confirmed planOptions')))
           ((,) <$> yesSwitchParser "Skip confirmation prompts" <*> planOptionsParser)
-    ["pulumi", "aws-subzone-resources"] ->
+    ["aws", "stack", "aws-subzone", "reconcile"] ->
       Just (fmap (RunNative . NativePulumi . PulumiAwsSubzoneResources) planOptionsParser)
-    ["pulumi", "aws-subzone-destroy"] ->
+    ["aws", "stack", "aws-subzone", "destroy"] ->
       Just $
         fmap
           ( \(confirmed, planOptions') ->
               RunNative (NativePulumi (PulumiAwsSubzoneDestroy confirmed planOptions'))
           )
           ((,) <$> yesSwitchParser "Skip confirmation prompts" <*> planOptionsParser)
-    ["pulumi", "aws-ses-resources"] ->
+    ["aws", "stack", "aws-ses", "reconcile"] ->
       Just (fmap (RunNative . NativePulumi . PulumiAwsSesResources) planOptionsParser)
-    ["pulumi", "aws-ses-destroy"] ->
+    ["aws", "stack", "aws-ses", "destroy"] ->
       Just $
         fmap
           ( \(confirmed, planOptions') ->
               RunNative (NativePulumi (PulumiAwsSesDestroy confirmed planOptions'))
           )
           ((,) <$> yesSwitchParser "Skip confirmation prompts" <*> planOptionsParser)
-    ["pulumi", "aws-ses-migrate-backend"] ->
+    ["aws", "stack", "aws-ses", "migrate-backend"] ->
       Just (fmap (RunNative . NativePulumi . PulumiAwsSesMigrateBackend) planOptionsParser)
     ["users", "invite"] ->
       Just $
@@ -417,15 +416,19 @@ parserForPath path =
           <$> strArgument (metavar "EMAIL_OR_USER_ID")
           <*> switch (long "delete" <> help "Fully delete the user instead of disabling")
           <*> planOptionsParser
-    ["rke2", "status"] -> Just (pure (RunNative (NativeRke2 Rke2Status)))
-    ["rke2", "start"] -> Just (pure (RunNative (NativeRke2 Rke2Start)))
-    ["rke2", "stop"] -> Just (pure (RunNative (NativeRke2 Rke2Stop)))
-    ["rke2", "restart"] -> Just (pure (RunNative (NativeRke2 Rke2Restart)))
-    ["rke2", "reconcile"] ->
-      Just (fmap (RunNative . NativeRke2 . Rke2Reconcile) planOptionsParser)
-    ["rke2", "delete"] ->
+    ["cluster", "status"] -> Just (pure (RunNative (NativeRke2 Rke2Status)))
+    ["cluster", "start"] -> Just (pure (RunNative (NativeRke2 Rke2Start)))
+    ["cluster", "stop"] -> Just (pure (RunNative (NativeRke2 Rke2Stop)))
+    ["cluster", "restart"] -> Just (pure (RunNative (NativeRke2 Rke2Restart)))
+    ["cluster", "reconcile"] ->
+      Just
+        ( fmap
+            (RunNative . NativeRke2)
+            (Rke2Reconcile <$> planOptionsParser <*> withPublicEdgeSwitch)
+        )
+    ["cluster", "delete"] ->
       Just (rke2DeleteParser <$> rke2DeleteFlagsParser <*> planOptionsParser)
-    ["rke2", "logs"] ->
+    ["cluster", "logs"] ->
       Just $
         fmap
           (RunNative . NativeRke2 . Rke2Logs)
@@ -481,7 +484,7 @@ parserForPath path =
                   )
             )
         )
-    ["tla-check"] -> Just (pure (RunNative NativeTlaCheck))
+    ["dev", "tla-check"] -> Just (pure (RunNative NativeTlaCheck))
     ["workload", "start"] ->
       Just (fmap (RunNative . NativeWorkload . WorkloadStart) workloadOptionsParser)
     _ -> Nothing
@@ -532,6 +535,17 @@ planOptionsParser =
               <> help "Write the rendered plan to a file"
           )
       )
+
+-- | @--with-edge@ for @rke2 reconcile@: also reconcile the AWS-gated public
+-- edge (Route 53 DNS + ZeroSSL TLS). Bare reconcile is local-only and needs
+-- no operational @aws.*@.
+withPublicEdgeSwitch :: Parser Bool
+withPublicEdgeSwitch =
+  switch
+    ( long "with-edge"
+        <> help
+          "Also reconcile the AWS-gated public edge (Route 53 DNS + ZeroSSL TLS); requires operational aws.*"
+    )
 
 outputOptionsParser :: Parser OutputOptions
 outputOptionsParser =
@@ -735,7 +749,7 @@ awsTeardownFlagsParser =
             DestroyPulumiResidueFirst
             ( long "destroy-pulumi-residue"
                 <> help
-                  ( "Run `prodbox pulumi <stack>-destroy --yes` for each "
+                  ( "Run `prodbox aws stack <stack> destroy --yes` for each "
                       ++ "live Pulumi-managed AWS stack (in canonical "
                       ++ "order: aws-eks-subzone, aws-eks, aws-test, "
                       ++ "aws-ses) before deleting the operational IAM "
@@ -948,14 +962,14 @@ awsGroup =
     , leaf
         "teardown"
         "Delete operational IAM user"
-        "Delete the operational IAM user. Default mode opens with a Pulumi-residue check and refuses if any AWS substrate stack (`aws-eks`, `aws-eks-subzone`, `aws-test`, `aws-ses`) still owns live resources. `--destroy-pulumi-residue` orchestrates `prodbox pulumi <stack>-destroy --yes` in canonical order before deleting the operational IAM user; destroying the long-lived `aws-ses` stack triggers a 5-30 min SES re-verification and ~24h S3 bucket-name cooldown. `--allow-pulumi-residue` is the operator-acknowledged recovery escape hatch that bypasses the residue check entirely (stacks become orphaned). `--destroy-pulumi-residue` and `--allow-pulumi-residue` are mutually exclusive at parse time."
+        "Delete the operational IAM user. Default mode opens with a Pulumi-residue check and refuses if any AWS substrate stack (`aws-eks`, `aws-eks-subzone`, `aws-test`, `aws-ses`) still owns live resources. `--destroy-pulumi-residue` orchestrates `prodbox aws stack <stack> destroy --yes` in canonical order before deleting the operational IAM user; destroying the long-lived `aws-ses` stack triggers a 5-30 min SES re-verification and ~24h S3 bucket-name cooldown. `--allow-pulumi-residue` is the operator-acknowledged recovery escape hatch that bypasses the residue check entirely (stacks become orphaned). `--destroy-pulumi-residue` and `--allow-pulumi-residue` are mutually exclusive at parse time."
         [ flagOption "dry-run" Nothing Nothing "Render the IAM teardown plan without mutating state"
         , optionalOption "plan-file" Nothing "PATH" "Write the rendered plan to a file"
         , flagOption
             "destroy-pulumi-residue"
             Nothing
             Nothing
-            "Run `prodbox pulumi <stack>-destroy --yes` for each live Pulumi-managed AWS stack in canonical order before deleting the operational IAM user (mutually exclusive with --allow-pulumi-residue)"
+            "Run `prodbox aws stack <stack> destroy --yes` for each live Pulumi-managed AWS stack in canonical order before deleting the operational IAM user (mutually exclusive with --allow-pulumi-residue)"
         , flagOption
             "allow-pulumi-residue"
             Nothing
@@ -969,18 +983,26 @@ awsGroup =
             ["aws", "teardown", "--destroy-pulumi-residue"]
             "Destroy live AWS substrate stacks in canonical order, then delete the operational IAM user."
         ]
-    , leaf
-        "check-quotas"
-        "Inspect supported AWS quotas"
-        "Inspect supported AWS quotas."
+    , group
+        "quotas"
+        "Inspect or request AWS quotas"
+        "Inspect supported AWS quotas and request quota increases."
+        [ leaf
+            "check"
+            "Inspect supported AWS quotas"
+            "Inspect supported AWS quotas."
+            []
+            [example ["aws", "quotas", "check"] "Inspect AWS quotas."]
+        , leaf
+            "request"
+            "Request supported AWS quotas"
+            "Request supported AWS quota increases."
+            [optionalOption "tier" Nothing "TIER" "Quota target tier to request"]
+            [example ["aws", "quotas", "request", "--tier", "core"] "Request core-tier quota increases."]
+        ]
         []
-        [example ["aws", "check-quotas"] "Inspect AWS quotas."]
-    , leaf
-        "request-quotas"
-        "Request supported AWS quotas"
-        "Request supported AWS quota increases."
-        [optionalOption "tier" Nothing "TIER" "Quota target tier to request"]
-        [example ["aws", "request-quotas", "--tier", "core"] "Request core-tier quota increases."]
+        [example ["aws", "quotas", "check"] "Inspect AWS quotas."]
+    , awsStackGroup
     ]
     []
     [example ["aws", "policy"] "Inspect the IAM policy without mutating AWS."]
@@ -1042,16 +1064,6 @@ hostGroup =
         ]
         []
         [example ["host", "firewall"] "Inspect firewall expectations."]
-    , leaf
-        "public-edge"
-        "Check public DNS/TLS edge state"
-        "Inspect Route 53, certificate, and shared-host readiness."
-        [substrateOption]
-        [ example ["host", "public-edge"] "Inspect public-edge readiness (home substrate)."
-        , example
-            ["host", "public-edge", "--substrate", "aws"]
-            "Inspect public-edge readiness on the AWS substrate."
-        ]
     ]
     []
     [example ["host", "info"] "Render host information."]
@@ -1071,38 +1083,6 @@ dnsGroup =
     ]
     []
     [example ["dns", "check"] "Inspect Route 53 ownership."]
-
-k8sGroup :: CommandSpec
-k8sGroup =
-  group
-    "k8s"
-    "Kubernetes helpers"
-    "Kubernetes health and log utilities."
-    [ leaf
-        "health"
-        "Check cluster health"
-        "Inspect Kubernetes health."
-        []
-        [example ["k8s", "health"] "Inspect cluster health."]
-    , leaf
-        "wait"
-        "Wait for deployments to be ready"
-        "Wait for named namespaces to become ready."
-        [ optionalOption "timeout" (Just 't') "INTEGER" "Timeout in seconds"
-        , optionalOption "namespace" (Just 'n') "VALUE" "Namespace to wait for"
-        ]
-        [example ["k8s", "wait", "--timeout", "300"] "Wait for infrastructure workloads."]
-    , leaf
-        "logs"
-        "Show recent infrastructure logs"
-        "Show recent logs from infrastructure namespaces."
-        [ optionalOption "namespace" (Just 'n') "VALUE" "Namespace to get logs from"
-        , optionalOption "tail" Nothing "INTEGER" "Number of log lines per container"
-        ]
-        [example ["k8s", "logs", "--tail", "25"] "Show recent infrastructure logs."]
-    ]
-    []
-    [example ["k8s", "health"] "Check Kubernetes health."]
 
 gatewayGroup :: CommandSpec
 gatewayGroup =
@@ -1243,8 +1223,8 @@ chartsGroup =
         []
         [example ["charts", "status", "vscode"] "Inspect the vscode chart status."]
     , leafWithArgs
-        "deploy"
-        "Deploy a root chart stack"
+        "reconcile"
+        "Reconcile a root chart stack"
         "Reconcile a root chart to the supported state."
         [chartArgument]
         [ flagOption "dry-run" Nothing Nothing "Render the deployment plan without mutating state"
@@ -1255,8 +1235,8 @@ chartsGroup =
             "SUBSTRATE"
             "Target substrate (home-local, aws); default home-local"
         ]
-        [ example ["charts", "deploy", "vscode"] "Deploy the vscode stack."
-        , example ["charts", "deploy", "--dry-run", "vscode"] "Render the chart deployment plan."
+        [ example ["charts", "reconcile", "vscode"] "Reconcile the vscode stack."
+        , example ["charts", "reconcile", "--dry-run", "vscode"] "Render the chart deployment plan."
         ]
     , leafWithArgs
         "delete"
@@ -1282,135 +1262,143 @@ chartsGroup =
   chartArgument =
     argument "chart" "CHART" "Root chart name (gateway, keycloak, vscode, api, websocket)"
 
-pulumiGroup :: CommandSpec
-pulumiGroup =
+-- | @prodbox aws stack ...@ — the Pulumi-backed AWS substrate stacks,
+-- regrouped under `aws` (Phase 5; the tool name `pulumi` no longer leaks
+-- into the surface). Each stack exposes the canonical `reconcile` /
+-- `destroy` verbs; `aws-ses` adds the one-time `migrate-backend`.
+awsStackGroup :: CommandSpec
+awsStackGroup =
   group
-    "pulumi"
-    "AWS validation stack lifecycle"
-    "Pulumi-backed AWS validation stack commands."
-    [ leaf
-        "eks-resources"
-        "Provision or inspect EKS test stack"
+    "stack"
+    "AWS substrate stack lifecycle"
+    "Reconcile and destroy the Pulumi-backed AWS substrate validation stacks."
+    [ stackVerbGroup
+        "eks"
+        "EKS validation stack"
         "Reconcile the EKS validation stack."
-        [ flagOption "dry-run" Nothing Nothing "Render the Pulumi plan without mutating state"
-        , optionalOption "plan-file" Nothing "PATH" "Write the rendered plan to a file"
-        ]
-        [example ["pulumi", "eks-resources"] "Reconcile the EKS validation stack."]
-    , leaf
-        "eks-destroy"
-        "Destroy EKS test stack"
         "Destroy the EKS validation stack."
-        [ flagOption "yes" (Just 'y') Nothing "Skip confirmation prompts"
-        , flagOption "dry-run" Nothing Nothing "Render the destroy plan without mutating state"
-        , optionalOption "plan-file" Nothing "PATH" "Write the rendered plan to a file"
-        ]
-        [example ["pulumi", "eks-destroy", "--yes"] "Destroy the EKS validation stack."]
-    , leaf
-        "test-resources"
-        "Provision or inspect HA RKE2 test stack"
+        []
+    , stackVerbGroup
+        "test"
+        "HA RKE2 validation stack"
         "Reconcile the HA RKE2 validation stack."
-        [ flagOption "dry-run" Nothing Nothing "Render the Pulumi plan without mutating state"
-        , optionalOption "plan-file" Nothing "PATH" "Write the rendered plan to a file"
-        ]
-        [example ["pulumi", "test-resources"] "Reconcile the HA RKE2 validation stack."]
-    , leaf
-        "test-destroy"
-        "Destroy HA RKE2 test stack"
         "Destroy the HA RKE2 validation stack."
-        [ flagOption "yes" (Just 'y') Nothing "Skip confirmation prompts"
-        , flagOption "dry-run" Nothing Nothing "Render the destroy plan without mutating state"
-        , optionalOption "plan-file" Nothing "PATH" "Write the rendered plan to a file"
-        ]
-        [example ["pulumi", "test-destroy", "--yes"] "Destroy the HA RKE2 validation stack."]
-    , leaf
-        "aws-subzone-resources"
-        "Provision the per-substrate Route 53 subzone"
+        []
+    , stackVerbGroup
+        "aws-subzone"
+        "Per-substrate Route 53 subzone"
         "Reconcile the AWS-substrate Route 53 hosted subzone and NS delegation."
-        [ flagOption "dry-run" Nothing Nothing "Render the subzone plan without mutating state"
-        , optionalOption "plan-file" Nothing "PATH" "Write the rendered plan to a file"
-        ]
-        [example ["pulumi", "aws-subzone-resources"] "Reconcile the AWS-substrate Route 53 subzone."]
-    , leaf
-        "aws-subzone-destroy"
-        "Destroy the per-substrate Route 53 subzone"
         "Destroy the AWS-substrate Route 53 hosted subzone and remove the parent NS delegation."
-        [ flagOption "yes" (Just 'y') Nothing "Skip confirmation prompts"
-        , flagOption "dry-run" Nothing Nothing "Render the destroy plan without mutating state"
-        , optionalOption "plan-file" Nothing "PATH" "Write the rendered plan to a file"
-        ]
-        [example ["pulumi", "aws-subzone-destroy", "--yes"] "Destroy the AWS-substrate Route 53 subzone."]
-    , leaf
-        "aws-ses-resources"
-        "Provision cross-substrate AWS SES infrastructure"
+        []
+    , stackVerbGroup
+        "aws-ses"
+        "Cross-substrate AWS SES infrastructure"
         "Reconcile the shared AWS SES sending identity, receive subdomain, receive rule set, S3 capture bucket, and SMTP IAM user used by Phase 8 operator-invited email auth."
-        [ flagOption "dry-run" Nothing Nothing "Render the SES plan without mutating state"
-        , optionalOption "plan-file" Nothing "PATH" "Write the rendered plan to a file"
-        ]
-        [example ["pulumi", "aws-ses-resources"] "Reconcile the cross-substrate SES infrastructure."]
-    , leaf
-        "aws-ses-destroy"
-        "Destroy cross-substrate AWS SES infrastructure"
         "Destroy the shared AWS SES stack (sending identity, receive subdomain, receive rule set, S3 capture bucket, and SMTP IAM user)."
-        [ flagOption "yes" (Just 'y') Nothing "Skip confirmation prompts"
-        , flagOption "dry-run" Nothing Nothing "Render the destroy plan without mutating state"
-        , optionalOption "plan-file" Nothing "PATH" "Write the rendered plan to a file"
-        ]
-        [example ["pulumi", "aws-ses-destroy", "--yes"] "Destroy the cross-substrate SES infrastructure."]
-    , leaf
-        "aws-ses-migrate-backend"
-        "Migrate aws-ses Pulumi state onto the long-lived S3 backend"
-        "Operator-interactive command: migrate the `aws-ses` stack's Pulumi state from the in-cluster MinIO backend onto the dedicated long-lived S3 bucket named by `pulumi_state_backend` in `prodbox-config.dhall`. Idempotent; no-op when the stack already lives in the long-lived backend. TTY-only; refuses non-interactive contexts."
-        [ flagOption "dry-run" Nothing Nothing "Render the migration plan without mutating state"
-        , optionalOption "plan-file" Nothing "PATH" "Write the rendered plan to a file"
-        ]
-        [ example
-            ["pulumi", "aws-ses-migrate-backend"]
-            "Migrate aws-ses state onto the long-lived S3 backend."
+        [ leaf
+            "migrate-backend"
+            "Migrate aws-ses Pulumi state onto the long-lived S3 backend"
+            "Operator-interactive command: migrate the `aws-ses` stack's Pulumi state from the in-cluster MinIO backend onto the dedicated long-lived S3 bucket named by `pulumi_state_backend` in `prodbox-config.dhall`. Idempotent; no-op when the stack already lives in the long-lived backend. TTY-only; refuses non-interactive contexts."
+            [ flagOption "dry-run" Nothing Nothing "Render the migration plan without mutating state"
+            , optionalOption "plan-file" Nothing "PATH" "Write the rendered plan to a file"
+            ]
+            [ example
+                ["aws", "stack", "aws-ses", "migrate-backend"]
+                "Migrate aws-ses state onto the long-lived S3 backend."
+            ]
         ]
     ]
     []
-    [example ["pulumi", "eks-resources"] "Reconcile the EKS validation stack."]
+    [example ["aws", "stack", "eks", "reconcile"] "Reconcile the EKS validation stack."]
 
-rke2Group :: CommandSpec
-rke2Group =
+-- | One @aws stack <name>@ subgroup with the canonical @reconcile@ /
+-- @destroy@ verbs plus any extra leaves (e.g. @aws-ses migrate-backend@).
+stackVerbGroup :: String -> String -> String -> String -> [CommandSpec] -> CommandSpec
+stackVerbGroup stackName summaryText reconcileDescription destroyDescription extraLeaves =
   group
-    "rke2"
+    stackName
+    summaryText
+    ("Lifecycle for the " ++ stackName ++ " AWS substrate stack.")
+    ( [ leaf
+          "reconcile"
+          ("Provision or inspect the " ++ stackName ++ " stack")
+          reconcileDescription
+          [ flagOption "dry-run" Nothing Nothing "Render the Pulumi plan without mutating state"
+          , optionalOption "plan-file" Nothing "PATH" "Write the rendered plan to a file"
+          ]
+          [example ["aws", "stack", stackName, "reconcile"] reconcileDescription]
+      , leaf
+          "destroy"
+          ("Destroy the " ++ stackName ++ " stack")
+          destroyDescription
+          [ flagOption "yes" (Just 'y') Nothing "Skip confirmation prompts"
+          , flagOption "dry-run" Nothing Nothing "Render the destroy plan without mutating state"
+          , optionalOption "plan-file" Nothing "PATH" "Write the rendered plan to a file"
+          ]
+          [example ["aws", "stack", stackName, "destroy", "--yes"] destroyDescription]
+      ]
+        ++ extraLeaves
+    )
+    []
+    [example ["aws", "stack", stackName, "reconcile"] reconcileDescription]
+
+clusterGroup :: CommandSpec
+clusterGroup =
+  group
+    "cluster"
     "Local cluster lifecycle"
-    "Local cluster lifecycle commands."
+    "Local Kubernetes cluster lifecycle. AWS-free: every command here decodes config and runs with an empty aws.* block. Public DNS + TLS lives under `prodbox edge`."
     [ leaf
         "status"
-        "Check RKE2 status"
-        "Inspect the local cluster status."
+        "Check cluster service status"
+        "Inspect the local cluster service status."
         []
-        [example ["rke2", "status"] "Inspect RKE2 status."]
+        [example ["cluster", "status"] "Inspect local cluster status."]
+    , leaf
+        "health"
+        "Check Kubernetes health"
+        "Inspect Kubernetes cluster health."
+        []
+        [example ["cluster", "health"] "Inspect Kubernetes health."]
     , leaf
         "start"
-        "Start RKE2"
+        "Start the cluster service"
         "Start the local cluster service."
         []
-        [example ["rke2", "start"] "Start RKE2."]
-    , leaf "stop" "Stop RKE2" "Stop the local cluster service." [] [example ["rke2", "stop"] "Stop RKE2."]
+        [example ["cluster", "start"] "Start the local cluster."]
+    , leaf
+        "stop"
+        "Stop the cluster service"
+        "Stop the local cluster service."
+        []
+        [example ["cluster", "stop"] "Stop the local cluster."]
     , leaf
         "restart"
-        "Restart RKE2"
+        "Restart the cluster service"
         "Restart the local cluster service."
         []
-        [example ["rke2", "restart"] "Restart RKE2."]
+        [example ["cluster", "restart"] "Restart the local cluster."]
     , leaf
         "reconcile"
-        "Reconcile RKE2"
-        "Reconcile the supported local cluster state."
+        "Reconcile the local cluster"
+        "Reconcile the supported local cluster state. Local-only by default (no AWS); pass --with-edge to also reconcile the public edge (or run `prodbox edge reconcile` separately)."
         [ flagOption "dry-run" Nothing Nothing "Render the lifecycle plan without mutating state"
         , optionalOption "plan-file" Nothing "PATH" "Write the rendered plan to a file"
+        , flagOption
+            "with-edge"
+            Nothing
+            Nothing
+            "Also reconcile the AWS-gated public edge (Route 53 DNS + ZeroSSL TLS); requires operational aws.*"
         ]
-        [ example ["rke2", "reconcile"] "Reconcile the supported local cluster."
-        , example ["rke2", "reconcile", "--dry-run"] "Render the lifecycle plan."
+        [ example ["cluster", "reconcile"] "Reconcile the supported local cluster (no AWS needed)."
+        , example ["cluster", "reconcile", "--dry-run"] "Render the lifecycle plan."
+        , example ["cluster", "reconcile", "--with-edge"] "Reconcile the cluster and attach the public edge."
         ]
     , leaf
         "delete"
-        "Delete RKE2"
+        "Delete the local cluster"
         "Delete the local cluster. Default mode opens with a per-run-residue check and refuses if `aws-eks`, `aws-eks-subzone`, or `aws-test` still have live resources. `--cascade` orchestrates the full teardown (K8s drain + per-run Pulumi destroys + cluster uninstall + postflight tag sweep) as one atomic operator action; the K8s drain phase skips gracefully when no cluster is reachable. `--allow-pulumi-residue` bypasses the residue check for operator-acknowledged recovery scenarios. `--cascade` and `--allow-pulumi-residue` are mutually exclusive at parse time."
-        [ flagOption "yes" (Just 'y') Nothing "Confirm full RKE2 cluster deletion"
+        [ flagOption "yes" (Just 'y') Nothing "Confirm full cluster deletion"
         , flagOption
             "cascade"
             Nothing
@@ -1425,21 +1413,67 @@ rke2Group =
         , optionalOption "plan-file" Nothing "PATH" "Write the rendered plan to a file"
         ]
         [ example
-            ["rke2", "delete", "--yes"]
+            ["cluster", "delete", "--yes"]
             "Delete the local cluster (refuses if per-run Pulumi stacks are live)."
         , example
-            ["rke2", "delete", "--yes", "--cascade"]
+            ["cluster", "delete", "--yes", "--cascade"]
             "Orchestrate the full teardown as one atomic operator action."
         ]
     , leaf
         "logs"
-        "Show RKE2 logs"
-        "Show RKE2 service logs."
+        "Show cluster service logs"
+        "Show the local cluster service (RKE2) journal logs."
         [optionalOption "lines" (Just 'n') "INTEGER" "Number of log lines to show"]
-        [example ["rke2", "logs", "--lines", "50"] "Show recent RKE2 logs."]
+        [example ["cluster", "logs", "--lines", "50"] "Show recent cluster service logs."]
+    , leaf
+        "wait"
+        "Wait for deployments to be ready"
+        "Wait for named namespaces to become ready."
+        [ optionalOption "timeout" (Just 't') "INTEGER" "Timeout in seconds"
+        , optionalOption "namespace" (Just 'n') "VALUE" "Namespace to wait for"
+        ]
+        [example ["cluster", "wait", "--timeout", "300"] "Wait for infrastructure workloads."]
+    , leaf
+        "workload-logs"
+        "Show recent workload logs"
+        "Show recent logs from infrastructure/workload namespaces."
+        [ optionalOption "namespace" (Just 'n') "VALUE" "Namespace to get logs from"
+        , optionalOption "tail" Nothing "INTEGER" "Number of log lines per container"
+        ]
+        [example ["cluster", "workload-logs", "--tail", "25"] "Show recent workload logs."]
     ]
     []
-    [example ["rke2", "reconcile"] "Reconcile the supported local cluster state."]
+    [example ["cluster", "reconcile"] "Reconcile the supported local cluster state."]
+
+edgeGroup :: CommandSpec
+edgeGroup =
+  group
+    "edge"
+    "Public DNS + TLS edge"
+    "The AWS-gated public edge: Route 53 DNS records and ZeroSSL DNS-01 TLS. Requires operational aws.* (run `prodbox aws setup` first)."
+    [ leaf
+        "reconcile"
+        "Reconcile the public edge"
+        "Reconcile the public edge: the ZeroSSL DNS-01 ClusterIssuer and the Route 53 bootstrap record. Requires operational aws.*; fails fast naming `prodbox aws setup` when it is empty."
+        [ flagOption "dry-run" Nothing Nothing "Render the edge plan without mutating state"
+        , optionalOption "plan-file" Nothing "PATH" "Write the rendered plan to a file"
+        ]
+        [ example ["edge", "reconcile"] "Reconcile Route 53 DNS + ZeroSSL TLS for the public edge."
+        , example ["edge", "reconcile", "--dry-run"] "Render the edge plan."
+        ]
+    , leaf
+        "status"
+        "Check public DNS/TLS edge state"
+        "Inspect Route 53, certificate, and shared-host readiness."
+        [substrateOption]
+        [ example ["edge", "status"] "Inspect public-edge readiness (home substrate)."
+        , example
+            ["edge", "status", "--substrate", "aws"]
+            "Inspect public-edge readiness on the AWS substrate."
+        ]
+    ]
+    []
+    [example ["edge", "reconcile"] "Reconcile the public edge (DNS + TLS)."]
 
 testGroupSpec :: CommandSpec
 testGroupSpec =
@@ -1535,14 +1569,86 @@ nukeLeaf =
     [ example ["nuke", "--dry-run"] "Render the total-teardown plan."
     ]
 
-checkCodeLeaf :: CommandSpec
-checkCodeLeaf =
-  leaf
-    "check-code"
-    "Run policy, lint, and type checks"
-    "Run the canonical quality gate."
+-- | @prodbox dev ...@ — developer + CI tooling, regrouped (Phase 5):
+-- @dev check@ (was @check-code@), @dev lint ...@ (was @lint ...@),
+-- @dev docs ...@ (was @docs ...@), and @dev tla-check@ (was @tla-check@).
+devGroup :: CommandSpec
+devGroup =
+  group
+    "dev"
+    "Developer and CI tooling"
+    "Local development and CI commands: the canonical quality gate, lint surfaces, generated-docs maintenance, and TLA+ checks."
+    [ leaf
+        "check"
+        "Run policy, lint, and type checks"
+        "Run the canonical quality gate."
+        []
+        [example ["dev", "check"] "Run the canonical quality gate."]
+    , group
+        "lint"
+        "Doctrine lint surfaces"
+        "Run doctrine-owned lint surfaces."
+        [ leaf
+            "all"
+            "Run every lint surface"
+            "Run every doctrine-owned lint surface."
+            []
+            [example ["dev", "lint", "all"] "Run every doctrine-owned lint surface."]
+        , leaf
+            "files"
+            "Run repository-policy lint checks"
+            "Check forbidden paths and library-first policy invariants."
+            [flagOption "write" Nothing Nothing "Rewrite the target surface instead of only checking for drift"]
+            [example ["dev", "lint", "files"] "Run repository-policy lint checks."]
+        , leaf
+            "docs"
+            "Check generated documentation sections"
+            "Check or rewrite marker-delimited documentation sections."
+            [flagOption "write" Nothing Nothing "Rewrite the generated documentation sections"]
+            [example ["dev", "lint", "docs"] "Check generated documentation sections for drift."]
+        , leaf
+            "haskell"
+            "Run Haskell formatter and lint checks"
+            "Run the formatter, hlint, and cabal-format consistency checks."
+            [flagOption "write" Nothing Nothing "Rewrite Haskell formatting surfaces in place"]
+            [example ["dev", "lint", "haskell"] "Run Haskell formatter and lint checks."]
+        , leaf
+            "chart"
+            "Run Helm chart structural lint checks"
+            "Run the Helm chart structural invariants linter."
+            []
+            [example ["dev", "lint", "chart"] "Run the Helm chart structural invariants linter."]
+        ]
+        []
+        [example ["dev", "lint", "all"] "Run every doctrine-owned lint surface."]
+    , group
+        "docs"
+        "Generated-documentation maintenance"
+        "Check or regenerate marker-delimited documentation sections."
+        [ leaf
+            "check"
+            "Check generated docs for drift"
+            "Check marker-delimited documentation sections for drift."
+            []
+            [example ["dev", "docs", "check"] "Fail when generated documentation has drifted."]
+        , leaf
+            "generate"
+            "Regenerate generated docs"
+            "Rewrite marker-delimited documentation sections from their renderers."
+            []
+            [example ["dev", "docs", "generate"] "Regenerate marker-delimited documentation sections."]
+        ]
+        []
+        [example ["dev", "docs", "check"] "Check generated documentation sections for drift."]
+    , leaf
+        "tla-check"
+        "Run TLA+ checks"
+        "Run the TLA+ model checks."
+        []
+        [example ["dev", "tla-check"] "Run the TLA+ model checks."]
+    ]
     []
-    [example ["check-code"] "Run the canonical quality gate."]
+    [example ["dev", "check"] "Run the canonical quality gate."]
 
 commandsLeaf :: CommandSpec
 commandsLeaf =
@@ -1566,75 +1672,4 @@ helpLeaf =
     "Render detailed help for a registered command path."
     [repeatableArgument "command-path" "COMMAND_PATH" "Command path segments to render help for"]
     []
-    [example ["help", "charts", "deploy"] "Render detailed help for `prodbox charts deploy`."]
-
-tlaCheckLeaf :: CommandSpec
-tlaCheckLeaf =
-  leaf
-    "tla-check"
-    "Run TLA+ checks"
-    "Run the TLA+ model checks."
-    []
-    [example ["tla-check"] "Run the TLA+ model checks."]
-
-docsGroup :: CommandSpec
-docsGroup =
-  group
-    "docs"
-    "Generated-documentation maintenance"
-    "Check or regenerate marker-delimited documentation sections."
-    [ leaf
-        "check"
-        "Check generated docs for drift"
-        "Check marker-delimited documentation sections for drift."
-        []
-        [example ["docs", "check"] "Fail when generated documentation has drifted."]
-    , leaf
-        "generate"
-        "Regenerate generated docs"
-        "Rewrite marker-delimited documentation sections from their renderers."
-        []
-        [example ["docs", "generate"] "Regenerate marker-delimited documentation sections."]
-    ]
-    []
-    [example ["docs", "check"] "Check generated documentation sections for drift."]
-
-lintGroup :: CommandSpec
-lintGroup =
-  group
-    "lint"
-    "Doctrine lint surfaces"
-    "Run doctrine-owned lint surfaces."
-    [ leaf
-        "all"
-        "Run every lint surface"
-        "Run every doctrine-owned lint surface."
-        []
-        [example ["lint", "all"] "Run every doctrine-owned lint surface."]
-    , leaf
-        "files"
-        "Run repository-policy lint checks"
-        "Check forbidden paths and library-first policy invariants."
-        [flagOption "write" Nothing Nothing "Rewrite the target surface instead of only checking for drift"]
-        [example ["lint", "files"] "Run repository-policy lint checks."]
-    , leaf
-        "docs"
-        "Check generated documentation sections"
-        "Check or rewrite marker-delimited documentation sections."
-        [flagOption "write" Nothing Nothing "Rewrite the generated documentation sections"]
-        [example ["lint", "docs"] "Check generated documentation sections for drift."]
-    , leaf
-        "haskell"
-        "Run Haskell formatter and lint checks"
-        "Run the formatter, hlint, and cabal-format consistency checks."
-        [flagOption "write" Nothing Nothing "Rewrite Haskell formatting surfaces in place"]
-        [example ["lint", "haskell"] "Run Haskell formatter and lint checks."]
-    , leaf
-        "chart"
-        "Run Helm chart structural lint checks"
-        "Run the Helm chart structural invariants linter."
-        []
-        [example ["lint", "chart"] "Run the Helm chart structural invariants linter."]
-    ]
-    []
-    [example ["lint", "all"] "Run every doctrine-owned lint surface."]
+    [example ["help", "charts", "reconcile"] "Render detailed help for `prodbox charts reconcile`."]

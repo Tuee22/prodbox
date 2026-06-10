@@ -21,7 +21,7 @@ This guide applies to the supported Haskell worktree:
 
 This document complements, rather than replaces:
 
-- [Code Quality Doctrine](./code_quality.md) for the public `prodbox check-code` contract
+- [Code Quality Doctrine](./code_quality.md) for the public `prodbox dev check` contract
 - [Pure FP Standards](./pure_fp_standards.md) for purity, ADT, and effect-boundary doctrine
 - [Dependency Management](./dependency_management.md) for host-tool and package ownership
 
@@ -35,7 +35,7 @@ Hard gates are enforced mechanically. A change that fails one of these gates is 
 
 Current hard gates:
 
-- repository-owned workflow and hook policy scan through `prodbox check-code`
+- repository-owned workflow and hook policy scan through `prodbox dev check`
 - Fourmolu formatting through the checked-in [`fourmolu.yaml`](../../fourmolu.yaml)
 - HLint through the checked-in [`/.hlint.yaml`](../../.hlint.yaml)
 - warning-clean Haskell compilation through
@@ -104,7 +104,7 @@ Important distinction:
 The authoritative mechanical Haskell quality gate is:
 
 ```bash
-prodbox check-code
+prodbox dev check
 ```
 
 `src/Prodbox/CheckCode.hs` owns that command. The supported gate currently requires:
@@ -133,7 +133,7 @@ the canonical formatter/linter/warning-clean gate.
 ## 5. Tooling Policy
 
 The repository uses local CLI entrypoints only. CI workflows, `.github/` automation, and git hooks
-are not part of the supported development model, and `prodbox check-code` fails on repo-owned
+are not part of the supported development model, and `prodbox dev check` fails on repo-owned
 workflow or hook surfaces that would violate that policy.
 
 See [Code Quality Doctrine](./code_quality.md#2a-development-tooling-policy) for the public policy

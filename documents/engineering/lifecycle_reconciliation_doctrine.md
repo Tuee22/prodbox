@@ -31,7 +31,7 @@ exactly one of these classes. Cleanup ownership is defined per class.
 
 | Class | Examples | Tracked by | Cluster-tag signature | Cleanup owner |
 |---|---|---|---|---|
-| 1. Pulumi-tracked stack resources | `aws-eks` VPC, EKS cluster, node group; `aws-test` EC2 nodes; `aws-eks-subzone` Route 53 records; `aws-ses` SES identity, DKIM, S3 capture bucket, SMTP IAM user | The Pulumi stack file (MinIO backend for per-run, S3 backend for long-lived; see §2) | Stack-name tag and `pulumi:project` tag | `prodbox pulumi <stack>-destroy --yes` (canonical per stack) |
+| 1. Pulumi-tracked stack resources | `aws-eks` VPC, EKS cluster, node group; `aws-test` EC2 nodes; `aws-eks-subzone` Route 53 records; `aws-ses` SES identity, DKIM, S3 capture bucket, SMTP IAM user | The Pulumi stack file (MinIO backend for per-run, S3 backend for long-lived; see §2) | Stack-name tag and `pulumi:project` tag | `prodbox aws stack <stack> destroy --yes` (canonical per stack) |
 | 2. CSI-driver-created EBS volumes | The MinIO PVC EBS volume in EKS; any future StatefulSet PVC | None — created via the Kubernetes API by `ebs.csi.aws.com` | `kubernetes.io/cluster/<cluster-name>: owned`, `ebs.csi.aws.com/cluster-name: <cluster-name>` | K8s drain phase (Sprint 4.12); fallback postflight tag sweep |
 | 3. AWS Load Balancer Controller resources | ALBs, NLBs, target groups, and security groups created in response to `Service type=LoadBalancer` and `Ingress` resources | None — created via the AWS API by the LBC pod | `kubernetes.io/cluster/<cluster-name>: owned`, `elbv2.k8s.aws/cluster`, `ingress.k8s.aws/stack` | K8s drain phase (Sprint 4.12); fallback postflight tag sweep |
 | 4. cert-manager DNS01 records | `_acme-challenge.<host>` TXT records in Route 53 during ACME issuance | None — created via the Route 53 API by the cert-manager solver | Record name pattern `_acme-challenge.*` | K8s drain phase (Sprint 4.12) handles graceful clean-up by deleting `Certificate` resources first; fallback is the postflight tag sweep |
@@ -66,13 +66,13 @@ zone.
 **Per-run state survives cluster wipes via `.data/` preservation.** MinIO runs from a
 host-pathed PV under `.data/minio/...`
 ([storage_lifecycle_doctrine.md](storage_lifecycle_doctrine.md) §1, §7). Whenever
-`.data/` is preserved (the default for both `prodbox rke2 delete --yes` and
-`prodbox rke2 delete --cascade --yes`), MinIO's bucket contents — the per-run Pulumi
+`.data/` is preserved (the default for both `prodbox cluster delete --yes` and
+`prodbox cluster delete --cascade --yes`), MinIO's bucket contents — the per-run Pulumi
 state, and the gateway-owned master seed at `prodbox/master-seed` — persist across the
-cluster cycle. This is what makes `prodbox rke2 delete --allow-pulumi-residue` a
+cluster cycle. This is what makes `prodbox cluster delete --allow-pulumi-residue` a
 leak-free recovery shape: abandon the cluster with state intact in MinIO; rebuild RKE2
-on the same `.data/`; MinIO returns with the same bucket data; `prodbox pulumi
-<stack>-destroy --yes` releases the AWS resources cleanly. No permanent leak even
+on the same `.data/`; MinIO returns with the same bucket data; `prodbox aws stack
+<stack> destroy --yes` releases the AWS resources cleanly. No permanent leak even
 under abnormal teardown sequences.
 
 **Configuration.** The bucket and region are declared in
@@ -89,7 +89,7 @@ bucket. The bucket is created by an idempotent admin-credentialed
 operation — implemented as `ensureLongLivedPulumiStateBucket` in
 `src/Prodbox/Infra/LongLivedPulumiBackend.hs`, invoked as a precondition
 by every command that touches a long-lived stack
-(`prodbox pulumi aws-ses-resources`, `prodbox pulumi aws-ses-destroy`,
+(`prodbox aws stack aws-ses reconcile`, `prodbox aws stack aws-ses destroy`,
 `prodbox nuke`). Required bucket properties: versioning enabled,
 server-side encryption with AES256 (S3-managed keys; KMS is overkill
 and entangles key lifecycle), block-all-public-access on, lifecycle
@@ -110,13 +110,13 @@ permission on the state bucket.
 
 **Migration recipe** (one-time, per long-lived stack):
 
-1. Bring up the MinIO backend (`prodbox rke2 reconcile`).
+1. Bring up the MinIO backend (`prodbox cluster reconcile`).
 2. `pulumi stack export --stack <name>` against the current MinIO backend.
 3. `pulumi login s3://<bucket>/<prefix>?region=<region>` (after
    `ensureLongLivedPulumiStateBucket` has run).
 4. `pulumi stack import --file <export>.json` into the new backend.
 
-The operator command `prodbox pulumi aws-ses-migrate-backend` wraps
+The operator command `prodbox aws stack aws-ses migrate-backend` wraps
 this recipe and is idempotent: if `aws-ses` state is already on S3,
 the command is a no-op.
 
@@ -161,7 +161,7 @@ no shared in-memory state.
    **cascade orchestration**, and this is deliberate:
 
    - **Gate callers fail closed** (Sprint 4.19). The refuse-path
-     preconditions for `prodbox rke2 delete` (default) and
+     preconditions for `prodbox cluster delete` (default) and
      `prodbox aws teardown` treat per-run `Unreachable` as a refusal:
      "I could not read the per-run Pulumi state" is **not** the same
      as "the resources are gone." Treating it as absent previously let
@@ -170,7 +170,7 @@ no shared in-memory state.
      operator `rm .data` then destroyed the only record of live AWS
      resources. Long-lived `Unreachable` (S3) has always failed closed
      for the same reason.
-   - **The cascade degrades gracefully.** `prodbox rke2 delete
+   - **The cascade degrades gracefully.** `prodbox cluster delete
      --cascade`'s own `perRunCascadeInventory` treats per-run
      `Unreachable` as absent — the cascade is tearing the cluster down
      regardless, and the postflight tag sweep (§6) is its backstop for
@@ -222,7 +222,7 @@ no shared in-memory state.
    Sprint 4.11.
 3. **Reconciler loop**, not strict sequence. `discover → diff → enact
    → re-observe` until stable or timeout. Idempotent by construction.
-   Matches the `prodbox rke2 reconcile` doctrine for the install path.
+   Matches the `prodbox cluster reconcile` doctrine for the install path.
 4. **Bracket-style ownership** for transient handles. Already used at
    `src/Prodbox/Infra/MinioBackend.hs:144` (`withMinioPortForward`).
    Reused for the kubectl drain session (Sprint 4.12) and the S3
@@ -320,14 +320,14 @@ Three invariants make the topology leak-proof and idempotent:
 3. **Idempotent reconciliation.** Teardown is one reconciler,
    `reconcileAbsent`, over a class subset of the registry: for each
    resource `Present → destroy → re-observe`, `Absent → skip`,
-   `Unreachable → refuse`. `prodbox rke2 delete` reconciles `PerRun`;
+   `Unreachable → refuse`. `prodbox cluster delete` reconciles `PerRun`;
    `prodbox aws teardown` reconciles `PerRun` ∪ `Operational`;
    `prodbox nuke` reconciles all classes. Re-running converges instead
    of erroring; built on `Plan`/`runPlanWithOptions` so `--dry-run`
    works uniformly.
 4. **Plan-option totality.** Every destructive command routes its work
    through `runPlanWithOptions`, so `--dry-run` and `--plan-file` are
-   honored uniformly — `prodbox rke2 delete` (both the default refuse-gate
+   honored uniformly — `prodbox cluster delete` (both the default refuse-gate
    form and `--cascade`) and `prodbox nuke` included. This is the intended
    Sprint 4.26 invariant: a `check-code` lint, `checkPlanOptionsHonored`,
    forbids any destructive dispatch arm from binding the `PlanOptions`
@@ -367,7 +367,7 @@ invariant 2) is exactly the guarantee restored by closing the
 `ChartPlatform.hs` `preservePublicEdgeTlsSecretBeforeDelete`
 silent-success gap: an unobservable owned certificate must refuse, never
 collapse to "absent/clean." Classified `LongLived` like `aws-ses`, it is
-never auto-destroyed by `prodbox rke2 delete` or `prodbox aws teardown`
+never auto-destroyed by `prodbox cluster delete` or `prodbox aws teardown`
 and is removed only by `prodbox nuke`. The certificate lifecycle and the
 production-vs-staging two-issuer model live in
 [acme_provider_guide.md](./acme_provider_guide.md); its lifecycle-class
@@ -391,9 +391,9 @@ is the per-resource view of one uniform mechanism, not a parallel one.
 
 | Predicate | Returns `Left` when | Used by |
 |---|---|---|
-| `noLivePerRunPulumiStacks` | Any of `aws-eks`, `aws-eks-subzone`, `aws-test` returns `ResiduePresent` (live resources — refuse with the per-stack destroy command) **or** `ResidueUnreachable` (the per-run MinIO state backend could not be read — refuse with a distinct "cannot confirm destroyed; do not delete `.data/`; re-run with `--allow-pulumi-residue` to accept the orphan risk" message). Sprint 4.19 made this gate **fail closed on `ResidueUnreachable`**: "cannot read the state" is not "the resources are gone." | `prodbox rke2 delete` (default), `prodbox aws teardown` (default; see also `noLiveLongLivedPulumiStacks`) |
+| `noLivePerRunPulumiStacks` | Any of `aws-eks`, `aws-eks-subzone`, `aws-test` returns `ResiduePresent` (live resources — refuse with the per-stack destroy command) **or** `ResidueUnreachable` (the per-run MinIO state backend could not be read — refuse with a distinct "cannot confirm destroyed; do not delete `.data/`; re-run with `--allow-pulumi-residue` to accept the orphan risk" message). Sprint 4.19 made this gate **fail closed on `ResidueUnreachable`**: "cannot read the state" is not "the resources are gone." | `prodbox cluster delete` (default), `prodbox aws teardown` (default; see also `noLiveLongLivedPulumiStacks`) |
 | `noLiveLongLivedPulumiStacks` | `aws-ses` returns `ResiduePresent` against its S3 backend, **or** (Sprint 4.24) the `public-edge-tls` retained certificate returns `ResiduePresent` against the long-lived bucket, **or** either returns `ResidueUnreachable` (S3 unreachable is a real failure for long-lived resources; failing closed is the correct behavior) | `prodbox aws teardown` (default); `prodbox nuke` (handled by destroying not refusing — the certificate transitively via the whole-bucket destroy) |
-| `noLiveClusterTaggedAws` | The AWS Resource Tagging API returns any resource carrying `kubernetes.io/cluster/<cluster-name>` | Postflight of `prodbox rke2 delete --cascade` and `prodbox nuke` |
+| `noLiveClusterTaggedAws` | The AWS Resource Tagging API returns any resource carrying `kubernetes.io/cluster/<cluster-name>` | Postflight of `prodbox cluster delete --cascade` and `prodbox nuke` |
 | `noUndrainedK8sAwsResources` | `kubectl` reports any LoadBalancer Service, ALB Ingress, or Delete-reclaim PVC that hasn't been drained, **and** the cluster was reachable on the pre-drain `kubectl cluster-info --request-timeout=5s` probe | Postflight of K8s drain (Sprint 4.12); preflight of per-run Pulumi destroys when `--cascade` is set |
 
 The `noUndrainedK8sAwsResources` predicate returns `Left` only on the
@@ -405,18 +405,18 @@ are already gone. The cascade is safe to continue after either
 outcome — the postflight tag sweep (§6) is the backstop that catches
 any AWS-side residue left by a `DrainSkipped` cascade.
 | `noLiveOperationalIamUser` | The operational `prodbox` IAM user exists | Postflight of `prodbox aws teardown` and `prodbox nuke` |
-| `noLeftoverDnsBootstrapRecords` | The configured public FQDN has stale prodbox-written Route 53 records | Postflight of `prodbox rke2 delete --cascade` and `prodbox nuke` |
+| `noLeftoverDnsBootstrapRecords` | The configured public FQDN has stale prodbox-written Route 53 records | Postflight of `prodbox cluster delete --cascade` and `prodbox nuke` |
 
 `aws-ses` is **explicitly excluded** from `noLivePerRunPulumiStacks`.
-`prodbox rke2 delete` ignores `aws-ses` residue because §2 places its
+`prodbox cluster delete` ignores `aws-ses` residue because §2 places its
 state outside the cluster; `aws-ses` may only be destroyed by
-`prodbox pulumi aws-ses-destroy --yes` or `prodbox nuke`.
+`prodbox aws stack aws-ses destroy --yes` or `prodbox nuke`.
 
 ## 5. Mandatory Preflight for Destructive Commands
 
 Every command in
-`{prodbox rke2 delete, prodbox aws teardown, prodbox pulumi
-<stack>-destroy, prodbox nuke}` must open with `checkAll [...]` over
+`{prodbox cluster delete, prodbox aws teardown, prodbox aws stack
+<stack> destroy, prodbox nuke}` must open with `checkAll [...]` over
 the appropriate `Precondition` set. Failure renders the structured
 leak list and the canonical remedy command per offending class. The
 preflight runs **before** any cluster-side or AWS-side work so the
@@ -425,15 +425,15 @@ backend / credentials are still up at the point of refusal).
 
 | Command | Preflight predicates | Default on residue |
 |---|---|---|
-| `prodbox rke2 delete` | §5a no-install short-circuit, then `noLivePerRunPulumiStacks` | Refuse with list and per-stack destroy command (or run `--cascade` for "orchestrate the full teardown") |
-| `prodbox rke2 delete --cascade` | §5a no-install short-circuit, then none at entry — the command **is** the orchestration | Confirm-MinIO → drain → per-run destroys → uninstall → sweep (see §5b) |
+| `prodbox cluster delete` | §5a no-install short-circuit, then `noLivePerRunPulumiStacks` | Refuse with list and per-stack destroy command (or run `--cascade` for "orchestrate the full teardown") |
+| `prodbox cluster delete --cascade` | §5a no-install short-circuit, then none at entry — the command **is** the orchestration | Confirm-MinIO → drain → per-run destroys → uninstall → sweep (see §5b) |
 | `prodbox aws teardown` | `noLivePerRunPulumiStacks`, `noLiveLongLivedPulumiStacks` (Sprint 7.6) | Refuse with list and per-stack destroy command |
-| `prodbox pulumi <stack>-destroy` | (none beyond Pulumi's own dependency check) | n/a |
+| `prodbox aws stack <stack> destroy` | (none beyond Pulumi's own dependency check) | n/a |
 | `prodbox nuke` | TTY refusal; typed-confirmation literal `NUKE EVERYTHING`; otherwise no residue refusal — the command **is** the total-teardown orchestration | Drain + destroy all stacks + IAM teardown + uninstall + step-4 fail-closed tag sweep (§6) |
 
 ### 5a. No-Install Short-Circuit (Sprint 4.25)
 
-`prodbox rke2 delete` opens — in **both** the default and `--cascade` forms — by
+`prodbox cluster delete` opens — in **both** the default and `--cascade` forms — by
 probing whether an RKE2 install is present on the host *before* the preflight
 predicate (or, for `--cascade`, the confirm-MinIO phase) runs. When no install is
 found it prints `No RKE2 cluster to delete.` and exits `0`.
@@ -461,7 +461,7 @@ untouched.
 Immediately after the §5a no-install short-circuit confirms an RKE2 install is
 present — and **before** the preflight predicate (default form) or the confirm-MinIO
 phase (`--cascade`) — both delete forms run `ensureHostInotifyLimits`. It is the same
-idempotent host-prep step that opens `prodbox rke2 reconcile`: it persists
+idempotent host-prep step that opens `prodbox cluster reconcile`: it persists
 `/etc/sysctl.d/99-prodbox-inotify.conf` (`fs.inotify.max_user_instances = 8192`,
 `fs.inotify.max_user_watches = 1048576`) and applies it via `sysctl --system`, writing
 only on drift. The `99-` prefix is deliberate: `sysctl --system` applies drop-ins in
@@ -479,7 +479,7 @@ ahead of a possible residue refusal is harmless.
 
 ### 5b. Canonical Cascade Order
 
-`prodbox rke2 delete --cascade --yes` orchestrates these phases in order. The order is
+`prodbox cluster delete --cascade --yes` orchestrates these phases in order. The order is
 deliberate and matches §1: the K8s drain runs **before** any per-run Pulumi destroy so
 the in-cluster controllers (AWS Load Balancer Controller, EBS CSI driver,
 cert-manager) are still alive to unwind their AWS-side state. Only then does Pulumi
@@ -520,7 +520,7 @@ orchestration but to the **per-run `aws-eks-test` Pulumi destroy itself**. As of
 Sprint 4.23, `Prodbox.Infra.AwsEksTestStack.destroyAwsEksTestStackStatus` runs a
 best-effort K8s drain (LoadBalancer Services, ALB Ingresses, Delete-reclaim PVCs)
 against the per-run EKS cluster's own kubeconfig immediately **before** `pulumi
-destroy`. Because both the harness postflight (`prodbox pulumi eks-destroy --yes`
+destroy`. Because both the harness postflight (`prodbox aws stack eks destroy --yes`
 from `awsPostflightDestroyActions`) and the cascade
 (`Prodbox.Lifecycle.ResourceRegistry.reconcileAbsent` → `PulumiEksDestroy`) route
 through this destroy, the drain covers both paths — closing the gap where the
@@ -553,7 +553,7 @@ stacks still hold live AWS resources whose destroy path requires operational cre
 clearing those creds would strand the orphans. The postflight therefore **holds**
 the teardown, preserves operational `aws.*` + the operational user, and emits a
 diagnostic naming the recovery path: resolve the destroy failure (e.g. wait out /
-clean up the orphan ENIs), then `prodbox pulumi <stack>-destroy --yes` for each
+clean up the orphan ENIs), then `prodbox aws stack <stack> destroy --yes` for each
 remaining per-run stack, then `prodbox aws teardown`. The per-run destroy failure is
 still surfaced as a non-zero exit.
 
@@ -632,7 +632,7 @@ leaks):
    performed 2026-05-28 (see
    [DEVELOPMENT_PLAN/README.md](../../DEVELOPMENT_PLAN/README.md) Closure
    Status). The long-lived `aws-ses` stack is the bounded configured-name
-   exception: `prodbox pulumi aws-ses-resources` can repair missing Pulumi
+   exception: `prodbox aws stack aws-ses reconcile` can repair missing Pulumi
    state by importing the retained capture bucket / SMTP IAM user / SES receipt
    resources and rotating stale SMTP access keys, because those names are
    operator-configured or hard-coded by the long-lived stack contract. Generic
@@ -649,7 +649,7 @@ This residual is recorded as a class in
 infrastructure never participate in `rke2 delete`'s residue policy.
 The only sanctioned paths to destroy them are:
 
-- `prodbox pulumi aws-ses-destroy --yes` for the `aws-ses` stack
+- `prodbox aws stack aws-ses destroy --yes` for the `aws-ses` stack
   (operator-driven, explicit, never automatic).
 - `prodbox nuke` for total teardown of every prodbox-owned AWS
   resource, including long-lived ones. TTY-only, no `--yes`

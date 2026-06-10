@@ -91,6 +91,7 @@ import Prodbox.CLI.Command
   , DaemonLaunchOptions (..)
   , DaemonStatusOptions (..)
   , DnsCommand (..)
+  , EdgeCommand (..)
   , GatewayCommand (..)
   , HostCommand (..)
   , IntegrationSuite (..)
@@ -346,6 +347,9 @@ import Prodbox.Naming
   , hashSuffix
   , sanitizeResourceName
   )
+import Prodbox.Native
+  ( commandPrerequisites
+  )
 import Prodbox.PostgresPlatform
   ( patroniPersistentVolumeClaimName
   , patroniPrimaryServiceName
@@ -402,6 +406,7 @@ import Prodbox.Settings
   , renderConfigDhall
   , renderSettingsDisplay
   , validateAndLoadSettings
+  , validateAwsBootstrapConfig
   , validatePublicEdgeDeployment
   )
 import Prodbox.Subprocess
@@ -523,12 +528,12 @@ main = mainWithSuite "prodbox-unit" $ do
       parseArgs ["host", "info"]
         `shouldBe` Right (Options False (RunNative (NativeHost HostInfo)))
 
-    it "routes host public-edge through the native Haskell runtime" $ do
-      parseArgs ["host", "public-edge"]
+    it "routes edge status through the native Haskell runtime" $ do
+      parseArgs ["edge", "status"]
         `shouldBe` Right (Options False (RunNative (NativeHost (HostPublicEdge SubstrateHomeLocal))))
 
-    it "routes host public-edge --substrate aws to the AWS-substrate diagnostic" $ do
-      parseArgs ["host", "public-edge", "--substrate", "aws"]
+    it "routes edge status --substrate aws to the AWS-substrate diagnostic" $ do
+      parseArgs ["edge", "status", "--substrate", "aws"]
         `shouldBe` Right (Options False (RunNative (NativeHost (HostPublicEdge SubstrateAws))))
 
     it "routes dns check through the native Haskell runtime" $ do
@@ -625,15 +630,15 @@ main = mainWithSuite "prodbox-unit" $ do
           )
 
     it "routes aws check-quotas to the native Haskell runtime" $ do
-      parseArgs ["aws", "check-quotas"]
+      parseArgs ["aws", "quotas", "check"]
         `shouldBe` Right (Options False (RunNative (NativeAws AwsCheckQuotas)))
 
     it "routes aws request-quotas to the native Haskell runtime" $ do
-      parseArgs ["aws", "request-quotas", "--tier", "core"]
+      parseArgs ["aws", "quotas", "request", "--tier", "core"]
         `shouldBe` Right (Options False (RunNative (NativeAws (AwsRequestQuotas PolicyCore))))
 
     it "routes tla-check through the native Haskell runtime" $ do
-      parseArgs ["tla-check"]
+      parseArgs ["dev", "tla-check"]
         `shouldBe` Right (Options False (RunNative NativeTlaCheck))
 
     it "routes nuke --dry-run through the native Haskell runtime" $ do
@@ -652,8 +657,8 @@ main = mainWithSuite "prodbox-unit" $ do
               (RunNative (NativeNuke (NukeOptions {nukeDryRun = False, nukePlanFile = Nothing})))
           )
 
-    it "routes rke2 commands through the native Haskell runtime" $ do
-      parseArgs ["rke2", "delete", "--yes"]
+    it "routes cluster commands through the native Haskell runtime" $ do
+      parseArgs ["cluster", "delete", "--yes"]
         `shouldBe` Right
           ( Options
               False
@@ -672,8 +677,8 @@ main = mainWithSuite "prodbox-unit" $ do
               )
           )
 
-    it "routes rke2 delete --cascade through the native Haskell runtime" $ do
-      parseArgs ["rke2", "delete", "--yes", "--cascade"]
+    it "routes cluster delete --cascade through the native Haskell runtime" $ do
+      parseArgs ["cluster", "delete", "--yes", "--cascade"]
         `shouldBe` Right
           ( Options
               False
@@ -692,8 +697,8 @@ main = mainWithSuite "prodbox-unit" $ do
               )
           )
 
-    it "routes rke2 delete --allow-pulumi-residue through the native Haskell runtime" $ do
-      parseArgs ["rke2", "delete", "--yes", "--allow-pulumi-residue"]
+    it "routes cluster delete --allow-pulumi-residue through the native Haskell runtime" $ do
+      parseArgs ["cluster", "delete", "--yes", "--allow-pulumi-residue"]
         `shouldBe` Right
           ( Options
               False
@@ -712,8 +717,8 @@ main = mainWithSuite "prodbox-unit" $ do
               )
           )
 
-    it "rejects rke2 delete --cascade --allow-pulumi-residue (mutual exclusion)" $ do
-      case parseArgs ["rke2", "delete", "--yes", "--cascade", "--allow-pulumi-residue"] of
+    it "rejects cluster delete --cascade --allow-pulumi-residue (mutual exclusion)" $ do
+      case parseArgs ["cluster", "delete", "--yes", "--cascade", "--allow-pulumi-residue"] of
         Left _ -> pure ()
         Right value ->
           expectationFailure
@@ -721,12 +726,12 @@ main = mainWithSuite "prodbox-unit" $ do
                 ++ show value
             )
 
-    it "routes pulumi commands through the native Haskell runtime" $ do
-      parseArgs ["pulumi", "test-resources"]
+    it "routes aws stack commands through the native Haskell runtime" $ do
+      parseArgs ["aws", "stack", "test", "reconcile"]
         `shouldBe` Right
           (Options False (RunNative (NativePulumi (PulumiTestResources (PlanOptions False Nothing)))))
 
-      parseArgs ["pulumi", "eks-destroy", "--yes"]
+      parseArgs ["aws", "stack", "eks", "destroy", "--yes"]
         `shouldBe` Right
           ( Options
               False
@@ -743,8 +748,8 @@ main = mainWithSuite "prodbox-unit" $ do
               )
           )
 
-    it "routes native k8s commands through the Haskell runtime with defaults" $ do
-      parseArgs ["k8s", "logs"]
+    it "routes cluster workload-logs through the Haskell runtime with defaults" $ do
+      parseArgs ["cluster", "workload-logs"]
         `shouldBe` Right
           ( Options
               False
@@ -844,7 +849,7 @@ main = mainWithSuite "prodbox-unit" $ do
         , "prodbox users list"
         , "prodbox users revoke"
         , "prodbox host firewall gateway-unrestrict"
-        , "prodbox pulumi aws-ses-migrate-backend"
+        , "prodbox aws stack aws-ses migrate-backend"
         , "prodbox test integration keycloak-invite"
         ]
         ( \commandText ->
@@ -931,7 +936,7 @@ main = mainWithSuite "prodbox-unit" $ do
             pure (BL8.pack (renderGatewayStartPlan "/tmp/prodbox/gateway.dhall" config))
 
     goldenTest
-      "renders the rke2 reconcile plan deterministically"
+      "renders the local (no-edge) rke2 reconcile plan deterministically"
       "test/golden/plans/rke2-reconcile.txt"
       ( pure
           ( BL8.pack
@@ -941,6 +946,23 @@ main = mainWithSuite "prodbox-unit" $ do
                   "machine-id-123"
                   "prodbox-123"
                   "prodbox-123"
+                  False
+              )
+          )
+      )
+
+    goldenTest
+      "renders the rke2 reconcile --with-edge plan deterministically"
+      "test/golden/plans/rke2-reconcile-with-edge.txt"
+      ( pure
+          ( BL8.pack
+              ( renderNativeInstallPlan
+                  "/tmp/prodbox"
+                  (testValidatedSettings "/tmp/prodbox/.data")
+                  "machine-id-123"
+                  "prodbox-123"
+                  "prodbox-123"
+                  True
               )
           )
       )
@@ -949,7 +971,7 @@ main = mainWithSuite "prodbox-unit" $ do
       let dropIn = renderInotifySysctlDropIn
       dropIn `shouldSatisfy` ("fs.inotify.max_user_instances = 8192" `isInfixOf`)
       dropIn `shouldSatisfy` ("fs.inotify.max_user_watches = 1048576" `isInfixOf`)
-      dropIn `shouldSatisfy` ("Managed by `prodbox rke2 reconcile`" `isInfixOf`)
+      dropIn `shouldSatisfy` ("Managed by `prodbox cluster reconcile`" `isInfixOf`)
 
     it "skips plan application on --dry-run while persisting the rendered plan" $
       withSystemTempDirectory "prodbox-plan-options" $ \tmpDir -> do
@@ -1307,13 +1329,13 @@ main = mainWithSuite "prodbox-unit" $ do
           case testPlanExecutionMode testPlan of
             NativeSuite suitePlan ->
               awsSubstrateBootstrapCommandArgs suitePlan
-                `shouldBe` [ ["pulumi", "aws-subzone-resources"]
-                           , ["pulumi", "eks-resources"]
-                           , ["pulumi", "test-resources"]
-                           , ["charts", "deploy", "gateway", "--substrate", "aws"]
-                           , ["charts", "deploy", "vscode", "--substrate", "aws"]
-                           , ["charts", "deploy", "api", "--substrate", "aws"]
-                           , ["charts", "deploy", "websocket", "--substrate", "aws"]
+                `shouldBe` [ ["aws", "stack", "aws-subzone", "reconcile"]
+                           , ["aws", "stack", "eks", "reconcile"]
+                           , ["aws", "stack", "test", "reconcile"]
+                           , ["charts", "reconcile", "gateway", "--substrate", "aws"]
+                           , ["charts", "reconcile", "vscode", "--substrate", "aws"]
+                           , ["charts", "reconcile", "api", "--substrate", "aws"]
+                           , ["charts", "reconcile", "websocket", "--substrate", "aws"]
                            ]
             DelegatedSuite _ -> expectationFailure "expected native aggregate test plan"
 
@@ -1340,9 +1362,9 @@ main = mainWithSuite "prodbox-unit" $ do
               nativeRequiresSupportedRuntimeBootstrap suitePlan `shouldBe` True
               nativeRequiresSupportedRuntimePostflight suitePlan `shouldBe` False
               awsPostflightDestroyCommandArgs suitePlan
-                `shouldBe` [ ["pulumi", "aws-subzone-destroy", "--yes"]
-                           , ["pulumi", "eks-destroy", "--yes"]
-                           , ["pulumi", "test-destroy", "--yes"]
+                `shouldBe` [ ["aws", "stack", "aws-subzone", "destroy", "--yes"]
+                           , ["aws", "stack", "eks", "destroy", "--yes"]
+                           , ["aws", "stack", "test", "destroy", "--yes"]
                            ]
             DelegatedSuite _ -> expectationFailure "expected native keycloak-invite plan"
 
@@ -1388,9 +1410,9 @@ main = mainWithSuite "prodbox-unit" $ do
               nativeManagedAwsHarnessPolicyTier suitePlan `shouldBe` Just PolicyFull
               nativeRequiresSupportedRuntimeBootstrap suitePlan `shouldBe` False
               awsPostflightDestroyCommandArgs suitePlan
-                `shouldBe` [ ["pulumi", "aws-subzone-destroy", "--yes"]
-                           , ["pulumi", "eks-destroy", "--yes"]
-                           , ["pulumi", "test-destroy", "--yes"]
+                `shouldBe` [ ["aws", "stack", "aws-subzone", "destroy", "--yes"]
+                           , ["aws", "stack", "eks", "destroy", "--yes"]
+                           , ["aws", "stack", "test", "destroy", "--yes"]
                            ]
             DelegatedSuite _ -> expectationFailure "expected native aws-eks plan"
 
@@ -4401,7 +4423,7 @@ main = mainWithSuite "prodbox-unit" $ do
             ResourceRegistry.ManagedResource
               { ResourceRegistry.resourceName = name
               , ResourceRegistry.resourceClass = ResourceClass.PerRun
-              , ResourceRegistry.resourceDestroyCommand = "prodbox pulumi " ++ name ++ "-destroy --yes"
+              , ResourceRegistry.resourceDestroyCommand = "prodbox aws stack " ++ name ++ " destroy --yes"
               , ResourceRegistry.resourceDestroy = \_ -> do
                   modifyIORef' destroyed (++ [name])
                   pure code
@@ -6136,9 +6158,9 @@ main = mainWithSuite "prodbox-unit" $ do
       $ do
         let perRun = absentPerRunStatuses {perRunAwsEksTest = residuePresentFor "aws-eks-test"}
             residue = categorizePulumiResidue perRun Residue.ResidueAbsent
-        residue `shouldBe` [("aws-eks", "prodbox pulumi eks-destroy --yes")]
+        residue `shouldBe` [("aws-eks", "prodbox aws stack eks destroy --yes")]
         let refusal = renderPulumiResidueRefusal residue
-        refusal `shouldContain` "aws-eks → prodbox pulumi eks-destroy --yes"
+        refusal `shouldContain` "aws-eks → prodbox aws stack eks destroy --yes"
         refusal `shouldContain` "--allow-pulumi-residue"
     it "Scenario B — interrupted suite: no live residue → list empty so cleanup proceeds" $ do
       let residue = categorizePulumiResidue absentPerRunStatuses Residue.ResidueAbsent
@@ -6151,14 +6173,14 @@ main = mainWithSuite "prodbox-unit" $ do
               }
           residue = categorizePulumiResidue perRun Residue.ResidueAbsent
       residue
-        `shouldBe` [ ("aws-eks-subzone", "prodbox pulumi aws-subzone-destroy --yes")
-                   , ("aws-test", "prodbox pulumi test-destroy --yes")
+        `shouldBe` [ ("aws-eks-subzone", "prodbox aws stack aws-subzone destroy --yes")
+                   , ("aws-test", "prodbox aws stack test destroy --yes")
                    ]
     it "Scenario D — SES present: aws-ses live → refusal names aws-ses-destroy as recovery" $ do
       let residue = categorizePulumiResidue absentPerRunStatuses (residuePresentFor "aws-ses")
-      residue `shouldBe` [("aws-ses", "prodbox pulumi aws-ses-destroy --yes")]
+      residue `shouldBe` [("aws-ses", "prodbox aws stack aws-ses destroy --yes")]
       let refusal = renderPulumiResidueRefusal residue
-      refusal `shouldContain` "aws-ses → prodbox pulumi aws-ses-destroy --yes"
+      refusal `shouldContain` "aws-ses → prodbox aws stack aws-ses destroy --yes"
     it "Scenario all-four — every stack present → all four canonical destroy commands in order" $ do
       let perRun =
             PerRunResidueStatuses
@@ -6168,10 +6190,10 @@ main = mainWithSuite "prodbox-unit" $ do
               }
           residue = categorizePulumiResidue perRun (residuePresentFor "aws-ses")
       residue
-        `shouldBe` [ ("aws-eks", "prodbox pulumi eks-destroy --yes")
-                   , ("aws-eks-subzone", "prodbox pulumi aws-subzone-destroy --yes")
-                   , ("aws-test", "prodbox pulumi test-destroy --yes")
-                   , ("aws-ses", "prodbox pulumi aws-ses-destroy --yes")
+        `shouldBe` [ ("aws-eks", "prodbox aws stack eks destroy --yes")
+                   , ("aws-eks-subzone", "prodbox aws stack aws-subzone destroy --yes")
+                   , ("aws-test", "prodbox aws stack test destroy --yes")
+                   , ("aws-ses", "prodbox aws stack aws-ses destroy --yes")
                    ]
     it "Sprint 4.19 unreachable per-run: MinIO down → gate refuses (cannot confirm gone)" $ do
       let unreachable =
@@ -6185,16 +6207,16 @@ main = mainWithSuite "prodbox-unit" $ do
               }
           residue = categorizePulumiResidue perRun Residue.ResidueAbsent
       residue
-        `shouldBe` [ ("aws-eks", "prodbox pulumi eks-destroy --yes")
-                   , ("aws-eks-subzone", "prodbox pulumi aws-subzone-destroy --yes")
-                   , ("aws-test", "prodbox pulumi test-destroy --yes")
+        `shouldBe` [ ("aws-eks", "prodbox aws stack eks destroy --yes")
+                   , ("aws-eks-subzone", "prodbox aws stack aws-subzone destroy --yes")
+                   , ("aws-test", "prodbox aws stack test destroy --yes")
                    ]
     it "Sprint 4.16 unreachable long-lived: S3 down → aws-ses treated as still-present (doctrine §3)" $ do
       let unreachable =
             Residue.ResidueUnreachable
               (Residue.ResidueBackendS3Unreachable "admin credentials missing")
           residue = categorizePulumiResidue absentPerRunStatuses unreachable
-      residue `shouldBe` [("aws-ses", "prodbox pulumi aws-ses-destroy --yes")]
+      residue `shouldBe` [("aws-ses", "prodbox aws stack aws-ses destroy --yes")]
 
   describe "Sprint 4.19 per-run delete-gate refusal messages" $ do
     it "unreadable-only refusal names the escape hatch and warns against deleting .data" $ do
@@ -6211,14 +6233,14 @@ main = mainWithSuite "prodbox-unit" $ do
       narrative `shouldContain` "--allow-pulumi-residue"
 
     it "live-only refusal lists the canonical destroy command and the cascade alternative" $ do
-      let narrative = Preconditions.renderPerRunRefusal [("aws-eks", "prodbox pulumi eks-destroy --yes")] []
-      narrative `shouldContain` "aws-eks → prodbox pulumi eks-destroy --yes"
+      let narrative = Preconditions.renderPerRunRefusal [("aws-eks", "prodbox aws stack eks destroy --yes")] []
+      narrative `shouldContain` "aws-eks → prodbox aws stack eks destroy --yes"
       narrative `shouldContain` "--cascade"
 
     it "summary distinguishes the present-and-unreachable combination" $ do
       let summary =
             Preconditions.perRunSummaryLine
-              [("aws-eks", "prodbox pulumi eks-destroy --yes")]
+              [("aws-eks", "prodbox aws stack eks destroy --yes")]
               [("aws-test", "unreachable (MinIO backend unreachable: refused)")]
       summary `shouldContain` "live resources"
       summary `shouldContain` "unreachable"
@@ -6602,9 +6624,9 @@ main = mainWithSuite "prodbox-unit" $ do
             StackDescriptor.renderStackCommandSurfaceMarkdown StackDescriptor.stackDescriptors
       rendered `shouldContain` "| Registry name | Pulumi stack id |"
       rendered
-        `shouldContain` "| `aws-eks` | `aws-eks-test` | `pulumi/aws-eks/` | `prodbox pulumi eks-resources` |"
+        `shouldContain` "| `aws-eks` | `aws-eks-test` | `pulumi/aws-eks/` | `prodbox aws stack eks reconcile` |"
       rendered
-        `shouldContain` "| `aws-ses` | `aws-ses` | `pulumi/aws-ses/` | `prodbox pulumi aws-ses-resources` |"
+        `shouldContain` "| `aws-ses` | `aws-ses` | `pulumi/aws-ses/` | `prodbox aws stack aws-ses reconcile` |"
 
   describe "Sprint 0.9 documentation-harmony pure helpers" $ do
     describe "stripFencedCodeBlocks" $ do
@@ -7243,7 +7265,7 @@ main = mainWithSuite "prodbox-unit" $ do
     it "renderNukePlan lists the five-step orchestration in order" $ do
       let plan = Nuke.renderNukePlan "/tmp/repo"
       plan `shouldContain` "STEP=1 K8s drain"
-      plan `shouldContain` "STEP=2 prodbox pulumi aws-ses-destroy"
+      plan `shouldContain` "STEP=2 prodbox aws stack aws-ses destroy"
       plan `shouldContain` "STEP=3 prodbox aws teardown"
       plan `shouldContain` "STEP=4 postflight tag sweep"
       plan `shouldContain` "STEP=5 destroy long-lived `pulumi_state_backend` S3 bucket"
@@ -7257,27 +7279,27 @@ main = mainWithSuite "prodbox-unit" $ do
       longLivedResourceNames `shouldBe` ["aws-ses", "public-edge-tls"]
     it "partitionResidueByLifecycle splits residue correctly with all four stacks live" $ do
       let allFour =
-            [ ("aws-eks", "prodbox pulumi eks-destroy --yes")
-            , ("aws-eks-subzone", "prodbox pulumi aws-subzone-destroy --yes")
-            , ("aws-test", "prodbox pulumi test-destroy --yes")
-            , ("aws-ses", "prodbox pulumi aws-ses-destroy --yes")
+            [ ("aws-eks", "prodbox aws stack eks destroy --yes")
+            , ("aws-eks-subzone", "prodbox aws stack aws-subzone destroy --yes")
+            , ("aws-test", "prodbox aws stack test destroy --yes")
+            , ("aws-ses", "prodbox aws stack aws-ses destroy --yes")
             ]
           (perRun, longLived) = partitionResidueByLifecycle allFour
       map fst perRun `shouldBe` ["aws-eks", "aws-eks-subzone", "aws-test"]
       map fst longLived `shouldBe` ["aws-ses"]
     it "pulumiDestroyPlanForResidue orders subzone -> eks -> test -> ses (most expensive last)" $ do
       let allFour =
-            [ ("aws-eks", "prodbox pulumi eks-destroy --yes")
-            , ("aws-eks-subzone", "prodbox pulumi aws-subzone-destroy --yes")
-            , ("aws-test", "prodbox pulumi test-destroy --yes")
-            , ("aws-ses", "prodbox pulumi aws-ses-destroy --yes")
+            [ ("aws-eks", "prodbox aws stack eks destroy --yes")
+            , ("aws-eks-subzone", "prodbox aws stack aws-subzone destroy --yes")
+            , ("aws-test", "prodbox aws stack test destroy --yes")
+            , ("aws-ses", "prodbox aws stack aws-ses destroy --yes")
             ]
       map fst (pulumiDestroyPlanForResidue allFour)
         `shouldBe` ["aws-eks-subzone", "aws-eks", "aws-test", "aws-ses"]
     it "pulumiDestroyPlanForResidue preserves canonical order even when input is reordered" $ do
       let reordered =
-            [ ("aws-ses", "prodbox pulumi aws-ses-destroy --yes")
-            , ("aws-test", "prodbox pulumi test-destroy --yes")
+            [ ("aws-ses", "prodbox aws stack aws-ses destroy --yes")
+            , ("aws-test", "prodbox aws stack test destroy --yes")
             ]
       map fst (pulumiDestroyPlanForResidue reordered)
         `shouldBe` ["aws-test", "aws-ses"]
@@ -7322,7 +7344,7 @@ main = mainWithSuite "prodbox-unit" $ do
         let (_, longLived) = partitionResidueByLifecycle sesOnlyResidue
         let refusal = renderPulumiResidueLongLivedRefusal longLived
         refusal `shouldContain` "long-lived cross-substrate shared"
-        refusal `shouldContain` "aws-ses → prodbox pulumi aws-ses-destroy --yes"
+        refusal `shouldContain` "aws-ses → prodbox aws stack aws-ses destroy --yes"
     it
       "Scenario G — BypassPerRunResidueOnly with both per-run and long-lived: refusal lists only long-lived"
       $ do
@@ -7383,7 +7405,7 @@ main = mainWithSuite "prodbox-unit" $ do
         map fst longLived `shouldBe` ["aws-ses"]
         -- The old policy would have produced a long-lived refusal here:
         renderPulumiResidueLongLivedRefusal longLived
-          `shouldContain` "aws-ses → prodbox pulumi aws-ses-destroy --yes"
+          `shouldContain` "aws-ses → prodbox aws stack aws-ses destroy --yes"
         -- The postflight policy is one of the two proceed-on-everything
         -- policies (BypassAllResidueForHarnessRefresh / AcceptOrphanResidue),
         -- so applyAwsTeardown short-circuits past that refusal.
@@ -7409,7 +7431,7 @@ main = mainWithSuite "prodbox-unit" $ do
               (absentPerRunStatuses {perRunAwsEksTest = residuePresentFor "aws-eks-test"})
               Residue.ResidueAbsent
       pulumiDestroyPlanForResidue residue
-        `shouldBe` [("aws-eks", "prodbox pulumi eks-destroy --yes")]
+        `shouldBe` [("aws-eks", "prodbox aws stack eks destroy --yes")]
     it
       "Scenario K — aws-ses only: destroy plan names aws-ses-destroy (long-lived warning fires at dispatch)"
       $ do
@@ -7418,7 +7440,7 @@ main = mainWithSuite "prodbox-unit" $ do
                 absentPerRunStatuses
                 (residuePresentFor "aws-ses")
         pulumiDestroyPlanForResidue residue
-          `shouldBe` [("aws-ses", "prodbox pulumi aws-ses-destroy --yes")]
+          `shouldBe` [("aws-ses", "prodbox aws stack aws-ses destroy --yes")]
     it "Scenario L — all four: destroy plan dispatches in canonical order subzone -> eks -> test -> ses" $ do
       let residue =
             categorizePulumiResidue
@@ -7515,6 +7537,30 @@ main = mainWithSuite "prodbox-unit" $ do
     it "names the test-only bypass env var explicitly" $
       allowNonTtyInteractiveEnvVar `shouldBe` "PRODBOX_ALLOW_NON_TTY_INTERACTIVE"
 
+  describe "command prerequisites (Phase 4 declarative SSoT)" $ do
+    it "references only registry-member prerequisite ids" $ do
+      let sampleCommands =
+            [ NativeAws (AwsSetup PolicyFull (PlanOptions False Nothing))
+            , NativeAws AwsCheckQuotas
+            , NativeCharts ChartsList
+            , NativeDns DnsCheck
+            , NativeEdge (EdgeReconcile (PlanOptions False Nothing))
+            , NativeK8s K8sHealth
+            , NativePulumi (PulumiEksResources (PlanOptions False Nothing))
+            , NativeCheckCode
+            , NativeTlaCheck
+            ]
+          referenced = concatMap commandPrerequisites sampleCommands
+      all (`Map.member` prerequisiteRegistry) referenced `shouldBe` True
+
+    it "gates edge reconcile on a reachable cluster and valid AWS credentials" $
+      commandPrerequisites (NativeEdge (EdgeReconcile (PlanOptions False Nothing)))
+        `shouldBe` [K8sClusterReachable, AwsCredentialsValid]
+
+    it "keeps the local cluster lifecycle commands prerequisite-free at the SSoT layer" $
+      commandPrerequisites (NativeRke2 (Rke2Reconcile (PlanOptions False Nothing) False))
+        `shouldBe` []
+
   describe "settings" $ do
     it "validates Dhall config and renders masked output without materializing JSON" $
       withSystemTempDirectory "prodbox-hs-unit" $ \tmpDir -> do
@@ -7574,15 +7620,25 @@ main = mainWithSuite "prodbox-unit" $ do
           }
         `shouldBe` Right ()
 
-    it "fails fast on invalid ZeroSSL EAB configuration" $
+    it "decodes locally even when the ZeroSSL EAB binding is incomplete (AWS-tier check)" $
+      -- The ACME / ZeroSSL binding is an AWS / public-edge concern, so the
+      -- local decode path ('validateAndLoadSettings') accepts it; only the
+      -- AWS tier ('validateAwsBootstrapConfig') enforces it.
       withSystemTempDirectory "prodbox-hs-unit" $ \tmpDir -> do
         writeFile (tmpDir </> "prodbox-config.dhall") invalidZeroSslConfig
 
-        result <- validateAndLoadSettings tmpDir
+        localResult <- validateAndLoadSettings tmpDir
+        case localResult of
+          Left err -> expectationFailure ("local validation must accept it: " ++ err)
+          Right _ -> pure ()
 
-        case result of
-          Left err -> err `shouldContain` "required for ZeroSSL ACME"
-          Right _ -> expectationFailure "expected validation failure"
+        configResult <- loadConfigFile tmpDir
+        case configResult of
+          Left err -> expectationFailure err
+          Right config ->
+            case validateAwsBootstrapConfig config of
+              Left err -> err `shouldContain` "required for ZeroSSL ACME"
+              Right () -> expectationFailure "expected AWS-tier validation failure"
 
     it "fails fast with setup guidance when the repo Dhall config is missing" $
       withSystemTempDirectory "prodbox-hs-unit" $ \tmpDir -> do

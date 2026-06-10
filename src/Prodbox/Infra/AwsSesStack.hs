@@ -557,7 +557,7 @@ runSyncKeycloakSmtpChartSecrets repoRoot projectDir baseEnvironment stackConfig 
           pure
             ( Left
                 ( "aws-ses stack is not present in the long-lived backend; "
-                    ++ "run `prodbox pulumi aws-ses-resources` before keycloak-invite validation."
+                    ++ "run `prodbox aws stack aws-ses reconcile` before keycloak-invite validation."
                 )
             )
         PulumiStackSelectFailed detail ->
@@ -784,7 +784,7 @@ trim = reverse . dropWhile (\c -> c == '\n' || c == '\r' || c == ' ') . reverse
 -- consults the long-lived S3 backend named by
 -- `pulumi_state_backend`. The in-cluster MinIO backend is no longer
 -- read on this path; operators with existing MinIO-backed state must
--- run `prodbox pulumi aws-ses-migrate-backend` once to copy state
+-- run `prodbox aws stack aws-ses migrate-backend` once to copy state
 -- onto the long-lived bucket.
 ensureAwsSesStackResources :: FilePath -> IO ExitCode
 ensureAwsSesStackResources repoRoot = do

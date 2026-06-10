@@ -62,7 +62,7 @@ validation environments.
   sweeping for cluster-tagged AWS resources after every destructive run; the consolidated doctrine
   lives in
   [documents/engineering/lifecycle_reconciliation_doctrine.md](./documents/engineering/lifecycle_reconciliation_doctrine.md).
-  `prodbox rke2 delete` opens with a refuse-path on live per-run Pulumi stacks; when no RKE2
+  `prodbox cluster delete` opens with a refuse-path on live per-run Pulumi stacks; when no RKE2
   install is present it short-circuits before that path to a no-op success
   (`No RKE2 cluster to delete.`, exit 0). `--cascade` is the
   positive-framed "clean teardown" path that orchestrates K8s drain + per-run destroys + cluster
@@ -106,7 +106,7 @@ The current codebase baseline still deploys and manages:
 - **Route 53** for the single public A-record ownership contract
 - **Interactive onboarding** through `prodbox config setup`
 - **AWS IAM automation** through `prodbox aws ...`
-- **AWS validation stacks** through `prodbox pulumi eks-resources|eks-destroy --yes|test-resources|test-destroy --yes`
+- **AWS validation stacks** through `prodbox aws stack eks reconcile|eks destroy --yes|test reconcile|test destroy --yes`
 - **Bespoke charts** for `gateway`, `keycloak`, `vscode`, `api`, and `websocket`, with internal
   `redis` and `keycloak-postgres` dependency releases
 
@@ -188,14 +188,11 @@ Closure, validation ownership, and phase history are tracked in
 git clone https://github.com/Tuee22/prodbox.git
 cd prodbox
 
-cabal build --builddir=.build exe:prodbox
-mkdir -p .build
-cp "$(cabal list-bin --builddir=.build exe:prodbox)" .build/prodbox
-chmod +x .build/prodbox
+cabal install exe:prodbox --builddir=.build --installdir=.build --install-method=copy --overwrite-policy=always
 ./.build/prodbox --help
 ```
 
-`prodbox check-code` enforces the repository-owned workflow and hook policy, then syncs the built
+`prodbox dev check` enforces the repository-owned workflow and hook policy, then syncs the built
 operator binary to `./.build/prodbox`.
 
 ## Supported Operating Model
@@ -206,28 +203,25 @@ operator path is the explicit `prodbox` command surface documented here and in
 
 - Most commands load and validate the repository-root `prodbox-config.dhall` before they do any
   work.
-- `prodbox rke2 reconcile` is the idempotent local lifecycle entrypoint. Use it to create or
+- `prodbox cluster reconcile` is the idempotent local lifecycle entrypoint. Use it to create or
   reconcile the supported local cluster.
 - `prodbox charts ...` manages the supported root chart stacks: `gateway`, `keycloak`, `vscode`,
   `api`, and `websocket`.
 - `api` and `websocket` are public-edge chart surfaces alongside `keycloak` and `vscode`. The
   internal `redis` release is owned by the `websocket` stack. The `gateway` chart is the separate
   in-cluster Haskell distributed gateway daemon, not the Envoy Gateway controller.
-- `prodbox pulumi ...` manages only the AWS validation stacks. It does not manage the local
+- `prodbox aws stack ...` manages only the AWS validation stacks. It does not manage the local
   cluster or the application chart stacks.
 - The AWS validation stacks use the repo-backed MinIO backend in the local RKE2 cluster, so
-  `prodbox rke2 reconcile` must succeed before `prodbox pulumi eks-resources` or
-  `prodbox pulumi test-resources` can succeed.
+  `prodbox cluster reconcile` must succeed before `prodbox aws stack eks reconcile` or
+  `prodbox aws stack test reconcile` can succeed.
 
 ## Quick Start
 
 Use this sequence for a first supported local bring-up:
 
 ```bash
-cabal build --builddir=.build exe:prodbox
-mkdir -p .build
-cp "$(cabal list-bin --builddir=.build exe:prodbox)" .build/prodbox
-chmod +x .build/prodbox
+cabal install exe:prodbox --builddir=.build --installdir=.build --install-method=copy --overwrite-policy=always
 
 ./.build/prodbox config setup
 ./.build/prodbox config validate
@@ -237,16 +231,16 @@ chmod +x .build/prodbox
 ./.build/prodbox host check-ports
 ./.build/prodbox host firewall
 
-./.build/prodbox rke2 reconcile
-./.build/prodbox rke2 status
+./.build/prodbox cluster reconcile
+./.build/prodbox cluster status
 
-./.build/prodbox charts deploy vscode
-./.build/prodbox charts deploy api
-./.build/prodbox charts deploy websocket
+./.build/prodbox charts reconcile vscode
+./.build/prodbox charts reconcile api
+./.build/prodbox charts reconcile websocket
 
-./.build/prodbox host public-edge
+./.build/prodbox edge status
 ./.build/prodbox charts status vscode
-./.build/prodbox charts deploy gateway
+./.build/prodbox charts reconcile gateway
 ./.build/prodbox charts status gateway
 ```
 
@@ -353,7 +347,7 @@ Validate the repository config:
 | Gateway operations | `gateway config-gen`, `gateway start --config <path>`, `gateway status --config <path>` | You need to generate a gateway config, run a daemon manually, or inspect daemon state |
 | DNS | `dns check` | You need Route 53 inspection for the configured public host |
 | AWS IAM and quotas | `aws policy`, `aws setup`, `aws teardown`, `aws check-quotas`, `aws request-quotas` | You need IAM bootstrap, cleanup, or supported quota inspection/request flows |
-| AWS validation stacks | `pulumi eks-resources`, `pulumi eks-destroy --yes`, `pulumi aws-subzone-resources`, `pulumi aws-subzone-destroy --yes`, `pulumi test-resources`, `pulumi test-destroy --yes`, `pulumi aws-ses-resources`, `pulumi aws-ses-destroy --yes` | You need to create, inspect, or destroy the AWS EKS, Route 53 subzone, HA-RKE2, or SES validation stacks (see [DEVELOPMENT_PLAN/substrates.md → Resource Lifecycle Classes](./DEVELOPMENT_PLAN/substrates.md#resource-lifecycle-classes) for which stacks the test harness auto-destroys vs retains) |
+| AWS validation stacks | `pulumi eks reconcile`, `pulumi eks destroy --yes`, `pulumi aws-subzone reconcile`, `pulumi aws-subzone destroy --yes`, `pulumi test reconcile`, `pulumi test destroy --yes`, `pulumi aws-ses reconcile`, `pulumi aws-ses destroy --yes` | You need to create, inspect, or destroy the AWS EKS, Route 53 subzone, HA-RKE2, or SES validation stacks (see [DEVELOPMENT_PLAN/substrates.md → Resource Lifecycle Classes](./DEVELOPMENT_PLAN/substrates.md#resource-lifecycle-classes) for which stacks the test harness auto-destroys vs retains) |
 | Validation | `check-code`, `lint ...`, `docs ...`, `test lint`, `test ...`, `tla-check` | You need quality gates, generated-doc maintenance, Haskell tests, native integration validation, or TLA+ checks |
 
 ## Common Workflows
@@ -363,22 +357,22 @@ Validate the repository config:
 Bring up or reconcile the supported local substrate:
 
 ```bash
-./.build/prodbox rke2 reconcile
-./.build/prodbox rke2 status
-./.build/prodbox k8s health
+./.build/prodbox cluster reconcile
+./.build/prodbox cluster status
+./.build/prodbox cluster health
 ```
 
 Inspect local platform logs:
 
 ```bash
-./.build/prodbox rke2 logs -n 200
-./.build/prodbox k8s logs --tail 200
+./.build/prodbox cluster logs -n 200
+./.build/prodbox cluster workload-logs --tail 200
 ```
 
 Remove the local runtime and destroy AWS validation residue:
 
 ```bash
-./.build/prodbox rke2 delete --yes
+./.build/prodbox cluster delete --yes
 ```
 
 `rke2 delete --yes` is destructive. It removes the local cluster, destroys the AWS validation
@@ -402,9 +396,9 @@ See supported root charts:
 Deploy or inspect supported chart stacks:
 
 ```bash
-./.build/prodbox charts deploy gateway
-./.build/prodbox charts deploy keycloak
-./.build/prodbox charts deploy vscode
+./.build/prodbox charts reconcile gateway
+./.build/prodbox charts reconcile keycloak
+./.build/prodbox charts reconcile vscode
 ./.build/prodbox charts status gateway
 ./.build/prodbox charts status keycloak
 ./.build/prodbox charts status vscode
@@ -424,7 +418,7 @@ Check the external Route 53 record and public edge state:
 
 ```bash
 ./.build/prodbox dns check
-./.build/prodbox host public-edge
+./.build/prodbox edge status
 ```
 
 `host public-edge` is the main supported readiness diagnostic for the public host. The successful
@@ -455,8 +449,8 @@ inspect/request supported AWS quotas:
 ./.build/prodbox aws policy --tier full
 ./.build/prodbox aws setup --tier full
 ./.build/prodbox aws teardown
-./.build/prodbox aws check-quotas
-./.build/prodbox aws request-quotas --tier full
+./.build/prodbox aws quotas check
+./.build/prodbox aws quotas request --tier full
 ```
 
 The supported public `aws ...` flow prompts for temporary admin credentials when needed.
@@ -468,17 +462,17 @@ but is the configured admin credential source for long-lived stack operations an
 Use the local cluster-backed MinIO backend to create or inspect the AWS validation stacks:
 
 ```bash
-./.build/prodbox rke2 reconcile
+./.build/prodbox cluster reconcile
 
-./.build/prodbox pulumi eks-resources
-./.build/prodbox pulumi test-resources
+./.build/prodbox aws stack eks reconcile
+./.build/prodbox aws stack test reconcile
 ```
 
 Destroy them explicitly:
 
 ```bash
-./.build/prodbox pulumi eks-destroy --yes
-./.build/prodbox pulumi test-destroy --yes
+./.build/prodbox aws stack eks destroy --yes
+./.build/prodbox aws stack test destroy --yes
 ```
 
 These stacks are for repository validation, not for the local application runtime.
@@ -490,7 +484,7 @@ These stacks are for repository validation, not for the local application runtim
 Use these commands for quick feedback that stays local:
 
 ```bash
-./.build/prodbox check-code
+./.build/prodbox dev check
 ./.build/prodbox test unit
 ./.build/prodbox test integration cli
 ./.build/prodbox test integration env

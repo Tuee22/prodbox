@@ -24,8 +24,8 @@ The `aws_admin_for_test_simulation` section exists for:
 2. `prodbox test integration all`
 3. `prodbox test all` when the aggregate runner reaches the native IAM suite
 4. repository tests that simulate the interactive temporary-admin-credential workflow
-5. long-lived stack operations (`prodbox pulumi aws-ses-resources`,
-   `prodbox pulumi aws-ses-destroy`, `prodbox pulumi aws-ses-migrate-backend`) and
+5. long-lived stack operations (`prodbox aws stack aws-ses reconcile`,
+   `prodbox aws stack aws-ses destroy`, `prodbox aws stack aws-ses migrate-backend`) and
    `prodbox nuke`
 
 Normal runtime commands use `aws.*`. Public `prodbox config setup` and public `prodbox aws ...`
@@ -77,7 +77,7 @@ temporary-admin-credential workflow, a long-lived stack operation, or `prodbox n
 4. leave `aws.*` blank unless the workflow explicitly needs operational credentials
 5. run `prodbox config validate`
 6. run the intended entrypoint (`prodbox test integration aws-iam`,
-   `prodbox pulumi aws-ses-destroy --yes`, `prodbox nuke`, etc.)
+   `prodbox aws stack aws-ses destroy --yes`, `prodbox nuke`, etc.)
 
 The native IAM suite fails in the Phase `1/2` prerequisite gate when
 `aws_admin_for_test_simulation.*` is missing, partial, or paired with an otherwise incomplete
@@ -176,7 +176,7 @@ was emptied. Recovery:
    be retained as designed.
 2. Optional, only if you want `aws-ses` destroyed (note the 5–30 min SES DKIM
    re-verification cost on next reprovision and the ~24-hour S3 bucket name reuse
-   cooldown): either `prodbox pulumi aws-ses-destroy --yes` (admin-credentialed; does not
+   cooldown): either `prodbox aws stack aws-ses destroy --yes` (admin-credentialed; does not
    require operational `aws.*`) followed by `prodbox aws teardown`, or — Sprint 7.7 —
    `prodbox aws teardown --destroy-pulumi-residue` in one step (warns about the SES costs
    before dispatching).
@@ -188,11 +188,11 @@ was emptied. Recovery:
 Operational `prodbox.aws.*` is the steady-state credential surface for operator-driven
 AWS-touching `prodbox` commands. It is consumed by, at minimum:
 
-- `prodbox rke2 reconcile` (cert-manager Route 53 DNS01 issuance)
-- `prodbox pulumi <stack>-resources` and `prodbox pulumi <stack>-destroy` for the **per-run**
+- `prodbox cluster reconcile` (cert-manager Route 53 DNS01 issuance)
+- `prodbox aws stack <stack> reconcile` and `prodbox aws stack <stack> destroy` for the **per-run**
   stacks under `pulumi/`: `aws-eks`, `aws-eks-subzone`, `aws-test`
-- `prodbox charts deploy ... --substrate aws` and `prodbox charts delete ... --substrate aws`
-- `prodbox host public-edge` when the host's substrate selection points at AWS
+- `prodbox charts reconcile ... --substrate aws` and `prodbox charts delete ... --substrate aws`
+- `prodbox edge status` when the host's substrate selection points at AWS
 
 Outside a managed test harness, the above fail fast with `aws.access_key_id must not be empty`
 when the operational section is unpopulated. There is no fallback to host AWS state, host
@@ -206,7 +206,7 @@ materialized operational credentials again.
 
 The **long-lived** stack `aws-ses` is the exception: per Sprint 4.10 it is admin-credentialed
 (`aws_admin_for_test_simulation.*` + the long-lived S3 state backend), not operationally
-credentialed. `prodbox pulumi aws-ses-resources` and `prodbox pulumi aws-ses-destroy`
+credentialed. `prodbox aws stack aws-ses reconcile` and `prodbox aws stack aws-ses destroy`
 authenticate through `loadAdminAwsCredentials` / `pulumiSesAdminBaseEnv` and therefore do
 **not** require operational `aws.*` to be populated — they do not fail fast on an empty
 operational section. This is why the Sprint 7.9 harness postflight can clear operational
@@ -221,7 +221,7 @@ Three supported population paths exist; pick exactly one per workflow shape:
 |----------------|-----------------|-------------|
 | Standalone substrate provisioning (e.g. the [Sprint 7.5.c.v operator workflow](../../DEVELOPMENT_PLAN/phase-7-aws-substrate-foundations.md)) | **Public path**: `prodbox aws setup` — prompts interactively for one temporary admin credential pasted from the AWS console; derives the dedicated `prodbox` IAM user via STS federation; writes operational `aws.*` to `prodbox-config.dhall`. The temporary admin credential is not persisted. | `prodbox aws setup` at start; `prodbox aws teardown` at end |
 | Suite-driven runs (the canonical test surface) | **Test-harness simulation path**: `aws_admin_for_test_simulation.*` populated in `prodbox-config.dhall`; consumed non-interactively by `runAwsIamHarnessSetup` to simulate the prompt input. The same provision-derive-write contract runs. | `prodbox test integration aws-iam`, `prodbox test integration <name> --substrate aws`, `prodbox test integration all`, `prodbox test all` |
-| Long-lived shared-infrastructure operations | **Config-backed admin path**: `aws_admin_for_test_simulation.*` populated in `prodbox-config.dhall`; consumed directly by `loadAdminAwsCredentials` / `pulumiSesAdminBaseEnv` without materializing operational `aws.*`. | `prodbox pulumi aws-ses-resources`, `prodbox pulumi aws-ses-destroy --yes`, `prodbox pulumi aws-ses-migrate-backend`, `prodbox nuke` |
+| Long-lived shared-infrastructure operations | **Config-backed admin path**: `aws_admin_for_test_simulation.*` populated in `prodbox-config.dhall`; consumed directly by `loadAdminAwsCredentials` / `pulumiSesAdminBaseEnv` without materializing operational `aws.*`. | `prodbox aws stack aws-ses reconcile`, `prodbox aws stack aws-ses destroy --yes`, `prodbox aws stack aws-ses migrate-backend`, `prodbox nuke` |
 
 These paths are not mixed in a single workflow. A standalone substrate run uses
 `prodbox aws setup` and `prodbox aws teardown` symmetrically; a suite-driven run lets the
@@ -229,7 +229,7 @@ harness own setup, per-run-stack cleanup when applicable, and teardown end-to-en
 shared-infrastructure operations consume the admin block directly and do not materialize
 operational `aws.*`. Per Sprint `7.3`, the standalone and suite-driven paths clear operational
 `aws.*` before they return, so a standalone workflow's intermediate steps (`rke2 reconcile`,
-`pulumi <stack>-resources`, `charts deploy --substrate aws`) must all run between the operator's
+`pulumi <stack> reconcile`, `charts deploy --substrate aws`) must all run between the operator's
 `prodbox aws setup` and the operator's `prodbox aws teardown`. A targeted AWS-substrate test is
 not part of that manual window; `prodbox test integration <name> --substrate aws` owns the
 temporary operational credential lifecycle itself.

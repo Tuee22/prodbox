@@ -190,7 +190,8 @@ kubeconfigExists =
   EffectNode
     { effectNodeId = KubeconfigExists
     , effectNodeDescription = "Check kubeconfig file exists"
-    , effectNodeRemedyHint = "Create `/etc/rancher/rke2/rke2.yaml` by reconciling the local RKE2 runtime."
+    , effectNodeRemedyHint =
+        "Run `prodbox cluster reconcile` to bring up the local cluster (creates `/etc/rancher/rke2/rke2.yaml`)."
     , effectNodePrerequisites = []
     , effectNodeEffect = Validate (RequireFileExists "/etc/rancher/rke2/rke2.yaml")
     }
@@ -252,7 +253,7 @@ rke2Installed =
   EffectNode
     { effectNodeId = Rke2Installed
     , effectNodeDescription = "Check RKE2 binary is installed"
-    , effectNodeRemedyHint = "Install RKE2 on the supported host or rerun `prodbox rke2 reconcile`."
+    , effectNodeRemedyHint = "Install RKE2 on the supported host or rerun `prodbox cluster reconcile`."
     , effectNodePrerequisites = [SupportedUbuntu2404]
     , effectNodeEffect = Validate (RequireFileExists "/usr/local/bin/rke2")
     }
@@ -283,7 +284,8 @@ k8sClusterReachable =
   EffectNode
     { effectNodeId = K8sClusterReachable
     , effectNodeDescription = "Confirm Kubernetes API access via kubectl cluster-info"
-    , effectNodeRemedyHint = "Export a working kubeconfig and confirm `kubectl cluster-info` succeeds."
+    , effectNodeRemedyHint =
+        "Run `prodbox cluster reconcile` to bring up the local cluster, then confirm `kubectl cluster-info` succeeds."
     , effectNodePrerequisites = [ToolKubectl, KubeconfigExists, Rke2ServiceActive]
     , effectNodeEffect = Validate RequireKubectlClusterReachable
     }
@@ -303,7 +305,8 @@ k8sReady =
   EffectNode
     { effectNodeId = K8sReady
     , effectNodeDescription = "Validate Kubernetes cluster is fully ready"
-    , effectNodeRemedyHint = "Wait for the cluster control plane and core workloads to become ready."
+    , effectNodeRemedyHint =
+        "Run `prodbox cluster reconcile`, then wait for the cluster control plane and core workloads to become ready."
     , effectNodePrerequisites = [K8sClusterReachable, Rke2ServiceActive]
     , effectNodeEffect = Noop
     }
@@ -342,7 +345,7 @@ publicEdgeReady =
     { effectNodeId = PublicEdgeReady
     , effectNodeDescription = "Validate public-edge readiness (cluster + chart platform up)"
     , effectNodeRemedyHint =
-        "Bring the cluster and chart platform up (`prodbox charts deploy ...`) and wait for `prodbox host public-edge` to report ready-for-external-proof."
+        "Bring the cluster and chart platform up (`prodbox charts reconcile ...`) and wait for `prodbox edge status` to report ready-for-external-proof."
     , effectNodePrerequisites = [K8sReady]
     , effectNodeEffect = Noop
     }
@@ -369,7 +372,7 @@ sesSendingIdentityVerified =
     , effectNodeDescription =
         "Validate the SES domain identity for ses.sender_domain is in VerificationStatus=Success"
     , effectNodeRemedyHint =
-        "Provision the shared SES infrastructure via `prodbox pulumi aws-ses-resources` (Sprint 8.1); confirm DKIM CNAME records exist in the parent Route 53 zone and that SES has reported VerificationStatus=Success for ses.sender_domain."
+        "Provision the shared SES infrastructure via `prodbox aws stack aws-ses reconcile` (Sprint 8.1); confirm DKIM CNAME records exist in the parent Route 53 zone and that SES has reported VerificationStatus=Success for ses.sender_domain."
     , effectNodePrerequisites = [AwsCredentialsValid, Route53Accessible]
     , effectNodeEffect = Validate RequireSesSendingIdentityVerified
     }
@@ -381,7 +384,7 @@ sesReceiveRuleSetActive =
     , effectNodeDescription =
         "Validate the SES receive rule set is active and captures mail for ses.receive_subdomain"
     , effectNodeRemedyHint =
-        "Re-run `prodbox pulumi aws-ses-resources` and confirm `aws ses describe-active-receipt-rule-set` reports the prodbox-receive-rule-set as active with an S3 action targeting ses.capture_bucket."
+        "Re-run `prodbox aws stack aws-ses reconcile` and confirm `aws ses describe-active-receipt-rule-set` reports the prodbox-receive-rule-set as active with an S3 action targeting ses.capture_bucket."
     , effectNodePrerequisites = [AwsCredentialsValid, Route53Accessible]
     , effectNodeEffect = Validate RequireSesReceiveRuleSetActive
     }
@@ -393,7 +396,7 @@ sesReceiveBucketAccessible =
     , effectNodeDescription =
         "Validate the SES capture S3 bucket is reachable for list and get operations"
     , effectNodeRemedyHint =
-        "Confirm the SMTP IAM user from `prodbox pulumi aws-ses-resources` retains `s3:ListBucket` and `s3:GetObject` on ses.capture_bucket; `aws s3api head-bucket --bucket <bucket>` must exit 0 from the runner."
+        "Confirm the SMTP IAM user from `prodbox aws stack aws-ses reconcile` retains `s3:ListBucket` and `s3:GetObject` on ses.capture_bucket; `aws s3api head-bucket --bucket <bucket>` must exit 0 from the runner."
     , effectNodePrerequisites = [AwsCredentialsValid]
     , effectNodeEffect = Validate RequireSesReceiveBucketAccessible
     }

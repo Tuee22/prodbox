@@ -873,7 +873,7 @@ interactiveAwsTeardownInputAfterLongLived repoRoot policy = do
         (False, False, DestroyPulumiResidueFirst) ->
           -- The destroy subprocesses inherit operational `aws.*` from
           -- the dhall config; an empty aws.* would make every
-          -- `prodbox pulumi <stack>-destroy --yes` fail fast. Refuse
+          -- `prodbox aws stack <stack> destroy --yes` fail fast. Refuse
           -- with an actionable message rather than prompting for the
           -- admin key (the admin key only powers the subsequent IAM
           -- delete, not the destroy step).
@@ -882,8 +882,8 @@ interactiveAwsTeardownInputAfterLongLived repoRoot policy = do
                 ( "AWS teardown --destroy-pulumi-residue requires populated "
                     ++ "operational `aws.*` (the destroy subprocesses inherit "
                     ++ "them from prodbox-config.dhall). Run `prodbox aws "
-                    ++ "setup` first to populate, or run each `prodbox pulumi "
-                    ++ "<stack>-destroy --yes` manually with credentials you "
+                    ++ "setup` first to populate, or run each `prodbox aws stack "
+                    ++ "<stack> destroy --yes` manually with credentials you "
                     ++ "provide."
                 )
             )
@@ -1871,11 +1871,11 @@ dispatchPulumiDestroysForResidue repoRoot plan = go plan
   pulumiDestroyArgsForStack :: String -> [String]
   pulumiDestroyArgsForStack stackName =
     case stackName of
-      "aws-eks" -> ["pulumi", "eks-destroy", "--yes"]
-      "aws-eks-subzone" -> ["pulumi", "aws-subzone-destroy", "--yes"]
-      "aws-test" -> ["pulumi", "test-destroy", "--yes"]
-      "aws-ses" -> ["pulumi", "aws-ses-destroy", "--yes"]
-      other -> ["pulumi", other ++ "-destroy", "--yes"]
+      "aws-eks" -> ["aws", "stack", "eks", "destroy", "--yes"]
+      "aws-eks-subzone" -> ["aws", "stack", "aws-subzone", "destroy", "--yes"]
+      "aws-test" -> ["aws", "stack", "test", "destroy", "--yes"]
+      "aws-ses" -> ["aws", "stack", "aws-ses", "destroy", "--yes"]
+      other -> ["aws", "stack", other, "destroy", "--yes"]
 
 -- | Sprint 7.6 refuse-path generalized to typed Pulumi-stack residue
 -- queries per Sprint 4.16. Returns the list of live stacks paired with
@@ -1920,7 +1920,7 @@ renderPulumiResidueRefusal residue =
     ( [ "AWS teardown refused: Pulumi-managed AWS stacks still have live resources."
       , ""
       , "Deleting the operational IAM user now would strand these stacks from"
-      , "the supported destroy surface (every `prodbox pulumi <stack>-destroy`"
+      , "the supported destroy surface (every `prodbox aws stack <stack> destroy`"
       , "fails fast when operational `aws.*` is empty)."
       , ""
       , "Run the canonical destroy command for each stack below first, then"
@@ -1952,7 +1952,7 @@ renderPulumiResidueLongLivedRefusal longLived =
       , ""
       , "The test harness will not clear operational `aws.*` while these stacks"
       , "are alive — doing so would strand them from the supported destroy"
-      , "surface (every `prodbox pulumi <stack>-destroy` fails fast when"
+      , "surface (every `prodbox aws stack <stack> destroy` fails fast when"
       , "operational `aws.*` is empty)."
       , ""
       , "Run the canonical destroy command for each stack below first, then"

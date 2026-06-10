@@ -5,7 +5,7 @@
 **Referenced by**: README.md, AGENTS.md, CLAUDE.md, documents/engineering/README.md, documents/engineering/cli_command_surface.md, documents/engineering/haskell_code_guide.md, documents/engineering/prerequisite_doctrine.md, documents/engineering/pure_fp_standards.md, documents/engineering/unit_testing_policy.md
 **Generated sections**: none
 
-> **Purpose**: Define policy guardrails and enforcement flow for `prodbox check-code`.
+> **Purpose**: Define policy guardrails and enforcement flow for `prodbox dev check`.
 
 ## 1. Guardrail Statement
 
@@ -18,7 +18,7 @@ All policy, formatting, build, and host-side executable-proof closure flow throu
 operator entrypoint:
 
 ```bash
-prodbox check-code
+prodbox dev check
 ```
 
 `src/Prodbox/CheckCode.hs` owns that command. The current Haskell implementation runs a fail-fast
@@ -41,7 +41,7 @@ Do not add or rely on:
 1. `.github/` workflow automation
 2. Git hook scripts (`.git/hooks`, pre-commit, or similar)
 
-`prodbox check-code` enforces this repository-owned policy surface by failing when it finds:
+`prodbox dev check` enforces this repository-owned policy surface by failing when it finds:
 
 1. `.github/`
 2. `.githooks/` or `.husky/`
@@ -55,7 +55,7 @@ retained runtime roots such as `.build/`, `dist-newstyle/`, and `.data/`.
 Use local CLI entrypoints only:
 
 ```bash
-prodbox check-code
+prodbox dev check
 prodbox test all
 ```
 
@@ -124,7 +124,7 @@ Current enforced quality surfaces:
   `PlanOptions` / `NukeOptions` field to a `_` wildcard. The covered arms are
   `destructivePlanOptionsArms` (`Rke2Delete`, `NativeNuke`); a wildcarded options field
   silently drops `--dry-run` / `--plan-file`, which is exactly the bug where
-  `prodbox rke2 delete --yes --dry-run` *mutated* (`Rke2Delete flags _planOptions` discarded
+  `prodbox cluster delete --yes --dry-run` *mutated* (`Rke2Delete flags _planOptions` discarded
   the options). This keeps every destructive command routed through `runPlanWithOptions` so
   `--dry-run` renders the full plan and exits `0` without mutation per
   [pure_fp_standards.md § Plan / Apply](./pure_fp_standards.md#plan--apply) and

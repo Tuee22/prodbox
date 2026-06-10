@@ -64,13 +64,13 @@ The supported chart doctrine is:
    named `public-edge-http-redirect`; all backend routes attach to HTTPS listener sections and the
    chart platform does not render plaintext application forwarding.
 10. Chart deploy fails fast until the cluster-wide Patroni platform exists. The actionable recovery
-   path is `prodbox rke2 reconcile`.
+   path is `prodbox cluster reconcile`.
 11. Chart templates that consume the canonical public-edge path catalog do so through the
-    marker-delimited generated `route-registry` blocks maintained by `prodbox docs generate`,
+    marker-delimited generated `route-registry` blocks maintained by `prodbox dev docs generate`,
     not through hand-maintained inline route inventories.
 12. Chart metadata is doctrine-owned: every chart helper exports
     `app.kubernetes.io/name`, `app.kubernetes.io/managed-by: prodbox`, and
-    `prodbox.io/chart-root`, and `prodbox lint chart` validates those invariants together with
+    `prodbox.io/chart-root`, and `prodbox dev lint chart` validates those invariants together with
     `Chart.yaml` metadata.
 13. Keycloak's NetworkPolicy keeps explicit egress: PostgreSQL, in-namespace Keycloak service
     traffic, cluster DNS, external HTTPS for issuer/OIDC paths, and the configured SMTP port from
@@ -78,13 +78,13 @@ The supported chart doctrine is:
 
 ## 1A. Chart Lint and Route Inventory Generation
 
-The supported chart-maintenance surface is split between `prodbox lint chart` and
-`prodbox docs generate`.
+The supported chart-maintenance surface is split between `prodbox dev lint chart` and
+`prodbox dev docs generate`.
 
-- `prodbox lint chart` validates every chart under `charts/` for the canonical
+- `prodbox dev lint chart` validates every chart under `charts/` for the canonical
   `Chart.yaml` metadata fields (`apiVersion: v2`, `name`, `version`, `appVersion`), the
   required chart-label helper lines, and drift on the generated `route-registry` sections.
-- `prodbox docs generate` refreshes the marker-delimited route inventory consumed by:
+- `prodbox dev docs generate` refreshes the marker-delimited route inventory consumed by:
   - `charts/keycloak/templates/gateway.yaml`
   - `charts/vscode/templates/http-route.yaml`
   - `charts/api/templates/http-route.yaml`
@@ -97,7 +97,7 @@ The supported chart-maintenance surface is split between `prodbox lint chart` an
 One Helm release per chart name exists cluster-wide at any time.
 
 - Before deployment, the Haskell runtime inspects `helm list --all-namespaces`.
-- If any release in the plan already exists, `prodbox charts deploy <chart>` reports the current
+- If any release in the plan already exists, `prodbox charts reconcile <chart>` reports the current
   deployment surface as success and performs no Helm or storage mutation.
 - Resetting the chart stack still requires an explicit `prodbox charts delete <chart>` first.
 
@@ -106,17 +106,17 @@ One Helm release per chart name exists cluster-wide at any time.
 The root chart name still determines the owning workload namespace for chart-local resources, but
 the current supported public edge is shared.
 
-- `prodbox charts deploy gateway` deploys into the `gateway` namespace.
-- `prodbox charts deploy keycloak` deploys `keycloak-postgres` plus `keycloak` into the
+- `prodbox charts reconcile gateway` deploys into the `gateway` namespace.
+- `prodbox charts reconcile keycloak` deploys `keycloak-postgres` plus `keycloak` into the
   `keycloak` namespace.
-- `prodbox charts deploy vscode` deploys `keycloak-postgres`, `keycloak`, and `vscode` into the
+- `prodbox charts reconcile vscode` deploys `keycloak-postgres`, `keycloak`, and `vscode` into the
   `vscode` namespace and publishes the shared `public-edge` `Gateway`, the HTTPS listener
   certificate, the redirect-only HTTP listener and route, and the `/auth` Keycloak route used by
   the supported shared-host edge and the authenticated `prodbox users` invite API.
-- `prodbox charts deploy api` deploys its workload and JWT `SecurityPolicy` into the `api`
+- `prodbox charts reconcile api` deploys its workload and JWT `SecurityPolicy` into the `api`
   namespace, then attaches its `HTTPRoute` to the shared `public-edge` `Gateway` in `vscode`
   through a cross-namespace `parentRef`.
-- `prodbox charts deploy websocket` deploys `redis`, its workload, and JWT `SecurityPolicy` into
+- `prodbox charts reconcile websocket` deploys `redis`, its workload, and JWT `SecurityPolicy` into
   the `websocket` namespace, then attaches its `/ws` and `/ws/oidc` `HTTPRoute` resources to the
   shared `public-edge` `Gateway` in `vscode` through cross-namespace `parentRefs`.
 
@@ -166,9 +166,9 @@ same namespace as the consuming chart stack.
 
 The supported contract is:
 
-- `prodbox rke2 reconcile` installs the cluster-wide `percona/pg-operator` Helm release into the
+- `prodbox cluster reconcile` installs the cluster-wide `percona/pg-operator` Helm release into the
   `postgres-operator` namespace.
-- `prodbox charts deploy keycloak` and `prodbox charts deploy vscode` include the internal
+- `prodbox charts reconcile keycloak` and `prodbox charts reconcile vscode` include the internal
   `keycloak-postgres` release before `keycloak`.
 - Each Patroni cluster runs exactly three PostgreSQL replicas.
 - Patroni synchronous replication is enabled across the supported three-replica steady state.
@@ -256,7 +256,7 @@ Rules:
 
 All non-PV chart state lives inside the cluster as native k8s Secrets and ConfigMaps.
 No `prodbox` command writes to `.prodbox-state/`; the directory is removed from the
-supported architecture and the `forbidDotProdboxState` lint in `prodbox check-code`
+supported architecture and the `forbidDotProdboxState` lint in `prodbox dev check`
 enforces this. Data-bound chart secrets (Patroni roles, Keycloak admin, gateway
 peer-event keys) are derived from the master seed by the in-cluster gateway service per
 [Secret Derivation Doctrine](./secret_derivation_doctrine.md). Non-data-bound chart
@@ -369,7 +369,7 @@ The current implementation boundary is:
   rate-limit-safe `LongLived` resource (Sprints 4.24/7.11/8.7). Its material is retained in the
   long-lived `pulumi_state_backend` S3 bucket under the substrate-scoped key
   `public-edge-tls/<substrate>/<fqdn>`, and restored before every issuance on **all** rebuild
-  paths — including a fresh cluster after `prodbox rke2 delete`, not only the
+  paths — including a fresh cluster after `prodbox cluster delete`, not only the
   chart-delete→redeploy path that the superseded `vscode/public-edge-tls` →
   `prodbox/public-edge-tls-retained` in-cluster Secret copy covered. The
   `preservePublicEdgeTlsSecretBeforeDelete` silent-success gap is closed: the preserve path emits
@@ -413,7 +413,7 @@ Namespace-local chart secrets are k8s Secrets, partitioned by class per
 
 The derived rows preserve credentials underneath preserved PostgreSQL data because the
 master seed lives on MinIO's PV under `.data/minio/...` and survives cluster wipes. On
-each `prodbox charts deploy <chart>` the chart-platform pre-install Job POSTs to
+each `prodbox charts reconcile <chart>` the chart-platform pre-install Job POSTs to
 `/v1/secret/ensure-namespace` on the in-cluster gateway ClusterIP; the gateway
 materializes the four derived Secrets above; Helm's `lookup` picks them up during the
 main install. Chart-generated rows use the standard `lookup`-guarded `randAlphaNum`

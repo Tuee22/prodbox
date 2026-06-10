@@ -78,7 +78,7 @@ awsTeardownGuard =
         unlines
           [ "The test-harness postflight auto-destroys per-run stacks and clears"
           , "aws.* on suite exit. For manual per-stack destroy:"
-          , "  prodbox pulumi <stack>-destroy --yes"
+          , "  prodbox aws stack <stack> destroy --yes"
           ]
     }
 
@@ -131,10 +131,10 @@ chartsDeleteGuard =
 awsSesMigrateBackendGuard :: InteractiveGuard
 awsSesMigrateBackendGuard =
   InteractiveGuard
-    { guardCommand = "prodbox pulumi aws-ses-migrate-backend"
+    { guardCommand = "prodbox aws stack aws-ses migrate-backend"
     , guardAutomationHint =
         unlines
-          [ "prodbox pulumi aws-ses-migrate-backend is a one-shot operator"
+          [ "prodbox aws stack aws-ses migrate-backend is a one-shot operator"
           , "migration. There is no automation equivalent; the migration is"
           , "exercised end-to-end by the operator workflow documented in"
           , "DEVELOPMENT_PLAN/phase-4-lifecycle-canonical-paths.md (Sprint 4.10)."

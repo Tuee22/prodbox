@@ -102,16 +102,16 @@ Integration-selected `prodbox test` commands execute in two phases:
    cluster-backed backend proof when the deferred proof depends on a visible runbook-created local
    runtime such as the RKE2-backed MinIO Pulumi backend.
 2. **Phase 1.5 - integration runbook gate**: cluster-backed suites may enforce
-   `prodbox rke2 reconcile`.
+   `prodbox cluster reconcile`.
 3. **Phase 1.6 - supported runtime bootstrap**: aggregate or destructive flows may repair the
    supported runtime before validation. When Phase 1.5 already ran the runbook reconcile,
    Phase 1.6 reuses that reconciled local runtime and performs the chart reset/deploy work
-   without repeating the full `prodbox rke2 reconcile` image-publication path.
+   without repeating the full `prodbox cluster reconcile` image-publication path.
 4. **Phase 2 - test execution**: run Haskell suites and named validation payloads only after the
    earlier phases succeed.
 
 When Phase `1.6/2` restores a cluster-backed supported runtime for external proof, it may wait for
-`prodbox host public-edge` to report `CLASSIFICATION=ready-for-external-proof` before the payload
+`prodbox edge status` to report `CLASSIFICATION=ready-for-external-proof` before the payload
 starts. That readiness is derived from Gateway API, Envoy Gateway, Route 53, and certificate
 state.
 
@@ -146,7 +146,7 @@ the command contract.
    the visible runbook has created or repaired the local runtime they depend on.
 4. `charts-vscode`, `charts-api`, and `charts-websocket` are supported-runtime cluster-backed
    suites and therefore enforce the cluster runbook plus supported-runtime bootstrap before their
-   external proof, and that bootstrap waits for `prodbox host public-edge` readiness rather than
+   external proof, and that bootstrap waits for `prodbox edge status` readiness rather than
    using a one-shot assertion. Public-host suites such as `public-dns` may avoid the cluster
    runbook only when their test plan does not require it, but still prove the external port `80`
    HTTP-to-HTTPS redirect after DNS records resolve to the configured public address.
@@ -247,7 +247,7 @@ The equivalent doctrine in the current Haskell repository is:
 Coverage remains a repository expectation, but the supported local closure gate is the Haskell
 build-plus-suite contract:
 
-- `prodbox check-code`
+- `prodbox dev check`
 - `prodbox test unit`
 - `prodbox test integration cli`
 - `prodbox test integration env`
@@ -265,12 +265,12 @@ obligations.
   `test/unit/` with synthetic stack snapshots, no AWS, no kubectl. See
   [lifecycle_reconciliation_doctrine.md → §4 Predicate Library Inventory](./lifecycle_reconciliation_doctrine.md).
 - **Postflight tag-sweep assertion.** Every destructive lifecycle integration
-  test (`prodbox rke2 delete`, `prodbox aws teardown`, `prodbox pulumi
-  <stack>-destroy`, `prodbox nuke`) must assert that the postflight tag sweep
+  test (`prodbox cluster delete`, `prodbox aws teardown`, `prodbox aws stack
+  <stack> destroy`, `prodbox nuke`) must assert that the postflight tag sweep
   returns empty after success. A non-empty sweep is a hard test failure with
   the leak list in the failure record.
-- **`--dry-run` golden snapshots.** `prodbox rke2 delete --dry-run`,
-  `prodbox rke2 delete --cascade --dry-run`, and `prodbox nuke --dry-run`
+- **`--dry-run` golden snapshots.** `prodbox cluster delete --dry-run`,
+  `prodbox cluster delete --cascade --dry-run`, and `prodbox nuke --dry-run`
   outputs are captured as golden tests so changes to the plan rendering
   require an explicit golden update. Sprint `5.6` lands these three goldens
   under `test/golden/destructive/` (rendered from the pure plan renderers

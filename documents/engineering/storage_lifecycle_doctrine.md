@@ -18,7 +18,7 @@
 - Retained storage is reconciled via the static `manual` no-provisioner `StorageClass`
   plus deterministic PV resources to guarantee stable PVC-to-PV rebinding across cluster
   delete/reinstall.
-- `prodbox rke2 reconcile` recreates the cluster-scoped `manual` `StorageClass` and
+- `prodbox cluster reconcile` recreates the cluster-scoped `manual` `StorageClass` and
   removes every other `StorageClass` before retained-storage reconciliation succeeds.
 - The manual PV host root stores PV contents and the per-cluster MinIO bucket files.
   MinIO's own PV lives under `.data/minio/...`; therefore the per-run Pulumi state
@@ -35,7 +35,7 @@
   derived from the master seed inside the cluster by the gateway service per
   [secret_derivation_doctrine.md](./secret_derivation_doctrine.md). Non-data-bound
   secrets are chart-generated behind `lookup`-guarded Helm helpers.
-- `prodbox rke2 delete --yes` and `prodbox rke2 delete --cascade --yes` both preserve
+- `prodbox cluster delete --yes` and `prodbox cluster delete --cascade --yes` both preserve
   `.data/`. No `prodbox` command removes `.data/` on its own; deletion is operator-only.
 - When the MinIO-backed Pulumi backend is still running but kubelet reports its `/export`
   mount as deleted, the Haskell backend helper recreates the declared retained host path,
@@ -46,11 +46,11 @@
 
 This doctrine governs:
 
-1. retained local storage resources created by `prodbox rke2 reconcile`
-2. retained local storage resources created by `prodbox charts deploy keycloak|vscode`
+1. retained local storage resources created by `prodbox cluster reconcile`
+2. retained local storage resources created by `prodbox charts reconcile keycloak|vscode`
    for the namespace-local Patroni PostgreSQL cluster and `vscode` data
-3. rebinding guarantees expected after `prodbox rke2 delete --yes` plus
-   `prodbox rke2 reconcile`
+3. rebinding guarantees expected after `prodbox cluster delete --yes` plus
+   `prodbox cluster reconcile`
 4. the `.data/` host root as the sole preserved operator-host directory, and the
    pin that MinIO's PV lives inside it
 5. MinIO persistence behavior on the supported single-node RKE2 machine
@@ -114,7 +114,7 @@ Deterministic rebinding is guaranteed only when all of these hold:
 
 ## 5. Delete Contract
 
-`prodbox rke2 delete --cascade --yes` is the canonical operator-driven teardown. The
+`prodbox cluster delete --cascade --yes` is the canonical operator-driven teardown. The
 cascade order is authoritatively defined in
 [lifecycle_reconciliation_doctrine.md](./lifecycle_reconciliation_doctrine.md) §5b
 ("Canonical Cascade Order") — that table is the single source of truth and this section
@@ -136,7 +136,7 @@ The drain-before-destroy ordering is load-bearing: see
 the substrate-aware drain and the `DependencyViolation` failure mode that an inverted
 order produces on the AWS substrate.
 
-`prodbox rke2 delete --yes` (without `--cascade`) preserves any Pulumi residue in MinIO
+`prodbox cluster delete --yes` (without `--cascade`) preserves any Pulumi residue in MinIO
 when invoked with `--allow-pulumi-residue`; reconcile + per-stack destroy from the
 rebuilt cluster is the supported recovery path because MinIO's PV under `.data/` keeps
 the Pulumi state alive across the cluster cycle. Live AWS resources tracked in MinIO
@@ -147,7 +147,7 @@ host iptables rule installed by reconcile (per
 [secret_derivation_doctrine.md](./secret_derivation_doctrine.md) §5) is removed as part
 of clean teardown.
 
-`prodbox rke2 delete` captures the upstream `/usr/local/bin/rke2-uninstall.sh` stdout
+`prodbox cluster delete` captures the upstream `/usr/local/bin/rke2-uninstall.sh` stdout
 and stderr through the lifecycle-local quiet path so that successful uninstall runs
 surface only the doctrine-owned summary lines, while non-zero uninstall exits still
 surface actionable upstream context through `summarizeRke2DeleteFailure`. Benign
@@ -165,7 +165,7 @@ Lifecycle-oriented validation should prove:
 
 1. the real MinIO PVC remains bound to the same PV across delete/reinstall, and the
    `prodbox/master-seed` object inside MinIO is unchanged
-2. only the `manual` `StorageClass` remains after `prodbox rke2 reconcile`
+2. only the `manual` `StorageClass` remains after `prodbox cluster reconcile`
 3. the `keycloak-postgres` and `vscode` storage bindings remain deterministic for their
    root namespaces
 4. Percona PostgreSQL PVC discovery binds retained PVs to the operator-created claim
@@ -175,14 +175,14 @@ Lifecycle-oriented validation should prove:
    supported three-replica steady state
 6. Patroni passwords derived from the master seed via the gateway service authenticate
    against the preserved `pg_authid` on a wipe-and-rebuild cycle
-7. `prodbox rke2 delete --yes` succeeds on the first operator invocation
+7. `prodbox cluster delete --yes` succeeds on the first operator invocation
 8. temporary validation resources are fully removed at test end
 9. baseline runtime after test completion matches the post-install state defined by
-   `prodbox rke2 reconcile`
+   `prodbox cluster reconcile`
 10. a deleted MinIO export host-path mount is repaired back onto the declared retained
     directory before Pulumi backend login or stack operations continue
 11. no `prodbox` invocation writes to `.prodbox-state/` (enforced by
-    `forbidDotProdboxState` in `prodbox check-code`)
+    `forbidDotProdboxState` in `prodbox dev check`)
 
 Cleanup ownership is defined in
 [Integration Fixture Doctrine](./integration_fixture_doctrine.md).

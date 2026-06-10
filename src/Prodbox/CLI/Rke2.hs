@@ -21,6 +21,7 @@ module Prodbox.CLI.Rke2
   , renderNativeInstallPlan
   , renderInotifySysctlDropIn
   , renderMinioChartArgs
+  , runEdgeCommand
   , runNativeDeleteCascade
   , runNativeDeleteWithResiduePolicy
   , runRke2Command
@@ -71,7 +72,8 @@ import Prodbox.AwsEnvironment
   ( overlayAwsCredentials
   )
 import Prodbox.CLI.Command
-  ( Plan (..)
+  ( EdgeCommand (..)
+  , Plan (..)
   , PlanOptions (..)
   , Rke2Command (..)
   , Rke2DeleteFlags (..)
@@ -170,6 +172,7 @@ import Prodbox.Settings
   , session_token
   , storage
   , validateAndLoadSettings
+  , validateOperationalAwsCredentials
   , validatedConfig
   , zone_id
   )
@@ -619,8 +622,8 @@ runRke2Command repoRoot command =
             , subprocessEnvironment = Nothing
             , subprocessWorkingDirectory = Just repoRoot
             }
-    Rke2Reconcile planOptions ->
-      requireLinux (runNativeInstall repoRoot planOptions)
+    Rke2Reconcile planOptions withEdge ->
+      requireLinux (runNativeInstall repoRoot planOptions withEdge)
     Rke2Delete flags planOptions ->
       requireLinux $
         if not (rke2DeleteYes flags)
@@ -656,8 +659,8 @@ runRke2Command repoRoot command =
                 , subprocessWorkingDirectory = Just repoRoot
                 }
 
-runNativeInstall :: FilePath -> PlanOptions -> IO ExitCode
-runNativeInstall repoRoot planOptions = do
+runNativeInstall :: FilePath -> PlanOptions -> Bool -> IO ExitCode
+runNativeInstall repoRoot planOptions withEdge = do
   settingsResult <- validateAndLoadSettings repoRoot
   case settingsResult of
     Left err -> failWith err
@@ -667,46 +670,93 @@ runNativeInstall repoRoot planOptions = do
         Left err -> failWith err
         Right (machineId, prodboxId) ->
           let labelValue = prodboxIdToLabelValue prodboxId
-              plan = buildNativeInstallExecutionPlan repoRoot settings machineId prodboxId labelValue
+              plan = buildNativeInstallExecutionPlan repoRoot settings machineId prodboxId labelValue withEdge
            in runPlanWithOptions
                 planOptions
                 plan
-                (applyNativeInstallPlan repoRoot settings)
+                (applyNativeInstallPlan repoRoot settings withEdge)
 
-renderNativeInstallPlan :: FilePath -> ValidatedSettings -> String -> String -> String -> String
-renderNativeInstallPlan repoRoot settings machineId prodboxId labelValue =
+-- | @prodbox edge ...@ dispatch. @edge reconcile@ is the AWS-gated,
+-- edge-only reconcile (the same plan @cluster reconcile --with-edge@
+-- appends, but standalone). @edge status@ is routed to the existing
+-- public-edge readiness check ('HostPublicEdge') at the parser layer.
+runEdgeCommand :: FilePath -> EdgeCommand -> IO ExitCode
+runEdgeCommand repoRoot command =
+  case command of
+    EdgeReconcile planOptions ->
+      requireLinux (runEdgeReconcile repoRoot planOptions)
+
+runEdgeReconcile :: FilePath -> PlanOptions -> IO ExitCode
+runEdgeReconcile repoRoot planOptions = do
+  settingsResult <- validateAndLoadSettings repoRoot
+  case settingsResult of
+    Left err -> failWith err
+    Right settings -> do
+      identityResult <- resolveMachineIdentity
+      case identityResult of
+        Left err -> failWith err
+        Right (_machineId, prodboxId) ->
+          let labelValue = prodboxIdToLabelValue prodboxId
+              plan = buildPlan (renderEdgeReconcilePlan repoRoot) (prodboxId, labelValue)
+           in runPlanWithOptions
+                planOptions
+                plan
+                ( \(resolvedProdboxId, resolvedLabelValue) -> applyPublicEdgeReconcile repoRoot settings resolvedProdboxId resolvedLabelValue
+                )
+
+renderEdgeReconcilePlan :: FilePath -> (String, String) -> String
+renderEdgeReconcilePlan repoRoot (_prodboxId, _labelValue) =
   unlines
-    [ "RKE2_RECONCILE_PLAN"
+    [ "EDGE_RECONCILE_PLAN"
     , "REPO_ROOT=" ++ repoRoot
-    , "MACHINE_ID=" ++ machineId
-    , "PRODBOX_ID=" ++ prodboxId
-    , "LABEL_VALUE=" ++ labelValue
-    , "MANUAL_PV_ROOT=" ++ resolvedManualPvHostRoot settings
-    , "STEP=ensure_host_inotify_limits"
-    , "STEP=ensure_rke2_server_installed"
-    , "STEP=ensure_rke2_ingress_controller"
-    , "STEP=enable_rke2_service"
-    , "STEP=restart_rke2_service"
-    , "STEP=sync_user_kubeconfig"
-    , "STEP=verify_cluster_info"
-    , "STEP=wait_for_cluster_nodes_ready"
-    , "STEP=delete_non_manual_storage_classes"
-    , "STEP=ensure_prodbox_identity_config_map"
-    , "STEP=ensure_retained_local_storage"
-    , "STEP=ensure_minio_runtime_bootstrap"
-    , "STEP=ensure_harbor_registry_storage_backend"
-    , "STEP=ensure_harbor_registry_runtime"
-    , "STEP=mirror_cluster_images_once"
-    , "STEP=ensure_gateway_images"
-    , "STEP=ensure_public_edge_workload_image"
-    , "STEP=ensure_rke2_registries_config"
-    , "STEP=ensure_cluster_platform_runtime"
+    , "STEP=require_operational_aws_credentials"
+    , "STEP=ensure_public_edge_acme_runtime"
     , "STEP=reconcile_dns_bootstrap_record"
-    , "STEP=ensure_minio_runtime_steady_state"
-    , "STEP=ensure_gateway_minio_bootstrap"
-    , "STEP=ensure_admin_public_edge_routes"
-    , "STEP=reconcile_managed_annotations"
     ]
+
+renderNativeInstallPlan
+  :: FilePath -> ValidatedSettings -> String -> String -> String -> Bool -> String
+renderNativeInstallPlan repoRoot settings machineId prodboxId labelValue withEdge =
+  unlines
+    ( [ "RKE2_RECONCILE_PLAN"
+      , "REPO_ROOT=" ++ repoRoot
+      , "MACHINE_ID=" ++ machineId
+      , "PRODBOX_ID=" ++ prodboxId
+      , "LABEL_VALUE=" ++ labelValue
+      , "MANUAL_PV_ROOT=" ++ resolvedManualPvHostRoot settings
+      , "WITH_EDGE=" ++ (if withEdge then "true" else "false")
+      , "STEP=ensure_host_inotify_limits"
+      , "STEP=ensure_rke2_server_installed"
+      , "STEP=ensure_rke2_ingress_controller"
+      , "STEP=enable_rke2_service"
+      , "STEP=restart_rke2_service"
+      , "STEP=sync_user_kubeconfig"
+      , "STEP=verify_cluster_info"
+      , "STEP=wait_for_cluster_nodes_ready"
+      , "STEP=delete_non_manual_storage_classes"
+      , "STEP=ensure_prodbox_identity_config_map"
+      , "STEP=ensure_retained_local_storage"
+      , "STEP=ensure_minio_runtime_bootstrap"
+      , "STEP=ensure_harbor_registry_storage_backend"
+      , "STEP=ensure_harbor_registry_runtime"
+      , "STEP=mirror_cluster_images_once"
+      , "STEP=ensure_gateway_images"
+      , "STEP=ensure_public_edge_workload_image"
+      , "STEP=ensure_rke2_registries_config"
+      , "STEP=ensure_cluster_platform_runtime"
+      , "STEP=ensure_minio_runtime_steady_state"
+      , "STEP=ensure_gateway_minio_bootstrap"
+      , "STEP=ensure_admin_public_edge_routes"
+      , "STEP=reconcile_managed_annotations"
+      ]
+        -- Public-edge steps are AWS-gated and run only under @--with-edge@.
+        ++ [ "STEP=require_operational_aws_credentials" | withEdge
+           ]
+        ++ [ "STEP=ensure_public_edge_acme_runtime" | withEdge
+           ]
+        ++ [ "STEP=reconcile_dns_bootstrap_record" | withEdge
+           ]
+    )
 
 buildNativeInstallExecutionPlan
   :: FilePath
@@ -714,8 +764,9 @@ buildNativeInstallExecutionPlan
   -> String
   -> String
   -> String
+  -> Bool
   -> Plan (String, String, String)
-buildNativeInstallExecutionPlan repoRoot settings machineId prodboxId labelValue =
+buildNativeInstallExecutionPlan repoRoot settings machineId prodboxId labelValue withEdge =
   buildPlan
     ( \(resolvedMachineId, resolvedProdboxId, resolvedLabelValue) ->
         renderNativeInstallPlan
@@ -724,53 +775,80 @@ buildNativeInstallExecutionPlan repoRoot settings machineId prodboxId labelValue
           resolvedMachineId
           resolvedProdboxId
           resolvedLabelValue
+          withEdge
     )
     (machineId, prodboxId, labelValue)
 
 applyNativeInstallPlan
   :: FilePath
   -> ValidatedSettings
+  -> Bool
   -> (String, String, String)
   -> IO ExitCode
-applyNativeInstallPlan repoRoot settings (machineId, prodboxId, labelValue) =
+applyNativeInstallPlan repoRoot settings withEdge (machineId, prodboxId, labelValue) =
   runSequentially
-    [ ensureHostInotifyLimits repoRoot
-    , ensureRke2ServerInstalled repoRoot
-    , ensureRke2IngressController repoRoot
-    , runCommand
-        Subprocess
-          { subprocessPath = "sudo"
-          , subprocessArguments = ["systemctl", "enable", rke2ServiceName]
-          , subprocessEnvironment = Nothing
-          , subprocessWorkingDirectory = Just repoRoot
-          }
-    , runCommand
-        Subprocess
-          { subprocessPath = "sudo"
-          , subprocessArguments = ["systemctl", "restart", rke2ServiceName]
-          , subprocessEnvironment = Nothing
-          , subprocessWorkingDirectory = Just repoRoot
-          }
-    , syncUserKubeconfig repoRoot
-    , verifyClusterInfo repoRoot
-    , waitForClusterNodesReady repoRoot
-    , deleteNonManualStorageClasses repoRoot
-    , ensureProdboxIdentityConfigMap repoRoot machineId prodboxId labelValue
-    , ensureRetainedLocalStorage repoRoot settings prodboxId labelValue
-    , ensureMinioRuntime repoRoot SubstrateHomeLocal MinioBootstrapPublic
-    , ensureHarborRegistryStorageBackend repoRoot
-    , ensureHarborRegistryRuntime repoRoot SubstrateHomeLocal
-    , mirrorClusterImagesOnce repoRoot
-    , ensureGatewayImages repoRoot prodboxId
-    , ensurePublicEdgeWorkloadImage repoRoot prodboxId
-    , ensureRke2RegistriesConfig repoRoot
-    , ensureClusterPlatformRuntime repoRoot settings prodboxId labelValue
-    , reconcileDnsBootstrapRecord repoRoot settings
-    , ensureMinioRuntime repoRoot SubstrateHomeLocal MinioSteadyStateHarbor
-    , ensureGatewayMinioBootstrap repoRoot
-    , ensureAdminPublicEdgeRoutes repoRoot settings SubstrateHomeLocal prodboxId labelValue
-    , reconcileManagedAnnotations repoRoot prodboxId labelValue
-    ]
+    ( [ ensureHostInotifyLimits repoRoot
+      , ensureRke2ServerInstalled repoRoot
+      , ensureRke2IngressController repoRoot
+      , runCommand
+          Subprocess
+            { subprocessPath = "sudo"
+            , subprocessArguments = ["systemctl", "enable", rke2ServiceName]
+            , subprocessEnvironment = Nothing
+            , subprocessWorkingDirectory = Just repoRoot
+            }
+      , runCommand
+          Subprocess
+            { subprocessPath = "sudo"
+            , subprocessArguments = ["systemctl", "restart", rke2ServiceName]
+            , subprocessEnvironment = Nothing
+            , subprocessWorkingDirectory = Just repoRoot
+            }
+      , syncUserKubeconfig repoRoot
+      , verifyClusterInfo repoRoot
+      , waitForClusterNodesReady repoRoot
+      , deleteNonManualStorageClasses repoRoot
+      , ensureProdboxIdentityConfigMap repoRoot machineId prodboxId labelValue
+      , ensureRetainedLocalStorage repoRoot settings prodboxId labelValue
+      , ensureMinioRuntime repoRoot SubstrateHomeLocal MinioBootstrapPublic
+      , ensureHarborRegistryStorageBackend repoRoot
+      , ensureHarborRegistryRuntime repoRoot SubstrateHomeLocal
+      , mirrorClusterImagesOnce repoRoot
+      , ensureGatewayImages repoRoot prodboxId
+      , ensurePublicEdgeWorkloadImage repoRoot prodboxId
+      , ensureRke2RegistriesConfig repoRoot
+      , ensureClusterPlatformRuntime repoRoot settings prodboxId labelValue
+      , ensureMinioRuntime repoRoot SubstrateHomeLocal MinioSteadyStateHarbor
+      , ensureGatewayMinioBootstrap repoRoot
+      , ensureAdminPublicEdgeRoutes repoRoot settings SubstrateHomeLocal prodboxId labelValue
+      , reconcileManagedAnnotations repoRoot prodboxId labelValue
+      ]
+        -- The public edge (Route 53 DNS + ZeroSSL DNS-01 TLS) is the only
+        -- part of reconcile that needs operational AWS credentials. It runs
+        -- only with @--with-edge@; bare @cluster reconcile@ stands up a fully
+        -- working local cluster with an empty @aws.*@ block.
+        ++ [applyPublicEdgeReconcile repoRoot settings prodboxId labelValue | withEdge]
+    )
+
+-- | The AWS-gated public-edge reconcile, factored out of the local cluster
+-- plan (Phase 2). Fails fast naming @prodbox aws setup@ when operational
+-- @aws.*@ is empty, then applies the ZeroSSL DNS-01 ClusterIssuer and the
+-- Route 53 bootstrap record.
+applyPublicEdgeReconcile :: FilePath -> ValidatedSettings -> String -> String -> IO ExitCode
+applyPublicEdgeReconcile repoRoot settings prodboxId labelValue =
+  case validateOperationalAwsCredentials (validatedConfig settings) of
+    Left err ->
+      failWith
+        ( err
+            ++ " The public edge needs operational AWS credentials for Route 53"
+            ++ " DNS + ZeroSSL TLS. Run `prodbox aws setup`, then re-run with"
+            ++ " `--with-edge`."
+        )
+    Right () ->
+      runSequentially
+        [ ensureAcmeRuntime repoRoot settings prodboxId labelValue
+        , reconcileDnsBootstrapRecord repoRoot settings
+        ]
 
 -- | Sprint 4.26: the Plan for @prodbox rke2 delete@ (default and
 -- @--cascade@). The payload is the 'Rke2DeleteFlags' so the apply closure
@@ -2599,7 +2677,6 @@ ensureClusterPlatformRuntime repoRoot settings prodboxId labelValue = do
         [ ensureMetalLbRuntime repoRoot settings prodboxId labelValue metallbPool
         , ensureEnvoyGatewayRuntime repoRoot settings prodboxId labelValue edgeLbIp
         , ensureCertManagerRuntime repoRoot prodboxId labelValue
-        , ensureAcmeRuntime repoRoot settings prodboxId labelValue
         , ensurePostgresOperatorRuntime repoRoot prodboxId labelValue
         ]
 
@@ -4486,7 +4563,7 @@ importImageIntoRke2Containerd repoRoot imageRef = do
 renderInotifySysctlDropIn :: String
 renderInotifySysctlDropIn =
   unlines
-    [ "# Managed by `prodbox rke2 reconcile`. Raises inotify limits so the systemd"
+    [ "# Managed by `prodbox cluster reconcile`. Raises inotify limits so the systemd"
     , "# manager (PID 1), containerd, and kubelet do not exhaust the per-user instance"
     , "# cap during RKE2 lifecycle operations. See"
     , "# documents/engineering/lifecycle_reconciliation_doctrine.md and"

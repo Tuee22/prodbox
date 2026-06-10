@@ -75,7 +75,7 @@ the daemon, so the boundary cannot regress silently.
 
 The coupling between the seed and the data it protects is intentional. If the operator
 wipes `.data/`, MinIO's PV disappears and the seed disappears with it. The next
-`prodbox rke2 reconcile` mints a new seed; subsequent chart deploys derive fresh
+`prodbox cluster reconcile` mints a new seed; subsequent chart deploys derive fresh
 data-bound secrets; any retained PV content that requires the old seed will fail to
 authenticate. Losing the seed is functionally identical to losing the data, so the
 operator never has to reason about the seed as a separate disaster-recovery artifact.
@@ -192,7 +192,7 @@ or patch (Secret exists but content drifted).
 The gateway daemon's Service runs in two shapes: a ClusterIP for in-cluster callers (chart
 pre-install Jobs) and a NodePort for host-CLI callers. The NodePort is restricted to
 `127.0.0.1` on the operator host via a host iptables rule installed by
-`prodbox rke2 reconcile`. External access (LAN, WAN) is dropped at the host firewall
+`prodbox cluster reconcile`. External access (LAN, WAN) is dropped at the host firewall
 before reaching the cluster. The in-cluster ClusterIP path remains unrestricted for
 chart-side callers.
 
@@ -212,7 +212,7 @@ steady state.
 The iptables rule lives in `src/Prodbox/Host.hs` next to the existing `ufw status` helper
 and is exposed through the existing `host firewall` CLI subcommand. The rule survives
 reboot via `iptables-save` to the host's persistence path (`/etc/iptables/rules.v4` on
-Debian/Ubuntu, or via the host's systemd-restore service if present). `prodbox rke2
+Debian/Ubuntu, or via the host's systemd-restore service if present). `prodbox cluster
 delete --yes` removes the rule as part of clean teardown.
 
 ## 6. Derived-vs-generated inventory
@@ -235,7 +235,7 @@ Adding a new secret to any chart requires a same-change row in this table, inclu
 class and source. Charts that generate secrets must either go through the gateway service
 (derived) or use the `lookup`-guarded `randAlphaNum`/`genSelfSignedCert` pattern (chart-
 generated). Storing secrets on the operator host is forbidden; the `forbidDotProdboxState`
-lint in `prodbox check-code` enforces this.
+lint in `prodbox dev check` enforces this.
 
 ## 7. Bootstrap order
 
@@ -243,7 +243,7 @@ The gateway daemon needs MinIO access before it can read or create the master se
 the chart pre-install Jobs need the gateway service before they can request derived
 secrets. The reconcile order:
 
-1. `prodbox rke2 reconcile` brings RKE2 up.
+1. `prodbox cluster reconcile` brings RKE2 up.
 2. Storage prerequisites + MinIO chart bring up MinIO with chart-generated root creds.
 3. `ensureGatewayMinioBucket` (Sprint 2.19; in `src/Prodbox/CLI/Rke2.hs`) is the
    canonical mechanism for the bucket bootstrap: a one-shot Job in the `minio`

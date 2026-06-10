@@ -15,8 +15,8 @@ AWS IAM and quota management
 \fBcharts\fR
 Bespoke Helm chart lifecycle
 .TP
-\fBcheck-code\fR
-Run policy, lint, and type checks
+\fBcluster\fR
+Local cluster lifecycle
 .TP
 \fBcommands\fR
 Render the command registry
@@ -24,11 +24,14 @@ Render the command registry
 \fBconfig\fR
 Configuration management
 .TP
+\fBdev\fR
+Developer and CI tooling
+.TP
 \fBdns\fR
 Route 53 inspection
 .TP
-\fBdocs\fR
-Generated-documentation maintenance
+\fBedge\fR
+Public DNS + TLS edge
 .TP
 \fBgateway\fR
 Gateway daemon operations
@@ -39,26 +42,11 @@ Render help for a command path
 \fBhost\fR
 Host prerequisite checks
 .TP
-\fBk8s\fR
-Kubernetes helpers
-.TP
-\fBlint\fR
-Doctrine lint surfaces
-.TP
 \fBnuke\fR
 Total teardown of every prodbox-owned AWS resource (operator-only)
 .TP
-\fBpulumi\fR
-AWS validation stack lifecycle
-.TP
-\fBrke2\fR
-Local cluster lifecycle
-.TP
 \fBtest\fR
 Named test suites
-.TP
-\fBtla-check\fR
-Run TLA+ checks
 .TP
 \fBusers\fR
 Operator-invited user management

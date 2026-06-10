@@ -250,7 +250,7 @@ integrationCliSuite = do
 
         (deployExitCode, deployStdout, deployStderr) <-
           readCreateProcessWithExitCode
-            (proc binary ["charts", "deploy", "vscode"]) {cwd = Just tmpDir, env = Just envVars}
+            (proc binary ["charts", "reconcile", "vscode"]) {cwd = Just tmpDir, env = Just envVars}
             ""
 
         deployExitCode `shouldBe` ExitSuccess
@@ -313,7 +313,10 @@ integrationCliSuite = do
 
         (secondDeployExitCode, secondDeployStdout, secondDeployStderr) <-
           readCreateProcessWithExitCode
-            (proc binary ["charts", "deploy", "vscode"]) {cwd = Just tmpDir, env = Just alreadyDeployedEnvVars}
+            (proc binary ["charts", "reconcile", "vscode"])
+              { cwd = Just tmpDir
+              , env = Just alreadyDeployedEnvVars
+              }
             ""
 
         secondDeployExitCode `shouldBe` ExitSuccess
@@ -370,7 +373,7 @@ integrationCliSuite = do
 
         (deployExitCode, deployStdout, deployStderr) <-
           readCreateProcessWithExitCode
-            (proc binary ["charts", "deploy", "vscode"]) {cwd = Just tmpDir, env = Just envVars}
+            (proc binary ["charts", "reconcile", "vscode"]) {cwd = Just tmpDir, env = Just envVars}
             ""
 
         deployExitCode `shouldBe` ExitSuccess
@@ -422,7 +425,7 @@ integrationCliSuite = do
 
         (statusExitCode, statusStdout, statusStderr) <-
           readCreateProcessWithExitCode
-            (proc binary ["rke2", "status"]) {cwd = Just tmpDir, env = Just envVars}
+            (proc binary ["cluster", "status"]) {cwd = Just tmpDir, env = Just envVars}
             ""
 
         statusExitCode `shouldBe` ExitSuccess
@@ -431,7 +434,7 @@ integrationCliSuite = do
 
         (startExitCode, startStdout, startStderr) <-
           readCreateProcessWithExitCode
-            (proc binary ["rke2", "start"]) {cwd = Just tmpDir, env = Just envVars}
+            (proc binary ["cluster", "start"]) {cwd = Just tmpDir, env = Just envVars}
             ""
 
         startExitCode `shouldBe` ExitSuccess
@@ -440,7 +443,7 @@ integrationCliSuite = do
 
         (logsExitCode, logsStdout, logsStderr) <-
           readCreateProcessWithExitCode
-            (proc binary ["rke2", "logs", "--lines", "25"]) {cwd = Just tmpDir, env = Just envVars}
+            (proc binary ["cluster", "logs", "--lines", "25"]) {cwd = Just tmpDir, env = Just envVars}
             ""
 
         logsExitCode `shouldBe` ExitSuccess
@@ -468,7 +471,7 @@ integrationCliSuite = do
 
         (installExitCode, installStdout, installStderr) <-
           readCreateProcessWithExitCode
-            (proc binary ["rke2", "reconcile"]) {cwd = Just tmpDir, env = Just envVars}
+            (proc binary ["cluster", "reconcile"]) {cwd = Just tmpDir, env = Just envVars}
             ""
 
         let installOutput =
@@ -493,7 +496,7 @@ integrationCliSuite = do
 
         (deleteExitCode, deleteStdout, deleteStderr) <-
           readCreateProcessWithExitCode
-            (proc binary ["rke2", "delete", "--yes"]) {cwd = Just tmpDir, env = Just envVars}
+            (proc binary ["cluster", "delete", "--yes"]) {cwd = Just tmpDir, env = Just envVars}
             ""
 
         let deleteOutput =
@@ -669,7 +672,7 @@ integrationCliSuite = do
 
         (installExitCode, installStdout, installStderr) <-
           readCreateProcessWithExitCode
-            (proc binary ["rke2", "reconcile"]) {cwd = Just tmpDir, env = Just envVars}
+            (proc binary ["cluster", "reconcile"]) {cwd = Just tmpDir, env = Just envVars}
             ""
 
         let installOutput =
@@ -704,7 +707,7 @@ integrationCliSuite = do
 
         (deleteExitCode, deleteStdout, deleteStderr) <-
           readCreateProcessWithExitCode
-            (proc binary ["rke2", "delete", "--yes"]) {cwd = Just tmpDir, env = Just envVars}
+            (proc binary ["cluster", "delete", "--yes"]) {cwd = Just tmpDir, env = Just envVars}
             ""
 
         let deleteOutput =
@@ -755,7 +758,7 @@ integrationCliSuite = do
 
         (deleteExitCode, deleteStdout, deleteStderr) <-
           readCreateProcessWithExitCode
-            (proc binary ["rke2", "delete", "--yes"]) {cwd = Just tmpDir, env = Just envVars}
+            (proc binary ["cluster", "delete", "--yes"]) {cwd = Just tmpDir, env = Just envVars}
             ""
 
         deleteExitCode `shouldBe` ExitFailure 1
@@ -780,7 +783,7 @@ integrationCliSuite = do
 
         (deleteExitCode, deleteStdout, deleteStderr) <-
           readCreateProcessWithExitCode
-            (proc binary ["rke2", "delete", "--yes"]) {cwd = Just tmpDir, env = Just envVars}
+            (proc binary ["cluster", "delete", "--yes"]) {cwd = Just tmpDir, env = Just envVars}
             ""
 
         let deleteOutput =
@@ -814,7 +817,7 @@ integrationCliSuite = do
 
         (deleteExitCode, deleteStdout, deleteStderr) <-
           readCreateProcessWithExitCode
-            (proc binary ["rke2", "delete", "--yes"]) {cwd = Just tmpDir, env = Just envVars}
+            (proc binary ["cluster", "delete", "--yes"]) {cwd = Just tmpDir, env = Just envVars}
             ""
 
         let deleteOutput = unlines ["delete stdout:", deleteStdout, "delete stderr:", deleteStderr]
@@ -842,7 +845,7 @@ integrationCliSuite = do
 
         (deleteExitCode, deleteStdout, _deleteStderr) <-
           readCreateProcessWithExitCode
-            (proc binary ["rke2", "delete", "--yes", "--allow-pulumi-residue"])
+            (proc binary ["cluster", "delete", "--yes", "--allow-pulumi-residue"])
               { cwd = Just tmpDir
               , env = Just envVars
               }
@@ -863,7 +866,7 @@ integrationCliSuite = do
 
         (deleteExitCode, deleteStdout, deleteStderr) <-
           readCreateProcessWithExitCode
-            (proc binary ["rke2", "delete", "--yes"]) {cwd = Just tmpDir, env = Just envVars}
+            (proc binary ["cluster", "delete", "--yes"]) {cwd = Just tmpDir, env = Just envVars}
             ""
 
         let combined = deleteStdout ++ deleteStderr
@@ -883,7 +886,7 @@ integrationCliSuite = do
 
         (deleteExitCode, deleteStdout, deleteStderr) <-
           readCreateProcessWithExitCode
-            (proc binary ["rke2", "delete", "--yes", "--cascade"]) {cwd = Just tmpDir, env = Just envVars}
+            (proc binary ["cluster", "delete", "--yes", "--cascade"]) {cwd = Just tmpDir, env = Just envVars}
             ""
 
         let combined = deleteStdout ++ deleteStderr
@@ -984,7 +987,7 @@ integrationCliSuite = do
 
         (upExitCode, upStdout, upStderr) <-
           readCreateProcessWithExitCode
-            (proc binary ["rke2", "reconcile"]) {cwd = Just tmpDir, env = Just envVars}
+            (proc binary ["cluster", "reconcile"]) {cwd = Just tmpDir, env = Just envVars}
             ""
 
         upExitCode `shouldBe` ExitSuccess
@@ -1182,7 +1185,7 @@ integrationCliSuite = do
 
         (checkExitCode, checkStdout, checkStderr) <-
           readCreateProcessWithExitCode
-            (proc binary ["aws", "check-quotas"]) {cwd = Just tmpDir, env = Just envVars}
+            (proc binary ["aws", "quotas", "check"]) {cwd = Just tmpDir, env = Just envVars}
             commandInput
 
         checkExitCode `shouldBe` ExitSuccess
@@ -1193,7 +1196,7 @@ integrationCliSuite = do
 
         (requestExitCode, requestStdout, requestStderr) <-
           readCreateProcessWithExitCode
-            (proc binary ["aws", "request-quotas", "--tier", "core"]) {cwd = Just tmpDir, env = Just envVars}
+            (proc binary ["aws", "quotas", "request", "--tier", "core"]) {cwd = Just tmpDir, env = Just envVars}
             commandInput
 
         requestExitCode `shouldBe` ExitSuccess

@@ -13,20 +13,47 @@
 | `prodbox aws policy` | Render IAM policy JSON |
 | `prodbox aws setup` | Create or refresh operational IAM user |
 | `prodbox aws teardown` | Delete operational IAM user |
-| `prodbox aws check-quotas` | Inspect supported AWS quotas |
-| `prodbox aws request-quotas` | Request supported AWS quotas |
+| `prodbox aws quotas check` | Inspect supported AWS quotas |
+| `prodbox aws quotas request` | Request supported AWS quotas |
+| `prodbox aws stack eks reconcile` | Provision or inspect the eks stack |
+| `prodbox aws stack eks destroy` | Destroy the eks stack |
+| `prodbox aws stack test reconcile` | Provision or inspect the test stack |
+| `prodbox aws stack test destroy` | Destroy the test stack |
+| `prodbox aws stack aws-subzone reconcile` | Provision or inspect the aws-subzone stack |
+| `prodbox aws stack aws-subzone destroy` | Destroy the aws-subzone stack |
+| `prodbox aws stack aws-ses reconcile` | Provision or inspect the aws-ses stack |
+| `prodbox aws stack aws-ses destroy` | Destroy the aws-ses stack |
+| `prodbox aws stack aws-ses migrate-backend` | Migrate aws-ses Pulumi state onto the long-lived S3 backend |
 | `prodbox charts list` | List supported charts |
 | `prodbox charts status` | Show detailed chart status |
-| `prodbox charts deploy` | Deploy a root chart stack |
+| `prodbox charts reconcile` | Reconcile a root chart stack |
 | `prodbox charts delete` | Delete a root chart stack |
-| `prodbox check-code` | Run policy, lint, and type checks |
+| `prodbox cluster status` | Check cluster service status |
+| `prodbox cluster health` | Check Kubernetes health |
+| `prodbox cluster start` | Start the cluster service |
+| `prodbox cluster stop` | Stop the cluster service |
+| `prodbox cluster restart` | Restart the cluster service |
+| `prodbox cluster reconcile` | Reconcile the local cluster |
+| `prodbox cluster delete` | Delete the local cluster |
+| `prodbox cluster logs` | Show cluster service logs |
+| `prodbox cluster wait` | Wait for deployments to be ready |
+| `prodbox cluster workload-logs` | Show recent workload logs |
 | `prodbox commands` | Render the command registry |
 | `prodbox config setup` | Interactively author config |
 | `prodbox config show` | Display current config |
 | `prodbox config validate` | Validate current config |
+| `prodbox dev check` | Run policy, lint, and type checks |
+| `prodbox dev lint all` | Run every lint surface |
+| `prodbox dev lint files` | Run repository-policy lint checks |
+| `prodbox dev lint docs` | Check generated documentation sections |
+| `prodbox dev lint haskell` | Run Haskell formatter and lint checks |
+| `prodbox dev lint chart` | Run Helm chart structural lint checks |
+| `prodbox dev docs check` | Check generated docs for drift |
+| `prodbox dev docs generate` | Regenerate generated docs |
+| `prodbox dev tla-check` | Run TLA+ checks |
 | `prodbox dns check` | Inspect Route 53 state |
-| `prodbox docs check` | Check generated docs for drift |
-| `prodbox docs generate` | Regenerate generated docs |
+| `prodbox edge reconcile` | Reconcile the public edge |
+| `prodbox edge status` | Check public DNS/TLS edge state |
 | `prodbox gateway start` | Start gateway daemon |
 | `prodbox gateway status` | Query gateway daemon status |
 | `prodbox gateway config-gen` | Generate gateway config |
@@ -36,32 +63,7 @@
 | `prodbox host info` | Display host diagnostics |
 | `prodbox host firewall gateway-restrict` | Restrict the gateway NodePort to 127.0.0.1 |
 | `prodbox host firewall gateway-unrestrict` | Remove the gateway NodePort loopback restriction |
-| `prodbox host public-edge` | Check public DNS/TLS edge state |
-| `prodbox k8s health` | Check cluster health |
-| `prodbox k8s wait` | Wait for deployments to be ready |
-| `prodbox k8s logs` | Show recent infrastructure logs |
-| `prodbox lint all` | Run every lint surface |
-| `prodbox lint files` | Run repository-policy lint checks |
-| `prodbox lint docs` | Check generated documentation sections |
-| `prodbox lint haskell` | Run Haskell formatter and lint checks |
-| `prodbox lint chart` | Run Helm chart structural lint checks |
 | `prodbox nuke` | Total teardown of every prodbox-owned AWS resource (operator-only) |
-| `prodbox pulumi eks-resources` | Provision or inspect EKS test stack |
-| `prodbox pulumi eks-destroy` | Destroy EKS test stack |
-| `prodbox pulumi test-resources` | Provision or inspect HA RKE2 test stack |
-| `prodbox pulumi test-destroy` | Destroy HA RKE2 test stack |
-| `prodbox pulumi aws-subzone-resources` | Provision the per-substrate Route 53 subzone |
-| `prodbox pulumi aws-subzone-destroy` | Destroy the per-substrate Route 53 subzone |
-| `prodbox pulumi aws-ses-resources` | Provision cross-substrate AWS SES infrastructure |
-| `prodbox pulumi aws-ses-destroy` | Destroy cross-substrate AWS SES infrastructure |
-| `prodbox pulumi aws-ses-migrate-backend` | Migrate aws-ses Pulumi state onto the long-lived S3 backend |
-| `prodbox rke2 status` | Check RKE2 status |
-| `prodbox rke2 start` | Start RKE2 |
-| `prodbox rke2 stop` | Stop RKE2 |
-| `prodbox rke2 restart` | Restart RKE2 |
-| `prodbox rke2 reconcile` | Reconcile RKE2 |
-| `prodbox rke2 delete` | Delete RKE2 |
-| `prodbox rke2 logs` | Show RKE2 logs |
 | `prodbox test all` | Run the full test suite |
 | `prodbox test lint` | Run lint and build checks |
 | `prodbox test unit` | Run unit tests |
@@ -85,7 +87,6 @@
 | `prodbox test integration admin-routes` | Run shared-host admin-route integration tests |
 | `prodbox test integration public-dns` | Run public DNS integration tests |
 | `prodbox test integration keycloak-invite` | Run Keycloak operator-invite integration tests |
-| `prodbox tla-check` | Run TLA+ checks |
 | `prodbox users invite` | Invite an operator-owned user by email |
 | `prodbox users list` | List operator-managed users |
 | `prodbox users revoke` | Disable or delete an operator-managed user |

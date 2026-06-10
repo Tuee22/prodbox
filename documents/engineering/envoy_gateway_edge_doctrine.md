@@ -79,7 +79,7 @@ itself remains in-cluster on both substrates.
 
 The current repository closes on the implemented self-managed public-edge doctrine:
 
-1. `prodbox rke2 reconcile` installs or reconciles Harbor, MinIO, MetalLB, Envoy Gateway, cert-manager, and the
+1. `prodbox cluster reconcile` installs or reconciles Harbor, MinIO, MetalLB, Envoy Gateway, cert-manager, and the
    Percona PostgreSQL operator.
 2. The current MetalLB runtime supports config-selected L2 or BGP advertisement from repo-owned
    settings, rendered through `IPAddressPool` plus `L2Advertisement` on the L2 path and
@@ -97,7 +97,7 @@ The current repository closes on the implemented self-managed public-edge doctri
 6. The shared `public-edge` `Gateway` exposes HTTPS on port `443` for application traffic and
    HTTP on port `80` only for a redirect-only `HTTPRoute` that returns a permanent redirect to the
    same shared-host path over HTTPS. Plaintext backend forwarding is unsupported.
-7. `prodbox host public-edge` classifies Route 53, Envoy Gateway deployment, `GatewayClass`,
+7. `prodbox edge status` classifies Route 53, Envoy Gateway deployment, `GatewayClass`,
    `Gateway`, listener readiness, redirect `HTTPRoute`, application `HTTPRoute`,
    `SecurityPolicy`, certificate, `LoadBalancer`, and advertisement-mode state across the browser,
    API, WebSocket, Harbor, and MinIO routes.
@@ -590,7 +590,7 @@ The supported operational model is:
 
 Lifecycle and chart implications:
 
-1. `prodbox rke2 reconcile` owns MetalLB, Envoy Gateway, cert-manager, and the Percona PostgreSQL
+1. `prodbox cluster reconcile` owns MetalLB, Envoy Gateway, cert-manager, and the Percona PostgreSQL
    operator on the self-managed cluster path.
 2. Harbor-backed steady-state image sourcing mirrors or publishes the Envoy Gateway control-plane
    and Envoy data-plane images rather than Traefik images. As of Sprint `7.12` the Envoy Gateway
@@ -623,13 +623,13 @@ Lifecycle and chart implications:
    canonical validation loop relies on the retained-and-restored public-edge certificate so
    rebuilds do not re-order it.
 8. The public-edge listener certificate is restored before issuance on every rebuild path
-   (`prodbox rke2 reconcile`, `prodbox charts deploy`, and the substrate-platform installs):
+   (`prodbox cluster reconcile`, `prodbox charts reconcile`, and the substrate-platform installs):
    the reconciler reads the retained certificate from the long-lived `pulumi_state_backend`
    S3 bucket under its substrate-scoped key and re-materializes the cert-manager Secret before
    any ZeroSSL ACME issuance is attempted, so a cluster wipe never triggers a re-order against
    ZeroSSL. Because it lives in the long-lived bucket and is
    registered as a LongLived managed resource, the public-edge certificate survives cluster
-   wipes (`prodbox rke2 delete --cascade`) and is removed only by `prodbox nuke`, per
+   wipes (`prodbox cluster delete --cascade`) and is removed only by `prodbox nuke`, per
    [lifecycle_reconciliation_doctrine.md](./lifecycle_reconciliation_doctrine.md). Scheduled
    for adoption in Sprints 4.24 / 7.11 / 8.7.
 
@@ -700,7 +700,7 @@ The supported public-edge diagnostic surface classifies:
 8. `LoadBalancer` IP agreement
 9. external HTTPS reachability
 
-The supported success state for `prodbox host public-edge` is
+The supported success state for `prodbox edge status` is
 `CLASSIFICATION=ready-for-external-proof`.
 
 Current named validation implications:

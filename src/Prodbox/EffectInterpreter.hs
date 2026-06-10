@@ -67,6 +67,7 @@ import Prodbox.Settings
   , loadConfigFile
   , validateAndLoadSettings
   , validateAwsBootstrapConfig
+  , validateOperationalAwsCredentials
   )
 import Prodbox.Subprocess
   ( ProcessOutput (..)
@@ -406,16 +407,24 @@ runValidation context validation =
     settingsResult <- validateAndLoadSettings (interpreterRepoRoot context)
     case settingsResult of
       Left err -> pure (Failure err)
-      Right settings -> do
-        environment <- awsCommandEnvironment settings
-        requireAwsValidationCommandSuccess
-          "AWS credential check failed"
-          Subprocess
-            { subprocessPath = "aws"
-            , subprocessArguments = ["sts", "get-caller-identity", "--output", "json"]
-            , subprocessEnvironment = Just environment
-            , subprocessWorkingDirectory = Just (interpreterRepoRoot context)
-            }
+      Right settings ->
+        -- Config now decodes locally without operational @aws.*@; this
+        -- node is the AWS-credential gate, so check the operational
+        -- credentials are present before spending an STS round trip. The
+        -- node's remedy hint ("Run `prodbox aws setup`") is appended by
+        -- the interpreter on failure.
+        case validateOperationalAwsCredentials (validatedConfig settings) of
+          Left err -> pure (Failure err)
+          Right () -> do
+            environment <- awsCommandEnvironment settings
+            requireAwsValidationCommandSuccess
+              "AWS credential check failed"
+              Subprocess
+                { subprocessPath = "aws"
+                , subprocessArguments = ["sts", "get-caller-identity", "--output", "json"]
+                , subprocessEnvironment = Just environment
+                , subprocessWorkingDirectory = Just (interpreterRepoRoot context)
+                }
 
   requireAwsIamHarnessReady :: IO (Result ())
   requireAwsIamHarnessReady = do
@@ -667,7 +676,7 @@ runValidation context validation =
           then
             pure
               ( Failure
-                  "ses.sender_domain must be set in prodbox-config.dhall before checking the SES sending identity. Run `prodbox pulumi aws-ses-resources` after populating the ses.* block."
+                  "ses.sender_domain must be set in prodbox-config.dhall before checking the SES sending identity. Run `prodbox aws stack aws-ses reconcile` after populating the ses.* block."
               )
           else do
             environment <- awsCommandEnvironment settings

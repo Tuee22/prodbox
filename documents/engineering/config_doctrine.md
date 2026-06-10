@@ -76,7 +76,7 @@ the path:
 ```bash
 # The host CLI resolves the repo-root prodbox-config.dhall via findRepoRoot;
 # there is no --config flag to pass.
-prodbox check-code
+prodbox dev check
 ```
 
 Example in the cluster:

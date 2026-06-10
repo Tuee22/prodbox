@@ -5,7 +5,7 @@
 -- The only sanctioned path to destroy long-lived shared
 -- infrastructure (@aws-ses@, the long-lived
 -- @pulumi_state_backend@ bucket) transitively, alongside the
--- explicit per-stack @prodbox pulumi aws-ses-destroy --yes@.
+-- explicit per-stack @prodbox aws stack aws-ses destroy --yes@.
 --
 -- Operator-only by design:
 --   * TTY-only: refuses non-interactive contexts with the canonical
@@ -108,7 +108,7 @@ nukeInteractiveGuard =
           , "cross-substrate shared infrastructure. Automation contexts must"
           , "compose the canonical commands individually:"
           , ""
-          , "  prodbox pulumi aws-ses-destroy --yes"
+          , "  prodbox aws stack aws-ses destroy --yes"
           , "  prodbox aws teardown"
           , "  prodbox rke2 delete --cascade"
           , ""

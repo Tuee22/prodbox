@@ -157,7 +157,7 @@ loadKeycloakSmtpSettings _repoRoot = do
             ( Left
                 ( "kubectl get secret keycloak-smtp failed: "
                     <> trim (processStderr output)
-                    <> " — run `prodbox pulumi aws-ses-resources` or an invite-aware test harness so the SES SMTP Secret is synced."
+                    <> " — run `prodbox aws stack aws-ses reconcile` or an invite-aware test harness so the SES SMTP Secret is synced."
                 )
             )
         ExitSuccess ->

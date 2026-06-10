@@ -39,6 +39,6 @@ owned by [DEVELOPMENT_PLAN/README.md](../../../DEVELOPMENT_PLAN/README.md).
 ## Running Checks
 
 - TLA+ must be executed in Docker via `maxdiefenbach/tlaplus`.
-- `src/Prodbox/Tla.hs` owns the public `prodbox tla-check` entrypoint.
-- CLI command: `prodbox tla-check`.
+- `src/Prodbox/Tla.hs` owns the public `prodbox dev tla-check` entrypoint.
+- CLI command: `prodbox dev tla-check`.
 - The command invokes `docker run --rm ...` and stores the latest result at `documents/engineering/tla/tlc_last_run.txt`.

@@ -246,7 +246,7 @@ runNativeValidation substrate repoRoot environment validation = do
           [ assertNativeCommandOutputContainsAll
               repoRoot
               environment
-              ["pulumi", "eks-resources"]
+              ["aws", "stack", "eks", "reconcile"]
               ["STACK=" ++ AwsEks.awsEksTestStackName, "CLUSTER_NAME=", "NODE_GROUP_NAME="]
           , verifyAwsEksSnapshot repoRoot
           ]
@@ -255,7 +255,7 @@ runNativeValidation substrate repoRoot environment validation = do
           [ assertNativeCommandOutputContainsAll
               repoRoot
               environment
-              ["pulumi", "test-resources"]
+              ["aws", "stack", "test", "reconcile"]
               ["STACK=" ++ AwsTest.awsTestStackName, "NODE_COUNT=3"]
           , verifyAwsTestSnapshot repoRoot
           ]
@@ -379,7 +379,7 @@ runHaRke2AwsValidation repoRoot environment = do
           writeDiagnosticLine
             "AWS test-stack SSH validation failed after reconcile; destroying and recreating the retained stack once before retry."
           destroyExit <-
-            runNativeCliCommandForExitCode repoRoot environment ["pulumi", "test-destroy", "--yes"]
+            runNativeCliCommandForExitCode repoRoot environment ["aws", "stack", "test", "destroy", "--yes"]
           case destroyExit of
             destroyFailure@(ExitFailure _) -> pure destroyFailure
             ExitSuccess -> do
@@ -398,7 +398,7 @@ provisionAndVerifyAwsTestStack repoRoot environment =
     [ assertNativeCommandOutputContainsAll
         repoRoot
         environment
-        ["pulumi", "test-resources"]
+        ["aws", "stack", "test", "reconcile"]
         ["STACK=" ++ AwsTest.awsTestStackName, "NODE_COUNT=3"]
     , verifyAwsTestSnapshot repoRoot
     ]

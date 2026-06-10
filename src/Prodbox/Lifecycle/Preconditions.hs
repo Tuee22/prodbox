@@ -6,7 +6,7 @@
 -- Each named 'Precondition' wraps one 'discover' IO action and
 -- returns @IO (Either StructuredError ())@. Predicates compose with
 -- 'checkAll'. Every command in @{prodbox rke2 delete, prodbox aws
--- teardown, prodbox pulumi <stack>-destroy, prodbox nuke}@ opens
+-- teardown, prodbox aws stack <stack> destroy, prodbox nuke}@ opens
 -- with @checkAll [...]@ over the appropriate set, per
 -- @documents/engineering/lifecycle_reconciliation_doctrine.md § 5@.
 --
@@ -120,9 +120,9 @@ noLivePerRunPulumiStacks repoRoot =
     , preconditionCheck = do
         perRun <- queryPerRunResidueStatuses repoRoot
         let stacks =
-              [ ("aws-eks", "prodbox pulumi eks-destroy --yes", perRunAwsEksTest perRun)
-              , ("aws-eks-subzone", "prodbox pulumi aws-subzone-destroy --yes", perRunAwsEksSubzone perRun)
-              , ("aws-test", "prodbox pulumi test-destroy --yes", perRunAwsTest perRun)
+              [ ("aws-eks", "prodbox aws stack eks destroy --yes", perRunAwsEksTest perRun)
+              , ("aws-eks-subzone", "prodbox aws stack aws-subzone destroy --yes", perRunAwsEksSubzone perRun)
+              , ("aws-test", "prodbox aws stack test destroy --yes", perRunAwsTest perRun)
               ]
             -- Sprint 4.19: branch on the constructor so the two failure
             -- modes get distinct, actionable refusals. `ResiduePresent`
@@ -218,7 +218,7 @@ noLiveLongLivedPulumiStacks repoRoot =
         sesStatus <- queryAwsSesResidueStatus repoRoot
         certStatus <- queryPublicEdgeTlsResidueStatus repoRoot
         let live =
-              [ ("aws-ses", "prodbox pulumi aws-ses-destroy --yes")
+              [ ("aws-ses", "prodbox aws stack aws-ses destroy --yes")
               | ResidueStatus.residueBlocksTeardownGate sesStatus
               ]
                 ++ [ ("public-edge-tls", "prodbox nuke")

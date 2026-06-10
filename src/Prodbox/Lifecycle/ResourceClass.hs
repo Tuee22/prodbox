@@ -35,7 +35,7 @@ data LifecycleClass
     PerRun
   | -- | Long-lived cross-substrate shared infrastructure (e.g.
     -- @aws-ses@). State lives in the operator-account S3 backend;
-    -- destroyed only by @prodbox pulumi aws-ses-destroy@ / @prodbox
+    -- destroyed only by @prodbox aws stack aws-ses destroy@ / @prodbox
     -- nuke@.
     LongLived
   | -- | Ephemeral operational credentials created by @prodbox aws

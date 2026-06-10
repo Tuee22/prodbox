@@ -52,7 +52,7 @@ Developers should build and test through Cabal:
 
 ```bash
 cabal build --builddir=.build exe:prodbox
-prodbox check-code
+prodbox dev check
 ```
 
 ## 3. Version Constraint Standards
@@ -102,7 +102,7 @@ prodbox check-code
 - Infrastructure tooling: `pulumi`
 - Formal verification tooling: Docker plus the TLA+ runtime documented in `documents/engineering/tla/`
 
-`prodbox lint haskell` and `prodbox check-code` bootstrap the repo-local style-tool sandbox at
+`prodbox dev lint haskell` and `prodbox dev check` bootstrap the repo-local style-tool sandbox at
 `.build/prodbox-style-tools/bin/` via `src/Prodbox/Lint.hs`, using `ghcup run --install` with
 formatter GHC `9.12.4`, Cabal `3.16.1.0`, Fourmolu `0.19.0.1`, and HLint `3.10`. The lint
 entrypoint invokes those sandboxed binaries directly rather than consulting host-installed
@@ -116,12 +116,12 @@ Checklist:
 2. Add Haskell library dependencies to `prodbox.cabal`, not to an unsupported sidecar toolchain.
 3. Update prerequisite doctrine when a new host tool becomes mandatory.
 4. Update the relevant engineering docs when the command surface or validation contract changes.
-5. Run `prodbox check-code` and the affected test suites.
+5. Run `prodbox dev check` and the affected test suites.
 
 ## 6. Upgrading Dependencies
 
 - Keep Cabal changes small and isolated.
-- Re-run `prodbox check-code` after dependency upgrades.
+- Re-run `prodbox dev check` after dependency upgrades.
 - Re-run the affected named validation suites when an upgrade touches AWS, gateway, chart, Pulumi,
   or public-edge behavior.
 - Update doctrine when an upgrade changes the supported external tool version expectations.

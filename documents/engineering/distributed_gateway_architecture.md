@@ -359,8 +359,8 @@ Model files:
 Execution requirement:
 
 - TLA+ checks must run via Docker using `maxdiefenbach/tlaplus`.
-- `src/Prodbox/Tla.hs` owns the public `prodbox tla-check` entrypoint.
-- Use the CLI command `prodbox tla-check`.
+- `src/Prodbox/Tla.hs` owns the public `prodbox dev tla-check` entrypoint.
+- Use the CLI command `prodbox dev tla-check`.
 - The command runs a self-deleting container (`docker run --rm ...`) and writes the latest result to `documents/engineering/tla/tlc_last_run.txt`.
 
 For modelling assumptions, variable correspondence, known divergences, and verification status, see [TLA+ Modelling Assumptions](./tla_modelling_assumptions.md).
@@ -604,7 +604,7 @@ stable `/healthz`, ready/draining
 ## 12. Deployment Model
 
 The canonical steady state for the gateway daemon is the in-cluster
-`prodbox charts deploy gateway` workload. The chart at `charts/gateway/` renders
+`prodbox charts reconcile gateway` workload. The chart at `charts/gateway/` renders
 one Deployment per ranked node id, each backed by a per-node `gateway-<id>`
 Service, an orders ConfigMap, a per-node config ConfigMap, a cert-manager-issued
 TLS material set, and the secret or config inputs required by the daemon at runtime.
@@ -620,7 +620,7 @@ host-process invocation remains a development mode, not the supported steady sta
 
 Containerization is first-class for integration/runtime image publishing:
 
-- `prodbox rke2 reconcile` builds the gateway image from `docker/gateway.Dockerfile`
+- `prodbox cluster reconcile` builds the gateway image from `docker/gateway.Dockerfile`
 - the publish path runs an ordinary host-native `docker build`, then pushes the resulting Harbor
   tags from the repo-owned single-stage `ubuntu:24.04` Dockerfile with in-image `ghcup` and
   pinned GHC `9.14.1`
@@ -643,7 +643,7 @@ native-host-architecture publish flow, explicit public-image reconcile, and RKE2
 prodbox gateway start --config <path>         # In-pod daemon entrypoint
 prodbox gateway status --config <path>        # Query running daemon
 prodbox gateway config-gen <path> --node-id <id>  # Generate template config
-prodbox charts deploy gateway                 # Install/upgrade in-cluster gateway workload
+prodbox charts reconcile gateway                 # Install/upgrade in-cluster gateway workload
 prodbox charts status gateway                 # Inspect installed gateway release
 ```
 
@@ -653,7 +653,7 @@ The gateway chart renders two Services per ranked node: the existing per-node
 `gateway-<id>` ClusterIP for in-cluster callers (chart pre-install Jobs, peer-mesh
 traffic) and an additional NodePort Service that exposes the REST listener for host-CLI
 access. The NodePort is restricted to `127.0.0.1` on the operator host via a host
-iptables rule installed by `prodbox rke2 reconcile` and removed by `prodbox rke2
+iptables rule installed by `prodbox cluster reconcile` and removed by `prodbox cluster
 delete --yes`. External access (LAN, WAN) is dropped at the host firewall.
 
 The host CLI calls the gateway via the native Haskell HTTP client in
@@ -697,7 +697,7 @@ Gateway verification lives in five canonical places:
    the `/v1/secret/derive` and `/v1/secret/ensure-namespace` round-trip against a real
    MinIO `prodbox` bucket.
 4. `prodbox test integration gateway-pods` for pod-backed mesh validation.
-5. `prodbox tla-check` plus `documents/engineering/tla/gateway_orders_rule.tla`
+5. `prodbox dev tla-check` plus `documents/engineering/tla/gateway_orders_rule.tla`
    for formal safety checks.
 
 ---

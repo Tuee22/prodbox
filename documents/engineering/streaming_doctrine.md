@@ -57,7 +57,7 @@ Terminal records must remain legible and attributable.
 
 ## 6. Lifecycle Destructive Success-Versus-Failure Rule
 
-`prodbox rke2 delete --yes` is the canonical case of a destructive lifecycle command that wraps a
+`prodbox cluster delete --yes` is the canonical case of a destructive lifecycle command that wraps a
 noisy upstream uninstaller. Its operator-facing output rule splits cleanly along the exit code of
 `/usr/local/bin/rke2-uninstall.sh`:
 
@@ -73,7 +73,7 @@ noisy upstream uninstaller. Its operator-facing output rule splits cleanly along
   not through the uninstaller's captured fds, so `captureToolOutput` cannot intercept it. The root
   cause — the kernel default `fs.inotify.max_user_instances = 128` being exhausted by RKE2 +
   containerd + kubelet (all uid 0) during teardown — is now fixed at its source: both
-  `prodbox rke2 reconcile` and `prodbox rke2 delete` run `ensureHostInotifyLimits` as their first
+  `prodbox cluster reconcile` and `prodbox cluster delete` run `ensureHostInotifyLimits` as their first
   host-prep step, which idempotently persists a `/etc/sysctl.d/99-prodbox-inotify.conf` drop-in
   (`max_user_instances = 8192`, `max_user_watches = 1048576`) and applies it via `sysctl --system`
   **before** systemd unwinds the RKE2 units. With the limit raised, PID 1 never hits `EMFILE` and
@@ -87,7 +87,7 @@ noisy upstream uninstaller. Its operator-facing output rule splits cleanly along
   out-of-band console emission is never in the captured streams) and renders them through the `writeError`
   boundary so the operator sees the failing command identity.
 
-This rule is scoped to `prodbox rke2 delete --yes`. It does not extend to repo-wide stderr
+This rule is scoped to `prodbox cluster delete --yes`. It does not extend to repo-wide stderr
 suppression, and other lifecycle commands continue to follow the streaming contract above.
 
 ## 7. Intent Ownership

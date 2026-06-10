@@ -23,33 +23,136 @@ Examples:
 ## prodbox aws teardown
 prodbox aws teardown - Delete operational IAM user
 
-Delete the operational IAM user. Default mode opens with a Pulumi-residue check and refuses if any AWS substrate stack (`aws-eks`, `aws-eks-subzone`, `aws-test`, `aws-ses`) still owns live resources. `--destroy-pulumi-residue` orchestrates `prodbox pulumi <stack>-destroy --yes` in canonical order before deleting the operational IAM user; destroying the long-lived `aws-ses` stack triggers a 5-30 min SES re-verification and ~24h S3 bucket-name cooldown. `--allow-pulumi-residue` is the operator-acknowledged recovery escape hatch that bypasses the residue check entirely (stacks become orphaned). `--destroy-pulumi-residue` and `--allow-pulumi-residue` are mutually exclusive at parse time.
+Delete the operational IAM user. Default mode opens with a Pulumi-residue check and refuses if any AWS substrate stack (`aws-eks`, `aws-eks-subzone`, `aws-test`, `aws-ses`) still owns live resources. `--destroy-pulumi-residue` orchestrates `prodbox aws stack <stack> destroy --yes` in canonical order before deleting the operational IAM user; destroying the long-lived `aws-ses` stack triggers a 5-30 min SES re-verification and ~24h S3 bucket-name cooldown. `--allow-pulumi-residue` is the operator-acknowledged recovery escape hatch that bypasses the residue check entirely (stacks become orphaned). `--destroy-pulumi-residue` and `--allow-pulumi-residue` are mutually exclusive at parse time.
 Options:
 - --dry-run - Render the IAM teardown plan without mutating state
 - --plan-file <PATH> - Write the rendered plan to a file
-- --destroy-pulumi-residue - Run `prodbox pulumi <stack>-destroy --yes` for each live Pulumi-managed AWS stack in canonical order before deleting the operational IAM user (mutually exclusive with --allow-pulumi-residue)
+- --destroy-pulumi-residue - Run `prodbox aws stack <stack> destroy --yes` for each live Pulumi-managed AWS stack in canonical order before deleting the operational IAM user (mutually exclusive with --allow-pulumi-residue)
 - --allow-pulumi-residue - Bypass the Pulumi-residue refuse-path that prevents deleting the operational IAM user while AWS substrate stacks still have live resources (operator-acknowledged recovery only; mutually exclusive with --destroy-pulumi-residue)
 
 Examples:
 - prodbox aws teardown  # Delete the operational IAM user (refuses if any AWS substrate stack is live).
 - prodbox aws teardown --destroy-pulumi-residue  # Destroy live AWS substrate stacks in canonical order, then delete the operational IAM user.
 
-## prodbox aws check-quotas
-prodbox aws check-quotas - Inspect supported AWS quotas
+## prodbox aws quotas check
+prodbox aws quotas check - Inspect supported AWS quotas
 
 Inspect supported AWS quotas.
 Examples:
-- prodbox aws check-quotas  # Inspect AWS quotas.
+- prodbox aws quotas check  # Inspect AWS quotas.
 
-## prodbox aws request-quotas
-prodbox aws request-quotas - Request supported AWS quotas
+## prodbox aws quotas request
+prodbox aws quotas request - Request supported AWS quotas
 
 Request supported AWS quota increases.
 Options:
 - --tier <TIER> - Quota target tier to request
 
 Examples:
-- prodbox aws request-quotas --tier core  # Request core-tier quota increases.
+- prodbox aws quotas request --tier core  # Request core-tier quota increases.
+
+## prodbox aws stack eks reconcile
+prodbox aws stack eks reconcile - Provision or inspect the eks stack
+
+Reconcile the EKS validation stack.
+Options:
+- --dry-run - Render the Pulumi plan without mutating state
+- --plan-file <PATH> - Write the rendered plan to a file
+
+Examples:
+- prodbox aws stack eks reconcile  # Reconcile the EKS validation stack.
+
+## prodbox aws stack eks destroy
+prodbox aws stack eks destroy - Destroy the eks stack
+
+Destroy the EKS validation stack.
+Options:
+- --yes, -y - Skip confirmation prompts
+- --dry-run - Render the destroy plan without mutating state
+- --plan-file <PATH> - Write the rendered plan to a file
+
+Examples:
+- prodbox aws stack eks destroy --yes  # Destroy the EKS validation stack.
+
+## prodbox aws stack test reconcile
+prodbox aws stack test reconcile - Provision or inspect the test stack
+
+Reconcile the HA RKE2 validation stack.
+Options:
+- --dry-run - Render the Pulumi plan without mutating state
+- --plan-file <PATH> - Write the rendered plan to a file
+
+Examples:
+- prodbox aws stack test reconcile  # Reconcile the HA RKE2 validation stack.
+
+## prodbox aws stack test destroy
+prodbox aws stack test destroy - Destroy the test stack
+
+Destroy the HA RKE2 validation stack.
+Options:
+- --yes, -y - Skip confirmation prompts
+- --dry-run - Render the destroy plan without mutating state
+- --plan-file <PATH> - Write the rendered plan to a file
+
+Examples:
+- prodbox aws stack test destroy --yes  # Destroy the HA RKE2 validation stack.
+
+## prodbox aws stack aws-subzone reconcile
+prodbox aws stack aws-subzone reconcile - Provision or inspect the aws-subzone stack
+
+Reconcile the AWS-substrate Route 53 hosted subzone and NS delegation.
+Options:
+- --dry-run - Render the Pulumi plan without mutating state
+- --plan-file <PATH> - Write the rendered plan to a file
+
+Examples:
+- prodbox aws stack aws-subzone reconcile  # Reconcile the AWS-substrate Route 53 hosted subzone and NS delegation.
+
+## prodbox aws stack aws-subzone destroy
+prodbox aws stack aws-subzone destroy - Destroy the aws-subzone stack
+
+Destroy the AWS-substrate Route 53 hosted subzone and remove the parent NS delegation.
+Options:
+- --yes, -y - Skip confirmation prompts
+- --dry-run - Render the destroy plan without mutating state
+- --plan-file <PATH> - Write the rendered plan to a file
+
+Examples:
+- prodbox aws stack aws-subzone destroy --yes  # Destroy the AWS-substrate Route 53 hosted subzone and remove the parent NS delegation.
+
+## prodbox aws stack aws-ses reconcile
+prodbox aws stack aws-ses reconcile - Provision or inspect the aws-ses stack
+
+Reconcile the shared AWS SES sending identity, receive subdomain, receive rule set, S3 capture bucket, and SMTP IAM user used by Phase 8 operator-invited email auth.
+Options:
+- --dry-run - Render the Pulumi plan without mutating state
+- --plan-file <PATH> - Write the rendered plan to a file
+
+Examples:
+- prodbox aws stack aws-ses reconcile  # Reconcile the shared AWS SES sending identity, receive subdomain, receive rule set, S3 capture bucket, and SMTP IAM user used by Phase 8 operator-invited email auth.
+
+## prodbox aws stack aws-ses destroy
+prodbox aws stack aws-ses destroy - Destroy the aws-ses stack
+
+Destroy the shared AWS SES stack (sending identity, receive subdomain, receive rule set, S3 capture bucket, and SMTP IAM user).
+Options:
+- --yes, -y - Skip confirmation prompts
+- --dry-run - Render the destroy plan without mutating state
+- --plan-file <PATH> - Write the rendered plan to a file
+
+Examples:
+- prodbox aws stack aws-ses destroy --yes  # Destroy the shared AWS SES stack (sending identity, receive subdomain, receive rule set, S3 capture bucket, and SMTP IAM user).
+
+## prodbox aws stack aws-ses migrate-backend
+prodbox aws stack aws-ses migrate-backend - Migrate aws-ses Pulumi state onto the long-lived S3 backend
+
+Operator-interactive command: migrate the `aws-ses` stack's Pulumi state from the in-cluster MinIO backend onto the dedicated long-lived S3 bucket named by `pulumi_state_backend` in `prodbox-config.dhall`. Idempotent; no-op when the stack already lives in the long-lived backend. TTY-only; refuses non-interactive contexts.
+Options:
+- --dry-run - Render the migration plan without mutating state
+- --plan-file <PATH> - Write the rendered plan to a file
+
+Examples:
+- prodbox aws stack aws-ses migrate-backend  # Migrate aws-ses state onto the long-lived S3 backend.
 
 ## prodbox charts list
 prodbox charts list - List supported charts
@@ -65,8 +168,8 @@ Inspect the current state of a root chart.
 Examples:
 - prodbox charts status vscode  # Inspect the vscode chart status.
 
-## prodbox charts deploy
-prodbox charts deploy - Deploy a root chart stack
+## prodbox charts reconcile
+prodbox charts reconcile - Reconcile a root chart stack
 
 Reconcile a root chart to the supported state.
 Options:
@@ -75,8 +178,8 @@ Options:
 - --substrate <SUBSTRATE> - Target substrate (home-local, aws); default home-local
 
 Examples:
-- prodbox charts deploy vscode  # Deploy the vscode stack.
-- prodbox charts deploy --dry-run vscode  # Render the chart deployment plan.
+- prodbox charts reconcile vscode  # Reconcile the vscode stack.
+- prodbox charts reconcile --dry-run vscode  # Render the chart deployment plan.
 
 ## prodbox charts delete
 prodbox charts delete - Delete a root chart stack
@@ -92,12 +195,101 @@ Examples:
 - prodbox charts delete vscode --yes  # Delete the vscode stack.
 - prodbox charts delete --dry-run vscode  # Render the chart deletion plan.
 
-## prodbox check-code
-prodbox check-code - Run policy, lint, and type checks
+## prodbox cluster status
+prodbox cluster status - Check cluster service status
 
-Run the canonical quality gate.
+Inspect the local cluster service status.
 Examples:
-- prodbox check-code  # Run the canonical quality gate.
+- prodbox cluster status  # Inspect local cluster status.
+
+## prodbox cluster health
+prodbox cluster health - Check Kubernetes health
+
+Inspect Kubernetes cluster health.
+Examples:
+- prodbox cluster health  # Inspect Kubernetes health.
+
+## prodbox cluster start
+prodbox cluster start - Start the cluster service
+
+Start the local cluster service.
+Examples:
+- prodbox cluster start  # Start the local cluster.
+
+## prodbox cluster stop
+prodbox cluster stop - Stop the cluster service
+
+Stop the local cluster service.
+Examples:
+- prodbox cluster stop  # Stop the local cluster.
+
+## prodbox cluster restart
+prodbox cluster restart - Restart the cluster service
+
+Restart the local cluster service.
+Examples:
+- prodbox cluster restart  # Restart the local cluster.
+
+## prodbox cluster reconcile
+prodbox cluster reconcile - Reconcile the local cluster
+
+Reconcile the supported local cluster state. Local-only by default (no AWS); pass --with-edge to also reconcile the public edge (or run `prodbox edge reconcile` separately).
+Options:
+- --dry-run - Render the lifecycle plan without mutating state
+- --plan-file <PATH> - Write the rendered plan to a file
+- --with-edge - Also reconcile the AWS-gated public edge (Route 53 DNS + ZeroSSL TLS); requires operational aws.*
+
+Examples:
+- prodbox cluster reconcile  # Reconcile the supported local cluster (no AWS needed).
+- prodbox cluster reconcile --dry-run  # Render the lifecycle plan.
+- prodbox cluster reconcile --with-edge  # Reconcile the cluster and attach the public edge.
+
+## prodbox cluster delete
+prodbox cluster delete - Delete the local cluster
+
+Delete the local cluster. Default mode opens with a per-run-residue check and refuses if `aws-eks`, `aws-eks-subzone`, or `aws-test` still have live resources. `--cascade` orchestrates the full teardown (K8s drain + per-run Pulumi destroys + cluster uninstall + postflight tag sweep) as one atomic operator action; the K8s drain phase skips gracefully when no cluster is reachable. `--allow-pulumi-residue` bypasses the residue check for operator-acknowledged recovery scenarios. `--cascade` and `--allow-pulumi-residue` are mutually exclusive at parse time.
+Options:
+- --yes, -y - Confirm full cluster deletion
+- --cascade - Orchestrate the full teardown (K8s drain + per-run Pulumi destroys + cluster uninstall + postflight tag sweep) as one atomic operator action
+- --allow-pulumi-residue - Bypass the per-run Pulumi residue refuse-path (recovery only)
+- --dry-run - Render the delete plan without mutating state
+- --plan-file <PATH> - Write the rendered plan to a file
+
+Examples:
+- prodbox cluster delete --yes  # Delete the local cluster (refuses if per-run Pulumi stacks are live).
+- prodbox cluster delete --yes --cascade  # Orchestrate the full teardown as one atomic operator action.
+
+## prodbox cluster logs
+prodbox cluster logs - Show cluster service logs
+
+Show the local cluster service (RKE2) journal logs.
+Options:
+- --lines, -n <INTEGER> - Number of log lines to show
+
+Examples:
+- prodbox cluster logs --lines 50  # Show recent cluster service logs.
+
+## prodbox cluster wait
+prodbox cluster wait - Wait for deployments to be ready
+
+Wait for named namespaces to become ready.
+Options:
+- --timeout, -t <INTEGER> - Timeout in seconds
+- --namespace, -n <VALUE> - Namespace to wait for
+
+Examples:
+- prodbox cluster wait --timeout 300  # Wait for infrastructure workloads.
+
+## prodbox cluster workload-logs
+prodbox cluster workload-logs - Show recent workload logs
+
+Show recent logs from infrastructure/workload namespaces.
+Options:
+- --namespace, -n <VALUE> - Namespace to get logs from
+- --tail <INTEGER> - Number of log lines per container
+
+Examples:
+- prodbox cluster workload-logs --tail 25  # Show recent workload logs.
 
 ## prodbox commands
 prodbox commands - Render the command registry
@@ -140,6 +332,78 @@ Validate the repository-root config file.
 Examples:
 - prodbox config validate  # Validate the current config.
 
+## prodbox dev check
+prodbox dev check - Run policy, lint, and type checks
+
+Run the canonical quality gate.
+Examples:
+- prodbox dev check  # Run the canonical quality gate.
+
+## prodbox dev lint all
+prodbox dev lint all - Run every lint surface
+
+Run every doctrine-owned lint surface.
+Examples:
+- prodbox dev lint all  # Run every doctrine-owned lint surface.
+
+## prodbox dev lint files
+prodbox dev lint files - Run repository-policy lint checks
+
+Check forbidden paths and library-first policy invariants.
+Options:
+- --write - Rewrite the target surface instead of only checking for drift
+
+Examples:
+- prodbox dev lint files  # Run repository-policy lint checks.
+
+## prodbox dev lint docs
+prodbox dev lint docs - Check generated documentation sections
+
+Check or rewrite marker-delimited documentation sections.
+Options:
+- --write - Rewrite the generated documentation sections
+
+Examples:
+- prodbox dev lint docs  # Check generated documentation sections for drift.
+
+## prodbox dev lint haskell
+prodbox dev lint haskell - Run Haskell formatter and lint checks
+
+Run the formatter, hlint, and cabal-format consistency checks.
+Options:
+- --write - Rewrite Haskell formatting surfaces in place
+
+Examples:
+- prodbox dev lint haskell  # Run Haskell formatter and lint checks.
+
+## prodbox dev lint chart
+prodbox dev lint chart - Run Helm chart structural lint checks
+
+Run the Helm chart structural invariants linter.
+Examples:
+- prodbox dev lint chart  # Run the Helm chart structural invariants linter.
+
+## prodbox dev docs check
+prodbox dev docs check - Check generated docs for drift
+
+Check marker-delimited documentation sections for drift.
+Examples:
+- prodbox dev docs check  # Fail when generated documentation has drifted.
+
+## prodbox dev docs generate
+prodbox dev docs generate - Regenerate generated docs
+
+Rewrite marker-delimited documentation sections from their renderers.
+Examples:
+- prodbox dev docs generate  # Regenerate marker-delimited documentation sections.
+
+## prodbox dev tla-check
+prodbox dev tla-check - Run TLA+ checks
+
+Run the TLA+ model checks.
+Examples:
+- prodbox dev tla-check  # Run the TLA+ model checks.
+
 ## prodbox dns check
 prodbox dns check - Inspect Route 53 state
 
@@ -147,19 +411,28 @@ Inspect Route 53 ownership state.
 Examples:
 - prodbox dns check  # Inspect Route 53 state.
 
-## prodbox docs check
-prodbox docs check - Check generated docs for drift
+## prodbox edge reconcile
+prodbox edge reconcile - Reconcile the public edge
 
-Check marker-delimited documentation sections for drift.
+Reconcile the public edge: the ZeroSSL DNS-01 ClusterIssuer and the Route 53 bootstrap record. Requires operational aws.*; fails fast naming `prodbox aws setup` when it is empty.
+Options:
+- --dry-run - Render the edge plan without mutating state
+- --plan-file <PATH> - Write the rendered plan to a file
+
 Examples:
-- prodbox docs check  # Fail when generated documentation has drifted.
+- prodbox edge reconcile  # Reconcile Route 53 DNS + ZeroSSL TLS for the public edge.
+- prodbox edge reconcile --dry-run  # Render the edge plan.
 
-## prodbox docs generate
-prodbox docs generate - Regenerate generated docs
+## prodbox edge status
+prodbox edge status - Check public DNS/TLS edge state
 
-Rewrite marker-delimited documentation sections from their renderers.
+Inspect Route 53, certificate, and shared-host readiness.
+Options:
+- --substrate <SUBSTRATE> - Target substrate (home-local, aws); default home-local
+
 Examples:
-- prodbox docs generate  # Regenerate marker-delimited documentation sections.
+- prodbox edge status  # Inspect public-edge readiness (home substrate).
+- prodbox edge status --substrate aws  # Inspect public-edge readiness on the AWS substrate.
 
 ## prodbox gateway start
 prodbox gateway start - Start gateway daemon
@@ -198,7 +471,7 @@ prodbox help - Render help for a command path
 
 Render detailed help for a registered command path.
 Examples:
-- prodbox help charts deploy  # Render detailed help for `prodbox charts deploy`.
+- prodbox help charts reconcile  # Render detailed help for `prodbox charts reconcile`.
 
 ## prodbox host ensure-tools
 prodbox host ensure-tools - Verify required host tools
@@ -243,90 +516,6 @@ Examples:
 - prodbox host firewall gateway-unrestrict  # Remove the loopback-only restriction on the default NodePort.
 - prodbox host firewall gateway-unrestrict --port 30443  # Remove the restriction on an explicit NodePort.
 
-## prodbox host public-edge
-prodbox host public-edge - Check public DNS/TLS edge state
-
-Inspect Route 53, certificate, and shared-host readiness.
-Options:
-- --substrate <SUBSTRATE> - Target substrate (home-local, aws); default home-local
-
-Examples:
-- prodbox host public-edge  # Inspect public-edge readiness (home substrate).
-- prodbox host public-edge --substrate aws  # Inspect public-edge readiness on the AWS substrate.
-
-## prodbox k8s health
-prodbox k8s health - Check cluster health
-
-Inspect Kubernetes health.
-Examples:
-- prodbox k8s health  # Inspect cluster health.
-
-## prodbox k8s wait
-prodbox k8s wait - Wait for deployments to be ready
-
-Wait for named namespaces to become ready.
-Options:
-- --timeout, -t <INTEGER> - Timeout in seconds
-- --namespace, -n <VALUE> - Namespace to wait for
-
-Examples:
-- prodbox k8s wait --timeout 300  # Wait for infrastructure workloads.
-
-## prodbox k8s logs
-prodbox k8s logs - Show recent infrastructure logs
-
-Show recent logs from infrastructure namespaces.
-Options:
-- --namespace, -n <VALUE> - Namespace to get logs from
-- --tail <INTEGER> - Number of log lines per container
-
-Examples:
-- prodbox k8s logs --tail 25  # Show recent infrastructure logs.
-
-## prodbox lint all
-prodbox lint all - Run every lint surface
-
-Run every doctrine-owned lint surface.
-Examples:
-- prodbox lint all  # Run every doctrine-owned lint surface.
-
-## prodbox lint files
-prodbox lint files - Run repository-policy lint checks
-
-Check forbidden paths and library-first policy invariants.
-Options:
-- --write - Rewrite the target surface instead of only checking for drift
-
-Examples:
-- prodbox lint files  # Run repository-policy lint checks.
-
-## prodbox lint docs
-prodbox lint docs - Check generated documentation sections
-
-Check or rewrite marker-delimited documentation sections.
-Options:
-- --write - Rewrite the generated documentation sections
-
-Examples:
-- prodbox lint docs  # Check generated documentation sections for drift.
-
-## prodbox lint haskell
-prodbox lint haskell - Run Haskell formatter and lint checks
-
-Run the formatter, hlint, and cabal-format consistency checks.
-Options:
-- --write - Rewrite Haskell formatting surfaces in place
-
-Examples:
-- prodbox lint haskell  # Run Haskell formatter and lint checks.
-
-## prodbox lint chart
-prodbox lint chart - Run Helm chart structural lint checks
-
-Run the Helm chart structural invariants linter.
-Examples:
-- prodbox lint chart  # Run the Helm chart structural invariants linter.
-
 ## prodbox nuke
 prodbox nuke - Total teardown of every prodbox-owned AWS resource (operator-only)
 
@@ -337,174 +526,6 @@ Options:
 
 Examples:
 - prodbox nuke --dry-run  # Render the total-teardown plan.
-
-## prodbox pulumi eks-resources
-prodbox pulumi eks-resources - Provision or inspect EKS test stack
-
-Reconcile the EKS validation stack.
-Options:
-- --dry-run - Render the Pulumi plan without mutating state
-- --plan-file <PATH> - Write the rendered plan to a file
-
-Examples:
-- prodbox pulumi eks-resources  # Reconcile the EKS validation stack.
-
-## prodbox pulumi eks-destroy
-prodbox pulumi eks-destroy - Destroy EKS test stack
-
-Destroy the EKS validation stack.
-Options:
-- --yes, -y - Skip confirmation prompts
-- --dry-run - Render the destroy plan without mutating state
-- --plan-file <PATH> - Write the rendered plan to a file
-
-Examples:
-- prodbox pulumi eks-destroy --yes  # Destroy the EKS validation stack.
-
-## prodbox pulumi test-resources
-prodbox pulumi test-resources - Provision or inspect HA RKE2 test stack
-
-Reconcile the HA RKE2 validation stack.
-Options:
-- --dry-run - Render the Pulumi plan without mutating state
-- --plan-file <PATH> - Write the rendered plan to a file
-
-Examples:
-- prodbox pulumi test-resources  # Reconcile the HA RKE2 validation stack.
-
-## prodbox pulumi test-destroy
-prodbox pulumi test-destroy - Destroy HA RKE2 test stack
-
-Destroy the HA RKE2 validation stack.
-Options:
-- --yes, -y - Skip confirmation prompts
-- --dry-run - Render the destroy plan without mutating state
-- --plan-file <PATH> - Write the rendered plan to a file
-
-Examples:
-- prodbox pulumi test-destroy --yes  # Destroy the HA RKE2 validation stack.
-
-## prodbox pulumi aws-subzone-resources
-prodbox pulumi aws-subzone-resources - Provision the per-substrate Route 53 subzone
-
-Reconcile the AWS-substrate Route 53 hosted subzone and NS delegation.
-Options:
-- --dry-run - Render the subzone plan without mutating state
-- --plan-file <PATH> - Write the rendered plan to a file
-
-Examples:
-- prodbox pulumi aws-subzone-resources  # Reconcile the AWS-substrate Route 53 subzone.
-
-## prodbox pulumi aws-subzone-destroy
-prodbox pulumi aws-subzone-destroy - Destroy the per-substrate Route 53 subzone
-
-Destroy the AWS-substrate Route 53 hosted subzone and remove the parent NS delegation.
-Options:
-- --yes, -y - Skip confirmation prompts
-- --dry-run - Render the destroy plan without mutating state
-- --plan-file <PATH> - Write the rendered plan to a file
-
-Examples:
-- prodbox pulumi aws-subzone-destroy --yes  # Destroy the AWS-substrate Route 53 subzone.
-
-## prodbox pulumi aws-ses-resources
-prodbox pulumi aws-ses-resources - Provision cross-substrate AWS SES infrastructure
-
-Reconcile the shared AWS SES sending identity, receive subdomain, receive rule set, S3 capture bucket, and SMTP IAM user used by Phase 8 operator-invited email auth.
-Options:
-- --dry-run - Render the SES plan without mutating state
-- --plan-file <PATH> - Write the rendered plan to a file
-
-Examples:
-- prodbox pulumi aws-ses-resources  # Reconcile the cross-substrate SES infrastructure.
-
-## prodbox pulumi aws-ses-destroy
-prodbox pulumi aws-ses-destroy - Destroy cross-substrate AWS SES infrastructure
-
-Destroy the shared AWS SES stack (sending identity, receive subdomain, receive rule set, S3 capture bucket, and SMTP IAM user).
-Options:
-- --yes, -y - Skip confirmation prompts
-- --dry-run - Render the destroy plan without mutating state
-- --plan-file <PATH> - Write the rendered plan to a file
-
-Examples:
-- prodbox pulumi aws-ses-destroy --yes  # Destroy the cross-substrate SES infrastructure.
-
-## prodbox pulumi aws-ses-migrate-backend
-prodbox pulumi aws-ses-migrate-backend - Migrate aws-ses Pulumi state onto the long-lived S3 backend
-
-Operator-interactive command: migrate the `aws-ses` stack's Pulumi state from the in-cluster MinIO backend onto the dedicated long-lived S3 bucket named by `pulumi_state_backend` in `prodbox-config.dhall`. Idempotent; no-op when the stack already lives in the long-lived backend. TTY-only; refuses non-interactive contexts.
-Options:
-- --dry-run - Render the migration plan without mutating state
-- --plan-file <PATH> - Write the rendered plan to a file
-
-Examples:
-- prodbox pulumi aws-ses-migrate-backend  # Migrate aws-ses state onto the long-lived S3 backend.
-
-## prodbox rke2 status
-prodbox rke2 status - Check RKE2 status
-
-Inspect the local cluster status.
-Examples:
-- prodbox rke2 status  # Inspect RKE2 status.
-
-## prodbox rke2 start
-prodbox rke2 start - Start RKE2
-
-Start the local cluster service.
-Examples:
-- prodbox rke2 start  # Start RKE2.
-
-## prodbox rke2 stop
-prodbox rke2 stop - Stop RKE2
-
-Stop the local cluster service.
-Examples:
-- prodbox rke2 stop  # Stop RKE2.
-
-## prodbox rke2 restart
-prodbox rke2 restart - Restart RKE2
-
-Restart the local cluster service.
-Examples:
-- prodbox rke2 restart  # Restart RKE2.
-
-## prodbox rke2 reconcile
-prodbox rke2 reconcile - Reconcile RKE2
-
-Reconcile the supported local cluster state.
-Options:
-- --dry-run - Render the lifecycle plan without mutating state
-- --plan-file <PATH> - Write the rendered plan to a file
-
-Examples:
-- prodbox rke2 reconcile  # Reconcile the supported local cluster.
-- prodbox rke2 reconcile --dry-run  # Render the lifecycle plan.
-
-## prodbox rke2 delete
-prodbox rke2 delete - Delete RKE2
-
-Delete the local cluster. Default mode opens with a per-run-residue check and refuses if `aws-eks`, `aws-eks-subzone`, or `aws-test` still have live resources. `--cascade` orchestrates the full teardown (K8s drain + per-run Pulumi destroys + cluster uninstall + postflight tag sweep) as one atomic operator action; the K8s drain phase skips gracefully when no cluster is reachable. `--allow-pulumi-residue` bypasses the residue check for operator-acknowledged recovery scenarios. `--cascade` and `--allow-pulumi-residue` are mutually exclusive at parse time.
-Options:
-- --yes, -y - Confirm full RKE2 cluster deletion
-- --cascade - Orchestrate the full teardown (K8s drain + per-run Pulumi destroys + cluster uninstall + postflight tag sweep) as one atomic operator action
-- --allow-pulumi-residue - Bypass the per-run Pulumi residue refuse-path (recovery only)
-- --dry-run - Render the delete plan without mutating state
-- --plan-file <PATH> - Write the rendered plan to a file
-
-Examples:
-- prodbox rke2 delete --yes  # Delete the local cluster (refuses if per-run Pulumi stacks are live).
-- prodbox rke2 delete --yes --cascade  # Orchestrate the full teardown as one atomic operator action.
-
-## prodbox rke2 logs
-prodbox rke2 logs - Show RKE2 logs
-
-Show RKE2 service logs.
-Options:
-- --lines, -n <INTEGER> - Number of log lines to show
-
-Examples:
-- prodbox rke2 logs --lines 50  # Show recent RKE2 logs.
 
 ## prodbox test all
 prodbox test all - Run the full test suite
@@ -776,13 +797,6 @@ Options:
 
 Examples:
 - prodbox test integration keycloak-invite  # Run the `keycloak-invite` integration suite.
-
-## prodbox tla-check
-prodbox tla-check - Run TLA+ checks
-
-Run the TLA+ model checks.
-Examples:
-- prodbox tla-check  # Run the TLA+ model checks.
 
 ## prodbox users invite
 prodbox users invite - Invite an operator-owned user by email

@@ -1,0 +1,42 @@
+.TH PRODBOX_cluster 1
+.SH NAME
+prodbox-cluster \- Local cluster lifecycle
+.SH SYNOPSIS
+.B prodbox cluster
+.SH DESCRIPTION
+Local Kubernetes cluster lifecycle. AWS-free: every command here decodes config and runs with an empty aws.* block. Public DNS + TLS lives under `prodbox edge`.
+.SH SUBCOMMANDS
+.TP
+\fBstatus\fR
+Check cluster service status
+.TP
+\fBhealth\fR
+Check Kubernetes health
+.TP
+\fBstart\fR
+Start the cluster service
+.TP
+\fBstop\fR
+Stop the cluster service
+.TP
+\fBrestart\fR
+Restart the cluster service
+.TP
+\fBreconcile\fR
+Reconcile the local cluster
+.TP
+\fBdelete\fR
+Delete the local cluster
+.TP
+\fBlogs\fR
+Show cluster service logs
+.TP
+\fBwait\fR
+Wait for deployments to be ready
+.TP
+\fBworkload-logs\fR
+Show recent workload logs
+.SH EXAMPLES
+.TP
+\fBprodbox cluster reconcile\fR
+Reconcile the supported local cluster state.

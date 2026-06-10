@@ -81,7 +81,7 @@ longLivedBackendErrorMessage err = case err of
   BackendNotConfigured ->
     "pulumi_state_backend is not configured. Set pulumi_state_backend.bucket_name and \
     \pulumi_state_backend.region in prodbox-config.dhall, then run \
-    \`prodbox pulumi aws-ses-migrate-backend` to migrate existing state from the \
+    \`prodbox aws stack aws-ses migrate-backend` to migrate existing state from the \
     \in-cluster MinIO backend onto the dedicated long-lived S3 bucket."
   BackendBucketNameEmpty ->
     "pulumi_state_backend.bucket_name must not be empty for long-lived stacks."
@@ -95,8 +95,8 @@ longLivedBackendErrorMessage err = case err of
 -- @Left@ when any required field (access key, secret, region) is
 -- empty.
 --
--- Long-lived stack operations (`prodbox pulumi aws-ses-resources`,
--- `prodbox pulumi aws-ses-destroy`) and `prodbox nuke`
+-- Long-lived stack operations (`prodbox aws stack aws-ses reconcile`,
+-- `prodbox aws stack aws-ses destroy`) and `prodbox nuke`
 -- authenticate with the admin credential block rather than the
 -- operational @aws.*@ block, so the operational @prodbox@ IAM user
 -- does not need @s3:GetObject@ / @PutObject@ on the long-lived state
@@ -118,7 +118,7 @@ loadAdminAwsCredentials repoRoot = do
                 \aws_admin_for_test_simulation.secret_access_key, and \
                 \aws_admin_for_test_simulation.region must all be set \
                 \in prodbox-config.dhall before long-lived stack operations \
-                \(`prodbox pulumi aws-ses-resources`, `aws-ses-destroy`, \
+                \(`prodbox aws stack aws-ses reconcile`, `aws-ses-destroy`, \
                 \`aws-ses-migrate-backend`) or `prodbox nuke` can authenticate."
 
 adminCredentialsConfigured :: Credentials -> Bool

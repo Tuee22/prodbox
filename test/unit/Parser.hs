@@ -18,6 +18,7 @@ import Prodbox.CLI.Command
   , ConfigCommand (..)
   , DnsCommand (..)
   , DocsCommand (..)
+  , EdgeCommand (..)
   , GatewayCommand (..)
   , HostCommand (..)
   , IntegrationSuite (..)
@@ -75,16 +76,16 @@ forbiddenCase (argv, label) =
 
 forbiddenArgvCases :: [([String], String)]
 forbiddenArgvCases =
-  [ (["rke2", "reconcile", "--force"], "rke2 reconcile --force")
-  , (["rke2", "reconcile", "--reinstall"], "rke2 reconcile --reinstall")
-  , (["rke2", "install"], "rke2 install")
-  , (["rke2", "install", "--force"], "rke2 install --force")
-  , (["rke2", "install", "--reinstall"], "rke2 install --reinstall")
-  , (["rke2", "upgrade"], "rke2 upgrade")
-  , (["rke2", "repair"], "rke2 repair")
-  , (["rke2", "force-install"], "rke2 force-install")
-  , (["charts", "deploy", "vscode", "--force"], "charts deploy --force")
-  , (["charts", "deploy", "vscode", "--reinstall"], "charts deploy --reinstall")
+  [ (["cluster", "reconcile", "--force"], "cluster reconcile --force")
+  , (["cluster", "reconcile", "--reinstall"], "cluster reconcile --reinstall")
+  , (["cluster", "install"], "cluster install")
+  , (["cluster", "install", "--force"], "cluster install --force")
+  , (["cluster", "install", "--reinstall"], "cluster install --reinstall")
+  , (["cluster", "upgrade"], "cluster upgrade")
+  , (["cluster", "repair"], "cluster repair")
+  , (["cluster", "force-install"], "cluster force-install")
+  , (["charts", "reconcile", "vscode", "--force"], "charts reconcile --force")
+  , (["charts", "reconcile", "vscode", "--reinstall"], "charts reconcile --reinstall")
   , (["charts", "delete", "vscode", "--force"], "charts delete --force")
   , (["charts", "delete", "vscode", "--reinstall"], "charts delete --reinstall")
   , (["charts", "install", "vscode"], "charts install")
@@ -160,16 +161,16 @@ commandPathOfRequest request =
               AwsPolicy _ -> ["policy"]
               AwsSetup _ _ -> ["setup"]
               AwsTeardown _ _ -> ["teardown"]
-              AwsCheckQuotas -> ["check-quotas"]
-              AwsRequestQuotas _ -> ["request-quotas"]
+              AwsCheckQuotas -> ["quotas", "check"]
+              AwsRequestQuotas _ -> ["quotas", "request"]
         NativeCharts chartsCommand ->
           "charts"
             : case chartsCommand of
               ChartsList -> ["list"]
               ChartsStatus _ -> ["status"]
-              ChartsDeploy {} -> ["deploy"]
+              ChartsDeploy {} -> ["reconcile"]
               ChartsDelete {} -> ["delete"]
-        NativeCheckCode -> ["check-code"]
+        NativeCheckCode -> ["dev", "check"]
         NativeConfig configCommand ->
           "config"
             : case configCommand of
@@ -181,8 +182,8 @@ commandPathOfRequest request =
             : case dnsCommand of
               DnsCheck -> ["check"]
         NativeDocs docsCommand ->
-          "docs"
-            : case docsCommand of
+          ["dev", "docs"]
+            ++ case docsCommand of
               DocsCheck -> ["check"]
               DocsGenerate -> ["generate"]
         NativeGateway gatewayCommand ->
@@ -192,49 +193,54 @@ commandPathOfRequest request =
               GatewayStatusCommand _ -> ["status"]
               GatewayConfigGen _ _ -> ["config-gen"]
         NativeHost hostCommand ->
-          "host"
-            : case hostCommand of
-              HostEnsureTools -> ["ensure-tools"]
-              HostCheckPorts -> ["check-ports"]
-              HostInfo -> ["info"]
-              HostFirewall -> ["firewall"]
-              HostFirewallGatewayRestrict _ -> ["firewall", "gateway-restrict"]
-              HostFirewallGatewayUnrestrict _ -> ["firewall", "gateway-unrestrict"]
-              HostPublicEdge _ -> ["public-edge"]
+          case hostCommand of
+            HostEnsureTools -> ["host", "ensure-tools"]
+            HostCheckPorts -> ["host", "check-ports"]
+            HostInfo -> ["host", "info"]
+            HostFirewall -> ["host", "firewall"]
+            HostFirewallGatewayRestrict _ -> ["host", "firewall", "gateway-restrict"]
+            HostFirewallGatewayUnrestrict _ -> ["host", "firewall", "gateway-unrestrict"]
+            -- Regrouped under `edge status` (Phase 5); the handler still
+            -- routes through 'HostPublicEdge'.
+            HostPublicEdge _ -> ["edge", "status"]
+        NativeEdge edgeCommand ->
+          "edge"
+            : case edgeCommand of
+              EdgeReconcile _ -> ["reconcile"]
         NativeK8s k8sCommand ->
-          "k8s"
+          "cluster"
             : case k8sCommand of
               K8sHealth -> ["health"]
               K8sWait _ _ -> ["wait"]
-              K8sLogs _ _ -> ["logs"]
+              K8sLogs _ _ -> ["workload-logs"]
         NativeLint lintCommand ->
-          "lint"
-            : case lintCommand of
+          ["dev", "lint"]
+            ++ case lintCommand of
               LintAll -> ["all"]
               LintFiles _ -> ["files"]
               LintDocs _ -> ["docs"]
               LintHaskell _ -> ["haskell"]
               LintChart -> ["chart"]
         NativePulumi pulumiCommand ->
-          "pulumi"
-            : case pulumiCommand of
-              PulumiEksResources _ -> ["eks-resources"]
-              PulumiEksDestroy _ _ -> ["eks-destroy"]
-              PulumiTestResources _ -> ["test-resources"]
-              PulumiTestDestroy _ _ -> ["test-destroy"]
-              PulumiAwsSubzoneResources _ -> ["aws-subzone-resources"]
-              PulumiAwsSubzoneDestroy _ _ -> ["aws-subzone-destroy"]
-              PulumiAwsSesResources _ -> ["aws-ses-resources"]
-              PulumiAwsSesDestroy _ _ -> ["aws-ses-destroy"]
-              PulumiAwsSesMigrateBackend _ -> ["aws-ses-migrate-backend"]
+          ["aws", "stack"]
+            ++ case pulumiCommand of
+              PulumiEksResources _ -> ["eks", "reconcile"]
+              PulumiEksDestroy _ _ -> ["eks", "destroy"]
+              PulumiTestResources _ -> ["test", "reconcile"]
+              PulumiTestDestroy _ _ -> ["test", "destroy"]
+              PulumiAwsSubzoneResources _ -> ["aws-subzone", "reconcile"]
+              PulumiAwsSubzoneDestroy _ _ -> ["aws-subzone", "destroy"]
+              PulumiAwsSesResources _ -> ["aws-ses", "reconcile"]
+              PulumiAwsSesDestroy _ _ -> ["aws-ses", "destroy"]
+              PulumiAwsSesMigrateBackend _ -> ["aws-ses", "migrate-backend"]
         NativeRke2 rke2Command ->
-          "rke2"
+          "cluster"
             : case rke2Command of
               Rke2Status -> ["status"]
               Rke2Start -> ["start"]
               Rke2Stop -> ["stop"]
               Rke2Restart -> ["restart"]
-              Rke2Reconcile _ -> ["reconcile"]
+              Rke2Reconcile _ _ -> ["reconcile"]
               Rke2Delete _ _ -> ["delete"]
               Rke2Logs _ -> ["logs"]
         NativeTest testCommand ->
@@ -267,7 +273,7 @@ commandPathOfRequest request =
                     IntegrationPublicDns -> ["public-dns"]
                     IntegrationKeycloakInvite -> ["keycloak-invite"]
         NativeNuke _ -> ["nuke"]
-        NativeTlaCheck -> ["tla-check"]
+        NativeTlaCheck -> ["dev", "tla-check"]
         NativeUsers usersCommand ->
           "users"
             : case usersCommand of

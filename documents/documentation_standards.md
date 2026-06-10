@@ -93,7 +93,7 @@ Every document must include:
 `**Generated sections**:` is mandatory in every governed document. The value is either
 `none` or a comma-separated list of the `<key>` portion of every marker pair the document
 contains (see Section 11). The header↔markers↔registry reconciler that enforces this — a
-lint pass under `prodbox lint docs` that fails when the declared metadata and the markers
+lint pass under `prodbox dev lint docs` that fails when the declared metadata and the markers
 physically present in the file disagree (declaring `none` while markers are present, or
 declaring a key whose markers are missing) — is the **intended** enforcement landing in
 [Sprint 0.9](../DEVELOPMENT_PLAN/README.md); it does not exist in the current worktree, so
@@ -178,7 +178,7 @@ sibling adds re-freeze friction on every type-schema edit with no integrity bene
 schema and the config travel together in the same commit, so a stale hash would only ever block
 legitimate edits.
 
-The `prodbox check-code` surface **does not** enforce a sha256 freeze (the implement-or-strike
+The `prodbox dev check` surface **does not** enforce a sha256 freeze (the implement-or-strike
 decision scheduled for [Sprint 0.9](../DEVELOPMENT_PLAN/README.md) was **struck**: there is no
 phantom check to re-derive). Should a remote or untrusted committed import be introduced in the
 future, freeze its hash and revisit enforcement at that point. Regardless, docs must not direct
@@ -286,10 +286,10 @@ Example: a generated command-registry table inside this file might look like:
 ### Authoritative list of files with generated regions
 
 The single source of truth is the in-code `GeneratedSectionRule` registry consumed by
-`prodbox docs check` and `prodbox docs generate`. Every file that contains markers must
+`prodbox dev docs check` and `prodbox dev docs generate`. Every file that contains markers must
 declare its keys in its `**Generated sections**:` metadata field (Section 3); the
 header↔markers↔registry reconciler that enforces that agreement is the **intended**
-`prodbox lint docs` check scheduled for [Sprint 0.9](../DEVELOPMENT_PLAN/README.md) (see
+`prodbox dev lint docs` check scheduled for [Sprint 0.9](../DEVELOPMENT_PLAN/README.md) (see
 Section 3), not a check the current worktree already runs.
 
 Generation targets enumerated by
@@ -305,20 +305,20 @@ cross-language types. The currently scheduled registry entries are:
 | Resource Lifecycle Classes table in `DEVELOPMENT_PLAN/substrates.md`, sourced from `Prodbox.Lifecycle.ResourceRegistry` | `resource-lifecycle-classes` | **Scheduled** — Sprint 4.22 (renderer + markers land then; hand-maintained until) |
 | Cross-language types (TypeScript / Go / PureScript mirrors) | `cross-language-types.*` | **Deferred** — no non-Haskell consumer in scope |
 
-The `prodbox lint docs --write` and `prodbox docs generate` surfaces share one Haskell
+The `prodbox dev lint docs --write` and `prodbox dev docs generate` surfaces share one Haskell
 function; either name regenerates the registered sections.
 
 ### How to regenerate
 
-Run `prodbox docs generate` to splice the current renderer output between every marker
+Run `prodbox dev docs generate` to splice the current renderer output between every marker
 pair declared in the registry. Hand edits between markers are reverted on the next
-regenerate and fail `prodbox docs check` until reverted.
+regenerate and fail `prodbox dev docs check` until reverted.
 
 The check command emits the doctrine's three-element error message on drift:
 
 1. The file path that drifted.
 2. The marker key (so the contributor knows which renderer is responsible).
-3. A literal remedy hint: ``Run `prodbox docs generate` to update.``
+3. A literal remedy hint: ``Run `prodbox dev docs generate` to update.``
 
 ### How to add a new generated section
 
@@ -327,15 +327,15 @@ The doctrine's five-step extension protocol:
 1. Define or extend the renderer in the relevant Haskell library module.
 2. Add the marker pair to the target file using the conventions above.
 3. Register a new `GeneratedSectionRule` or `TrackedGeneratedPath` entry in the in-code registry.
-4. Run `prodbox docs generate` to populate the section.
-5. Confirm `prodbox docs check` and `cabal test` pass.
+4. Run `prodbox dev docs generate` to populate the section.
+5. Confirm `prodbox dev docs check` and `cabal test` pass.
 
 ### Fully generated, do-not-hand-edit paths
 
 A separate tracked-generated-paths registry names files that are owned wholly by code
 generators (no markers required because the entire file is generated). The current worktree
 implements that registry in `src/Prodbox/CheckCode.hs` as `TrackedGeneratedPath` entries, with
-`prodbox lint files` refusing drift on paths such as:
+`prodbox dev lint files` refusing drift on paths such as:
 
 - `share/man/man1/prodbox.1`
 - `share/man/man1/prodbox-*.1`

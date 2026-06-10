@@ -33,7 +33,7 @@
   `prodbox-test-pulumi-backends`.
 - AWS-substrate canonical-suite runs (`--substrate aws`) require the operator-supplied
   `aws_substrate.hosted_zone_id` and `aws_substrate.subzone_name` Dhall fields, populated by
-  `prodbox pulumi aws-subzone-resources` provisioning a per-substrate Route 53 subzone with NS
+  `prodbox aws stack aws-subzone reconcile` provisioning a per-substrate Route 53 subzone with NS
   delegation in the parent zone. The AWS substrate must not fall back to home-substrate
   `route53.zone_id` or `domain.demo_fqdn` values; missing AWS-substrate config fails fast per
   [`DEVELOPMENT_PLAN/development_plan_standards.md` § M — Substrate coverage and independence (no fallback)](../../DEVELOPMENT_PLAN/development_plan_standards.md#substrate-coverage-and-independence-no-fallback).
@@ -65,7 +65,7 @@
   shared infrastructure that is retained by design** — live in
   [`DEVELOPMENT_PLAN/substrates.md` → Resource Lifecycle Classes](../../DEVELOPMENT_PLAN/substrates.md#resource-lifecycle-classes).
   See [`CLAUDE.md`](../../CLAUDE.md) and [`AGENTS.md`](../../AGENTS.md) for the rule that
-  invoking a documented `prodbox` AWS entrypoint (`prodbox pulumi <stack>-resources/-destroy`,
+  invoking a documented `prodbox` AWS entrypoint (`prodbox aws stack <stack> reconcile/-destroy`,
   `prodbox aws setup/teardown`, `prodbox test integration ... --substrate aws`,
   `prodbox test all`) does not require separate user approval beyond the original request —
   live AWS spend and shared-infrastructure mutation are *expected* outcomes of asking the
@@ -84,7 +84,7 @@
   escape hatch when recovery from a partial state requires deleting operational creds with
   stacks still up.
 - **Sprint `4.19` (May 28, 2026)** closes a silent-pass defect in the per-run residue
-  gate. `prodbox rke2 delete` (default) and `prodbox aws teardown` previously treated
+  gate. `prodbox cluster delete` (default) and `prodbox aws teardown` previously treated
   per-run `ResidueUnreachable` (the in-cluster MinIO Pulumi-state backend could not be
   read — e.g. the MinIO pod is down on a degraded cluster while the state is still intact
   on `.data/`) the same as `ResidueAbsent` and proceeded silently — reporting a clean
@@ -155,7 +155,7 @@
   in-cluster MinIO backend. State lifetime matches resource lifetime per class — this is
   the current enforced structure, detailed in § 4.5 below.
   See [lifecycle_reconciliation_doctrine.md → §2 State-Lifetime Rule](lifecycle_reconciliation_doctrine.md).
-- **Sprint `4.11` (planned)**: `prodbox rke2 delete` carries a symmetric refuse-path
+- **Sprint `4.11` (planned)**: `prodbox cluster delete` carries a symmetric refuse-path
   scoped to per-run Pulumi stacks (`aws-eks`, `aws-eks-subzone`, `aws-test`). `aws-ses`
   is excluded because Sprint `4.10` places its state outside the cluster. The new
   `--cascade` flag is the positive-framed "clean teardown" path; `--allow-pulumi-residue`
@@ -163,14 +163,14 @@
 - **Sprint `4.12` (planned)**: K8s drain phase + postflight tag sweep close the
   K8s-controller-created AWS leak classes (CSI volumes, ALBs, cert-manager DNS01 TXTs,
   direct-aws-CLI shell-out Route 53 records). Together with Sprint `4.11`'s refuse-path
-  these make `prodbox rke2 delete --cascade` structurally leak-safe.
+  these make `prodbox cluster delete --cascade` structurally leak-safe.
 - **Sprint `4.13` (planned)**: `prodbox nuke` is the operator-only total-teardown command
   that destroys long-lived shared infrastructure transitively, including the `aws-ses`
   stack and the long-lived `pulumi_state_backend` bucket. TTY-only, typed-confirmation
   literal `NUKE EVERYTHING`, no `--yes` shorthand.
 - Every interactive `prodbox` entry point (`prodbox config setup`,
-  `prodbox aws setup`, `prodbox aws teardown`, `prodbox aws check-quotas`,
-  `prodbox aws request-quotas`, and the `prodbox charts delete` confirmation prompt)
+  `prodbox aws setup`, `prodbox aws teardown`, `prodbox aws quotas check`,
+  `prodbox aws quotas request`, and the `prodbox charts delete` confirmation prompt)
   **refuses to run when stdin is not a TTY** and exits 1 with a guidance message naming
   the automation equivalent. Implementation in `src/Prodbox/CLI/Interactive.hs`; full
   contract in
@@ -197,7 +197,7 @@ real AWS state, including:
 4. `prodbox test integration ha-rke2-aws`
 5. `prodbox test integration public-dns`
 6. `prodbox test integration aws-iam`
-7. The supporting `prodbox pulumi ...` and `prodbox aws ...` command surfaces those validations
+7. The supporting `prodbox aws stack ...` and `prodbox aws ...` command surfaces those validations
    rely on, plus the credential-boundary rules those validations depend on
 
 The public `prodbox config setup` and `prodbox aws ...` surfaces route through the native Haskell
@@ -311,7 +311,7 @@ The required checks map to:
    decoded settings
 3. lifecycle-capability check:
    Route 53 validations must be able to create and fully own a fresh hosted-zone lifecycle;
-   Pulumi-backed validations must be able to drive the canonical `prodbox pulumi` command surface
+   Pulumi-backed validations must be able to drive the canonical `prodbox aws stack` command surface
 4. native IAM harness check: managed suite-driven runs must fail before their validation bodies
    when `aws_admin_for_test_simulation.*` is missing, partial, or paired with an otherwise
    incomplete harness config
@@ -334,7 +334,7 @@ fresh hosted-zone lifecycle using the canonical Route 53 command set.
 ### 3.5 Pulumi-Backed Stack Capability Proof Rule
 
 For `aws-eks`, `pulumi`, and `ha-rke2-aws`, permission sufficiency is proven only when the local
-host can reach its RKE2-backed MinIO backend and the relevant named `prodbox pulumi` surface can
+host can reach its RKE2-backed MinIO backend and the relevant named `prodbox aws stack` surface can
 select, inspect, or create the canonical AWS test stack using settings-defined AWS auth.
 
 The supported path synchronizes only non-secret validation inputs such as operator-CIDR and
@@ -349,7 +349,7 @@ the declared host path, reapplies the ownership and mode contract, restarts `dep
 and then reruns the login proof before stack operations continue.
 
 On aggregate or cluster-backed suite paths, the public test runner may satisfy the local backend
-contract by running the visible `prodbox rke2 reconcile` phase before it executes the deferred
+contract by running the visible `prodbox cluster reconcile` phase before it executes the deferred
 `pulumi_logged_in` prerequisite proof. The local-cluster-first rule still holds: remote AWS stack
 creation does not begin until that post-runbook backend proof succeeds.
 
@@ -380,20 +380,20 @@ canonical Pulumi stack flows.
 
 Minimum rule:
 
-1. `prodbox rke2 reconcile` creates or reconciles the local backend cluster first
-2. `prodbox pulumi eks-resources` is the only supported surface for creating or inspecting the AWS
+1. `prodbox cluster reconcile` creates or reconciles the local backend cluster first
+2. `prodbox aws stack eks reconcile` is the only supported surface for creating or inspecting the AWS
    EKS test stack
-3. `prodbox pulumi eks-destroy --yes` is the only supported surface for destroying that stack
-4. `prodbox pulumi test-resources` is the only supported surface for creating or inspecting the AWS
+3. `prodbox aws stack eks destroy --yes` is the only supported surface for destroying that stack
+4. `prodbox aws stack test reconcile` is the only supported surface for creating or inspecting the AWS
    HA stack
-5. `prodbox pulumi test-destroy --yes` is the only supported surface for destroying that stack
-6. `prodbox rke2 delete` opens with the Sprint `4.11` per-run refuse-path: it refuses when
+5. `prodbox aws stack test destroy --yes` is the only supported surface for destroying that stack
+6. `prodbox cluster delete` opens with the Sprint `4.11` per-run refuse-path: it refuses when
    any of `aws-eks`, `aws-eks-subzone`, `aws-test` reports live resources, naming each
    stack and the canonical destroy command. The `--cascade` flag orchestrates K8s drain
    (Sprint `4.12`) + per-run destroys + cluster uninstall + postflight tag sweep as one
    atomic operator action — the canonical "wipe and rebuild" path. `aws-ses` is ignored
    throughout because its Pulumi state lives outside the cluster (Sprint `4.10`) and may
-   only be destroyed by `prodbox pulumi aws-ses-destroy --yes` or `prodbox nuke`
+   only be destroyed by `prodbox aws stack aws-ses destroy --yes` or `prodbox nuke`
 7. the AWS validation Pulumi programs take non-secret operator-CIDR and SSH-public-key inputs
    through explicit stack config synchronized by the Haskell orchestration layer, while AWS
    provider credentials stay in the Haskell-owned subprocess environment
@@ -404,7 +404,7 @@ Minimum rule:
    interrupted run or operator network move do not survive as terminal validation state
 10. the local `prodbox-pulumi` Cabal stanza proves the retained ephemeral-stack harness and
    typed-output contract around those stack flows, while end-to-end AWS provisioning is exercised
-   by the named `prodbox pulumi ...` and `prodbox test integration ...` surfaces plus the aggregate
+   by the named `prodbox aws stack ...` and `prodbox test integration ...` surfaces plus the aggregate
    test suite
 
 ### 4.4 Stored Admin Credential Harness
@@ -448,13 +448,13 @@ the in-cluster MinIO. This is required, not incidental: `aws-ses` is long-lived
 cross-substrate shared infrastructure whose state must survive arbitrary
 `rke2 delete + rke2 reconcile` cycles, so it cannot live in a backend that disappears with the
 cluster. The idempotent `ensureLongLivedPulumiStateBucket` precondition (shared by
-`aws-ses-resources` and the invite bootstrap) provisions/repairs that bucket; the long-lived
+`aws-ses reconcile` and the invite bootstrap) provisions/repairs that bucket; the long-lived
 bucket is destroyed only by `prodbox nuke`, never by `rke2 delete` or per-run postflight.
 
 Concretely, this means:
 
 1. For per-run stacks, the home substrate must be running before any per-run
-   `prodbox pulumi` call. Operator runs `prodbox rke2 reconcile` once; the command is
+   `prodbox aws stack` call. Operator runs `prodbox cluster reconcile` once; the command is
    idempotent and a no-op when the home substrate is already up.
 2. For per-run stacks, the MinIO `prodbox-test-pulumi-backends` bucket must exist before the
    first stack is created. The reconcile contract ensures this — see § 0 above for the
@@ -474,14 +474,14 @@ verbatim.
 Every Pulumi-managed substrate stack is described by one `Prodbox.Infra.StackDescriptor`
 SSoT record (Sprint `4.27`): `stackRegistryName`, `stackPulumiStackId` (e.g. the registry
 name `aws-eks` is provisioned under the Pulumi stack id `aws-eks-test`), `stackProjectSubdir`
-under `pulumi/`, `stackCliVerb` (the `<stem>` in `prodbox pulumi <stem>-resources` /
-`<stem>-destroy`), and `stackLifecycleClass`. `perRunStackNames`, the CLI verbs, and the
+under `pulumi/`, `stackCliVerb` (the `<stem>` in `prodbox aws stack <stem> reconcile` /
+`<stem> destroy`), and `stackLifecycleClass`. `perRunStackNames`, the CLI verbs, and the
 project dirs all **derive** from `stackDescriptors`, removing the drift the
 documentation-harmony audit flagged between the registry names, the CLI verbs, and the
 project directories. The registry-name↔CLI-command inventory is rendered from this SSoT into
 the `stack-command-surface` generated section of
 [`DEVELOPMENT_PLAN/substrates.md`](../../DEVELOPMENT_PLAN/substrates.md#resource-lifecycle-classes)
-by `prodbox docs generate`; `prodbox docs check` fails the build if it drifts.
+by `prodbox dev docs generate`; `prodbox dev docs check` fails the build if it drifts.
 
 The standalone Sprint `7.5.c.v` workflow makes the per-run prerequisite explicit as
 [Sprint Workflow Step `0.5`](../../DEVELOPMENT_PLAN/phase-7-aws-substrate-foundations.md);
@@ -499,11 +499,11 @@ up again.
 
 The same public CLI surfaces used by operators own the AWS test-stack lifecycles during validation:
 
-1. `prodbox pulumi eks-resources`
-2. `prodbox pulumi eks-destroy --yes`
-3. `prodbox pulumi test-resources`
-4. `prodbox pulumi test-destroy --yes`
-5. `prodbox rke2 delete --yes` as the final automatic destroy path before backend teardown
+1. `prodbox aws stack eks reconcile`
+2. `prodbox aws stack eks destroy --yes`
+3. `prodbox aws stack test reconcile`
+4. `prodbox aws stack test destroy --yes`
+5. `prodbox cluster delete --yes` as the final automatic destroy path before backend teardown
 
 ### 5.3 Cleanup Must Run After Validation Failure
 
@@ -527,7 +527,7 @@ explicit target and error text.
 
 ### 5.5 Cascade Drain Phase Against EKS
 
-The `prodbox rke2 delete --cascade --yes` drain phase
+The `prodbox cluster delete --cascade --yes` drain phase
 ([`lifecycle_reconciliation_doctrine.md` §5b](lifecycle_reconciliation_doctrine.md))
 must run against the **substrate's own kubeconfig**, not the operator-host
 RKE2 kubeconfig, when the cascade is tearing down resources on the AWS substrate.
@@ -582,14 +582,14 @@ Route 53 lifecycle validation uses the canonical AWS CLI command family:
 
 Pulumi-backed validations depend on:
 
-1. `prodbox pulumi eks-resources`
-2. `prodbox pulumi eks-destroy --yes`
-3. `prodbox pulumi test-resources`
-4. `prodbox pulumi test-destroy --yes`
-5. `prodbox pulumi aws-subzone-resources`
-6. `prodbox pulumi aws-subzone-destroy --yes`
-7. `prodbox pulumi aws-ses-resources`
-8. `prodbox pulumi aws-ses-destroy --yes`
+1. `prodbox aws stack eks reconcile`
+2. `prodbox aws stack eks destroy --yes`
+3. `prodbox aws stack test reconcile`
+4. `prodbox aws stack test destroy --yes`
+5. `prodbox aws stack aws-subzone reconcile`
+6. `prodbox aws stack aws-subzone destroy --yes`
+7. `prodbox aws stack aws-ses reconcile`
+8. `prodbox aws stack aws-ses destroy --yes`
 
 ### 6.4 Cross-Substrate Shared SES Infrastructure
 
@@ -598,7 +598,7 @@ and [`DEVELOPMENT_PLAN/substrates.md`](../../DEVELOPMENT_PLAN/substrates.md#cros
 the AWS SES sending identity, receive subdomain MX records, receive rule set, S3 capture bucket,
 and SMTP IAM user are account-scoped resources shared across every substrate that runs
 `ValidationKeycloakInvite`. The supported provisioning entrypoints are
-`prodbox pulumi aws-ses-resources` and `prodbox pulumi aws-ses-destroy --yes`, sourced from
+`prodbox aws stack aws-ses reconcile` and `prodbox aws stack aws-ses destroy --yes`, sourced from
 `pulumi/aws-ses/` and operated through
 `src/Prodbox/Infra/AwsSesStack.hs`. The operator-supplied inputs are
 `ses.sender_domain`, `ses.receive_subdomain`, and `ses.capture_bucket` in
@@ -611,12 +611,12 @@ consumes the SES IAM-to-SMTP-credentials derivation as a Kubernetes secret. Fres
 clusters and invite-aware home-runtime bootstraps must sync that retained stack output into the
 current Kubernetes context before Helm renders Keycloak: the test bootstrap reads the long-lived
 `aws-ses` outputs via `aws_admin_for_test_simulation.*`, first running the same idempotent
-`ensureLongLivedPulumiStateBucket` precondition used by `aws-ses-resources`, and applies
+`ensureLongLivedPulumiStateBucket` precondition used by `aws-ses reconcile`, and applies
 `keycloak-smtp` into the supported Keycloak release namespaces (`vscode` for the canonical
 shared-edge stack, `keycloak` for the standalone root chart). Because Keycloak's realm import does
 not update an already-created realm, `prodbox users invite` also patches the live realm's
 `smtpServer` from `keycloak-smtp` before it sends an execute-actions email. If the long-lived stack
-state is missing while retained fixed-name SES/S3/IAM resources still exist, `aws-ses-resources`
+state is missing while retained fixed-name SES/S3/IAM resources still exist, `aws-ses reconcile`
 repairs state by importing the retained capture bucket, SMTP IAM user, SES receipt rule set, and receipt
 rule, rotating stale SMTP access keys so Pulumi owns a fresh retrievable secret, and reconciling
 overwrite-tolerant Route 53 verification/DKIM/MX records. The `ValidationKeycloakInvite`

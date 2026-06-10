@@ -165,10 +165,10 @@ registry-generated golden coverage:
 <!-- prodbox:stack-command-surface:start -->
 | Registry name | Pulumi stack id | Project subdir | Resources command | Destroy command | Lifecycle class |
 |---------------|-----------------|----------------|-------------------|-----------------|-----------------|
-| `aws-eks` | `aws-eks-test` | `pulumi/aws-eks/` | `prodbox pulumi eks-resources` | `prodbox pulumi eks-destroy --yes` | PerRun |
-| `aws-eks-subzone` | `aws-eks-subzone` | `pulumi/aws-eks-subzone/` | `prodbox pulumi aws-subzone-resources` | `prodbox pulumi aws-subzone-destroy --yes` | PerRun |
-| `aws-test` | `aws-test` | `pulumi/aws-test/` | `prodbox pulumi test-resources` | `prodbox pulumi test-destroy --yes` | PerRun |
-| `aws-ses` | `aws-ses` | `pulumi/aws-ses/` | `prodbox pulumi aws-ses-resources` | `prodbox pulumi aws-ses-destroy --yes` | LongLived |
+| `aws-eks` | `aws-eks-test` | `pulumi/aws-eks/` | `prodbox aws stack eks reconcile` | `prodbox aws stack eks destroy --yes` | PerRun |
+| `aws-eks-subzone` | `aws-eks-subzone` | `pulumi/aws-eks-subzone/` | `prodbox aws stack aws-subzone reconcile` | `prodbox aws stack aws-subzone destroy --yes` | PerRun |
+| `aws-test` | `aws-test` | `pulumi/aws-test/` | `prodbox aws stack test reconcile` | `prodbox aws stack test destroy --yes` | PerRun |
+| `aws-ses` | `aws-ses` | `pulumi/aws-ses/` | `prodbox aws stack aws-ses reconcile` | `prodbox aws stack aws-ses destroy --yes` | LongLived |
 <!-- prodbox:stack-command-surface:end -->
 
 ### Per-run stacks (auto-managed by the harness)

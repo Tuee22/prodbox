@@ -9,6 +9,7 @@ module Prodbox.CLI.Command
   , DocsCommand (..)
   , DaemonLaunchOptions (..)
   , DaemonStatusOptions (..)
+  , EdgeCommand (..)
   , GatewayCommand (..)
   , CommandRequest (..)
   , ConfigCommand (..)
@@ -61,6 +62,7 @@ data NativeCommand
   | NativeConfig ConfigCommand
   | NativeDns DnsCommand
   | NativeDocs DocsCommand
+  | NativeEdge EdgeCommand
   | NativeGateway GatewayCommand
   | NativeHost HostCommand
   | NativeK8s K8sCommand
@@ -106,6 +108,15 @@ data HostCommand
 
 data DnsCommand
   = DnsCheck
+  deriving (Eq, Show)
+
+-- | The public-edge surface (Route 53 DNS + ZeroSSL TLS). 'EdgeReconcile'
+-- is the AWS-gated edge-only reconcile (the same plan @cluster reconcile
+-- --with-edge@ appends); it fails fast naming @prodbox aws setup@ when
+-- operational @aws.*@ is empty. @edge status@ reuses the existing
+-- public-edge readiness check via 'HostPublicEdge'.
+data EdgeCommand
+  = EdgeReconcile PlanOptions
   deriving (Eq, Show)
 
 data DaemonLaunchOptions = DaemonLaunchOptions
@@ -247,7 +258,10 @@ data Rke2Command
   | Rke2Start
   | Rke2Stop
   | Rke2Restart
-  | Rke2Reconcile PlanOptions
+  | -- | @Bool@ is @--with-edge@: also reconcile the AWS-gated public edge
+    -- (Route 53 DNS + ZeroSSL TLS). Bare reconcile is local-only and needs
+    -- no operational @aws.*@.
+    Rke2Reconcile PlanOptions Bool
   | Rke2Delete Rke2DeleteFlags PlanOptions
   | Rke2Logs (Maybe Int)
   deriving (Eq, Show)

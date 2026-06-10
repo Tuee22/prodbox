@@ -76,8 +76,8 @@ data LifecycleAction
 - Use records when named fields improve clarity.
 
 For the lifecycle-command predicate / reconciler / phase-ADT layering that
-extends this pattern across `prodbox rke2 delete`, `prodbox aws teardown`,
-`prodbox pulumi <stack>-destroy`, and `prodbox nuke`, see
+extends this pattern across `prodbox cluster delete`, `prodbox aws teardown`,
+`prodbox aws stack <stack> destroy`, and `prodbox nuke`, see
 [lifecycle_reconciliation_doctrine.md](lifecycle_reconciliation_doctrine.md).
 That doctrine's managed-resource registry (§3.1) is the data-oriented
 endpoint of this discipline: the registry is pure data (a `[ManagedResource]`

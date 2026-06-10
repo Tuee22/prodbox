@@ -8,6 +8,7 @@
 [phase-7-aws-substrate-foundations.md](phase-7-aws-substrate-foundations.md),
 [legacy-tracking-for-deletion.md](legacy-tracking-for-deletion.md),
 [the engineering doctrine docs](../documents/engineering/README.md)
+**Generated sections**: none
 
 > **Purpose**: Switch Keycloak from the current hardcoded-`emailVerified` state to operator-invited,
 > email-verified authentication. Use AWS SES as the email transport, with SES receive rules + S3
@@ -249,7 +250,7 @@ strips the `cert-manager.io/*` adoption annotations; fix pending), and the opera
 
 **2026-06-07 — ZeroSSL is the sole supported ACME provider.** The earlier model that built two
 ACME `ClusterIssuer`s and selected between them was reverted to a single ZeroSSL `ClusterIssuer`
-(`zerossl-http01`): ZeroSSL has no separate test endpoint, and the S3 retain-and-restore of the
+(`zerossl-dns01`): ZeroSSL has no separate test endpoint, and the S3 retain-and-restore of the
 issued certificate already covers rebuild churn. The prior alternate ACME provider, its extra
 config field, the second `ClusterIssuer`, and the issuer-selection machinery are removed from the
 codebase and docs. The home `keycloak-invite` live gate (Sprint `8.8`) now runs against the
@@ -384,12 +385,12 @@ Provision the long-lived, account-scoped SES resources both substrates depend on
   `documents/cli/commands.md`, `share/man/man1/prodbox-pulumi-aws-ses-resources.1`
   and `prodbox-pulumi-aws-ses-destroy.1`, and the bash/zsh/fish completions all
   surface the two new commands.
-- [DEVELOPMENT_PLAN/substrates.md](../substrates.md#cross-substrate-shared-resources)
+- [DEVELOPMENT_PLAN/substrates.md](substrates.md#cross-substrate-shared-resources)
   Cross-Substrate Shared Resources table names
   `prodbox pulumi aws-ses-resources` / `aws-ses-destroy` as the provisioning surface
   for the SES sending identity, receive subdomain + MX, receive rule set + S3 capture
   bucket, and SMTP IAM user.
-- [documents/engineering/aws_integration_environment_doctrine.md](../../documents/engineering/aws_integration_environment_doctrine.md).4 records the cross-substrate shared SES infrastructure doctrine and names
+- [documents/engineering/aws_integration_environment_doctrine.md](../documents/engineering/aws_integration_environment_doctrine.md) records the cross-substrate shared SES infrastructure doctrine and names
   `src/Prodbox/Infra/AwsSesStack.hs` as the exclusive provisioning surface.
 - Validated with `prodbox check-code` (exit 0), `prodbox lint docs` (exit 0),
   `prodbox docs check` (exit 0), and `prodbox test unit` (300/300) on May 18, 2026.
@@ -1120,7 +1121,7 @@ parity rows accordingly.
 `public-edge-tls-retained` constants/manifest removed; the chart `Certificate` issuer set to the
 single `Prodbox.PublicEdge.publicEdgeClusterIssuerName`),
 `src/Prodbox/Infra/LongLivedPulumiBackend.hs` (`resolveLongLivedAdminS3Context`),
-`charts/keycloak/values.yaml` + `charts/vscode/values.yaml` (issuer → `zerossl-http01`)
+`charts/keycloak/values.yaml` + `charts/vscode/values.yaml` (issuer → `zerossl-dns01`)
 **Docs to update**: `documents/engineering/helm_chart_platform_doctrine.md`,
 `documents/engineering/envoy_gateway_edge_doctrine.md`,
 `documents/engineering/acme_provider_guide.md`
@@ -1161,7 +1162,7 @@ post-`rke2 delete`), not only the chart-delete→redeploy path.
   namespace/cluster), the existing `deployChartPlan` restore now works on EVERY rebuild path —
   including a fresh cluster after `prodbox rke2 delete`. ✅
 - The keycloak **and** vscode chart `Certificate` issuers reference the single ZeroSSL
-  `ClusterIssuer` (`zerossl-http01`) as a deploy-time value, replacing the hardcoded constant
+  `ClusterIssuer` (`zerossl-dns01`) as a deploy-time value, replacing the hardcoded constant
   (the `charts/keycloak/values.yaml` + `charts/vscode/values.yaml` defaults point at it). ✅
 
 ### Validation
@@ -1173,7 +1174,7 @@ Closure gates (passed 2026-06-07):
    `public-edge typed preserve outcome` describe block covers the three-way
    `classifyPublicEdgePreserve` discrimination and `renderPublicEdgePreserveOutcome` surfacing
    the absent states; the `ZeroSSL ACME ClusterIssuer + cert retention key scheme` block covers
-   the single-issuer rendering and the `zerossl-http01` constant).
+   the single-issuer rendering and the `zerossl-dns01` constant).
 3. `./.build/prodbox test integration cli` — only the 2 pre-existing `charts deploy vscode`
    environmental failures (`CliSuite.hs:256`/`:376`) remain; they reproduce identically on the
    pre-8.7 tree (the graceful-degradation S3 retention is a no-op without admin creds, so the

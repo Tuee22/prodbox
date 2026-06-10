@@ -17,7 +17,6 @@ module Prodbox.Gateway.Types
   , eventTypeHeartbeat
   , eventTypeClaim
   , eventTypeYield
-  , eventTypeOrdersPromoted
   , defaultMaxClockSkewSeconds
   , defaultDrainDeadlineSeconds
   , supportedDaemonConfigSchemaVersion
@@ -39,7 +38,6 @@ module Prodbox.Gateway.Types
   , parseIso8601Utc
   , formatUtcIso
   , computeMaxObservedSkew
-  , extractOrdersVersionFromEvent
   , validateDaemonTimingAgainstOrders
   )
 where
@@ -208,10 +206,26 @@ data ConnectionKey = ConnectionKey
 data Disposition = DispositionOwner | DispositionYielded | DispositionUnknown
   deriving (Eq, Show)
 
+-- | Per-peer health, split into two independent directions so a
+-- one-directional partition is observable rather than collapsed into a single
+-- transport-health value (Sprint 2.25).
+--
+--   * 'peerHealthLastInboundEvent' is INBOUND delivery health: the timestamp
+--     of the most recent signed event this daemon accepted FROM the peer. It
+--     is the freshness signal that feeds heartbeat / isolation judgements and
+--     is written only when an inbound event is actually accepted.
+--   * 'peerHealthOutboundConnected' / 'peerHealthOutboundLastError' are
+--     OUTBOUND dial health: whether this daemon's last push TO the peer
+--     succeeded, and the last dial error if it failed. They reflect our own
+--     delivery attempts and say nothing about whether the peer is producing
+--     events.
+--
+-- A successful outbound push must NOT advance 'peerHealthLastInboundEvent':
+-- reaching a peer's socket is not evidence the peer is alive and emitting.
 data PeerHealth = PeerHealth
   { peerHealthLastInboundEvent :: Maybe UTCTime
-  , peerHealthConnected :: Bool
-  , peerHealthLastError :: Maybe String
+  , peerHealthOutboundConnected :: Bool
+  , peerHealthOutboundLastError :: Maybe String
   }
   deriving (Eq, Show)
 
@@ -223,9 +237,6 @@ eventTypeClaim = "claim"
 
 eventTypeYield :: String
 eventTypeYield = "yield"
-
-eventTypeOrdersPromoted :: String
-eventTypeOrdersPromoted = "orders_promoted"
 
 defaultMaxClockSkewSeconds :: Double
 defaultMaxClockSkewSeconds = 10.0
@@ -462,14 +473,14 @@ computeMaxObservedSkew now log_ =
         [] -> Nothing
         xs -> Just (foldl' max 0 xs)
 
--- | Recover the Orders @version_utc@ promoted by the emitter from an
--- @orders_promoted@ event payload.
-extractOrdersVersionFromEvent :: SignedEvent -> Maybe Int
-extractOrdersVersionFromEvent ev
-  | eventType ev /= eventTypeOrdersPromoted = Nothing
-  | otherwise =
-      case eitherDecode (BL8.pack (payloadJson ev)) of
-        Right (Object obj) -> case KeyMap.lookup (Key.fromString "orders_version_utc") obj of
-          Just (Number n) -> Just (round n)
-          _ -> Nothing
-        _ -> Nothing
+-- Sprint 2.25 (doctrine D4): the in-process @orders_promoted@ promotion
+-- machinery was deleted. @stateOrdersVersionUtc@ never advances at runtime;
+-- a newer Orders document is adopted only by restarting the daemon against
+-- the new config (config_doctrine.md §8). The former
+-- @extractOrdersVersionFromEvent@ recovered an Orders version from an
+-- @orders_promoted@ event payload; nothing ever emitted that event class, so
+-- it was dead code. The refuse-to-reclaim-while-behind gate
+-- (@stateLatestObservedOrdersVersion > stateOrdersVersionUtc@ blocks ownership
+-- claims) is kept in 'Prodbox.Gateway.Daemon' and is fed only by the sender's
+-- advertised @orders_version_utc@ on each peer push, never by an in-process
+-- promotion event.

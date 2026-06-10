@@ -5,8 +5,6 @@ module Prodbox.Gateway
   , renderGatewayStartPlan
   , renderGatewayStatusReport
   , resolveGatewayConfigPath
-  , resolveGatewayLogLevel
-  , resolveGatewayPortOverride
   , runGatewayCommand
   )
 where
@@ -50,6 +48,7 @@ import Prodbox.Gateway.Types
   , validateDaemonTimingAgainstOrders
   )
 import Prodbox.Prerequisite (prerequisiteRegistry)
+import Prodbox.PrerequisiteId (PrerequisiteId (..))
 import Prodbox.Result (Result (..))
 import Prodbox.Settings
   ( Credentials (..)
@@ -77,27 +76,16 @@ runGatewayStart repoRoot options = do
   case configPathResult of
     Left err -> failWith err
     Right configPath -> do
-      portResult <- resolveGatewayPortOverride (daemonPort options)
-      case portResult of
+      configResult <- loadDaemonConfig configPath
+      case configResult of
         Left err -> failWith err
-        Right portOverride -> do
-          logLevel <- resolveGatewayLogLevel (daemonLogLevel options)
-          configResult <- loadDaemonConfig configPath
-          case configResult of
-            Left err -> failWith err
-            Right config -> do
-              let resolvedConfig = resolveDaemonInputPaths configPath config
-                  plan =
-                    buildGatewayStartExecutionPlan
-                      configPath
-                      logLevel
-                      portOverride
-                      (daemonForeground options)
-                      resolvedConfig
-              runPlanWithOptions
-                (daemonPlanOptions options)
-                plan
-                (applyGatewayStartPlan repoRoot configPath portOverride logLevel)
+        Right config -> do
+          let resolvedConfig = resolveDaemonInputPaths configPath config
+              plan = buildGatewayStartExecutionPlan configPath resolvedConfig
+          runPlanWithOptions
+            (daemonPlanOptions options)
+            plan
+            (applyGatewayStartPlan repoRoot configPath)
 
 runGatewayStatus :: DaemonStatusOptions -> IO ExitCode
 runGatewayStatus options = do
@@ -142,15 +130,18 @@ runGatewayConfigGen repoRoot outputPath nodeId = do
         Left err -> failWith err
         Right () -> pure ExitSuccess
 
-renderGatewayStartPlan :: FilePath -> String -> Maybe Int -> Bool -> DaemonConfig -> String
-renderGatewayStartPlan configPath logLevel portOverride foreground config =
+-- | Sprint 2.24: the daemon log level is sourced from the mounted Dhall
+-- config (@live.log_level@) exclusively; the daemon REST port comes from
+-- the Orders file the daemon loads at runtime. The plan render reflects
+-- those config-as-data sources rather than the removed CLI overrides.
+renderGatewayStartPlan :: FilePath -> DaemonConfig -> String
+renderGatewayStartPlan configPath config =
   unlines
     [ "GATEWAY_START_PLAN"
     , "CONFIG_PATH=" ++ configPath
     , "NODE_ID=" ++ daemonNodeId config
-    , "LOG_LEVEL=" ++ logLevel
-    , "PORT_OVERRIDE=" ++ maybe "<config-default>" show portOverride
-    , "FOREGROUND=" ++ boolText foreground
+    , "LOG_LEVEL=" ++ fromMaybe "info" (daemonConfigLogLevel config)
+    , "PORT_SOURCE=<orders>"
     ]
 
 resolveGatewayConfigPath :: Maybe FilePath -> IO (Either String FilePath)
@@ -159,35 +150,23 @@ resolveGatewayConfigPath maybeCliPath =
     Just configPath -> Right configPath
     Nothing -> Left "Missing gateway config path. Pass `--config <path>`."
 
-resolveGatewayLogLevel :: Maybe String -> IO String
-resolveGatewayLogLevel maybeCliLevel =
-  pure (fromMaybe "info" maybeCliLevel)
-
-resolveGatewayPortOverride :: Maybe Int -> IO (Either String (Maybe Int))
-resolveGatewayPortOverride maybeCliPort =
-  pure (Right maybeCliPort)
-
 buildGatewayStartExecutionPlan
   :: FilePath
-  -> String
-  -> Maybe Int
-  -> Bool
   -> DaemonConfig
   -> Plan DaemonConfig
-buildGatewayStartExecutionPlan configPath logLevel portOverride foreground =
-  buildPlan
-    (renderGatewayStartPlan configPath logLevel portOverride foreground)
+buildGatewayStartExecutionPlan configPath =
+  buildPlan (renderGatewayStartPlan configPath)
 
-applyGatewayStartPlan :: FilePath -> FilePath -> Maybe Int -> String -> DaemonConfig -> IO ExitCode
-applyGatewayStartPlan repoRoot configPath portOverride logLevel config = do
+applyGatewayStartPlan :: FilePath -> FilePath -> DaemonConfig -> IO ExitCode
+applyGatewayStartPlan repoRoot configPath config = do
   prerequisiteResult <- runGatewayDaemonAcquirePrerequisites repoRoot
   case prerequisiteResult of
     Failure err -> failWith err
-    Success () -> Daemon.runGatewayDaemon (Just configPath) portOverride logLevel config
+    Success () -> Daemon.runGatewayDaemon (Just configPath) config
 
 runGatewayDaemonAcquirePrerequisites :: FilePath -> IO (Result ())
 runGatewayDaemonAcquirePrerequisites repoRoot =
-  case fromRootIds ["gateway_daemon_acquire"] prerequisiteRegistry of
+  case fromRootIds [GatewayDaemonAcquire] prerequisiteRegistry of
     Left err -> pure (Failure err)
     Right dag -> runEffectDAG (InterpreterContext repoRoot) dag
 

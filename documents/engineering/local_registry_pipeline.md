@@ -2,7 +2,8 @@
 
 **Status**: Authoritative source
 **Supersedes**: N/A
-**Referenced by**: README.md, documents/engineering/README.md, documents/engineering/distributed_gateway_architecture.md, documents/engineering/effectful_dag_architecture.md, documents/engineering/envoy_gateway_edge_doctrine.md, documents/engineering/prerequisite_dag_system.md, documents/engineering/prerequisite_doctrine.md, documents/engineering/storage_lifecycle_doctrine.md
+**Referenced by**: README.md, documents/engineering/README.md, documents/engineering/distributed_gateway_architecture.md, documents/engineering/effectful_dag_architecture.md, documents/engineering/envoy_gateway_edge_doctrine.md, documents/engineering/helm_chart_platform_doctrine.md, documents/engineering/prerequisite_dag_system.md, documents/engineering/prerequisite_doctrine.md, documents/engineering/storage_lifecycle_doctrine.md
+**Generated sections**: none
 
 > **Purpose**: Define how `prodbox` provisions Harbor, bootstraps Harbor storage-backend
 > prerequisites, publishes native-host-architecture custom images, mirrors required public images,
@@ -108,6 +109,32 @@ The supported public-edge doctrine uses this image set:
 4. The Haskell distributed gateway image remains a separate repository-owned image and is not
    replaced by Envoy Gateway.
 
+### 3.2 One Release Value Per Substrate-Shared Platform Image
+
+The mirrored platform images are substrate-equivalent by construction (Sprint 7.12). The home
+local substrate and the AWS substrate mirror and consume the **same** image refs:
+
+1. The Envoy Gateway control-plane image, the Envoy data-plane image, and the cert-manager image
+   set are each pinned to exactly one `Prodbox.ContainerImage` release value — shared by the
+   chart, the control plane, and the data plane. There is no separate per-substrate Envoy or
+   cert-manager version, so the EG-control-plane-vs-Envoy-data-plane skew class (e.g. the
+   EG-1.4.4 / Envoy-1.37 mismatch) cannot arise from this pipeline.
+2. A lint forbids any `prodbox` code path from re-pinning a chart version or image ref
+   conditionally on the active substrate; `Prodbox.Lib.AwsSubstratePlatform` consumes the shared
+   `Prodbox.ContainerImage` values that the home reconcile uses rather than overriding them. A
+   substrate-keyed re-pin is a build-time error, never a silent divergence.
+3. Both installers draw the mirrored platform images from one shared `[PlatformComponent]`
+   inventory (Harbor, MinIO, the Percona PostgreSQL operator, the substrate load balancer, Envoy
+   Gateway, cert-manager). A coverage test asserts both installers cover every entry; the AWS
+   substrate is **not** a "no-Harbor" cluster and uses the identical `127.0.0.1:30080/prodbox/...`
+   refs (resolved on EKS via the EKS-side Harbor + node-local registry proxy).
+
+This is the image-pipeline statement of the substrate-equivalence mechanism; the chart-platform
+side is in
+[helm_chart_platform_doctrine.md § 3A](./helm_chart_platform_doctrine.md#3a-substrate-equivalence-mechanism),
+and the project-level rule is in [../../CLAUDE.md](../../CLAUDE.md) "Substrate Equivalence" and
+[../../DEVELOPMENT_PLAN/substrates.md](../../DEVELOPMENT_PLAN/substrates.md).
+
 ## 4. RKE2 Mirror Behavior
 
 `rke2 reconcile` reconciles:
@@ -169,12 +196,12 @@ prodbox test integration charts-api
 prodbox test integration charts-websocket
 ```
 
-Image overrides remain available for explicit testing:
-
-```bash
-PRODBOX_GATEWAY_IMAGE=<explicit-image-ref> prodbox test integration gateway-pods
-PRODBOX_PUBLIC_EDGE_WORKLOAD_IMAGE=<explicit-image-ref> prodbox test integration charts-api
-```
+There is no `PRODBOX_*_IMAGE` (or any other `PRODBOX_*`) environment-variable override: no
+supported `prodbox` binary reads `PRODBOX_*` environment variables, per
+[config_doctrine.md](./config_doctrine.md). The gateway and shared public-edge workload image
+refs are derived deterministically from machine identity (§3) into the Harbor `prodbox` project;
+there is no env-var seam to substitute an explicit ref. Tests run the canonical commands above
+against the Harbor-published image set produced by `prodbox rke2 reconcile`.
 
 ## Cross-References
 

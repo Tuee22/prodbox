@@ -8,6 +8,7 @@
 [phase-8-email-invite-auth.md](phase-8-email-invite-auth.md),
 [legacy-tracking-for-deletion.md](legacy-tracking-for-deletion.md),
 [the engineering doctrine docs](../documents/engineering/README.md)
+**Generated sections**: none
 
 > **Purpose**: Own the AWS substrate's foundations — the interactive onboarding wizard, the
 > standalone AWS IAM and quota command surface, the temporary-admin-credential validation harness
@@ -16,7 +17,25 @@
 
 ## Phase Status
 
-✅ **Sprint `7.11` Done** — Phase 7 renders one ZeroSSL ACME `ClusterIssuer` (`zerossl-http01`)
+✅ **Reclosed 2026-06-09** — Phase 7 was reopened for Sprints `7.12`–`7.13` (design-intention review;
+narrated in [README.md → Closure Status](README.md) per rule A); both have now landed. Sprint `7.12`
+✅ made **substrate equivalence a structural invariant**: one `Prodbox.ContainerImage` Envoy release
+value pins the Envoy Gateway chart + control plane + data plane together (killing the EG-`1.4.4` /
+Envoy-`1.37` skew, audit C79); `checkSubstrateImagePinning` forbids per-substrate chart-version /
+image re-pinning of shared components (the lower-layer MetalLB / ALB-controller pins are exempt); a
+shared `[PlatformComponent]` inventory + coverage test asserts both installers cover it (a coverage
+test, **not** a unified step DAG); and the stale "no Harbor on EKS" prose was corrected. Sprint
+`7.13` ✅ renamed the public-edge ACME issuer to the **DNS-01-honest** `zerossl-dns01` (from its
+historical HTTP-01-spelled name) from one SSoT constant across code + charts + ~41 doc/test sites
+(the old spelling now appears nowhere in code, charts, docs, tests, or goldens), reattributed
+the public-edge shared-route ownership to the `keycloak` chart in the doctrine, and removed the
+`PublicEdge.hs` `PRODBOX_AWS_SUBSTRATE_HOSTED_ZONE_ID` env read (now settings-sourced; `PublicEdge.hs`
+added to `checkEnvVarConfigReads.scopedPaths`). Validation at reclosure: `check-code` 0, `test unit`
+821, `integration cli` 35, `integration env` 35, `lint docs` 0, `docs check` 0; the live
+issuer-rename-on-rebuild + AWS-substrate `test all` are operator-driven. All earlier Phase 7 sprints
+(`7.1`–`7.11`) stay `Done` on their owned scope.
+
+✅ **Sprint `7.11` Done** — Phase 7 renders one ZeroSSL ACME `ClusterIssuer` (`zerossl-dns01`)
 and adds a substrate-scoped long-lived cert retention store; all earlier Phase 7 sprints
 (`7.1`–`7.10`) stay `Done` on their owned scope.
 
@@ -749,7 +768,7 @@ AWS LB Controller + Envoy Gateway install) is too large for one session.
       substrate-aware ACME `ClusterIssuer` without duplicating the logic.
       `Prodbox.Lib.AwsSubstratePlatform::ensureAwsSubstrateAcmeRuntime` writes
       the manifest to a temp file, `kubectl apply -f`s it, and
-      `kubectl wait --for=condition=Ready clusterissuer/zerossl-http01`s.
+      `kubectl wait --for=condition=Ready clusterissuer/zerossl-dns01`s.
       `Prodbox.Lib.AwsSubstratePlatform::ensureAwsSubstratePlatformRuntime`
       sequences `α`+`β`+`γ`+ACME after loading the EKS snapshot, failing fast
       when `prodbox pulumi eks-resources` has not yet been run. The
@@ -1132,7 +1151,7 @@ currently lays down the lower-layer ingress + TLS pieces on EKS:
 - `cert-manager` + `cert-manager-webhook` + `cert-manager-cainjector` in the
   `cert-manager` namespace via the upstream Jetstack chart.
 - `route53-credentials` + `acme-eab-credentials` secrets and the
-  `zerossl-http01` `ClusterIssuer` rendered with `SubstrateAws` so DNS01
+  `zerossl-dns01` `ClusterIssuer` rendered with `SubstrateAws` so DNS01
   challenges write into the per-substrate Route 53 subzone.
 
 ### Remaining Work
@@ -2645,7 +2664,7 @@ issuer), `src/Prodbox/PublicEdge.hs` (`publicEdgeClusterIssuerName` constant +
 
 ### Objective
 
-Render one cert-manager `ClusterIssuer` (`zerossl-http01`, built from `acme.server`) with a
+Render one cert-manager `ClusterIssuer` (`zerossl-dns01`, built from `acme.server`) with a
 factored DNS-01 Route 53 solver and the ZeroSSL external account binding, and add the
 substrate-scoped long-lived cert retention store. The retained cert material is stored in the
 long-lived `pulumi_state_backend` S3 bucket under a substrate-scoped key
@@ -2664,7 +2683,7 @@ preserved.
 
 ### Deliverables
 
-- One ZeroSSL ACME `ClusterIssuer` (`zerossl-http01`) with a factored DNS-01 Route 53 solver
+- One ZeroSSL ACME `ClusterIssuer` (`zerossl-dns01`) with a factored DNS-01 Route 53 solver
   and the required ZeroSSL external account binding.
 - The issuer carries its own `privateKeySecretRef` account key (`zerossl-account-key`).
 - A substrate-scoped S3 retention key scheme stores the public-edge cert so rebuilds restore
@@ -2683,7 +2702,7 @@ Closure gates (passed 2026-06-07):
    `ZeroSSL ACME ClusterIssuer + cert retention key scheme` describe block covers: the issuer
    rendering `acme.server` + the `zerossl-account-key` account key; the DNS-01 Route 53 solver
    secret + hosted zone; the ZeroSSL external account binding when configured; the single issuer
-   rendered by `acmeRuntimeManifestWith`; the `zerossl-http01` issuer name constant; and the
+   rendered by `acmeRuntimeManifestWith`; the `zerossl-dns01` issuer name constant; and the
    substrate-scoped `publicEdgeTlsRetentionKey`).
 3. `./.build/prodbox test integration cli` / `./.build/prodbox test integration env` → the
    ZeroSSL `acme` fixtures decode in every fixture (the `aws-iam`, `config setup`,
@@ -2699,6 +2718,192 @@ The live single-issuer + S3-retention behavior is exercised under Phase 8 Sprint
 first, then AWS parity, plus the production round-trip). The S3 cert-retention `put`/`get`
 access path landed here is consumed by the chart-platform restore-before-issue refactor in
 Sprint `8.7`.
+
+## Sprint 7.12: Substrate Equivalence as a Structural Invariant ✅
+
+**Status**: Done (2026-06-09). A new `EnvoyGatewayRelease`/`envoyGatewayRelease` SSoT in
+`ContainerImage.hs` pins the Envoy Gateway chart version + control-plane image + data-plane image
+together (chart `v1.7.2` / control `v1.7.2` / data `distroless-v1.37.0`, the proven home pairing) and
+feeds all three sites on BOTH substrates — eliminating the EG-`1.4.4`/Envoy-`1.37` skew (audit C79)
+by construction (the AWS install's hardcoded `v1.4.4` chart + missing controller override are gone).
+The same SSoT treatment was applied to the cert-manager / Percona-operator / MinIO chart versions.
+`checkSubstrateImagePinning` (wired into `runDoctrineAlignmentCheck`, proven to fire) forbids
+per-substrate re-pinning of a SHARED component's chart-version/image while exempting the genuinely
+substrate-specific lower layer (AWS LB Controller, MetalLB, FRR, containerd-mirror). A shared
+`[PlatformComponent]` inventory (13 components) is declared once and consumed by both installers,
+with a coverage test asserting neither omits a component (NOT a unified step DAG). The stale "no
+Harbor on EKS" prose was corrected across `AwsSubstratePlatform.hs` + the doctrine docs +
+`substrates.md` (Harbor + MinIO + Percona run on both substrates; the AWS Harbor is the EKS-side
+Harbor + node-local registry proxy). Validation green: `check-code` 0, `test unit` 0, `integration
+cli` 0, `lint docs` 0, `docs check` 0. The live `prodbox test all --substrate aws` re-validation is
+operator-driven.
+**Implementation**: `src/Prodbox/ContainerImage.hs` (recommended — new SSoT module for the single
+Envoy release value), `src/Prodbox/Lib/AwsSubstratePlatform.hs`, `src/Prodbox/CLI/Rke2.hs`,
+`src/Prodbox/Lib/ChartPlatform.hs`, `charts/`, `src/Prodbox/CheckCode.hs` (the per-substrate
+re-pin lint), `test/unit/Main.hs`
+**Docs to update**: `documents/engineering/helm_chart_platform_doctrine.md`,
+`documents/engineering/envoy_gateway_edge_doctrine.md`,
+`documents/engineering/aws_integration_environment_doctrine.md`,
+`DEVELOPMENT_PLAN/substrates.md`
+
+### Why Phase 7 reopened
+
+The substrate-equivalence contract ("the home local substrate and the AWS substrate stand up the
+same set of services") currently lives only as prose in `CLAUDE.md` and
+[substrates.md](substrates.md). Nothing structural enforces it, so the worktree drifted: the home
+substrate and the AWS substrate independently pin Envoy Gateway / Envoy versions (the
+EG-`1.4.4` chart shipped by Sprint `7.5.b.ii.β` against a data-plane Envoy `1.37` image — a skew
+that can only be caught by reading two files in two modules), and the doctrine still carries a
+stale "no Harbor on EKS" reading that the Sprint `7.5.b.ii` Harbor-mirrored chart-platform install
+already contradicts. Phase 7 owns the AWS-substrate platform install paths, so making equivalence a
+compiler/lint/test-enforced invariant — instead of trusting prose — reopens this phase for one
+sprint. Per [development_plan_standards.md → M. Substrate coverage and independence (no fallback)](development_plan_standards.md#substrate-coverage-and-independence-no-fallback)
+the two installers must remain behaviorally equivalent without per-substrate special-casing.
+
+### Objective
+
+Replace the prose substrate-equivalence contract with three structural enforcers — one pinned Envoy
+release value shared across chart + control plane + data plane, a lint forbidding per-substrate
+chart-version / image re-pinning, and a shared `[PlatformComponent]` inventory with a coverage test
+that both installers must satisfy — and correct the stale "no Harbor on EKS" prose. The two
+installers stay as separate code paths (home: MetalLB + the in-cluster Harbor NodePort pattern;
+AWS: AWS Load Balancer Controller + the EKS-side Harbor + node-local registry proxy); only the
+*component set* is asserted equal, **not** unified into one step DAG.
+
+### Deliverables
+
+- A new `Prodbox.ContainerImage` SSoT exposes one Envoy Gateway release value (e.g.
+  `envoyGatewayRelease`) consumed by all three pinning sites together: the Envoy Gateway Helm chart
+  version, the control-plane install (`ensureAwsSubstrateEnvoyGatewayRuntime` and the home
+  equivalent), and the data-plane proxy image. The EG-`1.4.4` / Envoy-`1.37` skew is eliminated by
+  construction — there is no second place to change a version independently.
+- A `checkSubstrateImagePinning` (or equivalently-named) lint in `src/Prodbox/CheckCode.hs`
+  **forbids per-substrate chart-version or image re-pinning** — any chart version / image reference
+  bound on a per-substrate branch (i.e. keyed off `Substrate`/`SubstrateAws`/`SubstrateHomeLocal`)
+  is a violation; the single pinned value from `Prodbox.ContainerImage` is the only sanctioned
+  source. Wired into `prodbox check-code`.
+- A shared `[PlatformComponent]` inventory (`gateway`, `keycloak`, `keycloak-postgres`, `vscode`,
+  `api`, `redis`, `websocket`, plus MinIO, Harbor, the Percona PostgreSQL operator, Envoy Gateway,
+  cert-manager, ZeroSSL DNS01) declared once and consumed by both the home install path
+  (`Prodbox.CLI.Rke2` / `Prodbox.Lib.ChartPlatform`) and the AWS install path
+  (`Prodbox.Lib.AwsSubstratePlatform`).
+- A **coverage test** (not a unified step DAG) in `test/unit/Main.hs` asserting that both
+  substrate installers cover every entry in the shared `[PlatformComponent]` inventory. The two
+  installers keep their distinct lower-layer implementations (MetalLB vs AWS LB Controller, parent
+  zone vs delegated subzone); the test asserts only that neither installer omits a component.
+- The stale "no Harbor on EKS" prose is corrected across the doctrine docs and [substrates.md](substrates.md)
+  to state that Harbor + MinIO + the Percona operator are installed on **both** substrates (the AWS
+  substrate's Harbor is the EKS-side Harbor + node-local registry proxy that makes
+  `127.0.0.1:30080/prodbox/...` resolve on EKS, mirroring the home NodePort-on-`127.0.0.1` pattern).
+
+### Validation
+
+1. `prodbox check-code` (exercises the new per-substrate re-pin lint).
+2. `prodbox test unit` (the `[PlatformComponent]` coverage test asserts both installers cover the
+   shared inventory).
+3. `prodbox docs check` / `prodbox lint docs` (corrected "no Harbor on EKS" prose reconciled).
+4. Live re-validation: `prodbox test all --substrate aws` proves the single Envoy release value
+   stands up Envoy Gateway on EKS with no chart/data-plane skew and the canonical suite stays green.
+
+### Remaining Work
+
+None — closed 2026-06-09. The `ContainerImage` Envoy/cert-manager/Percona/MinIO release SSoT, the
+`checkSubstrateImagePinning` lint, the shared `[PlatformComponent]` inventory + coverage test, and
+the "no Harbor on EKS" prose corrections all landed. The live `prodbox test all --substrate aws`
+re-validation (single Envoy release with no skew) is operator-driven.
+
+## Sprint 7.13: DNS-01-Honest Issuer Rename and Public-Edge Route-Ownership Correction ✅
+
+**Status**: Done (2026-06-09). The public-edge ACME issuer was renamed to the DNS-01-honest
+`zerossl-dns01` (from its historical HTTP-01-spelled name) from one SSoT constant
+(`publicEdgeClusterIssuerName` in
+`PublicEdge.hs`) flowing to all consumers — `acmeClusterIssuerSpec`/`acmeRuntimeManifestWith` + the
+issuer-wait (`Rke2.hs`), `ensureAwsSubstrateAcmeRuntime` (`AwsSubstratePlatform.hs`), the
+`ChartPlatform.hs` issuer references, and `charts/keycloak/values.yaml` + `charts/vscode/values.yaml`
+— with all ~41 doc/test sites updated; the old HTTP-01-spelled name now appears nowhere in code,
+charts, docs, tests, or goldens. The doctrine reattributes the shared Gateway / listener-cert / redirect / `/auth` route
+to the `keycloak` chart (verified against `charts/keycloak/templates/gateway.yaml`). `PublicEdge.hs`
+no longer reads `PRODBOX_AWS_SUBSTRATE_HOSTED_ZONE_ID` — `resolveSubstrateHostedZoneId` sources the
+hosted-zone id from settings (`aws_substrate.hosted_zone_id`) with the live `aws-eks-subzone` Pulumi
+output as fallback; `withSubstrateKubectlEnvironment` was relocated to a new
+`Prodbox.Infra.SubstrateKubectl` module (avoiding an import cycle) so `PublicEdge.hs` is env-I/O-free,
+and `PublicEdge.hs` was added to `checkEnvVarConfigReads.scopedPaths`. Validation green: `check-code`
+0, `test unit` 821/821, `integration cli` 35/35, `integration env` 35/35, `lint docs` 0, `docs check`
+0. The live issuer-rename-on-rebuild (the S3 cert restores under the new name — the retention key is
+substrate+FQDN-keyed) is operator-driven.
+**Implementation**: `src/Prodbox/PublicEdge.hs` (one SSoT issuer-name constant; the
+`PRODBOX_AWS_SUBSTRATE_HOSTED_ZONE_ID` env-read fix), `src/Prodbox/CLI/Rke2.hs`
+(`acmeClusterIssuerSpec` rename consumer), `charts/keycloak/values.yaml`,
+`charts/gateway/values.yaml` (the two chart `values.yaml` issuer references),
+`src/Prodbox/CheckCode.hs` (extend `checkEnvVarConfigReads`), `test/unit/Main.hs`,
+`test/golden/`
+**Docs to update**: `documents/engineering/acme_provider_guide.md`,
+`documents/engineering/envoy_gateway_edge_doctrine.md`,
+`documents/engineering/aws_integration_environment_doctrine.md`
+
+### Why Phase 7 reopened
+
+The single ACME `ClusterIssuer` landed by Sprint `7.11` was named with a misleading HTTP-01-claiming
+name, but the issuer in fact uses a **DNS-01** Route 53 solver (`acmeRoute53Solver`), not HTTP-01 — the name is
+historically inaccurate and contradicts the issuer's own solver. The rename touches one SSoT
+constant in `PublicEdge.hs`, both chart `values.yaml` files, and roughly 35 doc/test sites, so it
+must land on a wipe-and-rebuild boundary (a live cluster carrying the old issuer name would orphan
+the renamed `ClusterIssuer` / `Certificate` references). Separately, `PublicEdge.hs` reads the AWS
+substrate hosted-zone id directly from a `PRODBOX_AWS_SUBSTRATE_HOSTED_ZONE_ID` environment variable
+— a violation of the
+[config_doctrine.md](../documents/engineering/config_doctrine.md) no-`PRODBOX_*`-env-reads contract
+that `checkEnvVarConfigReads` does not yet cover for `PublicEdge.hs`. Because both defects are on
+Phase 7's owned public-edge surface, the phase reopens for one sprint to close them together.
+
+### Objective
+
+Rename the public-edge ACME issuer to a DNS-01-honest name (one SSoT constant flowing to both chart
+`values.yaml` files and the ~35 doc/test sites) on a wipe-and-rebuild boundary; reattribute the
+Gateway / listener-cert / redirect / auth route to the `keycloak` chart in the doctrine (it is
+currently mis-attributed); fix the `PublicEdge.hs` `PRODBOX_AWS_SUBSTRATE_HOSTED_ZONE_ID` env read
+to source the hosted-zone id from settings (`aws_substrate.hosted_zone_id`, via
+`substrateHostedZoneId`); and extend `checkEnvVarConfigReads` to scope `PublicEdge.hs` so the env
+read cannot reappear.
+
+### Deliverables
+
+- One SSoT DNS-01-honest issuer-name constant in `src/Prodbox/PublicEdge.hs` (replacing the
+  prior misleading HTTP-01-claiming `publicEdgeClusterIssuerName` value) flows to every consumer:
+  `acmeClusterIssuerSpec` / `acmeRuntimeManifestWith` in `Prodbox.CLI.Rke2`, the AWS path's
+  `ensureAwsSubstrateAcmeRuntime` issuer wait, both `charts/keycloak/values.yaml` and
+  `charts/gateway/values.yaml` issuer references, and the ~35 doc/test sites that name the old
+  issuer. No hand-edited second copy of the name survives.
+- The rename lands on a **wipe-and-rebuild boundary** (`prodbox rke2 delete --cascade` then a fresh
+  reconcile) so the old-named `ClusterIssuer` / `Certificate` is not orphaned on a live cluster;
+  the S3 cert retention key scheme (Sprint `7.11`) restores the retained cert under the new issuer
+  name without re-ordering from ZeroSSL.
+- The doctrine reattributes the Gateway / listener-cert / HTTP→HTTPS-redirect / auth route to the
+  `keycloak` chart (correcting the current mis-attribution in
+  `envoy_gateway_edge_doctrine.md`).
+- `src/Prodbox/PublicEdge.hs` no longer reads `PRODBOX_AWS_SUBSTRATE_HOSTED_ZONE_ID` from the
+  environment; the AWS-substrate hosted-zone id is sourced from settings
+  (`aws_substrate.hosted_zone_id` via `substrateHostedZoneId`) per the config doctrine.
+- `src/Prodbox/CheckCode.hs::checkEnvVarConfigReads.scopedPaths` is extended to cover
+  `src/Prodbox/PublicEdge.hs`, so any future `PRODBOX_*` env read there fails `prodbox check-code`.
+
+### Validation
+
+1. `prodbox check-code` (the extended `checkEnvVarConfigReads` now scans `PublicEdge.hs`; fails on
+   any `PRODBOX_*` read).
+2. `prodbox test unit` + golden re-acceptance (the renamed issuer flows through the ClusterIssuer
+   render goldens).
+3. `prodbox docs check` / `prodbox lint docs` (the ~35 doc sites and the route-ownership
+   reattribution reconciled).
+4. Live wipe-and-rebuild: `prodbox rke2 delete --cascade` then reconcile + `prodbox test all`
+   proves the renamed issuer issues / restores the public-edge cert and the canonical suite stays
+   green on both substrates.
+
+### Remaining Work
+
+None — closed 2026-06-09. The issuer rename, the route-ownership doctrine correction, the
+`PublicEdge.hs` env-read fix, and the `checkEnvVarConfigReads` extension all landed. The live
+issuer-rename-on-rebuild (`rke2 delete --cascade` + reconcile, restoring the retained cert under the
+new name) and the AWS-substrate `test all` exercise are operator-driven.
 
 ## Documentation Requirements
 
@@ -2720,11 +2925,26 @@ Sprint `8.7`.
 - `documents/engineering/aws_integration_environment_doctrine.md` - Sprint `7.6` refuse-path +
   auto-destroy doctrine plus the `--allow-pulumi-residue` escape hatch.
 - `documents/engineering/acme_provider_guide.md` - Sprint `7.11` single ZeroSSL issuer
-  (`zerossl-http01`) with its DNS-01 Route 53 solver and required EAB.
+  (`zerossl-dns01`) with its DNS-01 Route 53 solver and required EAB.
 - `documents/engineering/envoy_gateway_edge_doctrine.md` - Sprint `7.11` public-edge cert sourcing
   from the single ZeroSSL issuer and the substrate-scoped cert retention store.
 - `documents/engineering/config_doctrine.md` - Sprint `7.11` `acme.server` ZeroSSL default and the
   EAB-required validation shape.
+- `documents/engineering/helm_chart_platform_doctrine.md` - Sprint `7.12` substrate-equivalence
+  structural invariant: the single `Prodbox.ContainerImage` Envoy release value pinned across chart
+  + control plane + data plane, the per-substrate re-pin lint, and the shared `[PlatformComponent]`
+  inventory covered by both installers (a coverage test, not a unified step DAG).
+- `documents/engineering/envoy_gateway_edge_doctrine.md` - Sprint `7.12` single Envoy Gateway
+  release value (killing the EG-`1.4.4`/Envoy-`1.37` skew); Sprint `7.13` DNS-01-honest issuer
+  rename and the Gateway / listener-cert / redirect / auth route reattributed to the `keycloak`
+  chart.
+- `documents/engineering/aws_integration_environment_doctrine.md` - Sprint `7.12` corrected
+  "Harbor + MinIO + Percona on both substrates" prose (no "no-Harbor on EKS"); Sprint `7.13`
+  `aws_substrate.hosted_zone_id` sourced from settings (no `PRODBOX_AWS_SUBSTRATE_HOSTED_ZONE_ID`
+  env read).
+- `documents/engineering/acme_provider_guide.md` - Sprint `7.13` DNS-01-honest issuer rename (one
+  SSoT constant) replacing the historically-inaccurate HTTP-01-claiming name on a
+  wipe-and-rebuild boundary.
 
 **Product docs to create/update:**
 

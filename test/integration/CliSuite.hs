@@ -1364,19 +1364,23 @@ fakeChartEnvironment repoRoot = do
                 && key /= "PRODBOX_FAKE_HELM_LIST_JSON"
                 && key /= "PRODBOX_FAKE_PATRONI_STAGED_RESTORE"
                 && key /= "PRODBOX_FAKE_PATRONI_LIVE_ANCHOR"
-                && key /= "PRODBOX_TEST_HOST_MASTER_SEED_HEX"
+                && key /= "PRODBOX_TEST_GATEWAY_DERIVE_SEED_HEX"
           )
           currentEnvironment
   pure
     ( [ ("PATH", updatedPath)
       , ("PRODBOX_FAKE_CHART_RECORD_DIR", recordDir)
       , ("PRODBOX_FAKE_HELM_LIST_JSON", "[]")
-      , -- Sprint 3.13 chunks 31 + 33: deterministic master-seed injection so
-        -- 'Prodbox.Secret.HostBootstrap.preApplyDerivedSecretsForRelease'
-        -- (now called by 'deployRelease' before every 'helmUpgradeInstall')
-        -- short-circuits the MinIO port-forward in the fake-env charts
-        -- suite. See the matching override in 'fakeRke2Environment'.
-        ("PRODBOX_TEST_HOST_MASTER_SEED_HEX", replicate 64 '0')
+      , -- Sprint 3.16: the gateway-derive test seam stands in for a running
+        -- gateway daemon. 'Prodbox.Secret.HostBootstrap.preApplyDerivedSecretsForRelease'
+        -- (called by 'deployRelease' before every 'helmUpgradeInstall') now
+        -- requests *derived* values via the gateway RPC; in the fake-env
+        -- charts suite there is no daemon, so this seed lets the host compute
+        -- the daemon's deterministic response locally and `kubectl apply` the
+        -- Secrets. The raw seed is never re-exported the way the retired
+        -- 'PRODBOX_TEST_HOST_MASTER_SEED_HEX' host-side seam did. See the
+        -- matching override in 'fakeRke2Environment'.
+        ("PRODBOX_TEST_GATEWAY_DERIVE_SEED_HEX", replicate 64 '0')
       ]
         ++ baseEnvironment
     )
@@ -1651,7 +1655,7 @@ fakeRke2Environment repoRoot = do
                           , "PRODBOX_TEST_RESIDUE_ABSENT"
                           , "PRODBOX_TEST_RESIDUE_UNREACHABLE"
                           , "PRODBOX_TEST_RKE2_PRESENT"
-                          , "PRODBOX_TEST_HOST_MASTER_SEED_HEX"
+                          , "PRODBOX_TEST_GATEWAY_DERIVE_SEED_HEX"
                           , "HOME"
                           ]
           )
@@ -1671,14 +1675,15 @@ fakeRke2Environment repoRoot = do
         -- fire and the gate/cascade paths run as before. Production probes the
         -- real on-disk markers; see 'rke2InstallPresent' in 'Prodbox.CLI.Rke2'.
         ("PRODBOX_TEST_RKE2_PRESENT", "1")
-      , -- Sprint 3.13 chunk 31: deterministic master-seed injection for
-        -- 'ensureAdminPublicEdgeRoutes'. The reconcile reconciler reads the
-        -- master seed from MinIO to derive `VSCODE_CLIENT_SECRET` for the
-        -- harbor/minio admin SecurityPolicies; the fake env can't run a
-        -- real MinIO, so this env var short-circuits the MinIO port-forward
-        -- with a known 32-byte test seed. Production never sets this; see
-        -- 'readHostMasterSeedOverride' in 'Prodbox.CLI.Rke2'.
-        ("PRODBOX_TEST_HOST_MASTER_SEED_HEX", replicate 64 '0')
+      , -- Sprint 3.16: the gateway-derive test seam for
+        -- 'ensureAdminPublicEdgeRoutes'. That reconciler now asks the gateway
+        -- daemon to derive `VSCODE_CLIENT_SECRET` for the harbor/minio admin
+        -- SecurityPolicies over the loopback NodePort, instead of reading the
+        -- raw master seed from MinIO. The fake env has no daemon, so this
+        -- seed lets the host compute the daemon's deterministic response
+        -- locally. Production never sets this; see 'readGatewayDeriveTestSeam'
+        -- in 'Prodbox.CLI.Rke2'.
+        ("PRODBOX_TEST_GATEWAY_DERIVE_SEED_HEX", replicate 64 '0')
       , ("HOME", repoRoot)
       ]
         ++ baseEnvironment

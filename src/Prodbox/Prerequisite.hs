@@ -14,8 +14,18 @@ import Prodbox.Effect
 import Prodbox.EffectDAG
   ( EffectNode (..)
   )
+import Prodbox.PrerequisiteId
+  ( PrerequisiteId (..)
+  )
 
-prerequisiteRegistry :: Map String EffectNode
+-- | Sprint 5.6: the prerequisite registry is keyed by the typed
+-- 'PrerequisiteId' rather than a raw @String@, so identifiers are
+-- exhaustively matched. Each registered constructor decorates its
+-- 'PrerequisiteId' with the 'EffectNode' that validates it; the ad-hoc
+-- lifecycle nodes ('K8sWait') are NOT registry members (they are built
+-- inline by their command runners and inserted into a per-command
+-- registry view).
+prerequisiteRegistry :: Map PrerequisiteId EffectNode
 prerequisiteRegistry =
   Map.fromList (map keyed allPrerequisites)
  where
@@ -39,7 +49,6 @@ allPrerequisites =
   , toolSsh
   , toolRke2
   , toolSystemctl
-  , settingsLoaded
   , settingsObject
   , awsIamHarnessReady
   , kubeconfigExists
@@ -55,6 +64,7 @@ allPrerequisites =
   , pulumiLoggedIn
   , k8sReady
   , infraReady
+  , publicEdgeReady
   , gatewayDaemonAcquire
   , sesSendingIdentityVerified
   , sesReceiveRuleSetActive
@@ -64,7 +74,7 @@ allPrerequisites =
 platformLinux :: EffectNode
 platformLinux =
   EffectNode
-    { effectNodeId = "platform_linux"
+    { effectNodeId = PlatformLinux
     , effectNodeDescription = "Require Linux operating system"
     , effectNodeRemedyHint = "Run the supported command surface on a Linux host."
     , effectNodePrerequisites = []
@@ -74,97 +84,92 @@ platformLinux =
 systemdAvailable :: EffectNode
 systemdAvailable =
   EffectNode
-    { effectNodeId = "systemd_available"
+    { effectNodeId = SystemdAvailable
     , effectNodeDescription = "Require systemd availability"
     , effectNodeRemedyHint = "Use a systemd-managed host or container with `/run/systemd/system` present."
-    , effectNodePrerequisites = ["platform_linux"]
+    , effectNodePrerequisites = [PlatformLinux]
     , effectNodeEffect = Validate RequireSystemd
     }
 
 supportedUbuntu2404 :: EffectNode
 supportedUbuntu2404 =
   EffectNode
-    { effectNodeId = "supported_ubuntu_2404"
+    { effectNodeId = SupportedUbuntu2404
     , effectNodeDescription = "Require Ubuntu 24.04 LTS"
     , effectNodeRemedyHint = "Run the supported workflow on Ubuntu 24.04 LTS."
-    , effectNodePrerequisites = ["platform_linux"]
+    , effectNodePrerequisites = [PlatformLinux]
     , effectNodeEffect = Validate RequireUbuntu2404
     }
 
 machineIdentity :: EffectNode
 machineIdentity =
   EffectNode
-    { effectNodeId = "machine_identity"
+    { effectNodeId = MachineIdentity
     , effectNodeDescription = "Resolve machine-id and derived prodbox-id"
     , effectNodeRemedyHint = "Ensure `/etc/machine-id` exists and contains the host identity."
-    , effectNodePrerequisites = ["platform_linux"]
+    , effectNodePrerequisites = [PlatformLinux]
     , effectNodeEffect = Validate RequireMachineIdentity
     }
 
 toolKubectl :: EffectNode
-toolKubectl = toolNode "tool_kubectl" "Validate kubectl is installed" "kubectl" ["version", "--client=true"] []
+toolKubectl = toolNode ToolKubectl "Validate kubectl is installed" "kubectl" ["version", "--client=true"] []
 
 toolCurl :: EffectNode
-toolCurl = toolNode "tool_curl" "Validate curl is installed" "curl" ["--version"] []
+toolCurl = toolNode ToolCurl "Validate curl is installed" "curl" ["--version"] []
 
 toolDig :: EffectNode
-toolDig = toolNode "tool_dig" "Validate dig is installed" "dig" ["-v"] []
+toolDig = toolNode ToolDig "Validate dig is installed" "dig" ["-v"] []
 
 toolDocker :: EffectNode
-toolDocker = toolNode "tool_docker" "Validate docker is installed" "docker" ["--version"] []
+toolDocker = toolNode ToolDocker "Validate docker is installed" "docker" ["--version"] []
 
 toolCtr :: EffectNode
-toolCtr = toolNode "tool_ctr" "Validate ctr is installed" "ctr" ["--help"] []
+toolCtr = toolNode ToolCtr "Validate ctr is installed" "ctr" ["--help"] []
 
 toolHelm :: EffectNode
-toolHelm = toolNode "tool_helm" "Validate helm is installed" "helm" ["version", "--short"] []
+toolHelm = toolNode ToolHelm "Validate helm is installed" "helm" ["version", "--short"] []
 
 toolSudo :: EffectNode
-toolSudo = toolNode "tool_sudo" "Validate sudo is installed" "sudo" ["--version"] []
+toolSudo = toolNode ToolSudo "Validate sudo is installed" "sudo" ["--version"] []
 
 toolPulumi :: EffectNode
-toolPulumi = toolNode "tool_pulumi" "Validate pulumi is installed" "pulumi" ["version"] []
+toolPulumi = toolNode ToolPulumi "Validate pulumi is installed" "pulumi" ["version"] []
 
 toolAws :: EffectNode
-toolAws = toolNode "tool_aws" "Validate aws CLI is installed" "aws" ["--version"] []
+toolAws = toolNode ToolAws "Validate aws CLI is installed" "aws" ["--version"] []
 
 toolSsh :: EffectNode
-toolSsh = toolNode "tool_ssh" "Validate OpenSSH client is installed" "ssh" ["-V"] []
+toolSsh = toolNode ToolSsh "Validate OpenSSH client is installed" "ssh" ["-V"] []
 
 toolRke2 :: EffectNode
 toolRke2 =
   toolNode
-    "tool_rke2"
+    ToolRke2
     "Validate rke2 is installed"
     "/usr/local/bin/rke2"
     ["--version"]
-    ["platform_linux"]
+    [PlatformLinux]
 
 toolSystemctl :: EffectNode
 toolSystemctl =
   toolNode
-    "tool_systemctl"
+    ToolSystemctl
     "Validate systemctl is available"
     "systemctl"
     ["--version"]
-    ["systemd_available"]
+    [SystemdAvailable]
 
-settingsLoaded :: EffectNode
-settingsLoaded =
-  EffectNode
-    { effectNodeId = "settings_loaded"
-    , effectNodeDescription = "Validate prodbox settings are loaded"
-    , effectNodeRemedyHint = "Run `prodbox config setup` or repair `prodbox-config.dhall`."
-    , effectNodePrerequisites = []
-    , effectNodeEffect = Validate RequireSettings
-    }
-
+-- | The single prodbox-settings prerequisite. Sprint 1.31 collapsed the former
+-- `settings_loaded` / `settings_object` pair into this one node: both modelled the same
+-- `Validate RequireSettings` satisfied condition (the repository config decodes cleanly), so
+-- the split carried no extra information. Every former dependent edge now points here.
 settingsObject :: EffectNode
 settingsObject =
   EffectNode
-    { effectNodeId = "settings_object"
+    { effectNodeId = SettingsObject
     , effectNodeDescription = "Load validated prodbox settings"
-    , effectNodeRemedyHint = "Run `prodbox config validate` until the repository config loads cleanly."
+    , effectNodeRemedyHint =
+        "Run `prodbox config setup`/`prodbox config validate` until `prodbox-config.dhall` loads cleanly."
     , effectNodePrerequisites = []
     , effectNodeEffect = Validate RequireSettings
     }
@@ -172,7 +177,7 @@ settingsObject =
 awsIamHarnessReady :: EffectNode
 awsIamHarnessReady =
   EffectNode
-    { effectNodeId = "aws_iam_harness_ready"
+    { effectNodeId = AwsIamHarnessReady
     , effectNodeDescription = "Validate native IAM harness config and test-simulation admin credentials"
     , effectNodeRemedyHint =
         "Configure the AWS IAM harness inputs in `prodbox-config.dhall` before rerunning."
@@ -183,7 +188,7 @@ awsIamHarnessReady =
 kubeconfigExists :: EffectNode
 kubeconfigExists =
   EffectNode
-    { effectNodeId = "kubeconfig_exists"
+    { effectNodeId = KubeconfigExists
     , effectNodeDescription = "Check kubeconfig file exists"
     , effectNodeRemedyHint = "Create `/etc/rancher/rke2/rke2.yaml` by reconciling the local RKE2 runtime."
     , effectNodePrerequisites = []
@@ -193,7 +198,7 @@ kubeconfigExists =
 kubeconfigHomeExists :: EffectNode
 kubeconfigHomeExists =
   EffectNode
-    { effectNodeId = "kubeconfig_home_exists"
+    { effectNodeId = KubeconfigHomeExists
     , effectNodeDescription = "Check user kubeconfig exists"
     , effectNodeRemedyHint = "Copy or export a kubeconfig into `$HOME/.kube/config`."
     , effectNodePrerequisites = []
@@ -203,124 +208,152 @@ kubeconfigHomeExists =
 rke2ConfigExists :: EffectNode
 rke2ConfigExists =
   EffectNode
-    { effectNodeId = "rke2_config_exists"
+    { effectNodeId = Rke2ConfigExists
     , effectNodeDescription = "Check RKE2 config file exists"
     , effectNodeRemedyHint =
         "Create `/etc/rancher/rke2/config.yaml` through the supported lifecycle path."
-    , effectNodePrerequisites = ["platform_linux"]
+    , effectNodePrerequisites = [PlatformLinux]
     , effectNodeEffect = Validate (RequireFileExists "/etc/rancher/rke2/config.yaml")
     }
 
 awsCredentialsValid :: EffectNode
 awsCredentialsValid =
   EffectNode
-    { effectNodeId = "aws_credentials_valid"
+    { effectNodeId = AwsCredentialsValid
     , effectNodeDescription = "Validate AWS credentials are configured"
     , effectNodeRemedyHint = "Run `prodbox aws setup` or refresh the repo-owned AWS credentials in Dhall."
-    , effectNodePrerequisites = ["settings_loaded", "tool_aws"]
+    , effectNodePrerequisites = [SettingsObject, ToolAws]
     , effectNodeEffect = Validate RequireAwsCredentials
     }
 
 route53Accessible :: EffectNode
 route53Accessible =
   EffectNode
-    { effectNodeId = "route53_accessible"
+    { effectNodeId = Route53Accessible
     , effectNodeDescription = "Validate Route 53 is accessible"
     , effectNodeRemedyHint = "Verify the configured AWS credentials can read the target hosted zone."
-    , effectNodePrerequisites = ["aws_credentials_valid"]
+    , effectNodePrerequisites = [AwsCredentialsValid]
     , effectNodeEffect = Validate RequireRoute53Access
     }
 
 route53LifecycleCapable :: EffectNode
 route53LifecycleCapable =
   EffectNode
-    { effectNodeId = "route53_lifecycle_capable"
+    { effectNodeId = Route53LifecycleCapable
     , effectNodeDescription = "Validate Route 53 hosted-zone lifecycle capability"
     , effectNodeRemedyHint =
         "Grant the configured IAM principal the Route 53 record-write permissions required by the lifecycle surface."
-    , effectNodePrerequisites = ["route53_accessible"]
+    , effectNodePrerequisites = [Route53Accessible]
     , effectNodeEffect = Validate RequireRoute53LifecycleCapability
     }
 
 rke2Installed :: EffectNode
 rke2Installed =
   EffectNode
-    { effectNodeId = "rke2_installed"
+    { effectNodeId = Rke2Installed
     , effectNodeDescription = "Check RKE2 binary is installed"
     , effectNodeRemedyHint = "Install RKE2 on the supported host or rerun `prodbox rke2 reconcile`."
-    , effectNodePrerequisites = ["supported_ubuntu_2404"]
+    , effectNodePrerequisites = [SupportedUbuntu2404]
     , effectNodeEffect = Validate (RequireFileExists "/usr/local/bin/rke2")
     }
 
 rke2ServiceExists :: EffectNode
 rke2ServiceExists =
   EffectNode
-    { effectNodeId = "rke2_service_exists"
+    { effectNodeId = Rke2ServiceExists
     , effectNodeDescription = "Check RKE2 service exists"
     , effectNodeRemedyHint =
         "Install the `rke2-server.service` unit through the supported lifecycle path."
-    , effectNodePrerequisites = ["rke2_installed", "systemd_available", "supported_ubuntu_2404"]
+    , effectNodePrerequisites = [Rke2Installed, SystemdAvailable, SupportedUbuntu2404]
     , effectNodeEffect = Validate (RequireServiceExists "rke2-server.service")
     }
 
 rke2ServiceActive :: EffectNode
 rke2ServiceActive =
   EffectNode
-    { effectNodeId = "rke2_service_active"
+    { effectNodeId = Rke2ServiceActive
     , effectNodeDescription = "Check RKE2 service is active"
     , effectNodeRemedyHint = "Start the RKE2 service and confirm it reaches the active state."
-    , effectNodePrerequisites = ["rke2_service_exists"]
+    , effectNodePrerequisites = [Rke2ServiceExists]
     , effectNodeEffect = Validate (RequireServiceActive "rke2-server.service")
     }
 
 k8sClusterReachable :: EffectNode
 k8sClusterReachable =
   EffectNode
-    { effectNodeId = "k8s_cluster_reachable"
+    { effectNodeId = K8sClusterReachable
     , effectNodeDescription = "Confirm Kubernetes API access via kubectl cluster-info"
     , effectNodeRemedyHint = "Export a working kubeconfig and confirm `kubectl cluster-info` succeeds."
-    , effectNodePrerequisites = ["tool_kubectl", "kubeconfig_exists", "rke2_service_active"]
+    , effectNodePrerequisites = [ToolKubectl, KubeconfigExists, Rke2ServiceActive]
     , effectNodeEffect = Validate RequireKubectlClusterReachable
     }
 
 pulumiLoggedIn :: EffectNode
 pulumiLoggedIn =
   EffectNode
-    { effectNodeId = "pulumi_logged_in"
+    { effectNodeId = PulumiLoggedIn
     , effectNodeDescription = "Validate Pulumi is logged in"
     , effectNodeRemedyHint = "Log Pulumi into the supported backend before rerunning."
-    , effectNodePrerequisites = ["tool_pulumi", "k8s_cluster_reachable"]
+    , effectNodePrerequisites = [ToolPulumi, K8sClusterReachable]
     , effectNodeEffect = Validate RequirePulumiLogin
     }
 
 k8sReady :: EffectNode
 k8sReady =
   EffectNode
-    { effectNodeId = "k8s_ready"
+    { effectNodeId = K8sReady
     , effectNodeDescription = "Validate Kubernetes cluster is fully ready"
     , effectNodeRemedyHint = "Wait for the cluster control plane and core workloads to become ready."
-    , effectNodePrerequisites = ["k8s_cluster_reachable", "rke2_service_active"]
+    , effectNodePrerequisites = [K8sClusterReachable, Rke2ServiceActive]
     , effectNodeEffect = Noop
     }
 
+-- | Sprint 5.6: 'infra_ready' keeps the full infrastructure-readiness
+-- bundle — cluster readiness AND validated AWS credentials — for the
+-- AWS-credential-consuming validations that genuinely need both. The
+-- AWS-credential-free public-edge readiness gate split out into
+-- 'publicEdgeReady'.
 infraReady :: EffectNode
 infraReady =
   EffectNode
-    { effectNodeId = "infra_ready"
+    { effectNodeId = InfraReady
     , effectNodeDescription = "Validate all infrastructure prerequisites"
     , effectNodeRemedyHint =
         "Resolve the upstream Kubernetes or AWS prerequisite failures first, then rerun the validation."
-    , effectNodePrerequisites = ["k8s_ready", "aws_credentials_valid"]
+    , effectNodePrerequisites = [K8sReady, AwsCredentialsValid]
+    , effectNodeEffect = Noop
+    }
+
+-- | Sprint 5.6: the public-edge readiness gate as a DECLARED prerequisite
+-- node, promoted out of the procedural 'runWaitForPublicEdgeReady' poll
+-- and split out of 'infra_ready'. It encodes "the cluster + chart
+-- platform are up so the public edge can become ready-for-external-proof"
+-- and depends ONLY on cluster + chart-platform readiness (@k8s_ready@),
+-- **not** on AWS credentials. The @charts-vscode@ / @charts-api@ /
+-- @charts-websocket@ / @admin-routes@ validations gate on this node so
+-- they require an AWS-credential-free readiness rather than re-acquiring
+-- the full 'infra_ready' capability set (which still pulls in
+-- @aws_credentials_valid@). See
+-- @DEVELOPMENT_PLAN/phase-5-canonical-test-suite.md@ → Canonical Suite
+-- Inventory.
+publicEdgeReady :: EffectNode
+publicEdgeReady =
+  EffectNode
+    { effectNodeId = PublicEdgeReady
+    , effectNodeDescription = "Validate public-edge readiness (cluster + chart platform up)"
+    , effectNodeRemedyHint =
+        "Bring the cluster and chart platform up (`prodbox charts deploy ...`) and wait for `prodbox host public-edge` to report ready-for-external-proof."
+    , effectNodePrerequisites = [K8sReady]
     , effectNodeEffect = Noop
     }
 
 gatewayDaemonAcquire :: EffectNode
 gatewayDaemonAcquire =
   EffectNode
-    { effectNodeId = "gateway_daemon_acquire"
+    { effectNodeId = GatewayDaemonAcquire
     , effectNodeDescription = "Validate gateway daemon acquire prerequisites"
     , effectNodeRemedyHint = "Run gateway daemon entrypoints on the supported Linux runtime."
-    , effectNodePrerequisites = ["platform_linux"]
+    , effectNodePrerequisites = [PlatformLinux]
     , effectNodeEffect = Noop
     }
 
@@ -332,40 +365,40 @@ gatewayDaemonAcquire =
 sesSendingIdentityVerified :: EffectNode
 sesSendingIdentityVerified =
   EffectNode
-    { effectNodeId = "ses_sending_identity_verified"
+    { effectNodeId = SesSendingIdentityVerified
     , effectNodeDescription =
         "Validate the SES domain identity for ses.sender_domain is in VerificationStatus=Success"
     , effectNodeRemedyHint =
         "Provision the shared SES infrastructure via `prodbox pulumi aws-ses-resources` (Sprint 8.1); confirm DKIM CNAME records exist in the parent Route 53 zone and that SES has reported VerificationStatus=Success for ses.sender_domain."
-    , effectNodePrerequisites = ["aws_credentials_valid", "route53_accessible"]
+    , effectNodePrerequisites = [AwsCredentialsValid, Route53Accessible]
     , effectNodeEffect = Validate RequireSesSendingIdentityVerified
     }
 
 sesReceiveRuleSetActive :: EffectNode
 sesReceiveRuleSetActive =
   EffectNode
-    { effectNodeId = "ses_receive_rule_set_active"
+    { effectNodeId = SesReceiveRuleSetActive
     , effectNodeDescription =
         "Validate the SES receive rule set is active and captures mail for ses.receive_subdomain"
     , effectNodeRemedyHint =
         "Re-run `prodbox pulumi aws-ses-resources` and confirm `aws ses describe-active-receipt-rule-set` reports the prodbox-receive-rule-set as active with an S3 action targeting ses.capture_bucket."
-    , effectNodePrerequisites = ["aws_credentials_valid", "route53_accessible"]
+    , effectNodePrerequisites = [AwsCredentialsValid, Route53Accessible]
     , effectNodeEffect = Validate RequireSesReceiveRuleSetActive
     }
 
 sesReceiveBucketAccessible :: EffectNode
 sesReceiveBucketAccessible =
   EffectNode
-    { effectNodeId = "ses_receive_bucket_accessible"
+    { effectNodeId = SesReceiveBucketAccessible
     , effectNodeDescription =
         "Validate the SES capture S3 bucket is reachable for list and get operations"
     , effectNodeRemedyHint =
         "Confirm the SMTP IAM user from `prodbox pulumi aws-ses-resources` retains `s3:ListBucket` and `s3:GetObject` on ses.capture_bucket; `aws s3api head-bucket --bucket <bucket>` must exit 0 from the runner."
-    , effectNodePrerequisites = ["aws_credentials_valid"]
+    , effectNodePrerequisites = [AwsCredentialsValid]
     , effectNodeEffect = Validate RequireSesReceiveBucketAccessible
     }
 
-toolNode :: String -> String -> FilePath -> [String] -> [String] -> EffectNode
+toolNode :: PrerequisiteId -> String -> FilePath -> [String] -> [PrerequisiteId] -> EffectNode
 toolNode effectId description toolName versionArgs prerequisites =
   EffectNode
     { effectNodeId = effectId

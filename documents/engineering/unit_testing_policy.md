@@ -25,6 +25,7 @@ documents/engineering/lifecycle_reconciliation_doctrine.md,
 documents/engineering/prerequisite_dag_system.md, documents/engineering/prerequisite_doctrine.md,
 documents/engineering/pure_fp_standards.md, documents/engineering/refactoring_patterns.md,
 documents/engineering/streaming_doctrine.md
+**Generated sections**: none
 
 > **Purpose**: Define the interpreter-only mocking doctrine and public test-runner contract for
 > `prodbox`.
@@ -151,6 +152,27 @@ the command contract.
    HTTP-to-HTTPS redirect after DNS records resolve to the configured public address.
 5. Aggregate suites use the canonical validation ordering defined in `src/Prodbox/TestPlan.hs`.
 
+Sprint `5.6` makes this prerequisite surface **typed and minimal-and-precise**:
+
+- Prerequisite identifiers are a typed `PrerequisiteId` ADT
+  (`src/Prodbox/PrerequisiteId.hs`) that keys the registry
+  (`src/Prodbox/Prerequisite.hs`) and threads through `EffectDAG` /
+  `EffectInterpreter` and the `TestPlan` declarations — exhaustively matched,
+  not string-compared.
+- Each validation declares **exactly** the typed prerequisites it consumes
+  (`validationInitialPrerequisites` / `validationDeferredPrerequisites` in
+  `src/Prodbox/TestPlan.hs`) — no over-broad inherited bundle.
+- `infra_ready` is split into `infra_ready` (cluster + AWS credentials) and a
+  new declared `public_edge_ready` node that depends only on cluster +
+  chart-platform readiness (`k8s_ready`), **not** on AWS credentials.
+  `charts-vscode`, `charts-api`, `charts-websocket`, and `admin-routes` gate on
+  `public_edge_ready` + `tool_curl` so they require an AWS-credential-free
+  readiness rather than re-acquiring the full `infra_ready` capability set.
+- The managed AWS IAM-harness tier is **derived from declared capabilities**
+  (`derivedManagedAwsHarnessPolicyTier`), not from a `substrate=aws` blanket
+  override. A credential-free validation (e.g. `gateway-partition`) never
+  acquires the harness merely because the active substrate is AWS.
+
 Supported WebSocket validations must prove shared-host Keycloak issuer and redirect alignment when
 the workload owns direct OIDC bootstrap on the shared host under `/ws/oidc`, connection-time auth,
 real `/ws` upgrade, reconnect-safe or
@@ -249,8 +271,16 @@ obligations.
   the leak list in the failure record.
 - **`--dry-run` golden snapshots.** `prodbox rke2 delete --dry-run`,
   `prodbox rke2 delete --cascade --dry-run`, and `prodbox nuke --dry-run`
-  outputs are captured as golden tests in `test/integration/CliSuite.hs` so
-  changes to the plan rendering require an explicit golden update.
+  outputs are captured as golden tests so changes to the plan rendering
+  require an explicit golden update. Sprint `5.6` lands these three goldens
+  under `test/golden/destructive/` (rendered from the pure plan renderers
+  `renderNativeDeletePlan` / `Nuke.renderNukePlan` in `test/unit/Main.hs`),
+  proving each destructive path's planned step list **without executing it**
+  (the audit V80 found these missing; they validate Sprint `4.26`'s dry-run
+  fix). The goldens are **registry-generated**: the per-run, `aws-ses`, and
+  long-lived destroy lines are derived from the managed-resource registry /
+  `StackDescriptor` SSoT (Sprints `4.26`/`4.27`), and a drift guard fails if
+  a registered resource is added without regenerating the golden.
 - **`prodbox nuke` opt-in suite.** Because `prodbox nuke` destroys long-lived
   shared infrastructure (`aws-ses`, the long-lived `pulumi_state_backend`
   bucket), its end-to-end integration test is **not** part of the default

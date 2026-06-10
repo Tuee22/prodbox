@@ -4,6 +4,7 @@
 **Supersedes**: N/A
 **Referenced by**: [README.md](README.md), [00-overview.md](00-overview.md),
 [system-components.md](system-components.md), [the engineering doctrine docs](../documents/engineering/README.md)
+**Generated sections**: none
 
 > **Purpose**: Capture the Haskell runtime, CLI, configuration, build, and Pulumi foundations that
 > make later gateway, chart, and public-host phases meaningful and testable, and own the
@@ -12,7 +13,24 @@
 
 ## Phase Status
 
-✅ **Done** — Sprints `1.1`–`1.5` remain `Done` on the Haskell-only rewrite baseline. The phase
+✅ **Reclosed 2026-06-09** — Phase 1 was reopened for Sprints `1.29`–`1.32` by the 2026-06-09
+design-intention review (see [README.md](README.md) Closure Status and rule A); all four have now
+landed on their code-owned surfaces. Sprint `1.29` ✅ added a positional-args field to `CommandSpec`
+and generated the [cli_command_surface.md](../documents/engineering/cli_command_surface.md) §2/§3
+operator matrix from `commandRegistry` (the daemon/workload one-knob parser reduction was deferred
+to Sprints `2.24`/`3.15`, where the override flags are actually removed). Sprint `1.30` ✅ made
+`serviceErrorRetryable` real (a classifiable `ServiceError` sum classified at the single subprocess
+boundary), split the retrier from the readiness-poller, introduced one PATH/HOME-preserving
+`awsCliSubprocessEnvironment` and fixed the `Dns.hs` bare-`aws` PATH drop, deleted the dead `Retry`
+exports, and converged the code to the D2 capability/error doctrine (rewritten in Sprint `0.9`).
+Sprint `1.31` ✅ enforced prerequisite-DAG acyclicity at construction, collapsed
+`settings_loaded`/`settings_object`, and added the interpreter satisfied-node memo. Sprint `1.32` ✅
+retired the un-adopted `src/Prodbox/StateMachine.hs` plus its lone typecheck test and confirmed the
+D1 GADT-doctrine softening (Sprint `0.9`). Validation at reclosure: `check-code` 0, `test unit` 756,
+`lint docs` 0, `docs check` 0, `integration cli` 35/35. All earlier Phase 1 sprints (`1.1`–`1.28`)
+remain `Done` on their owned surfaces.
+
+✅ **Done (Sprints `1.1`–`1.28`)** — Sprints `1.1`–`1.5` remain `Done` on the Haskell-only rewrite baseline. The phase
 is reopened by Sprint 0.2 (see
 [phase-0-planning-documentation.md](phase-0-planning-documentation.md)) to schedule Sprints
 `1.6`–`1.23`, which adopt the CLI doctrine across the CLI surface, runtime, configuration, test
@@ -1543,13 +1561,20 @@ None.
 - `documents/engineering/README.md` - Haskell-only doctrine index plus
   [the engineering doctrine docs](../documents/engineering/README.md) pointer.
 - `documents/engineering/cli_command_surface.md` - canonical Haskell command matrix, deferring
-  to the doctrine for `CommandSpec`, `Command Topology`, and `Progressive Introspection`.
+  to the doctrine for `CommandSpec`, `Command Topology`, and `Progressive Introspection`;
+  Sprint 1.29 adds the positional-args `CommandSpec` field and makes the §2/§3 operator matrix a
+  registry-generated section.
 - `documents/engineering/code_quality.md` - Haskell `check-code` contract, deferring to the
   doctrine for `Lint, Format, and Code-Quality Stack`, `Forbidden Surfaces`, and
-  `Generated Artifacts`.
+  `Generated Artifacts`; Sprint 1.29 registers the generated §2/§3 matrix as a
+  `GeneratedSectionRule`.
 - `documents/engineering/haskell_code_guide.md` - hard-gate Haskell quality doctrine and
   review-guidance split, deferring to the doctrine for GADT state machines, smart
-  constructors, subprocess values, retry policy, and capability classes.
+  constructors, subprocess values, retry policy, and capability classes; Sprint 1.30 rewrites
+  the capability-classes / service-error sections to the argv-shaped reality (change D2):
+  `runMinIO`/`runRedis`/`runPg :: [String] -> m (Either E ProcessOutput)`, `HasRedis` marked
+  vestigial, constructor-classified `ServiceError`, and forbid-retry-of-non-retryable plus
+  forbid-literal-`retryable`-`Bool` intents.
 - `documents/engineering/dependency_management.md` - non-Python build and dependency posture,
   including the canonical Dockerfile location, `ghcup` toolchain pin, and no-symlink doctrine.
 - `documents/engineering/envoy_gateway_edge_doctrine.md` - target Envoy Gateway and Gateway API
@@ -1560,9 +1585,20 @@ None.
 - `documents/engineering/integration_fixture_doctrine.md` - integration setup and cleanup doctrine.
 - `documents/engineering/local_registry_pipeline.md` - frontend-image location and Harbor-first
   registry expectations.
-- `documents/engineering/prerequisite_dag_system.md` - prerequisite DAG construction and reduction.
+- `documents/engineering/prerequisite_dag_system.md` - prerequisite DAG construction and
+  reduction; Sprint 1.31 documents the construction-time acyclicity invariant (back-edge →
+  `Left AppError`).
 - `documents/engineering/prerequisite_doctrine.md` - prerequisite registry doctrine, deferring
-  to the doctrine for `Prerequisites as Typed Effects`.
+  to the doctrine for `Prerequisites as Typed Effects`; Sprint 1.31 records the
+  `settings_loaded`/`settings_object` collapse and the interpreter satisfied-node memo.
+- `documents/engineering/pure_fp_standards.md` - pure-FP and state-machine doctrine; Sprint 1.32
+  softens the GADT-indexed-state-machine mandate (change D1) to permit a flat exhaustive ADT for
+  externally-authoritative / log-reconciled state (the gateway `Disposition` projection) while
+  keeping the exhaustive-ADT and no-raw-`String` requirements.
+- `documents/engineering/distributed_gateway_architecture.md` - daemon-lifecycle parser shape;
+  Sprint 1.29 binds the single `--config` knob on `prodbox gateway start`.
+- `documents/engineering/config_doctrine.md` - host-CLI single-`--config` contract that
+  Sprint 1.29 binds for the gateway/workload start parsers.
 - `documents/engineering/streaming_doctrine.md` - terminal streaming invariants.
 - `documents/engineering/unit_testing_policy.md` - Haskell unit and integration harness
   doctrine, deferring to the doctrine for the tasty stack and stanza layout.
@@ -1634,6 +1670,245 @@ on supported config-loading paths.
 - The implementing sprint discovers the exact `allow-newer` set by running `cabal build`
   against the current `cabal.project` and reading the errors. Until that build is run, the
   `allow-newer` set listed in Deliverables is a placeholder.
+
+## Sprint 1.29: CommandSpec Positional Args and Generated Operator Matrix ✅
+
+**Status**: Done (2026-06-09). Added the `ArgumentSpec` positional-args field to `CommandSpec` and
+generated the `cli_command_surface.md` §2/§3 operator command matrix from `commandRegistry` as two
+marker-delimited `GeneratedSectionRule`s (`command-surface-toplevel`, `command-surface-matrix`), so
+the matrix can no longer drift from the typed registry; the previously-omitted live commands
+(`users invite|list|revoke`, `host firewall gateway-unrestrict`, `pulumi aws-ses-migrate-backend`,
+`test integration keycloak-invite`) now render automatically. The one-knob daemon/workload parser
+reduction is **not** part of this sprint — it is the override-flag/`PRODBOX_*` removal owned by
+Sprints `2.24` (daemon) and `3.15` (workload); 1.29 generates the *current* parser surface.
+Validation green: `check-code` 0, `test unit` 742, `docs generate` → `docs check` 0, `lint docs` 0.
+**Implementation**: `src/Prodbox/CLI/Spec.hs` (`ArgumentSpec` + `arguments` field +
+`leafWithArgs`/`argument`/`repeatableArgument`), `src/Prodbox/CLI/Docs.hs`
+(`renderCommandSurfaceTopLevel`, `renderCommandSurfaceMatrix`), `src/Prodbox/CheckCode.hs` (the two
+registered `GeneratedSectionRule`s), `documents/engineering/cli_command_surface.md` (markers +
+populated content), `test/unit/Main.hs` (10 cases)
+**Docs to update**: `documents/engineering/cli_command_surface.md` (done)
+
+### Objective
+
+Make `commandRegistry` the single typed source for the operator command matrix and reduce the
+daemon-launching parsers to the doctrine's one-knob shape, per
+[cli_command_surface.md#command-topology](../documents/engineering/cli_command_surface.md#command-topology),
+[code_quality.md#generated-artifacts](../documents/engineering/code_quality.md#generated-artifacts),
+and [distributed_gateway_architecture.md#daemon-lifecycle](../documents/engineering/distributed_gateway_architecture.md#daemon-lifecycle).
+This sprint supplies the positional-args `CommandSpec` field that Sprint `0.10` consumes to
+generate the §2/§3 matrix from a typed registry rather than a hand-maintained table.
+
+### Deliverables
+
+- Add a positional-args field to `CommandSpec` (alongside the Sprint 1.6 `name`, `summary`,
+  `description`, `children`, `options`, `examples` fields) so every command's positional
+  arguments are declared in the typed registry, not only its flags, per
+  [cli_command_surface.md#command-topology](../documents/engineering/cli_command_surface.md#command-topology).
+  The field is the documentation SSoT consumed by the generated matrix; the `optparse-applicative`
+  parser keeps parsing positionals via its existing `argument` combinators (unifying the two is an
+  optional future refinement, not required for the matrix-generation goal, and the field is purely
+  additive so there is no positional-args residue to remove).
+- Generate the [cli_command_surface.md](../documents/engineering/cli_command_surface.md) §2/§3
+  operator command matrix from `commandRegistry` as a marker-delimited generated section via
+  `GeneratedSectionRule` (Sprint 1.10), so the matrix cannot drift from the registry. This is
+  the typed source Sprint `0.10` builds on; `prodbox docs check` fails on drift.
+- (Deferred — not this sprint.) Reducing `prodbox gateway start` / `prodbox workload start` to a
+  single `--config <path>` knob IS the override-flag/`PRODBOX_*` removal, owned by Sprint `2.24`
+  (daemon) and Sprint `3.15` (workload). 1.29 generates the *current* parser surface, so the matrix
+  reflects those flags until 2.24/3.15 remove them and the matrix regenerates.
+- Enqueue the pre-doctrine positional-args-outside-`CommandSpec` residue in
+  [legacy-tracking-for-deletion.md](legacy-tracking-for-deletion.md) with Sprint 1.29 as the
+  owning sprint.
+
+### Validation
+
+1. `prodbox docs check` is a no-op on a clean tree after the §2/§3 matrix is generated from
+   `commandRegistry`; hand-editing the matrix fails `prodbox lint files`.
+2. A `prodbox-unit` parser test (Sprint 1.25) asserts that every command's declared positional
+   args round-trip through `execParserPure` to the typed `Command` value.
+3. `prodbox gateway start --config <path>` and `prodbox workload start --config <path>` accept
+   only the single `--config` knob; the golden `--help` output (Sprint 1.6) reflects the
+   one-knob shape.
+
+### Remaining Work
+
+None — closed 2026-06-09. The positional-args field and the generated §2/§3 matrix landed and
+round-trip green (`docs generate` → `docs check` 0). The one-knob parser reduction was never in
+this sprint's scope; it is owned by Sprints `2.24`/`3.15`.
+
+## Sprint 1.30: Classifiable ServiceError and Argv-Shaped Capability Doctrine ✅
+
+**Status**: Done (2026-06-09). `ServiceError` is now a constructor sum
+(`SEConnectionFailed`/`SETimeout`/`SEConflict`/`SEInternalError` retryable;
+`SENotFound`/`SEPermissionDenied` not) with retryability DERIVED via the total
+`serviceErrorRetryable` plus a single `classifyServiceError` boundary in
+`runServiceSubprocessWithEnv`; `checkServiceErrorRetryableLiteral` fails check-code on any hand-set
+literal. The retrier and the new `pollUntilReady` readiness-poller are separate combinators (the
+ChartPlatform Patroni waits and the daemon-lifecycle HTTP wait were migrated to the poller). One
+`awsCliSubprocessEnvironment` (PATH/HOME/LANG-preserving) is the sole AWS-CLI env builder;
+`adminAwsEnvironment` delegates to it and the `Dns.hs` Route 53 subprocesses route through it,
+fixing the bare-`aws` PATH-drop. Dead `Retry.retryAppError`/`defaultRetryPolicy` removed (ledger
+row → Completed). The D2 doctrine rewrite landed in Sprint 0.9. Validation green: `check-code` 0,
+`test unit` 750, `lint docs` 0, `docs check` 0.
+**Implementation**: `src/Prodbox/Service.hs`, `src/Prodbox/Retry.hs`,
+`src/Prodbox/AwsEnvironment.hs`, `src/Prodbox/Dns.hs`, `src/Prodbox/EffectInterpreter.hs`,
+`src/Prodbox/Infra/MinioBackend.hs`, `src/Prodbox/CheckCode.hs`, `test/unit/Main.hs`
+(recommended)
+**Docs to update**: `documents/engineering/haskell_code_guide.md`
+
+### Objective
+
+Make `serviceErrorRetryable` a real, constructor-derived classification and align the
+capability/error doctrine (change D2) with the argv-shaped reality, per
+[haskell_code_guide.md#capability-classes-and-service-errors](../documents/engineering/haskell_code_guide.md#capability-classes-and-service-errors)
+and [haskell_code_guide.md#retry-policy-as-first-class-values](../documents/engineering/haskell_code_guide.md#retry-policy-as-first-class-values).
+
+### Deliverables
+
+- Replace the hand-built `retryable :: Bool` field on `ServiceError` with a classifiable
+  `ServiceError` sum classified at the single subprocess boundary, so `serviceErrorRetryable`
+  is derived from the constructor rather than carried as a literal. Forbid hand-built
+  `ServiceError` values that pin a literal `retryable` `Bool`, via a `prodbox check-code`
+  lint rule, per
+  [haskell_code_guide.md#capability-classes-and-service-errors](../documents/engineering/haskell_code_guide.md#capability-classes-and-service-errors).
+- Split the retrier (retries a classified-retryable action with backoff) from the
+  readiness-poller (polls a steady-state predicate until ready or timeout); the two are
+  distinct concerns and must not share one loop, per
+  [haskell_code_guide.md#retry-policy-as-first-class-values](../documents/engineering/haskell_code_guide.md#retry-policy-as-first-class-values).
+- Introduce one PATH/HOME-preserving `awsCliSubprocessEnvironment` builder consumed by every
+  `aws`-invoking path, and fix the `src/Prodbox/Dns.hs` bare-`aws` invocation that currently
+  drops `PATH` (so the `aws` binary is not found on the supported path). All `aws` subprocess
+  environments route through the one builder.
+- Delete the dead `src/Prodbox/Retry.hs` exports with no remaining call sites; enqueue the
+  removed exports in [legacy-tracking-for-deletion.md](legacy-tracking-for-deletion.md) with
+  Sprint 1.30 as the owning sprint.
+- Doctrine change D2: rewrite the
+  [haskell_code_guide.md](../documents/engineering/haskell_code_guide.md) capability-classes
+  section to the argv-shaped reality — `runMinIO` / `runRedis` / `runPg ::
+  [String] -> m (Either E ProcessOutput)` — and mark `HasRedis` vestigial (zero `src/`
+  callers). Keep the typed-`ServiceError`-classified-by-constructor and
+  forbid-retry-of-non-retryable intents as the target the code moves to; the D2 doc rewrite
+  is landable in the Sprint `0.9` docs-only pass ahead of the code.
+
+### Validation
+
+1. A `prodbox-unit` test asserts `serviceErrorRetryable` is derived from the `ServiceError`
+   constructor and that a retryable error retries while a non-retryable error does not.
+2. `prodbox check-code` fails when a `ServiceError` is constructed with a literal `retryable`
+   `Bool` or when an `aws` subprocess is built without `awsCliSubprocessEnvironment`.
+3. `prodbox dns check` (and any `aws`-invoking path) finds the `aws` binary on the supported
+   path with the PATH/HOME-preserving environment.
+
+### Remaining Work
+
+None — closed 2026-06-09. All deliverables landed (the D2 doctrine doc was rewritten in Sprint
+0.9; this sprint converged the code to it). The capability classes were intentionally left
+argv-shaped per D2 (the reality); only the error classification changed.
+
+## Sprint 1.31: Prerequisite-DAG Acyclicity at Construction and Interpreter Memo ✅
+
+**Status**: Done (2026-06-09). `transitiveClosureIds` now carries a DFS recursion-stack and rejects
+a back-edge with `Left` (naming the cycle path) in the same pure `Either String` expansion that
+already rejects missing ids — acyclicity is a construction-time invariant, not a traversal-time
+tolerance (`fromRootIds` inherits it). The structured error stays `Either String` because
+[prerequisite_dag_system.md](../documents/engineering/prerequisite_dag_system.md) §3 specifies that
+expansion path and every caller already handles `Left`. The duplicate `settings_loaded` node was
+collapsed into `settings_object` (the `aws_credentials_valid` edge re-pointed; ledger row added). A
+boundary-only `SatisfiedEffectMemo` threaded through `runEffectDAG` evaluates each satisfied
+prerequisite at most once per run. Validation green: `check-code` 0, `test unit` 757, `lint docs` 0,
+`docs check` 0, `integration cli` 35/35.
+**Implementation**: `src/Prodbox/Prerequisite.hs`, `src/Prodbox/EffectDAG.hs`,
+`src/Prodbox/EffectInterpreter.hs`, `test/unit/Main.hs` (recommended)
+**Docs to update**: `documents/engineering/prerequisite_doctrine.md`,
+`documents/engineering/prerequisite_dag_system.md`
+
+### Objective
+
+Enforce prerequisite-DAG acyclicity at construction time and collapse the redundant
+settings-node pair, per
+[prerequisite_doctrine.md#prerequisites-as-typed-effects](../documents/engineering/prerequisite_doctrine.md#prerequisites-as-typed-effects)
+and the DAG-construction discipline in
+[prerequisite_dag_system.md](../documents/engineering/prerequisite_dag_system.md).
+
+### Deliverables
+
+- Reject back-edges at DAG construction: the DAG constructor returns `Left` (the doctrine's
+  `Either String` expansion path) rather than tolerating the cycle at traversal time when a node
+  introduces a back-edge, so an acyclic DAG is a construction-time invariant, per
+  [prerequisite_dag_system.md](../documents/engineering/prerequisite_dag_system.md).
+- Collapse the `settings_loaded` / `settings_object` prerequisite nodes into one node; the two
+  currently model the same satisfied condition and the split adds no information. Enqueue the
+  removed node in [legacy-tracking-for-deletion.md](legacy-tracking-for-deletion.md) with
+  Sprint 1.31 as the owning sprint.
+- Add an interpreter satisfied-node memo so an already-satisfied prerequisite is not
+  re-evaluated within one interpreter run, per
+  [prerequisite_doctrine.md#prerequisites-as-typed-effects](../documents/engineering/prerequisite_doctrine.md#prerequisites-as-typed-effects).
+
+### Validation
+
+1. A `prodbox-unit` test asserts that constructing a registry with a back-edge returns
+   `Left` and names the offending node.
+2. A `prodbox-unit` test asserts the single collapsed settings node satisfies every path that
+   previously expanded both `settings_loaded` and `settings_object`.
+3. A `prodbox-unit` test asserts the interpreter evaluates a satisfied prerequisite once per
+   run (the memo prevents re-evaluation).
+
+### Remaining Work
+
+None — closed 2026-06-09. Construction-time acyclicity, the settings-node collapse, and the
+interpreter memo all landed and are unit- and integration-covered.
+
+## Sprint 1.32: Retire StateMachine.hs and Realign the GADT Doctrine ✅
+
+**Status**: Done (2026-06-09). `src/Prodbox/StateMachine.hs` (un-adopted — zero `src`/`app`
+importers; its `Some*` existentials lacked singleton witnesses) was deleted along with its lone
+typecheck test in `test/unit/Main.hs` and its `prodbox.cabal` `exposed-modules` entry; the ledger
+row moved to Completed. The D1 GADT-doctrine softening already landed in `pure_fp_standards.md`
+(Sprint 0.9) and was verified consistent (a flat exhaustive ADT is permitted for
+externally-authoritative / log-reconciled state; raw-`String` state and missing-singleton
+existentials remain forbidden). Validation green: `check-code` 0, `test unit` 756, `lint docs` 0,
+`docs check` 0, `cabal build all` 0.
+**Implementation**: `src/Prodbox/StateMachine.hs` (removal),
+`test/unit/Main.hs` (typecheck-test removal), `prodbox.cabal`,
+`src/Prodbox/CheckCode.hs` (recommended)
+**Docs to update**: `documents/engineering/pure_fp_standards.md`
+
+### Objective
+
+Retire the un-adopted `src/Prodbox/StateMachine.hs` and its lone typecheck test, and realign
+the GADT-indexed-state-machine doctrine (change D1) to the externally-authoritative,
+log-reconciled state the gateway actually uses, per
+[pure_fp_standards.md#gadt-indexed-state-machines](../documents/engineering/pure_fp_standards.md#gadt-indexed-state-machines).
+
+### Deliverables
+
+- Delete `src/Prodbox/StateMachine.hs` (no supported call site adopts it) and its single
+  typecheck test in `test/unit/Main.hs`; drop the module from `prodbox.cabal`. Enqueue the
+  removal in [legacy-tracking-for-deletion.md](legacy-tracking-for-deletion.md) with Sprint
+  1.32 as the owning sprint.
+- Doctrine change D1: soften the
+  [pure_fp_standards.md#gadt-indexed-state-machines](../documents/engineering/pure_fp_standards.md#gadt-indexed-state-machines)
+  mandate to "GADTs for authoritative in-process transitions; externally-authoritative /
+  log-reconciled state (e.g. gateway ownership as a fold over the append-only commit log — a
+  `Disposition` projection) may use a flat exhaustive ADT." Keep the exhaustive-ADT and
+  no-raw-`String` requirements, and keep the matching Forbidden-list entry consistent with the
+  softened mandate. The D1 doc rewrite is landable in the Sprint `0.9` docs-only pass ahead of
+  the code removal.
+
+### Validation
+
+1. `cabal build all` and `prodbox check-code` succeed after `src/Prodbox/StateMachine.hs` and
+   its typecheck test are removed.
+2. `documents/engineering/pure_fp_standards.md` permits a flat exhaustive ADT for
+   externally-authoritative log-reconciled state while still forbidding raw-`String` state and
+   requiring exhaustive matching.
+3. No supported-path module imports `Prodbox.StateMachine` after the removal.
+
+### Remaining Work
+
+None — closed 2026-06-09. Module, test, and cabal entry removed; the D1 doctrine softening
+(Sprint 0.9) was verified consistent. No supported-path module imports `Prodbox.StateMachine`.
 
 ## Related Documents
 

@@ -16,12 +16,15 @@ module Prodbox.CLI.Rke2
   , MinioImageSource (..)
   , cascadeOrderNarration
   , inferCascadeSubstrate
+  , buildNativeDeletePlan
+  , renderNativeDeletePlan
   , renderNativeInstallPlan
   , renderInotifySysctlDropIn
   , renderMinioChartArgs
   , runNativeDeleteCascade
   , runNativeDeleteWithResiduePolicy
   , runRke2Command
+  , homeSubstratePlatformComponents
   )
 where
 
@@ -70,7 +73,6 @@ import Prodbox.AwsEnvironment
 import Prodbox.CLI.Command
   ( Plan (..)
   , PlanOptions (..)
-  , PulumiCommand (..)
   , Rke2Command (..)
   , Rke2DeleteFlags (..)
   , buildPlan
@@ -83,11 +85,11 @@ import Prodbox.CLI.Output
   , writeOutput
   , writeOutputLine
   )
-import Prodbox.CLI.Pulumi (runPulumiCommand)
 import Prodbox.ContainerImage qualified as ContainerImage
 import Prodbox.Dns (fetchPublicIp)
 import Prodbox.Dns qualified as Dns
 import Prodbox.Error (fatalError)
+import Prodbox.Gateway.Client qualified as GatewayClient
 import Prodbox.Host
   ( LanAddressing (..)
   , defaultGatewayNodePort
@@ -96,7 +98,6 @@ import Prodbox.Host
   )
 import Prodbox.Infra.AwsEksTestStack (awsEksCanonicalClusterName, withEksKubeconfig)
 import Prodbox.Infra.LongLivedPulumiBackend (loadAdminAwsCredentials)
-import Prodbox.Infra.MinioBackend (withCurrentMinioPortForward)
 import Prodbox.Lib.ChartPlatform
   ( keycloakRealmName
   , keycloakVscodeClientId
@@ -139,11 +140,7 @@ import Prodbox.Retry
   , retryDelayMicros
   )
 import Prodbox.Secret.Derive (MasterSeed, deriveBase64Url, masterSeed, oidcClientSecretContext)
-import Prodbox.Secret.MasterSeed
-  ( defaultMinioMasterSeedConfig
-  , ensureMasterSeed
-  , renderMasterSeedError
-  )
+import Prodbox.Secret.Wire (DeriveResponse (..))
 import Prodbox.Settings
   ( AcmeSection (..)
   , ConfigFile (..)
@@ -183,6 +180,7 @@ import Prodbox.Subprocess
   , runSubprocessStreaming
   )
 import Prodbox.Substrate (Substrate (..), substrateId)
+import Prodbox.TestSeam.GatewayDerive (lookupGatewayDeriveTestSeed)
 import System.Directory
   ( doesDirectoryExist
   , doesFileExist
@@ -358,8 +356,10 @@ minioRepositoryUrl = "https://charts.min.io/"
 minioChartRef :: String
 minioChartRef = "minio/minio"
 
+-- Sprint 7.12: MinIO is a shared platform component, so its chart version
+-- comes from the single 'ContainerImage.minioChartVersion' SSoT.
 minioChartVersion :: String
-minioChartVersion = "5.4.0"
+minioChartVersion = ContainerImage.minioChartVersion
 
 minioServiceName :: String
 minioServiceName = "minio"
@@ -452,8 +452,13 @@ envoyGatewayReleaseName = "envoy-gateway"
 envoyGatewayChartRef :: String
 envoyGatewayChartRef = "oci://docker.io/envoyproxy/gateway-helm"
 
+-- Sprint 7.12: the Envoy Gateway chart version is sourced from the single
+-- 'ContainerImage.envoyGatewayRelease' SSoT (shared with the control-plane
+-- and data-plane image pins and with the AWS-substrate installer). There is
+-- no second place to set an Envoy Gateway version, so the EG-chart /
+-- Envoy-data-plane skew cannot reappear.
 envoyGatewayChartVersion :: String
-envoyGatewayChartVersion = "v1.7.2"
+envoyGatewayChartVersion = ContainerImage.envoyGatewayChartVersion
 
 publicEdgeGatewayClassName :: String
 publicEdgeGatewayClassName = "prodbox-public-edge"
@@ -476,8 +481,12 @@ certManagerRepositoryUrl = "https://charts.jetstack.io"
 certManagerChartRef :: String
 certManagerChartRef = "jetstack/cert-manager"
 
+-- Sprint 7.12: the cert-manager chart version is sourced from the single
+-- 'ContainerImage.certManagerChartVersion' SSoT (shared with the
+-- cert-manager image pins and with the AWS-substrate installer). cert-manager
+-- is a shared platform component, so there is no per-substrate re-pin.
 certManagerChartVersion :: String
-certManagerChartVersion = "v1.16.2"
+certManagerChartVersion = ContainerImage.certManagerChartVersion
 
 postgresOperatorRepositoryName :: String
 postgresOperatorRepositoryName = "percona"
@@ -488,8 +497,11 @@ postgresOperatorRepositoryUrl = "https://percona.github.io/percona-helm-charts/"
 postgresOperatorChartRef :: String
 postgresOperatorChartRef = "percona/pg-operator"
 
+-- Sprint 7.12: the Percona PostgreSQL operator is a shared platform
+-- component, so its chart version comes from the single
+-- 'ContainerImage.postgresOperatorChartVersion' SSoT.
 postgresOperatorChartVersion :: String
-postgresOperatorChartVersion = "2.9.0"
+postgresOperatorChartVersion = ContainerImage.postgresOperatorChartVersion
 
 -- | The cert-manager ACME account-key Secret name. cert-manager stores
 -- the ZeroSSL ACME account registration under this @privateKeySecretRef@.
@@ -609,35 +621,22 @@ runRke2Command repoRoot command =
             }
     Rke2Reconcile planOptions ->
       requireLinux (runNativeInstall repoRoot planOptions)
-    Rke2Delete flags _planOptions ->
+    Rke2Delete flags planOptions ->
       requireLinux $
         if not (rke2DeleteYes flags)
           then failWith "rke2 delete requires --yes confirmation"
-          else do
-            -- No RKE2 install on this host means there is nothing to delete, so
-            -- short-circuit to a no-op success BEFORE the per-run residue gate.
-            -- An unreachable in-cluster MinIO backend (the gate's fail-closed
-            -- case) is otherwise indistinguishable from "cluster already gone",
-            -- which would wrongly refuse a delete that has nothing to do. The
-            -- gate and --cascade orchestration are unchanged when a cluster
-            -- (even a stopped one) is present.
-            present <- rke2InstallPresent
-            if not present
-              then do
-                writeOutputLine noRke2ClusterMessage
-                pure ExitSuccess
-              else
-                -- Raise the host inotify limits BEFORE systemd unwinds the
-                -- RKE2 units during teardown, so PID 1 does not log
-                -- `Failed to allocate directory watch: Too many open files`
-                -- to the console (see streaming_doctrine.md § 6). Idempotent
-                -- and shared with reconcile; covers both delete paths.
-                runSequentially
-                  [ ensureHostInotifyLimits repoRoot
-                  , if rke2DeleteCascade flags
-                      then runNativeDeleteCascade repoRoot
-                      else runNativeDeleteWithResiduePolicy repoRoot flags
-                  ]
+          else
+            -- Sprint 4.26: route the destructive teardown through the
+            -- Plan / Apply entrypoint so `--dry-run` renders the full
+            -- destructive plan and exits 0 WITHOUT mutating, and
+            -- `--plan-file` writes the rendered plan (pure_fp_standards.md
+            -- § Plan / Apply). The no-RKE2-install short-circuit, the
+            -- per-run refuse-gate, and the cascade orchestration all live
+            -- inside the apply closure so dry-run performs none of them.
+            runPlanWithOptions
+              planOptions
+              (buildNativeDeletePlan repoRoot flags)
+              (applyNativeDelete repoRoot)
     Rke2Logs maybeLines ->
       requireLinux $
         case normalizeLogLines maybeLines of
@@ -773,26 +772,127 @@ applyNativeInstallPlan repoRoot settings (machineId, prodboxId, labelValue) =
     , reconcileManagedAnnotations repoRoot prodboxId labelValue
     ]
 
+-- | Sprint 4.26: the Plan for @prodbox rke2 delete@ (default and
+-- @--cascade@). The payload is the 'Rke2DeleteFlags' so the apply closure
+-- branches on @--cascade@ / @--allow-pulumi-residue@ exactly as the dispatch
+-- arm used to; the rendered plan is the operator-visible destructive
+-- sequence so @--dry-run@ shows the full teardown without mutating.
+buildNativeDeletePlan :: FilePath -> Rke2DeleteFlags -> Plan Rke2DeleteFlags
+buildNativeDeletePlan repoRoot =
+  buildPlan (renderNativeDeletePlan repoRoot)
+
+-- | Sprint 4.26: render the destructive @rke2 delete@ plan. The cascade
+-- variant renders the canonical phase order (confirm-MinIO → drain →
+-- per-run destroys → uninstall → sweep); the default variant renders the
+-- refuse-gate + per-run sweep + cluster-substrate removal. Both list the
+-- per-run stacks from the managed-resource registry SSoT
+-- ('ResourceRegistry.perRunManagedResources'), so the rendered plan can
+-- never omit a per-run stack (closing the historical @aws-eks-subzone@
+-- gap on the default-delete path).
+renderNativeDeletePlan :: FilePath -> Rke2DeleteFlags -> String
+renderNativeDeletePlan repoRoot flags
+  | rke2DeleteCascade flags =
+      unlines
+        ( [ "RKE2_DELETE_CASCADE_PLAN"
+          , "REPO_ROOT=" ++ repoRoot
+          , "MODE=cascade"
+          , "NARRATION=" ++ cascadeOrderNarration
+          , "STEP=ensure_host_inotify_limits"
+          , "STEP=confirm_minio_per_run_residue"
+          , "STEP=k8s_drain"
+          ]
+            ++ [ "STEP=per_run_destroy " ++ ResourceRegistry.resourceName resource
+               | resource <- ResourceRegistry.perRunManagedResources
+               ]
+            ++ [ "STEP=delete_rke2_cluster_substrate"
+               , "STEP=remove_calico_endpoint_status_residue"
+               , "STEP=remove_managed_kubeconfig"
+               , "STEP=host_firewall_gateway_unrestrict"
+               , "STEP=render_retained_state_notice"
+               , "STEP=postflight_tag_sweep"
+               ]
+        )
+  | otherwise =
+      unlines
+        ( [ "RKE2_DELETE_PLAN"
+          , "REPO_ROOT=" ++ repoRoot
+          , "MODE=default"
+          , "ALLOW_PULUMI_RESIDUE=" ++ show (rke2DeleteAllowPulumiResidue flags)
+          , "STEP=ensure_host_inotify_limits"
+          ]
+            ++ [ "STEP=refuse_on_live_per_run_residue"
+               | not (rke2DeleteAllowPulumiResidue flags)
+               ]
+            ++ [ "STEP=per_run_destroy " ++ ResourceRegistry.resourceName resource
+               | resource <- ResourceRegistry.perRunManagedResources
+               ]
+            ++ [ "STEP=delete_rke2_cluster_substrate"
+               , "STEP=remove_calico_endpoint_status_residue"
+               , "STEP=remove_managed_kubeconfig"
+               , "STEP=host_firewall_gateway_unrestrict"
+               , "STEP=render_retained_state_notice"
+               ]
+        )
+
+-- | Sprint 4.26: the apply closure for @prodbox rke2 delete@. Performs the
+-- effects @--dry-run@ deliberately skips: the no-RKE2-install
+-- short-circuit, the inotify-limit host prep, and either the cascade
+-- reconciler (@--cascade@) or the refuse-gate default path.
+applyNativeDelete :: FilePath -> Rke2DeleteFlags -> IO ExitCode
+applyNativeDelete repoRoot flags = do
+  -- No RKE2 install on this host means there is nothing to delete, so
+  -- short-circuit to a no-op success BEFORE the per-run residue gate.
+  -- An unreachable in-cluster MinIO backend (the gate's fail-closed
+  -- case) is otherwise indistinguishable from "cluster already gone",
+  -- which would wrongly refuse a delete that has nothing to do. The
+  -- gate and --cascade orchestration are unchanged when a cluster
+  -- (even a stopped one) is present.
+  present <- rke2InstallPresent
+  if not present
+    then do
+      writeOutputLine noRke2ClusterMessage
+      pure ExitSuccess
+    else
+      -- Raise the host inotify limits BEFORE systemd unwinds the
+      -- RKE2 units during teardown, so PID 1 does not log
+      -- `Failed to allocate directory watch: Too many open files`
+      -- to the console (see streaming_doctrine.md § 6). Idempotent
+      -- and shared with reconcile; covers both delete paths.
+      runSequentially
+        [ ensureHostInotifyLimits repoRoot
+        , if rke2DeleteCascade flags
+            then runNativeDeleteCascade repoRoot
+            else runNativeDeleteWithResiduePolicy repoRoot flags
+        ]
+
 runNativeDelete :: FilePath -> IO ExitCode
 runNativeDelete repoRoot = do
   retainedManualPvRoot <- resolveRetainedManualPvRoot repoRoot
   writeOutputLine "Deleting local RKE2 environment..."
+  -- Sprint 4.26: derive the per-run destroy sweep from the managed-resource
+  -- registry SSoT instead of a hand-rolled list, closing the historical
+  -- `aws-eks-subzone` omission. The `--allow-pulumi-residue` path destroys
+  -- every PerRun-class stack unconditionally (the operator has accepted the
+  -- orphan risk); `reconcileAbsent`-style status gating is the cascade's
+  -- concern, not this best-effort sweep.
   runSequentially
-    [ runPulumiCommand repoRoot (PulumiEksDestroy True (PlanOptions False Nothing))
-    , runPulumiCommand repoRoot (PulumiTestDestroy True (PlanOptions False Nothing))
-    , deleteRke2ClusterSubstrate repoRoot
-    , removeCalicoEndpointStatusResidue
-    , removeManagedKubeconfig
-    , runHostFirewallGatewayUnrestrict defaultGatewayNodePort
-    , renderRetainedStateNotice repoRoot retainedManualPvRoot
-    ]
+    ( [ ResourceRegistry.resourceDestroy resource repoRoot
+      | resource <- ResourceRegistry.perRunManagedResources
+      ]
+        ++ [ deleteRke2ClusterSubstrate repoRoot
+           , removeCalicoEndpointStatusResidue
+           , removeManagedKubeconfig
+           , runHostFirewallGatewayUnrestrict defaultGatewayNodePort
+           , renderRetainedStateNotice repoRoot retainedManualPvRoot
+           ]
+    )
 
 -- | Sprint 4.11: @prodbox rke2 delete@ (default mode) opens with
 -- @checkAll [noLivePerRunPulumiStacks]@. When @--allow-pulumi-residue@
 -- is set the operator has explicitly acknowledged the risk and the
--- precondition is skipped. Per the doctrine, the K8s drain phase and
--- postflight tag sweep land in Sprints 4.12; this sprint only adds
--- the refuse-path and the @--cascade@ entry point.
+-- precondition is skipped. This stays a refuse-gate (it refuses on live
+-- residue rather than reconciling it); only @--cascade@ reconciles
+-- (Sprint 4.26, lifecycle_reconciliation_doctrine.md § 3.1).
 runNativeDeleteWithResiduePolicy :: FilePath -> Rke2DeleteFlags -> IO ExitCode
 runNativeDeleteWithResiduePolicy repoRoot flags
   | rke2DeleteAllowPulumiResidue flags = runNativeDelete repoRoot
@@ -2503,6 +2603,39 @@ ensureClusterPlatformRuntime repoRoot settings prodboxId labelValue = do
         , ensurePostgresOperatorRuntime repoRoot prodboxId labelValue
         ]
 
+-- | Sprint 7.12: the shared platform components the HOME-substrate install
+-- path stands up. The lower-layer pieces ('ensureMetalLbRuntime' — MetalLB,
+-- and the in-cluster Harbor NodePort) are intentionally substrate-specific
+-- and are NOT part of the shared inventory. This list is asserted equal (as
+-- a set) to 'ContainerImage.sharedPlatformComponents' by the
+-- 'test/unit/Main.hs' coverage test, so the home install can never silently
+-- omit a shared component.
+--
+-- The seven canonical workload charts (@gateway@, @keycloak@,
+-- @keycloak-postgres@, @vscode@, @api@, @redis@, @websocket@) are deployed
+-- through the substrate-independent 'Prodbox.Lib.ChartPlatform'
+-- ('supportedChartNames' plus the @keycloak-postgres@ / @redis@
+-- dependencies) on BOTH substrates; the platform pieces (Envoy Gateway,
+-- cert-manager, ZeroSSL DNS01, the Percona operator, MinIO, Harbor) are
+-- stood up by 'applyNativeInstallPlan' / 'ensureClusterPlatformRuntime'
+-- here.
+homeSubstratePlatformComponents :: [ContainerImage.PlatformComponent]
+homeSubstratePlatformComponents =
+  [ ContainerImage.ComponentGateway
+  , ContainerImage.ComponentKeycloak
+  , ContainerImage.ComponentKeycloakPostgres
+  , ContainerImage.ComponentVscode
+  , ContainerImage.ComponentApi
+  , ContainerImage.ComponentRedis
+  , ContainerImage.ComponentWebsocket
+  , ContainerImage.ComponentMinio
+  , ContainerImage.ComponentHarbor
+  , ContainerImage.ComponentPerconaPostgresOperator
+  , ContainerImage.ComponentEnvoyGateway
+  , ContainerImage.ComponentCertManager
+  , ContainerImage.ComponentZeroSslDns01
+  ]
+
 ensureAdminPublicEdgeRoutes
   :: FilePath -> ValidatedSettings -> Substrate -> String -> String -> IO ExitCode
 ensureAdminPublicEdgeRoutes repoRoot settings substrate prodboxId labelValue = do
@@ -2530,84 +2663,66 @@ ensureAdminPublicEdgeRoutes repoRoot settings substrate prodboxId labelValue = d
                   ExitFailure _ -> failWith ("kubectl apply failed: " ++ outputDetail output)
         )
 
--- | Host-side derivation of the @VSCODE_CLIENT_SECRET@ from the master
--- seed in MinIO, matching what the gateway daemon writes into the
--- @keycloak-oidc-clients@ Secret. This function is the
+-- | Host-side acquisition of the @VSCODE_CLIENT_SECRET@ — the value the
+-- gateway daemon writes into the @keycloak-oidc-clients@ Secret — for the
 -- @ensureAdminPublicEdgeRoutes@ ordering fix: that reconciler runs
 -- /during/ platform setup, before any chart deploys, so the
--- @keycloak-oidc-clients@ Secret doesn't exist yet (the keycloak
--- namespace doesn't even exist). The host can still derive the
--- correct value because the master seed is materialized into MinIO
--- by the gateway-minio bootstrap that runs immediately before
--- this function, and 'oidcClientSecretContext' /
--- 'deriveBase64Url' are deterministic over the master seed.
+-- @keycloak-oidc-clients@ Secret doesn't exist yet (the keycloak namespace
+-- doesn't even exist). The host therefore asks the gateway daemon to
+-- derive the value over the loopback NodePort
+-- ('Prodbox.Gateway.Client.derive') instead of reading the raw master
+-- seed itself (Sprint 3.16, @secret_derivation_doctrine.md §2/§5@). The
+-- context string — @oidcClientSecretContext "vscode" "vscode"@ — matches
+-- the daemon's Inventory exactly, so the host and daemon agree on the
+-- value byte-for-byte.
 --
 -- Returns the URL-safe-base64 string Keycloak will register for the
 -- @vscode@ OIDC client, which the harbor and minio admin
 -- @SecurityPolicy@'s reuse as their client secret too.
 readKeycloakVscodeClientSecret :: FilePath -> IO (Either String String)
-readKeycloakVscodeClientSecret repoRoot = do
-  overrideResult <- readHostMasterSeedOverride
-  case overrideResult of
+readKeycloakVscodeClientSecret _repoRoot = do
+  seamResult <- readGatewayDeriveTestSeam
+  case seamResult of
     Just (Left err) -> pure (Left err)
-    Just (Right seed) -> pure (Right (deriveVscodeClientSecret seed))
+    Just (Right seed) ->
+      pure (Right (Text.unpack (deriveBase64Url seed vscodeClientSecretContext)))
     Nothing -> do
-      credsResult <- resolveGatewayMinioCredentials repoRoot
-      case credsResult of
+      deriveResult <-
+        GatewayClient.derive
+          (GatewayClient.hostLoopbackGatewayEndpoint defaultGatewayNodePort)
+          vscodeClientSecretContext
+      pure $ case deriveResult of
         Left err ->
-          pure
-            ( Left
-                ( "could not resolve gateway-minio credentials for master-seed read: "
-                    ++ err
-                )
+          Left
+            ( "gateway derive of vscode OIDC client secret failed: "
+                ++ GatewayClient.renderGatewayError err
             )
-        Right (accessKey, secretKey) -> do
-          portForwardResult <- withCurrentMinioPortForward $ \localPort -> do
-            let cfg = defaultMinioMasterSeedConfig localPort accessKey secretKey
-            ensureMasterSeed cfg
-          case portForwardResult of
-            Left err ->
-              pure
-                ( Left
-                    ( "could not port-forward to MinIO for master-seed read: "
-                        ++ err
-                    )
-                )
-            Right (Left masterSeedErr) ->
-              pure
-                ( Left
-                    ( "master-seed read failed: "
-                        ++ renderMasterSeedError masterSeedErr
-                    )
-                )
-            Right (Right seed) -> pure (Right (deriveVscodeClientSecret seed))
+        Right response -> Right (Text.unpack (deriveResponseDerived response))
  where
   -- Sprint 3.13 chunk 32: the daemon's Inventory uses the deploy-namespace
   -- (`vscode` for the vscode root chart's transitive keycloak dep), so the
-  -- host-side derivation must match. Pre-chunk-32 this was hardcoded to
-  -- `"keycloak"` and computed a value Keycloak never registered, breaking
+  -- host-side derive context must match. Pre-chunk-32 this was hardcoded to
+  -- `"keycloak"` and named a context Keycloak never registered, breaking
   -- the harbor/minio admin SecurityPolicy OIDC handshake.
-  deriveVscodeClientSecret seed =
-    Text.unpack (deriveBase64Url seed (oidcClientSecretContext "vscode" "vscode"))
+  vscodeClientSecretContext = oidcClientSecretContext "vscode" "vscode"
 
--- | Test-only injection seam mirroring 'PRODBOX_TEST_RESIDUE_ABSENT' /
--- 'PRODBOX_TEST_RESIDUE_UNREACHABLE' in 'Prodbox.Lifecycle.LiveResidue':
--- when the env var is set to a 64-character hex string the host-side
--- master-seed read short-circuits to those bytes instead of port-forwarding
--- to MinIO. Production never sets this; the integration test harness in
--- 'fakeRke2Environment' provides a deterministic constant so reconcile
--- tests can exercise 'ensureAdminPublicEdgeRoutes' without a real MinIO.
-readHostMasterSeedOverride :: IO (Maybe (Either String MasterSeed))
-readHostMasterSeedOverride = do
-  maybeHex <- lookupEnv "PRODBOX_TEST_HOST_MASTER_SEED_HEX"
+-- | Sprint 3.16: the gateway-derive test seam, decoding its hex seed to a
+-- typed 'MasterSeed' so the integration harness can stand in for a running
+-- gateway daemon. Production returns 'Nothing' and the caller dials the
+-- real gateway. The seam computes the *derived* response the daemon would
+-- return; it never re-exports the raw master seed the way the retired
+-- @PRODBOX_TEST_HOST_MASTER_SEED_HEX@ host-side seam did.
+readGatewayDeriveTestSeam :: IO (Maybe (Either String MasterSeed))
+readGatewayDeriveTestSeam = do
+  maybeHex <- lookupGatewayDeriveTestSeed
   pure $ case maybeHex of
     Nothing -> Nothing
     Just hex ->
       case decodeHex hex of
-        Left err -> Just (Left ("PRODBOX_TEST_HOST_MASTER_SEED_HEX: " ++ err))
+        Left err -> Just (Left ("gateway-derive test seam: " ++ err))
         Right bytes ->
           case masterSeed bytes of
-            Left err -> Just (Left ("PRODBOX_TEST_HOST_MASTER_SEED_HEX: " ++ err))
+            Left err -> Just (Left ("gateway-derive test seam: " ++ err))
             Right seed -> Just (Right seed)
 
 decodeHex :: String -> Either String BS.ByteString

@@ -6,6 +6,7 @@ module Prodbox.EffectInterpreter
 where
 
 import Control.Concurrent (threadDelay)
+import Control.Exception (bracketOnError)
 import Control.Monad
   ( foldM
   , when
@@ -14,9 +15,12 @@ import Data.Char (isDigit)
 import Data.List
   ( intercalate
   , isInfixOf
-  , sort
+  , sortBy
   )
 import Data.Map.Strict qualified as Map
+import Data.Ord
+  ( comparing
+  )
 import Data.Set
   ( Set
   )
@@ -46,6 +50,10 @@ import Prodbox.Infra.MinioBackend
   , pulumiBackendUrl
   , readMinioCredentials
   , withMinioPortForward
+  )
+import Prodbox.PrerequisiteId
+  ( PrerequisiteId
+  , prerequisiteIdText
   )
 import Prodbox.Result
   ( Result (..)
@@ -97,42 +105,78 @@ data InterpreterContext = InterpreterContext
   }
   deriving (Eq, Show)
 
+-- | Interpreter-boundary memo of satisfied node effects within one `runEffectDAG` run.
+--
+-- Per [prerequisite_dag_system.md](../../documents/engineering/prerequisite_dag_system.md) §3
+-- ("no duplicate execution of the same satisfied node within one run") and pure_fp_standards
+-- §3.2 (mutable/threaded state is boundary-only), this is an immutable accumulator threaded
+-- through the IO scheduling loop — it never escapes the interpreter boundary and is keyed on
+-- the node `Effect` so an already-satisfied probe (the full Dhall decode for `RequireSettings`,
+-- a `RequireTool` invocation, …) executes at most once per run even when several distinct nodes
+-- carry the same effect. `Effect` derives only `Eq`, so the memo is an association list looked
+-- up by `Eq`.
+newtype SatisfiedEffectMemo = SatisfiedEffectMemo [Effect]
+
+emptySatisfiedEffectMemo :: SatisfiedEffectMemo
+emptySatisfiedEffectMemo = SatisfiedEffectMemo []
+
+isEffectSatisfied :: Effect -> SatisfiedEffectMemo -> Bool
+isEffectSatisfied effect (SatisfiedEffectMemo satisfied) = effect `elem` satisfied
+
+rememberSatisfiedEffect :: Effect -> SatisfiedEffectMemo -> SatisfiedEffectMemo
+rememberSatisfiedEffect effect memo@(SatisfiedEffectMemo satisfied)
+  | isEffectSatisfied effect memo = memo
+  | otherwise = SatisfiedEffectMemo (effect : satisfied)
+
 runEffectDAG :: InterpreterContext -> EffectDAG -> IO (Result ())
-runEffectDAG context dag = go initialPending Set.empty
+runEffectDAG context dag = go initialPending Set.empty emptySatisfiedEffectMemo
  where
   nodes = effectDagNodes dag
   initialPending = Set.fromList (Map.keys nodes)
 
-  go :: Set String -> Set String -> IO (Result ())
-  go pending completed
+  sortByText :: [PrerequisiteId] -> [PrerequisiteId]
+  sortByText = sortBy (comparing prerequisiteIdText)
+
+  go :: Set PrerequisiteId -> Set PrerequisiteId -> SatisfiedEffectMemo -> IO (Result ())
+  go pending completed memo
     | Set.null pending = pure (Success ())
     | null readyIds =
         pure
           ( Failure
               ( "Effect DAG stalled with pending nodes: "
-                  ++ intercalate ", " (sort (Set.toList pending))
+                  ++ intercalate ", " (map prerequisiteIdText (sortByText (Set.toList pending)))
               )
           )
-    | otherwise = runReady readyIds pending completed
+    | otherwise = runReady readyIds pending completed memo
    where
     readyIds =
-      sort
+      sortBy
+        (comparing prerequisiteIdText)
         [ effectId
         | effectId <- Set.toList pending
         , let node = nodes Map.! effectId
         , all (`Set.member` completed) (effectNodePrerequisites node)
         ]
 
-  runReady :: [String] -> Set String -> Set String -> IO (Result ())
-  runReady [] pending completed = go pending completed
-  runReady (effectId : remaining) pending completed = do
+  runReady
+    :: [PrerequisiteId]
+    -> Set PrerequisiteId
+    -> Set PrerequisiteId
+    -> SatisfiedEffectMemo
+    -> IO (Result ())
+  runReady [] pending completed memo = go pending completed memo
+  runReady (effectId : remaining) pending completed memo = do
     let node = nodes Map.! effectId
-    outcome <- runEffect context (effectNodeEffect node)
+        effect = effectNodeEffect node
+    outcome <-
+      if isEffectSatisfied effect memo
+        then pure (Success ())
+        else runEffect context effect
     case outcome of
       Failure err ->
         pure
           ( Failure
-              ( effectNodeId node
+              ( prerequisiteIdText (effectNodeId node)
                   ++ " ("
                   ++ effectNodeDescription node
                   ++ "): "
@@ -141,7 +185,12 @@ runEffectDAG context dag = go initialPending Set.empty
                   ++ effectNodeRemedyHint node
               )
           )
-      Success () -> runReady remaining (Set.delete effectId pending) (Set.insert effectId completed)
+      Success () ->
+        runReady
+          remaining
+          (Set.delete effectId pending)
+          (Set.insert effectId completed)
+          (rememberSatisfiedEffect effect memo)
 
 runEffect :: InterpreterContext -> Effect -> IO (Result ())
 runEffect context effect =
@@ -469,19 +518,53 @@ runValidation context validation =
                               "Route 53 lifecycle capability check failed: create-hosted-zone did not return a hosted zone id."
                           )
                       else
-                        requireAwsValidationCommandSuccess
-                          "Route 53 lifecycle capability cleanup failed"
-                          Subprocess
-                            { subprocessPath = "aws"
-                            , subprocessArguments =
-                                [ "route53"
-                                , "delete-hosted-zone"
-                                , "--id"
-                                , createdZoneId
-                                ]
-                            , subprocessEnvironment = Just environment
-                            , subprocessWorkingDirectory = Just (interpreterRepoRoot context)
-                            }
+                        -- Sprint 4.27 (audit C66): the throwaway capability-proof
+                        -- hosted zone now exists. Wrap the rest of the probe in
+                        -- 'bracketOnError' so any exception thrown after the create
+                        -- (e.g. an async exception, or a future step inserted between
+                        -- create and delete) always triggers a best-effort delete of
+                        -- the proof zone — no hosted-zone leak on a mid-probe failure.
+                        -- This probe is deliberately NOT a registered 'ManagedResource'
+                        -- (it has no steady state to discover/reconcile), so the §3.1
+                        -- totality registry stays correct without it.
+                        bracketOnError
+                          (pure createdZoneId)
+                          deleteCapabilityProofZone
+                          ( \zoneId ->
+                              requireAwsValidationCommandSuccess
+                                "Route 53 lifecycle capability cleanup failed"
+                                (deleteHostedZoneSpec environment zoneId)
+                          )
+   where
+    deleteHostedZoneSpec :: [(String, String)] -> String -> Subprocess
+    deleteHostedZoneSpec environment zoneId =
+      Subprocess
+        { subprocessPath = "aws"
+        , subprocessArguments =
+            [ "route53"
+            , "delete-hosted-zone"
+            , "--id"
+            , zoneId
+            ]
+        , subprocessEnvironment = Just environment
+        , subprocessWorkingDirectory = Just (interpreterRepoRoot context)
+        }
+    -- \| The 'bracketOnError' cleanup handler: best-effort delete of the
+    -- proof zone on the exception path. Errors here are swallowed (the
+    -- original exception is rethrown by 'bracketOnError'); the goal is
+    -- only to avoid leaking the zone.
+    deleteCapabilityProofZone :: String -> IO ()
+    deleteCapabilityProofZone zoneId = do
+      settingsResult <- validateAndLoadSettings (interpreterRepoRoot context)
+      case settingsResult of
+        Left _ -> pure ()
+        Right settings -> do
+          environment <- awsCommandEnvironment settings
+          _ <-
+            requireAwsValidationCommandSuccess
+              "Route 53 lifecycle capability cleanup failed"
+              (deleteHostedZoneSpec environment zoneId)
+          pure ()
 
   requirePulumiLogin :: IO (Result ())
   requirePulumiLogin = do

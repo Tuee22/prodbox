@@ -5,13 +5,27 @@
 **Referenced by**: [README.md](README.md), [00-overview.md](00-overview.md),
 [substrates.md](substrates.md),
 [the engineering doctrine docs](../documents/engineering/README.md)
+**Generated sections**: none
 
 > **Purpose**: Define the plan-ownership baseline for the Haskell rewrite so status, sequencing,
 > Python-removal work, and CLI doctrine adoption have one canonical home.
 
 ## Phase Status
 
-✅ **Done** — Sprint 0.1 (canonical plan suite for the Haskell rewrite) is `Done`, and the
+✅ **Reclosed 2026-06-09** — Phase 0 was reopened for Sprints `0.9`–`0.10` to make Documentation
+Harmony an enforced plan invariant; both have now landed. ✅ **Sprint `0.9`**: the five doctrine
+corrections + the repo-wide `**Generated sections**` header sweep, plus the header↔markers↔registry
+reconciler + governed-doc relative-link check wired into `runGeneratedArtifactLint` (the sha256-freeze
+over-claim struck). ✅ **Sprint `0.10`**: the §2/§3 command matrix (from `commandRegistry`, Sprint
+`1.29`) and the registry-name↔CLI-command table (from `StackDescriptor`, Sprint `4.27`) are generated
+sections; the chart→edge-resource ownership table was deliberately left editorial per the design
+guardrail (no typed owning-chart source — generating it would relocate drift; Sprint `7.13` owns the
+doctrine reattribution). Validation at reclosure: `check-code` 0, `test unit` 802, `lint docs` 0,
+`docs check` 0. All earlier Phase 0 sprints (`0.1`–`0.8`) remain `Done`; Documentation Harmony is now
+machine-enforced (the reconciler + relative-link check + generated drift-prone tables), not a
+periodic manual audit.
+
+✅ **Done (Sprints `0.1`–`0.8`)** — Sprint 0.1 (canonical plan suite for the Haskell rewrite) is `Done`, and the
 Phase-0 doctrine-governance reopens scheduled by Sprints `0.2`, `0.3`, `0.4`, `0.5`, `0.6`,
 and `0.7` are also now `Done`. Sprints `0.2`–`0.6` adopted
 [the engineering doctrine docs](../documents/engineering/README.md) as the authoritative CLI doctrine, aligned the
@@ -509,6 +523,38 @@ None.
   contract and the distinction between benign host-noise suppression on success and actionable
   failure context.
 
+Governed docs touched by the Sprint `0.9`–`0.10` design-intention review (Documentation
+Harmony as an enforced invariant):
+
+- `documents/documentation_standards.md` — define the lint contract that the
+  `**Generated sections**` header field, the in-file `<prodbox>:<key>:start|end` markers, and
+  the `GeneratedSectionRule` registry must agree, and the relative-link integrity check (Sprint
+  `0.9`); record the new generated sections introduced by Sprint `0.10`.
+- `documents/engineering/pure_fp_standards.md` — soften the GADT-Indexed State Machines mandate
+  to admit a flat exhaustive ADT for externally-authoritative / log-reconciled state (a
+  `Disposition` projection), keeping the exhaustive-ADT and no-raw-`String` requirements
+  (Sprint `0.9`; owned by Sprint `1.32`).
+- `documents/engineering/haskell_code_guide.md` — rewrite Capability Classes / Service Errors to
+  the argv-shaped `runMinIO` / `runRedis` / `runPg` reality, mark `HasRedis` vestigial, and keep
+  the typed-`ServiceError`-classified-by-constructor and forbid-retry-of-non-retryable intents
+  (Sprint `0.9`; owned by Sprint `1.30`).
+- `documents/engineering/code_quality.md` — strike the bullet forbidding `fsnotify` /
+  `inotify` / `getModificationTime`, since
+  [config_doctrine.md §7](../documents/engineering/config_doctrine.md#7-file-watch-reload-trigger)
+  makes `fsnotify` the required reload mechanism (Sprint `0.9`); record the generated-section
+  registry extensions for Sprint `0.10`.
+- `documents/engineering/distributed_gateway_architecture.md` and
+  `documents/engineering/tla_modelling_assumptions.md` — rewrite Orders promotion to be
+  restart-based and add the single-host-degenerate-mesh topology / fault-model note (Sprint
+  `0.9`; owned by Sprint `2.25`).
+- `documents/engineering/aws_integration_environment_doctrine.md` — correct §4.5 so per-run
+  stacks use the in-cluster MinIO backend and `aws-ses` uses the long-lived S3 backend (Sprint
+  `0.9`).
+- `documents/engineering/cli_command_surface.md` — convert the §2/§3 operator command matrix to
+  a generated section sourced from `commandRegistry` (Sprint `0.10`).
+- `documents/engineering/helm_chart_platform_doctrine.md` — convert the chart→edge-resource
+  ownership table to a generated section (Sprint `0.10`).
+
 **Product docs to create/update:**
 
 - None.
@@ -781,6 +827,165 @@ implementation of the new doctrine is scheduled in Phase 1 (Sprint 1.28), Phase 
   Objective. Sprint 0.8 closes when its doc revisions are complete and the four lint /
   build / test gates exit 0; the live exercise of the file-watch reload trigger is the
   closure gate for Sprint 2.21, not Sprint 0.8.
+
+## Sprint 0.9: Documentation Harmony as an Enforced Invariant ✅
+
+**Status**: Done (2026-06-09). The five doctrine corrections and the repo-wide
+`**Generated sections**` header sweep landed, and the lint-enforcement code shipped: the
+header↔markers↔registry reconciler (`checkGeneratedSectionsHarmony`) and the governed-doc
+relative-link check (`checkGovernedDocRelativeLinks`) are wired into `runGeneratedArtifactLint`,
+so `prodbox lint docs` / `docs check` / `check-code` fail closed on any header/marker/registry
+disagreement or dangling relative link. The sha256 Dhall-freeze decision resolved to **strike**
+the over-claim (see Deliverables). Validation green: `check-code` 0, `test unit` 732/732,
+`lint docs` 0, `docs check` 0.
+**Implementation**: `src/Prodbox/CheckCode.hs` (`checkGeneratedSectionsHarmony`,
+`checkGovernedDocRelativeLinks`, and their fenced-code-aware pure helpers, wired into
+`runGeneratedArtifactLint`), `test/unit/Main.hs` (36 pure-helper cases);
+`documents/engineering/pure_fp_standards.md`,
+`documents/engineering/haskell_code_guide.md`,
+`documents/engineering/code_quality.md`,
+`documents/engineering/distributed_gateway_architecture.md`,
+`documents/engineering/tla_modelling_assumptions.md`,
+`documents/engineering/aws_integration_environment_doctrine.md`
+**Docs to update**: `documents/engineering/pure_fp_standards.md`,
+`documents/engineering/haskell_code_guide.md`,
+`documents/engineering/code_quality.md`,
+`documents/engineering/distributed_gateway_architecture.md`,
+`documents/engineering/tla_modelling_assumptions.md`,
+`documents/engineering/aws_integration_environment_doctrine.md`,
+`documents/documentation_standards.md`,
+`DEVELOPMENT_PLAN/legacy-tracking-for-deletion.md`
+
+### Objective
+
+Make Documentation Harmony — every governed doc agreeing with live code and with the other
+governed docs — an invariant the lint stack enforces, rather than a property re-established
+by periodic audits. The design-intention review found five doctrine statements that contradict
+the live code or a sibling doctrine; the doc is wrong in each case, so this sprint repairs the
+prose to match the code's target shape and schedules the lint that will keep them aligned. It
+also closes the repo-wide gap where governed docs omit the
+[documentation_standards.md](../documents/documentation_standards.md) `**Generated sections**`
+header field.
+
+### Deliverables
+
+- **Five doctrine corrections** (the doc, not the code, is stale):
+  - `documents/engineering/pure_fp_standards.md` (GADT-Indexed State Machines + the
+    Forbidden list) softens the GADT mandate to "GADTs for authoritative in-process
+    transitions; externally-authoritative / log-reconciled state (e.g. gateway ownership
+    as a fold over the append-only commit log — a `Disposition` projection) may use a flat
+    exhaustive ADT", while keeping the exhaustive-ADT and no-raw-`String` requirements.
+    Owned by Sprint `1.32`.
+  - `documents/engineering/haskell_code_guide.md` (Capability Classes / Service Errors)
+    rewrites the capability classes to the argv-shaped reality
+    `runMinIO` / `runRedis` / `runPg :: [String] -> m (Either E ProcessOutput)`, marks
+    `HasRedis` vestigial (zero `src` callers), and keeps — as the target the code moves
+    to — the typed-`ServiceError`-classified-by-constructor intent and the
+    forbid-retry-of-non-retryable rule, forbidding a hand-built `ServiceError` with a
+    literal `retryable` `Bool`. Owned by Sprint `1.30`.
+  - `documents/engineering/code_quality.md` (the daemon reload-polling guardrail) strikes
+    the bullet listing `fsnotify` / `inotify` / `getModificationTime` as forbidden:
+    [config_doctrine.md §7](../documents/engineering/config_doctrine.md#7-file-watch-reload-trigger),
+    the live code, and `.hlint.yaml` together make `fsnotify` the *required* reload
+    mechanism. Doc-only fix landing under this sprint.
+  - `documents/engineering/distributed_gateway_architecture.md` §7.5 and
+    `documents/engineering/tla_modelling_assumptions.md` rewrite Orders promotion to be
+    restart-based (already defined by config_doctrine §8 step 4): `stateOrdersVersionUtc`
+    never advances in-process, the refuse-to-reclaim-while-behind gate is kept, and a
+    topology / fault-model note records that home is a single-host degenerate single-rank
+    mesh (shared-fate) while partition tolerance is an AWS / future-multi-host capability.
+    Owned by Sprint `2.25`.
+  - `documents/engineering/aws_integration_environment_doctrine.md` §4.5 is corrected so
+    per-run stacks use the in-cluster MinIO backend while `aws-ses` uses the long-lived S3
+    backend (its state must outlive cluster wipes). Doc-only fix landing under this sprint.
+- **Repo-wide `**Generated sections**` header sweep**: every governed doc missing the
+  field gains `**Generated sections**: none` (or its real marker keys) per
+  [documentation_standards.md](../documents/documentation_standards.md).
+- **Lint enforcement (Remaining Work)**: `runGeneratedArtifactLint` gains a
+  header↔markers↔registry reconciler (the `**Generated sections**` field, the in-file
+  `<prodbox>:<key>:start|end` markers, and the `GeneratedSectionRule` registry must agree)
+  and a relative-link check (every relative `[text](path#anchor)` link in a governed doc
+  resolves to an existing file and anchor).
+- **sha256 Dhall-freeze decision — struck.** The only committed local import is
+  `prodbox-config.dhall` → `./prodbox-config-types.dhall`, a co-edited sibling; cryptographic
+  freezing of a co-edited sibling adds re-freeze friction with no integrity benefit, and
+  `check-code` never enforced it. `documentation_standards.md` §6 is reframed (sha256 freezes
+  apply to any future remote/untrusted committed import; the sole current local sibling import
+  is intentionally not frozen) and `legacy-tracking-for-deletion.md` records the over-claim
+  correction. No freeze check is implemented.
+
+### Validation
+
+1. `prodbox lint docs` exit 0 after the header sweep (proves `**Generated sections**`
+   metadata stays consistent with markers across every governed doc).
+2. `prodbox docs check` exit 0 (this sprint's doc edits touch no generated content).
+3. `prodbox check-code` exit 0 — by no-op for the doc-only part; once the reconciler and
+   relative-link check land, `check-code` fails closed on any header/marker/registry
+   disagreement or dangling relative link.
+4. A grep replay confirms the five corrected statements no longer contradict
+   `config_doctrine.md`, the live code, or `.hlint.yaml`.
+
+### Remaining Work
+
+None — closed 2026-06-09. The reconciler + relative-link check are implemented and wired, and
+the sha256 decision is resolved (struck). Broken governed-doc links the new check surfaced were
+fixed in the same change (the `phase-8-email-invite-auth.md` `../substrates.md` over-prefix and
+the over-prefixed `aws_integration_environment_doctrine.md` link).
+
+## Sprint 0.10: Generate Drift-Prone Tables from Typed Registries ✅
+
+**Status**: Done (2026-06-09, after Sprint `4.27` unblocked it). Two of the three drift-prone tables
+are now generated from typed registries: the §2/§3 command matrix from `commandRegistry` (Sprint
+`1.29`: `command-surface-toplevel`/`command-surface-matrix`) and the registry-name↔CLI-command table
+from `StackDescriptor` (Sprint `4.27`: `stack-command-surface` in `substrates.md`). The third — the
+**chart→edge-resource ownership table** — was deliberately **not** generated, per the design
+guardrail (generate only a faithful projection of a typed value, with no new hand-authored
+annotation): `PublicEdgeRoute` has no owning-chart field, the shared Gateway / listener-cert /
+port-80-redirect resources are not routes at all, `/harbor` and `/minio` are applied imperatively
+(`Rke2.hs::ensureAdminPublicEdgeRoutes`), and the `/auth` + Gateway + cert ownership is a deployment
+fact the keycloak chart owns (reattributed editorially by Sprint `7.13`). Generating it would have
+required a parallel hand-authored annotation — relocating drift, not removing it — so it stays
+editorial doctrine; an `envoy_gateway_edge_doctrine.md §4` note records this with the evidence.
+Validation green: `check-code` 0, `test unit` 0, `docs generate`→`docs check` 0, `lint docs` 0.
+**Implementation**: `src/Prodbox/CheckCode.hs` /
+`src/Prodbox/CLI/Docs.hs` (extend the `GeneratedSectionRule` registry),
+`documents/engineering/cli_command_surface.md`,
+`documents/engineering/helm_chart_platform_doctrine.md`
+**Docs to update**: `documents/engineering/cli_command_surface.md`,
+`documents/engineering/helm_chart_platform_doctrine.md`,
+`documents/documentation_standards.md`
+
+### Objective
+
+Eliminate the recurring drift between the hand-maintained reference tables and the typed
+sources they describe by generating those tables from the registries directly, extending
+the generated-section machinery established by the doctrine's `Generated Artifacts` contract.
+
+### Deliverables
+
+- The `cli_command_surface.md` §2/§3 operator command matrix is generated from
+  `commandRegistry` (depends on the positional-args `CommandSpec` field added by Sprint
+  `1.29`).
+- The chart→edge-resource ownership table is **not** generated — per the design guardrail it is
+  not a faithful projection of a typed source (`PublicEdgeRoute` has no owning-chart field; the
+  shared Gateway / cert / `/auth` ownership is a deployment fact, not a route), so generating it
+  would relocate drift into a hand-authored annotation. It stays editorial doctrine (owned by
+  Sprint `7.13`); an `envoy_gateway_edge_doctrine.md §4` note records the decision + evidence.
+- The registry-name↔CLI-verb list is generated from the `StackDescriptor` SSoT record
+  introduced by Sprint `4.27` (the `stack-command-surface` section in `substrates.md`).
+
+### Validation
+
+1. `prodbox docs generate` then `prodbox docs check` exit 0 — the generated matrix,
+   ownership table, and registry-name↔verb list round-trip with the typed registries.
+2. `prodbox lint docs` exit 0 — the new generated sections carry matching
+   `**Generated sections**` header keys and `<prodbox>:<key>:start|end` markers.
+3. `prodbox check-code` exit 0.
+
+### Remaining Work
+
+None — closed 2026-06-09 after Sprints `1.29` and `4.27` landed the two generatable tables and the
+chart→edge ownership table was (correctly) left editorial per the guardrail.
 
 ## Related Documents
 

@@ -3,6 +3,7 @@
 **Status**: Authoritative source
 **Supersedes**: N/A
 **Referenced by**: documents/engineering/README.md, documents/engineering/effect_interpreter.md, documents/engineering/prerequisite_dag_system.md, documents/engineering/prerequisite_doctrine.md, documents/engineering/unit_testing_policy.md
+**Generated sections**: none
 
 > **Purpose**: Describe the Haskell effect DAG architecture used by prerequisite-aware command
 > flows.

@@ -3,6 +3,7 @@
 **Status**: Authoritative source
 **Supersedes**: N/A
 **Referenced by**: README.md, AGENTS.md, CLAUDE.md, DEVELOPMENT_PLAN/system-components.md, DEVELOPMENT_PLAN/legacy-tracking-for-deletion.md, DEVELOPMENT_PLAN/phase-0-planning-documentation.md, DEVELOPMENT_PLAN/phase-1-runtime-cli-aws-foundations.md, DEVELOPMENT_PLAN/phase-2-gateway-dns.md, DEVELOPMENT_PLAN/phase-4-lifecycle-canonical-paths.md, DEVELOPMENT_PLAN/phase-6-clean-room-handoff.md, documents/engineering/README.md, documents/engineering/cli_command_surface.md, documents/engineering/haskell_code_guide.md, documents/engineering/pure_fp_standards.md
+**Generated sections**: none
 
 > **Purpose**: Define current dependency-management doctrine for the Haskell `prodbox` repository.
 

@@ -3,6 +3,7 @@
 **Status**: Reference only
 **Supersedes**: N/A
 **Referenced by**: README.md, CLAUDE.md, documents/engineering/README.md
+**Generated sections**: none
 
 > **Purpose**: Show repository-safe before or after patterns for moving imperative or stringly
 > logic toward the Haskell functional style used by `prodbox`.

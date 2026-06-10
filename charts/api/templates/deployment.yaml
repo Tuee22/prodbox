@@ -36,8 +36,13 @@ spec:
           args: ["workload", "start", "--config", "/etc/workload/config.dhall"]
           volumeMounts:
             - name: workload-config
-              mountPath: /etc/workload/config.dhall
-              subPath: config.dhall
+              # Sprint 3.15: directory-style mount (no subPath) so the
+              # kubelet's atomic `..data` symlink swap on ConfigMap update
+              # fires fsnotify on /etc/workload/. With a subPath mount the
+              # kubelet does NOT propagate ConfigMap updates to the bound
+              # file, which silently breaks the workload's file-watch reload
+              # loop (the Sprint 2.21 chunk-47 gotcha).
+              mountPath: /etc/workload
               readOnly: true
           ports:
             - name: http

@@ -3,6 +3,7 @@
 **Status**: Authoritative source
 **Supersedes**: N/A
 **Referenced by**: documents/engineering/README.md, documents/engineering/effect_interpreter.md, documents/engineering/unit_testing_policy.md
+**Generated sections**: none
 
 > **Purpose**: Define streaming and terminal-record invariants for supported `prodbox` command
 > flows.
@@ -145,6 +146,18 @@ Event-driven systems require idempotent handlers and explicit delivery
 tracking. Events are immutable records stored with timestamps; a
 `processed_at` column tracks which events have been handled.
 
+`Prodbox.Daemon.Events` (`src/Prodbox/Daemon/Events.hs`) is the reference
+at-least-once port: `recordEvent` is insert-once by `eventId`,
+`fetchUnprocessedEvents` returns the `processed_at IS NULL` set in
+`created_at ASC` order, and `markEventProcessed` is the first-write-wins
+marker. The gateway peer commit log (`src/Prodbox/Gateway/Peer.hs`) is a
+deliberately different, **non-durable anti-entropy** variant: peers
+periodically push their known commit log to one another to converge
+ownership claims; it is not the durable at-least-once store and does not
+carry the `processed_at` delivery guarantee. Do not conflate the two — the
+durable processing contract below applies to the `Daemon.Events` port, not
+to the anti-entropy gossip transport.
+
 ### Event storage
 
 ```haskell
@@ -199,6 +212,15 @@ fetchUnprocessedEvents conn =
         ()
 ```
 
+The `markEventProcessed` `AND processed_at IS NULL` clause is an authoritative,
+load-bearing guard, not an optimization: it makes marking an event **first-write-wins**.
+The earliest writer stamps `processed_at`; every later redelivery of the same event
+finds the row already non-NULL and the `UPDATE` affects zero rows, so a single
+`clock_timestamp()` is recorded for the event no matter how many times the handler
+runs. Removing the clause would let a redelivery overwrite the original processing
+timestamp and corrupt the delivery-state audit trail. The guard must stay in any
+implementation of this port.
+
 ### Idempotent event handlers
 
 ```haskell
@@ -232,6 +254,8 @@ processEvents conn handler = do
   cards) without deduplication.
 - Events stored without creation timestamps.
 - Missing `processed_at` column (no way to track delivery state).
+- Marking an event processed without the `AND processed_at IS NULL` first-write-wins
+  guard (a redelivery would overwrite the original processing timestamp).
 - Event ordering other than `created_at ASC` (breaks replay semantics).
 - Deleting events after processing (audit trail loss).
 

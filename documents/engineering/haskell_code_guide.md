@@ -3,6 +3,7 @@
 **Status**: Authoritative source
 **Supersedes**: N/A
 **Referenced by**: [README.md](../../README.md), [../../DEVELOPMENT_PLAN/phase-1-runtime-cli-aws-foundations.md](../../DEVELOPMENT_PLAN/phase-1-runtime-cli-aws-foundations.md), [README.md](./README.md), [code_quality.md](./code_quality.md), [dependency_management.md](./dependency_management.md), [pure_fp_standards.md](./pure_fp_standards.md)
+**Generated sections**: none
 
 > **Purpose**: Define the repository's Haskell coding standards, the hard mechanical gates that
 > enforce them, and the review guidance that remains human-judged.
@@ -73,9 +74,10 @@ The current supported worktree has started converging on a small shared foundati
 - `src/Prodbox/Error.hs` owns `AppError` plus the `Recoverable` / `Fatal` split.
 - `src/Prodbox/CLI/Output.hs` owns user-facing error rendering, stdout/stderr writer helpers,
   and typed `OutputOptions` rendering at the CLI boundary.
-- `src/Prodbox/Retry.hs` owns `RetryPolicy` and pure backoff calculation.
-- `src/Prodbox/Service.hs` owns `ServiceError`, capability classes, IO-backed MinIO / Redis /
-  PostgreSQL service runners, and service-level retry helpers.
+- `src/Prodbox/Retry.hs` owns `RetryPolicy` and pure backoff calculation (the `AppError`-keyed
+  retrier).
+- `src/Prodbox/Service.hs` owns `ServiceError`, the argv-shaped capability classes, the IO-backed
+  MinIO / Redis / PostgreSQL service runners, and the service-level retry helper.
 - `src/Prodbox/Naming.hs` owns DNS-1123-safe resource naming helpers.
 - `src/Prodbox/StateMachine.hs` owns phantom-indexed transition surfaces for multi-state gateway,
   Pulumi, and chart workflows.
@@ -234,6 +236,31 @@ Why this matters:
   the config-loading paths. See
   [config_doctrine.md](./config_doctrine.md).
 
+### Subprocess environments must be PATH-preserving
+
+`Subprocess.subprocessEnvironment` is `Maybe [(Text, Text)]`, and the interpreter applies it
+with `typed-process`'s `setEnv`, which **replaces** the child environment wholesale — it does
+not merge with the parent's. So a `Just []` (or any list that simply omits `PATH`/`HOME`) hands
+the child process an environment with *no* `PATH`: the vendor CLI cannot resolve its own helper
+binaries, find a credentials file under `$HOME`, or locate anything off the search path.
+
+Any subprocess that needs auth or path-sensitive state — every `aws` invocation in particular —
+must therefore build its environment by *overlaying* the desired keys onto the inherited parent
+environment, never by handing the child a from-scratch list. This is the job of one canonical
+`awsCliSubprocessEnvironment :: Credentials -> IO [(String, String)]` helper: read the parent
+environment with `getEnvironment`, strip ambient AWS auth keys, then overlay the repo-root
+credentials. There must be exactly one such builder; the divergence Sprint 1.30 closes is that
+`Dns.hs` currently overlays onto an **empty** base (`overlayAwsCredentials []`), dropping `PATH`,
+while `AwsEksSubzoneStack.hs` correctly overlays onto `getEnvironment`. Both must route through
+the single PATH-preserving builder.
+
+**Forbidden patterns:**
+
+- Constructing an `aws`/`kubectl`/`redis-cli` subprocess environment from an empty or
+  literal-only list that omits `PATH` and `HOME`.
+- A second, parallel "AWS CLI environment" builder. There is one
+  `awsCliSubprocessEnvironment`; everything else calls it.
+
 ## Smart Constructors for Paired Resources
 
 When a system creates related resources that must stay consistent (e.g., a Kubernetes
@@ -347,23 +374,50 @@ which begins drain. See
 
 ## Capability Classes and Service Errors
 
-Subsystem boundaries (object storage, cache, database, message queue) are abstracted
-through capability classes. Each subsystem has its own error newtype wrapping a unified
-`ServiceError`, and a conversion typeclass enables generic handling (retry logic, unified
-reporting) without coupling.
+Subsystem boundaries (object storage, cache, database) are abstracted through *argv-shaped*
+capability classes. The supported services in this worktree are driven by invoking a vendor
+CLI (`aws`, `redis-cli`, `kubectl`) as a typed [`Subprocess`](#subprocesses-as-typed-values),
+not by linking a native protocol client. Each capability class therefore exposes a single
+runner that takes the argument vector and returns the captured `ProcessOutput`, and each
+subsystem has its own error newtype wrapping a unified `ServiceError`. A conversion typeclass
+enables generic handling (retry, unified reporting) without coupling.
 
-### Unified service error type
+`src/Prodbox/Service.hs` is the closed home of this surface.
+
+### Argv-shaped capability classes
+
+The runner takes the CLI argument vector and yields the typed `ProcessOutput`:
 
 ```haskell
-data ServiceError
-    = SEConnectionFailed Text
-    | SETimeout Text
-    | SENotFound Text
-    | SEPermissionDenied Text
-    | SEConflict Text
-    | SEInternalError Text
-    deriving stock (Show, Eq)
+class (Monad m) => HasMinIO m where
+    runMinIO :: [String] -> m (Either MinIOError ProcessOutput)
+    runMinIOWithEnv ::
+        Maybe [(String, String)] -> [String] -> m (Either MinIOError ProcessOutput)
+    runMinIOWithEnv _ = runMinIO
 
+class (Monad m) => HasRedis m where
+    runRedis :: [String] -> m (Either RedisError ProcessOutput)
+
+class (Monad m) => HasPg m where
+    runPg :: [String] -> m (Either PgError ProcessOutput)
+```
+
+The `IO` instances bind each class to its vendor CLI: `runMinIO` to `aws` (the S3-compatible
+MinIO path), `runPg` to `kubectl` (Patroni/Percona access through `kubectl exec`), and
+`runRedis` to `redis-cli`.
+
+> **`HasRedis` is vestigial.** It has *zero* `src/` callers in the current worktree — no
+> supported code path drives Redis through this class. It is retained as the shape a future
+> Redis-backed surface would adopt, not as live doctrine. A reviewer touching `Service.hs`
+> should not treat `HasRedis`/`runRedis`/`RedisError` as load-bearing; Sprint 1.30 may delete
+> the dead exports outright if no caller has appeared.
+
+### Unified service error type and conversion typeclass
+
+Every subsystem error is a newtype over one `ServiceError`, and `AsServiceError` lets a single
+retry helper work across `MinIOError`, `RedisError`, `PgError`, or any future subsystem error.
+
+```haskell
 newtype MinIOError = MinIOError { unMinIOError :: ServiceError }
     deriving stock (Show, Eq)
 
@@ -372,96 +426,31 @@ newtype RedisError = RedisError { unRedisError :: ServiceError }
 
 newtype PgError = PgError { unPgError :: ServiceError }
     deriving stock (Show, Eq)
-```
 
-### Conversion typeclass
-
-```haskell
 class AsServiceError e where
     toServiceError :: e -> ServiceError
     fromServiceError :: ServiceError -> e
-
-instance AsServiceError MinIOError where
-    toServiceError = unMinIOError
-    fromServiceError = MinIOError
 ```
 
-### Capability classes
+### Target shape: `ServiceError` classified by constructor (Sprint 1.30)
+
+The retry helper must be able to ask "is this error retryable?" *structurally* — never by
+trusting a `Bool` that some call site set by hand. The current `Service.hs` shape is a known
+gap: it carries a `serviceErrorRetryable :: Bool` field and the single subprocess wrapper
+hardcodes it to `True`, so retryability is asserted at the constructor, not derived from the
+failure. Sprint 1.30 reshapes `ServiceError` into a *classified sum* whose retryability is a
+total function of its constructor, classified once at the single subprocess boundary:
 
 ```haskell
-class (Monad m) => HasMinIO m where
-    minioPutObject ::
-        BucketName -> ObjectKey -> ByteString -> m (Either MinIOError ())
-    minioGetObject ::
-        BucketName -> ObjectKey -> m (Either MinIOError (Maybe ByteString))
-    minioDeleteObject ::
-        BucketName -> ObjectKey -> m (Either MinIOError ())
-
-class (Monad m) => HasRedis m where
-    redisGet :: RedisKey -> m (Either RedisError (Maybe ByteString))
-    redisSet :: RedisKey -> ByteString -> TTLSeconds -> m (Either RedisError ())
-    redisDelete :: RedisKey -> m (Either RedisError ())
-```
-
-### Generic retry across service errors
-
-```haskell
-retryServiceAction ::
-    (AsServiceError e, MonadIO m) =>
-    RetryPolicy ->
-    m (Either e a) ->
-    m (Either e a)
-retryServiceAction policy action = go 1
-  where
-    go attempt
-        | attempt > retryMaxAttempts policy = action
-        | otherwise = do
-            result <- action
-            case result of
-                Right a -> pure (Right a)
-                Left e
-                    | serviceErrorRetryable (toServiceError e) -> do
-                        liftIO $ threadDelay (retryDelayMicros policy attempt)
-                        go (attempt + 1)
-                    | otherwise -> pure (Left e)
-```
-
-The `AsServiceError` constraint allows a single retry function to work with `MinIOError`,
-`RedisError`, `PgError`, or any future subsystem error type.
-
-**Forbidden patterns:**
-
-- Stringly-typed errors (`Left "connection failed"`).
-- Bare `SomeException` in return types.
-- Subsystem-specific retry logic duplicated across call sites.
-- Service errors that do not implement `AsServiceError`.
-
-## Retry Policy as First-Class Values
-
-Retry policies are explicit typed values, not hardcoded loops with magic numbers. The
-policy definition is separate from error classification.
-
-```haskell
-data RetryPolicy = RetryPolicy
-    { retryBaseDelayMicros :: Int
-    , retryMaxDelayMicros :: Int
-    , retryMaxAttempts :: Int
-    }
+-- Sprint 1.30 target shape.
+data ServiceError
+    = SEConnectionFailed Text
+    | SETimeout Text
+    | SENotFound Text
+    | SEPermissionDenied Text
+    | SEConflict Text
+    | SEInternalError Text
     deriving stock (Show, Eq)
-
-defaultRetryPolicy :: RetryPolicy
-defaultRetryPolicy = RetryPolicy
-    { retryBaseDelayMicros = 10_000
-    , retryMaxDelayMicros = 1_000_000
-    , retryMaxAttempts = 5
-    }
-
-retryDelayMicros :: RetryPolicy -> Int -> Int
-retryDelayMicros policy attemptNumber =
-    fromInteger $
-        min (toInteger (retryMaxDelayMicros policy))
-            (toInteger (retryBaseDelayMicros policy) *
-             ((2 :: Integer) ^ max 0 (attemptNumber - 1)))
 
 serviceErrorRetryable :: ServiceError -> Bool
 serviceErrorRetryable = \case
@@ -473,14 +462,109 @@ serviceErrorRetryable = \case
     SEPermissionDenied _ -> False
 ```
 
-Default policy delay sequence: `[10000, 20000, 40000, 80000, 160000]` (10 ms → 160 ms).
+Classification happens **once**, where the subprocess result is observed (exit code, stderr
+shape), and is the only place that decides which constructor a failure becomes. Downstream
+code reads the classification; it never re-decides retryability.
+
+### Generic retry across service errors
+
+```haskell
+retryServiceAction ::
+    (AsServiceError e) =>
+    RetryPolicy ->
+    IO (Either e a) ->
+    IO (Either e a)
+retryServiceAction policy action = go 0
+  where
+    go attemptIndex = do
+        result <- action
+        case result of
+            Left e
+                | serviceErrorRetryable (toServiceError e)
+                    && attemptIndex + 1 < retryPolicyMaxAttempts policy -> do
+                    threadDelay (retryDelayMicros policy attemptIndex)
+                    go (attemptIndex + 1)
+            _ -> pure result
+```
+
+The `AsServiceError` constraint allows this single helper to work with any subsystem error
+type. It retries **only** when the classified error says it is retryable; a non-retryable
+constructor short-circuits immediately.
+
+**Forbidden patterns:**
+
+- Stringly-typed errors (`Left "connection failed"`).
+- Bare `SomeException` in return types.
+- Hand-building a `ServiceError` with a literal `retryable` `Bool` at a call site — retryability
+  is a function of the classified constructor, decided once at the subprocess boundary, never
+  asserted by the caller.
+- Retrying a non-retryable error (not-found, permission-denied) by classifying it as retryable
+  to "get the loop to run".
+- Subsystem-specific retry logic duplicated across call sites.
+- Service errors that do not implement `AsServiceError`.
+
+## Retry Policy as First-Class Values
+
+Retry policies are explicit typed values, not hardcoded loops with magic numbers. The
+policy definition (in `src/Prodbox/Retry.hs`) is separate from error classification, and the
+multiplier is an explicit field rather than a literal `2` baked into the delay function:
+
+```haskell
+data RetryPolicy = RetryPolicy
+    { retryPolicyMaxAttempts :: Int
+    , retryPolicyBaseDelayMicros :: Int
+    , retryPolicyMultiplier :: Int
+    , retryPolicyMaxDelayMicros :: Int
+    }
+    deriving (Eq, Show)
+
+defaultRetryPolicy :: RetryPolicy
+defaultRetryPolicy = RetryPolicy
+    { retryPolicyMaxAttempts = 5
+    , retryPolicyBaseDelayMicros = 500000
+    , retryPolicyMultiplier = 2
+    , retryPolicyMaxDelayMicros = 30000000
+    }
+
+retryDelayMicros :: RetryPolicy -> Int -> Int
+retryDelayMicros policy attemptIndex =
+    min
+        (retryPolicyMaxDelayMicros policy)
+        ( retryPolicyBaseDelayMicros policy
+            * retryPolicyMultiplier policy ^ max 0 attemptIndex
+        )
+```
+
+`retryDelayMicros` is the shared pure backoff calculation. With the default policy it yields
+`[500000, 1000000, 2000000, 4000000, 8000000]` microseconds (0.5 s → 8 s, capped at 30 s).
+
+### Two distinct retry shapes — keep them separate
+
+There are two callers of `retryDelayMicros`, and they answer different questions. Sprint 1.30
+keeps these split rather than collapsing them into one loop:
+
+- **The retrier** (`retryAppError` in `Retry.hs`, `retryServiceAction` in `Service.hs`) re-runs
+  a *failing* action while its error is classified retryable: `retryAppError` retries on an
+  `AppError` whose `errorKind` is `Recoverable`; `retryServiceAction` retries on a `ServiceError`
+  whose constructor is retryable. Both stop as soon as the action succeeds or the error is
+  non-retryable, and are bounded by `retryPolicyMaxAttempts`.
+- **The readiness poller** waits for a *not-yet-true* external condition to become true (a Pod
+  reporting Ready, a DNS record propagating, a stack converging). It loops on a *successful*
+  observation that reports "not ready yet", which is the opposite control-flow shape from
+  retrying a *failed* action. It must not be expressed as `retryServiceAction`/`retryAppError`,
+  because a "still pending" reading is not an error and must not be classified as one.
+
+Both may share the `RetryPolicy` backoff schedule, but the poller is its own function. Folding
+"poll until ready" into the error retrier conflates a pending observation with a failure.
 
 **Forbidden patterns:**
 
 - Hardcoded retry counts or delays in call sites.
-- Retry logic without exponential backoff.
+- Retry logic without exponential backoff (the `retryPolicyMultiplier` field).
 - Retrying non-retryable errors (not found, permission denied).
 - Magic numbers for delay or attempt limits.
+- Driving a readiness poll through the error retrier, or modelling a "still pending" reading as
+  a retryable error.
 
 ## Application Environment
 

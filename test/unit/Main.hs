@@ -16,6 +16,7 @@ import Data.Aeson
 import Data.Aeson.Key qualified as Key
 import Data.Aeson.KeyMap qualified as KeyMap
 import Data.ByteString qualified as BS
+import Data.ByteString.Lazy qualified as BL
 import Data.ByteString.Lazy.Char8 qualified as BL8
 import Data.Either (isRight)
 import Data.IORef
@@ -34,6 +35,7 @@ import Data.List
 import Data.Map.Strict qualified as Map
 import Data.Set qualified as Set
 import Data.Text qualified as Text
+import Data.Text.Encoding qualified as TextEncoding
 import Data.Time.Calendar (fromGregorian)
 import Data.Time.Clock (UTCTime (..), secondsToDiffTime)
 import Data.Vector qualified as Vector
@@ -55,9 +57,8 @@ import Prodbox.Aws
   , ConfigSetupInput (..)
   , SessionTokenPromptShape (..)
   , buildIamPolicyDocument
-  , categorizePulumiResidue
   , harnessPostflightResiduePolicy
-  , longLivedStackNames
+  , longLivedResourceNames
   , operationalAwsConfigResidueFromKey
   , operationalIamUserResidueFromExists
   , operationalManagedResources
@@ -72,8 +73,9 @@ import Prodbox.Aws
   , sessionTokenPromptShape
   )
 import Prodbox.AwsEnvironment
-  ( isolatedAwsEnvironment
+  ( awsCliSubprocessEnvironment
   , overlayAwsCredentials
+  , sealedAwsEnvironment
   )
 import Prodbox.CLI.Charts
   ( renderChartDeletePlan
@@ -95,6 +97,7 @@ import Prodbox.CLI.Command
   , K8sCommand (..)
   , NativeCommand (..)
   , NukeOptions (..)
+  , Plan (..)
   , PlanOptions (..)
   , PolicyTier (..)
   , PulumiCommand (..)
@@ -103,10 +106,16 @@ import Prodbox.CLI.Command
   , Rke2DeleteFlags (..)
   , TestCommand (..)
   , TestScope (..)
+  , WorkloadCommand (..)
+  , WorkloadOptions (..)
   , buildPlan
   , runPlanWithOptions
   )
-import Prodbox.CLI.Docs (renderCommandHelp)
+import Prodbox.CLI.Docs
+  ( renderCommandHelp
+  , renderCommandSurfaceMatrix
+  , renderCommandSurfaceTopLevel
+  )
 import Prodbox.CLI.Interactive
   ( InteractiveGuard (..)
   , allowNonTtyInteractiveEnvVar
@@ -139,14 +148,19 @@ import Prodbox.CLI.Rke2
   , acmeClusterIssuerSpec
   , acmeRuntimeManifestWith
   , adminPublicEdgeManifestItems
+  , buildNativeDeletePlan
   , cascadeOrderNarration
+  , homeSubstratePlatformComponents
   , inferCascadeSubstrate
   , renderInotifySysctlDropIn
   , renderMinioChartArgs
+  , renderNativeDeletePlan
   , renderNativeInstallPlan
   )
 import Prodbox.CLI.Spec
-  ( awsTeardownPolicyFromFlags
+  ( ArgumentSpec (..)
+  , CommandSpec (..)
+  , awsTeardownPolicyFromFlags
   , commandRegistry
   , findCommandSpec
   , leafCommandPaths
@@ -154,12 +168,28 @@ import Prodbox.CLI.Spec
 import Prodbox.CLI.Tree (renderCommandTree)
 import Prodbox.CheckCode
   ( DoctrineViolation (..)
+  , awsCreateProbeVerbs
+  , awsCreateSiteViolations
+  , awsCreateVerbs
+  , destructivePlanOptionsArms
   , doctrineViolationsInPaths
+  , extractMarkdownLinkTargets
   , extractStringLiterals
+  , generatedSectionsReconcilerViolations
   , iamCreateSiteViolations
+  , isRelativeLinkTarget
   , listRepoOwnedPaths
   , matchesSprintToken
+  , parseGeneratedSectionsField
+  , planOptionsHonoredViolations
+  , prodboxMarkerKeysPresent
   , pulumiCreateSiteViolations
+  , rawMasterSeedReadScopeViolations
+  , relativeLinkResolves
+  , serviceErrorRetryableLiteralViolations
+  , stripFencedCodeBlocks
+  , stripInlineCodeSpans
+  , substrateImagePinningViolations
   )
 import Prodbox.CheckCode qualified
 import Prodbox.ContainerImage qualified as ContainerImage
@@ -170,11 +200,13 @@ import Prodbox.Effect
   )
 import Prodbox.EffectDAG
   ( EffectNode (..)
+  , fromRootIds
   , transitiveClosureIds
   )
 import Prodbox.EffectInterpreter
   ( InterpreterContext (..)
   , runEffect
+  , runEffectDAG
   )
 import Prodbox.Error
   ( ErrorKind (..)
@@ -254,6 +286,7 @@ import Prodbox.Infra.MinioBackend
   , localKubeconfigCandidates
   , parseDeletedMinioExportHostPath
   )
+import Prodbox.Infra.StackDescriptor qualified as StackDescriptor
 import Prodbox.Infra.StackOutputs qualified as StackOutputs
 import Prodbox.K8s
   ( parseKubectlObjectNames
@@ -271,12 +304,16 @@ import Prodbox.Lib.AwsSubstratePlatform qualified
 import Prodbox.Lib.ChartPlatform
   ( ChartDeploymentPlan (..)
   , ChartReleasePlan (..)
+  , PatroniAuthObservation (..)
+  , PatroniResetDecision (..)
   , PublicEdgePreserveOutcome (..)
   , buildChartDeletePlan
   , buildChartDeploymentPlan
   , buildChartDeploymentPlanForSubstrate
   , certManagerAdoptionAnnotations
   , classifyPublicEdgePreserve
+  , patroniSeedMismatchDecision
+  , renderPatroniResetDecision
   , renderPublicEdgePreserveOutcome
   , resolveChartSecrets
   , retainedPublicEdgeTlsSecretManifest
@@ -318,13 +355,20 @@ import Prodbox.PostgresPlatform
 import Prodbox.Prerequisite
   ( prerequisiteRegistry
   )
+import Prodbox.PrerequisiteId
+  ( PrerequisiteId (..)
+  , prerequisiteIdEngagesIamHarness
+  , prerequisiteIdText
+  )
 import Prodbox.PublicEdge
   ( publicEdgeClusterIssuerName
   , publicEdgeTlsRetentionKey
   )
 import Prodbox.Result qualified as Result
 import Prodbox.Retry
-  ( RetryPolicy (..)
+  ( PollOutcome (..)
+  , RetryPolicy (..)
+  , pollUntilReady
   , retryDelayMicros
   )
 import Prodbox.Secret.Derive qualified
@@ -335,7 +379,10 @@ import Prodbox.Secret.Wire qualified
 import Prodbox.Service
   ( RedisError (..)
   , ServiceError (..)
+  , classifyServiceError
   , retryServiceAction
+  , serviceErrorMessage
+  , serviceErrorRetryable
   )
 import Prodbox.Ses.SmtpPassword qualified
 import Prodbox.Settings
@@ -357,18 +404,6 @@ import Prodbox.Settings
   , validateAndLoadSettings
   , validatePublicEdgeDeployment
   )
-import Prodbox.StateMachine
-  ( ChartState (..)
-  , GatewayOwnershipState (..)
-  , PulumiState (..)
-  , chartApply
-  , chartPlan
-  , chartVerify
-  , completeClaim
-  , promotePulumi
-  , startClaim
-  , startPulumiUpdate
-  )
 import Prodbox.Subprocess
   ( renderSubprocess
   , pattern Subprocess
@@ -379,8 +414,11 @@ import Prodbox.TestPlan
   , NativeValidation (..)
   , TestExecutionMode (..)
   , TestExecutionPlan (..)
+  , derivedManagedAwsHarnessPolicyTier
   , nativeValidationId
   , testExecutionPlan
+  , validationDeferredPrerequisites
+  , validationInitialPrerequisites
   )
 import Prodbox.TestRunner
   ( PublicEdgeCertificateFailure (..)
@@ -396,6 +434,15 @@ import Prodbox.TestValidation
   , verifyAwsTestSshReachability
   )
 import Prodbox.UsersAdmin qualified
+import Prodbox.Workload
+  ( WorkloadBootConfig (..)
+  , WorkloadLiveConfig (..)
+  , WorkloadMode (..)
+  , runWorkloadCommand
+  , workloadBootConfigFromDhall
+  , workloadBootFieldsChanged
+  , workloadLiveConfigFromDhall
+  )
 import Prodbox.Workload.Settings qualified as WorkloadSettings
 import System.Directory
   ( Permissions (..)
@@ -404,6 +451,7 @@ import System.Directory
   , doesFileExist
   , getCurrentDirectory
   , getPermissions
+  , getTemporaryDirectory
   , setPermissions
   )
 import System.Environment
@@ -414,6 +462,12 @@ import System.Environment
 import System.Exit (ExitCode (..))
 import System.FilePath ((</>))
 import System.IO.Temp (withSystemTempDirectory)
+import Test.Tasty.QuickCheck
+  ( Property
+  , elements
+  , forAll
+  , (===)
+  )
 import TestSupport
 
 -- | Predicate helper for `Either String a` test assertions: passes
@@ -424,6 +478,38 @@ leftContains :: String -> Either String a -> Bool
 leftContains needle result = case result of
   Left msg -> needle `isInfixOf` msg
   Right _ -> False
+
+-- | Sprint 2.25: @decodeDeriveContext . encodeDeriveContext == Just@ over a
+-- generator covering every 'Prodbox.Secret.Derive.DeriveContext' constructor.
+-- Proves the derive-context wire shape is stable and de-risks the GET
+-- @/v1/secret/derive@ context handling (audit C82).
+deriveContextRoundTrips :: Property
+deriveContextRoundTrips =
+  forAll (elements canonicalDeriveContexts) $ \ctx ->
+    Prodbox.Secret.Derive.decodeDeriveContext
+      (Prodbox.Secret.Derive.encodeDeriveContext ctx)
+      === Just ctx
+ where
+  canonicalDeriveContexts =
+    [ Prodbox.Secret.Derive.PatroniRoleContext namespace release role
+    | namespace <- ["keycloak", "prodbox"]
+    , release <- ["keycloak-postgres", "rel"]
+    , role <-
+        [ Prodbox.Secret.Derive.PatroniRoleApp
+        , Prodbox.Secret.Derive.PatroniRoleSuperuser
+        , Prodbox.Secret.Derive.PatroniRoleStandby
+        ]
+    ]
+      ++ [Prodbox.Secret.Derive.KeycloakAdminContext namespace | namespace <- ["keycloak", "ns"]]
+      ++ [Prodbox.Secret.Derive.KeycloakDemoUserContext namespace | namespace <- ["keycloak", "ns"]]
+      ++ [ Prodbox.Secret.Derive.OidcClientSecretContext namespace clientId
+         | namespace <- ["keycloak", "ns"]
+         , clientId <- ["vscode", "prodbox-api", "prodbox-websocket"]
+         ]
+      ++ [ Prodbox.Secret.Derive.GatewayEventKeyContext namespace nodeId
+         | namespace <- ["gateway", "ns"]
+         , nodeId <- ["node-a", "node-b", "node-c"]
+         ]
 
 main :: IO ()
 main = mainWithSuite "prodbox-unit" $ do
@@ -467,9 +553,6 @@ main = mainWithSuite "prodbox-unit" $ do
                       ( GatewayDaemonCommand
                           DaemonLaunchOptions
                             { daemonConfigPath = Just "/tmp/gateway.json"
-                            , daemonLogLevel = Nothing
-                            , daemonPort = Nothing
-                            , daemonForeground = True
                             , daemonPlanOptions = PlanOptions False Nothing
                             }
                       )
@@ -728,6 +811,70 @@ main = mainWithSuite "prodbox-unit" $ do
       "test/golden/cli/help-all.txt"
       (pure (BL8.pack renderAllLeafHelpPages))
 
+  describe "command-surface matrix renderer" $ do
+    it "emits the §2 top-level table with a known command row" $ do
+      let topLevel = renderCommandSurfaceTopLevel commandRegistry
+      topLevel `shouldSatisfy` ("| Command | Kind | Purpose |" `isInfixOf`)
+      topLevel `shouldSatisfy` ("| `charts` | Group |" `isInfixOf`)
+      topLevel `shouldSatisfy` ("| `nuke` | Command |" `isInfixOf`)
+
+    it "emits a per-group matrix row for a known leaf command" $ do
+      renderCommandSurfaceMatrix commandRegistry
+        `shouldSatisfy` ("| `prodbox config validate` | none | none |" `isInfixOf`)
+
+    it "renders a positional-argument metavar in the Arguments column" $ do
+      let matrix = renderCommandSurfaceMatrix commandRegistry
+      matrix `shouldSatisfy` ("| `prodbox charts status` | `CHART` | none |" `isInfixOf`)
+      matrix `shouldSatisfy` ("| `prodbox gateway config-gen` | `OUTPUT_PATH` |" `isInfixOf`)
+
+    it "renders a repeatable positional argument with a trailing ellipsis" $ do
+      renderCommandSurfaceMatrix commandRegistry
+        `shouldSatisfy` ("| `prodbox help` | `COMMAND_PATH...` | none |" `isInfixOf`)
+
+    it "includes every registered leaf command in the generated matrix" $ do
+      let matrix = renderCommandSurfaceMatrix commandRegistry
+          renderedCommand path = "`prodbox " ++ unwords path ++ "`"
+      forM_ leafCommandPaths $ \path ->
+        matrix `shouldSatisfy` (renderedCommand path `isInfixOf`)
+
+    it "surfaces the registry commands the hand-doc previously omitted" $ do
+      let matrix = renderCommandSurfaceMatrix commandRegistry
+      forM_
+        [ "prodbox users invite"
+        , "prodbox users list"
+        , "prodbox users revoke"
+        , "prodbox host firewall gateway-unrestrict"
+        , "prodbox pulumi aws-ses-migrate-backend"
+        , "prodbox test integration keycloak-invite"
+        ]
+        ( \commandText ->
+            matrix `shouldSatisfy` (("`" ++ commandText ++ "`") `isInfixOf`)
+        )
+
+    it "renders deterministically" $ do
+      renderCommandSurfaceTopLevel commandRegistry
+        `shouldBe` renderCommandSurfaceTopLevel commandRegistry
+      renderCommandSurfaceMatrix commandRegistry
+        `shouldBe` renderCommandSurfaceMatrix commandRegistry
+
+  describe "positional-argument CommandSpec field" $ do
+    it "records the typed positional argument on a leaf that takes one" $ do
+      case findCommandSpec ["charts", "status"] of
+        Just spec ->
+          map argumentMetavar (arguments spec) `shouldBe` ["CHART"]
+        Nothing -> expectationFailure "expected charts status command spec"
+
+    it "marks the help command's positional argument repeatable" $ do
+      case findCommandSpec ["help"] of
+        Just spec ->
+          map argumentRepeatable (arguments spec) `shouldBe` [True]
+        Nothing -> expectationFailure "expected help command spec"
+
+    it "leaves option-only leaves with an empty positional-argument list" $ do
+      case findCommandSpec ["config", "validate"] of
+        Just spec -> arguments spec `shouldBe` []
+        Nothing -> expectationFailure "expected config validate command spec"
+
   describe "plan renderers" $ do
     goldenTest
       "renders the chart deployment plan deterministically"
@@ -781,7 +928,7 @@ main = mainWithSuite "prodbox-unit" $ do
         case decodeResult of
           Left err -> fail err
           Right config ->
-            pure (BL8.pack (renderGatewayStartPlan "/tmp/prodbox/gateway.dhall" "warn" (Just 4200) True config))
+            pure (BL8.pack (renderGatewayStartPlan "/tmp/prodbox/gateway.dhall" config))
 
     goldenTest
       "renders the rke2 reconcile plan deterministically"
@@ -1053,8 +1200,18 @@ main = mainWithSuite "prodbox-unit" $ do
           case testPlanExecutionMode testPlan of
             NativeSuite suitePlan -> do
               nativeSuiteId suitePlan `shouldBe` "all"
-              nativeInitialIntegrationGatePrerequisites suitePlan
-                `shouldBe` [ "supported_ubuntu_2404"
+              -- Sprint 5.6: minimal-and-precise per-validation sets aggregate
+              -- here in first-occurrence order. The charts-* validations now
+              -- contribute the AWS-credential-free public_edge_ready gate
+              -- (not the old cluster + aws_credentials + pulumi bundle).
+              map prerequisiteIdText (nativeInitialIntegrationGatePrerequisites suitePlan)
+                `shouldBe` [ "public_edge_ready"
+                           , "tool_curl"
+                           , "route53_lifecycle_capable"
+                           , "tool_dig"
+                           , "aws_iam_harness_ready"
+                           , "tool_aws"
+                           , "supported_ubuntu_2404"
                            , "tool_docker"
                            , "tool_ctr"
                            , "tool_helm"
@@ -1064,15 +1221,10 @@ main = mainWithSuite "prodbox-unit" $ do
                            , "settings_object"
                            , "aws_credentials_valid"
                            , "tool_pulumi"
-                           , "tool_curl"
-                           , "route53_lifecycle_capable"
-                           , "tool_dig"
-                           , "aws_iam_harness_ready"
-                           , "tool_aws"
                            , "tool_ssh"
                            , "route53_accessible"
                            ]
-              nativeDeferredIntegrationGatePrerequisites suitePlan
+              map prerequisiteIdText (nativeDeferredIntegrationGatePrerequisites suitePlan)
                 `shouldBe` [ "pulumi_logged_in"
                            , "ses_sending_identity_verified"
                            , "ses_receive_rule_set_active"
@@ -1109,8 +1261,14 @@ main = mainWithSuite "prodbox-unit" $ do
           case testPlanExecutionMode testPlan of
             NativeSuite suitePlan -> do
               nativeSuiteId suitePlan `shouldBe` "integration-all"
-              nativeInitialIntegrationGatePrerequisites suitePlan
-                `shouldBe` [ "supported_ubuntu_2404"
+              map prerequisiteIdText (nativeInitialIntegrationGatePrerequisites suitePlan)
+                `shouldBe` [ "public_edge_ready"
+                           , "tool_curl"
+                           , "route53_lifecycle_capable"
+                           , "tool_dig"
+                           , "aws_iam_harness_ready"
+                           , "tool_aws"
+                           , "supported_ubuntu_2404"
                            , "tool_docker"
                            , "tool_ctr"
                            , "tool_helm"
@@ -1120,15 +1278,10 @@ main = mainWithSuite "prodbox-unit" $ do
                            , "settings_object"
                            , "aws_credentials_valid"
                            , "tool_pulumi"
-                           , "tool_curl"
-                           , "route53_lifecycle_capable"
-                           , "tool_dig"
-                           , "aws_iam_harness_ready"
-                           , "tool_aws"
                            , "tool_ssh"
                            , "route53_accessible"
                            ]
-              nativeDeferredIntegrationGatePrerequisites suitePlan
+              map prerequisiteIdText (nativeDeferredIntegrationGatePrerequisites suitePlan)
                 `shouldBe` [ "pulumi_logged_in"
                            , "ses_sending_identity_verified"
                            , "ses_receive_rule_set_active"
@@ -1248,7 +1401,7 @@ main = mainWithSuite "prodbox-unit" $ do
             NativeSuite suitePlan -> do
               nativeSuiteId suitePlan `shouldBe` "integration-aws-eks"
               nativeValidations suitePlan `shouldBe` [ValidationAwsEks]
-              nativeInitialIntegrationGatePrerequisites suitePlan
+              map prerequisiteIdText (nativeInitialIntegrationGatePrerequisites suitePlan)
                 `shouldBe` [ "supported_ubuntu_2404"
                            , "tool_docker"
                            , "tool_ctr"
@@ -1260,7 +1413,7 @@ main = mainWithSuite "prodbox-unit" $ do
                            , "aws_credentials_valid"
                            , "tool_pulumi"
                            ]
-              nativeDeferredIntegrationGatePrerequisites suitePlan
+              map prerequisiteIdText (nativeDeferredIntegrationGatePrerequisites suitePlan)
                 `shouldBe` ["pulumi_logged_in"]
               nativeRequiresIntegrationRunbook suitePlan `shouldBe` True
             DelegatedSuite _ -> expectationFailure "expected native aws-eks plan"
@@ -1270,7 +1423,7 @@ main = mainWithSuite "prodbox-unit" $ do
         testPlan ->
           case testPlanExecutionMode testPlan of
             NativeSuite suitePlan -> do
-              nativeInitialIntegrationGatePrerequisites suitePlan
+              map prerequisiteIdText (nativeInitialIntegrationGatePrerequisites suitePlan)
                 `shouldBe` ["route53_lifecycle_capable", "tool_dig"]
               nativeDeferredIntegrationGatePrerequisites suitePlan `shouldBe` []
             DelegatedSuite _ -> expectationFailure "expected native public-dns plan"
@@ -1279,7 +1432,7 @@ main = mainWithSuite "prodbox-unit" $ do
         testPlan ->
           case testPlanExecutionMode testPlan of
             NativeSuite suitePlan -> do
-              nativeInitialIntegrationGatePrerequisites suitePlan
+              map prerequisiteIdText (nativeInitialIntegrationGatePrerequisites suitePlan)
                 `shouldBe` ["route53_lifecycle_capable"]
               nativeDeferredIntegrationGatePrerequisites suitePlan `shouldBe` []
             DelegatedSuite _ -> expectationFailure "expected native dns-aws plan"
@@ -1288,7 +1441,7 @@ main = mainWithSuite "prodbox-unit" $ do
         testPlan ->
           case testPlanExecutionMode testPlan of
             NativeSuite suitePlan -> do
-              nativeInitialIntegrationGatePrerequisites suitePlan
+              map prerequisiteIdText (nativeInitialIntegrationGatePrerequisites suitePlan)
                 `shouldBe` ["aws_iam_harness_ready", "tool_aws"]
               nativeDeferredIntegrationGatePrerequisites suitePlan `shouldBe` []
               nativeManagedAwsHarnessPolicyTier suitePlan `shouldBe` Just PolicyFull
@@ -1299,7 +1452,7 @@ main = mainWithSuite "prodbox-unit" $ do
         testPlan ->
           case testPlanExecutionMode testPlan of
             NativeSuite suitePlan -> do
-              nativeInitialIntegrationGatePrerequisites suitePlan
+              map prerequisiteIdText (nativeInitialIntegrationGatePrerequisites suitePlan)
                 `shouldBe` [ "supported_ubuntu_2404"
                            , "tool_docker"
                            , "tool_ctr"
@@ -1312,6 +1465,90 @@ main = mainWithSuite "prodbox-unit" $ do
                            ]
               nativeDeferredIntegrationGatePrerequisites suitePlan `shouldBe` []
             DelegatedSuite _ -> expectationFailure "expected native gateway-daemon plan"
+
+    -- Sprint 5.6: the capability-derived IAM-harness tier. The deleted
+    -- normalizeManagedAwsHarness substrate=aws blanket override used to
+    -- force PolicyFull for ANY non-empty validation set on AWS, including
+    -- credential-free ones. The tier now follows declared capabilities.
+    it "does NOT acquire the IAM harness for a credential-free validation on the AWS substrate" $ do
+      -- gateway-partition is fully in-process and declares NO prerequisites,
+      -- so it engages no AWS credentials. On the AWS substrate it must still
+      -- get tier Nothing (no harness), pinning the deleted blanket override.
+      validationInitialPrerequisites ValidationGatewayPartition `shouldBe` []
+      validationDeferredPrerequisites ValidationGatewayPartition `shouldBe` []
+      case testExecutionPlan SubstrateAws (TestIntegration IntegrationGatewayPartition) of
+        testPlan ->
+          case testPlanExecutionMode testPlan of
+            NativeSuite suitePlan -> do
+              nativeSuiteId suitePlan `shouldBe` "integration-gateway-partition"
+              nativeManagedAwsHarnessPolicyTier suitePlan `shouldBe` Nothing
+            DelegatedSuite _ -> expectationFailure "expected native gateway-partition plan"
+      -- And on the home substrate it is likewise harness-free.
+      case testExecutionPlan SubstrateHomeLocal (TestIntegration IntegrationGatewayPartition) of
+        testPlan ->
+          case testPlanExecutionMode testPlan of
+            NativeSuite suitePlan ->
+              nativeManagedAwsHarnessPolicyTier suitePlan `shouldBe` Nothing
+            DelegatedSuite _ -> expectationFailure "expected native gateway-partition plan"
+      -- Direct derivation: a credential-free validation never engages the
+      -- harness regardless of substrate.
+      derivedManagedAwsHarnessPolicyTier SubstrateAws [ValidationGatewayPartition]
+        `shouldBe` Nothing
+      derivedManagedAwsHarnessPolicyTier SubstrateHomeLocal [ValidationGatewayPartition]
+        `shouldBe` Nothing
+
+    it "derives the IAM-harness tier from declared capabilities, not a substrate blanket" $ do
+      -- A credential-consuming validation (aws-eks needs aws_credentials_valid)
+      -- engages the harness ON the AWS substrate (where aws.* is materialized
+      -- by the harness) but not on the home substrate (where aws.* is
+      -- configured directly).
+      derivedManagedAwsHarnessPolicyTier SubstrateAws [ValidationAwsEks]
+        `shouldBe` Just PolicyFull
+      derivedManagedAwsHarnessPolicyTier SubstrateHomeLocal [ValidationAwsEks]
+        `shouldBe` Nothing
+      -- aws-iam and keycloak-invite materialize operational credentials
+      -- through the harness on EVERY substrate.
+      derivedManagedAwsHarnessPolicyTier SubstrateHomeLocal [ValidationAwsIam]
+        `shouldBe` Just PolicyFull
+      derivedManagedAwsHarnessPolicyTier SubstrateHomeLocal [ValidationKeycloakInvite]
+        `shouldBe` Just PolicyFull
+      -- The deleted blanket override no longer lives in TestPlan: neither
+      -- its definition/dispatch nor its substrate=aws blanket match arm.
+      -- (The name still appears in a doc comment narrating the deletion,
+      -- so target the code constructs, not the bare name.)
+      repoRoot <- getCurrentDirectory
+      testPlanSource <- readFile (repoRoot </> "src" </> "Prodbox" </> "TestPlan.hs")
+      testPlanSource `shouldNotContain` "normalizeManagedAwsHarness ::"
+      testPlanSource `shouldNotContain` "normalizeManagedAwsHarness suitePlan"
+      testPlanSource `shouldNotContain` "(Nothing, SubstrateAws, _ : _)"
+
+    it "declares exactly the typed prerequisites each validation consumes (minimal-and-precise)" $ do
+      -- The public-edge-readiness validations gate on the AWS-credential-free
+      -- public_edge_ready node + curl; no cluster/creds/pulumi bundle.
+      validationInitialPrerequisites ValidationChartsApi
+        `shouldBe` [PublicEdgeReady, ToolCurl]
+      validationInitialPrerequisites ValidationChartsWebsocket
+        `shouldBe` [PublicEdgeReady, ToolCurl]
+      validationDeferredPrerequisites ValidationChartsApi `shouldBe` []
+      -- No charts-* validation declares an IAM-harness-engaging prerequisite.
+      let chartsValidations =
+            [ ValidationChartsVscode
+            , ValidationChartsApi
+            , ValidationChartsWebsocket
+            , ValidationAdminRoutes
+            ]
+      all
+        ( \validation ->
+            not
+              ( any
+                  prerequisiteIdEngagesIamHarness
+                  ( validationInitialPrerequisites validation
+                      ++ validationDeferredPrerequisites validation
+                  )
+              )
+        )
+        chartsValidations
+        `shouldBe` True
 
     it "keeps gateway-partition on a native validation path distinct from tla-check" $ do
       repoRoot <- getCurrentDirectory
@@ -1344,21 +1581,14 @@ main = mainWithSuite "prodbox-unit" $ do
             NativeSuite suitePlan -> do
               nativeSuiteId suitePlan `shouldBe` "integration-charts-vscode"
               nativeValidations suitePlan `shouldBe` [ValidationChartsVscode]
-              nativeInitialIntegrationGatePrerequisites suitePlan
-                `shouldBe` [ "supported_ubuntu_2404"
-                           , "tool_docker"
-                           , "tool_ctr"
-                           , "tool_helm"
-                           , "tool_kubectl"
-                           , "tool_sudo"
-                           , "tool_systemctl"
-                           , "settings_object"
-                           , "aws_credentials_valid"
-                           , "tool_pulumi"
-                           , "tool_curl"
-                           ]
-              nativeDeferredIntegrationGatePrerequisites suitePlan
-                `shouldBe` ["pulumi_logged_in"]
+              -- Sprint 5.6: charts-vscode gates on the AWS-credential-free
+              -- public_edge_ready node (+ curl for the HTTPS probe), not the
+              -- old cluster + aws_credentials + pulumi bundle. No AWS
+              -- credentials, no pulumi login.
+              map prerequisiteIdText (nativeInitialIntegrationGatePrerequisites suitePlan)
+                `shouldBe` ["public_edge_ready", "tool_curl"]
+              nativeDeferredIntegrationGatePrerequisites suitePlan `shouldBe` []
+              nativeManagedAwsHarnessPolicyTier suitePlan `shouldBe` Nothing
               nativeRequiresIntegrationRunbook suitePlan `shouldBe` True
               nativeRequiresSupportedRuntimeBootstrap suitePlan `shouldBe` True
             DelegatedSuite _ -> expectationFailure "expected native charts-vscode plan"
@@ -1370,21 +1600,12 @@ main = mainWithSuite "prodbox-unit" $ do
             NativeSuite suitePlan -> do
               nativeSuiteId suitePlan `shouldBe` "integration-admin-routes"
               nativeValidations suitePlan `shouldBe` [ValidationAdminRoutes]
-              nativeInitialIntegrationGatePrerequisites suitePlan
-                `shouldBe` [ "supported_ubuntu_2404"
-                           , "tool_docker"
-                           , "tool_ctr"
-                           , "tool_helm"
-                           , "tool_kubectl"
-                           , "tool_sudo"
-                           , "tool_systemctl"
-                           , "settings_object"
-                           , "aws_credentials_valid"
-                           , "tool_pulumi"
-                           , "tool_curl"
-                           ]
-              nativeDeferredIntegrationGatePrerequisites suitePlan
-                `shouldBe` ["pulumi_logged_in"]
+              -- Sprint 5.6: admin-routes is re-pointed to the
+              -- AWS-credential-free public_edge_ready gate as well.
+              map prerequisiteIdText (nativeInitialIntegrationGatePrerequisites suitePlan)
+                `shouldBe` ["public_edge_ready", "tool_curl"]
+              nativeDeferredIntegrationGatePrerequisites suitePlan `shouldBe` []
+              nativeManagedAwsHarnessPolicyTier suitePlan `shouldBe` Nothing
               nativeRequiresIntegrationRunbook suitePlan `shouldBe` True
               nativeRequiresSupportedRuntimeBootstrap suitePlan `shouldBe` True
             DelegatedSuite _ -> expectationFailure "expected native admin-routes plan"
@@ -1505,20 +1726,32 @@ main = mainWithSuite "prodbox-unit" $ do
       minioSource `shouldContain` "parseDeletedMinioExportHostPath"
       minioSource `shouldContain` "\"rollout\", \"restart\", \"deployment/\" ++ minioDeploymentName"
 
-    it "uses the active chart cluster MinIO port-forward for host-side master-seed bootstrap" $ do
+    it "Sprint 3.16: host-side chart-secret paths route through the gateway RPC, not the raw seed" $ do
+      -- Sprint 3.13 had the host read the raw master seed from MinIO via
+      -- `withCurrentMinioPortForward` and derive Secret values itself.
+      -- Sprint 3.16 closed that boundary: the host requests *derived* values
+      -- through `Prodbox.Gateway.Client` over the loopback NodePort and never
+      -- reads the raw seed. These assertions pin the new structure and that
+      -- the removed host-side seed read does not reappear.
       repoRoot <- getCurrentDirectory
       hostBootstrapSource <-
         readFile (repoRoot </> "src" </> "Prodbox" </> "Secret" </> "HostBootstrap.hs")
       rke2Source <- readFile (repoRoot </> "src" </> "Prodbox" </> "CLI" </> "Rke2.hs")
-      minioSource <- readFile (repoRoot </> "src" </> "Prodbox" </> "Infra" </> "MinioBackend.hs")
 
-      minioSource `shouldContain` "withCurrentMinioPortForward"
-      minioSource `shouldContain` "subprocessEnvironment = environment"
+      -- HostBootstrap triggers in-cluster materialization via the gateway RPC.
+      hostBootstrapSource `shouldContain` "import Prodbox.Gateway.Client"
+      hostBootstrapSource `shouldContain` "GatewayClient.ensureNamespace"
+      -- Rke2's public-edge client secret comes from the gateway derive RPC.
+      rke2Source `shouldContain` "import Prodbox.Gateway.Client"
+      rke2Source `shouldContain` "GatewayClient.derive"
+
+      -- The retired host-side raw-seed read must NOT reappear in either path.
       hostBootstrapSource
-        `shouldContain` "import Prodbox.Infra.MinioBackend (withCurrentMinioPortForward)"
-      hostBootstrapSource `shouldContain` "portForwardResult <- withCurrentMinioPortForward"
-      rke2Source `shouldContain` "import Prodbox.Infra.MinioBackend (withCurrentMinioPortForward)"
-      rke2Source `shouldContain` "portForwardResult <- withCurrentMinioPortForward"
+        `shouldNotContain` "import Prodbox.Infra.MinioBackend (withCurrentMinioPortForward)"
+      hostBootstrapSource `shouldNotContain` "withCurrentMinioPortForward"
+      hostBootstrapSource `shouldNotContain` "ensureMasterSeed"
+      rke2Source `shouldNotContain` "portForwardResult <- withCurrentMinioPortForward"
+      rke2Source `shouldNotContain` "ensureMasterSeed"
 
     it "matches OIDC redirect headers without depending on percent-encoding case" $ do
       repoRoot <- getCurrentDirectory
@@ -1685,12 +1918,12 @@ main = mainWithSuite "prodbox-unit" $ do
             DelegatedSuite _ -> expectationFailure "expected native integration-env plan"
 
     it "expands prerequisite closures transitively and deterministically" $ do
-      transitiveClosureIds ["tool_systemctl", "supported_ubuntu_2404"] prerequisiteRegistry
+      transitiveClosureTexts ["tool_systemctl", "supported_ubuntu_2404"]
         `shouldBe` Right ["platform_linux", "supported_ubuntu_2404", "systemd_available", "tool_systemctl"]
 
   describe "prerequisite registry" $ do
     it "covers the full shared prerequisite inventory" $ do
-      sort (Map.keys prerequisiteRegistry)
+      sort (map prerequisiteIdText (Map.keys prerequisiteRegistry))
         `shouldBe` sort
           [ "platform_linux"
           , "systemd_available"
@@ -1708,7 +1941,6 @@ main = mainWithSuite "prodbox-unit" $ do
           , "tool_ssh"
           , "tool_rke2"
           , "tool_systemctl"
-          , "settings_loaded"
           , "settings_object"
           , "aws_iam_harness_ready"
           , "kubeconfig_exists"
@@ -1724,6 +1956,7 @@ main = mainWithSuite "prodbox-unit" $ do
           , "pulumi_logged_in"
           , "k8s_ready"
           , "infra_ready"
+          , "public_edge_ready"
           , "gateway_daemon_acquire"
           , "ses_sending_identity_verified"
           , "ses_receive_rule_set_active"
@@ -1744,35 +1977,50 @@ main = mainWithSuite "prodbox-unit" $ do
         (\node -> all (`Map.member` prerequisiteRegistry) (effectNodePrerequisites node) `shouldBe` True)
         (Map.elems prerequisiteRegistry)
 
-    it "has no direct self-reference or dependency cycles" $ do
+    -- Regression guard (demoted from the authoritative acyclicity gate): acyclicity is now
+    -- enforced at construction time in `transitiveClosureIds`/`fromRootIds` (see the
+    -- "construction-time acyclicity" group below). This static `hasCycle` scan over the shipped
+    -- registry remains as defense-in-depth per prerequisite_dag_system.md §3.
+    it "regression guard: the shipped registry has no direct self-reference or dependency cycles" $ do
       all
         (\(key, node) -> key `notElem` effectNodePrerequisites node)
         (Map.toList prerequisiteRegistry)
         `shouldBe` True
       all (not . hasCycle Set.empty) (Map.keys prerequisiteRegistry) `shouldBe` True
+      -- The shipped registry must also construct cleanly from every node as a root, since
+      -- construction is the authoritative acyclicity gate.
+      all
+        (\nodeId -> isRightResult (fromRootIds [nodeId] prerequisiteRegistry))
+        (Map.keys prerequisiteRegistry)
+        `shouldBe` True
 
     it "keeps the expected dependency chains for infrastructure prerequisites" $ do
-      effectNodePrerequisites (lookupPrerequisiteNode "aws_credentials_valid")
-        `shouldBe` ["settings_loaded", "tool_aws"]
-      effectNodePrerequisites (lookupPrerequisiteNode "aws_iam_harness_ready")
+      lookupPrereqTexts "aws_credentials_valid"
+        `shouldBe` ["settings_object", "tool_aws"]
+      lookupPrereqTexts "aws_iam_harness_ready"
         `shouldBe` []
-      effectNodePrerequisites (lookupPrerequisiteNode "route53_accessible")
+      lookupPrereqTexts "route53_accessible"
         `shouldBe` ["aws_credentials_valid"]
-      effectNodePrerequisites (lookupPrerequisiteNode "route53_lifecycle_capable")
+      lookupPrereqTexts "route53_lifecycle_capable"
         `shouldBe` ["route53_accessible"]
-      effectNodePrerequisites (lookupPrerequisiteNode "rke2_service_exists")
+      lookupPrereqTexts "rke2_service_exists"
         `shouldBe` ["rke2_installed", "systemd_available", "supported_ubuntu_2404"]
-      effectNodePrerequisites (lookupPrerequisiteNode "rke2_service_active")
+      lookupPrereqTexts "rke2_service_active"
         `shouldBe` ["rke2_service_exists"]
-      effectNodePrerequisites (lookupPrerequisiteNode "k8s_cluster_reachable")
+      lookupPrereqTexts "k8s_cluster_reachable"
         `shouldBe` ["tool_kubectl", "kubeconfig_exists", "rke2_service_active"]
-      effectNodePrerequisites (lookupPrerequisiteNode "pulumi_logged_in")
+      lookupPrereqTexts "pulumi_logged_in"
         `shouldBe` ["tool_pulumi", "k8s_cluster_reachable"]
-      effectNodePrerequisites (lookupPrerequisiteNode "k8s_ready")
+      lookupPrereqTexts "k8s_ready"
         `shouldBe` ["k8s_cluster_reachable", "rke2_service_active"]
-      effectNodePrerequisites (lookupPrerequisiteNode "infra_ready")
+      -- Sprint 5.6: infra_ready keeps the cluster + AWS-credential bundle...
+      lookupPrereqTexts "infra_ready"
         `shouldBe` ["k8s_ready", "aws_credentials_valid"]
-      effectNodePrerequisites (lookupPrerequisiteNode "gateway_daemon_acquire")
+      -- ...while the new public_edge_ready node depends ONLY on cluster +
+      -- chart-platform readiness, NOT on AWS credentials.
+      lookupPrereqTexts "public_edge_ready"
+        `shouldBe` ["k8s_ready"]
+      lookupPrereqTexts "gateway_daemon_acquire"
         `shouldBe` ["platform_linux"]
 
     it "uses the expected validation and no-op effect shapes" $ do
@@ -1787,7 +2035,6 @@ main = mainWithSuite "prodbox-unit" $ do
       lookupPrerequisiteEffect "tool_ctr" `shouldBe` Validate (RequireTool "ctr" ["--help"])
       lookupPrerequisiteEffect "tool_rke2"
         `shouldBe` Validate (RequireTool "/usr/local/bin/rke2" ["--version"])
-      lookupPrerequisiteEffect "settings_loaded" `shouldBe` Validate RequireSettings
       lookupPrerequisiteEffect "settings_object" `shouldBe` Validate RequireSettings
       lookupPrerequisiteEffect "aws_iam_harness_ready" `shouldBe` Validate RequireAwsIamHarnessReady
       lookupPrerequisiteEffect "kubeconfig_exists"
@@ -1809,10 +2056,11 @@ main = mainWithSuite "prodbox-unit" $ do
       lookupPrerequisiteEffect "pulumi_logged_in" `shouldBe` Validate RequirePulumiLogin
       lookupPrerequisiteEffect "k8s_ready" `shouldBe` Noop
       lookupPrerequisiteEffect "infra_ready" `shouldBe` Noop
+      lookupPrerequisiteEffect "public_edge_ready" `shouldBe` Noop
       lookupPrerequisiteEffect "gateway_daemon_acquire" `shouldBe` Noop
 
     it "expands shared prerequisite chains transitively" $ do
-      transitiveClosureIds ["rke2_service_active"] prerequisiteRegistry
+      transitiveClosureTexts ["rke2_service_active"]
         `shouldBe` Right
           [ "platform_linux"
           , "rke2_installed"
@@ -1821,22 +2069,22 @@ main = mainWithSuite "prodbox-unit" $ do
           , "supported_ubuntu_2404"
           , "systemd_available"
           ]
-      transitiveClosureIds ["route53_accessible"] prerequisiteRegistry
+      transitiveClosureTexts ["route53_accessible"]
         `shouldBe` Right
           [ "aws_credentials_valid"
           , "route53_accessible"
-          , "settings_loaded"
+          , "settings_object"
           , "tool_aws"
           ]
-      transitiveClosureIds ["route53_lifecycle_capable"] prerequisiteRegistry
+      transitiveClosureTexts ["route53_lifecycle_capable"]
         `shouldBe` Right
           [ "aws_credentials_valid"
           , "route53_accessible"
           , "route53_lifecycle_capable"
-          , "settings_loaded"
+          , "settings_object"
           , "tool_aws"
           ]
-      transitiveClosureIds ["pulumi_logged_in"] prerequisiteRegistry
+      transitiveClosureTexts ["pulumi_logged_in"]
         `shouldBe` Right
           [ "k8s_cluster_reachable"
           , "kubeconfig_exists"
@@ -1850,7 +2098,7 @@ main = mainWithSuite "prodbox-unit" $ do
           , "tool_kubectl"
           , "tool_pulumi"
           ]
-      transitiveClosureIds ["infra_ready"] prerequisiteRegistry
+      transitiveClosureTexts ["infra_ready"]
         `shouldBe` Right
           [ "aws_credentials_valid"
           , "infra_ready"
@@ -1861,16 +2109,145 @@ main = mainWithSuite "prodbox-unit" $ do
           , "rke2_installed"
           , "rke2_service_active"
           , "rke2_service_exists"
-          , "settings_loaded"
+          , "settings_object"
           , "supported_ubuntu_2404"
           , "systemd_available"
           , "tool_aws"
           , "tool_kubectl"
           ]
+      -- Sprint 5.6: the public_edge_ready closure resolves cluster
+      -- readiness WITHOUT pulling in any AWS-credential node.
+      transitiveClosureTexts ["public_edge_ready"]
+        `shouldBe` Right
+          [ "k8s_cluster_reachable"
+          , "k8s_ready"
+          , "kubeconfig_exists"
+          , "platform_linux"
+          , "public_edge_ready"
+          , "rke2_installed"
+          , "rke2_service_active"
+          , "rke2_service_exists"
+          , "supported_ubuntu_2404"
+          , "systemd_available"
+          , "tool_kubectl"
+          ]
 
-    it "fails fast when a prerequisite id is missing from the registry" $ do
-      transitiveClosureIds ["definitely_missing_node"] prerequisiteRegistry
-        `shouldBe` Left "Missing effect node in registry: definitely_missing_node"
+  describe "construction-time acyclicity (Sprint 1.31)" $ do
+    -- Sprint 5.6: synthetic registries are built from real 'PrerequisiteId'
+    -- constructors with deliberately rewired dependency edges (the
+    -- production registry is acyclic, so cyclic shapes are produced by
+    -- re-pointing edges, not by inventing string ids).
+    it "rejects a back-edge at construction and names the offending nodes" $ do
+      -- infra_ready -> k8s_ready -> infra_ready is a back-edge: constructing
+      -- from infra_ready must fail, not loop or silently short-circuit on a
+      -- visited set.
+      let cyclicRegistry =
+            Map.fromList
+              [ (effectNodeId node, node)
+              | node <-
+                  [ cycleNode InfraReady [K8sReady]
+                  , cycleNode K8sReady [InfraReady]
+                  ]
+              ]
+      transitiveClosureIds [InfraReady] cyclicRegistry
+        `shouldBe` Left "Prerequisite cycle detected: infra_ready -> k8s_ready -> infra_ready"
+      fromRootIds [InfraReady] cyclicRegistry
+        `shouldBe` Left "Prerequisite cycle detected: infra_ready -> k8s_ready -> infra_ready"
+
+    it "rejects a direct self-edge at construction" $ do
+      let selfRegistry =
+            Map.fromList [(MachineIdentity, cycleNode MachineIdentity [MachineIdentity])]
+      transitiveClosureIds [MachineIdentity] selfRegistry
+        `shouldBe` Left "Prerequisite cycle detected: machine_identity -> machine_identity"
+
+    it "still constructs a diamond (shared dependency, no cycle) cleanly" $ do
+      -- top depends on left and right; both depend on base. A shared dependency is a DAG, not a
+      -- cycle, and must construct without a false-positive cycle rejection.
+      let diamondRegistry =
+            Map.fromList
+              [ (effectNodeId node, node)
+              | node <-
+                  [ cycleNode K8sReady [Rke2Installed, Rke2ServiceExists]
+                  , cycleNode Rke2Installed [PlatformLinux]
+                  , cycleNode Rke2ServiceExists [PlatformLinux]
+                  , cycleNode PlatformLinux []
+                  ]
+              ]
+      fmap (map prerequisiteIdText) (transitiveClosureIds [K8sReady] diamondRegistry)
+        `shouldBe` Right
+          [ "k8s_ready"
+          , "platform_linux"
+          , "rke2_installed"
+          , "rke2_service_exists"
+          ]
+
+    it "still rejects missing node ids at construction" $ do
+      -- infra_ready references k8s_ready, but the registry omits k8s_ready.
+      let registryWithDangling =
+            Map.fromList [(InfraReady, cycleNode InfraReady [K8sReady])]
+      transitiveClosureIds [InfraReady] registryWithDangling
+        `shouldBe` Left "Missing effect node in registry: k8s_ready"
+
+  describe "collapsed settings node (Sprint 1.31)" $ do
+    it "registers the surviving settings_object node" $ do
+      Map.member SettingsObject prerequisiteRegistry `shouldBe` True
+
+    it "resolves the closure that previously expanded both settings nodes through the survivor" $ do
+      -- Every former dependent of `settings_loaded`/`settings_object` now reaches the single
+      -- `settings_object` node; the closure still resolves and contains exactly one settings node.
+      case transitiveClosureTexts ["aws_credentials_valid"] of
+        Left err -> expectationFailure ("expected acyclic closure, got: " ++ err)
+        Right closure -> do
+          ("settings_object" `elem` closure) `shouldBe` True
+          ("settings_loaded" `elem` closure) `shouldBe` False
+      effectNodeEffect (lookupPrerequisiteNode "settings_object")
+        `shouldBe` Validate RequireSettings
+
+  describe "interpreter satisfied-node memo (Sprint 1.31)" $ do
+    it "evaluates a satisfied prerequisite once per run even across distinct nodes" $
+      withSystemTempDirectory "prodbox-prereq-memo" $ \tmpDir -> do
+        -- Two distinct nodes carry the SAME effect (an identical counting command). The memo
+        -- must let the probe run at most once per interpreter run: the counter file lands at 1,
+        -- not 2.
+        let counterPath = tmpDir </> "memo-count"
+            counterScriptPath = tmpDir </> "increment.sh"
+            countingCommand =
+              RunCommand
+                ( Subprocess
+                    "/bin/sh"
+                    [counterScriptPath, counterPath]
+                    Nothing
+                    (Just tmpDir)
+                )
+            memoRegistry =
+              Map.fromList
+                [ (effectNodeId node, node)
+                | node <-
+                    [ effectNode MachineIdentity [] countingCommand
+                    , effectNode Rke2Installed [MachineIdentity] countingCommand
+                    ]
+                ]
+        writeFile
+          counterScriptPath
+          ( unlines
+              [ "#!/bin/sh"
+              , "count_file=\"$1\""
+              , "if [ -f \"$count_file\" ]; then"
+              , "  count=$(cat \"$count_file\")"
+              , "else"
+              , "  count=0"
+              , "fi"
+              , "count=$((count + 1))"
+              , "printf '%s' \"$count\" > \"$count_file\""
+              ]
+          )
+        makeExecutable counterScriptPath
+        case fromRootIds [Rke2Installed] memoRegistry of
+          Left err -> expectationFailure ("expected acyclic memo DAG, got: " ++ err)
+          Right dag -> do
+            result <- runEffectDAG (InterpreterContext tmpDir) dag
+            result `shouldBe` Result.Success ()
+            readFile counterPath `shouldReturn` "1"
 
   describe "shared runtime helpers" $ do
     it "round-trips the rendered repo-root Dhall config through loadConfigFile" $
@@ -1975,11 +2352,140 @@ main = mainWithSuite "prodbox-unit" $ do
           attempts <- readIORef attemptsRef
           pure $
             if attempts < 3
-              then Left (RedisError (ServiceError "transient" True))
+              then Left (RedisError (SEConnectionFailed "transient"))
               else Right ("ready" :: String)
       attempts <- readIORef attemptsRef
       result `shouldBe` Right "ready"
       attempts `shouldBe` 3
+
+    it "short-circuits a non-retryable classified service error" $ do
+      attemptsRef <- newIORef (0 :: Int)
+      let policy =
+            RetryPolicy
+              { retryPolicyMaxAttempts = 5
+              , retryPolicyBaseDelayMicros = 0
+              , retryPolicyMultiplier = 1
+              , retryPolicyMaxDelayMicros = 0
+              }
+      result <-
+        retryServiceAction policy $ do
+          modifyIORef' attemptsRef (+ 1)
+          pure (Left (RedisError (SEPermissionDenied "denied")) :: Either RedisError String)
+      attempts <- readIORef attemptsRef
+      result `shouldBe` Left (RedisError (SEPermissionDenied "denied"))
+      attempts `shouldBe` 1
+
+    it "derives ServiceError retryability from the classified constructor" $ do
+      map
+        serviceErrorRetryable
+        [ SEConnectionFailed "x"
+        , SETimeout "x"
+        , SEConflict "x"
+        , SEInternalError "x"
+        , SENotFound "x"
+        , SEPermissionDenied "x"
+        ]
+        `shouldBe` [True, True, True, True, False, False]
+
+    it "classifies subprocess spawn failures into retryable vs non-retryable constructors" $ do
+      let classify = classifyServiceError . fatalError . Text.pack
+      classify "aws: does not exist (No such file or directory)"
+        `shouldBe` SENotFound "aws: does not exist (No such file or directory)"
+      serviceErrorRetryable (classify "permission denied") `shouldBe` False
+      serviceErrorRetryable (classify "kubectl: connection refused") `shouldBe` True
+      serviceErrorRetryable (classify "operation timed out") `shouldBe` True
+      serviceErrorRetryable (classify "something unexpected went wrong") `shouldBe` True
+      serviceErrorMessage (classify "boom") `shouldBe` "boom"
+
+    it "polls a readiness predicate until ready without treating pending as failure" $ do
+      observationsRef <- newIORef (0 :: Int)
+      let policy =
+            RetryPolicy
+              { retryPolicyMaxAttempts = 5
+              , retryPolicyBaseDelayMicros = 0
+              , retryPolicyMultiplier = 1
+              , retryPolicyMaxDelayMicros = 0
+              }
+      result <-
+        pollUntilReady policy $ do
+          modifyIORef' observationsRef (+ 1)
+          observations <- readIORef observationsRef
+          pure $
+            if observations < 3
+              then PollPending (Text.pack ("pending after " ++ show observations))
+              else PollReady ("ready" :: String)
+      observations <- readIORef observationsRef
+      result `shouldBe` Right "ready"
+      observations `shouldBe` 3
+
+    it "surfaces the last pending detail when the readiness poll times out" $ do
+      let policy =
+            RetryPolicy
+              { retryPolicyMaxAttempts = 2
+              , retryPolicyBaseDelayMicros = 0
+              , retryPolicyMultiplier = 1
+              , retryPolicyMaxDelayMicros = 0
+              }
+      result <-
+        pollUntilReady policy (pure (PollPending "still converging" :: PollOutcome ()))
+      result `shouldBe` Left "still converging"
+
+    it "stops the readiness poll immediately on a hard observation failure" $ do
+      observationsRef <- newIORef (0 :: Int)
+      let policy =
+            RetryPolicy
+              { retryPolicyMaxAttempts = 5
+              , retryPolicyBaseDelayMicros = 0
+              , retryPolicyMultiplier = 1
+              , retryPolicyMaxDelayMicros = 0
+              }
+      result <-
+        pollUntilReady policy $ do
+          modifyIORef' observationsRef (+ 1)
+          pure (PollFailed "cannot observe" :: PollOutcome ())
+      observations <- readIORef observationsRef
+      result `shouldBe` Left "cannot observe"
+      observations `shouldBe` 1
+
+    it "flags hand-built ServiceError retryable literals in the doctrine lint" $ do
+      serviceErrorRetryableLiteralViolations
+        "src/Prodbox/Synthetic.hs"
+        "x = ServiceError { serviceErrorMessage = m, serviceErrorRetryable = True }"
+        `shouldNotBe` []
+      serviceErrorRetryableLiteralViolations
+        "src/Prodbox/Synthetic.hs"
+        "y = PgError (ServiceError \"boom\" False)"
+        `shouldNotBe` []
+      serviceErrorRetryableLiteralViolations
+        "src/Prodbox/Synthetic.hs"
+        "z = classifyServiceError appError"
+        `shouldBe` []
+
+    it "Sprint 3.16: raw-master-seed-scope lint fires on a host-side reader and is silent in scope" $ do
+      -- A host-side module that imports the raw-seed reader is a violation.
+      rawMasterSeedReadScopeViolations
+        "src/Prodbox/Synthetic.hs"
+        "import Prodbox.Secret.MasterSeed (ensureMasterSeed)\nf cfg = ensureMasterSeed cfg"
+        `shouldNotBe` []
+      -- A bare `ensureMasterSeed` call also fires, even without the import line.
+      rawMasterSeedReadScopeViolations
+        "src/Prodbox/Synthetic.hs"
+        "g cfg = ensureMasterSeed cfg"
+        `shouldNotBe` []
+      -- Mentioning the reader only inside a string literal / comment is allowed.
+      rawMasterSeedReadScopeViolations
+        "src/Prodbox/Synthetic.hs"
+        "msg = \"do not import Prodbox.Secret.MasterSeed or call ensureMasterSeed here\""
+        `shouldBe` []
+      -- The in-cluster daemon module set is permitted to read the raw seed.
+      rawMasterSeedReadScopeViolations
+        "src/Prodbox/Gateway/Daemon.hs"
+        "import Prodbox.Secret.MasterSeed qualified as MasterSeed\nx = MasterSeed.ensureMasterSeed cfg"
+        `shouldBe` []
+      rawMasterSeedReadScopeViolations
+        "src/Prodbox/Secret/MasterSeed.hs"
+        "ensureMasterSeed config = pure ()"
+        `shouldBe` []
 
     it "filters daemon log severities through the configured log level" $ do
       severityFromLogLevel "debug" `shouldBe` Debug
@@ -2003,14 +2509,6 @@ main = mainWithSuite "prodbox-unit" $ do
         (object ["status" .= ("ok" :: String)])
         `shouldBe` "{\"status\":\"ok\"}"
 
-    it "typechecks the doctrine state-machine transitions" $ do
-      case completeClaim (startClaim GatewayIdleState) of
-        GatewayOwnerState -> pure ()
-      case chartVerify (chartApply chartPlan) of
-        ChartVerifiedState -> pure ()
-      case promotePulumi (startPulumiUpdate PulumiSelectedState) of
-        PulumiReadyState -> pure ()
-
     it "records, fetches, and marks daemon events by processed_at state" $ do
       store <-
         DaemonEvents.newEventStore
@@ -2028,6 +2526,21 @@ main = mainWithSuite "prodbox-unit" $ do
       remainingEvents <- DaemonEvents.fetchUnprocessedEvents store
       map DaemonEvents.eventId remainingEvents
         `shouldBe` [DaemonEvents.EventId "event-a"]
+
+    it "markEventProcessed is first-write-wins under the IS-NULL guard" $ do
+      store <-
+        DaemonEvents.newEventStore
+          [storedDaemonEvent "event-x" 10 Nothing]
+      -- First processing stamps processed_at.
+      DaemonEvents.markEventProcessed store (DaemonEvents.EventId "event-x") (testUtc 100)
+      -- A later redelivery of the same event must be a no-op: the IS-NULL guard
+      -- finds processed_at already set and leaves the original timestamp.
+      DaemonEvents.markEventProcessed store (DaemonEvents.EventId "event-x") (testUtc 999)
+      -- The event is no longer unprocessed, and its stamp is the first writer's.
+      DaemonEvents.fetchUnprocessedEvents store
+        `shouldReturn` []
+      processedStamp <- DaemonEvents.lookupProcessedAt store (DaemonEvents.EventId "event-x")
+      processedStamp `shouldBe` Just (Just (testUtc 100))
 
     it "processes unprocessed daemon events once across repeated runs" $ do
       handledRef <- newIORef []
@@ -3114,6 +3627,188 @@ main = mainWithSuite "prodbox-unit" $ do
         Right _ -> expectationFailure "expected schemaVersion mismatch failure"
         Left err -> err `shouldContain` "config_schema_mismatch"
 
+  describe "Sprint 3.15 workload Boot/Live config split" $ do
+    let decodeWorkload src = do
+          result <- WorkloadSettings.decodeWorkloadConfigDhall (Text.pack (unlines src))
+          case result of
+            Left err -> expectationFailure err >> error "unreachable"
+            Right dto -> pure dto
+        apiSrc =
+          [ "{ schemaVersion = 1"
+          , ", mode = < Api | Websocket >.Api"
+          , ", log_level = None Text"
+          , ", workload_port = Some 8080"
+          , ", redis = None { host : Text, port : Text }"
+          , ", oidc = None"
+          , "    { issuer : Text"
+          , "    , client_id : Text"
+          , "    , client_secret : Text"
+          , "    , public_base_url : Text"
+          , "    , token_endpoint : Text"
+          , "    }"
+          , "}"
+          ]
+        websocketSrc logLevelLine portLine redisLine =
+          [ "{ schemaVersion = 1"
+          , ", mode = < Api | Websocket >.Websocket"
+          , logLevelLine
+          , portLine
+          , redisLine
+          , ", oidc = Some"
+          , "    { issuer = \"https://test.example.com/auth/realms/r\""
+          , "    , client_id = \"prodbox\""
+          , "    , client_secret = \"secret\""
+          , "    , public_base_url = \"https://test.example.com\""
+          , "    , token_endpoint = \"/token\""
+          , "    }"
+          , "}"
+          ]
+
+    it "classifies mode and port as Boot fields and log_level as a Live field" $ do
+      dto <- decodeWorkload apiSrc
+      let boot = workloadBootConfigFromDhall dto
+      bootMode boot `shouldBe` WorkloadApi
+      bootPort boot `shouldBe` 8080
+      case workloadLiveConfigFromDhall (bootMode boot) dto of
+        Left err -> expectationFailure err
+        Right live -> do
+          liveLogLevel live `shouldBe` "info"
+          liveRedisConfig live `shouldBe` Nothing
+          liveOidcConfig live `shouldBe` Nothing
+
+    it "defaults the listen port to 8080 when workload_port is None" $ do
+      dto <-
+        decodeWorkload
+          [ "{ schemaVersion = 1"
+          , ", mode = < Api | Websocket >.Api"
+          , ", log_level = None Text"
+          , ", workload_port = None Natural"
+          , ", redis = None { host : Text, port : Text }"
+          , ", oidc = None"
+          , "    { issuer : Text"
+          , "    , client_id : Text"
+          , "    , client_secret : Text"
+          , "    , public_base_url : Text"
+          , "    , token_endpoint : Text"
+          , "    }"
+          , "}"
+          ]
+      bootPort (workloadBootConfigFromDhall dto) `shouldBe` 8080
+
+    it "treats a log_level edit as a Live change (no Boot-field change)" $ do
+      original <-
+        decodeWorkload
+          ( websocketSrc
+              ", log_level = Some \"info\""
+              ", workload_port = Some 8081"
+              ", redis = Some { host = \"redis\", port = \"6379\" }"
+          )
+      edited <-
+        decodeWorkload
+          ( websocketSrc
+              ", log_level = Some \"debug\""
+              ", workload_port = Some 8081"
+              ", redis = Some { host = \"redis\", port = \"6379\" }"
+          )
+      workloadBootFieldsChanged
+        (workloadBootConfigFromDhall original)
+        (workloadBootConfigFromDhall edited)
+        `shouldBe` False
+      case workloadLiveConfigFromDhall WorkloadWebsocket edited of
+        Left err -> expectationFailure err
+        Right live -> liveLogLevel live `shouldBe` "debug"
+
+    it "treats a Redis-endpoint edit as a Live change (no Boot-field change)" $ do
+      original <-
+        decodeWorkload
+          ( websocketSrc
+              ", log_level = Some \"info\""
+              ", workload_port = Some 8081"
+              ", redis = Some { host = \"redis\", port = \"6379\" }"
+          )
+      edited <-
+        decodeWorkload
+          ( websocketSrc
+              ", log_level = Some \"info\""
+              ", workload_port = Some 8081"
+              ", redis = Some { host = \"redis-2\", port = \"6380\" }"
+          )
+      workloadBootFieldsChanged
+        (workloadBootConfigFromDhall original)
+        (workloadBootConfigFromDhall edited)
+        `shouldBe` False
+      case ( workloadLiveConfigFromDhall WorkloadWebsocket original
+           , workloadLiveConfigFromDhall WorkloadWebsocket edited
+           ) of
+        (Right originalLive, Right editedLive) ->
+          liveRedisConfig editedLive `shouldNotBe` liveRedisConfig originalLive
+        _ -> expectationFailure "expected both websocket live configs to build"
+
+    it "treats a port edit as a Boot-field change (drain-and-exit)" $ do
+      original <-
+        decodeWorkload
+          ( websocketSrc
+              ", log_level = Some \"info\""
+              ", workload_port = Some 8081"
+              ", redis = Some { host = \"redis\", port = \"6379\" }"
+          )
+      edited <-
+        decodeWorkload
+          ( websocketSrc
+              ", log_level = Some \"info\""
+              ", workload_port = Some 9090"
+              ", redis = Some { host = \"redis\", port = \"6379\" }"
+          )
+      workloadBootFieldsChanged
+        (workloadBootConfigFromDhall original)
+        (workloadBootConfigFromDhall edited)
+        `shouldBe` True
+
+    it "treats a mode edit as a Boot-field change (drain-and-exit)" $ do
+      apiDto <- decodeWorkload apiSrc
+      websocketDto <-
+        decodeWorkload
+          ( websocketSrc
+              ", log_level = None Text"
+              ", workload_port = Some 8080"
+              ", redis = Some { host = \"redis\", port = \"6379\" }"
+          )
+      workloadBootFieldsChanged
+        (workloadBootConfigFromDhall apiDto)
+        (workloadBootConfigFromDhall websocketDto)
+        `shouldBe` True
+
+    it "fails the live-config build when a websocket config omits redis" $ do
+      dto <-
+        decodeWorkload
+          [ "{ schemaVersion = 1"
+          , ", mode = < Api | Websocket >.Websocket"
+          , ", log_level = None Text"
+          , ", workload_port = Some 8081"
+          , ", redis = None { host : Text, port : Text }"
+          , ", oidc = Some"
+          , "    { issuer = \"https://test.example.com\""
+          , "    , client_id = \"prodbox\""
+          , "    , client_secret = \"secret\""
+          , "    , public_base_url = \"https://test.example.com\""
+          , "    , token_endpoint = \"/token\""
+          , "    }"
+          , "}"
+          ]
+      case workloadLiveConfigFromDhall WorkloadWebsocket dto of
+        Right _ -> expectationFailure "expected a structured failure when redis is None"
+        Left err -> err `shouldContain` "redis must be Some"
+
+    it "fails fast when the workload binary is started without --config" $ do
+      exitCode <- runWorkloadCommand (WorkloadStart (WorkloadOptions {workloadConfigPath = Nothing}))
+      exitCode `shouldBe` ExitFailure 1
+
+    it "fails fast when the workload --config path does not exist" $ do
+      exitCode <-
+        runWorkloadCommand
+          (WorkloadStart (WorkloadOptions {workloadConfigPath = Just "/nonexistent/workload/config.dhall"}))
+      exitCode `shouldBe` ExitFailure 1
+
   describe "Sprint 2.19 master-seed derivation" $ do
     it "rejects a master seed of the wrong length" $
       Prodbox.Secret.Derive.masterSeed (BS.replicate 16 0)
@@ -3198,6 +3893,30 @@ main = mainWithSuite "prodbox-unit" $ do
     it "Show on MasterSeed never leaks the bytes" $ do
       let Right seed = Prodbox.Secret.Derive.masterSeed (BS.replicate 32 0xff)
       show seed `shouldBe` "MasterSeed <redacted>"
+
+    it "encodeDeriveContext reproduces the canonical wire strings" $ do
+      Prodbox.Secret.Derive.encodeDeriveContext
+        ( Prodbox.Secret.Derive.PatroniRoleContext
+            "keycloak"
+            "keycloak-postgres"
+            Prodbox.Secret.Derive.PatroniRoleApp
+        )
+        `shouldBe` "patroni:keycloak:keycloak-postgres:app"
+      Prodbox.Secret.Derive.encodeDeriveContext
+        (Prodbox.Secret.Derive.GatewayEventKeyContext "gateway" "node-a")
+        `shouldBe` "gateway:gateway:node-a:event-key"
+
+    it "decodeDeriveContext rejects malformed / unknown wire strings" $ do
+      Prodbox.Secret.Derive.decodeDeriveContext "patroni:ns:rel:bogus-role"
+        `shouldBe` Nothing
+      Prodbox.Secret.Derive.decodeDeriveContext "unknown:ns:thing"
+        `shouldBe` Nothing
+      Prodbox.Secret.Derive.decodeDeriveContext "gateway:gateway:node-a"
+        `shouldBe` Nothing
+
+    propertyTest
+      "decode . encode == id over every canonical derive context"
+      deriveContextRoundTrips
 
   describe "Sprint 3.13 derived-secret inventory" $ do
     it "returns the three Patroni roles for keycloak-postgres in the keycloak namespace" $ do
@@ -3682,6 +4401,7 @@ main = mainWithSuite "prodbox-unit" $ do
             ResourceRegistry.ManagedResource
               { ResourceRegistry.resourceName = name
               , ResourceRegistry.resourceClass = ResourceClass.PerRun
+              , ResourceRegistry.resourceDestroyCommand = "prodbox pulumi " ++ name ++ "-destroy --yes"
               , ResourceRegistry.resourceDestroy = \_ -> do
                   modifyIORef' destroyed (++ [name])
                   pure code
@@ -3695,6 +4415,204 @@ main = mainWithSuite "prodbox-unit" $ do
       outcome <- ResourceRegistry.reconcileAbsent "/tmp" pairs
       outcome `shouldBe` ExitFailure 1
       readIORef destroyed `shouldReturn` ["first", "boom"]
+
+  describe "Sprint 4.26 destructive commands route through runPlanWithOptions" $ do
+    let defaultFlags =
+          Rke2DeleteFlags
+            { rke2DeleteYes = True
+            , rke2DeleteCascade = False
+            , rke2DeleteAllowPulumiResidue = False
+            }
+        cascadeFlags = defaultFlags {rke2DeleteCascade = True}
+
+    it "default-delete plan derives the per-run sweep from the registry (includes aws-eks-subzone)" $ do
+      let rendered = renderNativeDeletePlan "/repo" defaultFlags
+      rendered `shouldContain` "STEP=per_run_destroy aws-eks"
+      -- The historical bug: the hand-rolled list omitted aws-eks-subzone.
+      rendered `shouldContain` "STEP=per_run_destroy aws-eks-subzone"
+      rendered `shouldContain` "STEP=per_run_destroy aws-test"
+      rendered `shouldContain` "MODE=default"
+      rendered `shouldContain` "STEP=refuse_on_live_per_run_residue"
+
+    it "cascade plan renders the canonical drain-before-destroys narration + every per-run stack" $ do
+      let rendered = renderNativeDeletePlan "/repo" cascadeFlags
+      rendered `shouldContain` cascadeOrderNarration
+      rendered `shouldContain` "STEP=k8s_drain"
+      rendered `shouldContain` "STEP=per_run_destroy aws-eks-subzone"
+      -- drain step precedes the per-run destroy steps in the rendered plan.
+      let planLines = lines rendered
+          drainIdx = elemIndex "STEP=k8s_drain" planLines
+          destroyIdx = elemIndex "STEP=per_run_destroy aws-eks" planLines
+      (drainIdx < destroyIdx) `shouldBe` True
+      drainIdx `shouldSatisfy` (/= Nothing)
+
+    it "the per-run sweep lists exactly the PerRun registry resources in order" $ do
+      let registryNames =
+            map ResourceRegistry.resourceName ResourceRegistry.perRunManagedResources
+          planSteps =
+            [ drop (length ("STEP=per_run_destroy " :: String)) line
+            | line <- lines (renderNativeDeletePlan "/repo" defaultFlags)
+            , "STEP=per_run_destroy " `isPrefixOf` line
+            ]
+      planSteps `shouldBe` registryNames
+      registryNames `shouldBe` ResourceClass.resourceNamesOfClass ResourceClass.PerRun
+
+    it "rke2 delete --dry-run renders the plan and performs NO mutation (the core 4.26 fix)" $ do
+      -- The audit's #1 bug: `rke2 delete --yes --dry-run` SILENTLY MUTATED.
+      -- runPlanWithOptions with dryRun=True must render the destructive plan
+      -- and NEVER invoke the apply closure.
+      applyCalled <- newIORef False
+      let plan = buildNativeDeletePlan "/repo" defaultFlags
+      exit <-
+        runPlanWithOptions
+          PlanOptions {dryRun = True, planFile = Nothing}
+          plan
+          (\_ -> writeIORef applyCalled True >> pure (ExitFailure 99))
+      exit `shouldBe` ExitSuccess
+      mutated <- readIORef applyCalled
+      mutated `shouldBe` False
+
+    it "rke2 delete --plan-file writes the rendered destructive plan" $ do
+      applyCalled <- newIORef False
+      tmpDir <- getTemporaryDirectory
+      let planPath = tmpDir </> "prodbox-4-26-rke2-delete-plan.txt"
+          plan = buildNativeDeletePlan "/repo" cascadeFlags
+      _ <-
+        runPlanWithOptions
+          PlanOptions {dryRun = True, planFile = Just planPath}
+          plan
+          (\_ -> writeIORef applyCalled True >> pure ExitSuccess)
+      written <- readFile planPath
+      written `shouldContain` cascadeOrderNarration
+      written `shouldContain` "STEP=per_run_destroy aws-eks-subzone"
+      readIORef applyCalled `shouldReturn` False
+
+    it "nuke --dry-run renders the plan with a fail-closed step-4 description and does not prompt" $ do
+      let plan = Nuke.renderNukePlan "/repo"
+      plan `shouldContain` "STEP=4"
+      plan `shouldContain` "fail-closed"
+      plan `shouldContain` "STEP=5"
+
+  -- Sprint 5.6: the three destructive `--dry-run` goldens (audit V80 found
+  -- them missing). Each golden pins the exact planned step list a
+  -- destructive path emits WITHOUT executing it (the goldens render the
+  -- pure plan renderer, which `rke2 delete --dry-run` / `nuke --dry-run`
+  -- route through via runPlanWithOptions; the separate Sprint 4.26 tests
+  -- above prove dry-run performs NO mutation). The per-run / long-lived
+  -- stack lines are registry-derived, so the golden tracks the
+  -- managed-resource registry / StackDescriptor SSoT, and the drift check
+  -- below fails if a registered resource is added without updating the
+  -- golden.
+  describe "Sprint 5.6 destructive dry-run goldens (registry-generated)" $ do
+    let destructiveGoldenRepoRoot = "/tmp/prodbox"
+        defaultDeleteFlags =
+          Rke2DeleteFlags
+            { rke2DeleteYes = True
+            , rke2DeleteCascade = False
+            , rke2DeleteAllowPulumiResidue = False
+            }
+        cascadeDeleteFlags = defaultDeleteFlags {rke2DeleteCascade = True}
+
+    let renderUtf8 = BL.fromStrict . TextEncoding.encodeUtf8 . Text.pack
+
+    goldenTest
+      "rke2 delete --dry-run plan"
+      "test/golden/destructive/rke2-delete.txt"
+      ( pure
+          (renderUtf8 (renderNativeDeletePlan destructiveGoldenRepoRoot defaultDeleteFlags))
+      )
+
+    goldenTest
+      "rke2 delete --cascade --dry-run plan"
+      "test/golden/destructive/rke2-delete-cascade.txt"
+      ( pure
+          (renderUtf8 (renderNativeDeletePlan destructiveGoldenRepoRoot cascadeDeleteFlags))
+      )
+
+    goldenTest
+      "nuke --dry-run plan"
+      "test/golden/destructive/nuke.txt"
+      (pure (renderUtf8 (Nuke.renderNukePlan destructiveGoldenRepoRoot)))
+
+    it "the rke2-delete goldens name every PerRun registry resource (drift guard)" $ do
+      defaultGolden <- readFile "test/golden/destructive/rke2-delete.txt"
+      cascadeGolden <- readFile "test/golden/destructive/rke2-delete-cascade.txt"
+      let perRunNames = map ResourceRegistry.resourceName ResourceRegistry.perRunManagedResources
+      -- Every registered PerRun resource must appear in BOTH goldens; if a
+      -- new PerRun resource is registered without regenerating the goldens,
+      -- this fails (the golden no longer covers the registry).
+      mapM_
+        (\name -> defaultGolden `shouldContain` ("STEP=per_run_destroy " ++ name))
+        perRunNames
+      mapM_
+        (\name -> cascadeGolden `shouldContain` ("STEP=per_run_destroy " ++ name))
+        perRunNames
+      perRunNames `shouldBe` StackDescriptor.perRunStackDescriptorNames
+
+    it "the nuke golden names every registry-derived destroy target (drift guard)" $ do
+      nukeGolden <- readFile "test/golden/destructive/nuke.txt"
+      let perRunNames = map ResourceRegistry.resourceName ResourceRegistry.perRunManagedResources
+          longLivedNames = map ResourceRegistry.resourceName ResourceRegistry.longLivedManagedResources
+      mapM_
+        (\name -> nukeGolden `shouldContain` ("STEP=1 per_run_destroy " ++ name))
+        perRunNames
+      -- aws-ses long-lived Pulumi destroy command is registry-derived.
+      nukeGolden
+        `shouldContain` ("STEP=2 " ++ ResourceRegistry.resourceDestroyCommand ResourceRegistry.awsSesPulumiResource)
+      mapM_
+        (\name -> nukeGolden `shouldContain` ("STEP=4 long_lived_destroy " ++ name))
+        longLivedNames
+
+  describe "Sprint 4.26 checkPlanOptionsHonored lint" $ do
+    it "fires when Rke2Delete binds its PlanOptions to a _ wildcard" $ do
+      let offending = "    Rke2Delete flags _planOptions ->\n      foo\n"
+      planOptionsHonoredViolations "src/Prodbox/CLI/Rke2.hs" offending
+        `shouldSatisfy` (not . null)
+
+    it "fires when NativeNuke binds its NukeOptions to a _ wildcard" $ do
+      let offending = "    NativeNuke _opts -> runNukeCommand repoRoot defaultNukeOptions\n"
+      planOptionsHonoredViolations "src/Prodbox/Native.hs" offending
+        `shouldSatisfy` (not . null)
+
+    it "is silent when the options field is bound to a real name" $ do
+      let honest =
+            "    Rke2Delete flags planOptions ->\n"
+              ++ "      runPlanWithOptions planOptions plan apply\n"
+              ++ "    NativeNuke nukeOptions -> runNukeCommand repoRoot nukeOptions\n"
+      planOptionsHonoredViolations "src/Prodbox/CLI/Rke2.hs" honest `shouldBe` []
+
+    it "the live Rke2.hs / Nuke.hs / Native.hs dispatch arms are clean" $ do
+      rke2Source <- readFile "src/Prodbox/CLI/Rke2.hs"
+      nativeSource <- readFile "src/Prodbox/Native.hs"
+      planOptionsHonoredViolations "src/Prodbox/CLI/Rke2.hs" rke2Source `shouldBe` []
+      planOptionsHonoredViolations "src/Prodbox/Native.hs" nativeSource `shouldBe` []
+
+    it "covers Rke2Delete and NativeNuke as destructive arms" $
+      map fst destructivePlanOptionsArms `shouldBe` ["Rke2Delete", "NativeNuke"]
+
+  describe "Sprint 4.26 nuke step-4 tag sweep is fail-closed" $ do
+    it "a non-empty tag sweep aborts nuke (ExitFailure surfaced)" $
+      -- abortOrContinue short-circuits on the first ExitFailure: when the
+      -- step-4 tag-sweep returns ExitFailure, the bucket-destroy closure
+      -- never runs and the failure is returned.
+      Nuke.abortOrContinue (ExitFailure 7) (pure ExitSuccess)
+        `shouldReturn` ExitFailure 7
+
+    it "a clean tag sweep proceeds to the bucket destroy" $
+      Nuke.abortOrContinue ExitSuccess (pure (ExitFailure 5))
+        `shouldReturn` ExitFailure 5
+
+  describe "Sprint 4.26 noLiveLongLivedPulumiStacks aws-teardown preflight composition" $ do
+    it "the aws teardown default precondition set includes noLiveLongLivedPulumiStacks" $
+      -- The operator `aws teardown` default path refuses on a live long-lived
+      -- stack via this named precondition (the deferred Sprint 4.11
+      -- consolidation), in addition to the per-run noLivePerRunPulumiStacks.
+      Preconditions.preconditionLabel (Preconditions.noLiveLongLivedPulumiStacks "/repo")
+        `shouldBe` "noLiveLongLivedPulumiStacks"
+
+    it "noLivePerRunPulumiStacks stays the per-run gate (refuse-gate split preserved)" $
+      Preconditions.preconditionLabel (Preconditions.noLivePerRunPulumiStacks "/repo")
+        `shouldBe` "noLivePerRunPulumiStacks"
 
   describe "Sprint 7.8 operational-resource registry" $ do
     let sampleCreds =
@@ -4297,6 +5215,49 @@ main = mainWithSuite "prodbox-unit" $ do
         _ ->
           expectationFailure "expected two successful /dev/urandom reads"
 
+    it "Show MinioMasterSeedConfig redacts both MinIO credential fields" $ do
+      -- Sprint 3.16: the config gates read/write of the master seed, so its
+      -- Show must never leak the access key id or secret access key into a
+      -- log line or a show-on-failure trace.
+      let rendered = show cfg
+      rendered `shouldNotContain` "AKIA"
+      rendered `shouldNotContain` "secret"
+      rendered `shouldContain` "<redacted>"
+      -- The non-secret routing coordinates still print verbatim.
+      rendered `shouldContain` "http://127.0.0.1:9000"
+      rendered `shouldContain` "prodbox"
+      rendered `shouldContain` "master-seed"
+
+  describe "Sprint 3.16 Patroni seed/pg_authid mismatch loud-failure decision" $ do
+    it "proceeds when the derived password authenticates against pg_authid" $
+      patroniSeedMismatchDecision "vscode" "keycloak" PatroniAuthMatches
+        `shouldBe` PatroniResetProceed
+
+    it "proceeds when pg_authid cannot be observed (fresh install / transient miss)" $
+      patroniSeedMismatchDecision
+        "vscode"
+        "keycloak"
+        (PatroniAuthUnobservable "no Patroni primary Pod found; nothing to probe")
+        `shouldBe` PatroniResetProceed
+
+    it "fails loudly on a proven rejection, naming the namespace/role pair and resolution options" $
+      case patroniSeedMismatchDecision "vscode" "keycloak" PatroniAuthRejected of
+        PatroniResetProceed ->
+          expectationFailure "a definite pg_authid rejection must fail loudly, not proceed"
+        PatroniResetLoudFailure message -> do
+          message `shouldContain` "namespace `vscode`"
+          message `shouldContain` "role `keycloak`"
+          message `shouldContain` "refuses to silently reset"
+          message `shouldContain` "restoring the `.data/`"
+          message `shouldContain` "wiping"
+
+    it "renderPatroniResetDecision maps proceed to Right and loud failure to Left" $ do
+      renderPatroniResetDecision PatroniResetProceed
+        `shouldBe` Right ()
+      case renderPatroniResetDecision (PatroniResetLoudFailure "boom") of
+        Left message -> message `shouldBe` "boom"
+        Right () -> expectationFailure "a loud-failure decision must render as Left"
+
   describe "gateway commit-log dispositions" $ do
     it "computes node disposition from claim/yield events in chronological order" $ do
       let claimA = signedEventStub "node-a" eventTypeClaim "2026-04-06T10:00:00Z"
@@ -4605,12 +5566,26 @@ main = mainWithSuite "prodbox-unit" $ do
       lookup "AWS_SECURITY_TOKEN" updatedEnvironment `shouldBe` Nothing
 
     it "projects an explicit session token when the repo config provides one" $ do
-      let updatedEnvironment = isolatedAwsEnvironment credentialsWithSession
+      let updatedEnvironment = sealedAwsEnvironment credentialsWithSession
       lookup "AWS_ACCESS_KEY_ID" updatedEnvironment `shouldBe` Just "config-access-key"
       lookup "AWS_SECRET_ACCESS_KEY" updatedEnvironment `shouldBe` Just "config-secret-key"
       lookup "AWS_SESSION_TOKEN" updatedEnvironment `shouldBe` Just "config-session-token"
       lookup "AWS_REGION" updatedEnvironment `shouldBe` Just "us-west-2"
       lookup "AWS_DEFAULT_REGION" updatedEnvironment `shouldBe` Just "us-west-2"
+
+    it "seeds PATH and HOME from the parent environment in the canonical AWS CLI env builder" $ do
+      originalPath <- lookupEnv "PATH"
+      originalHome <- lookupEnv "HOME"
+      setEnv "PATH" "/canary/bin:/usr/bin"
+      setEnv "HOME" "/canary/home"
+      builtEnvironment <- awsCliSubprocessEnvironment credentialsWithoutSession
+      lookup "PATH" builtEnvironment `shouldBe` Just "/canary/bin:/usr/bin"
+      lookup "HOME" builtEnvironment `shouldBe` Just "/canary/home"
+      lookup "AWS_ACCESS_KEY_ID" builtEnvironment `shouldBe` Just "config-access-key"
+      lookup "AWS_SECRET_ACCESS_KEY" builtEnvironment `shouldBe` Just "config-secret-key"
+      lookup "AWS_REGION" builtEnvironment `shouldBe` Just "us-west-2"
+      maybe (unsetEnv "PATH") (setEnv "PATH") originalPath
+      maybe (unsetEnv "HOME") (setEnv "HOME") originalHome
 
     it "retries transient AWS credential propagation failures before failing the prerequisite" $
       withSystemTempDirectory "prodbox-hs-unit" $ \tmpDir -> do
@@ -4931,6 +5906,71 @@ main = mainWithSuite "prodbox-unit" $ do
       copyScript
         `shouldContain` "prodbox-image-mirror: docker.io/percona/percona-postgresql-operator:2.9.0 -> harbor.harbor.svc.cluster.local/prodbox/percona-postgresql-operator-mirror:2.9.0"
 
+  describe "Sprint 7.12 substrate-equivalence structural invariant" $ do
+    it "the home installer covers every shared platform component (no omission)" $
+      Set.fromList homeSubstratePlatformComponents
+        `shouldBe` Set.fromList ContainerImage.sharedPlatformComponents
+    it "the AWS installer covers every shared platform component (no omission)" $
+      Set.fromList Prodbox.Lib.AwsSubstratePlatform.awsSubstratePlatformComponents
+        `shouldBe` Set.fromList ContainerImage.sharedPlatformComponents
+    it "both installers cover the identical shared component set" $
+      Set.fromList homeSubstratePlatformComponents
+        `shouldBe` Set.fromList Prodbox.Lib.AwsSubstratePlatform.awsSubstratePlatformComponents
+    it "the shared inventory enumerates all 13 canonical components" $
+      sort (map ContainerImage.platformComponentLabel ContainerImage.sharedPlatformComponents)
+        `shouldBe` sort
+          [ "gateway"
+          , "keycloak"
+          , "keycloak-postgres"
+          , "vscode"
+          , "api"
+          , "redis"
+          , "websocket"
+          , "minio"
+          , "harbor"
+          , "percona-postgres-operator"
+          , "envoy-gateway"
+          , "cert-manager"
+          , "zerossl-dns01"
+          ]
+    it "the single Envoy Gateway release feeds chart + control plane + data plane from one pin" $ do
+      ContainerImage.envoyGatewayChartVersion
+        `shouldBe` ContainerImage.envoyGatewayReleaseChartVersion ContainerImage.envoyGatewayRelease
+      ContainerImage.imageTag ContainerImage.harborEnvoyGatewayImage `shouldBe` "v1.7.2"
+      ContainerImage.imageTag ContainerImage.harborEnvoyProxyImage `shouldBe` "distroless-v1.37.0"
+      ContainerImage.envoyGatewayChartVersion `shouldBe` "v1.7.2"
+    it "the AWS Envoy chart version equals the home Envoy chart version (no per-substrate skew)" $
+      Prodbox.Lib.AwsSubstratePlatform.awsSubstrateEnvoyGatewayChartVersion
+        `shouldBe` ContainerImage.envoyGatewayChartVersion
+    it "the AWS cert-manager chart version equals the shared cert-manager pin (no per-substrate skew)" $
+      Prodbox.Lib.AwsSubstratePlatform.awsSubstrateCertManagerChartVersion
+        `shouldBe` ContainerImage.certManagerChartVersion
+    it "checkSubstrateImagePinning passes on a tree that sources shared pins from ContainerImage" $
+      substrateImagePinningViolations
+        "src/Prodbox/Lib/AwsSubstratePlatform.hs"
+        "awsSubstrateEnvoyGatewayChartVersion = ContainerImage.envoyGatewayChartVersion\n"
+        `shouldBe` []
+    it "checkSubstrateImagePinning fires on a reintroduced per-substrate Envoy chart pin" $
+      substrateImagePinningViolations
+        "src/Prodbox/Lib/AwsSubstratePlatform.hs"
+        "awsSubstrateEnvoyGatewayChartVersion = \"v1.4.4\"\n"
+        `shouldSatisfy` (not . null)
+    it "checkSubstrateImagePinning fires on a reintroduced per-substrate cert-manager chart pin" $
+      substrateImagePinningViolations
+        "src/Prodbox/Lib/AwsSubstratePlatform.hs"
+        "awsSubstrateCertManagerChartVersion = \"v1.16.2\"\n"
+        `shouldSatisfy` (not . null)
+    it "checkSubstrateImagePinning does NOT fire on the legitimate lower-layer AWS LB Controller pin" $
+      substrateImagePinningViolations
+        "src/Prodbox/Lib/AwsSubstratePlatform.hs"
+        "awsLoadBalancerControllerChartVersion = \"1.8.4\"\n"
+        `shouldBe` []
+    it "checkSubstrateImagePinning does NOT fire on the legitimate lower-layer MetalLB pin" $
+      substrateImagePinningViolations
+        "src/Prodbox/CLI/Rke2.hs"
+        "metallbChartVersion = \"0.14.9\"\n"
+        `shouldBe` []
+
   describe
     "Sprint 7.5.c.iii AWS-substrate platform orchestration (extended through 7.5.c.iv + 7.5.c.v.b)"
     $ do
@@ -5199,12 +6239,12 @@ main = mainWithSuite "prodbox-unit" $ do
     it "perRunStackNames is derived from the registry (matches the prior literal)" $
       perRunStackNames `shouldBe` ["aws-eks", "aws-eks-subzone", "aws-test"]
 
-    it "longLivedStackNames is derived from the registry (aws-ses + public-edge-tls)" $
-      longLivedStackNames `shouldBe` ["aws-ses", "public-edge-tls"]
+    it "longLivedResourceNames is derived from the registry (aws-ses + public-edge-tls)" $
+      longLivedResourceNames `shouldBe` ["aws-ses", "public-edge-tls"]
 
     it "derived stack-name lists equal the PerRun/LongLived registry classes" $ do
       perRunStackNames `shouldBe` ResourceClass.resourceNamesOfClass ResourceClass.PerRun
-      longLivedStackNames `shouldBe` ResourceClass.resourceNamesOfClass ResourceClass.LongLived
+      longLivedResourceNames `shouldBe` ResourceClass.resourceNamesOfClass ResourceClass.LongLived
 
     it "Sprint 4.22 renderRegisteredResourcesMarkdown renders every registered resource + class" $ do
       let rendered =
@@ -5307,7 +6347,7 @@ main = mainWithSuite "prodbox-unit" $ do
         `shouldBe` [publicEdgeClusterIssuerName]
 
     it "the public-edge ClusterIssuer name is the ZeroSSL cert-manager issuer" $
-      publicEdgeClusterIssuerName `shouldBe` "zerossl-http01"
+      publicEdgeClusterIssuerName `shouldBe` "zerossl-dns01"
 
     it "the substrate-scoped retention key namespaces the production cert per substrate + fqdn" $ do
       publicEdgeTlsRetentionKey SubstrateHomeLocal "test.resolvefintech.com"
@@ -5346,7 +6386,7 @@ main = mainWithSuite "prodbox-unit" $ do
                     , "annotations"
                         .= object
                           [ "cert-manager.io/certificate-name" .= ("public-edge-tls" :: Text.Text)
-                          , "cert-manager.io/issuer-name" .= ("zerossl-http01" :: Text.Text)
+                          , "cert-manager.io/issuer-name" .= ("zerossl-dns01" :: Text.Text)
                           , "cert-manager.io/issuer-kind" .= ("ClusterIssuer" :: Text.Text)
                           , "kubectl.kubernetes.io/last-applied-configuration" .= ("{}" :: Text.Text)
                           ]
@@ -5357,7 +6397,7 @@ main = mainWithSuite "prodbox-unit" $ do
       certManagerAdoptionAnnotations secretValue
         `shouldBe` object
           [ "cert-manager.io/certificate-name" .= ("public-edge-tls" :: Text.Text)
-          , "cert-manager.io/issuer-name" .= ("zerossl-http01" :: Text.Text)
+          , "cert-manager.io/issuer-name" .= ("zerossl-dns01" :: Text.Text)
           , "cert-manager.io/issuer-kind" .= ("ClusterIssuer" :: Text.Text)
           ]
     it "certManagerAdoptionAnnotations returns an empty object when there are no annotations" $
@@ -5465,18 +6505,318 @@ main = mainWithSuite "prodbox-unit" $ do
       length violations `shouldBe` 1
       head violations `shouldContain` "aws-ses"
 
-    it "iamCreateSiteViolations allows the owner module src/Prodbox/Aws.hs" $
-      iamCreateSiteViolations "src/Prodbox/Aws.hs" contentsWithCreateUser `shouldBe` []
+    it "awsCreateSiteViolations allows the owner module src/Prodbox/Aws.hs" $
+      awsCreateSiteViolations "src/Prodbox/Aws.hs" contentsWithCreateUser `shouldBe` []
 
-    it "iamCreateSiteViolations flags an IAM create verb outside the owner module" $ do
+    it "awsCreateSiteViolations flags an IAM create verb outside the owner module" $ do
       let violations =
-            iamCreateSiteViolations "src/Prodbox/Other.hs" contentsWithCreateUser
+            awsCreateSiteViolations "src/Prodbox/Other.hs" contentsWithCreateUser
       length violations `shouldBe` 1
       head violations `shouldContain` "create-user"
       head violations `shouldContain` "src/Prodbox/Aws.hs"
 
-    it "iamCreateSiteViolations ignores a non-owner module with no IAM create verbs" $
-      iamCreateSiteViolations "src/Prodbox/Other.hs" contentsWithoutVerbs `shouldBe` []
+    it "awsCreateSiteViolations ignores a non-owner module with no AWS create verbs" $
+      awsCreateSiteViolations "src/Prodbox/Other.hs" contentsWithoutVerbs `shouldBe` []
+
+    it "iamCreateSiteViolations remains a back-compat alias of awsCreateSiteViolations" $
+      iamCreateSiteViolations "src/Prodbox/Other.hs" contentsWithCreateUser
+        `shouldBe` awsCreateSiteViolations "src/Prodbox/Other.hs" contentsWithCreateUser
+
+    it "Sprint 4.27 flags a non-IAM create verb (create-bucket) outside its owners" $ do
+      let contentsWithCreateBucket =
+            unlines
+              [ "      [ \"s3api\""
+              , "      , \"create-bucket\""
+              , "      , \"--bucket\""
+              , "      ]"
+              ]
+          violations =
+            awsCreateSiteViolations "src/Prodbox/Other.hs" contentsWithCreateBucket
+      length violations `shouldBe` 1
+      head violations `shouldContain` "create-bucket"
+
+    it "Sprint 4.27 awsCreateSiteViolations allows create-bucket in its owner modules" $ do
+      let contentsWithCreateBucket =
+            unlines ["      , \"create-bucket\""]
+      awsCreateSiteViolations "src/Prodbox/Infra/LongLivedPulumiBackend.hs" contentsWithCreateBucket
+        `shouldBe` []
+      awsCreateSiteViolations "src/Prodbox/Infra/MinioBackend.hs" contentsWithCreateBucket
+        `shouldBe` []
+
+    it "Sprint 4.27 the Route 53 capability probe (create-hosted-zone) is carved out, never flagged" $ do
+      let contentsWithCreateHostedZone =
+            unlines
+              [ "      [ \"route53\""
+              , "      , \"create-hosted-zone\""
+              , "      , \"--name\""
+              , "      ]"
+              ]
+      "create-hosted-zone" `shouldSatisfy` (`elem` awsCreateProbeVerbs)
+      ("create-hosted-zone" `elem` map fst awsCreateVerbs) `shouldBe` False
+      awsCreateSiteViolations "src/Prodbox/EffectInterpreter.hs" contentsWithCreateHostedZone
+        `shouldBe` []
+      awsCreateSiteViolations "src/Prodbox/TestValidation.hs" contentsWithCreateHostedZone
+        `shouldBe` []
+
+    it "Sprint 4.27 awsCreateSiteViolations returns no violations on the current repo tree" $ do
+      repoRoot <- getCurrentDirectory
+      violations <- Prodbox.CheckCode.checkCreateCallSiteCoverage repoRoot
+      violations `shouldBe` []
+
+  describe "Sprint 4.27 StackDescriptor SSoT" $ do
+    it "per-run descriptor names equal the prior literal and the PerRun registry slice" $ do
+      StackDescriptor.perRunStackDescriptorNames `shouldBe` ["aws-eks", "aws-eks-subzone", "aws-test"]
+      StackDescriptor.perRunStackDescriptorNames
+        `shouldBe` ResourceClass.resourceNamesOfClass ResourceClass.PerRun
+
+    it "perRunStackNames is derived from the StackDescriptor SSoT" $
+      perRunStackNames `shouldBe` StackDescriptor.perRunStackDescriptorNames
+
+    it "every descriptor registry name is in the managed-resource registry with the matching class" $
+      [ (StackDescriptor.stackRegistryName d, StackDescriptor.stackLifecycleClass d)
+      | d <- StackDescriptor.stackDescriptors
+      ]
+        `shouldBe` [ ("aws-eks", ResourceClass.PerRun)
+                   , ("aws-eks-subzone", ResourceClass.PerRun)
+                   , ("aws-test", ResourceClass.PerRun)
+                   , ("aws-ses", ResourceClass.LongLived)
+                   ]
+
+    it "the resources/destroy CLI verbs derive from the verb stem" $ do
+      map StackDescriptor.stackResourcesCliVerb StackDescriptor.stackDescriptors
+        `shouldBe` ["eks-resources", "aws-subzone-resources", "test-resources", "aws-ses-resources"]
+      map StackDescriptor.stackDestroyCliVerb StackDescriptor.stackDescriptors
+        `shouldBe` ["eks-destroy", "aws-subzone-destroy", "test-destroy", "aws-ses-destroy"]
+
+    it "the project subdirs derive from the descriptors" $
+      StackDescriptor.stackProjectSubdirs
+        `shouldBe` ["aws-eks", "aws-eks-subzone", "aws-test", "aws-ses"]
+
+    it "the EKS registry name and Pulumi stack id differ as recorded" $ do
+      let eks = head StackDescriptor.stackDescriptors
+      StackDescriptor.stackRegistryName eks `shouldBe` "aws-eks"
+      StackDescriptor.stackPulumiStackId eks `shouldBe` "aws-eks-test"
+
+    it "renderStackCommandSurfaceMarkdown renders a header and every descriptor row" $ do
+      let rendered =
+            StackDescriptor.renderStackCommandSurfaceMarkdown StackDescriptor.stackDescriptors
+      rendered `shouldContain` "| Registry name | Pulumi stack id |"
+      rendered
+        `shouldContain` "| `aws-eks` | `aws-eks-test` | `pulumi/aws-eks/` | `prodbox pulumi eks-resources` |"
+      rendered
+        `shouldContain` "| `aws-ses` | `aws-ses` | `pulumi/aws-ses/` | `prodbox pulumi aws-ses-resources` |"
+
+  describe "Sprint 0.9 documentation-harmony pure helpers" $ do
+    describe "stripFencedCodeBlocks" $ do
+      it "drops lines inside a fenced block and the fence lines themselves" $
+        stripFencedCodeBlocks
+          [ "outside before"
+          , "```markdown"
+          , "<!-- prodbox:command-registry:start -->"
+          , "<!-- prodbox:command-registry:end -->"
+          , "```"
+          , "outside after"
+          ]
+          `shouldBe` ["outside before", "outside after"]
+
+      it "leaves content alone when there is no fence" $
+        stripFencedCodeBlocks ["a", "b", "c"] `shouldBe` ["a", "b", "c"]
+
+      it "treats an indented fence opener as a fence" $
+        stripFencedCodeBlocks ["keep", "  ```", "hidden", "  ```", "keep2"]
+          `shouldBe` ["keep", "keep2"]
+
+    describe "stripInlineCodeSpans" $ do
+      it "blanks a backtick-delimited inline-code span" $
+        stripInlineCodeSpans "the `<!-- prodbox:foo:start -->` marker example"
+          `shouldNotContain` "prodbox:foo:start"
+
+      it "leaves text with no backticks unchanged" $
+        stripInlineCodeSpans "plain prose with no code"
+          `shouldBe` "plain prose with no code"
+
+      it "blanks an inline-code link example so it is not surfaced" $
+        stripInlineCodeSpans "every relative `[text](path#anchor)` link"
+          `shouldNotContain` "](path#anchor)"
+
+    describe "prodboxMarkerKeysPresent" $ do
+      it "finds a real Markdown marker pair outside fences/inline code" $
+        prodboxMarkerKeysPresent
+          ( unlines
+              [ "intro"
+              , "<!-- prodbox:command-registry.markdown:start -->"
+              , "table"
+              , "<!-- prodbox:command-registry.markdown:end -->"
+              ]
+          )
+          `shouldBe` ["command-registry.markdown"]
+
+      it "ignores EXAMPLE markers inside a fenced markdown block" $
+        prodboxMarkerKeysPresent
+          ( unlines
+              [ "```markdown"
+              , "<!-- prodbox:command-registry:start -->"
+              , "<!-- prodbox:command-registry:end -->"
+              , "```"
+              ]
+          )
+          `shouldBe` []
+
+      it "ignores marker placeholders quoted inline as code spans" $
+        prodboxMarkerKeysPresent
+          "| Markdown | `<!-- prodbox:<key>:start -->` | `<!-- prodbox:<key>:end -->` |"
+          `shouldBe` []
+
+      it "finds a Helm template marker key" $
+        prodboxMarkerKeysPresent "{{/* prodbox:route-registry:start */}}"
+          `shouldBe` ["route-registry"]
+
+      it "finds a YAML-comment marker key" $
+        prodboxMarkerKeysPresent "# prodbox:route-registry:end"
+          `shouldBe` ["route-registry"]
+
+      it "the literal <key> placeholder is never reported as a real key" $
+        prodboxMarkerKeysPresent "<!-- prodbox:<key>:start -->"
+          `shouldBe` []
+
+    describe "parseGeneratedSectionsField" $ do
+      it "returns Nothing when the field is absent" $
+        parseGeneratedSectionsField "# Title\n\n**Status**: Reference only\n"
+          `shouldBe` Nothing
+
+      it "parses `none` to the empty declared set" $
+        parseGeneratedSectionsField "**Generated sections**: none\n"
+          `shouldBe` Just []
+
+      it "parses a single backtick-quoted key" $
+        parseGeneratedSectionsField "**Generated sections**: `command-registry.markdown`\n"
+          `shouldBe` Just ["command-registry.markdown"]
+
+      it "parses a comma-separated key list" $
+        parseGeneratedSectionsField "**Generated sections**: foo, bar.baz\n"
+          `shouldBe` Just ["foo", "bar.baz"]
+
+      it "stops at a parenthesised annotation after `none`" $
+        parseGeneratedSectionsField
+          "**Generated sections**: none (the matrices are hand-maintained today)\n"
+          `shouldBe` Just []
+
+    describe "generatedSectionsReconcilerViolations" $ do
+      it "agrees: registered + declared + marked yields no violations" $
+        generatedSectionsReconcilerViolations
+          "documents/cli/commands.md"
+          ["command-registry.markdown"]
+          ["command-registry.markdown"]
+          ["command-registry.markdown"]
+          ["command-registry.markdown", "resource-lifecycle-classes"]
+          `shouldBe` []
+
+      it "agrees: a clean `none` doc with no markers and no registry entry" $
+        generatedSectionsReconcilerViolations "documents/x.md" [] [] [] ["command-registry.markdown"]
+          `shouldBe` []
+
+      it "flags a registry key that the metadata does not declare" $ do
+        -- declared=[] while the key is both registered AND physically
+        -- marked surfaces two distinct legs: the registry-undeclared leg
+        -- (`does not declare`) and the marker-undeclared leg (`but does
+        -- not declare`). Both are correct: metadata must declare the key.
+        let violations =
+              generatedSectionsReconcilerViolations
+                "documents/cli/commands.md"
+                []
+                ["command-registry.markdown"]
+                ["command-registry.markdown"]
+                ["command-registry.markdown"]
+        length violations `shouldBe` 2
+        any (isInfixOf "does not declare") violations `shouldBe` True
+
+      it "flags a registry key whose markers are missing from the file" $ do
+        let violations =
+              generatedSectionsReconcilerViolations
+                "documents/cli/commands.md"
+                ["command-registry.markdown"]
+                []
+                ["command-registry.markdown"]
+                ["command-registry.markdown"]
+        length violations `shouldBe` 1
+        head violations `shouldContain` "are not present in the file"
+
+      it "flags a declared key that no GeneratedSectionRule registers" $ do
+        let violations =
+              generatedSectionsReconcilerViolations
+                "documents/x.md"
+                ["ghost-key"]
+                []
+                []
+                ["command-registry.markdown"]
+        length violations `shouldBe` 1
+        head violations `shouldContain` "no `GeneratedSectionRule` registers it"
+
+      it "flags a marker present in the file but absent from metadata" $ do
+        let violations =
+              generatedSectionsReconcilerViolations
+                "documents/x.md"
+                []
+                ["route-registry"]
+                []
+                ["route-registry"]
+        length violations `shouldBe` 1
+        head violations `shouldContain` "but does not declare"
+
+    describe "extractMarkdownLinkTargets" $ do
+      it "extracts a relative link target" $
+        extractMarkdownLinkTargets "see [the doc](./engineering/code_quality.md#x) please"
+          `shouldBe` ["./engineering/code_quality.md#x"]
+
+      it "skips link examples quoted inside inline code spans" $
+        extractMarkdownLinkTargets "the `[text](path#anchor)` form is documentation"
+          `shouldBe` []
+
+      it "skips link examples inside fenced code blocks" $
+        extractMarkdownLinkTargets (unlines ["```", "[x](./gone.md)", "```"])
+          `shouldBe` []
+
+      it "extracts multiple targets on one line" $
+        extractMarkdownLinkTargets "[a](a.md) and [b](b.md)"
+          `shouldBe` ["a.md", "b.md"]
+
+    describe "isRelativeLinkTarget" $ do
+      it "treats a relative path as relative" $
+        isRelativeLinkTarget "../substrates.md#anchor" `shouldBe` True
+
+      it "skips https URLs" $
+        isRelativeLinkTarget "https://example.com" `shouldBe` False
+
+      it "skips mailto links" $
+        isRelativeLinkTarget "mailto:matthewnowak@gmail.com" `shouldBe` False
+
+      it "skips pure-anchor links" $
+        isRelativeLinkTarget "#section" `shouldBe` False
+
+    describe "relativeLinkResolves" $ do
+      it "resolves a sibling link against the doc directory and strips the anchor" $
+        relativeLinkResolves
+          "DEVELOPMENT_PLAN/phase-8-email-invite-auth.md"
+          "substrates.md#cross-substrate-shared-resources"
+          `shouldBe` Just "DEVELOPMENT_PLAN/substrates.md"
+
+      it "resolves a parent-relative link normally (the corrected phase-8 link)" $
+        relativeLinkResolves
+          "DEVELOPMENT_PLAN/phase-8-email-invite-auth.md"
+          "../documents/engineering/aws_integration_environment_doctrine.md"
+          `shouldBe` Just "documents/engineering/aws_integration_environment_doctrine.md"
+
+      it "shows why the OLD `../substrates.md` link was broken from DEVELOPMENT_PLAN/" $
+        relativeLinkResolves
+          "DEVELOPMENT_PLAN/phase-8-email-invite-auth.md"
+          "../substrates.md"
+          `shouldBe` Just "substrates.md"
+
+      it "returns Nothing for an absolute URL" $
+        relativeLinkResolves "documents/x.md" "https://example.com" `shouldBe` Nothing
+
+      it "returns Nothing for a pure-anchor link" $
+        relativeLinkResolves "documents/x.md" "#section" `shouldBe` Nothing
 
   describe "Sprint 4.15 cascade decision from drain result" $ do
     it "DrainSucceeded maps to CascadeContinue Nothing" $
@@ -5913,8 +7253,8 @@ main = mainWithSuite "prodbox-unit" $ do
   describe "Sprint 7.7 residue lifecycle partition" $ do
     it "perRunStackNames matches substrates-doctrine Resource Lifecycle Classes verbatim" $
       perRunStackNames `shouldBe` ["aws-eks", "aws-eks-subzone", "aws-test"]
-    it "longLivedStackNames lists aws-ses and the retained public-edge cert (Sprint 4.24)" $
-      longLivedStackNames `shouldBe` ["aws-ses", "public-edge-tls"]
+    it "longLivedResourceNames lists aws-ses and the retained public-edge cert (Sprint 4.24)" $
+      longLivedResourceNames `shouldBe` ["aws-ses", "public-edge-tls"]
     it "partitionResidueByLifecycle splits residue correctly with all four stacks live" $ do
       let allFour =
             [ ("aws-eks", "prodbox pulumi eks-destroy --yes")
@@ -6458,16 +7798,66 @@ fakeAwsCredentialPropagationScript stateDir =
   , "JSON"
   ]
 
+-- | Sprint 5.6: resolve a 'PrerequisiteId' by its stable display string
+-- ('prerequisiteIdText'). Lets the prerequisite-registry tests keep
+-- asserting the stable snake_case identifiers while the registry is keyed
+-- by the typed ADT.
+prerequisiteIdFromText :: String -> PrerequisiteId
+prerequisiteIdFromText text =
+  case lookup text [(prerequisiteIdText pid, pid) | pid <- [minBound .. maxBound]] of
+    Just pid -> pid
+    Nothing -> error ("unknown prerequisite id in test: " ++ text)
+
 lookupPrerequisiteNode :: String -> EffectNode
 lookupPrerequisiteNode prerequisiteId =
-  case Map.lookup prerequisiteId prerequisiteRegistry of
+  case Map.lookup (prerequisiteIdFromText prerequisiteId) prerequisiteRegistry of
     Just node -> node
     Nothing -> error ("missing prerequisite in test registry: " ++ prerequisiteId)
 
 lookupPrerequisiteEffect :: String -> Effect
 lookupPrerequisiteEffect = effectNodeEffect . lookupPrerequisiteNode
 
-hasCycle :: Set.Set String -> String -> Bool
+-- | The declared prerequisite edges of a registry node, as their stable
+-- display strings (so the dependency-chain assertions stay readable while
+-- the registry is keyed by the typed 'PrerequisiteId').
+lookupPrereqTexts :: String -> [String]
+lookupPrereqTexts =
+  map prerequisiteIdText . effectNodePrerequisites . lookupPrerequisiteNode
+
+-- | Resolve a transitive closure over the production registry from
+-- string roots, returning the closure's stable display strings — a
+-- text-facing adapter over the typed 'transitiveClosureIds' so the
+-- closure assertions stay readable.
+transitiveClosureTexts :: [String] -> Either String [String]
+transitiveClosureTexts roots =
+  fmap
+    (map prerequisiteIdText)
+    (transitiveClosureIds (map prerequisiteIdFromText roots) prerequisiteRegistry)
+
+-- | Build a synthetic `EffectNode` for construction-time acyclicity tests (Sprint 1.31). The
+-- effect is `Noop`; only the id and dependency edges matter to the pure DAG construction path.
+-- Sprint 5.6: the synthetic nodes are keyed by real 'PrerequisiteId'
+-- constructors with deliberately rewired dependency edges (the production
+-- registry is acyclic, so a synthetic cyclic shape is built by re-pointing
+-- the edges, not by inventing string ids).
+cycleNode :: PrerequisiteId -> [PrerequisiteId] -> EffectNode
+cycleNode nodeId prerequisites = effectNode nodeId prerequisites Noop
+
+-- | Build a synthetic `EffectNode` with an explicit effect (used by the interpreter memo test).
+effectNode :: PrerequisiteId -> [PrerequisiteId] -> Effect -> EffectNode
+effectNode nodeId prerequisites effect =
+  EffectNode
+    { effectNodeId = nodeId
+    , effectNodeDescription = "synthetic test node " ++ prerequisiteIdText nodeId
+    , effectNodeRemedyHint = "synthetic test node " ++ prerequisiteIdText nodeId
+    , effectNodePrerequisites = prerequisites
+    , effectNodeEffect = effect
+    }
+
+isRightResult :: Either a b -> Bool
+isRightResult = either (const False) (const True)
+
+hasCycle :: Set.Set PrerequisiteId -> PrerequisiteId -> Bool
 hasCycle visited prerequisiteId
   | Set.member prerequisiteId visited = True
   | otherwise =
@@ -6559,6 +7949,25 @@ absentPerRunStatuses =
     , perRunAwsEksSubzone = Residue.ResidueAbsent
     , perRunAwsTest = Residue.ResidueAbsent
     }
+
+-- | Sprint 4.26: the parallel hand-maintained @Prodbox.Aws.categorizePulumiResidue@
+-- classifier was retired in favor of the registry-derived residue path
+-- ('ResourceRegistry.pairPerRunResidue' + 'pairAwsSesResidue' +
+-- 'residueGateRefusalList'). This local helper exercises exactly that
+-- registry path under the old signature, so every existing assertion below
+-- now proves the registry-derived @(stack-name, destroy-command)@ output
+-- matches the retired classifier's output verbatim (a behavior-preserving
+-- retirement).
+categorizePulumiResidue
+  :: PerRunResidueStatuses -> Residue.ResidueStatus -> [(String, String)]
+categorizePulumiResidue perRun sesStatus =
+  ResourceRegistry.residueGateRefusalList
+    ( ResourceRegistry.pairPerRunResidue
+        (perRunAwsEksTest perRun)
+        (perRunAwsEksSubzone perRun)
+        (perRunAwsTest perRun)
+        ++ ResourceRegistry.pairAwsSesResidue sesStatus
+    )
 
 pulumiStateBackendDhallFragment :: String
 pulumiStateBackendDhallFragment =

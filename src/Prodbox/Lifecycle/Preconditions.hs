@@ -23,6 +23,7 @@ module Prodbox.Lifecycle.Preconditions
   , noLiveOperationalIamUser
   , noLivePerRunPulumiStacks
   , noLiveLongLivedPulumiStacks
+  , noLiveLongLivedPulumiStacksPreflight
   , noUndrainedK8sAwsResources
   , renderPreconditionFailures
   , perRunSummaryLine
@@ -235,6 +236,25 @@ noLiveLongLivedPulumiStacks repoRoot =
                 , errorNarrative = renderLongLivedRefusal live
                 }
     }
+
+-- | Sprint 4.26: adapt 'noLiveLongLivedPulumiStacks' to the
+-- @FilePath -> IO (Either String ())@ shape the operator @prodbox aws
+-- teardown@ preflight injects (it cannot import this module directly —
+-- 'Prodbox.Lifecycle.Preconditions' imports 'Prodbox.Aws', so the wiring
+-- is dependency-injected from 'Prodbox.Native', which can import both).
+-- @Right ()@ when no long-lived stack blocks the teardown; @Left
+-- narrative@ (the structured long-lived refusal) otherwise. This wires the
+-- deferred Sprint 4.11 consolidation: @aws teardown@ now refuses on a live
+-- long-lived stack ('aws-ses' OR the retained 'public-edge-tls'
+-- certificate) the same way it refuses on per-run residue. The HARNESS
+-- teardown path ('Prodbox.Aws.applyAwsTeardown' under
+-- 'BypassAllResidueForHarnessRefresh') is unaffected — only the operator
+-- preflight injects this, preserving Sprint 7.9's deliberate aws-ses
+-- relaxation for the harness postflight.
+noLiveLongLivedPulumiStacksPreflight :: FilePath -> IO (Either String ())
+noLiveLongLivedPulumiStacksPreflight repoRoot = do
+  result <- preconditionCheck (noLiveLongLivedPulumiStacks repoRoot)
+  pure (either (Left . errorNarrative) Right result)
 
 renderLongLivedRefusal :: [(String, String)] -> String
 renderLongLivedRefusal live =

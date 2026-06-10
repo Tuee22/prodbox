@@ -1,7 +1,8 @@
 {-# LANGUAGE DuplicateRecordFields #-}
 
 module Prodbox.CLI.Spec
-  ( CommandSpec (..)
+  ( ArgumentSpec (..)
+  , CommandSpec (..)
   , Example (..)
   , OptionSpec (..)
   , awsTeardownPolicyFromFlags
@@ -21,7 +22,6 @@ import Options.Applicative
   , auto
   , command
   , eitherReader
-  , flag
   , flag'
   , help
   , hsubparser
@@ -98,11 +98,29 @@ data OptionSpec = OptionSpec
   }
   deriving (Eq, Show)
 
+-- | A positional argument a leaf command accepts. This is the
+-- documentation source of truth for positionals the flat 'OptionSpec'
+-- list cannot express (e.g. @charts status \<CHART\>@,
+-- @gateway config-gen \<OUTPUT_PATH\>@, @help \<COMMAND_PATH...\>@). The
+-- parser still derives positional handling from the
+-- 'optparse-applicative' bindings in 'parserForPath'; this spec field
+-- exists so the generated docs can render an "Arguments" column without
+-- re-deriving it from the parser.
+data ArgumentSpec = ArgumentSpec
+  { argumentName :: String
+  , argumentMetavar :: String
+  , argumentDescription :: String
+  , argumentOptional :: Bool
+  , argumentRepeatable :: Bool
+  }
+  deriving (Eq, Show)
+
 data CommandSpec = CommandSpec
   { name :: String
   , summary :: String
   , description :: String
   , children :: [CommandSpec]
+  , arguments :: [ArgumentSpec]
   , options :: [OptionSpec]
   , examples :: [Example]
   }
@@ -135,6 +153,7 @@ commandRegistry =
         , usersGroup
         , workloadGroup
         ]
+    , arguments = []
     , options =
         [ flagOption "verbose" (Just 'v') Nothing "Enable verbose output"
         , flagOption "version" Nothing Nothing "Show version"
@@ -558,15 +577,6 @@ parseColorMode valueText =
     "never" -> Right ColorNever
     _ -> Left "--color must be one of: auto, always, never"
 
-foregroundParser :: Parser Bool
-foregroundParser =
-  flag
-    True
-    True
-    ( long "foreground"
-        <> help "Run in the foreground"
-    )
-
 withCoverage :: TestScope -> Parser CommandRequest
 withCoverage scope =
   (\coverage substrate -> RunNative (NativeTest (TestCommand scope coverage substrate)))
@@ -607,22 +617,6 @@ daemonLaunchOptionsParser =
               <> help "Gateway config path"
           )
       )
-    <*> optional
-      ( strOption
-          ( long "log-level"
-              <> metavar "LEVEL"
-              <> help "Override daemon log level"
-          )
-      )
-    <*> optional
-      ( option
-          auto
-          ( long "port"
-              <> metavar "INTEGER"
-              <> help "Override daemon port"
-          )
-      )
-    <*> foregroundParser
     <*> planOptionsParser
 
 daemonStatusOptionsParser :: Parser DaemonStatusOptions
@@ -648,22 +642,6 @@ workloadOptionsParser =
               <> help "Workload Dhall config path (e.g. /etc/workload/config.dhall)"
           )
       )
-    <*> optional
-      ( strOption
-          ( long "log-level"
-              <> metavar "LEVEL"
-              <> help "Override daemon log level"
-          )
-      )
-    <*> optional
-      ( option
-          auto
-          ( long "port"
-              <> metavar "INTEGER"
-              <> help "Override daemon port"
-          )
-      )
-    <*> foregroundParser
 
 writeSwitchParser :: Parser Bool
 writeSwitchParser =
@@ -864,16 +842,42 @@ optionalOption longName' shortName' metavar' helpText =
     , required = False
     }
 
+-- | A required, single-valued positional argument.
+argument :: String -> String -> String -> ArgumentSpec
+argument argName metavarText helpText =
+  ArgumentSpec
+    { argumentName = argName
+    , argumentMetavar = metavarText
+    , argumentDescription = helpText
+    , argumentOptional = False
+    , argumentRepeatable = False
+    }
+
+-- | A required, repeatable positional argument (e.g. @help
+-- \<COMMAND_PATH...\>@).
+repeatableArgument :: String -> String -> String -> ArgumentSpec
+repeatableArgument argName metavarText helpText =
+  (argument argName metavarText helpText) {argumentRepeatable = True}
+
 example :: [String] -> String -> Example
 example = Example
 
 leaf :: String -> String -> String -> [OptionSpec] -> [Example] -> CommandSpec
-leaf nodeName nodeSummary nodeDescription nodeOptions nodeExamples =
+leaf nodeName nodeSummary nodeDescription = leafWithArgs nodeName nodeSummary nodeDescription []
+
+-- | Like 'leaf' but with a typed positional-argument list. The
+-- positionals are documentation source only (the parser keeps its own
+-- 'optparse-applicative' bindings); the generated command-surface matrix
+-- renders them in its "Arguments" column.
+leafWithArgs
+  :: String -> String -> String -> [ArgumentSpec] -> [OptionSpec] -> [Example] -> CommandSpec
+leafWithArgs nodeName nodeSummary nodeDescription nodeArguments nodeOptions nodeExamples =
   CommandSpec
     { name = nodeName
     , summary = nodeSummary
     , description = nodeDescription
     , children = []
+    , arguments = nodeArguments
     , options = nodeOptions
     , examples = nodeExamples
     }
@@ -885,6 +889,7 @@ group nodeName nodeSummary nodeDescription nodeChildren nodeOptions nodeExamples
     , summary = nodeSummary
     , description = nodeDescription
     , children = nodeChildren
+    , arguments = []
     , options = nodeOptions
     , examples = nodeExamples
     }
@@ -1110,9 +1115,6 @@ gatewayGroup =
         "Start gateway daemon"
         "Start the distributed gateway daemon."
         [ optionalOption "config" Nothing "PATH" "Gateway config path"
-        , optionalOption "log-level" Nothing "LEVEL" "Override daemon log level"
-        , optionalOption "port" Nothing "INTEGER" "Override daemon port"
-        , flagOption "foreground" Nothing Nothing "Run in the foreground"
         , flagOption "dry-run" Nothing Nothing "Render the daemon-start plan without mutating state"
         , optionalOption "plan-file" Nothing "PATH" "Write the rendered plan to a file"
         ]
@@ -1123,10 +1125,11 @@ gatewayGroup =
         "Query the gateway daemon status surface."
         [optionalOption "config" Nothing "PATH" "Gateway config path"]
         [example ["gateway", "status", "--config", "gateway.dhall"] "Inspect the gateway daemon state."]
-    , leaf
+    , leafWithArgs
         "config-gen"
         "Generate gateway config"
         "Generate a gateway config template."
+        [argument "output-path" "OUTPUT_PATH" "Path to write the generated gateway config to"]
         [requiredOption "node-id" Nothing "NODE_ID" "Node ID for the generated config"]
         [ example
             ["gateway", "config-gen", "gateway.json", "--node-id", "node-a"]
@@ -1142,10 +1145,11 @@ usersGroup =
     "users"
     "Operator-invited user management"
     "Operator-facing Keycloak user management surface for the Phase 8 invite flow."
-    [ leaf
+    [ leafWithArgs
         "invite"
         "Invite an operator-owned user by email"
         "Create a Keycloak user with emailVerified=false and trigger the SES-backed invite email."
+        [argument "email" "EMAIL" "Email address of the user to invite"]
         [ optionalOption "role" Nothing "ROLE" "Operator-defined role to assign on invite"
         , flagOption "dry-run" Nothing Nothing "Render the invite plan without mutating state"
         , optionalOption "plan-file" Nothing "PATH" "Write the rendered plan to a file"
@@ -1178,10 +1182,11 @@ usersGroup =
             ["users", "list", "--status-unverified"]
             "List users awaiting invite activation."
         ]
-    , leaf
+    , leafWithArgs
         "revoke"
         "Disable or delete an operator-managed user"
         "Revoke an operator-managed user. Disables the user by default; pass --delete to fully remove the user."
+        [argument "email-or-user-id" "EMAIL_OR_USER_ID" "Email address or Keycloak user ID to revoke"]
         [ flagOption "delete" Nothing Nothing "Fully delete the user instead of disabling"
         , flagOption "dry-run" Nothing Nothing "Render the revoke plan without mutating state"
         , optionalOption "plan-file" Nothing "PATH" "Write the rendered plan to a file"
@@ -1207,11 +1212,13 @@ workloadGroup =
         "start"
         "Start internal workload runtime"
         "Start the internal workload daemon."
-        [ optionalOption "log-level" Nothing "LEVEL" "Override daemon log level"
-        , optionalOption "port" Nothing "INTEGER" "Override daemon port"
-        , flagOption "foreground" Nothing Nothing "Run in the foreground"
+        [ optionalOption
+            "config"
+            Nothing
+            "PATH"
+            "Workload Dhall config path (e.g. /etc/workload/config.dhall)"
         ]
-        [example ["workload", "start", "--foreground"] "Start the workload runtime in the foreground."]
+        [example ["workload", "start"] "Start the internal workload runtime."]
     ]
     []
     [example ["workload", "start"] "Start the internal workload runtime."]
@@ -1228,16 +1235,18 @@ chartsGroup =
         "List supported root charts."
         []
         [example ["charts", "list"] "List supported root charts."]
-    , leaf
+    , leafWithArgs
         "status"
         "Show detailed chart status"
         "Inspect the current state of a root chart."
+        [chartArgument]
         []
         [example ["charts", "status", "vscode"] "Inspect the vscode chart status."]
-    , leaf
+    , leafWithArgs
         "deploy"
         "Deploy a root chart stack"
         "Reconcile a root chart to the supported state."
+        [chartArgument]
         [ flagOption "dry-run" Nothing Nothing "Render the deployment plan without mutating state"
         , optionalOption "plan-file" Nothing "PATH" "Write the rendered plan to a file"
         , optionalOption
@@ -1249,10 +1258,11 @@ chartsGroup =
         [ example ["charts", "deploy", "vscode"] "Deploy the vscode stack."
         , example ["charts", "deploy", "--dry-run", "vscode"] "Render the chart deployment plan."
         ]
-    , leaf
+    , leafWithArgs
         "delete"
         "Delete a root chart stack"
         "Delete a root chart stack."
+        [chartArgument]
         [ flagOption "yes" (Just 'y') Nothing "Skip confirmation prompt"
         , flagOption "dry-run" Nothing Nothing "Render the deletion plan without mutating state"
         , optionalOption "plan-file" Nothing "PATH" "Write the rendered plan to a file"
@@ -1268,6 +1278,9 @@ chartsGroup =
     ]
     []
     [example ["charts", "list"] "List supported root charts."]
+ where
+  chartArgument =
+    argument "chart" "CHART" "Root chart name (gateway, keycloak, vscode, api, websocket)"
 
 pulumiGroup :: CommandSpec
 pulumiGroup =
@@ -1547,10 +1560,11 @@ commandsLeaf =
 
 helpLeaf :: CommandSpec
 helpLeaf =
-  leaf
+  leafWithArgs
     "help"
     "Render help for a command path"
     "Render detailed help for a registered command path."
+    [repeatableArgument "command-path" "COMMAND_PATH" "Command path segments to render help for"]
     []
     [example ["help", "charts", "deploy"] "Render detailed help for `prodbox charts deploy`."]
 

@@ -3,6 +3,7 @@
 **Status**: Authoritative source
 **Supersedes**: N/A
 **Referenced by**: README.md, AGENTS.md, CLAUDE.md, documents/engineering/README.md, documents/engineering/cli_command_surface.md, documents/engineering/haskell_code_guide.md, documents/engineering/prerequisite_doctrine.md, documents/engineering/pure_fp_standards.md, documents/engineering/unit_testing_policy.md
+**Generated sections**: none
 
 > **Purpose**: Define policy guardrails and enforcement flow for `prodbox check-code`.
 
@@ -80,9 +81,15 @@ Current enforced quality surfaces:
   HLint `3.10`
 - HLint through `.hlint.yaml`, including the doctrine-owned marker set for nested-case and
   daemon-path negative-space rules
-- daemon-path guardrails for forbidden filesystem readiness markers, `sd_notify`, reload polling
-  triggers (`fsnotify`, `inotify`, and `getModificationTime`), module-local mutable metrics
-  counters, and unrestricted Async primitives outside the closed daemon set
+- daemon-path guardrails for forbidden filesystem readiness markers, `sd_notify`, module-local
+  mutable metrics counters, and unrestricted Async primitives outside the closed daemon set.
+  Filesystem-watch reload primitives (`fsnotify` / `hinotify`) are **not** forbidden: they are
+  the *required* config-reload mechanism per
+  [config_doctrine.md § 7](./config_doctrine.md#7-file-watch-reload-trigger). The legacy
+  `forbidFsnotify` / `forbidInotify` / `forbid-mtime-polling` rules are scheduled for removal
+  under Sprint `3.15`; until that lands, the daemon path opts in via the existing marker-comment
+  allowlist, and any residual blanket prohibition on filesystem-watch reload triggers in this
+  doctrine or in `src/Prodbox/CheckCode.hs` is superseded by config_doctrine § 7
 - daemon structured-logging guardrails: gateway and workload daemon entrypoints use
   `src/Prodbox/Gateway/Logging.hs` backed by `co-log`, log-level filtering reads the current
   live config at log sites, lifecycle tests assert the JSON stderr envelope, and daemon-path
@@ -94,19 +101,52 @@ Current enforced quality surfaces:
   [`DEVELOPMENT_PLAN/substrates.md` Resource Lifecycle Classes](../../DEVELOPMENT_PLAN/substrates.md#resource-lifecycle-classes)
   parity scan (the same code↔doc-parity mechanism as the generated-section registry and the
   `perRunStackNames`↔doc rule), plus a create-call-site coverage scan
-  (`checkCreateCallSiteCoverage`) that covers the two — deliberately narrow — surfaces where
-  `prodbox` actually originates a new AWS/cluster resource: (1) every `Pulumi<Word>Resources`
-  constructor in `src/Prodbox/CLI/Command.hs` must map (via `pulumiCreateSiteOwners`) to a
-  registered `PerRun`/`LongLived` stack name; (2) the operational-IAM creation verbs
-  (`create-user`, `create-access-key`, `put-user-policy`) may appear only in the
-  `operational-iam-user` owner module `src/Prodbox/Aws.hs`. Broader generic-`create*` /
-  `change-resource-record-sets` / `create-bucket` scanning is deliberately excluded to avoid
-  false positives (those resources are Pulumi-managed or specially-handled bootstrap
-  operations). Together these make "a creatable-but-undiscoverable resource" unrepresentable per
+  (`checkCreateCallSiteCoverage`, wired into `runDoctrineAlignmentCheck` as of Sprint `4.27`)
+  that covers every surface where `prodbox` actually originates a new AWS/cluster resource:
+  (1) every `Pulumi<Word>Resources` constructor in `src/Prodbox/CLI/Command.hs` must map (via
+  `pulumiCreateSiteOwners`) to a registered `PerRun`/`LongLived` stack name; (2) the generalized
+  AWS-resource create-site lint `awsCreateSiteViolations` (Sprint `4.27`, formerly the IAM-only
+  `iamCreateSiteViolations`) flags any quoted `aws … create-*` verb appearing outside its
+  sanctioned owner module(s): `create-user` / `create-access-key` / `put-user-policy` only in the
+  `operational-iam-user` owner `src/Prodbox/Aws.hs`, and `create-bucket` only in the long-lived
+  `pulumi_state_backend` owner `src/Prodbox/Infra/LongLivedPulumiBackend.hs` and the in-cluster
+  MinIO-backend owner `src/Prodbox/Infra/MinioBackend.hs`. The verb is matched in its quoted
+  subprocess-argument form so Haddock prose describing a verb is not a false positive. The Route 53
+  capability-probe verb `create-hosted-zone` is deliberately carved out (`awsCreateProbeVerbs`,
+  never in `awsCreateVerbs`): the probe creates a throwaway hosted zone and immediately deletes
+  it (now under `bracketOnError`, Sprint `4.27`), so it has no steady state to discover/reconcile
+  and is correctly **not** a registered `ManagedResource`. Together these make "a
+  creatable-but-undiscoverable resource" unrepresentable per
+  [lifecycle_reconciliation_doctrine.md § 3.1](./lifecycle_reconciliation_doctrine.md)
+- destructive Plan / Apply totality (Sprint `4.26`): `checkPlanOptionsHonored` scans the
+  destructive command-dispatch modules (`src/Prodbox/CLI/Rke2.hs`, `src/Prodbox/CLI/Nuke.hs`,
+  `src/Prodbox/Native.hs`) and fails when a destructive dispatch arm binds its
+  `PlanOptions` / `NukeOptions` field to a `_` wildcard. The covered arms are
+  `destructivePlanOptionsArms` (`Rke2Delete`, `NativeNuke`); a wildcarded options field
+  silently drops `--dry-run` / `--plan-file`, which is exactly the bug where
+  `prodbox rke2 delete --yes --dry-run` *mutated* (`Rke2Delete flags _planOptions` discarded
+  the options). This keeps every destructive command routed through `runPlanWithOptions` so
+  `--dry-run` renders the full plan and exits `0` without mutation per
+  [pure_fp_standards.md § Plan / Apply](./pure_fp_standards.md#plan--apply) and
   [lifecycle_reconciliation_doctrine.md § 3.1](./lifecycle_reconciliation_doctrine.md)
 - warning-clean Haskell compilation through `cabal build --builddir=.build all --ghc-options=-Werror`
+  (this build runs in `runCheckCode` *after* the lint surface passes; it is not part of
+  `runLintAll`)
 - operator-binary sync to `.build/prodbox`
 - doctrine alignment described by the governed docs in this directory
+
+Scheduled under Sprint `0.9` (not yet enforced), `runGeneratedArtifactLint` gains two
+additional governed-document checks, both consuming the existing `GeneratedSectionRule`
+registry:
+
+- a **`**Generated sections**` header ↔ markers ↔ registry reconciler** asserting that any
+  governed doc carrying generated markers declares the corresponding `<key>` set in its
+  `**Generated sections**:` metadata field, and vice versa (the metadata-field discipline of
+  [§ Project-level documentation standards](#project-level-documentation-standards) item 4),
+  with the registry as the third leg so a declared-or-marked key that is absent from
+  `[GeneratedSectionRule]` also fails;
+- a **relative-link check** asserting that in-repo relative links (with anchors) in governed
+  docs resolve to an existing target file (and, where checkable, anchor).
 
 Phase 2 closes the daemon structured-logging surface on the supported gateway and workload
 entrypoints. Direct terminal writes outside the logging boundary are part of the enforced
@@ -338,7 +378,7 @@ tool lint docs        — governed docs, generated sections
 tool lint proto       — wire-format schemas       (when proto present)
 tool lint chart       — Helm chart invariants     (when chart present)
 tool lint haskell     — fourmolu --mode check + hlint + cabal format roundtrip
-tool lint all         — runs every lint above, plus `cabal build all`
+tool lint all         — runs every lint above (lint-only; the warning-clean build runs under `tool check-code` / `tool test lint`, not here)
 ```
 
 ### Operator Vocabulary Enforcement
@@ -418,8 +458,15 @@ test-suite call the same Haskell function.
 
 ### Aggregate dispatch
 
-- `tool test lint` (or `tool lint all`) runs the full lint surface plus
-  `cabal build all`.
+- `tool lint all` runs the full lint surface only (files, docs, haskell,
+  chart). It does **not** invoke `cabal build all`; in this repo `runLintAll`
+  in `src/Prodbox/CheckCode.hs` is lint-only.
+- `tool check-code` runs `tool lint all` first and then, only on lint success,
+  the warning-clean `cabal build --builddir=.build all --ghc-options=-Werror`
+  followed by the operator-binary sync. The build belongs to `check-code`, not
+  to `lint all`.
+- `tool test lint` is the broader gate that pairs the full lint surface with
+  the warning-clean build.
 - `tool test all` includes `tool test lint` as its first step before running
   `cabal test`.
 

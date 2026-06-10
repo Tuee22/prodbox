@@ -25,7 +25,8 @@
 --   5. Long-lived @pulumi_state_backend@ bucket destroy (last because
 --      AWS imposes a ~24-hour bucket-name reuse cooldown).
 module Prodbox.CLI.Nuke
-  ( confirmationLiteral
+  ( abortOrContinue
+  , confirmationLiteral
   , defaultNukeOptions
   , renderNukePlan
   , runNukeCommand
@@ -43,6 +44,8 @@ import Prodbox.CLI.Command
   ( NukeOptions (..)
   , PlanOptions (..)
   , PulumiCommand (..)
+  , buildPlan
+  , runPlanWithOptions
   )
 import Prodbox.CLI.Interactive
   ( InteractiveGuard (..)
@@ -61,6 +64,13 @@ import Prodbox.Infra.LongLivedPulumiBackend
   ( destroyLongLivedPulumiStateBucket
   , loadAdminAwsCredentials
   , longLivedBackendErrorMessage
+  )
+import Prodbox.Lifecycle.ResourceRegistry
+  ( awsSesPulumiResource
+  , longLivedManagedResources
+  , perRunManagedResources
+  , resourceDestroyCommand
+  , resourceName
   )
 import Prodbox.Lifecycle.TagSweep
   ( TagSweepInput (..)
@@ -107,36 +117,47 @@ nukeInteractiveGuard =
           ]
     }
 
+-- | Sprint 4.26: route @prodbox nuke@ through the shared Plan / Apply
+-- entrypoint so @--dry-run@ renders the full teardown plan and exits 0
+-- without mutating, and @--plan-file@ writes the rendered plan. The
+-- @nukePlanFile@ field is now read (previously threaded into
+-- 'NukeOptions' but unread). 'runPlanWithOptions' maps @NukeOptions@'s
+-- @nukeDryRun@/@nukePlanFile@ onto 'PlanOptions' so the dry-run/plan-file
+-- semantics match every other destructive command. The interactive
+-- confirmation + orchestration live entirely inside the apply closure so
+-- dry-run never prompts or mutates.
 runNukeCommand :: FilePath -> NukeOptions -> IO ExitCode
 runNukeCommand repoRoot options =
-  if nukeDryRun options
-    then do
-      writeOutput (renderNukePlan repoRoot)
-      pure ExitSuccess
+  runPlanWithOptions
+    PlanOptions {dryRun = nukeDryRun options, planFile = nukePlanFile options}
+    (buildPlan (const (renderNukePlan repoRoot)) ())
+    (\() -> runNukeInteractive repoRoot)
+
+runNukeInteractive :: FilePath -> IO ExitCode
+runNukeInteractive repoRoot = do
+  requireInteractiveTty nukeInteractiveGuard
+  writeOutputLine "prodbox nuke — total teardown."
+  writeOutputLine ""
+  writeOutputLine "This will destroy:"
+  writeOutputLine "  - K8s LoadBalancer Services, ALB Ingresses, Delete-reclaim PVCs"
+  writeOutputLine "  - aws-eks-subzone, aws-eks, aws-test (per-run substrate stacks)"
+  writeOutputLine "  - aws-ses (long-lived cross-substrate sending identity)"
+  writeOutputLine "  - operational `prodbox` IAM user + access keys"
+  writeOutputLine "  - local RKE2 cluster (etcd, kubelet, containerd)"
+  writeOutputLine "  - prodbox-tagged AWS resources surfaced by the postflight tag sweep"
+  writeOutputLine "  - long-lived `pulumi_state_backend` S3 bucket"
+  writeOutputLine ""
+  writeOutputLine ("Type `" ++ confirmationLiteral ++ "` to proceed (case-sensitive).")
+  writeOutputLine "Anything else aborts."
+  writeOutputLine ""
+  writeOutput "> "
+  hFlush stdout
+  typed <- getLine
+  if normalize typed == confirmationLiteral
+    then runNukeOrchestration repoRoot
     else do
-      requireInteractiveTty nukeInteractiveGuard
-      writeOutputLine "prodbox nuke — total teardown."
-      writeOutputLine ""
-      writeOutputLine "This will destroy:"
-      writeOutputLine "  - K8s LoadBalancer Services, ALB Ingresses, Delete-reclaim PVCs"
-      writeOutputLine "  - aws-eks-subzone, aws-eks, aws-test (per-run substrate stacks)"
-      writeOutputLine "  - aws-ses (long-lived cross-substrate sending identity)"
-      writeOutputLine "  - operational `prodbox` IAM user + access keys"
-      writeOutputLine "  - local RKE2 cluster (etcd, kubelet, containerd)"
-      writeOutputLine "  - prodbox-tagged AWS resources surfaced by the postflight tag sweep"
-      writeOutputLine "  - long-lived `pulumi_state_backend` S3 bucket"
-      writeOutputLine ""
-      writeOutputLine ("Type `" ++ confirmationLiteral ++ "` to proceed (case-sensitive).")
-      writeOutputLine "Anything else aborts."
-      writeOutputLine ""
-      writeOutput "> "
-      hFlush stdout
-      typed <- getLine
-      if normalize typed == confirmationLiteral
-        then runNukeOrchestration repoRoot
-        else do
-          writeDiagnosticLine "prodbox nuke: confirmation rejected; nothing destroyed."
-          pure (ExitFailure 1)
+      writeDiagnosticLine "prodbox nuke: confirmation rejected; nothing destroyed."
+      pure (ExitFailure 1)
  where
   -- Trim trailing whitespace only; literal is case-sensitive.
   normalize value = reverse (dropWhile (== ' ') (reverse value))
@@ -144,20 +165,40 @@ runNukeCommand repoRoot options =
 -- | The dependency-ordered teardown plan. Rendered verbatim by
 -- @--dry-run@ so operators can review what would happen without
 -- mutating any state.
+--
+-- Sprint 5.6: the per-run, @aws-ses@, and long-lived-S3 destroy lines are
+-- DERIVED from the managed-resource registry / 'StackDescriptor' SSoT
+-- (Sprints 4.26/4.27) — 'perRunManagedResources' for step 1's cascade
+-- targets, 'awsSesPulumiResource' for step 2, and 'longLivedManagedResources'
+-- for the long-lived S3-object destroys — so the rendered plan tracks the
+-- registry rather than drifting from it. A registry-generated golden pins
+-- this, and a parity check fails if a registered resource is added without
+-- updating the golden.
 renderNukePlan :: FilePath -> String
 renderNukePlan _repoRoot =
   unlines
-    [ "PRODBOX_NUKE_PLAN"
-    , "STEP=1 K8s drain + per-run Pulumi destroys + cluster uninstall (rke2 delete --cascade arm)"
-    , "STEP=2 prodbox pulumi aws-ses-destroy --yes (long-lived shared infrastructure)"
-    , "STEP=3 prodbox aws teardown (operational `prodbox` IAM user + access keys)"
-    , "STEP=4 postflight tag sweep (any prodbox-tagged AWS residue)"
-    , "STEP=5 destroy long-lived `pulumi_state_backend` S3 bucket"
-    , "ADMIN_CREDENTIAL_SOURCE=prodbox-config.dhall::aws_admin_for_test_simulation.*"
-    , "STATUS=plan-only"
-    , "CONFIRMATION_LITERAL=" ++ confirmationLiteral
-    , "ALSO_NOTE=Each step is idempotent on retry; the operator may resume after a partial failure."
-    ]
+    ( [ "PRODBOX_NUKE_PLAN"
+      , "STEP=1 K8s drain + per-run Pulumi destroys + cluster uninstall (rke2 delete --cascade arm)"
+      ]
+        ++ [ "STEP=1 per_run_destroy " ++ resourceName resource
+           | resource <- perRunManagedResources
+           ]
+        ++ [ "STEP=2 "
+               ++ resourceDestroyCommand awsSesPulumiResource
+               ++ " (long-lived shared infrastructure)"
+           , "STEP=3 prodbox aws teardown (operational `prodbox` IAM user + access keys)"
+           , "STEP=4 postflight tag sweep (fail-closed: any prodbox-tagged AWS residue OR an unconfirmable sweep aborts nuke non-zero before step 5)"
+           ]
+        ++ [ "STEP=4 long_lived_destroy " ++ resourceName resource
+           | resource <- longLivedManagedResources
+           ]
+        ++ [ "STEP=5 destroy long-lived `pulumi_state_backend` S3 bucket"
+           , "ADMIN_CREDENTIAL_SOURCE=prodbox-config.dhall::aws_admin_for_test_simulation.*"
+           , "STATUS=plan-only"
+           , "CONFIRMATION_LITERAL=" ++ confirmationLiteral
+           , "ALSO_NOTE=Each step is idempotent on retry; the operator may resume after a partial failure."
+           ]
+    )
 
 -- | Orchestration body. Loads the admin AWS credential block from
 -- @aws_admin_for_test_simulation.*@ in @prodbox-config.dhall@ before
@@ -203,25 +244,27 @@ runNukeSteps repoRoot adminCredentials backend = do
           runStep
             "4/5 postflight tag sweep"
             (nukeStepTagSweep repoRoot adminCredentials)
-        -- Tag sweep is informational; non-zero exit surfaces residue
-        -- to the operator but does not abort the bucket destroy.
-        case step4 of
-          ExitSuccess -> pure ()
-          ExitFailure _ ->
-            writeDiagnosticLine
-              "prodbox nuke: postflight tag sweep surfaced residue; proceeding to bucket destroy. Resolve residue with `aws` CLI before re-provisioning."
-        step5 <-
-          runStep
-            "5/5 long-lived state-bucket destroy"
-            (nukeStepStateBucket repoRoot adminCredentials backend)
-        case step5 of
-          ExitSuccess -> do
-            writeOutputLine ""
-            writeOutputLine "prodbox nuke: total teardown complete."
-            writeOutputLine "AWS imposes a ~24h cooldown on long-lived state-bucket name reuse;"
-            writeOutputLine "next reprovision must wait that window before re-creating the bucket."
-            pure ExitSuccess
-          failed -> pure failed
+        -- Sprint 4.26: the postflight tag sweep is FAIL-CLOSED per
+        -- lifecycle_reconciliation_doctrine.md § 6. A non-empty leak list
+        -- OR an unconfirmable sweep is a hard failure: it aborts nuke with
+        -- the surfaced residue and a non-zero exit BEFORE the step-5 bucket
+        -- destroy, never "proceed and report success." "Could not observe
+        -- the absence of residue" is treated as "residue may be present,"
+        -- never as "residue is absent" (the same soundness rule as § 3.1
+        -- invariant 2: Unreachable → refuse).
+        abortOrContinue step4 $ do
+          step5 <-
+            runStep
+              "5/5 long-lived state-bucket destroy"
+              (nukeStepStateBucket repoRoot adminCredentials backend)
+          case step5 of
+            ExitSuccess -> do
+              writeOutputLine ""
+              writeOutputLine "prodbox nuke: total teardown complete."
+              writeOutputLine "AWS imposes a ~24h cooldown on long-lived state-bucket name reuse;"
+              writeOutputLine "next reprovision must wait that window before re-creating the bucket."
+              pure ExitSuccess
+            failed -> pure failed
 
 -- | Run one nuke step and emit a structured header before/after.
 runStep :: String -> IO ExitCode -> IO ExitCode

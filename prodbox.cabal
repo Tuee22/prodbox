@@ -47,7 +47,9 @@ library
         Prodbox.Infra.AwsSesStack
         Prodbox.Infra.AwsTestStack
         Prodbox.Infra.LongLivedPulumiBackend
+        Prodbox.Infra.StackDescriptor
         Prodbox.Infra.StackOutputs
+        Prodbox.Infra.SubstrateKubectl
         Prodbox.CLI.Nuke
         Prodbox.Lifecycle.K8sDrain
         Prodbox.Lifecycle.LiveResidue
@@ -76,6 +78,7 @@ library
         Prodbox.Native
         Prodbox.PostgresPlatform
         Prodbox.Prerequisite
+        Prodbox.PrerequisiteId
         Prodbox.PublicEdge
         Prodbox.Repo
         Prodbox.Retry
@@ -88,14 +91,15 @@ library
         Prodbox.Secret.Wire
         Prodbox.Service
         Prodbox.Settings
-        Prodbox.StateMachine
         Prodbox.Substrate
         Prodbox.Subprocess
         Prodbox.TestPlan
         Prodbox.TestRunner
+        Prodbox.TestSeam.GatewayDerive
         Prodbox.TestValidation
         Prodbox.Tla
         Prodbox.Workload
+        Prodbox.Workload.PodIdentity
         Prodbox.Workload.Settings
 
     hs-source-dirs:   src

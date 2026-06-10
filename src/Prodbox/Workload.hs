@@ -1,21 +1,29 @@
 {-# LANGUAGE OverloadedStrings #-}
 
 module Prodbox.Workload
-  ( resolveHttpPort
-  , resolveWorkloadLogLevel
+  ( WorkloadBootConfig (..)
+  , WorkloadLiveConfig (..)
+  , WorkloadMode (..)
+  , workloadBootConfigFromDhall
+  , workloadLiveConfigFromDhall
+  , workloadBootFieldsChanged
   , runWorkloadCommand
   )
 where
 
-import Control.Applicative ((<|>))
 import Control.Concurrent (forkFinally, threadDelay)
+import Control.Concurrent.Async (concurrently_, race_, withAsync)
 import Control.Concurrent.STM
-  ( TVar
+  ( TQueue
+  , TVar
   , atomically
   , modifyTVar'
+  , newTQueueIO
   , newTVarIO
+  , readTQueue
   , readTVar
   , readTVarIO
+  , writeTQueue
   , writeTVar
   )
 import Control.Exception
@@ -44,7 +52,7 @@ import Data.ByteString.Lazy qualified as BL
 import Data.ByteString.Lazy.Char8 qualified as BL8
 import Data.Char (isAsciiLower, isAsciiUpper, isDigit)
 import Data.IORef (IORef, modifyIORef', newIORef, readIORef)
-import Data.List (intercalate, stripPrefix)
+import Data.List (intercalate, isPrefixOf, stripPrefix)
 import Data.Map.Strict (Map)
 import Data.Map.Strict qualified as Map
 import Data.Maybe (fromMaybe)
@@ -94,17 +102,52 @@ import Prodbox.Subprocess
   , Subprocess (..)
   , captureSubprocessResult
   )
+import Prodbox.Workload.PodIdentity (resolvePodName)
 import Prodbox.Workload.Settings qualified as WorkloadSettings
-import System.Environment (lookupEnv)
 import System.Exit
   ( ExitCode (ExitFailure, ExitSuccess)
   )
+import System.FSNotify
+  ( Event (..)
+  , defaultConfig
+  , watchDir
+  , withManagerConf
+  )
+import System.FilePath (takeDirectory, takeFileName)
 import System.Posix.Types (Fd (..))
 import System.Timeout (timeout)
 
 data WorkloadMode
   = WorkloadApi
   | WorkloadWebsocket
+  deriving (Eq, Show)
+
+-- | Sprint 3.15: the workload's Boot/Live split, mirroring the gateway
+-- daemon's @DaemonConfig@ → @LiveConfig@ separation
+-- ([config_doctrine.md §8](../../documents/engineering/config_doctrine.md#8-boot-vs-live-split-and-the-restart-contract)).
+--
+-- 'WorkloadBootConfig' carries the fields that cannot change without
+-- rebinding the listening socket or re-electing the request handler: the
+-- 'WorkloadMode' sum and the listen port. A change to either on a config
+-- reload triggers drain-and-exit so the kubelet restarts the Pod against
+-- the new Dhall. Pure by construction so the boot-change classifier
+-- ('workloadBootFieldsChanged') is testable without a socket.
+data WorkloadBootConfig = WorkloadBootConfig
+  { bootMode :: WorkloadMode
+  , bootPort :: Int
+  }
+  deriving (Eq, Show)
+
+-- | Sprint 3.15: the workload's live-reloadable config. These fields apply
+-- in-process on a config reload with no Pod restart: the log level and the
+-- websocket-mode Redis / OIDC tunables (none of which require rebinding the
+-- listening socket). Mirrors the gateway daemon's @LiveConfig@ held behind
+-- an @envLiveConfig@ 'TVar'.
+data WorkloadLiveConfig = WorkloadLiveConfig
+  { liveLogLevel :: String
+  , liveRedisConfig :: Maybe RedisConfig
+  , liveOidcConfig :: Maybe OidcConfig
+  }
   deriving (Eq, Show)
 
 data HttpRequest = HttpRequest
@@ -139,10 +182,32 @@ data OidcConfig = OidcConfig
 
 data WebsocketRuntime = WebsocketRuntime
   { websocketRuntimePodName :: String
-  , websocketRuntimeRedisConfig :: RedisConfig
-  , websocketRuntimeOidcConfig :: OidcConfig
+  , websocketRuntimeLive :: TVar WebsocketLiveTunables
+  -- ^ Sprint 3.15: the live-reloadable websocket tunables (Redis endpoint +
+  -- OIDC bootstrap) read fresh on each request so a @log_level@-style
+  -- in-process config reload that also rotates these values takes effect
+  -- without rebinding the listening socket. Mirrors the daemon's
+  -- @envLiveConfig@ 'TVar'.
   , websocketRuntimeState :: TVar WebsocketServerState
   }
+
+-- | The currently-active websocket tunables, snapshotted from the live
+-- config 'TVar' by 'currentWebsocketRedisConfig' / 'currentWebsocketOidcConfig'.
+data WebsocketLiveTunables = WebsocketLiveTunables
+  { websocketLiveRedisConfig :: RedisConfig
+  , websocketLiveOidcConfig :: OidcConfig
+  }
+  deriving (Eq, Show)
+
+-- | Read the currently-active Redis endpoint from the live config 'TVar'.
+currentWebsocketRedisConfig :: WebsocketRuntime -> IO RedisConfig
+currentWebsocketRedisConfig runtime =
+  websocketLiveRedisConfig <$> readTVarIO (websocketRuntimeLive runtime)
+
+-- | Read the currently-active OIDC bootstrap config from the live config 'TVar'.
+currentWebsocketOidcConfig :: WebsocketRuntime -> IO OidcConfig
+currentWebsocketOidcConfig runtime =
+  websocketLiveOidcConfig <$> readTVarIO (websocketRuntimeLive runtime)
 
 data WebsocketServerState = WebsocketServerState
   { serverDraining :: Bool
@@ -212,43 +277,216 @@ runWorkloadCommand command =
   case command of
     WorkloadStart options -> withSocketsDo (runWorkloadServer options)
 
+-- | Sprint 3.15: the workload's in-memory runtime environment, mirroring
+-- the gateway daemon's @DaemonEnv@. Carries the @--config@ path for the
+-- file-watch reload loop, the immutable Boot config (mode + port), the
+-- live-reloadable config behind a 'TVar', a reload-signal 'TQueue' fed by
+-- the @fsnotify@ watcher, and the optional websocket runtime.
+data WorkloadEnv = WorkloadEnv
+  { workloadEnvConfigPath :: FilePath
+  , workloadEnvBootConfig :: WorkloadBootConfig
+  , workloadEnvLiveConfig :: TVar WorkloadLiveConfig
+  , workloadEnvReloadSignals :: TQueue ()
+  , workloadEnvDrainSignals :: TQueue ()
+  , workloadEnvPodName :: String
+  , workloadEnvWebsocketRuntime :: Maybe WebsocketRuntime
+  }
+
+-- | Sprint 3.15: the mounted Dhall config is the sole config source. A
+-- missing @--config@ is a fast, structured failure (no env-var fallback);
+-- a present-but-unparseable @--config@ likewise fails fast through
+-- 'WorkloadSettings.loadWorkloadConfig'.
 runWorkloadServer :: WorkloadOptions -> IO ExitCode
-runWorkloadServer options = do
-  dhallResult <- resolveWorkloadDhallConfig options
-  case dhallResult of
-    Left err -> failWith err
-    Right maybeDhall -> do
-      modeResult <- resolveWorkloadModeFromDhall (workloadConfigPath options) maybeDhall
-      case modeResult of
+runWorkloadServer options =
+  case workloadConfigPath options of
+    Nothing ->
+      failWith
+        "Missing workload config path. Pass `--config <path>` to the workload binary; the mounted Dhall config is the sole config source (see documents/engineering/config_doctrine.md § 10)."
+    Just configPath -> do
+      dhallResult <- WorkloadSettings.loadWorkloadConfig configPath
+      case dhallResult of
         Left err -> failWith err
-        Right mode -> do
-          port <- resolveHttpPortWithDhall options maybeDhall
-          podName <- resolvePodName
-          websocketRuntimeResult <- resolveWebsocketRuntime maybeDhall mode podName
-          case websocketRuntimeResult of
+        Right dhall -> do
+          let bootConfig = workloadBootConfigFromDhall dhall
+          liveConfigResult <- pure (workloadLiveConfigFromDhall (bootMode bootConfig) dhall)
+          case liveConfigResult of
             Left err -> failWith err
-            Right maybeRuntime -> do
-              logLevel <- resolveWorkloadLogLevelWithDhall options maybeDhall
-              logStructuredAt
-                (severityFromLogLevel logLevel)
-                Info
-                "public_workload_starting"
-                [ field "mode" (renderMode mode)
-                , field "port" port
-                , field "log_level" logLevel
-                ]
-              serverSocketResult <- openListeningSocket port
-              case serverSocketResult of
+            Right liveConfig -> do
+              podName <- resolvePodName
+              websocketRuntimeResult <- resolveWebsocketRuntime (bootMode bootConfig) podName liveConfig
+              case websocketRuntimeResult of
                 Left err -> failWith err
-                Right serverSocket ->
-                  bracket (pure serverSocket) close $ \boundSocket -> do
-                    listen boundSocket 16
-                    forever $ do
-                      (clientSocket, _) <- accept boundSocket
-                      void $
-                        forkFinally
-                          (handleClient mode podName maybeRuntime clientSocket)
-                          (\_ -> void (tryCloseSocket clientSocket))
+                Right maybeRuntime -> do
+                  liveConfigVar <- newTVarIO liveConfig
+                  reloadSignals <- newTQueueIO
+                  drainSignals <- newTQueueIO
+                  let env =
+                        WorkloadEnv
+                          { workloadEnvConfigPath = configPath
+                          , workloadEnvBootConfig = bootConfig
+                          , workloadEnvLiveConfig = liveConfigVar
+                          , workloadEnvReloadSignals = reloadSignals
+                          , workloadEnvDrainSignals = drainSignals
+                          , workloadEnvPodName = podName
+                          , workloadEnvWebsocketRuntime = maybeRuntime
+                          }
+                  logStructuredAt
+                    (severityFromLogLevel (liveLogLevel liveConfig))
+                    Info
+                    "public_workload_starting"
+                    [ field "mode" (renderMode (bootMode bootConfig))
+                    , field "port" (bootPort bootConfig)
+                    , field "log_level" (liveLogLevel liveConfig)
+                    ]
+                  serverSocketResult <- openListeningSocket (bootPort bootConfig)
+                  case serverSocketResult of
+                    Left err -> failWith err
+                    Right serverSocket -> do
+                      bracket (pure serverSocket) close $ \boundSocket -> do
+                        listen boundSocket 16
+                        -- Mirror the daemon's structured-concurrency shape:
+                        -- the accept loop, the fsnotify config-watch loop,
+                        -- and the live-reload loop run as managed children;
+                        -- a boot-field change drains-and-exits the whole set.
+                        race_
+                          (drainCoordinator env)
+                          ( withAsync (configFileWatchLoop env) $ \_ ->
+                              concurrently_
+                                (reloadLoop env)
+                                (acceptLoop env boundSocket)
+                          )
+                      pure ExitSuccess
+
+acceptLoop :: WorkloadEnv -> Socket -> IO ()
+acceptLoop env boundSocket =
+  forever $ do
+    (clientSocket, _) <- accept boundSocket
+    void $
+      forkFinally
+        ( handleClient
+            (bootMode (workloadEnvBootConfig env))
+            (workloadEnvPodName env)
+            (workloadEnvWebsocketRuntime env)
+            clientSocket
+        )
+        (\_ -> void (tryCloseSocket clientSocket))
+
+-- | Sprint 3.15: when a config reload detects a Boot-field change it enqueues
+-- a drain signal; this coordinator wakes, drains any websocket connections,
+-- and returns so the @race_@ in 'runWorkloadServer' tears down the accept /
+-- watch / reload children and the process exits for a kubelet restart, per
+-- [config_doctrine.md §8](../../documents/engineering/config_doctrine.md#8-boot-vs-live-split-and-the-restart-contract).
+drainCoordinator :: WorkloadEnv -> IO ()
+drainCoordinator env = do
+  atomically (readTQueue (workloadEnvDrainSignals env))
+  liveConfig <- readTVarIO (workloadEnvLiveConfig env)
+  logStructuredAt
+    (severityFromLogLevel (liveLogLevel liveConfig))
+    Warn
+    "public_workload_boot_change_draining"
+    []
+  case workloadEnvWebsocketRuntime env of
+    Nothing -> pure ()
+    Just runtime -> do
+      initiateServerDrain runtime
+      waitForDrainCompletion runtime websocketDrainTimeoutMicroseconds
+
+-- | Sprint 3.15 file-watch worker, mirroring
+-- 'Prodbox.Gateway.Daemon.configFileWatchLoop': subscribe to events on the
+-- PARENT directory of the @--config@ Dhall path so the kubelet's atomic
+-- @..data@ symlink swap on a ConfigMap update fires the watch. The chart
+-- mounts the ConfigMap as a directory (no @subPath@) for exactly this reason
+-- — the Sprint 2.21 chunk-47 gotcha. Feeds the 'workloadEnvReloadSignals'
+-- 'TQueue' that 'reloadLoop' drains.
+configFileWatchLoop :: WorkloadEnv -> IO ()
+configFileWatchLoop env = do
+  let configPath = workloadEnvConfigPath env
+      parentDir = takeDirectory configPath
+      configName = takeFileName configPath
+  withManagerConf defaultConfig $ \manager -> do
+    _ <- watchDir manager parentDir (const True) (handleEvent configName)
+    forever (threadDelay 1000000)
+ where
+  handleEvent configName event =
+    let eventPath = takeFileName (eventPathFromEvent event)
+     in if eventPath == configName || eventPath == "..data"
+          then atomically (writeTQueue (workloadEnvReloadSignals env) ())
+          else pure ()
+
+  eventPathFromEvent :: Event -> FilePath
+  eventPathFromEvent ev = case ev of
+    Added p _ _ -> p
+    Modified p _ _ -> p
+    ModifiedAttributes p _ _ -> p
+    Removed p _ _ -> p
+    WatchedDirectoryRemoved p _ _ -> p
+    CloseWrite p _ _ -> p
+    Unknown p _ _ _ -> p
+
+-- | Sprint 3.15 live-reload worker, mirroring
+-- 'Prodbox.Gateway.Daemon.reloadLoop'. On each reload signal it re-reads the
+-- mounted Dhall, classifies the change with 'workloadBootFieldsChanged', and
+-- either applies the new live config in-process (the common @log_level@ /
+-- Redis / OIDC edit) or enqueues a drain signal for 'drainCoordinator' (a
+-- @mode@ / port edit).
+reloadLoop :: WorkloadEnv -> IO ()
+reloadLoop env = forever $ do
+  atomically (readTQueue (workloadEnvReloadSignals env))
+  reloadResult <- reloadLiveConfig env
+  currentLive <- readTVarIO (workloadEnvLiveConfig env)
+  case reloadResult of
+    Left eventName ->
+      logStructuredAt
+        (severityFromLogLevel (liveLogLevel currentLive))
+        Warn
+        (Text.pack eventName)
+        []
+    Right newLiveConfig -> do
+      atomically (writeTVar (workloadEnvLiveConfig env) newLiveConfig)
+      case workloadEnvWebsocketRuntime env of
+        Nothing -> pure ()
+        Just runtime ->
+          case (liveRedisConfig newLiveConfig, liveOidcConfig newLiveConfig) of
+            (Just redisConfig, Just oidcConfig) ->
+              atomically
+                ( writeTVar
+                    (websocketRuntimeLive runtime)
+                    WebsocketLiveTunables
+                      { websocketLiveRedisConfig = redisConfig
+                      , websocketLiveOidcConfig = oidcConfig
+                      }
+                )
+            _ -> pure ()
+      logStructuredAt
+        (severityFromLogLevel (liveLogLevel newLiveConfig))
+        Info
+        "public_workload_config_reloaded"
+        [field "log_level" (liveLogLevel newLiveConfig)]
+
+-- | Re-read the mounted Dhall and produce either a structured failure event
+-- name (logged, current config retained) or the new 'WorkloadLiveConfig'. A
+-- Boot-field change enqueues a drain signal and returns
+-- @Left "config_boot_change_drain"@ so the process restarts against the new
+-- Dhall. Mirrors 'Prodbox.Gateway.Daemon.reloadLiveConfig'.
+reloadLiveConfig :: WorkloadEnv -> IO (Either String WorkloadLiveConfig)
+reloadLiveConfig env = do
+  loadResult <- WorkloadSettings.loadWorkloadConfig (workloadEnvConfigPath env)
+  case loadResult of
+    Left err ->
+      if "config_schema_mismatch" `isPrefixOf` err
+        then pure (Left "config_schema_mismatch")
+        else pure (Left "config_reload_failed")
+    Right dhall -> do
+      let newBootConfig = workloadBootConfigFromDhall dhall
+          bootChanged =
+            workloadBootFieldsChanged (workloadEnvBootConfig env) newBootConfig
+      if bootChanged
+        then do
+          atomically (writeTQueue (workloadEnvDrainSignals env) ())
+          pure (Left "public_workload_config_reload_boot_change_detected")
+        else case workloadLiveConfigFromDhall (bootMode newBootConfig) dhall of
+          Left _ -> pure (Left "config_schema_mismatch")
+          Right liveConfig -> pure (Right liveConfig)
 
 handleClient :: WorkloadMode -> String -> Maybe WebsocketRuntime -> Socket -> IO ()
 handleClient mode podName maybeRuntime clientSocket = do
@@ -306,8 +544,8 @@ handleWebsocketHttpRequest runtime clientSocket request = do
           Left err -> sendPlainTextResponse clientSocket 400 [] err
           Right sessionId -> do
             prepareResult <-
-              withRedisSocket
-                (websocketRuntimeRedisConfig runtime)
+              withWebsocketRedisSocket
+                runtime
                 ( \redisSocket -> prepareWebsocketSession redisSocket (websocketRuntimePodName runtime) sessionId resetRequested
                 )
             case prepareResult of
@@ -337,8 +575,8 @@ handleWebsocketHttpRequest runtime clientSocket request = do
               then sendPlainTextResponse clientSocket 400 [] "message body must not be empty"
               else do
                 publishResult <-
-                  withRedisSocket
-                    (websocketRuntimeRedisConfig runtime)
+                  withWebsocketRedisSocket
+                    runtime
                     ( \redisSocket ->
                         publishWebsocketMessage redisSocket token (websocketRuntimePodName runtime) sessionId messageBody
                     )
@@ -363,8 +601,8 @@ handleWebsocketHttpRequest runtime clientSocket request = do
           Left err -> sendPlainTextResponse clientSocket 400 [] err
           Right sessionId -> do
             revokeResult <-
-              withRedisSocket
-                (websocketRuntimeRedisConfig runtime)
+              withWebsocketRedisSocket
+                runtime
                 (\redisSocket -> revokeWebsocketSession redisSocket token sessionId)
             case revokeResult of
               Left err -> sendPlainTextResponse clientSocket 500 [] err
@@ -376,8 +614,8 @@ handleWebsocketHttpRequest runtime clientSocket request = do
           Left err -> sendPlainTextResponse clientSocket 400 [] err
           Right sessionId -> do
             stateResult <-
-              withRedisSocket
-                (websocketRuntimeRedisConfig runtime)
+              withWebsocketRedisSocket
+                runtime
                 (\redisSocket -> websocketSessionState redisSocket (websocketRuntimePodName runtime) sessionId)
             case stateResult of
               Left err -> sendPlainTextResponse clientSocket 500 [] err
@@ -418,8 +656,8 @@ handleWebsocketUpgrade runtime clientSocket initialFrameBytes request = do
             finally
               ( do
                   redisResult <-
-                    withRedisSocket
-                      (websocketRuntimeRedisConfig runtime)
+                    withWebsocketRedisSocket
+                      runtime
                       ( \redisSocket -> do
                           prepareResult <-
                             prepareWebsocketSession redisSocket (websocketRuntimePodName runtime) sessionId resetRequested
@@ -573,8 +811,8 @@ handleIncomingWebSocketFrame runtime redisSocket clientSocket token sessionId fr
 buildOidcStartResponse :: WebsocketRuntime -> IO (Either String (String, String))
 buildOidcStartResponse runtime = do
   stateToken <- nonceWithPrefix "oidc-state"
-  let config = websocketRuntimeOidcConfig runtime
-      callbackUrl = oidcPublicBaseUrl config ++ "/oidc/callback"
+  config <- currentWebsocketOidcConfig runtime
+  let callbackUrl = oidcPublicBaseUrl config ++ "/oidc/callback"
       locationHeader =
         oidcIssuer config
           ++ "/protocol/openid-connect/auth?client_id="
@@ -603,8 +841,8 @@ handleOidcCallback runtime clientSocket request queryParams =
                 Left err -> sendPlainTextResponse clientSocket 500 [] err
                 Right session -> do
                   storeResult <-
-                    withRedisSocket
-                      (websocketRuntimeRedisConfig runtime)
+                    withWebsocketRedisSocket
+                      runtime
                       (\redisSocket -> storeOidcSession redisSocket session)
                   case storeResult of
                     Left err -> sendPlainTextResponse clientSocket 500 [] err
@@ -628,8 +866,8 @@ handleOidcSession runtime clientSocket request =
     Nothing -> sendPlainTextResponse clientSocket 401 [] "missing oidc session cookie"
     Just sessionId -> do
       sessionResult <-
-        withRedisSocket
-          (websocketRuntimeRedisConfig runtime)
+        withWebsocketRedisSocket
+          runtime
           (\redisSocket -> loadOidcSession redisSocket sessionId)
       case sessionResult of
         Left err -> sendPlainTextResponse clientSocket 500 [] err
@@ -649,174 +887,83 @@ handleOidcSession runtime clientSocket request =
                 ]
             )
 
-resolveWorkloadMode :: IO (Either String WorkloadMode)
-resolveWorkloadMode = do
-  maybeMode <- lookupEnv "PRODBOX_WORKLOAD_MODE"
-  pure $
-    case maybeMode of
-      Just "api" -> Right WorkloadApi
-      Just "websocket" -> Right WorkloadWebsocket
-      Just value ->
-        Left
-          ( "unsupported PRODBOX_WORKLOAD_MODE `"
-              ++ value
-              ++ "`; expected `api` or `websocket`"
-          )
-      Nothing -> Left "PRODBOX_WORKLOAD_MODE must be set to `api` or `websocket`"
-
--- | Sprint 3.14: load the workload Dhall config once when @--config@ is
--- passed. The chart-side config_doctrine contract is "Dhall as sole
--- source"; legacy env-var resolution is retained only when no @--config@
--- flag is given (operator-mode tests, host smoke runs).
-resolveWorkloadDhallConfig
-  :: WorkloadOptions -> IO (Either String (Maybe WorkloadSettings.WorkloadConfigDhall))
-resolveWorkloadDhallConfig options =
-  case workloadConfigPath options of
-    Nothing -> pure (Right Nothing)
-    Just path -> do
-      result <- WorkloadSettings.loadWorkloadConfig path
-      pure $ case result of
-        Left err -> Left err
-        Right dto -> Right (Just dto)
-
--- | Sprint 3.14: resolve the workload mode from an already-loaded Dhall
--- DTO (the canonical entrypoint used by 'runWorkloadServer'). When the
--- DTO is 'Nothing' (no @--config@ passed) the legacy env-var path runs.
-resolveWorkloadModeFromDhall
-  :: Maybe FilePath
-  -> Maybe WorkloadSettings.WorkloadConfigDhall
-  -> IO (Either String WorkloadMode)
-resolveWorkloadModeFromDhall maybePath maybeDhall =
-  case (maybePath, maybeDhall) of
-    (Just _, Just dto) -> pure (Right (workloadModeFromDhall dto))
-    _ -> resolveWorkloadMode
-
+-- | Sprint 3.15: map the workload Dhall mode sum onto the runtime
+-- 'WorkloadMode'. Pure and total.
 workloadModeFromDhall :: WorkloadSettings.WorkloadConfigDhall -> WorkloadMode
 workloadModeFromDhall dto = case WorkloadSettings.mode dto of
   WorkloadSettings.Api -> WorkloadApi
   WorkloadSettings.Websocket -> WorkloadWebsocket
 
-resolveHttpPort :: WorkloadOptions -> IO Int
-resolveHttpPort options = resolveHttpPortWithDhall options Nothing
+-- | Sprint 3.15: build the Boot config (mode + listen port) from the mounted
+-- Dhall. Pure: the mounted Dhall config is the sole source, so the port is
+-- the Dhall @workload_port@ when present and positive, otherwise the
+-- built-in default (8080). No env-var precedence.
+workloadBootConfigFromDhall :: WorkloadSettings.WorkloadConfigDhall -> WorkloadBootConfig
+workloadBootConfigFromDhall dto =
+  WorkloadBootConfig
+    { bootMode = workloadModeFromDhall dto
+    , bootPort =
+        fromMaybe 8080 (WorkloadSettings.workload_port dto >>= naturalToPositiveInt)
+    }
 
--- | Sprint 3.14: resolve the listener port with precedence
--- CLI flag > Dhall @workload_port@ > @PRODBOX_PORT@ env var > legacy
--- @PRODBOX_HTTP_PORT@ env var > built-in default (8080).
-resolveHttpPortWithDhall
-  :: WorkloadOptions -> Maybe WorkloadSettings.WorkloadConfigDhall -> IO Int
-resolveHttpPortWithDhall options maybeDhall = do
-  maybeModernPort <- lookupEnv "PRODBOX_PORT"
-  maybeLegacyPort <- lookupEnv "PRODBOX_HTTP_PORT"
-  let dhallPort =
-        maybeDhall >>= WorkloadSettings.workload_port >>= naturalToPositiveInt
-  pure $
-    case firstJust
-      [ workloadPort options
-      , dhallPort
-      , maybeModernPort >>= readMaybeInt
-      , maybeLegacyPort >>= readMaybeInt
-      ] of
-      Just portNumber | portNumber > 0 -> portNumber
-      _ -> 8080
+-- | Sprint 3.15: build the live-reloadable config from the mounted Dhall.
+-- Pure and total: classifies which fields can change in place. The
+-- @log_level@ defaults to @info@. For 'WorkloadWebsocket' the Redis and OIDC
+-- records are required and validated here (a missing or empty required field
+-- is a structured 'Left'); for 'WorkloadApi' they are 'Nothing'.
+workloadLiveConfigFromDhall
+  :: WorkloadMode
+  -> WorkloadSettings.WorkloadConfigDhall
+  -> Either String WorkloadLiveConfig
+workloadLiveConfigFromDhall mode dto =
+  let logLevel =
+        fromMaybe "info" (WorkloadSettings.log_level dto >>= textToNonEmptyString)
+   in case mode of
+        WorkloadApi ->
+          Right
+            WorkloadLiveConfig
+              { liveLogLevel = logLevel
+              , liveRedisConfig = Nothing
+              , liveOidcConfig = Nothing
+              }
+        WorkloadWebsocket -> do
+          redisConfig <- redisConfigFromDhall dto
+          oidcConfig <- oidcConfigFromDhall dto
+          Right
+            WorkloadLiveConfig
+              { liveLogLevel = logLevel
+              , liveRedisConfig = Just redisConfig
+              , liveOidcConfig = Just oidcConfig
+              }
 
-naturalToPositiveInt :: (Integral n) => n -> Maybe Int
-naturalToPositiveInt n =
-  let value = fromIntegral n :: Int
-   in if value > 0 then Just value else Nothing
+-- | Sprint 3.15: the Boot-field change classifier, mirroring
+-- 'Prodbox.Gateway.Daemon.daemonBootFieldsChanged'. A change to the
+-- 'WorkloadMode' sum or the listen 'bootPort' requires rebinding the
+-- listening socket / re-electing the request handler, so it triggers
+-- drain-and-exit per config_doctrine §8 rather than an in-process reload.
+-- Pure so the unit suite can pin the Boot-vs-Live classification.
+workloadBootFieldsChanged :: WorkloadBootConfig -> WorkloadBootConfig -> Bool
+workloadBootFieldsChanged old new =
+  bootMode old /= bootMode new
+    || bootPort old /= bootPort new
 
-resolveWorkloadLogLevel :: WorkloadOptions -> IO String
-resolveWorkloadLogLevel options = resolveWorkloadLogLevelWithDhall options Nothing
-
--- | Sprint 3.14: resolve the log level with precedence
--- CLI flag > Dhall @log_level@ > @PRODBOX_LOG_LEVEL@ env var > "info".
-resolveWorkloadLogLevelWithDhall
-  :: WorkloadOptions -> Maybe WorkloadSettings.WorkloadConfigDhall -> IO String
-resolveWorkloadLogLevelWithDhall options maybeDhall = do
-  maybeEnvLogLevel <- lookupEnv "PRODBOX_LOG_LEVEL"
-  let dhallLevel = maybeDhall >>= WorkloadSettings.log_level >>= textToNonEmptyString
-  pure
-    ( fromMaybe
-        "info"
-        (workloadLogLevel options <|> dhallLevel <|> maybeEnvLogLevel)
-    )
-
-textToNonEmptyString :: Text.Text -> Maybe String
-textToNonEmptyString t =
-  let s = Text.unpack t
-   in if null s then Nothing else Just s
-
-resolvePodName :: IO String
-resolvePodName = do
-  maybePodName <- lookupEnv "HOSTNAME"
-  pure $
-    case maybePodName of
-      Just podName | podName /= "" -> podName
-      _ -> "unknown-pod"
-
-resolveWebsocketRuntime
-  :: Maybe WorkloadSettings.WorkloadConfigDhall
-  -> WorkloadMode
-  -> String
-  -> IO (Either String (Maybe WebsocketRuntime))
-resolveWebsocketRuntime maybeDhall mode podName =
-  case mode of
-    WorkloadApi -> pure (Right Nothing)
-    WorkloadWebsocket -> do
-      redisConfigResult <- resolveRedisConfig maybeDhall
-      oidcConfigResult <- resolveOidcConfig maybeDhall
-      case (redisConfigResult, oidcConfigResult) of
-        (Left err, _) -> pure (Left err)
-        (_, Left err) -> pure (Left err)
-        (Right redisConfig, Right oidcConfig) -> do
-          runtimeState <-
-            newTVarIO
-              WebsocketServerState
-                { serverDraining = False
-                , serverNextConnectionId = 0
-                , serverCloseRequests = Map.empty
-                }
-          pure
-            ( Right
-                ( Just
-                    WebsocketRuntime
-                      { websocketRuntimePodName = podName
-                      , websocketRuntimeRedisConfig = redisConfig
-                      , websocketRuntimeOidcConfig = oidcConfig
-                      , websocketRuntimeState = runtimeState
-                      }
-                )
-            )
-
-resolveRedisConfig
-  :: Maybe WorkloadSettings.WorkloadConfigDhall -> IO (Either String RedisConfig)
-resolveRedisConfig maybeDhall =
-  case maybeDhall >>= WorkloadSettings.redis of
+redisConfigFromDhall :: WorkloadSettings.WorkloadConfigDhall -> Either String RedisConfig
+redisConfigFromDhall dto =
+  case WorkloadSettings.redis dto of
     Just dhallRedis ->
       let host = Text.unpack (WorkloadSettings.host dhallRedis)
           port = Text.unpack (WorkloadSettings.port dhallRedis)
        in if not (null host) && not (null port)
-            then pure (Right RedisConfig {redisHost = host, redisPort = port})
+            then Right RedisConfig {redisHost = host, redisPort = port}
             else
-              pure
-                ( Left
-                    "redis.host and redis.port must be non-empty in the workload Dhall config for websocket mode"
-                )
-    Nothing -> do
-      maybeHost <- lookupEnv "PRODBOX_REDIS_HOST"
-      maybePortEnv <- lookupEnv "PRODBOX_REDIS_PORT"
-      pure $
-        case (maybeHost, maybePortEnv) of
-          (Just host, Just port)
-            | host /= "" && port /= "" ->
-                Right RedisConfig {redisHost = host, redisPort = port}
-          _ ->
-            Left
-              "redis must be Some in the workload Dhall config (or PRODBOX_REDIS_HOST/PRODBOX_REDIS_PORT must be set) for websocket mode"
+              Left
+                "redis.host and redis.port must be non-empty in the workload Dhall config for websocket mode"
+    Nothing ->
+      Left "redis must be Some in the workload Dhall config for websocket mode"
 
-resolveOidcConfig
-  :: Maybe WorkloadSettings.WorkloadConfigDhall -> IO (Either String OidcConfig)
-resolveOidcConfig maybeDhall =
-  case maybeDhall >>= WorkloadSettings.oidc of
+oidcConfigFromDhall :: WorkloadSettings.WorkloadConfigDhall -> Either String OidcConfig
+oidcConfigFromDhall dto =
+  case WorkloadSettings.oidc dto of
     Just dhallOidc ->
       let issuer = Text.unpack (WorkloadSettings.issuer dhallOidc)
           clientId = Text.unpack (WorkloadSettings.client_id dhallOidc)
@@ -825,42 +972,74 @@ resolveOidcConfig maybeDhall =
           tokenEndpoint = Text.unpack (WorkloadSettings.token_endpoint dhallOidc)
        in if "" `notElem` [issuer, clientId, clientSecret, publicBaseUrl, tokenEndpoint]
             then
-              pure
-                ( Right
-                    OidcConfig
-                      { oidcIssuer = issuer
-                      , oidcClientId = clientId
-                      , oidcClientSecret = clientSecret
-                      , oidcPublicBaseUrl = publicBaseUrl
-                      , oidcTokenEndpoint = tokenEndpoint
+              Right
+                OidcConfig
+                  { oidcIssuer = issuer
+                  , oidcClientId = clientId
+                  , oidcClientSecret = clientSecret
+                  , oidcPublicBaseUrl = publicBaseUrl
+                  , oidcTokenEndpoint = tokenEndpoint
+                  }
+            else
+              Left
+                "oidc.{issuer,client_id,client_secret,public_base_url,token_endpoint} must be non-empty in the workload Dhall config for websocket mode"
+    Nothing ->
+      Left "oidc must be Some in the workload Dhall config for websocket mode"
+
+naturalToPositiveInt :: (Integral n) => n -> Maybe Int
+naturalToPositiveInt n =
+  let value = fromIntegral n :: Int
+   in if value > 0 then Just value else Nothing
+
+textToNonEmptyString :: Text.Text -> Maybe String
+textToNonEmptyString t =
+  let s = Text.unpack t
+   in if null s then Nothing else Just s
+
+-- | Sprint 3.15: construct the websocket runtime from the already-validated
+-- live config. In 'WorkloadApi' mode there is no websocket runtime. In
+-- 'WorkloadWebsocket' mode the live config is guaranteed to carry both Redis
+-- and OIDC records (validated by 'workloadLiveConfigFromDhall'); the
+-- defensive 'Left' arm keeps the function total without a partial pattern.
+resolveWebsocketRuntime
+  :: WorkloadMode
+  -> String
+  -> WorkloadLiveConfig
+  -> IO (Either String (Maybe WebsocketRuntime))
+resolveWebsocketRuntime mode podName liveConfig =
+  case mode of
+    WorkloadApi -> pure (Right Nothing)
+    WorkloadWebsocket ->
+      case (liveRedisConfig liveConfig, liveOidcConfig liveConfig) of
+        (Just redisConfig, Just oidcConfig) -> do
+          runtimeState <-
+            newTVarIO
+              WebsocketServerState
+                { serverDraining = False
+                , serverNextConnectionId = 0
+                , serverCloseRequests = Map.empty
+                }
+          liveTunablesVar <-
+            newTVarIO
+              WebsocketLiveTunables
+                { websocketLiveRedisConfig = redisConfig
+                , websocketLiveOidcConfig = oidcConfig
+                }
+          pure
+            ( Right
+                ( Just
+                    WebsocketRuntime
+                      { websocketRuntimePodName = podName
+                      , websocketRuntimeLive = liveTunablesVar
+                      , websocketRuntimeState = runtimeState
                       }
                 )
-            else
-              pure
-                ( Left
-                    "oidc.{issuer,client_id,client_secret,public_base_url,token_endpoint} must be non-empty in the workload Dhall config for websocket mode"
-                )
-    Nothing -> do
-      maybeIssuer <- lookupEnv "PRODBOX_OIDC_ISSUER"
-      maybeClientId <- lookupEnv "PRODBOX_OIDC_CLIENT_ID"
-      maybeClientSecret <- lookupEnv "PRODBOX_OIDC_CLIENT_SECRET"
-      maybePublicBaseUrl <- lookupEnv "PRODBOX_OIDC_PUBLIC_BASE_URL"
-      maybeTokenEndpoint <- lookupEnv "PRODBOX_OIDC_TOKEN_ENDPOINT"
-      pure $
-        case (maybeIssuer, maybeClientId, maybeClientSecret, maybePublicBaseUrl, maybeTokenEndpoint) of
-          (Just issuer, Just clientId, Just clientSecret, Just publicBaseUrl, Just tokenEndpoint)
-            | "" `notElem` [issuer, clientId, clientSecret, publicBaseUrl, tokenEndpoint] ->
-                Right
-                  OidcConfig
-                    { oidcIssuer = issuer
-                    , oidcClientId = clientId
-                    , oidcClientSecret = clientSecret
-                    , oidcPublicBaseUrl = publicBaseUrl
-                    , oidcTokenEndpoint = tokenEndpoint
-                    }
-          _ ->
-            Left
-              "oidc must be Some in the workload Dhall config (or PRODBOX_OIDC_* env vars must all be set) for websocket mode"
+            )
+        _ ->
+          pure
+            ( Left
+                "redis and oidc must both be Some in the workload Dhall config for websocket mode"
+            )
 
 openListeningSocket :: Int -> IO (Either String Socket)
 openListeningSocket port = do
@@ -1340,8 +1519,8 @@ withAuthorizedWebsocketToken request clientSocket action =
 
 exchangeAuthorizationCode :: WebsocketRuntime -> String -> IO (Either String OidcTokenResponse)
 exchangeAuthorizationCode runtime authorizationCode = do
-  let config = websocketRuntimeOidcConfig runtime
-      callbackUrl = oidcPublicBaseUrl config ++ "/oidc/callback"
+  config <- currentWebsocketOidcConfig runtime
+  let callbackUrl = oidcPublicBaseUrl config ++ "/oidc/callback"
       tokenUrl = oidcTokenEndpoint config
   outputResult <-
     captureSubprocessResult
@@ -1530,6 +1709,16 @@ requireJsonInt fieldName obj =
         Just intValue -> Right intValue
         Nothing -> Left ("JSON object field `" ++ fieldName ++ "` was out of range")
     _ -> Left ("JSON object did not contain integer field `" ++ fieldName ++ "`")
+
+-- | Sprint 3.15: open a Redis socket against the currently-active live
+-- Redis endpoint (read fresh from 'websocketRuntimeLive'), so an in-process
+-- config reload that rotates @redis.host@ / @redis.port@ takes effect on the
+-- next request without rebinding the listening socket.
+withWebsocketRedisSocket
+  :: WebsocketRuntime -> (Socket -> IO (Either String a)) -> IO (Either String a)
+withWebsocketRedisSocket runtime action = do
+  redisConfig <- currentWebsocketRedisConfig runtime
+  withRedisSocket redisConfig action
 
 withRedisSocket :: RedisConfig -> (Socket -> IO (Either String a)) -> IO (Either String a)
 withRedisSocket config action = do
@@ -1953,9 +2142,3 @@ failWith :: String -> IO ExitCode
 failWith message = do
   writeError (fatalError (Text.pack message))
   pure (ExitFailure 1)
-firstJust :: [Maybe a] -> Maybe a
-firstJust [] = Nothing
-firstJust (value : remaining) =
-  case value of
-    Just _ -> value
-    Nothing -> firstJust remaining

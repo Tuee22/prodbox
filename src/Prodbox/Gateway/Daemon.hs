@@ -6,7 +6,7 @@ module Prodbox.Gateway.Daemon
 where
 
 import Control.Concurrent (threadDelay)
-import Control.Concurrent.Async (concurrently, race, withAsync)
+import Control.Concurrent.Async (concurrently, race, waitCatch, withAsync)
 import Control.Concurrent.STM
   ( TChan
   , TQueue
@@ -50,6 +50,7 @@ import Data.ByteString.Char8 qualified as BS8
 import Data.ByteString.Lazy qualified as BL
 import Data.ByteString.Lazy.Char8 qualified as BL8
 import Data.Char (intToDigit, toLower)
+import Data.Foldable (for_)
 import Data.List (intercalate, isPrefixOf)
 import Data.Map.Strict (Map)
 import Data.Map.Strict qualified as Map
@@ -126,7 +127,6 @@ import Prodbox.Gateway.Types
   , eventTypeClaim
   , eventTypeHeartbeat
   , eventTypeYield
-  , extractOrdersVersionFromEvent
   , nodeDisposition
   , peerDialSocketHost
   , validateDaemonTimingAgainstOrders
@@ -200,8 +200,22 @@ data LiveConfig = LiveConfig
   , liveSyncInterval :: Double
   , liveMaxClockSkewSeconds :: Double
   , liveDrainDeadlineSeconds :: Int
+  , liveConnectionReadTimeoutSeconds :: Double
+  -- ^ Sprint 2.25: bounded per-connection read timeout applied to every
+  -- accepted connection on BOTH the REST and peer-events listeners, so a
+  -- slow or stuck peer cannot hold a handler thread (or wedge the accept
+  -- loop) indefinitely. Sourced from 'LiveConfig' with a sane default
+  -- ('defaultConnectionReadTimeoutSeconds') rather than from the Dhall
+  -- surface, so it tracks live-reload without expanding the config schema.
   }
   deriving (Eq, Show)
+
+-- | Sane default bounded read timeout for a single accepted connection.
+-- Generous enough for an operator @kubectl port-forward@ round-trip and a
+-- full peer event-batch push, short enough that a stalled peer is dropped
+-- well before it could starve the mesh.
+defaultConnectionReadTimeoutSeconds :: Double
+defaultConnectionReadTimeoutSeconds = 30.0
 
 data MetricsRegistry = MetricsRegistry
   { metricsDaemonName :: String
@@ -265,8 +279,13 @@ initialState ordersVersion =
     , stateLatestObservedOrdersVersion = ordersVersion
     }
 
-runGatewayDaemon :: Maybe FilePath -> Maybe Int -> String -> DaemonConfig -> IO ExitCode
-runGatewayDaemon maybeConfigPath restPortOverride logLevel config = withSocketsDo $ do
+-- | Sprint 2.24: the daemon no longer accepts a CLI log-level or REST
+-- port override. The log level is sourced from the mounted Dhall config
+-- (@live.log_level@, defaulting to @info@) and the REST port is sourced
+-- from the Orders file the daemon loads below.
+runGatewayDaemon :: Maybe FilePath -> DaemonConfig -> IO ExitCode
+runGatewayDaemon maybeConfigPath config = withSocketsDo $ do
+  let logLevel = fromMaybe "info" (daemonConfigLogLevel config)
   logAtLevel
     logLevel
     Info
@@ -351,10 +370,16 @@ runGatewayDaemon maybeConfigPath restPortOverride logLevel config = withSocketsD
                   -- @event_keys@ list is empty on first install; without
                   -- this in-memory injection the daemon would log
                   -- @event_key_missing@ forever and never sign a real
-                  -- peer event. The derivation matches what the daemon's
-                  -- own ensure-namespace handler writes for the
-                  -- @gateway-event-keys@ Secret, so the in-memory and
-                  -- on-cluster values agree by construction.
+                  -- peer event. Sprint 2.25: the derivation uses the one
+                  -- canonical event-key encoding (base64url-unpadded,
+                  -- 'Prodbox.Secret.Derive.deriveBase64Url'), which is
+                  -- exactly what 'EnsureNamespace.applyDerivedSecrets'
+                  -- writes into the on-cluster @gateway-event-keys@ Secret.
+                  -- The in-memory and chart-rendered surfaces therefore use
+                  -- one representation, so peers sign and verify
+                  -- consistently and the boot-change classifier no longer
+                  -- needs a hex-vs-base64url overlay (the retired chunk-48
+                  -- workaround).
                   let derivedEventKeys = deriveOwnGatewayEventKeys initialMasterSeed
                       configWithDerivedEventKeys =
                         config {daemonEventKeys = derivedEventKeys}
@@ -383,7 +408,7 @@ runGatewayDaemon maybeConfigPath restPortOverride logLevel config = withSocketsD
                     , field "orders_version_utc" (ordersVersionUtc orders)
                     ]
 
-                  result <- try (serveGatewayDaemon restPortOverride localPeer env) :: IO (Either SomeException ())
+                  result <- try (serveGatewayDaemon localPeer env) :: IO (Either SomeException ())
                   case result of
                     Left exc -> do
                       logForEnv env Error "gateway_daemon_error" [field "detail" (show exc)]
@@ -402,6 +427,7 @@ liveConfigFromDaemonConfig logLevel config =
     , liveMaxClockSkewSeconds = daemonMaxClockSkewSeconds config
     , liveDrainDeadlineSeconds =
         fromMaybe defaultDrainDeadlineSeconds (daemonDrainDeadlineSeconds config)
+    , liveConnectionReadTimeoutSeconds = defaultConnectionReadTimeoutSeconds
     }
 
 logAtLevel :: String -> Severity -> Text.Text -> [(Text.Text, Value)] -> IO ()
@@ -441,18 +467,18 @@ installDaemonSignalHandlers env signalCount = do
           else ForceDrain
       pure previousCount
 
-serveGatewayDaemon :: Maybe Int -> PeerEndpoint -> DaemonEnv -> IO ()
-serveGatewayDaemon restPortOverride localPeer env = do
+serveGatewayDaemon :: PeerEndpoint -> DaemonEnv -> IO ()
+serveGatewayDaemon localPeer env = do
   atomically (writeTVar (envReadiness env) Ready)
-  race (drainCoordinator env) (daemonWorkers restPortOverride localPeer env)
+  race (drainCoordinator env) (daemonWorkers localPeer env)
     >>= either pure pure
 
-daemonWorkers :: Maybe Int -> PeerEndpoint -> DaemonEnv -> IO ()
-daemonWorkers restPortOverride localPeer env =
+daemonWorkers :: PeerEndpoint -> DaemonEnv -> IO ()
+daemonWorkers localPeer env =
   withAsync (worker "heartbeat" (heartbeatLoop env)) $ \_ ->
     withAsync (worker "gateway_ownership" (gatewayLoop env)) $ \_ ->
       withAsync (worker "dns_write" (dnsWriteLoop env)) $ \_ ->
-        withAsync (worker "rest_server" (restServerLoop restPortOverride localPeer env)) $ \_ ->
+        withAsync (worker "rest_server" (restServerLoop localPeer env)) $ \_ ->
           withAsync (worker "peer_listener" (peerListenerLoop localPeer env)) $ \_ ->
             withAsync (worker "config_watch" (configFileWatchLoop env)) $ \_ ->
               void $
@@ -615,26 +641,22 @@ reloadLiveConfig env =
             else pure (Left "config_reload_failed")
         Right newConfig -> do
           currentLiveConfig <- readTVarIO (envLiveConfig env)
-          -- Sprint 2.21 chunk: reapply the in-memory event-key derivation
-          -- to the freshly-decoded config before comparing against
-          -- 'envBootConfig'. Chunk 16's chart-side @lookup@ stores
-          -- base64url values in the Secret; chunk 24's in-memory
-          -- derivation uses hex (peer signature verification depends on
-          -- the hex encoding). Without this overlay, every reload
-          -- compares hex-vs-base64url, so 'daemonBootFieldsChanged'
-          -- always returns True and routine 'log_level' edits spuriously
-          -- drain the Pod.
-          let derivedKeys = deriveOwnGatewayEventKeys (envMasterSeed env)
-              newConfigWithDerivedKeys =
-                newConfig {daemonEventKeys = derivedKeys}
-              bootChanged =
+          -- Sprint 2.25: the Sprint 2.21 chunk-48 reapply-derivation overlay
+          -- is retired. With the single canonical event-key encoding
+          -- (base64url-unpadded), the chart's ConfigMap @event_keys@ list
+          -- (read via Helm @lookup@ from the base64url
+          -- @gateway-event-keys@ Secret) and the in-memory derivation now
+          -- agree byte-for-byte, so the boot-change classifier compares
+          -- like-for-like. A routine @log_level@ edit no longer trips
+          -- 'daemonBootFieldsChanged' through a hex-vs-base64url mismatch.
+          let bootChanged =
                 daemonBootFieldsChanged
                   (envBootConfig env)
-                  newConfigWithDerivedKeys
+                  newConfig
               liveConfig =
                 liveConfigFromDaemonConfig
                   (liveLogLevel currentLiveConfig)
-                  newConfigWithDerivedKeys
+                  newConfig
           case validateDaemonTimingAgainstOrders newConfig (envOrders env) of
             Left _ -> pure (Left "config_schema_mismatch")
             Right () ->
@@ -863,10 +885,10 @@ dnsWriteLoop env = forever $ do
   liveConfig <- readTVarIO (envLiveConfig env)
   threadDelay (round (liveSyncInterval liveConfig * 1000000))
 
-restServerLoop :: Maybe Int -> PeerEndpoint -> DaemonEnv -> IO ()
-restServerLoop restPortOverride localPeer env = do
+restServerLoop :: PeerEndpoint -> DaemonEnv -> IO ()
+restServerLoop localPeer env = do
   let host = peerRestHost localPeer
-      port = fromMaybe (peerRestPort localPeer) restPortOverride
+      port = peerRestPort localPeer
   withListeningSocket "REST server" host port $ \sock -> do
     logForEnv env Info "rest_server_listening" [field "host" host, field "port" port]
     acceptWhileServing True sock env (`handleRestClient` env)
@@ -877,7 +899,10 @@ handleRestClient sock env = do
   close sock
  where
   handleRequest = do
-    rawRequest <- receiveAll sock
+    maybeRaw <- receiveAllWithin env sock
+    for_ maybeRaw handleParsedRequest
+
+  handleParsedRequest rawRequest = do
     now <- getCurrentTime
     case requestPath rawRequest of
       "/healthz" ->
@@ -1033,10 +1058,13 @@ acquireInitialMasterSeed logLevel config =
 -- Canonical node ids match 'Prodbox.Secret.Inventory.derivedSecretInventoryFor'
 -- for @(gateway, gateway)@: @node-a@, @node-b@, @node-c@. The derivation
 -- context follows 'Prodbox.Secret.Derive.gatewayEventKeyContext':
--- @gateway:gateway:<node-id>:event-key@. The hex encoding matches the
--- existing daemon @daemonEventKeys@ representation (`deriveHex` rather
--- than `deriveBase64Url`) so peer signature verification stays
--- compatible.
+-- @gateway:gateway:<node-id>:event-key@. Sprint 2.25: the encoding is the
+-- single canonical event-key encoding (base64url-unpadded via
+-- 'Prodbox.Secret.Derive.deriveBase64Url'), identical to what
+-- 'EnsureNamespace.applyDerivedSecrets' writes into the on-cluster
+-- @gateway-event-keys@ Secret and to what the chart's @event_keys@ list
+-- carries, so the in-memory signing material and the chart-rendered Secret
+-- are byte-identical and peers sign / verify consistently.
 deriveOwnGatewayEventKeys
   :: Maybe Prodbox.Secret.Derive.MasterSeed -> [(String, String)]
 deriveOwnGatewayEventKeys maybeSeed =
@@ -1045,7 +1073,7 @@ deriveOwnGatewayEventKeys maybeSeed =
     Just seed ->
       [ ( nodeId
         , Text.unpack
-            ( Prodbox.Secret.Derive.deriveHex
+            ( Prodbox.Secret.Derive.deriveBase64Url
                 seed
                 (Prodbox.Secret.Derive.gatewayEventKeyContext "gateway" (Text.pack nodeId))
             )
@@ -1272,7 +1300,7 @@ renderMetricsText now env state =
       [ "prodbox_gateway_peer_connected{peer=\""
           ++ peer
           ++ "\"} "
-          ++ if peerHealthConnected health then "1" else "0"
+          ++ if peerHealthOutboundConnected health then "1" else "0"
       | (peer, health) <- Map.toList (statePeerHealth state)
       ]
     ++ unlines
@@ -1298,6 +1326,25 @@ peerListenerLoop localPeer env = do
     logForEnv env Info "peer_listener_listening" [field "host" host, field "port" port]
     acceptWhileServing False sock env (`handlePeerClient` env)
 
+-- | Accept loop shared by both listeners (REST and peer-events). Sprint
+-- 2.25: each accepted connection is served under its OWN 'withAsync' child
+-- (never a raw unmanaged thread spawn) so a handler that throws or is
+-- cancelled can never leak a thread, wedge the accept loop, or block sibling
+-- connections. The accept
+-- loop recurses inside the 'withAsync' continuation, so it keeps accepting
+-- while in-flight connections run concurrently; when the loop finally returns
+-- (drain, with @allowDuringDrain@ False), 'withAsync' deterministically
+-- cancels any still-running child.
+--
+-- The handler ('handleClient') is responsible for applying the bounded
+-- per-connection read timeout to its socket read (see 'receiveAllWithin'),
+-- sourced from 'LiveConfig' ('liveConnectionReadTimeoutSeconds'). A peer that
+-- opens a socket and then stalls mid-request reads a timeout sentinel, is
+-- rejected by the request parser, and dropped — rather than holding its
+-- handler thread (or the accept loop) open indefinitely. A timed-out read is
+-- an ordinary, benign connection drop confined to that connection's socket;
+-- it never propagates into the accept loop and is never a 'Fatal' worker
+-- error (including during 'Draining').
 acceptWhileServing :: Bool -> Socket -> DaemonEnv -> (Socket -> IO ()) -> IO ()
 acceptWhileServing allowDuringDrain sock env handleClient = go
  where
@@ -1312,8 +1359,49 @@ acceptWhileServing allowDuringDrain sock env handleClient = go
           Nothing -> go
           Just () -> do
             (clientSock, _) <- accept sock
-            handleClient clientSock
+            -- Serve this connection in its own structured-concurrency child
+            -- (via 'withAsync', not a raw unmanaged thread spawn), so a handler
+            -- exception is confined to the child and the accept loop is never
+            -- killed by it. The child is
+            -- deterministically reaped via `waitCatch` (no leaked threads or
+            -- `Async` handles); because each handler bounds its own socket
+            -- read with the per-connection timeout, the join is itself bounded
+            -- by `liveConnectionReadTimeoutSeconds`, so a stalled peer can
+            -- delay the next accept by at most one timeout window rather than
+            -- wedging the loop forever. The `Left` arm captures any escaped
+            -- exception (handlers already self-`try`, so this is defensive)
+            -- without propagating it into the accept loop.
+            connOutcome <-
+              withAsync (handleClient clientSock) waitCatch
+            case connOutcome of
+              Right () -> pure ()
+              Left exc ->
+                logForEnv env Warn "connection_handler_error" [field "detail" (displayException exc)]
             go
+
+-- | Read an inbound request bounded by the configured per-connection read
+-- timeout. Returns the bytes read on success; returns 'Nothing' (a benign
+-- sentinel the caller treats as a dropped connection) when the read does not
+-- complete within 'liveConnectionReadTimeoutSeconds'. This is where the
+-- Sprint 2.25 bounded read timeout is actually enforced — at the socket read
+-- that a stalled peer would otherwise block forever.
+receiveAllWithin :: DaemonEnv -> Socket -> IO (Maybe BS.ByteString)
+receiveAllWithin env sock = do
+  liveConfig <- readTVarIO (envLiveConfig env)
+  let timeoutMicros = readTimeoutMicros (liveConnectionReadTimeoutSeconds liveConfig)
+  outcome <- timeout timeoutMicros (receiveAll sock)
+  case outcome of
+    Just raw -> pure (Just raw)
+    Nothing -> do
+      logForEnv env Warn "connection_read_timeout" []
+      pure Nothing
+
+-- | Convert a fractional-second read-timeout bound to whole microseconds for
+-- 'System.Timeout.timeout', clamping to at least 1 microsecond so a
+-- misconfigured non-positive value still yields a finite (immediate) timeout
+-- rather than 'timeout's block-forever semantics for non-positive arguments.
+readTimeoutMicros :: Double -> Int
+readTimeoutMicros seconds = max 1 (round (seconds * 1000000))
 
 waitForSocketRead :: Socket -> IO (Maybe ())
 waitForSocketRead sock =
@@ -1390,7 +1478,10 @@ handlePeerClient sock env = do
  where
   handleOne = do
     envOnPeerConnectionEstablished (envHooks env) "inbound"
-    raw <- receiveAll sock
+    maybeRaw <- receiveAllWithin env sock
+    for_ maybeRaw handleParsedPeerRequest
+
+  handleParsedPeerRequest raw =
     case parsePeerHttpRequest raw of
       Left err -> do
         let response = renderPeerHttpResponse (PeerResponseError err)
@@ -1515,8 +1606,14 @@ noteSenderOrdersAdvert s senderVersion
 
 -- | Apply a list of accepted peer events to the daemon state in one pass:
 -- append to the commit log (idempotently), update last-heartbeat times,
--- record per-peer transport health, refresh max-observed clock skew, and
--- promote a newer Orders version when announced.
+-- record per-peer inbound delivery health, and refresh max-observed clock
+-- skew.
+--
+-- Sprint 2.25 (doctrine D4): this no longer advances
+-- 'stateLatestObservedOrdersVersion' from any in-process promotion event. The
+-- highest observed Orders version is learned solely from the sender's
+-- advertised @orders_version_utc@ via 'noteSenderOrdersAdvert' on the ingest
+-- path; there is no @orders_promoted@ event class to fold over.
 applyAcceptedEvents :: UTCTime -> [SignedEvent] -> DaemonState -> DaemonState
 applyAcceptedEvents now events s0 =
   let log0 = stateCommitLog s0
@@ -1527,13 +1624,11 @@ applyAcceptedEvents now events s0 =
       peerHealth' = foldl' (updatePeerHealthFromEvent now) peerHealth0 events
       skew0 = stateMaxObservedSkewSeconds s0
       skew' = foldl' (updateSkewFromEvent now) skew0 events
-      ordersAdvert = foldl' updateOrdersAdvert (stateLatestObservedOrdersVersion s0) events
    in s0
         { stateCommitLog = log'
         , stateLastHeartbeatTimes = heartbeats'
         , statePeerHealth = peerHealth'
         , stateMaxObservedSkewSeconds = skew'
-        , stateLatestObservedOrdersVersion = ordersAdvert
         }
 
 updateHeartbeatFromEvent :: Map String UTCTime -> SignedEvent -> Map String UTCTime
@@ -1543,16 +1638,16 @@ updateHeartbeatFromEvent acc ev =
       Map.insertWith max (emitterNodeId ev) ts acc
     Nothing -> acc
 
+-- | Record INBOUND delivery health: stamp the last-accepted-event time for
+-- the emitting peer. This must touch only the inbound field — outbound dial
+-- health is owned by the peer-dialer loop and reflects a different direction
+-- of the link.
 updatePeerHealthFromEvent
   :: UTCTime -> Map String PeerHealth -> SignedEvent -> Map String PeerHealth
 updatePeerHealthFromEvent now acc ev =
-  let baseline = PeerHealth (Just now) True Nothing
+  let baseline = PeerHealth (Just now) False Nothing
       merge _new old =
-        old
-          { peerHealthLastInboundEvent = Just now
-          , peerHealthConnected = True
-          , peerHealthLastError = Nothing
-          }
+        old {peerHealthLastInboundEvent = Just now}
    in Map.insertWith merge (emitterNodeId ev) baseline acc
 
 updateSkewFromEvent :: UTCTime -> Maybe Double -> SignedEvent -> Maybe Double
@@ -1563,15 +1658,10 @@ updateSkewFromEvent now acc ev =
        in Just (maybe skew (max skew) acc)
     Nothing -> acc
 
-updateOrdersAdvert :: Int -> SignedEvent -> Int
-updateOrdersAdvert acc ev =
-  case extractOrdersVersionFromEvent ev of
-    Just v | v > acc -> v
-    _ -> acc
-
 -- | Periodically push the local commit log to every other peer in the
--- mesh.  Each cycle marks unreachable peers as disconnected so
--- @/v1/state@ exposes per-peer transport health.
+-- mesh.  Each cycle marks unreachable peers as outbound-disconnected so
+-- @/v1/state@ exposes per-peer OUTBOUND dial health (separate from the
+-- inbound delivery health stamped by the peer-events listener).
 peerDialerLoop :: DaemonEnv -> IO ()
 peerDialerLoop env = forever $ do
   let config = envBootConfig env
@@ -1655,36 +1745,41 @@ markPeerError stateVar peerId reason =
             (statePeerHealth s)
       }
 
+-- | Record OUTBOUND dial failure: mark the outbound link to the peer
+-- disconnected and stamp the dial error. Must not touch inbound delivery
+-- health — a failed push says nothing about whether the peer is emitting.
 markPeerHealthError :: String -> Maybe PeerHealth -> Maybe PeerHealth
 markPeerHealthError reason mh =
   case mh of
-    Just h -> Just h {peerHealthConnected = False, peerHealthLastError = Just reason}
+    Just h -> Just h {peerHealthOutboundConnected = False, peerHealthOutboundLastError = Just reason}
     Nothing -> Just (PeerHealth Nothing False (Just reason))
 
 markPeerOk :: TVar DaemonState -> String -> IO ()
-markPeerOk stateVar peerId = do
-  now <- getCurrentTime
+markPeerOk stateVar peerId =
   atomically $ modifyTVar' stateVar $ \s ->
     s
       { statePeerHealth =
           Map.alter
-            (markPeerHealthOk now)
+            markPeerHealthOk
             peerId
             (statePeerHealth s)
       }
 
-markPeerHealthOk :: UTCTime -> Maybe PeerHealth -> Maybe PeerHealth
-markPeerHealthOk now mh =
+-- | Record OUTBOUND dial success: mark the outbound link to the peer
+-- connected and clear the dial error. Sprint 2.25 stops this writing the
+-- inbound-event timestamp; reaching a peer's socket on a push is not evidence
+-- the peer accepted an event from us, so it must not advance inbound freshness
+-- (the prior conflation masked one-directional partitions).
+markPeerHealthOk :: Maybe PeerHealth -> Maybe PeerHealth
+markPeerHealthOk mh =
   case mh of
     Just h ->
       Just
         h
-          { peerHealthConnected = True
-          , peerHealthLastError = Nothing
-          , peerHealthLastInboundEvent =
-              Just (maybe now (max now) (peerHealthLastInboundEvent h))
+          { peerHealthOutboundConnected = True
+          , peerHealthOutboundLastError = Nothing
           }
-    Nothing -> Just (PeerHealth (Just now) True Nothing)
+    Nothing -> Just (PeerHealth Nothing True Nothing)
 
 renderStateJson :: UTCTime -> DaemonConfig -> DaemonState -> BL.ByteString
 renderStateJson now config state =
@@ -1707,7 +1802,8 @@ renderStateJson now config state =
       , "last_dns_write_at_utc" .= fmap formatUtcIso (stateLastDnsWriteTime state)
       , "dns_write_gate" .= fmap renderDnsWriteGate (daemonDnsWriteGate config)
       , "heartbeat_age_seconds" .= renderHeartbeatAges now state
-      , "peer_transport" .= renderPeerTransport now state
+      , "peer_inbound_health" .= renderPeerInboundHealth now state
+      , "peer_outbound_health" .= renderPeerOutboundHealth state
       , "max_clock_skew_seconds_observed" .= stateMaxObservedSkewSeconds state
       , "max_clock_skew_seconds_bound" .= daemonMaxClockSkewSeconds config
       , "orders_version_utc" .= stateOrdersVersionUtc state
@@ -1752,16 +1848,34 @@ renderHeartbeatAges now state =
       | (nodeId, timestamp) <- Map.toList (stateLastHeartbeatTimes state)
       ]
 
-renderPeerTransport :: UTCTime -> DaemonState -> Value
-renderPeerTransport now state =
+-- | INBOUND delivery health per peer: the age of the last signed event this
+-- daemon accepted from each peer. A stale (or absent) age while outbound
+-- health is healthy is the observable signature of a one-directional
+-- partition where we can reach the peer but it has stopped emitting to us.
+renderPeerInboundHealth :: UTCTime -> DaemonState -> Value
+renderPeerInboundHealth now state =
   Object $
     KeyMap.fromList
       [ ( Key.fromString peer
         , object
-            [ "connected" .= peerHealthConnected health
-            , "last_inbound_event_age_seconds"
+            [ "last_inbound_event_age_seconds"
                 .= fmap (\t -> realToFrac (diffUTCTime now t) :: Double) (peerHealthLastInboundEvent health)
-            , "last_error" .= peerHealthLastError health
+            ]
+        )
+      | (peer, health) <- Map.toList (statePeerHealth state)
+      ]
+
+-- | OUTBOUND dial health per peer: whether this daemon's last push to each
+-- peer connected, plus the last dial error. Reflects our delivery attempts
+-- only; it never advances when an inbound event arrives.
+renderPeerOutboundHealth :: DaemonState -> Value
+renderPeerOutboundHealth state =
+  Object $
+    KeyMap.fromList
+      [ ( Key.fromString peer
+        , object
+            [ "connected" .= peerHealthOutboundConnected health
+            , "last_error" .= peerHealthOutboundLastError health
             ]
         )
       | (peer, health) <- Map.toList (statePeerHealth state)

@@ -3,6 +3,7 @@
 **Status**: Authoritative source
 **Supersedes**: N/A
 **Referenced by**: documents/engineering/README.md, documents/engineering/effectful_dag_architecture.md, documents/engineering/prerequisite_dag_system.md, documents/engineering/unit_testing_policy.md
+**Generated sections**: none
 
 > **Purpose**: Define the runtime execution contract for the Haskell effect interpreter.
 

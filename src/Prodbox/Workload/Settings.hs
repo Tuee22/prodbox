@@ -13,12 +13,11 @@
 -- optional Redis endpoint (required when mode is Websocket), and optional
 -- OIDC bootstrap config (required when mode is Websocket).
 --
--- During the Sprint 3.14 transition the @--config@ flag is optional: when
--- absent the workload falls back to the legacy @PRODBOX_WORKLOAD_MODE@ +
--- sister-env-var ladder for backward compatibility with the chart templates
--- that still emit env vars. When the chart-side migration completes the
--- env-var fallback path is removed and the @--config@ flag becomes the sole
--- source.
+-- Sprint 3.15: this mounted Dhall config is the SOLE config source for the
+-- workload binary. The Sprint 3.14 transitional @PRODBOX_*@ env-var fallback
+-- ladder in @Prodbox.Workload@ was deleted, so @--config@ is mandatory: a
+-- missing or unparseable @--config@ is a fast, structured failure, never a
+-- silent env-var fallback (see config_doctrine.md § 10. Forbidden surfaces).
 module Prodbox.Workload.Settings
   ( WorkloadConfigDhall (..)
   , WorkloadModeDhall (..)

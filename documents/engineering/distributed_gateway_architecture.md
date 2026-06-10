@@ -31,7 +31,8 @@ This design assumes:
 2. All nodes are fully trusted mesh peers identified by Orders membership and per-node event
    keys; peer trust material remains part of the gateway config and chart contract.
 3. A typed global Orders document exists (protobuf), with monotonic UTC version timestamp.
-4. Nodes immediately promote newer validated Orders.
+4. Nodes promote newer validated Orders promptly, via the restart-based boot-field
+   reload path (§7.5), not by mutating Orders version in process.
 5. Every node has a stable peer endpoint in Orders for mesh communication.
 6. Only gateway owner updates the canonical public DNS record `test.resolvefintech.com`.
 7. A global append-only event log is the source of truth and is recovered peer-to-peer.
@@ -151,6 +152,31 @@ Therefore the design contract is:
 
 The schema can forbid ambiguous rule forms, but cannot bypass impossibility results.
 
+## 5.1 Topology and Fault Model
+
+The partition-tolerance machinery above is a *capability*, not a property the
+current deployment exercises. The two substrates sit at opposite ends of the
+topology spectrum:
+
+- **Home (single host)** — the home cluster runs the gateway as a degenerate
+  single-rank mesh on one physical host. There are no peers to partition from,
+  and the gateway daemon, the cluster it gates, and the operator host share
+  fate: a fault that takes down the gateway takes down everything it would
+  otherwise fail over to. There is no real partition scenario here, so
+  split-brain and tug-of-war are not live risks on home — the failsafe
+  reduces to "the single rank self-elects" (§4.2 singleton takeover). The
+  ranked-failover rule, the claim/yield log, and the DNS write gate still run,
+  but against a population of one.
+- **AWS / future multi-host** — genuine partition tolerance (and the
+  `NoTugOfWar` / `UniqueOwner` safety properties the TLA+ model verifies)
+  becomes load-bearing only when the mesh spans more than one host that can
+  partition independently. That is the AWS substrate and any future
+  multi-host topology, not the home single-host degenerate case.
+
+Doctrine and the TLA+ model are written for the multi-host fault model because
+that is the architecture the design targets; the home substrate is the
+shared-fate degenerate instance of the same protocol, not a second protocol.
+
 ---
 
 ## 6. Rejoin + Eventual Consistency
@@ -187,6 +213,31 @@ This provides deterministic convergence.
   `daemonEventKeys`, refuses unknown emitters, and ignores events whose
   emitter id is outside the Orders node set.
 
+### 7.1.1 Per-Connection Isolation Contract
+
+Both listeners — the peer-events ingest (`POST /v1/peer/events`) and the
+operator-facing REST surface (`GET /v1/state`, the secret-derivation routes,
+the health/metrics endpoints) — handle each inbound connection in isolation so
+a slow, stuck, or malformed peer cannot wedge the daemon:
+
+- Each accepted connection is served under its own `withAsync` (never
+  `forkIO`), so a handler that throws or is cancelled never leaks a thread and
+  never blocks the accept loop or sibling connections.
+- Each connection read is bounded by a read timeout. A peer that opens a socket
+  and then stalls mid-request is timed out and dropped rather than holding a
+  handler thread open indefinitely; the accept loop keeps serving other peers.
+- A failed, timed-out, or malformed connection mutates no daemon state — it is
+  dropped after the existing schema / hash-chain / HMAC validation rejects it
+  (see §7.3), and the listener returns to accepting.
+
+Sprint 2.25 landed the per-connection `withAsync` plus the bounded read
+timeout on both listeners. Each accepted connection is served under its own
+`withAsync` child (reaped via `waitCatch`, never a raw thread spawn), and the
+socket read is bounded by `liveConnectionReadTimeoutSeconds` (sourced from
+`LiveConfig` with a sane default); a read that exceeds the bound returns a
+benign sentinel that the request parser drops, confined to that connection and
+never classified as a `Fatal` worker error (including during `Draining`).
+
 ## 7.2 Log Replication
 
 - Each daemon periodically pushes its append-only commit log to every
@@ -199,9 +250,28 @@ This provides deterministic convergence.
   the inbound event timestamps rather than from the local heartbeat loop
   alone, closing the documented gap between the runtime and the TLA+
   model's peer-communication assumptions.
-- The receiver also tracks per-peer transport health
-  (last inbound event timestamp, connect state, last error) and exposes
-  it on `/v1/state` as `peer_transport`.
+- The receiver also tracks per-peer health and exposes it on `/v1/state` as
+  two **separate** top-level fields — `peer_inbound_health` and
+  `peer_outbound_health` — so a one-directional partition is observable rather
+  than collapsed into a single value. Inbound and outbound health have distinct
+  meaning and must not be conflated:
+  - **Inbound health** (`peer_inbound_health.<peer>.last_inbound_event_age_seconds`)
+    — age of the last *inbound* event from that peer. It is written only when
+    this daemon actually receives and accepts a signed event from the peer, and
+    it is the freshness signal that feeds heartbeat and isolation judgements
+    (§4.2).
+  - **Outbound health** (`peer_outbound_health.<peer>.{connected,last_error}`)
+    — whether this daemon's last *push to* that peer succeeded (connect state,
+    last dial error). It reflects our own delivery attempts and says nothing
+    about whether the peer is producing events.
+  - `markPeerOk` runs on a successful outbound push and writes **only** the
+    outbound fields. It must not stamp the inbound-event timestamp: a one-way
+    "we could reach the peer's socket" success is not evidence that the peer is
+    alive and emitting, and treating it as inbound freshness would mask a peer
+    that accepts connections but has stopped producing events, defeating the
+    isolation failsafe. Sprint 2.25 split these into separate fields so the
+    outbound-push callback can no longer advance inbound freshness; the prior
+    conflated `peer_transport` field is retired.
 
 ### 7.2.1 At-Least-Once Correspondence
 
@@ -240,18 +310,35 @@ the gateway only shares the idempotency rule and event-ordering discipline.
   `/v1/state` as `max_clock_skew_seconds_observed` so operators can
   detect drift before it crosses the configured bound.
 
-## 7.5 Orders Promotion
+## 7.5 Orders Promotion (Restart-Based)
 
-- Orders carries the existing monotonic `version_utc` field.  Each peer
-  push includes the sender's current `orders_version_utc`, and the
-  receiver returns `409 Conflict` when the sender's view is older than
-  the receiver's.  This prevents a stale peer from pushing events that
-  predate the receiver's promotion of a newer Orders document.
-- The daemon tracks the highest observed Orders version on
-  `/v1/state` as `latest_observed_orders_version_utc`.  When the peer
-  view advances past the local Orders, the daemon refuses to claim
-  ownership until its local Orders catches up so a daemon rebooting
-  against a stale Orders version cannot reclaim DNS write authority.
+Orders is a `BootConfig` field (cluster topology / ranked-node membership),
+not a live-reloadable knob. Promotion of a newer Orders document is therefore
+**restart-based**, following the file-watch reload contract in
+[config_doctrine.md §8 step 4](./config_doctrine.md#8-boot-vs-live-split-and-the-restart-contract):
+when the watcher observes a changed Orders mount, the daemon logs
+`config_reload_boot_change_detected`, drains within the bounded deadline, and
+exits `ExitSuccess`; the kubelet restarts the Pod, which decodes the new Orders
+fresh at startup and binds its rank, peer set, and timing from it. The daemon
+never advances its Orders version in process — `stateOrdersVersionUtc` is bound
+once at startup and stays fixed for the life of the process.
+
+- Each peer push includes the sender's current `orders_version_utc`, and the
+  receiver returns `409 Conflict` when the sender's view is older than the
+  receiver's. This prevents a stale peer from pushing events that predate the
+  receiver's (startup-bound) Orders version.
+- The daemon tracks the highest observed Orders version on `/v1/state` as
+  `latest_observed_orders_version_utc`. When the peer view advances past the
+  local (startup-bound) Orders, the daemon **refuses to claim ownership** until
+  it is restarted against the newer Orders — the refuse-to-reclaim-while-behind
+  gate. Because in-process promotion never happens, the only way to clear the
+  gate is the restart path above; a daemon rebooting against a stale Orders
+  version cannot reclaim DNS write authority.
+- There is no in-process `orders_promoted` transition. The
+  `eventTypeOrdersPromoted` / `orders_promoted` event class and its threading
+  are dead machinery: nothing advances `stateOrdersVersionUtc`, so no
+  promotion event is ever emitted or consumed. Sprint 2.25 removes that dead
+  `orders_promoted` machinery and keeps promotion entirely restart-driven.
 
 ---
 
@@ -406,10 +493,14 @@ Returns current daemon state:
         "node-a": 0.2,
         "node-b": 1.3
     },
-    "peer_transport": {
+    "peer_inbound_health": {
+        "node-b": {
+            "last_inbound_event_age_seconds": 0.7
+        }
+    },
+    "peer_outbound_health": {
         "node-b": {
             "connected": true,
-            "last_inbound_event_age_seconds": 0.7,
             "last_error": null
         }
     },
@@ -451,6 +542,15 @@ base64-url-encoded. Authoritative contract:
 `400` for malformed or unknown context; `500` if the gateway cannot read
 `prodbox/master-seed` from MinIO. Used by ad-hoc callers that already know the context
 string.
+
+The `context` query parameter is subject to a pinned encode/decode round-trip:
+the exact context string the caller derives a value for must decode back to the
+identical string the handler hashes. URL-encoding of the colon-delimited context
+(`patroni:keycloak:keycloak:app`) on the wire and percent-decoding in the handler
+must round-trip byte-for-byte, so the derived value is bound to precisely the
+context the caller asked for and never to a silently mangled variant. A context
+that fails to round-trip is a `400`, not a derivation against a corrupted key.
+Sprint 2.25 pins this round-trip with an explicit encode/decode test.
 
 ### `POST /v1/secret/ensure-namespace`
 
@@ -527,9 +627,12 @@ Containerization is first-class for integration/runtime image publishing:
 - Harbor is the supported source for the gateway workload image, and the host-arch variant is
   pulled back into local Docker before import into the RKE2 containerd cache
 - Kubernetes pod integration tests run against that Harbor-published image by default
-- Image pinning for explicit testing is expressed via the operator-authored Dhall config
-  (`gateway.image_override` field), not via environment variables — see
-  [config_doctrine.md](./config_doctrine.md)
+- The gateway workload image reference is pinned in code (the canonical
+  `127.0.0.1:30080/prodbox/...` Harbor ref, shared across both substrates),
+  not selected by an operator config field or environment variable. There is
+  no `gateway.image_override` (or equivalent) config knob — the Dhall config
+  carries no image field, and image pinning is a code constant, not operator
+  input
 
 See [Local Registry Pipeline](./local_registry_pipeline.md) for Harbor install,
 native-host-architecture publish flow, explicit public-image reconcile, and RKE2 registry behavior.

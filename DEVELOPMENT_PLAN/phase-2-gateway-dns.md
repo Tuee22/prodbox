@@ -4,6 +4,7 @@
 **Supersedes**: N/A
 **Referenced by**: [README.md](README.md), [00-overview.md](00-overview.md),
 [system-components.md](system-components.md), [the engineering doctrine docs](../documents/engineering/README.md)
+**Generated sections**: none
 
 > **Purpose**: Capture the Haskell gateway runtime, its formal verification path, the canonical
 > Route 53 ownership or update flow, and the CLI-doctrine adoption sprints that align the gateway
@@ -11,6 +12,25 @@
 > Binary](../documents/engineering/README.md).
 
 ## Phase Status
+
+✅ **Reclosed on the code-owned surface 2026-06-09** — reopened 2026-06-09 for Sprints `2.24`–`2.25`
+(design-intention review; see [README.md](README.md) Closure Status); both have now landed. Sprint
+`2.24` ✅ deleted the daemon/workload `--log-level` / `--port` / `--foreground` override flags + their
+threading (the pending Sprint 2.20 ledger removal; the daemon now sources log-level from Dhall and
+the REST port from Orders). Sprint `2.25` ✅ hardened the gateway runtime — per-connection `withAsync`
+with a bounded read timeout on both listeners, an inbound-vs-outbound peer-health split, one
+canonical base64url event-key encoding, a derive-context `decode . encode == id` round-trip,
+**restart-based Orders promotion** with the dead `orders_promoted` machinery deleted (D4:
+`stateOrdersVersionUtc` never advances in-process; the refuse-to-reclaim-while-behind gate kept), the
+`markEventProcessed` IS-NULL guard restored, and the topology-honest fault-model reframe (home =
+single-host degenerate single-rank mesh under shared fate; partition tolerance is the AWS /
+future-multi-host capability). Validation at reclosure: `check-code` 0, `test unit` 760,
+`integration cli` 35, `prodbox-daemon-lifecycle` 14/14, `lint docs` 0, `docs check` 0; the live
+`gateway-daemon`/`gateway-pods`/`gateway-partition` integration validations remain operator-driven
+(running cluster required). **Prior closure preserved**: ✅ Done (Sprints `2.1`–`2.16` + `2.17` +
+`2.18` + `2.19` + `2.20` + `2.21` + `2.22`, with Sprint `2.21` closed via the live home-substrate
+file-watch exercise 2026-06-02 — the drain-completion cancellation-propagation residual is deferred
+to a Sprint `2.23` follow-up). The prior closure detail below is retained verbatim.
 
 ✅ **Done** — Sprints `2.1`–`2.8` remain `Done` on the gateway runtime, Route 53 ownership,
 peer-transport, claim/yield, time-base, Orders-promotion, and host-info cleanup surfaces. The
@@ -1935,21 +1955,215 @@ None. The chart-side migration uses Dhall-fragment Secrets mounted at the canoni
 paths, preserves MinIO credentials across upgrades with `lookup`, and was exercised live
 by `prodbox test all` retry 21 on 2026-06-01.
 
+## Sprint 2.24: Delete Daemon `--log-level` / `--port` / `--foreground` Override Flags ✅
+
+**Status**: Done (2026-06-09). The three runtime-override flags + `foregroundParser` were removed
+from both `daemonLaunchOptionsParser` and `workloadOptionsParser`, the matching
+`DaemonLaunchOptions`/`WorkloadOptions` fields and the threading through `Gateway.hs`/`Daemon.hs`
+(`runGatewayDaemon :: Maybe FilePath -> DaemonConfig -> IO ExitCode`) dropped; `gateway start` =
+`--config` + `--dry-run` + `--plan-file`, `workload start` = `--config`. The daemon now sources
+`log_level` from the mounted Dhall (`live.log_level`, default `info`) and the REST port from Orders
+(`peerRestPort`); the daemon-lifecycle harness injects the port via the generated Orders Dhall
+instead of `--port`. The generated §2/§3 matrix + CLI goldens were regenerated and both ledger rows
+moved to Completed. The `Workload.hs` `PRODBOX_*` env ladder is intentionally retained (Sprint
+3.15). Validation green: `check-code` 0, `test unit` 0, `integration cli` 0,
+`prodbox-daemon-lifecycle` 13/13, `lint docs` 0, `docs check` 0.
+**Implementation**: `src/Prodbox/CLI/Spec.hs`, `src/Prodbox/CLI/Parser.hs`,
+`src/Prodbox/CLI/Command.hs`, `src/Prodbox/Gateway.hs`, `src/Prodbox/Workload.hs`,
+`test/daemon-lifecycle/Main.hs`, `DEVELOPMENT_PLAN/legacy-tracking-for-deletion.md` (recommended)
+**Docs to update**: `documents/engineering/cli_command_surface.md`,
+`documents/engineering/config_doctrine.md`,
+`documents/engineering/distributed_gateway_architecture.md`,
+`DEVELOPMENT_PLAN/legacy-tracking-for-deletion.md`
+
+### Objective
+
+Land the deferred Sprint 2.20 ledger removal: delete the daemon-launching commands'
+`--log-level`, `--port`, and `--foreground` override flags and the threading that carries them
+through `BootConfig` resolution, so `prodbox gateway start` and `prodbox workload start` take
+exactly one startup-time CLI knob — `--config <path>` — per
+[config_doctrine.md §2 and §10](../documents/engineering/config_doctrine.md#2-single-dhall-surface-per-binary-instance).
+Sprint 2.20 closed its Dhall-decoder surface but left these flags in place because the
+daemon-lifecycle test harness used `--port` for port allocation and the operator
+`gateway status` / `config-gen` commands still threaded `--log-level`; this sprint removes the
+flags and rewires those call sites onto the Dhall surface.
+
+### Deliverables
+
+- Remove the `--log-level`, `--port`, and `--foreground` flags from the `prodbox gateway start`
+  and `prodbox workload start` `CommandSpec` entries in `src/Prodbox/CLI/Spec.hs` and the
+  matching parser arms in `src/Prodbox/CLI/Parser.hs` / constructors in
+  `src/Prodbox/CLI/Command.hs`. `--config <path>` becomes the sole startup-time knob; the daemon
+  refuses to start on missing or unparseable config.
+- Remove the threading that lets those flags override `BootConfig` defaults: log level, listen
+  port, and foreground/daemonize disposition all come from the decoded Dhall config. The
+  CLI-flag > env-var > Dhall-default > built-in-default precedence ladder named in the closed
+  Sprint 2.15 deliverables collapses to Dhall-default > built-in-default (no CLI or env-var tier
+  survives on the supported path).
+- Rewire the `prodbox-daemon-lifecycle` stanza (Sprint 2.14) so its port allocation flows through
+  a generated Dhall fixture's `boot` port field rather than a `--port` flag; the operator
+  `gateway status` / `config-gen` commands take their log level from the same decoded config.
+- Move the `--log-level` / `--port` / `--foreground` flag-shape entry from `Pending Removal` to
+  `Completed` in [legacy-tracking-for-deletion.md](legacy-tracking-for-deletion.md) once the
+  flags are gone.
+- Regression guard: the `prodbox-unit` parser-shape test pins the reduced `DaemonLaunchOptions`
+  record (config + plan-options only), and the §2/§3 matrix is generated from the `CommandSpec`
+  registry — reintroducing any of the three flags changes the record arity (test compile-break)
+  and the generated matrix (docs-check drift), so reintroduction fails a gate. A dedicated
+  string-scan lint was judged unnecessary given the parser is generated-from-spec and unit-tested.
+
+### Validation
+
+1. `prodbox check-code` exit 0.
+2. `prodbox test unit` exit 0 (parser-shape coverage proves the three flags are absent on the
+   daemon-launching commands).
+3. `prodbox test integration cli` exit 0.
+4. `cabal test prodbox-daemon-lifecycle` exit 0 (the stanza allocates its port through the Dhall
+   fixture rather than a `--port` flag).
+5. `prodbox gateway start --config <path>` and `prodbox workload start --config <path>` accept no
+   other startup-time flag and refuse to start on missing or unparseable config.
+
+### Remaining Work
+
+None — closed 2026-06-09. Flags + threading removed, daemon sources port/log-level from
+Dhall/Orders, tests + matrix + goldens regenerated, ledger rows moved to Completed.
+
+## Sprint 2.25: Gateway Runtime Robustness and Topology-Honest Fault Model ✅
+
+**Status**: Done on the code-owned surface (2026-06-09). All six deliverables landed: per-connection
+`withAsync` + bounded `receiveAllWithin` read timeout (from `LiveConfig`, shutdown-aware) on both
+listeners; `/v1/state` splits `peer_transport` into `peer_inbound_health` + `peer_outbound_health`
+(`markPeerOk` no longer stamps the inbound field); one canonical base64url event-key encoding
+(`deriveBase64Url`; the `deriveHex` divergence, the Sprint-2.21 chunk-48 reload overlay, and the
+false "agree by construction" comment removed); a typed `DeriveContext` with a `decodeDeriveContext`
+inverse + a `decode . encode == id` property (de-risks GET `/v1/secret/derive`, audit C82);
+restart-based Orders promotion (`eventTypeOrdersPromoted`/`extractOrdersVersionFromEvent`/
+`updateOrdersAdvert` deleted, the refuse-to-reclaim-while-behind gate kept); and the
+`markEventProcessed` IS-NULL first-write-wins guard in `Daemon/Events.hs` (the peer anti-entropy log
+left untouched). The D4 + topology-honest doctrine reframes were verified consistent (Sprint 0.9).
+Validation green: `check-code` 0, `test unit` 760, `integration cli` 35, `prodbox-daemon-lifecycle`
+14/14, `lint docs` 0, `docs check` 0. The live `gateway-daemon`/`gateway-pods`/`gateway-partition`
+integration validations are operator-driven (require a running RKE2 cluster) and are the remaining
+live gate.
+**Behavior note:** retiring the chunk-48 overlay means a first-install empty `event_keys` ConfigMap
+now classifies as a boot change → drain-and-exit; the daemon re-derives identical base64url keys at
+restart and the populated ConfigMap then matches (the intended restart-contract behavior, not a
+regression).
+**Implementation**: `src/Prodbox/Gateway/Daemon.hs`, `src/Prodbox/Gateway/Types.hs`,
+`src/Prodbox/Gateway/Peer.hs`, `src/Prodbox/Daemon/Events.hs`, `test/unit/Main.hs`,
+`test/daemon-lifecycle/Main.hs` (recommended)
+**Docs to update**: `documents/engineering/distributed_gateway_architecture.md`,
+`documents/engineering/config_doctrine.md`,
+`documents/engineering/secret_derivation_doctrine.md`,
+`documents/engineering/streaming_doctrine.md`,
+`documents/engineering/tla_modelling_assumptions.md`
+
+### Objective
+
+Harden the gateway runtime's connection handling, peer-health accounting, event-key encoding, and
+Orders-promotion model, and reframe the gateway fault-model doctrine so it is topology-honest: the
+home substrate is a single-host degenerate single-rank mesh under shared fate, and partition
+tolerance is an AWS / future-multi-host capability rather than a property the home runtime
+exercises. This sprint also enacts doctrine change **D4** — Orders promotion is restart-based, not
+an in-process version advance — across
+[distributed_gateway_architecture.md §7.5](../documents/engineering/distributed_gateway_architecture.md)
+and [tla_modelling_assumptions.md](../documents/engineering/tla_modelling_assumptions.md), per
+[config_doctrine.md §8 step 4](../documents/engineering/config_doctrine.md#8-boot-vs-live-split-and-the-restart-contract),
+which already defines the restart contract.
+
+### Deliverables
+
+- Wrap each inbound connection on both the REST and peer-events listeners in its own `withAsync`
+  with a bounded read timeout, so a slow or stuck peer cannot wedge the accept loop; the timeout
+  is sourced from `LiveConfig` and the cancellation is intentional-shutdown-aware (it does not
+  classify as a `Fatal` worker error during `Draining`).
+- Split inbound-vs-outbound peer health: `/v1/state` reports inbound delivery health (last
+  accepted event age per peer) separately from outbound dial health (connect state, last dial
+  error per peer), so a one-directional partition is observable rather than collapsed into a
+  single `peer_transport` health value.
+- Collapse the event-key handling onto one typed encoding: define a single canonical event-key
+  encoding (the base64url surface already produced by the chart-rendered `event_keys`) and remove
+  the divergent in-memory `deriveHex` re-derivation path so the boot-change classifier and the
+  HMAC signing/verification path agree on one representation. The Sprint 2.21 chunk-48 workaround
+  (reapply the in-memory derivation before `daemonBootFieldsChanged` compares) is retired in
+  favor of the single encoding.
+- Add a derive-context encode/decode round-trip: the typed context constructors in
+  `Prodbox.Secret.Derive` (and any event-key context) gain an inverse decoder, with a property
+  test asserting `decode . encode == id` so the wire shape is provably stable.
+- **Restart-based Orders promotion (doctrine D4)**: rewrite
+  [distributed_gateway_architecture.md §7.5](../documents/engineering/distributed_gateway_architecture.md)
+  and [tla_modelling_assumptions.md](../documents/engineering/tla_modelling_assumptions.md) so a
+  new Orders document is adopted by restarting the daemon against the new config (per
+  [config_doctrine.md §8](../documents/engineering/config_doctrine.md#8-boot-vs-live-split-and-the-restart-contract)),
+  not by advancing `stateOrdersVersionUtc` in-process. `stateOrdersVersionUtc` never advances at
+  runtime; the dead in-process `orders_promoted` promotion machinery is deleted. The
+  refuse-to-reclaim-while-behind gate (`stateLatestObservedOrdersVersion > stateOrdersVersionUtc`
+  blocks ownership claims) is **kept** — a daemon that observes a newer Orders version refuses to
+  claim until it is restarted against that version.
+- Restore the `markEventProcessed` IS-NULL guard in `src/Prodbox/Daemon/Events.hs` so a
+  processed-marker write only fires when `processed_at IS NULL`, preserving the at-least-once
+  idempotent-replay contract from
+  [streaming_doctrine.md#at-least-once-event-processing](../documents/engineering/streaming_doctrine.md#at-least-once-event-processing)
+  under concurrent processors.
+- Topology-honest fault-model reframe in
+  [distributed_gateway_architecture.md](../documents/engineering/distributed_gateway_architecture.md)
+  and [tla_modelling_assumptions.md](../documents/engineering/tla_modelling_assumptions.md): a
+  note recording that the home substrate is a single-host degenerate single-rank mesh (the three
+  gateway pods share host fate, so a host failure is not a partition the runtime survives), and
+  that partition tolerance — the claim/yield protocol, the bounded-skew gate, the
+  refuse-to-reclaim gate — is exercised only on the AWS / future-multi-host substrate. The
+  doctrine stops presenting the home runtime as partition-tolerant.
+
+### Validation
+
+1. `prodbox check-code` exit 0.
+2. `prodbox test unit` exit 0, including the derive-context `decode . encode == id` property test
+   and the single-event-key-encoding unit coverage.
+3. `cabal test prodbox-daemon-lifecycle` exit 0 (per-connection timeout and inbound/outbound
+   health-split assertions).
+4. `prodbox test integration gateway-daemon`, `gateway-pods`, and `gateway-partition` exit 0.
+5. A unit test proves `markEventProcessed` is a no-op when `processed_at` is already set
+   (IS-NULL-guard idempotency).
+6. Text-search proof shows the in-process `orders_promoted` promotion machinery is removed and
+   `stateOrdersVersionUtc` has no in-process advance site, while the refuse-to-reclaim gate
+   remains.
+
+### Remaining Work
+
+Code-owned surface closed 2026-06-09 (all six deliverables + the D4 / topology-honest doctrine
+reframe verified). Remaining: the operator-driven live `gateway-daemon` / `gateway-pods` /
+`gateway-partition` integration validations against a running RKE2 cluster (cannot run in a
+non-cluster environment), matching the live-gate pattern the substrate sprints use.
+
 ## Documentation Requirements
 
 **Engineering docs to create/update:**
 
 - `documents/engineering/cli_command_surface.md` - Haskell gateway command surface, including the
-  distinct native `gateway-partition` validation contract.
+  distinct native `gateway-partition` validation contract, and the `--config <path>`-only
+  daemon-launching flag set after Sprint 2.24 removes `--log-level` / `--port` / `--foreground`.
+- `documents/engineering/config_doctrine.md` - the §2/§10 single-Dhall-surface contract that
+  Sprint 2.24 enforces by deleting the daemon override flags, and the §8 restart contract that
+  Sprint 2.25 enacts as restart-based Orders promotion.
 - `documents/engineering/dependency_management.md` - gateway container-build posture under the
   canonical Docker doctrine, including the `ghcup` pin and no-symlink rule.
 - `documents/engineering/distributed_gateway_architecture.md` - Haskell gateway implementation,
-  retained DNS ownership doctrine, and the authoritative peer-transport plus REST surface.
+  retained DNS ownership doctrine, the authoritative peer-transport plus REST surface, and the
+  §7.5 restart-based Orders-promotion rewrite plus the topology-honest fault-model reframe
+  (home = single-host degenerate single-rank mesh; partition tolerance is the AWS / multi-host
+  capability) landing with Sprint 2.25 (doctrine D4).
 - `documents/engineering/local_registry_pipeline.md` - gateway-container build, Harbor loading, and
   native-host-architecture delivery doctrine.
+- `documents/engineering/secret_derivation_doctrine.md` - the canonical event-key / derive-context
+  encoding consumed by the single-encoding consolidation and the encode/decode round-trip in
+  Sprint 2.25.
+- `documents/engineering/streaming_doctrine.md` - the at-least-once event-processing contract whose
+  `markEventProcessed` IS-NULL guard Sprint 2.25 restores.
 - `documents/engineering/tla/README.md` - formal model entrypoint and execution contract.
 - `documents/engineering/tla_modelling_assumptions.md` - correspondence between the Haskell runtime
-  and the model, including the split between native partition validation and `tla-check`.
+  and the model, including the split between native partition validation and `tla-check`, the
+  restart-based Orders-promotion correspondence (Sprint 2.25 / doctrine D4), and the
+  topology-honest fault-model note.
 - `documents/engineering/unit_testing_policy.md` - Haskell gateway integration-suite ownership.
 
 **Product docs to create/update:**

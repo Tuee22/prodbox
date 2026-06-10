@@ -3,6 +3,7 @@
 **Status**: Reference only
 **Supersedes**: N/A
 **Referenced by**: DEVELOPMENT_PLAN/README.md, documents/engineering/distributed_gateway_architecture.md, documents/engineering/README.md
+**Generated sections**: none
 
 > **Purpose**: Index TLA+ models for prodbox correctness properties.
 

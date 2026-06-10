@@ -3,6 +3,7 @@
 **Status**: Authoritative source
 **Supersedes**: N/A
 **Referenced by**: README.md, AGENTS.md, CLAUDE.md, DEVELOPMENT_PLAN/README.md, DEVELOPMENT_PLAN/00-overview.md, DEVELOPMENT_PLAN/system-components.md, DEVELOPMENT_PLAN/legacy-tracking-for-deletion.md, DEVELOPMENT_PLAN/phase-0-planning-documentation.md, DEVELOPMENT_PLAN/phase-1-runtime-cli-aws-foundations.md, DEVELOPMENT_PLAN/phase-2-gateway-dns.md, DEVELOPMENT_PLAN/phase-3-chart-platform-vscode.md, DEVELOPMENT_PLAN/phase-4-lifecycle-canonical-paths.md, DEVELOPMENT_PLAN/phase-5-canonical-test-suite.md, DEVELOPMENT_PLAN/phase-6-clean-room-handoff.md, DEVELOPMENT_PLAN/phase-7-aws-substrate-foundations.md, DEVELOPMENT_PLAN/phase-8-email-invite-auth.md, documents/cli/commands.md, documents/documentation_standards.md, documents/engineering/README.md, documents/engineering/acme_provider_guide.md, documents/engineering/aws_account_setup_guide.md, documents/engineering/aws_admin_credentials.md, documents/engineering/aws_integration_environment_doctrine.md, documents/engineering/code_quality.md, documents/engineering/dependency_management.md, documents/engineering/envoy_gateway_edge_doctrine.md, documents/engineering/helm_chart_platform_doctrine.md, documents/engineering/lifecycle_reconciliation_doctrine.md, documents/engineering/prerequisite_doctrine.md, documents/engineering/pure_fp_standards.md, documents/engineering/secret_derivation_doctrine.md, documents/engineering/streaming_doctrine.md, documents/engineering/unit_testing_policy.md
+**Generated sections**: `command-surface-toplevel`, `command-surface-matrix`
 
 > **Purpose**: Define the explicit, no-passthrough command surface for `prodbox`.
 
@@ -42,28 +43,32 @@ Top-level invocation:
 prodbox [--verbose|-v] [--version] <command> ...
 ```
 
-Top-level commands:
+Top-level commands (generated from `commandRegistry`; the `Purpose` column
+is each command's registry summary):
 
+<!-- prodbox:command-surface-toplevel:start -->
 | Command | Kind | Purpose |
 |---------|------|---------|
-| `aws` | Group | IAM policy, IAM user lifecycle, and service quota management |
-| `config` | Group | Dhall configuration management |
-| `docs` | Group | Generated-documentation maintenance |
-| `host` | Group | Host prerequisite checks and public-edge diagnostics |
-| `rke2` | Group | Local cluster lifecycle |
-| `pulumi` | Group | AWS validation stack lifecycle |
-| `dns` | Group | Route 53 inspection |
-| `k8s` | Group | Kubernetes health and log utilities |
-| `gateway` | Group | Gateway daemon operations |
-| `lint` | Group | Doctrine-owned lint surfaces |
-| `workload` | Group | Internal public-edge workload runtime |
+| `aws` | Group | AWS IAM and quota management |
 | `charts` | Group | Bespoke Helm chart lifecycle |
-| `test` | Group | Explicit named test suites |
-| `commands` | Command | Render command-registry introspection output |
+| `check-code` | Command | Run policy, lint, and type checks |
+| `commands` | Command | Render the command registry |
+| `config` | Group | Configuration management |
+| `dns` | Group | Route 53 inspection |
+| `docs` | Group | Generated-documentation maintenance |
+| `gateway` | Group | Gateway daemon operations |
 | `help` | Command | Render help for a command path |
-| `check-code` | Command | Doctrine-policy, formatter, lint, warning-clean build, and operator-binary sync gate |
-| `tla-check` | Command | TLA+ model checking via Docker |
-| `nuke` | Command | Operator-only total teardown (TTY-only, typed-confirmation literal `NUKE EVERYTHING`) |
+| `host` | Group | Host prerequisite checks |
+| `k8s` | Group | Kubernetes helpers |
+| `lint` | Group | Doctrine lint surfaces |
+| `nuke` | Command | Total teardown of every prodbox-owned AWS resource (operator-only) |
+| `pulumi` | Group | AWS validation stack lifecycle |
+| `rke2` | Group | Local cluster lifecycle |
+| `test` | Group | Named test suites |
+| `tla-check` | Command | Run TLA+ checks |
+| `users` | Group | Operator-invited user management |
+| `workload` | Group | Internal public workload runtime |
+<!-- prodbox:command-surface-toplevel:end -->
 
 ## 2A. Operator Vocabulary Contract
 
@@ -137,6 +142,54 @@ The contract does **not** apply to:
 
 ## 3. Command Matrix
 
+> §2 (top-level command list) and the per-group matrix below are the
+> **registry-derived operator surface** — every row is generated from the
+> typed `commandRegistry` in `src/Prodbox/CLI/Spec.hs`, not hand-edited.
+> `prodbox docs generate` rewrites the marker-delimited generated section
+> below from `commandRegistry` (rendered by
+> `renderCommandSurfaceMatrix` in `src/Prodbox/CLI/Docs.hs`), and
+> `prodbox docs check` / `prodbox check-code` fail the build if it drifts
+> from the parser. The "Arguments" column is sourced from each leaf
+> command's typed positional `ArgumentSpec` list; the "Options" column
+> lists each leaf's long flags. The per-command prose notes that follow
+> each generated group table — owner modules, refuse-path semantics,
+> lifecycle ordering, and the operator-vocabulary contract — are
+> hand-maintained and intentionally live OUTSIDE the markers.
+
+The per-group command matrix (generated; do not edit by hand):
+
+<!-- prodbox:command-surface-matrix:start -->
+### `prodbox aws`
+
+| Command | Arguments | Options |
+|---------|-----------|---------|
+| `prodbox aws policy` | none | `--tier` |
+| `prodbox aws setup` | none | `--tier`, `--dry-run`, `--plan-file` |
+| `prodbox aws teardown` | none | `--dry-run`, `--plan-file`, `--destroy-pulumi-residue`, `--allow-pulumi-residue` |
+| `prodbox aws check-quotas` | none | none |
+| `prodbox aws request-quotas` | none | `--tier` |
+
+### `prodbox charts`
+
+| Command | Arguments | Options |
+|---------|-----------|---------|
+| `prodbox charts list` | none | none |
+| `prodbox charts status` | `CHART` | none |
+| `prodbox charts deploy` | `CHART` | `--dry-run`, `--plan-file`, `--substrate` |
+| `prodbox charts delete` | `CHART` | `--yes`, `--dry-run`, `--plan-file`, `--substrate` |
+
+### `prodbox check-code`
+
+| Command | Arguments | Options |
+|---------|-----------|---------|
+| `prodbox check-code` | none | none |
+
+### `prodbox commands`
+
+| Command | Arguments | Options |
+|---------|-----------|---------|
+| `prodbox commands` | none | `--tree`, `--json` |
+
 ### `prodbox config`
 
 | Command | Arguments | Options |
@@ -145,21 +198,152 @@ The contract does **not** apply to:
 | `prodbox config show` | none | `--show-secrets` |
 | `prodbox config validate` | none | none |
 
+### `prodbox dns`
+
+| Command | Arguments | Options |
+|---------|-----------|---------|
+| `prodbox dns check` | none | none |
+
+### `prodbox docs`
+
+| Command | Arguments | Options |
+|---------|-----------|---------|
+| `prodbox docs check` | none | none |
+| `prodbox docs generate` | none | none |
+
+### `prodbox gateway`
+
+| Command | Arguments | Options |
+|---------|-----------|---------|
+| `prodbox gateway start` | none | `--config`, `--dry-run`, `--plan-file` |
+| `prodbox gateway status` | none | `--config` |
+| `prodbox gateway config-gen` | `OUTPUT_PATH` | `--node-id` |
+
+### `prodbox help`
+
+| Command | Arguments | Options |
+|---------|-----------|---------|
+| `prodbox help` | `COMMAND_PATH...` | none |
+
+### `prodbox host`
+
+| Command | Arguments | Options |
+|---------|-----------|---------|
+| `prodbox host ensure-tools` | none | none |
+| `prodbox host check-ports` | none | none |
+| `prodbox host info` | none | none |
+| `prodbox host firewall gateway-restrict` | none | `--port` |
+| `prodbox host firewall gateway-unrestrict` | none | `--port` |
+| `prodbox host public-edge` | none | `--substrate` |
+
+### `prodbox k8s`
+
+| Command | Arguments | Options |
+|---------|-----------|---------|
+| `prodbox k8s health` | none | none |
+| `prodbox k8s wait` | none | `--timeout`, `--namespace` |
+| `prodbox k8s logs` | none | `--namespace`, `--tail` |
+
+### `prodbox lint`
+
+| Command | Arguments | Options |
+|---------|-----------|---------|
+| `prodbox lint all` | none | none |
+| `prodbox lint files` | none | `--write` |
+| `prodbox lint docs` | none | `--write` |
+| `prodbox lint haskell` | none | `--write` |
+| `prodbox lint chart` | none | none |
+
+### `prodbox nuke`
+
+| Command | Arguments | Options |
+|---------|-----------|---------|
+| `prodbox nuke` | none | `--dry-run`, `--plan-file` |
+
+### `prodbox pulumi`
+
+| Command | Arguments | Options |
+|---------|-----------|---------|
+| `prodbox pulumi eks-resources` | none | `--dry-run`, `--plan-file` |
+| `prodbox pulumi eks-destroy` | none | `--yes`, `--dry-run`, `--plan-file` |
+| `prodbox pulumi test-resources` | none | `--dry-run`, `--plan-file` |
+| `prodbox pulumi test-destroy` | none | `--yes`, `--dry-run`, `--plan-file` |
+| `prodbox pulumi aws-subzone-resources` | none | `--dry-run`, `--plan-file` |
+| `prodbox pulumi aws-subzone-destroy` | none | `--yes`, `--dry-run`, `--plan-file` |
+| `prodbox pulumi aws-ses-resources` | none | `--dry-run`, `--plan-file` |
+| `prodbox pulumi aws-ses-destroy` | none | `--yes`, `--dry-run`, `--plan-file` |
+| `prodbox pulumi aws-ses-migrate-backend` | none | `--dry-run`, `--plan-file` |
+
+### `prodbox rke2`
+
+| Command | Arguments | Options |
+|---------|-----------|---------|
+| `prodbox rke2 status` | none | none |
+| `prodbox rke2 start` | none | none |
+| `prodbox rke2 stop` | none | none |
+| `prodbox rke2 restart` | none | none |
+| `prodbox rke2 reconcile` | none | `--dry-run`, `--plan-file` |
+| `prodbox rke2 delete` | none | `--yes`, `--cascade`, `--allow-pulumi-residue`, `--dry-run`, `--plan-file` |
+| `prodbox rke2 logs` | none | `--lines` |
+
+### `prodbox test`
+
+| Command | Arguments | Options |
+|---------|-----------|---------|
+| `prodbox test all` | none | `--coverage`, `--cov-fail-under`, `--substrate` |
+| `prodbox test lint` | none | none |
+| `prodbox test unit` | none | `--coverage`, `--cov-fail-under`, `--substrate` |
+| `prodbox test integration all` | none | `--coverage`, `--cov-fail-under`, `--substrate` |
+| `prodbox test integration cli` | none | `--coverage`, `--cov-fail-under`, `--substrate` |
+| `prodbox test integration aws-iam` | none | `--coverage`, `--cov-fail-under`, `--substrate` |
+| `prodbox test integration dns-aws` | none | `--coverage`, `--cov-fail-under`, `--substrate` |
+| `prodbox test integration aws-eks` | none | `--coverage`, `--cov-fail-under`, `--substrate` |
+| `prodbox test integration env` | none | `--coverage`, `--cov-fail-under`, `--substrate` |
+| `prodbox test integration gateway-daemon` | none | `--coverage`, `--cov-fail-under`, `--substrate` |
+| `prodbox test integration gateway-pods` | none | `--coverage`, `--cov-fail-under`, `--substrate` |
+| `prodbox test integration gateway-partition` | none | `--coverage`, `--cov-fail-under`, `--substrate` |
+| `prodbox test integration ha-rke2-aws` | none | `--coverage`, `--cov-fail-under`, `--substrate` |
+| `prodbox test integration lifecycle` | none | `--coverage`, `--cov-fail-under`, `--substrate` |
+| `prodbox test integration pulumi` | none | `--coverage`, `--cov-fail-under`, `--substrate` |
+| `prodbox test integration charts-storage` | none | `--coverage`, `--cov-fail-under`, `--substrate` |
+| `prodbox test integration charts-platform` | none | `--coverage`, `--cov-fail-under`, `--substrate` |
+| `prodbox test integration charts-vscode` | none | `--coverage`, `--cov-fail-under`, `--substrate` |
+| `prodbox test integration charts-api` | none | `--coverage`, `--cov-fail-under`, `--substrate` |
+| `prodbox test integration charts-websocket` | none | `--coverage`, `--cov-fail-under`, `--substrate` |
+| `prodbox test integration admin-routes` | none | `--coverage`, `--cov-fail-under`, `--substrate` |
+| `prodbox test integration public-dns` | none | `--coverage`, `--cov-fail-under`, `--substrate` |
+| `prodbox test integration keycloak-invite` | none | `--coverage`, `--cov-fail-under`, `--substrate` |
+
+### `prodbox tla-check`
+
+| Command | Arguments | Options |
+|---------|-----------|---------|
+| `prodbox tla-check` | none | none |
+
+### `prodbox users`
+
+| Command | Arguments | Options |
+|---------|-----------|---------|
+| `prodbox users invite` | `EMAIL` | `--role`, `--dry-run`, `--plan-file` |
+| `prodbox users list` | none | `--status`, `--status-unverified` |
+| `prodbox users revoke` | `EMAIL_OR_USER_ID` | `--delete`, `--dry-run`, `--plan-file` |
+
+### `prodbox workload`
+
+| Command | Arguments | Options |
+|---------|-----------|---------|
+| `prodbox workload start` | none | `--config` |
+<!-- prodbox:command-surface-matrix:end -->
+
+### `prodbox config` notes
+
 `src/Prodbox/Aws.hs` owns `config setup`. `src/Prodbox/Settings.hs` owns `config show` and
 `config validate`. `prodbox config compile` is not part of the supported command surface. The
 supported public `config setup` path prompts for one temporary admin AWS credential set when
 needed; stored `aws_admin_for_test_simulation.*` remains reserved for suite-driven destructive
 validation and long-lived stack/`prodbox nuke` flows, not ordinary onboarding.
 
-### `prodbox aws`
-
-| Command | Arguments | Options |
-|---------|-----------|---------|
-| `prodbox aws policy` | none | `--tier` |
-| `prodbox aws setup` | none | `--tier`, `--dry-run`, `--plan-file` |
-| `prodbox aws teardown` | none | `--dry-run`, `--plan-file`, `--allow-pulumi-residue`, `--destroy-pulumi-residue` (mutually exclusive with `--allow-pulumi-residue`) |
-| `prodbox aws check-quotas` | none | none |
-| `prodbox aws request-quotas` | none | `--tier` |
+### `prodbox aws` notes
 
 `src/Prodbox/Aws.hs` owns the full public `prodbox aws ...` surface. The supported public contract
 is prompt-driven for temporary admin AWS credentials; stored
@@ -191,25 +375,19 @@ The credential prompt itself auto-detects the access-key prefix and only asks fo
 token when the operator pastes an `ASIA…` (STS-derived) key — `AKIA…` (long-lived IAM user
 key) skips the session-token prompt entirely.
 
-### `prodbox host`
-
-| Command | Arguments | Options |
-|---------|-----------|---------|
-| `prodbox host ensure-tools` | none | none |
-| `prodbox host check-ports` | none | none |
-| `prodbox host info` | none | none |
-| `prodbox host firewall` | none | none |
-| `prodbox host firewall gateway-restrict` | none | none |
-| `prodbox host public-edge` | none | none |
+### `prodbox host` notes
 
 `src/Prodbox/Host.hs` owns the full public `prodbox host ...` surface.
 
 `prodbox host firewall gateway-restrict` (Sprint `2.18`) is the idempotent installer for
 the iptables INPUT-DROP rule that restricts the gateway-service NodePort to `127.0.0.1`
-on the operator host. `prodbox rke2 reconcile` invokes the installer as part of the
-host post-install phase; `prodbox rke2 delete --yes` removes the rule on clean teardown.
-The rule survives reboot via `iptables-save` to the host's persistence path. Authoritative
-contract: [Secret Derivation Doctrine](./secret_derivation_doctrine.md) §5.
+on the operator host. `prodbox host firewall gateway-unrestrict` is its inverse — the
+idempotent remover of that INPUT-DROP rule. Both take an optional `--port` knob
+(default the pinned gateway NodePort) so the rule and its removal target the same port.
+`prodbox rke2 reconcile` invokes the installer as part of the host post-install phase;
+`prodbox rke2 delete --yes` removes the rule on clean teardown. The rule survives reboot
+via `iptables-save` to the host's persistence path. Authoritative contract:
+[Secret Derivation Doctrine](./secret_derivation_doctrine.md) §5.
 
 The target public-edge doctrine for that surface is defined in
 [Envoy Gateway Edge Doctrine](./envoy_gateway_edge_doctrine.md). `prodbox host public-edge`
@@ -218,17 +396,7 @@ listener readiness, HTTPS listener readiness, redirect `HTTPRoute` acceptance, `
 attachment, certificate readiness, the shared-host `/auth`, `/vscode`, `/api`, `/ws`, `/harbor`,
 and `/minio` routes, and readiness for named external proof.
 
-### `prodbox rke2`
-
-| Command | Arguments | Options |
-|---------|-----------|---------|
-| `prodbox rke2 status` | none | none |
-| `prodbox rke2 start` | none | none |
-| `prodbox rke2 stop` | none | none |
-| `prodbox rke2 restart` | none | none |
-| `prodbox rke2 reconcile` | none | `--dry-run`, `--plan-file` |
-| `prodbox rke2 delete` | none | `--yes`, `--cascade`, `--allow-pulumi-residue`, `--dry-run`, `--plan-file` |
-| `prodbox rke2 logs` | none | `--lines`, `-n` |
+### `prodbox rke2` notes
 
 `src/Prodbox/CLI/Rke2.hs` owns the full public `prodbox rke2 ...` surface.
 
@@ -288,6 +456,16 @@ gate: an installed-but-stopped RKE2 still flows through the full path below. See
 - `--allow-pulumi-residue` → **operator-acknowledged orphan**. Bypass the refuse-path; per-run
   stacks become orphaned (their MinIO backend dies with the cluster). Recovery-only.
 
+All three modes route through `runPlanWithOptions` (Sprint `4.26`), so `--dry-run` renders the
+full destructive plan and exits `0` **without mutating** (the no-RKE2 short-circuit, the
+refuse-gate, and the cascade orchestration all live inside the apply closure), and `--plan-file`
+writes the rendered plan. The default-delete per-run sweep and the rendered plan's
+`per_run_destroy` steps are derived from the managed-resource registry's `PerRun` class, so they
+cannot omit `aws-eks-subzone`. The `checkPlanOptionsHonored` lint
+([code_quality.md](code_quality.md)) forbids any destructive dispatch arm from wildcarding its
+`PlanOptions` away, the regression guard for the historical
+`rke2 delete --yes --dry-run`-silently-mutates bug.
+
 `aws-ses` is **explicitly excluded** from `prodbox rke2 delete`'s residue scope regardless of
 flag. Its Pulumi state lives in the dedicated long-lived S3 bucket (Sprint `4.10`), so cluster
 wipes do not orphan it. Sanctioned destroy paths for `aws-ses` are
@@ -295,11 +473,7 @@ wipes do not orphan it. Sanctioned destroy paths for `aws-ses` are
 [lifecycle_reconciliation_doctrine.md](lifecycle_reconciliation_doctrine.md) for the
 predicate library and the full leak-class inventory.
 
-### `prodbox nuke`
-
-| Command | Arguments | Options |
-|---------|-----------|---------|
-| `prodbox nuke` | none | `--dry-run`, `--plan-file` |
+### `prodbox nuke` notes
 
 `src/Prodbox/CLI/Nuke.hs` (Sprint `4.13`, planned) owns the operator-only total-teardown
 surface. `prodbox nuke` is the **only** sanctioned command that destroys long-lived shared
@@ -316,28 +490,33 @@ Discipline (mirrors `aws teardown`):
 - **Typed confirmation.** Operator must type the literal string `NUKE EVERYTHING` (not `yes`)
   at the confirmation prompt. The unusual shape is the safety feature.
 - **No `--yes` shorthand.** Deliberate omission.
-- **`--dry-run` / `--plan-file`** render the exact sequence without mutating.
+- **`--dry-run` / `--plan-file`** render the exact sequence without mutating. Sprint `4.26`
+  routes `prodbox nuke` through `runPlanWithOptions` (reading `nukeDryRun` / `nukePlanFile`),
+  so the TTY guard, the typed-confirmation prompt, and the orchestration all live inside the
+  apply closure — `--dry-run` never prompts or mutates.
 
 Order of operations: K8s drain (Sprint `4.12`) → destroy all Pulumi stacks (`aws-eks-subzone`,
-`aws-eks`, `aws-test`, `aws-ses`) → `prodbox aws teardown`-equivalent IAM cleanup → local
-rke2 uninstall → postflight tag sweep → long-lived `pulumi_state_backend` bucket destruction.
-See [lifecycle_reconciliation_doctrine.md → §7](lifecycle_reconciliation_doctrine.md) for the
+`aws-eks`, `aws-test`, `aws-ses`) → `prodbox aws teardown`-equivalent IAM cleanup → step-4
+postflight tag sweep → long-lived `pulumi_state_backend` bucket destruction. The step-4 tag
+sweep is **fail-closed** (Sprint `4.26`,
+[lifecycle_reconciliation_doctrine.md §6](lifecycle_reconciliation_doctrine.md)): a non-empty
+leak list *or* an unconfirmable sweep aborts nuke with a non-zero exit and the surfaced residue
+*before* the step-5 bucket destroy, never "report clean and proceed." See
+[lifecycle_reconciliation_doctrine.md → §7](lifecycle_reconciliation_doctrine.md) for the
 full doctrine.
 
-### `prodbox pulumi`
-
-| Command | Arguments | Options |
-|---------|-----------|---------|
-| `prodbox pulumi eks-resources` | none | `--dry-run`, `--plan-file` |
-| `prodbox pulumi eks-destroy` | none | `--yes`, `-y`, `--dry-run`, `--plan-file` |
-| `prodbox pulumi aws-subzone-resources` | none | `--dry-run`, `--plan-file` |
-| `prodbox pulumi aws-subzone-destroy` | none | `--yes`, `-y`, `--dry-run`, `--plan-file` |
-| `prodbox pulumi test-resources` | none | `--dry-run`, `--plan-file` |
-| `prodbox pulumi test-destroy` | none | `--yes`, `-y`, `--dry-run`, `--plan-file` |
-| `prodbox pulumi aws-ses-resources` | none | `--dry-run`, `--plan-file` |
-| `prodbox pulumi aws-ses-destroy` | none | `--yes`, `-y`, `--dry-run`, `--plan-file` |
+### `prodbox pulumi` notes
 
 `src/Prodbox/CLI/Pulumi.hs` owns the full public `prodbox pulumi ...` surface.
+
+`prodbox pulumi aws-ses-migrate-backend` is the operator-interactive (TTY-only) command that
+migrates the `aws-ses` stack's Pulumi state from the in-cluster MinIO backend onto the
+dedicated long-lived S3 bucket named by `pulumi_state_backend` in `prodbox-config.dhall` —
+so the SES sending identity and receive-rule-set state outlives cluster wipes. It is
+idempotent (a no-op when the stack already lives in the long-lived backend) and refuses
+non-interactive contexts. See
+[aws_integration_environment_doctrine.md §4.5](./aws_integration_environment_doctrine.md)
+for the per-run-vs-long-lived backend contract.
 
 This matrix is the supported entrypoint set for AWS substrate provisioning and teardown.
 Invoking any entry does not require additional user approval beyond the original request —
@@ -348,6 +527,14 @@ lifecycle classification (auto-managed per-run stacks vs long-lived cross-substr
 infrastructure retained by design) lives in
 [`DEVELOPMENT_PLAN/substrates.md` → Resource Lifecycle Classes](../../DEVELOPMENT_PLAN/substrates.md#resource-lifecycle-classes).
 
+Each Pulumi-managed substrate stack's registry name, Pulumi stack id, project subdir, CLI verb
+stem, and lifecycle class are a single `Prodbox.Infra.StackDescriptor` SSoT record (Sprint
+`4.27`); the `prodbox pulumi <stem>-resources` / `<stem>-destroy` verbs above all derive from it.
+The registry-name↔CLI-command inventory is rendered from that SSoT into the
+`stack-command-surface` generated section of
+[`DEVELOPMENT_PLAN/substrates.md`](../../DEVELOPMENT_PLAN/substrates.md#resource-lifecycle-classes)
+and kept in sync by `prodbox docs generate` / `docs check`.
+
 `prodbox pulumi eks-destroy --yes`, `prodbox pulumi aws-subzone-destroy --yes`,
 `prodbox pulumi test-destroy --yes`, and `prodbox pulumi aws-ses-destroy --yes` report one-line
 stack destroy disposition instead of replaying Pulumi login chatter on successful cleanup. On
@@ -356,44 +543,37 @@ cleanup error.
 
 No supported local-cluster platform or application deployment depends on a root Pulumi project.
 
-### `prodbox dns`
-
-| Command | Arguments | Options |
-|---------|-----------|---------|
-| `prodbox dns check` | none | none |
+### `prodbox dns` notes
 
 `src/Prodbox/Dns.hs` owns the public DNS inspection surface.
 
-### `prodbox k8s`
-
-| Command | Arguments | Options |
-|---------|-----------|---------|
-| `prodbox k8s health` | none | none |
-| `prodbox k8s wait` | none | `--timeout`, `-t`, `--namespace`, `-n` |
-| `prodbox k8s logs` | none | `--namespace`, `-n`, `--tail` |
+### `prodbox k8s` notes
 
 `src/Prodbox/K8s.hs` owns the public Kubernetes helper surface.
 
-### `prodbox gateway`
-
-| Command | Arguments | Options |
-|---------|-----------|---------|
-| `prodbox gateway start` | none | `--config`, `--log-level`, `--port`, `--foreground`, `--dry-run`, `--plan-file` |
-| `prodbox gateway status` | none | `--config` |
-| `prodbox gateway config-gen` | `OUTPUT_PATH` | `--node-id` |
+### `prodbox gateway` notes
 
 `src/Prodbox/Gateway.hs` owns the public gateway surface and `src/Prodbox/Gateway/Daemon.hs`
 owns the daemon runtime. `prodbox gateway status` queries the daemon's operator-facing
 bounded `/v1/state` endpoint over HTTP on the configured REST port.
 
+`prodbox gateway start` takes a single startup-time knob — `--config <path>` — plus the
+universal `--dry-run` / `--plan-file` plan renderers, per
+[config_doctrine.md §2](./config_doctrine.md#2-single-dhall-surface-per-binary-instance)
+and §3B's [Daemon-launching flags](#daemon-launching-flags) contract. Sprint 2.24 removed
+the legacy `--log-level`, `--port`, and `--foreground` override flags (and the `workload
+start` equivalents) along with their daemon threading; the daemon now sources `log_level`
+from the mounted Dhall (`live.log_level`, defaulting to `info`) and its REST port from the
+Orders file exclusively (see
+[legacy-tracking-for-deletion.md](../../DEVELOPMENT_PLAN/legacy-tracking-for-deletion.md)).
+Every value the daemon needs already lives in the Dhall file, so the override flags were
+redundant, not load-bearing. This matrix row and the §3B prose are now the same
+single-`--config` contract.
+
 This `gateway` command group refers to the Haskell distributed gateway daemon, not to the
 Kubernetes Gateway API or Envoy Gateway controller.
 
-### `prodbox workload`
-
-| Command | Arguments | Options |
-|---------|-----------|---------|
-| `prodbox workload start` | none | `--config <path>` |
+### `prodbox workload` notes
 
 `src/Prodbox/Workload.hs` owns the internal public workload runtime used by the `api` and
 `websocket` chart surfaces. It is repo-rootless and selects its runtime mode (api vs.
@@ -402,14 +582,7 @@ websocket) from the `workload.mode` field of its mounted Dhall config (see
 workload-managed OIDC bootstrap under `/ws/oidc`, the JWT-protected `/ws` upgrade path, and
 readiness-based drain for live upgraded connections.
 
-### `prodbox charts`
-
-| Command | Arguments | Options |
-|---------|-----------|---------|
-| `prodbox charts list` | none | none |
-| `prodbox charts status` | `CHART` | none |
-| `prodbox charts deploy` | `CHART` | `--dry-run`, `--plan-file` |
-| `prodbox charts delete` | `CHART` | `--yes`, `-y`, `--dry-run`, `--plan-file` |
+### `prodbox charts` notes
 
 `src/Prodbox/CLI/Charts.hs`, `src/Prodbox/Lib/ChartPlatform.hs`,
 `src/Prodbox/Lib/Storage.hs`, and `src/Prodbox/PostgresPlatform.hs` own the public chart surface
@@ -441,22 +614,29 @@ The current public chart surface ships:
   upgrade path, and an internal `redis` dependency for shared state
 - the separate Haskell distributed `gateway` chart, which is not the Envoy Gateway public edge
 
-### `prodbox commands` and `prodbox help`
+### `prodbox users` notes
 
-| Command | Arguments | Options |
-|---------|-----------|---------|
-| `prodbox commands` | none | `--tree`, `--json` |
-| `prodbox help` | `COMMAND_PATH ...` | none |
+`src/Prodbox/CLI/Users.hs` owns the operator-facing Keycloak user-management surface for the
+Phase 8 invite flow. `prodbox users invite <email>` creates a Keycloak user with
+`emailVerified=false` and triggers the SES-backed invite email; `--role` assigns an
+operator-defined role on invite. `prodbox users list` reports users with their
+email-verification status and last-login time, optionally filtered by status (`--status`
+alone selects verified users; `--status-unverified` restricts to users awaiting invite
+activation; the default lists all). `prodbox users revoke <email-or-id>` disables an
+operator-managed user by default, or fully deletes it with `--delete`.
+
+### `prodbox commands` and `prodbox help` notes
 
 `src/Prodbox/App.hs`, `src/Prodbox/CLI/Spec.hs`, `src/Prodbox/CLI/Docs.hs`,
 `src/Prodbox/CLI/Tree.hs`, and `src/Prodbox/CLI/Json.hs` own the introspection surface. The
 registry-backed `commands`, `commands --tree`, `commands --json`, and `help <path>` outputs are
 the canonical in-process CLI documentation surface.
 
-### `prodbox test`
+### `prodbox test` notes
 
 `prodbox test` and `prodbox test integration` are help groups only. They do not run an implicit
-default suite.
+default suite. The per-command rows (options column) live in the generated matrix above; the
+tables below add the test-only `Scope` and shared-option semantics.
 
 Shared executable-suite options:
 
@@ -492,6 +672,7 @@ Named suite commands:
 | `prodbox test integration charts-websocket` | Native external WebSocket validation |
 | `prodbox test integration admin-routes` | Native shared-host Harbor and MinIO route validation |
 | `prodbox test integration public-dns` | Native public DNS delegation validation |
+| `prodbox test integration keycloak-invite` | Native Keycloak operator-invite validation (Phase 8 invite flow) |
 
 `src/Prodbox/TestRunner.hs` owns the public `prodbox test` entrypoint. It:
 
@@ -515,11 +696,7 @@ Named suite commands:
   surface, while preserving the HTTPS auth, route, certificate, and RBAC proofs on port `443`
 - dispatches named real-world validations through `src/Prodbox/TestValidation.hs`
 
-### `prodbox check-code`
-
-| Command | Arguments | Options |
-|---------|-----------|---------|
-| `prodbox check-code` | none | none |
+### `prodbox check-code` notes
 
 `src/Prodbox/CheckCode.hs` owns the public `check-code` entrypoint.
 
@@ -531,11 +708,7 @@ is defined in
 The policy-scan portion is scoped to repo-owned surfaces and excludes generated or retained
 runtime roots such as `.build/`, `dist-newstyle/`, and `.data/`.
 
-### `prodbox tla-check`
-
-| Command | Arguments | Options |
-|---------|-----------|---------|
-| `prodbox tla-check` | none | none |
+### `prodbox tla-check` notes
 
 `src/Prodbox/Tla.hs` owns the public TLA+ validation surface.
 
@@ -623,8 +796,8 @@ generated public-edge catalog.
 `prodbox lint docs [--write]` is implemented as a thin alias over the same Haskell function
 that backs `prodbox docs check` / `prodbox docs generate`; both surfaces consume the same
 in-code generation registry per
-[Generated Artifacts](../../documents/engineering/README.md)and
-§2321. The generator owns both marker-delimited artifacts and fully generated files:
+[code_quality.md → Generated Artifacts](./code_quality.md#generated-artifacts).
+The generator owns both marker-delimited artifacts and fully generated files:
 
 - `documents/cli/commands.md`
 - `share/man/man1/prodbox.1`
@@ -642,15 +815,24 @@ validator command.
 
 `prodbox gateway start`, `prodbox gateway status`, and `prodbox workload start` accept
 exactly one startup-time CLI knob — `--config <path>` — per
-[config_doctrine.md §2](./config_doctrine.md#2-single-dhall-surface-per-binary-instance).
-Foreground execution is the only supported mode; self-daemonization (`--detach`,
+[config_doctrine.md §2](./config_doctrine.md#2-single-dhall-surface-per-binary-instance)
+(`gateway start` additionally exposes only the universal `--dry-run` / `--plan-file` plan
+renderers). Foreground execution is the only supported mode; self-daemonization (`--detach`,
 double-fork, `setsid`, `forkProcess`) is forbidden per
 [CLI-to-Daemon Plumbing](../../documents/engineering/README.md).
-`--log-level`, `--port`, `--node-id`, and similar runtime-override flags are not supported;
-every value the daemon needs lives in the Dhall file. Environment-variable precedence is
-forbidden on supported paths: no `PRODBOX_*` startup fallback ladder. See
+`--log-level`, `--port`, `--node-id`, and similar runtime-override flags are **not part of
+the surface**; every value the daemon needs lives in the Dhall file. Environment-variable
+precedence is forbidden on supported paths: no `PRODBOX_*` startup fallback ladder. See
 [config_doctrine.md §10](./config_doctrine.md#10-forbidden-surfaces) for the authoritative
 forbidden-surface list.
+
+Sprint 2.24 removed the legacy `--log-level`, `--port`, and `--foreground` override flags
+from both `prodbox gateway start` and `prodbox workload start`, along with the
+`src/Prodbox/Gateway.hs` threading. The gateway daemon now sources its log level from the
+mounted Dhall (`live.log_level`, defaulting to `info`) and its REST port from the Orders
+file; the workload daemon sources its port and log level from its mounted Dhall config.
+Both daemon-launch surfaces conform to the single-`--config` contract (see the
+[generated command matrix](#3-command-matrix)).
 
 ### One-shot output flags
 

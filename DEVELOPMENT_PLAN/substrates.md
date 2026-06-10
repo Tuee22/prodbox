@@ -16,7 +16,7 @@
 [phase-8-email-invite-auth.md](phase-8-email-invite-auth.md),
 [the engineering doctrine docs](../documents/engineering/README.md),
 [../documents/engineering/acme_provider_guide.md](../documents/engineering/acme_provider_guide.md)
-**Generated sections**: resource-lifecycle-classes
+**Generated sections**: resource-lifecycle-classes, stack-command-surface
 
 > **Purpose**: Inventory the substrates against which the canonical test suite runs, the
 > provision and teardown surface each substrate owns, and the current parity status of each
@@ -58,6 +58,37 @@ See
 [development_plan_standards.md → M. Substrate coverage and independence (no fallback)](development_plan_standards.md#substrate-coverage-and-independence-no-fallback)
 for the authoritative doctrine.
 
+## Substrate Equivalence (Structural Invariant)
+
+The home local substrate and the AWS substrate stand up the **same set of services**. As of
+Sprint `7.12` this is a *structural* invariant, not prose, enforced by three mechanisms in code:
+
+1. **One pinned Envoy Gateway release.** `Prodbox.ContainerImage.envoyGatewayRelease` pins the
+   Envoy Gateway Helm chart version, the control-plane (gateway controller) image, and the
+   data-plane (Envoy proxy) image together. Both installers consume it for all three pinning
+   sites, so the EG-`1.4.4`-chart / Envoy-`1.37`-data-plane skew (audit C79) is eliminated by
+   construction — there is no second place to set an Envoy Gateway version. cert-manager, MinIO,
+   and the Percona operator chart versions are likewise pinned once in `Prodbox.ContainerImage`.
+2. **A per-substrate re-pin lint.** `checkSubstrateImagePinning` (in `Prodbox.CheckCode`, wired
+   into `prodbox check-code`) fails closed on any shared-component chart-version / image
+   re-pinned with a literal on a per-substrate branch; the single `Prodbox.ContainerImage` value
+   is the only sanctioned source. The genuinely substrate-specific LOWER layer (the AWS Load
+   Balancer Controller on AWS, MetalLB + FRR on home, the EKS node-local registry proxy) is
+   exempt — those have no cross-substrate counterpart to keep in lockstep.
+3. **A shared `[PlatformComponent]` inventory + coverage test.**
+   `Prodbox.ContainerImage.sharedPlatformComponents` declares the shared set once (`gateway`,
+   `keycloak`, `keycloak-postgres`, `vscode`, `api`, `redis`, `websocket`, MinIO, Harbor, the
+   Percona operator, Envoy Gateway, cert-manager, ZeroSSL DNS01). A `test/unit/Main.hs` coverage
+   test asserts both installers (`homeSubstratePlatformComponents` in `Prodbox.CLI.Rke2`,
+   `awsSubstratePlatformComponents` in `Prodbox.Lib.AwsSubstratePlatform`) cover every entry. It
+   is **not** a unified step DAG — each substrate keeps its own ordering and its own lower-layer
+   implementation — but neither installer may silently drop a shared component.
+
+Harbor + MinIO + the Percona operator are therefore installed on **both** substrates; the AWS
+substrate is **not** a "no-Harbor" cluster. When AWS appears to be "missing" a shared platform
+piece the home cluster has, the fix is to extend the shared inventory and the AWS installer,
+never to render different image refs or re-pin versions per substrate.
+
 ## Substrate Inventory
 
 ### Home Local Substrate
@@ -80,7 +111,7 @@ for the authoritative doctrine.
 | Provision | `prodbox pulumi eks-resources` (EKS test cluster), `prodbox pulumi aws-subzone-resources` (per-substrate Route 53 subzone), and `prodbox pulumi test-resources` (three Ubuntu 24.04 EC2 instances for HA-RKE2) |
 | Teardown | `prodbox pulumi eks-destroy --yes`, `prodbox pulumi aws-subzone-destroy --yes`, and `prodbox pulumi test-destroy --yes` |
 | Inventory today | Two disposable Pulumi stacks: `aws-eks-test` (VPC, subnets, EKS cluster, node group, IAM, security group) and `aws-test` (VPC, subnets, three EC2 instances, security group, key pair). State stored in MinIO-backed Pulumi backend on the local cluster under `prodbox-test-pulumi-backends`. |
-| Target inventory | Same canonical chart deploy set as the home substrate: cert-manager + real ZeroSSL, Envoy Gateway or substrate-equivalent ingress with MetalLB or NLB, Keycloak, Patroni Postgres, `gateway`, `vscode`, `api`, `websocket`, plus the per-substrate Route 53 subzone provisioned by `pulumi/aws-eks-subzone/` for the AWS-substrate public-edge proofs. |
+| Target inventory | Same canonical service set as the home substrate (Sprint 7.12 substrate equivalence): cert-manager + real ZeroSSL, Envoy Gateway, Harbor + MinIO + the Percona PostgreSQL operator, Keycloak, Patroni Postgres, `gateway`, `keycloak-postgres`, `vscode`, `api`, `redis`, `websocket`. Harbor + MinIO + Percona are installed on **both** substrates — the AWS Harbor is the EKS-side Harbor reached through the node-local registry proxy (the EKS containerd registry-mirror DaemonSet that makes `127.0.0.1:30080/prodbox/...` resolve on EKS, mirroring the home NodePort-on-`127.0.0.1` pattern). The two substrates differ only in their LOWER layer: ingress load-balancer (MetalLB on home, the AWS Load Balancer Controller / NLB on EKS) and Route 53 hosting (parent zone on home, the per-substrate subzone provisioned by `pulumi/aws-eks-subzone/` on AWS). |
 | Required Config | `aws_substrate.subzone_name` (the AWS-substrate public FQDN, e.g. `aws.test.resolvefintech.com`), optional `aws_substrate.hosted_zone_id` when an operator wants to pin the already-provisioned subzone ID in config, `ses.*` (sender_domain, receive_subdomain, capture_bucket — shared cross-substrate; same values as home substrate), AWS operator credentials, plus the same `acme.*` settings the home substrate uses. During harness-driven AWS runs, the suite reads the live `aws-eks-subzone` Pulumi output after provisioning and passes the hosted-zone ID to child commands. Missing AWS-substrate values fail fast; the AWS substrate does not fall back to `route53.zone_id` or `domain.demo_fqdn` from the home substrate. |
 | Prerequisites satisfied today | `aws_credentials_valid`, `route53_accessible`, `route53_lifecycle_capable`, `pulumi_logged_in`, the AWS-stack snapshot prereqs |
 | Phase ownership (provision/teardown) | [phase-7-aws-substrate-foundations.md](phase-7-aws-substrate-foundations.md) |
@@ -120,6 +151,26 @@ resource cannot be added to the registry without this inventory updating in lock
 | `operational-aws-config` | Operational |
 <!-- prodbox:resource-lifecycle-classes:end -->
 
+Each Pulumi-managed substrate stack is described by one `StackDescriptor` SSoT record
+(`Prodbox.Infra.StackDescriptor`, Sprint `4.27`): its registry name, Pulumi stack id, project
+subdir under `pulumi/`, CLI verb stem, and lifecycle class. The per-run name list
+(`Prodbox.Aws.perRunStackNames`), the CLI verbs, and the project dirs are **derived** from it
+rather than hand-maintained, removing the drift the documentation-harmony audit flagged between
+the registry names, the CLI verbs, and the project directories. The registry-name↔CLI-command
+table below is **generated** from `stackDescriptors` by `prodbox docs generate` — do not hand-edit
+between the markers; `prodbox docs check` fails the build if it drifts. This is the typed source
+Sprint `0.10` consumes for the registry-name↔CLI-verb list and Sprint `5.6` consumes for
+registry-generated golden coverage:
+
+<!-- prodbox:stack-command-surface:start -->
+| Registry name | Pulumi stack id | Project subdir | Resources command | Destroy command | Lifecycle class |
+|---------------|-----------------|----------------|-------------------|-----------------|-----------------|
+| `aws-eks` | `aws-eks-test` | `pulumi/aws-eks/` | `prodbox pulumi eks-resources` | `prodbox pulumi eks-destroy --yes` | PerRun |
+| `aws-eks-subzone` | `aws-eks-subzone` | `pulumi/aws-eks-subzone/` | `prodbox pulumi aws-subzone-resources` | `prodbox pulumi aws-subzone-destroy --yes` | PerRun |
+| `aws-test` | `aws-test` | `pulumi/aws-test/` | `prodbox pulumi test-resources` | `prodbox pulumi test-destroy --yes` | PerRun |
+| `aws-ses` | `aws-ses` | `pulumi/aws-ses/` | `prodbox pulumi aws-ses-resources` | `prodbox pulumi aws-ses-destroy --yes` | LongLived |
+<!-- prodbox:stack-command-surface:end -->
+
 ### Per-run stacks (auto-managed by the harness)
 
 | Stack | Provisioned by | Destroyed by | Pulumi state backend |
@@ -141,7 +192,7 @@ with the cluster).
 | `aws-ses` stack (sending identity, DKIM, MX, receive rule set, S3 capture bucket, SMTP IAM user) | `prodbox pulumi aws-ses-resources` | `prodbox pulumi aws-ses-destroy --yes` — **only on explicit invocation**; never auto-destroyed by the test-harness postflight, never destroyed by `prodbox rke2 delete` (any flag); destroyed transitively by `prodbox nuke` (Sprint `4.13`) | Dedicated AWS S3 bucket per `prodbox-config.dhall` `pulumi_state_backend` block (Sprint `4.10`) |
 | Long-lived `pulumi_state_backend` S3 bucket (Sprint `4.10`) | `ensureLongLivedPulumiStateBucket` precondition in `src/Prodbox/Infra/LongLivedPulumiBackend.hs` (idempotent, admin-credentialed) | `prodbox nuke` (Sprint `4.13`) — final pass after all long-lived stacks are gone; never destroyed by `aws teardown` or `rke2 delete` | n/a (the bucket *is* the backend) |
 | Operator-owned Route 53 parent zone for the configured public FQDN | Operator-managed in Route 53 (no `prodbox pulumi` flow) | Operator action against Route 53 — outside the harness surface | n/a |
-| Public-edge TLS certificate material (Sprints `4.24`/`7.11`/`8.7`) | cert-manager via the ZeroSSL ACME `ClusterIssuer` (`zerossl-http01`); retained material written to a substrate-scoped key (`public-edge-tls/<substrate>/<fqdn>`) in the long-lived `pulumi_state_backend` S3 bucket and restored before every issuance | `prodbox nuke` only; never destroyed by `aws teardown` or `rke2 delete`; registered as a `LongLived` managed resource (Sprint `4.24`) | Long-lived `pulumi_state_backend` S3 bucket |
+| Public-edge TLS certificate material (Sprints `4.24`/`7.11`/`8.7`) | cert-manager via the ZeroSSL ACME `ClusterIssuer` (`zerossl-dns01`); retained material written to a substrate-scoped key (`public-edge-tls/<substrate>/<fqdn>`) in the long-lived `pulumi_state_backend` S3 bucket and restored before every issuance | `prodbox nuke` only; never destroyed by `aws teardown` or `rke2 delete`; registered as a `LongLived` managed resource (Sprint `4.24`) | Long-lived `pulumi_state_backend` S3 bucket |
 
 Retained by design — not orphaned. SES domain identity + DKIM verification requires 5–30 min
 of DNS propagation per provision; only one receive rule set may be active per AWS account; S3

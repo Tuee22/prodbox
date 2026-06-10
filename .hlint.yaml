@@ -51,3 +51,4 @@
 - ignore: {name: "Use zipFrom"}
 - ignore: {name: "Use zipWithFrom"}
 - ignore: {name: "Use <$>"}
+- ignore: {name: "Use enumerate"}

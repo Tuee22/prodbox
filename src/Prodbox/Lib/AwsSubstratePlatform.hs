@@ -7,11 +7,19 @@
 -- `src/Prodbox/CLI/Rke2.hs::ensureClusterPlatformRuntime` and is
 -- specialized to the operator's home cluster — including Harbor-mirrored
 -- image references and MetalLB-based LoadBalancer IPs. The AWS substrate
--- (EKS) needs a different install path: AWS Load Balancer Controller
--- (replacing MetalLB), upstream-registry images (Harbor is not present on
--- the EKS substrate), and cert-manager scoped to the per-substrate
--- Route 53 subzone (rendered by
--- `acmeClusterIssuerSpec SubstrateAws` in `Prodbox.CLI.Rke2`).
+-- (EKS) keeps a different install path but stands up the SAME shared
+-- service set (Sprint 7.12 substrate equivalence): Harbor + MinIO + the
+-- Percona operator are installed on BOTH substrates. The two installers
+-- differ only in their LOWER layer — AWS Load Balancer Controller
+-- (replacing MetalLB), the EKS-side Harbor reached through the node-local
+-- registry proxy (the EKS containerd registry-mirror DaemonSet that makes
+-- `127.0.0.1:30080/prodbox/...` resolve on EKS, mirroring the home
+-- NodePort-on-`127.0.0.1` pattern), and cert-manager scoped to the
+-- per-substrate Route 53 subzone (rendered by
+-- `acmeClusterIssuerSpec SubstrateAws` in `Prodbox.CLI.Rke2`). The shared
+-- platform-component pins (Envoy Gateway, cert-manager, Harbor, MinIO,
+-- Percona) come from the single `Prodbox.ContainerImage` SSoT; there is no
+-- per-substrate chart-version / image re-pin.
 --
 -- Sprint 7.5.b.ii.d.II lands the AWS Load Balancer Controller install
 -- function `ensureAwsLoadBalancerControllerRuntime`. The corresponding
@@ -40,6 +48,7 @@ module Prodbox.Lib.AwsSubstratePlatform
   , applyEksContainerdMirrorDaemonSet
   , applyEksImageMirrorJob
   , awsSubstratePlatformRuntimeStepDescriptions
+  , awsSubstratePlatformComponents
   )
 where
 
@@ -312,15 +321,22 @@ waitForCrdEstablished crdName =
       , subprocessWorkingDirectory = Nothing
       }
 
--- Envoy Gateway upstream OCI chart. The home substrate consumes a
--- Harbor-mirrored variant; on the AWS substrate (no Harbor) we install
--- directly from the upstream OCI registry so the EKS cluster can pull the
--- controller and data-plane images without operator-side Harbor wiring.
+-- Envoy Gateway upstream OCI chart. Both substrates run the same Envoy
+-- Gateway release — Harbor + the in-cluster registry are installed on BOTH
+-- substrates (home: the in-cluster Harbor NodePort; AWS: the EKS-side Harbor
+-- + node-local registry proxy that makes @127.0.0.1:30080/prodbox/...@
+-- resolve on EKS), so the control-plane and data-plane images come from the
+-- same Harbor-mirrored refs as the home substrate.
 awsSubstrateEnvoyGatewayChartRef :: String
 awsSubstrateEnvoyGatewayChartRef = "oci://docker.io/envoyproxy/gateway-helm"
 
+-- Sprint 7.12: the Envoy Gateway chart version is sourced from the single
+-- 'ContainerImage.envoyGatewayRelease' SSoT — the same value the home
+-- installer uses — so the previous EG-@1.4.4@-chart / Envoy-@1.37@-data-plane
+-- skew (audit C79) is eliminated by construction. There is no second place
+-- to set an Envoy Gateway version.
 awsSubstrateEnvoyGatewayChartVersion :: String
-awsSubstrateEnvoyGatewayChartVersion = "v1.4.4"
+awsSubstrateEnvoyGatewayChartVersion = ContainerImage.envoyGatewayChartVersion
 
 awsSubstrateEnvoyGatewayReleaseName :: String
 awsSubstrateEnvoyGatewayReleaseName = "envoy-gateway"
@@ -364,6 +380,16 @@ ensureAwsSubstrateEnvoyGatewayRuntime repoRoot settings prodboxId labelValue = d
             , "--atomic"
             , "--timeout"
             , "10m0s"
+            , -- Sprint 7.12: pin the control-plane (gateway controller) image
+              -- to the single 'ContainerImage.envoyGatewayRelease' SSoT — the
+              -- same Harbor-mirrored ref the home installer uses — so both
+              -- substrates run the identical Envoy Gateway control plane.
+              "--set"
+            , "deployment.envoyGateway.image.repository="
+                ++ awsSubstrateEnvoyGatewayControlPlaneRepository
+            , "--set"
+            , "deployment.envoyGateway.image.tag="
+                ++ ContainerImage.imageTag controlPlaneImage
             ]
         , subprocessEnvironment = Nothing
         , subprocessWorkingDirectory = Nothing
@@ -380,6 +406,16 @@ ensureAwsSubstrateEnvoyGatewayRuntime repoRoot settings prodboxId labelValue = d
         , waitForCrdEstablished "securitypolicies.gateway.envoyproxy.io"
         , applyAwsSubstrateEnvoyGatewayRuntime repoRoot settings prodboxId labelValue
         ]
+ where
+  controlPlaneImage = ContainerImage.harborEnvoyGatewayImage
+
+-- | The Envoy Gateway control-plane image repository (registry + repo, no
+-- tag) sourced from the single 'ContainerImage.envoyGatewayRelease' SSoT.
+awsSubstrateEnvoyGatewayControlPlaneRepository :: String
+awsSubstrateEnvoyGatewayControlPlaneRepository =
+  ContainerImage.imageRegistry image ++ "/" ++ ContainerImage.imageRepository image
+ where
+  image = ContainerImage.harborEnvoyGatewayImage
 
 publicEdgeGatewayClassName :: String
 publicEdgeGatewayClassName = "prodbox-public-edge"
@@ -487,15 +523,15 @@ configuredEnvoyGatewayDataPlaneReplicas :: ValidatedSettings -> Int
 configuredEnvoyGatewayDataPlaneReplicas settings =
   maybe 1 fromIntegral (envoy_gateway_data_plane_replicas (deployment (validatedConfig settings)))
 
--- cert-manager upstream chart. The home substrate consumes Harbor-mirrored
--- cert-manager controller, webhook, cainjector, acmesolver, and
--- startupapicheck images via `Prodbox.ContainerImage`; on the AWS
--- substrate (no Harbor) we install the upstream Jetstack chart directly so
--- the EKS cluster pulls images from quay.io. The substrate-aware ACME
--- `ClusterIssuer` rendering (with `substrateHostedZoneId settings
--- SubstrateAws` resolving to the per-substrate subzone) is already in
--- place from Sprint `7.5.b.ii.a`; this install lays down the cert-manager
--- runtime that the ClusterIssuer needs.
+-- cert-manager Helm chart. cert-manager is a SHARED platform component
+-- installed on BOTH substrates from the upstream Jetstack chart; its chart
+-- version comes from the single `Prodbox.ContainerImage.certManagerChartVersion`
+-- SSoT (the same value the home installer uses), so there is no
+-- per-substrate version skew. The substrate-aware ACME `ClusterIssuer`
+-- rendering (with `substrateHostedZoneId settings SubstrateAws` resolving to
+-- the per-substrate subzone) is already in place from Sprint `7.5.b.ii.a`;
+-- this install lays down the cert-manager runtime that the ClusterIssuer
+-- needs.
 awsSubstrateCertManagerRepoName :: String
 awsSubstrateCertManagerRepoName = "jetstack"
 
@@ -505,11 +541,12 @@ awsSubstrateCertManagerRepoUrl = "https://charts.jetstack.io"
 awsSubstrateCertManagerChartRef :: String
 awsSubstrateCertManagerChartRef = awsSubstrateCertManagerRepoName ++ "/cert-manager"
 
--- Pinned to the same release the home substrate uses so the runtime
--- behavior is consistent across substrates. Keep aligned with
--- `certManagerChartVersion` in `Prodbox.CLI.Rke2` when bumping versions.
+-- Sprint 7.12: cert-manager is a SHARED platform component, so its chart
+-- version is sourced from the single 'ContainerImage.certManagerChartVersion'
+-- SSoT — the same value the home installer uses. There is no per-substrate
+-- re-pin.
 awsSubstrateCertManagerChartVersion :: String
-awsSubstrateCertManagerChartVersion = "v1.16.2"
+awsSubstrateCertManagerChartVersion = ContainerImage.certManagerChartVersion
 
 awsSubstrateCertManagerReleaseName :: String
 awsSubstrateCertManagerReleaseName = "cert-manager"
@@ -724,6 +761,41 @@ awsSubstratePlatformRuntimeStepDescriptions =
   , "ensureMinioRuntime SubstrateAws MinioSteadyStateHarbor"
   , "ensureGatewayMinioBootstrap"
   , "ensureAdminPublicEdgeRoutes SubstrateAws"
+  ]
+
+-- | Sprint 7.12: the shared platform components the AWS-substrate install
+-- path stands up. The lower-layer pieces (the AWS Load Balancer Controller
+-- — 'ensureAwsLoadBalancerControllerRuntime', the EKS containerd
+-- registry-mirror DaemonSet / node-local registry proxy, and the delegated
+-- Route 53 subzone) are intentionally substrate-specific and are NOT part of
+-- the shared inventory. This list is asserted equal (as a set) to
+-- 'ContainerImage.sharedPlatformComponents' by the 'test/unit/Main.hs'
+-- coverage test, so the AWS install can never silently omit a shared
+-- component.
+--
+-- Harbor + MinIO + the Percona operator are installed on the AWS substrate
+-- just as on home: the EKS-side Harbor + node-local registry proxy makes
+-- @127.0.0.1:30080/prodbox/...@ resolve on EKS (mirroring the home
+-- NodePort-on-@127.0.0.1@ pattern), so the canonical chart image refs are
+-- identical across substrates. The seven workload charts (@gateway@,
+-- @keycloak@, @keycloak-postgres@, @vscode@, @api@, @redis@, @websocket@)
+-- are deployed through the substrate-independent 'Prodbox.Lib.ChartPlatform'
+-- on BOTH substrates.
+awsSubstratePlatformComponents :: [ContainerImage.PlatformComponent]
+awsSubstratePlatformComponents =
+  [ ContainerImage.ComponentGateway
+  , ContainerImage.ComponentKeycloak
+  , ContainerImage.ComponentKeycloakPostgres
+  , ContainerImage.ComponentVscode
+  , ContainerImage.ComponentApi
+  , ContainerImage.ComponentRedis
+  , ContainerImage.ComponentWebsocket
+  , ContainerImage.ComponentMinio
+  , ContainerImage.ComponentHarbor
+  , ContainerImage.ComponentPerconaPostgresOperator
+  , ContainerImage.ComponentEnvoyGateway
+  , ContainerImage.ComponentCertManager
+  , ContainerImage.ComponentZeroSslDns01
   ]
 
 -- | Sprint 7.5.c.iv: apply the in-cluster image-mirror Job rendered

@@ -16,6 +16,7 @@
 [phase-7-aws-substrate-foundations.md](phase-7-aws-substrate-foundations.md),
 [phase-8-email-invite-auth.md](phase-8-email-invite-auth.md),
 [the engineering doctrine docs](../documents/engineering/README.md)
+**Generated sections**: none
 
 > **Purpose**: Provide the target architecture, current baseline, clean-room sequence, and hard
 > constraints for the Haskell rewrite of `prodbox`.
@@ -162,6 +163,19 @@ prerequisites.
 
 ## Alignment Status
 
+**2026-06-09 (later) — Design-intention review reopens Phases `0`, `1`, `2`, `3`, `4`, `5`, and
+`7`.** A whole-system design analysis adjudicated each documented-intention-vs-code divergence
+toward the structure that best serves the project's ultimate needs (not "make the doc match the
+code"), found code-convergence gaps the doctrine mandates plus five places the doctrine itself
+should change, and (per standards rule L) scheduled each gap as a new sprint in its owning phase:
+`0.9`–`0.10` (Documentation Harmony as an enforced, generated/linted invariant), `1.29`–`1.32`,
+`2.24`–`2.25`, `3.15`–`3.16`, `4.26`–`4.27`, `5.6`, `7.12`–`7.13`. **Phases `6` and `8` stay
+`Done`**; foundations (registry SSoT, `Plan`/Apply, Effect-DAG, single-issuer + S3 retain-restore,
+chart-side env removal) are reused, not changed. The full Rule-A narration (which sprint owns what,
+why the handoff stays incomplete) is the authoritative
+[README.md → Closure Status](README.md#closure-status) entry of the same date; this section does
+not duplicate it.
+
 **2026-06-09 — AWS parity ✅ (Sprint `8.6`) + cert round-trip restore-no-reorder ✅ (Sprint `8.8`).**
 Targeted `keycloak-invite --substrate aws` passed end-to-end (OIDC claims verified, clean teardown,
 no leak) → `keycloak-invite` green on both substrates. The cert no longer re-orders on rebuild:
@@ -200,7 +214,7 @@ re-issues; fix pending), and the TTY-only `prodbox nuke` proof (Sprint `8.8`, no
 one ZeroSSL issuer.** Sprints `7.11`/`8.7` originally rendered two cert-manager `ClusterIssuer`s
 (a production issuer plus a staging issuer on a separate ACME provider) selected by an
 `IssuerClass`. ZeroSSL became the only supported provider, so the ACME runtime now renders ONE
-`ClusterIssuer` (`zerossl-http01`, built from `acme.server`, EAB-authenticated, with a DNS-01
+`ClusterIssuer` (`zerossl-dns01`, built from `acme.server`, EAB-authenticated, with a DNS-01
 Route 53 solver); the staging issuer, `acme.staging_server`, its default constant, and the
 `IssuerClass` ADT + env var are removed from the codebase and docs. ZeroSSL has no staging
 endpoint; rebuild churn is handled by the S3 retain-and-restore of the issued certificate
@@ -215,7 +229,7 @@ typed `PublicEdgePreserveOutcome` + pure `classifyPublicEdgePreserve`, closing t
 long-lived S3 store and restore reads it back (graceful degradation when the store is
 unavailable), so restore-before-issue works on every rebuild path including a fresh cluster. The
 keycloak + vscode `Certificate` issuers reference the single ZeroSSL `ClusterIssuer`
-(`zerossl-http01`), replacing the removed hardcoded constant. (The `IssuerClass` selector this
+(`zerossl-dns01`), replacing the removed hardcoded constant. (The `IssuerClass` selector this
 sprint originally added was reverted with the ZeroSSL single-issuer decision above.) Gates:
 `check-code` 0, `test unit` 690/690, `docs check` 0, `lint docs` 0; integration cli/env only the
 2 pre-existing `charts deploy vscode` environmental failures. The live S3 round-trip is the
@@ -224,7 +238,7 @@ Sprint `8.8` gate. Sprints `8.5`/`8.6`/`8.8` remain operator-driven live gates (
 
 **2026-06-07 — Sprint `7.11` ✅ Done; Phase `7` reclosed on its code-owned surface.** The ACME
 runtime renders one cert-manager `ClusterIssuer` from `acmeRuntimeManifestWith` —
-`zerossl-http01` (`acme.server`, EAB-authenticated) with a factored-out DNS-01 Route 53 solver
+`zerossl-dns01` (`acme.server`, EAB-authenticated) with a factored-out DNS-01 Route 53 solver
 (`acmeRoute53Solver`) and the `zerossl-account-key` account key; both the home and AWS ACME paths
 wait for it. `PublicEdge.publicEdgeTlsRetentionKey` defines the substrate-scoped retention key
 `public-edge-tls/<substrate>/<fqdn>`, and `putLongLivedObject`/`getLongLivedObject` (in
@@ -260,7 +274,7 @@ managed-resource registry. **Phase `4` reopened** for Sprint `4.24` (the certifi
 registry as a `LongLived` `discover`/`destroy` resource under
 [lifecycle_reconciliation_doctrine.md § 3.1](../documents/engineering/lifecycle_reconciliation_doctrine.md)
 totality). **Phase `7` reopened** for Sprint `7.11` (the single ZeroSSL ACME `ClusterIssuer`
-`zerossl-http01` with a DNS-01 Route 53 solver, plus the substrate-scoped S3 retention store; the
+`zerossl-dns01` with a DNS-01 Route 53 solver, plus the substrate-scoped S3 retention store; the
 substrate-aware extension of Sprint `7.5.b`). **Phase `8` is extended** (already Active) with
 Sprint `8.7` (chart-platform retention refactor: close the silent-success gap, S3
 restore-before-issue on all rebuild paths) and Sprint `8.8` (live `keycloak-invite` gate closure
@@ -680,12 +694,15 @@ proof through the public-edge certificate status-patch guard and TLS Secret rete
 `8.5`–`8.6` carry the remaining operator-driven live OIDC and aggregate closure work. On
 2026-06-06 Phases `4` and `7` reopened again (Sprints `4.24` and `7.11`) and Phase `8` gained
 Sprints `8.7`/`8.8` to reclassify the public-edge production certificate as a `LongLived`,
-rate-limit-safe resource (two ACME issuers, staging-for-churn, S3-retained production cert); see
-the [Alignment Status](#alignment-status) note for the reopening rationale. **Phases `4` and `7`
-reclosed 2026-06-07** when Sprints `4.24` and `7.11` landed on their code-owned surfaces (the
-certificate is a registered `LongLived` managed resource; the ACME runtime renders two
-issuers + the substrate-scoped S3 cert-retention key scheme and access path); Phase `8` stays
-open for Sprints `8.7`/`8.8` (and the live `8.5`/`8.6` proofs).
+rate-limit-safe resource (the 2026-06-06 attempt rendered two ACME issuers with a staging issuer
+for rebuild churn; that two-issuer/`IssuerClass` model was reverted 2026-06-07 to one ZeroSSL
+issuer with S3 retain-and-restore); see the [Alignment Status](#alignment-status) note for the
+reopening rationale. **Phases `4` and `7` reclosed 2026-06-07** when Sprints `4.24` and `7.11`
+landed on their code-owned surfaces (the certificate is a registered `LongLived` managed resource;
+the ACME runtime renders one ZeroSSL `ClusterIssuer` — `zerossl-dns01`, EAB-authenticated, with a
+DNS-01 Route 53 solver — plus the substrate-scoped S3 cert-retention key scheme and access path;
+the two-issuer model these sprints first added was reverted 2026-06-07); Phase `8` stays open for
+Sprints `8.7`/`8.8` (and the live `8.5`/`8.6` proofs).
 
 - Phase 0 defines the canonical plan suite and cleanup ledger.
 - Phase 1 owns the CLI, direct-Dhall config contract, `.build/prodbox` artifact contract, the

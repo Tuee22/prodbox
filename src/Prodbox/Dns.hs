@@ -30,7 +30,7 @@ import Data.Text (Text)
 import Data.Text qualified as Text
 import Data.Vector qualified as Vector
 import Prodbox.AwsEnvironment
-  ( isolatedAwsEnvironment
+  ( awsCliSubprocessEnvironment
   )
 import Prodbox.CLI.Command (DnsCommand (..))
 import Prodbox.CLI.Output
@@ -154,6 +154,7 @@ queryRoute53ARecordValuesInZone
   -> String
   -> IO (Either String [String])
 queryRoute53ARecordValuesInZone repoRoot settings hostedZoneId fqdn = do
+  environment <- awsCliEnvironment (aws config)
   outputResult <-
     captureSubprocessResult
       Subprocess
@@ -166,7 +167,7 @@ queryRoute53ARecordValuesInZone repoRoot settings hostedZoneId fqdn = do
             , "--output"
             , "json"
             ]
-        , subprocessEnvironment = Just (awsCliEnvironment (aws config))
+        , subprocessEnvironment = Just environment
         , subprocessWorkingDirectory = Just repoRoot
         }
   pure $
@@ -190,6 +191,7 @@ changeRoute53ARecordSetInZone
 changeRoute53ARecordSetInZone repoRoot settings hostedZoneId fqdn recordValues ttlValue
   | null recordValues = pure (Left ("refusing to write empty Route 53 A record set for " ++ fqdn))
   | otherwise = do
+      environment <- awsCliEnvironment (aws config)
       changeResult <-
         captureSubprocessResult
           Subprocess
@@ -206,7 +208,7 @@ changeRoute53ARecordSetInZone repoRoot settings hostedZoneId fqdn recordValues t
                 , "--output"
                 , "text"
                 ]
-            , subprocessEnvironment = Just (awsCliEnvironment (aws config))
+            , subprocessEnvironment = Just environment
             , subprocessWorkingDirectory = Just repoRoot
             }
       case changeResult of
@@ -226,7 +228,7 @@ changeRoute53ARecordSetInZone repoRoot settings hostedZoneId fqdn recordValues t
                         , "--id"
                         , trim (processStdout changeOutput)
                         ]
-                    , subprocessEnvironment = Just (awsCliEnvironment (aws config))
+                    , subprocessEnvironment = Just environment
                     , subprocessWorkingDirectory = Just repoRoot
                     }
               pure $ case waitResult of
@@ -306,8 +308,12 @@ mapMaybeValue f (value : remaining) =
 ensureTrailingDot :: String -> String
 ensureTrailingDot value = if null value || last value == '.' then value else value ++ "."
 
-awsCliEnvironment :: Credentials -> [(String, String)]
-awsCliEnvironment = isolatedAwsEnvironment
+-- | Route 53 subprocesses run through the single PATH/HOME/LANG-preserving
+-- 'awsCliSubprocessEnvironment' builder so the bare @aws@ binary resolves on
+-- hosts where @aws@ lives outside the default exec @PATH@. Sprint 1.30 fixed
+-- the prior empty-base (`isolatedAwsEnvironment`) that dropped @PATH@.
+awsCliEnvironment :: Credentials -> IO [(String, String)]
+awsCliEnvironment = awsCliSubprocessEnvironment
 
 outputDetail :: ProcessOutput -> String
 outputDetail output =

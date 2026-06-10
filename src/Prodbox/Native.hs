@@ -31,6 +31,7 @@ import Prodbox.Error (fatalError)
 import Prodbox.Gateway (runGatewayCommand)
 import Prodbox.Host (runHostCommand)
 import Prodbox.K8s (runK8sCommand)
+import Prodbox.Lifecycle.Preconditions (noLiveLongLivedPulumiStacksPreflight)
 import Prodbox.Settings
   ( renderSettingsDisplay
   , validateAndLoadSettings
@@ -45,7 +46,14 @@ import System.Exit
 runNativeCommand :: FilePath -> NativeCommand -> IO ExitCode
 runNativeCommand repoRoot command =
   case command of
-    NativeAws awsCommand -> runAwsCommand repoRoot awsCommand
+    NativeAws awsCommand ->
+      -- Sprint 4.26: inject the long-lived teardown preflight here (rather
+      -- than inside 'Prodbox.Aws') because the precondition module imports
+      -- 'Prodbox.Aws' — wiring it from 'Prodbox.Aws' would be an import
+      -- cycle. Only the operator 'aws teardown' default path consults it;
+      -- the harness teardown paths bypass it, preserving Sprint 7.9's
+      -- aws-ses relaxation.
+      runAwsCommand repoRoot noLiveLongLivedPulumiStacksPreflight awsCommand
     NativeCharts chartsCommand -> runChartsCommand repoRoot chartsCommand
     NativeCheckCode -> runCheckCode repoRoot
     NativeConfig configCommand -> runConfigCommand repoRoot configCommand

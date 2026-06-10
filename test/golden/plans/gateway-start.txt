@@ -1,6 +1,5 @@
 GATEWAY_START_PLAN
 CONFIG_PATH=/tmp/prodbox/gateway.dhall
 NODE_ID=node-a
-LOG_LEVEL=warn
-PORT_OVERRIDE=4200
-FOREGROUND=true
+LOG_LEVEL=info
+PORT_SOURCE=<orders>

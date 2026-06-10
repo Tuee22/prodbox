@@ -42,7 +42,10 @@ Prodbox manages a home Kubernetes cluster with a Haskell command surface.
   gateway daemon and workload Pods load their own Dhall config from a mounted ConfigMap
   (with credentials imported from a sibling Secret-mounted Dhall fragment). Every
   `prodbox` binary instance takes its configuration from `--config <path>`; no supported
-  binary reads `PRODBOX_*` environment variables. See
+  binary reads `PRODBOX_*` environment variables. The raw master seed is daemon-only —
+  read solely in-cluster by the gateway daemon; the host CLI never reads it directly and
+  derives chart secrets over HTTP through the gateway client (intended structure,
+  Sprint 3.16). See
   [documents/engineering/config_doctrine.md](./documents/engineering/config_doctrine.md).
 - `pulumi/aws-eks/Pulumi.yaml` plus `pulumi/aws-eks/Main.yaml` and `pulumi/aws-test/Pulumi.yaml`
   plus `pulumi/aws-test/Main.yaml` are the supported Pulumi programs for AWS validation IaC.
@@ -301,6 +304,5 @@ contracts.
 - [Development Plan](./DEVELOPMENT_PLAN/README.md)
 - [Engineering Docs Index](./documents/engineering/README.md)
 - [Documentation Standards](./documents/documentation_standards.md)
-- [Engineering Docs Index](./documents/engineering/README.md)
 - [CLI Command Surface](./documents/engineering/cli_command_surface.md)
 - [Unit Testing Policy](./documents/engineering/unit_testing_policy.md)

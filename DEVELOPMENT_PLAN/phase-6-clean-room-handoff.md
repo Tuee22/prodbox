@@ -6,6 +6,7 @@
 [substrates.md](substrates.md),
 [legacy-tracking-for-deletion.md](legacy-tracking-for-deletion.md),
 [the engineering doctrine docs](../documents/engineering/README.md)
+**Generated sections**: none
 
 > **Purpose**: Capture the zero-Python handoff criteria: a full clean-room rerun through the
 > Haskell stack and a cleanup ledger where any surviving supported-path residue is explicitly

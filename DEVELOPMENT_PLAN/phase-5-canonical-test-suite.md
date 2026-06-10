@@ -5,6 +5,7 @@
 **Referenced by**: [README.md](README.md), [00-overview.md](00-overview.md),
 [substrates.md](substrates.md),
 [the engineering doctrine docs](../documents/engineering/README.md)
+**Generated sections**: none
 
 > **Purpose**: Own the substrate-agnostic canonical test suite — the named-validation set in
 > `src/Prodbox/TestValidation.hs` — as suite content with declared prerequisites. Substrate
@@ -13,11 +14,20 @@
 
 ## Phase Status
 
-✅ **Done on owned surfaces** — Sprints `5.1`–`5.5` are closed on the canonical-suite content
-that proves public-host behavior — the public-edge diagnostic, named external proofs, shared-host
-route classification, admin-route auth and RBAC proofs, and the HTTP-to-HTTPS redirect proof.
-Sprint `5.5` added the public HTTP listener on port `80` and proved that it only redirects to
-the canonical HTTPS edge.
+✅ **Reclosed 2026-06-09** — Sprints `5.1`–`5.5` remain closed on the canonical-suite content that
+proves public-host behavior (the public-edge diagnostic, named external proofs, shared-host route
+classification, admin-route auth/RBAC proofs, and the port-80 HTTP-to-HTTPS redirect proof). The
+2026-06-09 design-intention review reopened this phase for Sprint `5.6`, which has now landed: the
+prerequisite surface that gates the canonical suite is typed (`PrerequisiteId` ADT) and
+minimal-and-precise per validation; the IAM-harness tier is derived from each validation's declared
+capabilities (the `normalizeManagedAwsHarness` `substrate=aws` blanket override deleted; a
+credential-free validation on AWS engages no harness); `infra_ready` was split from a new
+AWS-credential-free `public_edge_ready` node (re-pointing `charts-*`); `verifyAwsEksSnapshot` was
+strengthened to a structured parse; and the three registry-generated destructive `--dry-run` goldens
+(`rke2 delete`, `rke2 delete --cascade`, `nuke`) landed with drift-guard tests (closing audit V80).
+Validation at reclosure: `check-code` 0, `test unit` 809, `integration cli` 35, `integration env` 35,
+`lint docs` 0, `docs check` 0. The live AWS-substrate aggregate + public-edge-readiness exercises are
+operator-driven.
 
 Per [development_plan_standards.md → M. Test Suite Substrates](development_plan_standards.md#m-test-suite-substrates),
 these validations are **suite content**, not home-substrate-only validations. The home local
@@ -67,19 +77,34 @@ The full inventory of canonical-suite validations owned by this phase lives in
 | `ha-rke2-aws` | `aws_credentials_valid`, `pulumi_logged_in`, `tool_ssh` | SSH reachability to all three EC2 instances; destroy-and-recreate repair on stale instances |
 | `charts-platform` | `k8s_ready`, chart-platform prereqs | `charts list`, `charts status` produce expected output for the supported chart set |
 | `charts-storage` | `k8s_ready`, chart-platform prereqs | Retained-storage reconciler, PV/PVC pairing, secret rendering |
-| `charts-vscode` | `infra_ready`, `public_edge_ready` | Real HTTPS curl to `https://<publicFqdn>/vscode`; redirect to OIDC callback with expected fragments |
-| `charts-api` | `infra_ready`, `public_edge_ready` | Real HTTPS curl to `https://<publicFqdn>/api`; bearer-token validation; 401/403 contract |
-| `charts-websocket` | `infra_ready`, `public_edge_ready` | Real WebSocket upgrade against `/ws`; cross-pod broadcast; revocation-driven reconnect; readiness-based drain |
-| `admin-routes` | `infra_ready`, `public_edge_ready` | Harbor and MinIO auth + RBAC on the shared public edge |
+| `charts-vscode` | `public_edge_ready`, `tool_curl` | Real HTTPS curl to `https://<publicFqdn>/vscode`; redirect to OIDC callback with expected fragments |
+| `charts-api` | `public_edge_ready`, `tool_curl` | Real HTTPS curl to `https://<publicFqdn>/api`; bearer-token validation; 401/403 contract |
+| `charts-websocket` | `public_edge_ready`, `tool_curl` | Real WebSocket upgrade against `/ws`; cross-pod broadcast; revocation-driven reconnect; readiness-based drain |
+| `admin-routes` | `public_edge_ready`, `tool_curl` | Harbor and MinIO auth + RBAC on the shared public edge |
 | `keycloak-invite` | `aws_credentials_valid`, `route53_accessible`, `ses_sending_identity_verified`, `ses_receive_rule_set_active`, `ses_receive_bucket_accessible`, `pulumi_logged_in` | Operator-invited Keycloak flow end-to-end: `prodbox users invite` → SES capture-bucket poll → invite link follow → credential setup → OIDC login |
+
+The "Prerequisites" column names declared prerequisite nodes from `src/Prodbox/Prerequisite.hs`,
+keyed by the typed `PrerequisiteId` ADT (Sprint `5.6`; the registry is no longer keyed by raw
+`String`). **Public-edge readiness is now a declared prerequisite node.** Sprint `5.6` promoted
+the former *procedural* bootstrap gate into the declared `public_edge_ready` node split out of
+`infra_ready`: it depends only on cluster + chart-platform readiness (`k8s_ready`), **not** on
+AWS credentials, so `charts-vscode`, `charts-api`, `charts-websocket`, and `admin-routes` gate on
+an AWS-credential-free readiness rather than re-acquiring the full `infra_ready` capability set
+(which still pulls in `aws_credentials_valid`). The runner still runs `runWaitForPublicEdgeReady`
+in `src/Prodbox/TestRunner.hs` (polling `prodbox host public-edge` until
+`CLASSIFICATION=ready-for-external-proof`) to *satisfy* the gate during the supported-runtime
+bootstrap/restore; the declared `public_edge_ready` node is what the `charts-*` and `admin-routes`
+validations name in their minimal-and-precise prerequisite sets.
 
 ## Substrate Independence
 
 Suite content does not name a substrate. It names prerequisites that any substrate must satisfy
 to run the validation. When the AWS substrate stands up real DNS, cert-manager, ingress, and
 the chart set (tracked in [phase-7-aws-substrate-foundations.md](phase-7-aws-substrate-foundations.md)),
-the same `charts-vscode`, `charts-api`, `charts-websocket`, `public-dns`, `admin-routes`, and
-public-edge readiness validations run against it without modification.
+the same `charts-vscode`, `charts-api`, `charts-websocket`, `public-dns`, and `admin-routes`
+validations run against it without modification, behind the same declared `public_edge_ready`
+prerequisite node (see the inventory note above; Sprint `5.6` promoted this from a procedural gate
+to a declared, AWS-credential-free node).
 
 **"Substrate-agnostic" does not mean substrates share defaults.** Each per-substrate run is
 locked to one substrate, consumes only that substrate's required config and provisioned
@@ -373,6 +398,88 @@ the same shared-host path.
 
 None.
 
+## Sprint 5.6: Typed Prerequisites, Capability-Derived IAM Tier, and Destructive Dry-Run Goldens ✅
+
+**Status**: Done (2026-06-09). New `src/Prodbox/PrerequisiteId.hs` defines the typed `PrerequisiteId`
+ADT (one constructor per registry node) with `prerequisiteIdText` as the stable-string SSoT; the
+prerequisite registry, `EffectDAG`/`EffectInterpreter`, and `TestPlan` are parameterized on it (no
+more `Set String`/`Map String`). Each validation declares minimal-and-precise typed prerequisites
+(`validationInitialPrerequisites`/`validationDeferredPrerequisites`) — e.g. `charts-*` now require
+only `[PublicEdgeReady, ToolCurl]`. `normalizeManagedAwsHarness`'s `substrate=aws` blanket override
+was deleted; `derivedManagedAwsHarnessPolicyTier` derives the IAM tier from declared capabilities
+(`gateway-partition` on AWS engages NO harness — unit-pinned). `infra_ready` split into `infra_ready`
++ the new AWS-credential-free `public_edge_ready` node, with `charts-vscode`/`api`/`websocket`/
+`admin-routes` re-pointed to it. `verifyAwsEksSnapshot` now uses the structured
+`parseAwsEksTestStackFromOutputs` parser (substrate-equivalence properties) instead of a `Text.null`
+check. Three registry-generated destructive `--dry-run` goldens (`rke2 delete`, `rke2 delete
+--cascade`, `nuke`) landed under `test/golden/destructive/` with drift-guard tests (a new registered
+resource fails the golden) — closing the audit V80 gap and proving Sprint 4.26's dry-run-no-mutation
+fix. Validation green: `check-code` 0, `test unit` 809/809, `integration cli` 35/35, `integration
+env` 35/35, `lint docs` 0, `docs check` 0. The live AWS-substrate + public-edge-readiness exercises
+are operator-driven.
+**Implementation**: `src/Prodbox/Prerequisite.hs`, `src/Prodbox/TestPlan.hs`, `src/Prodbox/TestRunner.hs`, `src/Prodbox/TestValidation.hs`, `test/` (recommended)
+**Docs to update**: `documents/engineering/unit_testing_policy.md`, `documents/engineering/integration_fixture_doctrine.md`
+
+### Objective
+
+Make the prerequisite surface that gates the canonical suite typed and minimal-and-precise per
+validation, derive the IAM-harness tier from each validation's declared capabilities instead of a
+blanket substrate override, split the public-edge readiness gate out of `infra_ready` so the
+`charts-*` validations gate on an AWS-credential-free readiness, strengthen the AWS EKS snapshot
+verification, and add destructive `--dry-run` golden coverage generated from the managed-resource
+registry. This is the canonical-suite-side counterpart to the typed-source work in Sprints `1.31`
+(prerequisite DAG acyclicity + node collapse), `4.26`/`4.27` (registry-derived destructive
+dispatch and the `StackDescriptor` SSoT), and the typed-error reframe in Sprint `1.30`.
+
+### Deliverables
+
+- A typed `PrerequisiteId` ADT replaces the current raw-`String` `effectNodeId` keys in
+  `src/Prodbox/Prerequisite.hs`, so prerequisite identifiers are exhaustively matched rather than
+  string-compared.
+- Each canonical validation declares a minimal-and-precise prerequisite set: a validation requires
+  exactly the typed prerequisites it actually consumes, with no over-broad inherited bundle.
+- The IAM-harness tier per validation is derived from that validation's declared capabilities. The
+  `normalizeManagedAwsHarness` `substrate=aws` blanket override is deleted; a validation that needs
+  no AWS credentials does not acquire the IAM harness merely because the active substrate is AWS.
+- `infra_ready` is split into `infra_ready` and a new declared `public_edge_ready` prerequisite
+  node. `public_edge_ready` encodes the public-edge readiness gate (today procedural in
+  `runWaitForPublicEdgeReady`) as a declared node that depends only on cluster + chart-platform
+  readiness, **not** on AWS credentials, so `charts-vscode`, `charts-api`, `charts-websocket`, and
+  `admin-routes` gate on an AWS-credential-free readiness. The Canonical Suite Inventory table and
+  the procedural-gate note above are updated to name `public_edge_ready` as a declared node once
+  this lands.
+- `verifyAwsEksSnapshot` is strengthened to assert the substrate-equivalence properties the AWS
+  EKS run must hold (per [substrates.md](substrates.md) and
+  [phase-7-aws-substrate-foundations.md](phase-7-aws-substrate-foundations.md)) rather than a
+  weaker existence check.
+- Three destructive `--dry-run` goldens are added — for `prodbox rke2 delete`,
+  `prodbox rke2 delete --cascade`, and `prodbox nuke` — proving the planned step list each
+  destructive path emits without executing it. The golden coverage is generated from the
+  managed-resource registry / `StackDescriptor` SSoT (Sprints `4.26`/`4.27`) so the goldens track
+  the registry rather than drifting from it.
+
+### Validation
+
+1. `prodbox check-code`
+2. `prodbox test unit`
+3. `prodbox test integration cli`
+4. `prodbox test integration env`
+5. Typed-prerequisite proof: the prerequisite registry keys are a typed `PrerequisiteId` ADT and
+   no validation declares a prerequisite it does not consume.
+6. Capability-tier proof: a credential-free validation run on the AWS substrate does not acquire
+   the IAM harness; `normalizeManagedAwsHarness` no longer carries a `substrate=aws` blanket arm.
+7. Readiness-split proof: `charts-*` validations gate on `public_edge_ready` and pass with no
+   AWS credentials present.
+8. Golden proof: the three destructive `--dry-run` goldens render from the managed-resource
+   registry and fail if a registered resource is added without updating the generated golden.
+
+### Remaining Work
+
+None — closed 2026-06-09. All deliverables landed (typed `PrerequisiteId`, minimal per-validation
+prerequisites, capability-derived IAM tier, the `public_edge_ready` split, the strengthened
+`verifyAwsEksSnapshot`, and the three registry-generated destructive goldens). The live
+AWS-substrate aggregate and the live public-edge-readiness exercise are operator-driven.
+
 ## Documentation Requirements
 
 **Engineering docs to create/update:**
@@ -386,7 +493,13 @@ None.
   doctrine.
 - `documents/engineering/helm_chart_platform_doctrine.md` - public-host behavior of the rewritten
   `vscode` stack.
-- `documents/engineering/unit_testing_policy.md` - external-only public-host validation doctrine.
+- `documents/engineering/unit_testing_policy.md` - external-only public-host validation doctrine;
+  for Sprint `5.6`, the typed `PrerequisiteId` surface, minimal-and-precise per-validation
+  prerequisites, the `public_edge_ready` readiness split, and the three destructive `--dry-run`
+  goldens generated from the managed-resource registry.
+- `documents/engineering/integration_fixture_doctrine.md` - for Sprint `5.6`, the
+  capability-derived IAM-harness tier (replacing the `normalizeManagedAwsHarness` `substrate=aws`
+  blanket override) and the registry-generated destructive-dry-run golden fixtures.
 
 **Product docs to create/update:**
 

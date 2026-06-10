@@ -14,6 +14,7 @@
 [../documentation_standards.md](../documentation_standards.md),
 [README.md](./README.md), [cli_command_surface.md](./cli_command_surface.md),
 [envoy_gateway_edge_doctrine.md](./envoy_gateway_edge_doctrine.md),
+[local_registry_pipeline.md](./local_registry_pipeline.md),
 [secret_derivation_doctrine.md](./secret_derivation_doctrine.md),
 [storage_lifecycle_doctrine.md](./storage_lifecycle_doctrine.md),
 [unit_testing_policy.md](./unit_testing_policy.md)
@@ -125,6 +126,38 @@ doctrine explicitly allows cross-namespace `HTTPRoute` attachment to the shared 
 runtime contract to `keycloak.vscode.svc.cluster.local` for token exchange. The only cluster-wide
 dependency beyond that shared-edge model is the lifecycle-owned Percona PostgreSQL operator in the
 `postgres-operator` namespace.
+
+## 3A. Substrate-Equivalence Mechanism
+
+The home local substrate and the AWS substrate stand up the same platform components; the only
+deliberate differences are the lower-layer load balancer (MetalLB on home, AWS Load Balancer
+Controller on EKS) and Route 53 hosting. Substrate equivalence is enforced as a structural
+invariant, not maintained by parallel hand-edited installers (Sprint 7.12):
+
+1. **One release value per platform component image.** The Envoy Gateway control-plane image, the
+   Envoy data-plane image, and the cert-manager image set are each pinned to exactly one
+   `Prodbox.ContainerImage` release value, shared by the chart, the control plane, and the data
+   plane. There is no separate per-substrate Envoy or cert-manager version. This kills version
+   skew of the EG-control-plane-vs-Envoy-data-plane kind (the EG-1.4.4 / Envoy-1.37 skew class):
+   a single release value pins the chart, control plane, and data plane together.
+2. **A lint forbids per-substrate chart-version or image re-pinning.** No `prodbox` code path may
+   re-pin a chart version or image ref conditionally on the active substrate
+   (`Prodbox.Lib.AwsSubstratePlatform` may not override the shared `Prodbox.ContainerImage`
+   values that `Prodbox.Lib.ChartPlatform` uses). The lint fails closed on any substrate-keyed
+   re-pin, so "AWS needs a different Envoy version" is a build-time error, never a silent
+   divergence.
+3. **A shared `[PlatformComponent]` inventory drives both installers.** Both the home-substrate
+   reconcile and the AWS substrate-platform install draw from one `[PlatformComponent]` list
+   (Harbor, MinIO, the Percona PostgreSQL operator, MetalLB-or-ALB-controller, Envoy Gateway,
+   cert-manager). A coverage test asserts both installers cover every entry — it is **not** a
+   unified step DAG; each substrate keeps its own ordering, but neither may silently drop a
+   component the other installs. The AWS substrate is **not** a "no-Harbor" cluster.
+
+This is the chart-platform-side statement of the substrate-equivalence doctrine in
+[../../CLAUDE.md](../../CLAUDE.md) "Substrate Equivalence" and
+[../../DEVELOPMENT_PLAN/substrates.md](../../DEVELOPMENT_PLAN/substrates.md). When AWS appears to
+be "missing" a platform piece the home cluster has, the fix is to extend the shared inventory and
+the AWS installer, never to render different image refs or re-pin versions per substrate.
 
 ## 4. Patroni PostgreSQL Dependency Contract
 
@@ -343,7 +376,7 @@ The current implementation boundary is:
   typed/logged outcomes and never reports silent success when the owned certificate is absent (the
   soundness rule restored in [lifecycle_reconciliation_doctrine.md §3.1](./lifecycle_reconciliation_doctrine.md#31-the-managed-resource-registry-the-reconciler-substrate)).
   The high-churn canonical validation loop does not re-order the certificate against a separate test
-  issuer; the single `zerossl-http01` `ClusterIssuer` issues the production certificate once and the
+  issuer; the single `zerossl-dns01` `ClusterIssuer` issues the production certificate once and the
   S3 retain-and-restore path restores it on every rebuild. See
   [acme_provider_guide.md](./acme_provider_guide.md#2-zerossl) for the ZeroSSL ACME provider and the
   single-issuer rebuild-safe certificate retention model, and

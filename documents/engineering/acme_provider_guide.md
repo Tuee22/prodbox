@@ -17,6 +17,17 @@ ZeroSSL issues through public ACME DNS-01 over Route 53, EAB-authenticated. `pro
 configures ZeroSSL credentials during the interactive setup flow; there is no provider choice
 because ZeroSSL is the only supported provider.
 
+> **Issuer-name note**: the single `ClusterIssuer` is named `zerossl-dns01`, a DNS-01-honest
+> name — the issuer solves ACME challenges through a **DNS-01 Route 53 solver**, never HTTP-01,
+> and the name now says so. It is one SSoT constant in
+> `Prodbox.PublicEdge.publicEdgeClusterIssuerName`, threaded through both chart `values.yaml`
+> files and every doc/test site that names the issuer; no second hand-edited copy survives.
+> Sprint 7.13 renamed it from the historically-inaccurate HTTP-01-claiming name (which named
+> HTTP-01 but ran DNS-01). Because the issuer name is baked into retained ACME account and
+> certificate state, the live rename lands on a wipe-and-rebuild boundary; the S3 cert
+> retention key is keyed on substrate + FQDN (not the issuer name), so the retained certificate
+> restores under the new issuer name without re-ordering from ZeroSSL.
+
 ---
 
 ## 2. ZeroSSL
@@ -66,11 +77,15 @@ before the config is accepted: a ZeroSSL `acme.server` with a missing EAB field 
 The Haskell lifecycle reconcile renders one cert-manager `ClusterIssuer`:
 
 ```text
-zerossl-http01 — built from acme.server, EAB-authenticated, DNS-01 Route 53 solver
+zerossl-dns01 — built from acme.server, EAB-authenticated, DNS-01 Route 53 solver
 ```
 
-Both substrates (home local and AWS) render and wait on this single issuer; the keycloak and
-vscode chart `Certificate`s reference it
+The name is DNS-01-honest (the solver is DNS-01 Route 53, and the name says so); it is one SSoT
+`Prodbox.PublicEdge.publicEdgeClusterIssuerName` constant. Sprint 7.13 renamed it from the
+historically-inaccurate HTTP-01-claiming name (which named HTTP-01 but ran DNS-01); the live
+rename lands on a wipe-and-rebuild boundary. Both substrates (home local and AWS) render and
+wait on
+this single issuer; the `keycloak` chart `Certificate` for the shared listener references it
 (`Prodbox.PublicEdge.publicEdgeClusterIssuerName`).
 
 ### Rebuild churn and issuance quota

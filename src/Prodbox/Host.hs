@@ -58,11 +58,12 @@ import Prodbox.Effect (Effect (..))
 import Prodbox.EffectDAG (fromRootIds)
 import Prodbox.EffectInterpreter (InterpreterContext (..), runEffect, runEffectDAG)
 import Prodbox.Error (fatalError)
+import Prodbox.Infra.SubstrateKubectl (withSubstrateKubectlEnvironment)
 import Prodbox.Prerequisite (prerequisiteRegistry)
+import Prodbox.PrerequisiteId (PrerequisiteId (..))
 import Prodbox.PublicEdge
   ( resolveSubstrateHostedZoneId
   , substratePublicFqdn
-  , withSubstrateKubectlEnvironment
   )
 import Prodbox.Result (Result (..))
 import Prodbox.Settings
@@ -151,14 +152,14 @@ runHostCommand repoRoot command =
       prerequisiteResult <-
         runPrerequisites
           repoRoot
-          [ "tool_kubectl"
-          , "tool_helm"
-          , "tool_pulumi"
-          , "tool_docker"
-          , "tool_ctr"
-          , "tool_sudo"
-          , "tool_systemctl"
-          , "tool_rke2"
+          [ ToolKubectl
+          , ToolHelm
+          , ToolPulumi
+          , ToolDocker
+          , ToolCtr
+          , ToolSudo
+          , ToolSystemctl
+          , ToolRke2
           ]
       case prerequisiteResult of
         Failure err -> failWith err
@@ -757,7 +758,7 @@ parseTimedatectlNtpDisposition raw =
   normalize :: String -> String
   normalize = map toLowerAscii . trim
 
-runPrerequisites :: FilePath -> [String] -> IO (Result ())
+runPrerequisites :: FilePath -> [PrerequisiteId] -> IO (Result ())
 runPrerequisites repoRoot rootIds =
   case fromRootIds rootIds prerequisiteRegistry of
     Left err -> pure (Failure err)

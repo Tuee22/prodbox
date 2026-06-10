@@ -62,6 +62,17 @@ read or write any object in `prodbox/`. No other in-cluster workload, no operato
 root credential consumer (such as the per-run Pulumi-state backend), and no external
 client has access. The seed never leaves the cluster as plaintext.
 
+**Daemon-only master-seed boundary** (Sprint 3.16). The raw 32-byte seed is read in
+exactly one place: the in-cluster gateway daemon, via `Prodbox.Secret.MasterSeed`. That
+module's import is lint-enforced to the in-cluster daemon path only — no host-side command,
+no validation flow, and no chart-side helper may import the raw-seed reader. The host
+never holds the seed in any form: it requests *derived* values over HTTP through
+`Prodbox.Gateway.Client` (§5), and the gateway returns only per-context derivations, never
+the seed itself. There is no fixed seed file on the host (no `/tmp` seed, no
+`.prodbox-state` cache); the only durable copy is the MinIO object on MinIO's PV. The
+target structure is that the lint refuses any new importer of the raw-seed reader outside
+the daemon, so the boundary cannot regress silently.
+
 The coupling between the seed and the data it protects is intentional. If the operator
 wipes `.data/`, MinIO's PV disappears and the seed disappears with it. The next
 `prodbox rke2 reconcile` mints a new seed; subsequent chart deploys derive fresh
@@ -79,9 +90,13 @@ derive :: MasterSeed -> Text -> ByteString
 derive seed context = HMAC.SHA256(seed, encodeUtf8 context)
 ```
 
-The output is a 32-byte value. Callers that require a printable secret base64-encode the
-output; callers that require a 64-character hex string hex-encode it. The encoding
-choice belongs to the consumer, never to the derivation.
+The output is a 32-byte value. Callers that require a printable secret encode the output
+as **base64url without padding** (RFC 4648 §5, the URL- and filename-safe alphabet, no
+`=` padding); callers that require a 64-character hex string hex-encode it. Plain base64
+(the `+`/`/` alphabet, `=`-padded) is not used for materialized secret values — the
+padding and non-URL-safe characters round-trip badly through k8s Secret data, env vars,
+and the JSON-over-HTTP derive endpoint. The encoding choice belongs to the consumer, never
+to the derivation, but the printable choice is pinned to base64url-unpadded.
 
 ### Context strings
 
@@ -101,6 +116,23 @@ existing row; add new rows for new secret classes.
 New context strings must satisfy three rules: they are colon-delimited; they start with
 the secret class (`patroni`, `keycloak`, `gateway`, …); and they include enough namespace
 qualifiers to be globally unique across the canonical chart set.
+
+The colon-delimited shape is not just a convention: the context constructors are a typed
+ADT (`Prodbox.Secret.Derive.DeriveContext`) whose `encodeDeriveContext` produces the wire
+string and whose `decodeDeriveContext` is its exact inverse. A property test asserts
+`decodeDeriveContext . encodeDeriveContext == Just` over every canonical constructor, so
+the wire shape is provably stable and the `GET /v1/secret/derive` context handling
+round-trips (Sprint 2.25, audit C82).
+
+**Gateway event-key encoding (single canonical surface).** The gateway peer-event HMAC key
+(`gateway:<ns>:<node-id>:event-key`) uses the one canonical printable encoding —
+base64url-unpadded — on **both** surfaces: the on-cluster `gateway-event-keys` Secret
+(written via `EnsureNamespace.applyDerivedSecrets` / `deriveBase64Url`) and the daemon's
+in-memory signing material injected into `daemonEventKeys` at boot. Both sides therefore
+hold the byte-identical key string, so peers sign and verify consistently and the
+boot-change classifier compares like-for-like. Sprint 2.25 removed the prior divergent
+in-memory `deriveHex` re-derivation and retired the Sprint 2.21 reapply-derivation reload
+workaround that existed only to paper over the hex-vs-base64url mismatch.
 
 ## 4. The in-cluster gateway service
 
@@ -164,12 +196,18 @@ pre-install Jobs) and a NodePort for host-CLI callers. The NodePort is restricte
 before reaching the cluster. The in-cluster ClusterIP path remains unrestricted for
 chart-side callers.
 
-The host CLI calls the gateway via a native Haskell HTTP client built on `http-client` and
-`http-client-tls` (already declared in `prodbox.cabal`). The legacy `curl` shell-out
-pattern (`src/Prodbox/Gateway.queryGatewayState`, `src/Prodbox/Gateway/Daemon.fetchPublicIp`,
-`src/Prodbox/Dns.fetchPublicIp`, and the validation paths in
-`src/Prodbox/TestValidation.hs`) is removed. The `toolCurl` prerequisite registration is
-removed in the same sprint.
+The host CLI requests derived secrets over HTTP through `Prodbox.Gateway.Client`, a native
+Haskell HTTP client built on `http-client` and `http-client-tls` (already declared in
+`prodbox.cabal`). The host never reads the raw seed; it only ever holds per-context
+derivations returned by the gateway (§2).
+
+The legacy `curl` shell-out pattern is **not yet fully removed** — its retirement is
+scheduled in Sprint 2.17. As of this writing, `src/Prodbox/TestValidation.hs` still
+contains roughly a dozen `curl` call sites, and the `toolCurl` prerequisite registration
+is still present. The target structure is that every host-side HTTP call routes through
+the native client and `toolCurl` is deleted in the same sprint; until Sprint 2.17 lands,
+treat the surviving `curl` sites and `toolCurl` as known residue, not as the intended
+steady state.
 
 The iptables rule lives in `src/Prodbox/Host.hs` next to the existing `ufw status` helper
 and is exposed through the existing `host firewall` CLI subcommand. The rule survives
@@ -237,6 +275,16 @@ secrets. The reconcile order:
    `/v1/secret/ensure-namespace` via the in-cluster ClusterIP; the gateway materializes
    the data-bound Secrets; Helm `lookup` picks them up during the main install.
 
+**Ordering constraint: gateway ready before any derived-secret consumer.** No consumer of
+a derived secret — neither a chart pre-install Job POSTing to `/v1/secret/ensure-namespace`
+(step 7) nor a host-CLI caller of `/v1/secret/derive` via `Prodbox.Gateway.Client` (§5) —
+may run before the gateway daemon reports ready (`/readyz` 200, step 6). The gateway is the
+sole derivation authority and the sole reader of the master seed (§2); a consumer that
+reaches the derive surface before the daemon has read or minted the seed cannot succeed.
+Reconcile and chart deploy therefore gate every derived-secret consumer on gateway
+readiness rather than racing it; a not-ready gateway returns `503` from `/readyz` and
+refuses `/v1/secret/*` (§8) rather than serving a partial or seedless answer.
+
 Sprint 4.18's `withMaterializedOperationalCreds` bracket and the cascade order in
 [lifecycle_reconciliation_doctrine.md](./lifecycle_reconciliation_doctrine.md) §5 are the
 authoritative references for the inverse (teardown) order.
@@ -248,13 +296,23 @@ authoritative references for the inverse (teardown) order.
 | Master seed missing and MinIO writable | first-ever reconcile, or first reconcile after `.data/` wipe | gateway daemon creates seed under list-then-put; subsequent calls succeed |
 | Master seed missing and MinIO unwritable | misconfigured MinIO IAM, or write race | gateway daemon refuses to serve `/v1/secret/*` until resolved; `/readyz` reports `503` with reason |
 | Dhall `--config` file missing or fails to decode | misconfigured ConfigMap, malformed Dhall, missing Secret import | gateway daemon refuses to start (initial decode); after startup, file-watch reload classifies the change as `config_reload_decode_failed`, leaves the in-memory config in place, and `/v1/secret/*` continues to serve from the last successfully-decoded config per [config_doctrine.md §8](./config_doctrine.md#8-boot-vs-live-split-and-the-restart-contract) |
-| Master seed present, derivation produces value that mismatches `pg_authid` | preserved `.data/` from an incompatible seed (e.g., seed regenerated while data preserved) | `shouldResetPatroniStorage` in `Prodbox.Lib.ChartPlatform` reports a loud failure naming the namespace/role pair; operator must either restore the matching `.data/` or wipe the affected `.data/<ns>/<release>/` subtree |
+| Master seed present, derivation produces value that mismatches `pg_authid` | preserved `.data/` from an incompatible seed (e.g., seed regenerated while data preserved) | **Implemented (Sprint 3.16):** `resetPatroniStorageIfRequested` in `Prodbox.Lib.ChartPlatform` probes the gateway-derived Patroni app-role password against the preserved `pg_authid` hash through a probe-only Postgres connection. The pure decision (`patroniSeedMismatchDecision`) reports a loud failure naming the namespace/role pair and the resolution options on a definite authentication rejection; the operator must either restore the matching `.data/` or wipe the affected `.data/<ns>/keycloak-postgres/` subtree. A fresh install (no primary Pod) or any transient probe failure classifies as "cannot observe" and proceeds — only a proven rejection fails loudly. Never a silent destructive reset. |
 | Gateway service unreachable from host | iptables rule misconfigured, NodePort not exposed, daemon not running | host CLI returns a structured error from `Prodbox.Gateway.Client`; never silently falls back to a host-side cache (none exists) |
 
 The third row is the load-bearing failure case. It is loud by design: silent data reset
 on derivation mismatch is precisely the failure mode the pre-doctrine
 `.prodbox-state/<ns>/.secrets.json` cache used to hide. With derivation, the mismatch is
-detected up-front and reported.
+detected up-front and reported. As of Sprint 3.16 the guard is implemented:
+`resetPatroniStorageIfRequested` derives the expected Patroni app-role password over the
+gateway RPC (the host never reads the raw seed) and probes it against the preserved
+`pg_authid` through a probe-only Postgres connection. The pure
+`patroniSeedMismatchDecision` keeps the loud-failure policy separate from the boundary
+probe and is unit-tested: a definite `pg_authid` rejection (`PatroniAuthRejected`) is the
+only path to a loud failure; a successful authentication (`PatroniAuthMatches`) or an
+un-observable probe (`PatroniAuthUnobservable` — fresh install, no primary Pod, transient
+psql failure) both proceed, so the guard never blocks an ordinary first install. The live
+probe is operator-driven (it requires a running cluster with preserved data); the pure
+decision is the doctrine contract.
 
 ## Cross-References
 

@@ -4,6 +4,7 @@
 module Prodbox.Aws
   ( AwsSetupInput (..)
   , AwsTeardownInput (..)
+  , AwsTeardownLongLivedPreflight
   , ConfigSetupInput (..)
   , PulumiResiduePolicy (..)
   , SessionTokenPromptShape (..)
@@ -11,10 +12,9 @@ module Prodbox.Aws
   , applyAwsTeardown
   , buildIamPolicyDocument
   , buildIamPolicyJson
-  , categorizePulumiResidue
   , checkPulumiResidueBeforeTeardown
   , harnessPostflightResiduePolicy
-  , longLivedStackNames
+  , longLivedResourceNames
   , operationalAwsConfigResidueFromKey
   , operationalBootstrapDnsRecordExists
   , operationalIamUserExists
@@ -79,7 +79,7 @@ import Data.Text qualified as Text
 import Data.Vector qualified as Vector
 import Numeric.Natural (Natural)
 import Prodbox.AwsEnvironment
-  ( overlayAwsCredentials
+  ( awsCliSubprocessEnvironment
   )
 import Prodbox.BuildSupport (canonicalOperatorBinaryPath)
 import Prodbox.CLI.Command
@@ -107,6 +107,9 @@ import Prodbox.CLI.Output
   , writeOutputLine
   )
 import Prodbox.Error (fatalError)
+import Prodbox.Infra.StackDescriptor
+  ( perRunStackDescriptorNames
+  )
 import Prodbox.Lifecycle.LiveResidue
   ( PerRunResidueStatuses (..)
   , queryAwsSesResidueStatus
@@ -116,7 +119,10 @@ import Prodbox.Lifecycle.ResidueStatus qualified as ResidueStatus
 import Prodbox.Lifecycle.ResourceClass qualified as ResourceClass
 import Prodbox.Lifecycle.ResourceRegistry
   ( ManagedResource (..)
+  , pairAwsSesResidue
+  , pairPerRunResidue
   , reconcileAbsent
+  , residueGateRefusalList
   )
 import Prodbox.Repo
   ( ConfigPaths (..)
@@ -150,7 +156,6 @@ import System.Directory
   ( doesFileExist
   , findExecutable
   )
-import System.Environment (getEnvironment)
 import System.Exit
   ( ExitCode (ExitFailure, ExitSuccess)
   )
@@ -290,23 +295,29 @@ sessionTokenPromptShape accessKeyId
 -- stacks are auto-managed by the test runner's
 -- 'awsPostflightDestroyActions' and may safely be bypassed by the
 -- harness-internal 'BypassPerRunResidueOnly' policy.
--- Sprint 4.20: derived from the managed-resource registry facts in
--- 'Prodbox.Lifecycle.ResourceClass' so this list cannot drift from the
--- single source of truth (the per-run Pulumi stacks are exactly the
--- 'PerRun'-class entries).
+-- Sprint 4.27: derived from the 'StackDescriptor' SSoT
+-- ('perRunStackDescriptorNames') — the @PerRun@-class Pulumi-managed
+-- stacks — so this list cannot drift from the single typed source that
+-- also feeds the CLI verbs, project dirs, and the generated
+-- registry-name↔CLI-command doc section. A unit test pins it equal to
+-- both the prior literal and the @PerRun@ slice of the managed-resource
+-- registry ('Prodbox.Lifecycle.ResourceClass').
 perRunStackNames :: [String]
-perRunStackNames = ResourceClass.resourceNamesOfClass ResourceClass.PerRun
+perRunStackNames = perRunStackDescriptorNames
 
 -- | Long-lived cross-substrate shared resource names per
 -- @DEVELOPMENT_PLAN/substrates.md → Resource Lifecycle Classes@: the
 -- @aws-ses@ Pulumi stack and (Sprint 4.24) the retained
 -- @public-edge-tls@ production certificate material (an S3 object class,
 -- not a Pulumi stack). These are retained by design; the harness must
--- NEVER bypass residue refusal for them. Sprint 4.20: derived from the
--- registry facts so the list cannot drift from the single source of
--- truth.
-longLivedStackNames :: [String]
-longLivedStackNames = ResourceClass.resourceNamesOfClass ResourceClass.LongLived
+-- NEVER bypass residue refusal for them. Sprint 4.27: renamed from
+-- @longLivedStackNames@ — the long-lived class spans more than Pulumi
+-- stacks (it includes the non-stack @public-edge-tls@ certificate), so
+-- it is derived from the @LongLived@-class managed-resource registry
+-- facts rather than from the 'StackDescriptor' Pulumi-stack list (which
+-- only knows about @aws-ses@).
+longLivedResourceNames :: [String]
+longLivedResourceNames = ResourceClass.resourceNamesOfClass ResourceClass.LongLived
 
 -- | Sprint 7.7 — partition residue tuples into (per-run, long-lived)
 -- buckets using 'perRunStackNames'. The partition keys must match the
@@ -444,9 +455,23 @@ buildFederatedSessionPolicyDocument policyTier =
       PolicyCore -> ["sts:GetCallerIdentity", "route53:*"]
       PolicyFull -> ["sts:GetCallerIdentity", "route53:*", "ec2:*", "eks:*", "iam:*"]
 
-runAwsCommand :: FilePath -> AwsCommand -> IO ExitCode
-runAwsCommand repoRoot command = do
-  result <- try (executeAwsCommand repoRoot command) :: IO (Either SomeException ExitCode)
+-- | Sprint 4.26: the operator @prodbox aws teardown@ preflight refuses on
+-- a live long-lived Pulumi stack ('aws-ses' / retained 'public-edge-tls')
+-- via 'Prodbox.Lifecycle.Preconditions.noLiveLongLivedPulumiStacks'. That
+-- precondition module imports 'Prodbox.Aws', so the check is
+-- dependency-injected here as @FilePath -> IO (Either String ())@ (the
+-- caller in 'Prodbox.Native' supplies it). @Right ()@ proceeds; @Left
+-- narrative@ is rendered as the refusal. The HARNESS teardown paths
+-- ('runAwsIamHarnessSetup' / 'runAwsIamHarnessTeardown') never inject it —
+-- Sprint 7.9's deliberate aws-ses relaxation for the harness postflight is
+-- preserved.
+type AwsTeardownLongLivedPreflight = FilePath -> IO (Either String ())
+
+runAwsCommand :: FilePath -> AwsTeardownLongLivedPreflight -> AwsCommand -> IO ExitCode
+runAwsCommand repoRoot longLivedPreflight command = do
+  result <-
+    try (executeAwsCommand repoRoot longLivedPreflight command)
+      :: IO (Either SomeException ExitCode)
   case result of
     Left err
       | Just (exitCode :: ExitCode) <- fromException err -> throwIO exitCode
@@ -470,8 +495,8 @@ runInteractiveConfigSetupWithPlan repoRoot planOptions = do
           pure (ExitFailure 1)
     Right exitCode -> pure exitCode
 
-executeAwsCommand :: FilePath -> AwsCommand -> IO ExitCode
-executeAwsCommand repoRoot command =
+executeAwsCommand :: FilePath -> AwsTeardownLongLivedPreflight -> AwsCommand -> IO ExitCode
+executeAwsCommand repoRoot longLivedPreflight command =
   case command of
     AwsPolicy policyTier -> do
       writeOutput (buildIamPolicyJson policyTier)
@@ -486,7 +511,7 @@ executeAwsCommand repoRoot command =
           writeOutput (renderAwsSetupResult result)
           pure ExitSuccess
     AwsTeardown planOptions flags -> do
-      decision <- interactiveAwsTeardownInput repoRoot flags
+      decision <- interactiveAwsTeardownInput repoRoot longLivedPreflight flags
       case decision of
         Left refusal -> do
           writeError (fatalError (Text.pack refusal))
@@ -802,12 +827,36 @@ interactiveAwsSetupInput repoRoot policyTier = do
 --     captured, downstream 'applyAwsTeardown' will handle the IAM
 --     delete + @aws.*@ clear under the requested 'PulumiResiduePolicy'.
 interactiveAwsTeardownInput
-  :: FilePath -> AwsTeardownFlags -> IO (Either String (Maybe AwsTeardownInput))
-interactiveAwsTeardownInput repoRoot flags = do
+  :: FilePath
+  -> AwsTeardownLongLivedPreflight
+  -> AwsTeardownFlags
+  -> IO (Either String (Maybe AwsTeardownInput))
+interactiveAwsTeardownInput repoRoot longLivedPreflight flags = do
   requireInteractiveTty awsTeardownGuard
+  let policy = teardownResiduePolicy flags
+  -- Sprint 4.26: the deferred Sprint 4.11 consolidation. On the default
+  -- operator path ('RefuseOnAnyResidue') the long-lived class
+  -- ('aws-ses' + the retained 'public-edge-tls' certificate) refuses the
+  -- teardown the same way per-run residue does, via the injected
+  -- 'noLiveLongLivedPulumiStacks' precondition. '--destroy-pulumi-residue'
+  -- and '--allow-pulumi-residue' deliberately skip this gate (the former
+  -- destroys the residue, the latter is an operator-acknowledged orphan).
+  -- The HARNESS path never reaches here (it calls 'applyAwsTeardown'
+  -- directly under a Bypass* policy), so Sprint 7.9's aws-ses relaxation
+  -- for the harness postflight is preserved.
+  longLivedRefusal <-
+    if policy == RefuseOnAnyResidue
+      then either Just (const Nothing) <$> longLivedPreflight repoRoot
+      else pure Nothing
+  case longLivedRefusal of
+    Just narrative -> pure (Left narrative)
+    Nothing -> interactiveAwsTeardownInputAfterLongLived repoRoot policy
+
+interactiveAwsTeardownInputAfterLongLived
+  :: FilePath -> PulumiResiduePolicy -> IO (Either String (Maybe AwsTeardownInput))
+interactiveAwsTeardownInputAfterLongLived repoRoot policy = do
   -- Step 1: file-based residue check — no credentials needed.
   residue <- checkPulumiResidueBeforeTeardown repoRoot
-  let policy = teardownResiduePolicy flags
   -- Step 2: decide based on residue + policy. Skip the credential
   -- prompt entirely on refusal and on the nothing-to-do path.
   case (residue, policy) of
@@ -1521,7 +1570,7 @@ applyAwsTeardown repoRoot input = do
   -- inspected through the policy logic below; the partition exists so
   -- any future stack added per `substrates.md → Resource Lifecycle
   -- Classes` forces a deliberate per-run vs long-lived classification
-  -- via 'perRunStackNames' / 'longLivedStackNames').
+  -- via 'perRunStackNames' / 'longLivedResourceNames').
   let (_perRunResidue, longLivedResidue) = partitionResidueByLifecycle residue
   case awsTeardownResiduePolicy input of
     AcceptOrphanResidue -> runTeardown
@@ -1663,6 +1712,7 @@ operationalManagedResources adminCreds =
   [ ManagedResource
       { resourceName = "operational-iam-user"
       , resourceClass = ResourceClass.Operational
+      , resourceDestroyCommand = "prodbox aws teardown"
       , resourceDestroy = \repoRoot -> do
           _ <- deleteExistingOperationalKeys repoRoot adminCreds
           deleteUserPolicyIfPresent repoRoot adminCreds
@@ -1672,6 +1722,7 @@ operationalManagedResources adminCreds =
   , ManagedResource
       { resourceName = "operational-aws-config"
       , resourceClass = ResourceClass.Operational
+      , resourceDestroyCommand = "prodbox aws teardown"
       , resourceDestroy = \repoRoot -> clearOperationalAwsConfig repoRoot adminCreds
       }
   ]
@@ -1831,48 +1882,37 @@ dispatchPulumiDestroysForResidue repoRoot plan = go plan
 -- the canonical destroy command operators should run to clean them up.
 -- An empty list means it is safe to delete the operational IAM user.
 --
--- Implementation note: this is the IO wrapper around the pure
--- 'categorizePulumiResidue' helper. The IO half reaches into the
--- in-cluster MinIO backend (via one shared port-forward across the
--- three per-run stacks) and the operator-account S3 backend (admin
--- credentials) so the residue listing reflects what is actually in
+-- Sprint 4.26: the canonical @(stack-name, destroy-command)@ list is now
+-- wholly registry-derived through 'pairPerRunResidue' / 'pairAwsSesResidue'
+-- + 'residueGateRefusalList', retiring the parallel hand-maintained
+-- @categorizePulumiResidue@ classifier the registry subsumes. The IO half
+-- reaches into the in-cluster MinIO backend (via one shared port-forward
+-- across the three per-run stacks) and the operator-account S3 backend
+-- (admin credentials) so the residue listing reflects what is actually in
 -- the Pulumi backends, not stale file-existence approximations.
+--
+-- Both per-run and long-lived 'ResidueUnreachable' count as blocking
+-- residue for this teardown gate (Sprint 4.19/4.20): "cannot read the
+-- Pulumi state backend" is not a confirmation that the AWS resources are
+-- gone, so @prodbox aws teardown@ must refuse rather than delete the
+-- operational IAM user and strand unreadable stacks. 'residueGateRefusalList'
+-- encodes that via 'ResidueStatus.residueBlocksTeardownGate' ("present OR
+-- unreachable → block"). (The @--cascade@ path keeps its own
+-- graceful-degradation handling in
+-- 'Prodbox.Lifecycle.ResourceRegistry.resourcesToDestroy'.)
 checkPulumiResidueBeforeTeardown :: FilePath -> IO [(String, String)]
 checkPulumiResidueBeforeTeardown repoRoot = do
   perRun <- queryPerRunResidueStatuses repoRoot
   ses <- queryAwsSesResidueStatus repoRoot
-  pure (categorizePulumiResidue perRun ses)
-
--- | Pure categorization of the four 'ResidueStatus' values into the
--- canonical @(stack-name, destroy-command)@ list the refuse-path
--- consumes. Exposed for unit testing because the IO query is hard to
--- exercise without a live cluster.
---
--- Sprint 4.19/4.20: both per-run and long-lived 'ResidueUnreachable'
--- count as blocking residue for this teardown gate. "Cannot read the
--- Pulumi state backend" is not a confirmation that the AWS resources
--- are gone, so @prodbox aws teardown@ must refuse rather than delete
--- the operational IAM user and strand unreadable stacks. The single
--- soundness combinator 'ResidueStatus.residueBlocksTeardownGate'
--- (Sprint 4.20, superseding the per-class
--- @isResiduePresentOrUnknown*@ booleans) encodes "present OR unreachable
--- → block." (The @--cascade@ path keeps its own graceful-degradation
--- handling in 'Prodbox.Lifecycle.ResourceRegistry.resourcesToDestroy'.)
-categorizePulumiResidue
-  :: PerRunResidueStatuses -> ResidueStatus.ResidueStatus -> [(String, String)]
-categorizePulumiResidue perRun sesStatus =
-  [ ("aws-eks", "prodbox pulumi eks-destroy --yes")
-  | ResidueStatus.residueBlocksTeardownGate (perRunAwsEksTest perRun)
-  ]
-    ++ [ ("aws-eks-subzone", "prodbox pulumi aws-subzone-destroy --yes")
-       | ResidueStatus.residueBlocksTeardownGate (perRunAwsEksSubzone perRun)
-       ]
-    ++ [ ("aws-test", "prodbox pulumi test-destroy --yes")
-       | ResidueStatus.residueBlocksTeardownGate (perRunAwsTest perRun)
-       ]
-    ++ [ ("aws-ses", "prodbox pulumi aws-ses-destroy --yes")
-       | ResidueStatus.residueBlocksTeardownGate sesStatus
-       ]
+  pure
+    ( residueGateRefusalList
+        ( pairPerRunResidue
+            (perRunAwsEksTest perRun)
+            (perRunAwsEksSubzone perRun)
+            (perRunAwsTest perRun)
+            ++ pairAwsSesResidue ses
+        )
+    )
 
 renderPulumiResidueRefusal :: [(String, String)] -> String
 renderPulumiResidueRefusal residue =
@@ -2791,16 +2831,12 @@ loadConfigForWrite repoRoot = do
 writeConfigFile :: FilePath -> ConfigFile -> IO ()
 writeConfigFile path config = writeFile path (renderConfigDhall config)
 
-subprocessBaseEnvironment :: IO [(String, String)]
-subprocessBaseEnvironment = do
-  environment <- getEnvironment
-  let keep key = maybe [] (\value -> [(key, value)]) (lookup key environment)
-  pure (concatMap keep ["PATH", "HOME", "LANG", "TERM", "USER"])
-
+-- | Admin/operational AWS CLI subprocess environment. Delegates to the
+-- single canonical PATH/HOME/LANG-preserving builder
+-- 'awsCliSubprocessEnvironment' (Sprint 1.30 consolidation): there is
+-- exactly one AWS-CLI environment builder and everything else calls it.
 adminAwsEnvironment :: Credentials -> IO [(String, String)]
-adminAwsEnvironment credentials = do
-  base <- subprocessBaseEnvironment
-  pure (overlayAwsCredentials base credentials)
+adminAwsEnvironment = awsCliSubprocessEnvironment
 
 operationalAwsEnvironment :: Credentials -> IO [(String, String)]
 operationalAwsEnvironment = adminAwsEnvironment

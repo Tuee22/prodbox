@@ -5,6 +5,7 @@
 **Referenced by**: [README.md](README.md), [00-overview.md](00-overview.md),
 [legacy-tracking-for-deletion.md](legacy-tracking-for-deletion.md),
 [system-components.md](system-components.md), [the engineering doctrine docs](../documents/engineering/README.md)
+**Generated sections**: none
 
 > **Purpose**: Capture the lifecycle hardening work, Pulumi scope reduction, Python-removal
 > work, and the CLI-doctrine adoption sprints that bring the local-cluster lifecycle and AWS
@@ -12,9 +13,30 @@
 
 ## Phase Status
 
-🔄 **Active** — Phase 4 is reopened for Sprint `4.24`: the public-edge production certificate
-joins the managed-resource registry as a `LongLived` resource. All earlier Phase 4 sprints
-(`4.1`–`4.23`) remain `Done` on their owned surfaces.
+✅ **Reclosed 2026-06-09** — Phase 4 was reopened for Sprints `4.26`–`4.27` (design-intention
+review: the destructive-command Plan/Apply gaps + the registry-name SSoT consolidation surfaced
+against the lifecycle reconciliation surface); both have now landed. Sprint `4.26` ✅ routed
+`prodbox rke2 delete` (default + cascade) and `prodbox nuke` through `runPlanWithOptions` so
+`--dry-run` / `--plan-file` are honored on the destructive arms (fixing the audit's #1 bug — a
+discarded `_planOptions` that silently destroyed), added the `checkPlanOptionsHonored` lint, derived
+the default-delete sweep from `perRunManagedResources` (closing the `aws-eks-subzone` omission),
+failed the nuke step-4 tag sweep closed, read `nukePlanFile`, wired `noLiveLongLivedPulumiStacks`
+into the `aws teardown` preflight, and retired `categorizePulumiResidue` — all while preserving the
+refuse-gate vs reconciler split ([lifecycle_reconciliation_doctrine.md § 3.1](../documents/engineering/lifecycle_reconciliation_doctrine.md)).
+The cascade order was left untouched (drain → destroys; `storage_lifecycle_doctrine.md` §5 was
+already corrected in Sprint 0.9). Sprint `4.27` ✅ introduced the `StackDescriptor` SSoT (deriving the
+per-run/long-lived name lists, CLI verbs, project dirs, and a generated registry-name↔CLI-command doc
+section), wrapped the Route 53 capability-proof create→delete in `bracketOnError` (unregistered — no
+steady state), generalized `iamCreateSiteViolations` → `awsCreateSiteViolations`, and renamed
+`longLivedStackNames` → `longLivedResourceNames`. Validation at reclosure: `check-code` 0,
+`test unit` 802, `integration cli` 35, `prodbox-daemon-lifecycle` 11/11, `lint docs` 0, `docs check`
+0; the live destructive cascade is operator-driven. All earlier Phase 4 sprints (`4.1`–`4.25`) remain
+`Done` on their owned surfaces.
+
+The phase was previously reopened for Sprint `4.24`: the public-edge production certificate
+joins the managed-resource registry as a `LongLived` resource (now `Done` on the code-owned
+surface), and for Sprint `4.25`, which makes `prodbox rke2 delete` a no-op success when no RKE2
+cluster is installed (`Done`).
 
 ✅ **Done (Sprints `4.1`–`4.23`)** — Sprints `4.1`–`4.4` remain `Done` on lifecycle parity, Python Pulumi removal,
 repository-wide Python toolchain removal, and the single-record DNS / single-certificate
@@ -2293,6 +2315,165 @@ cluster there is nothing to delete: report `No RKE2 cluster to delete.` and exit
 
 None — the change is self-contained to the `rke2 delete` dispatch plus its tests and docs.
 
+## Sprint 4.26: Route the Destructive Commands Through `runPlanWithOptions` ✅
+
+**Status**: Done (2026-06-09). `rke2 delete` (default + `--cascade`) and `nuke` now route through
+`runPlanWithOptions` — `--dry-run` renders the full destructive plan and exits 0 with **zero**
+mutation (the audit's #1 bug: `Rke2Delete flags _planOptions` discarded its options and silently
+destroyed), `--plan-file` writes it, and `nuke` now reads `nukePlanFile`. The new
+`checkPlanOptionsHonored` lint (in `runDoctrineAlignmentCheck`, proven to fire) forbids a destructive
+dispatch arm from binding its `PlanOptions`/`NukeOptions` to a `_` wildcard. The default-delete
+per-run sweep is now derived from `perRunManagedResources` (closing the `aws-eks-subzone` omission;
+`resourceDestroyCommand` added so the registry is the SSoT for both the destroy and the operator
+command string). `nuke` step-4 tag sweep is fail-closed (aborts non-zero before the bucket destroy).
+`noLiveLongLivedPulumiStacks` is wired into the operator `aws teardown` preflight (via DI to avoid a
+`Preconditions`→`Aws` cycle; the harness `BypassAllResidueForHarnessRefresh` paths are untouched, so
+Sprint 7.9's aws-ses relaxation is intact). `categorizePulumiResidue` was retired in favor of the
+registry-derived residue path (behavior-preserving). The refuse-gate vs reconciler split is
+preserved. The cascade order (drain → destroys) was left untouched. Validation green: `check-code` 0,
+`test unit` 790, `integration cli` 35, `lint docs` 0, `docs check` 0. The live destructive cascade is
+operator-driven.
+**Implementation**: `src/Prodbox/CLI/Rke2.hs`, `src/Prodbox/CLI/Nuke.hs`,
+`src/Prodbox/Native.hs`, `src/Prodbox/Aws.hs`, `src/Prodbox/Lifecycle/Preconditions.hs`,
+`src/Prodbox/CheckCode.hs`, `test/unit/Main.hs`, `test/integration/CliSuite.hs` (recommended)
+**Docs to update**: `documents/engineering/lifecycle_reconciliation_doctrine.md`,
+`documents/engineering/storage_lifecycle_doctrine.md`,
+`documents/engineering/cli_command_surface.md`, `documents/engineering/code_quality.md`
+
+### Objective
+
+Make `--dry-run` and `--plan-file` honored on the destructive arms — `prodbox rke2 delete`
+(default and `--cascade`) and `prodbox nuke` — by routing them through the same
+`runPlanWithOptions` Plan / Apply entrypoint the reconcile path already uses
+([pure_fp_standards.md#plan--apply](../documents/engineering/pure_fp_standards.md#plan--apply),
+Sprint 1.7), close two correctness gaps the audit surfaced (the default-delete sweep omitting
+`aws-eks-subzone`; the nuke step-4 tag sweep treating a failed sweep as success), and add a lint
+that keeps the wiring honest. The refuse-gate vs reconciler split stays intact: the default
+`rke2 delete` and `aws teardown` remain refuse-gates (they refuse on live residue rather than
+reconcile it); only `--cascade` reconciles
+([lifecycle_reconciliation_doctrine.md § 3.1](../documents/engineering/lifecycle_reconciliation_doctrine.md)).
+
+### Deliverables
+
+- `prodbox rke2 delete` (default + `--cascade`) and `prodbox nuke` dispatch through
+  `runPlanWithOptions` so `--dry-run` renders the full destructive plan and exits `0` without
+  mutation, and `--plan-file` writes the rendered plan. `prodbox nuke` reads its `nukePlanFile`
+  field (today threaded into `NukeOptions` but unread).
+- A `checkPlanOptionsHonored` lint in `src/Prodbox/CheckCode.hs` forbids any destructive dispatch
+  arm from binding its `PlanOptions` to a `_` wildcard, so a future destructive command cannot
+  silently drop `--dry-run` / `--plan-file`. Registered in the `prodbox check-code` lint stack
+  ([code_quality.md](../documents/engineering/code_quality.md)).
+- The default-delete per-run sweep is derived from `perRunManagedResources` rather than a
+  hand-maintained stack list, closing the `aws-eks-subzone` omission (the registry is already the
+  SSoT for the per-run class after Sprint `4.21`).
+- The `prodbox nuke` step-4 tag sweep fails **closed**: a tag-sweep error aborts nuke with an
+  actionable error instead of best-effort-continuing, matching the
+  [lifecycle_reconciliation_doctrine.md § 3.1](../documents/engineering/lifecycle_reconciliation_doctrine.md)
+  "cannot observe is never silently absent" rule for the total-teardown path.
+- `noLiveLongLivedPulumiStacks` is wired into the `aws teardown` preflight (completing the
+  Sprint `4.11` deferred consolidation note), so `aws teardown` refuses on a live long-lived stack
+  the same way it refuses on live per-run stacks.
+- `storage_lifecycle_doctrine.md` §5 cascade order: **already corrected in Sprint 0.9** to the
+  canonical sequence — confirm-MinIO → **K8s drain → per-run Pulumi destroys** → RKE2 uninstall →
+  postflight tag sweep (DRAIN BEFORE DESTROYS, matching
+  [lifecycle_reconciliation_doctrine.md §5b](../documents/engineering/lifecycle_reconciliation_doctrine.md)
+  and the landed Sprint `4.17.a` reorder). This sprint left it untouched. (An earlier draft of this
+  bullet stated the inverted destroys-before-drain order; that was a typo — destroys-before-drain is
+  the fatal `DependencyViolation` sequence, NOT canonical.)
+- `categorizePulumiResidue` is retired in favor of the registry-derived residue path
+  (`perRunManagedResources` + `pairPerRunResidue`), removing the parallel hand-maintained
+  classifier the registry now subsumes.
+
+### Validation
+
+1. `prodbox check-code` exits `0`, including the new `checkPlanOptionsHonored` lint.
+2. `prodbox test unit` covers the registry-derived default-delete sweep (asserting
+   `aws-eks-subzone` is included), the nuke step-4 fail-closed branch, and the
+   `noLiveLongLivedPulumiStacks` `aws teardown` preflight composition.
+3. `prodbox test integration cli` covers `--dry-run` / `--plan-file` snapshots for
+   `rke2 delete`, `rke2 delete --cascade`, and `nuke` (the three destructive `--dry-run` goldens
+   are authored under Sprint `5.6`).
+4. `prodbox docs check` confirms parity for the corrected `storage_lifecycle_doctrine.md` §5
+   cascade order.
+
+### Remaining Work
+
+None — closed 2026-06-09. All deliverables landed; the refuse-gate vs reconciler split is preserved
+(default `rke2 delete`/`aws teardown` refuse, only `--cascade` reconciles). The live destructive
+cascade against a real cluster/AWS is operator-driven.
+
+## Sprint 4.27: `StackDescriptor` SSoT and AWS Create-Site Generalization ✅
+
+**Status**: Done (2026-06-09). New `src/Prodbox/Infra/StackDescriptor.hs` holds the
+`StackDescriptor {stackRegistryName, stackPulumiStackId, stackProjectSubdir, stackCliVerb,
+stackLifecycleClass}` SSoT and the single `stackDescriptors` list (recording the `aws-eks`
+registry-name vs `aws-eks-test` Pulumi-stack-id difference); the per-run name list (`perRunStackNames`),
+CLI verbs, and project subdirs are now DERIVED from it (a unit test pins the derived list equal to
+both the prior literal and the `PerRun` registry slice). A new `stack-command-surface`
+`GeneratedSectionRule` renders the registry-name↔CLI-command table into `substrates.md` (the typed
+source Sprints `0.10`/`5.6` consume). `requireRoute53LifecycleCapability` now wraps its create→delete
+probe in `bracketOnError` so the throwaway proof zone is always deleted on a mid-probe exception
+(audit C66); it stays unregistered (no steady state) and keeps the create-site lint carve-out.
+`iamCreateSiteViolations` was generalized to `awsCreateSiteViolations` (IAM verbs + `create-bucket`,
+matching the quoted-arg form; `create-hosted-zone` carved out for the probe). `longLivedStackNames`
+was renamed to `longLivedResourceNames` (still derived from the `LongLived` registry class, so it
+keeps the non-stack `public-edge-tls` cert). Validation green: `check-code` 0, `test unit` 802/802,
+`docs generate`→`docs check` 0, `integration cli` 35/35, `lint docs` 0. The live Route 53
+`bracketOnError` cleanup exercise is operator-driven.
+**Implementation**: `src/Prodbox/Aws.hs`, `src/Prodbox/Lifecycle/ResourceRegistry.hs`,
+`src/Prodbox/CheckCode.hs`, `src/Prodbox/CLI/Pulumi.hs`, `src/Prodbox/Dns.hs`,
+`test/unit/Main.hs` (recommended)
+**Docs to update**: `documents/engineering/lifecycle_reconciliation_doctrine.md`,
+`documents/engineering/aws_integration_environment_doctrine.md`,
+`documents/engineering/cli_command_surface.md`, `DEVELOPMENT_PLAN/substrates.md`
+
+### Objective
+
+Collapse the several hand-maintained parallel lists describing each Pulumi-managed stack
+(registry name, Pulumi stack id, project subdir, CLI verb, lifecycle class) into one
+`StackDescriptor` SSoT record, and generalize the IAM-specific create-site lint into an
+AWS-wide one. This removes the drift risk the documentation-harmony audit flagged between the
+registry names, the CLI verbs, and the project directories, and feeds the
+[lifecycle_reconciliation_doctrine.md § 3.1](../documents/engineering/lifecycle_reconciliation_doctrine.md)
+registry totality from a single typed source.
+
+### Deliverables
+
+- A `StackDescriptor` record (`registryName`, `pulumiStackId`, `projectSubdir`, `cliVerb`,
+  `lifecycleClass`) in `src/Prodbox/Aws.hs` (or a dedicated `Prodbox.Infra.StackDescriptor`
+  module) as the SSoT for the Pulumi-managed substrate stacks. The per-run / long-lived name
+  lists, the CLI verbs, and the project dirs are **derived** from `[StackDescriptor]` rather than
+  hand-maintained.
+- A generated registry-name↔CLI-command doc section (a `prodbox docs generate` marker block)
+  driven by `[StackDescriptor]`; this is the typed source Sprint `0.10` consumes for the
+  registry-name↔CLI-verb list and Sprint `5.6` consumes for registry-generated golden coverage.
+- The Route 53 capability-proof create→delete is wrapped in `bracketOnError` so a failure after
+  the probe record is created always deletes it. It is deliberately **not** registered as a
+  `ManagedResource`: the capability probe has no steady state to discover or reconcile, so the
+  § 3.1 totality registry stays correct without it.
+- `iamCreateSiteViolations` is generalized into `awsCreateSiteViolations` in
+  `src/Prodbox/CheckCode.hs` so the create-site lint covers every AWS-resource create call site,
+  not only IAM.
+- `longLivedStackNames` is renamed to `longLivedResourceNames` (the long-lived class now spans
+  more than Pulumi stacks — it includes the public-edge production certificate from Sprint
+  `4.24`), with all call sites and the `Prodbox.Lifecycle.Preconditions` /
+  `Prodbox.Aws` references updated.
+
+### Validation
+
+1. `prodbox check-code` exits `0`, including the generalized `awsCreateSiteViolations` lint.
+2. `prodbox test unit` covers the `StackDescriptor`-derived name lists (per-run / long-lived
+   parity with the registry), the CLI-verb derivation, and the renamed `longLivedResourceNames`.
+3. `prodbox docs check` confirms the generated registry-name↔CLI-command section round-trips.
+4. The Route 53 capability-proof `bracketOnError` cleanup is exercised by the
+   `prodbox test integration public-dns` (or `aws-iam`) flow, proving the probe record is deleted
+   even on a mid-probe failure.
+
+### Remaining Work
+
+None — closed 2026-06-09. All deliverables landed; the Route 53 capability proof was correctly left
+**unregistered** (no steady state). The live `bracketOnError` cleanup exercise is operator-driven.
+
 ## Documentation Requirements
 
 **Engineering docs to create/update:**
@@ -2307,8 +2488,13 @@ None — the change is self-contained to the `rke2 delete` dispatch plus its tes
   reconciler-with-predicates pattern, the state-lifetime rule, and the leak-class
   inventory that Sprints `4.10`–`4.13` operationalize; for Sprint `4.24` it also records
   the public-edge production certificate as a `LongLived` managed resource under the § 3.1
-  totality + soundness pattern.
-- `documents/engineering/code_quality.md` - final non-Python quality gate.
+  totality + soundness pattern; for Sprints `4.26`–`4.27` it records the refuse-gate vs
+  reconciler split (default `rke2 delete` / `aws teardown` stay refuse-gates, only `--cascade`
+  reconciles), the registry-derived default-delete sweep, the nuke step-4 fail-closed tag sweep,
+  and the `StackDescriptor` SSoT feeding the § 3.1 registry totality.
+- `documents/engineering/code_quality.md` - final non-Python quality gate; for Sprint `4.26` it
+  also lists the `checkPlanOptionsHonored` lint, and for Sprint `4.27` the generalized
+  `awsCreateSiteViolations` create-site lint.
 - `documents/engineering/dependency_management.md` - final Haskell dependency and container-image
   inventory, including the `ghcup` pin and no-symlink doctrine for Haskell-build containers.
 - `documents/engineering/local_registry_pipeline.md` - Harbor-first lifecycle ordering and the
@@ -2317,7 +2503,12 @@ None — the change is self-contained to the `rke2 delete` dispatch plus its tes
 - `documents/engineering/streaming_doctrine.md` - user-visible success-summary versus actionable
   failure-context rules for noisy lifecycle subprocesses.
 - `documents/engineering/storage_lifecycle_doctrine.md` - retained storage contract after the
-  lifecycle/chart rewrite, including the delete-side cleanup-summary contract.
+  lifecycle/chart rewrite, including the delete-side cleanup-summary contract; for Sprint `4.26`
+  the §5 cascade order is corrected to the canonical per-run-destroy → drain → uninstall →
+  tag-sweep sequence.
+- `documents/engineering/aws_integration_environment_doctrine.md` - additionally, for Sprint
+  `4.27`, the `StackDescriptor`-derived per-run / long-lived stack inventory and the generated
+  registry-name↔CLI-command section.
 - `documents/engineering/unit_testing_policy.md` - native lifecycle and aggregate validation
   ownership.
 
@@ -2330,6 +2521,9 @@ None — the change is self-contained to the `rke2 delete` dispatch plus its tes
 - Keep lifecycle and AWS IaC doctrine linked from [system-components.md](system-components.md).
 - For Sprint `4.24`, cross-reference [substrates.md](substrates.md) so the regenerated Resource
   Lifecycle Classes table lists the public-edge production certificate as `LongLived`.
+- For Sprint `4.27`, cross-reference [substrates.md](substrates.md) so the `StackDescriptor` SSoT
+  and the renamed `longLivedResourceNames` stay aligned with the Resource Lifecycle Classes
+  inventory.
 
 ## Related Documents
 

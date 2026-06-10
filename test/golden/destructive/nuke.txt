@@ -1,0 +1,14 @@
+PRODBOX_NUKE_PLAN
+STEP=1 K8s drain + per-run Pulumi destroys + cluster uninstall (rke2 delete --cascade arm)
+STEP=1 per_run_destroy aws-eks
+STEP=1 per_run_destroy aws-eks-subzone
+STEP=1 per_run_destroy aws-test
+STEP=2 prodbox pulumi aws-ses-destroy --yes (long-lived shared infrastructure)
+STEP=3 prodbox aws teardown (operational `prodbox` IAM user + access keys)
+STEP=4 postflight tag sweep (fail-closed: any prodbox-tagged AWS residue OR an unconfirmable sweep aborts nuke non-zero before step 5)
+STEP=4 long_lived_destroy public-edge-tls
+STEP=5 destroy long-lived `pulumi_state_backend` S3 bucket
+ADMIN_CREDENTIAL_SOURCE=prodbox-config.dhall::aws_admin_for_test_simulation.*
+STATUS=plan-only
+CONFIRMATION_LITERAL=NUKE EVERYTHING
+ALSO_NOTE=Each step is idempotent on retry; the operator may resume after a partial failure.

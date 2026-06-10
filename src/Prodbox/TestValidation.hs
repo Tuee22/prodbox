@@ -2004,6 +2004,20 @@ reserveLocalTcpPort =
 -- | Sprint 4.18: AWS EKS validation reads the live Pulumi outputs
 -- from the in-cluster MinIO backend rather than the legacy
 -- @.prodbox-state\/aws-eks-test\/stack-snapshot.json@ file.
+--
+-- Sprint 5.6: assert the substrate-equivalence properties the AWS EKS run
+-- must hold (per @DEVELOPMENT_PLAN/substrates.md@ and
+-- @phase-7-aws-substrate-foundations.md@) by decoding the outputs through
+-- the structured 'AwsEks.parseAwsEksTestStackFromOutputs' parser —
+-- mirroring the stronger sibling 'verifyAwsTestSnapshot' (which structurally
+-- decodes the three-node topology). The parser requires every field
+-- (@cluster_name@, @node_group_name@, @vpc_id@, the structured
+-- @subnet_ids@ JSON list, the cluster OIDC issuer, the OIDC provider ARN,
+-- and the AWS Load Balancer Controller policy/role ARNs that make the EKS
+-- substrate stand up the same load-balancer edge as home) to be present,
+-- non-empty, and well-formed — replacing the weaker
+-- @null clusterName || Text.null subnetIdsRaw@ existence check that passed
+-- on a structurally invalid @subnet_ids@ payload.
 verifyAwsEksSnapshot :: FilePath -> IO ExitCode
 verifyAwsEksSnapshot repoRoot = do
   outputsResult <-
@@ -2012,11 +2026,12 @@ verifyAwsEksSnapshot repoRoot = do
     Left err ->
       failWith ("AWS EKS validation could not read Pulumi outputs: " ++ err)
     Right outputs ->
-      let clusterName = maybe "" Text.unpack (Map.lookup "cluster_name" outputs)
-          subnetIdsRaw = Map.lookup "subnet_ids" outputs
-       in if null clusterName || maybe True Text.null subnetIdsRaw
-            then failWith "AWS EKS Pulumi outputs are incomplete"
-            else pure ExitSuccess
+      case AwsEks.parseAwsEksTestStackFromOutputs outputs of
+        Left err -> failWith ("AWS EKS Pulumi outputs are incomplete: " ++ err)
+        Right snapshot
+          | null (AwsEks.eksSnapshotSubnetIds snapshot) ->
+              failWith "AWS EKS Pulumi outputs parsed but contain no subnet_ids"
+          | otherwise -> pure ExitSuccess
 
 -- | Sprint 4.18: AWS test-stack validation reads the live Pulumi
 -- @nodes@ output from the in-cluster MinIO backend rather than the

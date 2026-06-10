@@ -125,8 +125,12 @@ without first deciding its lifetime class, selecting the matching
 backend, and matching the credential class. The class assignment must
 appear in
 [../../DEVELOPMENT_PLAN/substrates.md → Resource Lifecycle Classes](../../DEVELOPMENT_PLAN/substrates.md#resource-lifecycle-classes)
-and the code-side list (`Prodbox.Aws.perRunStackNames` /
-`longLivedStackNames`) in the same change.
+and the code-side SSoT in the same change: every Pulumi-managed stack is one
+`Prodbox.Infra.StackDescriptor` record (`stackRegistryName` / `stackPulumiStackId` /
+`stackProjectSubdir` / `stackCliVerb` / `stackLifecycleClass`, Sprint `4.27`), from which
+`Prodbox.Aws.perRunStackNames` and the CLI verbs / project dirs derive; the long-lived
+class (which spans more than stacks — it includes the non-stack `public-edge-tls` cert)
+is `Prodbox.Aws.longLivedResourceNames`.
 
 ## 3. The Reconciler-with-Predicates Pattern
 
@@ -293,9 +297,10 @@ managedResources :: [ManagedResource]      -- the single source of truth
 It reuses, not replaces, the existing pieces: the three-valued
 `ResidueStatus` (§3 layer 1), the composable `Precondition`/`checkAll`
 algebra (§3 layer 2), the `Plan`/`Apply` discipline, and the
-declare-and-interpret shape of the Effect DAG. The per-class stack-name
-lists (`Prodbox.Aws.perRunStackNames` / `longLivedStackNames`, §2) are
-**derived from** the registry by class so they cannot drift from it.
+declare-and-interpret shape of the Effect DAG. The per-class name lists
+(`Prodbox.Aws.perRunStackNames`, derived from the `StackDescriptor` SSoT;
+`Prodbox.Aws.longLivedResourceNames`, derived from the registry by class so it can
+include the non-stack `public-edge-tls` cert, §2) cannot drift from their sources.
 
 Three invariants make the topology leak-proof and idempotent:
 
@@ -320,6 +325,31 @@ Three invariants make the topology leak-proof and idempotent:
    `prodbox nuke` reconciles all classes. Re-running converges instead
    of erroring; built on `Plan`/`runPlanWithOptions` so `--dry-run`
    works uniformly.
+4. **Plan-option totality.** Every destructive command routes its work
+   through `runPlanWithOptions`, so `--dry-run` and `--plan-file` are
+   honored uniformly — `prodbox rke2 delete` (both the default refuse-gate
+   form and `--cascade`) and `prodbox nuke` included. This is the intended
+   Sprint 4.26 invariant: a `check-code` lint, `checkPlanOptionsHonored`,
+   forbids any destructive dispatch arm from binding the `PlanOptions`
+   argument to a `_` wildcard (which would silently drop `--dry-run` /
+   `--plan-file`). Routing through `runPlanWithOptions` is orthogonal to
+   the refuse-gate vs reconciler split (§3.1, §5): the default
+   `rke2 delete` and `aws teardown` remain refuse-gates and only the
+   cascade reconciles, but **all** of them must still surface a faithful
+   `--dry-run` plan and accept a `--plan-file`. The rule is total — "a
+   destructive command that ignores its plan options" is made
+   unrepresentable, the same way invariant 1 makes
+   "a creatable-but-undiscoverable resource" unrepresentable. The
+   default-delete per-run sweep is itself **derived from**
+   `perRunManagedResources` (the registry SSoT for the `PerRun` class)
+   rather than a hand-maintained stack list, so the rendered `--dry-run`
+   plan and the executed sweep can never omit a per-run stack — closing
+   the historical `aws-eks-subzone` omission on the `--allow-pulumi-residue`
+   default-delete path. The parallel hand-maintained `categorizePulumiResidue`
+   classifier the teardown refuse-gate used was retired in favor of the
+   registry-derived residue path (`pairPerRunResidue` / `pairAwsSesResidue`
+   + `residueGateRefusalList`), so the gate's `(stack, destroy-command)`
+   list and the destroy actions share one source.
 
 This is the data-oriented "make illegal states unrepresentable"
 answer, not a global state machine: the registry is pure data, every
@@ -396,10 +426,10 @@ backend / credentials are still up at the point of refusal).
 | Command | Preflight predicates | Default on residue |
 |---|---|---|
 | `prodbox rke2 delete` | §5a no-install short-circuit, then `noLivePerRunPulumiStacks` | Refuse with list and per-stack destroy command (or run `--cascade` for "orchestrate the full teardown") |
-| `prodbox rke2 delete --cascade` | §5a no-install short-circuit, then none at entry — the command **is** the orchestration | Confirm-MinIO → per-run destroys → drain → uninstall → sweep (see §5b) |
+| `prodbox rke2 delete --cascade` | §5a no-install short-circuit, then none at entry — the command **is** the orchestration | Confirm-MinIO → drain → per-run destroys → uninstall → sweep (see §5b) |
 | `prodbox aws teardown` | `noLivePerRunPulumiStacks`, `noLiveLongLivedPulumiStacks` (Sprint 7.6) | Refuse with list and per-stack destroy command |
 | `prodbox pulumi <stack>-destroy` | (none beyond Pulumi's own dependency check) | n/a |
-| `prodbox nuke` | TTY refusal; typed-confirmation literal `NUKE EVERYTHING`; otherwise no residue refusal — the command **is** the total-teardown orchestration | Drain + destroy all stacks + IAM teardown + uninstall + sweep |
+| `prodbox nuke` | TTY refusal; typed-confirmation literal `NUKE EVERYTHING`; otherwise no residue refusal — the command **is** the total-teardown orchestration | Drain + destroy all stacks + IAM teardown + uninstall + step-4 fail-closed tag sweep (§6) |
 
 ### 5a. No-Install Short-Circuit (Sprint 4.25)
 
@@ -541,6 +571,17 @@ the equivalent long-lived-tag query). A non-empty result is a hard
 failure: the command reports the leak list, the canonical remedy
 command per leaked class, and exits non-zero. This is the only layer
 that catches K8s-operator-created AWS resources that escape the drain.
+
+**The tag sweep is fail-closed.** A sweep that cannot reach the AWS
+Resource Tagging API to confirm the absence of cluster-tagged residue is
+a hard failure, never a silent pass — the same soundness rule as §3.1
+invariant 2 (`Unreachable → refuse`). This applies in particular to
+`prodbox nuke`'s step-4 tag sweep (§5, the nuke total-teardown
+orchestration): the final tag sweep must fail closed, so an
+unconfirmable sweep stops the command with a non-zero exit and a
+diagnostic rather than reporting "clean." "Could not observe the
+absence of residue" is treated as "residue may be present," never as
+"residue is absent."
 
 The tag sweep lives at `src/Prodbox/Lifecycle/TagSweep.hs` (introduced
 in Sprint 4.11; extended for the full cluster-tag scan in Sprint 4.12).

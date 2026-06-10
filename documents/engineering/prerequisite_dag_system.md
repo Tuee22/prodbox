@@ -3,6 +3,7 @@
 **Status**: Authoritative source
 **Supersedes**: N/A
 **Referenced by**: documents/engineering/README.md, documents/engineering/effect_interpreter.md, documents/engineering/prerequisite_doctrine.md, documents/engineering/unit_testing_policy.md
+**Generated sections**: none
 
 > **Purpose**: Define the DAG construction and reduction model for prerequisite execution.
 
@@ -10,11 +11,17 @@
 
 The prerequisite DAG system is defined by:
 
-- effect nodes with stable IDs
-- explicit dependency edges
-- a canonical registry in `src/Prodbox/Prerequisite.hs`
-- graph construction in `src/Prodbox/EffectDAG.hs`
-- graph execution in `src/Prodbox/EffectInterpreter.hs`
+- `EffectNode` values (`effectNodeId`, `effectNodeDescription`, `effectNodeRemedyHint`,
+  `effectNodePrerequisites`, `effectNodeEffect`) keyed by stable IDs
+- explicit dependency edges carried in `effectNodePrerequisites`
+- a canonical registry `prerequisiteRegistry :: Map String EffectNode` in
+  `src/Prodbox/Prerequisite.hs`
+- graph construction in `src/Prodbox/EffectDAG.hs` (`fromRootIds`, `transitiveClosureIds`)
+- graph execution in `src/Prodbox/EffectInterpreter.hs` (`runEffectDAG`)
+
+Node IDs are presently raw `String`s. The intended target is a typed `PrerequisiteId` ADT so
+that root selection and dependency edges are checked by the compiler rather than by string
+equality (Sprint 5.6).
 
 The supported command surface does not construct ad-hoc prerequisite orderings outside this model.
 
@@ -31,12 +38,20 @@ Prerequisite failures propagate from the root cause upward.
 For a fixed root set and registry, prerequisite expansion must be deterministic.
 
 - missing prerequisite IDs fail at expansion time rather than being discovered later at execution
-- no missing prerequisite IDs
+- no missing prerequisite IDs (`transitiveClosureIds` returns `Left` naming the absent ID)
 - no cycles
 - no duplicate execution of the same satisfied node within one run
-- stable transitive closure for the selected roots
+- stable transitive closure for the selected roots (`transitiveClosureIds` sorts its result)
 
-`test/unit/Main.hs` is responsible for guarding these invariants.
+Acyclicity is enforced at construction, not merely test-guarded: `transitiveClosureIds` /
+`fromRootIds` return `Left` on a back-edge — a node that (transitively) depends on itself — so a
+cyclic registry can never produce an `EffectDAG`. Cycle detection sits in the same `Either String`
+expansion path that already rejects missing IDs, and the interpreter memoizes satisfied nodes so no
+node executes twice within one run (Sprint 1.31).
+
+`test/unit/Main.hs` retains coverage of these invariants as defense-in-depth, but the construction
+path — not the test suite — is the authoritative gate: a back-edge is rejected by
+`transitiveClosureIds`/`fromRootIds` before any `EffectDAG` reaches the interpreter.
 
 ## 4. Test Command Integration
 

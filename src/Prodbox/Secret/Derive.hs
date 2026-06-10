@@ -13,6 +13,9 @@ module Prodbox.Secret.Derive
   , masterSeed
   , masterSeedBytes
   , PatroniRole (..)
+  , DeriveContext (..)
+  , encodeDeriveContext
+  , decodeDeriveContext
   , patroniRoleContext
   , keycloakAdminContext
   , keycloakDemoUserContext
@@ -75,23 +78,87 @@ patroniRoleSlug role = case role of
   PatroniRoleSuperuser -> "superuser"
   PatroniRoleStandby -> "standby"
 
+patroniRoleFromSlug :: Text -> Maybe PatroniRole
+patroniRoleFromSlug slug = case slug of
+  "app" -> Just PatroniRoleApp
+  "superuser" -> Just PatroniRoleSuperuser
+  "standby" -> Just PatroniRoleStandby
+  _ -> Nothing
+
+-- | A typed, structured derivation context. Every secret derived from the
+-- master seed names its purpose through one of these constructors rather than
+-- an ad-hoc colon-joined string, and the wire string is produced solely by
+-- 'encodeDeriveContext'. 'decodeDeriveContext' is its exact inverse:
+-- @decodeDeriveContext . encodeDeriveContext == Just@ for every well-formed
+-- 'DeriveContext' (proved by a round-trip property test), so the
+-- @/v1/secret/derive@ context wire shape is provably stable.
+data DeriveContext
+  = -- | @patroni:<namespace>:<release>:<role>@
+    PatroniRoleContext Text Text PatroniRole
+  | -- | @keycloak:<namespace>:admin@
+    KeycloakAdminContext Text
+  | -- | @keycloak:<namespace>:demo-user@
+    KeycloakDemoUserContext Text
+  | -- | @oidc:<namespace>:<clientId>@
+    OidcClientSecretContext Text Text
+  | -- | @gateway:<namespace>:<node-id>:event-key@
+    GatewayEventKeyContext Text Text
+  deriving (Eq, Show)
+
+-- | Encode a typed context to its canonical colon-joined wire string. This is
+-- the single authoritative encoder; the legacy @*Context@ helpers below are
+-- thin wrappers over it so every call site shares one representation.
+encodeDeriveContext :: DeriveContext -> Text
+encodeDeriveContext ctx = case ctx of
+  PatroniRoleContext namespace release role ->
+    Text.intercalate ":" ["patroni", namespace, release, patroniRoleSlug role]
+  KeycloakAdminContext namespace ->
+    Text.intercalate ":" ["keycloak", namespace, "admin"]
+  KeycloakDemoUserContext namespace ->
+    Text.intercalate ":" ["keycloak", namespace, "demo-user"]
+  OidcClientSecretContext namespace clientId ->
+    Text.intercalate ":" ["oidc", namespace, clientId]
+  GatewayEventKeyContext namespace nodeId ->
+    Text.intercalate ":" ["gateway", namespace, nodeId, "event-key"]
+
+-- | Decode a canonical wire string back to its typed 'DeriveContext'. The
+-- exact inverse of 'encodeDeriveContext'. Returns 'Nothing' for any string
+-- that does not match a known canonical shape (wrong prefix, wrong arity,
+-- unknown trailing literal, or an unknown Patroni role slug), so the
+-- @/v1/secret/derive@ handler can reject malformed or unknown contexts.
+--
+-- Round-trip caveat: the encoder joins segments with @:@, so a segment that
+-- itself contains @:@ (e.g. a namespace literal with an embedded colon) would
+-- not survive the split. Every canonical caller passes colon-free segments
+-- (Kubernetes namespace / release / node-id / client-id tokens), so the
+-- round-trip is total over the canonical input domain the property test
+-- exercises.
+decodeDeriveContext :: Text -> Maybe DeriveContext
+decodeDeriveContext wire =
+  case Text.splitOn ":" wire of
+    ["patroni", namespace, release, roleSlug] ->
+      PatroniRoleContext namespace release <$> patroniRoleFromSlug roleSlug
+    ["keycloak", namespace, "admin"] ->
+      Just (KeycloakAdminContext namespace)
+    ["keycloak", namespace, "demo-user"] ->
+      Just (KeycloakDemoUserContext namespace)
+    ["oidc", namespace, clientId] ->
+      Just (OidcClientSecretContext namespace clientId)
+    ["gateway", namespace, nodeId, "event-key"] ->
+      Just (GatewayEventKeyContext namespace nodeId)
+    _ -> Nothing
+
 -- | Canonical context string for a Patroni role secret.
 -- Shape: @patroni:<namespace>:<release>:<role>@
 patroniRoleContext :: Text -> Text -> PatroniRole -> Text
 patroniRoleContext namespace release role =
-  Text.intercalate
-    ":"
-    [ "patroni"
-    , namespace
-    , release
-    , patroniRoleSlug role
-    ]
+  encodeDeriveContext (PatroniRoleContext namespace release role)
 
 -- | Canonical context string for the Keycloak admin-user secret.
 -- Shape: @keycloak:<namespace>:admin@
 keycloakAdminContext :: Text -> Text
 keycloakAdminContext namespace =
-  Text.intercalate ":" ["keycloak", namespace, "admin"]
+  encodeDeriveContext (KeycloakAdminContext namespace)
 
 -- | Canonical context string for the Keycloak demo-user password (Sprint 3.13
 -- chunk 11). Shape: @keycloak:<namespace>:demo-user@. The demo user is seeded
@@ -102,7 +169,7 @@ keycloakAdminContext namespace =
 -- materializes into the @keycloak-oidc-clients@ Secret.
 keycloakDemoUserContext :: Text -> Text
 keycloakDemoUserContext namespace =
-  Text.intercalate ":" ["keycloak", namespace, "demo-user"]
+  encodeDeriveContext (KeycloakDemoUserContext namespace)
 
 -- | Canonical context string for an OIDC client's @client_secret@ (Sprint 3.13
 -- chunk 11). Shape: @oidc:<namespace>:<clientId>@. Same rationale as
@@ -113,13 +180,13 @@ keycloakDemoUserContext namespace =
 -- coordination.
 oidcClientSecretContext :: Text -> Text -> Text
 oidcClientSecretContext namespace clientId =
-  Text.intercalate ":" ["oidc", namespace, clientId]
+  encodeDeriveContext (OidcClientSecretContext namespace clientId)
 
 -- | Canonical context string for a gateway peer-event signing key.
 -- Shape: @gateway:<namespace>:<node-id>:event-key@
 gatewayEventKeyContext :: Text -> Text -> Text
 gatewayEventKeyContext namespace nodeId =
-  Text.intercalate ":" ["gateway", namespace, nodeId, "event-key"]
+  encodeDeriveContext (GatewayEventKeyContext namespace nodeId)
 
 -- | Derive a 32-byte secret from the master seed and a context string
 -- via HMAC-SHA-256. The encoding is the caller's choice; use

@@ -8,6 +8,7 @@ module Prodbox.Daemon.Events
   , EventType (..)
   , StoredEvent (..)
   , fetchUnprocessedEvents
+  , lookupProcessedAt
   , markEventProcessed
   , newEventStore
   , processEvents
@@ -24,6 +25,7 @@ import Control.Concurrent.STM
   )
 import Data.Aeson (Value)
 import Data.List (sortOn)
+import Data.Maybe (isNothing)
 import Data.Time.Clock (UTCTime)
 
 newtype EventId = EventId {unEventId :: String}
@@ -63,12 +65,24 @@ recordEvent (EventStore storeVar) event =
         then events
         else sortEvents (event : events)
 
+-- | Mark an event processed, first-write-wins. The write fires only when the
+-- event's @processed_at@ is still NULL ('eventProcessedAt' is 'Nothing'); a
+-- later redelivery of the same event finds it already stamped and is a no-op.
+-- This is the IS-NULL guard from the streaming doctrine's at-least-once
+-- contract — an authoritative, load-bearing invariant, not an optimization:
+-- it pins a single processing timestamp per event no matter how many times a
+-- concurrent processor replays it, so the delivery-state audit trail is not
+-- corrupted by a redelivery overwriting the original.
+--
+-- This is the durable at-least-once REFERENCE port. The gateway peer-gossip
+-- anti-entropy commit log is intentionally the non-durable variant and must
+-- not adopt this guard (per pure_fp_standards.md §6.3 / streaming_doctrine.md).
 markEventProcessed :: EventStore -> EventId -> UTCTime -> IO ()
 markEventProcessed (EventStore storeVar) targetId processedAt =
   atomically $
     modifyTVar' storeVar $
       map $ \event ->
-        if eventId event == targetId
+        if eventId event == targetId && isNothing (eventProcessedAt event)
           then event {eventProcessedAt = Just processedAt}
           else event
 
@@ -80,6 +94,21 @@ fetchUnprocessedEvents (EventStore storeVar) =
  where
   isUnprocessed Nothing = True
   isUnprocessed (Just _) = False
+
+-- | Read the recorded @processed_at@ stamp for an event, if the event exists.
+-- A double 'Maybe': outer 'Nothing' means no such event in the store, inner
+-- 'Nothing' means the event is recorded but not yet processed. Lets callers
+-- (and the first-write-wins guard test) observe the delivery-state audit
+-- trail without exposing the underlying store.
+lookupProcessedAt :: EventStore -> EventId -> IO (Maybe (Maybe UTCTime))
+lookupProcessedAt (EventStore storeVar) targetId =
+  atomically $ do
+    events <- readTVar storeVar
+    pure (fmap eventProcessedAt (firstMatching events))
+ where
+  firstMatching events = case filter ((== targetId) . eventId) events of
+    (event : _) -> Just event
+    [] -> Nothing
 
 processEvents :: EventStore -> (IO UTCTime) -> EventHandler -> IO Int
 processEvents store clock handler = do

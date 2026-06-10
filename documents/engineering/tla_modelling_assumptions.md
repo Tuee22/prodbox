@@ -3,6 +3,7 @@
 **Status**: Authoritative source
 **Supersedes**: N/A
 **Referenced by**: DEVELOPMENT_PLAN/README.md, documents/engineering/README.md, documents/engineering/distributed_gateway_architecture.md
+**Generated sections**: none
 
 > **Purpose**: Document the formal modelling decisions, correspondence mapping, known divergences, and verification boundaries for the gateway TLA+ specification.
 
@@ -149,7 +150,10 @@ The current Haskell daemon status surface exposes:
 5. `stateLastDnsWriteIp` / `stateLastDnsWriteTime` as the observed last successful write
 6. total `event_count`, a bounded recent `event_hashes` tail, and `heartbeat_age_seconds` on
    `/v1/state` for operator and integration observability
-7. `peer_transport` per-peer connection health
+7. `peer_inbound_health` (last accepted-event age per peer) and
+   `peer_outbound_health` (per-peer dial connect state / last dial error),
+   split so a one-directional partition is observable (Sprint 2.25; the prior
+   conflated `peer_transport` field is retired)
 
 Phase closure and any remaining alignment work on that boundary are
 owned by [DEVELOPMENT_PLAN/README.md](../../DEVELOPMENT_PLAN/README.md).
@@ -161,20 +165,48 @@ skew limit.  `prodbox host info` reports the host's NTP synchronization
 disposition derived from `timedatectl` and fails fast when the system
 clock is unsynchronized.  The gateway daemon refuses inbound peer
 events whose timestamps lie beyond `daemonMaxClockSkewSeconds` (default
-10 seconds, range `[0.1, 600]`) and records the maximum observed
-inter-node skew on `/v1/state` as `max_clock_skew_seconds_observed`.
+10 seconds) and records the maximum observed inter-node skew on
+`/v1/state` as `max_clock_skew_seconds_observed`.
 
-### Divergence 5: Orders Promotion Is Coordinated Across The Mesh
+Validation surface note: today the only enforced constraint on
+`daemonMaxClockSkewSeconds` is `validateNonNegative` — the value must be
+≥ 0; there is no upper bound and no positive-floor check in code yet.
+The intended bounded range `[0.1, 600]` (a positive floor so the skew
+gate is never effectively disabled, and a ceiling that keeps the
+bounded-delay correspondence honest) is scheduled doctrine, not a
+current invariant. Until that smart-constructor bound lands, a
+configured skew of `0` or an arbitrarily large value is accepted at
+decode time; the modelling correspondence assumes the bounded range and
+should not be read as describing enforced behaviour.
+
+### Divergence 5: Orders Promotion Is Restart-Based, Not In-Process
+
+The TLA+ `PromoteOrders(r, newTs)` action lets a running node advance
+its active Orders version in place. The runtime does **not** do this:
+`stateOrdersVersionUtc` is fixed at daemon boot from the Orders document
+present at start and never advances while the process is live. A daemon
+adopts a newer Orders only by restarting against the new document — the
+restart-based promotion path defined in
+[config_doctrine.md § 8 step 4](./config_doctrine.md). The model's
+in-process `PromoteOrders` step therefore corresponds to a
+boot-then-restart cycle in the runtime, not to a mutation of live state.
 
 Orders documents carry the existing monotonic `version_utc` field. Each
-peer push includes the sender's current view of that version.  The
+peer push includes the sender's current view of that version. The
 receiver returns `409 Conflict` when the sender's view is older,
-preventing a stale peer from advancing the receiver's commit log
-behind a newer Orders.  The daemon tracks the highest observed Orders
-version on `/v1/state` and refuses to claim ownership while
-`stateLatestObservedOrdersVersion > stateOrdersVersionUtc`, so a
-daemon rebooting against a stale Orders cannot reclaim DNS write
-authority until its Orders view catches up.
+preventing a stale peer from advancing the receiver's commit log behind
+a newer Orders. The daemon tracks the highest observed Orders version on
+`/v1/state` and refuses to claim ownership while
+`stateLatestObservedOrdersVersion > stateOrdersVersionUtc` — the
+refuse-to-reclaim-while-behind gate. Because the in-process version never
+advances, a daemon that boots against a stale Orders stays refused until
+it is restarted against the current document; it cannot reclaim DNS write
+authority by observing a newer version at runtime.
+
+Realigning the `PromoteOrders` action and any associated machinery to
+the restart-based reality — and removing the dead in-process promotion
+path — is owned by Sprint 2.25 in
+[DEVELOPMENT_PLAN/README.md](../../DEVELOPMENT_PLAN/README.md).
 
 ---
 
@@ -184,7 +216,7 @@ authority until its Orders view catches up.
 
 | Bound | Value | Justification |
 |---|---|---|
-| `Nodes` | `{n1, n2, n3}` | 3 nodes is the minimum for non-trivial partition testing (majority vs minority). Matches the physical deployment target. |
+| `Nodes` | `{n1, n2, n3}` | 3 nodes is the minimum for non-trivial partition testing (majority vs minority). This is the *multi-host* topology the model is written for — it does NOT match the current home deployment target, which is a single-host degenerate single-rank mesh (see the topology/fault-model note below). The 3-node bound exercises the partition-tolerance capability reserved for the AWS / future multi-host substrate. |
 | `MaxTimestamp` | `2` | Bounds the state space for exhaustive TLC exploration. With 2 timestamps, heartbeat timeout of 2 allows one timeout cycle. Sufficient to demonstrate the invariants but does NOT prove properties over unbounded runs. |
 | `HeartbeatTimeout` | `2` | Matches the smallest timeout that allows meaningful timeout expiry within `MaxTimestamp`. In production, `heartbeat_timeout_seconds` is typically 5-15 seconds. |
 | `Rank1`/`Rank2`/`Rank3` | `n1`/`n2`/`n3` | Individual constants for rank ordering (TLC config files cannot express sequence literals). Constructs `RankOrder == <<n1, n2, n3>>`. |
@@ -201,6 +233,33 @@ authority until its Orders view catches up.
 - Behavior with >3 nodes.
 - Real-time constraints (the model uses discrete timestamps, not wall-clock time).
 - Network-level failures (the model only models message delay, not TCP resets, partial writes, etc.).
+
+### Topology and Fault Model
+
+The model's 3-node ranked mesh with crash/recover and message delay is a
+*multi-host* fault model. It does not describe the current home
+deployment. The home substrate runs a **single-host degenerate
+single-rank mesh**: a single gateway daemon on the one host this
+machine is, with no peer to fail over to. Every component on that host
+shares fate — if the host is down, the daemon, etcd, kubelet, and the
+DNS-write authority all go down together. There is no partition to
+tolerate, because there is no second host to be partitioned from.
+
+Partition tolerance is therefore a **capability the model reserves for
+the AWS / future multi-host substrate**, not a property the home
+deployment exercises. The 3-node bound, the ranked-failover election,
+the crash/recover actions, and the partition-heal reconvergence
+(Section 6) all correspond to the multi-host case; on home they are
+exercised only degenerately (a single rank-1 node that always
+self-elects, satisfying `SingletonSelfElection`). Reading this document,
+treat the partition-related invariants as proving the *intended*
+multi-host behaviour the runtime is built toward — not as describing a
+fault class the single-host home topology can actually enter.
+
+This topology framing is kept consistent with the fault-model reframe in
+[distributed_gateway_architecture.md § 7.5](./distributed_gateway_architecture.md),
+owned by Sprint 2.25 in
+[DEVELOPMENT_PLAN/README.md](../../DEVELOPMENT_PLAN/README.md).
 
 ---
 

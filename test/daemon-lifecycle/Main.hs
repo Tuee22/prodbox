@@ -34,22 +34,17 @@ import Network.Socket
   , withSocketsDo
   )
 import Network.Socket.ByteString (recv, sendAll)
-import Prodbox.CLI.Command
-  ( WorkloadOptions (..)
-  )
 import Prodbox.CLI.Spec
   ( findCommandSpec
   )
 import Prodbox.Gateway
   ( resolveGatewayConfigPath
-  , resolveGatewayLogLevel
-  , resolveGatewayPortOverride
   )
 import Prodbox.Result (Result (..))
-import Prodbox.Retry (RetryPolicy (..))
-import Prodbox.Service
-  ( ServiceError (..)
-  , retryServiceAction
+import Prodbox.Retry
+  ( PollOutcome (..)
+  , RetryPolicy (..)
+  , pollUntilReady
   )
 import Prodbox.Subprocess
   ( BackgroundProcess (..)
@@ -60,10 +55,6 @@ import Prodbox.Subprocess
   , stopBackgroundProcess
   , terminateBackgroundProcess
   , waitBackgroundProcess
-  )
-import Prodbox.Workload
-  ( resolveHttpPort
-  , resolveWorkloadLogLevel
   )
 import System.Directory (getCurrentDirectory)
 import System.Environment
@@ -142,6 +133,21 @@ main = mainWithSuite "prodbox-daemon-lifecycle" $ do
   -- BootConfig drain-and-exit (node identity / cert paths) followed by a
   -- kubelet-driven restart.
 
+  describe "gateway /v1/state inbound/outbound health split (Sprint 2.25)" $ do
+    it "splits peer health into inbound and outbound fields" $
+      withGatewayDaemon 5 $ \daemon -> do
+        waitForHttpStatus (daemonRestPort daemon) "/readyz" 200
+        stateResponse <- readHttp (daemonRestPort daemon) "/v1/state"
+        responseStatus stateResponse `shouldBe` 200
+        case eitherDecode (BL8.pack (responseBody stateResponse)) of
+          Left err -> expectationFailure ("/v1/state was not JSON: " ++ err)
+          Right (Object obj) -> do
+            stateHasKey obj "peer_inbound_health" `shouldBe` True
+            stateHasKey obj "peer_outbound_health" `shouldBe` True
+            -- The conflated single-health field is replaced by the split.
+            stateHasKey obj "peer_transport" `shouldBe` False
+          Right _ -> expectationFailure "/v1/state was not a JSON object"
+
   describe "gateway daemon health endpoint goldens" $ do
     goldenTest
       "keeps /healthz response shape stable"
@@ -163,8 +169,17 @@ main = mainWithSuite "prodbox-daemon-lifecycle" $ do
       "test/golden/daemon-health/metrics.golden"
       renderMetricsGolden
 
-  describe "daemon flag precedence" $ do
-    it "uses the gateway CLI flags as the sole source and ignores PRODBOX_* env vars"
+  -- Sprint 2.24: the daemon/workload runtime-override CLI flags
+  -- (@--log-level@, @--port@, @--foreground@) were removed per the
+  -- config-as-data doctrine. The gateway daemon takes only @--config@.
+  -- Sprint 3.15: the workload likewise takes only @--config@ and sources
+  -- its mode / port / log level / Redis / OIDC from the mounted Dhall config
+  -- exclusively — the @PRODBOX_*@ env-var ladder was deleted, so there is no
+  -- workload env-resolution to exercise here. The workload Boot/Live
+  -- classification and the missing-@--config@ hard-failure path are covered
+  -- by the unit suite.
+  describe "daemon config-as-data resolution" $ do
+    it "requires --config for the gateway daemon and ignores PRODBOX_CONFIG_PATH"
       $ withTemporaryEnv
         [ ("PRODBOX_CONFIG_PATH", Just "/tmp/from-env-gateway.json")
         , ("PRODBOX_LOG_LEVEL", Just "debug")
@@ -173,65 +188,8 @@ main = mainWithSuite "prodbox-daemon-lifecycle" $ do
       $ do
         resolveGatewayConfigPath (Just "/tmp/from-cli-gateway.json")
           `shouldReturn` Right "/tmp/from-cli-gateway.json"
-        resolveGatewayLogLevel (Just "warn")
-          `shouldReturn` "warn"
-        resolveGatewayPortOverride (Just 4200)
-          `shouldReturn` Right (Just 4200)
-
-    it "fails fast when --config is absent and ignores PRODBOX_CONFIG_PATH"
-      $ withTemporaryEnv
-        [ ("PRODBOX_CONFIG_PATH", Just "/tmp/from-env-gateway.json")
-        , ("PRODBOX_LOG_LEVEL", Just "debug")
-        , ("PRODBOX_PORT", Just "4100")
-        ]
-      $ do
         resolveGatewayConfigPath Nothing
           `shouldReturn` Left "Missing gateway config path. Pass `--config <path>`."
-        resolveGatewayLogLevel Nothing
-          `shouldReturn` "info"
-        resolveGatewayPortOverride Nothing
-          `shouldReturn` Right Nothing
-
-    it "applies workload port precedence as CLI, then PRODBOX_PORT, then legacy env, then default"
-      $ withTemporaryEnv
-        [ ("PRODBOX_PORT", Just "9100")
-        , ("PRODBOX_HTTP_PORT", Just "9200")
-        ]
-      $ do
-        resolveHttpPort defaultWorkloadOptions
-          `shouldReturn` 9100
-        resolveHttpPort defaultWorkloadOptions {workloadPort = Just 9300}
-          `shouldReturn` 9300
-
-    it "falls back to the workload default port and info log level"
-      $ withTemporaryEnv
-        [ ("PRODBOX_PORT", Nothing)
-        , ("PRODBOX_HTTP_PORT", Nothing)
-        , ("PRODBOX_LOG_LEVEL", Nothing)
-        ]
-      $ do
-        resolveHttpPort defaultWorkloadOptions
-          `shouldReturn` 8080
-        resolveWorkloadLogLevel defaultWorkloadOptions
-          `shouldReturn` "info"
-
-    it "prefers workload CLI log level over PRODBOX_LOG_LEVEL"
-      $ withTemporaryEnv
-        [("PRODBOX_LOG_LEVEL", Just "debug")]
-      $ do
-        resolveWorkloadLogLevel defaultWorkloadOptions
-          `shouldReturn` "debug"
-        resolveWorkloadLogLevel defaultWorkloadOptions {workloadLogLevel = Just "warn"}
-          `shouldReturn` "warn"
-
-defaultWorkloadOptions :: WorkloadOptions
-defaultWorkloadOptions =
-  WorkloadOptions
-    { workloadConfigPath = Nothing
-    , workloadLogLevel = Nothing
-    , workloadPort = Nothing
-    , workloadForeground = True
-    }
 
 withTemporaryEnv :: [(String, Maybe String)] -> IO a -> IO a
 withTemporaryEnv bindings action =
@@ -344,7 +302,7 @@ startGatewayProcess binary workingDir configPath restPort writeConfig = do
     startBackgroundProcess
       Subprocess
         { subprocessPath = binary
-        , subprocessArguments = ["gateway", "start", "--config", configPath, "--port", show restPort]
+        , subprocessArguments = ["gateway", "start", "--config", configPath]
         , subprocessEnvironment = Nothing
         , subprocessWorkingDirectory = Just workingDir
         }
@@ -394,6 +352,10 @@ assertStructuredLogLine rawLine =
       assertStringField obj "severity"
       assertStringField obj "event"
     Right _ -> expectationFailure "daemon stderr log line was not a JSON object"
+
+stateHasKey :: KeyMap.KeyMap Value -> String -> Bool
+stateHasKey obj fieldName =
+  KeyMap.member (Key.fromString fieldName) obj
 
 assertStringField :: KeyMap.KeyMap Value -> String -> IO ()
 assertStringField obj fieldName =
@@ -462,33 +424,33 @@ allocateTcpPort =
             _ -> ioError (userError "expected IPv4 socket address while allocating a test port")
       )
 
+-- | Readiness poll for an HTTP endpoint reaching the expected status. A
+-- not-yet-ready reading is a steady-state observation, not an error, so
+-- this routes through 'pollUntilReady' rather than the error retrier.
 waitForHttpStatus :: Int -> String -> Int -> IO ()
 waitForHttpStatus port path expectedStatus = do
-  result <- retryServiceAction httpStatusRetryPolicy probe
+  result <- pollUntilReady httpStatusRetryPolicy probe
   case result of
     Right () -> pure ()
-    Left err -> expectationFailure (Text.unpack (serviceErrorMessage err))
+    Left detail -> expectationFailure (Text.unpack detail)
  where
   probe = do
     result <- tryReadHttp port path
     pure $
       case result of
         Right response
-          | responseStatus response == expectedStatus -> Right ()
+          | responseStatus response == expectedStatus -> PollReady ()
         _ ->
-          Left
-            ServiceError
-              { serviceErrorMessage =
-                  Text.pack
-                    ( "timed out waiting for "
-                        ++ path
-                        ++ " status "
-                        ++ show expectedStatus
-                        ++ "; last result: "
-                        ++ show result
-                    )
-              , serviceErrorRetryable = True
-              }
+          PollPending
+            ( Text.pack
+                ( "timed out waiting for "
+                    ++ path
+                    ++ " status "
+                    ++ show expectedStatus
+                    ++ "; last result: "
+                    ++ show result
+                )
+            )
 
 httpStatusRetryPolicy :: RetryPolicy
 httpStatusRetryPolicy =

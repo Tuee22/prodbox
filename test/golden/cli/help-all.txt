@@ -167,9 +167,6 @@ prodbox gateway start - Start gateway daemon
 Start the distributed gateway daemon.
 Options:
 - --config <PATH> - Gateway config path
-- --log-level <LEVEL> - Override daemon log level
-- --port <INTEGER> - Override daemon port
-- --foreground - Run in the foreground
 - --dry-run - Render the daemon-start plan without mutating state
 - --plan-file <PATH> - Write the rendered plan to a file
 
@@ -831,11 +828,9 @@ prodbox workload start - Start internal workload runtime
 
 Start the internal workload daemon.
 Options:
-- --log-level <LEVEL> - Override daemon log level
-- --port <INTEGER> - Override daemon port
-- --foreground - Run in the foreground
+- --config <PATH> - Workload Dhall config path (e.g. /etc/workload/config.dhall)
 
 Examples:
-- prodbox workload start --foreground  # Start the workload runtime in the foreground.
+- prodbox workload start  # Start the internal workload runtime.
 
 -- end --

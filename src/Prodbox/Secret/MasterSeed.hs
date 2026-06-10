@@ -49,7 +49,7 @@ module Prodbox.Secret.MasterSeed
   )
 where
 
-import Control.Exception (IOException, try)
+import Control.Exception (IOException, bracket, try)
 import Data.ByteString (ByteString)
 import Data.ByteString qualified as BS
 import Data.List (isInfixOf)
@@ -66,12 +66,15 @@ import Prodbox.Service
   , toServiceError
   )
 import Prodbox.Subprocess (ProcessOutput (..))
+import System.Directory (removeFile)
 import System.Exit (ExitCode (..))
 import System.IO
-  ( IOMode (..)
+  ( Handle
+  , IOMode (..)
   , hClose
   , openBinaryFile
   )
+import System.IO.Temp (openBinaryTempFile)
 
 -- | Where to find the master seed in MinIO and how to authenticate.
 -- The endpoint is resolved as @http:\/\/127.0.0.1:\<localPort\>@ via
@@ -87,7 +90,27 @@ data MinioMasterSeedConfig = MinioMasterSeedConfig
   , minioMasterSeedAccessKey :: !String
   , minioMasterSeedSecretKey :: !String
   }
-  deriving (Eq, Show)
+  deriving (Eq)
+
+-- | Sprint 3.16: deliberately-redacting 'Show'. The MinIO credentials in
+-- this record gate read\/write access to the master seed (the entropy
+-- source for every data-bound secret), so the record must never expose the
+-- access key id or secret access key — not in daemon logs, not in a
+-- structured error rendering, not in a @show@-on-failure trace. Both
+-- credential fields render as the fixed literal @\"<redacted>\"@; the
+-- non-secret coordinates (endpoint, bucket, key) render verbatim so the
+-- value still carries operator-useful routing detail. Mirrors the
+-- deliberately-redacting 'Show' on 'Prodbox.Secret.Derive.MasterSeed'.
+instance Show MinioMasterSeedConfig where
+  show config =
+    "MinioMasterSeedConfig {minioMasterSeedEndpoint = "
+      ++ show (minioMasterSeedEndpoint config)
+      ++ ", minioMasterSeedBucket = "
+      ++ show (minioMasterSeedBucket config)
+      ++ ", minioMasterSeedKey = "
+      ++ show (minioMasterSeedKey config)
+      ++ ", minioMasterSeedAccessKey = \"<redacted>\""
+      ++ ", minioMasterSeedSecretKey = \"<redacted>\"}"
 
 -- | Canonical object key under the @prodbox@ bucket. Pinned so every
 -- daemon instance and every test fixture agrees on the storage
@@ -335,71 +358,110 @@ runHead config = do
 
 readSeedBytes :: MinioMasterSeedConfig -> IO (Either MasterSeedError MasterSeed)
 readSeedBytes config = do
-  -- The AWS CLI's get-object writes the body to a file path argument.
-  -- We round-trip through a fixed temporary file under /tmp; the
-  -- caller should hold this entire flow inside a bracket that wipes
-  -- the file. Today the daemon's startup path is the only caller, so
-  -- the file lives only as long as the startup decoding step.
-  let tmpPath = "/tmp/prodbox-master-seed.bin"
-      environment =
+  -- Sprint 3.16: the AWS CLI's get-object writes the seed body to a file
+  -- path argument (the captured-stdout path corrupts the binary 32-byte
+  -- payload, so streaming through 'ProcessOutput' is not an option). To
+  -- keep the seed off any fixed, predictable host path — the
+  -- @secret_derivation_doctrine.md §2@ "no @\/tmp@ seed" rule — the body
+  -- lands only in a randomized, single-use temp file that
+  -- 'withManagedSeedTempFile' deletes the instant this read completes (on
+  -- success or failure). No durable copy exists outside MinIO's PV.
+  let environment =
         minioAwsEnv
           (minioMasterSeedAccessKey config)
           (minioMasterSeedSecretKey config)
-      args = awsS3ApiGetArgs config tmpPath
-  result <- runMinIOWithEnv (Just environment) args
-  case result of
-    Left err -> pure (Left (MasterSeedSubprocessFailed (renderMinIOError err)))
-    Right output ->
-      case processExitCode output of
-        ExitFailure _ ->
-          pure
-            ( Left
-                ( MasterSeedGetFailed
-                    (trim (processStderr output ++ "\n" ++ processStdout output))
-                )
-            )
-        ExitSuccess -> do
-          readResult <- try (BS.readFile tmpPath)
-          case readResult of
-            Left (ioErr :: IOException) ->
-              pure (Left (MasterSeedFileIoFailed (show ioErr)))
-            Right bytes -> case masterSeed bytes of
-              Left detail -> pure (Left (MasterSeedInvalidSize detail))
-              Right seed -> pure (Right seed)
+  withManagedSeedTempFile $ \tmpPath -> do
+    let args = awsS3ApiGetArgs config tmpPath
+    result <- runMinIOWithEnv (Just environment) args
+    case result of
+      Left err -> pure (Left (MasterSeedSubprocessFailed (renderMinIOError err)))
+      Right output ->
+        case processExitCode output of
+          ExitFailure _ ->
+            pure
+              ( Left
+                  ( MasterSeedGetFailed
+                      (trim (processStderr output ++ "\n" ++ processStdout output))
+                  )
+              )
+          ExitSuccess -> do
+            readResult <- try (BS.readFile tmpPath)
+            case readResult of
+              Left (ioErr :: IOException) ->
+                pure (Left (MasterSeedFileIoFailed (show ioErr)))
+              Right bytes -> case masterSeed bytes of
+                Left detail -> pure (Left (MasterSeedInvalidSize detail))
+                Right seed -> pure (Right seed)
 
 runPut :: MinioMasterSeedConfig -> ByteString -> IO (Either MasterSeedError ())
 runPut config bodyBytes = do
-  -- Write the body to a temp file because aws s3api put-object reads
-  -- the body from a path argument, not from stdin.
-  let tmpPath = "/tmp/prodbox-master-seed-put.bin"
-      environment =
+  -- Sprint 3.16: aws s3api put-object reads the body from a path argument,
+  -- not from stdin, so the fresh seed bytes must transit a file. As with
+  -- 'readSeedBytes', that file is a randomized, single-use temp file
+  -- 'withManagedSeedTempFile' wipes immediately after the PUT — never the
+  -- former fixed @\/tmp\/prodbox-master-seed-put.bin@ path.
+  let environment =
         minioAwsEnv
           (minioMasterSeedAccessKey config)
           (minioMasterSeedSecretKey config)
-      args = awsS3ApiPutArgs config tmpPath
-  writeResult <- try (BS.writeFile tmpPath bodyBytes)
-  case writeResult of
-    Left (ioErr :: IOException) ->
-      pure (Left (MasterSeedFileIoFailed (show ioErr)))
-    Right () -> do
-      result <- runMinIOWithEnv (Just environment) args
-      case result of
-        Left err -> pure (Left (MasterSeedSubprocessFailed (renderMinIOError err)))
-        Right output ->
-          case processExitCode output of
-            ExitSuccess -> pure (Right ())
-            ExitFailure _ ->
-              let stderrTxt = processStderr output
-                  stdoutTxt = processStdout output
-                  combined = stderrTxt ++ "\n" ++ stdoutTxt
-               in -- A concurrent first-start race surfaces here as a
-                  -- 412 PreconditionFailed / "At least one of the
-                  -- pre-conditions you specified did not hold". That
-                  -- is success for our purposes — the bucket now
-                  -- holds a seed, and the post-PUT GET will read it.
-                  if isAwsCliPreconditionFailedMessage combined
-                    then pure (Right ())
-                    else pure (Left (MasterSeedPutFailed (trim combined)))
+  withManagedSeedTempFile $ \tmpPath -> do
+    let args = awsS3ApiPutArgs config tmpPath
+    writeResult <- try (BS.writeFile tmpPath bodyBytes)
+    case writeResult of
+      Left (ioErr :: IOException) ->
+        pure (Left (MasterSeedFileIoFailed (show ioErr)))
+      Right () -> do
+        result <- runMinIOWithEnv (Just environment) args
+        case result of
+          Left err -> pure (Left (MasterSeedSubprocessFailed (renderMinIOError err)))
+          Right output ->
+            case processExitCode output of
+              ExitSuccess -> pure (Right ())
+              ExitFailure _ ->
+                let stderrTxt = processStderr output
+                    stdoutTxt = processStdout output
+                    combined = stderrTxt ++ "\n" ++ stdoutTxt
+                 in -- A concurrent first-start race surfaces here as a
+                    -- 412 PreconditionFailed / "At least one of the
+                    -- pre-conditions you specified did not hold". That
+                    -- is success for our purposes — the bucket now
+                    -- holds a seed, and the post-PUT GET will read it.
+                    if isAwsCliPreconditionFailedMessage combined
+                      then pure (Right ())
+                      else pure (Left (MasterSeedPutFailed (trim combined)))
+
+-- | Sprint 3.16: run @action@ against a randomized, single-use temporary
+-- file path, deleting the file the instant @action@ returns (success or
+-- exception). The AWS CLI needs a filesystem path for the seed @--body@ /
+-- @get-object@ output, but the seed must not persist on any fixed,
+-- predictable path; this bracket guarantees the only filesystem residue
+-- is a short-lived, uniquely-named file that no other code path can
+-- discover. Replaces the former fixed @\/tmp\/prodbox-master-seed*.bin@
+-- coordinates.
+withManagedSeedTempFile
+  :: (FilePath -> IO (Either MasterSeedError a))
+  -> IO (Either MasterSeedError a)
+withManagedSeedTempFile action = do
+  openResult <-
+    try (openBinaryTempFile "/tmp" "prodbox-seed-.bin")
+      :: IO (Either IOException (FilePath, Handle))
+  case openResult of
+    Left ioErr -> pure (Left (MasterSeedFileIoFailed (show ioErr)))
+    Right (tmpPath, handle) ->
+      bracket
+        (pure tmpPath)
+        ( \path -> do
+            _ <- try (hClose handle) :: IO (Either IOException ())
+            _ <- try (removeFile path) :: IO (Either IOException ())
+            pure ()
+        )
+        ( \path -> do
+            -- The CLI re-creates the file at @path@; close our handle
+            -- first so the get-object write is not racing an open
+            -- descriptor, but keep the name reserved for the duration.
+            _ <- try (hClose handle) :: IO (Either IOException ())
+            action path
+        )
 
 -- | True when the AWS CLI error blob describes a 412
 -- PreconditionFailed (the @If-None-Match: *@ guard fired). Exported

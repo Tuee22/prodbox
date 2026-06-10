@@ -5,6 +5,8 @@ module Prodbox.Lib.ChartPlatform
   , ChartDeploymentPlan (..)
   , ChartInstallSnapshot (..)
   , ChartReleasePlan (..)
+  , PatroniAuthObservation (..)
+  , PatroniResetDecision (..)
   , PublicEdgePreserveOutcome (..)
   , buildChartDeletePlan
   , buildChartDeploymentPlan
@@ -16,8 +18,10 @@ module Prodbox.Lib.ChartPlatform
   , gatewayNodeIds
   , keycloakVscodeClientId
   , keycloakRealmName
+  , patroniSeedMismatchDecision
   , renderChartList
   , renderChartStatus
+  , renderPatroniResetDecision
   , renderPublicEdgePreserveOutcome
   , retainReadyPublicEdgeCertificate
   , retainedPublicEdgeTlsSecretManifest
@@ -70,6 +74,8 @@ import Data.Map.Strict (Map)
 import Data.Map.Strict qualified as Map
 import Data.Text qualified as Text
 import Prodbox.ContainerImage qualified as ContainerImage
+import Prodbox.Gateway.Client qualified as GatewayClient
+import Prodbox.Host (defaultGatewayNodePort)
 import Prodbox.Infra.LongLivedPulumiBackend
   ( getLongLivedObject
   , putLongLivedObject
@@ -121,15 +127,20 @@ import Prodbox.Result
   ( Result (..)
   )
 import Prodbox.Retry
-  ( RetryPolicy (..)
+  ( PollOutcome (..)
+  , RetryPolicy (..)
+  , pollUntilReady
+  )
+import Prodbox.Secret.Derive
+  ( PatroniRole (..)
+  , patroniRoleContext
   )
 import Prodbox.Secret.HostBootstrap (preApplyDerivedSecretsForRelease)
+import Prodbox.Secret.Wire (DeriveResponse (..))
 import Prodbox.Service
-  ( HasPg (..)
-  , PgError (..)
-  , ServiceError (..)
-  , retryServiceAction
-  , toServiceError
+  ( AsServiceError (..)
+  , HasPg (..)
+  , serviceErrorMessage
   )
 import Prodbox.Settings
   ( AwsSubstrateSection (..)
@@ -821,24 +832,27 @@ ensurePerconaPatroniStorageBindingsWithExpectedClaims namespace rootChart logica
                             nodeHostname
                         )
 
+-- | Readiness poll for the expected Patroni PVC set. The PVCs not yet
+-- existing is a steady-state "not ready yet" reading, not a failure, so
+-- this routes through 'pollUntilReady' rather than the error retrier.
 waitForPerconaPatroniClaims :: String -> Int -> IO (Either String [PerconaPatroniClaim])
 waitForPerconaPatroniClaims namespace expectedClaimCount =
-  mapPgError <$> retryServiceAction perconaPatroniClaimRetryPolicy discoverExpectedClaims
+  mapPollFailure <$> pollUntilReady perconaPatroniClaimRetryPolicy observeExpectedClaims
  where
   clusterName = patroniClusterName namespace
 
-  discoverExpectedClaims :: IO (Either PgError [PerconaPatroniClaim])
-  discoverExpectedClaims = do
+  observeExpectedClaims :: IO (PollOutcome [PerconaPatroniClaim])
+  observeExpectedClaims = do
     claimsResult <- discoverPerconaPatroniClaims namespace
     pure $
       case claimsResult of
-        Left err -> Left (retryablePgError err)
+        Left err -> PollFailed (Text.pack err)
         Right claims
           | length claims == expectedClaimCount ->
-              Right (sortOn perconaPatroniClaimName claims)
+              PollReady (sortOn perconaPatroniClaimName claims)
           | otherwise ->
-              Left
-                ( retryablePgError
+              PollPending
+                ( Text.pack
                     ( "Percona Patroni cluster "
                         ++ clusterName
                         ++ " did not create the expected PostgreSQL PVC set. "
@@ -1021,9 +1035,12 @@ waitForPatroniClusterReady :: String -> IO (Either String ())
 waitForPatroniClusterReady namespace =
   waitForPatroniClusterReadyWithReplicaCount namespace 3
 
+-- | Readiness poll for Patroni cluster convergence. A "pending" cluster
+-- status is a steady-state observation, not a failure, so this routes
+-- through 'pollUntilReady' rather than the error retrier.
 waitForPatroniClusterReadyWithReplicaCount :: String -> Int -> IO (Either String ())
 waitForPatroniClusterReadyWithReplicaCount namespace expectedReadyReplicas =
-  mapPgError <$> retryServiceAction patroniClusterReadyRetryPolicy checkReadiness
+  mapPollFailure <$> pollUntilReady patroniClusterReadyRetryPolicy observeReadiness
  where
   clusterName = patroniClusterName namespace
   timeoutSeconds =
@@ -1032,17 +1049,17 @@ waitForPatroniClusterReadyWithReplicaCount namespace expectedReadyReplicas =
     )
       `div` 1000000
 
-  checkReadiness :: IO (Either PgError ())
-  checkReadiness = do
+  observeReadiness :: IO (PollOutcome ())
+  observeReadiness = do
     readinessResult <- patroniClusterReadiness namespace expectedReadyReplicas
     pure $
       case readinessResult of
         Left err ->
-          Left (retryablePgError ("Patroni cluster " ++ clusterName ++ " did not converge: " ++ err))
-        Right PatroniClusterReady -> Right ()
+          PollFailed (Text.pack ("Patroni cluster " ++ clusterName ++ " did not converge: " ++ err))
+        Right PatroniClusterReady -> PollReady ()
         Right (PatroniClusterPending detail) ->
-          Left
-            ( retryablePgError
+          PollPending
+            ( Text.pack
                 ( "Patroni cluster "
                     ++ clusterName
                     ++ " did not converge within "
@@ -1053,15 +1070,13 @@ waitForPatroniClusterReadyWithReplicaCount namespace expectedReadyReplicas =
                 )
             )
 
-retryablePgError :: String -> PgError
-retryablePgError message =
-  PgError
-    ServiceError
-      { serviceErrorMessage = Text.pack message
-      , serviceErrorRetryable = True
-      }
+mapPollFailure :: Either Text.Text value -> Either String value
+mapPollFailure result =
+  case result of
+    Left detail -> Left (Text.unpack detail)
+    Right value -> Right value
 
-mapPgError :: Either PgError value -> Either String value
+mapPgError :: (AsServiceError errorType) => Either errorType value -> Either String value
 mapPgError result =
   case result of
     Left err -> Left (Text.unpack (serviceErrorMessage (toServiceError err)))
@@ -1384,6 +1399,99 @@ discoverPatroniAnchorPersistentVolumeName namespace = do
   case maybePrimaryPodName >>= patroniClaimNameFromPodName of
     Nothing -> pure Nothing
     Just claimName -> readOptionalPersistentVolumeNameForClaim namespace claimName
+
+-- | Sprint 3.16 (boundary probe). Observe whether the gateway-derived
+-- Patroni application-role password still authenticates against the
+-- preserved cluster's @pg_authid@ hash. This is the effectful half of the
+-- loud-failure guard; the pure policy is 'patroniSeedMismatchDecision'.
+--
+-- Steps, all best-effort (any failure short of a definite authentication
+-- rejection classifies as 'PatroniAuthUnobservable' so a fresh install or
+-- a transient probe miss never blocks the deploy):
+--
+--   1. Ask the gateway daemon to derive the @patroni:<ns>:keycloak-postgres:app@
+--      password over the loopback NodePort. The host never reads the raw
+--      master seed (Sprint 3.16).
+--   2. Resolve the primary Pod for the cluster. Absent ⇒ no running
+--      Postgres to probe ⇒ unobservable.
+--   3. Run a probe-only @psql@ connection inside the primary Pod using the
+--      derived password. Exit 0 ⇒ matches; an authentication-failure
+--      diagnostic ⇒ rejected; anything else ⇒ unobservable.
+probePatroniAppRoleAuth :: String -> IO PatroniAuthObservation
+probePatroniAppRoleAuth namespace = do
+  deriveResult <-
+    GatewayClient.derive
+      (GatewayClient.hostLoopbackGatewayEndpoint defaultGatewayNodePort)
+      (patroniRoleContext (Text.pack namespace) "keycloak-postgres" PatroniRoleApp)
+  case deriveResult of
+    Left err ->
+      pure
+        ( PatroniAuthUnobservable
+            ("gateway derive of Patroni app-role password failed: " ++ GatewayClient.renderGatewayError err)
+        )
+    Right response -> do
+      maybePrimaryPodName <- readOptionalPatroniPrimaryPodName namespace
+      case maybePrimaryPodName of
+        Nothing ->
+          pure (PatroniAuthUnobservable "no Patroni primary Pod found; nothing to probe")
+        Just primaryPodName ->
+          probePatroniPsqlAuth namespace primaryPodName (Text.unpack (deriveResponseDerived response))
+
+-- | Sprint 3.16 (boundary probe). Run a probe-only @psql@ connection in the
+-- primary Pod authenticating as the Patroni application role with the
+-- supplied password, and classify the result. The password is passed via
+-- @PGPASSWORD@ in the exec environment and is never written to a log or
+-- argv slot (it would otherwise show in process listings).
+probePatroniPsqlAuth :: String -> String -> String -> IO PatroniAuthObservation
+probePatroniPsqlAuth namespace primaryPodName derivedPassword = do
+  result <-
+    runPg
+      [ "exec"
+      , primaryPodName
+      , "--namespace"
+      , namespace
+      , "--container"
+      , "database"
+      , "--"
+      , "env"
+      , "PGPASSWORD=" ++ derivedPassword
+      , "psql"
+      , "--host"
+      , "127.0.0.1"
+      , "--username"
+      , patroniUsername
+      , "--dbname"
+      , patroniDatabaseName
+      , "--no-password"
+      , "--tuples-only"
+      , "--command"
+      , "SELECT 1"
+      ]
+  pure $ case result of
+    Left err ->
+      PatroniAuthUnobservable
+        ("psql probe subprocess failed: " ++ Text.unpack (serviceErrorMessage (toServiceError err)))
+    Right output ->
+      case processExitCode output of
+        ExitSuccess -> PatroniAuthMatches
+        ExitFailure _ ->
+          let diagnostic = processStderr output ++ "\n" ++ processStdout output
+           in if isPostgresAuthenticationFailure diagnostic
+                then PatroniAuthRejected
+                else
+                  PatroniAuthUnobservable
+                    ("psql probe did not yield an authentication verdict: " ++ trimWhitespace diagnostic)
+
+-- | Sprint 3.16 (pure). Recognise a Postgres password-authentication
+-- rejection in a @psql@ diagnostic blob. PostgreSQL emits
+-- @"password authentication failed for user"@ (SQLSTATE @28P01@) for a
+-- wrong password; @"role ... does not exist"@ (@28000@) is a different
+-- failure that must NOT be read as a seed mismatch. Pure so the unit
+-- suite can pin the recognition without a live Postgres.
+isPostgresAuthenticationFailure :: String -> Bool
+isPostgresAuthenticationFailure diagnostic =
+  "password authentication failed" `isInfixOf` diagnostic
+    || "28P01" `isInfixOf` diagnostic
 
 readOptionalPatroniPrimaryPodName :: String -> IO (Maybe String)
 readOptionalPatroniPrimaryPodName namespace = do
@@ -2354,6 +2462,88 @@ renderDeleteReport plan =
     ]
       ++ renderStorageReport (chartReleasePlanStorageBindings release)
 
+-- | Sprint 3.16 (pure decision). The observable result of probing a
+-- preserved Patroni datadir for whether the gateway-derived role password
+-- still authenticates against the @pg_authid@ hash the datadir carries.
+-- Kept deliberately separate from the boundary probe so the loud-failure
+-- policy is unit-testable without a live Postgres.
+data PatroniAuthObservation
+  = -- | The probe connected with the gateway-derived password — the
+    -- preserved @pg_authid@ hash matches the current seed's derivation.
+    PatroniAuthMatches
+  | -- | The probe reached Postgres but the derived password was rejected:
+    -- the preserved @.data/@ was written under a different master seed.
+    -- This is the load-bearing failure case (@secret_derivation_doctrine.md §8@).
+    PatroniAuthRejected
+  | -- | The probe could not observe @pg_authid@ at all (no primary Pod
+    -- yet, psql unavailable, connection refused). The 'String' carries the
+    -- operator-facing reason. "Cannot observe" is never treated as
+    -- "mismatch": a first install (no running Postgres) and a transient
+    -- probe failure must not block the deploy with a destructive-sounding
+    -- error.
+    PatroniAuthUnobservable !String
+  deriving (Eq, Show)
+
+-- | Sprint 3.16 (pure decision). Whether the Patroni storage step may
+-- proceed, or must fail loudly before any chart deploy mutates state.
+data PatroniResetDecision
+  = -- | Proceed: either the derived password authenticates, or the datadir
+    -- could not be observed (so there is no proven mismatch to be loud
+    -- about).
+    PatroniResetProceed
+  | -- | A proven seed\/@pg_authid@ mismatch. Carries the structured,
+    -- operator-facing message naming the namespace\/role pair and the
+    -- resolution options. Never a silent destructive reset.
+    PatroniResetLoudFailure !String
+  deriving (Eq, Show)
+
+-- | Sprint 3.16 (pure decision). Map an authentication observation for a
+-- @(namespace, role)@ pair to the reset decision. The only path to a loud
+-- failure is a definite 'PatroniAuthRejected'; a match or an
+-- un-observable probe both proceed, so a fresh install or a transient
+-- probe miss never surfaces as the destructive-mismatch error. This is the
+-- doctrine-prescribed replacement for the former silent @pure (Right ())@
+-- no-op (@secret_derivation_doctrine.md §8@).
+patroniSeedMismatchDecision
+  :: String
+  -- ^ Kubernetes namespace of the preserved Patroni cluster.
+  -> String
+  -- ^ Patroni role name whose derived password was probed.
+  -> PatroniAuthObservation
+  -> PatroniResetDecision
+patroniSeedMismatchDecision namespace role observation =
+  case observation of
+    PatroniAuthMatches -> PatroniResetProceed
+    PatroniAuthUnobservable _ -> PatroniResetProceed
+    PatroniAuthRejected ->
+      PatroniResetLoudFailure
+        ( "Patroni preserved-data mismatch: the master-seed-derived password for role `"
+            ++ role
+            ++ "` in namespace `"
+            ++ namespace
+            ++ "` does not authenticate against the preserved `pg_authid` hash. "
+            ++ "The preserved `.data/"
+            ++ namespace
+            ++ "/keycloak-postgres/...` datadir was written under a different "
+            ++ "master seed (the seed in MinIO was regenerated while the datadir "
+            ++ "was retained). prodbox refuses to silently reset preserved Postgres "
+            ++ "storage. Resolve by either (a) restoring the `.data/` snapshot whose "
+            ++ "master seed matches this datadir, or (b) deliberately wiping the "
+            ++ "affected `.data/"
+            ++ namespace
+            ++ "/keycloak-postgres/` subtree so a fresh cluster is provisioned "
+            ++ "against the current seed."
+        )
+
+-- | Sprint 3.16. Render a 'PatroniResetDecision' to the
+-- @Either String ()@ shape the storage step consumes: a proceed decision
+-- is @Right ()@; a loud failure is @Left@ with the structured message.
+renderPatroniResetDecision :: PatroniResetDecision -> Either String ()
+renderPatroniResetDecision decision =
+  case decision of
+    PatroniResetProceed -> Right ()
+    PatroniResetLoudFailure message -> Left message
+
 ensureChartStorage :: ChartDeploymentPlan -> IO (Either String ())
 ensureChartStorage plan = do
   let bindings = concatMap chartReleasePlanStorageBindings (chartDeploymentPlanReleases plan)
@@ -2421,14 +2611,25 @@ ensureChartStorage plan = do
   -- marker any more, so the legacy "rm -rf host paths if marker present"
   -- escape hatch can never fire. The previous silent-reset arm of
   -- 'shouldResetPatroniStorage' (chunk 14 in the spec) is therefore dead too.
-  -- The replacement loud-failure check — comparing the daemon-derived
-  -- @KEYCLOAK_ADMIN_PASSWORD@/Patroni @password@ against what @pg_authid@
-  -- reports via a probe Postgres connection — is left for the live four-block
-  -- exercise to drive, since the failure paths only make sense in the context
-  -- of a real preserved-data run. Until that lands, the reset arm is simply
-  -- a no-op.
+  --
+  -- Sprint 3.16 lands the doctrine-prescribed replacement
+  -- (@secret_derivation_doctrine.md §8@): instead of silently resetting
+  -- preserved storage, probe whether the gateway-derived Patroni app-role
+  -- password still authenticates against the preserved `pg_authid` hash and
+  -- FAIL LOUDLY on a proven mismatch. The pure loud-failure policy lives in
+  -- 'patroniSeedMismatchDecision' (unit-tested); this arm is only the
+  -- boundary probe that derives the expected password over the gateway RPC
+  -- and observes `pg_authid` through a probe-only Postgres connection. The
+  -- probe is best-effort: a fresh install (no primary Pod) or any
+  -- transient probe failure classifies as "cannot observe" and proceeds —
+  -- only a definite authentication rejection triggers the loud failure.
   resetPatroniStorageIfRequested :: IO (Either String ())
-  resetPatroniStorageIfRequested = pure (Right ())
+  resetPatroniStorageIfRequested = do
+    observation <- probePatroniAppRoleAuth (chartDeploymentPlanNamespace plan)
+    pure
+      ( renderPatroniResetDecision
+          (patroniSeedMismatchDecision (chartDeploymentPlanNamespace plan) patroniUsername observation)
+      )
 
   -- The Patroni anchor decision now derives from live k8s state alone
   -- (Sprint 3.13 chunk 13). 'discoverPatroniAnchorPersistentVolumeName'

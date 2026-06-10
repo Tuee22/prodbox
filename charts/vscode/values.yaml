@@ -14,7 +14,7 @@ gateway:
   tlsSecretName: public-edge-tls
   # Deploy-time default; set by Prodbox.Lib.ChartPlatform.valuesForVscode to
   # the single ZeroSSL ClusterIssuer (Prodbox.PublicEdge.publicEdgeClusterIssuerName).
-  clusterIssuer: zerossl-http01
+  clusterIssuer: zerossl-dns01
   host: test.resolvefintech.com
   pathPrefix: /vscode
 

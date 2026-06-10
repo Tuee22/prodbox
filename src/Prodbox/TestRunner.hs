@@ -59,25 +59,15 @@ import Prodbox.EffectInterpreter
   , runEffectDAG
   )
 import Prodbox.Error (fatalError)
-import Prodbox.Infra.AwsEksSubzoneStack
-  ( AwsEksSubzoneStackSnapshot (..)
-  , parseAwsEksSubzoneStackFromOutputs
-  )
 import Prodbox.Infra.AwsEksTestStack (withEksKubeconfig)
 import Prodbox.Infra.AwsSesStack qualified as AwsSesStack
-import Prodbox.Infra.StackOutputs (StackName (..))
 import Prodbox.Lib.ChartPlatform
   ( renderPublicEdgePreserveOutcome
   , retainReadyPublicEdgeCertificate
   )
-import Prodbox.Lifecycle.LiveResidue
-  ( awsEksSubzoneStackName
-  , fetchPerRunStackOutputs
-  )
 import Prodbox.Prerequisite
   ( prerequisiteRegistry
   )
-import Prodbox.PublicEdge (awsSubstrateHostedZoneIdEnvVar)
 import Prodbox.Result
   ( Result (..)
   )
@@ -534,18 +524,18 @@ runAwsSubstrateBootstrap repoRoot environment suitePlan =
       subzoneExit <- runNativeCliCommandForExitCode repoRoot environment subzoneCommand
       case subzoneExit of
         failure@(ExitFailure _) -> pure failure
-        ExitSuccess -> do
-          hostedZoneResult <- loadAwsSubstrateHostedZoneId repoRoot
-          case hostedZoneResult of
-            Left err -> failWith err
-            Right hostedZoneId -> do
-              setEnv awsSubstrateHostedZoneIdEnvVar hostedZoneId
-              let environmentWithHostedZone =
-                    upsertEnv awsSubstrateHostedZoneIdEnvVar hostedZoneId environment
-              runAwsSubstrateBootstrapAfterSubzone
-                repoRoot
-                environmentWithHostedZone
-                remainingCommands
+        ExitSuccess ->
+          -- Sprint 7.13: the subzone Pulumi stack is now provisioned, so
+          -- every child `prodbox` process resolves
+          -- `aws_substrate.hosted_zone_id` from settings or the live
+          -- aws-eks-subzone Pulumi output via
+          -- `Prodbox.PublicEdge.resolveSubstrateHostedZoneId`. No
+          -- `PRODBOX_AWS_SUBSTRATE_HOSTED_ZONE_ID` env var is set or read
+          -- (config_doctrine.md § 10, no `PRODBOX_*` config reads).
+          runAwsSubstrateBootstrapAfterSubzone
+            repoRoot
+            environment
+            remainingCommands
 
 runAwsSubstrateBootstrapAfterSubzone
   :: FilePath -> [(String, String)] -> [[String]] -> IO ExitCode
@@ -616,25 +606,6 @@ syncKeycloakSmtpForCurrentKubeContext repoRoot message = do
   case syncResult of
     Left err -> failWith err
     Right () -> pure ExitSuccess
-
-loadAwsSubstrateHostedZoneId :: FilePath -> IO (Either String String)
-loadAwsSubstrateHostedZoneId repoRoot = do
-  outputsResult <-
-    fetchPerRunStackOutputs repoRoot (StackName (Text.pack awsEksSubzoneStackName))
-  pure $ case outputsResult of
-    Left err ->
-      Left
-        ( "AWS-substrate bootstrap could not read aws-eks-subzone Pulumi outputs "
-            ++ "after provisioning: "
-            ++ err
-        )
-    Right outputs ->
-      case parseAwsEksSubzoneStackFromOutputs outputs of
-        Left err -> Left ("AWS-substrate bootstrap could not parse aws-eks-subzone outputs: " ++ err)
-        Right snapshot -> Right (subzoneSnapshotSubzoneId snapshot)
-
-upsertEnv :: String -> String -> [(String, String)] -> [(String, String)]
-upsertEnv key value environment = (key, value) : filter ((/= key) . fst) environment
 
 awsSubstrateBootstrapCommandArgs :: NativeSuitePlan -> [[String]]
 awsSubstrateBootstrapCommandArgs suitePlan =

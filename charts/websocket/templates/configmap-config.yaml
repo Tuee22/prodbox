@@ -5,6 +5,14 @@ as a Dhall expression (`config.dhall`) per
 this file in-process via the native Haskell `dhall` library through
 `Prodbox.Workload.Settings.loadWorkloadConfig`.
 
+Sprint 3.15: this mounted Dhall config is the SOLE config source for the
+workload binary. The `PRODBOX_*` env-var fallback ladder was deleted from
+`Prodbox.Workload`, so no rollback-safety env vars are set on the Pod;
+`--config` is the only source. The ConfigMap is mounted as a directory (no
+`subPath`) so a `log_level` / Redis / OIDC edit reloads in-process via
+fsnotify, while a `mode` / `port` edit drains-and-exits for a kubelet restart
+(Boot/Live split, config_doctrine §8).
+
 Sprint 3.13 chunks 11 + 28: the OIDC `client_secret` is read via
 cross-namespace Helm `lookup` of the gateway-daemon-managed
 `keycloak-oidc-clients` Secret. The keycloak release that registers

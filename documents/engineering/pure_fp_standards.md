@@ -3,6 +3,7 @@
 **Status**: Authoritative source
 **Supersedes**: N/A
 **Referenced by**: README.md, AGENTS.md, CLAUDE.md, documents/engineering/README.md, documents/engineering/code_quality.md, documents/engineering/dependency_management.md, documents/engineering/effect_interpreter.md, documents/engineering/lifecycle_reconciliation_doctrine.md, documents/engineering/refactoring_patterns.md, documents/engineering/unit_testing_policy.md
+**Generated sections**: none
 
 > **Purpose**: Define the Haskell coding standards for `prodbox` so pure planning logic,
 > structured domain modeling, and explicit impurity boundaries stay consistent across the
@@ -239,6 +240,29 @@ Pure-functional structure is not stylistic only; it determines how code is teste
   validations.
 - Mocks belong at subprocess or interpreter boundaries, not inside pure planners.
 
+A concrete payoff of the boundary model (§6): keep subprocess-output *classification* pure so
+it is unit-tested against captured `ProcessOutput` fixtures with no process spawned and no
+mock. The boundary runs the subprocess and hands back a typed `ProcessOutput`; a pure
+classifier maps that value onto a typed result. The classifier is the unit under test:
+
+```haskell
+-- pure: no IO, no mock — the unit under test
+classifyServiceError :: ProcessOutput -> Maybe ServiceError
+
+-- in test/unit/Main.hs: feed a captured ProcessOutput, assert the typed verdict
+testRedisThrottleIsRetryable :: TestTree
+testRedisThrottleIsRetryable =
+    testCase "OOM stderr classifies as a retryable ServiceError" $
+        classifyServiceError oomFixture @?= Just RedisOutOfMemory
+```
+
+The effectful boundary (`runRedis :: [String] -> m (Either ServiceError ProcessOutput)`) is
+exercised separately at the interpreter boundary; the classification logic that decides
+*whether a failure is retryable* never needs a process to test. See the typed-`ServiceError`
+classification contract in
+[haskell_code_guide.md](./haskell_code_guide.md) (the target shape Sprint 1.30 moves the code
+toward).
+
 ## 8. Review Checklist
 
 Before closing a change, confirm:
@@ -262,11 +286,30 @@ This SSoT co-owns repository coding-style doctrine.
 
 ## GADT-Indexed State Machines
 
-State machines with more than two states must use GADTs with phantom type parameters to
-encode valid transitions at the type level. Invalid transitions become compile errors, not
-runtime errors.
+State machines whose transitions are **authoritative in-process** — where this process is the
+sole writer and a transition is a fact only once it has happened here — and that have more than
+two states must use GADTs with phantom type parameters to encode valid transitions at the type
+level. Invalid transitions become compile errors, not runtime errors.
 
-The prescribed shape:
+The GADT mandate is scoped to in-process authority. **Externally-authoritative or
+log-reconciled state** does not use a GADT-indexed command type: when the authoritative state
+lives outside this process — derived by folding an append-only commit log, reconstructed from a
+remote system's observed state, or otherwise reconciled rather than commanded — model it as a
+flat **exhaustive ADT** computed by a pure projection. The gateway ownership model is the
+canonical example: ownership is a `Disposition` projection folded over the signed append-only
+commit log, not a command sequence this process authors, so it is an exhaustive ADT rather than
+a GADT (see
+[distributed_gateway_architecture.md](./distributed_gateway_architecture.md)). There is no valid
+in-process "transition" to encode at the type level, because no transition originates here; the
+log is the source of truth and the projection is recomputed, not stepped.
+
+This carve-out does **not** relax the rest of the discipline. Externally-authoritative state
+must still be a typed ADT, matched exhaustively (§2.1, §2.2), and must never be a raw `String`
+or `Text` status field with string comparisons. The difference is only whether transitions are
+encoded as GADT indices (in-process authority) or recomputed as a pure fold over the
+authoritative log (external authority).
+
+The prescribed shape for in-process authoritative state machines:
 
 ```haskell
 {-# LANGUAGE DataKinds #-}
@@ -336,9 +379,21 @@ operations on dynamically loaded values without unsafe casts.
 **Forbidden patterns:**
 
 - Runtime status enums with manual validation in command handlers.
-- Status fields as `Text` or `String` with string comparisons.
-- State machines with more than two states that do not use GADT indexing.
+- Status fields as `Text` or `String` with string comparisons — for both GADT-indexed and
+  log-reconciled state.
+- **In-process authoritative** state machines with more than two states that do not use GADT
+  indexing. (Externally-authoritative / log-reconciled state is exempt from the GADT
+  requirement but must still be an exhaustive ADT computed by a pure projection — see above.)
 - Existential wrappers without singleton witnesses (losing type information).
+- Modeling log-reconciled or externally-authoritative state as a GADT-indexed command type:
+  there is no in-process transition to encode, so the GADT machinery is dead weight that
+  implies an authority the process does not have. Use the flat exhaustive projection ADT.
+
+> **Doctrine realignment**: This section's in-process/external authority split is the
+> doctrine target for Sprint 1.32 (retire the un-adopted `src/Prodbox/StateMachine.hs` and its
+> lone typecheck test, realign the GADT doctrine to the reconciled-projection reality). The
+> gateway `Disposition` projection (an exhaustive ADT folded over the commit log) is the
+> reference implementation of the externally-authoritative case.
 
 ## Plan / Apply
 

@@ -92,12 +92,14 @@ Every document must include:
 
 `**Generated sections**:` is mandatory in every governed document. The value is either
 `none` or a comma-separated list of the `<key>` portion of every marker pair the document
-contains (see Section 11). The lint pass owned by `prodbox lint docs` enforces that the
-metadata and the markers physically present in the file agree: declaring `none` when
-markers are present is a lint failure, and declaring a key whose markers are missing is a
-lint failure. The reference list of generated sections per file is the
-`GeneratedSectionRule` registry described in
-[code_quality.md#generated-artifacts](../documents/engineering/code_quality.md#generated-artifacts).
+contains (see Section 11). The header↔markers↔registry reconciler that enforces this — a
+lint pass under `prodbox lint docs` that fails when the declared metadata and the markers
+physically present in the file disagree (declaring `none` while markers are present, or
+declaring a key whose markers are missing) — is the **intended** enforcement landing in
+[Sprint 0.9](../DEVELOPMENT_PLAN/README.md); it does not exist in the current worktree, so
+until it lands the metadata is maintained by review against this rule. The reference list of
+generated sections per file is the `GeneratedSectionRule` registry described in
+[code_quality.md#generated-artifacts](./engineering/code_quality.md#generated-artifacts).
 
 ---
 
@@ -168,10 +170,19 @@ Code examples must not use:
 
 ### Committed Dhall Imports
 
-When documentation or inline guidance refers to the committed repo-root Dhall files, keep the
-`sha256:` freeze annotations on their local imports. `prodbox check-code` enforces the frozen
-form for `prodbox-config.dhall` and any future committed `types.dhall` / `defaults.dhall`
-surfaces, so docs must not direct contributors to delete or hand-edit those hashes.
+`sha256:` freezes apply to any future **remote** or otherwise-untrusted committed import, where
+the hash is an integrity pin against a source the editor does not co-own. The sole current local
+import is `prodbox-config.dhall` → `./prodbox-config-types.dhall`, a co-edited sibling file in
+the same repository; it is intentionally **not** frozen. Cryptographically freezing a co-edited
+sibling adds re-freeze friction on every type-schema edit with no integrity benefit — the
+schema and the config travel together in the same commit, so a stale hash would only ever block
+legitimate edits.
+
+The `prodbox check-code` surface **does not** enforce a sha256 freeze (the implement-or-strike
+decision scheduled for [Sprint 0.9](../DEVELOPMENT_PLAN/README.md) was **struck**: there is no
+phantom check to re-derive). Should a remote or untrusted committed import be introduced in the
+future, freeze its hash and revisit enforcement at that point. Regardless, docs must not direct
+contributors to delete or hand-edit any hash that a future remote import does carry.
 
 ---
 
@@ -242,9 +253,9 @@ This SSoT co-owns documentation-topology doctrine intention.
 ## 11. Generated Sections
 
 This section documents the generated-sections discipline mandated by
-[code_quality.md#generated-artifacts](../documents/engineering/code_quality.md#generated-artifacts) and
+[code_quality.md#generated-artifacts](./engineering/code_quality.md#generated-artifacts) and
 [Project-level documentation
-standards](../documents/engineering/README.md). The doctrine is the authoritative source for the
+standards](./engineering/README.md). The doctrine is the authoritative source for the
 underlying registry shape, marker conventions, paired check/write commands, and drift
 enforcement; this section restates the contract for documentation contributors who do not
 need to read the full doctrine.
@@ -276,11 +287,13 @@ Example: a generated command-registry table inside this file might look like:
 
 The single source of truth is the in-code `GeneratedSectionRule` registry consumed by
 `prodbox docs check` and `prodbox docs generate`. Every file that contains markers must
-declare its keys in its `**Generated sections**:` metadata field (Section 3); the lint
-pass enforces agreement.
+declare its keys in its `**Generated sections**:` metadata field (Section 3); the
+header↔markers↔registry reconciler that enforces that agreement is the **intended**
+`prodbox lint docs` check scheduled for [Sprint 0.9](../DEVELOPMENT_PLAN/README.md) (see
+Section 3), not a check the current worktree already runs.
 
 Generation targets enumerated by
-[code_quality.md#generated-artifacts](../documents/engineering/code_quality.md#generated-artifacts)include CLI
+[code_quality.md#generated-artifacts](./engineering/code_quality.md#generated-artifacts) include CLI
 help, command reference docs, route inventories, Helm chart sections, JSON schemas, and
 cross-language types. The currently scheduled registry entries are:
 
@@ -342,6 +355,6 @@ environment-derived paths.
 
 - [Engineering docs index](./engineering/README.md)
 - [Development Plan](../DEVELOPMENT_PLAN/README.md)
-- [the engineering doctrine docs](../documents/engineering/README.md) - canonical CLI doctrine
+- [the engineering doctrine docs](./engineering/README.md) - canonical CLI doctrine
 - [CLAUDE.md](../CLAUDE.md) - AI assistant guidelines
 - [AGENTS.md](../AGENTS.md) - Agent guidelines

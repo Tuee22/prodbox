@@ -13,6 +13,7 @@ module Prodbox.Gateway.Client
   , ensureNamespace
   , deriveUrl
   , ensureNamespaceUrl
+  , hostLoopbackGatewayEndpoint
   )
 where
 
@@ -21,7 +22,7 @@ import Data.ByteString.Char8 qualified as BS8
 import Data.Text (Text)
 import Data.Text.Encoding qualified as TE
 import Network.HTTP.Types.URI (urlEncode)
-import Prodbox.Gateway.Types (PeerEndpoint, peerRestUrl)
+import Prodbox.Gateway.Types (PeerEndpoint (..), peerRestUrl)
 import Prodbox.Http.Client
   ( HttpConfig (..)
   , HttpError
@@ -46,6 +47,26 @@ renderGatewayError :: GatewayError -> String
 renderGatewayError err = case err of
   GatewayTransport httpErr -> renderHttpError httpErr
   GatewayPayload msg -> "gateway response payload error: " ++ msg
+
+-- | Sprint 3.16: the host-CLI's view of the in-cluster gateway daemon —
+-- the loopback-restricted NodePort the @secret_derivation_doctrine.md §5@
+-- host↔cluster boundary pins to @127.0.0.1@. Host-side derived-secret
+-- callers (@charts deploy@ pre-apply, @rke2 reconcile@ public-edge client
+-- secret) dial this endpoint to request *derived* values; they never read
+-- the raw master seed. The @gatewayNodePort@ argument is the daemon
+-- NodePort the host iptables rule restricts to loopback
+-- (@Prodbox.Host.defaultGatewayNodePort@). The socket fields are unused by
+-- the @/v1/secret/*@ REST calls but populated for type completeness.
+hostLoopbackGatewayEndpoint :: Int -> PeerEndpoint
+hostLoopbackGatewayEndpoint gatewayNodePort =
+  PeerEndpoint
+    { peerNodeId = "host-cli"
+    , peerStableDnsName = "127.0.0.1"
+    , peerRestHost = "127.0.0.1"
+    , peerRestPort = gatewayNodePort
+    , peerSocketHost = "127.0.0.1"
+    , peerSocketPort = gatewayNodePort
+    }
 
 -- | Canonical URL for the gateway daemon's @/v1/state@ observability
 -- endpoint.

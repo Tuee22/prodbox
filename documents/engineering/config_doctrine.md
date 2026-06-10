@@ -45,10 +45,15 @@ again — SIGHUP on the daemon, full process restart on the host, no live reload
 workloads.
 
 That mix is no longer the supported architecture. Every `prodbox` binary takes its
-configuration from exactly one Dhall file passed by `--config <path>`. Cryptographic material
-and credentials are still mounted from k8s Secrets, but they are referenced **from the Dhall
-file** via Dhall's native import system — never from environment variables, never from a
-parallel JSON document, never from a CLI override that fronts an env-var fallback.
+configuration from exactly one Dhall file. The in-cluster binaries — the gateway daemon and
+the workload Pods — name that file with a `--config <path>` flag (the chart passes the
+mounted ConfigMap path). The **host CLI has no `--config` flag**: it resolves the fixed
+repository-root `prodbox-config.dhall` by locating the repo root (`Prodbox.Repo.findRepoRoot`
++ `canonicalConfigPaths`). Either way the rule is one Dhall file per process and nothing else.
+Cryptographic material and credentials are still mounted from k8s Secrets, but they are
+referenced **from the Dhall file** via Dhall's native import system — never from environment
+variables, never from a parallel JSON document, never from a CLI override that fronts an
+env-var fallback.
 
 The reload model is symmetric: the running binary watches the file at its `--config` path,
 classifies each on-disk change as a BootConfig change (drain + exit so kubelet restarts the
@@ -57,20 +62,21 @@ longer the canonical reload trigger.
 
 ## 2. Single Dhall surface per binary instance
 
-Each `prodbox` binary instance accepts exactly one CLI flag for configuration:
+Each `prodbox` binary instance sources configuration from exactly one Dhall file. The
+in-cluster binaries name that file with a CLI flag:
 
 ```
-prodbox <subcommand> --config <path-to-dhall-file>
+prodbox <gateway|workload subcommand> --config <path-to-dhall-file>
 ```
 
-Examples on the host:
+The host CLI takes no `--config` flag at all. It resolves the canonical repository-root
+`prodbox-config.dhall` automatically by locating the repo root, so the operator never names
+the path:
 
 ```bash
-# Implicit: prodbox resolves the canonical repository-root path.
+# The host CLI resolves the repo-root prodbox-config.dhall via findRepoRoot;
+# there is no --config flag to pass.
 prodbox check-code
-
-# Explicit: same shape, named path.
-prodbox --config ./prodbox-config.dhall check-code
 ```
 
 Example in the cluster:
@@ -101,9 +107,9 @@ import syntax (Section 5).
 | In-cluster gateway daemon | `/etc/gateway/config.dhall` | chart-side ConfigMap mount; see [helm_chart_platform_doctrine.md](./helm_chart_platform_doctrine.md) |
 | In-cluster workload Pods (`api`, `websocket`) | `/etc/workload/config.dhall` | chart-side ConfigMap mount on the owning workload chart |
 
-For the host CLI, omitting `--config` resolves the canonical repo-root path. Inside the
-cluster the deployments always pass `--config <path>` explicitly so the resolution rule is
-trivial.
+The host CLI has no `--config` flag; it always resolves the canonical repo-root path via
+`findRepoRoot` + `canonicalConfigPaths`. Inside the cluster the deployments always pass
+`--config <path>` explicitly so the resolution rule is trivial.
 
 ## 4. Decoding
 
@@ -111,9 +117,24 @@ Every binary decodes its Dhall in-process through the native Haskell `dhall` lib
 
 ```haskell
 -- src/Prodbox/Settings.hs
-loadConfigFile :: FilePath -> IO ConfigFile
-loadConfigFile path = Dhall.inputFile auto path
+loadConfigFile :: FilePath -> IO (Either String ConfigFile)
+loadConfigFile repoRoot = do
+  let configPath = configDhallPath (canonicalConfigPaths repoRoot)
+  configExists <- doesFileExist configPath
+  if not configExists
+    then pure (Left (missingConfigMessage configPath))
+    else do
+      result <- try (inputFile auto configPath)
+      pure $ case result of
+        Left (e :: SomeException) -> Left ("Failed to decode Dhall config …: " ++ displayException e)
+        Right config -> Right config
 ```
+
+The host loader takes the **repository root**, derives the canonical
+`prodbox-config.dhall` path via `canonicalConfigPaths`, guards existence with
+`doesFileExist`, and wraps the decode in `try` so a missing or malformed config surfaces as
+a `Left String` rather than an exception. The in-cluster binaries pass their mounted
+`--config` path straight to `Dhall.inputFile auto`.
 
 There is no intermediate JSON projection on the supported path. `dhall-to-json` is not part
 of the supported toolchain. The on-disk artifact is the typed, operator-authored Dhall
@@ -206,7 +227,7 @@ in `prodbox-config.dhall`:
 | `acme.eab_hmac_key` | `Optional Text` | EAB HMAC key (required for ZeroSSL) |
 
 `acme.server` is a non-empty ACME directory `Text` that defaults to the ZeroSSL directory
-`https://acme.zerossl.com/v2/DV90` and feeds the single `ClusterIssuer` (`zerossl-http01`).
+`https://acme.zerossl.com/v2/DV90` and feeds the single `ClusterIssuer` (`zerossl-dns01`).
 ZeroSSL is the only supported ACME provider, so `acme.eab_key_id` / `acme.eab_hmac_key` are
 required and `validateAcmeBinding` rejects a ZeroSSL `acme.server` with either EAB field
 missing. The single-issuer model — one `ClusterIssuer` with a DNS-01 Route 53 solver plus the
@@ -216,17 +237,25 @@ owned by [acme_provider_guide.md](./acme_provider_guide.md) and
 
 ## 7. File-watch reload trigger
 
-Every long-running `prodbox` binary instance (the gateway daemon, the workload Pods) watches
-the file at its `--config` path for changes via filesystem-watch primitives. Concretely the
-supported watcher is `fsnotify` on Linux (with `hinotify` as an acceptable equivalent inside
-the canonical Docker image); the chosen library is named by the implementing sprint. The
-watch loop subscribes to events on the parent directory so the `..data` symlink swap
-performed by the kubelet on ConfigMap or Secret updates triggers a reload.
+Every long-running `prodbox` binary instance watches the file at its `--config` path for
+changes via filesystem-watch primitives (the gateway daemon does so today; the workload Pods
+are the scheduled target — see below). Concretely the supported watcher is `fsnotify` on
+Linux (with `hinotify` as an acceptable equivalent inside the canonical Docker image); the
+chosen library is named by the implementing sprint. The watch loop subscribes to events on
+the parent directory so the `..data` symlink swap performed by the kubelet on ConfigMap or
+Secret updates triggers a reload.
 
 SIGHUP is no longer a supported reload trigger. The signal handler that previously fed the
 reload queue is removed; the watcher feeds the same `TBQueue ()` reload-worker that the
 existing implementation drains. The downstream STM broadcast channel that publishes
 LiveConfig changes to subscribers is unchanged.
+
+The gateway daemon already implements this fsnotify-driven Boot/Live reload loop. The
+**workload Pods are a target, not yet a reality**: today `Prodbox.Workload` decodes its Dhall
+once at startup and has no file watcher. Giving the workload the same daemon-style
+fsnotify watcher and Boot/Live reload split is scheduled work (Sprint 3.15); until that lands,
+"the workload Pods watch their config file" describes the intended structure rather than the
+current code.
 
 This explicitly overrides the prior prohibition on `fsnotify`, `inotify`, and `mtime` as
 reload triggers. The `forbidFsnotify` / `forbidInotify` / `forbid-mtime-polling` lint rules
@@ -262,31 +291,43 @@ job, not the binary's.
 
 ## 9. Host CLI
 
-The host CLI applies the same contract with one simplification: the host binary is not
-long-running, so file watching is unnecessary. `prodbox` reads `./prodbox-config.dhall`
-once at the start of each invocation via `Dhall.inputFile auto`, executes the requested
-subcommand, and exits. There is no env-var precedence ladder on the host either — the file
-is the sole source.
+The host CLI applies the same contract with two simplifications: it has no `--config` flag
+(it resolves the fixed repo-root `prodbox-config.dhall`, §1–§3), and the host binary is not
+long-running, so file watching is unnecessary. `prodbox` resolves the repo root, reads the
+canonical `prodbox-config.dhall` once at the start of each invocation through the
+existence-guarded, `try`-wrapped `loadConfigFile` (§4), executes the requested subcommand,
+and exits. There is no env-var precedence ladder on the host either — the file is the sole
+source.
 
-The host case is the existing baseline (Sprint 1.2); no migration is required for the host
-surface beyond removing residual env-var-read call sites in `Prodbox.Gateway` and friends
-that read `PRODBOX_*` for daemon-launch knobs.
+The host case is the existing baseline (Sprint 1.2). The remaining env-var-read call sites on
+the supported path are not on the host CLI but in `Prodbox.Workload`, which still reads a
+`PRODBOX_*` precedence ladder (`PRODBOX_WORKLOAD_MODE`, `PRODBOX_PORT`, `PRODBOX_LOG_LEVEL`,
+`PRODBOX_REDIS_*`, `PRODBOX_OIDC_*`). Deleting that ladder and moving the workload to the
+config-as-data Dhall surface is scheduled work (Sprint 3.15); see §10.
 
 ## 10. Forbidden surfaces
 
-The following surfaces are explicitly forbidden on the supported path:
+The following surfaces are the **target** forbidden set — the structure the supported path is
+moving to. Where a surface is named "scheduled" below, the code has not finished the move yet,
+so the prohibition is the intended end state rather than a present-tense fact:
 
 - Reading configuration from environment variables in any binary code path. `lookupEnv`,
-  `getEnv`, and `getEnvironment` from `System.Environment` are linted out of the supported
-  source tree. The k8s Pod environment may still carry runtime metadata (Pod name, namespace)
-  that the binary does not read; the lint rule is scoped to the config-loading paths.
+  `getEnv`, and `getEnvironment` from `System.Environment` are the target for being linted out
+  of the supported config-loading paths. **Not yet complete on the workload**: `Prodbox.Workload`
+  still reads a `PRODBOX_*` precedence ladder (mode, port, log level, Redis host/port, OIDC
+  fields); deleting that ladder and adding `Workload.hs` to the env-var-read lint scope
+  (`checkEnvVarConfigReads.scopedPaths`) is scheduled under Sprint 3.15. The k8s Pod
+  environment may still carry runtime metadata (Pod name, namespace) that the binary does not
+  read; the lint rule is scoped to the config-loading paths.
 - Materializing `prodbox-config.json` (or any other JSON projection of the Dhall) on a
   supported path. `prodbox config compile` is not a supported subcommand.
 - `--log-level`, `--port`, `--node-id`, `--foreground`, `--config-path`, and any other
   runtime-override CLI flag that fronts a non-`--config` config source. `--config` is the
   sole startup-time CLI knob.
 - `PRODBOX_LOG_LEVEL`, `PRODBOX_CONFIG_PATH`, `PRODBOX_PORT`, `PRODBOX_WORKLOAD_MODE`, and
-  any other `PRODBOX_*` env-var precedence rule.
+  any other `PRODBOX_*` env-var precedence rule. The host CLI carries none of these. The
+  workload's surviving `PRODBOX_*` ladder is the one outstanding violation of this rule;
+  retiring it is scheduled under Sprint 3.15 (see §9 and the first bullet above).
 - `MINIO_ENDPOINT_URL` env var on the gateway Pod (the attempted addition rolled back
   May 24, 2026). The MinIO endpoint reaches the daemon via the `boot.minio_endpoint_url`
   field of the mounted Dhall config; see §6 "Non-secret service-endpoint fields".

@@ -17,6 +17,7 @@ import Prodbox.EffectDAG (EffectNode (..), fromRootIds)
 import Prodbox.EffectInterpreter (InterpreterContext (..), runEffectDAG)
 import Prodbox.Error (fatalError)
 import Prodbox.Prerequisite (prerequisiteRegistry)
+import Prodbox.PrerequisiteId (PrerequisiteId (..))
 import Prodbox.Result (Result (..))
 import Prodbox.Subprocess
   ( ProcessOutput (..)
@@ -142,7 +143,7 @@ runK8sPrerequisites repoRoot =
 waitNode :: FilePath -> Int -> [String] -> EffectNode
 waitNode repoRoot timeout namespaces =
   EffectNode
-    { effectNodeId = "k8s_wait"
+    { effectNodeId = K8sWaitNode
     , effectNodeDescription = "Wait for deployments to become available"
     , effectNodeRemedyHint =
         "Wait for the requested deployments to reach `Available=True` or inspect the failing namespace."
@@ -164,8 +165,8 @@ waitNode repoRoot timeout namespaces =
           ]
     }
 
-k8sPrerequisiteRoots :: [String]
-k8sPrerequisiteRoots = ["k8s_cluster_reachable"]
+k8sPrerequisiteRoots :: [PrerequisiteId]
+k8sPrerequisiteRoots = [K8sClusterReachable]
 
 kubectlSpec :: FilePath -> Maybe String -> [String] -> Subprocess
 kubectlSpec repoRoot maybeNamespace args =

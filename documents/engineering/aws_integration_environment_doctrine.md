@@ -3,6 +3,7 @@
 **Status**: Authoritative source
 **Supersedes**: N/A
 **Referenced by**: README.md, AGENTS.md, DEVELOPMENT_PLAN/README.md, DEVELOPMENT_PLAN/system-components.md, DEVELOPMENT_PLAN/legacy-tracking-for-deletion.md, DEVELOPMENT_PLAN/phase-0-planning-documentation.md, DEVELOPMENT_PLAN/phase-1-runtime-cli-aws-foundations.md, DEVELOPMENT_PLAN/phase-2-gateway-dns.md, DEVELOPMENT_PLAN/phase-4-lifecycle-canonical-paths.md, DEVELOPMENT_PLAN/phase-5-canonical-test-suite.md, DEVELOPMENT_PLAN/phase-7-aws-substrate-foundations.md, DEVELOPMENT_PLAN/phase-8-email-invite-auth.md, documents/documentation_standards.md, documents/engineering/README.md, documents/engineering/aws_account_setup_guide.md, documents/engineering/aws_admin_credentials.md, documents/engineering/aws_test_environment.md, documents/engineering/cli_command_surface.md, documents/engineering/integration_fixture_doctrine.md, documents/engineering/lifecycle_reconciliation_doctrine.md, documents/engineering/prerequisite_doctrine.md, documents/engineering/unit_testing_policy.md
+**Generated sections**: none
 
 > **Purpose**: Define how `prodbox` authenticates to AWS for integration work and how the
 > supported AWS validation path creates, owns, and tears down real AWS resources.
@@ -36,6 +37,26 @@
   delegation in the parent zone. The AWS substrate must not fall back to home-substrate
   `route53.zone_id` or `domain.demo_fqdn` values; missing AWS-substrate config fails fast per
   [`DEVELOPMENT_PLAN/development_plan_standards.md` § M — Substrate coverage and independence (no fallback)](../../DEVELOPMENT_PLAN/development_plan_standards.md#substrate-coverage-and-independence-no-fallback).
+  The AWS-substrate hosted-zone id is sourced from settings
+  (`aws_substrate.hosted_zone_id` via `Prodbox.PublicEdge.resolveSubstrateHostedZoneId`) and,
+  failing that, the live `aws-eks-subzone` Pulumi stack output — never from a
+  `PRODBOX_AWS_SUBSTRATE_HOSTED_ZONE_ID` environment variable (Sprint `7.13` removed that env
+  read per [config_doctrine.md § 10](./config_doctrine.md); `Prodbox.PublicEdge` is now scoped
+  by `checkEnvVarConfigReads` so it cannot reappear). The single public-edge ACME
+  `ClusterIssuer` is named `zerossl-dns01` (DNS-01-honest; renamed from the misleading
+  HTTP-01-claiming name in Sprint `7.13`).
+- **The home substrate and the AWS substrate stand up the same shared service set** (Sprint
+  `7.12` substrate equivalence): Harbor + MinIO + the Percona PostgreSQL operator are installed
+  on **both** substrates — the AWS substrate is **not** a "no-Harbor on EKS" cluster. The AWS
+  Harbor is the EKS-side Harbor reached through the node-local registry proxy (the EKS containerd
+  registry-mirror DaemonSet that makes `127.0.0.1:30080/prodbox/...` resolve on EKS, mirroring
+  the home NodePort-on-`127.0.0.1` pattern), so the canonical chart image refs are identical
+  across substrates. The two installers differ only in their LOWER layer (MetalLB on home, the
+  AWS Load Balancer Controller on EKS; parent zone on home, the delegated subzone on AWS). The
+  shared platform-component pins (Envoy Gateway, cert-manager, Harbor, MinIO, Percona) come from
+  the single `Prodbox.ContainerImage` SSoT and are enforced by the `checkSubstrateImagePinning`
+  lint plus the `[PlatformComponent]` coverage test. See
+  [`DEVELOPMENT_PLAN/substrates.md` → Substrate Equivalence (Structural Invariant)](../../DEVELOPMENT_PLAN/substrates.md#substrate-equivalence-structural-invariant).
 - The `prodbox` test harness is the **exclusive owner** of every AWS resource any `prodbox`
   flow creates or destroys. Every AWS API call flows through the harness via the `prodbox`
   command surface; ad-hoc `pulumi`, `aws` CLI, `eksctl`, or `terraform` invocations outside
@@ -76,16 +97,16 @@
   with the postflight tag sweep as backstop); the deliberate gate-vs-cascade asymmetry is
   documented in
   [lifecycle_reconciliation_doctrine.md §3](lifecycle_reconciliation_doctrine.md).
-- **Sprint `7.8` (scheduled; Phase 7 reopened 2026-05-28)** brings the operational-credential
-  lifecycle under the managed-resource registry. The operational `prodbox` IAM user and the
-  operational `aws.*` block in `prodbox-config.dhall` become registered `Operational`-class
-  resources (each with a `discover` + `destroy`), and `prodbox aws setup`/`teardown` are
-  re-expressed as `reconcileAbsent` reconciliations over the registry — idempotent on re-run,
-  `Unreachable`-fails-closed. This closes the coverage gap that let an interrupted run leak the
+- The operational-credential lifecycle is brought under the managed-resource registry. The
+  operational `prodbox` IAM user and the operational `aws.*` block in `prodbox-config.dhall`
+  are registered `Operational`-class resources (each with a `discover` + `destroy`), and
+  `prodbox aws setup`/`teardown` are expressed as `reconcileAbsent` reconciliations over the
+  registry — idempotent on re-run, `Unreachable`-fails-closed. This is the current enforced
+  structure and closes the coverage gap that previously let an interrupted run leak the
   operational IAM user *and* leave its stale `aws.*` config entry behind (the 2026-05-28
   incident). Doctrine:
   [lifecycle_reconciliation_doctrine.md § 3.1](./lifecycle_reconciliation_doctrine.md);
-  schedule:
+  phase ownership:
   [DEVELOPMENT_PLAN/phase-7-aws-substrate-foundations.md](../../DEVELOPMENT_PLAN/phase-7-aws-substrate-foundations.md)
   Sprint 7.8.
 - Sprint `7.7` (May 19, 2026) generalizes the teardown residue contract and closes the
@@ -99,7 +120,9 @@
   Sprint `7.5.c.v.c` later added a fifth constructor, `BypassAllResidueForHarnessRefresh`
   (also harness-internal only), which bypasses both per-run AND long-lived residue.
   The per-run partition (`aws-eks`, `aws-eks-subzone`, `aws-test`) vs long-lived partition
-  (`aws-ses`) is fixed by `Prodbox.Aws.perRunStackNames` / `longLivedStackNames` and must
+  (`aws-ses` + the non-stack `public-edge-tls` cert) is fixed by
+  `Prodbox.Aws.perRunStackNames` (derived from the `Prodbox.Infra.StackDescriptor` SSoT,
+  Sprint `4.27`) / `Prodbox.Aws.longLivedResourceNames` and must
   match `DEVELOPMENT_PLAN/substrates.md → Resource Lifecycle Classes` verbatim.
   - At Sprint 7.7 the test-harness teardown paths both used `BypassPerRunResidueOnly`, so the
     harness refused on `aws-ses` residue the way the operator-driven path does. That was
@@ -124,11 +147,13 @@
   to an optional prompt with an explanatory hint. The four user-facing prompt strings
   were renamed from "Elevated AWS …" / "elevated operations" to "Temporary admin AWS …"
   / "admin operations" inline with the May 2026 doctrine alignment.
-- **Sprint `4.10` (planned)**: long-lived Pulumi state is decoupled from the in-cluster
-  MinIO backend onto a dedicated AWS S3 bucket configured via the new
-  `pulumi_state_backend` block in `prodbox-config.dhall`. The `aws-ses` stack moves to
-  the new backend so its state survives arbitrary `rke2 delete + rke2 reconcile` cycles.
-  Per-run stacks continue using MinIO. State lifetime matches resource lifetime per class.
+- **Sprint `4.10`**: long-lived Pulumi state is decoupled from the in-cluster
+  MinIO backend onto a dedicated AWS S3 bucket configured via the
+  `pulumi_state_backend` block in `prodbox-config.dhall`. The `aws-ses` stack uses
+  this S3 backend so its state survives arbitrary `rke2 delete + rke2 reconcile` cycles;
+  the per-run stacks (`aws-eks`, `aws-eks-subzone`, `aws-test`) continue using the
+  in-cluster MinIO backend. State lifetime matches resource lifetime per class — this is
+  the current enforced structure, detailed in § 4.5 below.
   See [lifecycle_reconciliation_doctrine.md → §2 State-Lifetime Rule](lifecycle_reconciliation_doctrine.md).
 - **Sprint `4.11` (planned)**: `prodbox rke2 delete` carries a symmetric refuse-path
   scoped to per-run Pulumi stacks (`aws-eks`, `aws-eks-subzone`, `aws-test`). `aws-ses`
@@ -406,21 +431,59 @@ configuration file but a separate credential section:
 
 ### 4.5 Pulumi State Backend Prerequisite
 
-Every `prodbox pulumi <stack>-resources` and `prodbox pulumi <stack>-destroy` invocation
-(`aws-eks`, `aws-eks-subzone`, `aws-test`, `aws-ses`) projects the home substrate's in-cluster
-MinIO as its Pulumi state backend. The projection happens through `withMinioPortForward` in
-`src/Prodbox/Infra/AwsEksTestStack.hs` (and the analogous wrappers in the sibling
-`Infra/Aws*.hs` modules). Concretely, this means:
+The Pulumi state backend is split by resource lifecycle class — state lifetime must match
+resource lifetime (Sprint `4.10`; see
+[lifecycle_reconciliation_doctrine.md → §2 State-Lifetime Rule](lifecycle_reconciliation_doctrine.md)).
 
-1. The home substrate must be running before any AWS-substrate or AWS-shared `prodbox pulumi`
-   call. Operator runs `prodbox rke2 reconcile` once; the command is idempotent and a no-op
-   when the home substrate is already up.
-2. The MinIO `prodbox-test-pulumi-backends` bucket must exist before the first stack is
-   created. The reconcile contract ensures this — see § 0 above for the canonical statement.
-3. AWS-substrate work does not bootstrap its own Pulumi backend; there is no AWS-side
-   alternative to the home MinIO state store on the supported path.
+**Per-run stacks** (`aws-eks`, `aws-eks-subzone`, `aws-test`) project the home substrate's
+in-cluster MinIO as their Pulumi state backend. The projection happens through
+`withMinioPortForward` in `src/Prodbox/Infra/AwsEksTestStack.hs` (and the analogous wrappers
+in the sibling `Infra/Aws*.hs` modules). Their state is intentionally co-located with the
+cluster: a per-run stack has no steady state to preserve across a cluster wipe, so its state
+backend is the cluster's MinIO.
 
-The standalone Sprint `7.5.c.v` workflow makes this prerequisite explicit as
+**The long-lived `aws-ses` stack** projects the dedicated AWS S3 bucket configured via the
+`pulumi_state_backend` block in `prodbox-config.dhall` as its Pulumi state backend — **not**
+the in-cluster MinIO. This is required, not incidental: `aws-ses` is long-lived
+cross-substrate shared infrastructure whose state must survive arbitrary
+`rke2 delete + rke2 reconcile` cycles, so it cannot live in a backend that disappears with the
+cluster. The idempotent `ensureLongLivedPulumiStateBucket` precondition (shared by
+`aws-ses-resources` and the invite bootstrap) provisions/repairs that bucket; the long-lived
+bucket is destroyed only by `prodbox nuke`, never by `rke2 delete` or per-run postflight.
+
+Concretely, this means:
+
+1. For per-run stacks, the home substrate must be running before any per-run
+   `prodbox pulumi` call. Operator runs `prodbox rke2 reconcile` once; the command is
+   idempotent and a no-op when the home substrate is already up.
+2. For per-run stacks, the MinIO `prodbox-test-pulumi-backends` bucket must exist before the
+   first stack is created. The reconcile contract ensures this — see § 0 above for the
+   canonical statement.
+3. Per-run AWS-substrate work does not bootstrap its own Pulumi backend; there is no AWS-side
+   alternative to the home MinIO state store for per-run stacks on the supported path.
+4. For the long-lived `aws-ses` stack, the home substrate need not be running: its S3 state
+   backend is independent of cluster lifetime. The `pulumi_state_backend` bucket is the
+   prerequisite, and `ensureLongLivedPulumiStateBucket` is the idempotent guarantee.
+
+The per-run partition (`aws-eks`, `aws-eks-subzone`, `aws-test`) vs long-lived partition
+(`aws-ses` + the non-stack `public-edge-tls` cert) is fixed by `Prodbox.Aws.perRunStackNames` /
+`Prodbox.Aws.longLivedResourceNames` and must match
+[`DEVELOPMENT_PLAN/substrates.md` → Resource Lifecycle Classes](../../DEVELOPMENT_PLAN/substrates.md#resource-lifecycle-classes)
+verbatim.
+
+Every Pulumi-managed substrate stack is described by one `Prodbox.Infra.StackDescriptor`
+SSoT record (Sprint `4.27`): `stackRegistryName`, `stackPulumiStackId` (e.g. the registry
+name `aws-eks` is provisioned under the Pulumi stack id `aws-eks-test`), `stackProjectSubdir`
+under `pulumi/`, `stackCliVerb` (the `<stem>` in `prodbox pulumi <stem>-resources` /
+`<stem>-destroy`), and `stackLifecycleClass`. `perRunStackNames`, the CLI verbs, and the
+project dirs all **derive** from `stackDescriptors`, removing the drift the
+documentation-harmony audit flagged between the registry names, the CLI verbs, and the
+project directories. The registry-name↔CLI-command inventory is rendered from this SSoT into
+the `stack-command-surface` generated section of
+[`DEVELOPMENT_PLAN/substrates.md`](../../DEVELOPMENT_PLAN/substrates.md#resource-lifecycle-classes)
+by `prodbox docs generate`; `prodbox docs check` fails the build if it drifts.
+
+The standalone Sprint `7.5.c.v` workflow makes the per-run prerequisite explicit as
 [Sprint Workflow Step `0.5`](../../DEVELOPMENT_PLAN/phase-7-aws-substrate-foundations.md);
 suite-driven runs (`prodbox test all`) cover it through the Sprint `7.6`
 auto-managed lifecycle.

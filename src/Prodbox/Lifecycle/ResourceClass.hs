@@ -6,8 +6,9 @@
 -- cycle: the IO-bearing registry
 -- ('Prodbox.Lifecycle.ResourceRegistry', scheduled Sprint 4.21)
 -- decorates these facts with @discover@ \/ @destroy@ actions, while
--- 'Prodbox.Aws.perRunStackNames' \/ 'longLivedStackNames' derive their
--- name lists from here.
+-- 'Prodbox.Aws.longLivedResourceNames' derives its name list from here
+-- (and 'Prodbox.Aws.perRunStackNames' from the 'StackDescriptor' SSoT,
+-- whose per-run registry names must match the @PerRun@ slice here).
 --
 -- The doctrine SSoT is
 -- @documents\/engineering\/lifecycle_reconciliation_doctrine.md § 3.1@;

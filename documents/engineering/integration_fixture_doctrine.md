@@ -3,6 +3,7 @@
 **Status**: Authoritative source
 **Supersedes**: N/A
 **Referenced by**: documents/engineering/README.md, documents/engineering/unit_testing_policy.md, documents/engineering/aws_test_environment.md
+**Generated sections**: none
 
 > **Purpose**: Define integration setup, teardown, and cleanup ownership for real-system
 > validation.
@@ -35,8 +36,22 @@ Ownership rules:
 4. The suite-level IAM harness in `src/Prodbox/TestRunner.hs` owns setup and teardown of
    temporary operational `aws.*` for `prodbox test integration aws-iam`, targeted
    `prodbox test integration <name> --substrate aws` validations,
-   `prodbox test integration all`, and `prodbox test all`.
+   `prodbox test integration all`, and `prodbox test all`. **The IAM-harness tier is
+   capability-derived (Sprint `5.6`):** `derivedManagedAwsHarnessPolicyTier` in
+   `src/Prodbox/TestPlan.hs` engages the harness exactly when a validation declares an
+   AWS-credential-consuming prerequisite on the AWS substrate, or is `aws-iam` /
+   `keycloak-invite` (which materialize operational credentials on every substrate). The
+   former `normalizeManagedAwsHarness` `substrate=aws` blanket override is **deleted**: a
+   credential-free validation (e.g. `gateway-partition`) no longer acquires the IAM harness
+   merely because the active substrate is AWS.
 5. Cleanup failures must be surfaced explicitly to the operator.
+
+The destructive `--dry-run` golden fixtures under `test/golden/destructive/` (Sprint `5.6`:
+`rke2-delete.txt`, `rke2-delete-cascade.txt`, `nuke.txt`) are **registry-generated** — their
+per-run, `aws-ses`, and long-lived destroy lines derive from the managed-resource registry /
+`StackDescriptor` SSoT, and a drift guard fails the suite if a registered resource is added
+without regenerating the golden. They prove each destructive path's planned step list without
+allocating or destroying any real resource.
 
 ## 3. Isolation Modes
 

@@ -4,12 +4,29 @@
 **Supersedes**: N/A
 **Referenced by**: [README.md](README.md), [00-overview.md](00-overview.md),
 [system-components.md](system-components.md), [the engineering doctrine docs](../documents/engineering/README.md)
+**Generated sections**: none
 
 > **Purpose**: Capture the Haskell chart platform, deterministic retained storage model, the
 > supported public workload delivery path, and the CLI-doctrine adoption sprints that align chart
 > orchestration with [the engineering doctrine docs](../documents/engineering/README.md).
 
 ## Phase Status
+
+✅ **Reclosed 2026-06-09** — reopened for Sprints `3.15`–`3.16` (design-intention review,
+2026-06-09; narrated in the [README.md](README.md) Closure Status per
+[development_plan_standards.md](development_plan_standards.md) rule A); both landed. Sprint `3.15` ✅
+made the public-workload binary config-as-data: deleted the `src/Prodbox/Workload.hs` `PRODBOX_*`
+env-var ladder (`--config` is now mandatory and `Workload.hs` has zero `lookupEnv`), gave the
+workload the daemon's Boot/Live split + `fsnotify` reload symmetry, and added `Workload.hs` to
+`checkEnvVarConfigReads.scopedPaths` so the workload path cannot regress to env-var config. Sprint
+`3.16` ✅ closed the master-seed boundary: the raw seed is read in-cluster only (lint-enforced by
+`checkRawMasterSeedReadScope`), the host derives chart secrets via `Prodbox.Gateway.Client`, the
+`/tmp` seed-file + `resolveSeedViaMinio` host paths are deleted, `MinioMasterSeedConfig` got a
+redacting `Show`, and `resetPatroniStorageIfRequested` was landed as the doctrine-prescribed
+loud-failure mismatch check. Validation at reclosure: `check-code` 0, `test unit` 775,
+`integration cli` 35, `prodbox-daemon-lifecycle` 11/11, `lint docs` 0, `docs check` 0; the live
+first-install secret-materialization and Patroni-probe exercises are operator-driven. All earlier
+Phase 3 sprints (`3.1`–`3.14`) remain `Done`; no later phase was reopened by this change.
 
 ✅ **Done** — Sprints `3.1`–`3.7` remain `Done` on the chart runtime, retained storage, browser
 delivery, JWT-API, WebSocket, admin surfaces, and the Patroni doctrine. The phase is reopened by
@@ -1345,11 +1362,20 @@ owned by Sprint `8.5`.
 
 - `documents/engineering/cli_command_surface.md` - canonical Haskell `prodbox charts` surface,
   restricted to root charts.
+- `documents/engineering/config_doctrine.md` - workload-binary config-as-data: the public
+  workload (`api` / `websocket`) reads its full configuration from the mounted Dhall config as
+  the sole source (no `PRODBOX_*` fallback ladder), with the Boot/Live split and
+  `fsnotify`-driven reload symmetry the daemon already follows (Sprint `3.15`).
+- `documents/engineering/secret_derivation_doctrine.md` - the daemon-only master-seed boundary:
+  the raw master seed is read in-cluster only, the host obtains *derived* values via the gateway
+  RPC (`Prodbox.Gateway.Client`), and no host-side `/tmp` seed file or `resolveSeedViaMinio`
+  raw-seed read remains on the supported path (Sprint `3.16`).
 - `documents/engineering/envoy_gateway_edge_doctrine.md` - target Envoy Gateway and Keycloak edge
   doctrine for chart-managed workloads.
 - `documents/engineering/helm_chart_platform_doctrine.md` - Haskell chart runtime, supported stack
-  topology, internal dependency-release boundary, and the authoritative synchronous-replication
-  Patroni doctrine.
+  topology, internal dependency-release boundary, the authoritative synchronous-replication
+  Patroni doctrine, and the land-or-delete loud-failure Patroni-storage-mismatch contract
+  (Sprint `3.16`).
 - `documents/engineering/storage_lifecycle_doctrine.md` - retained storage and rebinding doctrine.
 - `documents/engineering/local_registry_pipeline.md` - Harbor-loading implications for the chart
   platform where relevant.
@@ -1459,6 +1485,159 @@ through the mounted Dhall config path and passed both public-edge validations. T
 workload-only Dhall schema remains inline in
 `src/Prodbox/Workload/Settings.hs::WorkloadConfigDhall`; promoting it to a sibling
 `prodbox-workload-types.dhall` remains optional follow-up work, not a closure blocker.
+
+## Sprint 3.15: Workload Config-as-Data (Delete the `PRODBOX_*` Ladder, Boot/Live + fsnotify Symmetry) ✅
+
+**Status**: Done (2026-06-09). The entire `PRODBOX_*` env ladder was deleted from `Workload.hs`
+(`--config` is now mandatory — a missing/unparseable file is a fast structured failure; the sole
+legitimate runtime-metadata read, the `HOSTNAME` pod name, moved to a new `Workload/PodIdentity.hs`
+so `Workload.hs` has zero `lookupEnv`). The workload gained the daemon's Boot/Live split
+(`WorkloadBootConfig`/`WorkloadLiveConfig` + pure `workloadBootFieldsChanged`; Live fields apply
+in-process via a `TVar`, Boot fields drain-and-exit) and an `fsnotify` `configFileWatchLoop` on the
+`--config` parent directory. `src/Prodbox/Workload.hs` joined `checkEnvVarConfigReads.scopedPaths`
+(proven to fire on a reintroduced read). The api/websocket charts switched to a directory mount, the
+legacy-ladder comments were removed, and the Sprint 3.14 workload `PRODBOX_*` ledger row moved to
+Completed. Validation green: `check-code` 0, `test unit` 769/769, `integration cli` 35/35,
+`prodbox-daemon-lifecycle` 11/11, `lint docs` 0, `docs check` 0, and `helm template api|websocket`
+render with zero `PRODBOX_*` env vars. The live in-cluster reload exercise is operator-driven.
+**Implementation**: `src/Prodbox/Workload.hs`, `src/Prodbox/Workload/Settings.hs`, `src/Prodbox/CheckCode.hs`, `charts/api/templates/configmap-config.yaml`, `charts/websocket/templates/configmap-config.yaml`, `test/unit/Main.hs`
+**Docs to update**: `documents/engineering/config_doctrine.md`, `documents/engineering/helm_chart_platform_doctrine.md`
+
+### Objective
+
+Finish the [config_doctrine.md](../documents/engineering/config_doctrine.md) migration on the
+public-workload binary. Sprint `3.14` moved `api` / `websocket` mode and config to a mounted
+Dhall ConfigMap but left the entire `PRODBOX_*` env-var fallback ladder in
+`src/Prodbox/Workload.hs` "for rollback safety", so the workload remains a second supported
+config source. This sprint makes the Dhall config the *sole* workload config source, gives the
+workload the same Boot/Live split and `fsnotify`-driven reload the gateway daemon already runs
+(Sprint `2.21`), and lint-enforces that the supported workload path cannot regress to env-var
+config — closing the gap [config_doctrine.md §7](../documents/engineering/config_doctrine.md)
+requires for every long-running `prodbox` binary.
+
+### Deliverables
+
+- Delete the `PRODBOX_WORKLOAD_MODE` / `PRODBOX_PORT` / `PRODBOX_HTTP_PORT` /
+  `PRODBOX_LOG_LEVEL` / `PRODBOX_REDIS_*` / `PRODBOX_OIDC_*` `lookupEnv` ladder from
+  `src/Prodbox/Workload.hs` (the `resolveWorkloadModeFromDhall`, `resolveHttpPortWithDhall`,
+  `resolveWorkloadLogLevelWithDhall`, `resolveRedisConfig`, and `resolveOidcConfig` env-var
+  fallback arms). The mounted Dhall config decoded via `Dhall.inputFile auto` from
+  `--config /etc/workload/config.dhall` is the only config source; a missing `--config` is a
+  fast structured failure, not a silent env-var fallback.
+- Give the workload the daemon's Boot/Live config split: fields that can change in place
+  (`log_level`, OIDC/Redis tunables that do not require a socket rebind) are Live and applied
+  in-process on reload; fields that require a restart (the `mode` sum, the listen port) are
+  Boot and trigger drain-and-exit per [config_doctrine.md §8](../documents/engineering/config_doctrine.md),
+  mirroring `Prodbox.Gateway` `daemonBootFieldsChanged` / `reloadLiveConfig`.
+- Add an `fsnotify`-driven `configFileWatchLoop`-equivalent in the workload runtime that
+  watches the `--config` parent directory (directory mount, not `subPath`, so the kubelet
+  atomic `..data` symlink swap fires the watch — the same gotcha Sprint `2.21` chunk 47 hit).
+- Add `src/Prodbox/Workload.hs` to `checkEnvVarConfigReads.scopedPaths` in
+  `src/Prodbox/CheckCode.hs` so `prodbox check-code` fails closed on any reintroduced
+  `PRODBOX_*` config read on the workload surface (joining `Settings.hs`,
+  `Gateway/Settings.hs`, and `Gateway.hs`).
+- Remove the legacy-ladder note from the Sprint `3.14` `Workload/Settings.hs` header comment
+  and from the api/websocket chart Deployments (no rollback-safety `PRODBOX_*` env vars
+  remain).
+
+### Validation
+
+1. `prodbox check-code` exit 0 with `src/Prodbox/Workload.hs` newly in
+   `checkEnvVarConfigReads.scopedPaths`; reintroducing any `PRODBOX_*` config read on the
+   workload surface fails the lint.
+2. `prodbox test unit` covers the Boot/Live field classification and the
+   missing-`--config`-is-a-hard-failure path.
+3. `helm template api charts/api` and `helm template websocket charts/websocket` render
+   cleanly with no `PRODBOX_*` config env vars on the Deployments.
+4. Live exercise: a `log_level` edit to a deployed workload's mounted ConfigMap reloads
+   in-process with no Pod restart; a `mode`/port edit drains and exits for kubelet restart.
+
+### Remaining Work
+
+None — closed 2026-06-09. The only outstanding item is the operator-driven live in-cluster reload
+exercise (a `log_level` ConfigMap edit reloads in-process; a `mode`/port edit drains+exits).
+
+## Sprint 3.16: Daemon-Only Master-Seed Boundary ✅
+
+**Status**: Done (2026-06-09). The host no longer reads the raw seed:
+`HostBootstrap.preApplyDerivedSecretsForRelease` and `Rke2.readKeycloakVscodeClientSecret` now call
+`Gateway.Client.ensureNamespace`/`derive` over the loopback NodePort (`hostLoopbackGatewayEndpoint`),
+so the in-cluster daemon materializes the data-bound Secrets and the host sees only derived values /
+the SHA-256 inventory. `resolveSeedViaMinio`, the `readHostMasterSeedHexOverride` /
+`PRODBOX_TEST_HOST_MASTER_SEED_HEX` seam, and the fixed `/tmp/prodbox-master-seed*.bin` paths are
+deleted (seed get/put now transit a randomized, single-use, bracket-deleted temp file in
+`MasterSeed.hs`, in-cluster only); a new gateway-client-boundary test seam
+(`PRODBOX_TEST_GATEWAY_DERIVE_SEED_HEX`, `Prodbox.TestSeam.GatewayDerive`) injects a *derived* value
+without re-exporting the seed. The new `checkRawMasterSeedReadScope` lint (in
+`runDoctrineAlignmentCheck`, proven to fire) confines the raw-seed read to
+`{Gateway/Daemon.hs, Secret/EnsureNamespace.hs, Secret/MasterSeed.hs}`. `MinioMasterSeedConfig` got a
+redacting `Show`. `resetPatroniStorageIfRequested` was **landed** (not deleted) as the
+doctrine-prescribed loud-failure guard — pure `patroniSeedMismatchDecision` (auth-rejected → loud
+failure naming namespace/role; matches/unobservable → proceed, never a silent reset) + a probe-only
+`psql` auth check (`PGPASSWORD` in exec env, never argv). `secret_derivation_doctrine.md §8` flipped to
+Implemented; ledger rows moved to Completed. Validation green: `check-code` 0, `test unit` 775/775,
+`integration cli` 35/35, `lint docs` 0, `docs check` 0. The live first-install secret-materialization
+and Patroni mismatch-probe exercises are operator-driven.
+**Implementation**: `src/Prodbox/Secret/MasterSeed.hs`, `src/Prodbox/Secret/HostBootstrap.hs`, `src/Prodbox/CLI/Rke2.hs`, `src/Prodbox/Lib/ChartPlatform.hs`, `src/Prodbox/CheckCode.hs`, `test/unit/Main.hs`
+**Docs to update**: `documents/engineering/secret_derivation_doctrine.md`, `documents/engineering/config_doctrine.md`, `documents/engineering/helm_chart_platform_doctrine.md`
+
+### Objective
+
+Make the raw master seed an in-cluster-only secret. Sprint `3.13`'s live-iteration tail (chunks
+18 / 31 / 33) added host-side master-seed reads — `resolveSeedViaMinio`, the
+`PRODBOX_TEST_HOST_MASTER_SEED_HEX` seam, and `/tmp/prodbox-master-seed*.bin` scratch files —
+to close Helm `lookup` timing holes on first install. Those host paths re-export the raw seed
+outside the cluster, contradicting [secret_derivation_doctrine.md §5](../documents/engineering/secret_derivation_doctrine.md)'s
+host↔cluster boundary (the host should consume *derived* values via the gateway RPC, never the
+raw seed). This sprint moves all host-side chart-secret materialization onto
+`Prodbox.Gateway.Client.derive` / `ensureNamespace`, confines the raw-seed read to in-cluster
+code, lint-enforces that confinement, and lands-or-deletes the no-op
+`resetPatroniStorageIfRequested` arm Sprint `3.13` chunk 14 deferred.
+
+### Deliverables
+
+- Replace the host-side raw-seed paths (`src/Prodbox/Secret/HostBootstrap.hs::resolveSeedViaMinio`
+  and `preApplyDerivedSecretsForRelease`'s direct derivation) with calls to
+  `Prodbox.Gateway.Client.derive` / `ensureNamespace` so the host obtains the *derived* Secret
+  values (or triggers in-cluster materialization) without ever reading the raw seed. The
+  `Prodbox.CLI.Rke2.readKeycloakVscodeClientSecret` host path migrates to the same RPC.
+- Confine the raw-seed read in `src/Prodbox/Secret/MasterSeed.hs` to in-cluster daemon code and
+  delete the `/tmp/prodbox-master-seed.bin` / `/tmp/prodbox-master-seed-put.bin` scratch-file
+  round-trip (the seed never lands on a host filesystem path). Replace the
+  `PRODBOX_TEST_HOST_MASTER_SEED_HEX` host-side test seam with a derived-value test seam at the
+  gateway-client boundary so the integration harness still exercises the chunk-18/33 code path
+  without re-exporting the raw seed.
+- Add a `prodbox check-code` lint (`checkRawMasterSeedReadScope` or equivalent) that forbids the
+  raw-seed read outside the in-cluster daemon module set (`src/Prodbox/Gateway/Daemon.hs`,
+  `src/Prodbox/Secret/EnsureNamespace.hs`), the same lint shape `checkEnvVarConfigReads` uses.
+- Add a redacting `Show` instance to `MinioMasterSeedConfig` in
+  `src/Prodbox/Secret/MasterSeed.hs` so the master-seed config never prints credentials in
+  logs or error output.
+- Land-or-delete the deferred `resetPatroniStorageIfRequested` arm
+  (`src/Prodbox/Lib/ChartPlatform.hs:2430`, currently `pure (Right ())`): either implement the
+  Sprint `3.13`-prescribed loud-failure mismatch check (derive the expected Patroni password
+  via `Prodbox.Gateway.Client.derive`, compare against `pg_authid` through a probe-only
+  Postgres connection, fail loudly naming the namespace/role pair and the resolution options),
+  or delete the no-op function and its lone call site if the live four-block exercise proves the
+  check is unnecessary.
+
+### Validation
+
+1. `prodbox check-code` exit 0 with the new raw-seed-scope lint; reintroducing a raw-seed read
+   outside the in-cluster daemon module set fails the lint.
+2. `prodbox test unit` covers the redacting `Show` on `MinioMasterSeedConfig` (no credential
+   substring in the rendered output) and the gateway-client-derived host path.
+3. A `grep` for `/tmp/prodbox-master-seed` and `resolveSeedViaMinio` in `src/` + `app/`
+   returns zero supported-path hits.
+4. Live exercise: first-install `prodbox charts deploy keycloak` / `... vscode` still renders
+   the realm-import with the correct master-seed-derived OIDC client secrets (the chunk-33
+   timing hole stays closed) while the host obtains them via the gateway RPC, not the raw seed.
+
+### Remaining Work
+
+None — closed 2026-06-09. Remaining items are operator-driven live exercises (first-install
+`charts deploy keycloak|vscode` secret materialization via the gateway RPC, and the live Patroni
+seed/`pg_authid` mismatch probe) — they require a running cluster.
 
 ## Related Documents
 

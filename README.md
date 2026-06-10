@@ -386,7 +386,9 @@ stacks if they still exist, removes the managed kubeconfig, and preserves `.data
 retained operator-host directory. The per-run Pulumi state in MinIO and the gateway-owned
 master seed both live on MinIO's PV under `.data/minio/...`, so they survive cluster wipes
 whenever `.data/` is preserved. `prodbox` never deletes `.data/`; removing it is an
-operator-only action. Invoking `rke2 delete` when no local RKE2 cluster is installed is a
+operator-only action. The raw master seed is daemon-only: it is read solely in-cluster by the
+gateway daemon, and the host CLI never reads it directly — it derives chart secrets over HTTP
+through the gateway client (intended structure, Sprint 3.16). Invoking `rke2 delete` when no local RKE2 cluster is installed is a
 no-op success (`No RKE2 cluster to delete.`, exit 0), not an error.
 
 ### Chart Stacks
@@ -571,7 +573,6 @@ prodbox/
 - [Development Plan](./DEVELOPMENT_PLAN/README.md)
 - [Engineering Docs Index](./documents/engineering/README.md)
 - [Documentation Standards](./documents/documentation_standards.md)
-- [Engineering Docs Index](./documents/engineering/README.md)
 - [CLI Command Surface](./documents/engineering/cli_command_surface.md)
 - [Code Quality Doctrine](./documents/engineering/code_quality.md)
 - [Lifecycle Reconciliation Doctrine](./documents/engineering/lifecycle_reconciliation_doctrine.md)

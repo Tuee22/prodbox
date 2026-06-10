@@ -87,9 +87,11 @@ The current repository closes on the implemented self-managed public-edge doctri
 3. The current shipped public workloads are `vscode`, `api`, `websocket`, Harbor, and MinIO,
    each delivered through shared-host Gateway API `HTTPRoute` resources on
    `test.resolvefintech.com`.
-4. The current supported shared public edge is anchored in the `vscode` namespace: the `vscode`
-   stack publishes the shared `Gateway`, listener certificate, and `/auth` Keycloak route, while
-   `api` and `websocket` attach `HTTPRoute` resources from their own namespaces.
+4. The supported shared public edge is owned by the `keycloak` chart: the `keycloak` stack
+   publishes the shared `Gateway`, the listener certificate, the port-80 redirect `HTTPRoute`, and
+   the `/auth` Keycloak route, while `vscode`, `api`, and `websocket` attach `HTTPRoute` resources
+   from their own namespaces. (The shared edge co-locates with the OIDC identity provider that
+   terminates `/auth`, rather than with an application workload.)
 5. Keycloak publishes the identity flow and the authenticated admin API used by `prodbox users`
    on the shared hostname under `/auth`.
 6. The shared `public-edge` `Gateway` exposes HTTPS on port `443` for application traffic and
@@ -103,11 +105,11 @@ The current repository closes on the implemented self-managed public-edge doctri
    prove the shipped JWT-only API and Redis-backed WebSocket paths externally, while
    `prodbox test integration admin-routes` proves the Harbor and MinIO auth gates externally.
 9. Public browser redirects use the shared-host `/auth` identity route, while non-browser
-   provider backchannels stay in-cluster: VS Code's Envoy `SecurityPolicy` targets the
-   namespace-local `keycloak` Service, API/WebSocket JWT policies fetch JWKS through the shared
-   internal Keycloak endpoint, Harbor/MinIO admin OIDC policies use the shared internal Keycloak
-   token endpoint, and the WebSocket workload uses `keycloak.vscode.svc.cluster.local:8080`.
-   These are current runtime boundaries, not second public identity surfaces.
+   provider backchannels stay in-cluster: VS Code's Envoy `SecurityPolicy` targets the in-cluster
+   Keycloak Service, API/WebSocket JWT policies fetch JWKS through the shared internal Keycloak
+   endpoint, Harbor/MinIO admin OIDC policies use the shared internal Keycloak token endpoint, and
+   the WebSocket workload uses the in-cluster Keycloak Service on port 8080. These are current
+   runtime boundaries, not second public identity surfaces.
 
 ## 3. Component Responsibilities
 
@@ -175,9 +177,19 @@ cert-manager owns listener TLS material for the public edge. It renders one ACME
 `ClusterIssuer` with a DNS-01 Route 53 solver per
 [acme_provider_guide.md](./acme_provider_guide.md):
 
-- `zerossl-http01` — the ZeroSSL ACME issuer, built from `acme.server` and EAB-authenticated.
+- `zerossl-dns01` — the ZeroSSL ACME issuer, built from `acme.server` and EAB-authenticated.
 
-The keycloak and vscode chart `Certificate`s reference this single issuer
+The issuer name is DNS-01-honest: the issuer authenticates ACME challenges through a
+**DNS-01 Route 53 solver**, and the name now says so. It is held as one SSoT constant in
+`Prodbox.PublicEdge.publicEdgeClusterIssuerName` and threaded through both chart
+`values.yaml` files and the doc/test sites; no second hand-edited copy survives. Sprint 7.13
+renamed it from the historically-inaccurate HTTP-01-claiming name (which named HTTP-01 but ran
+DNS-01). Because the issuer name is baked into retained ACME account and certificate state,
+the live rename lands on a wipe-and-rebuild boundary; the S3 cert retention key is keyed on
+substrate + FQDN (not the issuer name), so the retained certificate restores under the new
+issuer name without re-ordering from ZeroSSL.
+
+The keycloak chart `Certificate` references this single issuer
 (`Prodbox.PublicEdge.publicEdgeClusterIssuerName`). Because the canonical validation loop
 repeatedly rebuilds the substrate, the issued certificate is retained and restored before
 issuance (see below) so rebuilds do not re-order it and consume ZeroSSL issuance quota.
@@ -262,11 +274,37 @@ Example hostname routing inside this model may look like:
 The supported architecture no longer treats an app-local nginx auth proxy or Traefik `Ingress`
 surface as the canonical public edge.
 
-In the current implementation, the shared `public-edge` `Gateway` and listener certificate live in
-the `vscode` namespace. `api` and `websocket` keep their workloads in their own namespaces, but
+In the supported implementation, the `keycloak` chart owns the shared `public-edge` `Gateway` and
+listener certificate in the `keycloak` namespace, alongside the `/auth` identity route it
+terminates. `vscode`, `api`, and `websocket` keep their workloads in their own namespaces, but
 their `HTTPRoute` resources attach to that shared `Gateway` through cross-namespace `parentRefs`.
 The HTTP redirect route also lives with the shared `Gateway` and attaches only to the port `80`
 listener, while every backend route attaches to HTTPS listener sections.
+
+The chart→edge-resource ownership above is **editorial doctrine, not a generated section** — and
+deliberately so. The route→service catalog *is* generated: the canonical six-route inventory
+(`/auth`, `/vscode`, `/api`, `/ws`, `/harbor`, `/minio` and their path prefixes) is a faithful
+projection of the typed `PublicEdgeRoute` catalog in `src/Prodbox/PublicEdge.hs`, rendered into
+the chart `HTTPRoute` / `Gateway` manifests by the Sprint `3.12` `route-registry` generated
+sections (`charts/api/...`, `charts/keycloak/...`, `charts/vscode/...`, `charts/websocket/...`).
+Chart-*ownership* of the shared edge resources, however, has **no typed source** to project from:
+
+- The typed catalog encodes only route identity and path prefix
+  (`PublicEdgeRoute`, `publicRoutePathPrefix`); it carries no owning-chart field.
+- The shared `Gateway`, the listener certificate, and the port-80 redirect `HTTPRoute` are **not
+  routes** — they do not appear in `PublicEdgeRoute` at all — so no `route-registry` extension can
+  attribute them.
+- The `/harbor` and `/minio` admin routes are not owned by any chart template; they are applied
+  imperatively by `ensureAdminPublicEdgeRoutes` in `src/Prodbox/CLI/Rke2.hs`.
+- The keycloak-chart attribution of the `Gateway` / listener-cert / redirect / `/auth` route is a
+  deployment fact reattributed by Sprint `7.13`, not derived from the catalog.
+
+Adding an "owning chart" column would therefore require a new hand-authored Haskell annotation
+parallel to the catalog, which would only relocate drift into a second source rather than remove
+it. Per the documentation-harmony design guardrail (a table is generated only when it is a faithful
+projection of a typed value that needs *no* new hand-authored annotation), the chart→edge ownership
+mapping stays editorial here and is owned/corrected by Sprint `7.13`'s route-ownership
+reattribution.
 
 The earlier edge pattern:
 
@@ -335,11 +373,12 @@ The current worktree ships all three supported public-edge auth shapes:
 
 - `vscode` uses Envoy-managed browser OIDC enforcement through `SecurityPolicy`; the browser-facing
   authorization endpoint remains on the public issuer, and Envoy's token/provider exchange uses
-  the namespace-local `keycloak` Service on port 8080.
+  the in-cluster Keycloak Service on port 8080 through a cross-namespace backend reference granted
+  by `ReferenceGrant`.
 - `api` uses request-carried bearer JWTs validated locally at Envoy from Keycloak issuer metadata,
-  JWKS, audience, and route claims. The issuer stays public, while Envoy fetches JWKS from
-  `keycloak.vscode.svc.cluster.local:8080` through `remoteJWKS.backendRefs` plus a
-  `ReferenceGrant` from `api` to the Keycloak Service in `vscode`.
+  JWKS, audience, and route claims. The issuer stays public, while Envoy fetches JWKS from the
+  in-cluster Keycloak Service on port 8080 through `remoteJWKS.backendRefs` plus a
+  `ReferenceGrant` from `api` to the Keycloak Service.
 - Harbor and MinIO admin routes use Envoy-managed browser OIDC enforcement through
   `SecurityPolicy`, public authorization redirects, and the shared internal Keycloak token
   endpoint for provider exchange. Their host, issuer, and redirect URL are substrate-aware:
@@ -347,9 +386,9 @@ The current worktree ships all three supported public-edge auth shapes:
   platform applies these routes after gateway MinIO bootstrap.
 - `websocket` uses workload-managed OIDC bootstrap and cookie-backed session ownership on
   `/ws/oidc`, then a JWT-protected `/ws` upgrade path plus Redis-backed shared state for upgraded
-  connections; the current token exchange path uses private in-cluster access to
-  `keycloak.vscode.svc.cluster.local:8080`, and its Envoy JWT JWKS fetch uses the same internal
-  service boundary through a `ReferenceGrant` from `websocket` to `vscode`.
+  connections; the current token exchange path uses private in-cluster access to the Keycloak
+  Service on port 8080, and its Envoy JWT JWKS fetch uses the same internal service boundary
+  through a `ReferenceGrant` from `websocket` to the Keycloak namespace.
 
 The shared-host Keycloak route on `/auth` remains the external identity surface for issuer
 metadata, browser login, and workload-managed redirect flows.
@@ -554,13 +593,19 @@ Lifecycle and chart implications:
 1. `prodbox rke2 reconcile` owns MetalLB, Envoy Gateway, cert-manager, and the Percona PostgreSQL
    operator on the self-managed cluster path.
 2. Harbor-backed steady-state image sourcing mirrors or publishes the Envoy Gateway control-plane
-   and Envoy data-plane images rather than Traefik images.
-3. The current chart platform ships Keycloak, `vscode`, `api`, and `websocket` on one shared
-   public hostname, anchors the shared `Gateway`, listener certificate, and `/auth` Keycloak route
-   in the `vscode` namespace, attaches `api` and `websocket` `HTTPRoute` resources through
-   cross-namespace `parentRefs`, keeps the Keycloak public route limited to browser/OIDC identity
-   paths plus `/auth/admin` for the authenticated `prodbox users` invite API, and no longer depends
-   on `vscode-nginx`.
+   and Envoy data-plane images rather than Traefik images. As of Sprint `7.12` the Envoy Gateway
+   chart version, the control-plane (gateway controller) image, and the data-plane (Envoy proxy)
+   image are pinned together as one release in `Prodbox.ContainerImage.envoyGatewayRelease` and
+   consumed identically by both substrate installers — there is no per-substrate Envoy version, so
+   the EG-`1.4.4`-chart / Envoy-`1.37`-data-plane skew (audit C79) is eliminated by construction.
+   The proven pairing is EG chart `v1.7.2` / control plane `v1.7.2` / data plane
+   `distroless-v1.37.0`.
+3. The chart platform ships Keycloak, `vscode`, `api`, and `websocket` on one shared
+   public hostname, anchors the shared `Gateway`, listener certificate, port-80 redirect route,
+   and `/auth` Keycloak route in the `keycloak` namespace via the `keycloak` chart, attaches
+   `vscode`, `api`, and `websocket` `HTTPRoute` resources through cross-namespace `parentRefs`,
+   keeps the Keycloak public route limited to browser/OIDC identity paths plus `/auth/admin` for
+   the authenticated `prodbox users` invite API, and no longer depends on `vscode-nginx`.
 4. The Haskell distributed gateway daemon remains a separate chart and runtime surface; it is not
    the Envoy Gateway public edge.
 5. Additional JWT-only API routes, Redis-backed workloads, or WebSocket services must be added
@@ -570,8 +615,9 @@ Lifecycle and chart implications:
    admin SecurityPolicies, and `websocket` workload keep token/provider/JWKS backchannels
    in-cluster rather than exposing a second public Keycloak route or relying on EKS
    public-load-balancer hairpin behavior.
-7. cert-manager renders one ACME `ClusterIssuer` (`zerossl-http01`) on every reconcile; the
-   keycloak and vscode chart `Certificate`s reference it, per
+7. cert-manager renders one ACME `ClusterIssuer` (`zerossl-dns01`, a DNS-01-honest name for its
+   DNS-01 Route 53 solver — renamed from the misleading HTTP-01-claiming name in Sprint 7.13) on
+   every reconcile; the `keycloak` chart `Certificate` for the shared listener references it, per
    [acme_provider_guide.md](./acme_provider_guide.md) and
    [helm_chart_platform_doctrine.md](./helm_chart_platform_doctrine.md). The high-churn
    canonical validation loop relies on the retained-and-restored public-edge certificate so

@@ -3,6 +3,7 @@
 **Status**: Authoritative source
 **Supersedes**: N/A
 **Referenced by**: README.md, DEVELOPMENT_PLAN/phase-7-aws-substrate-foundations.md, documents/engineering/README.md, documents/engineering/aws_account_setup_guide.md, documents/engineering/aws_integration_environment_doctrine.md
+**Generated sections**: none
 
 > **Purpose**: Define the `aws_admin_for_test_simulation` section in
 > `prodbox-config.dhall` and the supported way to populate and clear it for suite-driven

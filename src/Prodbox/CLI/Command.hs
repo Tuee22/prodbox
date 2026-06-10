@@ -110,9 +110,6 @@ data DnsCommand
 
 data DaemonLaunchOptions = DaemonLaunchOptions
   { daemonConfigPath :: Maybe FilePath
-  , daemonLogLevel :: Maybe String
-  , daemonPort :: Maybe Int
-  , daemonForeground :: Bool
   , daemonPlanOptions :: PlanOptions
   }
   deriving (Eq, Show)
@@ -130,9 +127,6 @@ data GatewayCommand
 
 data WorkloadOptions = WorkloadOptions
   { workloadConfigPath :: Maybe FilePath
-  , workloadLogLevel :: Maybe String
-  , workloadPort :: Maybe Int
-  , workloadForeground :: Bool
   }
   deriving (Eq, Show)
 

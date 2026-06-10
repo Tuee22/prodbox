@@ -1,5 +1,14 @@
 module Prodbox.ContainerImage
   ( ImageRef (..)
+  , EnvoyGatewayRelease (..)
+  , PlatformComponent (..)
+  , envoyGatewayRelease
+  , envoyGatewayChartVersion
+  , certManagerChartVersion
+  , postgresOperatorChartVersion
+  , minioChartVersion
+  , sharedPlatformComponents
+  , platformComponentLabel
   , canonicalImagePlatforms
   , harborMirrorSourceCandidates
   , harborCertManagerAcmesolverImage
@@ -70,15 +79,129 @@ harborPublicEdgeWorkloadRepository = harborMirrorProject ++ "/prodbox-public-edg
 harborPublicEdgeWorkloadImageRepository :: String
 harborPublicEdgeWorkloadImageRepository = harborRegistryEndpoint ++ "/" ++ harborPublicEdgeWorkloadRepository
 
+-- | Sprint 7.12: the single Envoy Gateway release SSoT. The Envoy Gateway
+-- Helm chart version, the control-plane (gateway controller) image, and the
+-- data-plane (Envoy proxy) image are pinned together as one coherent
+-- release so the EG-chart / Envoy-data-plane pairing can only ever be
+-- changed in one place. Both substrate installers (home: MetalLB + the
+-- in-cluster Harbor NodePort; AWS: AWS Load Balancer Controller + the
+-- EKS-side Harbor + node-local registry proxy) consume this value for all
+-- three pinning sites; there is no second place to set a version
+-- independently, so the EG-@1.4.4@ / Envoy-@1.37@ skew (audit C79) is
+-- eliminated by construction.
+--
+-- The pinned release is the proven home pairing: EG chart @v1.7.2@ /
+-- control plane @v1.7.2@ / data plane @distroless-v1.37.0@.
+data EnvoyGatewayRelease = EnvoyGatewayRelease
+  { envoyGatewayReleaseChartVersion :: String
+  , envoyGatewayReleaseControlPlaneImage :: ImageRef
+  , envoyGatewayReleaseDataPlaneImage :: ImageRef
+  }
+  deriving (Eq, Show)
+
+envoyGatewayRelease :: EnvoyGatewayRelease
+envoyGatewayRelease =
+  EnvoyGatewayRelease
+    { envoyGatewayReleaseChartVersion = "v1.7.2"
+    , envoyGatewayReleaseControlPlaneImage =
+        harborImageRefFromRepository "envoy-gateway-mirror" "v1.7.2"
+    , envoyGatewayReleaseDataPlaneImage =
+        harborImageRefFromRepository "envoy-proxy-mirror" "distroless-v1.37.0"
+    }
+
+-- | The Envoy Gateway Helm chart version, sourced from the single
+-- 'envoyGatewayRelease' SSoT. Consumed by both substrate installers'
+-- @helm upgrade --install@ @--version@ argument.
+envoyGatewayChartVersion :: String
+envoyGatewayChartVersion = envoyGatewayReleaseChartVersion envoyGatewayRelease
+
 harborEnvoyGatewayImage :: ImageRef
-harborEnvoyGatewayImage = harborImageRefFromRepository "envoy-gateway-mirror" "v1.7.2"
+harborEnvoyGatewayImage = envoyGatewayReleaseControlPlaneImage envoyGatewayRelease
 
 harborEnvoyProxyImage :: ImageRef
-harborEnvoyProxyImage = harborImageRefFromRepository "envoy-proxy-mirror" "distroless-v1.37.0"
+harborEnvoyProxyImage = envoyGatewayReleaseDataPlaneImage envoyGatewayRelease
+
+-- | Upstream control-plane image tag, derived from the single
+-- 'envoyGatewayRelease' SSoT so the Harbor mirror-source entry cannot drift
+-- from the pinned release.
+envoyGatewayControlPlaneTag :: String
+envoyGatewayControlPlaneTag = imageTag (envoyGatewayReleaseControlPlaneImage envoyGatewayRelease)
+
+-- | Upstream data-plane image tag, derived from the single
+-- 'envoyGatewayRelease' SSoT.
+envoyGatewayDataPlaneTag :: String
+envoyGatewayDataPlaneTag = imageTag (envoyGatewayReleaseDataPlaneImage envoyGatewayRelease)
+
+-- | Sprint 7.12: the shared platform-component inventory. Substrate
+-- equivalence ("the home local substrate and the AWS substrate stand up the
+-- same set of services") is enforced structurally by declaring the shared
+-- component set once here and requiring both installers
+-- ('Prodbox.CLI.Rke2' / 'Prodbox.Lib.ChartPlatform' for home,
+-- 'Prodbox.Lib.AwsSubstratePlatform' for AWS) to cover every entry. The
+-- genuinely substrate-specific LOWER layer (MetalLB vs the AWS Load Balancer
+-- Controller, the parent zone vs the delegated subzone, the node-local
+-- registry proxy) is intentionally NOT in this inventory: those differences
+-- are correct, so they are not asserted equal.
+data PlatformComponent
+  = ComponentGateway
+  | ComponentKeycloak
+  | ComponentKeycloakPostgres
+  | ComponentVscode
+  | ComponentApi
+  | ComponentRedis
+  | ComponentWebsocket
+  | ComponentMinio
+  | ComponentHarbor
+  | ComponentPerconaPostgresOperator
+  | ComponentEnvoyGateway
+  | ComponentCertManager
+  | ComponentZeroSslDns01
+  deriving (Bounded, Enum, Eq, Ord, Show)
+
+-- | Every shared platform component both substrate installers must cover.
+-- Enumerated via 'Bounded'/'Enum' so adding a constructor automatically
+-- extends the coverage contract (the unit test then forces both installers
+-- to declare coverage of the new entry).
+sharedPlatformComponents :: [PlatformComponent]
+sharedPlatformComponents = [minBound .. maxBound]
+
+-- | Human-readable label for a shared platform component (operator-facing
+-- diagnostics and the coverage test's failure message).
+platformComponentLabel :: PlatformComponent -> String
+platformComponentLabel component =
+  case component of
+    ComponentGateway -> "gateway"
+    ComponentKeycloak -> "keycloak"
+    ComponentKeycloakPostgres -> "keycloak-postgres"
+    ComponentVscode -> "vscode"
+    ComponentApi -> "api"
+    ComponentRedis -> "redis"
+    ComponentWebsocket -> "websocket"
+    ComponentMinio -> "minio"
+    ComponentHarbor -> "harbor"
+    ComponentPerconaPostgresOperator -> "percona-postgres-operator"
+    ComponentEnvoyGateway -> "envoy-gateway"
+    ComponentCertManager -> "cert-manager"
+    ComponentZeroSslDns01 -> "zerossl-dns01"
 
 harborPostgresOperatorImage :: ImageRef
 harborPostgresOperatorImage =
   harborImageRefFromRepository "percona-postgresql-operator-mirror" "2.9.0"
+
+-- | Sprint 7.12: the Percona PostgreSQL operator Helm chart version, sourced
+-- from the single operator image tag so chart + image stay in lockstep. The
+-- Percona operator is a SHARED platform component, installed once by
+-- 'Prodbox.CLI.Rke2.ensurePostgresOperatorRuntime' for both substrates.
+postgresOperatorChartVersion :: String
+postgresOperatorChartVersion = imageTag harborPostgresOperatorImage
+
+-- | Sprint 7.12: the MinIO Helm chart version. MinIO is a SHARED platform
+-- component installed once by 'Prodbox.CLI.Rke2.ensureMinioRuntime' for both
+-- substrates; the chart version is its own pin (it does not track the MinIO
+-- image RELEASE tag), but it lives here as the single sanctioned source so it
+-- can never be re-pinned per substrate.
+minioChartVersion :: String
+minioChartVersion = "5.4.0"
 
 harborPostgresDatabaseImage :: ImageRef
 harborPostgresDatabaseImage =
@@ -136,6 +259,14 @@ harborKubeRbacProxyImage = harborImageRefFromRepository "kube-rbac-proxy-mirror"
 
 harborCertManagerControllerImage :: ImageRef
 harborCertManagerControllerImage = harborImageRefFromRepository "cert-manager-controller-mirror" "v1.16.2"
+
+-- | Sprint 7.12: the cert-manager Helm chart version, sourced from the
+-- single cert-manager controller image tag so chart + image stay in
+-- lockstep. cert-manager is a SHARED platform component, so both substrate
+-- installers consume this value rather than re-pinning the chart version on
+-- a per-substrate branch.
+certManagerChartVersion :: String
+certManagerChartVersion = imageTag harborCertManagerControllerImage
 
 harborCertManagerWebhookImage :: ImageRef
 harborCertManagerWebhookImage = harborImageRefFromRepository "cert-manager-webhook-mirror" "v1.16.2"
@@ -214,12 +345,12 @@ requiredPublicImageMirrors =
       []
       harborRedisImage
   , mirroredPublicImage
-      (ImageRef "docker.io" "envoyproxy/gateway" "v1.7.2")
-      [ImageRef "mirror.gcr.io" "envoyproxy/gateway" "v1.7.2"]
+      (ImageRef "docker.io" "envoyproxy/gateway" envoyGatewayControlPlaneTag)
+      [ImageRef "mirror.gcr.io" "envoyproxy/gateway" envoyGatewayControlPlaneTag]
       harborEnvoyGatewayImage
   , mirroredPublicImage
-      (ImageRef "docker.io" "envoyproxy/envoy" "distroless-v1.37.0")
-      [ImageRef "mirror.gcr.io" "envoyproxy/envoy" "distroless-v1.37.0"]
+      (ImageRef "docker.io" "envoyproxy/envoy" envoyGatewayDataPlaneTag)
+      [ImageRef "mirror.gcr.io" "envoyproxy/envoy" envoyGatewayDataPlaneTag]
       harborEnvoyProxyImage
   , mirroredPublicImage
       publicMinioImage

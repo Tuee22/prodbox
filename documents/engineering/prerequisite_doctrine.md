@@ -3,6 +3,7 @@
 **Status**: Authoritative source
 **Supersedes**: N/A
 **Referenced by**: documents/engineering/README.md, documents/engineering/cli_command_surface.md, documents/engineering/code_quality.md, documents/engineering/effectful_dag_architecture.md, documents/engineering/prerequisite_dag_system.md, documents/engineering/unit_testing_policy.md
+**Generated sections**: none
 
 > **Purpose**: Define the fail-fast prerequisite doctrine for supported `prodbox` command flows.
 
@@ -51,10 +52,14 @@ Typical prerequisite categories include:
 
 Important registry properties:
 
-- each prerequisite has a stable ID
-- dependencies are explicit
+- each prerequisite is an `EffectNode` with a stable ID (`effectNodeId`)
+- dependencies are explicit (`effectNodePrerequisites`)
 - root sets are selected by command planning code such as `src/Prodbox/TestPlan.hs`
 - the registry is shared by the public test harness and other prerequisite-aware command flows
+
+IDs are presently raw `String`s. The intended target is a typed `PrerequisiteId` ADT, so root
+selection and dependency edges are compiler-checked rather than string-matched, with
+per-validation prerequisite sets kept minimal and precise (Sprint 5.6).
 
 Examples of supported prerequisite IDs in the current repository include:
 
@@ -122,9 +127,12 @@ endpoints, supported OS, required files on disk — are encoded as a typed
 directed acyclic graph, not as scattered `unless (toolExists "kubectl") fail`
 checks in command runners.
 
-The prescribed three types:
+The prescribed shape (illustrative — the generic names below map to the real
+`src/Prodbox/Effect.hs` / `src/Prodbox/EffectDAG.hs` types named after each block):
 
 ```haskell
+-- Illustrative generic form. Real type: Prodbox.Effect.Validation, a closed
+-- sum of the project's concrete checks.
 data Validation
   = RequireTool FilePath [Text]       -- binary + accepted version args
   | RequireFileExists FilePath
@@ -134,6 +142,7 @@ data Validation
   -- ...extend per project
   deriving stock (Eq, Show)
 
+-- Illustrative generic form. Real type: Prodbox.EffectDAG.EffectNode.
 data PrerequisiteNode = PrerequisiteNode
   { nodeId            :: Text
   , nodeDescription   :: Text
@@ -144,29 +153,46 @@ data PrerequisiteNode = PrerequisiteNode
 prerequisiteRegistry :: Map Text PrerequisiteNode
 ```
 
+In the current codebase these are concretely `Prodbox.EffectDAG.EffectNode` with fields
+`effectNodeId` / `effectNodeDescription` / `effectNodeRemedyHint` / `effectNodePrerequisites` /
+`effectNodeEffect`, where the node action is a `Prodbox.Effect.Effect` (the `Validate Validation`
+constructor carries a check; other constructors emit lines or run subprocesses). The registry is
+`prerequisiteRegistry :: Map String EffectNode`, and node IDs are presently raw `String`s — the
+typed `PrerequisiteId` ADT is the target (Sprint 5.6).
+
 The registry is the single source of truth. Adding a prerequisite means
 adding one entry to the map. Declaring a command's needs means listing the
 root IDs that command depends on.
 
-Expansion is pure:
+Expansion is pure (real signatures, `src/Prodbox/EffectDAG.hs`):
 
 ```haskell
-transitiveClosure
-  :: [Text]                            -- root IDs
-  -> Map Text PrerequisiteNode
-  -> Either AppError [PrerequisiteNode]
+transitiveClosureIds
+  :: [String]                          -- root IDs
+  -> Map String EffectNode
+  -> Either String [String]
+
+fromRootIds
+  :: [String]                          -- root IDs
+  -> Map String EffectNode
+  -> Either String EffectDAG
 ```
 
 Missing IDs are a registry error caught at expansion time, not at runtime,
-so typos and stale references never reach an end user.
+so typos and stale references never reach an end user. Acyclicity is enforced
+on this same construction path: a back-edge (a node that transitively depends
+on itself) yields `Left` from `transitiveClosureIds`/`fromRootIds`, so a cyclic
+registry can never produce an `EffectDAG` (Sprint 1.31). See
+[Prerequisite DAG System § 3](./prerequisite_dag_system.md#3-reduction-and-determinism).
 
-Interpretation lives at the IO boundary:
+Interpretation lives at the IO boundary (real signature,
+`src/Prodbox/EffectInterpreter.hs`):
 
 ```haskell
-checkPrerequisites
-  :: Env
-  -> [PrerequisiteNode]
-  -> IO (Either PrerequisiteFailure ())
+runEffectDAG
+  :: InterpreterContext
+  -> EffectDAG
+  -> IO (Result ())
 ```
 
 **Required error-message contract.** A prerequisite failure must include:
@@ -194,7 +220,7 @@ Where in the lifecycle:
 - Inline `unless` / `when` checks of prerequisite-shaped conditions in
   command runners. Add a registry node instead.
 - Multiple registries (per-command, per-module). The single
-  `Map Text PrerequisiteNode` is the source of truth.
+  `prerequisiteRegistry :: Map String EffectNode` is the source of truth.
 - Silent fallback when a prerequisite is unmet. The command refuses to
   proceed; it does not paper over the gap.
 - Checking prerequisites *after* a mutating step. The DAG is a gate, not a

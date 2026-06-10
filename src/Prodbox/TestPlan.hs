@@ -4,6 +4,9 @@ module Prodbox.TestPlan
   , TestExecutionMode (..)
   , TestExecutionPlan (..)
   , nativeValidationId
+  , validationInitialPrerequisites
+  , validationDeferredPrerequisites
+  , derivedManagedAwsHarnessPolicyTier
   , testExecutionPlan
   )
 where
@@ -15,6 +18,10 @@ import Prodbox.CLI.Command
   ( IntegrationSuite (..)
   , PolicyTier (..)
   , TestScope (..)
+  )
+import Prodbox.PrerequisiteId
+  ( PrerequisiteId (..)
+  , prerequisiteIdEngagesIamHarness
   )
 import Prodbox.Substrate (Substrate (..))
 
@@ -41,8 +48,8 @@ data NativeValidation
 data NativeSuitePlan = NativeSuitePlan
   { nativeSuiteId :: String
   , nativeValidations :: [NativeValidation]
-  , nativeInitialIntegrationGatePrerequisites :: [String]
-  , nativeDeferredIntegrationGatePrerequisites :: [String]
+  , nativeInitialIntegrationGatePrerequisites :: [PrerequisiteId]
+  , nativeDeferredIntegrationGatePrerequisites :: [PrerequisiteId]
   , nativeManagedAwsHarnessPolicyTier :: Maybe PolicyTier
   , nativeRequiresIntegrationRunbook :: Bool
   , nativeRequiresSupportedRuntimeBootstrap :: Bool
@@ -72,17 +79,13 @@ testExecutionPlan substrate scope =
         [ "test:prodbox-unit"
         , "test:prodbox-integration"
         ]
-        NativeSuitePlan
-          { nativeSuiteId = "all"
-          , nativeValidations = canonicalNativeValidations
-          , nativeInitialIntegrationGatePrerequisites = allInitialIntegrationPrerequisites
-          , nativeDeferredIntegrationGatePrerequisites = allDeferredIntegrationPrerequisites
-          , nativeManagedAwsHarnessPolicyTier = Just PolicyFull
-          , nativeRequiresIntegrationRunbook = True
-          , nativeRequiresSupportedRuntimeBootstrap = True
-          , nativeRequiresSupportedRuntimePostflight = True
-          , nativeSubstrate = substrate
-          }
+        ( canonicalSuitePlan
+            "all"
+            canonicalNativeValidations
+            True
+            True
+            True
+        )
     TestLint ->
       nativeExecutionPlan
         "lint"
@@ -119,247 +122,191 @@ testExecutionPlan substrate scope =
           nativeExecutionPlan
             "integration all"
             ["test:prodbox-integration"]
-            NativeSuitePlan
-              { nativeSuiteId = "integration-all"
-              , nativeValidations = canonicalNativeValidations
-              , nativeInitialIntegrationGatePrerequisites = allInitialIntegrationPrerequisites
-              , nativeDeferredIntegrationGatePrerequisites = allDeferredIntegrationPrerequisites
-              , nativeManagedAwsHarnessPolicyTier = Just PolicyFull
-              , nativeRequiresIntegrationRunbook = True
-              , nativeRequiresSupportedRuntimeBootstrap = True
-              , nativeRequiresSupportedRuntimePostflight = True
-              , nativeSubstrate = substrate
-              }
+            ( canonicalSuitePlan
+                "integration-all"
+                canonicalNativeValidations
+                True
+                True
+                True
+            )
         IntegrationCli ->
           nativeIntegrationPlan
             "integration cli"
             ["test:prodbox-integration"]
             "integration-cli"
             []
-            []
-            []
             False
-            Nothing
         IntegrationAwsIam ->
           nativeNamedSuite
             "integration aws-iam"
             "integration-aws-iam"
             [ValidationAwsIam]
-            awsIamInitialPrerequisites
-            []
             False
-            (Just PolicyFull)
         IntegrationDnsAws ->
           nativeNamedSuite
             "integration dns-aws"
             "integration-dns-aws"
             [ValidationDnsAws]
-            dnsAwsPrerequisites
-            []
             False
-            Nothing
         IntegrationAwsEks ->
           nativeNamedSuite
             "integration aws-eks"
             "integration-aws-eks"
             [ValidationAwsEks]
-            awsEksInitialPrerequisites
-            awsEksDeferredPrerequisites
             True
-            Nothing
         IntegrationEnv ->
           nativeIntegrationPlan
             "integration env"
             ["test:prodbox-integration"]
             "integration-env"
             []
-            []
-            []
             False
-            Nothing
         IntegrationGatewayDaemon ->
           nativeNamedSuite
             "integration gateway-daemon"
             "integration-gateway-daemon"
             [ValidationGatewayDaemon]
-            gatewayDaemonPrerequisites
-            []
             True
-            Nothing
         IntegrationGatewayPods ->
           nativeNamedSuite
             "integration gateway-pods"
             "integration-gateway-pods"
             [ValidationGatewayPods]
-            gatewayPodsPrerequisites
-            []
             True
-            Nothing
         IntegrationGatewayPartition ->
           nativeNamedSuite
             "integration gateway-partition"
             "integration-gateway-partition"
             [ValidationGatewayPartition]
-            gatewayPartitionPrerequisites
-            []
             False
-            Nothing
         IntegrationHaRke2Aws ->
           nativeNamedSuite
             "integration ha-rke2-aws"
             "integration-ha-rke2-aws"
             [ValidationHaRke2Aws]
-            awsHaRke2InitialPrerequisites
-            awsHaRke2DeferredPrerequisites
             True
-            Nothing
         IntegrationLifecycle ->
           nativeNamedSuite
             "integration lifecycle"
             "integration-lifecycle"
             [ValidationLifecycle]
-            lifecyclePrerequisites
-            []
             True
-            Nothing
         IntegrationPulumi ->
           nativeNamedSuite
             "integration pulumi"
             "integration-pulumi"
             [ValidationPulumi]
-            pulumiInitialPrerequisites
-            pulumiDeferredPrerequisites
             True
-            Nothing
         IntegrationChartsStorage ->
           nativeNamedSuite
             "integration charts-storage"
             "integration-charts-storage"
             [ValidationChartsStorage]
-            chartsStoragePrerequisites
-            []
             True
-            Nothing
         IntegrationChartsPlatform ->
           nativeNamedSuite
             "integration charts-platform"
             "integration-charts-platform"
             [ValidationChartsPlatform]
-            chartsPlatformPrerequisites
-            []
             True
-            Nothing
         IntegrationChartsVscode ->
           nativeExecutionPlan
             "integration charts-vscode"
             []
-            NativeSuitePlan
-              { nativeSuiteId = "integration-charts-vscode"
-              , nativeValidations = [ValidationChartsVscode]
-              , nativeInitialIntegrationGatePrerequisites = chartsVscodeInitialPrerequisites
-              , nativeDeferredIntegrationGatePrerequisites = chartsVscodeDeferredPrerequisites
-              , nativeManagedAwsHarnessPolicyTier = Nothing
-              , nativeRequiresIntegrationRunbook = True
-              , nativeRequiresSupportedRuntimeBootstrap = True
-              , nativeRequiresSupportedRuntimePostflight = False
-              , nativeSubstrate = substrate
-              }
+            (chartsValidationPlan "integration-charts-vscode" ValidationChartsVscode)
         IntegrationChartsApi ->
           nativeExecutionPlan
             "integration charts-api"
             []
-            NativeSuitePlan
-              { nativeSuiteId = "integration-charts-api"
-              , nativeValidations = [ValidationChartsApi]
-              , nativeInitialIntegrationGatePrerequisites = chartsApiInitialPrerequisites
-              , nativeDeferredIntegrationGatePrerequisites = chartsApiDeferredPrerequisites
-              , nativeManagedAwsHarnessPolicyTier = Nothing
-              , nativeRequiresIntegrationRunbook = True
-              , nativeRequiresSupportedRuntimeBootstrap = True
-              , nativeRequiresSupportedRuntimePostflight = False
-              , nativeSubstrate = substrate
-              }
+            (chartsValidationPlan "integration-charts-api" ValidationChartsApi)
         IntegrationChartsWebsocket ->
           nativeExecutionPlan
             "integration charts-websocket"
             []
-            NativeSuitePlan
-              { nativeSuiteId = "integration-charts-websocket"
-              , nativeValidations = [ValidationChartsWebsocket]
-              , nativeInitialIntegrationGatePrerequisites = chartsWebsocketInitialPrerequisites
-              , nativeDeferredIntegrationGatePrerequisites = chartsWebsocketDeferredPrerequisites
-              , nativeManagedAwsHarnessPolicyTier = Nothing
-              , nativeRequiresIntegrationRunbook = True
-              , nativeRequiresSupportedRuntimeBootstrap = True
-              , nativeRequiresSupportedRuntimePostflight = False
-              , nativeSubstrate = substrate
-              }
+            (chartsValidationPlan "integration-charts-websocket" ValidationChartsWebsocket)
         IntegrationAdminRoutes ->
           nativeExecutionPlan
             "integration admin-routes"
             []
-            NativeSuitePlan
-              { nativeSuiteId = "integration-admin-routes"
-              , nativeValidations = [ValidationAdminRoutes]
-              , nativeInitialIntegrationGatePrerequisites = adminRoutesInitialPrerequisites
-              , nativeDeferredIntegrationGatePrerequisites = adminRoutesDeferredPrerequisites
-              , nativeManagedAwsHarnessPolicyTier = Nothing
-              , nativeRequiresIntegrationRunbook = True
-              , nativeRequiresSupportedRuntimeBootstrap = True
-              , nativeRequiresSupportedRuntimePostflight = False
-              , nativeSubstrate = substrate
-              }
+            (chartsValidationPlan "integration-admin-routes" ValidationAdminRoutes)
         IntegrationPublicDns ->
           nativeNamedSuite
             "integration public-dns"
             "integration-public-dns"
             [ValidationPublicDns]
-            publicDnsPrerequisites
-            []
             False
-            Nothing
         IntegrationKeycloakInvite ->
           nativeExecutionPlan
             "integration keycloak-invite"
             []
-            NativeSuitePlan
-              { nativeSuiteId = "integration-keycloak-invite"
-              , nativeValidations = [ValidationKeycloakInvite]
-              , nativeInitialIntegrationGatePrerequisites = keycloakInviteInitialPrerequisites
-              , nativeDeferredIntegrationGatePrerequisites = keycloakInviteDeferredPrerequisites
-              , nativeManagedAwsHarnessPolicyTier = Just PolicyFull
-              , nativeRequiresIntegrationRunbook = True
-              , nativeRequiresSupportedRuntimeBootstrap = True
-              , nativeRequiresSupportedRuntimePostflight = False
-              , nativeSubstrate = substrate
-              }
+            ( ( chartsValidationPlan
+                  "integration-keycloak-invite"
+                  ValidationKeycloakInvite
+              )
+                { nativeRequiresIntegrationRunbook = True
+                , nativeRequiresSupportedRuntimeBootstrap = True
+                , nativeRequiresSupportedRuntimePostflight = False
+                }
+            )
  where
-  nativeIntegrationPlan label haskellSuites suiteId validations initialPrerequisites deferredPrerequisites requiresRunbook managedAwsHarnessPolicyTier =
+  -- \| The canonical aggregate suites ('all', 'integration-all'): the full
+  -- ordered validation set, with the gate prerequisites and the
+  -- IAM-harness tier DERIVED from the per-validation typed sets.
+  canonicalSuitePlan suiteId validations requiresRunbook requiresBootstrap requiresPostflight =
+    let initialPrerequisites = aggregateInitialPrerequisites validations
+        deferredPrerequisites = aggregateDeferredPrerequisites validations
+     in NativeSuitePlan
+          { nativeSuiteId = suiteId
+          , nativeValidations = validations
+          , nativeInitialIntegrationGatePrerequisites = initialPrerequisites
+          , nativeDeferredIntegrationGatePrerequisites = deferredPrerequisites
+          , nativeManagedAwsHarnessPolicyTier =
+              derivedTier substrate validations
+          , nativeRequiresIntegrationRunbook = requiresRunbook
+          , nativeRequiresSupportedRuntimeBootstrap = requiresBootstrap
+          , nativeRequiresSupportedRuntimePostflight = requiresPostflight
+          , nativeSubstrate = substrate
+          }
+
+  -- \| A single charts-family validation plan (the AWS-credential-free
+  -- public-edge-readiness validations + keycloak-invite). The gate
+  -- prerequisites and tier are derived from the validation's typed set.
+  chartsValidationPlan suiteId validation =
+    NativeSuitePlan
+      { nativeSuiteId = suiteId
+      , nativeValidations = [validation]
+      , nativeInitialIntegrationGatePrerequisites = validationInitialPrerequisites validation
+      , nativeDeferredIntegrationGatePrerequisites = validationDeferredPrerequisites validation
+      , nativeManagedAwsHarnessPolicyTier = derivedTier substrate [validation]
+      , nativeRequiresIntegrationRunbook = True
+      , nativeRequiresSupportedRuntimeBootstrap = True
+      , nativeRequiresSupportedRuntimePostflight = False
+      , nativeSubstrate = substrate
+      }
+
+  nativeIntegrationPlan label haskellSuites suiteId validations requiresRunbook =
     nativeExecutionPlan
       label
       haskellSuites
       NativeSuitePlan
         { nativeSuiteId = suiteId
         , nativeValidations = validations
-        , nativeInitialIntegrationGatePrerequisites = initialPrerequisites
-        , nativeDeferredIntegrationGatePrerequisites = deferredPrerequisites
-        , nativeManagedAwsHarnessPolicyTier = managedAwsHarnessPolicyTier
+        , nativeInitialIntegrationGatePrerequisites = aggregateInitialPrerequisites validations
+        , nativeDeferredIntegrationGatePrerequisites = aggregateDeferredPrerequisites validations
+        , nativeManagedAwsHarnessPolicyTier = derivedTier substrate validations
         , nativeRequiresIntegrationRunbook = requiresRunbook
         , nativeRequiresSupportedRuntimeBootstrap = False
         , nativeRequiresSupportedRuntimePostflight = False
         , nativeSubstrate = substrate
         }
 
-  nativeNamedSuite label suiteId validations initialPrerequisites deferredPrerequisites requiresRunbook managedAwsHarnessPolicyTier =
+  nativeNamedSuite label suiteId validations requiresRunbook =
     nativeIntegrationPlan
       label
       []
       suiteId
       validations
-      initialPrerequisites
-      deferredPrerequisites
       requiresRunbook
-      managedAwsHarnessPolicyTier
 
 canonicalNativeValidations :: [NativeValidation]
 canonicalNativeValidations =
@@ -382,154 +329,154 @@ canonicalNativeValidations =
   , ValidationLifecycle
   ]
 
-allInitialIntegrationPrerequisites :: [String]
-allInitialIntegrationPrerequisites =
-  orderedUnion
-    [ chartsVscodeInitialPrerequisites
-    , chartsApiInitialPrerequisites
-    , chartsWebsocketInitialPrerequisites
-    , adminRoutesInitialPrerequisites
-    , publicDnsPrerequisites
-    , dnsAwsPrerequisites
-    , ["aws_iam_harness_ready"]
-    , awsIamInitialPrerequisites
-    , awsEksInitialPrerequisites
-    , pulumiInitialPrerequisites
-    , awsHaRke2InitialPrerequisites
-    , gatewayDaemonPrerequisites
-    , gatewayPodsPrerequisites
-    , chartsPlatformPrerequisites
-    , chartsStoragePrerequisites
-    , lifecyclePrerequisites
-    , gatewayPartitionPrerequisites
-    , keycloakInviteInitialPrerequisites
-    ]
+-- | Sprint 5.6: the per-validation initial-gate prerequisites, typed and
+-- minimal-and-precise — each validation declares exactly the typed
+-- prerequisites it actually consumes, with no over-broad inherited
+-- bundle. Exhaustively matched ('PrerequisiteId' is an ADT), so adding a
+-- validation forces declaring its prerequisite set.
+validationInitialPrerequisites :: NativeValidation -> [PrerequisiteId]
+validationInitialPrerequisites validation =
+  case validation of
+    -- The public-edge-readiness validations gate on the declared
+    -- AWS-credential-free 'PublicEdgeReady' node (Sprint 5.6 split out of
+    -- 'infra_ready'), plus 'tool_curl' for their real HTTPS / WebSocket
+    -- probes. They no longer inherit cluster + AWS-credential bundles.
+    ValidationChartsVscode -> [PublicEdgeReady, ToolCurl]
+    ValidationChartsApi -> [PublicEdgeReady, ToolCurl]
+    ValidationChartsWebsocket -> [PublicEdgeReady, ToolCurl]
+    ValidationAdminRoutes -> [PublicEdgeReady, ToolCurl]
+    -- public-dns proves NS delegation + FQDN resolution: Route 53
+    -- lifecycle capability + dig.
+    ValidationPublicDns -> [Route53LifecycleCapable, ToolDig]
+    -- dns-aws exercises the Route 53 hosted-zone lifecycle API.
+    ValidationDnsAws -> [Route53LifecycleCapable]
+    -- aws-iam exercises the IAM-user provisioning loop via the harness.
+    ValidationAwsIam -> [AwsIamHarnessReady, ToolAws]
+    -- The Pulumi-substrate stacks consume validated AWS credentials +
+    -- the cluster (the MinIO Pulumi backend lives in-cluster) + pulumi.
+    ValidationAwsEks -> pulumiSubstratePrerequisites
+    ValidationPulumi -> pulumiSubstratePrerequisites
+    ValidationHaRke2Aws -> pulumiSubstratePrerequisites ++ [ToolSsh]
+    -- gateway-daemon runs the daemon locally and probes /healthz: cluster
+    -- + curl.
+    ValidationGatewayDaemon -> clusterPrerequisites ++ [ToolCurl]
+    -- gateway-pods inspects in-cluster pods: cluster only.
+    ValidationGatewayPods -> clusterPrerequisites
+    -- gateway-partition is fully in-process: no prerequisites.
+    ValidationGatewayPartition -> []
+    -- The chart-platform / storage / lifecycle validations operate on the
+    -- local cluster: cluster only, no AWS credentials.
+    ValidationChartsPlatform -> clusterPrerequisites
+    ValidationChartsStorage -> clusterPrerequisites
+    ValidationLifecycle -> clusterPrerequisites
+    -- keycloak-invite drives the full invite flow end-to-end: the
+    -- public-edge readiness gate + curl, plus AWS credentials + Route 53
+    -- for the SES capture-bucket poll.
+    ValidationKeycloakInvite ->
+      [PublicEdgeReady, ToolCurl, AwsCredentialsValid, Route53Accessible]
 
-allDeferredIntegrationPrerequisites :: [String]
-allDeferredIntegrationPrerequisites =
-  orderedUnion
-    [ chartsVscodeDeferredPrerequisites
-    , chartsApiDeferredPrerequisites
-    , chartsWebsocketDeferredPrerequisites
-    , adminRoutesDeferredPrerequisites
-    , awsEksDeferredPrerequisites
-    , pulumiDeferredPrerequisites
-    , awsHaRke2DeferredPrerequisites
-    , keycloakInviteDeferredPrerequisites
-    ]
+-- | Sprint 5.6: the per-validation deferred-gate prerequisites (probes
+-- that run after substrate provisioning), typed and minimal.
+validationDeferredPrerequisites :: NativeValidation -> [PrerequisiteId]
+validationDeferredPrerequisites validation =
+  case validation of
+    ValidationChartsVscode -> []
+    ValidationChartsApi -> []
+    ValidationChartsWebsocket -> []
+    ValidationAdminRoutes -> []
+    ValidationPublicDns -> []
+    ValidationDnsAws -> []
+    ValidationAwsIam -> []
+    ValidationAwsEks -> [PulumiLoggedIn]
+    ValidationPulumi -> [PulumiLoggedIn]
+    ValidationHaRke2Aws -> [PulumiLoggedIn]
+    ValidationGatewayDaemon -> []
+    ValidationGatewayPods -> []
+    ValidationGatewayPartition -> []
+    ValidationChartsPlatform -> []
+    ValidationChartsStorage -> []
+    ValidationLifecycle -> []
+    ValidationKeycloakInvite ->
+      [ SesSendingIdentityVerified
+      , SesReceiveRuleSetActive
+      , SesReceiveBucketAccessible
+      ]
 
-clusterPrerequisites :: [String]
+-- | Sprint 5.6: derive the managed AWS IAM harness tier from declared
+-- capabilities, replacing the deleted @normalizeManagedAwsHarness@
+-- @substrate=aws@ blanket override. A validation set engages the harness
+-- (tier 'PolicyFull') exactly when it is run on the AWS substrate AND at
+-- least one declared prerequisite (initial or deferred) needs live AWS
+-- credentials ('prerequisiteIdEngagesIamHarness'), OR when it is the
+-- IAM-harness validation itself ('aws-iam') or the invite flow
+-- ('keycloak-invite'), which always materialize operational credentials
+-- via the harness regardless of substrate. A credential-free validation
+-- (e.g. @gateway-partition@) never acquires the harness merely because the
+-- active substrate is AWS.
+derivedManagedAwsHarnessPolicyTier :: Substrate -> [NativeValidation] -> Maybe PolicyTier
+derivedManagedAwsHarnessPolicyTier = derivedTier
+
+derivedTier :: Substrate -> [NativeValidation] -> Maybe PolicyTier
+derivedTier substrate validations
+  | any alwaysEngagesHarness validations = Just PolicyFull
+  | substrate == SubstrateAws && any engagesViaCredentials validations = Just PolicyFull
+  | otherwise = Nothing
+ where
+  -- Validations whose body itself materializes operational credentials
+  -- through the harness on every substrate.
+  alwaysEngagesHarness validation =
+    case validation of
+      ValidationAwsIam -> True
+      ValidationKeycloakInvite -> True
+      _ -> False
+
+  -- Validations that consume live AWS credentials via a declared
+  -- prerequisite; on the AWS substrate those credentials are materialized
+  -- by the harness from @aws_admin_for_test_simulation.*@.
+  engagesViaCredentials validation =
+    any
+      prerequisiteIdEngagesIamHarness
+      ( validationInitialPrerequisites validation
+          ++ validationDeferredPrerequisites validation
+      )
+
+aggregateInitialPrerequisites :: [NativeValidation] -> [PrerequisiteId]
+aggregateInitialPrerequisites =
+  orderedUnion . map validationInitialPrerequisites
+
+aggregateDeferredPrerequisites :: [NativeValidation] -> [PrerequisiteId]
+aggregateDeferredPrerequisites =
+  orderedUnion . map validationDeferredPrerequisites
+
+-- | The cluster-readiness prerequisite bundle the cluster-backed
+-- validations consume (tools + settings the local cluster path needs).
+-- AWS-credential-free.
+clusterPrerequisites :: [PrerequisiteId]
 clusterPrerequisites =
-  [ "supported_ubuntu_2404"
-  , "tool_docker"
-  , "tool_ctr"
-  , "tool_helm"
-  , "tool_kubectl"
-  , "tool_sudo"
-  , "tool_systemctl"
-  , "settings_object"
+  [ SupportedUbuntu2404
+  , ToolDocker
+  , ToolCtr
+  , ToolHelm
+  , ToolKubectl
+  , ToolSudo
+  , ToolSystemctl
+  , SettingsObject
   ]
 
-chartsVscodeInitialPrerequisites :: [String]
-chartsVscodeInitialPrerequisites = orderedUnion [pulumiInitialPrerequisites, ["tool_curl"]]
-
-chartsVscodeDeferredPrerequisites :: [String]
-chartsVscodeDeferredPrerequisites = pulumiDeferredPrerequisites
-
-chartsApiInitialPrerequisites :: [String]
-chartsApiInitialPrerequisites = orderedUnion [pulumiInitialPrerequisites, ["tool_curl"]]
-
-chartsApiDeferredPrerequisites :: [String]
-chartsApiDeferredPrerequisites = pulumiDeferredPrerequisites
-
-chartsWebsocketInitialPrerequisites :: [String]
-chartsWebsocketInitialPrerequisites = orderedUnion [pulumiInitialPrerequisites, ["tool_curl"]]
-
-chartsWebsocketDeferredPrerequisites :: [String]
-chartsWebsocketDeferredPrerequisites = pulumiDeferredPrerequisites
-
-adminRoutesInitialPrerequisites :: [String]
-adminRoutesInitialPrerequisites = orderedUnion [pulumiInitialPrerequisites, ["tool_curl"]]
-
-adminRoutesDeferredPrerequisites :: [String]
-adminRoutesDeferredPrerequisites = pulumiDeferredPrerequisites
-
-publicDnsPrerequisites :: [String]
-publicDnsPrerequisites = ["route53_lifecycle_capable", "tool_dig"]
-
-dnsAwsPrerequisites :: [String]
-dnsAwsPrerequisites = ["route53_lifecycle_capable"]
-
-pulumiInitialPrerequisites :: [String]
-pulumiInitialPrerequisites = orderedUnion [clusterPrerequisites, ["aws_credentials_valid", "tool_pulumi"]]
-
-pulumiDeferredPrerequisites :: [String]
-pulumiDeferredPrerequisites = ["pulumi_logged_in"]
-
-awsIamInitialPrerequisites :: [String]
-awsIamInitialPrerequisites = ["aws_iam_harness_ready", "tool_aws"]
-
-awsEksInitialPrerequisites :: [String]
-awsEksInitialPrerequisites = pulumiInitialPrerequisites
-
-awsEksDeferredPrerequisites :: [String]
-awsEksDeferredPrerequisites = pulumiDeferredPrerequisites
-
-awsHaRke2InitialPrerequisites :: [String]
-awsHaRke2InitialPrerequisites = orderedUnion [pulumiInitialPrerequisites, ["tool_ssh"]]
-
-awsHaRke2DeferredPrerequisites :: [String]
-awsHaRke2DeferredPrerequisites = pulumiDeferredPrerequisites
-
-gatewayDaemonPrerequisites :: [String]
-gatewayDaemonPrerequisites = orderedUnion [clusterPrerequisites, ["tool_curl"]]
-
-gatewayPodsPrerequisites :: [String]
-gatewayPodsPrerequisites = clusterPrerequisites
-
-gatewayPartitionPrerequisites :: [String]
-gatewayPartitionPrerequisites = []
-
-chartsPlatformPrerequisites :: [String]
-chartsPlatformPrerequisites = clusterPrerequisites
-
-chartsStoragePrerequisites :: [String]
-chartsStoragePrerequisites = clusterPrerequisites
-
-lifecyclePrerequisites :: [String]
-lifecyclePrerequisites = clusterPrerequisites
-
-keycloakInviteInitialPrerequisites :: [String]
-keycloakInviteInitialPrerequisites =
-  orderedUnion
-    [ chartsVscodeInitialPrerequisites
-    , ["aws_credentials_valid", "route53_accessible", "tool_curl"]
-    ]
-
-keycloakInviteDeferredPrerequisites :: [String]
-keycloakInviteDeferredPrerequisites =
-  orderedUnion
-    [ pulumiDeferredPrerequisites
-    , ["ses_sending_identity_verified", "ses_receive_rule_set_active", "ses_receive_bucket_accessible"]
-    ]
+-- | The Pulumi-substrate prerequisite bundle the AWS Pulumi stacks
+-- consume: the cluster (the MinIO Pulumi state backend lives in-cluster)
+-- plus validated AWS credentials and the pulumi CLI.
+pulumiSubstratePrerequisites :: [PrerequisiteId]
+pulumiSubstratePrerequisites =
+  clusterPrerequisites ++ [AwsCredentialsValid, ToolPulumi]
 
 nativeExecutionPlan :: String -> [String] -> NativeSuitePlan -> TestExecutionPlan
 nativeExecutionPlan label haskellSuites suitePlan =
   TestExecutionPlan
     { testPlanLabel = label
     , testPlanHaskellSuites = haskellSuites
-    , testPlanExecutionMode = NativeSuite (normalizeManagedAwsHarness suitePlan)
+    , testPlanExecutionMode = NativeSuite suitePlan
     }
-
-normalizeManagedAwsHarness :: NativeSuitePlan -> NativeSuitePlan
-normalizeManagedAwsHarness suitePlan =
-  case ( nativeManagedAwsHarnessPolicyTier suitePlan
-       , nativeSubstrate suitePlan
-       , nativeValidations suitePlan
-       ) of
-    (Nothing, SubstrateAws, _ : _) ->
-      suitePlan {nativeManagedAwsHarnessPolicyTier = Just PolicyFull}
-    _ -> suitePlan
 
 nativeValidationId :: NativeValidation -> String
 nativeValidationId validation =
@@ -552,5 +499,5 @@ nativeValidationId validation =
     ValidationLifecycle -> "lifecycle"
     ValidationKeycloakInvite -> "keycloak-invite"
 
-orderedUnion :: [[String]] -> [String]
+orderedUnion :: [[PrerequisiteId]] -> [PrerequisiteId]
 orderedUnion = nub . concat

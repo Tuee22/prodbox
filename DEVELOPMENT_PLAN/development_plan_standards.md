@@ -18,6 +18,7 @@
 [../documents/engineering/prerequisite_doctrine.md](../documents/engineering/prerequisite_doctrine.md),
 [../documents/engineering/unit_testing_policy.md](../documents/engineering/unit_testing_policy.md),
 [the engineering doctrine docs](../documents/engineering/README.md)
+**Generated sections**: none
 
 > **Purpose**: Define the maintenance rules for the prodbox development plan so the repository
 > keeps one coherent, execution-ordered plan and one explicit ledger of cleanup/removal work.

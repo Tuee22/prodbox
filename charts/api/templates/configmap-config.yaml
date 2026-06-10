@@ -5,10 +5,13 @@ Dhall expression (`config.dhall`) per
 this file in-process via the native Haskell `dhall` library through
 `Prodbox.Workload.Settings.loadWorkloadConfig`.
 
-The transitional state keeps the `PRODBOX_WORKLOAD_MODE` /
-`PRODBOX_HTTP_PORT` env vars on the Pod alongside this new ConfigMap so the
-binary can fall back if the chart is rolled back. Sprint 3.14 follow-up
-removes those env vars and makes `--config` the sole source.
+Sprint 3.15: this mounted Dhall config is the SOLE config source for the
+workload binary. The `PRODBOX_*` env-var fallback ladder was deleted from
+`Prodbox.Workload`, so no rollback-safety env vars are set on the Pod;
+`--config` is the only source. The ConfigMap is mounted as a directory (no
+`subPath`) so a `log_level` edit reloads in-process via fsnotify, while a
+`mode` / `port` edit drains-and-exits for a kubelet restart (Boot/Live split,
+config_doctrine §8).
 */}}
 apiVersion: v1
 kind: ConfigMap

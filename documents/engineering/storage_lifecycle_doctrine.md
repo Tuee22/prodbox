@@ -115,17 +115,26 @@ Deterministic rebinding is guaranteed only when all of these hold:
 ## 5. Delete Contract
 
 `prodbox rke2 delete --cascade --yes` is the canonical operator-driven teardown. The
-cascade order, defined in
-[lifecycle_reconciliation_doctrine.md](./lifecycle_reconciliation_doctrine.md) §5, is:
+cascade order is authoritatively defined in
+[lifecycle_reconciliation_doctrine.md](./lifecycle_reconciliation_doctrine.md) §5b
+("Canonical Cascade Order") — that table is the single source of truth and this section
+must not restate the phase sequence independently. For storage context the order is:
 
 1. Confirm MinIO is reachable (or treat per-run Pulumi state as already gone if not).
-2. Per-run Pulumi destroys against MinIO with the
+2. K8s drain phase (LoadBalancer Services, Ingresses, Delete-reclaim PVCs) so the
+   in-cluster controllers are still alive to unwind their AWS-side state.
+3. Per-run Pulumi destroys against MinIO with the
    `withMaterializedOperationalCreds` bracket filling `aws.*` from
-   `aws_admin_for_test_simulation.*` when empty.
-3. K8s drain phase (LoadBalancer Services, Ingresses, Delete-reclaim PVCs).
+   `aws_admin_for_test_simulation.*` when empty — only after the drain so subnet / VPC /
+   cluster deletes have no live ENI / ALB / EBS dependency to trip on.
 4. RKE2 uninstall, removing the substrate and managed kubeconfig.
 5. Postflight cluster-tag sweep that fails the command with the leak list if anything
    cluster-tagged survives.
+
+The drain-before-destroy ordering is load-bearing: see
+[lifecycle_reconciliation_doctrine.md](./lifecycle_reconciliation_doctrine.md) §5b for
+the substrate-aware drain and the `DependencyViolation` failure mode that an inverted
+order produces on the AWS substrate.
 
 `prodbox rke2 delete --yes` (without `--cascade`) preserves any Pulumi residue in MinIO
 when invoked with `--allow-pulumi-residue`; reconcile + per-stack destroy from the

@@ -3,6 +3,8 @@
 module Prodbox.CLI.Docs
   ( renderBashCompletion
   , renderCommandHelp
+  , renderCommandSurfaceMatrix
+  , renderCommandSurfaceTopLevel
   , renderFishCompletion
   , renderGroupManpage
   , renderMarkdownCommandReference
@@ -12,7 +14,8 @@ module Prodbox.CLI.Docs
 where
 
 import Prodbox.CLI.Spec
-  ( CommandSpec (..)
+  ( ArgumentSpec (..)
+  , CommandSpec (..)
   , Example (..)
   , OptionSpec (..)
   )
@@ -114,6 +117,117 @@ renderMarkdownCommandReference spec =
 
   renderRow (commandPath, commandSummary) =
     "| `" ++ commandPath ++ "` | " ++ commandSummary ++ " |"
+
+-- | Render the §2 top-level command table (Command | Kind | Purpose)
+-- directly from the registry's immediate children, in registry order. A
+-- child with subcommands is a @Group@; a child without is a @Command@.
+-- Pure and deterministic: no sorting, timestamps, or environment reads —
+-- the row order is the registry's declaration order.
+renderCommandSurfaceTopLevel :: CommandSpec -> String
+renderCommandSurfaceTopLevel spec =
+  unlines
+    ( [ "| Command | Kind | Purpose |"
+      , "|---------|------|---------|"
+      ]
+        ++ map renderTopLevelRow (children spec)
+    )
+ where
+  renderTopLevelRow child =
+    "| `"
+      ++ name child
+      ++ "` | "
+      ++ topLevelKind child
+      ++ " | "
+      ++ summary child
+      ++ " |"
+
+  topLevelKind child =
+    case children child of
+      [] -> "Command"
+      _ -> "Group"
+
+-- | Render the §3 per-group command matrix directly from the registry. For
+-- each top-level child the matrix emits a @### \`prodbox \<name\>\`@ heading
+-- followed by a @Command | Arguments | Options@ table whose rows are every
+-- leaf command in that subtree (in registry order). The "Arguments" column
+-- renders each leaf's typed positional 'ArgumentSpec's; the "Options"
+-- column lists each leaf's long flags. Pure and deterministic: no sorting,
+-- timestamps, or environment reads.
+renderCommandSurfaceMatrix :: CommandSpec -> String
+renderCommandSurfaceMatrix spec =
+  intercalateBlocks (map renderGroupBlock (children spec))
+ where
+  renderGroupBlock child =
+    unlines
+      ( [ "### `prodbox " ++ name child ++ "`"
+        , ""
+        , "| Command | Arguments | Options |"
+        , "|---------|-----------|---------|"
+        ]
+          ++ map renderMatrixRow (gatherLeaves [name child] child)
+      )
+
+  renderMatrixRow (commandPath, node) =
+    "| `prodbox "
+      ++ unwords commandPath
+      ++ "` | "
+      ++ renderArgumentsCell (arguments node)
+      ++ " | "
+      ++ renderOptionsCell (options node)
+      ++ " |"
+
+-- | Every (command-path, leaf-spec) pair reachable from a node, in
+-- registry order. A node with no children is a leaf and yields a single
+-- pair; otherwise the children are gathered with the node's name pushed
+-- onto the path prefix.
+gatherLeaves :: [String] -> CommandSpec -> [([String], CommandSpec)]
+gatherLeaves commandPath node =
+  case children node of
+    [] -> [(commandPath, node)]
+    nested -> concatMap (\child -> gatherLeaves (commandPath ++ [name child]) child) nested
+
+-- | Render the "Arguments" matrix cell. @none@ when the leaf takes no
+-- positional arguments; otherwise the space-joined metavars, with @...@
+-- appended to a repeatable metavar and @[...]@ wrapping an optional one.
+renderArgumentsCell :: [ArgumentSpec] -> String
+renderArgumentsCell [] = "none"
+renderArgumentsCell argumentSpecs =
+  "`" ++ unwords (map renderArgumentMetavar argumentSpecs) ++ "`"
+
+renderArgumentMetavar :: ArgumentSpec -> String
+renderArgumentMetavar argumentSpec =
+  optionalWrap (argumentMetavar argumentSpec ++ repeatableSuffix)
+ where
+  repeatableSuffix = if argumentRepeatable argumentSpec then "..." else ""
+  optionalWrap text =
+    if argumentOptional argumentSpec
+      then "[" ++ text ++ "]"
+      else text
+
+-- | Render the "Options" matrix cell. @none@ when the leaf takes no
+-- options; otherwise the comma-joined long flags in registry order, each
+-- as @\`--flag\`@.
+renderOptionsCell :: [OptionSpec] -> String
+renderOptionsCell [] = "none"
+renderOptionsCell optionSpecs =
+  intercalateString ", " (map renderOptionFlag optionSpecs)
+
+renderOptionFlag :: OptionSpec -> String
+renderOptionFlag optionSpec = "`--" ++ longName optionSpec ++ "`"
+
+-- | Join rendered blocks with a single blank line between them. Each block
+-- already ends in a trailing newline (it was built with 'unlines'), so the
+-- separator is a lone newline.
+intercalateBlocks :: [String] -> String
+intercalateBlocks = intercalateString "\n"
+
+intercalateString :: String -> [String] -> String
+intercalateString separator =
+  go
+ where
+  go [] = ""
+  go [final] = final
+  go (current : remaining) = current ++ separator ++ go remaining
 
 renderTopLevelManpage :: CommandSpec -> String
 renderTopLevelManpage spec =

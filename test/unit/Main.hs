@@ -98,7 +98,6 @@ import Prodbox.CLI.Command
   , K8sCommand (..)
   , NativeCommand (..)
   , NukeOptions (..)
-  , Plan (..)
   , PlanOptions (..)
   , PolicyTier (..)
   , PulumiCommand (..)
@@ -668,7 +667,6 @@ main = mainWithSuite "prodbox-unit" $ do
                           ( Rke2DeleteFlags
                               { rke2DeleteYes = True
                               , rke2DeleteCascade = False
-                              , rke2DeleteAllowPulumiResidue = False
                               }
                           )
                           (PlanOptions False Nothing)
@@ -688,7 +686,6 @@ main = mainWithSuite "prodbox-unit" $ do
                           ( Rke2DeleteFlags
                               { rke2DeleteYes = True
                               , rke2DeleteCascade = True
-                              , rke2DeleteAllowPulumiResidue = False
                               }
                           )
                           (PlanOptions False Nothing)
@@ -696,35 +693,6 @@ main = mainWithSuite "prodbox-unit" $ do
                   )
               )
           )
-
-    it "routes cluster delete --allow-pulumi-residue through the native Haskell runtime" $ do
-      parseArgs ["cluster", "delete", "--yes", "--allow-pulumi-residue"]
-        `shouldBe` Right
-          ( Options
-              False
-              ( RunNative
-                  ( NativeRke2
-                      ( Rke2Delete
-                          ( Rke2DeleteFlags
-                              { rke2DeleteYes = True
-                              , rke2DeleteCascade = False
-                              , rke2DeleteAllowPulumiResidue = True
-                              }
-                          )
-                          (PlanOptions False Nothing)
-                      )
-                  )
-              )
-          )
-
-    it "rejects cluster delete --cascade --allow-pulumi-residue (mutual exclusion)" $ do
-      case parseArgs ["cluster", "delete", "--yes", "--cascade", "--allow-pulumi-residue"] of
-        Left _ -> pure ()
-        Right value ->
-          expectationFailure
-            ( "Expected parse failure for --cascade + --allow-pulumi-residue, got: "
-                ++ show value
-            )
 
     it "routes aws stack commands through the native Haskell runtime" $ do
       parseArgs ["aws", "stack", "test", "reconcile"]
@@ -4443,18 +4411,19 @@ main = mainWithSuite "prodbox-unit" $ do
           Rke2DeleteFlags
             { rke2DeleteYes = True
             , rke2DeleteCascade = False
-            , rke2DeleteAllowPulumiResidue = False
             }
         cascadeFlags = defaultFlags {rke2DeleteCascade = True}
 
-    it "default-delete plan derives the per-run sweep from the registry (includes aws-eks-subzone)" $ do
+    it "default-delete plan is a pure local uninstall (no per-run AWS backend interaction)" $ do
       let rendered = renderNativeDeletePlan "/repo" defaultFlags
-      rendered `shouldContain` "STEP=per_run_destroy aws-eks"
-      -- The historical bug: the hand-rolled list omitted aws-eks-subzone.
-      rendered `shouldContain` "STEP=per_run_destroy aws-eks-subzone"
-      rendered `shouldContain` "STEP=per_run_destroy aws-test"
       rendered `shouldContain` "MODE=default"
-      rendered `shouldContain` "STEP=refuse_on_live_per_run_residue"
+      rendered `shouldContain` "STEP=delete_rke2_cluster_substrate"
+      rendered `shouldContain` "STEP=render_retained_state_notice"
+      -- The default delete no longer queries/gates/destroys the per-run
+      -- AWS Pulumi backend; that lives in --cascade only.
+      rendered `shouldNotContain` "STEP=per_run_destroy"
+      rendered `shouldNotContain` "STEP=refuse_on_live_per_run_residue"
+      rendered `shouldNotContain` "ALLOW_PULUMI_RESIDUE"
 
     it "cascade plan renders the canonical drain-before-destroys narration + every per-run stack" $ do
       let rendered = renderNativeDeletePlan "/repo" cascadeFlags
@@ -4468,12 +4437,12 @@ main = mainWithSuite "prodbox-unit" $ do
       (drainIdx < destroyIdx) `shouldBe` True
       drainIdx `shouldSatisfy` (/= Nothing)
 
-    it "the per-run sweep lists exactly the PerRun registry resources in order" $ do
+    it "the cascade per-run sweep lists exactly the PerRun registry resources in order" $ do
       let registryNames =
             map ResourceRegistry.resourceName ResourceRegistry.perRunManagedResources
           planSteps =
             [ drop (length ("STEP=per_run_destroy " :: String)) line
-            | line <- lines (renderNativeDeletePlan "/repo" defaultFlags)
+            | line <- lines (renderNativeDeletePlan "/repo" cascadeFlags)
             , "STEP=per_run_destroy " `isPrefixOf` line
             ]
       planSteps `shouldBe` registryNames
@@ -4531,7 +4500,6 @@ main = mainWithSuite "prodbox-unit" $ do
           Rke2DeleteFlags
             { rke2DeleteYes = True
             , rke2DeleteCascade = False
-            , rke2DeleteAllowPulumiResidue = False
             }
         cascadeDeleteFlags = defaultDeleteFlags {rke2DeleteCascade = True}
 
@@ -4556,16 +4524,15 @@ main = mainWithSuite "prodbox-unit" $ do
       "test/golden/destructive/nuke.txt"
       (pure (renderUtf8 (Nuke.renderNukePlan destructiveGoldenRepoRoot)))
 
-    it "the rke2-delete goldens name every PerRun registry resource (drift guard)" $ do
+    it "the cascade rke2-delete golden names every PerRun registry resource (drift guard)" $ do
       defaultGolden <- readFile "test/golden/destructive/rke2-delete.txt"
       cascadeGolden <- readFile "test/golden/destructive/rke2-delete-cascade.txt"
       let perRunNames = map ResourceRegistry.resourceName ResourceRegistry.perRunManagedResources
-      -- Every registered PerRun resource must appear in BOTH goldens; if a
-      -- new PerRun resource is registered without regenerating the goldens,
-      -- this fails (the golden no longer covers the registry).
-      mapM_
-        (\name -> defaultGolden `shouldContain` ("STEP=per_run_destroy " ++ name))
-        perRunNames
+      -- The default delete is a pure local uninstall: it has NO per_run_destroy
+      -- steps. Only the cascade golden carries the per-run sweep; if a new
+      -- PerRun resource is registered without regenerating the cascade golden,
+      -- this fails.
+      defaultGolden `shouldNotContain` "STEP=per_run_destroy"
       mapM_
         (\name -> cascadeGolden `shouldContain` ("STEP=per_run_destroy " ++ name))
         perRunNames
@@ -4627,14 +4594,10 @@ main = mainWithSuite "prodbox-unit" $ do
   describe "Sprint 4.26 noLiveLongLivedPulumiStacks aws-teardown preflight composition" $ do
     it "the aws teardown default precondition set includes noLiveLongLivedPulumiStacks" $
       -- The operator `aws teardown` default path refuses on a live long-lived
-      -- stack via this named precondition (the deferred Sprint 4.11
-      -- consolidation), in addition to the per-run noLivePerRunPulumiStacks.
+      -- stack via this named precondition. (The per-run refuse-gate was
+      -- removed: `cluster delete` is now a pure local uninstall.)
       Preconditions.preconditionLabel (Preconditions.noLiveLongLivedPulumiStacks "/repo")
         `shouldBe` "noLiveLongLivedPulumiStacks"
-
-    it "noLivePerRunPulumiStacks stays the per-run gate (refuse-gate split preserved)" $
-      Preconditions.preconditionLabel (Preconditions.noLivePerRunPulumiStacks "/repo")
-        `shouldBe` "noLivePerRunPulumiStacks"
 
   describe "Sprint 7.8 operational-resource registry" $ do
     let sampleCreds =
@@ -4937,8 +4900,8 @@ main = mainWithSuite "prodbox-unit" $ do
             `shouldBe` Residue.ResidueUnreachable
               (Residue.ResidueBackendMinioUnreachable "connection refused")
 
-    it "isMissingLongLivedS3BackendBucketMessage matches Pulumi S3 NoSuchBucket output" $
-      LiveResidue.isMissingLongLivedS3BackendBucketMessage
+    it "isMissingStateBackendBucketMessage matches Pulumi S3 NoSuchBucket output" $
+      LiveResidue.isMissingStateBackendBucketMessage
         "error listing stacks: could not list bucket: blob (code=NotFound): NoSuchBucket:"
         `shouldBe` True
 
@@ -4955,6 +4918,24 @@ main = mainWithSuite "prodbox-unit" $ do
        in status
             `shouldBe` Residue.ResidueUnreachable
               (Residue.ResidueBackendS3Unreachable "AccessDenied: denied")
+
+    it "residueStatusFromMinioListing treats a never-created per-run state bucket as absent" $
+      -- A 404 NoSuchBucket from the in-cluster MinIO backend means no
+      -- per-run stacks were ever provisioned — Absent (nothing to destroy),
+      -- NOT Unreachable. (Was the bug that wrongly refused `cluster delete`
+      -- on a local cluster.)
+      let err =
+            StackOutputs.StackOutputsCommandFailed
+              "error listing stacks: could not list bucket: blob (code=NotFound): NoSuchBucket: The specified bucket does not exist"
+          status = LiveResidue.residueStatusFromMinioListing "aws-eks-test" (Left err)
+       in status `shouldBe` Residue.ResidueAbsent
+
+    it "residueStatusFromMinioListing keeps a genuinely-down MinIO backend fail-closed" $
+      let err = StackOutputs.StackOutputsCommandFailed "dial tcp 127.0.0.1: connection refused"
+          status = LiveResidue.residueStatusFromMinioListing "aws-eks-test" (Left err)
+       in status
+            `shouldBe` Residue.ResidueUnreachable
+              (Residue.ResidueBackendMinioUnreachable "dial tcp 127.0.0.1: connection refused")
 
     it "canonical stack-name constants match the production names" $ do
       LiveResidue.awsEksTestStackName `shouldBe` "aws-eks-test"
@@ -6217,33 +6198,6 @@ main = mainWithSuite "prodbox-unit" $ do
               (Residue.ResidueBackendS3Unreachable "admin credentials missing")
           residue = categorizePulumiResidue absentPerRunStatuses unreachable
       residue `shouldBe` [("aws-ses", "prodbox aws stack aws-ses destroy --yes")]
-
-  describe "Sprint 4.19 per-run delete-gate refusal messages" $ do
-    it "unreadable-only refusal names the escape hatch and warns against deleting .data" $ do
-      let summary =
-            Preconditions.perRunSummaryLine [] [("aws-eks", "unreachable (MinIO backend unreachable: refused)")]
-          narrative =
-            Preconditions.renderPerRunRefusal
-              []
-              [("aws-eks", "unreachable (MinIO backend unreachable: refused)")]
-      summary `shouldContain` "unreachable"
-      summary `shouldContain` "cannot confirm"
-      narrative `shouldContain` "could not"
-      narrative `shouldContain` "do NOT delete `.data/`"
-      narrative `shouldContain` "--allow-pulumi-residue"
-
-    it "live-only refusal lists the canonical destroy command and the cascade alternative" $ do
-      let narrative = Preconditions.renderPerRunRefusal [("aws-eks", "prodbox aws stack eks destroy --yes")] []
-      narrative `shouldContain` "aws-eks → prodbox aws stack eks destroy --yes"
-      narrative `shouldContain` "--cascade"
-
-    it "summary distinguishes the present-and-unreachable combination" $ do
-      let summary =
-            Preconditions.perRunSummaryLine
-              [("aws-eks", "prodbox aws stack eks destroy --yes")]
-              [("aws-test", "unreachable (MinIO backend unreachable: refused)")]
-      summary `shouldContain` "live resources"
-      summary `shouldContain` "unreachable"
 
   describe "Sprint 4.20 managed-resource registry facts" $ do
     it "every per-run stack the lifecycle classes declares is a Pulumi stack" $

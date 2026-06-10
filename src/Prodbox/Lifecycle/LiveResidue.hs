@@ -40,8 +40,9 @@ module Prodbox.Lifecycle.LiveResidue
   , residueReasonFromS3Error
   , residueStatusFromListing
   , residueStatusFromS3Listing
+  , residueStatusFromMinioListing
   , residueStatusFromObjectListing
-  , isMissingLongLivedS3BackendBucketMessage
+  , isMissingStateBackendBucketMessage
   , awsEksTestStackName
   , awsEksSubzoneStackName
   , awsTestStackName
@@ -187,19 +188,16 @@ queryPerRunLive repoRoot = do
               (repoRoot </> "pulumi" </> "aws-eks")
               environment
               awsEksTestStackName
-              residueReasonFromMinioError
           subzone <-
             queryOne
               (repoRoot </> "pulumi" </> "aws-eks-subzone")
               environment
               awsEksSubzoneStackName
-              residueReasonFromMinioError
           test <-
             queryOne
               (repoRoot </> "pulumi" </> "aws-test")
               environment
               awsTestStackName
-              residueReasonFromMinioError
           pure (eks, subzone, test)
       pure $ case bracketResult of
         Left err -> unreachableTriple (ResidueBackendMinioUnreachable err)
@@ -346,12 +344,10 @@ queryOne
   -- ^ Environment for the @pulumi@ subprocess.
   -> String
   -- ^ Canonical stack name (e.g. @aws-eks-test@).
-  -> (StackOutputsError -> ResidueUnreachableReason)
-  -- ^ Per-backend error mapper.
   -> IO ResidueStatus
-queryOne projectDir environment stackName toReason = do
+queryOne projectDir environment stackName = do
   result <- listStacks projectDir environment
-  pure (residueStatusFromListing stackName toReason result)
+  pure (residueStatusFromMinioListing stackName result)
 
 -- | Pure helper translating the 'listStacks' result into a typed
 -- 'ResidueStatus'. Exposed for unit testing because the IO query is
@@ -381,9 +377,27 @@ residueStatusFromS3Listing
   -> ResidueStatus
 residueStatusFromS3Listing stackName result = case result of
   Left err
-    | isMissingLongLivedS3BackendBucketMessage (stackOutputsErrorDetail err) ->
+    | isMissingStateBackendBucketMessage (stackOutputsErrorDetail err) ->
         ResidueAbsent
   _ -> residueStatusFromListing stackName residueReasonFromS3Error result
+
+-- | Per-run MinIO backends use a never-created (or deleted) state bucket
+-- as the authoritative "nothing to destroy" state: a @NoSuchBucket@ /
+-- @code=NotFound@ response means no per-run stacks were ever provisioned,
+-- which is 'ResidueAbsent', NOT 'ResidueUnreachable'. (MinIO is
+-- S3-compatible, so the blob-store error is identical to the long-lived
+-- S3 case — see 'residueStatusFromS3Listing'.) Other MinIO errors (a
+-- genuinely down pod, a connection refusal) still fail closed via
+-- 'ResidueUnreachable' through 'residueReasonFromMinioError'.
+residueStatusFromMinioListing
+  :: String
+  -> Either StackOutputsError [StackListEntry]
+  -> ResidueStatus
+residueStatusFromMinioListing stackName result = case result of
+  Left err
+    | isMissingStateBackendBucketMessage (stackOutputsErrorDetail err) ->
+        ResidueAbsent
+  _ -> residueStatusFromListing stackName residueReasonFromMinioError result
 
 -- | Sprint 4.24: translate a long-lived S3 object-key listing (from
 -- 'listLongLivedObjectKeysUnderPrefix') into a typed 'ResidueStatus'
@@ -403,7 +417,7 @@ residueStatusFromS3Listing stackName result = case result of
 residueStatusFromObjectListing :: String -> Either String [String] -> ResidueStatus
 residueStatusFromObjectListing resourceName result = case result of
   Left detail
-    | isMissingLongLivedS3BackendBucketMessage detail -> ResidueAbsent
+    | isMissingStateBackendBucketMessage detail -> ResidueAbsent
     | otherwise -> ResidueUnreachable (ResidueBackendS3Unreachable detail)
   Right [] -> ResidueAbsent
   Right keys ->
@@ -422,8 +436,13 @@ stackOutputsErrorDetail err = case err of
   StackOutputsCommandFailed detail -> detail
   StackOutputsParseFailed detail -> detail
 
-isMissingLongLivedS3BackendBucketMessage :: String -> Bool
-isMissingLongLivedS3BackendBucketMessage detail =
+-- | Detect the S3-compatible "the state bucket does not exist" blob
+-- emitted by both the long-lived S3 backend AND the per-run in-cluster
+-- MinIO backend (a 404 @NoSuchBucket@ / @code=NotFound@ when listing
+-- stacks). A never-created bucket is authoritative evidence of "nothing
+-- to destroy" (Absent), not an unobservable backend (Unreachable).
+isMissingStateBackendBucketMessage :: String -> Bool
+isMissingStateBackendBucketMessage detail =
   "nosuchbucket" `isInfixOf` normalized
     || ( "could not list bucket" `isInfixOf` normalized
            && "code=notfound" `isInfixOf` normalized

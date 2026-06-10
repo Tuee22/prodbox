@@ -30,6 +30,22 @@ govern this plan suite.
 
 ## Closure Status
 
+**2026-06-10 (later) — `cluster delete` per-run-backend decoupling reopens Phase `4`.** A live
+`prodbox cluster delete --yes` on a freshly-reconciled local cluster wrongly REFUSED because the
+default delete's per-run residue gate misclassified a never-created MinIO state bucket
+(`NoSuchBucket` / 404) as `Unreachable` instead of `Absent`. Per the operator's call, the default
+`cluster delete` is redefined as a **pure local cluster uninstall**: it preserves `.data/` and
+never queries, gates on, or destroys the per-run AWS Pulumi backend — so deleting the cluster can
+never be blocked by AWS-backend observability, and per-run AWS stacks (if any) stay destroyable
+afterward via `--cascade` or `prodbox aws stack <name> destroy --yes`. **Phase `4` reopens** for
+the next Phase-4 sprint: remove the `noLivePerRunPulumiStacks` precondition + the default-delete
+refuse-gate + the `--allow-pulumi-residue` flag (clean cut, no alias); add the secondary
+`NoSuchBucket → Absent` classification fix in `LiveResidue` (benefits the cascade + `aws teardown`
+per-run queries); regenerate the `rke2-delete` default golden; update `CLAUDE.md`, `README.md`,
+and `lifecycle_reconciliation_doctrine.md` / `cli_command_surface.md`. `--cascade` is unchanged and
+remains the only `cluster delete` path that destroys per-run AWS stacks. Phases `0`/`1`/`5` (the
+command-surface refactor below) and `2`/`3`/`6`/`7`/`8` are otherwise unaffected.
+
 **2026-06-10 — Command-surface refactor reopens Phases `0`, `1`, and `5`.** A whole-surface
 review found the documented command topology leaked implementation (`rke2`, `pulumi`) and coupled
 local cluster commands to AWS. The refactor: tiers config validation so local commands decode with

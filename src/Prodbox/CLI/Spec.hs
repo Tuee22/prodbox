@@ -673,53 +673,25 @@ yesSwitchParser helpText =
     )
 
 -- | Sprint 4.11: parser for the @prodbox rke2 delete@ flag matrix.
--- @--yes@ is independent; @--cascade@ and @--allow-pulumi-residue@
--- are mutually exclusive (enforced via 'flag'' + '<|>' so the second
--- flag's appearance produces a parse-time error when the first has
--- already consumed its match). The default (neither cascade nor
--- allow-pulumi-residue) is the refuse-on-per-run-residue path.
+-- @--yes@ is independent; @--cascade@ opts into the full teardown (K8s
+-- drain + per-run Pulumi destroys + uninstall + postflight tag sweep).
+-- The default (no @--cascade@) is a pure local cluster uninstall that
+-- never touches the per-run AWS Pulumi backend.
 rke2DeleteFlagsParser :: Parser Rke2DeleteFlags
 rke2DeleteFlagsParser =
-  buildFlags
-    <$> yesSwitchParser "Confirm full RKE2 cluster deletion"
-    <*> ( flag'
-            CascadeMode
-            ( long "cascade"
-                <> help
-                  ( "Orchestrate the full teardown — K8s drain, per-run "
-                      ++ "Pulumi destroys, cluster uninstall, postflight "
-                      ++ "tag sweep — as one atomic operator action. The "
-                      ++ "K8s drain phase skips gracefully when no cluster "
-                      ++ "is reachable. Mutually exclusive with "
-                      ++ "--allow-pulumi-residue."
-                  )
+  Rke2DeleteFlags
+    <$> yesSwitchParser "Confirm full local cluster deletion"
+    <*> switch
+      ( long "cascade"
+          <> help
+            ( "Orchestrate the full teardown — K8s drain, per-run "
+                ++ "Pulumi destroys, cluster uninstall, postflight tag "
+                ++ "sweep — as one atomic operator action. The K8s drain "
+                ++ "phase skips gracefully when no cluster is reachable. "
+                ++ "Without --cascade, `cluster delete` is a pure local "
+                ++ "uninstall and leaves per-run AWS stacks untouched."
             )
-            <|> flag'
-              AllowResidueMode
-              ( long "allow-pulumi-residue"
-                  <> help
-                    ( "Bypass the per-run Pulumi residue refuse-path "
-                        ++ "(recovery only). Allows uninstalling RKE2 even "
-                        ++ "while aws-eks / aws-eks-subzone / aws-test "
-                        ++ "stacks still have live resources. Mutually "
-                        ++ "exclusive with --cascade."
-                    )
-              )
-            <|> pure RefuseMode
-        )
- where
-  buildFlags confirmed mode =
-    Rke2DeleteFlags
-      { rke2DeleteYes = confirmed
-      , rke2DeleteCascade = mode == CascadeMode
-      , rke2DeleteAllowPulumiResidue = mode == AllowResidueMode
-      }
-
-data Rke2DeleteMode
-  = RefuseMode
-  | CascadeMode
-  | AllowResidueMode
-  deriving (Eq, Show)
+      )
 
 -- | Sprint 4.11: build an 'Rke2Delete' request from parsed flags.
 rke2DeleteParser :: Rke2DeleteFlags -> PlanOptions -> CommandRequest
@@ -1397,27 +1369,22 @@ clusterGroup =
     , leaf
         "delete"
         "Delete the local cluster"
-        "Delete the local cluster. Default mode opens with a per-run-residue check and refuses if `aws-eks`, `aws-eks-subzone`, or `aws-test` still have live resources. `--cascade` orchestrates the full teardown (K8s drain + per-run Pulumi destroys + cluster uninstall + postflight tag sweep) as one atomic operator action; the K8s drain phase skips gracefully when no cluster is reachable. `--allow-pulumi-residue` bypasses the residue check for operator-acknowledged recovery scenarios. `--cascade` and `--allow-pulumi-residue` are mutually exclusive at parse time."
+        "Delete the local cluster. Default mode is a PURE LOCAL UNINSTALL: it uninstalls RKE2 and preserves `.data/` (the MinIO-backed per-run Pulumi state) without querying, gating on, or destroying the per-run AWS Pulumi backend — so per-run AWS stacks (if any) are left untouched and remain destroyable afterward via `prodbox cluster delete --cascade` or `prodbox aws stack <name> destroy --yes`. `--cascade` orchestrates the full teardown (K8s drain + per-run Pulumi destroys + cluster uninstall + postflight tag sweep) as one atomic operator action; the K8s drain phase skips gracefully when no cluster is reachable."
         [ flagOption "yes" (Just 'y') Nothing "Confirm full cluster deletion"
         , flagOption
             "cascade"
             Nothing
             Nothing
             "Orchestrate the full teardown (K8s drain + per-run Pulumi destroys + cluster uninstall + postflight tag sweep) as one atomic operator action"
-        , flagOption
-            "allow-pulumi-residue"
-            Nothing
-            Nothing
-            "Bypass the per-run Pulumi residue refuse-path (recovery only)"
         , flagOption "dry-run" Nothing Nothing "Render the delete plan without mutating state"
         , optionalOption "plan-file" Nothing "PATH" "Write the rendered plan to a file"
         ]
         [ example
             ["cluster", "delete", "--yes"]
-            "Delete the local cluster (refuses if per-run Pulumi stacks are live)."
+            "Uninstall the local cluster (pure local uninstall; leaves per-run AWS stacks untouched)."
         , example
             ["cluster", "delete", "--yes", "--cascade"]
-            "Orchestrate the full teardown as one atomic operator action."
+            "Orchestrate the full teardown including per-run AWS destroys."
         ]
     , leaf
         "logs"

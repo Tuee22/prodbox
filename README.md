@@ -62,9 +62,9 @@ validation environments.
   sweeping for cluster-tagged AWS resources after every destructive run; the consolidated doctrine
   lives in
   [documents/engineering/lifecycle_reconciliation_doctrine.md](./documents/engineering/lifecycle_reconciliation_doctrine.md).
-  `prodbox cluster delete` opens with a refuse-path on live per-run Pulumi stacks; when no RKE2
-  install is present it short-circuits before that path to a no-op success
-  (`No RKE2 cluster to delete.`, exit 0). `--cascade` is the
+  `prodbox cluster delete` defaults to a pure local cluster uninstall — it preserves `.data/`
+  and never touches the per-run AWS Pulumi backend; when no RKE2 install is present it is a
+  no-op success (`No RKE2 cluster to delete.`, exit 0). `--cascade` is the
   positive-framed "clean teardown" path that orchestrates K8s drain + per-run destroys + cluster
   uninstall + postflight tag sweep. The K8s drain phase tolerates the case where the Kubernetes
   cluster is already absent (partial teardown, first-time provisioning, repeated reruns): a quick

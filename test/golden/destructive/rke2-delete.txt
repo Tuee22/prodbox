@@ -1,12 +1,7 @@
 RKE2_DELETE_PLAN
 REPO_ROOT=/tmp/prodbox
 MODE=default
-ALLOW_PULUMI_RESIDUE=False
 STEP=ensure_host_inotify_limits
-STEP=refuse_on_live_per_run_residue
-STEP=per_run_destroy aws-eks
-STEP=per_run_destroy aws-eks-subzone
-STEP=per_run_destroy aws-test
 STEP=delete_rke2_cluster_substrate
 STEP=remove_calico_endpoint_status_residue
 STEP=remove_managed_kubeconfig

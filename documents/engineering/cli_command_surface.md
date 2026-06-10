@@ -193,7 +193,7 @@ The per-group command matrix (generated; do not edit by hand):
 | `prodbox cluster stop` | none | none |
 | `prodbox cluster restart` | none | none |
 | `prodbox cluster reconcile` | none | `--dry-run`, `--plan-file`, `--with-edge` |
-| `prodbox cluster delete` | none | `--yes`, `--cascade`, `--allow-pulumi-residue`, `--dry-run`, `--plan-file` |
+| `prodbox cluster delete` | none | `--yes`, `--cascade`, `--dry-run`, `--plan-file` |
 | `prodbox cluster logs` | none | `--lines` |
 | `prodbox cluster wait` | none | `--timeout`, `--namespace` |
 | `prodbox cluster workload-logs` | none | `--namespace`, `--tail` |
@@ -396,23 +396,20 @@ succeeds; the filter entry only catches the line on the rare path where systemd 
 captured stderr). When the uninstaller exits non-zero, the actionable upstream lines are still
 surfaced through `summarizeRke2DeleteFailure` so the operator can act on the real failure.
 
-`prodbox cluster delete` carries the Sprint `4.11` refuse-path (planned; symmetric to the Sprint
-`7.6` `aws teardown` refuse-path). It refuses to proceed when any per-run Pulumi stack
-(`aws-eks`, `aws-eks-subzone`, `aws-test`) reports live resources, naming each offending stack
-and the canonical destroy command. Three mutating modes are available; they are mutually
-exclusive at parse time:
+`prodbox cluster delete` has two modes; the default is a **pure local cluster uninstall** and
+`--cascade` is the full teardown.
 
-Before any of the three modes below, `prodbox cluster delete` probes for an installed RKE2 (the
-on-disk markers `/usr/local/bin/rke2`, `/usr/local/bin/rke2-uninstall.sh`,
-`/var/lib/rancher/rke2`, `/etc/rancher/rke2`). When none is present — there is no cluster to
-delete — it prints `No RKE2 cluster to delete.` and exits `0` without consulting the residue
-gate or starting the cascade. This is a no-op short-circuit, not a weakening of the fail-closed
-gate: an installed-but-stopped RKE2 still flows through the full path below. See
+Before either mode, `prodbox cluster delete` probes for an installed RKE2 (the on-disk markers
+`/usr/local/bin/rke2`, `/usr/local/bin/rke2-uninstall.sh`, `/var/lib/rancher/rke2`,
+`/etc/rancher/rke2`). When none is present — there is no cluster to delete — it prints
+`No RKE2 cluster to delete.` and exits `0`. See
 [lifecycle_reconciliation_doctrine.md](lifecycle_reconciliation_doctrine.md) §5a.
 
-- (default, no flag) → **refuse** with the actionable per-stack remedy list. The cluster is
-  not touched; the operator runs the named `prodbox aws stack <stack> destroy --yes` commands
-  while the MinIO backend for those stacks is still up.
+- (default, no flag) → **pure local uninstall**. It uninstalls RKE2 and preserves `.data/` (the
+  MinIO-backed per-run Pulumi state) WITHOUT querying, gating on, or destroying the per-run AWS
+  Pulumi backend. Per-run AWS stacks (if any) are left untouched and remain destroyable
+  afterward via `--cascade` or `prodbox aws stack <name> destroy --yes`. Because `.data/` is
+  preserved, deleting the cluster never affects the ability to reason about that state.
 - `--cascade` → **orchestrate the full clean teardown**. Sprints `4.17.a` / `4.17.b`
   establish the doctrine-canonical drain-before-destroys order with substrate-aware
   drain kubeconfig handling. Canonical order: (1) confirm MinIO reachable and query
@@ -430,18 +427,14 @@ gate: an installed-but-stopped RKE2 still flows through the full path below. See
   [Lifecycle Reconciliation Doctrine](lifecycle_reconciliation_doctrine.md) §5b is the
   authoritative cascade-order reference. This is the recommended path for
   wipe-and-rebuild cycles.
-- `--allow-pulumi-residue` → **operator-acknowledged orphan**. Bypass the refuse-path; per-run
-  stacks become orphaned (their MinIO backend dies with the cluster). Recovery-only.
-
-All three modes route through `runPlanWithOptions` (Sprint `4.26`), so `--dry-run` renders the
-full destructive plan and exits `0` **without mutating** (the no-RKE2 short-circuit, the
-refuse-gate, and the cascade orchestration all live inside the apply closure), and `--plan-file`
-writes the rendered plan. The default-delete per-run sweep and the rendered plan's
-`per_run_destroy` steps are derived from the managed-resource registry's `PerRun` class, so they
-cannot omit `aws-eks-subzone`. The `checkPlanOptionsHonored` lint
-([code_quality.md](code_quality.md)) forbids any destructive dispatch arm from wildcarding its
-`PlanOptions` away, the regression guard for the historical
-`rke2 delete --yes --dry-run`-silently-mutates bug.
+Both modes route through `runPlanWithOptions` (Sprint `4.26`), so `--dry-run` renders the
+full plan and exits `0` **without mutating** (the no-RKE2 short-circuit and the cascade
+orchestration live inside the apply closure), and `--plan-file` writes the rendered plan. The
+cascade's per-run sweep and the rendered cascade plan's `per_run_destroy` steps are derived from
+the managed-resource registry's `PerRun` class, so they cannot omit `aws-eks-subzone`. The
+`checkPlanOptionsHonored` lint ([code_quality.md](code_quality.md)) forbids any destructive
+dispatch arm from wildcarding its `PlanOptions` away, the regression guard for the historical
+`cluster delete --yes --dry-run`-silently-mutates bug.
 
 `aws-ses` is **explicitly excluded** from `prodbox cluster delete`'s residue scope regardless of
 flag. Its Pulumi state lives in the dedicated long-lived S3 bucket (Sprint `4.10`), so cluster

@@ -509,7 +509,7 @@ integrationCliSuite = do
         when (deleteExitCode /= ExitSuccess) (expectationFailure deleteOutput)
         deleteExitCode `shouldBe` ExitSuccess
         deleteStderr `shouldBe` ""
-        deleteStdout `shouldContain` "Deleting local RKE2 environment..."
+        deleteStdout `shouldContain` "Uninstalling the local cluster..."
         deleteStdout
           `shouldContain` "AWS EKS test stack: no local Pulumi backend or saved residue snapshot; nothing to destroy"
         deleteStdout
@@ -720,7 +720,7 @@ integrationCliSuite = do
         when (deleteExitCode /= ExitSuccess) (expectationFailure deleteOutput)
         deleteExitCode `shouldBe` ExitSuccess
         deleteStderr `shouldBe` ""
-        deleteStdout `shouldContain` "Deleting local RKE2 environment..."
+        deleteStdout `shouldContain` "Uninstalling the local cluster..."
         deleteStdout
           `shouldContain` "AWS EKS test stack: no local Pulumi backend or saved residue snapshot; nothing to destroy"
         deleteStdout
@@ -762,7 +762,7 @@ integrationCliSuite = do
             ""
 
         deleteExitCode `shouldBe` ExitFailure 1
-        deleteStdout `shouldContain` "Deleting local RKE2 environment..."
+        deleteStdout `shouldContain` "Uninstalling the local cluster..."
         deleteStdout `shouldNotContain` "Local RKE2 substrate: cleanup complete"
         deleteStderr `shouldContain` "failed to clean the local RKE2 substrate"
         deleteStderr `shouldContain` "umount: /var/lib/kubelet/pods/abc: target is busy"
@@ -796,21 +796,22 @@ integrationCliSuite = do
         when (deleteExitCode /= ExitSuccess) (expectationFailure deleteOutput)
         deleteExitCode `shouldBe` ExitSuccess
         deleteStderr `shouldBe` ""
-        deleteStdout `shouldContain` "Deleting local RKE2 environment..."
+        deleteStdout `shouldContain` "Uninstalling the local cluster..."
         deleteStdout
           `shouldContain` "AWS EKS test stack: no local Pulumi backend or saved residue snapshot; nothing to destroy"
         deleteStdout
           `shouldContain` "AWS test stack: no local Pulumi backend or saved residue snapshot; nothing to destroy"
         deleteStdout `shouldContain` "Preserved host state:"
 
-    it "Sprint 4.19: rke2 delete --yes refuses when the per-run Pulumi state backend is unreachable" $
+    it "cluster delete --yes is a pure local uninstall that never refuses on per-run residue" $
       withSystemTempDirectory "prodbox-hs-cli" $ \tmpDir -> do
         binary <- resolveBinaryPath
         writeRepoMarkers tmpDir
         writeFile (tmpDir </> "prodbox-config.dhall") validConfigWithBlankOperationalAwsAndConfiguredAdmin
         baseEnvVars <- fakeRke2Environment tmpDir
-        -- Drop the absent-bypass and force the unreachable-bypass so the gate
-        -- sees ResidueUnreachable (MinIO state backend cannot be read).
+        -- Even with the per-run backend forced unreachable, the default
+        -- delete never queries, gates on, or destroys it — it is a pure
+        -- local cluster uninstall. (All per-run AWS destruction is --cascade.)
         let envVars =
               ("PRODBOX_TEST_RESIDUE_UNREACHABLE", "1")
                 : filter ((/= "PRODBOX_TEST_RESIDUE_ABSENT") . fst) baseEnvVars
@@ -823,36 +824,13 @@ integrationCliSuite = do
         let deleteOutput = unlines ["delete stdout:", deleteStdout, "delete stderr:", deleteStderr]
             combined = deleteStdout ++ deleteStderr
         when
-          (deleteExitCode == ExitSuccess)
-          (expectationFailure ("expected refusal, got success:\n" ++ deleteOutput))
-        deleteExitCode `shouldBe` ExitFailure 1
-        -- It must NOT claim a clean teardown.
-        combined `shouldNotContain` "Deleting local RKE2 environment..."
-        -- It must explain the unreadable state and name the explicit escape.
-        combined `shouldContain` "per-run Pulumi state backend"
-        combined `shouldContain` "do NOT delete `.data/`"
-        combined `shouldContain` "--allow-pulumi-residue"
-
-    it "Sprint 4.19: rke2 delete --yes --allow-pulumi-residue still proceeds when state is unreachable" $
-      withSystemTempDirectory "prodbox-hs-cli" $ \tmpDir -> do
-        binary <- resolveBinaryPath
-        writeRepoMarkers tmpDir
-        writeFile (tmpDir </> "prodbox-config.dhall") validConfigWithBlankOperationalAwsAndConfiguredAdmin
-        baseEnvVars <- fakeRke2Environment tmpDir
-        let envVars =
-              ("PRODBOX_TEST_RESIDUE_UNREACHABLE", "1")
-                : filter ((/= "PRODBOX_TEST_RESIDUE_ABSENT") . fst) baseEnvVars
-
-        (deleteExitCode, deleteStdout, _deleteStderr) <-
-          readCreateProcessWithExitCode
-            (proc binary ["cluster", "delete", "--yes", "--allow-pulumi-residue"])
-              { cwd = Just tmpDir
-              , env = Just envVars
-              }
-            ""
-
+          (deleteExitCode /= ExitSuccess)
+          (expectationFailure ("expected a clean local uninstall, got failure:\n" ++ deleteOutput))
         deleteExitCode `shouldBe` ExitSuccess
-        deleteStdout `shouldContain` "Deleting local RKE2 environment..."
+        combined `shouldContain` "Uninstalling the local cluster..."
+        -- No refusal and no per-run backend interaction.
+        combined `shouldNotContain` "per-run Pulumi state backend"
+        combined `shouldNotContain` "Refused:"
 
     it "Sprint 4.25: rke2 delete --yes is a no-op success with no RKE2 install" $
       withSystemTempDirectory "prodbox-hs-cli" $ \tmpDir -> do
@@ -875,7 +853,7 @@ integrationCliSuite = do
         -- The residue gate never ran, so neither its refusal nor a teardown
         -- narration may appear.
         combined `shouldNotContain` "per-run Pulumi state backend"
-        combined `shouldNotContain` "Deleting local RKE2 environment..."
+        combined `shouldNotContain` "Uninstalling the local cluster..."
 
     it "Sprint 4.25: rke2 delete --cascade is a no-op success with no RKE2 install" $
       withSystemTempDirectory "prodbox-hs-cli" $ \tmpDir -> do

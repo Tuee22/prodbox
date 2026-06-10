@@ -23,7 +23,6 @@ module Prodbox.CLI.Rke2
   , renderMinioChartArgs
   , runEdgeCommand
   , runNativeDeleteCascade
-  , runNativeDeleteWithResiduePolicy
   , runRke2Command
   , homeSubstratePlatformComponents
   )
@@ -115,7 +114,6 @@ import Prodbox.Lifecycle.LiveResidue
   ( PerRunResidueStatuses (..)
   , queryPerRunResidueStatuses
   )
-import Prodbox.Lifecycle.Preconditions qualified as Preconditions
 import Prodbox.Lifecycle.ResidueStatus qualified as ResidueStatus
 import Prodbox.Lifecycle.ResourceRegistry qualified as ResourceRegistry
 import Prodbox.Lifecycle.TagSweep qualified as TagSweep
@@ -891,26 +889,23 @@ renderNativeDeletePlan repoRoot flags
                ]
         )
   | otherwise =
+      -- Default `cluster delete` is a PURE LOCAL UNINSTALL: it never
+      -- queries, gates on, or destroys the per-run AWS Pulumi backend.
+      -- Deleting the cluster preserves `.data/`, so per-run state + any
+      -- AWS resources stay fully reasoned-about afterward. All per-run AWS
+      -- destruction lives in `--cascade` (or `prodbox aws stack <name>
+      -- destroy`).
       unlines
-        ( [ "RKE2_DELETE_PLAN"
-          , "REPO_ROOT=" ++ repoRoot
-          , "MODE=default"
-          , "ALLOW_PULUMI_RESIDUE=" ++ show (rke2DeleteAllowPulumiResidue flags)
-          , "STEP=ensure_host_inotify_limits"
-          ]
-            ++ [ "STEP=refuse_on_live_per_run_residue"
-               | not (rke2DeleteAllowPulumiResidue flags)
-               ]
-            ++ [ "STEP=per_run_destroy " ++ ResourceRegistry.resourceName resource
-               | resource <- ResourceRegistry.perRunManagedResources
-               ]
-            ++ [ "STEP=delete_rke2_cluster_substrate"
-               , "STEP=remove_calico_endpoint_status_residue"
-               , "STEP=remove_managed_kubeconfig"
-               , "STEP=host_firewall_gateway_unrestrict"
-               , "STEP=render_retained_state_notice"
-               ]
-        )
+        [ "RKE2_DELETE_PLAN"
+        , "REPO_ROOT=" ++ repoRoot
+        , "MODE=default"
+        , "STEP=ensure_host_inotify_limits"
+        , "STEP=delete_rke2_cluster_substrate"
+        , "STEP=remove_calico_endpoint_status_residue"
+        , "STEP=remove_managed_kubeconfig"
+        , "STEP=host_firewall_gateway_unrestrict"
+        , "STEP=render_retained_state_notice"
+        ]
 
 -- | Sprint 4.26: the apply closure for @prodbox rke2 delete@. Performs the
 -- effects @--dry-run@ deliberately skips: the no-RKE2-install
@@ -940,48 +935,26 @@ applyNativeDelete repoRoot flags = do
         [ ensureHostInotifyLimits repoRoot
         , if rke2DeleteCascade flags
             then runNativeDeleteCascade repoRoot
-            else runNativeDeleteWithResiduePolicy repoRoot flags
+            else runNativeLocalUninstall repoRoot
         ]
 
-runNativeDelete :: FilePath -> IO ExitCode
-runNativeDelete repoRoot = do
+-- | Default @prodbox cluster delete@: a PURE LOCAL UNINSTALL. It does NOT
+-- query, gate on, or destroy the per-run AWS Pulumi backend — deleting the
+-- cluster preserves @.data/@, so the per-run state and any AWS resources
+-- remain fully reasoned-about and destroyable afterward. All per-run AWS
+-- destruction lives in 'runNativeDeleteCascade' (or @prodbox aws stack
+-- <name> destroy@).
+runNativeLocalUninstall :: FilePath -> IO ExitCode
+runNativeLocalUninstall repoRoot = do
   retainedManualPvRoot <- resolveRetainedManualPvRoot repoRoot
-  writeOutputLine "Deleting local RKE2 environment..."
-  -- Sprint 4.26: derive the per-run destroy sweep from the managed-resource
-  -- registry SSoT instead of a hand-rolled list, closing the historical
-  -- `aws-eks-subzone` omission. The `--allow-pulumi-residue` path destroys
-  -- every PerRun-class stack unconditionally (the operator has accepted the
-  -- orphan risk); `reconcileAbsent`-style status gating is the cascade's
-  -- concern, not this best-effort sweep.
+  writeOutputLine "Uninstalling the local cluster..."
   runSequentially
-    ( [ ResourceRegistry.resourceDestroy resource repoRoot
-      | resource <- ResourceRegistry.perRunManagedResources
-      ]
-        ++ [ deleteRke2ClusterSubstrate repoRoot
-           , removeCalicoEndpointStatusResidue
-           , removeManagedKubeconfig
-           , runHostFirewallGatewayUnrestrict defaultGatewayNodePort
-           , renderRetainedStateNotice repoRoot retainedManualPvRoot
-           ]
-    )
-
--- | Sprint 4.11: @prodbox rke2 delete@ (default mode) opens with
--- @checkAll [noLivePerRunPulumiStacks]@. When @--allow-pulumi-residue@
--- is set the operator has explicitly acknowledged the risk and the
--- precondition is skipped. This stays a refuse-gate (it refuses on live
--- residue rather than reconciling it); only @--cascade@ reconciles
--- (Sprint 4.26, lifecycle_reconciliation_doctrine.md § 3.1).
-runNativeDeleteWithResiduePolicy :: FilePath -> Rke2DeleteFlags -> IO ExitCode
-runNativeDeleteWithResiduePolicy repoRoot flags
-  | rke2DeleteAllowPulumiResidue flags = runNativeDelete repoRoot
-  | otherwise = do
-      checkResult <-
-        Preconditions.checkAll [Preconditions.noLivePerRunPulumiStacks repoRoot]
-      case checkResult of
-        Left failures -> do
-          writeOutputLine (Preconditions.renderPreconditionFailures failures)
-          pure (ExitFailure 1)
-        Right () -> runNativeDelete repoRoot
+    [ deleteRke2ClusterSubstrate repoRoot
+    , removeCalicoEndpointStatusResidue
+    , removeManagedKubeconfig
+    , runHostFirewallGatewayUnrestrict defaultGatewayNodePort
+    , renderRetainedStateNotice repoRoot retainedManualPvRoot
+    ]
 
 -- | Sprint 4.17.a canonical cascade order:
 -- confirm-MinIO → drain → per-run destroys → uninstall → sweep.
@@ -4736,8 +4709,11 @@ removeManagedKubeconfig = do
 
 renderRetainedStateNotice :: FilePath -> FilePath -> IO ExitCode
 renderRetainedStateNotice _repoRoot retainedManualPvRoot = do
-  writeOutputLine "Preserved host state:"
+  writeOutputLine "Local cluster uninstalled. Preserved host state:"
   writeOutputLine ("  - manual PV root: " ++ retainedManualPvRoot)
+  writeOutputLine ("  - `.data/` (MinIO-backed per-run Pulumi state) is preserved")
+  writeOutputLine
+    "Per-run AWS stacks (if any) were NOT destroyed by this local uninstall. To destroy them, run `prodbox cluster delete --cascade` or `prodbox aws stack <name> destroy --yes`."
   -- Sprint 3.13 chunk 16: the @.prodbox-state/charts/@ chart-state root is
   -- gone; chart secrets and gateway event keys now live in k8s @Secret@s
   -- materialized by the gateway daemon. Nothing under @.prodbox-state/@

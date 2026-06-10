@@ -247,17 +247,16 @@ Examples:
 ## prodbox cluster delete
 prodbox cluster delete - Delete the local cluster
 
-Delete the local cluster. Default mode opens with a per-run-residue check and refuses if `aws-eks`, `aws-eks-subzone`, or `aws-test` still have live resources. `--cascade` orchestrates the full teardown (K8s drain + per-run Pulumi destroys + cluster uninstall + postflight tag sweep) as one atomic operator action; the K8s drain phase skips gracefully when no cluster is reachable. `--allow-pulumi-residue` bypasses the residue check for operator-acknowledged recovery scenarios. `--cascade` and `--allow-pulumi-residue` are mutually exclusive at parse time.
+Delete the local cluster. Default mode is a PURE LOCAL UNINSTALL: it uninstalls RKE2 and preserves `.data/` (the MinIO-backed per-run Pulumi state) without querying, gating on, or destroying the per-run AWS Pulumi backend  so per-run AWS stacks (if any) are left untouched and remain destroyable afterward via `prodbox cluster delete --cascade` or `prodbox aws stack <name> destroy --yes`. `--cascade` orchestrates the full teardown (K8s drain + per-run Pulumi destroys + cluster uninstall + postflight tag sweep) as one atomic operator action; the K8s drain phase skips gracefully when no cluster is reachable.
 Options:
 - --yes, -y - Confirm full cluster deletion
 - --cascade - Orchestrate the full teardown (K8s drain + per-run Pulumi destroys + cluster uninstall + postflight tag sweep) as one atomic operator action
-- --allow-pulumi-residue - Bypass the per-run Pulumi residue refuse-path (recovery only)
 - --dry-run - Render the delete plan without mutating state
 - --plan-file <PATH> - Write the rendered plan to a file
 
 Examples:
-- prodbox cluster delete --yes  # Delete the local cluster (refuses if per-run Pulumi stacks are live).
-- prodbox cluster delete --yes --cascade  # Orchestrate the full teardown as one atomic operator action.
+- prodbox cluster delete --yes  # Uninstall the local cluster (pure local uninstall; leaves per-run AWS stacks untouched).
+- prodbox cluster delete --yes --cascade  # Orchestrate the full teardown including per-run AWS destroys.
 
 ## prodbox cluster logs
 prodbox cluster logs - Show cluster service logs

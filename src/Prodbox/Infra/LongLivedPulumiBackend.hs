@@ -540,7 +540,7 @@ renderDeletePayload entries =
 -- and @Left detail@ on failure. A @NoSuchBucket@ failure surfaces in
 -- @detail@ so the caller can treat a deleted long-lived backend as the
 -- authoritative "nothing retained" state via
--- 'Prodbox.Lifecycle.LiveResidue.isMissingLongLivedS3BackendBucketMessage'.
+-- 'Prodbox.Lifecycle.LiveResidue.isMissingStateBackendBucketMessage'.
 listLongLivedObjectKeysUnderPrefix
   :: FilePath
   -> [(String, String)]

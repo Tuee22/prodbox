@@ -1144,7 +1144,7 @@ runDestroyAwsSesPulumiCycle repoRoot projectDir baseEnvironment currentSnapshot 
   case loginResult of
     Left err
       | currentSnapshot == Nothing
-          && LiveResidue.isMissingLongLivedS3BackendBucketMessage err ->
+          && LiveResidue.isMissingStateBackendBucketMessage err ->
           pure (Right "already absent from the long-lived Pulumi backend")
       | otherwise -> pure (Left ("pulumi login failed: " ++ err))
     Right () -> do

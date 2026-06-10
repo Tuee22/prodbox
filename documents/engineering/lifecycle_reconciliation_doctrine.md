@@ -69,11 +69,12 @@ host-pathed PV under `.data/minio/...`
 `.data/` is preserved (the default for both `prodbox cluster delete --yes` and
 `prodbox cluster delete --cascade --yes`), MinIO's bucket contents — the per-run Pulumi
 state, and the gateway-owned master seed at `prodbox/master-seed` — persist across the
-cluster cycle. This is what makes `prodbox cluster delete --allow-pulumi-residue` a
-leak-free recovery shape: abandon the cluster with state intact in MinIO; rebuild RKE2
-on the same `.data/`; MinIO returns with the same bucket data; `prodbox aws stack
-<stack> destroy --yes` releases the AWS resources cleanly. No permanent leak even
-under abnormal teardown sequences.
+cluster cycle. This is exactly why the **default `prodbox cluster delete` is a pure local
+uninstall** that never touches the per-run AWS backend: abandoning the cluster leaves the
+state intact in MinIO; rebuild RKE2 on the same `.data/`; MinIO returns with the same
+bucket data; `prodbox aws stack <stack> destroy --yes` (or `prodbox cluster delete
+--cascade`) releases the AWS resources cleanly. No permanent leak even under abnormal
+teardown sequences.
 
 **Configuration.** The bucket and region are declared in
 `prodbox-config.dhall` under the `pulumi_state_backend` block. The
@@ -160,16 +161,17 @@ no shared in-memory state.
    `Unreachable` depends on whether they are a **gate** or the
    **cascade orchestration**, and this is deliberate:
 
-   - **Gate callers fail closed** (Sprint 4.19). The refuse-path
-     preconditions for `prodbox cluster delete` (default) and
-     `prodbox aws teardown` treat per-run `Unreachable` as a refusal:
-     "I could not read the per-run Pulumi state" is **not** the same
-     as "the resources are gone." Treating it as absent previously let
-     `rke2 delete --yes` silently pass on a degraded cluster (MinIO pod
-     down, per-run state still intact on `.data/`); the subsequent
-     operator `rm .data` then destroyed the only record of live AWS
-     resources. Long-lived `Unreachable` (S3) has always failed closed
-     for the same reason.
+   - **Gate callers fail closed.** A residue refuse-path treats
+     `Unreachable` as a refusal: "I could not read the Pulumi state" is
+     **not** the same as "the resources are gone." This applies to
+     `prodbox aws teardown`'s long-lived gate (`noLiveLongLivedPulumiStacks`)
+     and is honored when the cascade queries per-run residue. Note a
+     never-created backend bucket (`NoSuchBucket` / 404) is **not**
+     `Unreachable` — it is positive evidence of `Absent` (nothing to
+     destroy), classified as such for both the S3 and MinIO backends.
+     (Default `prodbox cluster delete` no longer carries a per-run
+     refuse-path at all — it is a pure local uninstall — so this
+     fail-closed rule is moot there.)
    - **The cascade degrades gracefully.** `prodbox cluster delete
      --cascade`'s own `perRunCascadeInventory` treats per-run
      `Unreachable` as absent — the cascade is tearing the cluster down
@@ -320,36 +322,30 @@ Three invariants make the topology leak-proof and idempotent:
 3. **Idempotent reconciliation.** Teardown is one reconciler,
    `reconcileAbsent`, over a class subset of the registry: for each
    resource `Present → destroy → re-observe`, `Absent → skip`,
-   `Unreachable → refuse`. `prodbox cluster delete` reconciles `PerRun`;
-   `prodbox aws teardown` reconciles `PerRun` ∪ `Operational`;
+   `Unreachable → refuse`. `prodbox cluster delete --cascade` reconciles
+   `PerRun` (default `cluster delete` is a pure local uninstall and
+   reconciles nothing); `prodbox aws teardown` reconciles `Operational`
+   (gating long-lived via `noLiveLongLivedPulumiStacks`);
    `prodbox nuke` reconciles all classes. Re-running converges instead
    of erroring; built on `Plan`/`runPlanWithOptions` so `--dry-run`
    works uniformly.
 4. **Plan-option totality.** Every destructive command routes its work
    through `runPlanWithOptions`, so `--dry-run` and `--plan-file` are
-   honored uniformly — `prodbox cluster delete` (both the default refuse-gate
-   form and `--cascade`) and `prodbox nuke` included. This is the intended
-   Sprint 4.26 invariant: a `check-code` lint, `checkPlanOptionsHonored`,
-   forbids any destructive dispatch arm from binding the `PlanOptions`
-   argument to a `_` wildcard (which would silently drop `--dry-run` /
-   `--plan-file`). Routing through `runPlanWithOptions` is orthogonal to
-   the refuse-gate vs reconciler split (§3.1, §5): the default
-   `rke2 delete` and `aws teardown` remain refuse-gates and only the
-   cascade reconciles, but **all** of them must still surface a faithful
-   `--dry-run` plan and accept a `--plan-file`. The rule is total — "a
+   honored uniformly — `prodbox cluster delete` (the default local
+   uninstall and `--cascade`), `prodbox aws teardown`, and `prodbox nuke`
+   included. This is the intended Sprint 4.26 invariant: a `check-code`
+   lint, `checkPlanOptionsHonored`, forbids any destructive dispatch arm
+   from binding the `PlanOptions` argument to a `_` wildcard (which would
+   silently drop `--dry-run` / `--plan-file`). The rule is total — "a
    destructive command that ignores its plan options" is made
    unrepresentable, the same way invariant 1 makes
    "a creatable-but-undiscoverable resource" unrepresentable. The
-   default-delete per-run sweep is itself **derived from**
-   `perRunManagedResources` (the registry SSoT for the `PerRun` class)
-   rather than a hand-maintained stack list, so the rendered `--dry-run`
-   plan and the executed sweep can never omit a per-run stack — closing
-   the historical `aws-eks-subzone` omission on the `--allow-pulumi-residue`
-   default-delete path. The parallel hand-maintained `categorizePulumiResidue`
-   classifier the teardown refuse-gate used was retired in favor of the
-   registry-derived residue path (`pairPerRunResidue` / `pairAwsSesResidue`
-   + `residueGateRefusalList`), so the gate's `(stack, destroy-command)`
-   list and the destroy actions share one source.
+   cascade's per-run sweep is **derived from** `perRunManagedResources`
+   (the registry SSoT for the `PerRun` class) rather than a hand-maintained
+   stack list, so the rendered `--dry-run` plan and the executed sweep can
+   never omit a per-run stack. The gate's `(stack, destroy-command)` list
+   and the destroy actions share one registry-derived source
+   (`pairPerRunResidue` / `pairAwsSesResidue` + `residueGateRefusalList`).
 
 This is the data-oriented "make illegal states unrepresentable"
 answer, not a global state machine: the registry is pure data, every
@@ -391,7 +387,6 @@ is the per-resource view of one uniform mechanism, not a parallel one.
 
 | Predicate | Returns `Left` when | Used by |
 |---|---|---|
-| `noLivePerRunPulumiStacks` | Any of `aws-eks`, `aws-eks-subzone`, `aws-test` returns `ResiduePresent` (live resources — refuse with the per-stack destroy command) **or** `ResidueUnreachable` (the per-run MinIO state backend could not be read — refuse with a distinct "cannot confirm destroyed; do not delete `.data/`; re-run with `--allow-pulumi-residue` to accept the orphan risk" message). Sprint 4.19 made this gate **fail closed on `ResidueUnreachable`**: "cannot read the state" is not "the resources are gone." | `prodbox cluster delete` (default), `prodbox aws teardown` (default; see also `noLiveLongLivedPulumiStacks`) |
 | `noLiveLongLivedPulumiStacks` | `aws-ses` returns `ResiduePresent` against its S3 backend, **or** (Sprint 4.24) the `public-edge-tls` retained certificate returns `ResiduePresent` against the long-lived bucket, **or** either returns `ResidueUnreachable` (S3 unreachable is a real failure for long-lived resources; failing closed is the correct behavior) | `prodbox aws teardown` (default); `prodbox nuke` (handled by destroying not refusing — the certificate transitively via the whole-bucket destroy) |
 | `noLiveClusterTaggedAws` | The AWS Resource Tagging API returns any resource carrying `kubernetes.io/cluster/<cluster-name>` | Postflight of `prodbox cluster delete --cascade` and `prodbox nuke` |
 | `noUndrainedK8sAwsResources` | `kubectl` reports any LoadBalancer Service, ALB Ingress, or Delete-reclaim PVC that hasn't been drained, **and** the cluster was reachable on the pre-drain `kubectl cluster-info --request-timeout=5s` probe | Postflight of K8s drain (Sprint 4.12); preflight of per-run Pulumi destroys when `--cascade` is set |
@@ -407,10 +402,19 @@ any AWS-side residue left by a `DrainSkipped` cascade.
 | `noLiveOperationalIamUser` | The operational `prodbox` IAM user exists | Postflight of `prodbox aws teardown` and `prodbox nuke` |
 | `noLeftoverDnsBootstrapRecords` | The configured public FQDN has stale prodbox-written Route 53 records | Postflight of `prodbox cluster delete --cascade` and `prodbox nuke` |
 
-`aws-ses` is **explicitly excluded** from `noLivePerRunPulumiStacks`.
-`prodbox cluster delete` ignores `aws-ses` residue because §2 places its
-state outside the cluster; `aws-ses` may only be destroyed by
-`prodbox aws stack aws-ses destroy --yes` or `prodbox nuke`.
+`aws-ses` is **explicitly excluded** from every `cluster delete` path:
+its state lives outside the cluster (§2), so `aws-ses` may only be
+destroyed by `prodbox aws stack aws-ses destroy --yes` or `prodbox nuke`.
+
+Default `prodbox cluster delete` carries **no per-run residue preflight at
+all** — it is a pure local cluster uninstall that preserves `.data/` (the
+MinIO-backed per-run Pulumi state) and never queries, gates on, or
+destroys the per-run AWS backend. Deleting the cluster does not affect the
+ability to reason about that state (it survives on `.data/`), so there is
+nothing to fail closed on. All per-run AWS destruction is `--cascade`'s
+job (which reconciles `PerRun` via `reconcileAbsent`, degrading gracefully
+on an unreachable backend) or the explicit
+`prodbox aws stack <name> destroy --yes`.
 
 ## 5. Mandatory Preflight for Destructive Commands
 
@@ -425,9 +429,9 @@ backend / credentials are still up at the point of refusal).
 
 | Command | Preflight predicates | Default on residue |
 |---|---|---|
-| `prodbox cluster delete` | §5a no-install short-circuit, then `noLivePerRunPulumiStacks` | Refuse with list and per-stack destroy command (or run `--cascade` for "orchestrate the full teardown") |
+| `prodbox cluster delete` | §5a no-install short-circuit, then a pure local uninstall (no per-run residue preflight) | n/a — uninstalls the cluster, preserves `.data/`, leaves per-run AWS stacks untouched |
 | `prodbox cluster delete --cascade` | §5a no-install short-circuit, then none at entry — the command **is** the orchestration | Confirm-MinIO → drain → per-run destroys → uninstall → sweep (see §5b) |
-| `prodbox aws teardown` | `noLivePerRunPulumiStacks`, `noLiveLongLivedPulumiStacks` (Sprint 7.6) | Refuse with list and per-stack destroy command |
+| `prodbox aws teardown` | `noLiveLongLivedPulumiStacks` (Sprint 7.6) | Refuse with list and per-stack destroy command |
 | `prodbox aws stack <stack> destroy` | (none beyond Pulumi's own dependency check) | n/a |
 | `prodbox nuke` | TTY refusal; typed-confirmation literal `NUKE EVERYTHING`; otherwise no residue refusal — the command **is** the total-teardown orchestration | Drain + destroy all stacks + IAM teardown + uninstall + step-4 fail-closed tag sweep (§6) |
 
@@ -600,7 +604,7 @@ class is:
   succeeds and its state is then lost (the create-then-crash window, or a
   `.data/` wipe / cluster crash before the per-run `pulumi destroy`).
 - The operational `prodbox` IAM user, owned by `prodbox aws setup` /
-  `aws teardown` (not by `rke2 delete`); an interrupted run can leave it.
+  `aws teardown` (not by `cluster delete`); an interrupted run can leave it.
 
 How the doctrine handles this class without scanning AWS behind Pulumi
 (an anti-pattern) and without an auto-sweep (which would mask genuine
@@ -615,12 +619,14 @@ leaks):
    resource, and `check-code` totality refuses any future create without
    a registered counterpart. This closes the *coverage* half of the
    blind spot for everything except the irreducible residual below.
-2. **Prevent new silent leaks.** Sprint 4.19's fail-closed delete gate
-   (§3 layer 1, §4) — generalized by §3.1's soundness invariant —
-   refuses `rke2 delete` / `aws teardown` when the per-run Pulumi state
-   backend is unreachable, so an interrupted-state teardown can no
-   longer report "clean" and let `.data/` be wiped out from under live
-   resources. New divergence is surfaced, not hidden.
+2. **Prevent new silent leaks.** The fail-closed soundness invariant
+   (§3 layer 1, §4, §3.1) — `Unreachable → refuse` — applies to
+   `aws teardown`'s long-lived gate and to the cascade's per-run query,
+   so an interrupted-state teardown can no longer report "clean" and let
+   `.data/` be wiped out from under live resources. (Default
+   `cluster delete` is a pure local uninstall: it never reports on per-run
+   state at all, and preserves `.data/` so nothing is wiped.) New
+   divergence is surfaced, not hidden.
 3. **The irreducible residual is operator-cleaned.** The one case the
    registry cannot observe is a fixed-name resource created by a partial
    `pulumi up` whose state was then lost (create-then-crash; a Pulumi
@@ -642,11 +648,11 @@ leaks):
 This residual is recorded as a class in
 [DEVELOPMENT_PLAN/substrates.md → Resource Lifecycle Classes](../../DEVELOPMENT_PLAN/substrates.md#resource-lifecycle-classes).
 
-## 7. What Is Out of Scope for `rke2 delete`
+## 7. What Is Out of Scope for `cluster delete`
 
 `aws-ses`, the operator's parent Route 53 zone, the long-lived
 `pulumi_state_backend` bucket, and any other long-lived shared
-infrastructure never participate in `rke2 delete`'s residue policy.
+infrastructure never participate in `cluster delete`'s residue policy.
 The only sanctioned paths to destroy them are:
 
 - `prodbox aws stack aws-ses destroy --yes` for the `aws-ses` stack
@@ -660,7 +666,7 @@ The only sanctioned paths to destroy them are:
 The long-lived state bucket is created idempotently by
 `ensureLongLivedPulumiStateBucket` and destroyed only by
 `prodbox nuke`'s final pass — never by `aws teardown`, never by
-`rke2 delete`, never as a side effect of any other command.
+`cluster delete`, never as a side effect of any other command.
 
 ## Related Documents
 

@@ -249,7 +249,6 @@ data PulumiCommand
 data Rke2DeleteFlags = Rke2DeleteFlags
   { rke2DeleteYes :: Bool
   , rke2DeleteCascade :: Bool
-  , rke2DeleteAllowPulumiResidue :: Bool
   }
   deriving (Eq, Show)
 

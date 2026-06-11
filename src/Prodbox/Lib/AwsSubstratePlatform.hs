@@ -70,6 +70,7 @@ import Prodbox.CLI.Rke2
   ( MinioImageSource (..)
   , acmeRuntimeManifestWith
   , ensureAdminPublicEdgeRoutes
+  , ensureGatewayChartReady
   , ensureGatewayImagesForSubstrate
   , ensureGatewayMinioBootstrap
   , ensureHarborRegistryRuntime
@@ -101,6 +102,7 @@ import Prodbox.Lifecycle.LiveResidue
   )
 import Prodbox.PublicEdge (publicEdgeClusterIssuerName, resolveSubstrateHostedZoneId)
 import Prodbox.Result (Result (..))
+import Prodbox.Secret.GatewayDeriveMode (GatewayDeriveMode)
 import Prodbox.Settings
   ( ConfigFile (..)
   , Credentials (..)
@@ -694,8 +696,8 @@ ensureAwsSubstrateAcmeRuntime repoRoot settings prodboxId labelValue = do
 --   * The caller has `KUBECONFIG` pointed at the EKS cluster (see
 --     `Prodbox.CLI.Charts.withSubstrateEnvironment`).
 ensureAwsSubstratePlatformRuntime
-  :: FilePath -> ValidatedSettings -> String -> String -> IO ExitCode
-ensureAwsSubstratePlatformRuntime repoRoot settings prodboxId labelValue = do
+  :: GatewayDeriveMode -> FilePath -> ValidatedSettings -> String -> String -> IO ExitCode
+ensureAwsSubstratePlatformRuntime mode repoRoot settings prodboxId labelValue = do
   writeOutputLine
     ( "Reconciling AWS-substrate platform (LB Controller + Envoy Gateway "
         ++ "+ cert-manager + ACME + containerd registry mirror + MinIO + Harbor + admin routes)"
@@ -736,7 +738,10 @@ ensureAwsSubstratePlatformRuntime repoRoot settings prodboxId labelValue = do
     , ensurePostgresOperatorRuntime repoRoot prodboxId labelValue
     , ensureMinioRuntime repoRoot SubstrateAws MinioSteadyStateHarbor
     , ensureGatewayMinioBootstrap repoRoot
-    , ensureAdminPublicEdgeRoutes repoRoot settings SubstrateAws prodboxId labelValue
+    , -- secret_derivation_doctrine.md §7 steps 4–6: gateway daemon deployed
+      -- and ready before the host-CLI derive in 'ensureAdminPublicEdgeRoutes'.
+      ensureGatewayChartReady mode repoRoot settings SubstrateAws
+    , ensureAdminPublicEdgeRoutes mode repoRoot settings SubstrateAws prodboxId labelValue
     ]
 
 -- | Pure listing of the orchestration steps
@@ -760,6 +765,7 @@ awsSubstratePlatformRuntimeStepDescriptions =
   , "ensurePostgresOperatorRuntime"
   , "ensureMinioRuntime SubstrateAws MinioSteadyStateHarbor"
   , "ensureGatewayMinioBootstrap"
+  , "ensureGatewayChartReady SubstrateAws"
   , "ensureAdminPublicEdgeRoutes SubstrateAws"
   ]
 

@@ -5979,7 +5979,7 @@ main = mainWithSuite "prodbox-unit" $ do
     $ do
       let steps = Prodbox.Lib.AwsSubstratePlatform.awsSubstratePlatformRuntimeStepDescriptions
       it
-        "sequences the canonical 15 steps in order through the Sprint 7.5.c.v.b custom-image and admin-route extension"
+        "sequences the canonical 16 steps in order through the Sprint 7.5.c.v.b custom-image and admin-route extension"
         $ steps
           `shouldBe` [ "ensureAwsLoadBalancerControllerRuntime"
                      , "ensureAwsSubstrateEnvoyGatewayRuntime"
@@ -5995,6 +5995,7 @@ main = mainWithSuite "prodbox-unit" $ do
                      , "ensurePostgresOperatorRuntime"
                      , "ensureMinioRuntime SubstrateAws MinioSteadyStateHarbor"
                      , "ensureGatewayMinioBootstrap"
+                     , "ensureGatewayChartReady SubstrateAws"
                      , "ensureAdminPublicEdgeRoutes SubstrateAws"
                      ]
       it

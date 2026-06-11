@@ -37,6 +37,7 @@ import Prodbox.Host (runHostCommand)
 import Prodbox.K8s (runK8sCommand)
 import Prodbox.Lifecycle.Preconditions (noLiveLongLivedPulumiStacksPreflight)
 import Prodbox.PrerequisiteId (PrerequisiteId (..))
+import Prodbox.Secret.GatewayDeriveMode (GatewayDeriveMode)
 import Prodbox.Settings
   ( renderSettingsDisplay
   , validateAndLoadSettings
@@ -48,8 +49,8 @@ import System.Exit
   ( ExitCode (ExitFailure, ExitSuccess)
   )
 
-runNativeCommand :: FilePath -> NativeCommand -> IO ExitCode
-runNativeCommand repoRoot command =
+runNativeCommand :: GatewayDeriveMode -> FilePath -> NativeCommand -> IO ExitCode
+runNativeCommand mode repoRoot command =
   case command of
     NativeAws awsCommand ->
       -- Sprint 4.26: inject the long-lived teardown preflight here (rather
@@ -59,7 +60,7 @@ runNativeCommand repoRoot command =
       -- the harness teardown paths bypass it, preserving Sprint 7.9's
       -- aws-ses relaxation.
       runAwsCommand repoRoot noLiveLongLivedPulumiStacksPreflight awsCommand
-    NativeCharts chartsCommand -> runChartsCommand repoRoot chartsCommand
+    NativeCharts chartsCommand -> runChartsCommand mode repoRoot chartsCommand
     NativeCheckCode -> runCheckCode repoRoot
     NativeConfig configCommand -> runConfigCommand repoRoot configCommand
     NativeDns dnsCommand -> runDnsCommand repoRoot dnsCommand
@@ -71,7 +72,7 @@ runNativeCommand repoRoot command =
     NativeLint lintCommand -> runLintCommand repoRoot lintCommand
     NativeNuke nukeOptions -> runNukeCommand repoRoot nukeOptions
     NativePulumi pulumiCommand -> runPulumiCommand repoRoot pulumiCommand
-    NativeRke2 rke2Command -> runRke2Command repoRoot rke2Command
+    NativeRke2 rke2Command -> runRke2Command mode repoRoot rke2Command
     NativeTest testCommand -> runTests repoRoot testCommand
     NativeTlaCheck -> runTlaCheck repoRoot
     NativeUsers usersCommand -> runUsersCommand repoRoot usersCommand

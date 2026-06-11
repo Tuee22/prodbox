@@ -424,7 +424,7 @@ runbookActions repoRoot environment suitePlan =
   if nativeRequiresIntegrationRunbook suitePlan
     then
       [ emitLineAction phaseOnePointFiveMessage
-      , runNativeCliCommandForExitCode repoRoot environment ["rke2", "reconcile"]
+      , runNativeCliCommandForExitCode repoRoot environment ["cluster", "reconcile", "--with-edge"]
       ]
     else []
 
@@ -434,7 +434,7 @@ supportedRuntimeBootstrapActions repoRoot environment suitePlan =
   if nativeRequiresSupportedRuntimeBootstrap suitePlan
     then
       let reconcileActions =
-            [ runNativeCliCommandForExitCode repoRoot environment ["rke2", "reconcile"]
+            [ runNativeCliCommandForExitCode repoRoot environment ["cluster", "reconcile", "--with-edge"]
             | supportedRuntimeBootstrapNeedsReconcile suitePlan
             ]
        in [emitLineAction phaseOnePointSixMessage]
@@ -633,7 +633,7 @@ supportedRuntimePostflightActions repoRoot environment suitePlan =
   if nativeRequiresSupportedRuntimePostflight suitePlan
     then
       [ emitLineAction postTestRestoreMessage
-      , runNativeCliCommandForExitCode repoRoot environment ["rke2", "reconcile"]
+      , runNativeCliCommandForExitCode repoRoot environment ["cluster", "reconcile", "--with-edge"]
       , runNativeCliCommandForExitCode repoRoot environment ["charts", "delete", "websocket", "--yes"]
       , runNativeCliCommandForExitCode repoRoot environment ["charts", "delete", "api", "--yes"]
       , runNativeCliCommandForExitCode repoRoot environment ["charts", "delete", "vscode", "--yes"]
@@ -760,7 +760,7 @@ runWaitForPublicEdgeReady repoRoot environment substrate attempts delayMicroseco
     nativeCliCommandSpec
       repoRoot
       environment
-      ["host", "public-edge", "--substrate", substrateId substrate]
+      ["edge", "status", "--substrate", substrateId substrate]
 
   go :: Int -> Int -> IO ExitCode
   go attemptsLeft repairsLeft = do

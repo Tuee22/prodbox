@@ -43,6 +43,7 @@ import Prodbox.Lib.ChartPlatform
   , resolveChartSecrets
   , supportedChartNames
   )
+import Prodbox.Secret.GatewayDeriveMode (GatewayDeriveMode)
 import Prodbox.Settings
   ( ConfigFile (..)
   , Credentials (..)
@@ -60,8 +61,8 @@ import System.IO
   , stdout
   )
 
-runChartsCommand :: FilePath -> ChartsCommand -> IO ExitCode
-runChartsCommand repoRoot command =
+runChartsCommand :: GatewayDeriveMode -> FilePath -> ChartsCommand -> IO ExitCode
+runChartsCommand mode repoRoot command =
   case command of
     ChartsList ->
       withSettings repoRoot $ \settings -> do
@@ -100,14 +101,14 @@ runChartsCommand repoRoot command =
                   Left err -> failWith err
                   Right plan ->
                     withSubstrateEnvironment repoRoot settings substrate $ do
-                      platformExit <- ensurePlatformForSubstrate repoRoot settings substrate
+                      platformExit <- ensurePlatformForSubstrate mode repoRoot settings substrate
                       case platformExit of
                         ExitFailure _ -> pure platformExit
                         ExitSuccess ->
                           runPlanWithOptions
                             planOptions
                             (buildPlan renderChartDeploymentPlan plan)
-                            (applyChartDeployWithPostHook rootChart substrate)
+                            (applyChartDeployWithPostHook mode rootChart substrate)
     ChartsDelete chartName substrate confirmed planOptions ->
       case requirePublicRootChartName chartName of
         Left err -> failWith err
@@ -178,9 +179,10 @@ applyChartPlanOutput applyPlan plan = do
 -- | Sprint 2.19 lifecycle hook: after a successful @charts deploy gateway@
 -- on the home substrate, install the iptables loopback-only rule on the
 -- gateway NodePort. Other charts and substrates pass through unchanged.
-applyChartDeployWithPostHook :: String -> Substrate -> ChartDeploymentPlan -> IO ExitCode
-applyChartDeployWithPostHook rootChart substrate plan = do
-  deployExit <- applyChartPlanOutput deployChartPlan plan
+applyChartDeployWithPostHook
+  :: GatewayDeriveMode -> String -> Substrate -> ChartDeploymentPlan -> IO ExitCode
+applyChartDeployWithPostHook mode rootChart substrate plan = do
+  deployExit <- applyChartPlanOutput (deployChartPlan mode) plan
   case (deployExit, rootChart, substrate) of
     (ExitSuccess, "gateway", SubstrateHomeLocal) ->
       runHostFirewallGatewayRestrictOptional defaultGatewayNodePort
@@ -238,10 +240,11 @@ failWith message = do
 -- `helm upgrade --install` or `kubectl apply`, so repeated runs converge
 -- without breaking existing installs.
 ensurePlatformForSubstrate
-  :: FilePath -> ValidatedSettings -> Substrate -> IO ExitCode
-ensurePlatformForSubstrate _ _ SubstrateHomeLocal = pure ExitSuccess
-ensurePlatformForSubstrate repoRoot settings SubstrateAws =
+  :: GatewayDeriveMode -> FilePath -> ValidatedSettings -> Substrate -> IO ExitCode
+ensurePlatformForSubstrate _ _ _ SubstrateHomeLocal = pure ExitSuccess
+ensurePlatformForSubstrate mode repoRoot settings SubstrateAws =
   ensureAwsSubstratePlatformRuntime
+    mode
     repoRoot
     settings
     awsSubstrateProdboxId

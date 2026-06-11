@@ -7,6 +7,7 @@ module Prodbox.CLI.Rke2
   , ensureGatewayImagesForSubstrate
   , ensureGatewayMinioBootstrap
   , ensureAdminPublicEdgeRoutes
+  , ensureGatewayChartReady
   , adminPublicEdgeManifestItems
   , ensureHarborRegistryRuntime
   , ensureHarborRegistryStorageBackend
@@ -63,6 +64,7 @@ import Data.List
   , isPrefixOf
   , nub
   )
+import Data.Map qualified as Map
 import Data.Maybe (fromMaybe)
 import Data.Text qualified as Text
 import Data.Word (Word8)
@@ -95,13 +97,17 @@ import Prodbox.Host
   ( LanAddressing (..)
   , defaultGatewayNodePort
   , detectLanAddressing
+  , runHostFirewallGatewayRestrictOptional
   , runHostFirewallGatewayUnrestrict
   )
 import Prodbox.Infra.AwsEksTestStack (awsEksCanonicalClusterName, withEksKubeconfig)
 import Prodbox.Infra.LongLivedPulumiBackend (loadAdminAwsCredentials)
 import Prodbox.Lib.ChartPlatform
-  ( keycloakRealmName
+  ( buildChartDeploymentPlanForSubstrate
+  , deployChartPlan
+  , keycloakRealmName
   , keycloakVscodeClientId
+  , resolveChartSecrets
   )
 import Prodbox.Lib.EksCustomImagePush
   ( EksCustomImagePushConfig (..)
@@ -139,7 +145,8 @@ import Prodbox.Retry
   ( RetryPolicy (..)
   , retryDelayMicros
   )
-import Prodbox.Secret.Derive (MasterSeed, deriveBase64Url, masterSeed, oidcClientSecretContext)
+import Prodbox.Secret.Derive (deriveBase64Url, oidcClientSecretContext)
+import Prodbox.Secret.GatewayDeriveMode (GatewayDeriveMode (..))
 import Prodbox.Secret.Wire (DeriveResponse (..))
 import Prodbox.Settings
   ( AcmeSection (..)
@@ -181,7 +188,6 @@ import Prodbox.Subprocess
   , runSubprocessStreaming
   )
 import Prodbox.Substrate (Substrate (..), substrateId)
-import Prodbox.TestSeam.GatewayDerive (lookupGatewayDeriveTestSeed)
 import System.Directory
   ( doesDirectoryExist
   , doesFileExist
@@ -581,8 +587,8 @@ doctrineCrdSuffixes =
   , ".postgres-operator.crunchydata.com"
   ]
 
-runRke2Command :: FilePath -> Rke2Command -> IO ExitCode
-runRke2Command repoRoot command =
+runRke2Command :: GatewayDeriveMode -> FilePath -> Rke2Command -> IO ExitCode
+runRke2Command mode repoRoot command =
   case command of
     Rke2Status ->
       requireLinux $
@@ -621,7 +627,7 @@ runRke2Command repoRoot command =
             , subprocessWorkingDirectory = Just repoRoot
             }
     Rke2Reconcile planOptions withEdge ->
-      requireLinux (runNativeInstall repoRoot planOptions withEdge)
+      requireLinux (runNativeInstall mode repoRoot planOptions withEdge)
     Rke2Delete flags planOptions ->
       requireLinux $
         if not (rke2DeleteYes flags)
@@ -657,8 +663,8 @@ runRke2Command repoRoot command =
                 , subprocessWorkingDirectory = Just repoRoot
                 }
 
-runNativeInstall :: FilePath -> PlanOptions -> Bool -> IO ExitCode
-runNativeInstall repoRoot planOptions withEdge = do
+runNativeInstall :: GatewayDeriveMode -> FilePath -> PlanOptions -> Bool -> IO ExitCode
+runNativeInstall mode repoRoot planOptions withEdge = do
   settingsResult <- validateAndLoadSettings repoRoot
   case settingsResult of
     Left err -> failWith err
@@ -672,7 +678,7 @@ runNativeInstall repoRoot planOptions withEdge = do
            in runPlanWithOptions
                 planOptions
                 plan
-                (applyNativeInstallPlan repoRoot settings withEdge)
+                (applyNativeInstallPlan mode repoRoot settings withEdge)
 
 -- | @prodbox edge ...@ dispatch. @edge reconcile@ is the AWS-gated,
 -- edge-only reconcile (the same plan @cluster reconcile --with-edge@
@@ -744,6 +750,7 @@ renderNativeInstallPlan repoRoot settings machineId prodboxId labelValue withEdg
       , "STEP=ensure_cluster_platform_runtime"
       , "STEP=ensure_minio_runtime_steady_state"
       , "STEP=ensure_gateway_minio_bootstrap"
+      , "STEP=ensure_gateway_chart_ready"
       , "STEP=ensure_admin_public_edge_routes"
       , "STEP=reconcile_managed_annotations"
       ]
@@ -778,12 +785,13 @@ buildNativeInstallExecutionPlan repoRoot settings machineId prodboxId labelValue
     (machineId, prodboxId, labelValue)
 
 applyNativeInstallPlan
-  :: FilePath
+  :: GatewayDeriveMode
+  -> FilePath
   -> ValidatedSettings
   -> Bool
   -> (String, String, String)
   -> IO ExitCode
-applyNativeInstallPlan repoRoot settings withEdge (machineId, prodboxId, labelValue) =
+applyNativeInstallPlan mode repoRoot settings withEdge (machineId, prodboxId, labelValue) =
   runSequentially
     ( [ ensureHostInotifyLimits repoRoot
       , ensureRke2ServerInstalled repoRoot
@@ -818,7 +826,11 @@ applyNativeInstallPlan repoRoot settings withEdge (machineId, prodboxId, labelVa
       , ensureClusterPlatformRuntime repoRoot settings prodboxId labelValue
       , ensureMinioRuntime repoRoot SubstrateHomeLocal MinioSteadyStateHarbor
       , ensureGatewayMinioBootstrap repoRoot
-      , ensureAdminPublicEdgeRoutes repoRoot settings SubstrateHomeLocal prodboxId labelValue
+      , -- secret_derivation_doctrine.md §7 steps 4–6: the gateway daemon must
+        -- be deployed and ready before the host-CLI derive in
+        -- 'ensureAdminPublicEdgeRoutes' (§5/§7 ordering constraint).
+        ensureGatewayChartReady mode repoRoot settings SubstrateHomeLocal
+      , ensureAdminPublicEdgeRoutes mode repoRoot settings SubstrateHomeLocal prodboxId labelValue
       , reconcileManagedAnnotations repoRoot prodboxId labelValue
       ]
         -- The public edge (Route 53 DNS + ZeroSSL DNS-01 TLS) is the only
@@ -2686,9 +2698,139 @@ homeSubstratePlatformComponents =
   , ContainerImage.ComponentZeroSslDns01
   ]
 
+-- | secret_derivation_doctrine.md §7 steps 4–6 for the gateway chart, run
+-- as a reconcile-time prerequisite of the host-CLI derived-secret consumer
+-- 'ensureAdminPublicEdgeRoutes'. The host-CLI derive of the vscode OIDC
+-- client secret (§5) "may [not] run before the gateway daemon reports
+-- ready" (§7 ordering constraint), so reconcile must stand the daemon up
+-- and gate on it here rather than racing it.
+--
+-- Steps: deploy the gateway chart (the daemon self-bootstraps its own
+-- @gateway-event-keys@ Secret, so 'preApplyDerivedSecretsForRelease' skips
+-- the gateway release rather than dialing a not-yet-running daemon),
+-- install the loopback-only NodePort iptables restriction on home (mirrors
+-- the @charts deploy gateway@ post-hook), then poll the daemon's derive
+-- surface over the loopback NodePort until it answers.
+--
+-- Idempotent: 'deployChartPlan' no-ops when the gateway release is already
+-- installed, and the firewall + readiness steps are safe to repeat.
+ensureGatewayChartReady
+  :: GatewayDeriveMode -> FilePath -> ValidatedSettings -> Substrate -> IO ExitCode
+ensureGatewayChartReady mode repoRoot settings substrate =
+  case mode of
+    -- 'TestSeed' means the integration harness is standing in for the
+    -- in-cluster gateway daemon (fake kubectl/helm/docker, no real cluster).
+    -- There is no real gateway to deploy a chart for or to dial for readiness,
+    -- and 'ensureAdminPublicEdgeRoutes' already derives the vscode secret from
+    -- the seed locally, so skip the real chart deploy + derive poll here.
+    -- Production ('ProductionGateway') runs the full path below.
+    TestSeed _ -> pure ExitSuccess
+    ProductionGateway -> ensureGatewayChartReadyForSubstrate mode repoRoot settings substrate
+
+ensureGatewayChartReadyForSubstrate
+  :: GatewayDeriveMode -> FilePath -> ValidatedSettings -> Substrate -> IO ExitCode
+ensureGatewayChartReadyForSubstrate mode repoRoot settings substrate =
+  case validateOperationalAwsCredentials (validatedConfig settings) of
+    -- The gateway chart needs operational AWS credentials (Route 53 / DNS
+    -- write gate; 'Prodbox.Lib.ChartPlatform' rejects an empty
+    -- @access_key_id@). A bare @cluster reconcile@ "stands up a fully
+    -- working local cluster with an empty aws.* block", so skip the gateway
+    -- daemon — and, downstream, 'ensureAdminPublicEdgeRoutes' — rather than
+    -- failing. The test harness materializes operational @aws.*@ before its
+    -- Phase 1.5 reconcile, and @--with-edge@ requires it, so both run there.
+    Left _ -> do
+      writeOutputLine
+        ( "Skipping gateway daemon deploy: operational aws.* is empty (bare"
+            ++ " local cluster reconcile). The gateway chart needs Route 53"
+            ++ " credentials; populate aws.* via the test harness or"
+            ++ " `prodbox aws setup` to bring the gateway up."
+        )
+      pure ExitSuccess
+    Right () -> ensureGatewayChartReadyCredentialed mode repoRoot settings substrate
+
+ensureGatewayChartReadyCredentialed
+  :: GatewayDeriveMode -> FilePath -> ValidatedSettings -> Substrate -> IO ExitCode
+ensureGatewayChartReadyCredentialed mode repoRoot settings substrate = do
+  secretsResult <- resolveChartSecrets repoRoot gatewayNamespace
+  case secretsResult of
+    Left err -> failWith err
+    Right chartSecrets -> do
+      planResult <-
+        buildChartDeploymentPlanForSubstrate
+          substrate
+          repoRoot
+          settings
+          gatewayNamespace
+          chartSecrets
+          Map.empty
+      case planResult of
+        Left err -> failWith err
+        Right plan -> do
+          deployResult <- deployChartPlan mode plan
+          case deployResult of
+            Left err -> failWith err
+            Right report -> do
+              writeOutputLine report
+              firewallExit <- case substrate of
+                SubstrateHomeLocal ->
+                  runHostFirewallGatewayRestrictOptional defaultGatewayNodePort
+                _ -> pure ExitSuccess
+              case firewallExit of
+                ExitFailure _ -> pure firewallExit
+                ExitSuccess -> waitForGatewayDeriveReady
+
+-- | Bounded poll of the gateway daemon's @/v1/secret/derive@ surface over
+-- the loopback NodePort, so the host-CLI derived-secret consumer that runs
+-- next ('ensureAdminPublicEdgeRoutes') cannot race a not-yet-ready daemon
+-- (secret_derivation_doctrine.md §7 step 6). A successful derive proves the
+-- daemon is up, reachable on the loopback NodePort, and has read or minted
+-- the master seed — exactly the conditions the subsequent derive needs.
+waitForGatewayDeriveReady :: IO ExitCode
+waitForGatewayDeriveReady = go gatewayDeriveReadyAttempts
+ where
+  endpoint = GatewayClient.hostLoopbackGatewayEndpoint defaultGatewayNodePort
+  go :: Int -> IO ExitCode
+  go remaining = do
+    deriveResult <- GatewayClient.derive endpoint vscodeClientSecretContext
+    case deriveResult of
+      Right _ -> pure ExitSuccess
+      Left err
+        | remaining <= 1 ->
+            failWith
+              ( "gateway daemon did not become ready for host-CLI secret"
+                  ++ " derivation over the loopback NodePort after "
+                  ++ show gatewayDeriveReadyAttempts
+                  ++ " attempts: "
+                  ++ GatewayClient.renderGatewayError err
+              )
+        | otherwise -> do
+            threadDelay gatewayDeriveReadyDelayMicroseconds
+            go (remaining - 1)
+
+-- | Readiness-poll budget for 'waitForGatewayDeriveReady': 60 attempts at a
+-- 3-second cadence bounds the wait at ~3 minutes, comfortably covering
+-- gateway Pod scheduling plus master-seed acquisition from MinIO.
+gatewayDeriveReadyAttempts :: Int
+gatewayDeriveReadyAttempts = 60
+
+gatewayDeriveReadyDelayMicroseconds :: Int
+gatewayDeriveReadyDelayMicroseconds = 3 * 1000 * 1000
+
 ensureAdminPublicEdgeRoutes
-  :: FilePath -> ValidatedSettings -> Substrate -> String -> String -> IO ExitCode
-ensureAdminPublicEdgeRoutes repoRoot settings substrate prodboxId labelValue = do
+  :: GatewayDeriveMode -> FilePath -> ValidatedSettings -> Substrate -> String -> String -> IO ExitCode
+ensureAdminPublicEdgeRoutes mode repoRoot settings substrate prodboxId labelValue =
+  case validateOperationalAwsCredentials (validatedConfig settings) of
+    -- Admin public-edge routes derive the vscode OIDC secret over the
+    -- gateway daemon, which 'ensureGatewayChartReady' only stands up when
+    -- operational credentials are present. Mirror that gate so a bare
+    -- @cluster reconcile@ (empty aws.*, no gateway) skips cleanly rather
+    -- than dialing a daemon that was intentionally not deployed.
+    Left _ -> pure ExitSuccess
+    Right () -> ensureAdminPublicEdgeRoutesCredentialed mode repoRoot settings substrate prodboxId labelValue
+
+ensureAdminPublicEdgeRoutesCredentialed
+  :: GatewayDeriveMode -> FilePath -> ValidatedSettings -> Substrate -> String -> String -> IO ExitCode
+ensureAdminPublicEdgeRoutesCredentialed mode repoRoot settings substrate prodboxId labelValue = do
   -- Sprint 3.13 chunks 11 + 12: the OIDC client secrets (vscode / api /
   -- websocket / demo-user) are now master-seed-derived and materialized
   -- by the gateway daemon's `ensure-namespace` handler into the
@@ -2696,7 +2838,7 @@ ensureAdminPublicEdgeRoutes repoRoot settings substrate prodboxId labelValue = d
   -- host-side `resolveChartSecrets` cache is gone; this function reads
   -- `VSCODE_CLIENT_SECRET` (which the harbor / minio admin SecurityPolicies
   -- both reuse) directly from the cluster Secret via @kubectl@.
-  clientSecretResult <- readKeycloakVscodeClientSecret repoRoot
+  clientSecretResult <- readKeycloakVscodeClientSecret mode
   case clientSecretResult of
     Left err -> failWith err
     Right clientSecret ->
@@ -2729,14 +2871,12 @@ ensureAdminPublicEdgeRoutes repoRoot settings substrate prodboxId labelValue = d
 -- Returns the URL-safe-base64 string Keycloak will register for the
 -- @vscode@ OIDC client, which the harbor and minio admin
 -- @SecurityPolicy@'s reuse as their client secret too.
-readKeycloakVscodeClientSecret :: FilePath -> IO (Either String String)
-readKeycloakVscodeClientSecret _repoRoot = do
-  seamResult <- readGatewayDeriveTestSeam
-  case seamResult of
-    Just (Left err) -> pure (Left err)
-    Just (Right seed) ->
+readKeycloakVscodeClientSecret :: GatewayDeriveMode -> IO (Either String String)
+readKeycloakVscodeClientSecret mode =
+  case mode of
+    TestSeed seed ->
       pure (Right (Text.unpack (deriveBase64Url seed vscodeClientSecretContext)))
-    Nothing -> do
+    ProductionGateway -> do
       deriveResult <-
         GatewayClient.derive
           (GatewayClient.hostLoopbackGatewayEndpoint defaultGatewayNodePort)
@@ -2748,47 +2888,17 @@ readKeycloakVscodeClientSecret _repoRoot = do
                 ++ GatewayClient.renderGatewayError err
             )
         Right response -> Right (Text.unpack (deriveResponseDerived response))
- where
-  -- Sprint 3.13 chunk 32: the daemon's Inventory uses the deploy-namespace
-  -- (`vscode` for the vscode root chart's transitive keycloak dep), so the
-  -- host-side derive context must match. Pre-chunk-32 this was hardcoded to
-  -- `"keycloak"` and named a context Keycloak never registered, breaking
-  -- the harbor/minio admin SecurityPolicy OIDC handshake.
-  vscodeClientSecretContext = oidcClientSecretContext "vscode" "vscode"
 
--- | Sprint 3.16: the gateway-derive test seam, decoding its hex seed to a
--- typed 'MasterSeed' so the integration harness can stand in for a running
--- gateway daemon. Production returns 'Nothing' and the caller dials the
--- real gateway. The seam computes the *derived* response the daemon would
--- return; it never re-exports the raw master seed the way the retired
--- @PRODBOX_TEST_HOST_MASTER_SEED_HEX@ host-side seam did.
-readGatewayDeriveTestSeam :: IO (Maybe (Either String MasterSeed))
-readGatewayDeriveTestSeam = do
-  maybeHex <- lookupGatewayDeriveTestSeed
-  pure $ case maybeHex of
-    Nothing -> Nothing
-    Just hex ->
-      case decodeHex hex of
-        Left err -> Just (Left ("gateway-derive test seam: " ++ err))
-        Right bytes ->
-          case masterSeed bytes of
-            Left err -> Just (Left ("gateway-derive test seam: " ++ err))
-            Right seed -> Just (Right seed)
-
-decodeHex :: String -> Either String BS.ByteString
-decodeHex input
-  | odd (length input) = Left "odd-length hex string"
-  | not (all isHexDigit input) = Left "non-hex characters in input"
-  | otherwise = Right (BS.pack (parsePairs input))
- where
-  parsePairs [] = []
-  parsePairs (a : b : rest) = fromIntegral (hexValue a * 16 + hexValue b) : parsePairs rest
-  parsePairs _ = []
-  hexValue c
-    | c >= '0' && c <= '9' = fromEnum c - fromEnum '0'
-    | c >= 'a' && c <= 'f' = fromEnum c - fromEnum 'a' + 10
-    | c >= 'A' && c <= 'F' = fromEnum c - fromEnum 'A' + 10
-    | otherwise = 0
+-- | The host-side derive context for the vscode OIDC client secret. Sprint
+-- 3.13 chunk 32: the daemon's Inventory uses the deploy-namespace (`vscode`
+-- for the vscode root chart's transitive keycloak dep), so the host-side
+-- derive context must match. Pre-chunk-32 this was hardcoded to `"keycloak"`
+-- and named a context Keycloak never registered, breaking the harbor/minio
+-- admin SecurityPolicy OIDC handshake. Shared by
+-- 'readKeycloakVscodeClientSecret' and the reconcile-time gateway readiness
+-- gate 'waitForGatewayDeriveReady'.
+vscodeClientSecretContext :: Text.Text
+vscodeClientSecretContext = oidcClientSecretContext "vscode" "vscode"
 
 adminPublicEdgeManifestItems
   :: ValidatedSettings -> Substrate -> String -> String -> String -> [Value]

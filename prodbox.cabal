@@ -85,6 +85,7 @@ library
         Prodbox.Result
         Prodbox.Secret.Derive
         Prodbox.Secret.EnsureNamespace
+        Prodbox.Secret.GatewayDeriveMode
         Prodbox.Secret.HostBootstrap
         Prodbox.Secret.Inventory
         Prodbox.Secret.MasterSeed

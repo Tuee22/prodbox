@@ -37,19 +37,17 @@ where
 
 import Control.Exception (SomeException, try)
 import Data.Aeson (Value, encode)
-import Data.ByteString qualified as BS
 import Data.ByteString.Lazy qualified as BL
-import Data.Char (isHexDigit)
 import Data.Map.Strict qualified as Map
 import Data.Text (Text)
 import Data.Text qualified as Text
-import Data.Word (Word8)
 import Prodbox.Gateway.Client (hostLoopbackGatewayEndpoint, renderGatewayError)
 import Prodbox.Gateway.Client qualified as GatewayClient
 import Prodbox.Host (defaultGatewayNodePort)
 import Prodbox.K8s.InCluster (secretManifestJson)
 import Prodbox.Result (Result (..))
-import Prodbox.Secret.Derive (MasterSeed, deriveBase64Url, masterSeed)
+import Prodbox.Secret.Derive (MasterSeed, deriveBase64Url)
+import Prodbox.Secret.GatewayDeriveMode (GatewayDeriveMode (..))
 import Prodbox.Secret.Inventory
   ( DerivedSecretEntry (..)
   , derivedSecretInventoryFor
@@ -60,7 +58,6 @@ import Prodbox.Subprocess
   , captureSubprocessResult
   , processExitCode
   )
-import Prodbox.TestSeam.GatewayDerive (lookupGatewayDeriveTestSeed)
 import System.Directory (removeFile)
 import System.Exit (ExitCode (..))
 import System.IO (hClose)
@@ -83,19 +80,34 @@ import System.IO.Temp (openBinaryTempFile)
 -- mode this function simulates the daemon by deriving each Secret value
 -- from the seam's test seed and @kubectl apply@-ing the manifests, so the
 -- chunk-33 code path is still exercised without a live cluster.
-preApplyDerivedSecretsForRelease :: String -> String -> IO (Either String ())
-preApplyDerivedSecretsForRelease nsStr relStr =
+preApplyDerivedSecretsForRelease :: GatewayDeriveMode -> String -> String -> IO (Either String ())
+preApplyDerivedSecretsForRelease mode nsStr relStr =
   case derivedSecretInventoryFor namespace release of
     [] -> pure (Right ())
-    entries -> do
-      seamSeed <- lookupGatewayDeriveTestSeam
-      case seamSeed of
-        Just (Left err) -> pure (Left err)
-        Just (Right seed) -> applyEntriesViaKubectl seed namespace entries
-        Nothing -> ensureNamespaceViaGateway namespace release
+    entries ->
+      case mode of
+        TestSeed seed -> applyEntriesViaKubectl seed namespace entries
+        ProductionGateway
+          -- The gateway daemon self-bootstraps its own @gateway-event-keys@
+          -- Secret after it acquires the master seed
+          -- ('Prodbox.Gateway.Daemon.selfBootstrapOwnSecrets'); that is how
+          -- the gateway release escapes the pre-install-vs-daemon
+          -- chicken-and-egg the other charts avoid by POSTing to an
+          -- already-running daemon (see the @("gateway","gateway")@ case in
+          -- 'Prodbox.Secret.Inventory.derivedSecretInventoryFor'). The host
+          -- must therefore NOT dial @ensure-namespace@ for the gateway's own
+          -- keys before the daemon Pod exists. The integration harness
+          -- simulates the daemon via the 'TestSeed' branch above.
+          | release == gatewaySelfBootstrapRelease -> pure (Right ())
+          | otherwise -> ensureNamespaceViaGateway namespace release
  where
   namespace = Text.pack nsStr
   release = Text.pack relStr
+
+-- | The single Helm release whose derived Secrets the in-cluster daemon
+-- materializes for itself rather than via a host @ensure-namespace@ POST.
+gatewaySelfBootstrapRelease :: Text
+gatewaySelfBootstrapRelease = Text.pack "gateway"
 
 -- | Production path: trigger in-cluster materialization through the
 -- gateway daemon's @ensure-namespace@ RPC. The host obtains only the
@@ -119,22 +131,6 @@ ensureNamespaceViaGateway namespace release = do
             ++ renderGatewayError err
         )
     Right _ -> Right ()
-
--- | Read the gateway-derive test seam, decoding its hex seed to a typed
--- 'MasterSeed'. The seam is a deterministic stand-in for the gateway's
--- derived response in the integration harness; production never sets it.
-lookupGatewayDeriveTestSeam :: IO (Maybe (Either String MasterSeed))
-lookupGatewayDeriveTestSeam = do
-  maybeHex <- lookupGatewayDeriveTestSeed
-  pure $ case maybeHex of
-    Nothing -> Nothing
-    Just hex ->
-      case decodeHex hex of
-        Left err -> Just (Left ("gateway-derive test seam: " ++ err))
-        Right bytes ->
-          case masterSeed bytes of
-            Left err -> Just (Left ("gateway-derive test seam: " ++ err))
-            Right seed -> Just (Right seed)
 
 applyEntriesViaKubectl :: MasterSeed -> Text -> [DerivedSecretEntry] -> IO (Either String ())
 applyEntriesViaKubectl seed namespace entries = do
@@ -188,20 +184,3 @@ withTempManifestFile content action = do
   result <- action tmpPath
   _ <- try (removeFile tmpPath) :: IO (Either SomeException ())
   pure result
-
-decodeHex :: String -> Either String BS.ByteString
-decodeHex input
-  | odd (length input) = Left "odd-length hex string"
-  | not (all isHexDigit input) = Left "non-hex characters in input"
-  | otherwise = Right (BS.pack (parsePairs input))
- where
-  parsePairs [] = []
-  parsePairs (a : b : rest) = byteFromPair a b : parsePairs rest
-  parsePairs _ = []
-  byteFromPair :: Char -> Char -> Word8
-  byteFromPair a b = fromIntegral (hexValue a * 16 + hexValue b)
-  hexValue c
-    | c >= '0' && c <= '9' = fromEnum c - fromEnum '0'
-    | c >= 'a' && c <= 'f' = fromEnum c - fromEnum 'a' + 10
-    | c >= 'A' && c <= 'F' = fromEnum c - fromEnum 'A' + 10
-    | otherwise = 0

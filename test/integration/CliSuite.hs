@@ -510,10 +510,12 @@ integrationCliSuite = do
         deleteExitCode `shouldBe` ExitSuccess
         deleteStderr `shouldBe` ""
         deleteStdout `shouldContain` "Uninstalling the local cluster..."
+        -- Default `cluster delete` (no --cascade) is a pure local uninstall:
+        -- it does not query, gate on, or destroy the per-run AWS Pulumi
+        -- backend, so it emits this notice instead of per-stack destroy
+        -- traces (per the refactored lifecycle doctrine).
         deleteStdout
-          `shouldContain` "AWS EKS test stack: no local Pulumi backend or saved residue snapshot; nothing to destroy"
-        deleteStdout
-          `shouldContain` "AWS test stack: no local Pulumi backend or saved residue snapshot; nothing to destroy"
+          `shouldContain` "Per-run AWS stacks (if any) were NOT destroyed by this local uninstall."
         deleteStdout `shouldContain` "Local RKE2 substrate: cleanup complete"
         deleteStdout `shouldContain` "Managed kubeconfig: removed"
         deleteStdout `shouldContain` "Preserved host state:"
@@ -721,10 +723,12 @@ integrationCliSuite = do
         deleteExitCode `shouldBe` ExitSuccess
         deleteStderr `shouldBe` ""
         deleteStdout `shouldContain` "Uninstalling the local cluster..."
+        -- Default `cluster delete` (no --cascade) is a pure local uninstall:
+        -- it does not query, gate on, or destroy the per-run AWS Pulumi
+        -- backend, so it emits this notice instead of per-stack destroy
+        -- traces (per the refactored lifecycle doctrine).
         deleteStdout
-          `shouldContain` "AWS EKS test stack: no local Pulumi backend or saved residue snapshot; nothing to destroy"
-        deleteStdout
-          `shouldContain` "AWS test stack: no local Pulumi backend or saved residue snapshot; nothing to destroy"
+          `shouldContain` "Per-run AWS stacks (if any) were NOT destroyed by this local uninstall."
         deleteStdout `shouldContain` "Local RKE2 substrate: cleanup complete"
         deleteStdout `shouldContain` "Managed kubeconfig: removed"
         deleteStdout `shouldContain` "Preserved host state:"
@@ -797,10 +801,12 @@ integrationCliSuite = do
         deleteExitCode `shouldBe` ExitSuccess
         deleteStderr `shouldBe` ""
         deleteStdout `shouldContain` "Uninstalling the local cluster..."
+        -- Default `cluster delete` (no --cascade) is a pure local uninstall:
+        -- it does not query, gate on, or destroy the per-run AWS Pulumi
+        -- backend, so it emits this notice instead of per-stack destroy
+        -- traces (per the refactored lifecycle doctrine).
         deleteStdout
-          `shouldContain` "AWS EKS test stack: no local Pulumi backend or saved residue snapshot; nothing to destroy"
-        deleteStdout
-          `shouldContain` "AWS test stack: no local Pulumi backend or saved residue snapshot; nothing to destroy"
+          `shouldContain` "Per-run AWS stacks (if any) were NOT destroyed by this local uninstall."
         deleteStdout `shouldContain` "Preserved host state:"
 
     it "cluster delete --yes is a pure local uninstall that never refuses on per-run residue" $
@@ -963,9 +969,13 @@ integrationCliSuite = do
         writeFile (tmpDir </> "prodbox-config.dhall") zeroSslConfig
         envVars <- fakeRke2Environment tmpDir
 
+        -- The refactor moved the ZeroSSL ACME ClusterIssuer (and the Route 53
+        -- DNS bootstrap) behind `--with-edge`; bare `cluster reconcile` stands
+        -- up a local-only cluster with no public edge. The EAB projection this
+        -- test asserts therefore lives on the `--with-edge` path.
         (upExitCode, upStdout, upStderr) <-
           readCreateProcessWithExitCode
-            (proc binary ["cluster", "reconcile"]) {cwd = Just tmpDir, env = Just envVars}
+            (proc binary ["cluster", "reconcile", "--with-edge"]) {cwd = Just tmpDir, env = Just envVars}
             ""
 
         upExitCode `shouldBe` ExitSuccess

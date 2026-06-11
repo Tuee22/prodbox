@@ -56,7 +56,7 @@ integrationEnvSuite = do
             ""
 
         exitCode `shouldBe` ExitFailure 1
-        stderrText `shouldContain` "aws.access_key_id must not be empty"
+        stderrText `shouldContain` "domain.demo_fqdn must not be empty"
 
     it "requires repo-root commands to run from the repository root instead of searching upward" $
       withSystemTempDirectory "prodbox-hs-env" $ \tmpDir -> do
@@ -127,7 +127,11 @@ invalidConfig =
     , ", route53 = { zone_id = \"Z1234567890ABC\" }"
     , ", aws_substrate = { hosted_zone_id = \"\", subzone_name = \"\" }"
     , ", ses = { sender_domain = \"\", receive_subdomain = \"\", capture_bucket = \"\" }"
-    , ", domain = { demo_fqdn = \"test.resolvefintech.com\", demo_ttl = 60 }"
+    , -- Invalid by current rules: `domain.demo_fqdn` is still validated as
+      -- non-empty by `config validate`. Empty operational `aws.*` is
+      -- intentionally VALID now (populated on demand by the harness /
+      -- `--with-edge`), so an empty `aws.access_key_id` no longer fails fast.
+      ", domain = { demo_fqdn = \"\", demo_ttl = 60 }"
     , ", acme = { email = \"test@resolvefintech.com\", server = \"https://acme.zerossl.com/v2/DV90\", eab_key_id = Some \"test-eab-key-id\", eab_hmac_key = Some \"test-eab-hmac-key\" }"
     , ", deployment = " ++ deploymentDhallFragment
     , ", storage = { manual_pv_host_root = \".data\" }"

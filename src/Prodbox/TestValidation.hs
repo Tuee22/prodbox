@@ -267,11 +267,11 @@ runNativeValidation substrate repoRoot environment validation = do
           [ runNativeCliCommandForExitCode
               repoRoot
               environment
-              ["k8s", "wait", "--namespace", gatewayValidationNamespace]
+              ["cluster", "wait", "--namespace", gatewayValidationNamespace]
           , runNativeCliCommandForExitCode
               repoRoot
               environment
-              ["k8s", "logs", "--namespace", gatewayValidationNamespace, "--tail", "20"]
+              ["cluster", "workload-logs", "--namespace", gatewayValidationNamespace, "--tail", "20"]
           ]
       ValidationGatewayPartition -> runGatewayPartitionValidation
       ValidationChartsPlatform ->
@@ -315,9 +315,14 @@ runNativeValidation substrate repoRoot environment validation = do
           [ runNativeCliCommandForExitCode
               repoRoot
               environment
-              ["rke2", "delete", "--yes", "--allow-pulumi-residue"]
-          , runNativeCliCommandForExitCode repoRoot environment ["rke2", "reconcile"]
-          , runNativeCliCommandForExitCode repoRoot environment ["k8s", "health"]
+              -- The refactor renamed `rke2 delete` → `cluster delete`; the new
+              -- default (no `--cascade`) is a pure local uninstall that leaves
+              -- per-run AWS Pulumi stacks untouched, exactly what the retired
+              -- `--allow-pulumi-residue` bypass did, so the suite-internal
+              -- residue-acknowledged teardown is now just `cluster delete --yes`.
+              ["cluster", "delete", "--yes"]
+          , runNativeCliCommandForExitCode repoRoot environment ["cluster", "reconcile"]
+          , runNativeCliCommandForExitCode repoRoot environment ["cluster", "health"]
           ]
       ValidationKeycloakInvite -> runKeycloakInviteValidation repoRoot substrate environment
 
@@ -846,7 +851,7 @@ runWebsocketUpgradeValidation repoRoot environment settings substrate apiToken w
                                                                         runNativeCliCommandForExitCode
                                                                           repoRoot
                                                                           environment
-                                                                          ["k8s", "wait", "--namespace", "websocket"]
+                                                                          ["cluster", "wait", "--namespace", "websocket"]
                                                                       case rolloutExit of
                                                                         ExitFailure _ -> pure rolloutExit
                                                                         ExitSuccess -> do
@@ -1470,7 +1475,7 @@ waitForPublicEdgeReady repoRoot substrate = do
   let spec =
         Subprocess
           { subprocessPath = canonicalOperatorBinaryPath repoRoot
-          , subprocessArguments = ["host", "public-edge", "--substrate", substrateId substrate]
+          , subprocessArguments = ["edge", "status", "--substrate", substrateId substrate]
           , subprocessEnvironment = Nothing
           , subprocessWorkingDirectory = Just repoRoot
           }
@@ -1782,7 +1787,7 @@ runGatewayDaemonValidation repoRoot environment = do
         runNativeCliCommandForExitCode
           repoRoot
           environment
-          ["k8s", "wait", "--namespace", gatewayValidationNamespace]
+          ["cluster", "wait", "--namespace", gatewayValidationNamespace]
       case readyExit of
         ExitFailure _ -> pure readyExit
         ExitSuccess -> do
@@ -1851,7 +1856,7 @@ runGatewayDaemonValidation repoRoot environment = do
                                         runNativeCliCommandForExitCode
                                           repoRoot
                                           environment
-                                          ["k8s", "logs", "--namespace", gatewayValidationNamespace, "--tail", "20"]
+                                          ["cluster", "workload-logs", "--namespace", gatewayValidationNamespace, "--tail", "20"]
 
 selectGatewayValidationPeer :: Orders -> Either String PeerEndpoint
 selectGatewayValidationPeer orders =

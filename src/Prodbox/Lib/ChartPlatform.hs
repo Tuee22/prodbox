@@ -135,6 +135,7 @@ import Prodbox.Secret.Derive
   ( PatroniRole (..)
   , patroniRoleContext
   )
+import Prodbox.Secret.GatewayDeriveMode (GatewayDeriveMode)
 import Prodbox.Secret.HostBootstrap (preApplyDerivedSecretsForRelease)
 import Prodbox.Secret.Wire (DeriveResponse (..))
 import Prodbox.Service
@@ -594,8 +595,8 @@ renderChartStatus repoRoot settings chartName = do
                 ++ releaseLines
                 ++ renderStorageReport (chartReleasePlanStorageBindings chartRelease)
 
-deployChartPlan :: ChartDeploymentPlan -> IO (Either String String)
-deployChartPlan plan = do
+deployChartPlan :: GatewayDeriveMode -> ChartDeploymentPlan -> IO (Either String String)
+deployChartPlan mode plan = do
   snapshotsResult <- helmReleaseSnapshots
   case snapshotsResult of
     Left err -> pure (Left err)
@@ -637,6 +638,7 @@ deployChartPlan plan = do
         -- in-cluster idempotent fallback.
         preApplyResult <-
           preApplyDerivedSecretsForRelease
+            mode
             (chartReleasePlanNamespace release)
             (chartReleasePlanReleaseName release)
         case preApplyResult of
@@ -658,6 +660,7 @@ deployChartPlan plan = do
     -- it reconciles the PostgresCluster CR. See 'deployRelease'.
     preApplyResult <-
       preApplyDerivedSecretsForRelease
+        mode
         (chartReleasePlanNamespace release)
         (chartReleasePlanReleaseName release)
     case preApplyResult of

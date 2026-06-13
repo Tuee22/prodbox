@@ -2,7 +2,7 @@
 
 **Status**: Reference only
 **Supersedes**: N/A
-**Referenced by**: CLAUDE.md, AGENTS.md, DEVELOPMENT_PLAN/README.md
+**Referenced by**: CLAUDE.md, AGENTS.md, DEVELOPMENT_PLAN/README.md, [documents/engineering/vault_doctrine.md](./documents/engineering/vault_doctrine.md)
 **Generated sections**: none
 
 > **Purpose**: Project overview, operator guide, installation guide, and documentation index for
@@ -79,6 +79,17 @@ validation environments.
   the WebSocket workload on `/ws`, Harbor on `/harbor`, and MinIO console on `/minio`.
 - The Haskell `prodbox gateway ...` command group and `charts deploy gateway` manage the separate
   distributed gateway daemon; they are not the Envoy Gateway public edge controller.
+- Vault is the scheduled fail-closed secrets / KMS / PKI backend of every prodbox-managed cluster.
+  As intended structure it runs in-cluster on a durable `.data/`-backed PV (preserved across cluster
+  wipes exactly like the MinIO PV), `prodbox-config.dhall` carries only typed `SecretRef` values
+  (never plaintext secrets), MinIO objects and Pulumi backend state become Vault-Transit envelopes,
+  and the TLS, Keycloak, Pulumi, and AWS-credential paths fail closed when Vault is sealed — a
+  sealed Vault reduces the cluster to an opaque durable-data pile that reveals no secrets until it is
+  unsealed. This extends (never replaces) the existing master-seed derivation and single-Dhall-config
+  model. The doctrine single source of truth is
+  [documents/engineering/vault_doctrine.md](./documents/engineering/vault_doctrine.md); the
+  per-surface adoption is scheduled (not yet shipped) and tracked in the 2026-06-11 Closure Status
+  entry of [DEVELOPMENT_PLAN/README.md](./DEVELOPMENT_PLAN/README.md).
 
 The development-plan target architecture centers the local public edge on:
 
@@ -280,6 +291,24 @@ a sibling Secret). The complete sourcing, mount, and reload contract lives in
   configuration; `--config <path>` is the sole startup-time CLI knob.
 - `prodbox config show --show-secrets` reveals full secret values when you explicitly need them.
 
+### Secret References (SecretRef)
+
+Scheduled under Sprint 1.35 (intended structure, not yet shipped): sensitive configuration fields
+carry typed `SecretRef` values — a Dhall union of
+`Vault | TransitKey | Prompt | FileSecret | TestPlaintext` — rather than inline plaintext secrets.
+`prodbox config validate` rejects plaintext secrets in production config; plaintext test inputs live
+only in `test-secrets.dhall`, which is never imported by `prodbox-config.dhall`. This extends the
+existing single-Dhall-file config contract rather than replacing it: the file keeps its shape and
+simply holds references in place of raw secret material. The authoritative model is
+[documents/engineering/vault_doctrine.md](./documents/engineering/vault_doctrine.md) (see
+[§3 The SecretRef model](./documents/engineering/vault_doctrine.md#3-the-secretref-model) and
+[§4 Config split](./documents/engineering/vault_doctrine.md#4-config-split-production-references-vs-test-plaintext)).
+
+> **Note**: the current plaintext `aws.access_key_id`, `aws.secret_access_key`, and `acme.eab_*`
+> fields listed below are scheduled to become `SecretRef.Vault` references (Sprints 1.35 / 7.15).
+> The Validation-Required-Fields table stays valid as the field inventory; only the value form
+> changes from inline plaintext to a typed Vault reference.
+
 ### Supported Onboarding
 
 ```bash
@@ -348,6 +377,7 @@ Validate the repository config:
 | DNS | `dns check` | You need Route 53 inspection for the configured public host |
 | AWS IAM and quotas | `aws policy`, `aws setup`, `aws teardown`, `aws check-quotas`, `aws request-quotas` | You need IAM bootstrap, cleanup, or supported quota inspection/request flows |
 | AWS validation stacks | `pulumi eks reconcile`, `pulumi eks destroy --yes`, `pulumi aws-subzone reconcile`, `pulumi aws-subzone destroy --yes`, `pulumi test reconcile`, `pulumi test destroy --yes`, `pulumi aws-ses reconcile`, `pulumi aws-ses destroy --yes` | You need to create, inspect, or destroy the AWS EKS, Route 53 subzone, HA-RKE2, or SES validation stacks (see [DEVELOPMENT_PLAN/substrates.md → Resource Lifecycle Classes](./DEVELOPMENT_PLAN/substrates.md#resource-lifecycle-classes) for which stacks the test harness auto-destroys vs retains) |
+| Vault (scheduled, Sprint 1.36) | `vault status`, `vault init`, `vault unseal`, `vault reconcile`, `vault pki ...` | You need to initialize, unseal, or reconcile the in-cluster Vault that backs cluster secrets (intended structure; see [vault_doctrine.md](./documents/engineering/vault_doctrine.md#7-vault-lifecycle-commands)) |
 | Validation | `check-code`, `lint ...`, `docs ...`, `test lint`, `test ...`, `tla-check` | You need quality gates, generated-doc maintenance, Haskell tests, native integration validation, or TLA+ checks |
 
 ## Common Workflows
@@ -511,7 +541,15 @@ These commands run real native Haskell validation flows against the named enviro
 ./.build/prodbox test integration charts-vscode
 ./.build/prodbox test integration public-dns
 ./.build/prodbox test integration lifecycle
+./.build/prodbox test integration sealed-vault
 ```
+
+`./.build/prodbox test integration sealed-vault` is scheduled under Sprint 5.8 (intended structure,
+not yet shipped): it asserts the fail-closed invariant — that a sealed Vault leaves PVs and MinIO
+objects intact while revealing no secrets, no active Dhall, no Pulumi state, and no downstream
+inventory until Vault is unsealed (see
+[vault_doctrine.md §2 The fail-closed invariant](./documents/engineering/vault_doctrine.md#2-the-fail-closed-invariant)
+and [§15 Sealed-state behavior matrix](./documents/engineering/vault_doctrine.md#15-sealed-state-behavior-matrix)).
 
 ### Full End-To-End Validation
 
@@ -570,4 +608,5 @@ prodbox/
 - [CLI Command Surface](./documents/engineering/cli_command_surface.md)
 - [Code Quality Doctrine](./documents/engineering/code_quality.md)
 - [Lifecycle Reconciliation Doctrine](./documents/engineering/lifecycle_reconciliation_doctrine.md)
+- [Vault Secret-Management Doctrine](./documents/engineering/vault_doctrine.md)
 - [Unit Testing Policy](./documents/engineering/unit_testing_policy.md)

@@ -1,0 +1,28 @@
+global:
+  # The root chart name, stamped onto every object via prodbox.io/chart-root.
+  rootChart: vault
+
+image:
+  # Sprint 3.17: a pinned Vault server image. On the supported path this is
+  # mirrored through the in-cluster Harbor (127.0.0.1:30080/prodbox/...) like
+  # every other platform component; the public reference here is the bootstrap
+  # exception used until the substrate-platform install wires the mirror.
+  repository: hashicorp/vault
+  tag: "1.18.3"
+  pullPolicy: IfNotPresent
+
+ports:
+  api: 8200
+  cluster: 8201
+
+storage:
+  # Durable Vault storage on the retained `manual` no-provisioner StorageClass,
+  # rooted under `.data/vault/...` per the storage-lifecycle doctrine. Preserved
+  # across cluster teardown exactly like MinIO's PV.
+  className: manual
+  size: 1Gi
+
+service:
+  # Host-CLI access to the in-cluster Vault, restricted to 127.0.0.1 by the host
+  # firewall rule (the NodePort-on-loopback pattern the gateway daemon uses).
+  nodePort: 31820

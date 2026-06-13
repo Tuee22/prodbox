@@ -15,7 +15,8 @@
 [phase-7-aws-substrate-foundations.md](phase-7-aws-substrate-foundations.md),
 [phase-8-email-invite-auth.md](phase-8-email-invite-auth.md),
 [the engineering doctrine docs](../documents/engineering/README.md),
-[../documents/engineering/acme_provider_guide.md](../documents/engineering/acme_provider_guide.md)
+[../documents/engineering/acme_provider_guide.md](../documents/engineering/acme_provider_guide.md),
+[../documents/engineering/vault_doctrine.md](../documents/engineering/vault_doctrine.md)
 **Generated sections**: resource-lifecycle-classes, stack-command-surface
 
 > **Purpose**: Inventory the substrates against which the canonical test suite runs, the
@@ -89,6 +90,17 @@ substrate is **not** a "no-Harbor" cluster. When AWS appears to be "missing" a s
 piece the home cluster has, the fix is to extend the shared inventory and the AWS installer,
 never to render different image refs or re-pin versions per substrate.
 
+Both substrates also stand up an in-cluster Vault on a durable PV from the shared
+`[PlatformComponent]` inventory (scheduled, Sprint `3.17`). Vault is **not** a substrate — that
+word is reserved for the home-local and AWS substrates — it is a platform component that **both**
+substrates run identically, exactly like Harbor, MinIO, and the Percona operator. Vault becomes
+the fail-closed secrets / key-management / encryption-as-a-service / PKI backend of whichever
+substrate is active; a sealed Vault reduces the cluster to an opaque durable-data pile until it is
+unsealed. The same shared-inventory coverage test that keeps Harbor/MinIO/Percona in lockstep
+across both installers extends to the Vault component, so neither installer may silently drop it.
+See [../documents/engineering/vault_doctrine.md → §2 The fail-closed invariant](../documents/engineering/vault_doctrine.md#2-the-fail-closed-invariant)
+and [§5 Vault deployment model](../documents/engineering/vault_doctrine.md#5-vault-deployment-model).
+
 ## Substrate Inventory
 
 ### Home Local Substrate
@@ -125,6 +137,14 @@ This section is the authoritative classification — when adding a new AWS resou
 `prodbox` code path, it must land in one of these three classes (and in the matching inventory
 table below). Pulumi state lifetime must also match resource lifetime per class; see
 [../documents/engineering/lifecycle_reconciliation_doctrine.md → §2 State-Lifetime Rule](../documents/engineering/lifecycle_reconciliation_doctrine.md).
+
+> **Scope note — the Vault durable PV is not an AWS resource.** The in-cluster Vault's durable
+> volume is **local retained state** under `.data/vault/...`, governed by the storage lifecycle
+> doctrine, not by the AWS resource lifecycle classes — so it does **not** appear in the per-run,
+> long-lived, or operational AWS tables below. It is preserved across cluster teardown exactly
+> like the MinIO PV (scheduled, Sprint `4.29`), so a wipe-and-rebuild keeps Vault's sealed
+> ciphertext stores intact. See
+> [../documents/engineering/vault_doctrine.md → §5 Vault deployment model](../documents/engineering/vault_doctrine.md#5-vault-deployment-model).
 
 The per-run vs long-lived partition is mirrored in code by `Prodbox.Aws.perRunStackNames`
 and `Prodbox.Aws.longLivedStackNames` (Sprint `7.7`), which the
@@ -312,3 +332,4 @@ they only stand up or tear down the substrate that the suite runs against.
 - [phase-5-canonical-test-suite.md](phase-5-canonical-test-suite.md)
 - [phase-7-aws-substrate-foundations.md](phase-7-aws-substrate-foundations.md)
 - [phase-8-email-invite-auth.md](phase-8-email-invite-auth.md)
+- [../documents/engineering/vault_doctrine.md](../documents/engineering/vault_doctrine.md) — the fail-closed Vault secret-management model both substrates run

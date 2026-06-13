@@ -18,7 +18,7 @@ import Data.Aeson.KeyMap qualified as KeyMap
 import Data.ByteString qualified as BS
 import Data.ByteString.Lazy qualified as BL
 import Data.ByteString.Lazy.Char8 qualified as BL8
-import Data.Either (isRight)
+import Data.Either (isLeft, isRight)
 import Data.IORef
   ( IORef
   , modifyIORef'
@@ -106,6 +106,7 @@ import Prodbox.CLI.Command
   , Rke2DeleteFlags (..)
   , TestCommand (..)
   , TestScope (..)
+  , VaultCommand (..)
   , WorkloadCommand (..)
   , WorkloadOptions (..)
   , buildPlan
@@ -193,6 +194,12 @@ import Prodbox.CheckCode
   )
 import Prodbox.CheckCode qualified
 import Prodbox.ContainerImage qualified as ContainerImage
+import Prodbox.Crypto.Envelope
+  ( EnvelopeError (..)
+  , insecureLocalDekCipher
+  , openEnvelope
+  , sealEnvelope
+  )
 import Prodbox.Daemon.Events qualified as DaemonEvents
 import Prodbox.Effect
   ( Effect (..)
@@ -408,6 +415,15 @@ import Prodbox.Settings
   , validateAwsBootstrapConfig
   , validatePublicEdgeDeployment
   )
+import Prodbox.Settings.SecretRef
+  ( SecretRef (..)
+  , SecretRefError (..)
+  , SecretRefMode (..)
+  , VaultSecretRef (..)
+  , resolveSecretRef
+  , secretRefIsPlaintext
+  , validateProductionSecretRef
+  )
 import Prodbox.Subprocess
   ( renderSubprocess
   , pattern Subprocess
@@ -438,6 +454,25 @@ import Prodbox.TestValidation
   , verifyAwsTestSshReachability
   )
 import Prodbox.UsersAdmin qualified
+import Prodbox.Vault.Client
+  ( BootstrapAction (..)
+  , InitResponse (..)
+  , SealStatus (..)
+  , VaultAddress (..)
+  , bootstrapAction
+  , initResponseToUnlockBundle
+  )
+import Prodbox.Vault.Gate
+  ( VaultGateDecision (..)
+  , renderVaultGateBlock
+  , vaultGateDecision
+  )
+import Prodbox.Vault.UnlockBundle
+  ( UnlockBundle (..)
+  , UnlockBundleError (..)
+  , decryptUnlockBundle
+  , encryptUnlockBundle
+  )
 import Prodbox.Workload
   ( WorkloadBootConfig (..)
   , WorkloadLiveConfig (..)
@@ -515,9 +550,143 @@ deriveContextRoundTrips =
          , nodeId <- ["node-a", "node-b", "node-c"]
          ]
 
+-- | Sprint 1.36: a sample unlock bundle + password for the encrypted
+-- unlock-bundle round-trip tests.
+sampleUnlockBundle :: UnlockBundle
+sampleUnlockBundle =
+  UnlockBundle
+    { unlockBundleClusterId = "cluster-xyz"
+    , unlockBundleVaultAddressHint = "https://vault.vault.svc.cluster.local:8200"
+    , unlockBundleCreatedAt = "2026-06-12T00:00:00Z"
+    , unlockBundleUnsealKeys = ["unseal-share-1", "unseal-share-2", "unseal-share-3"]
+    , unlockBundleRecoveryKeys = ["recovery-share-1", "recovery-share-2"]
+    , unlockBundleInitialRootToken = "s.rootsecrettoken"
+    , unlockBundleFormatVersion = 1
+    }
+
+sampleUnlockBundlePassword :: Text.Text
+sampleUnlockBundlePassword = "correct horse battery staple"
+
 main :: IO ()
 main = mainWithSuite "prodbox-unit" $ do
   parserSuite
+  describe "vault unlock bundle (Sprint 1.36)" $ do
+    it "round-trips through encrypt/decrypt with the same password" $ do
+      encrypted <- encryptUnlockBundle sampleUnlockBundlePassword sampleUnlockBundle
+      case encrypted of
+        Left err -> expectationFailure ("encrypt failed: " ++ show err)
+        Right envelope ->
+          decryptUnlockBundle sampleUnlockBundlePassword envelope
+            `shouldBe` Right sampleUnlockBundle
+    it "fails authentication when decrypted with the wrong password" $ do
+      encrypted <- encryptUnlockBundle sampleUnlockBundlePassword sampleUnlockBundle
+      case encrypted of
+        Left err -> expectationFailure ("encrypt failed: " ++ show err)
+        Right envelope ->
+          decryptUnlockBundle "wrong-password" envelope
+            `shouldBe` Left UnlockBundleAuthFailed
+    it "rejects a tampered ciphertext envelope" $ do
+      encrypted <- encryptUnlockBundle sampleUnlockBundlePassword sampleUnlockBundle
+      case encrypted of
+        Left err -> expectationFailure ("encrypt failed: " ++ show err)
+        Right envelope ->
+          decryptUnlockBundle sampleUnlockBundlePassword (BS.snoc envelope 0x21)
+            `shouldSatisfy` isLeft
+    it "writes an opaque envelope that does not leak the root token in plaintext" $ do
+      encrypted <- encryptUnlockBundle sampleUnlockBundlePassword sampleUnlockBundle
+      case encrypted of
+        Left err -> expectationFailure ("encrypt failed: " ++ show err)
+        Right envelope ->
+          BS.isInfixOf "s.rootsecrettoken" envelope `shouldBe` False
+  describe "vault client (Sprint 1.36)" $ do
+    it "decides initialize when Vault is uninitialized" $ do
+      bootstrapAction (SealStatus False True 0 0 0) `shouldBe` BootstrapInitialize
+    it "decides unseal when Vault is initialized but sealed" $ do
+      bootstrapAction (SealStatus True True 3 5 1) `shouldBe` BootstrapUnseal
+    it "decides ready when Vault is initialized and unsealed" $ do
+      bootstrapAction (SealStatus True False 3 5 3) `shouldBe` BootstrapReady
+    it "decodes a sys/seal-status response" $ do
+      let decoded =
+            eitherDecode
+              "{\"type\":\"shamir\",\"initialized\":true,\"sealed\":false,\"t\":3,\"n\":5,\"progress\":0}"
+      decoded `shouldBe` Right (SealStatus True False 3 5 0)
+    it "decodes a sys/init response and maps it into an unlock bundle" $ do
+      let decoded =
+            eitherDecode "{\"keys_base64\":[\"k1\",\"k2\"],\"root_token\":\"s.root\"}"
+              :: Either String InitResponse
+      case decoded of
+        Left err -> expectationFailure ("decode failed: " ++ err)
+        Right resp -> do
+          initResponseKeysBase64 resp `shouldBe` ["k1", "k2"]
+          let bundle =
+                initResponseToUnlockBundle
+                  "c1"
+                  (VaultAddress "http://127.0.0.1:8200")
+                  "2026-06-12T00:00:00Z"
+                  resp
+          unlockBundleUnsealKeys bundle `shouldBe` ["k1", "k2"]
+          unlockBundleInitialRootToken bundle `shouldBe` "s.root"
+  describe "vault gate (Sprint 1.37)" $ do
+    it "allows Pulumi when Vault is initialized and unsealed" $ do
+      vaultGateDecision (Right (SealStatus True False 3 5 3)) `shouldBe` VaultGateAllow
+    it "blocks Pulumi when Vault is sealed" $ do
+      vaultGateDecision (Right (SealStatus True True 3 5 0)) `shouldBe` VaultGateBlockSealed
+    it "blocks Pulumi when Vault is uninitialized" $ do
+      vaultGateDecision (Right (SealStatus False True 0 0 0))
+        `shouldBe` VaultGateBlockUninitialized
+    it "renders a fail-closed message that starts no Pulumi operation" $ do
+      case renderVaultGateBlock (vaultGateDecision (Right (SealStatus True True 3 5 0))) of
+        Nothing -> expectationFailure "expected a fail-closed block message"
+        Just msg -> do
+          msg `shouldContain` "Blocked"
+          msg `shouldContain` "No preview/update/destroy was started"
+          msg `shouldContain` "prodbox vault unseal"
+  describe "vault envelope (Sprint 3.17)" $ do
+    it "round-trips an envelope under the bound AAD" $ do
+      sealed <- sealEnvelope insecureLocalDekCipher "cluster1|master-seed" "the-secret-seed-bytes"
+      case sealed of
+        Left err -> expectationFailure ("seal failed: " ++ show err)
+        Right envelope -> do
+          opened <- openEnvelope insecureLocalDekCipher "cluster1|master-seed" envelope
+          opened `shouldBe` Right "the-secret-seed-bytes"
+    it "fails closed when opened under a different AAD" $ do
+      sealed <- sealEnvelope insecureLocalDekCipher "cluster1|master-seed" "the-secret-seed-bytes"
+      case sealed of
+        Left err -> expectationFailure ("seal failed: " ++ show err)
+        Right envelope -> do
+          opened <- openEnvelope insecureLocalDekCipher "cluster1|WRONG-object" envelope
+          opened `shouldBe` Left EnvelopeAuthFailed
+    it "rejects a tampered envelope" $ do
+      sealed <- sealEnvelope insecureLocalDekCipher "cluster1|master-seed" "the-secret-seed-bytes"
+      case sealed of
+        Left err -> expectationFailure ("seal failed: " ++ show err)
+        Right envelope -> do
+          opened <- openEnvelope insecureLocalDekCipher "cluster1|master-seed" (BS.snoc envelope 0x21)
+          opened `shouldSatisfy` isLeft
+    it "writes ciphertext that does not leak the plaintext" $ do
+      sealed <- sealEnvelope insecureLocalDekCipher "cluster1|master-seed" "the-secret-seed-bytes"
+      case sealed of
+        Left err -> expectationFailure ("seal failed: " ++ show err)
+        Right envelope -> BS.isInfixOf "the-secret-seed-bytes" envelope `shouldBe` False
+  describe "secret references (Sprint 1.35)" $ do
+    it "flags a plaintext literal as plaintext" $ do
+      secretRefIsPlaintext (SecretRefTestPlaintext "AKIAEXAMPLE") `shouldBe` True
+    it "does not flag a Vault reference as plaintext" $ do
+      secretRefIsPlaintext (SecretRefVault (VaultSecretRef "kv" "prodbox/aws/admin" "access_key_id"))
+        `shouldBe` False
+    it "rejects a plaintext literal in production config" $ do
+      validateProductionSecretRef (SecretRefTestPlaintext "AKIAEXAMPLE")
+        `shouldBe` Left SecretRefPlaintextInProduction
+    it "accepts a Vault reference in production config" $ do
+      validateProductionSecretRef (SecretRefVault (VaultSecretRef "kv" "p" "f")) `shouldBe` Right ()
+    it "resolves a test-plaintext only in the test harness" $ do
+      resolveSecretRef TestHarnessMode (SecretRefTestPlaintext "v") `shouldReturn` Right "v"
+    it "refuses to resolve a test-plaintext on the production path" $ do
+      resolveSecretRef ProductionMode (SecretRefTestPlaintext "v")
+        `shouldReturn` Left SecretRefPlaintextInProduction
+    it "fails loud resolving a Vault reference before the read path is wired" $ do
+      resolveSecretRef ProductionMode (SecretRefVault (VaultSecretRef "kv" "p" "f"))
+        `shouldReturn` Left SecretRefVaultUnavailable
   describe "CLI parser" $ do
     it "routes config show to the native Haskell command" $ do
       parseArgs ["config", "show", "--show-secrets"]
@@ -639,6 +808,26 @@ main = mainWithSuite "prodbox-unit" $ do
     it "routes tla-check through the native Haskell runtime" $ do
       parseArgs ["dev", "tla-check"]
         `shouldBe` Right (Options False (RunNative NativeTlaCheck))
+
+    it "routes vault status through the native Haskell runtime" $ do
+      parseArgs ["vault", "status"]
+        `shouldBe` Right (Options False (RunNative (NativeVault VaultStatus)))
+
+    it "routes vault unseal through the native Haskell runtime" $ do
+      parseArgs ["vault", "unseal"]
+        `shouldBe` Right (Options False (RunNative (NativeVault VaultUnseal)))
+
+    it "routes vault rotate-transit-key with its key argument" $ do
+      parseArgs ["vault", "rotate-transit-key", "prodbox-minio-envelope"]
+        `shouldBe` Right
+          ( Options
+              False
+              (RunNative (NativeVault (VaultRotateTransitKey "prodbox-minio-envelope")))
+          )
+
+    it "routes vault pki issue-test-cert through the nested pki group" $ do
+      parseArgs ["vault", "pki", "issue-test-cert"]
+        `shouldBe` Right (Options False (RunNative (NativeVault VaultPkiIssueTestCert)))
 
     it "routes nuke --dry-run through the native Haskell runtime" $ do
       parseArgs ["nuke", "--dry-run"]
@@ -5919,7 +6108,7 @@ main = mainWithSuite "prodbox-unit" $ do
     it "both installers cover the identical shared component set" $
       Set.fromList homeSubstratePlatformComponents
         `shouldBe` Set.fromList Prodbox.Lib.AwsSubstratePlatform.awsSubstratePlatformComponents
-    it "the shared inventory enumerates all 13 canonical components" $
+    it "the shared inventory enumerates all 14 canonical components" $
       sort (map ContainerImage.platformComponentLabel ContainerImage.sharedPlatformComponents)
         `shouldBe` sort
           [ "gateway"
@@ -5935,6 +6124,7 @@ main = mainWithSuite "prodbox-unit" $ do
           , "envoy-gateway"
           , "cert-manager"
           , "zerossl-dns01"
+          , "vault"
           ]
     it "the single Envoy Gateway release feeds chart + control plane + data plane from one pin" $ do
       ContainerImage.envoyGatewayChartVersion

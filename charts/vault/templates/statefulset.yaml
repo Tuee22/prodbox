@@ -1,0 +1,69 @@
+{{- /*
+Sprint 3.17: the in-cluster Vault server. A single-replica StatefulSet with a
+durable PVC on the retained `manual` StorageClass so Vault state survives
+cluster teardown (vault_doctrine.md §5). The readiness probe uses Vault's
+sys/health with sealedcode=204 / uninitcode=204 so a sealed-but-running Vault
+counts as Ready — the operator unseals it via `prodbox vault unseal`.
+*/ -}}
+apiVersion: apps/v1
+kind: StatefulSet
+metadata:
+  name: vault
+  labels:
+    {{- include "vault.labels" . | nindent 4 }}
+spec:
+  serviceName: vault
+  replicas: 1
+  selector:
+    matchLabels:
+      {{- include "vault.selectorLabels" . | nindent 6 }}
+  template:
+    metadata:
+      labels:
+        {{- include "vault.labels" . | nindent 8 }}
+    spec:
+      containers:
+        - name: vault
+          image: "{{ .Values.image.repository }}:{{ .Values.image.tag }}"
+          imagePullPolicy: {{ .Values.image.pullPolicy }}
+          command:
+            - vault
+            - server
+            - -config=/vault/config/vault.hcl
+          ports:
+            - name: api
+              containerPort: {{ .Values.ports.api }}
+            - name: cluster
+              containerPort: {{ .Values.ports.cluster }}
+          env:
+            - name: VAULT_ADDR
+              value: "http://127.0.0.1:{{ .Values.ports.api }}"
+          readinessProbe:
+            httpGet:
+              path: /v1/sys/health?standbyok=true&sealedcode=204&uninitcode=204
+              port: api
+              scheme: HTTP
+            initialDelaySeconds: 5
+            periodSeconds: 10
+          volumeMounts:
+            - name: config
+              mountPath: /vault/config
+              readOnly: true
+            - name: data
+              mountPath: /vault/data
+      volumes:
+        - name: config
+          configMap:
+            name: vault-config
+  volumeClaimTemplates:
+    - metadata:
+        name: data
+        labels:
+          {{- include "vault.labels" . | nindent 10 }}
+      spec:
+        accessModes:
+          - ReadWriteOnce
+        storageClassName: {{ .Values.storage.className }}
+        resources:
+          requests:
+            storage: {{ .Values.storage.size }}

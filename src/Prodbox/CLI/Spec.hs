@@ -69,6 +69,7 @@ import Prodbox.CLI.Command
   , TestScope (..)
   , UsersCommand (..)
   , UsersListStatus (..)
+  , VaultCommand (..)
   , WorkloadCommand (..)
   , WorkloadOptions (..)
   )
@@ -148,6 +149,7 @@ commandRegistry =
         , nukeLeaf
         , testGroupSpec
         , usersGroup
+        , vaultGroup
         , workloadGroup
         ]
     , arguments = []
@@ -274,6 +276,18 @@ parserForPath path =
               )
           )
     ["config", "validate"] -> Just (pure (RunNative (NativeConfig ConfigValidate)))
+    ["vault", "status"] -> Just (pure (RunNative (NativeVault VaultStatus)))
+    ["vault", "init"] -> Just (pure (RunNative (NativeVault VaultInit)))
+    ["vault", "unseal"] -> Just (pure (RunNative (NativeVault VaultUnseal)))
+    ["vault", "seal"] -> Just (pure (RunNative (NativeVault VaultSeal)))
+    ["vault", "reconcile"] -> Just (pure (RunNative (NativeVault VaultReconcile)))
+    ["vault", "rotate-unlock-bundle"] ->
+      Just (pure (RunNative (NativeVault VaultRotateUnlockBundle)))
+    ["vault", "rotate-transit-key"] ->
+      Just (fmap (RunNative . NativeVault . VaultRotateTransitKey) (strArgument (metavar "KEY")))
+    ["vault", "pki", "status"] -> Just (pure (RunNative (NativeVault VaultPkiStatus)))
+    ["vault", "pki", "issue-test-cert"] ->
+      Just (pure (RunNative (NativeVault VaultPkiIssueTestCert)))
     ["dns", "check"] -> Just (pure (RunNative (NativeDns DnsCheck)))
     ["dev", "docs", "check"] -> Just (pure (RunNative (NativeDocs DocsCheck)))
     ["dev", "docs", "generate"] -> Just (pure (RunNative (NativeDocs DocsGenerate)))
@@ -1441,6 +1455,78 @@ edgeGroup =
     ]
     []
     [example ["edge", "reconcile"] "Reconcile the public edge (DNS + TLS)."]
+
+vaultGroup :: CommandSpec
+vaultGroup =
+  group
+    "vault"
+    "Vault secret-management lifecycle"
+    "The in-cluster Vault lifecycle: seal-status, init, unseal, reconcile, key rotation, and PKI inspection. The host-side encrypted unlock bundle (.data/prodbox/vault-unlock-bundle.age) recovers a torn-down cluster's Vault."
+    [ leaf
+        "status"
+        "Report Vault seal state"
+        "Probe the in-cluster Vault and report initialized / sealed / unseal-progress, or that it is unreachable."
+        []
+        [example ["vault", "status"] "Probe the in-cluster Vault seal state."]
+    , leaf
+        "init"
+        "Initialize Vault"
+        "Initialize an uninitialized Vault, capturing the unseal/recovery keys and root token into the encrypted unlock bundle exactly once."
+        []
+        [example ["vault", "init"] "Initialize Vault and write the encrypted unlock bundle."]
+    , leaf
+        "unseal"
+        "Unseal Vault"
+        "Decrypt the host-side unlock bundle and submit the unseal keys until Vault is unsealed."
+        []
+        [example ["vault", "unseal"] "Unseal Vault from the encrypted unlock bundle."]
+    , leaf
+        "seal"
+        "Seal Vault"
+        "Seal Vault, returning the cluster to the fail-closed state."
+        []
+        [example ["vault", "seal"] "Seal Vault."]
+    , leaf
+        "reconcile"
+        "Reconcile Vault policy"
+        "Idempotently reconcile Vault auth mounts, policies, roles, KV mounts, Transit keys, PKI issuers, and Kubernetes auth roles."
+        []
+        [example ["vault", "reconcile"] "Reconcile Vault mounts, policies, and keys."]
+    , leaf
+        "rotate-unlock-bundle"
+        "Re-encrypt the unlock bundle"
+        "Re-encrypt the host-side unlock bundle under a new password."
+        []
+        [example ["vault", "rotate-unlock-bundle"] "Re-encrypt the unlock bundle under a new password."]
+    , leafWithArgs
+        "rotate-transit-key"
+        "Rotate a Transit key"
+        "Rotate a named Vault Transit envelope key to a new version."
+        [argument "key" "KEY" "The Transit key name to rotate"]
+        []
+        [example ["vault", "rotate-transit-key", "prodbox-minio-envelope"] "Rotate the named Transit key."]
+    , group
+        "pki"
+        "Vault PKI inspection"
+        "Inspect the Vault PKI issuer and issue a throwaway certificate to validate it."
+        [ leaf
+            "status"
+            "Report Vault PKI state"
+            "Report the Vault PKI issuer and certificate state."
+            []
+            [example ["vault", "pki", "status"] "Report Vault PKI issuer state."]
+        , leaf
+            "issue-test-cert"
+            "Issue a throwaway PKI cert"
+            "Issue a throwaway certificate from Vault PKI to validate the issuer."
+            []
+            [example ["vault", "pki", "issue-test-cert"] "Issue a throwaway Vault PKI certificate."]
+        ]
+        []
+        [example ["vault", "pki", "status"] "Report Vault PKI issuer state."]
+    ]
+    []
+    [example ["vault", "status"] "Probe the in-cluster Vault seal state."]
 
 testGroupSpec :: CommandSpec
 testGroupSpec =

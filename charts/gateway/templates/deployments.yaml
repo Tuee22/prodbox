@@ -85,6 +85,15 @@ spec:
               mountPath: /etc/gateway/secrets/minio.dhall
               subPath: minio.dhall
               readOnly: true
+            - name: seed-scratch
+              # Sprint 3.17: RAM-backed (emptyDir{medium: Memory}) tmpfs
+              # scratch dir for the master-seed get/put. The AWS CLI needs a
+              # filesystem path for the binary seed body; backing it with
+              # tmpfs keeps the plaintext seed off the node's disk (with the
+              # kubelet's required swap-off the bytes never leave RAM).
+              # Writable (no readOnly) — the daemon writes the transient,
+              # randomized, immediately-deleted scratch file here.
+              mountPath: /run/prodbox-seed
           livenessProbe:
             httpGet:
               path: /v1/state
@@ -132,4 +141,12 @@ spec:
             items:
               - key: minio.dhall
                 path: minio.dhall
+        - name: seed-scratch
+          # Sprint 3.17: in-memory tmpfs so the master-seed scratch file
+          # never lands on the node's disk. sizeLimit is generous headroom
+          # over the 32-byte seed; tmpfs usage counts against the Pod's
+          # memory limit.
+          emptyDir:
+            medium: Memory
+            sizeLimit: 1Mi
 {{- end }}

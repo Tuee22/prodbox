@@ -1,0 +1,44 @@
+{{- /*
+Sprint 3.17: the in-cluster Vault Service (ClusterIP for in-cluster callers
+such as the gateway daemon's Kubernetes-auth seed unwrap) plus a NodePort for
+host-CLI access. The host firewall rule restricts the NodePort to 127.0.0.1 on
+the operator host (the same loopback pattern the gateway daemon uses), so the
+host `prodbox vault status|init|unseal` commands reach Vault without exposing it
+to the LAN/WAN.
+*/ -}}
+apiVersion: v1
+kind: Service
+metadata:
+  name: vault
+  labels:
+    {{- include "vault.labels" . | nindent 4 }}
+spec:
+  type: ClusterIP
+  selector:
+    {{- include "vault.selectorLabels" . | nindent 4 }}
+  ports:
+    - name: api
+      port: {{ .Values.ports.api }}
+      targetPort: api
+      protocol: TCP
+    - name: cluster
+      port: {{ .Values.ports.cluster }}
+      targetPort: cluster
+      protocol: TCP
+---
+apiVersion: v1
+kind: Service
+metadata:
+  name: vault-host
+  labels:
+    {{- include "vault.labels" . | nindent 4 }}
+spec:
+  type: NodePort
+  selector:
+    {{- include "vault.selectorLabels" . | nindent 4 }}
+  ports:
+    - name: api
+      port: {{ .Values.ports.api }}
+      targetPort: api
+      nodePort: {{ .Values.service.nodePort }}
+      protocol: TCP

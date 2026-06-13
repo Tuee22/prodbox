@@ -9,6 +9,7 @@
 [lifecycle_reconciliation_doctrine.md](./lifecycle_reconciliation_doctrine.md),
 [cli_command_surface.md](./cli_command_surface.md),
 [local_registry_pipeline.md](./local_registry_pipeline.md),
+[vault_doctrine.md](./vault_doctrine.md),
 [../../DEVELOPMENT_PLAN/README.md](../../DEVELOPMENT_PLAN/README.md),
 [../../DEVELOPMENT_PLAN/00-overview.md](../../DEVELOPMENT_PLAN/00-overview.md),
 [../../DEVELOPMENT_PLAN/system-components.md](../../DEVELOPMENT_PLAN/system-components.md),
@@ -72,6 +73,19 @@ the seed itself. There is no fixed seed file on the host (no `/tmp` seed, no
 `.prodbox-state` cache); the only durable copy is the MinIO object on MinIO's PV. The
 target structure is that the lint refuses any new importer of the raw-seed reader outside
 the daemon, so the boundary cannot regress silently.
+
+**Vault-Transit envelope at rest (Sprint 3.17).** The at-rest `master-seed` object in MinIO
+becomes a `prodbox-envelope-v1` Vault-Transit envelope rather than a raw 32-byte object. The
+gateway daemon authenticates to Vault with Kubernetes auth, asks Vault Transit to unwrap the
+data-encryption key, and recovers the seed only when Vault is unsealed and policy allows it. A
+sealed Vault therefore makes the seed unrecoverable and the daemon fails closed. The
+HMAC-SHA-256 derivation, the context strings, and the daemon-only boundary are unchanged; only
+the at-rest representation gains the envelope, decryptable only after an operator unseals Vault
+with the unlock-bundle password — the ephemeral root of the [unlock
+chain](./vault_doctrine.md#the-unlock-chain), whose only cleartext home is `test-secrets.dhall`
+(test harness only). See
+[vault_doctrine.md §9](./vault_doctrine.md#9-minio-as-a-ciphertext-store). This is the intended
+structure scheduled under Sprint 3.17, not yet implemented.
 
 The coupling between the seed and the data it protects is intentional. If the operator
 wipes `.data/`, MinIO's PV disappears and the seed disappears with it. The next
@@ -237,6 +251,13 @@ class and source. Charts that generate secrets must either go through the gatewa
 generated). Storing secrets on the operator host is forbidden; the `forbidDotProdboxState`
 lint in `prodbox dev check` enforces this.
 
+A third source class extends this inventory as secrets move into Vault: **Vault KV via Vault
+Kubernetes auth** for secrets such as the Keycloak admin/client secrets and `keycloak-smtp`,
+read by in-cluster workloads that authenticate to Vault with Kubernetes auth. This extends —
+never replaces — the derived and chart-generated classes above, and is scheduled under
+Sprints 3.18 / 8.9 (not yet implemented). See
+[vault_doctrine.md §12](./vault_doctrine.md#12-in-cluster-service-auth).
+
 ## 7. Bootstrap order
 
 The gateway daemon needs MinIO access before it can read or create the master seed, and
@@ -298,6 +319,7 @@ authoritative references for the inverse (teardown) order.
 | Dhall `--config` file missing or fails to decode | misconfigured ConfigMap, malformed Dhall, missing Secret import | gateway daemon refuses to start (initial decode); after startup, file-watch reload classifies the change as `config_reload_decode_failed`, leaves the in-memory config in place, and `/v1/secret/*` continues to serve from the last successfully-decoded config per [config_doctrine.md §8](./config_doctrine.md#8-boot-vs-live-split-and-the-restart-contract) |
 | Master seed present, derivation produces value that mismatches `pg_authid` | preserved `.data/` from an incompatible seed (e.g., seed regenerated while data preserved) | **Implemented (Sprint 3.16):** `resetPatroniStorageIfRequested` in `Prodbox.Lib.ChartPlatform` probes the gateway-derived Patroni app-role password against the preserved `pg_authid` hash through a probe-only Postgres connection. The pure decision (`patroniSeedMismatchDecision`) reports a loud failure naming the namespace/role pair and the resolution options on a definite authentication rejection; the operator must either restore the matching `.data/` or wipe the affected `.data/<ns>/keycloak-postgres/` subtree. A fresh install (no primary Pod) or any transient probe failure classifies as "cannot observe" and proceeds — only a proven rejection fails loudly. Never a silent destructive reset. |
 | Gateway service unreachable from host | iptables rule misconfigured, NodePort not exposed, daemon not running | host CLI returns a structured error from `Prodbox.Gateway.Client`; never silently falls back to a host-side cache (none exists) |
+| Vault sealed (master-seed envelope cannot be unwrapped) | Vault not yet unsealed after cluster bring-up, or re-sealed mid-flight | the master-seed `prodbox-envelope-v1` envelope cannot be unwrapped, so the gateway daemon refuses `/v1/secret/*` and `/readyz` reports `503` with a waiting-for-Vault reason (fail closed). Intended structure scheduled under Sprint 3.17, per [vault_doctrine.md §15](./vault_doctrine.md#15-sealed-state-behavior-matrix) |
 
 The third row is the load-bearing failure case. It is loud by design: silent data reset
 on derivation mismatch is precisely the failure mode the pre-doctrine
@@ -327,5 +349,7 @@ decision is the doctrine contract.
   cascade order that releases MinIO-tracked AWS resources before cluster uninstall
 - [cli_command_surface.md](./cli_command_surface.md) — the `host firewall` subcommand
   that installs the iptables rule
+- [vault_doctrine.md](./vault_doctrine.md) — the Vault-Transit envelope around the at-rest
+  master seed and the sealed-state fail-closed gate
 - [../../DEVELOPMENT_PLAN/legacy-tracking-for-deletion.md](../../DEVELOPMENT_PLAN/legacy-tracking-for-deletion.md)
   — the `.prodbox-state/<ns>/.secrets.json` host cache is on the cleanup ledger

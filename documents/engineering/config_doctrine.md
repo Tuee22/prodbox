@@ -14,6 +14,7 @@
 [haskell_code_guide.md](./haskell_code_guide.md),
 [helm_chart_platform_doctrine.md](./helm_chart_platform_doctrine.md),
 [secret_derivation_doctrine.md](./secret_derivation_doctrine.md),
+[vault_doctrine.md](./vault_doctrine.md),
 [storage_lifecycle_doctrine.md](./storage_lifecycle_doctrine.md),
 [unit_testing_policy.md](./unit_testing_policy.md),
 [aws_integration_environment_doctrine.md](./aws_integration_environment_doctrine.md),
@@ -53,7 +54,12 @@ repository-root `prodbox-config.dhall` by locating the repo root (`Prodbox.Repo.
 Cryptographic material and credentials are still mounted from k8s Secrets, but they are
 referenced **from the Dhall file** via Dhall's native import system — never from environment
 variables, never from a parallel JSON document, never from a CLI override that fronts an
-env-var fallback.
+env-var fallback. The credentials a binary references from its Dhall file are now typed
+`SecretRef` values rather than inline plaintext: the target is `SecretRef.Vault` references
+resolved through Vault when it is unsealed, with the Secret-mounted Dhall fragment (`as Text`)
+retained only as the `SecretRef.FileSecret` migration bridge. This refines what the file may
+contain without weakening the single-Dhall-file-per-binary rule. See
+[vault_doctrine.md §3](./vault_doctrine.md#3-the-secretref-model).
 
 The reload model is symmetric: the running binary watches the file at its `--config` path,
 classifies each on-disk change as a BootConfig change (drain + exit so kubelet restarts the
@@ -235,6 +241,28 @@ S3-backed retain-and-restore of the issued certificate so rebuilds do not re-ord
 owned by [acme_provider_guide.md](./acme_provider_guide.md) and
 [envoy_gateway_edge_doctrine.md](./envoy_gateway_edge_doctrine.md).
 
+`acme.eab_key_id` / `acme.eab_hmac_key` move from plaintext config fields into Vault KV,
+referenced by `SecretRef.Vault` rather than carried inline (scheduled under Sprint 7.15; see
+[vault_doctrine.md §11](./vault_doctrine.md#11-tls-and-pki-under-vault)). The field names and
+their required-for-ZeroSSL semantics are unchanged; only their at-rest carrier moves behind
+Vault.
+
+## 6.2 SecretRef: typed secret references
+
+Sensitive config fields carry a typed `SecretRef` value, never a plaintext secret. The Dhall
+union is `< Vault | TransitKey | Prompt | FileSecret | TestPlaintext >`; the corresponding
+Haskell ADT is `Prodbox.Settings.SecretRef`. (Scheduled under Sprint 1.35.)
+
+- `prodbox config validate` rejects any plaintext secret value in production config and rejects
+  `TestPlaintext` outside the test harness.
+- Production config and test plaintext are split: `prodbox-config.dhall` holds references only,
+  while `test-secrets.dhall` holds plaintext used solely by the test harness and is never
+  imported by `prodbox-config.dhall`. See
+  [vault_doctrine.md §4](./vault_doctrine.md#4-config-split-production-references-vs-test-plaintext).
+
+This is the SSoT-deferring summary; [vault_doctrine.md §3](./vault_doctrine.md#3-the-secretref-model)
+owns the full SecretRef model and is the single source of truth for it.
+
 ## 7. File-watch reload trigger
 
 Every long-running `prodbox` binary instance watches the file at its `--config` path for
@@ -335,6 +363,9 @@ so the prohibition is the intended end state rather than a present-tense fact:
   terminate signal again with the supported behavior `drain + exit`.
 - ConfigMap-rendered credentials. Credentials live in k8s Secrets, mounted as Dhall files
   and imported by the main Dhall.
+- Plaintext secret values in `prodbox-config.dhall` or in ConfigMap-rendered Dhall. Sensitive
+  fields carry `SecretRef` references instead (scheduled under Sprint 1.35; see §6.2 and
+  [vault_doctrine.md §3](./vault_doctrine.md#3-the-secretref-model)).
 
 ## 11. Cross-references
 
@@ -350,6 +381,8 @@ so the prohibition is the intended end state rather than a present-tense fact:
   Secret mount layout for the cluster Dhall surface.
 - [secret_derivation_doctrine.md](./secret_derivation_doctrine.md) — MinIO endpoint and
   credentials sourcing for the master-seed read path.
+- [vault_doctrine.md](./vault_doctrine.md) — the `SecretRef` contract and the production
+  references vs. `test-secrets.dhall` plaintext split.
 - [unit_testing_policy.md](./unit_testing_policy.md) — file-watch reload test stanza.
 - [../../DEVELOPMENT_PLAN/README.md](../../DEVELOPMENT_PLAN/README.md) — sprint status and
   adoption schedule for this doctrine.

@@ -4,7 +4,8 @@
 **Supersedes**: N/A
 **Referenced by**: [README.md](README.md), [00-overview.md](00-overview.md),
 [substrates.md](substrates.md),
-[the engineering doctrine docs](../documents/engineering/README.md)
+[the engineering doctrine docs](../documents/engineering/README.md),
+[vault_doctrine.md](../documents/engineering/vault_doctrine.md)
 **Generated sections**: none
 
 > **Purpose**: Define the plan-ownership baseline for the Haskell rewrite so status, sequencing,
@@ -523,6 +524,33 @@ None.
   contract and the distinction between benign host-noise suppression on success and actionable
   failure context.
 
+Engineering docs scheduled by Sprint `0.12` (Vault secret-management doctrine + documentation
+harmony):
+
+- `documents/engineering/vault_doctrine.md` — new SSoT for Vault as the fail-closed secrets / KMS /
+  PKI backend: the typed `SecretRef` model, the host-side `vault-unlock-bundle.age` bundle, Vault
+  Transit envelope encryption (`prodbox-envelope-v1`), the sealed-state fail-closed invariant,
+  in-cluster Vault Kubernetes auth, the config/state classification, and the red-team checklist.
+- `documents/engineering/config_doctrine.md` — defer to `vault_doctrine.md` for the typed
+  `SecretRef` config contract and the `test-secrets.dhall` test-only plaintext split.
+- `documents/engineering/secret_derivation_doctrine.md` — defer to `vault_doctrine.md` for the
+  Vault-Transit envelope over the at-rest master seed while keeping the master-seed HMAC-SHA-256
+  derivation and daemon-only seed boundary intact.
+- `documents/engineering/storage_lifecycle_doctrine.md` — defer to `vault_doctrine.md` for MinIO as
+  a ciphertext store and the durable Vault PV preserved across cluster wipes alongside the MinIO PV.
+- `documents/engineering/lifecycle_reconciliation_doctrine.md` — defer to `vault_doctrine.md` for
+  Vault deploy/unseal during reconcile and Vault PV preservation during teardown.
+- `documents/engineering/envoy_gateway_edge_doctrine.md` — defer to `vault_doctrine.md` for the TLS
+  private-key path and PKI material held behind Vault.
+- `documents/engineering/helm_chart_platform_doctrine.md` — defer to `vault_doctrine.md` for chart
+  and Keycloak secrets sourced via Vault Kubernetes auth.
+- `documents/engineering/acme_provider_guide.md` — defer to `vault_doctrine.md` for the ACME EAB
+  material held in Vault while keeping the single ZeroSSL issuer + S3 retain-restore intact.
+- `documents/engineering/aws_admin_credentials.md` — defer to `vault_doctrine.md` for AWS
+  credentials stored in Vault KV.
+- `documents/engineering/cli_command_surface.md` — defer to `vault_doctrine.md` for the `prodbox
+  vault` command group surface.
+
 Governed docs touched by the Sprint `0.9`–`0.10` design-intention review (Documentation
 Harmony as an enforced invariant):
 
@@ -986,6 +1014,50 @@ the generated-section machinery established by the doctrine's `Generated Artifac
 
 None — closed 2026-06-09 after Sprints `1.29` and `4.27` landed the two generatable tables and the
 chart→edge ownership table was (correctly) left editorial per the guardrail.
+
+## Sprint 0.12: Vault Secret-Management Doctrine and Documentation Harmony ✅
+
+**Status**: Done
+**Implementation**: `documents/engineering/vault_doctrine.md`
+**Docs to update**: `documents/engineering/vault_doctrine.md`, `documents/engineering/README.md`, `config_doctrine.md`, `secret_derivation_doctrine.md`, `storage_lifecycle_doctrine.md`, `lifecycle_reconciliation_doctrine.md`, `envoy_gateway_edge_doctrine.md`, `helm_chart_platform_doctrine.md`, `acme_provider_guide.md`, `aws_admin_credentials.md`, `cli_command_surface.md`
+
+### Objective
+
+Establish the SSoT doctrine for Vault as the fail-closed secrets / KMS / PKI backend and bring the
+governed documentation set into harmony with it, so the per-surface adoption sprints (`1.35`–`8.9`)
+cite one authoritative source. Vault is documented as an encryption-at-rest and sealed-state
+authority layer added *beneath* the existing secret model — it extends, and does not reverse, the
+master-seed derivation model, the single-Dhall contract, the retained-PV model, and the single
+ZeroSSL issuer.
+
+### Deliverables
+
+- `documents/engineering/vault_doctrine.md` created as the authoritative source for the SecretRef
+  model, the host-side unlock bundle, Vault Transit envelope encryption, the sealed-state
+  invariant, in-cluster Vault Kubernetes auth, the config/state classification, and the red-team
+  checklist.
+- The engineering index (`documents/engineering/README.md`) gains a `vault_doctrine.md` row and a
+  Secrets-and-Vault quick-navigation block.
+- `config_doctrine.md`, `secret_derivation_doctrine.md`, `storage_lifecycle_doctrine.md`,
+  `lifecycle_reconciliation_doctrine.md`, `envoy_gateway_edge_doctrine.md`,
+  `helm_chart_platform_doctrine.md`, `acme_provider_guide.md`, `aws_admin_credentials.md`, and
+  `cli_command_surface.md` defer to `vault_doctrine.md` and carry the bidirectional cross-reference.
+- The secret-classification model (public / sensitive-topology / secret-material) is documented in
+  `vault_doctrine.md` §13 and referenced from the secret and storage docs.
+
+### Validation
+
+- `prodbox dev lint docs` exit 0 and `prodbox dev docs check` exit 0 (header↔markers↔registry and
+  relative-link discipline) — verified 2026-06-11.
+- `prodbox dev check` exit 0 (policy + Fourmolu + HLint + warning-clean build) and
+  `prodbox test unit` 823/823 — the governed doc set validates; the same run also gated the
+  Sprint `3.17` tmpfs seed-scratch increment (see Phase 3).
+- Every governed doc's `**Referenced by**` header and cross-reference list agree (bidirectional
+  link discipline).
+
+### Remaining Work
+
+- None — closed 2026-06-11 (all gates green).
 
 ## Related Documents
 

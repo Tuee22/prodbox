@@ -2,7 +2,7 @@
 
 **Status**: Authoritative source
 **Supersedes**: N/A
-**Referenced by**: README.md, AGENTS.md, CLAUDE.md, DEVELOPMENT_PLAN/README.md, DEVELOPMENT_PLAN/00-overview.md, DEVELOPMENT_PLAN/system-components.md, DEVELOPMENT_PLAN/legacy-tracking-for-deletion.md, DEVELOPMENT_PLAN/phase-0-planning-documentation.md, DEVELOPMENT_PLAN/phase-1-runtime-cli-aws-foundations.md, DEVELOPMENT_PLAN/phase-2-gateway-dns.md, DEVELOPMENT_PLAN/phase-3-chart-platform-vscode.md, DEVELOPMENT_PLAN/phase-4-lifecycle-canonical-paths.md, DEVELOPMENT_PLAN/phase-5-canonical-test-suite.md, DEVELOPMENT_PLAN/phase-6-clean-room-handoff.md, DEVELOPMENT_PLAN/phase-7-aws-substrate-foundations.md, DEVELOPMENT_PLAN/phase-8-email-invite-auth.md, documents/cli/commands.md, documents/documentation_standards.md, documents/engineering/README.md, documents/engineering/acme_provider_guide.md, documents/engineering/aws_account_setup_guide.md, documents/engineering/aws_admin_credentials.md, documents/engineering/aws_integration_environment_doctrine.md, documents/engineering/code_quality.md, documents/engineering/dependency_management.md, documents/engineering/envoy_gateway_edge_doctrine.md, documents/engineering/helm_chart_platform_doctrine.md, documents/engineering/lifecycle_reconciliation_doctrine.md, documents/engineering/prerequisite_doctrine.md, documents/engineering/pure_fp_standards.md, documents/engineering/secret_derivation_doctrine.md, documents/engineering/streaming_doctrine.md, documents/engineering/unit_testing_policy.md
+**Referenced by**: README.md, AGENTS.md, CLAUDE.md, DEVELOPMENT_PLAN/README.md, DEVELOPMENT_PLAN/00-overview.md, DEVELOPMENT_PLAN/system-components.md, DEVELOPMENT_PLAN/legacy-tracking-for-deletion.md, DEVELOPMENT_PLAN/phase-0-planning-documentation.md, DEVELOPMENT_PLAN/phase-1-runtime-cli-aws-foundations.md, DEVELOPMENT_PLAN/phase-2-gateway-dns.md, DEVELOPMENT_PLAN/phase-3-chart-platform-vscode.md, DEVELOPMENT_PLAN/phase-4-lifecycle-canonical-paths.md, DEVELOPMENT_PLAN/phase-5-canonical-test-suite.md, DEVELOPMENT_PLAN/phase-6-clean-room-handoff.md, DEVELOPMENT_PLAN/phase-7-aws-substrate-foundations.md, DEVELOPMENT_PLAN/phase-8-email-invite-auth.md, documents/cli/commands.md, documents/documentation_standards.md, documents/engineering/README.md, documents/engineering/acme_provider_guide.md, documents/engineering/aws_account_setup_guide.md, documents/engineering/aws_admin_credentials.md, documents/engineering/aws_integration_environment_doctrine.md, documents/engineering/code_quality.md, documents/engineering/dependency_management.md, documents/engineering/envoy_gateway_edge_doctrine.md, documents/engineering/helm_chart_platform_doctrine.md, documents/engineering/lifecycle_reconciliation_doctrine.md, documents/engineering/prerequisite_doctrine.md, documents/engineering/pure_fp_standards.md, documents/engineering/secret_derivation_doctrine.md, documents/engineering/streaming_doctrine.md, documents/engineering/unit_testing_policy.md, documents/engineering/vault_doctrine.md
 **Generated sections**: `command-surface-toplevel`, `command-surface-matrix`
 
 > **Purpose**: Define the explicit, no-passthrough command surface for `prodbox`.
@@ -63,6 +63,7 @@ is each command's registry summary):
 | `nuke` | Command | Total teardown of every prodbox-owned AWS resource (operator-only) |
 | `test` | Group | Named test suites |
 | `users` | Group | Operator-invited user management |
+| `vault` | Group | Vault secret-management lifecycle |
 | `workload` | Group | Internal public workload runtime |
 <!-- prodbox:command-surface-toplevel:end -->
 
@@ -305,12 +306,72 @@ The per-group command matrix (generated; do not edit by hand):
 | `prodbox users list` | none | `--status`, `--status-unverified` |
 | `prodbox users revoke` | `EMAIL_OR_USER_ID` | `--delete`, `--dry-run`, `--plan-file` |
 
+### `prodbox vault`
+
+| Command | Arguments | Options |
+|---------|-----------|---------|
+| `prodbox vault status` | none | none |
+| `prodbox vault init` | none | none |
+| `prodbox vault unseal` | none | none |
+| `prodbox vault seal` | none | none |
+| `prodbox vault reconcile` | none | none |
+| `prodbox vault rotate-unlock-bundle` | none | none |
+| `prodbox vault rotate-transit-key` | `KEY` | none |
+| `prodbox vault pki status` | none | none |
+| `prodbox vault pki issue-test-cert` | none | none |
+
 ### `prodbox workload`
 
 | Command | Arguments | Options |
 |---------|-----------|---------|
 | `prodbox workload start` | none | `--config` |
 <!-- prodbox:command-surface-matrix:end -->
+
+### `prodbox vault` (scheduled — Sprint 1.36)
+
+The `prodbox vault` command group is the host-side Vault lifecycle surface. It is the
+intended structure scheduled under Sprint 1.36 (`prodbox vault` command group + encrypted
+unlock bundle); it is not yet part of the registry-generated matrix above and will join the
+generated `command-surface-matrix` section when the typed `commandRegistry` gains its leaves.
+The rows below are the planned surface, not an implemented one:
+
+| Command | Arguments | Options | Owning Sprint |
+|---------|-----------|---------|---------------|
+| `prodbox vault status` | none | none | Sprint 1.36 |
+| `prodbox vault init` | none | none | Sprint 1.36 |
+| `prodbox vault unseal` | none | none | Sprint 1.36 |
+| `prodbox vault seal` | none | none | Sprint 1.36 |
+| `prodbox vault reconcile` | none | `--dry-run`, `--plan-file` | Sprint 1.36 |
+| `prodbox vault rotate-unlock-bundle` | none | none | Sprint 1.36 |
+| `prodbox vault rotate-transit-key` | `KEY` | none | Sprint 1.36 |
+| `prodbox vault pki status` | none | none | Sprint 1.36 |
+| `prodbox vault pki issue-test-cert` | none | none | Sprint 1.36 |
+
+Planned per-command intent (authoritative model in
+[vault_doctrine.md § 7](./vault_doctrine.md#7-vault-lifecycle-commands)):
+
+- `prodbox vault status` — report whether Vault is deployed, initialized, sealed/unsealed, and
+  policy-reconciled.
+- `prodbox vault init` — idempotent init-if-empty; capture the unseal/recovery keys and root
+  token once into the encrypted unlock bundle at
+  `.data/prodbox/vault-unlock-bundle.age` (Argon2id/age authenticated encryption).
+- `prodbox vault unseal` — read the unlock bundle, prompt for its password, and unseal Vault.
+- `prodbox vault seal` — seal Vault (fail-closed back to the sealed-state invariant).
+- `prodbox vault reconcile` — idempotently reconcile auth mounts, policies, roles, KV mounts,
+  Transit keys, PKI, and Kubernetes auth roles, in keeping with the single-reconcile doctrine.
+- `prodbox vault rotate-unlock-bundle` — re-encrypt the unlock bundle under a new password
+  without re-initializing Vault.
+- `prodbox vault rotate-transit-key <key>` — rotate a named Transit key version (envelope
+  re-wrap is forward-compatible via the `prodbox-envelope-v1` tag).
+- `prodbox vault pki status` / `prodbox vault pki issue-test-cert` — inspect the Vault PKI mount
+  and issue a throwaway certificate for verification.
+
+The sealed-state invariant, the typed `SecretRef` config contract, and startup-config sourcing
+that these commands operate against are owned by
+[vault_doctrine.md](./vault_doctrine.md); see
+[vault_doctrine.md § 6](./vault_doctrine.md#6-the-unlock-bundle) for the unlock bundle and
+[vault_doctrine.md § 7](./vault_doctrine.md#7-vault-lifecycle-commands) for the lifecycle
+command contract.
 
 ### `prodbox config` notes
 
@@ -781,6 +842,19 @@ The generator owns both marker-delimited artifacts and fully generated files:
 Operators may use either name; future contributors must not split the surfaces or add a third
 validator command.
 
+### `prodbox vault`
+
+The `prodbox vault` group (scheduled under Sprint 1.36) is the host-side Vault lifecycle
+surface — `status`, `init`, `unseal`, `seal`, `reconcile`, `rotate-unlock-bundle`,
+`rotate-transit-key`, and the `pki` inspection leaves (full row set in
+[§3 Command Matrix](#3-command-matrix)). These commands manage the in-cluster Vault backend
+and its encrypted unlock bundle from the operator host. Startup-config sourcing, the typed
+`SecretRef` contract, and the sealed-state fail-closed invariant are not owned here; they are
+owned by [vault_doctrine.md](./vault_doctrine.md) and
+[config_doctrine.md](./config_doctrine.md). This surface extends the existing config and
+lifecycle command groups with a Vault control plane; it does not replace the single-Dhall
+config contract or the managed-resource-registry teardown.
+
 ### Daemon-launching flags
 
 `prodbox gateway start`, `prodbox gateway status`, and `prodbox workload start` accept
@@ -994,3 +1068,4 @@ partial state — is the supported operation, not an unauthorized change.
 - [Lifecycle Reconciliation Doctrine](./lifecycle_reconciliation_doctrine.md)
 - [Prerequisite Doctrine](./prerequisite_doctrine.md)
 - [Pure FP Standards](./pure_fp_standards.md)
+- [Vault Secret-Management Doctrine](./vault_doctrine.md)

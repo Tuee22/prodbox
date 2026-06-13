@@ -4,7 +4,8 @@
 **Supersedes**: N/A
 **Referenced by**: [README.md](README.md), [00-overview.md](00-overview.md),
 [legacy-tracking-for-deletion.md](legacy-tracking-for-deletion.md),
-[system-components.md](system-components.md), [the engineering doctrine docs](../documents/engineering/README.md)
+[system-components.md](system-components.md), [the engineering doctrine docs](../documents/engineering/README.md),
+[vault_doctrine.md](../documents/engineering/vault_doctrine.md)
 **Generated sections**: none
 
 > **Purpose**: Capture the lifecycle hardening work, Pulumi scope reduction, Python-removal
@@ -2474,6 +2475,69 @@ registry totality from a single typed source.
 None — closed 2026-06-09. All deliverables landed; the Route 53 capability proof was correctly left
 **unregistered** (no steady state). The live `bracketOnError` cleanup exercise is operator-driven.
 
+## Sprint 4.29: Vault Lifecycle Integration and Durable Vault PV Preservation 📋
+
+**Status**: Planned
+**Implementation**: `src/Prodbox/CLI/Rke2.hs`, `src/Prodbox/Lifecycle/`
+**Blocked by**: Sprints `1.36`, `3.17`
+**Docs to update**: `documents/engineering/lifecycle_reconciliation_doctrine.md`, `documents/engineering/storage_lifecycle_doctrine.md`, `documents/engineering/vault_doctrine.md`
+
+### Objective
+
+Fold Vault into the canonical cluster lifecycle: reconcile deploys and unseals it, teardown
+preserves its durable PV, and a sealed Vault is a first-class cluster status (vault_doctrine §5, §7,
+§15). The retained-PV teardown model is extended, not reversed.
+
+### Deliverables
+
+- `prodbox cluster reconcile` deploys/rebinds Vault, runs `vault init`-if-empty, unseals from the
+  unlock bundle (or prompts), and runs `vault reconcile` before MinIO/chart reconcile.
+- `prodbox cluster delete --yes` and `--cascade --yes` both preserve the durable Vault PV
+  (`.data/vault/...`) exactly like the MinIO PV; no `prodbox` command removes it.
+- `prodbox cluster status` / `prodbox edge status` surface Vault sealed/unsealed/uninitialized as a
+  first-class line.
+- Lifecycle commands gain fail-closed readiness gates that refuse secret-dependent work when Vault
+  is sealed.
+
+### Validation
+
+- Cluster teardown preserves the Vault and MinIO PVs; cluster reconcile rebinds Vault and recovers
+  after unseal.
+- A sealed Vault is reported by `cluster status`, not hidden.
+
+### Remaining Work
+
+- Metadata hardening + the red-team sweep land in Sprint `4.30`.
+
+## Sprint 4.30: MinIO Metadata Hardening and Sealed-State Red-Team 📋
+
+**Status**: Planned
+**Implementation**: `src/Prodbox/Minio/EncryptedObject.hs`, `src/Prodbox/Lifecycle/`
+**Blocked by**: Sprints `3.17`, `4.29`
+**Docs to update**: `documents/engineering/vault_doctrine.md`
+
+### Objective
+
+Remove sensitive meaning from MinIO object names and audit every surface for downstream-cluster
+metadata leakage, so a sealed Vault reveals only opaque object IDs (vault_doctrine §9, §14, §16).
+
+### Deliverables
+
+- MinIO objects use opaque IDs (`objects/<opaque-id>.enc`) plus Vault-encrypted indexes
+  (`indexes/*.enc`); meaningful prefixes that reveal downstream-cluster inventory are removed.
+- Log redaction: no SecretRef-resolved values, unlock-bundle plaintext, Vault tokens, or sensitive
+  downstream-cluster names on sealed-state failure paths.
+- The red-team checklist (vault_doctrine §16) is exercised.
+
+### Validation
+
+- A MinIO bucket dump while Vault is sealed reveals only opaque object IDs.
+- A log audit finds no secret or sensitive downstream-cluster name on sealed-state failure paths.
+
+### Remaining Work
+
+- Red-team checklist closure is tracked alongside the sealed-Vault canonical validation (Sprint `5.8`).
+
 ## Documentation Requirements
 
 **Engineering docs to create/update:**
@@ -2511,6 +2575,17 @@ None — closed 2026-06-09. All deliverables landed; the Route 53 capability pro
   registry-name↔CLI-command section.
 - `documents/engineering/unit_testing_policy.md` - native lifecycle and aggregate validation
   ownership.
+- [`documents/engineering/vault_doctrine.md`](../documents/engineering/vault_doctrine.md) - SSoT
+  for the fail-closed Vault secret-management model; for Sprint `4.29` it records Vault folded into
+  the canonical cluster lifecycle (reconcile deploys/unseals, teardown preserves the durable Vault
+  PV alongside the MinIO PV, sealed Vault is a first-class `cluster status` line — vault_doctrine
+  [§5](../documents/engineering/vault_doctrine.md#5-vault-deployment-model),
+  [§7](../documents/engineering/vault_doctrine.md#7-vault-lifecycle-commands),
+  [§15](../documents/engineering/vault_doctrine.md#15-sealed-state-behavior-matrix)), and for
+  Sprint `4.30` the MinIO opaque-object-ID metadata hardening plus the sealed-state red-team sweep
+  (vault_doctrine [§9](../documents/engineering/vault_doctrine.md#9-minio-as-a-ciphertext-store),
+  [§16](../documents/engineering/vault_doctrine.md#16-red-team-checklist)). The retained-PV
+  teardown model is extended, not reversed.
 
 **Product docs to create/update:**
 

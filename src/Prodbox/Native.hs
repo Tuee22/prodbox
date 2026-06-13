@@ -16,6 +16,7 @@ import Prodbox.CLI.Command
   , EdgeCommand (..)
   , GatewayCommand (..)
   , NativeCommand (..)
+  , VaultCommand (..)
   )
 import Prodbox.CLI.Nuke (runNukeCommand)
 import Prodbox.CLI.Output
@@ -25,6 +26,7 @@ import Prodbox.CLI.Output
 import Prodbox.CLI.Pulumi (runPulumiCommand)
 import Prodbox.CLI.Rke2 (runEdgeCommand, runRke2Command)
 import Prodbox.CLI.Users (runUsersCommand)
+import Prodbox.CLI.Vault (runVaultCommand)
 import Prodbox.CheckCode
   ( runCheckCode
   , runDocsCommand
@@ -76,6 +78,7 @@ runNativeCommand mode repoRoot command =
     NativeTest testCommand -> runTests repoRoot testCommand
     NativeTlaCheck -> runTlaCheck repoRoot
     NativeUsers usersCommand -> runUsersCommand repoRoot usersCommand
+    NativeVault vaultCommand -> runVaultCommand repoRoot vaultCommand
     NativeWorkload workloadCommand -> runWorkloadCommand workloadCommand
 
 -- | Phase 4: the declarative single-source-of-truth for the typed
@@ -132,6 +135,20 @@ commandPrerequisites command =
     NativeTest _ -> []
     NativeTlaCheck -> []
     NativeUsers _ -> []
+    -- `vault status` self-handles an unreachable Vault (reports it); the
+    -- mutating subcommands act against the in-cluster Vault and gate on a
+    -- reachable cluster. `rotate-unlock-bundle` is a host-only re-encryption.
+    NativeVault vaultCommand ->
+      case vaultCommand of
+        VaultStatus -> []
+        VaultInit -> [K8sClusterReachable]
+        VaultUnseal -> [K8sClusterReachable]
+        VaultSeal -> [K8sClusterReachable]
+        VaultReconcile -> [K8sClusterReachable]
+        VaultRotateUnlockBundle -> []
+        VaultRotateTransitKey _ -> [K8sClusterReachable]
+        VaultPkiStatus -> [K8sClusterReachable]
+        VaultPkiIssueTestCert -> [K8sClusterReachable]
     NativeWorkload _ -> []
 
 runConfigCommand :: FilePath -> ConfigCommand -> IO ExitCode

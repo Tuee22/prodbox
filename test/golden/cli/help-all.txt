@@ -836,6 +836,69 @@ Examples:
 - prodbox users revoke operator@example.invalid  # Disable the operator account.
 - prodbox users revoke operator@example.invalid --delete  # Fully delete the operator account.
 
+## prodbox vault status
+prodbox vault status - Report Vault seal state
+
+Probe the in-cluster Vault and report initialized / sealed / unseal-progress, or that it is unreachable.
+Examples:
+- prodbox vault status  # Probe the in-cluster Vault seal state.
+
+## prodbox vault init
+prodbox vault init - Initialize Vault
+
+Initialize an uninitialized Vault, capturing the unseal/recovery keys and root token into the encrypted unlock bundle exactly once.
+Examples:
+- prodbox vault init  # Initialize Vault and write the encrypted unlock bundle.
+
+## prodbox vault unseal
+prodbox vault unseal - Unseal Vault
+
+Decrypt the host-side unlock bundle and submit the unseal keys until Vault is unsealed.
+Examples:
+- prodbox vault unseal  # Unseal Vault from the encrypted unlock bundle.
+
+## prodbox vault seal
+prodbox vault seal - Seal Vault
+
+Seal Vault, returning the cluster to the fail-closed state.
+Examples:
+- prodbox vault seal  # Seal Vault.
+
+## prodbox vault reconcile
+prodbox vault reconcile - Reconcile Vault policy
+
+Idempotently reconcile Vault auth mounts, policies, roles, KV mounts, Transit keys, PKI issuers, and Kubernetes auth roles.
+Examples:
+- prodbox vault reconcile  # Reconcile Vault mounts, policies, and keys.
+
+## prodbox vault rotate-unlock-bundle
+prodbox vault rotate-unlock-bundle - Re-encrypt the unlock bundle
+
+Re-encrypt the host-side unlock bundle under a new password.
+Examples:
+- prodbox vault rotate-unlock-bundle  # Re-encrypt the unlock bundle under a new password.
+
+## prodbox vault rotate-transit-key
+prodbox vault rotate-transit-key - Rotate a Transit key
+
+Rotate a named Vault Transit envelope key to a new version.
+Examples:
+- prodbox vault rotate-transit-key prodbox-minio-envelope  # Rotate the named Transit key.
+
+## prodbox vault pki status
+prodbox vault pki status - Report Vault PKI state
+
+Report the Vault PKI issuer and certificate state.
+Examples:
+- prodbox vault pki status  # Report Vault PKI issuer state.
+
+## prodbox vault pki issue-test-cert
+prodbox vault pki issue-test-cert - Issue a throwaway PKI cert
+
+Issue a throwaway certificate from Vault PKI to validate the issuer.
+Examples:
+- prodbox vault pki issue-test-cert  # Issue a throwaway Vault PKI certificate.
+
 ## prodbox workload start
 prodbox workload start - Start internal workload runtime
 

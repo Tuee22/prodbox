@@ -802,6 +802,7 @@ awsSubstratePlatformComponents =
   , ContainerImage.ComponentEnvoyGateway
   , ContainerImage.ComponentCertManager
   , ContainerImage.ComponentZeroSslDns01
+  , ContainerImage.ComponentVault
   ]
 
 -- | Sprint 7.5.c.iv: apply the in-cluster image-mirror Job rendered

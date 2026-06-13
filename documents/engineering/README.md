@@ -57,6 +57,7 @@ cross-substrate shared infrastructure (see
 | [refactoring_patterns.md](./refactoring_patterns.md) | Imperative to pure FP migration patterns |
 | [helm_chart_platform_doctrine.md](./helm_chart_platform_doctrine.md) | Singleton chart identity, namespace isolation, storage lifecycle, and delete semantics for `prodbox charts` |
 | [secret_derivation_doctrine.md](./secret_derivation_doctrine.md) | Master-seed derivation, host↔cluster secret boundary, and the gateway-as-secret-service contract |
+| [vault_doctrine.md](./vault_doctrine.md) | Vault as the fail-closed secrets / KMS / PKI backend: the SecretRef config contract, the host-side unlock bundle, Vault Transit envelope encryption of MinIO and Pulumi state, the sealed-state invariant, and in-cluster Vault Kubernetes auth |
 
 ## Quick Navigation
 
@@ -144,6 +145,17 @@ cross-substrate shared infrastructure (see
 - [Managed-Resource Registry (production-cert LongLived registration)](./lifecycle_reconciliation_doctrine.md#31-the-managed-resource-registry-the-reconciler-substrate)
 - [Repo-Local Storage](./storage_lifecycle_doctrine.md#7-repo-local-retained-state-layout)
 - Supported `vscode` path: cluster-backed `prodbox charts` only
+
+### Secrets and Vault
+
+- [Vault Secret-Management Doctrine](./vault_doctrine.md)
+- [SecretRef model](./vault_doctrine.md#3-the-secretref-model)
+- [Unlock bundle](./vault_doctrine.md#6-the-unlock-bundle)
+- [Envelope encryption with Vault Transit](./vault_doctrine.md#8-envelope-encryption-with-vault-transit)
+- [Sealed-state behavior matrix](./vault_doctrine.md#15-sealed-state-behavior-matrix)
+- [Config Doctrine (SecretRef contract)](./config_doctrine.md)
+- [Secret Derivation Doctrine](./secret_derivation_doctrine.md)
+- [Storage Lifecycle (Vault PV preservation)](./storage_lifecycle_doctrine.md)
 
 ## Intent Ownership
 

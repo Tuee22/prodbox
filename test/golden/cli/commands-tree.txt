@@ -100,5 +100,16 @@ prodbox
     invite
     list
     revoke
+  vault
+    status
+    init
+    unseal
+    seal
+    reconcile
+    rotate-unlock-bundle
+    rotate-transit-key
+    pki
+      status
+      issue-test-cert
   workload
     start

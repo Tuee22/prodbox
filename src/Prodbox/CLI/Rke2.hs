@@ -13,6 +13,7 @@ module Prodbox.CLI.Rke2
   , ensureHarborRegistryStorageBackend
   , ensureMinioRuntime
   , ensurePostgresOperatorRuntime
+  , ensureVaultRuntime
   , ensurePublicEdgeWorkloadImageForSubstrate
   , MinioImageSource (..)
   , cascadeOrderNarration
@@ -1524,6 +1525,28 @@ ensureRetainedLocalStorage repoRoot settings prodboxId labelValue = do
                                   )
                               ExitSuccess -> pure ExitSuccess
 
+-- | Sprint 3.17: deploy the in-cluster Vault platform component from the local
+-- @charts/vault@ chart — a single-replica StatefulSet on a durable PV. Vault
+-- comes up sealed; the operator runs @prodbox vault unseal@ next. Vault is a
+-- shared platform component declared in 'homeSubstratePlatformComponents' and
+-- 'awsSubstratePlatformComponents'; splicing this call into the home/AWS
+-- reconcile sequences and the live deploy are the remaining Sprint 3.17 work
+-- (deferred from the reconcile sequence until the live `cluster reconcile`
+-- exercise can validate it, so a chart defect cannot break the working
+-- platform install before then).
+ensureVaultRuntime :: FilePath -> IO ExitCode
+ensureVaultRuntime repoRoot =
+  runHelmCommandWithRetries
+    repoRoot
+    [ "upgrade"
+    , "--install"
+    , "vault"
+    , repoRoot ++ "/charts/vault"
+    , "--namespace"
+    , "vault"
+    , "--create-namespace"
+    ]
+
 ensureMinioRuntime :: FilePath -> Substrate -> MinioImageSource -> IO ExitCode
 ensureMinioRuntime repoRoot substrate imageSource = do
   repoAddResult <-
@@ -2696,6 +2719,7 @@ homeSubstratePlatformComponents =
   , ContainerImage.ComponentEnvoyGateway
   , ContainerImage.ComponentCertManager
   , ContainerImage.ComponentZeroSslDns01
+  , ContainerImage.ComponentVault
   ]
 
 -- | secret_derivation_doctrine.md §7 steps 4–6 for the gateway chart, run

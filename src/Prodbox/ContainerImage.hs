@@ -156,6 +156,7 @@ data PlatformComponent
   | ComponentEnvoyGateway
   | ComponentCertManager
   | ComponentZeroSslDns01
+  | ComponentVault
   deriving (Bounded, Enum, Eq, Ord, Show)
 
 -- | Every shared platform component both substrate installers must cover.
@@ -183,6 +184,7 @@ platformComponentLabel component =
     ComponentEnvoyGateway -> "envoy-gateway"
     ComponentCertManager -> "cert-manager"
     ComponentZeroSslDns01 -> "zerossl-dns01"
+    ComponentVault -> "vault"
 
 harborPostgresOperatorImage :: ImageRef
 harborPostgresOperatorImage =

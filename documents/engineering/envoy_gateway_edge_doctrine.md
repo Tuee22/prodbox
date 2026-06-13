@@ -18,7 +18,8 @@
 [distributed_gateway_architecture.md](./distributed_gateway_architecture.md),
 [helm_chart_platform_doctrine.md](./helm_chart_platform_doctrine.md),
 [local_registry_pipeline.md](./local_registry_pipeline.md),
-[unit_testing_policy.md](./unit_testing_policy.md)
+[unit_testing_policy.md](./unit_testing_policy.md),
+[vault_doctrine.md](./vault_doctrine.md)
 **Generated sections**: none
 
 > **Purpose**: Define the canonical MetalLB + Envoy Gateway + Keycloak public-edge doctrine for
@@ -200,6 +201,27 @@ under a substrate-scoped key, and registered in the managed-resource registry pe
 [lifecycle_reconciliation_doctrine.md](./lifecycle_reconciliation_doctrine.md); it is removed
 only by `prodbox nuke`. Restore-before-issue and rebuild semantics are in §9. Scheduled for
 adoption in Sprints 4.24 / 7.11 / 8.7.
+
+#### TLS and ACME Material Under Vault
+
+The Vault refactor places the ACME and TLS key material beneath this issuer model as a
+fail-closed authority layer; it **extends** the single ZeroSSL issuer + S3 retain-restore
+behavior above and does not replace it. The retained-and-restored public-edge certificate
+contract (substrate-scoped S3 key, restore-before-issue, LongLived managed resource) is
+unchanged. Under the refactor:
+
+- The ACME EAB material (the ZeroSSL external-account-binding key id and HMAC) moves into
+  Vault KV and is referenced from `prodbox-config.dhall` by a typed `SecretRef.Vault` rather
+  than carried as plaintext.
+- TLS private-key material is generated-in / stored-in / wrapped-by Vault rather than living
+  only in plaintext Kubernetes Secrets, so new certificate issuance and private-key retrieval
+  fail closed when Vault is sealed.
+- Envoy/Gateway listener TLS is not regenerated from plaintext Kubernetes Secrets on restart;
+  a sealed Vault means no new certificate can be ordered and no private key can be retrieved
+  until Vault is unsealed.
+
+This is the intended structure, scheduled under Sprint 7.15; see
+[vault_doctrine.md §11](./vault_doctrine.md#11-tls-and-pki-under-vault).
 
 ### Redis
 
@@ -725,4 +747,5 @@ Current named validation implications:
 - [Helm Chart Platform Doctrine](./helm_chart_platform_doctrine.md)
 - [Local Registry Pipeline](./local_registry_pipeline.md)
 - [Unit Testing Policy](./unit_testing_policy.md)
+- [Vault Secret-Management Doctrine](./vault_doctrine.md)
 - [Documentation Standards](../documentation_standards.md)

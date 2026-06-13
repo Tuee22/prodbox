@@ -15,7 +15,8 @@
 [phase-6-clean-room-handoff.md](phase-6-clean-room-handoff.md),
 [phase-7-aws-substrate-foundations.md](phase-7-aws-substrate-foundations.md),
 [phase-8-email-invite-auth.md](phase-8-email-invite-auth.md),
-[the engineering doctrine docs](../documents/engineering/README.md)
+[the engineering doctrine docs](../documents/engineering/README.md),
+[vault_doctrine.md](../documents/engineering/vault_doctrine.md)
 **Generated sections**: none
 
 > **Purpose**: Provide the target architecture, current baseline, clean-room sequence, and hard
@@ -114,6 +115,25 @@ Build a clean-room Haskell `prodbox` repository with:
     closes with zero pending supported-path residue.
 26. Pulumi retained for true IaC surfaces such as AWS substrate resources, with no supported
     Python Pulumi program and no supported local-cluster public operator flow.
+
+Vault is the scheduled expansion that adds a fail-closed secrets / KMS / encryption-as-a-service /
+PKI authority layer *beneath* the existing secret model, not a replacement for any of it. Vault is
+the fail-closed secrets / KMS / PKI backend of every prodbox-managed cluster: it runs in-cluster on
+a durable `.data/`-backed PV (`.data/vault/...`), preserved across cluster wipes exactly like
+MinIO's PV; `prodbox-config.dhall` carries only typed `SecretRef` values (never plaintext secrets);
+MinIO objects, Pulumi backend state, and the active daemon Dhall are stored only as Vault-Transit
+envelopes; and the TLS, Keycloak, Pulumi, and AWS-credential paths fail closed when Vault is
+sealed. The master-seed HMAC derivation model and daemon-only seed boundary, the
+single-Dhall-file-per-binary config contract, the retained `.data/` PV model, the single ZeroSSL
+ACME issuer + S3 retain-restore, and the managed-resource-registry teardown all stay and are
+extended by Vault, never torn out. The load-bearing invariant: a sealed Vault reduces prodbox to an
+opaque durable-data pile — PVs and MinIO objects may still exist, but they reveal no secrets, no
+active Dhall, no Pulumi state, and no downstream-cluster inventory until Vault is unsealed. Adoption
+is scheduled (not yet implemented) across the reopened Phases `0`/`1`/`3`/`4`/`5`/`7`/`8` —
+Sprints `0.12`, `1.35`–`1.37`, `3.17`–`3.18`, `4.29`–`4.30`, `5.8`, `7.14`–`7.15`, and `8.9`. The
+single source of truth for the Vault model is
+[vault_doctrine.md](../documents/engineering/vault_doctrine.md); the authoritative reopening
+narration is the 2026-06-11 [README.md → Closure Status](README.md#closure-status) entry.
 
 ## Test Substrates
 
@@ -632,6 +652,15 @@ than restated here as a fresh rerun log.
 - `src/Prodbox/TestRunner.hs`, `src/Prodbox/TestPlan.hs`, and `src/Prodbox/TestValidation.hs`
   own the aggregate reruns, named Haskell-owned validation flows, and destructive postflight restore
   path.
+- An in-cluster Vault platform component and a `prodbox vault` command group are the scheduled
+  (not-yet-implemented) intended structure for fail-closed secrets / KMS / PKI. The platform
+  component runs Vault in-cluster on a durable `.data/vault/...` PV alongside MinIO's PV
+  (scheduled under Sprint `3.17`), and the `prodbox vault status` / `init` / `unseal` / `seal` /
+  `reconcile` / `rotate-unlock-bundle` / `rotate-transit-key <key>` / `pki status` /
+  `pki issue-test-cert` command group joins the public CLI surface (scheduled under Sprint `1.36`,
+  with the encrypted unlock bundle at `.data/prodbox/vault-unlock-bundle.age`). The typed
+  `Prodbox.Settings.SecretRef` config contract is scheduled under Sprint `1.35`. See
+  [vault_doctrine.md](../documents/engineering/vault_doctrine.md).
 
 ### Canonical Validation Gates
 
@@ -857,6 +886,13 @@ Sprints `8.7`/`8.8` (and the live `8.5`/`8.6` proofs).
 - Full cluster delete preserves exactly two retained host roots: the configured manual PV root and
   k8s Secrets materialized by the in-cluster gateway service from the master seed at
   MinIO `prodbox/master-seed` (Sprint `3.13`).
+- Secrets must never appear in `prodbox-config.dhall`, generated configs, logs, or committed Dhall;
+  they are carried only as typed `SecretRef` references resolved through Vault. A sealed Vault must
+  leave no secret, no active Dhall, no Pulumi state, and no downstream-cluster metadata extractable
+  from the retained durable data — the fail-closed invariant of
+  [vault_doctrine.md §2](../documents/engineering/vault_doctrine.md#2-the-fail-closed-invariant)
+  (scheduled across Sprints `0.12`, `1.35`–`1.37`, `3.17`–`3.18`, `4.29`–`4.30`, `5.8`,
+  `7.14`–`7.15`, `8.9`; not yet implemented).
 - Direct public-registry pulls are permitted on the supported path only for Harbor and Harbor's
   storage backend during bootstrap.
 - Every later Helm deployment must obtain its images through Harbor.

@@ -15,7 +15,8 @@
 [pure_fp_standards.md](pure_fp_standards.md),
 [secret_derivation_doctrine.md](secret_derivation_doctrine.md),
 [storage_lifecycle_doctrine.md](storage_lifecycle_doctrine.md),
-[unit_testing_policy.md](unit_testing_policy.md)
+[unit_testing_policy.md](unit_testing_policy.md),
+[vault_doctrine.md](vault_doctrine.md)
 **Generated sections**: none
 
 > **Purpose**: Single Source of Truth for how prodbox lifecycle commands
@@ -668,6 +669,42 @@ The long-lived state bucket is created idempotently by
 `prodbox nuke`'s final pass — never by `aws teardown`, never by
 `cluster delete`, never as a side effect of any other command.
 
+## Vault in the cluster lifecycle
+
+Vault is the fail-closed secrets / encryption-as-a-service authority layered
+*beneath* the existing reconciler model — it extends, and does not replace, the
+managed-resource-registry teardown and the canonical cascade order above. The
+in-cluster Vault is the single source of truth for the Vault secret model; this
+section records only how the lifecycle commands integrate it. See
+[vault_doctrine.md](./vault_doctrine.md) for the full model.
+
+- **Reconcile deploys and unseals Vault first.** `prodbox cluster reconcile`
+  deploys (or rebinds) Vault on its durable `.data/`-backed PV, runs `vault init`
+  if the backend is empty, unseals from the encrypted unlock bundle (or prompts the
+  operator), and runs `vault reconcile` **before** the MinIO and chart reconcile
+  phases — so MinIO ciphertext and chart secrets have a live Transit/KV authority by
+  the time they are needed. This is the intended structure scheduled under
+  Sprint 4.29. See
+  [vault_doctrine.md §7](./vault_doctrine.md#7-vault-lifecycle-commands).
+- **Teardown preserves the durable Vault PV.** `prodbox cluster delete --yes` and
+  `prodbox cluster delete --cascade --yes` preserve the durable Vault PV exactly
+  like the MinIO PV (§2); no `prodbox` command removes it. A wiped-and-rebuilt
+  cluster reattaches the same Vault data, mirroring the per-run-state-survives-wipe
+  guarantee for MinIO.
+- **A sealed Vault is a first-class status line, never hidden.** A sealed or
+  unreachable Vault surfaces as an explicit `cluster status` / `edge status` line;
+  secret-dependent lifecycle work fails closed behind an explicit readiness gate
+  rather than degrading silently. This is the intended structure scheduled under
+  Sprint 4.29. See
+  [vault_doctrine.md §15](./vault_doctrine.md#15-sealed-state-behavior-matrix).
+- **Pulumi/AWS operations gate on Vault readiness.** Every `prodbox aws stack ...`
+  operation runs the Vault readiness check (reachable / initialized / unsealed /
+  Transit available / backend decryptable) before touching state and refuses with a
+  redacted sealed-Vault error **before any AWS mutation** — because the Pulumi
+  backend state is stored only as Vault-Transit envelopes. This is the intended
+  structure scheduled under Sprints 1.37 / 7.14. See
+  [vault_doctrine.md §10](./vault_doctrine.md#10-pulumi-backend-under-vault).
+
 ## Related Documents
 
 - [README.md](README.md)
@@ -675,6 +712,7 @@ The long-lived state bucket is created idempotently by
 - [cli_command_surface.md](cli_command_surface.md)
 - [pure_fp_standards.md](pure_fp_standards.md)
 - [unit_testing_policy.md](unit_testing_policy.md)
+- [Vault Secret-Management Doctrine](./vault_doctrine.md)
 - [../documentation_standards.md](../documentation_standards.md)
 - [../../DEVELOPMENT_PLAN/substrates.md](../../DEVELOPMENT_PLAN/substrates.md)
 - [../../DEVELOPMENT_PLAN/phase-4-lifecycle-canonical-paths.md](../../DEVELOPMENT_PLAN/phase-4-lifecycle-canonical-paths.md)

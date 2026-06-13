@@ -4,7 +4,8 @@
 **Supersedes**: N/A
 **Referenced by**: [README.md](README.md), [00-overview.md](00-overview.md),
 [substrates.md](substrates.md),
-[the engineering doctrine docs](../documents/engineering/README.md)
+[the engineering doctrine docs](../documents/engineering/README.md),
+[vault_doctrine.md](../documents/engineering/vault_doctrine.md)
 **Generated sections**: none
 
 > **Purpose**: Own the substrate-agnostic canonical test suite — the named-validation set in
@@ -480,6 +481,40 @@ prerequisites, capability-derived IAM tier, the `public_edge_ready` split, the s
 `verifyAwsEksSnapshot`, and the three registry-generated destructive goldens). The live
 AWS-substrate aggregate and the live public-edge-readiness exercise are operator-driven.
 
+## Sprint 5.8: Sealed-Vault Canonical Validation and SecretRef Golden Tests 📋
+
+**Status**: Planned
+**Implementation**: `src/Prodbox/TestValidation.hs`, `src/Prodbox/TestPlan.hs`, `test/`
+**Blocked by**: Sprints `1.37`, `3.17`, `4.29`
+**Docs to update**: `documents/engineering/unit_testing_policy.md`, `documents/engineering/vault_doctrine.md`
+
+### Objective
+
+Add suite content that proves the fail-closed invariant end-to-end and that generated artifacts
+contain only SecretRef values (vault_doctrine §15–§16). This extends the canonical suite; existing
+validations are unchanged.
+
+### Deliverables
+
+- A `ValidationSealedVault` / `prodbox test integration sealed-vault` flow: spin up, init+unseal,
+  reconcile MinIO/active-Dhall/Pulumi/charts, seal Vault, then assert active-Dhall read, Pulumi
+  preview, gateway config load, Keycloak reconcile, and TLS reconcile all fail closed without
+  leaking metadata.
+- Golden tests that generated Dhall/config artifacts contain only `SecretRef` values (forbidden
+  patterns: `AKIA`, `aws_secret_access_key`, `BEGIN PRIVATE KEY`, `client_secret = "…"`,
+  `password = "…"`, Pulumi passphrase, kubeconfig user token).
+- Unit proofs for plaintext-secret rejection, Vault init/unseal/reconcile, fixture seeding from
+  `test-secrets.dhall`, and teardown-preserves-Vault-PV.
+
+### Validation
+
+- `prodbox test integration sealed-vault` asserts every sealed-state row fails closed.
+- The SecretRef golden tests fail on any forbidden plaintext pattern.
+
+### Remaining Work
+
+- The both-substrate live sealed-Vault exercise is operator-driven.
+
 ## Documentation Requirements
 
 **Engineering docs to create/update:**
@@ -500,6 +535,12 @@ AWS-substrate aggregate and the live public-edge-readiness exercise are operator
 - `documents/engineering/integration_fixture_doctrine.md` - for Sprint `5.6`, the
   capability-derived IAM-harness tier (replacing the `normalizeManagedAwsHarness` `substrate=aws`
   blanket override) and the registry-generated destructive-dry-run golden fixtures.
+- [documents/engineering/vault_doctrine.md](../documents/engineering/vault_doctrine.md) - for
+  Sprint `5.8`, the sealed-state behavior matrix
+  ([vault_doctrine.md §15](../documents/engineering/vault_doctrine.md#15-sealed-state-behavior-matrix))
+  and red-team checklist
+  ([vault_doctrine.md §16](../documents/engineering/vault_doctrine.md#16-red-team-checklist)) the
+  `sealed-vault` validation and the SecretRef golden tests prove against the canonical suite.
 
 **Product docs to create/update:**
 

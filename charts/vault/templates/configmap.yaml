@@ -1,0 +1,31 @@
+{{- /*
+Sprint 3.17: the in-cluster Vault server configuration. File storage on the
+retained PV (the load-bearing property is that cluster teardown never destroys
+Vault state, per vault_doctrine.md §5). The listener is plain HTTP on the pod
+network — like the in-cluster MinIO endpoint; the daemon<->Vault TLS hop is a
+separate hardening item. `disable_mlock` is set because file storage in a
+container without IPC_LOCK cannot mlock; the host-side unlock bundle and the
+sealed-state invariant are the protection boundary, not mlock.
+*/ -}}
+apiVersion: v1
+kind: ConfigMap
+metadata:
+  name: vault-config
+  labels:
+    {{- include "vault.labels" . | nindent 4 }}
+data:
+  vault.hcl: |
+    ui            = true
+    disable_mlock = true
+
+    storage "file" {
+      path = "/vault/data"
+    }
+
+    listener "tcp" {
+      address     = "0.0.0.0:{{ .Values.ports.api }}"
+      tls_disable = true
+    }
+
+    api_addr     = "http://vault.{{ .Release.Namespace }}.svc.cluster.local:{{ .Values.ports.api }}"
+    cluster_addr = "http://vault.{{ .Release.Namespace }}.svc.cluster.local:{{ .Values.ports.cluster }}"

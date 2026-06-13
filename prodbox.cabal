@@ -26,8 +26,10 @@ library
         Prodbox.CLI.Spec
         Prodbox.CLI.Tree
         Prodbox.CLI.Users
+        Prodbox.CLI.Vault
         Prodbox.ContainerImage
         Prodbox.Daemon.Events
+        Prodbox.Crypto.Envelope
         Prodbox.Dns
         Prodbox.Error
         Prodbox.Effect
@@ -92,6 +94,7 @@ library
         Prodbox.Secret.Wire
         Prodbox.Service
         Prodbox.Settings
+        Prodbox.Settings.SecretRef
         Prodbox.Substrate
         Prodbox.Subprocess
         Prodbox.TestPlan
@@ -99,6 +102,9 @@ library
         Prodbox.TestSeam.GatewayDerive
         Prodbox.TestValidation
         Prodbox.Tla
+        Prodbox.Vault.Client
+        Prodbox.Vault.Gate
+        Prodbox.Vault.UnlockBundle
         Prodbox.Workload
         Prodbox.Workload.PodIdentity
         Prodbox.Workload.Settings
@@ -118,6 +124,8 @@ library
         co-log ^>=0.7.0.0,
         co-log-core ^>=0.3.2.6,
         containers ^>=0.6.7,
+        crypton ^>=1.0.6,
+        memory ^>=0.18,
         cryptohash-sha1 ^>=0.11,
         cryptohash-sha256 ^>=0.11.102,
         dhall ^>=1.42,

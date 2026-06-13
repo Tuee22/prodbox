@@ -1,0 +1,36 @@
+.TH PRODBOX_vault 1
+.SH NAME
+prodbox-vault \- Vault secret-management lifecycle
+.SH SYNOPSIS
+.B prodbox vault
+.SH DESCRIPTION
+The in-cluster Vault lifecycle: seal-status, init, unseal, reconcile, key rotation, and PKI inspection. The host-side encrypted unlock bundle (.data/prodbox/vault-unlock-bundle.age) recovers a torn-down cluster's Vault.
+.SH SUBCOMMANDS
+.TP
+\fBstatus\fR
+Report Vault seal state
+.TP
+\fBinit\fR
+Initialize Vault
+.TP
+\fBunseal\fR
+Unseal Vault
+.TP
+\fBseal\fR
+Seal Vault
+.TP
+\fBreconcile\fR
+Reconcile Vault policy
+.TP
+\fBrotate-unlock-bundle\fR
+Re-encrypt the unlock bundle
+.TP
+\fBrotate-transit-key\fR
+Rotate a Transit key
+.TP
+\fBpki\fR
+Vault PKI inspection
+.SH EXAMPLES
+.TP
+\fBprodbox vault status\fR
+Probe the in-cluster Vault seal state.

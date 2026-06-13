@@ -30,6 +30,7 @@ import Prodbox.CLI.Command
   , TestCommand (..)
   , TestScope (..)
   , UsersCommand (..)
+  , VaultCommand (..)
   , WorkloadCommand (..)
   )
 import Prodbox.CLI.Parser
@@ -280,6 +281,18 @@ commandPathOfRequest request =
               UsersInvite {} -> ["invite"]
               UsersList _ -> ["list"]
               UsersRevoke {} -> ["revoke"]
+        NativeVault vaultCommand ->
+          "vault"
+            : case vaultCommand of
+              VaultStatus -> ["status"]
+              VaultInit -> ["init"]
+              VaultUnseal -> ["unseal"]
+              VaultSeal -> ["seal"]
+              VaultReconcile -> ["reconcile"]
+              VaultRotateUnlockBundle -> ["rotate-unlock-bundle"]
+              VaultRotateTransitKey _ -> ["rotate-transit-key"]
+              VaultPkiStatus -> ["pki", "status"]
+              VaultPkiIssueTestCert -> ["pki", "issue-test-cert"]
         NativeWorkload workloadCommand ->
           "workload"
             : case workloadCommand of

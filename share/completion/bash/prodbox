@@ -5,7 +5,7 @@ _prodbox()
   COMPREPLY=()
   cur="${COMP_WORDS[COMP_CWORD]}"
   if (( COMP_CWORD <= 1 )); then
-    words="aws charts cluster commands config dev dns edge gateway help host nuke test users workload"
+    words="aws charts cluster commands config dev dns edge gateway help host nuke test users vault workload"
   else
     key="${COMP_WORDS[@]:1:COMP_CWORD-1}"
     case "$key" in
@@ -71,6 +71,12 @@ _prodbox()
         ;;
       "users")
         words="invite list revoke"
+        ;;
+      "vault")
+        words="status init unseal seal reconcile rotate-unlock-bundle rotate-transit-key pki"
+        ;;
+      "vault pki")
+        words="status issue-test-cert"
         ;;
       "workload")
         words="start"

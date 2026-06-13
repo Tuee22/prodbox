@@ -2,7 +2,7 @@
 
 **Status**: Generated reference
 **Supersedes**: N/A
-**Referenced by**: documents/engineering/cli_command_surface.md, DEVELOPMENT_PLAN/phase-1-runtime-cli-aws-foundations.md
+**Referenced by**: documents/engineering/cli_command_surface.md, DEVELOPMENT_PLAN/phase-1-runtime-cli-aws-foundations.md, documents/engineering/vault_doctrine.md
 **Generated sections**: `command-registry.markdown`
 
 > **Purpose**: Provide the generated leaf-command registry derived from `src/Prodbox/CLI/Spec.hs`.
@@ -90,5 +90,28 @@
 | `prodbox users invite` | Invite an operator-owned user by email |
 | `prodbox users list` | List operator-managed users |
 | `prodbox users revoke` | Disable or delete an operator-managed user |
+| `prodbox vault status` | Report Vault seal state |
+| `prodbox vault init` | Initialize Vault |
+| `prodbox vault unseal` | Unseal Vault |
+| `prodbox vault seal` | Seal Vault |
+| `prodbox vault reconcile` | Reconcile Vault policy |
+| `prodbox vault rotate-unlock-bundle` | Re-encrypt the unlock bundle |
+| `prodbox vault rotate-transit-key` | Rotate a Transit key |
+| `prodbox vault pki status` | Report Vault PKI state |
+| `prodbox vault pki issue-test-cert` | Issue a throwaway PKI cert |
 | `prodbox workload start` | Start internal workload runtime |
 <!-- prodbox:command-registry.markdown:end -->
+
+## `prodbox vault` command group
+
+The `prodbox vault` leaf commands are now in the generated registry above. `vault status` is fully
+wired — it probes the in-cluster Vault and reports initialized / sealed / unseal-progress, or that
+it is unreachable. The mutating subcommands (`init`, `unseal`, `seal`, `reconcile`,
+`rotate-unlock-bundle`, `rotate-transit-key`, `pki status`, `pki issue-test-cert`) are wired to the
+surface; their init/unseal orchestration and authenticated (token-bearing) flows are still being
+built and report so until they land. The host-side
+[unlock bundle](../engineering/vault_doctrine.md#6-the-unlock-bundle) at
+`.data/prodbox/vault-unlock-bundle.age` recovers a torn-down cluster's Vault, and a sealed Vault
+fails closed; the model these commands operate against is owned by
+[`vault_doctrine.md`](../engineering/vault_doctrine.md) (see
+[§7 Vault lifecycle commands](../engineering/vault_doctrine.md#7-vault-lifecycle-commands)).

@@ -7,7 +7,8 @@
 [substrates.md](substrates.md),
 [phase-7-aws-substrate-foundations.md](phase-7-aws-substrate-foundations.md),
 [legacy-tracking-for-deletion.md](legacy-tracking-for-deletion.md),
-[the engineering doctrine docs](../documents/engineering/README.md)
+[the engineering doctrine docs](../documents/engineering/README.md),
+[vault_doctrine.md](../documents/engineering/vault_doctrine.md)
 **Generated sections**: none
 
 > **Purpose**: Switch Keycloak from the current hardcoded-`emailVerified` state to operator-invited,
@@ -1228,6 +1229,36 @@ The live runs above; home gate first (ordering), then AWS parity.
 
 - This is the live closure gate; Phase `8` stays Active until it lands.
 
+## Sprint 8.9: Keycloak SMTP and Invite Secrets via Vault 📋
+
+**Status**: Planned
+**Implementation**: `src/Prodbox/Infra/AwsSesStack.hs`, `src/Prodbox/UsersAdmin.hs`, `charts/keycloak/`
+**Blocked by**: Sprints `3.18`, `7.14`
+**Docs to update**: `documents/engineering/vault_doctrine.md`, `documents/engineering/aws_integration_environment_doctrine.md`
+
+### Objective
+
+Move the invite-flow secrets — the `keycloak-smtp` SMTP credential and the OIDC client secrets the
+invite path uses — into Vault KV, consumed by Keycloak via Vault Kubernetes auth with fail-closed
+bootstrap (vault_doctrine §11–§12, §15). The invite-auth flow is extended, not reversed.
+
+### Deliverables
+
+- The SMTP password (derived from the retained `aws-ses` IAM secret access key via the AWS SES
+  IAM-to-SMTP algorithm) is stored in Vault KV and consumed by Keycloak via Vault auth rather than a
+  kubectl-applied plaintext `keycloak-smtp` Secret.
+- The invite-flow OIDC client secrets resolve from Vault KV.
+- The invite-send and Keycloak bootstrap paths fail closed when Vault is sealed.
+
+### Validation
+
+- A sealed Vault fails the invite send and Keycloak bootstrap closed without leaking SMTP material.
+- `keycloak-invite` passes on both substrates with the SMTP credential sourced from Vault.
+
+### Remaining Work
+
+- The both-substrate live invite exercise is operator-driven.
+
 ## Documentation Requirements
 
 **Engineering docs to create/update:**
@@ -1248,6 +1279,13 @@ The live runs above; home gate first (ordering), then AWS parity.
 - `documents/engineering/unit_testing_policy.md` — `ValidationKeycloakInvite` as canonical
   suite content; SES receive-rules-and-S3 as the canonical email-verification test
   mechanism.
+- [`documents/engineering/vault_doctrine.md`](../documents/engineering/vault_doctrine.md) — the
+  `keycloak-smtp` SMTP credential and invite-flow OIDC client secrets sourced from Vault KV via
+  Vault Kubernetes auth, with the invite-send and Keycloak bootstrap paths failing closed when
+  Vault is sealed (scheduled under Sprint `8.9`; see
+  [§11](../documents/engineering/vault_doctrine.md#11-tls-and-pki-under-vault),
+  [§12](../documents/engineering/vault_doctrine.md#12-in-cluster-service-auth), and
+  [§15](../documents/engineering/vault_doctrine.md#15-sealed-state-behavior-matrix)).
 
 **Product docs to create/update:**
 

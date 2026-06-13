@@ -2,7 +2,7 @@
 
 **Status**: Authoritative source
 **Supersedes**: N/A
-**Referenced by**: README.md, DEVELOPMENT_PLAN/phase-7-aws-substrate-foundations.md, documents/engineering/README.md, documents/engineering/aws_account_setup_guide.md, documents/engineering/aws_integration_environment_doctrine.md
+**Referenced by**: README.md, DEVELOPMENT_PLAN/phase-7-aws-substrate-foundations.md, documents/engineering/README.md, documents/engineering/aws_account_setup_guide.md, documents/engineering/aws_integration_environment_doctrine.md, [vault_doctrine.md](./vault_doctrine.md)
 **Generated sections**: none
 
 > **Purpose**: Define the `aws_admin_for_test_simulation` section in
@@ -238,9 +238,32 @@ The standalone substrate-provisioning step list is owned by
 [DEVELOPMENT_PLAN/phase-7-aws-substrate-foundations.md → Sprint 7.5.c Sprint Workflow](../../DEVELOPMENT_PLAN/phase-7-aws-substrate-foundations.md);
 this section is the credentials-side contract that workflow cites.
 
+## AWS credentials under Vault
+
+The Vault refactor extends this credential model rather than replacing it. Under the refactor,
+the IAM identities `prodbox` creates — the operational access keys / roles it derives — live in
+Vault KV and are referenced from Dhall by `SecretRef.Vault`, not stored as plaintext in
+`prodbox-config.dhall`. The provision-derive-write contract above is unchanged in shape: the
+one-off elevated/admin AWS credential the operator supplies is still prompted, used to mint the
+least-privilege dedicated `prodbox` identity, written into Vault, and then the prompted elevated
+credential is discarded — never persisted to `prodbox-config.dhall`. This is scheduled under
+Sprint 7.14 (AWS secrets in Vault KV); until that sprint lands, operational `aws.*` continues to
+materialize as described in §3 and §5.
+
+This is consistent with the existing `aws_admin_for_test_simulation.*` fixture. The fixture
+remains a retained test-harness credential block (it is the harness simulation input, not
+deletable residue); its meaning, population, and cleanup rules in §1–§4 are unchanged. Once the
+typed `SecretRef` config contract lands (Sprint 1.35), the fixture block may itself be expressed
+as a `SecretRef` value rather than inline plaintext, keeping the suite-driven simulation path
+fully under the SecretRef model. See
+[vault_doctrine.md §13](./vault_doctrine.md#13-config-and-state-classification) for the
+authoritative config-and-state classification that places these credential blocks in the secret
+model.
+
 ## Related Documents
 
 - [aws_account_setup_guide.md](./aws_account_setup_guide.md)
 - [aws_integration_environment_doctrine.md](./aws_integration_environment_doctrine.md)
 - [cli_command_surface.md](./cli_command_surface.md)
+- [Vault Secret-Management Doctrine](./vault_doctrine.md)
 - [../../DEVELOPMENT_PLAN/phase-7-aws-substrate-foundations.md](../../DEVELOPMENT_PLAN/phase-7-aws-substrate-foundations.md)

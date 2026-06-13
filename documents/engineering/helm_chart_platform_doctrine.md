@@ -17,7 +17,8 @@
 [local_registry_pipeline.md](./local_registry_pipeline.md),
 [secret_derivation_doctrine.md](./secret_derivation_doctrine.md),
 [storage_lifecycle_doctrine.md](./storage_lifecycle_doctrine.md),
-[unit_testing_policy.md](./unit_testing_policy.md)
+[unit_testing_policy.md](./unit_testing_policy.md),
+[vault_doctrine.md](./vault_doctrine.md)
 **Generated sections**: none
 
 > **Purpose**: Define the singleton chart identity, shared public-edge attachment model, external Patroni
@@ -440,6 +441,34 @@ preventing gateway uninstall from deleting workload namespaces or retained SMTP 
 Keycloak realms are still patched by `prodbox users invite` from the same `keycloak-smtp` Secret
 before invite sends, because realm import is first-create only.
 
+## Vault as a platform component and chart secret consumption
+
+Vault is the fail-closed secret-management authority beneath the chart-platform secret model
+described above. It extends — and does not replace — the master-seed derivation and
+`lookup`-guarded chart-generated secret paths in §6 and §10; those mechanisms stay, and Vault is
+added as the encryption-at-rest + sealed-state layer beneath them. `vault_doctrine.md` is the
+single source of truth for the Vault model; the statements below are the chart-platform-side
+summary.
+
+- **Vault is a singleton platform component.** Vault stands up on the same footing as
+  MinIO, Harbor, the Percona PostgreSQL operator, Envoy Gateway, and cert-manager, drawn from the
+  same shared `[PlatformComponent]` inventory (§3A) so it installs identically on both the home and
+  AWS substrates. It runs on a durable PV alongside the MinIO PV, preserved across cluster wipes.
+  This in-cluster Vault platform component is scheduled under Sprint 3.17. See
+  [vault_doctrine.md §5](./vault_doctrine.md#5-vault-deployment-model).
+- **Chart workloads consume Vault-held secrets via Vault Kubernetes auth.** Chart workloads —
+  including Keycloak — that need a Vault-held secret authenticate through Vault Kubernetes auth: a
+  workload service account, a namespace + SA-bound Vault role, and a least-privilege policy,
+  surfaced via the Vault Agent Injector, the CSI Secret Store Vault provider, or app-side auth. The
+  current Secret-mounted plaintext Dhall fragment pattern (§6 daemon/workload config mount
+  contract) survives only as the `SecretRef.FileSecret` migration bridge. This Vault Kubernetes
+  auth path for chart and Keycloak secrets is scheduled under Sprint 3.18. See
+  [vault_doctrine.md §12](./vault_doctrine.md#12-in-cluster-service-auth).
+- **A sealed Vault fails secret-dependent startup closed.** When Vault is sealed, Keycloak
+  bootstrap and other secret-dependent Pod startup fail closed; new Pods do not reconstruct secrets
+  from k8s Secret plaintext. This sealed-state behavior is scheduled under Sprint 3.18. See
+  [vault_doctrine.md §15](./vault_doctrine.md#15-sealed-state-behavior-matrix).
+
 ## 11. Planning Ownership
 
 This document is normative chart-platform doctrine only.
@@ -453,5 +482,6 @@ Delivery sequencing, completion status, remaining work, and cleanup ownership ar
 - [Envoy Gateway Edge Doctrine](./envoy_gateway_edge_doctrine.md)
 - [Storage Lifecycle Doctrine](./storage_lifecycle_doctrine.md)
 - [Local Registry Pipeline](./local_registry_pipeline.md)
+- [Vault Secret-Management Doctrine](./vault_doctrine.md)
 - [Development Plan](../../DEVELOPMENT_PLAN/README.md)
 - [Documentation Standards](../documentation_standards.md)

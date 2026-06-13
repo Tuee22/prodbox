@@ -66,7 +66,7 @@ import Prodbox.Service
   , toServiceError
   )
 import Prodbox.Subprocess (ProcessOutput (..))
-import System.Directory (removeFile)
+import System.Directory (doesDirectoryExist, removeFile)
 import System.Exit (ExitCode (..))
 import System.IO
   ( Handle
@@ -430,6 +430,22 @@ runPut config bodyBytes = do
                       then pure (Right ())
                       else pure (Left (MasterSeedPutFailed (trim combined)))
 
+-- | Sprint 3.17: the RAM-backed scratch directory the gateway chart
+-- mounts as an @emptyDir{ medium: Memory }@ tmpfs at this path (see
+-- @charts\/gateway\/templates\/deployments.yaml@). Backing the seed
+-- scratch file with tmpfs keeps the plaintext seed off the node's disk;
+-- with the kubelet's required swap-off the bytes never leave RAM.
+seedScratchTmpfsDir :: FilePath
+seedScratchTmpfsDir = "/run/prodbox-seed"
+
+-- | Pick the seed scratch directory: the RAM-backed tmpfs mount
+-- ('seedScratchTmpfsDir') when the chart has provided it (the in-cluster
+-- daemon Pod), otherwise @\/tmp@ so non-cluster callers still function.
+resolveSeedScratchDir :: IO FilePath
+resolveSeedScratchDir = do
+  hasTmpfs <- doesDirectoryExist seedScratchTmpfsDir
+  pure (if hasTmpfs then seedScratchTmpfsDir else "/tmp")
+
 -- | Sprint 3.16: run @action@ against a randomized, single-use temporary
 -- file path, deleting the file the instant @action@ returns (success or
 -- exception). The AWS CLI needs a filesystem path for the seed @--body@ /
@@ -437,13 +453,17 @@ runPut config bodyBytes = do
 -- predictable path; this bracket guarantees the only filesystem residue
 -- is a short-lived, uniquely-named file that no other code path can
 -- discover. Replaces the former fixed @\/tmp\/prodbox-master-seed*.bin@
--- coordinates.
+-- coordinates. Sprint 3.17: the directory is the RAM-backed
+-- @emptyDir{ medium: Memory }@ tmpfs mount when present, so the plaintext
+-- seed transits RAM rather than the node's disk, falling back to @\/tmp@
+-- outside the daemon Pod.
 withManagedSeedTempFile
   :: (FilePath -> IO (Either MasterSeedError a))
   -> IO (Either MasterSeedError a)
 withManagedSeedTempFile action = do
+  scratchDir <- resolveSeedScratchDir
   openResult <-
-    try (openBinaryTempFile "/tmp" "prodbox-seed-.bin")
+    try (openBinaryTempFile scratchDir "prodbox-seed-.bin")
       :: IO (Either IOException (FilePath, Handle))
   case openResult of
     Left ioErr -> pure (Left (MasterSeedFileIoFailed (show ioErr)))

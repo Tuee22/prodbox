@@ -2,7 +2,7 @@
 
 **Status**: Authoritative source
 **Supersedes**: N/A
-**Referenced by**: README.md, DEVELOPMENT_PLAN/README.md, DEVELOPMENT_PLAN/system-components.md, documents/engineering/README.md, documents/engineering/effectful_dag_architecture.md, documents/engineering/integration_fixture_doctrine.md, documents/engineering/local_registry_pipeline.md, documents/engineering/prerequisite_dag_system.md, documents/engineering/prerequisite_doctrine.md, documents/engineering/helm_chart_platform_doctrine.md, documents/engineering/secret_derivation_doctrine.md, documents/engineering/lifecycle_reconciliation_doctrine.md
+**Referenced by**: README.md, DEVELOPMENT_PLAN/README.md, DEVELOPMENT_PLAN/system-components.md, documents/engineering/README.md, documents/engineering/effectful_dag_architecture.md, documents/engineering/integration_fixture_doctrine.md, documents/engineering/local_registry_pipeline.md, documents/engineering/prerequisite_dag_system.md, documents/engineering/prerequisite_doctrine.md, documents/engineering/helm_chart_platform_doctrine.md, documents/engineering/secret_derivation_doctrine.md, documents/engineering/lifecycle_reconciliation_doctrine.md, documents/engineering/vault_doctrine.md
 **Generated sections**: none
 
 > **Purpose**: Define deterministic retained-storage behavior for `prodbox` install/delete
@@ -24,6 +24,13 @@
   MinIO's own PV lives under `.data/minio/...`; therefore the per-run Pulumi state
   backend (`prodbox-test-pulumi-backends`) and the gateway-owned secret-derivation bucket
   (`prodbox/master-seed`) both survive cluster wipes whenever `.data/` is preserved.
+- Vault runs in-cluster on a durable PV under `.data/vault/...`, preserved across cluster
+  wipes exactly like MinIO's PV; cluster teardown never destroys Vault state. (Scheduled
+  under Sprints 3.17 / 4.29.)
+- prodbox-owned MinIO objects in the `prodbox` bucket — the master seed and the active
+  daemon Dhall — are stored as Vault-Transit ciphertext envelopes, not plaintext, per
+  [vault_doctrine.md §9](./vault_doctrine.md#9-minio-as-a-ciphertext-store). (Scheduled
+  under Sprints 3.17 / 4.29.)
 - Namespace-local Patroni PostgreSQL clusters created for Helm-managed application stacks
   use deterministic CLI-owned PVs rooted at
   `.data/<namespace>/keycloak-postgres/prodbox-<root-chart>-pg/<ordinal>/data/`.
@@ -59,6 +66,10 @@ This doctrine governs:
    `.data/minio/...` and is therefore in scope of this doctrine for persistence
    (derivation, access control, and endpoint contract are governed by
    [secret_derivation_doctrine.md](./secret_derivation_doctrine.md))
+8. the Vault durable PV under `.data/vault/...` and its preservation across
+   delete/reinstall — persistence is in scope here; the Vault model itself (seal/unseal,
+   Transit, KV, PKI, Kubernetes auth) is owned by
+   [vault_doctrine.md](./vault_doctrine.md) (scheduled under Sprints 3.17 / 4.29)
 
 Harbor registry details remain in
 [Local Registry Pipeline](./local_registry_pipeline.md).
@@ -111,6 +122,9 @@ Deterministic rebinding is guaranteed only when all of these hold:
    PV under `.data/minio/...`; mismatch surfaces as a loud failure per
    [secret_derivation_doctrine.md](./secret_derivation_doctrine.md) §8, never a silent
    data reset.
+7. the Vault PV at `.data/vault/...` rebinds across reinstall exactly like the MinIO PV,
+   so the unsealed Vault re-attaches to the same Transit keys, KV, and PKI material that
+   were active when the preserved data was written (scheduled under Sprint 4.29).
 
 ## 5. Delete Contract
 
@@ -141,6 +155,10 @@ when invoked with `--allow-pulumi-residue`; reconcile + per-stack destroy from t
 rebuilt cluster is the supported recovery path because MinIO's PV under `.data/` keeps
 the Pulumi state alive across the cluster cycle. Live AWS resources tracked in MinIO
 state remain reachable from any subsequent reconcile.
+
+Both `prodbox cluster delete --yes` and `prodbox cluster delete --cascade --yes` preserve
+the Vault PV (`.data/vault/...`) just as they preserve `.data/` and the MinIO PV; cluster
+teardown never destroys Vault state (scheduled under Sprint 4.29).
 
 Both delete shapes preserve `.data/` and remove nothing else on the operator host. The
 host iptables rule installed by reconcile (per
@@ -217,12 +235,21 @@ Rules:
 10. Deleting `.data/` is an operator-only action. It is the supported way to start from
     a truly empty baseline; on the next reconcile the master seed is regenerated and
     all data-bound secrets derive from the new value.
+11. `.data/vault/...` is the durable Vault storage anchor. It is preserved by cluster
+    delete and only removed when the operator wipes `.data/`, at which point Vault state
+    is lost with the rest of `.data/`, exactly like the master seed (scheduled under
+    Sprints 3.17 / 4.29).
+12. The host-side encrypted Vault recovery material — the unlock bundle — lives at
+    `.data/prodbox/vault-unlock-bundle.age` (Argon2id/age authenticated encryption); see
+    [vault_doctrine.md §6](./vault_doctrine.md#6-the-unlock-bundle) (scheduled under
+    Sprint 1.36).
 
 ## Cross-References
 
 - [Config Doctrine](./config_doctrine.md) — storage paths and MinIO coordinates live in
   the daemon's Dhall config, not in environment variables
 - [Secret Derivation Doctrine](./secret_derivation_doctrine.md)
+- [Vault Secret-Management Doctrine](./vault_doctrine.md)
 - [Lifecycle Reconciliation Doctrine](./lifecycle_reconciliation_doctrine.md)
 - [Prerequisite Doctrine](./prerequisite_doctrine.md)
 - [Effectful DAG Architecture](./effectful_dag_architecture.md)

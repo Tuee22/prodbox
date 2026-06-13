@@ -31,6 +31,7 @@ module Prodbox.CLI.Command
   , TestScope (..)
   , UsersCommand (..)
   , UsersListStatus (..)
+  , VaultCommand (..)
   , WorkloadCommand (..)
   , WorkloadOptions (..)
   , validateCoverage
@@ -76,6 +77,7 @@ data NativeCommand
   | NativeTest TestCommand
   | NativeTlaCheck
   | NativeUsers UsersCommand
+  | NativeVault VaultCommand
   | NativeWorkload WorkloadCommand
   deriving (Eq, Show)
 
@@ -117,6 +119,23 @@ data DnsCommand
 -- public-edge readiness check via 'HostPublicEdge'.
 data EdgeCommand
   = EdgeReconcile PlanOptions
+  deriving (Eq, Show)
+
+-- | Sprint 1.36: the in-cluster Vault lifecycle surface. 'VaultStatus' probes
+-- seal state (implemented); the remaining subcommands drive init / unseal /
+-- seal / reconcile / key rotation / PKI inspection. 'VaultRotateTransitKey'
+-- carries the Transit key name. The subcommands are nullary (no 'PlanOptions')
+-- until the init/unseal orchestration and its @--dry-run@ plan land.
+data VaultCommand
+  = VaultStatus
+  | VaultInit
+  | VaultUnseal
+  | VaultSeal
+  | VaultReconcile
+  | VaultRotateUnlockBundle
+  | VaultRotateTransitKey String
+  | VaultPkiStatus
+  | VaultPkiIssueTestCert
   deriving (Eq, Show)
 
 data DaemonLaunchOptions = DaemonLaunchOptions

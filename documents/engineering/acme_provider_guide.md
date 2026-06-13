@@ -2,7 +2,7 @@
 
 **Status**: Authoritative source
 **Supersedes**: N/A
-**Referenced by**: README.md, DEVELOPMENT_PLAN/phase-7-aws-substrate-foundations.md, DEVELOPMENT_PLAN/phase-8-email-invite-auth.md, documents/engineering/README.md, documents/engineering/aws_account_setup_guide.md, documents/engineering/envoy_gateway_edge_doctrine.md, documents/engineering/config_doctrine.md, documents/engineering/helm_chart_platform_doctrine.md, documents/engineering/lifecycle_reconciliation_doctrine.md
+**Referenced by**: README.md, DEVELOPMENT_PLAN/phase-7-aws-substrate-foundations.md, DEVELOPMENT_PLAN/phase-8-email-invite-auth.md, documents/engineering/README.md, documents/engineering/aws_account_setup_guide.md, documents/engineering/envoy_gateway_edge_doctrine.md, documents/engineering/config_doctrine.md, documents/engineering/helm_chart_platform_doctrine.md, documents/engineering/lifecycle_reconciliation_doctrine.md, documents/engineering/vault_doctrine.md
 **Generated sections**: none
 
 > **Purpose**: Define the supported ACME provider for `prodbox config setup`.
@@ -106,6 +106,24 @@ certificate is correctly retained rather than treated as a leak, see
 and
 [../../DEVELOPMENT_PLAN/substrates.md § Resource Lifecycle Classes](../../DEVELOPMENT_PLAN/substrates.md#resource-lifecycle-classes).
 
+## ACME credentials under Vault
+
+The ZeroSSL EAB Key ID and EAB HMAC key are scheduled to move out of the plaintext
+`acme.eab_key_id` / `acme.eab_hmac_key` config fields into Vault KV, referenced from Dhall by
+`SecretRef.Vault` rather than carried as plaintext (scheduled under Sprint 7.15). Certificate
+issuance fails closed when Vault is sealed: with the EAB material behind a sealed Vault, the
+`ClusterIssuer` cannot authenticate to ZeroSSL and the reconcile surfaces a sealed-Vault error
+rather than proceeding.
+
+This extends — and does not replace — the existing ACME model. ZeroSSL remains the sole ACME
+provider, and the single-issuer (`zerossl-dns01`) plus S3 retain-restore behavior of
+[§ 4](#4-single-issuer-and-rebuild-safe-certificate-retention) is unchanged; only the at-rest EAB
+secret gains a Vault home and a `SecretRef.Vault` indirection.
+
+For the TLS and PKI model behind Vault — how the EAB material and TLS private-key paths live under
+Vault and why issuance is fail-closed — see
+[vault_doctrine.md §11](./vault_doctrine.md#11-tls-and-pki-under-vault).
+
 ## Related Documents
 
 - [aws_account_setup_guide.md](./aws_account_setup_guide.md)
@@ -113,5 +131,6 @@ and
 - [helm_chart_platform_doctrine.md](./helm_chart_platform_doctrine.md)
 - [lifecycle_reconciliation_doctrine.md](./lifecycle_reconciliation_doctrine.md)
 - [envoy_gateway_edge_doctrine.md](./envoy_gateway_edge_doctrine.md)
+- [Vault Secret-Management Doctrine](./vault_doctrine.md)
 - [../../DEVELOPMENT_PLAN/substrates.md](../../DEVELOPMENT_PLAN/substrates.md)
 - [../../DEVELOPMENT_PLAN/phase-7-aws-substrate-foundations.md](../../DEVELOPMENT_PLAN/phase-7-aws-substrate-foundations.md)

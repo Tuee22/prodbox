@@ -1,0 +1,6 @@
+apiVersion: v2
+name: vault
+description: In-cluster HashiCorp Vault — the prodbox per-cluster secrets / KMS / PKI backend on a durable PV (Sprint 3.17)
+type: application
+version: 0.1.0
+appVersion: "1.18.3"

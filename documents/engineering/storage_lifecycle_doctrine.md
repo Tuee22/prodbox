@@ -18,13 +18,19 @@
 - Retained storage is reconciled via the static `manual` no-provisioner `StorageClass`
   plus deterministic PV resources to guarantee stable PVC-to-PV rebinding across cluster
   delete/reinstall.
+- Every retained PersistentVolume follows one deterministic host-path scheme —
+  `.data/<namespace>/<StatefulSet>/<replica-index>` — provisioned by a single reconciler.
+  There is no per-host machine-id directory prefix. Every stateful workload is a
+  StatefulSet (MinIO, the namespace-local Patroni PostgreSQL cluster, `vscode`, and
+  Vault), so every retained PVC is a StatefulSet `volumeClaimTemplate` claim
+  (`data-<statefulset>-<ordinal>`) that a deterministic PV `claimRef`-binds.
 - `prodbox cluster reconcile` recreates the cluster-scoped `manual` `StorageClass` and
   removes every other `StorageClass` before retained-storage reconciliation succeeds.
 - The manual PV host root stores PV contents and the per-cluster MinIO bucket files.
-  MinIO's own PV lives under `.data/minio/...`; therefore the per-run Pulumi state
+  MinIO's own PV lives under `.data/prodbox/minio/0`; therefore the per-run Pulumi state
   backend (`prodbox-test-pulumi-backends`) and the gateway-owned secret-derivation bucket
   (`prodbox/master-seed`) both survive cluster wipes whenever `.data/` is preserved.
-- Vault runs in-cluster on a durable PV under `.data/vault/...`, preserved across cluster
+- Vault runs in-cluster on a durable PV under `.data/vault/vault/0`, preserved across cluster
   wipes exactly like MinIO's PV; cluster teardown never destroys Vault state. (Scheduled
   under Sprints 3.17 / 4.29.)
 - prodbox-owned MinIO objects in the `prodbox` bucket — the master seed and the active
@@ -33,7 +39,7 @@
   under Sprints 3.17 / 4.29.)
 - Namespace-local Patroni PostgreSQL clusters created for Helm-managed application stacks
   use deterministic CLI-owned PVs rooted at
-  `.data/<namespace>/keycloak-postgres/prodbox-<root-chart>-pg/<ordinal>/data/`.
+  `.data/<namespace>/prodbox-<root-chart>-pg/<ordinal>`.
 - The shipped `api`, `redis`, and `websocket` workloads do not add new manual-PV
   contracts; the Redis-backed WebSocket path keeps shared state at the application layer
   rather than extending the retained PV inventory.
@@ -46,7 +52,7 @@
   `.data/`. No `prodbox` command removes `.data/` on its own; deletion is operator-only.
 - When the MinIO-backed Pulumi backend is still running but kubelet reports its `/export`
   mount as deleted, the Haskell backend helper recreates the declared retained host path,
-  reapplies the `1000:1000` plus `0770` contract, and restarts `deployment/minio` before
+  reapplies the `1000:1000` plus `0770` contract, and restarts `statefulset/minio` before
   backend validation or stack operations continue.
 
 ## 2. Scope
@@ -63,10 +69,10 @@ This doctrine governs:
 5. MinIO persistence behavior on the supported single-node RKE2 machine
 6. deleted-export-mount repair for the repo-backed Pulumi backend
 7. the master seed at `prodbox/master-seed` in MinIO, which lives on MinIO's PV under
-   `.data/minio/...` and is therefore in scope of this doctrine for persistence
+   `.data/prodbox/minio/0` and is therefore in scope of this doctrine for persistence
    (derivation, access control, and endpoint contract are governed by
    [secret_derivation_doctrine.md](./secret_derivation_doctrine.md))
-8. the Vault durable PV under `.data/vault/...` and its preservation across
+8. the Vault durable PV under `.data/vault/vault/0` and its preservation across
    delete/reinstall — persistence is in scope here; the Vault model itself (seal/unseal,
    Transit, KV, PKI, Kubernetes auth) is owned by
    [vault_doctrine.md](./vault_doctrine.md) (scheduled under Sprints 3.17 / 4.29)
@@ -87,8 +93,8 @@ The retained-storage effect must reconcile:
 1. `StorageClass` `manual` with `kubernetes.io/no-provisioner`, `Retain`, and
    `WaitForFirstConsumer`
 2. deterministic `PersistentVolume` objects with `claimRef` and single-node affinity
-3. direct-workload `PersistentVolumeClaim` objects with explicit `volumeName` prebinding
-   where the workload is not operator-managed
+3. StatefulSet `volumeClaimTemplate` PVCs (`data-<statefulset>-<ordinal>`) on the `manual`
+   StorageClass, which the deterministic PVs in (2) `claimRef`-bind on first pod schedule
 4. post-install Percona PostgreSQL PVC discovery plus staged retained-cluster restore so
    deterministic PVs bind to the operator-created claim names, the preserved ordinal
    `0` anchor comes up first, and follower ordinals `1` and `2` rejoin only after their
@@ -119,10 +125,10 @@ Deterministic rebinding is guaranteed only when all of these hold:
 5. the workload remains scheduled to the same single node
 6. the master seed at `prodbox/master-seed` in MinIO matches the seed that was active
    when the preserved data was written. The seed survives cluster wipes via MinIO's
-   PV under `.data/minio/...`; mismatch surfaces as a loud failure per
+   PV under `.data/prodbox/minio/0`; mismatch surfaces as a loud failure per
    [secret_derivation_doctrine.md](./secret_derivation_doctrine.md) §8, never a silent
    data reset.
-7. the Vault PV at `.data/vault/...` rebinds across reinstall exactly like the MinIO PV,
+7. the Vault PV at `.data/vault/vault/0` rebinds across reinstall exactly like the MinIO PV,
    so the unsealed Vault re-attaches to the same Transit keys, KV, and PKI material that
    were active when the preserved data was written (scheduled under Sprint 4.29).
 
@@ -157,7 +163,7 @@ the Pulumi state alive across the cluster cycle. Live AWS resources tracked in M
 state remain reachable from any subsequent reconcile.
 
 Both `prodbox cluster delete --yes` and `prodbox cluster delete --cascade --yes` preserve
-the Vault PV (`.data/vault/...`) just as they preserve `.data/` and the MinIO PV; cluster
+the Vault PV (`.data/vault/vault/0`) just as they preserve `.data/` and the MinIO PV; cluster
 teardown never destroys Vault state (scheduled under Sprint 4.29).
 
 Both delete shapes preserve `.data/` and remove nothing else on the operator host. The
@@ -211,13 +217,13 @@ Cleanup ownership is defined in
 
 Rules:
 
-1. `.data/` stores PV content. The MinIO PV at `.data/minio/...` is the persistence
+1. `.data/` stores PV content. The MinIO PV at `.data/prodbox/minio/0` is the persistence
    anchor for per-run Pulumi state and for the gateway-owned secret-derivation bucket
    (`prodbox/master-seed`).
 2. The internal `keycloak-postgres` release uses the deterministic path
-   `.data/<namespace>/keycloak-postgres/prodbox-<root-chart>-pg/<ordinal>/data/`.
+   `.data/<namespace>/prodbox-<root-chart>-pg/<ordinal>`.
 3. The `vscode` StatefulSet uses the deterministic path
-   `.data/vscode/vscode/vscode/0/data/`.
+   `.data/vscode/vscode/0`.
 4. Deterministic PV and Patroni resource names flow through `src/Prodbox/Naming.hs`.
 5. Patroni service names, PVC names, and storage-spec inventory flow through
    `src/Prodbox/PostgresPlatform.hs` rather than through chart-platform string
@@ -225,7 +231,7 @@ Rules:
 6. The `api`, `redis`, and `websocket` workloads do not currently allocate
    deterministic `.data/` roots on the supported path.
 7. The retained Patroni anchor path is
-   `.data/<namespace>/keycloak-postgres/prodbox-<root-chart>-pg/0/data/`; follower
+   `.data/<namespace>/prodbox-<root-chart>-pg/0`; follower
    paths for ordinals `1` and `2` are preserved on disk but must be reset before those
    replicas rejoin a restored cluster.
 8. `prodbox charts delete <chart>` deletes PV/PVC objects but never removes `.data/`.
@@ -235,7 +241,7 @@ Rules:
 10. Deleting `.data/` is an operator-only action. It is the supported way to start from
     a truly empty baseline; on the next reconcile the master seed is regenerated and
     all data-bound secrets derive from the new value.
-11. `.data/vault/...` is the durable Vault storage anchor. It is preserved by cluster
+11. `.data/vault/vault/0` is the durable Vault storage anchor. It is preserved by cluster
     delete and only removed when the operator wipes `.data/`, at which point Vault state
     is lost with the rest of `.data/`, exactly like the master seed (scheduled under
     Sprints 3.17 / 4.29).

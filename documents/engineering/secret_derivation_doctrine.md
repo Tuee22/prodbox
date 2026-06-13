@@ -30,7 +30,7 @@
 Two classes of secret exist in prodbox.
 
 **Data-bound secrets** authenticate against state that survives cluster wipes. The
-preserved PostgreSQL datadir under `.data/<ns>/keycloak-postgres/.../data/` holds password
+preserved PostgreSQL datadir under `.data/<ns>/prodbox-<root-chart>-pg/<ordinal>` holds password
 hashes in `pg_authid`. A freshly generated plaintext does not authenticate against the
 existing hash; the running Postgres rejects it. Patroni passwords, the Keycloak admin
 password, and gateway peer-event HMAC keys all belong to this class.
@@ -55,7 +55,7 @@ A single 256-bit random secret, stored once and never rotated automatically.
 | Location | MinIO bucket `prodbox`, object key `master-seed` |
 | Owner | MinIO IAM principal `prodbox-gateway` |
 | Mode | binary, 32 bytes exactly |
-| Lifetime | created once by the gateway daemon on first reconcile; preserved across cluster wipes via MinIO's PV under `.data/minio/...`; lost only when the operator wipes `.data/` |
+| Lifetime | created once by the gateway daemon on first reconcile; preserved across cluster wipes via MinIO's PV under `.data/prodbox/minio/0`; lost only when the operator wipes `.data/` |
 | Rotation | none. Rotation would require `ALTER USER` passes across every data-bound Postgres role plus rewriting every gateway event-key Secret. That is a future sprint, not this doctrine. |
 
 The bucket is access-restricted via MinIO IAM. Only the `prodbox-gateway` principal can
@@ -317,7 +317,7 @@ authoritative references for the inverse (teardown) order.
 | Master seed missing and MinIO writable | first-ever reconcile, or first reconcile after `.data/` wipe | gateway daemon creates seed under list-then-put; subsequent calls succeed |
 | Master seed missing and MinIO unwritable | misconfigured MinIO IAM, or write race | gateway daemon refuses to serve `/v1/secret/*` until resolved; `/readyz` reports `503` with reason |
 | Dhall `--config` file missing or fails to decode | misconfigured ConfigMap, malformed Dhall, missing Secret import | gateway daemon refuses to start (initial decode); after startup, file-watch reload classifies the change as `config_reload_decode_failed`, leaves the in-memory config in place, and `/v1/secret/*` continues to serve from the last successfully-decoded config per [config_doctrine.md §8](./config_doctrine.md#8-boot-vs-live-split-and-the-restart-contract) |
-| Master seed present, derivation produces value that mismatches `pg_authid` | preserved `.data/` from an incompatible seed (e.g., seed regenerated while data preserved) | **Implemented (Sprint 3.16):** `resetPatroniStorageIfRequested` in `Prodbox.Lib.ChartPlatform` probes the gateway-derived Patroni app-role password against the preserved `pg_authid` hash through a probe-only Postgres connection. The pure decision (`patroniSeedMismatchDecision`) reports a loud failure naming the namespace/role pair and the resolution options on a definite authentication rejection; the operator must either restore the matching `.data/` or wipe the affected `.data/<ns>/keycloak-postgres/` subtree. A fresh install (no primary Pod) or any transient probe failure classifies as "cannot observe" and proceeds — only a proven rejection fails loudly. Never a silent destructive reset. |
+| Master seed present, derivation produces value that mismatches `pg_authid` | preserved `.data/` from an incompatible seed (e.g., seed regenerated while data preserved) | **Implemented (Sprint 3.16):** `resetPatroniStorageIfRequested` in `Prodbox.Lib.ChartPlatform` probes the gateway-derived Patroni app-role password against the preserved `pg_authid` hash through a probe-only Postgres connection. The pure decision (`patroniSeedMismatchDecision`) reports a loud failure naming the namespace/role pair and the resolution options on a definite authentication rejection; the operator must either restore the matching `.data/` or wipe the affected `.data/<ns>/prodbox-<root-chart>-pg/` subtree. A fresh install (no primary Pod) or any transient probe failure classifies as "cannot observe" and proceeds — only a proven rejection fails loudly. Never a silent destructive reset. |
 | Gateway service unreachable from host | iptables rule misconfigured, NodePort not exposed, daemon not running | host CLI returns a structured error from `Prodbox.Gateway.Client`; never silently falls back to a host-side cache (none exists) |
 | Vault sealed (master-seed envelope cannot be unwrapped) | Vault not yet unsealed after cluster bring-up, or re-sealed mid-flight | the master-seed `prodbox-envelope-v1` envelope cannot be unwrapped, so the gateway daemon refuses `/v1/secret/*` and `/readyz` reports `503` with a waiting-for-Vault reason (fail closed). Intended structure scheduled under Sprint 3.17, per [vault_doctrine.md §15](./vault_doctrine.md#15-sealed-state-behavior-matrix) |
 

@@ -1379,7 +1379,7 @@ owned by Sprint `8.5`.
   (Sprint `3.16`).
 - `documents/engineering/storage_lifecycle_doctrine.md` - retained storage and rebinding doctrine.
 - `documents/engineering/vault_doctrine.md` - the in-cluster Vault platform component on a durable
-  `.data/vault/...` PV, the `prodbox-envelope-v1` Vault-Transit envelopes wrapping the MinIO
+  `.data/vault/vault/0` PV, the `prodbox-envelope-v1` Vault-Transit envelopes wrapping the MinIO
   master-seed object and active Dhall, and the chart/Keycloak-secret-via-Vault-Kubernetes-auth
   model; scheduled under Sprints `3.17`–`3.18` (extends, does not reverse, the Sprint `3.16`
   daemon-only seed boundary and HMAC-SHA-256 derivation).
@@ -1670,7 +1670,7 @@ property. Gates green: `dev check` 0, `test unit` **862/862**.
 
 The in-cluster Vault **platform-component chart** also landed as a structurally-validated artifact:
 `charts/vault/` deploys a single-replica Vault StatefulSet (file storage on a durable PVC over the
-retained `manual` StorageClass under `.data/vault/...`), a ConfigMap with the Vault HCL config, an
+retained `manual` StorageClass under `.data/vault/vault/0`), a ConfigMap with the Vault HCL config, an
 in-cluster ClusterIP Service, and a host-CLI NodePort (loopback-restricted, mirroring the gateway
 pattern). It passes `dev lint chart` 0, renders cleanly under `helm template`, and `dev check` 0.
 
@@ -1685,18 +1685,19 @@ inventory test is updated, and `Prodbox.CLI.Rke2.ensureVaultRuntime` is the real
 `bathurst` Ready) + the platform (Harbor/MinIO/Envoy/cert-manager/Percona); `charts/vault/` then
 deployed cleanly (`helm upgrade --install vault ./charts/vault -n vault`) — Vault `1.18.3` came up
 **Running 1/1** with its durable PVC `data-vault-0` **Bound** to a retained `manual`-class PV under
-`.data/vault/...`. The full lifecycle was proven end-to-end: a fresh `prodbox vault status` reported
+`.data/vault/vault/0`. The full lifecycle was proven end-to-end: a fresh `prodbox vault status` reported
 `initialized=False, sealed=True`; after init + unseal the deployed Vault reported `sealed:false`,
 and `prodbox vault status` correctly tracked the change to `initialized=True, sealed=False`. So the
 **`Prodbox.Vault.Client` HTTP path and the `prodbox vault` command group work against a real
 deployed Vault** (Sprint `1.36`), and **the `charts/vault/` platform-component chart deploys a
 working durable-PV Vault** (Sprint `3.17`).
 
-The rest of Sprint `3.17` — the Vault-Transit-backed `DekCipher` (the live DEK wrap/unwrap),
-splicing `ensureVaultRuntime` + a deterministic Vault PV into the retained-storage reconciler so
-`cluster reconcile` deploys Vault itself (the live run used a manual `helm install` + a hand-applied
-PV, which proved the chart), the gateway Vault Kubernetes-auth seed unwrap + active-Dhall envelope
-wiring, and the stronger native-in-process-S3/scrubbed-memory seed rung — remains `📋 Planned`.
+The rest of Sprint `3.17` — the Vault-Transit-backed `DekCipher` (the live DEK wrap/unwrap), the
+gateway Vault Kubernetes-auth seed unwrap + active-Dhall envelope wiring, and the stronger
+native-in-process-S3/scrubbed-memory seed rung — remains `📋 Planned`. Folding `ensureVaultRuntime`
+into `cluster reconcile` so it deploys Vault itself is Sprint `4.29`; Vault's deterministic PV
+joining the unified retained-storage reconciler under `.data/vault/vault/0` is Sprint `4.31` (the
+live run used a manual `helm install` + a hand-applied PV, which proved the chart).
 
 ### Objective
 
@@ -1708,7 +1709,7 @@ seed and active daemon Dhall Vault-Transit envelopes that a sealed Vault cannot 
 ### Deliverables
 
 - Vault added to the shared `[PlatformComponent]` inventory so the home and AWS substrate installers
-  both stand up an in-cluster Vault on a durable `.data/vault/...` PV (substrate equivalence).
+  both stand up an in-cluster Vault on a durable `.data/vault/vault/0` PV (substrate equivalence).
 - `Prodbox.Crypto.Envelope` (AEAD + Vault-Transit-wrapped DEK) and `Prodbox.Minio.EncryptedObject`.
 - The MinIO `prodbox/master-seed` object and the active Dhall stored as `prodbox-envelope-v1`
   envelopes; the gateway daemon authenticates to Vault with Kubernetes auth and unwraps the DEK.

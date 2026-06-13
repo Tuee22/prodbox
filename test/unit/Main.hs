@@ -1319,7 +1319,7 @@ main = mainWithSuite "prodbox-unit" $ do
     it "keeps the vscode chart on the supported code-server path-prefix flag" $ do
       repoRoot <- getCurrentDirectory
       deploymentTemplate <-
-        readFile (repoRoot </> "charts" </> "vscode" </> "templates" </> "deployment.yaml")
+        readFile (repoRoot </> "charts" </> "vscode" </> "templates" </> "statefulset.yaml")
 
       deploymentTemplate `shouldContain` "--abs-proxy-base-path"
       deploymentTemplate `shouldNotContain` "--base-path"
@@ -1903,7 +1903,7 @@ main = mainWithSuite "prodbox-unit" $ do
       interpreterSource `shouldContain` "\"--non-interactive\""
       interpreterSource `shouldContain` "PULUMI_BACKEND_URL"
       minioSource `shouldContain` "parseDeletedMinioExportHostPath"
-      minioSource `shouldContain` "\"rollout\", \"restart\", \"deployment/\" ++ minioDeploymentName"
+      minioSource `shouldContain` "\"rollout\", \"restart\", \"statefulset/\" ++ minioDeploymentName"
 
     it "Sprint 3.16: host-side chart-secret paths route through the gateway RPC, not the raw seed" $ do
       -- Sprint 3.13 had the host read the raw master seed from MinIO via
@@ -2758,11 +2758,11 @@ main = mainWithSuite "prodbox-unit" $ do
   describe "native chart platform helpers" $ do
     it "extracts deleted MinIO export host paths from mountinfo" $ do
       parseDeletedMinioExportHostPath
-        "14443 14435 8:2 /home/matthewnowak/prodbox/.data/prodbox-123/prodbox-minio-pv-0//deleted /export rw,relatime - ext4 /dev/sda2 rw\n"
-        `shouldBe` Just "/home/matthewnowak/prodbox/.data/prodbox-123/prodbox-minio-pv-0"
+        "14443 14435 8:2 /home/matthewnowak/prodbox/.data/prodbox/minio/0//deleted /export rw,relatime - ext4 /dev/sda2 rw\n"
+        `shouldBe` Just "/home/matthewnowak/prodbox/.data/prodbox/minio/0"
 
       parseDeletedMinioExportHostPath
-        "14443 14435 8:2 /home/matthewnowak/prodbox/.data/prodbox-123/prodbox-minio-pv-0 /export rw,relatime - ext4 /dev/sda2 rw\n"
+        "14443 14435 8:2 /home/matthewnowak/prodbox/.data/prodbox/minio/0 /export rw,relatime - ext4 /dev/sda2 rw\n"
         `shouldBe` Nothing
 
     it "derives deterministic storage bindings" $ do
@@ -2778,7 +2778,7 @@ main = mainWithSuite "prodbox-unit" $ do
       chartStorageBindingPersistentVolumeName binding
         `shouldBe` "prodbox-chart-vscode-vscode-vscode-0-data"
       chartStorageBindingHostPath binding
-        `shouldBe` "/tmp/prodbox/.data/vscode/vscode/vscode/0/data"
+        `shouldBe` "/tmp/prodbox/.data/vscode/vscode/0"
 
     it "lists supported charts in canonical order" $ do
       supportedChartNames `shouldBe` ["keycloak", "vscode", "api", "websocket", "gateway"]
@@ -6298,31 +6298,29 @@ main = mainWithSuite "prodbox-unit" $ do
       hostsToml `shouldContain` "capabilities = [\"pull\", \"resolve\"]"
       hostsToml `shouldContain` "skip_verify = true"
 
-  describe "Sprint 7.5.c.i substrate-aware MinIO chart values" $ do
-    it "Home substrate + bootstrap image source: binds the pre-created hostPath PVC, no storageClass" $ do
-      let args = renderMinioChartArgs SubstrateHomeLocal MinioBootstrapPublic
-      consecutivePair args "persistence.existingClaim=minio" `shouldBe` True
-      consecutivePair args "persistence.size=200Gi" `shouldBe` True
-      consecutivePair args "resources.requests.memory=512Mi" `shouldBe` True
-      consecutivePair args "resources.limits.memory=2Gi" `shouldBe` True
-      any ("persistence.storageClass=" `isPrefixOf`) args `shouldBe` False
-      consecutivePair args "mode=standalone" `shouldBe` True
-    it "Home substrate + steady-state image source: same persistence shape, Harbor-mirrored images" $ do
-      let args = renderMinioChartArgs SubstrateHomeLocal MinioSteadyStateHarbor
-      consecutivePair args "persistence.existingClaim=minio" `shouldBe` True
-      any ("image.repository=127.0.0.1:30080" `isPrefixOf`) args `shouldBe` True
-      any ("persistence.storageClass=" `isPrefixOf`) args `shouldBe` False
-    it "AWS substrate + bootstrap image source: dynamic gp2 EBS PVC, no existingClaim, 20Gi" $ do
-      let args = renderMinioChartArgs SubstrateAws MinioBootstrapPublic
-      consecutivePair args "persistence.storageClass=gp2" `shouldBe` True
-      consecutivePair args "persistence.size=20Gi" `shouldBe` True
-      any ("persistence.existingClaim=" `isPrefixOf`) args `shouldBe` False
-      consecutivePair args "mode=standalone" `shouldBe` True
-    it "AWS substrate + steady-state image source: gp2 EBS + Harbor-mirrored images" $ do
-      let args = renderMinioChartArgs SubstrateAws MinioSteadyStateHarbor
-      consecutivePair args "persistence.storageClass=gp2" `shouldBe` True
-      any ("image.repository=127.0.0.1:30080" `isPrefixOf`) args `shouldBe` True
-      any ("persistence.existingClaim=" `isPrefixOf`) args `shouldBe` False
+  describe "Sprint 4.31 substrate-aware MinIO chart values" $ do
+    -- MinIO backs Harbor, so it always uses the public (bootstrap-exception)
+    -- image regardless of the requested image source — never the Harbor mirror,
+    -- which would deadlock a non-surging StatefulSet. Only storage varies.
+    it "Home substrate: manual StorageClass + 200Gi, always the public image (never Harbor)" $ do
+      let bootstrapArgs = renderMinioChartArgs SubstrateHomeLocal MinioBootstrapPublic
+          steadyArgs = renderMinioChartArgs SubstrateHomeLocal MinioSteadyStateHarbor
+      consecutivePair bootstrapArgs "storage.className=manual" `shouldBe` True
+      consecutivePair bootstrapArgs "storage.size=200Gi" `shouldBe` True
+      consecutivePair bootstrapArgs "storage.className=gp2" `shouldBe` False
+      any ("image.repository=" `isPrefixOf`) bootstrapArgs `shouldBe` True
+      -- The image source is ignored: steady-state renders identically to
+      -- bootstrap, and never the Harbor-mirrored registry.
+      steadyArgs `shouldBe` bootstrapArgs
+      any ("image.repository=127.0.0.1:30080" `isPrefixOf`) steadyArgs `shouldBe` False
+    it "AWS substrate: dynamic gp2 EBS class + 20Gi, always the public image (never Harbor)" $ do
+      let bootstrapArgs = renderMinioChartArgs SubstrateAws MinioBootstrapPublic
+          steadyArgs = renderMinioChartArgs SubstrateAws MinioSteadyStateHarbor
+      consecutivePair bootstrapArgs "storage.className=gp2" `shouldBe` True
+      consecutivePair bootstrapArgs "storage.size=20Gi" `shouldBe` True
+      consecutivePair bootstrapArgs "storage.className=manual" `shouldBe` False
+      steadyArgs `shouldBe` bootstrapArgs
+      any ("image.repository=127.0.0.1:30080" `isPrefixOf`) steadyArgs `shouldBe` False
 
   describe "Sprint 7.6 AWS harness orphan-safety (Sprint 4.16 source-of-truth pure layer)" $ do
     it

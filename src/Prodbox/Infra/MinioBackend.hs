@@ -254,7 +254,7 @@ repairDeletedMinioExportMountIfNeeded environment = do
           writeOutputLine
             ( "Detected deleted MinIO export mount at "
                 ++ hostPath
-                ++ "; recreating the host path and restarting deployment/minio."
+                ++ "; recreating the host path and restarting statefulset/minio."
             )
           recreateResult <- recreateDeletedMinioExportHostPath hostPath
           case recreateResult of
@@ -296,7 +296,7 @@ readMinioMountInfo environment = do
             [ "exec"
             , "-n"
             , minioNamespace
-            , "deployment/" ++ minioDeploymentName
+            , "statefulset/" ++ minioDeploymentName
             , "--"
             , "cat"
             , "/proc/self/mountinfo"
@@ -310,7 +310,7 @@ readMinioMountInfo environment = do
       Success output ->
         case processExitCode output of
           ExitFailure _ ->
-            Left (renderCommandFailure "kubectl exec deployment/minio -- cat /proc/self/mountinfo" output)
+            Left (renderCommandFailure "kubectl exec statefulset/minio -- cat /proc/self/mountinfo" output)
           ExitSuccess -> Right (processStdout output)
 
 recreateDeletedMinioExportHostPath :: FilePath -> IO (Either String ())
@@ -352,11 +352,11 @@ restartMinioDeployment :: [(String, String)] -> IO (Either String ())
 restartMinioDeployment environment = do
   rolloutRestartResult <-
     runCheckedCommand
-      "failed to restart deployment/minio"
+      "failed to restart statefulset/minio"
       Subprocess
         { subprocessPath = "kubectl"
         , subprocessArguments =
-            ["rollout", "restart", "deployment/" ++ minioDeploymentName, "-n", minioNamespace]
+            ["rollout", "restart", "statefulset/" ++ minioDeploymentName, "-n", minioNamespace]
         , subprocessEnvironment = Just environment
         , subprocessWorkingDirectory = Nothing
         }
@@ -364,13 +364,13 @@ restartMinioDeployment environment = do
     Left err -> pure (Left err)
     Right () ->
       runCheckedCommand
-        "deployment/minio did not become ready after restart"
+        "statefulset/minio did not become ready after restart"
         Subprocess
           { subprocessPath = "kubectl"
           , subprocessArguments =
               [ "rollout"
               , "status"
-              , "deployment/" ++ minioDeploymentName
+              , "statefulset/" ++ minioDeploymentName
               , "-n"
               , minioNamespace
               , "--timeout"

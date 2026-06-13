@@ -79,14 +79,15 @@ Build a clean-room Haskell `prodbox` repository with:
     steady-state request path does not synchronously depend on Keycloak or Redis. Port `80`
     exists only as an HTTP-to-HTTPS redirect into the same shared-host path model.
 16. One retained PV host-path model rooted at the configured manual PV root, defaulting to
-    `.data/<namespace>/<release>/<workload>/<ordinal>/<claim>`.
+    `.data/<namespace>/<StatefulSet>/<replica>` — one deterministic PV per StatefulSet ordinal,
+    no machine-id prefix, provisioned by a single reconciler.
 17. Exactly one preserved operator-host directory: `.data/`. Chart secrets, gateway
     peer-event keys, AWS stack outputs, EKS kubeconfig material, and HA-RKE2 SSH key
     material all live inside the cluster (k8s Secrets, or Pulumi stack outputs read
     on demand). The legacy `.prodbox-state/` repo-local cache is removed. The
     gateway-owned master seed at MinIO bucket `prodbox/master-seed` is the persistence
     anchor for data-bound secrets; it survives cluster wipes because MinIO's PV lives
-    under `.data/minio/...`. See [Secret Derivation Doctrine](../documents/engineering/secret_derivation_doctrine.md)
+    under `.data/prodbox/minio/0`. See [Secret Derivation Doctrine](../documents/engineering/secret_derivation_doctrine.md)
     and [Retained Storage Lifecycle Doctrine](../documents/engineering/storage_lifecycle_doctrine.md).
 18. One PostgreSQL doctrine for Helm-managed application data: every supported PostgreSQL
     deployment is external, Percona-operator-backed Patroni HA with exactly three PostgreSQL
@@ -119,7 +120,7 @@ Build a clean-room Haskell `prodbox` repository with:
 Vault is the scheduled expansion that adds a fail-closed secrets / KMS / encryption-as-a-service /
 PKI authority layer *beneath* the existing secret model, not a replacement for any of it. Vault is
 the fail-closed secrets / KMS / PKI backend of every prodbox-managed cluster: it runs in-cluster on
-a durable `.data/`-backed PV (`.data/vault/...`), preserved across cluster wipes exactly like
+a durable `.data/`-backed PV (`.data/vault/vault/0`), preserved across cluster wipes exactly like
 MinIO's PV; `prodbox-config.dhall` carries only typed `SecretRef` values (never plaintext secrets);
 MinIO objects, Pulumi backend state, and the active daemon Dhall are stored only as Vault-Transit
 envelopes; and the TLS, Keycloak, Pulumi, and AWS-credential paths fail closed when Vault is
@@ -130,10 +131,11 @@ extended by Vault, never torn out. The load-bearing invariant: a sealed Vault re
 opaque durable-data pile — PVs and MinIO objects may still exist, but they reveal no secrets, no
 active Dhall, no Pulumi state, and no downstream-cluster inventory until Vault is unsealed. Adoption
 is scheduled (not yet implemented) across the reopened Phases `0`/`1`/`3`/`4`/`5`/`7`/`8` —
-Sprints `0.12`, `1.35`–`1.37`, `3.17`–`3.18`, `4.29`–`4.30`, `5.8`, `7.14`–`7.15`, and `8.9`. The
+Sprints `0.12`, `1.35`–`1.37`, `3.17`–`3.18`, `4.29`–`4.31`, `5.8`, `7.14`–`7.15`, and `8.9`. The
 single source of truth for the Vault model is
 [vault_doctrine.md](../documents/engineering/vault_doctrine.md); the authoritative reopening
-narration is the 2026-06-11 [README.md → Closure Status](README.md#closure-status) entry.
+narration is the 2026-06-11 [README.md → Closure Status](README.md#closure-status) entry, extended
+by the 2026-06-13 storage-topology-reorg entry in the same section.
 
 ## Test Substrates
 
@@ -480,7 +482,7 @@ The reopened ranges close on the following sprint sets:
 | AWS substrate provision/teardown (EKS) | `prodbox pulumi eks-resources|eks-destroy --yes` | Haskell orchestration plus Pulumi; provisions the EKS portion of the AWS substrate. The `aws-eks` canonical suite validation runs against it. |
 | AWS substrate provision/teardown (HA RKE2) | `prodbox pulumi test-resources|test-destroy --yes` | Haskell orchestration plus Pulumi; provisions the EC2 portion of the AWS substrate. The `ha-rke2-aws` canonical suite validation runs against it. |
 | Pulumi backend state | MinIO bucket `prodbox-test-pulumi-backends` on the local cluster | Local cluster bootstrap plus bounded repo-backed backend login and deleted-mount repair |
-| Per-run Pulumi state (MinIO-backed; survives cluster wipes via MinIO's PV under `.data/minio/...`) | `s3://prodbox-test-pulumi-backends?endpoint=127.0.0.1:39000` | Haskell Pulumi orchestration and AWS substrate helpers |
+| Per-run Pulumi state (MinIO-backed; survives cluster wipes via MinIO's PV under `.data/prodbox/minio/0`) | `s3://prodbox-test-pulumi-backends?endpoint=127.0.0.1:39000` | Haskell Pulumi orchestration and AWS substrate helpers |
 | Gateway-owned secret-derivation MinIO bucket | `s3://prodbox?endpoint=127.0.0.1:39000` (master seed at `prodbox/master-seed`) | Gateway daemon (`prodbox-gateway` MinIO principal) |
 | Gateway runtime operations | `prodbox gateway start --config <path>|status --config <path>|config-gen <output-path> --node-id <node-id>` | Haskell gateway runtime |
 | Public workload runtime | `prodbox workload start --config <path>` | Haskell runtime selected through the `workload.mode = Api \| Websocket` field of the mounted Dhall config per [config_doctrine.md](../documents/engineering/config_doctrine.md) (migration from `PRODBOX_WORKLOAD_MODE` env-var scheduled by Sprint 3.14) for the supported path-routed API and real-WebSocket surfaces behind the shared public hostname |
@@ -619,10 +621,10 @@ than restated here as a fresh rerun log.
   `src/Prodbox/Infra/AwsTestStack.hs`, and `src/Prodbox/Infra/AwsEksTestStack.hs` now keep the
   repo-backed Pulumi backend on a bounded `pulumi login ... --non-interactive` path and repair a
   deleted MinIO export host-path mount by recreating the declared retained directory plus
-  restarting `deployment/minio` before backend validation continues.
+  restarting `statefulset/minio` before backend validation continues.
 - `src/Prodbox/Infra/AwsTestStack.hs` and `src/Prodbox/Infra/AwsEksTestStack.hs` generate and
   rely on MinIO-backed Pulumi state that survives cluster wipes via MinIO's PV under
-  `.data/minio/...` (Sprint `4.16` replaces the prior `.prodbox-state/<stack>/
+  `.data/prodbox/minio/0` (Sprint `4.16` replaces the prior `.prodbox-state/<stack>/
   stack-snapshot.json` file-existence predicate with `<stack>ResidueStatus` queries
   against the MinIO/S3 backend); the HA-RKE2 validation SSH key is fetched on demand
   from `pulumi stack output --show-secrets` into a `mktemp` file scoped to the
@@ -654,7 +656,7 @@ than restated here as a fresh rerun log.
   path.
 - An in-cluster Vault platform component and a `prodbox vault` command group are the scheduled
   (not-yet-implemented) intended structure for fail-closed secrets / KMS / PKI. The platform
-  component runs Vault in-cluster on a durable `.data/vault/...` PV alongside MinIO's PV
+  component runs Vault in-cluster on a durable `.data/vault/vault/0` PV alongside MinIO's PV
   (scheduled under Sprint `3.17`), and the `prodbox vault status` / `init` / `unseal` / `seal` /
   `reconcile` / `rotate-unlock-bundle` / `rotate-transit-key <key>` / `pki status` /
   `pki issue-test-cert` command group joins the public CLI surface (scheduled under Sprint `1.36`,
@@ -688,7 +690,7 @@ Patroni application-database path. Compatibility-cleanup history now lives only 
 | Configuration and settings | `src/Prodbox/Settings.hs`, `src/Prodbox/Repo.hs`, `prodbox-config.dhall`, `prodbox-config-types.dhall` | Phase 1 |
 | Host and Kubernetes helpers | `src/Prodbox/Host.hs`, `src/Prodbox/K8s.hs` | Phase 1 |
 | Container packaging and registry doctrine | `docker/`, `src/Prodbox/CLI/Rke2.hs`, `src/Prodbox/ContainerImage.hs`, `src/Prodbox/Lib/ChartPlatform.hs` | Phases 1-4 |
-| Pulumi orchestration and YAML stack programs | `src/Prodbox/CLI/Pulumi.hs`, `src/Prodbox/Infra/`, `pulumi/aws-eks/Pulumi.yaml`, `pulumi/aws-eks/Main.yaml`, `pulumi/aws-test/Pulumi.yaml`, `pulumi/aws-test/Main.yaml`, plus per-run Pulumi state in the MinIO `prodbox-test-pulumi-backends` bucket (anchored to `.data/minio/...`) | Phase 4 |
+| Pulumi orchestration and YAML stack programs | `src/Prodbox/CLI/Pulumi.hs`, `src/Prodbox/Infra/`, `pulumi/aws-eks/Pulumi.yaml`, `pulumi/aws-eks/Main.yaml`, `pulumi/aws-test/Pulumi.yaml`, `pulumi/aws-test/Main.yaml`, plus per-run Pulumi state in the MinIO `prodbox-test-pulumi-backends` bucket (anchored to `.data/prodbox/minio/0`) | Phase 4 |
 | DNS inspection | `src/Prodbox/Dns.hs` | Phase 2 |
 | Shared public-edge route catalog | `src/Prodbox/PublicEdge.hs` | Phase 3 |
 | Gateway runtime and packaging | `src/Prodbox/Gateway.hs`, `src/Prodbox/Gateway/Daemon.hs`, `src/Prodbox/Gateway/Peer.hs`, `src/Prodbox/Gateway/Types.hs`, `docker/gateway.Dockerfile` | Phase 2 |

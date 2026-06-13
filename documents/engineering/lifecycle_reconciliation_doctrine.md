@@ -65,7 +65,7 @@ the `aws-ses` capture bucket and the operator-owned parent Route 53
 zone.
 
 **Per-run state survives cluster wipes via `.data/` preservation.** MinIO runs from a
-host-pathed PV under `.data/minio/...`
+host-pathed PV under `.data/prodbox/minio/0`
 ([storage_lifecycle_doctrine.md](storage_lifecycle_doctrine.md) §1, §7). Whenever
 `.data/` is preserved (the default for both `prodbox cluster delete --yes` and
 `prodbox cluster delete --cascade --yes`), MinIO's bucket contents — the per-run Pulumi

@@ -357,7 +357,7 @@ the supported product scope.
   [substrates.md](substrates.md)).
 - The repo-backed Pulumi prerequisite and AWS-substrate provisioning helpers now use bounded
   `pulumi login ... --non-interactive` checks against the MinIO backend and recreate a deleted
-  MinIO export host-path mount before restarting `deployment/minio`, so the suite fails fast
+  MinIO export host-path mount before restarting `statefulset/minio`, so the suite fails fast
   on real backend errors instead of hanging on stale retained-storage mounts.
 - `src/Prodbox/TestValidation.hs` provides the canonical-suite content (`lifecycle`,
   `pulumi`, `aws-eks`, `ha-rke2-aws`, and the rest of the named validations) dispatched by

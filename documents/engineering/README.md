@@ -138,7 +138,7 @@ cross-substrate shared infrastructure (see
 ### Chart Platform
 
 - [Helm Chart Platform Doctrine](./helm_chart_platform_doctrine.md)
-- [Chart Storage Contract](./helm_chart_platform_doctrine.md#7-datanamespacereleaseworkloadordinalclaim-host-path-contract)
+- [Chart Storage Contract](./helm_chart_platform_doctrine.md#6-datanamespacestatefulsetordinal-host-path-contract)
 - [Delete Semantics](./helm_chart_platform_doctrine.md#8-delete-semantics)
 - [Supported Public Auth Model (public-edge production TLS retention)](./helm_chart_platform_doctrine.md#9-supported-public-auth-model)
 - [ACME Provider Guide](./acme_provider_guide.md)

@@ -79,7 +79,8 @@ Sprint `7.12` this is a *structural* invariant, not prose, enforced by three mec
 3. **A shared `[PlatformComponent]` inventory + coverage test.**
    `Prodbox.ContainerImage.sharedPlatformComponents` declares the shared set once (`gateway`,
    `keycloak`, `keycloak-postgres`, `vscode`, `api`, `redis`, `websocket`, MinIO, Harbor, the
-   Percona operator, Envoy Gateway, cert-manager, ZeroSSL DNS01). A `test/unit/Main.hs` coverage
+   Percona operator, Envoy Gateway, cert-manager, ZeroSSL DNS01, and an in-cluster Vault). A
+   `test/unit/Main.hs` coverage
    test asserts both installers (`homeSubstratePlatformComponents` in `Prodbox.CLI.Rke2`,
    `awsSubstratePlatformComponents` in `Prodbox.Lib.AwsSubstratePlatform`) cover every entry. It
    is **not** a unified step DAG — each substrate keeps its own ordering and its own lower-layer
@@ -139,7 +140,7 @@ table below). Pulumi state lifetime must also match resource lifetime per class;
 [../documents/engineering/lifecycle_reconciliation_doctrine.md → §2 State-Lifetime Rule](../documents/engineering/lifecycle_reconciliation_doctrine.md).
 
 > **Scope note — the Vault durable PV is not an AWS resource.** The in-cluster Vault's durable
-> volume is **local retained state** under `.data/vault/...`, governed by the storage lifecycle
+> volume is **local retained state** under `.data/vault/vault/0`, governed by the storage lifecycle
 > doctrine, not by the AWS resource lifecycle classes — so it does **not** appear in the per-run,
 > long-lived, or operational AWS tables below. It is preserved across cluster teardown exactly
 > like the MinIO PV (scheduled, Sprint `4.29`), so a wipe-and-rebuild keeps Vault's sealed

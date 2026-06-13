@@ -1,0 +1,32 @@
+global:
+  # The root chart name, stamped onto every object via prodbox.io/chart-root.
+  rootChart: minio
+
+image:
+  # Sprint 4.31: MinIO is a shared platform component. The reconcile install
+  # overrides image.repository / image.tag via --set — the public quay.io
+  # reference for the bootstrap pass and the in-cluster Harbor mirror
+  # (127.0.0.1:30080/prodbox/minio-mirror) for the steady-state pass — so these
+  # defaults are only a fallback.
+  repository: quay.io/minio/minio
+  tag: "RELEASE.2024-12-18T13-15-44Z"
+  pullPolicy: IfNotPresent
+
+ports:
+  api: 9000
+  console: 9001
+
+storage:
+  # Durable MinIO storage on the retained `manual` no-provisioner StorageClass,
+  # rooted at `.data/<namespace>/<StatefulSet>/<ordinal>` (= `.data/prodbox/minio/0`)
+  # per the storage-lifecycle doctrine. On the AWS substrate this is overridden
+  # to the EKS `gp2` dynamic class via --set.
+  className: manual
+  size: 200Gi
+
+resources:
+  requests:
+    memory: 512Mi
+    cpu: 100m
+  limits:
+    memory: 2Gi

@@ -230,22 +230,27 @@ Repo-owned charts never create `PersistentVolume` objects directly.
 
 There is no Pulumi-owned PostgreSQL exception on the supported path.
 
-## 6. `.data/<namespace>/<release>/<workload>/<ordinal>/<claim>` Host-Path Contract
+## 6. `.data/<namespace>/<StatefulSet>/<ordinal>` Host-Path Contract
 
 Chart-owned retained host storage lives at:
 
 ```text
-<repo-root>/.data/<namespace>/<release>/<workload>/<ordinal>/<claim>/
+<repo-root>/.data/<namespace>/<StatefulSet>/<ordinal>
 ```
 
-Examples:
+There is no per-host machine-id prefix and no `<release>` or `<claim>` path segment; the
+PVC↔PV identity is carried by `claimRef`, not by the directory layout. Examples:
 
-- `keycloak-postgres` for the `keycloak` root chart:
-  `.data/keycloak/keycloak-postgres/prodbox-keycloak-pg/0/data/`
-- `keycloak-postgres` for the `vscode` root chart:
-  `.data/vscode/keycloak-postgres/prodbox-vscode-pg/0/data/`
+- `keycloak-postgres` Patroni cluster for the `keycloak` root chart:
+  `.data/keycloak/prodbox-keycloak-pg/0`
+- the same Patroni dependency deployed under the `vscode` root chart:
+  `.data/vscode/prodbox-vscode-pg/0`
 - `vscode` StatefulSet:
-  `.data/vscode/vscode/vscode/0/data/`
+  `.data/vscode/vscode/0`
+- `minio` StatefulSet (in the shared `prodbox` namespace):
+  `.data/prodbox/minio/0`
+- `vault` StatefulSet:
+  `.data/vault/vault/0`
 
 Rules:
 
@@ -253,7 +258,9 @@ Rules:
 2. `.data/` is reserved for PV contents only.
 3. PV names are deterministic and flow through `src/Prodbox/Naming.hs`.
 4. `manual` is the only supported `StorageClass`.
-5. `vscode` remains single-replica retained storage on the supported path.
+5. Every retained workload — `minio`, the Patroni PostgreSQL cluster, `vscode`, and
+   `vault` — is a StatefulSet; `minio`, `vscode`, and `vault` are single-replica and the
+   Patroni cluster is three-replica, so each contributes one PV per ordinal.
 
 All non-PV chart state lives inside the cluster as native k8s Secrets and ConfigMaps.
 No `prodbox` command writes to `.prodbox-state/`; the directory is removed from the
@@ -413,7 +420,7 @@ Namespace-local chart secrets are k8s Secrets, partitioned by class per
 | `keycloak_demo_user_password` | `keycloak-runtime.demoUser` | chart-generated | Helm `lookup` + `randAlphaNum` |
 
 The derived rows preserve credentials underneath preserved PostgreSQL data because the
-master seed lives on MinIO's PV under `.data/minio/...` and survives cluster wipes. On
+master seed lives on MinIO's PV under `.data/prodbox/minio/0` and survives cluster wipes. On
 each `prodbox charts reconcile <chart>` the chart-platform pre-install Job POSTs to
 `/v1/secret/ensure-namespace` on the in-cluster gateway ClusterIP; the gateway
 materializes the four derived Secrets above; Helm's `lookup` picks them up during the

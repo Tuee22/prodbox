@@ -367,7 +367,7 @@ resolveChart repoRoot chartName =
           , chartDefinitionStorage =
               [ ChartStorageSpec
                   { chartStorageSpecStatefulSetName = "vscode"
-                  , chartStorageSpecPersistentVolumeClaimName = "vscode-data-0"
+                  , chartStorageSpecPersistentVolumeClaimName = "data-vscode-0"
                   , chartStorageSpecStorageSize = "50Gi"
                   , chartStorageSpecOrdinal = 0
                   , chartStorageSpecClaimSuffix = "data"
@@ -1736,7 +1736,7 @@ renderReleaseValuesJson substrate definition namespace rootChart settings chartS
       "vscode" ->
         case (maybePublicFqdn, storageBindings) of
           (Just fqdn, [binding]) ->
-            valuesForVscode namespace rootChart settings chartSecrets binding fqdn
+            valuesForVscode namespace rootChart settings chartSecrets storageClassName binding fqdn
           (Nothing, _) -> Left "vscode requires a public host"
           _ -> Left "vscode requires exactly one storage binding"
       "redis" ->
@@ -2075,10 +2075,11 @@ valuesForVscode
   -> String
   -> ValidatedSettings
   -> Map String String
+  -> String
   -> ChartStorageBinding
   -> String
   -> Either String Value
-valuesForVscode namespace rootChart settings _chartSecrets binding sharedHostFqdn = do
+valuesForVscode namespace rootChart settings _chartSecrets storageClassName binding sharedHostFqdn = do
   -- Sprint 3.13 chunk 11: the vscode chart reads the OIDC `client-secret`
   -- via Helm `lookup` of the gateway-daemon-managed `keycloak-oidc-clients`
   -- Secret in the release namespace. The chart's `values.yaml` `change-me`
@@ -2128,9 +2129,16 @@ valuesForVscode namespace rootChart settings _chartSecrets binding sharedHostFqd
               ]
         , "vscode"
             .= object
-              [ "existingClaim" .= chartStorageBindingPersistentVolumeClaimName binding
-              , "image" .= ContainerImage.renderImageRef ContainerImage.harborCodeServerImage
+              [ "image" .= ContainerImage.renderImageRef ContainerImage.harborCodeServerImage
               , "basePath" .= vscodePathPrefix
+              ]
+        , -- Sprint 4.31: the `data` volumeClaimTemplate class + size. The
+          -- StatefulSet adopts the prebound PVC the chart-storage reconciler
+          -- creates at `.data/vscode/vscode/0`.
+          "storage"
+            .= object
+              [ "className" .= storageClassName
+              , "size" .= chartStorageBindingStorageSize binding
               ]
         ]
     )

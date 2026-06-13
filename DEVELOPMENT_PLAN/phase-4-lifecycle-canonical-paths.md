@@ -39,6 +39,17 @@ joins the managed-resource registry as a `LongLived` resource (now `Done` on the
 surface), and for Sprint `4.25`, which makes `prodbox rke2 delete` a no-op success when no RKE2
 cluster is installed (`Done`).
 
+🔄 **Reopened 2026-06-11 (Vault secret-management refactor)** — Phase 4 is reopened for Sprints
+`4.29` (Vault folded into the canonical cluster lifecycle — reconcile deploys/unseals, teardown
+preserves the durable Vault PV) and `4.30` (MinIO opaque-object-ID metadata hardening + sealed-state
+red-team), both `📋 Planned`. **Extended 2026-06-13** with Sprint `4.31` (the unified deterministic
+retained-storage topology — a machine-id-free `.data/<namespace>/<StatefulSet>/<replica>` layout
+under one reconciler, with MinIO and `vscode` converted to StatefulSets), also `📋 Planned`. All
+earlier Phase 4 sprints remain `Done` on their owned surfaces; the authoritative reopen narration is
+the [README.md → Closure Status](README.md#closure-status) entries of the same dates. Sprint `4.31`
+refines the canonical retained-storage paths — it extends, it does not reverse, the Phase `3`
+storage-binding model (Sprint `3.1`).
+
 ✅ **Done (Sprints `4.1`–`4.23`)** — Sprints `4.1`–`4.4` remain `Done` on lifecycle parity, Python Pulumi removal,
 repository-wide Python toolchain removal, and the single-record DNS / single-certificate
 contract. The phase was first reopened by Sprint 0.2 to schedule Sprints `4.5`–`4.7`: rename
@@ -2493,7 +2504,7 @@ preserves its durable PV, and a sealed Vault is a first-class cluster status (va
 - `prodbox cluster reconcile` deploys/rebinds Vault, runs `vault init`-if-empty, unseals from the
   unlock bundle (or prompts), and runs `vault reconcile` before MinIO/chart reconcile.
 - `prodbox cluster delete --yes` and `--cascade --yes` both preserve the durable Vault PV
-  (`.data/vault/...`) exactly like the MinIO PV; no `prodbox` command removes it.
+  (`.data/vault/vault/0`) exactly like the MinIO PV; no `prodbox` command removes it.
 - `prodbox cluster status` / `prodbox edge status` surface Vault sealed/unsealed/uninitialized as a
   first-class line.
 - Lifecycle commands gain fail-closed readiness gates that refuse secret-dependent work when Vault
@@ -2538,6 +2549,55 @@ metadata leakage, so a sealed Vault reveals only opaque object IDs (vault_doctri
 
 - Red-team checklist closure is tracked alongside the sealed-Vault canonical validation (Sprint `5.8`).
 
+## Sprint 4.31: Unified Deterministic Retained-Storage Topology 📋
+
+**Status**: Planned
+**Implementation**: `src/Prodbox/Lib/Storage.hs`, `src/Prodbox/CLI/Rke2.hs`, `src/Prodbox/Lib/ChartPlatform.hs`, `src/Prodbox/Naming.hs`, `charts/minio/`, `charts/vscode/`, `charts/vault/`
+**Blocked by**: Sprint `3.17`
+**Docs to update**: `documents/engineering/storage_lifecycle_doctrine.md`, `documents/engineering/helm_chart_platform_doctrine.md`, `documents/engineering/vault_doctrine.md`
+
+### Objective
+
+Collapse every retained PersistentVolume onto one deterministic host-path scheme —
+`.data/<namespace>/<StatefulSet>/<replica-index>` — provisioned by a single reconciler, and make
+every stateful workload a StatefulSet so every retained PVC is a `volumeClaimTemplate` claim. This
+refines the canonical retained-storage paths; it extends, it does not reverse, the Sprint `3.1`
+storage-binding model or the retained-PV teardown contract.
+
+### Deliverables
+
+- `storageBinding` (`src/Prodbox/Lib/Storage.hs`) produces `.data/<namespace>/<StatefulSet>/<ordinal>`
+  with no per-host machine-id prefix and no `<release>` / `<claim>` path segment; the deterministic
+  PV name derives from `(namespace, statefulset, ordinal)` via
+  `Prodbox.Naming.boundedResourceName`.
+- One retained-StatefulSet inventory feeds `ensureRetainedLocalStorage`, which provisions a
+  deterministic PV + prebound PVC for MinIO, the Patroni cluster, `vscode`, and Vault — Vault's PV
+  joins this managed set instead of being hand-applied. Each PV host directory is chowned to its
+  workload's `uid:gid` (non-root).
+- MinIO moves off the bitnami standalone Deployment to a prodbox-owned `charts/minio/` single-replica
+  StatefulSet (mirroring `charts/vault/`); PVC `data-minio-0` → `.data/prodbox/minio/0`. MinIO keeps
+  the **public** `quay.io/minio/minio` image at steady state (never the Harbor mirror): it is Harbor's
+  own storage backend, so it cannot source its image from Harbor, and unlike the surge-capable bitnami
+  Deployment a single-replica StatefulSet cannot break that circular dependency (a Harbor-sourced image
+  deadlocks — MinIO down → Harbor 500 → MinIO `ImagePullBackOff`). See
+  [local_registry_pipeline.md](../documents/engineering/local_registry_pipeline.md) step 13.
+- `vscode` moves from a Deployment to a single-replica StatefulSet; PVC `data-vscode-0` →
+  `.data/vscode/vscode/0`.
+
+### Validation
+
+- `cluster reconcile` on a wiped `.data/` materializes `.data/<namespace>/<StatefulSet>/<ordinal>`
+  for `minio`, the Patroni ordinals, `vscode`, and `vault`; every PVC is `Bound` to its deterministic
+  PV and MinIO/vscode/Vault run as StatefulSets.
+- `cluster delete --yes` + `cluster reconcile` deterministically rebinds every retained PV on the
+  same node without the machine-id prefix.
+
+### Remaining Work
+
+- None beyond the gates above; the removed machine-id prefix, the bitnami MinIO Deployment, the
+  `vscode` Deployment, and the hand-applied Vault PV are recorded in
+  [legacy-tracking-for-deletion.md](legacy-tracking-for-deletion.md).
+
 ## Documentation Requirements
 
 **Engineering docs to create/update:**
@@ -2569,7 +2629,9 @@ metadata leakage, so a sealed Vault reveals only opaque object IDs (vault_doctri
 - `documents/engineering/storage_lifecycle_doctrine.md` - retained storage contract after the
   lifecycle/chart rewrite, including the delete-side cleanup-summary contract; for Sprint `4.26`
   the §5 cascade order is corrected to the canonical per-run-destroy → drain → uninstall →
-  tag-sweep sequence.
+  tag-sweep sequence; for Sprint `4.31` the host-path contract is the unified
+  `.data/<namespace>/<StatefulSet>/<replica>` scheme (no machine-id prefix), every retained
+  workload is a StatefulSet, and one reconciler provisions all retained PVs.
 - `documents/engineering/aws_integration_environment_doctrine.md` - additionally, for Sprint
   `4.27`, the `StackDescriptor`-derived per-run / long-lived stack inventory and the generated
   registry-name↔CLI-command section.

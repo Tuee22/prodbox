@@ -1,0 +1,6 @@
+apiVersion: v2
+name: minio
+description: In-cluster MinIO — the prodbox object-store backend (master seed, Pulumi state, Harbor registry storage) as a single-replica StatefulSet on a durable PV (Sprint 4.31)
+type: application
+version: 0.1.0
+appVersion: "RELEASE.2024-12-18T13-15-44Z"

@@ -30,10 +30,26 @@ govern this plan suite.
 
 ## Closure Status
 
+**2026-06-13 — retained-storage topology reorg folds into the open Vault refactor.** The ad-hoc
+`.data/` layout — a per-host machine-id prefix on MinIO's PV, an over-nested
+`<release>/<workload>/<ordinal>/<claim>` chart path, and a hand-applied Vault PV — is replaced by one
+deterministic scheme, `.data/<namespace>/<StatefulSet>/<replica>`, provisioned by a single
+reconciler, with every retained workload a StatefulSet (MinIO and `vscode` convert; the Patroni
+cluster and Vault already are). **Phase 4 gains Sprint `4.31`** (the unified topology; MinIO off the
+bitnami Deployment onto a prodbox-owned `charts/minio/` StatefulSet; `vscode` Deployment →
+StatefulSet), `📋 Planned`. The storage / chart-platform / Vault / secret-derivation doctrines and
+`system-components.md` + `substrates.md` are updated to the target topology now (declarative
+architecture); the implementing code is tracked under Sprints `3.17` / `4.29` / `4.31`, which remain
+`📋` / `🔄`. The removed machine-id prefix, the bitnami MinIO Deployment, the `vscode` Deployment,
+and the hand-applied Vault PV are recorded in
+[legacy-tracking-for-deletion.md](legacy-tracking-for-deletion.md). This **refines, it does not
+reverse**, the Phase `3` storage-binding model; all later phases remain closed on their owned
+surfaces.
+
 **2026-06-12 (live) — first live Vault validation on the home cluster.** `prodbox cluster reconcile`
 stood up RKE2 (`v1.35.5+rke2r2`, node `bathurst` Ready) + the platform stack from the schema-default
 local config; `charts/vault/` then deployed cleanly and Vault `1.18.3` came up **Running 1/1** with
-its durable PVC **Bound** to a retained `manual`-class PV under `.data/vault/...`. The full lifecycle
+its durable PVC **Bound** to a retained `manual`-class PV under `.data/vault/vault/0`. The full lifecycle
 was proven end-to-end: `prodbox vault status` reported `initialized=False, sealed=True` on a fresh
 Vault, then `initialized=True, sealed=False` after init + unseal — so **`Prodbox.Vault.Client` and the
 `prodbox vault` command group work against a real deployed Vault (Sprint `1.36`), and the

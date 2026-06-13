@@ -185,7 +185,7 @@ Sprint `3.17`).
 Requirements:
 
 - A single Vault instance per prodbox-managed cluster.
-- A durable PVC backed by `.data/` (`.data/vault/...`), preserved across cluster teardown exactly
+- A durable PVC backed by `.data/` (`.data/vault/vault/0`), preserved across cluster teardown exactly
   like MinIO's PV. Cluster teardown must not destroy Vault state.
 - Init only when no existing Vault state is found; no accidental reinitialization.
 - Startup readiness gates that distinguish: not deployed; deployed but uninitialized; initialized
@@ -197,10 +197,11 @@ that cluster teardown never destroys Vault state.
 
 ```text
 .data/
-  vault/                         durable Vault storage (PV, preserved across cluster wipe)
-  minio/                         durable MinIO storage (PV) — ciphertext objects only (§9)
   prodbox/
+    minio/0/                     durable MinIO StatefulSet PV — ciphertext objects only (§9)
     vault-unlock-bundle.age      host-side encrypted Vault recovery material (§6)
+  vault/
+    vault/0/                     durable Vault StatefulSet PV, preserved across cluster wipe
 ```
 
 ## 6. The unlock bundle
@@ -581,7 +582,7 @@ so it is resolved on purpose, not by accident.
 
 | # | Decision | Current lean | Owning sprint |
 |---|----------|--------------|---------------|
-| 1 | Vault storage backend | Integrated storage on the retained `.data/vault/...` PV (file storage acceptable for dev); the load-bearing property is only that teardown never destroys Vault state (§5). | `3.17` / `4.29` |
+| 1 | Vault storage backend | Integrated storage on the retained `.data/vault/vault/0` PV (file storage acceptable for dev); the load-bearing property is only that teardown never destroys Vault state (§5). | `3.17` / `4.29` |
 | 2 | Initial root-token lifetime | Store unseal/recovery material in the unlock bundle, create named admin roles/tokens, and rotate or revoke the initial root token out of the steady-state admin path after bootstrap (§6). | `1.36` |
 | 3 | Opaque object names / indexes | Opaque object IDs + Vault-encrypted indexes, since config/topology metadata is secret (§9). | `4.30` |
 | 4 | Pulumi encrypted-backend approach | Option B (Vault-derived passphrase) first, then Option A or C for full metadata secrecy (§10). | `1.37` / `7.14` |

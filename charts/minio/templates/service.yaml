@@ -1,0 +1,39 @@
+{{- /*
+Sprint 4.31: the in-cluster MinIO Services. `minio` (ClusterIP, S3 API on 9000)
+is the canonical endpoint reached in-cluster as
+`minio.<namespace>.svc.cluster.local:9000` and by the host CLI through a
+`kubectl port-forward` (no NodePort — the host opens a forward on 127.0.0.1:39000
+for the Pulumi backend). `minio-console` (ClusterIP, 9001) backs the
+Envoy-fronted admin console route.
+*/ -}}
+apiVersion: v1
+kind: Service
+metadata:
+  name: minio
+  labels:
+    {{- include "minio.labels" . | nindent 4 }}
+spec:
+  type: ClusterIP
+  selector:
+    {{- include "minio.selectorLabels" . | nindent 4 }}
+  ports:
+    - name: api
+      port: {{ .Values.ports.api }}
+      targetPort: api
+      protocol: TCP
+---
+apiVersion: v1
+kind: Service
+metadata:
+  name: minio-console
+  labels:
+    {{- include "minio.labels" . | nindent 4 }}
+spec:
+  type: ClusterIP
+  selector:
+    {{- include "minio.selectorLabels" . | nindent 4 }}
+  ports:
+    - name: console
+      port: {{ .Values.ports.console }}
+      targetPort: console
+      protocol: TCP

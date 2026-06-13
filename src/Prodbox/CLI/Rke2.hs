@@ -355,20 +355,6 @@ minioNamespace = prodboxNamespace
 minioReleaseName :: String
 minioReleaseName = "minio"
 
-minioRepositoryName :: String
-minioRepositoryName = "minio"
-
-minioRepositoryUrl :: String
-minioRepositoryUrl = "https://charts.min.io/"
-
-minioChartRef :: String
-minioChartRef = "minio/minio"
-
--- Sprint 7.12: MinIO is a shared platform component, so its chart version
--- comes from the single 'ContainerImage.minioChartVersion' SSoT.
-minioChartVersion :: String
-minioChartVersion = ContainerImage.minioChartVersion
-
 minioServiceName :: String
 minioServiceName = "minio"
 
@@ -543,11 +529,30 @@ data CustomImageBuildPlan = CustomImageBuildPlan
 minioPersistentVolume :: String
 minioPersistentVolume = "prodbox-minio-pv-0"
 
+-- Sprint 4.31: MinIO is now a single-replica StatefulSet, so its PVC is the
+-- `data` volumeClaimTemplate claim `data-minio-0` (the StatefulSet adopts the
+-- prebound PV the reconciler creates at `.data/prodbox/minio/0`).
 minioPersistentClaim :: String
-minioPersistentClaim = "minio"
+minioPersistentClaim = "data-minio-0"
 
 minioStorageSize :: String
 minioStorageSize = "200Gi"
+
+-- Sprint 4.31: the in-cluster Vault durable PV joins the unified
+-- retained-storage reconciler at `.data/vault/vault/0`, replacing the
+-- hand-applied PV from the 3.17 live bring-up. The Vault StatefulSet's `data`
+-- volumeClaimTemplate adopts the prebound `data-vault-0` PVC.
+vaultStorageNamespace :: String
+vaultStorageNamespace = "vault"
+
+vaultPersistentVolume :: String
+vaultPersistentVolume = "prodbox-vault-pv-0"
+
+vaultPersistentClaim :: String
+vaultPersistentClaim = "data-vault-0"
+
+vaultStorageSize :: String
+vaultStorageSize = "1Gi"
 
 managedNamespaces :: [String]
 managedNamespaces =
@@ -817,6 +822,7 @@ applyNativeInstallPlan mode repoRoot settings withEdge (machineId, prodboxId, la
       , deleteNonManualStorageClasses repoRoot
       , ensureProdboxIdentityConfigMap repoRoot machineId prodboxId labelValue
       , ensureRetainedLocalStorage repoRoot settings prodboxId labelValue
+      , ensureVaultRuntime repoRoot
       , ensureMinioRuntime repoRoot SubstrateHomeLocal MinioBootstrapPublic
       , ensureHarborRegistryStorageBackend repoRoot
       , ensureHarborRegistryRuntime repoRoot SubstrateHomeLocal
@@ -1457,73 +1463,75 @@ deleteNonManualStorageClasses repoRoot = do
                 | ref <- refs
                 ]
 
+-- | Sprint 4.31: reconcile every always-on retained PV under the unified
+-- `.data/<namespace>/<StatefulSet>/<ordinal>` scheme — MinIO (`.data/prodbox/minio/0`,
+-- chowned to its `1000:1000` runtime user) and Vault (`.data/vault/vault/0`,
+-- chowned to its `100:100` runtime user) — with no per-host machine-id prefix.
+-- Each host directory is created and chowned, any Released/Failed PV is reset so
+-- it can rebind, and the deterministic StorageClass + PV + prebound PVC for both
+-- workloads are applied in one manifest. The MinIO and Vault StatefulSets adopt
+-- their prebound PVCs. Per-chart retained PVs (the Patroni cluster, `vscode`) are
+-- created at chart-deploy time through the same `storageBinding` scheme in
+-- 'Prodbox.Lib.ChartPlatform'.
 ensureRetainedLocalStorage :: FilePath -> ValidatedSettings -> String -> String -> IO ExitCode
 ensureRetainedLocalStorage repoRoot settings prodboxId labelValue = do
   nodeNameResult <- resolveSingleNodeHostname repoRoot
   case nodeNameResult of
     Left err -> failWith err
     Right nodeName -> do
-      let hostPath = resolvedManualPvHostRoot settings </> prodboxId </> minioPersistentVolume
-      hostPathExit <- ensureHostStoragePath repoRoot hostPath
-      case hostPathExit of
-        ExitFailure _ -> pure hostPathExit
-        ExitSuccess -> do
-          pvPhaseResult <-
-            captureKubectl
-              repoRoot
-              ["get", "pv", minioPersistentVolume, "-o", "jsonpath={.status.phase}", "--ignore-not-found=true"]
-          case pvPhaseResult of
-            Left err -> failWith err
-            Right pvPhaseOutput -> do
-              let existingPhase = trimWhitespace (processStdout pvPhaseOutput)
-              resetExit <-
-                if existingPhase `elem` ["Released", "Failed"]
-                  then
-                    runCommand
-                      Subprocess
-                        { subprocessPath = "kubectl"
-                        , subprocessArguments =
-                            ["delete", "pv", minioPersistentVolume, "--ignore-not-found=true", "--wait=true"]
-                        , subprocessEnvironment = Nothing
-                        , subprocessWorkingDirectory = Just repoRoot
-                        }
-                  else pure ExitSuccess
-              case resetExit of
-                ExitFailure _ -> pure resetExit
-                ExitSuccess -> do
-                  pvcPhaseResult <-
-                    captureKubectl
-                      repoRoot
-                      [ "get"
-                      , "pvc"
-                      , minioPersistentClaim
-                      , "-n"
-                      , minioNamespace
-                      , "-o"
-                      , "jsonpath={.status.phase}"
-                      ]
-                  case pvcPhaseResult of
-                    Left err -> failWith err
-                    Right pvcPhaseOutput -> do
-                      let pvcAlreadyBound =
-                            processExitCode pvcPhaseOutput == ExitSuccess
-                              && trimWhitespace (processStdout pvcPhaseOutput) == "Bound"
-                          manifestItems =
-                            if pvcAlreadyBound
-                              then take 2 (storageManifestItems hostPath nodeName prodboxId labelValue)
-                              else storageManifestItems hostPath nodeName prodboxId labelValue
-                      withTemporaryJsonManifest "prodbox-storage" manifestItems $ \manifestPath -> do
-                        applyResult <- captureKubectl repoRoot ["apply", "-f", manifestPath]
-                        case applyResult of
-                          Left err -> failWith err
-                          Right applyOutput ->
-                            case processExitCode applyOutput of
-                              ExitFailure _ ->
-                                failWith
-                                  ( "Failed to ensure retained local storage resources: "
-                                      ++ outputDetail applyOutput
-                                  )
-                              ExitSuccess -> pure ExitSuccess
+      let root = resolvedManualPvHostRoot settings
+          minioHostPath = root </> minioNamespace </> "minio" </> "0"
+          vaultHostPath = root </> vaultStorageNamespace </> "vault" </> "0"
+      runSequentially
+        [ ensureHostStoragePath repoRoot minioHostPath "1000:1000"
+        , ensureHostStoragePath repoRoot vaultHostPath "100:100"
+        , resetReleasedPersistentVolume repoRoot minioPersistentVolume
+        , resetReleasedPersistentVolume repoRoot vaultPersistentVolume
+        , applyRetainedStorageManifest
+            repoRoot
+            (storageManifestItems minioHostPath vaultHostPath nodeName prodboxId labelValue)
+        ]
+
+-- | Delete a retained PV only when it is stuck @Released@/@Failed@ (e.g. after a
+-- PVC delete left the @Retain@ PV behind) so the next apply can recreate it and
+-- rebind. A @Bound@ or absent PV is left untouched.
+resetReleasedPersistentVolume :: FilePath -> String -> IO ExitCode
+resetReleasedPersistentVolume repoRoot pvName = do
+  pvPhaseResult <-
+    captureKubectl
+      repoRoot
+      ["get", "pv", pvName, "-o", "jsonpath={.status.phase}", "--ignore-not-found=true"]
+  case pvPhaseResult of
+    Left err -> failWith err
+    Right pvPhaseOutput ->
+      if trimWhitespace (processStdout pvPhaseOutput) `elem` ["Released", "Failed"]
+        then
+          runCommand
+            Subprocess
+              { subprocessPath = "kubectl"
+              , subprocessArguments =
+                  ["delete", "pv", pvName, "--ignore-not-found=true", "--wait=true"]
+              , subprocessEnvironment = Nothing
+              , subprocessWorkingDirectory = Just repoRoot
+              }
+        else pure ExitSuccess
+
+-- | Apply the retained StorageClass + PV/PVC manifest set. @kubectl apply@ is
+-- idempotent: re-applying an already-bound PVC with an identical spec is a no-op.
+applyRetainedStorageManifest :: FilePath -> [Value] -> IO ExitCode
+applyRetainedStorageManifest repoRoot manifestItems =
+  withTemporaryJsonManifest "prodbox-storage" manifestItems $ \manifestPath -> do
+    applyResult <- captureKubectl repoRoot ["apply", "-f", manifestPath]
+    case applyResult of
+      Left err -> failWith err
+      Right applyOutput ->
+        case processExitCode applyOutput of
+          ExitFailure _ ->
+            failWith
+              ( "Failed to ensure retained local storage resources: "
+                  ++ outputDetail applyOutput
+              )
+          ExitSuccess -> pure ExitSuccess
 
 -- | Sprint 3.17: deploy the in-cluster Vault platform component from the local
 -- @charts/vault@ chart — a single-replica StatefulSet on a durable PV. Vault
@@ -1547,117 +1555,75 @@ ensureVaultRuntime repoRoot =
     , "--create-namespace"
     ]
 
+-- | Sprint 4.31: deploy MinIO from the prodbox-owned @charts/minio@ chart — a
+-- single-replica StatefulSet on the unified retained-storage scheme — replacing
+-- the bitnami standalone Deployment. The reconcile installs it twice (public
+-- bootstrap image, then the Harbor-mirrored steady-state image), each a
+-- @helm upgrade --install@ that only flips the image values; the StatefulSet
+-- rolls the pod and adopts the prebound @data-minio-0@ PVC either way.
 ensureMinioRuntime :: FilePath -> Substrate -> MinioImageSource -> IO ExitCode
-ensureMinioRuntime repoRoot substrate imageSource = do
-  repoAddResult <-
-    captureToolOutput repoRoot "helm" ["repo", "add", minioRepositoryName, minioRepositoryUrl]
-  case repoAddResult of
-    Left err -> failWith err
-    Right repoAddOutput ->
-      case processExitCode repoAddOutput of
-        ExitFailure _
-          | "already exists" `isInfixOf` map toLower (outputDetail repoAddOutput) -> continue
-          | otherwise -> failWith ("Failed to add MinIO helm repo: " ++ outputDetail repoAddOutput)
-        ExitSuccess -> continue
- where
-  continue =
-    runSequentially
-      [ runHelmCommandWithRetries repoRoot ["repo", "update"]
-      , runHelmCommandWithRetries
-          repoRoot
-          ( [ "upgrade"
-            , "--install"
-            , minioReleaseName
-            , minioChartRef
-            , "--version"
-            , minioChartVersion
-            , "--namespace"
-            , minioNamespace
-            , "--create-namespace"
-            ]
-              ++ renderMinioChartArgs substrate imageSource
-          )
-      , runCommand
-          Subprocess
-            { subprocessPath = "kubectl"
-            , subprocessArguments =
-                [ "wait"
-                , "--for=condition=Available"
-                , "deployment/minio"
-                , "-n"
-                , minioNamespace
-                , "--timeout=300s"
-                ]
-            , subprocessEnvironment = Nothing
-            , subprocessWorkingDirectory = Just repoRoot
-            }
-      ]
+ensureMinioRuntime repoRoot substrate imageSource =
+  runSequentially
+    [ runHelmCommandWithRetries
+        repoRoot
+        ( [ "upgrade"
+          , "--install"
+          , minioReleaseName
+          , repoRoot ++ "/charts/minio"
+          , "--namespace"
+          , minioNamespace
+          , "--create-namespace"
+          ]
+            ++ renderMinioChartArgs substrate imageSource
+        )
+    , runCommand
+        Subprocess
+          { subprocessPath = "kubectl"
+          , subprocessArguments =
+              [ "rollout"
+              , "status"
+              , "statefulset/minio"
+              , "-n"
+              , minioNamespace
+              , "--timeout=300s"
+              ]
+          , subprocessEnvironment = Nothing
+          , subprocessWorkingDirectory = Just repoRoot
+          }
+    ]
 
--- | Pure render of @--set@ flag pairs for the MinIO chart install,
--- substrate-aware per Sprint @7.5.c.i@:
---
---   * 'SubstrateHomeLocal' binds to the operator-host @hostPath@ PVC
---     pre-created by 'ensureRetainedLocalStorage'
---     (@persistence.existingClaim=minio@).
---   * 'SubstrateAws' lets the chart dynamically provision an EBS
---     volume against the EKS default @gp2@ storage class
---     (@persistence.storageClass=gp2@), with no @existingClaim@. The
---     volume size is bounded at 20 GiB to keep test-substrate EBS
---     cost predictable; the home substrate's 200 GiB size argument
---     was hostPath-backed and effectively ignored by the chart.
---
--- Substrate-agnostic core (chart mode, replicas, service type,
--- image refs, resource requests) is shared. The function is total:
--- the @[String]@ output is a flat alternating @["--set", "k=v", …]@
--- list ready to splice into a @helm upgrade --install@ invocation.
+-- | Pure render of @--set@ flag pairs for the prodbox-owned @charts/minio@
+-- install. MinIO always uses the PUBLIC (bootstrap-exception) image regardless of
+-- the requested image source, so @_imageSource@ is ignored: MinIO is Harbor's own
+-- S3 storage backend, so it cannot source its image from Harbor (a circular
+-- dependency). The bitnami Deployment masked this because a Deployment surges a
+-- new pod before terminating the old one (keeping Harbor's backend alive across an
+-- image switch); a single-replica StatefulSet does not surge, so a Harbor-sourced
+-- MinIO image deadlocks (MinIO down → Harbor 500 → MinIO @ImagePullBackOff@). Only
+-- the substrate-specific storage class + size vary; everything else is fixed in the
+-- chart's @values.yaml@. The @[String]@ output is a flat alternating
+-- @["--set", "k=v", …]@ list ready to splice into a @helm upgrade --install@.
 renderMinioChartArgs :: Substrate -> MinioImageSource -> [String]
-renderMinioChartArgs substrate imageSource =
-  let (minioImage, minioMcImage) = minioChartImages imageSource
-      coreArgs =
-        [ "--set"
-        , "mode=standalone"
-        , "--set"
-        , "replicas=1"
-        , "--set"
-        , "persistence.enabled=true"
-        , "--set"
-        , "image.repository=" ++ renderImageRefWithoutTag minioImage
-        , "--set"
-        , "image.tag=" ++ ContainerImage.imageTag minioImage
-        , "--set"
-        , "mcImage.repository=" ++ renderImageRefWithoutTag minioMcImage
-        , "--set"
-        , "mcImage.tag=" ++ ContainerImage.imageTag minioMcImage
-        , "--set"
-        , "service.type=ClusterIP"
-        , "--set"
-        , "consoleService.type=ClusterIP"
-        , "--set"
-        , "resources.requests.memory=512Mi"
-        , "--set"
-        , "resources.requests.cpu=100m"
-        , "--set"
-        , "resources.limits.memory=2Gi"
-        ]
-   in coreArgs ++ minioSubstratePersistenceArgs substrate
+renderMinioChartArgs substrate _imageSource =
+  let (minioImage, _minioMcImage) = minioChartImages MinioBootstrapPublic
+   in [ "--set"
+      , "image.repository=" ++ renderImageRefWithoutTag minioImage
+      , "--set"
+      , "image.tag=" ++ ContainerImage.imageTag minioImage
+      ]
+        ++ minioSubstratePersistenceArgs substrate
 
--- | Substrate-specific MinIO persistence args. See
--- 'renderMinioChartArgs' for the rationale.
+-- | Substrate-specific MinIO storage args for the @data@ volumeClaimTemplate:
+-- the retained @manual@ StorageClass on home (the prebound PV at
+-- @.data/prodbox/minio/0@), or the dynamic EKS @gp2@ class on AWS (bounded at
+-- 20 GiB to keep test-substrate EBS cost predictable).
 minioSubstratePersistenceArgs :: Substrate -> [String]
 minioSubstratePersistenceArgs substrate =
   case substrate of
     SubstrateHomeLocal ->
-      [ "--set"
-      , "persistence.existingClaim=minio"
-      , "--set"
-      , "persistence.size=200Gi"
-      ]
+      ["--set", "storage.className=manual", "--set", "storage.size=200Gi"]
     SubstrateAws ->
-      [ "--set"
-      , "persistence.storageClass=gp2"
-      , "--set"
-      , "persistence.size=20Gi"
-      ]
+      ["--set", "storage.className=gp2", "--set", "storage.size=20Gi"]
 
 minioChartImages :: MinioImageSource -> (ContainerImage.ImageRef, ContainerImage.ImageRef)
 minioChartImages imageSource =
@@ -4924,8 +4890,11 @@ resolveSingleNodeHostname repoRoot = do
                   ++ " nodes"
               )
 
-ensureHostStoragePath :: FilePath -> FilePath -> IO ExitCode
-ensureHostStoragePath repoRoot hostPath =
+-- | Create a retained PV host directory and chown it to the owning workload's
+-- runtime @uid:gid@ (Sprint 4.31: MinIO @1000:1000@, Vault @100:100@) so the
+-- non-root container can write to its hostPath-backed volume.
+ensureHostStoragePath :: FilePath -> FilePath -> String -> IO ExitCode
+ensureHostStoragePath repoRoot hostPath owner =
   runSequentially
     [ runCommand
         Subprocess
@@ -4937,7 +4906,7 @@ ensureHostStoragePath repoRoot hostPath =
     , runCommand
         Subprocess
           { subprocessPath = "sudo"
-          , subprocessArguments = ["chown", "-R", "1000:1000", hostPath]
+          , subprocessArguments = ["chown", "-R", owner, hostPath]
           , subprocessEnvironment = Nothing
           , subprocessWorkingDirectory = Just repoRoot
           }
@@ -4950,9 +4919,34 @@ ensureHostStoragePath repoRoot hostPath =
           }
     ]
 
-storageManifestItems :: FilePath -> String -> String -> String -> [Value]
-storageManifestItems hostPath nodeName prodboxId labelValue =
-  [ object
+-- | Sprint 4.31: the retained StorageClass plus the deterministic PV + prebound
+-- PVC for every always-on retained StatefulSet (MinIO, Vault), all on the
+-- unified @.data/<namespace>/<StatefulSet>/<ordinal>@ scheme.
+storageManifestItems :: FilePath -> FilePath -> String -> String -> String -> [Value]
+storageManifestItems minioHostPath vaultHostPath nodeName prodboxId labelValue =
+  [ storageClassItem
+  , retainedPersistentVolume
+      minioNamespace
+      minioPersistentVolume
+      minioPersistentClaim
+      minioStorageSize
+      minioHostPath
+      nodeName
+      prodboxId
+      labelValue
+  , retainedPersistentVolume
+      vaultStorageNamespace
+      vaultPersistentVolume
+      vaultPersistentClaim
+      vaultStorageSize
+      vaultHostPath
+      nodeName
+      prodboxId
+      labelValue
+  ]
+ where
+  storageClassItem =
+    object
       [ "apiVersion" .= ("storage.k8s.io/v1" :: String)
       , "kind" .= ("StorageClass" :: String)
       , "metadata"
@@ -4968,75 +4962,64 @@ storageManifestItems hostPath nodeName prodboxId labelValue =
       , "reclaimPolicy" .= ("Retain" :: String)
       , "allowVolumeExpansion" .= True
       ]
-  , object
-      [ "apiVersion" .= ("v1" :: String)
-      , "kind" .= ("PersistentVolume" :: String)
-      , "metadata"
-          .= object
-            [ "name" .= minioPersistentVolume
-            , "annotations"
-                .= object [Key.fromString prodboxAnnotationKey .= prodboxId]
-            , "labels"
-                .= object [Key.fromString prodboxLabelKey .= labelValue]
-            ]
-      , "spec"
-          .= object
-            [ "capacity" .= object ["storage" .= minioStorageSize]
-            , "volumeMode" .= ("Filesystem" :: String)
-            , "accessModes" .= (["ReadWriteOnce" :: String] :: [String])
-            , "persistentVolumeReclaimPolicy" .= ("Retain" :: String)
-            , "storageClassName" .= manualStorageClass
-            , "claimRef"
-                .= object
-                  [ "namespace" .= minioNamespace
-                  , "name" .= minioPersistentClaim
-                  ]
-            , "hostPath"
-                .= object
-                  [ "path" .= hostPath
-                  , "type" .= ("DirectoryOrCreate" :: String)
-                  ]
-            , "nodeAffinity"
-                .= object
-                  [ "required"
-                      .= object
-                        [ "nodeSelectorTerms"
-                            .= [ object
-                                   [ "matchExpressions"
-                                       .= [ object
-                                              [ "key" .= ("kubernetes.io/hostname" :: String)
-                                              , "operator" .= ("In" :: String)
-                                              , "values" .= ([nodeName] :: [String])
-                                              ]
-                                          ]
-                                   ]
-                               ]
-                        ]
-                  ]
-            ]
-      ]
-  , object
-      [ "apiVersion" .= ("v1" :: String)
-      , "kind" .= ("PersistentVolumeClaim" :: String)
-      , "metadata"
-          .= object
-            [ "name" .= minioPersistentClaim
-            , "namespace" .= minioNamespace
-            , "annotations"
-                .= object [Key.fromString prodboxAnnotationKey .= prodboxId]
-            , "labels"
-                .= object [Key.fromString prodboxLabelKey .= labelValue]
-            ]
-      , "spec"
-          .= object
-            [ "accessModes" .= (["ReadWriteOnce" :: String] :: [String])
-            , "volumeMode" .= ("Filesystem" :: String)
-            , "storageClassName" .= manualStorageClass
-            , "volumeName" .= minioPersistentVolume
-            , "resources" .= object ["requests" .= object ["storage" .= minioStorageSize]]
-            ]
-      ]
-  ]
+
+-- | The deterministic @Retain@ PV (single-node affinity) for one retained
+-- StatefulSet ordinal, @claimRef@-bound to the StatefulSet's
+-- @data-<sts>-<ordinal>@ PVC. The reconciler creates only the PV — it is
+-- cluster-scoped, so it needs no workload namespace to exist yet (the @vault@
+-- namespace, for one, is created later by 'ensureVaultRuntime'). Each
+-- StatefulSet's @data@ volumeClaimTemplate creates the matching PVC, which the
+-- @claimRef@ plus @WaitForFirstConsumer@ binds to this PV on first pod schedule.
+retainedPersistentVolume
+  :: String -> String -> String -> String -> FilePath -> String -> String -> String -> Value
+retainedPersistentVolume namespace pvName pvcName size hostPath nodeName prodboxId labelValue =
+  object
+    [ "apiVersion" .= ("v1" :: String)
+    , "kind" .= ("PersistentVolume" :: String)
+    , "metadata"
+        .= object
+          [ "name" .= pvName
+          , "annotations"
+              .= object [Key.fromString prodboxAnnotationKey .= prodboxId]
+          , "labels"
+              .= object [Key.fromString prodboxLabelKey .= labelValue]
+          ]
+    , "spec"
+        .= object
+          [ "capacity" .= object ["storage" .= size]
+          , "volumeMode" .= ("Filesystem" :: String)
+          , "accessModes" .= (["ReadWriteOnce" :: String] :: [String])
+          , "persistentVolumeReclaimPolicy" .= ("Retain" :: String)
+          , "storageClassName" .= manualStorageClass
+          , "claimRef"
+              .= object
+                [ "namespace" .= namespace
+                , "name" .= pvcName
+                ]
+          , "hostPath"
+              .= object
+                [ "path" .= hostPath
+                , "type" .= ("DirectoryOrCreate" :: String)
+                ]
+          , "nodeAffinity"
+              .= object
+                [ "required"
+                    .= object
+                      [ "nodeSelectorTerms"
+                          .= [ object
+                                 [ "matchExpressions"
+                                     .= [ object
+                                            [ "key" .= ("kubernetes.io/hostname" :: String)
+                                            , "operator" .= ("In" :: String)
+                                            , "values" .= ([nodeName] :: [String])
+                                            ]
+                                        ]
+                                 ]
+                             ]
+                      ]
+                ]
+          ]
+    ]
 
 ensureProdboxIdentityConfigMap :: FilePath -> String -> String -> String -> IO ExitCode
 ensureProdboxIdentityConfigMap repoRoot machineId prodboxId labelValue =

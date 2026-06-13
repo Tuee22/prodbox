@@ -345,7 +345,7 @@ subprocess environment, not copied into stack-local config files.
 The prerequisite proof for that backend is a bounded `pulumi login ... --non-interactive` against
 the repo-backed MinIO backend after the Haskell helper confirms bucket existence and listability.
 If the running MinIO pod still points at a deleted retained host-path mount, the helper recreates
-the declared host path, reapplies the ownership and mode contract, restarts `deployment/minio`,
+the declared host path, reapplies the ownership and mode contract, restarts `statefulset/minio`,
 and then reruns the login proof before stack operations continue.
 
 On aggregate or cluster-backed suite paths, the public test runner may satisfy the local backend

@@ -675,7 +675,7 @@ The gateway daemon is the sole reader and writer of the master seed stored at th
 | MinIO IAM principal | `prodbox-gateway` |
 | Policy actions on `prodbox/*` | `s3:GetObject`, `s3:PutObject`, `s3:ListBucket` |
 | Other principals (including MinIO root) | not used to read or write `prodbox/*` |
-| Persistence | MinIO PV under `.data/minio/...` per [Retained Storage Lifecycle Doctrine](./storage_lifecycle_doctrine.md) §1 |
+| Persistence | MinIO PV under `.data/prodbox/minio/0` per [Retained Storage Lifecycle Doctrine](./storage_lifecycle_doctrine.md) §1 |
 
 The per-run Pulumi-state bucket (`prodbox-test-pulumi-backends`) is unaffected by this
 IAM addition — it continues to use MinIO root credentials. The `prodbox` bucket and

@@ -1,0 +1,87 @@
+{{- /*
+Sprint 4.31: the in-cluster MinIO server. A single-replica StatefulSet with a
+durable PVC (`data-minio-0`) on the retained `manual` StorageClass at
+`.data/prodbox/minio/0`, replacing the bitnami standalone Deployment so every
+retained PVC comes from a StatefulSet `volumeClaimTemplate`. The data volume
+mounts at `/export` (the path the deleted-export-mount repair and the Harbor /
+Pulumi backends expect). MinIO runs non-root as uid 1000 (the upstream image
+user); the reconciler chowns the host PV directory to 1000:1000.
+*/ -}}
+apiVersion: apps/v1
+kind: StatefulSet
+metadata:
+  name: minio
+  labels:
+    {{- include "minio.labels" . | nindent 4 }}
+spec:
+  serviceName: minio
+  replicas: 1
+  selector:
+    matchLabels:
+      {{- include "minio.selectorLabels" . | nindent 6 }}
+  template:
+    metadata:
+      labels:
+        {{- include "minio.labels" . | nindent 8 }}
+    spec:
+      securityContext:
+        runAsUser: 1000
+        runAsGroup: 1000
+        fsGroup: 1000
+      containers:
+        - name: minio
+          image: "{{ .Values.image.repository }}:{{ .Values.image.tag }}"
+          imagePullPolicy: {{ .Values.image.pullPolicy }}
+          command:
+            - minio
+            - server
+            - /export
+            - --console-address
+            - ":{{ .Values.ports.console }}"
+          env:
+            - name: MINIO_ROOT_USER
+              valueFrom:
+                secretKeyRef:
+                  name: minio
+                  key: rootUser
+            - name: MINIO_ROOT_PASSWORD
+              valueFrom:
+                secretKeyRef:
+                  name: minio
+                  key: rootPassword
+          ports:
+            - name: api
+              containerPort: {{ .Values.ports.api }}
+            - name: console
+              containerPort: {{ .Values.ports.console }}
+          readinessProbe:
+            httpGet:
+              path: /minio/health/ready
+              port: api
+              scheme: HTTP
+            initialDelaySeconds: 5
+            periodSeconds: 10
+          livenessProbe:
+            httpGet:
+              path: /minio/health/live
+              port: api
+              scheme: HTTP
+            initialDelaySeconds: 15
+            periodSeconds: 20
+          resources:
+            {{- toYaml .Values.resources | nindent 12 }}
+          volumeMounts:
+            - name: data
+              mountPath: /export
+  volumeClaimTemplates:
+    - metadata:
+        name: data
+        labels:
+          {{- include "minio.labels" . | nindent 10 }}
+      spec:
+        accessModes:
+          - ReadWriteOnce
+        storageClassName: {{ .Values.storage.className }}
+        resources:
+          requests:
+            storage: {{ .Values.storage.size }}

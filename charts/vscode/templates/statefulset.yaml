@@ -1,10 +1,18 @@
+{{- /*
+Sprint 4.31: vscode as a single-replica StatefulSet. The durable PVC
+(`data-vscode-0`, from the `data` volumeClaimTemplate) is pre-created and
+PV-prebound by the chart-storage reconciler at `.data/vscode/vscode/0`, and the
+StatefulSet adopts it. Replaces the prior Deployment + standalone
+`vscode-data-0` PVC so every retained PVC comes from a StatefulSet.
+*/ -}}
 apiVersion: apps/v1
-kind: Deployment
+kind: StatefulSet
 metadata:
   name: vscode
   labels:
     {{- include "vscode.labels" . | nindent 4 }}
 spec:
+  serviceName: vscode
   replicas: {{ .Values.replicaCount }}
   selector:
     matchLabels:
@@ -43,7 +51,7 @@ spec:
             - name: http
               containerPort: 8080
           volumeMounts:
-            - name: workspace
+            - name: data
               mountPath: /workspace
           readinessProbe:
             httpGet:
@@ -57,7 +65,15 @@ spec:
               port: http
             initialDelaySeconds: 30
             periodSeconds: 20
-      volumes:
-        - name: workspace
-          persistentVolumeClaim:
-            claimName: {{ .Values.vscode.existingClaim | quote }}
+  volumeClaimTemplates:
+    - metadata:
+        name: data
+        labels:
+          {{- include "vscode.labels" . | nindent 10 }}
+      spec:
+        accessModes:
+          - ReadWriteOnce
+        storageClassName: {{ .Values.storage.className }}
+        resources:
+          requests:
+            storage: {{ .Values.storage.size }}

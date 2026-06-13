@@ -33,5 +33,12 @@ oidc:
 
 vscode:
   image: 127.0.0.1:30080/prodbox/code-server-mirror:4.98.2
-  existingClaim: vscode-data-0
   basePath: /vscode
+
+storage:
+  # The `data` volumeClaimTemplate's class + size. Sprint 4.31:
+  # Prodbox.Lib.ChartPlatform.valuesForVscode overrides storage.className to the
+  # active substrate's class (manual on home, gp2 on AWS); the prebound PV the
+  # StatefulSet adopts lives at `.data/vscode/vscode/0`.
+  className: manual
+  size: 50Gi

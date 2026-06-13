@@ -72,13 +72,14 @@ storageBinding manualPvRoot namespace releaseName spec =
           )
     , chartStorageBindingPersistentVolumeClaimName = chartStorageSpecPersistentVolumeClaimName spec
     , chartStorageBindingStorageSize = chartStorageSpecStorageSize spec
-    , chartStorageBindingHostPath =
+    , -- Sprint 4.31: the unified `.data/<namespace>/<StatefulSet>/<ordinal>`
+      -- host-path scheme. No per-host machine-id prefix and no `<release>` /
+      -- `<claim>` segment — the PVC↔PV identity is carried by `claimRef`.
+      chartStorageBindingHostPath =
         manualPvRoot
           </> namespace
-          </> releaseName
           </> chartStorageSpecStatefulSetName spec
           </> show (chartStorageSpecOrdinal spec)
-          </> chartStorageSpecClaimSuffix spec
     , chartStorageBindingOrdinal = chartStorageSpecOrdinal spec
     , chartStorageBindingClaimSuffix = chartStorageSpecClaimSuffix spec
     }

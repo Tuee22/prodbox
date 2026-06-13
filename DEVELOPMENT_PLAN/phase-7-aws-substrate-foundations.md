@@ -342,7 +342,7 @@ or operational `aws.*` credentials behind.
 - `src/Prodbox/EffectInterpreter.hs` now checks bounded `pulumi login ... --non-interactive`
   against the canonical repo-backed MinIO backend during deferred prerequisites, and the shared
   `src/Prodbox/Infra/MinioBackend.hs` helper recreates a deleted MinIO export host path plus
-  restarts `deployment/minio` before retrying that proof, so the aggregate IAM run no longer
+  restarts `statefulset/minio` before retrying that proof, so the aggregate IAM run no longer
   depends on stale ambient Pulumi host-login state or a detached retained-storage mount.
 - The aggregate IAM proof is sequenced before downstream AWS-backed suites through the named
   prerequisite DAG rather than through ambient host Pulumi login state.

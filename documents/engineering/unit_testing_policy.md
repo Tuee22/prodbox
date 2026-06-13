@@ -118,7 +118,7 @@ state.
 When a Phase `1/2` prerequisite owns a deterministic local backend proof, it may perform a
 visible, bounded repair of repository-managed state before re-running the same readiness check. The
 canonical current example is the MinIO-backed Pulumi prerequisite recreating a deleted retained
-export host path and restarting `deployment/minio` before retrying backend login.
+export host path and restarting `statefulset/minio` before retrying backend login.
 
 If Phase 1 fails, Phase 2 is not started. This is an all-or-nothing gate, not a skip.
 

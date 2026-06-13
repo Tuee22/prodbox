@@ -55,7 +55,12 @@ The native Haskell lifecycle reconciles Harbor state in this order:
 11. Harbor-backed platform-runtime install for MetalLB, Envoy Gateway, cert-manager, and the
    Percona PostgreSQL operator
 12. Optional Route 53 bootstrap A-record reconcile
-13. MinIO steady-state reconcile onto Harbor-backed image refs
+13. MinIO steady-state re-reconcile, kept on the **public** `quay.io/minio/minio` image (never
+    the Harbor mirror): MinIO is Harbor's own storage backend, so it cannot source its image from
+    Harbor — a circular dependency a non-surging single-replica StatefulSet cannot break (a
+    Harbor-sourced MinIO image would deadlock: MinIO down → Harbor 500 → MinIO `ImagePullBackOff`).
+    The earlier bitnami Deployment masked this by surging a replacement pod before terminating the
+    running one; the StatefulSet does not surge (Sprint 4.31).
 
 The critical split is:
 

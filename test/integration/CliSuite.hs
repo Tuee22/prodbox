@@ -263,7 +263,7 @@ integrationCliSuite = do
         -- ensureChartStorage's storage manifest and the Patroni
         -- binding apply, so the test asserts content rather than
         -- specific apply ordinals.
-        appliedManifest <- readAppliedManifestContaining (tmpDir </> "fake-chart-state") "vscode-data-0"
+        appliedManifest <- readAppliedManifestContaining (tmpDir </> "fake-chart-state") "data-vscode-0"
         appliedManifest `shouldContain` "PersistentVolumeClaim"
         patroniManifest <-
           readAppliedManifestContaining
@@ -356,7 +356,7 @@ integrationCliSuite = do
           `shouldContain` "delete|pvc|--selector|postgres-operator.crunchydata.com/cluster=prodbox-vscode-pg,postgres-operator.crunchydata.com/data=postgres|--namespace|vscode|--ignore-not-found=true|--wait=true"
         deleteRecord
           `shouldContain` "delete|pv|prodbox-chart-vscode-keycloak-postgres-prodbox-vscode-pg-0-data"
-        deleteRecord `shouldContain` "delete|pvc|vscode-data-0|--namespace|vscode"
+        deleteRecord `shouldContain` "delete|pvc|data-vscode-0|--namespace|vscode"
         deleteRecord `shouldContain` "delete|pv|prodbox-chart-vscode-vscode-vscode-0-data"
         deleteRecord `shouldContain` "delete|namespace|vscode"
 
@@ -365,9 +365,12 @@ integrationCliSuite = do
         binary <- resolveBinaryPath
         writeRepoMarkers tmpDir
         writeFile (tmpDir </> "prodbox-config.dhall") validConfig
+        -- Sprint 4.31: the retained ordinal-0 host data lives at the unified
+        -- `.data/<namespace>/<StatefulSet>/<ordinal>` path (no `<release>` /
+        -- `<claim>` segment), so the restore-staging detects it here.
         createDirectoryIfMissing
           True
-          (tmpDir </> ".data" </> "vscode" </> "keycloak-postgres" </> "prodbox-vscode-pg" </> "0" </> "data")
+          (tmpDir </> ".data" </> "vscode" </> "prodbox-vscode-pg" </> "0")
         baseEnvVars <- fakeChartEnvironment tmpDir
         let envVars = ("PRODBOX_FAKE_PATRONI_STAGED_RESTORE", "true") : baseEnvVars
 
@@ -570,8 +573,13 @@ integrationCliSuite = do
         applyIdentity <- readFile (rke2StateDir </> "kubectl-apply-1.json")
         applyIdentity `shouldContain` "prodbox-identity"
         applyStorage <- readFile (rke2StateDir </> "kubectl-apply-2.json")
-        applyStorage `shouldContain` "PersistentVolumeClaim"
+        -- Sprint 4.31: retained storage is PV-only — the MinIO and Vault
+        -- StatefulSets create their own `data-<sts>-0` PVCs, which these
+        -- deterministic claimRef'd PVs bind. No PVC object in the manifest.
+        applyStorage `shouldNotContain` "PersistentVolumeClaim"
         applyStorage `shouldContain` "prodbox-minio-pv-0"
+        applyStorage `shouldContain` "prodbox-vault-pv-0"
+        applyStorage `shouldContain` "data-minio-0"
         applyHarborBootstrap <-
           readAppliedManifestContaining rke2StateDir harborRegistryStorageBootstrapJobName
         applyHarborBootstrap `shouldContain` harborRegistryStorageSecretName
@@ -594,12 +602,18 @@ integrationCliSuite = do
           `shouldContain` "http://keycloak.vscode.svc.cluster.local:8080/auth/realms/prodbox/protocol/openid-connect/token"
 
         helmRecord <- readFile (tmpDir </> "fake-rke2-state" </> "helm.txt")
-        helmRecord `shouldContain` "repo|add|minio|https://charts.min.io/"
-        helmRecord `shouldContain` "upgrade|--install|minio|minio/minio"
+        -- Sprint 4.31: MinIO + Vault are prodbox-owned StatefulSet charts. MinIO
+        -- always uses the PUBLIC image (it backs Harbor — never the Harbor
+        -- mirror), so there is no bitnami `minio` helm repo and the chart sets no
+        -- `mcImage`. Vault installs from `charts/vault`, spliced into reconcile.
+        helmRecord `shouldNotContain` "repo|add|minio|https://charts.min.io/"
+        helmRecord `shouldNotContain` "upgrade|--install|minio|minio/minio"
+        helmRecord `shouldContain` "/charts/minio|--namespace|prodbox|--create-namespace"
         helmRecord `shouldContain` "image.repository=quay.io/minio/minio"
-        helmRecord `shouldContain` "mcImage.repository=quay.io/minio/mc"
-        helmRecord `shouldContain` "image.repository=127.0.0.1:30080/prodbox/minio-mirror"
-        helmRecord `shouldContain` "mcImage.repository=127.0.0.1:30080/prodbox/minio-mc-mirror"
+        helmRecord `shouldContain` "--set|storage.className=manual"
+        helmRecord `shouldNotContain` "image.repository=127.0.0.1:30080/prodbox/minio-mirror"
+        helmRecord `shouldNotContain` "mcImage.repository"
+        helmRecord `shouldContain` "/charts/vault|--namespace|vault|--create-namespace"
         helmRecord `shouldContain` "repo|add|harbor|https://helm.goharbor.io"
         helmRecord `shouldContain` "upgrade|--install|harbor|harbor/harbor"
         helmRecord `shouldContain` "persistence.imageChartStorage.type=s3"
@@ -619,7 +633,7 @@ integrationCliSuite = do
         helmRecord `shouldContain` "upgrade|--install|postgres-operator|percona/pg-operator"
         helmRecord `shouldNotContain` "uninstall|traefik|--namespace|traefik-system|--wait"
         helmRecord `shouldNotContain` "uninstall|postgres-operator|--namespace|postgres-operator|--wait"
-        findRecordLineIndex "upgrade|--install|minio|minio/minio" helmRecord
+        findRecordLineIndex "/charts/minio|--namespace|prodbox" helmRecord
           `shouldSatisfy` (< findRecordLineIndex "upgrade|--install|harbor|harbor/harbor" helmRecord)
 
         dockerRecord <- readFile (tmpDir </> "fake-rke2-state" </> "docker.txt")

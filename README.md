@@ -44,11 +44,15 @@ validation environments.
   defined there.
 - The supported configuration contract is described by
   [documents/engineering/config_doctrine.md](./documents/engineering/config_doctrine.md):
-  every `prodbox` binary instance — host CLI and in-cluster gateway daemon — takes its
-  configuration from exactly one Dhall file passed via `--config <path>`, decoded
-  in-process by the native Haskell `dhall` library. On the host that file is the
-  repository-root `prodbox-config.dhall`. In the cluster it is a mounted ConfigMap that
-  may import credentials from a sibling Secret-mounted Dhall fragment. `prodbox-config.json`,
+  the in-force cluster configuration is the source of truth, stored as a
+  Vault-Transit-enveloped object in MinIO. A filesystem `prodbox-config.dhall` is a
+  seed/propose input only — on first-ever bring-up it seeds the encrypted MinIO SSoT, and
+  thereafter supplying a file is a proposed update, not the live config. Each `prodbox`
+  binary instance reads the small unencrypted basics locally (cluster id, this cluster's
+  Vault address, seal mode, and for a child the parent reference it contacts to auto-unseal)
+  and fetches plus decrypts the in-force config from MinIO through Vault; in-cluster
+  consumers authenticate to Vault directly via Vault Kubernetes auth, with no
+  Secret-mounted plaintext Dhall credential fragments. `prodbox-config.json`,
   `prodbox config compile`, and `PRODBOX_*` environment-variable precedence are not part
   of the supported interface.
 - The supported Pulumi scope is limited to the AWS validation stacks under `pulumi/aws-eks/`,
@@ -79,17 +83,25 @@ validation environments.
   the WebSocket workload on `/ws`, Harbor on `/harbor`, and MinIO console on `/minio`.
 - The Haskell `prodbox gateway ...` command group and `charts deploy gateway` manage the separate
   distributed gateway daemon; they are not the Envoy Gateway public edge controller.
-- Vault is the scheduled fail-closed secrets / KMS / PKI backend of every prodbox-managed cluster.
-  As intended structure it runs in-cluster on a durable `.data/`-backed PV (preserved across cluster
-  wipes exactly like the MinIO PV), `prodbox-config.dhall` carries only typed `SecretRef` values
-  (never plaintext secrets), MinIO objects and Pulumi backend state become Vault-Transit envelopes,
-  and the TLS, Keycloak, Pulumi, and AWS-credential paths fail closed when Vault is sealed — a
-  sealed Vault reduces the cluster to an opaque durable-data pile that reveals no secrets until it is
-  unsealed. This extends (never replaces) the existing master-seed derivation and single-Dhall-config
-  model. The doctrine single source of truth is
-  [documents/engineering/vault_doctrine.md](./documents/engineering/vault_doctrine.md); the
-  per-surface adoption is scheduled (not yet shipped) and tracked in the 2026-06-11 Closure Status
-  entry of [DEVELOPMENT_PLAN/README.md](./DEVELOPMENT_PLAN/README.md).
+- Vault is the sole, finalized fail-closed secrets / KMS / PKI root of every prodbox-managed
+  cluster. Every secret, credential, key, and certificate the stack uses is a Vault object
+  (KV v2, Transit key, or PKI-issued cert); there is no second store and no plaintext fallback.
+  The master-seed HMAC derivation model is retired (not extended): there is no master seed, no
+  HMAC derivation, and no Secret-mounted Dhall credential fragments — every previously-derived
+  secret is a Vault KV object fetched via Vault Kubernetes auth. Vault runs in-cluster on a
+  durable `.data/`-backed PV (preserved across cluster wipes exactly like the MinIO PV) and is
+  initialized exactly once, then only unsealed on each rebuild. MinIO objects and Pulumi backend
+  state are Vault-Transit envelopes, and the TLS, Keycloak, Pulumi, and AWS-credential paths fail
+  closed when Vault is sealed — a sealed Vault bricks the cluster, reducing it to an opaque
+  durable-data pile that reveals no secrets until it is unsealed. Cluster federation forms a Vault
+  transit-seal trust tree: a root cluster (Shamir-sealed, operator-unsealed) and child clusters
+  that auto-unseal against their parent's Vault, with each parent holding custody of its children's
+  init keys. The doctrine single source of truth is
+  [documents/engineering/vault_doctrine.md](./documents/engineering/vault_doctrine.md), with the
+  federation trust tree governed by
+  [documents/engineering/cluster_federation_doctrine.md](./documents/engineering/cluster_federation_doctrine.md);
+  the per-surface adoption is scheduled (not yet shipped) and tracked in the 2026-06-14 Closure
+  Status entry of [DEVELOPMENT_PLAN/README.md](./DEVELOPMENT_PLAN/README.md).
 
 The development-plan target architecture centers the local public edge on:
 
@@ -277,10 +289,14 @@ What this does:
 ## Configuration
 
 All supported configuration is authored in Dhall and decoded in-process by the native
-Haskell `dhall` library. The host CLI loads the repository-root `prodbox-config.dhall`
-against the schema in `prodbox-config-types.dhall`; the in-cluster gateway daemon and
-workload Pods load a Dhall file mounted from a ConfigMap (with credentials imported from
-a sibling Secret). The complete sourcing, mount, and reload contract lives in
+Haskell `dhall` library. The in-force cluster configuration is the source of truth, held
+as a Vault-Transit-enveloped object in MinIO; the repository-root `prodbox-config.dhall`
+(validated against the schema in `prodbox-config-types.dhall`) is a seed/propose input
+only, never the live SSoT. Each binary reads the small unencrypted basics locally to reach
+and unseal Vault, then fetches and decrypts the in-force config through Vault; in-cluster
+consumers read their secrets directly from Vault via Vault Kubernetes auth, with no
+Secret-mounted credential fragments. The complete sourcing, seed/propose, and decryption
+contract lives in
 [documents/engineering/config_doctrine.md](./documents/engineering/config_doctrine.md).
 
 - `prodbox config setup` writes and validates Dhall directly.
@@ -295,11 +311,12 @@ a sibling Secret). The complete sourcing, mount, and reload contract lives in
 
 Scheduled under Sprint 1.35 (intended structure, not yet shipped): sensitive configuration fields
 carry typed `SecretRef` values — a Dhall union of
-`Vault | TransitKey | Prompt | FileSecret | TestPlaintext` — rather than inline plaintext secrets.
-`prodbox config validate` rejects plaintext secrets in production config; plaintext test inputs live
-only in `test-secrets.dhall`, which is never imported by `prodbox-config.dhall`. This extends the
-existing single-Dhall-file config contract rather than replacing it: the file keeps its shape and
-simply holds references in place of raw secret material. The authoritative model is
+`Vault | TransitKey | Prompt | TestPlaintext` — rather than inline plaintext secrets. `Vault` and
+`TransitKey` are the production targets; there is no `FileSecret` arm and no Secret-mounted Dhall
+fragment path. `prodbox config validate` rejects plaintext secrets in production config; plaintext
+test inputs live only in `test-secrets.dhall`, which is never imported by `prodbox-config.dhall`.
+The seed/propose `prodbox-config.dhall` holds references in place of raw secret material; the
+in-force config it seeds is the Vault-encrypted MinIO object. The authoritative model is
 [documents/engineering/vault_doctrine.md](./documents/engineering/vault_doctrine.md) (see
 [§3 The SecretRef model](./documents/engineering/vault_doctrine.md#3-the-secretref-model) and
 [§4 Config split](./documents/engineering/vault_doctrine.md#4-config-split-production-references-vs-test-plaintext)).
@@ -407,12 +424,13 @@ Remove the local runtime and destroy AWS validation residue:
 
 `rke2 delete --yes` is destructive. It removes the local cluster, destroys the AWS validation
 stacks if they still exist, removes the managed kubeconfig, and preserves `.data/` as the sole
-retained operator-host directory. The per-run Pulumi state in MinIO and the gateway-owned
-master seed both live on MinIO's PV under `.data/prodbox/minio/0`, so they survive cluster wipes
-whenever `.data/` is preserved. `prodbox` never deletes `.data/`; removing it is an
-operator-only action. The raw master seed is daemon-only: it is read solely in-cluster by the
-gateway daemon, and the host CLI never reads it directly — it derives chart secrets over HTTP
-through the gateway client (intended structure, Sprint 3.16). Invoking `rke2 delete` when no local RKE2 cluster is installed is a
+retained operator-host directory. The per-run Pulumi state lives on MinIO's PV under
+`.data/prodbox/minio/0` and Vault's durable storage lives on its own retained PV under
+`.data/vault/vault/0`, so both survive cluster wipes whenever `.data/` is preserved. `prodbox`
+never deletes `.data/`; removing it is an operator-only action. A cluster rebuild is therefore not
+a fresh Vault: `vault init` runs exactly once (the first time the PV is empty) and every later
+`cluster reconcile` only unseals the existing data, so Vault KV is as durable across rebuilds as
+any retained PV. Invoking `rke2 delete` when no local RKE2 cluster is installed is a
 no-op success (`No RKE2 cluster to delete.`, exit 0), not an error.
 
 ### Chart Stacks

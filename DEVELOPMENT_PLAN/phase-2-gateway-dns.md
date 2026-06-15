@@ -13,6 +13,21 @@
 
 ## Phase Status
 
+🔄 **Reopened 2026-06-14** — the Vault-root finalization (see [README.md](README.md) Closure Status
+2026-06-14, [vault_doctrine.md](../documents/engineering/vault_doctrine.md), and
+[cluster_federation_doctrine.md](../documents/engineering/cluster_federation_doctrine.md)) makes
+prodbox manage a hierarchy of clusters whose trust and unseal authority form a Vault transit-seal
+tree: a root cluster's Vault is Shamir-sealed and unsealed only by the operator, and each downstream
+child cluster auto-unseals against its parent's Vault, which also custodies the child's init keys.
+A cluster's knowledge of its downstream clusters — their existence, identities, endpoints,
+kubeconfigs, account ids, and Pulumi stacks — is secret data legible only behind an unsealed Vault.
+This reopens Phase `2` to own the gateway/CLI federation-trust surface that did not exist when the
+phase last closed. Sprint `2.26` (📋 Planned, blocked by Sprint `3.20`) adds the cluster-federation
+trust topology and downstream-cluster custody surface. **Prior closure preserved**: ✅ Done on the
+code-owned gateway-runtime, DNS-ownership, peer-transport, and daemon-lifecycle surfaces
+(Sprints `2.1`–`2.25`); the reclosure detail below is retained verbatim and is unchanged by this
+reopen.
+
 ✅ **Reclosed on the code-owned surface 2026-06-09** — reopened 2026-06-09 for Sprints `2.24`–`2.25`
 (design-intention review; see [README.md](README.md) Closure Status); both have now landed. Sprint
 `2.24` ✅ deleted the daemon/workload `--log-level` / `--port` / `--foreground` override flags + their
@@ -2135,16 +2150,90 @@ reframe verified). Remaining: the operator-driven live `gateway-daemon` / `gatew
 `gateway-partition` integration validations against a running RKE2 cluster (cannot run in a
 non-cluster environment), matching the live-gate pattern the substrate sprints use.
 
+## Sprint 2.26: Cluster Federation Trust Topology and Downstream-Cluster Custody 📋
+
+**Status**: Planned
+**Implementation**: `src/Prodbox/Gateway.hs`, `src/Prodbox/Gateway/Daemon.hs`,
+`src/Prodbox/Gateway/Types.hs`, `src/Prodbox/Cluster/Federation.hs` (new), `test/unit/Main.hs`
+**Blocked by**: Sprint `3.20`
+**Docs to update**: `documents/engineering/cluster_federation_doctrine.md`,
+`documents/engineering/vault_doctrine.md`,
+`documents/engineering/config_doctrine.md`,
+`documents/engineering/distributed_gateway_architecture.md`
+
+### Objective
+
+Give prodbox the gateway and CLI surface to manage a hierarchy of clusters as a Vault transit-seal
+trust tree per
+[cluster_federation_doctrine.md](../documents/engineering/cluster_federation_doctrine.md). A root
+cluster and zero or more downstream/child clusters form a trust tree: the root cluster's Vault is
+Shamir-sealed and unsealed only by the operator, while each child cluster's Vault uses
+`seal "transit"` pointed at its parent's Vault and auto-unseals against the parent with no human and
+no local unseal keys. The parent custodies each child's init keys (recovery keys plus initial root
+token) in its own Vault KV, and a cluster's knowledge of its downstream clusters is secret data
+legible only behind an unsealed Vault. This sprint owns the registration and custody surface — the
+seal-mode wiring and per-cluster seal custody itself land in Sprint `3.20`, which this sprint is
+blocked by.
+
+### Deliverables
+
+- A `prodbox cluster federation register <child>` surface (operator-interactive on the root,
+  gateway-mediated in-cluster) that records a downstream child cluster's identity, endpoints,
+  kubeconfig reference, account id, and Pulumi-stack references as Vault KV objects behind the
+  root's unsealed Vault, never as plaintext in `prodbox-config.dhall`, per
+  [cluster_federation_doctrine.md](../documents/engineering/cluster_federation_doctrine.md) and
+  [config_doctrine.md](../documents/engineering/config_doctrine.md).
+- The parent-owns-child-init-keys contract is enacted at child registration: the child's recovery
+  keys and initial root token are written to the parent's Vault KV, and the parent's Transit key is
+  recorded as the child's unseal authority. A child Vault therefore cannot unseal without a live,
+  unsealed parent, per
+  [vault_doctrine.md](../documents/engineering/vault_doctrine.md).
+- Downstream-cluster metadata is treated as secret: with the parent Vault sealed, no child cluster's
+  existence, identity, endpoint, kubeconfig, account id, or Pulumi stack is determinable beyond the
+  unencrypted basics (cluster id, this cluster's Vault address, seal mode, and a child's parent
+  reference) defined by
+  [config_doctrine.md](../documents/engineering/config_doctrine.md).
+- The gateway exposes a child-listing and child-bootstrap-reference surface so a child cluster can
+  fetch the bootstrap reference and transit-seal credential it needs to reach its parent's Vault and
+  auto-unseal, with that material provisioned and owned by the parent.
+- The federation surface refuses to write or mutate root-cluster federation state without the root
+  Vault token, since root federation state governs every downstream cluster, per
+  [cluster_federation_doctrine.md](../documents/engineering/cluster_federation_doctrine.md).
+
+### Validation
+
+1. `prodbox check-code` exit 0.
+2. `prodbox test unit` exit 0, including coverage that downstream-cluster metadata round-trips as a
+   Vault KV object and that the unencrypted basics never carry child-cluster identities.
+3. `prodbox cluster federation register <child>` writes the child's init keys and metadata only
+   through the parent's unsealed Vault and refuses to run against a sealed parent Vault.
+4. A negative test proves a root-cluster federation-state mutation is rejected without the root
+   Vault token.
+5. Operator-driven live validation: registering a child cluster against a running parent cluster and
+   confirming the child auto-unseals against the parent's Transit key (requires two live clusters;
+   matches the live-gate pattern the substrate sprints use).
+
+### Remaining Work
+
+Planned; blocked by Sprint `3.20` (Vault transit-seal hierarchy and per-cluster seal custody), which
+provides the root Shamir + `.age` unlock bundle, the child `seal "transit"` wiring, and the
+per-cluster init-key custody this sprint registers against.
+
 ## Documentation Requirements
 
 **Engineering docs to create/update:**
 
 - `documents/engineering/cli_command_surface.md` - Haskell gateway command surface, including the
-  distinct native `gateway-partition` validation contract, and the `--config <path>`-only
-  daemon-launching flag set after Sprint 2.24 removes `--log-level` / `--port` / `--foreground`.
+  distinct native `gateway-partition` validation contract, the `--config <path>`-only
+  daemon-launching flag set after Sprint 2.24 removes `--log-level` / `--port` / `--foreground`, and
+  the `prodbox cluster federation register <child>` surface added by Sprint 2.26.
+- `documents/engineering/cluster_federation_doctrine.md` - the root/child Vault transit-seal trust
+  tree, the parent-owns-child-init-keys custody contract, downstream-cluster metadata as secret
+  data, and the root-Vault-token gate on root federation state, owned by Sprint 2.26.
 - `documents/engineering/config_doctrine.md` - the §2/§10 single-Dhall-surface contract that
-  Sprint 2.24 enforces by deleting the daemon override flags, and the §8 restart contract that
-  Sprint 2.25 enacts as restart-based Orders promotion.
+  Sprint 2.24 enforces by deleting the daemon override flags, the §8 restart contract that
+  Sprint 2.25 enacts as restart-based Orders promotion, and the unencrypted-basics surface that
+  Sprint 2.26 keeps free of downstream-cluster identities.
 - `documents/engineering/dependency_management.md` - gateway container-build posture under the
   canonical Docker doctrine, including the `ghcup` pin and no-symlink rule.
 - `documents/engineering/distributed_gateway_architecture.md` - Haskell gateway implementation,
@@ -2165,6 +2254,9 @@ non-cluster environment), matching the live-gate pattern the substrate sprints u
   restart-based Orders-promotion correspondence (Sprint 2.25 / doctrine D4), and the
   topology-honest fault-model note.
 - `documents/engineering/unit_testing_policy.md` - Haskell gateway integration-suite ownership.
+- `documents/engineering/vault_doctrine.md` - Vault is the sole secrets/KMS/PKI root; Sprint 2.26
+  custodies each child cluster's init keys in the parent's Vault KV and records the parent's Transit
+  key as the child's unseal authority.
 
 **Product docs to create/update:**
 
@@ -2173,6 +2265,8 @@ non-cluster environment), matching the live-gate pattern the substrate sprints u
 **Cross-references to add:**
 
 - Keep gateway and TLA+ doctrine linked back to [README.md](README.md).
+- Add a backlink from `documents/engineering/cluster_federation_doctrine.md` to this phase for the
+  gateway/CLI federation-trust surface owned by Sprint 2.26.
 
 ## Related Documents
 

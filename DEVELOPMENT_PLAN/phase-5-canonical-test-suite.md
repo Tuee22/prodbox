@@ -15,20 +15,36 @@
 
 ## Phase Status
 
-✅ **Reclosed 2026-06-09** — Sprints `5.1`–`5.5` remain closed on the canonical-suite content that
-proves public-host behavior (the public-edge diagnostic, named external proofs, shared-host route
-classification, admin-route auth/RBAC proofs, and the port-80 HTTP-to-HTTPS redirect proof). The
-2026-06-09 design-intention review reopened this phase for Sprint `5.6`, which has now landed: the
-prerequisite surface that gates the canonical suite is typed (`PrerequisiteId` ADT) and
-minimal-and-precise per validation; the IAM-harness tier is derived from each validation's declared
-capabilities (the `normalizeManagedAwsHarness` `substrate=aws` blanket override deleted; a
-credential-free validation on AWS engages no harness); `infra_ready` was split from a new
-AWS-credential-free `public_edge_ready` node (re-pointing `charts-*`); `verifyAwsEksSnapshot` was
-strengthened to a structured parse; and the three registry-generated destructive `--dry-run` goldens
-(`rke2 delete`, `rke2 delete --cascade`, `nuke`) landed with drift-guard tests (closing audit V80).
-Validation at reclosure: `check-code` 0, `test unit` 809, `integration cli` 35, `integration env` 35,
-`lint docs` 0, `docs check` 0. The live AWS-substrate aggregate + public-edge-readiness exercises are
-operator-driven.
+🔄 **Reopened 2026-06-11, finalized 2026-06-14** (Vault-root + cluster federation) — Sprint `5.8`
+reframes to the finalized end state: the `sealed-vault` canonical validation seals Vault and asserts
+the whole stack fails closed (no secret resolves, no cert issues, no MinIO object decrypts, no
+Pulumi op runs, gateway daemon and Keycloak fail their readiness gates) without leaking metadata.
+It now **also** covers the retired master-seed derivation surface — there is no `master-seed` object
+and no daemon `/v1/secret/*` RPC to fall back to, so the sealed stack cannot reconstruct a secret
+from any non-Vault source — and the cluster-federation auto-unseal cascade, where a sealed or
+unreachable parent Vault bricks its children (the fail-closed brick cascades down the transit-seal
+trust tree from the root). The SecretRef golden tests prove generated Dhall/config artifacts carry
+only `SecretRef.Vault` / `SecretRef.TransitKey` values on the `FileSecret`-free union — there is no
+`SecretRefFile` constructor to render — per
+[vault_doctrine.md](../documents/engineering/vault_doctrine.md) and
+[cluster_federation_doctrine.md](../documents/engineering/cluster_federation_doctrine.md). Sprint
+`5.8` is 📋 Planned on its owned surface; existing validations are unchanged and the new sealed-Vault
+suite content extends them. See the 2026-06-14 Closure Status entry in [README.md](README.md).
+
+✅ **Prior closure preserved — reclosed 2026-06-09** — Sprints `5.1`–`5.5` remain closed on the
+canonical-suite content that proves public-host behavior (the public-edge diagnostic, named external
+proofs, shared-host route classification, admin-route auth/RBAC proofs, and the port-80
+HTTP-to-HTTPS redirect proof). The 2026-06-09 design-intention review reopened this phase for Sprint
+`5.6`, which has now landed: the prerequisite surface that gates the canonical suite is typed
+(`PrerequisiteId` ADT) and minimal-and-precise per validation; the IAM-harness tier is derived from
+each validation's declared capabilities (the `normalizeManagedAwsHarness` `substrate=aws` blanket
+override deleted; a credential-free validation on AWS engages no harness); `infra_ready` was split
+from a new AWS-credential-free `public_edge_ready` node (re-pointing `charts-*`); `verifyAwsEksSnapshot`
+was strengthened to a structured parse; and the three registry-generated destructive `--dry-run`
+goldens (`rke2 delete`, `rke2 delete --cascade`, `nuke`) landed with drift-guard tests (closing
+audit V80). Validation at reclosure: `check-code` 0, `test unit` 809, `integration cli` 35,
+`integration env` 35, `lint docs` 0, `docs check` 0. The live AWS-substrate aggregate +
+public-edge-readiness exercises are operator-driven.
 
 Per [development_plan_standards.md → M. Test Suite Substrates](development_plan_standards.md#m-test-suite-substrates),
 these validations are **suite content**, not home-substrate-only validations. The home local
@@ -36,9 +52,11 @@ substrate runs them today on real `test.resolvefintech.com` infrastructure (real
 real OIDC, real WebSocket fan-out). Bringing the AWS substrate to parity so it runs the same
 validations is tracked in [phase-7-aws-substrate-foundations.md](phase-7-aws-substrate-foundations.md).
 
-Per [development_plan_standards.md](development_plan_standards.md) standards rule E, Phases `6`
-and `7` remain `Done` on their owned surfaces, while the overall handoff still depends on the
-separately reopened implementation phases `1`–`4`.
+Per [development_plan_standards.md](development_plan_standards.md) standards rule E, Phase `6` (the
+clean-room handoff) stays ✅ Done on its owned surface, while the overall handoff still depends on
+the separately reopened implementation phases `1`–`4`, `7`, and `8` and the newly reopened Phase `2`
+(cluster-federation custody, Sprint `2.26`) carrying the finalized Vault-root + cluster-federation
+model.
 
 ## Phase Summary
 
@@ -485,35 +503,61 @@ AWS-substrate aggregate and the live public-edge-readiness exercise are operator
 
 **Status**: Planned
 **Implementation**: `src/Prodbox/TestValidation.hs`, `src/Prodbox/TestPlan.hs`, `test/`
-**Blocked by**: Sprints `1.37`, `3.17`, `4.29`
-**Docs to update**: `documents/engineering/unit_testing_policy.md`, `documents/engineering/vault_doctrine.md`
+**Blocked by**: Sprints `1.37`, `3.17`, `3.19`, `3.20`, `4.29`, `4.32`
+**Docs to update**: `documents/engineering/unit_testing_policy.md`, `documents/engineering/vault_doctrine.md`, `documents/engineering/cluster_federation_doctrine.md`
 
 ### Objective
 
-Add suite content that proves the fail-closed invariant end-to-end and that generated artifacts
-contain only SecretRef values (vault_doctrine §15–§16). This extends the canonical suite; existing
-validations are unchanged.
+Add suite content that proves the finalized fail-closed invariant end-to-end: Vault is the sole
+secrets backend, so a sealed Vault bricks the cluster and there is no non-Vault source to
+reconstruct a secret from. The validation asserts the sealed-state behavior matrix
+([vault_doctrine.md §15](../documents/engineering/vault_doctrine.md#15-sealed-state-behavior-matrix))
+and the red-team checklist
+([vault_doctrine.md §19](../documents/engineering/vault_doctrine.md#19-red-team-checklist)) and that
+generated artifacts carry only `SecretRef` values on the `FileSecret`-free union. It **also** covers
+the two finalized surfaces this end state adds: the
+retired master-seed derivation surface (no `master-seed` object, no daemon `/v1/secret/*` RPC to
+fall back to) and the cluster-federation auto-unseal cascade (a sealed or unreachable parent Vault
+bricks its children) per
+[cluster_federation_doctrine.md](../documents/engineering/cluster_federation_doctrine.md). This
+extends the canonical suite; existing validations are unchanged.
 
 ### Deliverables
 
 - A `ValidationSealedVault` / `prodbox test integration sealed-vault` flow: spin up, init+unseal,
-  reconcile MinIO/active-Dhall/Pulumi/charts, seal Vault, then assert active-Dhall read, Pulumi
-  preview, gateway config load, Keycloak reconcile, and TLS reconcile all fail closed without
-  leaking metadata.
-- Golden tests that generated Dhall/config artifacts contain only `SecretRef` values (forbidden
-  patterns: `AKIA`, `aws_secret_access_key`, `BEGIN PRIVATE KEY`, `client_secret = "…"`,
-  `password = "…"`, Pulumi passphrase, kubeconfig user token).
-- Unit proofs for plaintext-secret rejection, Vault init/unseal/reconcile, fixture seeding from
-  `test-secrets.dhall`, and teardown-preserves-Vault-PV.
+  reconcile MinIO/in-force-Dhall/Pulumi/charts, seal Vault, then assert in-force-config read, Pulumi
+  preview, gateway config load, Keycloak reconcile, MinIO object decrypt, and TLS reconcile all fail
+  closed without leaking metadata — only the unencrypted basics (cluster id, Vault address, seal
+  mode, parent reference for a child) remain legible while Vault is sealed.
+- Derivation-retirement coverage: the suite asserts there is **no** `master-seed` object in MinIO
+  and **no** gateway daemon `/v1/secret/derive` / `/v1/secret/ensure-namespace` RPC, so a sealed
+  Vault has no HMAC-derivation path to reconstruct a previously-derived secret (Patroni/Postgres,
+  Keycloak admin, OIDC client, gateway event keys); every such secret resolves only as a Vault KV
+  object via Vault Kubernetes auth and fails closed when Vault is sealed (Sprint `3.19`).
+- Federation auto-unseal cascade coverage: with a sealed (or unreachable) parent Vault, a child
+  cluster's `seal "transit"`-backed Vault cannot auto-unseal, and the child's own fail-closed brick
+  follows — proving the unseal cascade roots in the operator unsealing the root cluster
+  (Sprint `3.20`, Sprint `4.32`).
+- Golden tests that generated Dhall/config artifacts contain only `SecretRef.Vault` /
+  `SecretRef.TransitKey` values — there is no `SecretRefFile` constructor to render — with no
+  forbidden plaintext pattern (`AKIA`, `aws_secret_access_key`, `BEGIN PRIVATE KEY`,
+  `client_secret = "…"`, `password = "…"`, Pulumi passphrase, kubeconfig user token, raw master
+  seed).
+- Unit proofs for plaintext-secret rejection (the `SecretRef.TestPlaintext` arm is accepted only by
+  the test harness from `test-secrets.dhall`, never in production), Vault init/unseal/reconcile,
+  fixture seeding from `test-secrets.dhall`, and teardown-preserves-Vault-PV.
 
 ### Validation
 
-- `prodbox test integration sealed-vault` asserts every sealed-state row fails closed.
-- The SecretRef golden tests fail on any forbidden plaintext pattern.
+- `prodbox test integration sealed-vault` asserts every sealed-state row fails closed, including the
+  no-derivation-fallback rows and the federation auto-unseal-cascade rows.
+- The SecretRef golden tests fail on any forbidden plaintext pattern and on any rendered
+  `SecretRefFile` constructor.
 
 ### Remaining Work
 
-- The both-substrate live sealed-Vault exercise is operator-driven.
+- The both-substrate live sealed-Vault exercise, and the live parent/child federation auto-unseal
+  cascade exercise, are operator-driven.
 
 ## Documentation Requirements
 
@@ -539,8 +583,13 @@ validations are unchanged.
   Sprint `5.8`, the sealed-state behavior matrix
   ([vault_doctrine.md §15](../documents/engineering/vault_doctrine.md#15-sealed-state-behavior-matrix))
   and red-team checklist
-  ([vault_doctrine.md §16](../documents/engineering/vault_doctrine.md#16-red-team-checklist)) the
-  `sealed-vault` validation and the SecretRef golden tests prove against the canonical suite.
+  ([vault_doctrine.md §19](../documents/engineering/vault_doctrine.md#19-red-team-checklist)) the
+  `sealed-vault` validation and the SecretRef golden tests prove against the canonical suite,
+  including the retired master-seed derivation surface (no `master-seed` object, no daemon
+  `/v1/secret/*` RPC) and the `FileSecret`-free `SecretRef` union.
+- [documents/engineering/cluster_federation_doctrine.md](../documents/engineering/cluster_federation_doctrine.md) -
+  for Sprint `5.8`, the Vault transit-seal trust tree and the fail-closed unseal cascade the
+  `sealed-vault` validation proves when a parent Vault is sealed or unreachable.
 
 **Product docs to create/update:**
 

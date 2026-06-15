@@ -19,9 +19,10 @@
   `haskell_code_guide.md`; generated artifacts and lint stack in `code_quality.md`; output
   rules and at-least-once event processing in `streaming_doctrine.md`; prerequisites as
   typed effects in `prerequisite_doctrine.md`; daemon lifecycle in
-  `distributed_gateway_architecture.md`; testing doctrine in `unit_testing_policy.md`;
-  toolchain pinning in `dependency_management.md`. Phase documents in `DEVELOPMENT_PLAN/`
-  cite doctrine sections by name when scheduling adoption work.
+  `distributed_gateway_architecture.md`; the Vault transit-seal trust tree and
+  downstream-cluster custody in `cluster_federation_doctrine.md`; testing doctrine in
+  `unit_testing_policy.md`; toolchain pinning in `dependency_management.md`. Phase documents
+  in `DEVELOPMENT_PLAN/` cite doctrine sections by name when scheduling adoption work.
 - The repository is Haskell-only on the supported path. The public CLI, lifecycle runtime, Pulumi
   orchestration, gateway runtime, chart platform, onboarding flow, AWS administration commands,
   and test harness all live under `app/`, `src/Prodbox/`, `test/`, `prodbox.cabal`,
@@ -37,15 +38,19 @@ Prodbox manages a home Kubernetes cluster with a Haskell command surface.
 - `src/Prodbox/` owns the command parser, runtime modules, infra orchestration, gateway runtime,
   chart platform, AWS administration flows, and test harness.
 - `test/` contains the Haskell unit and integration suites.
-- `prodbox-config.dhall` is decoded directly into Haskell types by the native `dhall`
-  library; `prodbox-config.json` is not part of the supported interface. The in-cluster
-  gateway daemon and workload Pods load their own Dhall config from a mounted ConfigMap
-  (with credentials imported from a sibling Secret-mounted Dhall fragment). Every
-  `prodbox` binary instance takes its configuration from `--config <path>`; no supported
-  binary reads `PRODBOX_*` environment variables. The raw master seed is daemon-only —
-  read solely in-cluster by the gateway daemon; the host CLI never reads it directly and
-  derives chart secrets over HTTP through the gateway client (intended structure,
-  Sprint 3.16). See
+- `prodbox-config.dhall` is decoded into Haskell types by the native `dhall` library;
+  `prodbox-config.json` is not part of the supported interface. The in-force cluster
+  configuration is the source of truth, stored as a Vault-Transit-enveloped object in
+  MinIO; the filesystem `prodbox-config.dhall` is a seed/propose input only — it seeds the
+  encrypted MinIO SSoT on first-ever bring-up, and thereafter supplying a file is a
+  proposed update, not the live config. Each binary reads the small unencrypted basics
+  locally (cluster id, this cluster's Vault address, seal mode, and for a child the parent
+  reference it contacts to auto-unseal), then fetches and decrypts the in-force config from
+  MinIO through Vault. In-cluster consumers authenticate to Vault directly via Vault
+  Kubernetes auth; there are no Secret-mounted Dhall credential fragments and no master
+  seed or HMAC derivation. Updating the root cluster's in-force config requires the root
+  Vault token (which requires an unsealed root Vault). No supported binary reads `PRODBOX_*`
+  environment variables. See
   [documents/engineering/config_doctrine.md](./documents/engineering/config_doctrine.md).
 - `pulumi/aws-eks/Pulumi.yaml` plus `pulumi/aws-eks/Main.yaml` and `pulumi/aws-test/Pulumi.yaml`
   plus `pulumi/aws-test/Main.yaml` are the supported Pulumi programs for AWS validation IaC.

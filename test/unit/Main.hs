@@ -39,6 +39,7 @@ import Data.Text.Encoding qualified as TextEncoding
 import Data.Time.Calendar (fromGregorian)
 import Data.Time.Clock (UTCTime (..), secondsToDiffTime)
 import Data.Vector qualified as Vector
+import Dhall qualified
 import Options.Applicative
   ( ParserResult (..)
   , defaultPrefs
@@ -193,6 +194,27 @@ import Prodbox.CheckCode
   , substrateImagePinningViolations
   )
 import Prodbox.CheckCode qualified
+import Prodbox.Config.Basics
+  ( ParentRef (..)
+  , SealMode (..)
+  , UnencryptedBasics (..)
+  , basicsFromJson
+  , basicsToJson
+  , isRootCluster
+  , validateBasics
+  )
+import Prodbox.Config.InForce
+  ( ConfigSource (..)
+  , RootConfigWriteDecision (..)
+  , RootWriteAuthority (..)
+  , SeedProposeDecision (..)
+  , openInForcePayload
+  , renderInForcePayload
+  , renderRootConfigWriteBlock
+  , rootConfigWriteDecision
+  , sealInForcePayload
+  , seedProposeDecision
+  )
 import Prodbox.ContainerImage qualified as ContainerImage
 import Prodbox.Crypto.Envelope
   ( EnvelopeError (..)
@@ -457,15 +479,28 @@ import Prodbox.UsersAdmin qualified
 import Prodbox.Vault.Client
   ( BootstrapAction (..)
   , InitResponse (..)
+  , KvV2ReadResponse (..)
+  , KvV2WriteRequest (..)
   , SealStatus (..)
+  , TransitEncryptRequest (..)
+  , TransitEncryptResponse (..)
   , VaultAddress (..)
   , bootstrapAction
   , initResponseToUnlockBundle
   )
 import Prodbox.Vault.Gate
   ( VaultGateDecision (..)
+  , VaultGateOutcome (..)
   , renderVaultGateBlock
   , vaultGateDecision
+  , vaultGateOutcome
+  )
+import Prodbox.Vault.Orchestration
+  ( UnsealOutcome (..)
+  , UnsealStep (..)
+  , interpretUnsealProgress
+  , planUnseal
+  , vaultUnlockBundleRelPath
   )
 import Prodbox.Vault.UnlockBundle
   ( UnlockBundle (..)
@@ -567,6 +602,34 @@ sampleUnlockBundle =
 sampleUnlockBundlePassword :: Text.Text
 sampleUnlockBundlePassword = "correct horse battery staple"
 
+sampleParentRef :: ParentRef
+sampleParentRef =
+  ParentRef
+    { parentRefClusterId = "prodbox-root"
+    , parentRefVaultAddress = "http://10.0.0.1:8200"
+    , parentRefTransitKey = "transit/prodbox-child-seal"
+    }
+
+sampleRootBasics :: UnencryptedBasics
+sampleRootBasics =
+  UnencryptedBasics
+    { basicsClusterId = "prodbox-home"
+    , basicsVaultAddress = "http://127.0.0.1:31820"
+    , basicsSealMode = SealModeShamir
+    , basicsParentRef = Nothing
+    , basicsFormatVersion = 1
+    }
+
+sampleChildBasics :: UnencryptedBasics
+sampleChildBasics =
+  UnencryptedBasics
+    { basicsClusterId = "prodbox-child"
+    , basicsVaultAddress = "http://127.0.0.1:31820"
+    , basicsSealMode = SealModeTransit
+    , basicsParentRef = Just sampleParentRef
+    , basicsFormatVersion = 1
+    }
+
 main :: IO ()
 main = mainWithSuite "prodbox-unit" $ do
   parserSuite
@@ -626,6 +689,44 @@ main = mainWithSuite "prodbox-unit" $ do
                   resp
           unlockBundleUnsealKeys bundle `shouldBe` ["k1", "k2"]
           unlockBundleInitialRootToken bundle `shouldBe` "s.root"
+    it "encodes a KV v2 write body under a top-level data key" $ do
+      BL8.unpack (encode (KvV2WriteRequest (Map.fromList [("access_key_id", "AKIA")])))
+        `shouldBe` "{\"data\":{\"access_key_id\":\"AKIA\"}}"
+    it "decodes a KV v2 read response from the nested data.data object" $ do
+      let decoded =
+            eitherDecode
+              "{\"data\":{\"data\":{\"access_key_id\":\"AKIA\"},\"metadata\":{\"version\":1}}}"
+              :: Either String KvV2ReadResponse
+      fmap kvV2ReadData decoded `shouldBe` Right (Map.fromList [("access_key_id", "AKIA")])
+    it "encodes a Transit encrypt request with base64 plaintext" $ do
+      BL8.unpack (encode (TransitEncryptRequest "cGxhaW50ZXh0"))
+        `shouldBe` "{\"plaintext\":\"cGxhaW50ZXh0\"}"
+    it "decodes a Transit encrypt response ciphertext token" $ do
+      let decoded =
+            eitherDecode "{\"data\":{\"ciphertext\":\"vault:v1:abc123\"}}"
+              :: Either String TransitEncryptResponse
+      fmap transitCiphertext decoded `shouldBe` Right "vault:v1:abc123"
+  describe "vault orchestration (Sprint 1.36)" $ do
+    it "plans the remaining unseal key submissions for a sealed Vault" $ do
+      planUnseal (SealStatus True True 3 5 0) ["k1", "k2", "k3", "k4", "k5"]
+        `shouldBe` Right [UnsealStep 1 "k1", UnsealStep 2 "k2", UnsealStep 3 "k3"]
+    it "plans no submissions for an already-unsealed Vault" $ do
+      planUnseal (SealStatus True False 3 5 3) ["k1", "k2", "k3"] `shouldBe` Right []
+    it "fails the plan when the bundle has no unseal keys" $ do
+      planUnseal (SealStatus True True 3 5 0) [] `shouldSatisfy` isLeft
+    it "fails the plan when the bundle has too few keys for the threshold" $ do
+      planUnseal (SealStatus True True 3 5 1) ["only-one"] `shouldSatisfy` isLeft
+    it "reads unseal completion when the post-submission Vault is unsealed" $ do
+      interpretUnsealProgress (SealStatus True False 3 5 3) (UnsealStep 3 "k3")
+        `shouldBe` UnsealCompleted
+    it "reads an unseal advance when the share registered" $ do
+      interpretUnsealProgress (SealStatus True True 3 5 2) (UnsealStep 2 "k2")
+        `shouldBe` UnsealAdvanced 2
+    it "reads an unseal stall when progress did not advance" $ do
+      interpretUnsealProgress (SealStatus True True 3 5 1) (UnsealStep 2 "k2")
+        `shouldBe` UnsealStalled
+    it "resolves the canonical unlock-bundle path" $ do
+      vaultUnlockBundleRelPath `shouldBe` ".data/prodbox/vault-unlock-bundle.age"
   describe "vault gate (Sprint 1.37)" $ do
     it "allows Pulumi when Vault is initialized and unsealed" $ do
       vaultGateDecision (Right (SealStatus True False 3 5 3)) `shouldBe` VaultGateAllow
@@ -641,6 +742,95 @@ main = mainWithSuite "prodbox-unit" $ do
           msg `shouldContain` "Blocked"
           msg `shouldContain` "No preview/update/destroy was started"
           msg `shouldContain` "prodbox vault unseal"
+    it "folds an unsealed Vault into a proceed outcome" $ do
+      vaultGateOutcome (Right (SealStatus True False 3 5 3)) `shouldBe` VaultGateProceed
+    it "folds a sealed Vault into a refusal that starts no Pulumi op" $ do
+      case vaultGateOutcome (Right (SealStatus True True 3 5 0)) of
+        VaultGateProceed -> expectationFailure "expected a refusal for a sealed Vault"
+        VaultGateRefuse message -> do
+          message `shouldContain` "Vault is sealed."
+          message `shouldContain` "No preview/update/destroy was started"
+    it "folds an uninitialized Vault into a refusal" $ do
+      case vaultGateOutcome (Right (SealStatus False True 0 0 0)) of
+        VaultGateProceed -> expectationFailure "expected a refusal for an uninitialized Vault"
+        VaultGateRefuse message -> message `shouldContain` "Vault is not initialized."
+    it "folds an unreachable Vault into a refusal" $ do
+      case vaultGateOutcome (Left (Prodbox.Http.Client.HttpConnectionFailure "connection refused")) of
+        VaultGateProceed -> expectationFailure "expected a refusal for an unreachable Vault"
+        VaultGateRefuse message -> message `shouldContain` "Vault is unreachable"
+  describe "config unencrypted basics (Sprint 1.38)" $ do
+    it "round-trips a root cluster's basics through JSON" $ do
+      basicsFromJson (basicsToJson sampleRootBasics) `shouldBe` Right sampleRootBasics
+    it "round-trips a child cluster's basics through JSON" $ do
+      basicsFromJson (basicsToJson sampleChildBasics) `shouldBe` Right sampleChildBasics
+    it "accepts a coherent root (shamir, no parent) basics" $ do
+      validateBasics sampleRootBasics `shouldBe` Right ()
+    it "accepts a coherent child (transit, parent) basics" $ do
+      validateBasics sampleChildBasics `shouldBe` Right ()
+    it "rejects a root cluster that carries a parent ref" $ do
+      validateBasics (sampleRootBasics {basicsParentRef = Just sampleParentRef})
+        `shouldSatisfy` isLeft
+    it "rejects a child cluster with no parent ref" $ do
+      validateBasics (sampleChildBasics {basicsParentRef = Nothing}) `shouldSatisfy` isLeft
+    it "rejects an empty cluster id" $ do
+      validateBasics (sampleRootBasics {basicsClusterId = ""}) `shouldSatisfy` isLeft
+    it "rejects a non-1 format version" $ do
+      validateBasics (sampleRootBasics {basicsFormatVersion = 2}) `shouldSatisfy` isLeft
+    it "identifies the root cluster and a child cluster" $ do
+      isRootCluster sampleRootBasics `shouldBe` True
+      isRootCluster sampleChildBasics `shouldBe` False
+  describe "in-force config envelope (Sprint 1.38)" $ do
+    it "round-trips the in-force config payload through the envelope" $ do
+      let payload = renderInForcePayload defaultConfigFile
+      sealed <- sealInForcePayload insecureLocalDekCipher "cluster1" payload
+      case sealed of
+        Left err -> expectationFailure ("seal failed: " ++ show err)
+        Right envelope -> do
+          opened <- openInForcePayload insecureLocalDekCipher "cluster1" envelope
+          opened `shouldBe` Right payload
+    it "fails closed when opened under a different cluster id" $ do
+      sealed <- sealInForcePayload insecureLocalDekCipher "cluster1" "in-force-bytes"
+      case sealed of
+        Left err -> expectationFailure ("seal failed: " ++ show err)
+        Right envelope -> do
+          opened <- openInForcePayload insecureLocalDekCipher "cluster2" envelope
+          opened `shouldSatisfy` isLeft
+    it "fails closed on a tampered envelope" $ do
+      sealed <- sealInForcePayload insecureLocalDekCipher "cluster1" "in-force-bytes"
+      case sealed of
+        Left err -> expectationFailure ("seal failed: " ++ show err)
+        Right envelope -> do
+          opened <- openInForcePayload insecureLocalDekCipher "cluster1" (BS.snoc envelope 0x21)
+          opened `shouldSatisfy` isLeft
+    it "writes ciphertext that does not leak the config plaintext" $ do
+      let payload = renderInForcePayload defaultConfigFile
+      sealed <- sealInForcePayload insecureLocalDekCipher "cluster1" payload
+      case sealed of
+        Left err -> expectationFailure ("seal failed: " ++ show err)
+        Right envelope -> BS.isInfixOf "resolvefintech" envelope `shouldBe` False
+  describe "config seed/propose (Sprint 1.38)" $ do
+    it "seeds the in-force SSoT when only the file is present" $ do
+      seedProposeDecision (ConfigSource True False) `shouldBe` SeedInForce
+    it "treats the file as a proposed update when both are present" $ do
+      seedProposeDecision (ConfigSource True True) `shouldBe` ProposeUpdate
+    it "uses the in-force SSoT as-is when only it is present" $ do
+      seedProposeDecision (ConfigSource False True) `shouldBe` UseInForceAsIs
+    it "reports no config available when neither is present" $ do
+      seedProposeDecision (ConfigSource False False) `shouldBe` NoConfigAvailable
+  describe "root-config write authority (Sprint 1.38)" $ do
+    it "blocks a root-cluster config write with no root token" $ do
+      rootConfigWriteDecision (RootWriteAuthority True False)
+        `shouldBe` RootWriteBlockNoRootToken
+    it "renders a fail-closed message for the blocked root write" $ do
+      case renderRootConfigWriteBlock (rootConfigWriteDecision (RootWriteAuthority True False)) of
+        Nothing -> expectationFailure "expected a fail-closed block message"
+        Just msg -> do
+          msg `shouldContain` "root"
+          msg `shouldContain` "No write was started"
+    it "allows a root-cluster config write with a root token" $ do
+      rootConfigWriteDecision (RootWriteAuthority True True) `shouldBe` RootWriteAllow
+    it "allows a child-cluster config write without a root token" $ do
+      rootConfigWriteDecision (RootWriteAuthority False False) `shouldBe` RootWriteAllow
   describe "vault envelope (Sprint 3.17)" $ do
     it "round-trips an envelope under the bound AAD" $ do
       sealed <- sealEnvelope insecureLocalDekCipher "cluster1|master-seed" "the-secret-seed-bytes"
@@ -687,6 +877,28 @@ main = mainWithSuite "prodbox-unit" $ do
     it "fails loud resolving a Vault reference before the read path is wired" $ do
       resolveSecretRef ProductionMode (SecretRefVault (VaultSecretRef "kv" "p" "f"))
         `shouldReturn` Left SecretRefVaultUnavailable
+    it "decodes a SecretRef.Vault reference from the Dhall union" $ do
+      let expr =
+            Text.concat
+              [ "< Vault : { mount : Text, path : Text, field : Text }"
+              , "| TransitKey : Text"
+              , "| Prompt : { name : Text, purpose : Text }"
+              , "| TestPlaintext : Text"
+              , ">.Vault { mount = \"kv\", path = \"prodbox/aws/admin\", field = \"access_key_id\" }"
+              ]
+      decoded <- Dhall.input Dhall.auto expr
+      decoded `shouldBe` SecretRefVault (VaultSecretRef "kv" "prodbox/aws/admin" "access_key_id")
+    it "decodes a SecretRef.TestPlaintext literal from the Dhall union" $ do
+      let expr =
+            Text.concat
+              [ "< Vault : { mount : Text, path : Text, field : Text }"
+              , "| TransitKey : Text"
+              , "| Prompt : { name : Text, purpose : Text }"
+              , "| TestPlaintext : Text"
+              , ">.TestPlaintext \"AKIAEXAMPLE\""
+              ]
+      decoded <- Dhall.input Dhall.auto expr
+      decoded `shouldBe` SecretRefTestPlaintext "AKIAEXAMPLE"
   describe "CLI parser" $ do
     it "routes config show to the native Haskell command" $ do
       parseArgs ["config", "show", "--show-secrets"]

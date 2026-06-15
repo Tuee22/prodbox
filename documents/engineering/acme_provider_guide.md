@@ -106,19 +106,28 @@ certificate is correctly retained rather than treated as a leak, see
 and
 [../../DEVELOPMENT_PLAN/substrates.md § Resource Lifecycle Classes](../../DEVELOPMENT_PLAN/substrates.md#resource-lifecycle-classes).
 
-## ACME credentials under Vault
+## ACME credentials and TLS key material under Vault
 
-The ZeroSSL EAB Key ID and EAB HMAC key are scheduled to move out of the plaintext
-`acme.eab_key_id` / `acme.eab_hmac_key` config fields into Vault KV, referenced from Dhall by
-`SecretRef.Vault` rather than carried as plaintext (scheduled under Sprint 7.15). Certificate
-issuance fails closed when Vault is sealed: with the EAB material behind a sealed Vault, the
-`ClusterIssuer` cannot authenticate to ZeroSSL and the reconcile surfaces a sealed-Vault error
-rather than proceeding.
+Vault is the TLS authority for the entire stack. The ZeroSSL EAB Key ID and EAB HMAC key are
+Vault KV objects, referenced from Dhall by `SecretRef.Vault` rather than carried as plaintext in
+the `acme.eab_key_id` / `acme.eab_hmac_key` config fields. All TLS private-key material is
+generated in, stored in, or wrapped by Vault: Vault PKI is the certificate authority for internal
+certs, and the public ZeroSSL public-edge certificate keeps the S3 retain-and-restore contract of
+[§ 4](#4-single-issuer-and-rebuild-safe-certificate-retention) (unchanged) with its key material
+Vault-protected at rest. (The EAB-material move out of plaintext config and the Vault-PKI internal
+authority land under Sprint 7.15; until that sprint lands, the EAB fields and ZeroSSL key material
+materialize as described in §§ 2–4.)
 
-This extends — and does not replace — the existing ACME model. ZeroSSL remains the sole ACME
-provider, and the single-issuer (`zerossl-dns01`) plus S3 retain-restore behavior of
-[§ 4](#4-single-issuer-and-rebuild-safe-certificate-retention) is unchanged; only the at-rest EAB
-secret gains a Vault home and a `SecretRef.Vault` indirection.
+Certificate issuance and key retrieval fail closed when Vault is sealed. With the EAB material and
+private-key paths behind a sealed (or unreachable, or uninitialized) Vault, the `ClusterIssuer`
+cannot authenticate to ZeroSSL and no key can be retrieved or minted, so the reconcile surfaces a
+sealed-Vault error rather than proceeding. There is no plaintext fallback for ACME credentials or
+TLS keys.
+
+ZeroSSL remains the sole public ACME provider, and the single-issuer (`zerossl-dns01`) plus
+S3 retain-restore behavior of [§ 4](#4-single-issuer-and-rebuild-safe-certificate-retention) is
+unchanged; only the at-rest key and EAB material gain a Vault home and a `SecretRef.Vault`
+indirection.
 
 For the TLS and PKI model behind Vault — how the EAB material and TLS private-key paths live under
 Vault and why issuance is fail-closed — see

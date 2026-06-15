@@ -50,6 +50,22 @@ the [README.md → Closure Status](README.md#closure-status) entries of the same
 refines the canonical retained-storage paths — it extends, it does not reverse, the Phase `3`
 storage-binding model (Sprint `3.1`).
 
+🔄 **Finalized 2026-06-14 (Vault-root finalization + cluster federation)** — the secrets model is
+finalized: Vault is the sole secrets/KMS/PKI root, the master-seed HMAC derivation model is retired
+(not extended), `FileSecret` / Secret-mounted plaintext Dhall is removed (not bridged), and a sealed
+Vault fail-closed-bricks the cluster. Sprints `4.29` and `4.30` are reframed to own that finalized
+end state (no bridge; derivation retired), and Phase 4 is extended with Sprint `4.32` (federated
+lifecycle reconcile — child clusters auto-unseal from their parent on the init-once /
+unseal-on-rebuild contract, the fail-closed unseal cascade bricks a subtree when a parent is
+sealed/unreachable, and root-config writes are gated on the root Vault token), `📋 Planned`. The
+federation trust topology this lifecycle wiring depends on is owned by Sprint `3.20` (Vault
+transit-seal hierarchy) and the new
+[cluster_federation_doctrine.md](../documents/engineering/cluster_federation_doctrine.md). All
+earlier Phase 4 sprints remain `Done` on their owned surfaces; the authoritative reopen narration is
+the [README.md → Closure Status](README.md#closure-status) 2026-06-14 entry. Sprint `4.32` extends,
+it does not reverse, the Sprint `4.29` retained-Vault-PV lifecycle and the Phase `3` storage-binding
+model.
+
 ✅ **Done (Sprints `4.1`–`4.23`)** — Sprints `4.1`–`4.4` remain `Done` on lifecycle parity, Python Pulumi removal,
 repository-wide Python toolchain removal, and the single-record DNS / single-certificate
 contract. The phase was first reopened by Sprint 0.2 to schedule Sprints `4.5`–`4.7`: rename
@@ -2495,30 +2511,39 @@ None — closed 2026-06-09. All deliverables landed; the Route 53 capability pro
 
 ### Objective
 
-Fold Vault into the canonical cluster lifecycle: reconcile deploys and unseals it, teardown
-preserves its durable PV, and a sealed Vault is a first-class cluster status (vault_doctrine §5, §7,
-§15). The retained-PV teardown model is extended, not reversed.
+Fold Vault — the sole, finalized secrets/KMS/PKI root — into the canonical cluster lifecycle:
+reconcile deploys and unseals it on the init-once / unseal-on-rebuild contract, teardown preserves
+its durable PV, and a sealed Vault is a first-class fail-closed cluster status (vault_doctrine §5,
+§7, §15). Because Vault is the only secrets backend, a sealed Vault means no secret resolves, no
+cert issues, no MinIO object decrypts, and no secret-dependent reconcile step proceeds. The
+retained-PV teardown model is extended, not reversed.
 
 ### Deliverables
 
-- `prodbox cluster reconcile` deploys/rebinds Vault, runs `vault init`-if-empty, unseals from the
-  unlock bundle (or prompts), and runs `vault reconcile` before MinIO/chart reconcile.
+- `prodbox cluster reconcile` deploys/rebinds Vault before MinIO/chart reconcile, runs `vault init`
+  **exactly once, ever** (only when the durable PV is empty), and on every subsequent reconcile
+  redeploys the Vault chart against existing data and only **unseals** it from the `.age` unlock
+  bundle (or prompts) — no re-init and no key regeneration. A cluster rebuild is not a fresh Vault.
 - `prodbox cluster delete --yes` and `--cascade --yes` both preserve the durable Vault PV
-  (`.data/vault/vault/0`) exactly like the MinIO PV; no `prodbox` command removes it.
+  (`.data/vault/vault/0`) exactly like the MinIO PV; no `prodbox` command removes it. Vault KV is as
+  durable across `cluster delete` + `cluster reconcile` rebuild cycles as any retained PV.
 - `prodbox cluster status` / `prodbox edge status` surface Vault sealed/unsealed/uninitialized as a
   first-class line.
-- Lifecycle commands gain fail-closed readiness gates that refuse secret-dependent work when Vault
-  is sealed.
+- Lifecycle commands gain absolute fail-closed readiness gates: a sealed, unreachable, or
+  uninitialized Vault refuses every secret-dependent reconcile step rather than reconstructing any
+  secret from a non-Vault source (the master-seed HMAC derivation model is retired, not wrapped).
 
 ### Validation
 
-- Cluster teardown preserves the Vault and MinIO PVs; cluster reconcile rebinds Vault and recovers
-  after unseal.
-- A sealed Vault is reported by `cluster status`, not hidden.
+- Cluster teardown preserves the Vault and MinIO PVs; cluster reconcile rebinds Vault, unseals
+  without re-init, and recovers the retained Vault KV state after unseal.
+- A sealed Vault is reported by `cluster status` and fails secret-dependent reconcile steps closed,
+  not hidden.
 
 ### Remaining Work
 
 - Metadata hardening + the red-team sweep land in Sprint `4.30`.
+- The federated child-cluster auto-unseal and the fail-closed unseal cascade land in Sprint `4.32`.
 
 ## Sprint 4.30: MinIO Metadata Hardening and Sealed-State Red-Team 📋
 
@@ -2530,14 +2555,21 @@ preserves its durable PV, and a sealed Vault is a first-class cluster status (va
 ### Objective
 
 Remove sensitive meaning from MinIO object names and audit every surface for downstream-cluster
-metadata leakage, so a sealed Vault reveals only opaque object IDs (vault_doctrine §9, §14, §16).
+metadata leakage, so that with Vault as the sole secrets root a sealed Vault reduces every
+prodbox-owned MinIO bucket to an opaque, durable ciphertext pile — only opaque object IDs are
+legible (vault_doctrine §9, §14, §16). Every prodbox-owned object (the in-force cluster config,
+gateway state, Pulumi backend state, checkpoints, indexes) is a `prodbox-envelope-v1`
+Vault-Transit envelope.
 
 ### Deliverables
 
 - MinIO objects use opaque IDs (`objects/<opaque-id>.enc`) plus Vault-encrypted indexes
-  (`indexes/*.enc`); meaningful prefixes that reveal downstream-cluster inventory are removed.
+  (`indexes/*.enc`); meaningful prefixes that reveal downstream-cluster inventory are removed, so a
+  sealed Vault leaks nothing about workloads, downstream clusters, or credentials beyond the
+  unencrypted basics.
 - Log redaction: no SecretRef-resolved values, unlock-bundle plaintext, Vault tokens, or sensitive
-  downstream-cluster names on sealed-state failure paths.
+  downstream-cluster names (existence, identities, endpoints, kubeconfigs, account IDs, Pulumi
+  stacks) on sealed-state failure paths.
 - The red-team checklist (vault_doctrine §16) is exercised.
 
 ### Validation
@@ -2598,6 +2630,55 @@ storage-binding model or the retained-PV teardown contract.
   `vscode` Deployment, and the hand-applied Vault PV are recorded in
   [legacy-tracking-for-deletion.md](legacy-tracking-for-deletion.md).
 
+## Sprint 4.32: Federated Lifecycle Reconcile and Fail-Closed Unseal Cascade 📋
+
+**Status**: Planned
+**Implementation**: `src/Prodbox/CLI/Rke2.hs`, `src/Prodbox/Lifecycle/`, `src/Prodbox/Vault/`
+**Blocked by**: Sprints `4.29`, `3.20`
+**Docs to update**: `documents/engineering/cluster_federation_doctrine.md`, `documents/engineering/lifecycle_reconciliation_doctrine.md`, `documents/engineering/vault_doctrine.md`, `documents/engineering/config_doctrine.md`
+
+### Objective
+
+Wire the Vault transit-seal trust tree (Sprint `3.20`) into the canonical cluster lifecycle so a
+child cluster's `cluster reconcile` auto-unseals against its parent, the init-once / unseal-on-rebuild
+contract holds across the whole hierarchy, and a sealed-or-unreachable parent fail-closed-bricks its
+children — the cascade rooted in one operator unsealing the root cluster
+([cluster_federation_doctrine.md](../documents/engineering/cluster_federation_doctrine.md);
+[lifecycle_reconciliation_doctrine.md § 3.1](../documents/engineering/lifecycle_reconciliation_doctrine.md)).
+Mutating the root cluster's in-force config — the keys to the kingdom for every downstream cluster —
+is gated on the root Vault token (vault_doctrine §11; config_doctrine §6.2).
+
+### Deliverables
+
+- A **child** cluster's `prodbox cluster reconcile` deploys Vault with `seal "transit"` pointed at
+  the parent cluster's Vault and auto-unseals against it — no human, no local unseal keys. A child
+  Vault that cannot reach a live, unsealed parent fails reconcile closed with a clear safe error.
+- The init-once / unseal-on-rebuild contract (Sprint `4.29`) holds per cluster across the tree: at
+  child init the child's recovery keys + initial root token are stored in the parent's Vault KV and
+  the parent's transit key is the child's unseal authority; on every subsequent child rebuild Vault
+  only auto-unseals against the parent.
+- The fail-closed brick cascade is enforced: a sealed/unreachable parent means its children cannot
+  unseal, so the whole subtree refuses secret-dependent work — cluster liveness for the tree roots
+  in the operator unsealing the root Vault.
+- Reads of a cluster's unencrypted basics (cluster id, this cluster's Vault address, seal mode, and —
+  for a child — the parent reference it contacts to auto-unseal) stay free; full in-force config
+  reads require an unsealed Vault; **writes to the root cluster's in-force config require the root
+  Vault token**, wired into the lifecycle so a non-root token cannot mutate root config.
+
+### Validation
+
+- A child cluster `cluster reconcile` against a live, unsealed parent auto-unseals with no operator
+  unseal step; the same reconcile against a sealed/unreachable parent fails closed with a safe
+  error and reconstructs no secret from a non-Vault source.
+- Sealing the root Vault is observed to fail-closed-brick every downstream cluster's
+  secret-dependent reconcile until the operator re-unseals the root.
+- A root-config write attempted without the root Vault token is refused; a free read of the
+  unencrypted basics succeeds with the rest of the in-force config sealed and opaque.
+
+### Remaining Work
+
+- The sealed-Vault canonical validation across the federated tree is exercised under Sprint `5.8`.
+
 ## Documentation Requirements
 
 **Engineering docs to create/update:**
@@ -2638,16 +2719,29 @@ storage-binding model or the retained-PV teardown contract.
 - `documents/engineering/unit_testing_policy.md` - native lifecycle and aggregate validation
   ownership.
 - [`documents/engineering/vault_doctrine.md`](../documents/engineering/vault_doctrine.md) - SSoT
-  for the fail-closed Vault secret-management model; for Sprint `4.29` it records Vault folded into
-  the canonical cluster lifecycle (reconcile deploys/unseals, teardown preserves the durable Vault
-  PV alongside the MinIO PV, sealed Vault is a first-class `cluster status` line — vault_doctrine
+  for the fail-closed Vault-root secret-management model (Vault is the sole secrets/KMS/PKI root; the
+  master-seed HMAC derivation model is retired, not extended); for Sprint `4.29` it records Vault
+  folded into the canonical cluster lifecycle on the init-once / unseal-on-rebuild contract (reconcile
+  deploys/unseals, teardown preserves the durable Vault PV alongside the MinIO PV, sealed Vault is a
+  first-class fail-closed `cluster status` line — vault_doctrine
   [§5](../documents/engineering/vault_doctrine.md#5-vault-deployment-model),
   [§7](../documents/engineering/vault_doctrine.md#7-vault-lifecycle-commands),
-  [§15](../documents/engineering/vault_doctrine.md#15-sealed-state-behavior-matrix)), and for
+  [§15](../documents/engineering/vault_doctrine.md#15-sealed-state-behavior-matrix)), for
   Sprint `4.30` the MinIO opaque-object-ID metadata hardening plus the sealed-state red-team sweep
   (vault_doctrine [§9](../documents/engineering/vault_doctrine.md#9-minio-as-a-ciphertext-store),
-  [§16](../documents/engineering/vault_doctrine.md#16-red-team-checklist)). The retained-PV
-  teardown model is extended, not reversed.
+  [§16](../documents/engineering/vault_doctrine.md#16-red-team-checklist)), and for Sprint `4.32` the
+  federated lifecycle reconcile — child-cluster auto-unseal, the fail-closed unseal cascade, and the
+  root-token-gated root-config write. The retained-PV teardown model is extended, not reversed.
+- [`documents/engineering/cluster_federation_doctrine.md`](../documents/engineering/cluster_federation_doctrine.md) -
+  SSoT for the Vault transit-seal trust tree (root/child hierarchy, parent custody of child init
+  keys, downstream-cluster metadata as secret, the root-token config-write authority, the fail-closed
+  unseal cascade, and the unencrypted basics); for Sprint `4.32` it records the federated lifecycle
+  reconcile that auto-unseals a child against its parent and cascades the fail-closed brick down the
+  tree when a parent is sealed or unreachable.
+- [`documents/engineering/config_doctrine.md`](../documents/engineering/config_doctrine.md) - for
+  Sprint `4.32`, the root-token-gated root-config mutation wired into the lifecycle (free reads of the
+  unencrypted basics, unseal-gated full in-force-config reads, root-Vault-token-gated root-config
+  writes).
 
 **Product docs to create/update:**
 

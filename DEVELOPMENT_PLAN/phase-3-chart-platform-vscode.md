@@ -13,6 +13,22 @@
 
 ## Phase Status
 
+🔄 **Finalized 2026-06-14** — the Vault secrets model is finalized to the Vault-root architecture
+(narrated in the [README.md](README.md) Closure Status and harmonized across the plan suite per
+[development_plan_standards.md](development_plan_standards.md) rule J). Vault is the sole
+secrets/KMS/PKI root for the chart platform; the master-seed HMAC-SHA-256 derivation model is
+**retired, not extended**; the `SecretRef.FileSecret` / Secret-mounted plaintext Dhall fragment is
+**removed, not bridged**; a sealed Vault bricks chart and Keycloak secret resolution (hard
+fail-closed). Sprints `3.17` and `3.18` are **reframed** to own that finalized end state — Vault
+installed on both substrates on the init-once/unseal-on-rebuild durable PV, and **all** chart and
+Keycloak secrets fetched from Vault KV via Vault Kubernetes auth. Two new sprints are added: Sprint
+`3.19` **retires the master-seed derivation** so Vault KV is the sole secret store (📋 Planned,
+blocked by Sprint `3.18`), and Sprint `3.20` stands up the **Vault transit-seal hierarchy** with
+per-cluster seal custody (📋 Planned, blocked by Sprint `3.17`). The chart-secret implementation is
+not validated, so these sprints stay `📋 Planned`; the earlier Phase 3 sprints (`3.1`–`3.16`) remain
+`Done` on their owned surfaces. See [vault_doctrine.md](../documents/engineering/vault_doctrine.md)
+and [cluster_federation_doctrine.md](../documents/engineering/cluster_federation_doctrine.md).
+
 ✅ **Reclosed 2026-06-09** — reopened for Sprints `3.15`–`3.16` (design-intention review,
 2026-06-09; narrated in the [README.md](README.md) Closure Status per
 [development_plan_standards.md](development_plan_standards.md) rule A); both landed. Sprint `3.15` ✅
@@ -1378,11 +1394,16 @@ owned by Sprint `8.5`.
   Patroni doctrine, and the land-or-delete loud-failure Patroni-storage-mismatch contract
   (Sprint `3.16`).
 - `documents/engineering/storage_lifecycle_doctrine.md` - retained storage and rebinding doctrine.
-- `documents/engineering/vault_doctrine.md` - the in-cluster Vault platform component on a durable
-  `.data/vault/vault/0` PV, the `prodbox-envelope-v1` Vault-Transit envelopes wrapping the MinIO
-  master-seed object and active Dhall, and the chart/Keycloak-secret-via-Vault-Kubernetes-auth
-  model; scheduled under Sprints `3.17`–`3.18` (extends, does not reverse, the Sprint `3.16`
-  daemon-only seed boundary and HMAC-SHA-256 derivation).
+- `documents/engineering/vault_doctrine.md` - Vault as the sole secrets/KMS/PKI root on a durable
+  `.data/vault/vault/0` PV (init-once/unseal-on-rebuild, both substrates), the `prodbox-envelope-v1`
+  Vault-Transit envelopes wrapping every prodbox-owned MinIO object, the
+  chart/Keycloak-secret-via-Vault-Kubernetes-auth model, and the per-cluster Vault seal model;
+  scheduled under Sprints `3.17`–`3.20`. The master-seed HMAC-SHA-256 derivation model is retired,
+  not extended (Sprint `3.19`).
+- `documents/engineering/cluster_federation_doctrine.md` - the root/child transit-seal trust tree and
+  per-cluster seal custody (Sprint `3.20`).
+- `documents/engineering/config_doctrine.md` - chart/Keycloak secrets from Vault KV via Vault
+  Kubernetes auth, with no Secret-mounted plaintext Dhall fragment (Sprints `3.18`–`3.19`).
 - `documents/engineering/local_registry_pipeline.md` - Harbor-loading implications for the chart
   platform where relevant.
 - `documents/engineering/unit_testing_policy.md` - chart-platform integration ownership.
@@ -1693,77 +1714,187 @@ deployed Vault** (Sprint `1.36`), and **the `charts/vault/` platform-component c
 working durable-PV Vault** (Sprint `3.17`).
 
 The rest of Sprint `3.17` — the Vault-Transit-backed `DekCipher` (the live DEK wrap/unwrap), the
-gateway Vault Kubernetes-auth seed unwrap + active-Dhall envelope wiring, and the stronger
-native-in-process-S3/scrubbed-memory seed rung — remains `📋 Planned`. Folding `ensureVaultRuntime`
-into `cluster reconcile` so it deploys Vault itself is Sprint `4.29`; Vault's deterministic PV
-joining the unified retained-storage reconciler under `.data/vault/vault/0` is Sprint `4.31` (the
-live run used a manual `helm install` + a hand-applied PV, which proved the chart).
+in-cluster Vault Kubernetes-auth unwrap of the envelope-wrapped in-force config and prodbox-owned
+MinIO objects, and the init-once/unseal-on-rebuild lifecycle wiring — remains `📋 Planned`. Folding
+`ensureVaultRuntime` into `cluster reconcile` so it deploys Vault itself is Sprint `4.29`; Vault's
+deterministic PV joining the unified retained-storage reconciler under `.data/vault/vault/0` is
+Sprint `4.31` (the live run used a manual `helm install` + a hand-applied PV, which proved the
+chart). Retiring the master-seed derivation modules so Vault KV is the sole secret store is Sprint
+`3.19`; the transit-seal hierarchy that gives each cluster its seal custody is Sprint `3.20`.
 
 ### Objective
 
-Stand up Vault as a durable-PV platform component on both substrates and make the gateway master
-seed and active daemon Dhall Vault-Transit envelopes that a sealed Vault cannot decrypt
-(vault_doctrine §5, §8–§9). The HMAC-SHA-256 derivation model and the daemon-only seed boundary
-(Sprint 3.16) are unchanged behind the envelope — this extends, it does not reverse them.
+Stand up Vault as the durable-PV secrets/KMS/PKI root on **both substrates** (home + AWS,
+identically) on the init-once/unseal-on-rebuild lifecycle, and make every prodbox-owned MinIO
+object — the in-force config, gateway state, and Pulumi backend state — a `prodbox-envelope-v1`
+Vault-Transit envelope that a sealed Vault cannot decrypt (vault_doctrine §5, §8–§9). A sealed,
+unreachable, or uninitialized Vault means nothing in the `prodbox` bucket decrypts: the bucket
+reveals only opaque ids. There is no plaintext fallback and no degraded mode that leaks.
 
 ### Deliverables
 
 - Vault added to the shared `[PlatformComponent]` inventory so the home and AWS substrate installers
-  both stand up an in-cluster Vault on a durable `.data/vault/vault/0` PV (substrate equivalence).
+  both stand up an in-cluster Vault — identically — on a durable `.data/vault/vault/0` PV
+  (`manual` StorageClass, `Retain`, single-node affinity), preserved across `cluster delete` exactly
+  like MinIO's PV (substrate equivalence; vault_doctrine §A2 init-once/unseal-on-rebuild).
+- `vault init` runs **exactly once, ever** — the first time the PV is empty. Every subsequent
+  reconcile redeploys the Vault chart against existing data and only **unseals** it; no re-init, no
+  key regeneration. A cluster rebuild is not a fresh Vault, so Vault KV is as durable across rebuilds
+  as any retained PV.
 - `Prodbox.Crypto.Envelope` (AEAD + Vault-Transit-wrapped DEK) and `Prodbox.Minio.EncryptedObject`.
-- The MinIO `prodbox/master-seed` object and the active Dhall stored as `prodbox-envelope-v1`
-  envelopes; the gateway daemon authenticates to Vault with Kubernetes auth and unwraps the DEK.
-- The seed-read and active-Dhall-read paths fail closed (gateway `/readyz` reports
-  waiting-for-Vault) when Vault is sealed.
-- The plaintext seed never lands on a disk-backed file: minimally, the daemon's scratch file is
-  backed by a RAM-only `emptyDir{medium: Memory}` tmpfs mount (valid with node swap off, per the
-  kubelet requirement); ideally, the daemon drops the AWS-CLI file handoff for a native in-process
-  S3 path that holds the seed only in scrubbed memory (no file, no child process). Secret-bearing
-  daemon↔MinIO transfers use TLS (the hop is plaintext HTTP today). The operator unlock-bundle
-  password is the ephemeral root that gates the decrypt (vault_doctrine §6 "The unlock chain").
+- Every prodbox-owned MinIO object — the in-force config, gateway state, Pulumi backend state,
+  checkpoints, and indexes — stored as `prodbox-envelope-v1` envelopes with opaque ids and
+  Vault-encrypted indexes; in-cluster consumers authenticate to Vault with Kubernetes auth and
+  unwrap the DEK.
+- The config-read and object-decrypt paths fail closed (gateway `/readyz` reports
+  waiting-for-Vault) when Vault is sealed; new Pods do not reconstruct secrets from any non-Vault
+  source.
+- No plaintext secret ever lands on a disk-backed file. Secret-bearing daemon↔MinIO transfers use
+  TLS. MinIO's own root credentials come from Vault. The operator unlock-bundle password — for the
+  root cluster — is the ephemeral key that gates the decrypt (vault_doctrine §6 "The unlock chain").
 
 ### Validation
 
-- MinIO `prodbox`-bucket objects are ciphertext; a bucket dump while Vault is sealed reveals no
-  plaintext seed or active Dhall.
-- The gateway daemon cannot read the active Dhall or derive secrets when Vault is sealed.
-- The HMAC-SHA-256 derivation and daemon-only seed boundary remain unchanged behind the envelope.
+- MinIO `prodbox`-bucket objects are ciphertext; a bucket dump while Vault is sealed reveals only
+  opaque ids — no plaintext in-force config, gateway state, or Pulumi backend state.
+- An in-cluster consumer cannot read the in-force config or decrypt any prodbox object when Vault is
+  sealed; the gateway daemon and Keycloak fail their readiness gates.
+- `cluster delete` preserves `.data/vault/vault/0`; a subsequent rebuild unseals the existing Vault
+  rather than re-initializing it.
 
 ### Remaining Work
 
-- Chart/Keycloak secret consumption via Vault auth lands in Sprint `3.18`.
+- Chart/Keycloak secret consumption via Vault auth lands in Sprint `3.18`; the master-seed
+  derivation model is retired in Sprint `3.19`; the transit-seal hierarchy lands in Sprint `3.20`.
 
 ## Sprint 3.18: Chart and Keycloak Secrets via Vault Kubernetes Auth 📋
 
 **Status**: Planned
-**Implementation**: `src/Prodbox/Secret/Inventory.hs`, `charts/keycloak/`, `charts/vscode/`, `charts/api/`, `charts/websocket/`
+**Implementation**: `src/Prodbox/Secret/Inventory.hs`, `src/Prodbox/Settings/SecretRef.hs`, `charts/keycloak/`, `charts/vscode/`, `charts/api/`, `charts/websocket/`
 **Blocked by**: Sprint `3.17`
-**Docs to update**: `documents/engineering/secret_derivation_doctrine.md`, `documents/engineering/helm_chart_platform_doctrine.md`, `documents/engineering/vault_doctrine.md`
+**Docs to update**: `documents/engineering/secret_derivation_doctrine.md`, `documents/engineering/helm_chart_platform_doctrine.md`, `documents/engineering/config_doctrine.md`, `documents/engineering/vault_doctrine.md`
 
 ### Objective
 
-Have in-cluster chart workloads — including Keycloak — consume their data-bound secrets through Vault
-Kubernetes auth rather than Secret-mounted plaintext Dhall fragments (vault_doctrine §12).
+Have **every** in-cluster chart workload — including Keycloak — consume **all** of its secrets from
+Vault KV via Vault Kubernetes auth. Vault KV is the sole secret store for the chart platform; there
+is no Secret-mounted plaintext Dhall fragment, no `as Text` credential import, and no plaintext
+fallback (vault_doctrine §12; config_doctrine §A6). The `SecretRef.FileSecret` constructor and its
+`/etc/.../secrets/*.dhall` mount contract are **removed, not bridged**.
 
 ### Deliverables
 
 - Each chart that needs a Vault-held secret has a Kubernetes service account, a namespace+SA-bound
   Vault role, and a least-privilege Vault policy.
-- Keycloak admin bootstrap, database credentials, and client secrets resolve from Vault KV via Vault
-  auth (Vault Agent Injector, CSI Secret Store Vault provider, or app-side auth).
-- The derived-vs-generated inventory in `secret_derivation_doctrine.md` §6 extends with the Vault-KV
-  class; the `SecretRef.FileSecret` Secret-mounted Dhall fragments remain only as the migration
-  bridge.
+- Keycloak admin bootstrap, database credentials, client secrets, and SMTP material — and every
+  other chart/workload secret — resolve from Vault KV via Vault auth (Vault Agent Injector, CSI
+  Secret Store Vault provider, or app-side auth). There is no second store.
+- The `SecretRef.FileSecret` constructor and its resolver arm are deleted from
+  `Prodbox.Settings.SecretRef`; the secret-mounted plaintext Dhall fragment contract is removed from
+  every chart and from the gateway daemon. In-cluster consumers authenticate to Vault directly.
+- The secret inventory in `secret_derivation_doctrine.md` maps each chart/Keycloak secret to its
+  Vault KV path, owning Vault policy, and consuming service account (no derivation class survives).
 
 ### Validation
 
 - A sealed Vault fails Keycloak bootstrap/readiness closed; new Pods do not reconstruct secrets from
-  k8s Secret plaintext.
+  any non-Vault source.
+- No chart or gateway manifest mounts a plaintext Dhall fragment, and `Prodbox.Settings.SecretRef`
+  carries no `FileSecret` arm.
 - Chart deploys succeed when Vault is unsealed and the SA-bound policy allows the read.
 
 ### Remaining Work
 
-- The `keycloak-smtp` SMTP credential + invite OIDC client secrets land in Sprint `8.9`.
+- The master-seed derivation modules and chart-generated `lookup`+`randAlphaNum` Secrets are removed
+  in Sprint `3.19`; the `keycloak-smtp` SMTP credential + invite OIDC client secrets are owned by
+  Sprint `8.9`.
+
+## Sprint 3.19: Retire Master-Seed Derivation: Vault KV Is the Sole Secret Store 📋
+
+**Status**: Planned
+**Implementation**: `src/Prodbox/Secret/Derive.hs`, `src/Prodbox/Secret/MasterSeed.hs`, `src/Prodbox/Secret/Inventory.hs`, `src/Prodbox/Gateway/Daemon.hs`, `src/Prodbox/CheckCode.hs`, `charts/minio/templates/secret.yaml`, `charts/keycloak/`
+**Blocked by**: Sprint `3.18`
+**Docs to update**: `documents/engineering/secret_derivation_doctrine.md`, `documents/engineering/vault_doctrine.md`, `documents/engineering/helm_chart_platform_doctrine.md`, `documents/engineering/config_doctrine.md`
+
+### Objective
+
+Retire the master-seed HMAC-SHA-256 derivation model entirely so Vault KV is the sole secret store.
+The derivation model is removed, not wrapped: every secret that was previously HMAC-derived or
+chart-generated becomes a Vault KV object, generated once, persisted on Vault's durable storage, and
+fetched by each in-cluster consumer via Vault Kubernetes auth (secret_derivation_doctrine §A1;
+vault_doctrine §A1). There is no `master-seed` object in MinIO.
+
+### Deliverables
+
+- `Prodbox.Secret.Derive`, `Prodbox.Secret.MasterSeed`, and `Prodbox.Secret.Inventory` are removed,
+  along with the gateway daemon `/v1/secret/derive` and `/v1/secret/ensure-namespace` RPCs, the
+  `checkRawMasterSeedReadScope` daemon-only-seed lint, and `selfBootstrapOwnSecrets`.
+- The `prodbox/master-seed` MinIO object is removed; no code path reads or writes it.
+- Every previously-derived secret — Patroni/Postgres passwords, the Keycloak admin password, OIDC
+  client secrets, gateway per-node event keys — is a Vault KV object fetched via Vault k8s auth.
+- The chart-generated `lookup`+`randAlphaNum` Secrets (MinIO root in
+  `charts/minio/templates/secret.yaml`, OIDC client secrets) are replaced by Vault KV reads.
+- `secret_derivation_doctrine.md` describes only the Vault-KV model; the legacy "derivation" content
+  is repointed to [legacy-tracking-for-deletion.md](legacy-tracking-for-deletion.md).
+
+### Validation
+
+- The repository contains no `Prodbox.Secret.{Derive,MasterSeed,Inventory}` module, no
+  `/v1/secret/*` daemon RPC, no `checkRawMasterSeedReadScope` lint, and no `selfBootstrapOwnSecrets`.
+- No chart template renders a `lookup`+`randAlphaNum` Secret; MinIO root and OIDC client secrets read
+  from Vault KV.
+- With Vault unsealed, chart and Keycloak secrets resolve from Vault KV; with Vault sealed, secret
+  resolution fails closed and no consumer reconstructs a secret from any non-Vault source.
+
+### Remaining Work
+
+- The transit-seal hierarchy that gives each cluster its seal custody for these Vault KV objects is
+  Sprint `3.20`; federated lifecycle reconcile and the fail-closed unseal cascade are Sprint `4.32`.
+
+## Sprint 3.20: Vault Transit-Seal Hierarchy and Per-Cluster Seal Custody 📋
+
+**Status**: Planned
+**Implementation**: `src/Prodbox/Vault/Seal.hs`, `src/Prodbox/Vault/Client.hs`, `src/Prodbox/CLI/Vault.hs`, `charts/vault/`
+**Blocked by**: Sprint `3.17`
+**Docs to update**: `documents/engineering/cluster_federation_doctrine.md`, `documents/engineering/vault_doctrine.md`, `documents/engineering/config_doctrine.md`
+
+### Objective
+
+Establish the per-cluster Vault seal model and seal custody that underpins cluster federation: the
+root cluster uses a Shamir seal unlocked by the operator, and each child cluster uses
+`seal "transit"` pointed at its parent's Vault, with the child's init keys held in the parent's
+Vault KV (cluster_federation_doctrine §A3; vault_doctrine §A2–§A3). A child Vault literally cannot
+unseal without a live, unsealed parent — the fail-closed brick cascades down the tree from the root.
+
+### Deliverables
+
+- The root cluster's Vault uses a Shamir seal; its recovery keys + initial root token are emitted
+  into the `.age` unlock bundle on retained host storage
+  (`.data/prodbox/vault-unlock-bundle.age`), decrypted only by the operator's memorized password
+  (the test harness simulates the password via `test-secrets.dhall`).
+- A child cluster's Vault config carries `seal "transit"` against the parent cluster's Vault; the
+  child auto-unseals against the parent with no local unseal keys and no human in the loop.
+- At child init, the child's recovery keys + initial root token are stored in the **parent's** Vault
+  KV; the parent's Transit key is the child's unseal authority.
+- Per-domain Transit keys + least-privilege Vault policies are provisioned for the envelope and
+  secret-class consumers (config, gateway state, Pulumi backend, chart/Keycloak secrets).
+- The `prodbox vault` command group surfaces the root init/unseal path and the child seal-custody
+  registration path (the parent-owns-child-init-keys contract).
+
+### Validation
+
+- A child Vault configured with `seal "transit"` auto-unseals against a live parent and refuses to
+  unseal when the parent is sealed or unreachable (the cascade brick).
+- The root Vault's recovery keys + root token are present only inside the `.age` unlock bundle and a
+  child's init keys are present only in its parent's Vault KV — never on the child's local storage.
+- Per-domain Transit keys exist with least-privilege policies; an unauthorized SA cannot wrap/unwrap
+  against a domain it is not bound to.
+
+### Remaining Work
+
+- Child `cluster reconcile` auto-unseal-from-parent wiring, the init-once/unseal-on-rebuild
+  lifecycle, and the full fail-closed unseal cascade are Sprint `4.32`; the cluster-federation trust
+  topology and downstream-cluster custody CLI/gateway surface is Sprint `2.26`.
 
 ## Related Documents
 

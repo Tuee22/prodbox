@@ -18,6 +18,22 @@
 
 ## Phase Status
 
+🔄 **Reopened 2026-06-14** — the Vault-root finalization (narrated in
+[README.md → Closure Status](README.md) per rule A) makes Vault the sole, finalized
+secrets / KMS / PKI root for the AWS substrate. Sprints `7.14` and `7.15` are reframed to own
+that finalized end state: the master-seed HMAC-derivation model is **retired** (not extended),
+`FileSecret` / Secret-mounted plaintext Dhall is **removed** (not bridged), and a sealed Vault
+fails every AWS-substrate Pulumi op and TLS issuance **closed**. Sprint `7.14` (📋 Planned) owns
+Vault-Transit-enveloped Pulumi backend objects and prodbox-created AWS identities as Vault KV
+`SecretRef.Vault` references; Sprint `7.15` (📋 Planned) owns ACME EAB and TLS private-key material
+as the Vault-protected sole authority. Both are blocked on the cross-phase Vault platform and
+transit-seal sprints (`1.37`, `3.17`, `3.18`, `3.20`, `1.35`, `1.36`). Honest status: 📋 Planned —
+the Vault-root AWS-substrate implementation is not yet validated. All earlier Phase 7 sprints
+(`7.1`–`7.13`) stay `Done` on their owned scope. See
+[vault_doctrine.md](../documents/engineering/vault_doctrine.md),
+[cluster_federation_doctrine.md](../documents/engineering/cluster_federation_doctrine.md), and the
+[legacy ledger](legacy-tracking-for-deletion.md).
+
 ✅ **Reclosed 2026-06-09** — Phase 7 was reopened for Sprints `7.12`–`7.13` (design-intention review;
 narrated in [README.md → Closure Status](README.md) per rule A); both have now landed. Sprint `7.12`
 ✅ made **substrate equivalence a structural invariant**: one `Prodbox.ContainerImage` Envoy release
@@ -2910,29 +2926,36 @@ new name) and the AWS-substrate `test all` exercise are operator-driven.
 
 **Status**: Planned
 **Implementation**: `src/Prodbox/Pulumi/EncryptedBackend.hs`, `src/Prodbox/Aws.hs`
-**Blocked by**: Sprints `1.37`, `3.17`
+**Blocked by**: Sprints `1.37`, `3.17`, `3.18`
 **Docs to update**: `documents/engineering/aws_admin_credentials.md`, `documents/engineering/aws_integration_environment_doctrine.md`, `documents/engineering/vault_doctrine.md`
 
 ### Objective
 
-Make the Pulumi backend objects themselves Vault-Transit envelopes and move every prodbox-created
-AWS identity into Vault KV (vault_doctrine §8, §10, §13). This extends the per-run MinIO backend; it
-does not change the backend's lifetime class.
+Make the AWS-substrate Pulumi backend objects themselves Vault-Transit envelopes and hold every
+prodbox-created AWS identity as a Vault KV object (vault_doctrine §8, §10, §13). Vault is the sole
+authority over Pulumi backend state and AWS credentials: there is no plaintext fallback and no
+non-Vault store. A sealed Vault makes the backend opaque and fails every `aws stack` op closed.
 
 ### Deliverables
 
-- Pulumi backend objects in MinIO stored as `prodbox-envelope-v1` envelopes; a sealed Vault makes
-  the raw backend metadata opaque, not just the gate.
-- IAM users/roles/access keys prodbox creates live in Vault KV and are referenced from Dhall as
-  `SecretRef.Vault`.
-- The elevated/admin AWS credential prompt stores the resulting least-privilege identity in Vault
-  and discards the prompted elevated credential; it is never written to `prodbox-config.dhall`.
+- Pulumi backend objects in MinIO are stored as `prodbox-envelope-v1` Vault-Transit envelopes; a
+  sealed Vault reveals only opaque ids — no resource names, account IDs, or topology.
+- Every `aws stack` op performs a Vault reachable / initialized / unsealed / decryptable readiness
+  gate before touching state; a sealed Vault blocks preview / update / destroy with a clear
+  safe error rather than a degraded path that leaks.
+- IAM users / roles / access keys prodbox creates are Vault KV objects, referenced from Dhall as
+  `SecretRef.Vault` only — there is no plaintext AWS secret field in `prodbox-config.dhall`.
+- The elevated / admin AWS credential is prompted, used, and discarded: the prompt provisions a
+  least-privilege identity stored in Vault KV and never writes the prompted elevated credential to
+  `prodbox-config.dhall`.
 
 ### Validation
 
 - A MinIO dump of the Pulumi backend while Vault is sealed reveals no resource names, account IDs,
-  or topology.
-- `prodbox config validate` confirms no AWS secret is plaintext in the config.
+  or topology — only opaque ids.
+- A sealed Vault blocks `prodbox aws stack <stack> reconcile` / `destroy` with a clear safe error.
+- `prodbox config validate` confirms no AWS secret is plaintext in the config (only `SecretRef.Vault`
+  references).
 
 ### Remaining Work
 
@@ -2942,22 +2965,24 @@ does not change the backend's lifetime class.
 
 **Status**: Planned
 **Implementation**: `src/Prodbox/PublicEdge.hs`, `src/Prodbox/Settings.hs`, `charts/keycloak/`, `charts/vscode/`
-**Blocked by**: Sprints `1.35`, `1.36`
+**Blocked by**: Sprints `1.35`, `1.36`, `3.18`
 **Docs to update**: `documents/engineering/acme_provider_guide.md`, `documents/engineering/envoy_gateway_edge_doctrine.md`, `documents/engineering/vault_doctrine.md`
 
 ### Objective
 
-Move ACME EAB credentials and TLS private-key material behind Vault and make TLS fail closed when
-Vault is sealed (vault_doctrine §11). This extends the single ZeroSSL issuer + S3 retain-restore
-model; ZeroSSL remains the sole provider and the retained-and-restored certificate behavior is
-unchanged.
+Make Vault the sole TLS authority for the AWS substrate: ACME EAB credentials are Vault KV objects
+and TLS private-key material is generated-in / stored-in / wrapped-by Vault (vault_doctrine §11).
+A sealed Vault fails new issuance and key retrieval closed. ZeroSSL remains the sole public ACME
+provider and the S3 cert retain-and-restore contract is unchanged, but the key material that
+contract protects is Vault-owned — there is no plaintext key material a sealed Vault could leak.
 
 ### Deliverables
 
-- `acme.eab_key_id` / `acme.eab_hmac_key` move from plaintext config fields into Vault KV, referenced
-  by `SecretRef.Vault`.
-- TLS private keys are generated-in / stored-in / wrapped-by Vault; certificate-issuance state is
-  not recoverable from plaintext Kubernetes Secrets alone.
+- `acme.eab_key_id` / `acme.eab_hmac_key` are Vault KV objects referenced by `SecretRef.Vault` —
+  there are no plaintext EAB config fields.
+- TLS private keys are generated-in / stored-in / wrapped-by Vault (Vault PKI for internal certs;
+  public ZeroSSL cert key material Vault-protected); certificate-issuance state is not recoverable
+  from plaintext Kubernetes Secrets alone.
 - The cert-manager-Vault-issuer vs native-Vault-PKI choice is recorded; new issuance and private-key
   retrieval fail closed when Vault is sealed.
 
@@ -2965,7 +2990,8 @@ unchanged.
 
 - A sealed Vault blocks new certificate issuance and private-key reconstruction; restarts fail
   closed.
-- The single ZeroSSL issuer + S3 retain-restore behavior is preserved (no re-order on rebuild).
+- The single ZeroSSL issuer + S3 retain-restore behavior is preserved (no re-order on rebuild),
+  with its key material Vault-protected.
 
 ### Remaining Work
 
@@ -3014,13 +3040,15 @@ unchanged.
 - [documents/engineering/vault_doctrine.md](../documents/engineering/vault_doctrine.md) - Sprint
   `7.14` Pulumi backend objects stored as `prodbox-envelope-v1` Vault-Transit envelopes
   ([§8](../documents/engineering/vault_doctrine.md#8-envelope-encryption-with-vault-transit),
-  [§10](../documents/engineering/vault_doctrine.md#10-pulumi-backend-under-vault)) and
-  prodbox-created AWS identities held in Vault KV referenced by `SecretRef.Vault`
+  [§10](../documents/engineering/vault_doctrine.md#10-pulumi-backend-under-vault)) with a sealed-Vault
+  readiness gate on every `aws stack` op, and prodbox-created AWS identities held in Vault KV
+  referenced by `SecretRef.Vault`
   ([§13](../documents/engineering/vault_doctrine.md#13-config-and-state-classification)); Sprint
-  `7.15` ACME EAB + TLS private-key material behind Vault that fails closed when Vault is sealed
-  ([§11](../documents/engineering/vault_doctrine.md#11-tls-and-pki-under-vault)). Both sprints
-  extend (never reverse) the per-run MinIO backend and the single ZeroSSL issuer + S3
-  retain-restore model.
+  `7.15` ACME EAB + TLS private-key material as Vault-owned objects that fail closed when Vault is
+  sealed ([§11](../documents/engineering/vault_doctrine.md#11-tls-and-pki-under-vault)). Vault is the
+  sole authority over both surfaces: the per-run MinIO backend lifetime class and the single ZeroSSL
+  issuer + S3 retain-restore behavior are unchanged, but their secret and key material is Vault-owned
+  with no plaintext fallback.
 - `documents/engineering/aws_admin_credentials.md` - Sprint `7.14` elevated/admin AWS credential
   stored as a least-privilege identity in Vault KV (never written to `prodbox-config.dhall`).
 - `documents/engineering/envoy_gateway_edge_doctrine.md` - Sprint `7.15` public-edge TLS

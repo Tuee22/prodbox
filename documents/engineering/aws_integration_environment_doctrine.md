@@ -281,12 +281,15 @@ The following variables are forbidden as ambient auth sources:
 11. `AWS_ROLE_SESSION_NAME`
 
 The same forbidden-env-var posture extends to the in-cluster gateway daemon: AWS
-credentials reach the daemon Pod via a k8s Secret mounted as a Dhall file at
-`/etc/gateway/secrets/aws.dhall`, imported by the main Dhall config per
-[config_doctrine.md](./config_doctrine.md). No `AWS_*` environment variable is read by
-supported daemon paths; the subprocess that calls `aws route53 ...` receives credentials
-through an explicit subprocess-environment overlay assembled from the decoded Dhall
-config, not from the Pod environment.
+credentials reach the daemon Pod from Vault KV, fetched at startup through Vault Kubernetes
+auth — there is no Secret-mounted `aws.dhall` fragment in the delivery path. The
+prodbox-created AWS identities are `SecretRef.Vault` references resolved against the
+in-cluster Vault per [config_doctrine.md](./config_doctrine.md) and
+[vault_doctrine.md §12](./vault_doctrine.md#12-in-cluster-service-auth). No `AWS_*`
+environment variable is read by supported daemon paths; the subprocess that calls
+`aws route53 ...` receives credentials through an explicit subprocess-environment overlay
+assembled from the Vault-resolved material, not from the Pod environment. A sealed Vault
+fails this credential fetch closed.
 
 ## 3. Harness Preflight Contract
 

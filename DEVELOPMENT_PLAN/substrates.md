@@ -92,13 +92,22 @@ piece the home cluster has, the fix is to extend the shared inventory and the AW
 never to render different image refs or re-pin versions per substrate.
 
 Both substrates also stand up an in-cluster Vault on a durable PV from the shared
-`[PlatformComponent]` inventory (scheduled, Sprint `3.17`). Vault is **not** a substrate — that
-word is reserved for the home-local and AWS substrates — it is a platform component that **both**
-substrates run identically, exactly like Harbor, MinIO, and the Percona operator. Vault becomes
-the fail-closed secrets / key-management / encryption-as-a-service / PKI backend of whichever
-substrate is active; a sealed Vault reduces the cluster to an opaque durable-data pile until it is
-unsealed. The same shared-inventory coverage test that keeps Harbor/MinIO/Percona in lockstep
-across both installers extends to the Vault component, so neither installer may silently drop it.
+`[PlatformComponent]` inventory (scheduled, Sprint `3.17`), **installed identically on both as the
+sole, finalized secrets / key-management / encryption-as-a-service / PKI root**. Vault is **not** a
+substrate — that word is reserved for the home-local and AWS substrates — it is a platform component
+that **both** substrates run identically, exactly like Harbor, MinIO, and the Percona operator.
+Every secret/credential/key/cert is a Vault object (KV v2, Transit, or PKI), with no second store and
+no plaintext fallback; a sealed (or unreachable/uninitialized) Vault **bricks** whichever substrate
+is active, reducing the cluster to an opaque durable-data pile until it is unsealed. The same
+shared-inventory coverage test that keeps Harbor/MinIO/Percona in lockstep across both installers
+extends to the Vault component, so neither installer may silently drop it.
+
+The federation / downstream-cluster relationship between a root cluster and its child clusters — the
+Vault transit-seal trust tree, parent custody of child init keys, and downstream-cluster inventory as
+secret data — is governed by
+[../documents/engineering/cluster_federation_doctrine.md](../documents/engineering/cluster_federation_doctrine.md);
+it is a cross-cluster trust relationship, not a substrate distinction, so it does not change the
+substrate-equivalence invariant above (both substrates still stand up the identical service set).
 See [../documents/engineering/vault_doctrine.md → §2 The fail-closed invariant](../documents/engineering/vault_doctrine.md#2-the-fail-closed-invariant)
 and [§5 Vault deployment model](../documents/engineering/vault_doctrine.md#5-vault-deployment-model).
 
@@ -333,4 +342,5 @@ they only stand up or tear down the substrate that the suite runs against.
 - [phase-5-canonical-test-suite.md](phase-5-canonical-test-suite.md)
 - [phase-7-aws-substrate-foundations.md](phase-7-aws-substrate-foundations.md)
 - [phase-8-email-invite-auth.md](phase-8-email-invite-auth.md)
-- [../documents/engineering/vault_doctrine.md](../documents/engineering/vault_doctrine.md) — the fail-closed Vault secret-management model both substrates run
+- [../documents/engineering/vault_doctrine.md](../documents/engineering/vault_doctrine.md) — the finalized, fail-closed Vault secret-management root both substrates run
+- [../documents/engineering/cluster_federation_doctrine.md](../documents/engineering/cluster_federation_doctrine.md) — the Vault transit-seal trust tree governing root/child cluster federation

@@ -10,7 +10,10 @@ module Prodbox.Http.Client
   , defaultHttpConfig
   , httpGetText
   , httpGetJson
+  , httpGetJsonWithHeaders
   , httpPostJsonResponseJson
+  , httpPostJsonWithHeaders
+  , httpRequestNoBody
   , renderHttpError
   )
 where
@@ -38,6 +41,8 @@ import Network.HTTP.Client
   , responseTimeoutMicro
   )
 import Network.HTTP.Client.TLS (tlsManagerSettings)
+import Network.HTTP.Types.Header (Header)
+import Network.HTTP.Types.Method (Method)
 import Network.HTTP.Types.Status (statusCode)
 
 -- | Errors that surface from an HTTP request through this module.
@@ -182,3 +187,76 @@ httpPostJsonResponseJson config url payload = do
                   Left err -> Left (HttpDecode err)
                   Right value -> Right value
                 else Left (HttpStatus status body)
+
+-- | Send a request with an explicit method, extra request headers, and an
+-- optional JSON-encoded body, returning the raw @(status, body)@ pair. The
+-- shared engine the header-bearing helpers below build on — used by the
+-- authenticated Vault surface (@X-Vault-Token@ + KV / Transit / @sys\/seal@).
+sendRequestRaw
+  :: HttpConfig
+  -> Method
+  -> [Header]
+  -> String
+  -> Maybe BL.ByteString
+  -> IO (Either HttpError (Int, BL.ByteString))
+sendRequestRaw config httpMethod extraHeaders url maybeBody = do
+  requestResult <- try (parseRequest url) :: IO (Either SomeException Request)
+  case requestResult of
+    Left ex -> pure (Left (HttpConnectionFailure (show ex)))
+    Right baseRequest -> do
+      let request =
+            baseRequest
+              { method = httpMethod
+              , requestHeaders =
+                  ("Accept", "application/json")
+                    : maybe [] (const [("Content-Type", "application/json")]) maybeBody
+                    ++ extraHeaders
+              , requestBody = maybe (requestBody baseRequest) RequestBodyLBS maybeBody
+              }
+      result <- runRequest config request
+      pure $ case result of
+        Left err -> Left err
+        Right response ->
+          Right (statusCode (responseStatus response), responseBody response)
+
+-- | Decode a @(status, body)@ pair: any 2xx decodes the JSON body, anything
+-- else becomes an 'HttpStatus'.
+decodeJsonResponse :: (FromJSON a) => (Int, BL.ByteString) -> Either HttpError a
+decodeJsonResponse (status, body)
+  | status >= 200 && status < 300 =
+      case eitherDecode body of
+        Left err -> Left (HttpDecode err)
+        Right value -> Right value
+  | otherwise = Left (HttpStatus status (BL8.unpack body))
+
+-- | GET with extra request headers (e.g. @X-Vault-Token@), decode JSON.
+httpGetJsonWithHeaders
+  :: (FromJSON a) => HttpConfig -> [Header] -> String -> IO (Either HttpError a)
+httpGetJsonWithHeaders config extraHeaders url = do
+  result <- sendRequestRaw config "GET" extraHeaders url Nothing
+  pure (result >>= decodeJsonResponse)
+
+-- | POST a JSON payload with extra request headers, decode the JSON response.
+httpPostJsonWithHeaders
+  :: (ToJSON a, FromJSON b)
+  => HttpConfig
+  -> [Header]
+  -> String
+  -> a
+  -> IO (Either HttpError b)
+httpPostJsonWithHeaders config extraHeaders url payload = do
+  result <- sendRequestRaw config "POST" extraHeaders url (Just (encode payload))
+  pure (result >>= decodeJsonResponse)
+
+-- | Send a bodyless request (e.g. @PUT \/v1\/sys\/seal@) with extra headers;
+-- any 2xx (including 204 No Content) is success and the response body is
+-- ignored.
+httpRequestNoBody
+  :: HttpConfig -> Method -> [Header] -> String -> IO (Either HttpError ())
+httpRequestNoBody config httpMethod extraHeaders url = do
+  result <- sendRequestRaw config httpMethod extraHeaders url Nothing
+  pure $ case result of
+    Left err -> Left err
+    Right (status, body)
+      | status >= 200 && status < 300 -> Right ()
+      | otherwise -> Left (HttpStatus status (BL8.unpack body))

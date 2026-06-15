@@ -10,7 +10,9 @@
 -- @documents/engineering/vault_doctrine.md@ §10 (Pulumi backend under Vault).
 module Prodbox.Vault.Gate
   ( VaultGateDecision (..)
+  , VaultGateOutcome (..)
   , vaultGateDecision
+  , vaultGateOutcome
   , vaultGateAllows
   , renderVaultGateBlock
   )
@@ -57,6 +59,25 @@ renderVaultGateBlock decision = case decision of
     Just (gateBlockMessage "Vault is not initialized.")
   VaultGateBlockSealed ->
     Just (gateBlockMessage "Vault is sealed.")
+
+-- | The pure result of consulting the gate at an apply-path call site: either
+-- proceed, or refuse with the rendered operator message (which the caller
+-- prints to stderr before returning a non-zero exit). 'vaultGateOutcome' is
+-- total — 'renderVaultGateBlock' returns 'Nothing' iff the decision allows — so
+-- allow maps to proceed and every fail-closed decision maps to a refusal. This
+-- is the unit-testable decision→action seam the @prodbox aws stack ...@ wiring
+-- folds over (the live wiring itself activates with the deployed Vault, Sprint
+-- 3.17).
+data VaultGateOutcome
+  = VaultGateProceed
+  | VaultGateRefuse String
+  deriving (Eq, Show)
+
+vaultGateOutcome :: Either HttpError SealStatus -> VaultGateOutcome
+vaultGateOutcome probe =
+  case renderVaultGateBlock (vaultGateDecision probe) of
+    Nothing -> VaultGateProceed
+    Just message -> VaultGateRefuse message
 
 gateBlockMessage :: String -> String
 gateBlockMessage reason =

@@ -15,6 +15,7 @@
 [helm_chart_platform_doctrine.md](./helm_chart_platform_doctrine.md),
 [secret_derivation_doctrine.md](./secret_derivation_doctrine.md),
 [vault_doctrine.md](./vault_doctrine.md),
+[cluster_federation_doctrine.md](./cluster_federation_doctrine.md),
 [storage_lifecycle_doctrine.md](./storage_lifecycle_doctrine.md),
 [unit_testing_policy.md](./unit_testing_policy.md),
 [aws_integration_environment_doctrine.md](./aws_integration_environment_doctrine.md),
@@ -48,23 +49,60 @@ workloads.
 That mix is no longer the supported architecture. Every `prodbox` binary takes its
 configuration from exactly one Dhall file. The in-cluster binaries — the gateway daemon and
 the workload Pods — name that file with a `--config <path>` flag (the chart passes the
-mounted ConfigMap path). The **host CLI has no `--config` flag**: it resolves the fixed
-repository-root `prodbox-config.dhall` by locating the repo root (`Prodbox.Repo.findRepoRoot`
-+ `canonicalConfigPaths`). Either way the rule is one Dhall file per process and nothing else.
-Cryptographic material and credentials are still mounted from k8s Secrets, but they are
-referenced **from the Dhall file** via Dhall's native import system — never from environment
-variables, never from a parallel JSON document, never from a CLI override that fronts an
-env-var fallback. The credentials a binary references from its Dhall file are now typed
-`SecretRef` values rather than inline plaintext: the target is `SecretRef.Vault` references
-resolved through Vault when it is unsealed, with the Secret-mounted Dhall fragment (`as Text`)
-retained only as the `SecretRef.FileSecret` migration bridge. This refines what the file may
-contain without weakening the single-Dhall-file-per-binary rule. See
-[vault_doctrine.md §3](./vault_doctrine.md#3-the-secretref-model).
+mounted ConfigMap path). The **host CLI** locates the repo root and reads the on-disk
+`prodbox-config.dhall` as a *seed/propose input only* — never as the in-force source of truth.
+Either way the rule is one Dhall file per process and nothing else, and that file carries no
+secret material. Sensitive fields are typed `SecretRef` values, never inline plaintext: the
+production targets are `SecretRef.Vault` / `SecretRef.TransitKey` references resolved through
+Vault. In-cluster consumers authenticate to Vault directly via Vault Kubernetes auth — there
+are no Secret-mounted Dhall credential fragments and no `as Text` credential imports. See
+[vault_doctrine.md §3](./vault_doctrine.md#3-the-secretref-model) and
+[vault_doctrine.md §12](./vault_doctrine.md#12-in-cluster-service-auth).
 
 The reload model is symmetric: the running binary watches the file at its `--config` path,
 classifies each on-disk change as a BootConfig change (drain + exit so kubelet restarts the
 Pod) or a LiveConfig change (atomic STM swap, no restart), and acts accordingly. SIGHUP is no
 longer the canonical reload trigger.
+
+One further inversion governs *what the file means*. The in-force cluster configuration is not
+the on-disk Dhall — it is a Vault-Transit-enveloped object in MinIO. The filesystem
+`prodbox-config.dhall` is a seed/propose input that bootstraps or proposes an update to that
+encrypted source of truth; the binary reads only the unencrypted basics locally and fetches +
+decrypts the in-force config through Vault. Section 1a states this inversion in full; the
+SecretRef union (Section 6.2), the import rules (Section 5), and the cluster mount contract
+(Section 6) are all expressed against it.
+
+## 1a. The in-force config lives encrypted in MinIO
+
+The **in-force cluster configuration** is stored in MinIO as a Vault-Transit-enveloped object,
+and that encrypted object is the single source of truth. When Vault is sealed the object is
+opaque ciphertext: nothing about the cluster's setup, its workloads, or its child clusters is
+determinable beyond the *unencrypted basics*. This is the same fail-closed posture every other
+prodbox-owned MinIO object obeys — a sealed Vault reduces prodbox to an opaque durable-data
+pile. See [vault_doctrine.md §9](./vault_doctrine.md#9-minio-as-a-ciphertext-store) and
+[cluster_federation_doctrine.md](./cluster_federation_doctrine.md).
+
+**Unencrypted basics.** The basics are the minimal, non-revealing bootstrap needed only to
+reach and unseal Vault: the cluster id, this cluster's Vault address, the seal mode, and (for a
+child cluster) the parent reference it must contact to auto-unseal. The basics carry nothing
+about workloads, downstream clusters, or credentials. Reads of the basics are always free —
+they are exactly the surface a host that cannot yet reach an unsealed Vault is allowed to see.
+
+**Filesystem Dhall is seed/propose, not SSoT.** A filesystem `prodbox-config.dhall` is a
+seed/propose input only. On first-ever bring-up it seeds the encrypted MinIO source of truth;
+thereafter supplying a file is a *proposed update*, reconciled into the in-force config rather
+than read as the live config. The prior host-CLI model — read the repo-root
+`prodbox-config.dhall` directly as the live config — is replaced by "read the basics locally,
+fetch and decrypt the in-force config from MinIO via Vault." (Scheduled under Sprint 1.38.)
+
+**Root-token-gated config writes.** Updating the *root cluster's* in-force config requires the
+root Vault token, which in turn requires an unsealed root Vault. Root config governs every
+downstream cluster — it is the keys to the kingdom. The authority ladder is: reads of the basics
+are free; a full read of the in-force config requires an unsealed Vault; a write to the root
+cluster's in-force config requires the privileged root token. The root/child trust tree, the
+transit-seal auto-unseal, and downstream-cluster custody are owned by
+[cluster_federation_doctrine.md](./cluster_federation_doctrine.md). (Scheduled under
+Sprint 1.38; the federation surface under Sprint 2.26.)
 
 ## 2. Single Dhall surface per binary instance
 
@@ -117,6 +155,11 @@ The host CLI has no `--config` flag; it always resolves the canonical repo-root 
 `findRepoRoot` + `canonicalConfigPaths`. Inside the cluster the deployments always pass
 `--config <path>` explicitly so the resolution rule is trivial.
 
+The path each binary resolves here names the *seed/propose* Dhall input, not the in-force
+config. The in-force config is the Vault-Transit-enveloped MinIO object (Section 1a); a host
+that cannot reach an unsealed Vault sees only the unencrypted basics, and supplying a file is a
+proposed update reconciled into the encrypted source of truth. (Scheduled under Sprint 1.38.)
+
 ## 4. Decoding
 
 Every binary decodes its Dhall in-process through the native Haskell `dhall` library:
@@ -154,30 +197,35 @@ the newer GHC. The specific `allow-newer` set is owned by
 ## 5. Dhall imports
 
 The Dhall expression at the `--config` path is free to compose itself from sibling files
-using Dhall's native import system:
+using Dhall's native import system. It imports only non-secret parts — types, cluster topology,
+and `SecretRef` references — never a secret value:
 
 ```dhall
 -- /etc/gateway/config.dhall (rendered into the gateway-config-<nodeId> ConfigMap)
 let types  = ./types.dhall
 let orders = ./orders.dhall                          -- separate ConfigMap mount
-let aws    = /etc/gateway/secrets/aws.dhall as Text  -- separate Secret mount, kept opaque
-let minio  = /etc/gateway/secrets/minio.dhall as Text
 in  types.BootConfig::{ node_id   = "node-a"
                       , orders    = orders
-                      , aws_creds = aws
-                      , minio     = minio
+                      -- credentials are SecretRef.Vault references, resolved at runtime
+                      -- through Vault Kubernetes auth — never imported as a value here
+                      , aws_creds = types.SecretRef.Vault { mount = "kv", path = "aws/route53", field = "creds" }
+                      , minio     = types.SecretRef.Vault { mount = "kv", path = "minio/root", field = "creds" }
                       , …
                       }
 ```
 
 The binary reads one file. That file imports the parts that have independent lifecycles —
-Orders (cluster topology, monotonically versioned per Sprint 2.7), credentials (Secret-backed,
-rotated independently of ConfigMaps), the operator-authored bootstrap fragment (rotated only
-when the operator edits the repo). The single-file rule is preserved at the CLI surface; the
-on-disk layout follows the data lifecycles.
+Orders (cluster topology, monotonically versioned per Sprint 2.7) and the operator-authored
+bootstrap fragment (rotated only when the operator edits the repo). The single-file rule is
+preserved at the CLI surface; the on-disk layout follows the data lifecycles.
 
-Imports of `as Text` are encouraged for credential files so the Dhall typechecker never sees
-the literal secret value; the consumer of the field treats it as an opaque token.
+There are **no `as Text` credential imports and no Secret-mounted Dhall credential fragments.**
+Sensitive fields carry `SecretRef.Vault` / `SecretRef.TransitKey` references; the value is
+fetched at runtime by the in-cluster consumer authenticating to Vault directly via Vault
+Kubernetes auth. The Dhall typechecker never sees a literal secret because there is no literal
+secret in the config tree — only a reference to a Vault object. See
+[vault_doctrine.md §12](./vault_doctrine.md#12-in-cluster-service-auth) and Section 6.2.
+(Scheduled under Sprints 1.38, 3.18.)
 
 ## 6. Cluster mount contract
 
@@ -185,24 +233,32 @@ The gateway daemon's Dhall file is materialized by the Helm chart as follows:
 
 | Mount source | Mount path | Content |
 |---|---|---|
-| `gateway-config-<nodeId>` ConfigMap | `/etc/gateway/config.dhall` | per-node Dhall expression; imports the files below, and also carries non-secret service endpoints (notably `boot.minio_endpoint_url`) inline |
+| `gateway-config-<nodeId>` ConfigMap | `/etc/gateway/config.dhall` | per-node Dhall expression; imports `orders.dhall`, carries `SecretRef.Vault` references for credentials, and carries non-secret service endpoints (notably `boot.minio_endpoint_url`) inline |
 | `gateway-orders` ConfigMap | `/etc/gateway/orders.dhall` | cluster-wide ranked-node + timing Dhall expression |
-| `gateway-secrets-aws` Secret | `/etc/gateway/secrets/aws.dhall` | Dhall expression carrying the AWS Route 53 credentials |
-| `gateway-secrets-minio` Secret | `/etc/gateway/secrets/minio.dhall` | Dhall expression carrying the MinIO IAM credentials |
 | `gateway-<nodeId>-tls` Secret | `/tls/` | cert-manager-issued per-node TLS keypair; referenced by file path from the Dhall config |
 | Cert-manager CA Secret | `/ca/` | trust anchor for peer mTLS; referenced by file path from the Dhall config |
 
-The chart materializes every credentialed value as a Dhall fragment in a k8s Secret (not a
-ConfigMap). The operator-facing `gateway-config-<nodeId>` ConfigMap contains no secret
-material — only references to the Secret-mounted Dhall imports plus non-secret service
-endpoints rendered inline.
+The chart materializes **no credential as a Dhall fragment**. There are no
+`gateway-secrets-aws` / `gateway-secrets-minio` Secret-mounted Dhall fragments — those mounts
+are removed. Credentials are `SecretRef.Vault` references in the ConfigMap-rendered Dhall, and
+the daemon resolves them at runtime by authenticating to Vault via Vault Kubernetes auth: a
+Kubernetes service account, a Vault role bound to the daemon's namespace and service account,
+and a Vault policy scoping which KV paths it may read. See
+[vault_doctrine.md §12](./vault_doctrine.md#12-in-cluster-service-auth) and
+[helm_chart_platform_doctrine.md](./helm_chart_platform_doctrine.md). (Scheduled under
+Sprint 3.18.) The operator-facing `gateway-config-<nodeId>` ConfigMap therefore contains no
+secret material — only `SecretRef` references plus non-secret service endpoints rendered
+inline. The cert-manager-issued TLS keypair and CA trust anchor remain ordinary k8s Secret
+mounts referenced by file path; they are cert material under Vault's PKI authority, not Dhall
+credential fragments.
 
 ### Non-secret service-endpoint fields
 
-Service endpoints the daemon must reach (currently: the MinIO endpoint URL used by
-`acquireInitialMasterSeed`) live as fields on the chart-rendered `boot` record rather
-than in Secrets. The endpoint is not credential material; placing it in a Secret would
-unnecessarily restrict who can read it. Today the only such field is:
+Service endpoints the daemon must reach (currently: the MinIO endpoint URL used to fetch the
+Vault-Transit-enveloped in-force config and gateway state) live as fields on the
+chart-rendered `boot` record rather than in Secrets. The endpoint is not credential material;
+placing it in a Secret would unnecessarily restrict who can read it. Today the only such field
+is:
 
 | Field | Type | Source | Canonical value |
 |---|---|---|---|
@@ -210,9 +266,12 @@ unnecessarily restrict who can read it. Today the only such field is:
 
 The daemon decoder (`Prodbox.Gateway.Settings.DaemonBootDhall.minio_endpoint_url`) treats
 the field as `Optional Text` so chart-only smoke installs without a live MinIO can still
-decode the config; the master-seed acquisition path falls back to `127.0.0.1:9000` and
-serves the documented 503 master-seed-unavailable response when the field is `None` and
-MinIO is unreachable.
+decode the config; the MinIO-backed config fetch falls back to `127.0.0.1:9000` and fails
+closed — serving the documented unavailable response — when the field is `None` and MinIO (or
+the Vault unseal the decrypt depends on) is unreachable. The MinIO objects are
+Vault-Transit-enveloped, so a sealed Vault leaves the daemon with opaque ciphertext regardless
+of MinIO reachability; see Section 1a and
+[vault_doctrine.md §9](./vault_doctrine.md#9-minio-as-a-ciphertext-store).
 
 ConfigMap and Secret volume updates land in the Pod via the kubelet's atomic `..data`
 symlink swap. The file-watch reload trigger (Section 7) follows that symlink swap rather
@@ -250,8 +309,12 @@ Vault.
 ## 6.2 SecretRef: typed secret references
 
 Sensitive config fields carry a typed `SecretRef` value, never a plaintext secret. The Dhall
-union is `< Vault | TransitKey | Prompt | FileSecret | TestPlaintext >`; the corresponding
-Haskell ADT is `Prodbox.Settings.SecretRef`. (Scheduled under Sprint 1.35.)
+union is `< Vault | TransitKey | Prompt | TestPlaintext >`; the corresponding Haskell ADT is
+`Prodbox.Settings.SecretRef`. There is **no `FileSecret` arm** — the `SecretRefFile`
+constructor and its resolver are removed, and there are no Secret-mounted Dhall credential
+fragments. `Vault` / `TransitKey` are the production targets, `Prompt` is CLI-only one-off
+elevated material, and `TestPlaintext` is accepted only by the test harness from
+`test-secrets.dhall`. (Scheduled under Sprints 1.35, 1.38.)
 
 - `prodbox config validate` rejects any plaintext secret value in production config and rejects
   `TestPlaintext` outside the test harness.
@@ -324,8 +387,13 @@ The host CLI applies the same contract with two simplifications: it has no `--co
 long-running, so file watching is unnecessary. `prodbox` resolves the repo root, reads the
 canonical `prodbox-config.dhall` once at the start of each invocation through the
 existence-guarded, `try`-wrapped `loadConfigFile` (§4), executes the requested subcommand,
-and exits. There is no env-var precedence ladder on the host either — the file is the sole
-source.
+and exits. There is no env-var precedence ladder on the host — the on-disk file is the sole
+*local* Dhall surface.
+
+The on-disk file is the seed/propose input, not the in-force config. The host reads the
+unencrypted basics locally and fetches + decrypts the in-force config from MinIO via Vault
+(§1a); supplying a file is a proposed update, and a write to the root cluster's in-force config
+requires the root Vault token. (Scheduled under Sprint 1.38.)
 
 The host case is the existing baseline (Sprint 1.2). The remaining env-var-read call sites on
 the supported path are not on the host CLI but in `Prodbox.Workload`, which still reads a
@@ -361,11 +429,17 @@ so the prohibition is the intended end state rather than a present-tense fact:
   field of the mounted Dhall config; see §6 "Non-secret service-endpoint fields".
 - SIGHUP-driven reload. The signal handler is removed; SIGHUP becomes a process-level
   terminate signal again with the supported behavior `drain + exit`.
-- ConfigMap-rendered credentials. Credentials live in k8s Secrets, mounted as Dhall files
-  and imported by the main Dhall.
+- ConfigMap-rendered credentials, and Secret-mounted Dhall credential fragments (any
+  `as Text` credential import, any `gateway-secrets-*` Dhall Secret). Credentials are
+  `SecretRef.Vault` references resolved at runtime through Vault Kubernetes auth, not mounted
+  Dhall values (scheduled under Sprint 3.18; see §5, §6, and
+  [vault_doctrine.md §12](./vault_doctrine.md#12-in-cluster-service-auth)).
 - Plaintext secret values in `prodbox-config.dhall` or in ConfigMap-rendered Dhall. Sensitive
-  fields carry `SecretRef` references instead (scheduled under Sprint 1.35; see §6.2 and
+  fields carry `SecretRef` references instead (scheduled under Sprints 1.35, 1.38; see §6.2 and
   [vault_doctrine.md §3](./vault_doctrine.md#3-the-secretref-model)).
+- Reading the on-disk `prodbox-config.dhall` as the in-force config SSoT. The filesystem Dhall
+  is a seed/propose input only; the in-force config is the Vault-Transit-enveloped MinIO object
+  (scheduled under Sprint 1.38; see §1a).
 
 ## 11. Cross-references
 
@@ -379,10 +453,15 @@ so the prohibition is the intended end state rather than a present-tense fact:
   primitives.
 - [helm_chart_platform_doctrine.md](./helm_chart_platform_doctrine.md) — ConfigMap and
   Secret mount layout for the cluster Dhall surface.
-- [secret_derivation_doctrine.md](./secret_derivation_doctrine.md) — MinIO endpoint and
-  credentials sourcing for the master-seed read path.
-- [vault_doctrine.md](./vault_doctrine.md) — the `SecretRef` contract and the production
-  references vs. `test-secrets.dhall` plaintext split.
+- [secret_derivation_doctrine.md](./secret_derivation_doctrine.md) — the secret inventory
+  mapping each secret to its Vault KV / PKI / Transit path (the HMAC master-seed derivation
+  model is retired; secrets are Vault objects).
+- [vault_doctrine.md](./vault_doctrine.md) — the finalized Vault-root model: the `SecretRef`
+  contract, the production references vs. `test-secrets.dhall` plaintext split, MinIO as a
+  ciphertext store, and in-cluster Vault Kubernetes auth.
+- [cluster_federation_doctrine.md](./cluster_federation_doctrine.md) — the root/child trust
+  tree, transit-seal auto-unseal, parent custody of child init keys, and the
+  root-token-gated config-write authority that governs §1a.
 - [unit_testing_policy.md](./unit_testing_policy.md) — file-watch reload test stanza.
 - [../../DEVELOPMENT_PLAN/README.md](../../DEVELOPMENT_PLAN/README.md) — sprint status and
   adoption schedule for this doctrine.

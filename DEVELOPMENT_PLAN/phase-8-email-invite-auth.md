@@ -19,6 +19,23 @@
 
 ## Phase Status
 
+🔄 **Reopened 2026-06-11, finalized 2026-06-14** (Vault-root + cluster federation) — the
+Vault-root finalization (narrated in [README.md → Closure Status](README.md) per rule A) makes
+Vault the sole, finalized secrets / KMS / PKI root for the whole stack. Sprint `8.9` (📋 Planned)
+is **reframed** to own that finalized end state for the invite-auth surface: the `keycloak-smtp`
+SMTP credential and the invite-flow OIDC client secrets are Vault KV objects referenced by
+`SecretRef.Vault` and consumed by Keycloak via Vault Kubernetes auth. The master-seed HMAC-derivation
+model is **retired** (not extended), the chart-generated `lookup`+`randAlphaNum` Secrets behind the
+OIDC client secrets are **removed** (not bridged), and a sealed Vault **bricks** Keycloak bootstrap
+and the invite-send / secret-dependent startup paths — no SMTP or OIDC material is reconstructed
+from any non-Vault source. The invite-auth flow itself is unchanged; only its secret delivery moves
+under Vault. Sprint `8.9` is blocked on the cross-phase Vault platform and derivation-retirement
+sprints (`3.18`, `3.19`, `7.14`). Honest status: 📋 Planned — the Vault-root invite-secret
+implementation is not yet validated. Sprints `8.1`–`8.8` stay ✅ Done on their owned surfaces. See
+[vault_doctrine.md](../documents/engineering/vault_doctrine.md),
+[cluster_federation_doctrine.md](../documents/engineering/cluster_federation_doctrine.md), and the
+[legacy ledger](legacy-tracking-for-deletion.md).
+
 ✅ **Done** (2026-06-09) — All sprints `8.1`–`8.8` are closed on their owned surfaces.
 Sprints `8.5`/`8.6` closed live (home + AWS `keycloak-invite` end-to-end with
 `OIDC_CLAIMS_VERIFIED=true` on both substrates, clean teardown, no leak). Sprint `8.8` closed via
@@ -1233,27 +1250,36 @@ The live runs above; home gate first (ordering), then AWS parity.
 
 **Status**: Planned
 **Implementation**: `src/Prodbox/Infra/AwsSesStack.hs`, `src/Prodbox/UsersAdmin.hs`, `charts/keycloak/`
-**Blocked by**: Sprints `3.18`, `7.14`
+**Blocked by**: Sprints `3.18`, `3.19`, `7.14`
 **Docs to update**: `documents/engineering/vault_doctrine.md`, `documents/engineering/aws_integration_environment_doctrine.md`
 
 ### Objective
 
-Move the invite-flow secrets — the `keycloak-smtp` SMTP credential and the OIDC client secrets the
-invite path uses — into Vault KV, consumed by Keycloak via Vault Kubernetes auth with fail-closed
-bootstrap (vault_doctrine §11–§12, §15). The invite-auth flow is extended, not reversed.
+Make the invite-flow secrets — the `keycloak-smtp` SMTP credential and the OIDC client secrets the
+invite path uses — Vault KV objects consumed by Keycloak via Vault Kubernetes auth, with fail-closed
+bootstrap (vault_doctrine §11–§12, §15). Under the finalized Vault-root model Vault is the sole
+secrets store: there is no kubectl-applied plaintext `keycloak-smtp` Secret, no Secret-mounted Dhall
+fragment, and no master-seed derivation behind these secrets. The SMTP password is computed once
+from the retained `aws-ses` IAM secret access key and persisted as a Vault KV object — not
+re-derived from any non-Vault source on each consumer.
 
 ### Deliverables
 
-- The SMTP password (derived from the retained `aws-ses` IAM secret access key via the AWS SES
-  IAM-to-SMTP algorithm) is stored in Vault KV and consumed by Keycloak via Vault auth rather than a
-  kubectl-applied plaintext `keycloak-smtp` Secret.
-- The invite-flow OIDC client secrets resolve from Vault KV.
-- The invite-send and Keycloak bootstrap paths fail closed when Vault is sealed.
+- The SMTP password (computed from the retained `aws-ses` IAM secret access key via the AWS SES
+  IAM-to-SMTP algorithm) is a Vault KV object referenced by `SecretRef.Vault` and consumed by
+  Keycloak via Vault Kubernetes auth — there is no kubectl-applied plaintext `keycloak-smtp` Secret.
+- The invite-flow OIDC client secrets are Vault KV objects (no chart-generated `lookup`+`randAlphaNum`
+  Secrets, no master-seed derivation).
+- The invite-send (`prodbox users invite`) and Keycloak bootstrap paths fail closed when Vault is
+  sealed: a sealed Vault blocks the invite send and Keycloak's secret-dependent startup without
+  reconstructing the SMTP or OIDC material from any non-Vault source.
 
 ### Validation
 
-- A sealed Vault fails the invite send and Keycloak bootstrap closed without leaking SMTP material.
-- `keycloak-invite` passes on both substrates with the SMTP credential sourced from Vault.
+- A sealed Vault fails the invite send and Keycloak bootstrap closed without leaking SMTP or OIDC
+  material from any non-Vault source.
+- `keycloak-invite` passes on both substrates with the SMTP and OIDC client secrets sourced from
+  Vault KV.
 
 ### Remaining Work
 

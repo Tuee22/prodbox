@@ -1,49 +1,76 @@
 {-# LANGUAGE OverloadedStrings #-}
 
--- | Sprint 1.36: a minimal Vault HTTP client for the host-side lifecycle
--- surface (@prodbox vault status|init|unseal@). It speaks the unauthenticated
--- @sys/seal-status@, @sys/init@, and @sys/unseal@ endpoints of Vault's HTTP
--- API through the native 'Prodbox.Http.Client' (no curl), and ties the init
--- response to the encrypted unlock bundle of "Prodbox.Vault.UnlockBundle".
+-- | Sprint 1.36: the Vault HTTP client for the host-side lifecycle surface
+-- (@prodbox vault status|init|unseal|seal|reconcile@). It speaks Vault's HTTP
+-- API through the native 'Prodbox.Http.Client' (no curl) in two layers:
 --
--- The authenticated surface (@sys/seal@ with @X-Vault-Token@, KV, Transit,
--- PKI) lands with the rest of Sprint 1.36 once the token-bearing request
--- helper is in place; the seal-status / init / unseal trio is the bootstrap
--- engine the cluster-reconcile integration (Sprint 4.29) and the live unseal
--- exercise (gated on the deployed Vault, Sprint 3.17) build on.
+--   * the __unauthenticated bootstrap trio__ — @sys/seal-status@, @sys/init@,
+--     and @sys/unseal@ — plus the pure 'bootstrapAction' decision and the
+--     'initResponseToUnlockBundle' capture into "Prodbox.Vault.UnlockBundle";
+--   * the __authenticated (token-bearing) surface__ — @sys/seal@, KV v2 read /
+--     write, and Transit encrypt / decrypt — keyed on a 'VaultToken' via the
+--     @X-Vault-Token@ header. This is the surface 'SecretRef.Vault' resolution
+--     (Sprint 3.17), the Transit-backed envelope @DekCipher@ (Sprint 3.17), and
+--     @vault reconcile@ build on.
+--
+-- The live init / unseal / seal exercise is gated on a deployed in-cluster
+-- Vault (Sprint 3.17 + a reconciled cluster); the wire format here is unit-
+-- tested offline through the request/response JSON instances.
 module Prodbox.Vault.Client
   ( VaultAddress (..)
+  , VaultToken (..)
   , SealStatus (..)
   , InitRequest (..)
   , InitResponse (..)
   , BootstrapAction (..)
+  , KvV2WriteRequest (..)
+  , KvV2ReadResponse (..)
+  , TransitEncryptRequest (..)
+  , TransitEncryptResponse (..)
+  , TransitDecryptRequest (..)
+  , TransitDecryptResponse (..)
   , defaultInitRequest
   , bootstrapAction
   , initResponseToUnlockBundle
   , vaultSealStatus
   , vaultInit
   , vaultSubmitUnseal
+  , vaultSeal
+  , vaultKvReadV2
+  , vaultKvWriteV2
+  , vaultTransitEncrypt
+  , vaultTransitDecrypt
   )
 where
 
+import Control.Monad (void)
 import Data.Aeson
   ( FromJSON (..)
   , ToJSON (..)
+  , Value
   , object
   , withObject
   , (.:)
   , (.:?)
   , (.=)
   )
+import Data.ByteString (ByteString)
+import Data.ByteString.Base64 qualified as B64
+import Data.Map.Strict (Map)
 import Data.Maybe (fromMaybe)
 import Data.Text (Text)
 import Data.Text qualified as Text
+import Data.Text.Encoding qualified as TextEncoding
+import Network.HTTP.Types.Header (Header)
 import Numeric.Natural (Natural)
 import Prodbox.Http.Client
-  ( HttpError
+  ( HttpError (..)
   , defaultHttpConfig
   , httpGetJson
+  , httpGetJsonWithHeaders
   , httpPostJsonResponseJson
+  , httpPostJsonWithHeaders
+  , httpRequestNoBody
   )
 import Prodbox.Vault.UnlockBundle (UnlockBundle (..))
 
@@ -173,3 +200,140 @@ vaultSubmitUnseal address key =
     defaultHttpConfig
     (vaultUrl address "/v1/sys/unseal")
     (UnsealRequest key)
+
+-- | A Vault authentication token, sent as the @X-Vault-Token@ header on every
+-- authenticated request. Never logged.
+newtype VaultToken = VaultToken {unVaultToken :: Text}
+  deriving (Eq, Show)
+
+vaultTokenHeader :: VaultToken -> Header
+vaultTokenHeader token =
+  ("X-Vault-Token", TextEncoding.encodeUtf8 (unVaultToken token))
+
+-- | The @POST \/v1\/\<mount\>\/data\/\<path\>@ KV v2 write body: the field map
+-- nested under a top-level @data@ key.
+newtype KvV2WriteRequest = KvV2WriteRequest (Map Text Text)
+  deriving (Eq, Show)
+
+instance ToJSON KvV2WriteRequest where
+  toJSON (KvV2WriteRequest fields) = object ["data" .= fields]
+
+-- | The decoded @GET \/v1\/\<mount\>\/data\/\<path\>@ KV v2 read response. The
+-- secret fields live at @.data.data@; the surrounding @.data.metadata@ is
+-- ignored.
+newtype KvV2ReadResponse = KvV2ReadResponse {kvV2ReadData :: Map Text Text}
+  deriving (Eq, Show)
+
+instance FromJSON KvV2ReadResponse where
+  parseJSON =
+    withObject "KvV2ReadResponse" $ \o -> do
+      outer <- o .: "data"
+      KvV2ReadResponse <$> outer .: "data"
+
+-- | The @POST \/v1\/transit\/encrypt\/\<key\>@ request body. @plaintext@ is the
+-- base64-encoded plaintext.
+newtype TransitEncryptRequest = TransitEncryptRequest {transitEncryptPlaintextB64 :: Text}
+  deriving (Eq, Show)
+
+instance ToJSON TransitEncryptRequest where
+  toJSON req = object ["plaintext" .= transitEncryptPlaintextB64 req]
+
+-- | The decoded Transit encrypt response: the wrapped ciphertext token
+-- (@vault:v1:...@) at @.data.ciphertext@.
+newtype TransitEncryptResponse = TransitEncryptResponse {transitCiphertext :: Text}
+  deriving (Eq, Show)
+
+instance FromJSON TransitEncryptResponse where
+  parseJSON =
+    withObject "TransitEncryptResponse" $ \o -> do
+      d <- o .: "data"
+      TransitEncryptResponse <$> d .: "ciphertext"
+
+-- | The @POST \/v1\/transit\/decrypt\/\<key\>@ request body.
+newtype TransitDecryptRequest = TransitDecryptRequest {transitDecryptCiphertext :: Text}
+  deriving (Eq, Show)
+
+instance ToJSON TransitDecryptRequest where
+  toJSON req = object ["ciphertext" .= transitDecryptCiphertext req]
+
+-- | The decoded Transit decrypt response: the base64-encoded plaintext at
+-- @.data.plaintext@.
+newtype TransitDecryptResponse = TransitDecryptResponse {transitPlaintextB64 :: Text}
+  deriving (Eq, Show)
+
+instance FromJSON TransitDecryptResponse where
+  parseJSON =
+    withObject "TransitDecryptResponse" $ \o -> do
+      d <- o .: "data"
+      TransitDecryptResponse <$> d .: "plaintext"
+
+-- | @PUT \/v1\/sys\/seal@ — re-seal an unsealed Vault. Requires a token with
+-- the @sys/seal@ capability; responds 204 No Content on success.
+vaultSeal :: VaultAddress -> VaultToken -> IO (Either HttpError ())
+vaultSeal address token =
+  httpRequestNoBody
+    defaultHttpConfig
+    "PUT"
+    [vaultTokenHeader token]
+    (vaultUrl address "/v1/sys/seal")
+
+-- | @GET \/v1\/\<mount\>\/data\/\<path\>@ — read a KV v2 secret's field map.
+vaultKvReadV2
+  :: VaultAddress -> VaultToken -> Text -> Text -> IO (Either HttpError (Map Text Text))
+vaultKvReadV2 address token mount path = do
+  result <-
+    httpGetJsonWithHeaders
+      defaultHttpConfig
+      [vaultTokenHeader token]
+      (vaultUrl address (kvV2DataPath mount path))
+  pure (fmap kvV2ReadData result)
+
+-- | @POST \/v1\/\<mount\>\/data\/\<path\>@ — write a KV v2 secret's field map.
+-- The 200 response carries version metadata, which is ignored.
+vaultKvWriteV2
+  :: VaultAddress -> VaultToken -> Text -> Text -> Map Text Text -> IO (Either HttpError ())
+vaultKvWriteV2 address token mount path fields = do
+  result <-
+    httpPostJsonWithHeaders
+      defaultHttpConfig
+      [vaultTokenHeader token]
+      (vaultUrl address (kvV2DataPath mount path))
+      (KvV2WriteRequest fields)
+  pure (void (result :: Either HttpError Value))
+
+-- | @POST \/v1\/transit\/encrypt\/\<key\>@ — wrap a plaintext blob under a
+-- Transit key, returning the @vault:v1:...@ ciphertext token.
+vaultTransitEncrypt
+  :: VaultAddress -> VaultToken -> Text -> ByteString -> IO (Either HttpError Text)
+vaultTransitEncrypt address token keyName plaintext = do
+  let body = TransitEncryptRequest (TextEncoding.decodeUtf8 (B64.encode plaintext))
+  result <-
+    httpPostJsonWithHeaders
+      defaultHttpConfig
+      [vaultTokenHeader token]
+      (vaultUrl address ("/v1/transit/encrypt/" ++ Text.unpack keyName))
+      body
+  pure (fmap transitCiphertext result)
+
+-- | @POST \/v1\/transit\/decrypt\/\<key\>@ — unwrap a @vault:v1:...@ ciphertext
+-- token back to the original plaintext bytes.
+vaultTransitDecrypt
+  :: VaultAddress -> VaultToken -> Text -> Text -> IO (Either HttpError ByteString)
+vaultTransitDecrypt address token keyName ciphertext = do
+  let body = TransitDecryptRequest ciphertext
+  result <-
+    httpPostJsonWithHeaders
+      defaultHttpConfig
+      [vaultTokenHeader token]
+      (vaultUrl address ("/v1/transit/decrypt/" ++ Text.unpack keyName))
+      body
+  pure (result >>= decodeTransitPlaintext)
+ where
+  decodeTransitPlaintext (TransitDecryptResponse b64) =
+    case B64.decode (TextEncoding.encodeUtf8 b64) of
+      Left err -> Left (HttpDecode ("Transit plaintext base64 decode failed: " ++ err))
+      Right bytes -> Right bytes
+
+kvV2DataPath :: Text -> Text -> String
+kvV2DataPath mount path =
+  "/v1/" ++ Text.unpack mount ++ "/data/" ++ Text.unpack path

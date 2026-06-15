@@ -83,11 +83,15 @@ Build a clean-room Haskell `prodbox` repository with:
     no machine-id prefix, provisioned by a single reconciler.
 17. Exactly one preserved operator-host directory: `.data/`. Chart secrets, gateway
     peer-event keys, AWS stack outputs, EKS kubeconfig material, and HA-RKE2 SSH key
-    material all live inside the cluster (k8s Secrets, or Pulumi stack outputs read
-    on demand). The legacy `.prodbox-state/` repo-local cache is removed. The
-    gateway-owned master seed at MinIO bucket `prodbox/master-seed` is the persistence
-    anchor for data-bound secrets; it survives cluster wipes because MinIO's PV lives
-    under `.data/prodbox/minio/0`. See [Secret Derivation Doctrine](../documents/engineering/secret_derivation_doctrine.md)
+    material all live inside the cluster (k8s Secrets fetched from Vault KV via Vault
+    Kubernetes auth, or Pulumi stack outputs read on demand). The legacy
+    `.prodbox-state/` repo-local cache is removed. In-cluster Vault on its durable PV
+    under `.data/vault/vault/0` is the persistence anchor for every secret; its KV store
+    survives cluster wipes (init-once / unseal-on-rebuild) because the Vault PV is
+    retained alongside MinIO's PV under `.data/prodbox/minio/0`. The master-seed
+    derivation model is retired — there is no `master-seed` object in MinIO. See
+    [Vault Doctrine](../documents/engineering/vault_doctrine.md),
+    [Secret Management Doctrine](../documents/engineering/secret_derivation_doctrine.md),
     and [Retained Storage Lifecycle Doctrine](../documents/engineering/storage_lifecycle_doctrine.md).
 18. One PostgreSQL doctrine for Helm-managed application data: every supported PostgreSQL
     deployment is external, Percona-operator-backed Patroni HA with exactly three PostgreSQL
@@ -117,25 +121,42 @@ Build a clean-room Haskell `prodbox` repository with:
 26. Pulumi retained for true IaC surfaces such as AWS substrate resources, with no supported
     Python Pulumi program and no supported local-cluster public operator flow.
 
-Vault is the scheduled expansion that adds a fail-closed secrets / KMS / encryption-as-a-service /
-PKI authority layer *beneath* the existing secret model, not a replacement for any of it. Vault is
-the fail-closed secrets / KMS / PKI backend of every prodbox-managed cluster: it runs in-cluster on
-a durable `.data/`-backed PV (`.data/vault/vault/0`), preserved across cluster wipes exactly like
-MinIO's PV; `prodbox-config.dhall` carries only typed `SecretRef` values (never plaintext secrets);
-MinIO objects, Pulumi backend state, and the active daemon Dhall are stored only as Vault-Transit
-envelopes; and the TLS, Keycloak, Pulumi, and AWS-credential paths fail closed when Vault is
-sealed. The master-seed HMAC derivation model and daemon-only seed boundary, the
-single-Dhall-file-per-binary config contract, the retained `.data/` PV model, the single ZeroSSL
-ACME issuer + S3 retain-restore, and the managed-resource-registry teardown all stay and are
-extended by Vault, never torn out. The load-bearing invariant: a sealed Vault reduces prodbox to an
-opaque durable-data pile — PVs and MinIO objects may still exist, but they reveal no secrets, no
-active Dhall, no Pulumi state, and no downstream-cluster inventory until Vault is unsealed. Adoption
-is scheduled (not yet implemented) across the reopened Phases `0`/`1`/`3`/`4`/`5`/`7`/`8` —
-Sprints `0.12`, `1.35`–`1.37`, `3.17`–`3.18`, `4.29`–`4.31`, `5.8`, `7.14`–`7.15`, and `8.9`. The
-single source of truth for the Vault model is
-[vault_doctrine.md](../documents/engineering/vault_doctrine.md); the authoritative reopening
-narration is the 2026-06-11 [README.md → Closure Status](README.md#closure-status) entry, extended
-by the 2026-06-13 storage-topology-reorg entry in the same section.
+Vault is the **sole, finalized** secrets / KMS / encryption-as-a-service / PKI root of every
+prodbox-managed cluster — there is no transitional or bridge pattern. Every secret, credential, key,
+and certificate the stack uses is a Vault object (a KV v2 secret, a Transit key, or a PKI-issued
+cert), with no second store and no plaintext fallback; **a sealed (or unreachable / uninitialized)
+Vault bricks the cluster** (hard fail-closed). Vault runs in-cluster on a durable `.data/`-backed PV
+(`.data/vault/vault/0`), preserved across cluster wipes exactly like MinIO's PV, and is **init-once
+/ unseal-on-rebuild** — `vault init` runs exactly once ever (the first time the PV is empty) and
+every subsequent `cluster reconcile` only unseals it, so Vault KV is as durable across rebuilds as
+any retained PV. `prodbox-config.dhall` carries only typed `SecretRef.Vault` references (never
+plaintext secrets); the in-force cluster configuration is itself a Vault-Transit-enveloped MinIO
+object that is the **config SSoT** (a filesystem `prodbox-config.dhall` is a seed/propose input
+only); MinIO objects, Pulumi backend state, and the active daemon Dhall are stored only as
+Vault-Transit envelopes; and the TLS, Keycloak, Pulumi, and AWS-credential paths fail closed when
+Vault is sealed. The master-seed HMAC derivation model and its daemon-only seed boundary are
+**retired, not wrapped** — `Prodbox.Secret.{Derive,MasterSeed,Inventory}`, the daemon
+`/v1/secret/*` RPC, the daemon-only-seed lint, and `selfBootstrapOwnSecrets` are removed, there is
+no `master-seed` object in MinIO, and every previously-derived or chart-generated secret becomes a
+Vault KV object fetched via Vault Kubernetes auth; `FileSecret` / Secret-mounted plaintext Dhall is
+**removed, not bridged**. The retained `.data/` PV model, the single ZeroSSL ACME issuer + S3
+retain-restore (with key material now Vault-protected), and the managed-resource-registry teardown
+all stay. Cluster federation adds a **Vault transit-seal trust tree**: a root cluster (Shamir seal,
+operator-unsealed via the `.age` unlock bundle) and zero or more child clusters
+(`seal "transit"` against the parent), where each parent's Vault KV owns its children's init keys
+and a cluster's downstream-cluster inventory is itself secret behind an unsealed Vault — so the
+fail-closed brick cascades down the tree from the root. The load-bearing invariant: a sealed Vault
+reduces prodbox to an opaque durable-data pile — PVs and MinIO objects may still exist, but they
+reveal no secrets, no active Dhall, no Pulumi state, and no downstream-cluster inventory until Vault
+is unsealed. Adoption is scheduled (implementation Planned/Active until validated) across the
+reopened Phases `0`/`1`/`2`/`3`/`4`/`5`/`7`/`8` — Sprints `0.12`–`0.13`, `1.35`–`1.38`, `2.26`,
+`3.17`–`3.20`, `4.29`–`4.32`, `5.8`, `7.14`–`7.15`, and `8.9`. The single source of truth for the
+Vault model is [vault_doctrine.md](../documents/engineering/vault_doctrine.md); the federation trust
+tree is
+[cluster_federation_doctrine.md](../documents/engineering/cluster_federation_doctrine.md); the
+authoritative reopening narration is the 2026-06-14
+[README.md → Closure Status](README.md#closure-status) entry (superseding the 2026-06-11 framing for
+the derivation model), extended by the 2026-06-13 storage-topology-reorg entry in the same section.
 
 ## Test Substrates
 
@@ -184,6 +205,25 @@ prerequisites.
 | 8 | Operator-Invited Email Authentication via Keycloak + AWS SES | Keycloak switches to operator-invited, email-verified auth via AWS SES; shared SES infrastructure (sending identity, receive subdomain, S3 capture bucket) is provisioned cross-substrate; `prodbox users invite|list|revoke` joins the public command surface; `ValidationKeycloakInvite` joins the canonical suite and runs against every substrate |
 
 ## Alignment Status
+
+**2026-06-14 — Vault-root finalization + cluster federation reopens Phase `2` and finalizes the
+Vault model.** The secrets model is finalized: Vault is the **sole, finalized** secrets / KMS / PKI
+root, a sealed Vault **bricks the cluster** (hard fail-closed), the master-seed HMAC derivation
+model is **retired** (not extended), and `FileSecret` / Secret-mounted plaintext Dhall is
+**removed** (not bridged). The in-force cluster config is a Vault-Transit-enveloped MinIO object
+(the config SSoT); a filesystem `prodbox-config.dhall` is a seed/propose input only; root-cluster
+config writes require the root Vault token. Cluster federation adds a Vault transit-seal trust tree
+(a root cluster Shamir-sealed and operator-unsealed, child clusters `seal "transit"` against the
+parent, each parent's Vault KV owning its children's init keys). **Phase `2` reopens** for Sprint
+`2.26` (cluster-federation trust topology and downstream-cluster custody), **in addition to** Phases
+`0`, `1`, `3`, `4`, `5`, `7`, `8` (reopened 2026-06-11 and finalized 2026-06-14 — new Sprints `0.13`,
+`1.38`, `3.19`, `3.20`, `4.32` join the reframed Vault sprints). **Phase `6` stays `Done`** on its
+owned clean-room/zero-Python surface. The full Rule-A narration is the authoritative
+[README.md → Closure Status](README.md#closure-status) entry of the same date; the doctrine SSoT is
+[vault_doctrine.md](../documents/engineering/vault_doctrine.md) and the federation trust tree is
+[cluster_federation_doctrine.md](../documents/engineering/cluster_federation_doctrine.md). Adoption
+is scheduled (implementation Planned/Active until validated). This section does not duplicate the
+README entry.
 
 **2026-06-09 (later) — Design-intention review reopens Phases `0`, `1`, `2`, `3`, `4`, `5`, and
 `7`.** A whole-system design analysis adjudicated each documented-intention-vs-code divergence

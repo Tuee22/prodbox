@@ -13,6 +13,20 @@
 
 ## Phase Status
 
+✅ **Done on owned surface 2026-06-14** — Phase 0 owns the docs / plan-only Sprint `0.13`
+(Vault-Root Finalization and Cluster-Federation Doctrine Harmony), which finalizes the secrets
+architecture in doctrine: Vault is the sole, fail-closed secrets / KMS / PKI root; the master-seed
+HMAC derivation model is **retired** (not extended — this supersedes the Sprint `0.12` framing);
+`SecretRef.FileSecret` and Secret-mounted plaintext Dhall fragments are **removed** (not bridged);
+a sealed Vault bricks the cluster; and cluster federation adds a Vault transit-seal trust tree
+governed by the new [cluster_federation_doctrine.md](../documents/engineering/cluster_federation_doctrine.md).
+Sprint `0.13` rewrote [vault_doctrine.md](../documents/engineering/vault_doctrine.md), the config /
+secret-management / helm / storage / acme / aws doctrine docs, the repo-root `README.md` and
+`CLAUDE.md`, and the plan suite, added the federation doctrine, and deleted the repo-root
+`VAULT_REFACTOR.md`. The code adoption is owned by the new and reframed implementation sprints
+(`1.35`–`1.38`, `2.26`, `3.17`–`3.20`, `4.29`–`4.32`, `5.8`, `7.14`–`7.15`, `8.9`); Phase 0 stays
+`Done` on its owned doc / plan surface.
+
 ✅ **Reclosed 2026-06-09** — Phase 0 was reopened for Sprints `0.9`–`0.10` to make Documentation
 Harmony an enforced plan invariant; both have now landed. ✅ **Sprint `0.9`**: the five doctrine
 corrections + the repo-wide `**Generated sections**` header sweep, plus the header↔markers↔registry
@@ -1058,6 +1072,102 @@ ZeroSSL issuer.
 ### Remaining Work
 
 - None — closed 2026-06-11 (all gates green).
+
+## Sprint 0.13: Vault-Root Finalization and Cluster-Federation Doctrine Harmony ✅
+
+**Status**: Done (2026-06-14)
+**Implementation**: `documents/engineering/vault_doctrine.md`,
+`documents/engineering/cluster_federation_doctrine.md` (new),
+`documents/engineering/config_doctrine.md`,
+`documents/engineering/secret_derivation_doctrine.md`,
+`documents/engineering/helm_chart_platform_doctrine.md`,
+`documents/engineering/storage_lifecycle_doctrine.md`,
+`documents/engineering/acme_provider_guide.md`,
+`documents/engineering/aws_admin_credentials.md`,
+`documents/engineering/aws_integration_environment_doctrine.md`,
+`documents/engineering/README.md`, repo-root `README.md` and `CLAUDE.md`,
+`DEVELOPMENT_PLAN/README.md`, `DEVELOPMENT_PLAN/00-overview.md`,
+`DEVELOPMENT_PLAN/system-components.md`, `DEVELOPMENT_PLAN/substrates.md`,
+`DEVELOPMENT_PLAN/legacy-tracking-for-deletion.md`, and the phase files;
+repo-root `VAULT_REFACTOR.md` deleted (folded into the doctrine set)
+**Docs to update**: every file listed above.
+
+### Objective
+
+Finalize the secrets architecture in doctrine: Vault is the sole, fail-closed secrets / KMS / PKI
+root for the entire prodbox stack, with no transitional or bridge pattern. This **supersedes** the
+Sprint `0.12` framing that Vault "extends, and does not reverse, the master-seed derivation model":
+the master-seed HMAC derivation model is **retired**, not wrapped; `SecretRef.FileSecret` and
+Secret-mounted plaintext Dhall fragments are **removed**, not bridged; a sealed (or
+unreachable / uninitialized) Vault **bricks** the cluster — there is no degraded mode that leaks.
+This sprint also introduces cluster federation as a Vault transit-seal trust tree: a root cluster
+unsealed by the operator and zero or more child clusters that auto-unseal against their parent's
+Vault, with the parent custodying each child's init keys and the fail-closed brick cascading down
+the tree. The change brings the governed documentation set into harmony with that end state so the
+per-surface adoption sprints (`1.35`–`8.9`, plus the new `1.38`, `2.26`, `3.19`, `3.20`, `4.32`)
+cite one authoritative source. Like Sprint `0.12`, this is a docs / plan-only sprint; the code
+adoption lands in the cited implementation sprints.
+
+### Deliverables
+
+- `documents/engineering/vault_doctrine.md` rewritten as the finalized statement of the Vault-root
+  model: the `SecretRef` union with **no** `FileSecret` arm (`Vault` / `TransitKey` / `Prompt` /
+  `TestPlaintext`), the derivation model stated as retired with Vault KV as the sole store, the
+  cluster-federation transit-seal hierarchy summarized with a link to the new federation doctrine,
+  and the substance of the repo-root `VAULT_REFACTOR.md` proposal folded in. Honest
+  "intended structure scheduled under Sprint X" markers are kept using the new sprint set, per
+  [development_plan_standards.md](development_plan_standards.md) rule L.
+- New `documents/engineering/cluster_federation_doctrine.md` SSoT covering the root / child trust
+  tree, Vault transit-seal auto-unseal, parent custody of child init keys, downstream-cluster
+  metadata as secret data, the root-token config-write authority, the fail-closed unseal cascade,
+  and the unencrypted-basics bootstrap surface. It is added to the engineering index
+  (`documents/engineering/README.md`) and cross-links `vault_doctrine.md`, `config_doctrine.md`,
+  `distributed_gateway_architecture.md`, and `storage_lifecycle_doctrine.md`.
+- `config_doctrine.md` rewritten so the in-force cluster configuration is the
+  Vault-Transit-enveloped MinIO object (the SSoT), the filesystem `prodbox-config.dhall` is a
+  seed / propose input only, the unencrypted-basics local surface is described, and root-cluster
+  config writes require the root Vault token; the §6 Secret-mounted Dhall mount-contract rows and
+  the §5 `as Text` credential-import example are removed in favor of Vault Kubernetes auth.
+- `secret_derivation_doctrine.md` retitled to a Vault-backed secret-management framing (filename
+  retained only for link stability); the master-seed / HMAC mechanism content replaced by the
+  every-secret-is-a-Vault-object model, with the inventory table mapping each secret to its Vault
+  KV / PKI / Transit path, owning Vault policy, and consuming service account.
+- `helm_chart_platform_doctrine.md`, `storage_lifecycle_doctrine.md`, `acme_provider_guide.md`,
+  `aws_admin_credentials.md`, and `aws_integration_environment_doctrine.md` rewritten to the
+  finalized model: chart / Keycloak secrets via Vault Kubernetes auth only; the Vault PV durable on
+  the init-once / unseal-on-rebuild contract; ACME EAB material and TLS key material Vault-protected
+  with Vault PKI as the cert authority; prodbox-created AWS identities in Vault KV and the elevated
+  admin credential prompted-used-discarded.
+- Repo-root `README.md` and `CLAUDE.md` paragraphs updated to drop the "daemon-only raw master
+  seed" and "credentials imported from a sibling Secret-mounted Dhall fragment" claims and state
+  the Vault-root model.
+- The plan suite — `DEVELOPMENT_PLAN/README.md`, `00-overview.md`, `system-components.md`,
+  `substrates.md`, `legacy-tracking-for-deletion.md`, and the reopened phase files — harmonized to
+  the finalized model: the existing Vault sprints (`1.35`–`8.9`) reframed to own the finalized
+  end state, the new sprints (`0.13`, `1.38`, `2.26`, `3.19`, `3.20`, `4.32`) added, Phase `2`
+  reopened for cluster-federation custody, and the legacy ledger repointed so the Vault rows own
+  complete removal (no bridge) and the master-seed derivation model is itself slated for removal.
+- Repo-root `VAULT_REFACTOR.md` deleted; its substance lives in `vault_doctrine.md` and
+  `cluster_federation_doctrine.md`, and the legacy ledger records the deletion as owned here.
+
+### Validation
+
+1. `prodbox dev lint docs` exit 0 (header↔markers↔registry and relative-link discipline across
+   every governed doc, including the new `cluster_federation_doctrine.md`).
+2. `prodbox dev docs check` exit 0 (this sprint's doc edits touch no generated content).
+3. `prodbox dev check` exit 0 — by no-op for the docs-only part.
+4. Every governed doc's `**Referenced by**` header and cross-reference list agree (bidirectional
+   link discipline), and no inbound reference to the deleted `VAULT_REFACTOR.md` survives.
+5. A grep replay confirms no governed doc still frames the Vault-root model or the
+   derivation-retirement as future-optional, and the `FileSecret` arm no longer appears in any
+   `SecretRef` union mention.
+
+### Remaining Work
+
+- None — the doc and plan rewrites land in this change. The code adoption of the finalized model
+  lands in the cited implementation sprints (`1.35`–`1.38`, `3.17`–`3.20`, `4.29`–`4.32`, `5.8`,
+  `7.14`–`7.15`, `8.9`, and the federation surface under `2.26`); each closes on its own owned
+  surface when its validation gates pass.
 
 ## Related Documents
 

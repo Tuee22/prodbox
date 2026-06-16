@@ -3,8 +3,7 @@
 module Prodbox.Infra.AwsSesStack
   ( AwsSesStackSnapshot (..)
   , awsSesStackName
-  , keycloakSmtpSecretNamespaces
-  , renderKeycloakSmtpKubectlApplyScript
+  , keycloakSmtpVaultFields
   , ensureAwsSesStackResources
   , syncKeycloakSmtpChartSecrets
   , destroyAwsSesStack
@@ -16,7 +15,6 @@ module Prodbox.Infra.AwsSesStack
   )
 where
 
-import Control.Exception (IOException, bracket, try)
 import Control.Monad (foldM, forM_, when)
 import Data.Aeson
   ( Value (..)
@@ -26,7 +24,7 @@ import Data.Aeson.Key qualified as Key
 import Data.Aeson.KeyMap qualified as KeyMap
 import Data.ByteString.Lazy.Char8 qualified as BL8
 import Data.Char (toLower)
-import Data.List (intercalate, isInfixOf)
+import Data.List (isInfixOf)
 import Data.Map.Strict (Map)
 import Data.Map.Strict qualified as Map
 import Data.Text qualified as Text
@@ -46,24 +44,28 @@ import Prodbox.Infra.AwsEksTestStack
   , settingsAwsEnv
   )
 import Prodbox.Infra.LongLivedPulumiBackend
-  ( ensureLongLivedPulumiStateBucket
-  , loadAdminAwsCredentials
+  ( loadAdminAwsCredentials
   , longLivedBackendErrorMessage
   , longLivedPulumiBackendUrlEither
   )
 import Prodbox.Infra.MinioBackend
-  ( ensureMinioBackendBucket
-  , pulumiBackendLoginTimeoutSeconds
-  , pulumiBackendUrl
-  , readMinioCredentials
-  , withMinioPortForward
+  ( pulumiBackendLoginTimeoutSeconds
   )
 import Prodbox.Lifecycle.LiveResidue qualified as LiveResidue
 import Prodbox.Lifecycle.ResidueStatus qualified as ResidueStatus
+import Prodbox.Pulumi.EncryptedBackend
+  ( EncryptedBackendError
+  , LegacyPulumiBackend (..)
+  , PulumiStackRef (..)
+  , renderEncryptedBackendError
+  , withDecryptedStackEnvironment
+  , withMigratedDecryptedStackEnvironment
+  )
 import Prodbox.Result (Result (..))
 import Prodbox.Ses.SmtpPassword (derivedSesSmtpPassword)
 import Prodbox.Settings
-  ( ConfigFile
+  ( AwsCredentialsRef (..)
+  , ConfigFile
   , Credentials (..)
   , PulumiStateBackendSection
   , Route53Section (..)
@@ -81,18 +83,18 @@ import Prodbox.Subprocess
   , captureSubprocessResult
   , runSubprocessStreaming
   )
-import System.Directory
-  ( doesFileExist
-  , getTemporaryDirectory
-  , removeFile
-  )
+import Prodbox.Vault.Host (writeHostVaultKvObject)
+import System.Directory (doesFileExist)
 import System.Environment (getEnvironment)
 import System.Exit (ExitCode (..))
 import System.FilePath ((</>))
-import System.IO (hClose, openTempFile)
 
 awsSesStackName :: String
 awsSesStackName = "aws-ses"
+
+awsSesPulumiStackRef :: PulumiStackRef
+awsSesPulumiStackRef =
+  PulumiStackRef "prodbox-aws-ses" (Text.pack awsSesStackName)
 
 awsSesPulumiProjectDir :: FilePath -> FilePath
 awsSesPulumiProjectDir repoRoot = repoRoot </> "pulumi" </> "aws-ses"
@@ -105,16 +107,6 @@ sesReceiveRuleName = "prodbox-capture-all-mail"
 
 sesSmtpUserName :: String
 sesSmtpUserName = "prodbox-ses-smtp"
-
-keycloakSmtpSecretName :: String
-keycloakSmtpSecretName = "keycloak-smtp"
-
--- | Namespaces where the Keycloak release can legitimately run on the
--- supported chart surface. `prodbox charts deploy keycloak` renders Keycloak
--- in `keycloak`; the canonical shared-edge stack (`charts deploy vscode`) runs
--- the transitive Keycloak release in `vscode`.
-keycloakSmtpSecretNamespaces :: [String]
-keycloakSmtpSecretNamespaces = ["vscode", "keycloak"]
 
 -- | Sprint 4.16 typed residue status. Delegates to the live
 -- @pulumi stack ls --json@ source-of-truth query against the
@@ -320,7 +312,7 @@ awsSesStackConfigFromConfig config = do
   receiveSubdomainValue = Text.unpack (Text.strip (receive_subdomain sesSection))
   captureBucketValue = Text.unpack (Text.strip (capture_bucket sesSection))
   awsRegionValue =
-    Text.unpack (Text.strip (region (aws_admin_for_test_simulation config)))
+    Text.unpack (Text.strip (awsCredentialRegion (aws_admin_for_test_simulation config)))
 
 syncAwsSesStackConfig :: FilePath -> [(String, String)] -> AwsSesStackConfig -> IO ExitCode
 syncAwsSesStackConfig projectDir environment stackConfig =
@@ -342,14 +334,11 @@ syncAwsSesStackConfig projectDir environment stackConfig =
       environment
       ["config", "set", "--stack", awsSesStackName, key, value]
 
--- | Sprint 4.10 admin-credential build: emit the env vars that the
--- aws-ses Pulumi flow needs when state lives on the long-lived S3
--- backend and the AWS provider authenticates with admin credentials
--- (`aws_admin_for_test_simulation.*`). The same admin creds are used
--- both for S3 backend authentication (via the `AWS_*` env vars) and
--- for the AWS Pulumi provider (via the `PRODBOX_PULUMI_AWS_*` env
--- vars). The operational `aws.*` block is no longer read on this
--- path.
+-- | Legacy Sprint 4.10 admin-credential build used only as the
+-- optional first-touch source for encrypted backend migration. Main
+-- Sprint 7.14 reconcile/destroy/migration paths run Pulumi against the
+-- encrypted scratch backend instead of handing raw S3 backend
+-- credentials to the supported action.
 pulumiSesAdminBaseEnv
   :: FilePath
   -> Credentials
@@ -359,11 +348,8 @@ pulumiSesAdminBaseEnv _repoRoot adminCreds backend =
   case longLivedPulumiBackendUrlEither backend of
     Left err -> pure (Left (longLivedBackendErrorMessage err))
     Right backendUrl -> do
-      currentEnv <- getEnvironment
-      let path = maybe "" id (lookup "PATH" currentEnv)
-          home = maybe "" id (lookup "HOME" currentEnv)
-          providerEnv = pulumiAwsProviderEnv adminCreds
-          adminRegion = Text.unpack (region adminCreds)
+      providerEnv <- pulumiSesProviderBaseEnv adminCreds
+      let adminRegion = Text.unpack (region adminCreds)
           sessionTokenEntries = case session_token adminCreds of
             Just token -> [("AWS_SESSION_TOKEN", Text.unpack token)]
             Nothing -> []
@@ -373,18 +359,57 @@ pulumiSesAdminBaseEnv _repoRoot adminCreds backend =
               , ("AWS_SECRET_ACCESS_KEY", Text.unpack (secret_access_key adminCreds))
               , ("AWS_REGION", adminRegion)
               , ("AWS_DEFAULT_REGION", adminRegion)
-              , ("AWS_EC2_METADATA_DISABLED", "true")
               , ("PULUMI_BACKEND_URL", backendUrl)
               , ("PULUMI_CONFIG_PASSPHRASE", "")
-              , ("PULUMI_SKIP_UPDATE_CHECK", "true")
-              , ("PATH", path)
-              , ("HOME", home)
-              , ("LANG", "C.UTF-8")
               ]
                 ++ sessionTokenEntries
                 ++ providerEnv
             )
         )
+
+pulumiSesProviderBaseEnv :: Credentials -> IO [(String, String)]
+pulumiSesProviderBaseEnv adminCreds = do
+  currentEnv <- getEnvironment
+  let path = maybe "" id (lookup "PATH" currentEnv)
+      home = maybe "" id (lookup "HOME" currentEnv)
+  pure
+    ( [ ("AWS_EC2_METADATA_DISABLED", "true")
+      , ("PULUMI_SKIP_UPDATE_CHECK", "true")
+      , ("PATH", path)
+      , ("HOME", home)
+      , ("LANG", "C.UTF-8")
+      ]
+        ++ pulumiAwsProviderEnv adminCreds
+    )
+
+withAwsSesEncryptedStackEnvironment
+  :: FilePath
+  -> FilePath
+  -> Credentials
+  -> [(String, String)]
+  -> ([(String, String)] -> IO (Either String a))
+  -> IO (Either EncryptedBackendError a)
+withAwsSesEncryptedStackEnvironment repoRoot projectDir adminCreds environment action = do
+  legacyBackend <- awsSesLegacyPulumiBackend repoRoot projectDir adminCreds
+  case legacyBackend of
+    Nothing ->
+      withDecryptedStackEnvironment repoRoot awsSesPulumiStackRef environment action
+    Just legacy ->
+      withMigratedDecryptedStackEnvironment repoRoot awsSesPulumiStackRef legacy environment action
+
+awsSesLegacyPulumiBackend
+  :: FilePath -> FilePath -> Credentials -> IO (Maybe LegacyPulumiBackend)
+awsSesLegacyPulumiBackend repoRoot projectDir adminCreds = do
+  configResult <- loadConfigFile repoRoot
+  case configResult of
+    Left _ -> pure Nothing
+    Right config -> do
+      legacyEnvironmentResult <-
+        pulumiSesAdminBaseEnv repoRoot adminCreds (pulumi_state_backend config)
+      pure $ case legacyEnvironmentResult of
+        Left _ -> Nothing
+        Right legacyEnvironment ->
+          Just (LegacyPulumiBackend projectDir legacyEnvironment (Text.pack awsSesStackName))
 
 pulumiLogin :: FilePath -> [(String, String)] -> IO ExitCode
 pulumiLogin projectDir environment = do
@@ -409,7 +434,10 @@ data PulumiStackSelectResult
 
 pulumiStackSelect :: FilePath -> [(String, String)] -> Bool -> IO PulumiStackSelectResult
 pulumiStackSelect projectDir environment createIfMissing =
-  let arguments = ["stack", "select", awsSesStackName] ++ ["--create" | createIfMissing]
+  let arguments =
+        ["stack", "select", awsSesStackName]
+          ++ ["--create" | createIfMissing]
+          ++ if createIfMissing then ["--secrets-provider", "plaintext"] else []
    in if createIfMissing
         then do
           exitCode <- runPulumiCommand projectDir environment arguments
@@ -474,9 +502,9 @@ pulumiStackOutputs projectDir environment = do
 
 -- Fetch the single named stack output with --show-secrets so the IAM
 -- secret access key surfaces in plaintext. Used only on the
--- chart-credential persistence path (`persistKeycloakSmtpChartSecrets`)
+-- Vault-credential persistence path (`persistKeycloakSmtpChartSecrets`)
 -- because the captured value derives the SES SMTP password and is then
--- immediately applied to the cluster-owned `keycloak-smtp` Secret. The
+-- immediately written to the externally-owned `secret/keycloak/smtp` KV object. The
 -- plaintext value is never persisted to disk by this function.
 pulumiStackOutputSecret
   :: FilePath -> [(String, String)] -> String -> IO (Either String String)
@@ -509,11 +537,11 @@ pulumiStackOutputSecret projectDir environment outputName = do
             )
         ExitSuccess -> Right (trim (processStdout output))
 
--- | Re-apply the Keycloak SMTP Secret from the already-provisioned long-lived
--- @aws-ses@ stack into the current Kubernetes context. This is intentionally
+-- | Re-apply the Keycloak SMTP Vault object from the already-provisioned long-lived
+-- @aws-ses@ stack into the current cluster's Vault. This is intentionally
 -- separate from 'ensureAwsSesStackResources': per-run clusters are fresh while
 -- the SES stack is retained, so AWS-substrate validation bootstrap must sync
--- the cluster Secret without mutating the long-lived SES resources.
+-- the Vault KV object without mutating the long-lived SES resources.
 syncKeycloakSmtpChartSecrets :: FilePath -> IO (Either String ())
 syncKeycloakSmtpChartSecrets repoRoot = do
   let projectDir = awsSesPulumiProjectDir repoRoot
@@ -523,22 +551,21 @@ syncKeycloakSmtpChartSecrets repoRoot = do
     else do
       configResult <- resolveAwsSesStackConfig repoRoot
       adminResult <- loadAdminAwsCredentials repoRoot
-      backendConfigResult <- loadConfigFile repoRoot
-      case (configResult, adminResult, backendConfigResult) of
-        (Left err, _, _) -> pure (Left err)
-        (_, Left err, _) -> pure (Left err)
-        (_, _, Left err) -> pure (Left err)
-        (Right stackConfig, Right adminCreds, Right backendConfig) -> do
-          let backend = pulumi_state_backend backendConfig
-          baseEnvResult <- pulumiSesAdminBaseEnv repoRoot adminCreds backend
-          case baseEnvResult of
-            Left err -> pure (Left err)
-            Right baseEnvironment -> do
-              bucketResult <- ensureLongLivedPulumiStateBucket repoRoot baseEnvironment backend
-              case bucketResult of
-                Left err -> pure (Left (longLivedBackendErrorMessage err))
-                Right () ->
-                  runSyncKeycloakSmtpChartSecrets repoRoot projectDir baseEnvironment stackConfig
+      case (configResult, adminResult) of
+        (Left err, _) -> pure (Left err)
+        (_, Left err) -> pure (Left err)
+        (Right stackConfig, Right adminCreds) -> do
+          baseEnvironment <- pulumiSesProviderBaseEnv adminCreds
+          backendResult <-
+            withAwsSesEncryptedStackEnvironment
+              repoRoot
+              projectDir
+              adminCreds
+              baseEnvironment
+              (\environment -> runSyncKeycloakSmtpChartSecrets repoRoot projectDir environment stackConfig)
+          pure $ case backendResult of
+            Left err -> Left (renderEncryptedBackendError err)
+            Right () -> Right ()
 
 runSyncKeycloakSmtpChartSecrets
   :: FilePath
@@ -579,20 +606,14 @@ runSyncKeycloakSmtpChartSecrets repoRoot projectDir baseEnvironment stackConfig 
 
 -- After a successful aws-ses Pulumi reconcile, fetch the IAM secret access
 -- key for the SMTP user, derive the SES SMTP password via
--- `Prodbox.Ses.SmtpPassword.derivedSesSmtpPassword`, and apply the
--- `keycloak-smtp` @v1.Secret@ in every supported Keycloak release namespace
--- directly via @kubectl@. The Secret carries the seven @KC_SMTP_*@ fields the
--- chart's `configmap.yaml` reads via Helm @lookup@ in `.Release.Namespace` to
--- populate the realm-import @smtpServer@ block. The IAM secret access key never
+-- `Prodbox.Ses.SmtpPassword.derivedSesSmtpPassword`, and write the
+-- externally-owned @secret/keycloak/smtp@ Vault KV object. The Keycloak chart
+-- and operator invite helpers read the same Vault object; no kubectl-applied
+-- SMTP Secret is a supported source of truth. The IAM secret access key never
 -- lands on disk.
 --
--- Sprint 3.13 chunk 10: replaced the prior
--- @.prodbox-state/charts/keycloak/.secrets.json@ write with a kubectl
--- apply so the cluster Secret is the source-of-truth. @helm.sh/resource-policy:
--- keep@ is stamped on the Secret so a subsequent @charts delete keycloak@
--- does not delete it, matching the pattern from Sprint 2.19's gateway-minio-creds
--- closure. The chart's own @keycloak-smtp@ Secret template is removed in the
--- same chunk so there is no helm-vs-kubectl multi-writer race.
+-- Sprint 3.18: the Sprint 3.13 Kubernetes Secret sync is replaced by a Vault
+-- KV write so the SMTP credential has one store before Keycloak starts.
 persistKeycloakSmtpChartSecrets
   :: FilePath
   -> FilePath
@@ -600,109 +621,37 @@ persistKeycloakSmtpChartSecrets
   -> AwsSesStackConfig
   -> AwsSesStackSnapshot
   -> IO (Either String ())
-persistKeycloakSmtpChartSecrets _repoRoot projectDir environment stackConfig snapshot = do
+persistKeycloakSmtpChartSecrets repoRoot projectDir environment stackConfig snapshot = do
   secretResult <- pulumiStackOutputSecret projectDir environment "smtp_iam_secret_access_key"
   case secretResult of
     Left err -> pure (Left err)
     Right smtpSecret -> do
-      let region = Text.pack (sesStackAwsRegion stackConfig)
-          derivedPassword =
-            Text.unpack (derivedSesSmtpPassword region (Text.pack smtpSecret))
-          fromAddress = "noreply@" ++ sesStackSenderDomain stackConfig
-          fields =
-            [ ("KC_SMTP_HOST", sesSnapshotSmtpEndpoint snapshot)
-            , ("KC_SMTP_PORT", "587")
-            , ("KC_SMTP_FROM", fromAddress)
-            , ("KC_SMTP_FROM_DISPLAY_NAME", "prodbox")
-            , ("KC_SMTP_REPLY_TO", fromAddress)
-            , ("KC_SMTP_USER", sesSnapshotSmtpIamAccessKeyId snapshot)
-            , ("KC_SMTP_PASSWORD", derivedPassword)
-            ]
-      applyKeycloakSmtpKubectlSecret fields
+      writeHostVaultKvObject
+        repoRoot
+        "secret"
+        "keycloak/smtp"
+        ( keycloakSmtpVaultFields
+            (sesStackAwsRegion stackConfig)
+            (sesStackSenderDomain stackConfig)
+            (sesSnapshotSmtpEndpoint snapshot)
+            (sesSnapshotSmtpIamAccessKeyId snapshot)
+            smtpSecret
+        )
 
--- | Apply (create-or-update) the @keycloak-smtp@ Secret in the supported
--- Keycloak release namespaces via @kubectl create secret generic …
--- --dry-run=client -o yaml | kubectl apply -f -@. Mirrors
--- 'Prodbox.CLI.Rke2.writeGatewayMinioCredsSecret' from Sprint 2.19 (same
--- @helm.sh/resource-policy: keep@ annotation so @helm uninstall@ doesn't
--- drop the Secret). The kubectl context is the operator's current kubeconfig.
--- The namespace create is idempotent and intentionally happens before the
--- Secret apply so a fresh EKS cluster can receive the SMTP Secret before Helm
--- renders the Keycloak chart and performs its `lookup`.
-applyKeycloakSmtpKubectlSecret :: [(String, String)] -> IO (Either String ())
-applyKeycloakSmtpKubectlSecret fields = do
-  let script = renderKeycloakSmtpKubectlApplyScript fields
-  result <-
-    captureSubprocessResult
-      Subprocess
-        { subprocessPath = "sh"
-        , subprocessArguments = ["-c", script]
-        , subprocessEnvironment = Nothing
-        , subprocessWorkingDirectory = Nothing
-        }
-  pure $ case result of
-    Failure err ->
-      Left ("failed to kubectl-apply keycloak-smtp Secret: " ++ err)
-    Success output ->
-      case processExitCode output of
-        ExitSuccess -> Right ()
-        ExitFailure _ ->
-          Left
-            ( "kubectl apply for keycloak-smtp Secret failed: "
-                ++ trim (processStderr output ++ processStdout output)
-                ++ " (is `kubectl` configured for the operator cluster? "
-                ++ "run `prodbox rke2 reconcile` or the AWS-substrate bootstrap first.)"
-            )
-
-renderKeycloakSmtpKubectlApplyScript :: [(String, String)] -> String
-renderKeycloakSmtpKubectlApplyScript fields =
-  intercalate " && " (concatMap namespaceSteps keycloakSmtpSecretNamespaces)
- where
-  literalArgs =
-    concatMap
-      (\(k, v) -> " --from-literal=" ++ shellQuoteForBash (k ++ "=" ++ v))
-      fields
-
-  namespaceSteps namespace =
-    [ "kubectl create namespace "
-        ++ shellQuoteForBash namespace
-        ++ " --dry-run=client -o yaml | kubectl apply -f -"
-    , "kubectl label namespace "
-        ++ shellQuoteForBash namespace
-        ++ " "
-        ++ shellQuoteForBash "app.kubernetes.io/managed-by=Helm"
-        ++ " --overwrite"
-    , "kubectl annotate namespace "
-        ++ shellQuoteForBash namespace
-        ++ " "
-        ++ shellQuoteForBash "meta.helm.sh/release-name=gateway"
-        ++ " "
-        ++ shellQuoteForBash "meta.helm.sh/release-namespace=gateway"
-        ++ " "
-        ++ shellQuoteForBash "helm.sh/resource-policy=keep"
-        ++ " --overwrite"
-    , "kubectl create secret generic "
-        ++ shellQuoteForBash keycloakSmtpSecretName
-        ++ literalArgs
-        ++ " -n "
-        ++ shellQuoteForBash namespace
-        ++ " --dry-run=client -o yaml | kubectl apply -f -"
-    , "kubectl annotate secret "
-        ++ shellQuoteForBash keycloakSmtpSecretName
-        ++ " -n "
-        ++ shellQuoteForBash namespace
-        ++ " helm.sh/resource-policy=keep --overwrite"
-    ]
-
--- | Shell-quote a literal for safe inclusion as a single argument inside an
--- @sh -c@ script. Wraps in single quotes and escapes embedded single quotes
--- via the @'\\''@ idiom. Mirrors 'Prodbox.CLI.Rke2.shellQuote' but kept
--- local to avoid the import cycle.
-shellQuoteForBash :: String -> String
-shellQuoteForBash s = "'" ++ concatMap escape s ++ "'"
- where
-  escape '\'' = "'\\''"
-  escape c = [c]
+keycloakSmtpVaultFields
+  :: String -> String -> String -> String -> String -> Map Text.Text Text.Text
+keycloakSmtpVaultFields awsRegion senderDomain smtpEndpoint smtpAccessKeyId smtpSecret =
+  let region = Text.pack awsRegion
+      fromAddress = Text.pack ("noreply@" ++ senderDomain)
+   in Map.fromList
+        [ ("host", Text.pack smtpEndpoint)
+        , ("port", "587")
+        , ("from", fromAddress)
+        , ("from_display_name", "prodbox")
+        , ("reply_to", fromAddress)
+        , ("username", Text.pack smtpAccessKeyId)
+        , ("password", derivedSesSmtpPassword region (Text.pack smtpSecret))
+        ]
 
 runPulumiCommand :: FilePath -> [(String, String)] -> [String] -> IO ExitCode
 runPulumiCommand projectDir environment arguments = do
@@ -779,13 +728,11 @@ renderProcessDetail output =
 trim :: String -> String
 trim = reverse . dropWhile (\c -> c == '\n' || c == '\r' || c == ' ') . reverse
 
--- | Sprint 4.10: aws-ses Pulumi reconcile authenticates with the
--- admin credential block (`aws_admin_for_test_simulation.*`) and
--- consults the long-lived S3 backend named by
--- `pulumi_state_backend`. The in-cluster MinIO backend is no longer
--- read on this path; operators with existing MinIO-backed state must
--- run `prodbox aws stack aws-ses migrate-backend` once to copy state
--- onto the long-lived bucket.
+-- | Sprint 7.14: aws-ses Pulumi reconcile authenticates the AWS provider
+-- with the admin credential block (`aws_admin_for_test_simulation.*`) and
+-- stores Pulumi state through the encrypted scratch backend. The legacy
+-- long-lived S3 backend path survives only as an optional first-touch
+-- migration source for the encrypted wrapper.
 ensureAwsSesStackResources :: FilePath -> IO ExitCode
 ensureAwsSesStackResources repoRoot = do
   let projectDir = awsSesPulumiProjectDir repoRoot
@@ -795,31 +742,21 @@ ensureAwsSesStackResources repoRoot = do
     else do
       configResult <- resolveAwsSesStackConfig repoRoot
       adminResult <- loadAdminAwsCredentials repoRoot
-      backendConfigResult <- loadConfigFile repoRoot
-      case (configResult, adminResult, backendConfigResult) of
-        (Left err, _, _) -> failWith err
-        (_, Left err, _) -> failWith err
-        (_, _, Left err) -> failWith err
-        (Right stackConfig, Right adminCreds, Right backendConfig) -> do
-          let backend = pulumi_state_backend backendConfig
-          baseEnvResult <- pulumiSesAdminBaseEnv repoRoot adminCreds backend
-          case baseEnvResult of
-            Left err -> failWith err
-            Right baseEnvironment -> do
-              bucketResult <-
-                ensureLongLivedPulumiStateBucket repoRoot baseEnvironment backend
-              case bucketResult of
-                Left err -> failWith (longLivedBackendErrorMessage err)
-                Right () -> do
-                  runResult <-
-                    runEnsureAwsSesPulumiCycle
-                      repoRoot
-                      projectDir
-                      baseEnvironment
-                      stackConfig
-                  case runResult of
-                    Left err -> failWith err
-                    Right () -> pure ExitSuccess
+      case (configResult, adminResult) of
+        (Left err, _) -> failWith err
+        (_, Left err) -> failWith err
+        (Right stackConfig, Right adminCreds) -> do
+          baseEnvironment <- pulumiSesProviderBaseEnv adminCreds
+          runResult <-
+            withAwsSesEncryptedStackEnvironment
+              repoRoot
+              projectDir
+              adminCreds
+              baseEnvironment
+              (\environment -> runEnsureAwsSesPulumiCycle repoRoot projectDir environment stackConfig)
+          case runResult of
+            Left err -> failWith (renderEncryptedBackendError err)
+            Right () -> pure ExitSuccess
 
 runEnsureAwsSesPulumiCycle
   :: FilePath
@@ -1104,33 +1041,34 @@ destroyAwsSesStack repoRoot summary = do
       writeOutputLine ("AWS SES stack: " ++ status)
       pure ExitSuccess
 
--- | Sprint 4.10: aws-ses destroy authenticates with admin credentials
--- (`aws_admin_for_test_simulation.*`) and consults the long-lived S3
--- backend. The operational @aws.*@ block is no longer read on this
--- path. The MinIO port-forward is gone — a missing long-lived bucket
--- is treated as "already destroyed" only when no on-disk snapshot
--- exists; otherwise it is an actionable failure.
+-- | Sprint 7.14: aws-ses destroy authenticates the AWS provider with
+-- admin credentials (`aws_admin_for_test_simulation.*`) and consults the
+-- encrypted scratch backend. The operational @aws.*@ block is no longer
+-- read on this path.
 destroyAwsSesStackStatus :: FilePath -> Bool -> IO (Either String String)
 destroyAwsSesStackStatus repoRoot summary = do
   currentSnapshot <- fetchAwsSesStackSnapshotFromBackend repoRoot
   let projectDir = awsSesPulumiProjectDir repoRoot
   adminResult <- loadAdminAwsCredentials repoRoot
-  configResult <- loadConfigFile repoRoot
-  case (adminResult, configResult) of
-    (Left err, _) ->
+  case adminResult of
+    Left err ->
       case currentSnapshot of
         Nothing ->
           pure
             (Right "no admin AWS credentials configured and no saved residue snapshot; nothing to destroy")
         Just _ -> pure (Left ("admin AWS credentials required to destroy the AWS SES stack: " ++ err))
-    (_, Left err) -> pure (Left err)
-    (Right adminCreds, Right config) -> do
-      let backend = pulumi_state_backend config
-      baseEnvResult <- pulumiSesAdminBaseEnv repoRoot adminCreds backend
-      case baseEnvResult of
-        Left err -> pure (Left err)
-        Right backendEnvironment ->
-          runDestroyAwsSesPulumiCycle repoRoot projectDir backendEnvironment currentSnapshot summary
+    Right adminCreds -> do
+      backendEnvironment <- pulumiSesProviderBaseEnv adminCreds
+      backendResult <-
+        withAwsSesEncryptedStackEnvironment
+          repoRoot
+          projectDir
+          adminCreds
+          backendEnvironment
+          (\environment -> runDestroyAwsSesPulumiCycle repoRoot projectDir environment currentSnapshot summary)
+      pure $ case backendResult of
+        Left err -> Left (renderEncryptedBackendError err)
+        Right status -> Right status
 
 runDestroyAwsSesPulumiCycle
   :: FilePath
@@ -1266,180 +1204,49 @@ failWith message = do
   writeError (fatalError (Text.pack message))
   pure (ExitFailure 1)
 
--- | Sprint 4.10: migrate the @aws-ses@ stack's Pulumi state from the
--- in-cluster MinIO backend onto the dedicated long-lived S3 bucket
--- named by @pulumi_state_backend@ in @prodbox-config.dhall@.
--- Idempotent: detects whether the long-lived backend already carries
--- a recent state checkpoint and short-circuits without exporting.
---
--- Operator-driven: gated by 'requireInteractiveTty' at the CLI layer
--- (see 'Prodbox.CLI.Interactive.awsSesMigrateBackendGuard'). The
--- migration sequence follows the doctrine in
--- @documents/engineering/lifecycle_reconciliation_doctrine.md § 2@:
---
---   1. Validate that @pulumi_state_backend.bucket_name@ and
---      @pulumi_state_backend.region@ are non-empty (no fallback).
---   2. Ensure the long-lived S3 bucket exists (idempotent
---      @head-bucket@ + @create-bucket@ with versioning, SSE,
---      block-public-access, prodbox tags, and a 90-day
---      noncurrent-version expiration lifecycle rule).
---   3. Detect whether the long-lived backend already carries the
---      stack's checkpoint; short-circuit if so.
---   4. Export the stack from MinIO, log in to the S3 backend, import
---      into S3.
---   5. Persist the operator-visible status report.
+-- | Operator compatibility entrypoint for the @aws-ses@ backend
+-- migration. The first-touch import/delete logic now lives in the
+-- encrypted backend wrapper; this command simply opens that wrapper
+-- and selects the stack from the scratch backend so the wrapper can
+-- persist an encrypted checkpoint and delete the legacy raw source
+-- only after a successful supported action.
 migrateAwsSesStackBackend :: FilePath -> IO ExitCode
 migrateAwsSesStackBackend repoRoot = do
   requireInteractiveTty awsSesMigrateBackendGuard
   adminResult <- loadAdminAwsCredentials repoRoot
-  configResult <- loadConfigFile repoRoot
-  case (adminResult, configResult) of
-    (Left err, _) -> failWith err
-    (_, Left err) -> failWith err
-    (Right adminCreds, Right config) -> do
-      let backend = pulumi_state_backend config
-          projectDir = awsSesPulumiProjectDir repoRoot
-      writeOutputLine "AWS_SES_BACKEND_MIGRATION"
-      longLivedEnvResult <- pulumiSesAdminBaseEnv repoRoot adminCreds backend
-      case longLivedEnvResult of
-        Left err -> failWith err
-        Right longLivedEnv -> do
-          bucketResult <-
-            ensureLongLivedPulumiStateBucket repoRoot longLivedEnv backend
-          case bucketResult of
-            Left err -> failWith (longLivedBackendErrorMessage err)
-            Right () -> runMigrateAwsSesBackend repoRoot projectDir longLivedEnv
+  case adminResult of
+    Left err -> failWith err
+    Right adminCreds -> do
+      let projectDir = awsSesPulumiProjectDir repoRoot
+      projectExists <- doesFileExist (projectDir </> "Pulumi.yaml")
+      if not projectExists
+        then failWith ("Pulumi AWS SES project missing: " ++ projectDir)
+        else do
+          baseEnvironment <- pulumiSesProviderBaseEnv adminCreds
+          writeOutputLine "AWS_SES_BACKEND_MIGRATION"
+          runResult <-
+            withAwsSesEncryptedStackEnvironment
+              repoRoot
+              projectDir
+              adminCreds
+              baseEnvironment
+              (runEncryptedAwsSesBackendMigration projectDir)
+          case runResult of
+            Left err -> failWith (renderEncryptedBackendError err)
+            Right status -> do
+              writeOutputLine status
+              pure ExitSuccess
 
--- | Idempotent migrate-backend orchestration body. Returns
--- 'ExitSuccess' both when the migration runs to completion AND when
--- it short-circuits because the long-lived backend already carries
--- the stack (subsequent re-runs are no-ops).
-runMigrateAwsSesBackend
-  :: FilePath -> FilePath -> [(String, String)] -> IO ExitCode
-runMigrateAwsSesBackend repoRoot projectDir longLivedEnv = do
-  loginExit <- pulumiLogin projectDir longLivedEnv
-  case loginExit of
-    ExitFailure _ -> failWith "pulumi login against long-lived backend failed"
-    ExitSuccess -> do
-      selectExit <- pulumiStackSelect projectDir longLivedEnv False
-      case selectExit of
-        PulumiStackSelected -> do
-          writeOutputLine
-            "long-lived backend already carries the aws-ses stack; nothing to migrate"
-          writeOutputLine "STATUS=already-migrated"
-          pure ExitSuccess
+runEncryptedAwsSesBackendMigration
+  :: FilePath -> [(String, String)] -> IO (Either String String)
+runEncryptedAwsSesBackendMigration projectDir environment = do
+  loginResult <- pulumiLoginQuiet projectDir environment
+  case loginResult of
+    Left err -> pure (Left ("pulumi login failed: " ++ err))
+    Right () -> do
+      selectResult <- pulumiStackSelect projectDir environment False
+      pure $ case selectResult of
+        PulumiStackSelected -> Right "STATUS=encrypted-backend-ready"
+        PulumiStackMissing -> Right "STATUS=absent"
         PulumiStackSelectFailed detail ->
-          failWith ("pulumi stack select on long-lived backend failed: " ++ detail)
-        PulumiStackMissing ->
-          performAwsSesBackendMigration repoRoot projectDir longLivedEnv
-
--- | Drive the export-from-MinIO → import-into-long-lived sequence.
--- Brackets a temporary JSON file holding the exported checkpoint;
--- the file is removed even on failure paths.
-performAwsSesBackendMigration
-  :: FilePath -> FilePath -> [(String, String)] -> IO ExitCode
-performAwsSesBackendMigration repoRoot projectDir longLivedEnv = do
-  temporaryDirectory <- getTemporaryDirectory
-  bracket
-    ( do
-        (path, handle) <- openTempFile temporaryDirectory "aws-ses-export-.json"
-        hClose handle
-        pure path
-    )
-    ( \tempPath -> do
-        _ <- try (removeFile tempPath) :: IO (Either IOException ())
-        pure ()
-    )
-    ( \exportFile -> do
-        exportResult <- exportAwsSesFromMinIO repoRoot projectDir exportFile
-        case exportResult of
-          ExitFailure code -> pure (ExitFailure code)
-          ExitSuccess -> importAwsSesIntoLongLived projectDir longLivedEnv exportFile
-    )
-
--- | Open a MinIO port-forward, log in to the in-cluster MinIO Pulumi
--- backend, select the aws-ses stack, and export its checkpoint to
--- the supplied file path.
-exportAwsSesFromMinIO :: FilePath -> FilePath -> FilePath -> IO ExitCode
-exportAwsSesFromMinIO _repoRoot projectDir exportFile = do
-  portForwardResult <- withMinioPortForward $ \localPort -> do
-    credsResult <- readMinioCredentials
-    case credsResult of
-      Left err -> pure (Left err)
-      Right (accessKey, secretKey) -> do
-        bucketResult <- ensureMinioBackendBucket localPort accessKey secretKey
-        case bucketResult of
-          Left err -> pure (Left err)
-          Right () -> do
-            currentEnv <- getEnvironment
-            let path = maybe "" id (lookup "PATH" currentEnv)
-                home = maybe "" id (lookup "HOME" currentEnv)
-                minioEnv =
-                  [ ("AWS_ACCESS_KEY_ID", accessKey)
-                  , ("AWS_SECRET_ACCESS_KEY", secretKey)
-                  , ("AWS_REGION", "us-east-1")
-                  , ("AWS_DEFAULT_REGION", "us-east-1")
-                  , ("AWS_EC2_METADATA_DISABLED", "true")
-                  , ("PULUMI_BACKEND_URL", pulumiBackendUrl localPort)
-                  , ("PULUMI_CONFIG_PASSPHRASE", "")
-                  , ("PULUMI_SKIP_UPDATE_CHECK", "true")
-                  , ("PATH", path)
-                  , ("HOME", home)
-                  , ("LANG", "C.UTF-8")
-                  ]
-            loginExit <- pulumiLogin projectDir minioEnv
-            case loginExit of
-              ExitFailure _ -> pure (Left "pulumi login against MinIO backend failed")
-              ExitSuccess -> do
-                selectExit <- pulumiStackSelect projectDir minioEnv False
-                case selectExit of
-                  PulumiStackMissing ->
-                    pure (Left "aws-ses stack is absent from the MinIO backend; nothing to migrate")
-                  PulumiStackSelectFailed detail ->
-                    pure (Left ("pulumi stack select on MinIO backend failed: " ++ detail))
-                  PulumiStackSelected -> do
-                    exportExit <- pulumiStackExport projectDir minioEnv exportFile
-                    pure $ case exportExit of
-                      ExitSuccess -> Right ()
-                      ExitFailure code ->
-                        Left ("pulumi stack export from MinIO failed with exit code " ++ show code)
-  case portForwardResult of
-    Left err -> failWith ("MinIO port-forward unavailable for migration export: " ++ err)
-    Right (Left err) -> failWith err
-    Right (Right ()) -> pure ExitSuccess
-
--- | Already authenticated against the long-lived backend (the
--- caller invoked @pulumi login@ against it). Create the @aws-ses@
--- stack and import the checkpoint from the supplied file.
-importAwsSesIntoLongLived
-  :: FilePath -> [(String, String)] -> FilePath -> IO ExitCode
-importAwsSesIntoLongLived projectDir longLivedEnv exportFile = do
-  selectExit <- pulumiStackSelect projectDir longLivedEnv True
-  case selectExit of
-    PulumiStackMissing ->
-      failWith "pulumi stack select reported a missing stack after --create on long-lived backend"
-    PulumiStackSelectFailed detail ->
-      failWith ("pulumi stack --create on long-lived backend failed: " ++ detail)
-    PulumiStackSelected -> do
-      importExit <- pulumiStackImport projectDir longLivedEnv exportFile
-      case importExit of
-        ExitFailure code ->
-          failWith ("pulumi stack import into long-lived backend failed with exit code " ++ show code)
-        ExitSuccess -> do
-          writeOutputLine "stack migrated from MinIO backend onto the long-lived S3 backend"
-          writeOutputLine "STATUS=migrated"
-          pure ExitSuccess
-
-pulumiStackExport :: FilePath -> [(String, String)] -> FilePath -> IO ExitCode
-pulumiStackExport projectDir environment outputFile =
-  runPulumiCommand
-    projectDir
-    environment
-    ["stack", "export", "--stack", awsSesStackName, "--file", outputFile]
-
-pulumiStackImport :: FilePath -> [(String, String)] -> FilePath -> IO ExitCode
-pulumiStackImport projectDir environment inputFile =
-  runPulumiCommand
-    projectDir
-    environment
-    ["stack", "import", "--stack", awsSesStackName, "--file", inputFile]
+          Left ("pulumi stack select failed: " ++ detail)

@@ -19,12 +19,12 @@ module Prodbox.Infra.SubstrateKubectl
 where
 
 import Control.Exception (bracket_)
-import Data.Text qualified as Text
+import Prodbox.AwsEnvironment (overlayAwsCredentials)
 import Prodbox.Infra.AwsEksTestStack (withEksKubeconfig)
 import Prodbox.Settings
-  ( Credentials (..)
-  , ValidatedSettings (..)
+  ( ValidatedSettings (..)
   , aws
+  , resolveAwsCredentialsRefFromHostVault
   , validatedConfig
   )
 import Prodbox.Substrate (Substrate (..))
@@ -44,22 +44,22 @@ withSubstrateKubectlEnvironment
 withSubstrateKubectlEnvironment repoRoot settings substrate action =
   case substrate of
     SubstrateHomeLocal -> action
-    SubstrateAws ->
-      withEksKubeconfig repoRoot $ \kubeconfigPath -> do
-        let awsCreds = aws (validatedConfig settings)
-            envOverrides =
-              [ ("KUBECONFIG", kubeconfigPath)
-              , ("AWS_ACCESS_KEY_ID", Text.unpack (access_key_id awsCreds))
-              , ("AWS_SECRET_ACCESS_KEY", Text.unpack (secret_access_key awsCreds))
-              , ("AWS_DEFAULT_REGION", Text.unpack (region awsCreds))
-              , ("AWS_REGION", Text.unpack (region awsCreds))
-              ]
-                ++ maybe [] (\tok -> [("AWS_SESSION_TOKEN", Text.unpack tok)]) (session_token awsCreds)
-        previousValues <- mapM (lookupEnv . fst) envOverrides
-        bracket_
-          (mapM_ (uncurry setEnv) envOverrides)
-          (mapM_ restoreOne (zip envOverrides previousValues))
-          action
+    SubstrateAws -> do
+      credentialsResult <-
+        resolveAwsCredentialsRefFromHostVault
+          repoRoot
+          "aws"
+          (aws (validatedConfig settings))
+      case credentialsResult of
+        Left err -> fail ("load operational AWS credentials from Vault: " ++ err)
+        Right credentials ->
+          withEksKubeconfig repoRoot $ \kubeconfigPath -> do
+            let envOverrides = overlayAwsCredentials [("KUBECONFIG", kubeconfigPath)] credentials
+            previousValues <- mapM (lookupEnv . fst) envOverrides
+            bracket_
+              (mapM_ (uncurry setEnv) envOverrides)
+              (mapM_ restoreOne (zip envOverrides previousValues))
+              action
  where
   restoreOne :: ((String, String), Maybe String) -> IO ()
   restoreOne ((name, _), Nothing) = unsetEnv name

@@ -15,12 +15,11 @@
 -- by the test harness.
 --
 -- This module lands the type, its 'FromDhall' decoder, the
--- production-plaintext-rejection validator, and the resolver's local arm
--- (@TestPlaintext@ in the test harness only). Live @SecretRef.Vault@ resolution
--- is wired once the Vault read path is in place (Sprint @1.36@); until then
--- 'resolveSecretRef' reports 'SecretRefVaultUnavailable' for @Vault@ /
--- @TransitKey@ so a production config that references Vault fails loud rather
--- than silently.
+-- production-plaintext-rejection validator, the resolver's local arm
+-- (@TestPlaintext@ in the test harness only), and the Vault KV resolver seam
+-- consumed by the future config-loader migration. The compatibility
+-- 'resolveSecretRef' helper still fails loud for @Vault@ / @TransitKey@ unless
+-- a Vault reader is explicitly supplied.
 module Prodbox.Settings.SecretRef
   ( SecretRef (..)
   , VaultSecretRef (..)
@@ -30,11 +29,14 @@ module Prodbox.Settings.SecretRef
   , secretRefIsPlaintext
   , validateProductionSecretRef
   , resolveSecretRef
+  , resolveSecretRefWithVault
+  , resolveSecretRefFromVault
   , renderSecretRefError
   )
 where
 
 import Data.Char qualified as Char
+import Data.Map.Strict qualified as Map
 import Data.Maybe (fromMaybe)
 import Data.Text (Text)
 import Data.Text qualified as Text
@@ -45,6 +47,12 @@ import Dhall
   , genericAutoWith
   )
 import GHC.Generics (Generic)
+import Prodbox.Http.Client (renderHttpError)
+import Prodbox.Vault.Client
+  ( VaultAddress
+  , VaultToken
+  , vaultKvReadV2
+  )
 
 -- | A reference to where a secret lives. Only 'SecretRefTestPlaintext' carries
 -- a literal value, and it is rejected outside the test harness. There is no
@@ -125,6 +133,10 @@ data SecretRefError
   | -- | A `Vault` / `TransitKey` reference was resolved before the Vault read
     -- path is wired (or against a sealed/unreachable Vault).
     SecretRefVaultUnavailable
+  | -- | Vault was reachable but the referenced KV field was absent.
+    SecretRefVaultFieldMissing
+  | -- | Vault returned an HTTP/decode error while reading the referenced secret.
+    SecretRefVaultReadFailed String
   | -- | A `Prompt` reference cannot be resolved non-interactively.
     SecretRefPromptUnsupported Text
   deriving (Eq, Show)
@@ -135,6 +147,10 @@ renderSecretRefError err = case err of
     "plaintext secret values are forbidden in production config; use a SecretRef.Vault reference"
   SecretRefVaultUnavailable ->
     "Vault-backed secret reference is not resolvable: Vault is unavailable or its read path is not yet wired"
+  SecretRefVaultFieldMissing ->
+    "Vault-backed secret reference is missing the requested field"
+  SecretRefVaultReadFailed detail ->
+    "Vault-backed secret reference failed to read: " ++ detail
   SecretRefPromptUnsupported name ->
     "prompted secret " ++ Text.unpack name ++ " cannot be resolved non-interactively"
 
@@ -151,14 +167,53 @@ validateProductionSecretRef ref
   | secretRefIsPlaintext ref = Left SecretRefPlaintextInProduction
   | otherwise = Right ()
 
--- | Resolve a 'SecretRef' to its plaintext value. 'SecretRefTestPlaintext'
--- resolves only in 'TestHarnessMode'; 'SecretRefVault' / 'SecretRefTransitKey' /
--- 'SecretRefPrompt' are not resolvable on this path yet and fail loud.
+-- | Resolve a 'SecretRef' to its plaintext value without a Vault reader.
+-- 'SecretRefTestPlaintext' resolves only in 'TestHarnessMode'; Vault-backed
+-- references fail loud on this compatibility path.
 resolveSecretRef :: SecretRefMode -> SecretRef -> IO (Either SecretRefError Text)
-resolveSecretRef mode ref = case ref of
+resolveSecretRef mode =
+  resolveSecretRefWithVault mode (\_ -> pure (Left SecretRefVaultUnavailable))
+
+-- | Resolve a 'SecretRef' using the supplied Vault KV reader. This is the
+-- unit-testable seam used by the production Vault-backed resolver and by the
+-- future config loader that migrates sensitive fields from plaintext to
+-- SecretRef references.
+resolveSecretRefWithVault
+  :: SecretRefMode
+  -> (VaultSecretRef -> IO (Either SecretRefError Text))
+  -> SecretRef
+  -> IO (Either SecretRefError Text)
+resolveSecretRefWithVault mode vaultReader ref = case ref of
   SecretRefTestPlaintext value -> case mode of
     TestHarnessMode -> pure (Right value)
     ProductionMode -> pure (Left SecretRefPlaintextInProduction)
-  SecretRefVault _ -> pure (Left SecretRefVaultUnavailable)
+  SecretRefVault vaultRef -> vaultReader vaultRef
   SecretRefTransitKey _ -> pure (Left SecretRefVaultUnavailable)
   SecretRefPrompt spec -> pure (Left (SecretRefPromptUnsupported (promptSpecName spec)))
+
+-- | Resolve a 'SecretRef.Vault' through Vault KV v2 using a token-bearing
+-- client. Transit keys are handles, not readable plaintext values, and remain
+-- intentionally unresolved on this path.
+resolveSecretRefFromVault
+  :: SecretRefMode
+  -> VaultAddress
+  -> VaultToken
+  -> SecretRef
+  -> IO (Either SecretRefError Text)
+resolveSecretRefFromVault mode address token =
+  resolveSecretRefWithVault mode readVaultRef
+ where
+  readVaultRef vaultRef = do
+    result <-
+      vaultKvReadV2
+        address
+        token
+        (vaultSecretMount vaultRef)
+        (vaultSecretPath vaultRef)
+    pure $ case result of
+      Left err -> Left (SecretRefVaultReadFailed (renderHttpError err))
+      Right fields ->
+        maybe
+          (Left SecretRefVaultFieldMissing)
+          Right
+          (Map.lookup (vaultSecretField vaultRef) fields)

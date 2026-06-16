@@ -31,6 +31,16 @@ spec:
         - protocol: TCP
           port: 53
     - to:
+        - namespaceSelector:
+            matchLabels:
+              kubernetes.io/metadata.name: vault
+          podSelector:
+            matchLabels:
+              app.kubernetes.io/name: prodbox-vault
+      ports:
+        - protocol: TCP
+          port: 8200
+    - to:
         - ipBlock:
             cidr: 0.0.0.0/0
       ports:

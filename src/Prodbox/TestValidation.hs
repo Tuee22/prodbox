@@ -2,6 +2,10 @@
 
 module Prodbox.TestValidation
   ( runNativeValidation
+  , SealedVaultAuditInput (..)
+  , defaultSealedVaultAuditInput
+  , sealedVaultAuditReport
+  , sealedVaultForbiddenPatterns
   , verifyAwsTestSshReachability
   , assertInviteOidcClaims
   )
@@ -29,7 +33,7 @@ import Data.ByteString.Char8 qualified as BS8
 import Data.ByteString.Lazy qualified as BL
 import Data.CaseInsensitive qualified as CI
 import Data.Char (isAsciiUpper)
-import Data.List (intercalate, isInfixOf, isPrefixOf, nub, sort)
+import Data.List (intercalate, isInfixOf, isPrefixOf, isSuffixOf, nub, sort)
 import Data.Map.Strict qualified as Map
 import Data.Text qualified as Text
 import Data.Text.Encoding qualified as TextEncoding
@@ -114,12 +118,13 @@ import Prodbox.PublicEdge
 import Prodbox.Result (Result (..))
 import Prodbox.Ses.Capture qualified
 import Prodbox.Settings
-  ( Credentials (..)
+  ( AwsCredentialsRef (..)
   , DomainSection (..)
   , Route53Section (..)
   , ValidatedSettings (..)
   , aws
   , domain
+  , resolveAwsCredentialsRefFromHostVault
   , route53
   , validateAndLoadSettings
   )
@@ -140,7 +145,8 @@ import Prodbox.TestPlan
   , nativeValidationId
   )
 import Prodbox.UsersAdmin qualified
-import System.Directory (removeFile)
+import Prodbox.Vault.Host (readHostVaultKvField)
+import System.Directory (doesDirectoryExist, removeFile)
 import System.Environment
   ( getEnvironment
   , lookupEnv
@@ -177,6 +183,107 @@ tokenFetchAttempts = 12
 
 tokenFetchDelayMicroseconds :: Int
 tokenFetchDelayMicroseconds = 5000000
+
+data SealedVaultAuditInput = SealedVaultAuditInput
+  { sealedVaultBucketNames :: [String]
+  , sealedVaultObjectKeys :: [String]
+  , sealedVaultHostDiskEntries :: [String]
+  , sealedVaultKubernetesObjectNames :: [String]
+  , sealedVaultLogLines :: [String]
+  }
+  deriving (Eq, Show)
+
+defaultSealedVaultAuditInput :: SealedVaultAuditInput
+defaultSealedVaultAuditInput =
+  SealedVaultAuditInput
+    { sealedVaultBucketNames = ["prodbox-state"]
+    , sealedVaultObjectKeys = []
+    , sealedVaultHostDiskEntries = []
+    , sealedVaultKubernetesObjectNames = []
+    , sealedVaultLogLines = []
+    }
+
+sealedVaultForbiddenPatterns :: [String]
+sealedVaultForbiddenPatterns =
+  [ "prodbox-test-pulumi-backends"
+  , "aws-eks"
+  , "aws-test"
+  , "aws-ses"
+  , "master-seed"
+  , "/v1/secret/derive"
+  , "/v1/secret/ensure-namespace"
+  , "secretreffile"
+  , "aws_secret_access_key"
+  , "akia"
+  , "begin private key"
+  , "client_secret = \""
+  , "password = \""
+  , "pulumi_config_passphrase"
+  , "kubeconfig user token"
+  , "child-a"
+  , "child-b"
+  , "child-named"
+  ]
+
+sealedVaultAuditReport :: SealedVaultAuditInput -> Either String String
+sealedVaultAuditReport input = do
+  assertOnlyGenericBuckets (sealedVaultBucketNames input)
+  assertOpaqueObjectKeys (sealedVaultObjectKeys input)
+  assertNoForbiddenPatterns "bucket listing" (sealedVaultBucketNames input)
+  assertNoForbiddenPatterns "object listing" (sealedVaultObjectKeys input)
+  assertNoForbiddenPatterns "host disk" (sealedVaultHostDiskEntries input)
+  assertNoForbiddenPatterns "kubernetes objects" (sealedVaultKubernetesObjectNames input)
+  assertNoForbiddenPatterns "logs/output" (sealedVaultLogLines input)
+  Right $
+    unlines
+      [ "SEALED_VAULT_AUDIT=pass"
+      , "SEALED_VAULT_BUCKETS=" ++ show (length (sealedVaultBucketNames input))
+      , "SEALED_VAULT_OBJECT_KEYS=" ++ show (length (sealedVaultObjectKeys input))
+      , "SEALED_VAULT_HOST_DISK_ENTRIES=" ++ show (length (sealedVaultHostDiskEntries input))
+      , "SEALED_VAULT_K8S_OBJECTS=" ++ show (length (sealedVaultKubernetesObjectNames input))
+      , "SEALED_VAULT_LOG_LINES=" ++ show (length (sealedVaultLogLines input))
+      ]
+
+assertOnlyGenericBuckets :: [String] -> Either String ()
+assertOnlyGenericBuckets buckets =
+  case filter (`notElem` ["prodbox-state"]) buckets of
+    [] -> Right ()
+    unexpected -> Left ("sealed Vault audit found role-revealing bucket names: " ++ show unexpected)
+
+assertOpaqueObjectKeys :: [String] -> Either String ()
+assertOpaqueObjectKeys objectKeys =
+  case filter (not . sealedVaultOpaqueObjectKey) objectKeys of
+    [] -> Right ()
+    unexpected -> Left ("sealed Vault audit found non-opaque object keys: " ++ show unexpected)
+
+sealedVaultOpaqueObjectKey :: String -> Bool
+sealedVaultOpaqueObjectKey key =
+  objectKey "objects/" || objectKey "indexes/"
+ where
+  objectKey prefix =
+    prefix `isPrefixOf` key
+      && suffix `isSuffixOf` key
+      && noNestedPath (drop (length prefix) (take (length key - length suffix) key))
+   where
+    suffix = ".enc" :: String
+
+  noNestedPath value =
+    value /= "" && not ("/" `isInfixOf` value)
+
+assertNoForbiddenPatterns :: String -> [String] -> Either String ()
+assertNoForbiddenPatterns surface values =
+  case [forbidden | forbidden <- sealedVaultForbiddenPatterns, any (containsLower forbidden) values] of
+    [] -> Right ()
+    patterns ->
+      Left
+        ( "sealed Vault audit found forbidden pattern(s) on "
+            ++ surface
+            ++ ": "
+            ++ intercalate ", " patterns
+        )
+ where
+  containsLower forbidden value =
+    map toLowerAscii forbidden `isInfixOf` map toLowerAscii value
 
 awsTestSshReadyAttempts :: Int
 awsTestSshReadyAttempts = 18
@@ -325,6 +432,7 @@ runNativeValidation substrate repoRoot environment validation = do
           , runNativeCliCommandForExitCode repoRoot environment ["cluster", "health"]
           ]
       ValidationKeycloakInvite -> runKeycloakInviteValidation repoRoot substrate environment
+      ValidationSealedVault -> runSealedVaultValidation repoRoot environment
 
 -- | Wrap a validation action with substrate-aware `KUBECONFIG` plus AWS_*
 -- credentials for the AWS substrate.
@@ -348,28 +456,160 @@ withSubstrateKubeconfigEnv repoRoot substrate action =
         Left err -> do
           writeError (fatalError (Text.pack err))
           pure (ExitFailure 1)
-        Right settings -> AwsEks.withEksKubeconfig repoRoot $ \kubeconfigPath -> do
-          let awsCreds = aws (validatedConfig settings)
-              envOverrides =
-                [ ("KUBECONFIG", kubeconfigPath)
-                , ("AWS_ACCESS_KEY_ID", Text.unpack (access_key_id awsCreds))
-                , ("AWS_SECRET_ACCESS_KEY", Text.unpack (secret_access_key awsCreds))
-                , ("AWS_DEFAULT_REGION", Text.unpack (region awsCreds))
-                , ("AWS_REGION", Text.unpack (region awsCreds))
-                ]
-                  ++ maybe
-                    []
-                    (\tok -> [("AWS_SESSION_TOKEN", Text.unpack tok)])
-                    (session_token awsCreds)
-          previousValues <- mapM (\(name, _) -> lookupEnv name) envOverrides
-          bracket_
-            (mapM_ (\(name, value) -> setEnv name value) envOverrides)
-            (mapM_ restoreOne (zip envOverrides previousValues))
-            action
+        Right settings -> do
+          credentialsResult <-
+            resolveAwsCredentialsRefFromHostVault
+              repoRoot
+              "aws"
+              (aws (validatedConfig settings))
+          case credentialsResult of
+            Left err -> do
+              writeError (fatalError (Text.pack ("load operational AWS credentials from Vault: " ++ err)))
+              pure (ExitFailure 1)
+            Right credentials ->
+              AwsEks.withEksKubeconfig repoRoot $ \kubeconfigPath -> do
+                let envOverrides = overlayAwsCredentials [("KUBECONFIG", kubeconfigPath)] credentials
+                previousValues <- mapM (\(name, _) -> lookupEnv name) envOverrides
+                bracket_
+                  (mapM_ (\(name, value) -> setEnv name value) envOverrides)
+                  (mapM_ restoreOne (zip envOverrides previousValues))
+                  action
  where
   restoreOne :: ((String, String), Maybe String) -> IO ()
   restoreOne ((name, _), Nothing) = unsetEnv name
   restoreOne ((name, _), Just value) = setEnv name value
+
+runSealedVaultValidation :: FilePath -> [(String, String)] -> IO ExitCode
+runSealedVaultValidation repoRoot environment = do
+  testAudit <- lookupEnv "PRODBOX_TEST_SEALED_VAULT_AUDIT"
+  case testAudit of
+    Just "pass" -> emitSealedVaultAudit defaultSealedVaultAuditInput
+    Just other -> failWith ("unknown PRODBOX_TEST_SEALED_VAULT_AUDIT fixture: " ++ other)
+    Nothing -> do
+      statusResult <- captureNativeCliCommand repoRoot environment ["vault", "status"]
+      case statusResult of
+        Left err -> failWith err
+        Right statusOutput -> do
+          let statusText = processStdout statusOutput ++ processStderr statusOutput
+              startedUnsealed = "sealed=False" `isInfixOf` statusText
+              startedSealed = "sealed=True" `isInfixOf` statusText
+          if not (startedUnsealed || startedSealed)
+            then
+              failWith ("could not determine Vault seal state from `vault status`: " ++ outputDetail statusOutput)
+            else
+              let restore =
+                    if startedUnsealed
+                      then do
+                        unsealExit <- runNativeCliCommandForExitCode repoRoot environment ["vault", "unseal"]
+                        case unsealExit of
+                          ExitSuccess -> pure ()
+                          ExitFailure _ ->
+                            writeDiagnosticLine "sealed-vault validation could not restore Vault to unsealed state."
+                      else pure ()
+               in finally
+                    ( do
+                        if startedUnsealed
+                          then do
+                            sealExit <- runNativeCliCommandForExitCode repoRoot environment ["vault", "seal"]
+                            case sealExit of
+                              ExitSuccess -> runSealedVaultAssertions repoRoot environment
+                              failure@(ExitFailure _) -> pure failure
+                          else runSealedVaultAssertions repoRoot environment
+                    )
+                    restore
+
+runSealedVaultAssertions :: FilePath -> [(String, String)] -> IO ExitCode
+runSealedVaultAssertions repoRoot environment =
+  runSequentially
+    [ assertNativeCommandOutputContainsAll repoRoot environment ["vault", "status"] ["sealed=True"]
+    , assertNativeCommandFailureContainsAll
+        repoRoot
+        environment
+        ["aws", "stack", "eks", "reconcile"]
+        ["Blocked: Vault is sealed."]
+    , runSealedVaultHostAndK8sAudit repoRoot
+    ]
+
+runSealedVaultHostAndK8sAudit :: FilePath -> IO ExitCode
+runSealedVaultHostAndK8sAudit repoRoot = do
+  let minioRoot = repoRoot ++ "/.data/prodbox/minio/0"
+  minioExists <- doesDirectoryExist minioRoot
+  if not minioExists
+    then failWith ("MinIO hostPath root missing for sealed-Vault audit: " ++ minioRoot)
+    else do
+      findResult <-
+        runTextCommand
+          Subprocess
+            { subprocessPath = "find"
+            , subprocessArguments = [minioRoot, "-type", "f", "-o", "-type", "d"]
+            , subprocessEnvironment = Nothing
+            , subprocessWorkingDirectory = Just repoRoot
+            }
+      case findResult of
+        Left err -> failWith err
+        Right output -> do
+          let hostEntries = filter (/= "") (lines output)
+          k8sObjectsResult <-
+            runTextCommand
+              Subprocess
+                { subprocessPath = "kubectl"
+                , subprocessArguments = ["get", "configmap,secret", "-A", "-o", "name"]
+                , subprocessEnvironment = Nothing
+                , subprocessWorkingDirectory = Just repoRoot
+                }
+          case k8sObjectsResult of
+            Left err -> failWith err
+            Right k8sOutput ->
+              emitSealedVaultAudit
+                defaultSealedVaultAuditInput
+                  { sealedVaultHostDiskEntries = hostEntries
+                  , sealedVaultKubernetesObjectNames = filter (/= "") (lines k8sOutput)
+                  }
+
+emitSealedVaultAudit :: SealedVaultAuditInput -> IO ExitCode
+emitSealedVaultAudit input =
+  case sealedVaultAuditReport input of
+    Left err -> failWith err
+    Right report -> do
+      writeOutput report
+      pure ExitSuccess
+
+captureNativeCliCommand
+  :: FilePath -> [(String, String)] -> [String] -> IO (Either String ProcessOutput)
+captureNativeCliCommand repoRoot environment cliArgs = do
+  result <- captureSubprocessResult (nativeCliCommandSpec repoRoot environment cliArgs)
+  pure $
+    case result of
+      Failure err -> Left err
+      Success output -> Right output
+
+assertNativeCommandFailureContainsAll
+  :: FilePath -> [(String, String)] -> [String] -> [String] -> IO ExitCode
+assertNativeCommandFailureContainsAll repoRoot environment cliArgs expectedTexts =
+  assertCommandFailureContainsAll (nativeCliCommandSpec repoRoot environment cliArgs) expectedTexts
+
+assertCommandFailureContainsAll :: Subprocess -> [String] -> IO ExitCode
+assertCommandFailureContainsAll spec expectedTexts = do
+  outputResult <- captureSubprocessResult spec
+  case outputResult of
+    Failure err -> failWith ("failed to start `" ++ commandDisplay spec ++ "`: " ++ err)
+    Success output -> do
+      writeOutput (processStdout output)
+      writeDiagnostic (processStderr output)
+      let combinedOutput = processStdout output ++ processStderr output
+      case processExitCode output of
+        ExitSuccess ->
+          failWith ("`" ++ commandDisplay spec ++ "` unexpectedly succeeded on a sealed-Vault path")
+        ExitFailure _ ->
+          if all (`isInfixOf` combinedOutput) expectedTexts
+            then pure ExitSuccess
+            else
+              failWith
+                ( "`"
+                    ++ commandDisplay spec
+                    ++ "` did not report all required sealed-Vault fragments: "
+                    ++ show expectedTexts
+                )
 
 runHaRke2AwsValidation :: FilePath -> [(String, String)] -> IO ExitCode
 runHaRke2AwsValidation repoRoot environment = do
@@ -888,9 +1128,8 @@ completeDirectOidcLogin :: FilePath -> ValidatedSettings -> Substrate -> IO (Eit
 completeDirectOidcLogin repoRoot settings substrate =
   withTemporaryFilePath repoRoot "prodbox-oidc-cookies" $ \cookieJarPath ->
     withTemporaryFilePath repoRoot "prodbox-oidc-login-body" $ \bodyPath -> do
-      -- Sprint 3.13 chunks 11 + 12: demo-user password lives in the
-      -- daemon-applied @keycloak-oidc-clients@ Secret, not in the gone
-      -- @.prodbox-state@ cache.
+      -- Sprint 3.18: demo-user password lives in Vault KV, not in the
+      -- removed host-side @.prodbox-state@ cache or the pre-Vault OIDC Secret.
       demoPasswordResult <- readKeycloakOidcClientField repoRoot "DEMO_USER_PASSWORD"
       case demoPasswordResult of
         Left err -> pure (Left err)
@@ -1251,12 +1490,10 @@ waitForAccessToken repoRoot settings substrate secretKey clientId = go tokenFetc
 fetchAccessToken
   :: FilePath -> ValidatedSettings -> Substrate -> String -> String -> IO (Either String String)
 fetchAccessToken repoRoot settings substrate secretKey clientId = do
-  -- Sprint 3.13 chunks 11 + 12: the OIDC client secrets + demo-user
-  -- password live in the daemon-applied @keycloak-oidc-clients@ Secret
-  -- in the @keycloak@ namespace. The @secretKey@ argument is the
-  -- legacy chart-secret key name; we map it to the corresponding
-  -- daemon-applied field name and read it via @kubectl@.
-  clientSecretResult <- readKeycloakOidcClientField repoRoot (oidcClientSecretFieldFor secretKey)
+  -- Sprint 3.18: the OIDC client secrets + demo-user password live in Vault KV.
+  -- The @secretKey@ argument is the legacy chart-secret key name; we map it to
+  -- the corresponding Vault path and field.
+  clientSecretResult <- readKeycloakOidcClientField repoRoot secretKey
   case clientSecretResult of
     Left err -> pure (Left err)
     Right clientSecret -> do
@@ -1292,67 +1529,27 @@ fetchAccessToken repoRoot settings substrate secretKey clientId = do
             Left err -> pure (Left err)
             Right payload -> pure (accessTokenFromPayload payload)
 
--- | Map a legacy host-side chart-secret key name to the corresponding
--- field in the daemon-applied @keycloak-oidc-clients@ Secret. Sprint 3.13
--- chunk 11's Inventory uses @VSCODE_CLIENT_SECRET@ / @API_CLIENT_SECRET@ /
--- @WEBSOCKET_CLIENT_SECRET@ / @DEMO_USER_PASSWORD@; legacy callers still
--- pass the chart-secret keys (@keycloak_*_client_secret@,
--- @keycloak_demo_user_password@).
-oidcClientSecretFieldFor :: String -> String
-oidcClientSecretFieldFor "keycloak_vscode_client_secret" = "VSCODE_CLIENT_SECRET"
-oidcClientSecretFieldFor "keycloak_api_client_secret" = "API_CLIENT_SECRET"
-oidcClientSecretFieldFor "keycloak_websocket_client_secret" = "WEBSOCKET_CLIENT_SECRET"
-oidcClientSecretFieldFor "keycloak_demo_user_password" = "DEMO_USER_PASSWORD"
-oidcClientSecretFieldFor other = other
+-- | Map a legacy validation key to the Vault KV path and field used by the
+-- shared-edge Keycloak deployment. The caller surface remains stable for the
+-- validation code, but the secret source is now Vault KV.
+oidcClientSecretVaultRefFor :: String -> (Text.Text, Text.Text)
+oidcClientSecretVaultRefFor "keycloak_vscode_client_secret" = ("vscode/oidc/vscode", "client_secret")
+oidcClientSecretVaultRefFor "keycloak_api_client_secret" = ("vscode/oidc/prodbox-api", "client_secret")
+oidcClientSecretVaultRefFor "keycloak_websocket_client_secret" = ("vscode/oidc/prodbox-websocket", "client_secret")
+oidcClientSecretVaultRefFor "keycloak_demo_user_password" = ("vscode/oidc/demo-user", "password")
+oidcClientSecretVaultRefFor "VSCODE_CLIENT_SECRET" = ("vscode/oidc/vscode", "client_secret")
+oidcClientSecretVaultRefFor "API_CLIENT_SECRET" = ("vscode/oidc/prodbox-api", "client_secret")
+oidcClientSecretVaultRefFor "WEBSOCKET_CLIENT_SECRET" = ("vscode/oidc/prodbox-websocket", "client_secret")
+oidcClientSecretVaultRefFor "DEMO_USER_PASSWORD" = ("vscode/oidc/demo-user", "password")
+oidcClientSecretVaultRefFor other = (Text.pack other, "client_secret")
 
--- | Read a field from the daemon-applied @keycloak-oidc-clients@ Secret
--- in the @vscode@ namespace via @kubectl get secret@. Sprint 3.13
--- chunks 11 + 28 + 32: the host-side @.prodbox-state/<ns>/.secrets.json@
--- cache is gone, and validations read OIDC client secrets directly from
--- the cluster Secret the gateway daemon materializes via its
--- @ensure-namespace@ handler. The lookup namespace is @vscode@ because
--- @prodbox test all@ deploys the @vscode@ root chart, which transitively
--- pulls keycloak into the @vscode@ namespace (chunk 28's namespace-aware
--- Inventory mirrors this on the daemon side).
+-- | Read a validation OIDC secret field from Vault KV. A sealed/unreachable
+-- Vault or missing field fails the validation closed.
 readKeycloakOidcClientField :: FilePath -> String -> IO (Either String String)
 readKeycloakOidcClientField repoRoot fieldName = do
-  textResult <-
-    runTextCommand
-      Subprocess
-        { subprocessPath = "kubectl"
-        , subprocessArguments =
-            [ "get"
-            , "secret"
-            , "keycloak-oidc-clients"
-            , "--namespace"
-            , "vscode"
-            , "-o"
-            , "go-template={{index .data \"" ++ fieldName ++ "\" | base64decode}}"
-            ]
-        , subprocessEnvironment = Nothing
-        , subprocessWorkingDirectory = Just repoRoot
-        }
-  case textResult of
-    Left err -> pure (Left err)
-    Right raw ->
-      let trimmed =
-            reverse
-              . dropWhile (`elem` (" \t\r\n" :: String))
-              . reverse
-              . dropWhile (`elem` (" \t\r\n" :: String))
-              $ raw
-       in if null trimmed
-            then
-              pure
-                ( Left
-                    ( "kubectl returned an empty `"
-                        ++ fieldName
-                        ++ "` from keycloak-oidc-clients;"
-                        ++ " the daemon's ensure-namespace handler may not have"
-                        ++ " run yet (deploy keycloak chart to trigger)."
-                    )
-                )
-            else pure (Right trimmed)
+  let (path, field) = oidcClientSecretVaultRefFor fieldName
+  result <- readHostVaultKvField repoRoot "secret" path field
+  pure (Text.unpack <$> result)
 
 accessTokenFromPayload :: Value -> Either String String
 accessTokenFromPayload payload =
@@ -1937,7 +2134,8 @@ renderGatewayValidationConfigDhall settings nodeId ordersPath =
     , "        { zone_id = " ++ dhallText (Text.unpack (zone_id (route53 (validatedConfig settings))))
     , "        , fqdn = " ++ dhallText (publicFqdn settings)
     , "        , ttl = " ++ show (demo_ttl (domain (validatedConfig settings)))
-    , "        , aws_region = " ++ dhallText (Text.unpack (region (aws (validatedConfig settings))))
+    , "        , aws_region = "
+        ++ dhallText (Text.unpack (awsCredentialRegion (aws (validatedConfig settings))))
     , "        }"
     , "    , aws_creds = None { access_key_id : Text, secret_access_key : Text, session_token : Optional Text, region : Text }"
     , "    , minio_creds = None { minio_access_key : Text, minio_secret_key : Text }"
@@ -2397,12 +2595,19 @@ settingsAwsEnvironment repoRoot = do
     Left err -> pure (Left err)
     Right settings -> do
       currentEnvironment <- getEnvironment
-      pure
-        ( Right
-            ( settings
-            , overlayAwsCredentials currentEnvironment (aws (validatedConfig settings))
-            )
-        )
+      credentialsResult <-
+        resolveAwsCredentialsRefFromHostVault
+          repoRoot
+          "aws"
+          (aws (validatedConfig settings))
+      pure $
+        case credentialsResult of
+          Left err -> Left ("load operational AWS credentials from Vault: " ++ err)
+          Right credentials ->
+            Right
+              ( settings
+              , overlayAwsCredentials currentEnvironment credentials
+              )
 
 hostedZoneDelegation :: Value -> Either String (String, [String])
 hostedZoneDelegation payload =

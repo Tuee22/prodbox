@@ -37,7 +37,6 @@ import Control.Monad (forever, void, when)
 import Crypto.Hash.SHA256 (hash, hmac)
 import Data.Aeson
   ( Value (..)
-  , eitherDecode
   , encode
   , object
   , toJSON
@@ -51,11 +50,12 @@ import Data.ByteString.Lazy qualified as BL
 import Data.ByteString.Lazy.Char8 qualified as BL8
 import Data.Char (intToDigit, toLower)
 import Data.Foldable (for_)
-import Data.List (intercalate, isPrefixOf)
+import Data.List (intercalate, isPrefixOf, isSuffixOf, stripPrefix)
 import Data.Map.Strict (Map)
 import Data.Map.Strict qualified as Map
 import Data.Maybe (fromMaybe)
 import Data.Text qualified as Text
+import Data.Text.IO qualified as TextIO
 import Data.Time.Clock (UTCTime, diffUTCTime, getCurrentTime)
 import Data.Time.Format.ISO8601 (formatShow, iso8601Format)
 import Data.Word (Word8)
@@ -86,6 +86,18 @@ import Network.Socket
   , withSocketsDo
   )
 import Network.Socket.ByteString (recv, sendAll)
+import Prodbox.Cluster.Federation
+  ( ChildBootstrapCredential
+  , ChildIndex (..)
+  , ChildMetadata
+  , childBootstrapKvLogicalPath
+  , childMetadataKvLogicalPath
+  , decodeChildBootstrapCredential
+  , decodeChildIndex
+  , decodeChildMetadata
+  , decodePayloadJsonField
+  , federationChildrenIndexKvLogicalPath
+  )
 import Prodbox.Error
   ( AppError (..)
   , ErrorKind (..)
@@ -113,8 +125,8 @@ import Prodbox.Gateway.Types
   , Disposition (..)
   , DnsWriteGate (..)
   , GatewayAwsCreds (..)
-  , GatewayMinioCreds (..)
   , GatewayRule (..)
+  , GatewayVaultAuth (..)
   , Orders (..)
   , PeerEndpoint (..)
   , PeerHealth (..)
@@ -132,25 +144,26 @@ import Prodbox.Gateway.Types
   , validateDaemonTimingAgainstOrders
   )
 import Prodbox.Http.Client
-  ( defaultHttpConfig
+  ( HttpError (..)
+  , defaultHttpConfig
   , httpGetText
   , renderHttpError
   )
-import Prodbox.K8s.InCluster qualified as InCluster
 import Prodbox.Result (Result (..))
 import Prodbox.Retry
   ( RetryPolicy (..)
   , retryDelayMicros
   )
-import Prodbox.Secret.Derive qualified
-import Prodbox.Secret.EnsureNamespace qualified as EnsureNamespace
-import Prodbox.Secret.Inventory qualified as Inventory
-import Prodbox.Secret.MasterSeed qualified as MasterSeed
-import Prodbox.Secret.Wire qualified as SecretWire
 import Prodbox.Subprocess
   ( ProcessOutput (..)
   , Subprocess (..)
   , captureSubprocessResult
+  )
+import Prodbox.Vault.Client
+  ( VaultAddress (..)
+  , VaultToken
+  , vaultKubernetesLogin
+  , vaultKvReadV2
   )
 import System.Directory (doesFileExist)
 import System.Exit (ExitCode (..))
@@ -240,13 +253,6 @@ data DaemonEnv = DaemonEnv
   , envDrainSignals :: TQueue DrainSignal
   , envReloadSignals :: TQueue ()
   , envHooks :: DaemonHooks
-  , envMasterSeed :: Maybe Prodbox.Secret.Derive.MasterSeed
-  -- ^ Sprint 2.19: the master seed retrieved from MinIO at startup. When
-  -- the daemon has 'daemonMinioCreds' bound and the seed is readable, the
-  -- @/v1/secret/derive@ endpoint composes 'Prodbox.Secret.Derive.derive'
-  -- against this value. When MinIO is unavailable (no credentials bound,
-  -- or the read fails at startup) the field stays 'Nothing' and the
-  -- endpoint returns 503 with the structured reason in the legacy stub.
   }
 
 data DrainSignal
@@ -347,46 +353,10 @@ runGatewayDaemon maybeConfigPath config = withSocketsDo $ do
                   drainSignals <- newTQueueIO
                   reloadSignals <- newTQueueIO
                   signalCount <- newTVarIO (0 :: Int)
-                  -- Sprint 2.19: attempt to retrieve the master seed from MinIO if
-                  -- credentials are bound in the Dhall config. Failures degrade
-                  -- gracefully: the daemon stays up and @/v1/secret/derive@ returns
-                  -- a structured 503 until the seed becomes available.
-                  initialMasterSeed <- acquireInitialMasterSeed logLevel config
-                  -- Sprint 3.13 chunk 16: self-bootstrap the gateway's own
-                  -- @gateway-event-keys@ Secret. Solves the chicken-and-egg
-                  -- where the other charts' pre-install Jobs POST to the
-                  -- gateway daemon, but the gateway daemon doesn't exist
-                  -- yet to satisfy its own pre-install Job. Failures degrade
-                  -- gracefully (running outside k8s, RBAC missing, or
-                  -- already-applied): the chart's Helm @lookup@ falls back
-                  -- to placeholder values and the next reconcile retries.
-                  selfBootstrapOwnSecrets logLevel initialMasterSeed
-                  -- Sprint 3.13 chunk 24: derive the gateway's own event
-                  -- keys in-memory from the master seed and inject them
-                  -- into the BootConfig so the runtime peer/heartbeat
-                  -- loops always have valid signing material. The chart's
-                  -- @configmap-config.yaml@ renders BEFORE the daemon
-                  -- writes its self-bootstrap Secret, so the ConfigMap's
-                  -- @event_keys@ list is empty on first install; without
-                  -- this in-memory injection the daemon would log
-                  -- @event_key_missing@ forever and never sign a real
-                  -- peer event. Sprint 2.25: the derivation uses the one
-                  -- canonical event-key encoding (base64url-unpadded,
-                  -- 'Prodbox.Secret.Derive.deriveBase64Url'), which is
-                  -- exactly what 'EnsureNamespace.applyDerivedSecrets'
-                  -- writes into the on-cluster @gateway-event-keys@ Secret.
-                  -- The in-memory and chart-rendered surfaces therefore use
-                  -- one representation, so peers sign and verify
-                  -- consistently and the boot-change classifier no longer
-                  -- needs a hex-vs-base64url overlay (the retired chunk-48
-                  -- workaround).
-                  let derivedEventKeys = deriveOwnGatewayEventKeys initialMasterSeed
-                      configWithDerivedEventKeys =
-                        config {daemonEventKeys = derivedEventKeys}
                   let env =
                         DaemonEnv
                           { envConfigPath = maybeConfigPath
-                          , envBootConfig = configWithDerivedEventKeys
+                          , envBootConfig = config
                           , envOrders = orders
                           , envState = stateVar
                           , envReadiness = readinessVar
@@ -396,7 +366,6 @@ runGatewayDaemon maybeConfigPath config = withSocketsDo $ do
                           , envDrainSignals = drainSignals
                           , envReloadSignals = reloadSignals
                           , envHooks = noopDaemonHooks
-                          , envMasterSeed = initialMasterSeed
                           }
                   installDaemonSignalHandlers env signalCount
 
@@ -678,6 +647,7 @@ daemonBootFieldsChanged old new =
     || daemonCaFile old /= daemonCaFile new
     || daemonOrdersFile old /= daemonOrdersFile new
     || daemonEventKeys old /= daemonEventKeys new
+    || daemonVaultAuth old /= daemonVaultAuth new
     || daemonDnsWriteGate old /= daemonDnsWriteGate new
 
 validateDaemonStartupInputs :: DaemonConfig -> IO (Either String ())
@@ -919,12 +889,31 @@ handleRestClient sock env = do
       "/v1/state" -> do
         state <- readTVarIO (envState env)
         sendLazyHttpResponse sock 200 "application/json" (renderStateJson now (envBootConfig env) state)
-      path
-        | "/v1/secret/derive" `isPrefixOf` path -> handleSecretDerive env sock path
-        | path == "/v1/secret/ensure-namespace" ->
-            handleSecretEnsureNamespace env sock rawRequest
+      "/v1/federation/children" -> do
+        childrenResult <- readFederationChildren (envBootConfig env)
+        case childrenResult of
+          Left err -> sendHttpResponse sock 503 "text/plain" (err ++ "\n")
+          Right children ->
+            sendLazyHttpResponse
+              sock
+              200
+              "application/json"
+              (encode (object ["children" .= children]))
       _ ->
-        sendHttpResponse sock 404 "text/plain" "not found\n"
+        case federationBootstrapChildId (requestPath rawRequest) of
+          Just childId -> do
+            bootstrapResult <- readFederationChildBootstrap (envBootConfig env) (Text.pack childId)
+            case bootstrapResult of
+              Left err ->
+                case err of
+                  FederationChildBootstrapMissing ->
+                    sendHttpResponse sock 404 "text/plain" "not found\n"
+                  FederationVaultUnavailable detail ->
+                    sendHttpResponse sock 503 "text/plain" (detail ++ "\n")
+              Right credential ->
+                sendLazyHttpResponse sock 200 "application/json" (encode credential)
+          Nothing ->
+            sendHttpResponse sock 404 "text/plain" "not found\n"
 
 sendHttpResponse :: Socket -> Int -> String -> String -> IO ()
 sendHttpResponse sock statusCode contentType responseBody =
@@ -963,328 +952,106 @@ requestPath rawRequest =
     _method : path : _ -> path
     _ -> "/v1/state"
 
--- | Sprint 2.19: try to retrieve the master seed from MinIO at daemon
--- startup. Returns 'Just' when 'daemonMinioCreds' is bound and the read or
--- create succeeds; returns 'Nothing' otherwise (no creds, MinIO unreachable,
--- I/O failure). The @/v1/secret/derive@ endpoint serves 503 while
--- 'envMasterSeed' stays 'Nothing'.
-acquireInitialMasterSeed :: String -> DaemonConfig -> IO (Maybe Prodbox.Secret.Derive.MasterSeed)
-acquireInitialMasterSeed logLevel config =
-  case daemonMinioCreds config of
-    Nothing -> do
-      logAtLevel
-        logLevel
-        Info
-        "master_seed_unavailable"
-        [field "reason" ("no minio_creds bound in daemon config" :: String)]
-      pure Nothing
-    Just creds -> do
-      -- Sprint 2.19: prefer the endpoint URL bound in the daemon Dhall
-      -- config (`boot.minio_endpoint_url`) so in-cluster gateway pods
-      -- reach the MinIO Service DNS (e.g.
-      -- `http://minio.prodbox.svc.cluster.local:9000`) rather than the
-      -- pod's own loopback. Fall back to `http://127.0.0.1:9000` only
-      -- for host-side smoke runs that lack the field.
-      let cfg = case daemonMinioEndpointUrl config of
-            Just url ->
-              MasterSeed.minioMasterSeedConfigFromUrl
-                url
-                (gatewayMinioAccessKey creds)
-                (gatewayMinioSecretKey creds)
-            Nothing ->
-              MasterSeed.defaultMinioMasterSeedConfig
-                defaultMinioLocalPort
-                (gatewayMinioAccessKey creds)
-                (gatewayMinioSecretKey creds)
-      result <- MasterSeed.ensureMasterSeed cfg
-      case result of
-        Left err -> do
-          logAtLevel
-            logLevel
-            Warn
-            "master_seed_unavailable"
-            [field "reason" (MasterSeed.renderMasterSeedError err)]
-          pure Nothing
-        Right seed -> do
-          logAtLevel
-            logLevel
-            Info
-            "master_seed_ready"
-            [ field "source" ("minio:prodbox/master-seed" :: String)
-            , field "endpoint" (MasterSeed.minioMasterSeedEndpoint cfg)
-            ]
-          pure (Just seed)
- where
-  defaultMinioLocalPort :: Int
-  defaultMinioLocalPort = 9000
+data FederationChildBootstrapError
+  = FederationVaultUnavailable String
+  | FederationChildBootstrapMissing
+  deriving (Eq, Show)
 
--- | Sprint 3.13 chunk 16: at daemon startup, after the master seed has
--- been acquired, self-materialize the gateway's own derived-secret
--- inventory ('(\"gateway\", \"gateway\")' in 'Inventory.derivedSecretInventoryFor').
--- This is the daemon's response to the bootstrap chicken-and-egg: the
--- other charts (keycloak, keycloak-postgres) materialize their secrets
--- via a pre-install Job that POSTs to /this/ daemon, but the gateway
--- chart can't depend on itself the same way. Self-bootstrap puts the
--- daemon Pod in charge of writing its own k8s Secret as soon as it has
--- the master seed.
---
--- Failure modes are all benign-and-logged:
---
---   * No master seed yet — skipped silently; subsequent reload may
---     succeed once MinIO becomes reachable.
---   * Outside k8s (no projected ServiceAccount) — skipped with a
---     diagnostic; the standalone smoke-run path has no @gateway-event-keys@
---     Secret to write to.
---   * CA store load fails — skipped with diagnostic.
---   * RBAC missing or PUT fails — skipped with diagnostic; the operator
---     can repair RBAC and the next Pod restart retries.
---
--- The chart's @configmap-config.yaml@ reads the materialized Secret via
--- Helm @lookup@, so once the daemon writes the Secret a subsequent
--- @helm upgrade@ picks up the keys. The peer-event flow itself
--- tolerates an empty key list (it just won't accept signed events from
--- peers until both sides hold matching keys).
--- | Sprint 3.13 chunk 24: derive the gateway's own per-node event keys
--- in memory from the master seed. The list shape matches what the
--- daemon's ensure-namespace handler writes into the
--- @gateway-event-keys@ Secret for external observers, but here we want
--- the values directly in 'daemonEventKeys' so the runtime peer /
--- heartbeat loops have signing material from the very first event.
---
--- Returns @[]@ when the seed isn't bound yet; the runtime degrades to
--- the @event_key_missing@ log path until a future config reload re-runs
--- this with a valid seed.
---
--- Canonical node ids match 'Prodbox.Secret.Inventory.derivedSecretInventoryFor'
--- for @(gateway, gateway)@: @node-a@, @node-b@, @node-c@. The derivation
--- context follows 'Prodbox.Secret.Derive.gatewayEventKeyContext':
--- @gateway:gateway:<node-id>:event-key@. Sprint 2.25: the encoding is the
--- single canonical event-key encoding (base64url-unpadded via
--- 'Prodbox.Secret.Derive.deriveBase64Url'), identical to what
--- 'EnsureNamespace.applyDerivedSecrets' writes into the on-cluster
--- @gateway-event-keys@ Secret and to what the chart's @event_keys@ list
--- carries, so the in-memory signing material and the chart-rendered Secret
--- are byte-identical and peers sign / verify consistently.
-deriveOwnGatewayEventKeys
-  :: Maybe Prodbox.Secret.Derive.MasterSeed -> [(String, String)]
-deriveOwnGatewayEventKeys maybeSeed =
-  case maybeSeed of
-    Nothing -> []
-    Just seed ->
-      [ ( nodeId
-        , Text.unpack
-            ( Prodbox.Secret.Derive.deriveBase64Url
-                seed
-                (Prodbox.Secret.Derive.gatewayEventKeyContext "gateway" (Text.pack nodeId))
-            )
+federationBootstrapChildId :: String -> Maybe String
+federationBootstrapChildId path = do
+  rest <- stripPrefix "/v1/federation/children/" path
+  let suffix = "/bootstrap"
+  if suffix `isSuffixOf` rest
+    then
+      let childId = take (length rest - length suffix) rest
+       in if null childId then Nothing else Just childId
+    else Nothing
+
+readFederationChildren :: DaemonConfig -> IO (Either String [ChildMetadata])
+readFederationChildren config = do
+  vaultResult <- resolveGatewayVaultToken config
+  case vaultResult of
+    Left err -> pure (Left err)
+    Right (address, token) -> do
+      indexResult <- vaultKvReadV2 address token "secret" federationChildrenIndexKvLogicalPath
+      case indexResult of
+        Left (HttpStatus 404 _) -> pure (Right [])
+        Left err -> pure (Left ("federation inventory unavailable: " ++ renderHttpError err))
+        Right fields ->
+          case decodePayloadJsonField decodeChildIndex fields of
+            Left err -> pure (Left ("federation inventory index invalid: " ++ err))
+            Right (ChildIndex childIds) -> readFederationChildMetadataList address token childIds
+
+readFederationChildMetadata
+  :: VaultAddress -> VaultToken -> Text.Text -> IO (Either String ChildMetadata)
+readFederationChildMetadata address token childId = do
+  readResult <- vaultKvReadV2 address token "secret" (childMetadataKvLogicalPath childId)
+  pure $ case readResult of
+    Left err -> Left ("federation child metadata unavailable: " ++ renderHttpError err)
+    Right fields -> decodePayloadJsonField decodeChildMetadata fields
+
+readFederationChildMetadataList
+  :: VaultAddress -> VaultToken -> [Text.Text] -> IO (Either String [ChildMetadata])
+readFederationChildMetadataList _ _ [] = pure (Right [])
+readFederationChildMetadataList address token (childId : rest) = do
+  current <- readFederationChildMetadata address token childId
+  case current of
+    Left err -> pure (Left err)
+    Right metadata -> do
+      remaining <- readFederationChildMetadataList address token rest
+      pure ((metadata :) <$> remaining)
+
+readFederationChildBootstrap
+  :: DaemonConfig -> Text.Text -> IO (Either FederationChildBootstrapError ChildBootstrapCredential)
+readFederationChildBootstrap config childId = do
+  vaultResult <- resolveGatewayVaultToken config
+  case vaultResult of
+    Left err -> pure (Left (FederationVaultUnavailable err))
+    Right (address, token) -> do
+      readResult <- vaultKvReadV2 address token "secret" (childBootstrapKvLogicalPath childId)
+      pure $ case readResult of
+        Left (HttpStatus 404 _) -> Left FederationChildBootstrapMissing
+        Left err -> Left (FederationVaultUnavailable ("federation bootstrap unavailable: " ++ renderHttpError err))
+        Right fields ->
+          case decodePayloadJsonField decodeChildBootstrapCredential fields of
+            Left err -> Left (FederationVaultUnavailable ("federation bootstrap payload invalid: " ++ err))
+            Right credential -> Right credential
+
+resolveGatewayVaultToken :: DaemonConfig -> IO (Either String (VaultAddress, VaultToken))
+resolveGatewayVaultToken config =
+  case daemonVaultAuth config of
+    Nothing ->
+      pure (Left "federation inventory unavailable: gateway Vault auth is not configured")
+    Just auth -> do
+      jwtResult <- readGatewayServiceAccountToken (gatewayVaultServiceAccountTokenFile auth)
+      case jwtResult of
+        Left err -> pure (Left err)
+        Right jwt -> do
+          let address = VaultAddress (Text.pack (gatewayVaultAddress auth))
+          loginResult <-
+            vaultKubernetesLogin
+              address
+              (Text.pack (gatewayVaultAuthPath auth))
+              (Text.pack (gatewayVaultRole auth))
+              jwt
+          pure $ case loginResult of
+            Left err -> Left ("federation inventory unavailable: Vault Kubernetes auth failed: " ++ renderHttpError err)
+            Right token -> Right (address, token)
+
+readGatewayServiceAccountToken :: FilePath -> IO (Either String Text.Text)
+readGatewayServiceAccountToken path = do
+  result <- try (TextIO.readFile path) :: IO (Either SomeException Text.Text)
+  pure $ case result of
+    Left exc ->
+      Left
+        ( "federation inventory unavailable: failed to read gateway service-account token: "
+            ++ displayException exc
         )
-      | nodeId <- ["node-a", "node-b", "node-c"]
-      ]
-
-selfBootstrapOwnSecrets :: String -> Maybe Prodbox.Secret.Derive.MasterSeed -> IO ()
-selfBootstrapOwnSecrets logLevel maybeSeed =
-  case maybeSeed of
-    Nothing -> pure ()
-    Just seed -> do
-      credsResult <- InCluster.loadInClusterCredentials
-      case credsResult of
-        Left credsErr ->
-          logAtLevel
-            logLevel
-            Info
-            "self_bootstrap_skipped"
-            [field "reason" credsErr]
-        Right creds -> do
-          opsResult <- InCluster.inClusterK8sSecretOps creds
-          case opsResult of
-            Left opsErr ->
-              logAtLevel
-                logLevel
-                Warn
-                "self_bootstrap_skipped"
-                [field "reason" opsErr]
-            Right ops -> do
-              let inventory = Inventory.derivedSecretInventoryFor "gateway" "gateway"
-              applyResult <- EnsureNamespace.applyDerivedSecrets ops seed "gateway" inventory
-              case applyResult of
-                Left applyErr ->
-                  logAtLevel
-                    logLevel
-                    Warn
-                    "self_bootstrap_failed"
-                    [field "reason" applyErr]
-                Right _ ->
-                  logAtLevel
-                    logLevel
-                    Info
-                    "self_bootstrap_ready"
-                    [ field "secret" ("gateway-event-keys" :: String)
-                    , field "fields" (length inventory)
-                    ]
-
--- | Sprint 2.19: serve @/v1/secret/derive?context=<ctx>@. Returns 200 with
--- the URL-safe base64 derived value when the seed is bound; 400 when the
--- @context@ query parameter is missing; 503 when 'envMasterSeed' is
--- 'Nothing'.
-handleSecretDerive :: DaemonEnv -> Socket -> String -> IO ()
-handleSecretDerive env sock path =
-  case envMasterSeed env of
-    Nothing ->
-      sendHttpResponse
-        sock
-        503
-        "application/json"
-        "{\"error\":\"master-seed unavailable\",\"reason\":\"daemon has not yet acquired the master seed from MinIO; see documents/engineering/secret_derivation_doctrine.md \\u00a78.\"}\n"
-    Just seed ->
-      case extractContextQuery path of
-        Nothing ->
-          sendHttpResponse
-            sock
-            400
-            "application/json"
-            "{\"error\":\"missing context query parameter\",\"reason\":\"GET /v1/secret/derive requires ?context=<context-string>\"}\n"
-        Just contextText -> do
-          let derived =
-                Prodbox.Secret.Derive.deriveBase64Url
-                  seed
-                  (Text.pack contextText)
-              response =
-                SecretWire.DeriveResponse
-                  { SecretWire.deriveResponseContext = Text.pack contextText
-                  , SecretWire.deriveResponseDerived = derived
-                  , SecretWire.deriveResponseEncoding = SecretWire.deriveEncodingBase64Url
-                  }
-          sendLazyHttpResponse sock 200 "application/json" (encode response)
-
--- | Sprint 3.13 fifth chunk: serve @POST /v1/secret/ensure-namespace@.
--- Idempotently materializes every derived @v1.Secret@ for a release per
--- the doctrine §6 inventory. Returns 200 with the SHA-256 inventory on
--- success; 400 on malformed body; 503 when the master seed is
--- unavailable or the in-pod K8s API client cannot be constructed.
-handleSecretEnsureNamespace :: DaemonEnv -> Socket -> BS.ByteString -> IO ()
-handleSecretEnsureNamespace env sock rawRequest =
-  case envMasterSeed env of
-    Nothing ->
-      sendHttpResponse
-        sock
-        503
-        "application/json"
-        "{\"error\":\"master-seed unavailable\",\"reason\":\"daemon has not yet acquired the master seed from MinIO; see documents/engineering/secret_derivation_doctrine.md \\u00a78.\"}\n"
-    Just seed -> do
-      let body = extractRequestBody rawRequest
-      case eitherDecode (BL.fromStrict body) of
-        Left err ->
-          sendLazyHttpResponse
-            sock
-            400
-            "application/json"
-            ( encode
-                ( object
-                    [ "error" .= ("malformed request body" :: Text.Text)
-                    , "reason" .= Text.pack ("JSON decode failed: " ++ err)
-                    ]
-                )
-            )
-        Right (request :: SecretWire.EnsureNamespaceRequest) -> do
-          credsResult <- InCluster.loadInClusterCredentials
-          case credsResult of
-            Left credsErr ->
-              sendLazyHttpResponse
-                sock
-                503
-                "application/json"
-                ( encode
-                    ( object
-                        [ "error" .= ("in-pod ServiceAccount unavailable" :: Text.Text)
-                        , "reason" .= Text.pack credsErr
-                        ]
-                    )
-                )
-            Right creds -> do
-              opsResult <- InCluster.inClusterK8sSecretOps creds
-              case opsResult of
-                Left opsErr ->
-                  sendLazyHttpResponse
-                    sock
-                    503
-                    "application/json"
-                    ( encode
-                        ( object
-                            [ "error" .= ("K8s API client construction failed" :: Text.Text)
-                            , "reason" .= Text.pack opsErr
-                            ]
-                        )
-                    )
-                Right ops -> do
-                  let namespace = SecretWire.ensureNamespaceRequestNamespace request
-                      release = SecretWire.ensureNamespaceRequestRelease request
-                      inventory = Inventory.derivedSecretInventoryFor namespace release
-                  applyResult <- EnsureNamespace.applyDerivedSecrets ops seed namespace inventory
-                  case applyResult of
-                    Left applyErr ->
-                      sendLazyHttpResponse
-                        sock
-                        500
-                        "application/json"
-                        ( encode
-                            ( object
-                                [ "error" .= ("ensure-namespace materialization failed" :: Text.Text)
-                                , "reason" .= Text.pack applyErr
-                                ]
-                            )
-                        )
-                    Right secrets ->
-                      sendLazyHttpResponse
-                        sock
-                        200
-                        "application/json"
-                        ( encode
-                            SecretWire.EnsureNamespaceResponse
-                              { SecretWire.ensureNamespaceResponseNamespace = namespace
-                              , SecretWire.ensureNamespaceResponseRelease = release
-                              , SecretWire.ensureNamespaceResponseSecrets = secrets
-                              }
-                        )
-
--- | Sprint 3.13 fifth chunk: extract the body of an HTTP request from
--- the raw bytes received off the socket. Looks for the @\\r\\n\\r\\n@
--- header/body separator and returns everything after it. Returns an
--- empty 'ByteString' when the separator is absent (the request had
--- only headers and the caller will surface a malformed-body error
--- during JSON decode). Exposed at module scope so the unit suite can
--- pin the byte-level contract without spinning up a socket.
-extractRequestBody :: BS.ByteString -> BS.ByteString
-extractRequestBody raw =
-  let sep = BS8.pack "\r\n\r\n"
-   in case BS.breakSubstring sep raw of
-        (_, rest) | BS.null rest -> BS.empty
-        (_, rest) -> BS.drop (BS.length sep) rest
-
--- | Parse the @context@ query parameter from a path of the form
--- @/v1/secret/derive?context=<value>@. Returns 'Nothing' when the parameter
--- is absent. Does not URL-decode; doctrine context strings are ASCII-only.
-extractContextQuery :: String -> Maybe String
-extractContextQuery path =
-  case break (== '?') path of
-    (_, '?' : queryString) -> lookup "context" (parsePairs queryString)
-    _ -> Nothing
- where
-  parsePairs s =
-    [ (key, value)
-    | pair <- splitOn '&' s
-    , let (key, rest) = break (== '=') pair
-    , value <- case rest of
-        '=' : v -> [v]
-        _ -> [""]
-    ]
-
-splitOn :: Char -> String -> [String]
-splitOn c = foldr step []
- where
-  step char [] = [[char]]
-  step char (cur : rest)
-    | char == c = "" : cur : rest
-    | otherwise = (char : cur) : rest
+    Right rawToken ->
+      let token = Text.strip rawToken
+       in if Text.null token
+            then Left "federation inventory unavailable: gateway service-account token is empty"
+            else Right token
 
 renderMetricsText :: UTCTime -> DaemonEnv -> DaemonState -> String
 renderMetricsText now env state =

@@ -3,18 +3,17 @@
 -- | Sprint 4.16: live source-of-truth residue queries.
 --
 -- Replaces the file-existence snapshot adapter as the authoritative
--- answer to \"is stack X present in its Pulumi backend?\". Talks to
--- the backends directly via @pulumi stack ls --json@ through
--- 'Prodbox.Infra.StackOutputs':
+-- answer to \"is stack X present in its Pulumi backend?\". Production
+-- Pulumi-stack reads go through 'Prodbox.Infra.StackOutputs'
+-- encrypted-backend helpers:
 --
 --   * Per-run stacks (@aws-eks-test@, @aws-eks-subzone@, @aws-test@)
---     query the in-cluster MinIO backend. Opens one MinIO port-forward
---     and runs the three project listings inside the bracket so
---     callers do not pay the port-forward cost three times.
+--     query the Vault-encrypted Model-B object-store through the
+--     decrypt-to-scratch Pulumi interposition.
 --
---   * The long-lived @aws-ses@ stack queries the operator-account S3
---     backend declared by 'Prodbox.Infra.LongLivedPulumiBackend' using
---     admin AWS credentials from @aws_admin_for_test_simulation@.
+--   * The long-lived @aws-ses@ stack uses the same encrypted object-store
+--     path. Long-lived public-edge TLS material remains an S3 object class
+--     and is queried separately below.
 --
 -- On any subprocess, credential, or parse failure the result is
 -- 'ResidueUnreachable'. Per
@@ -41,7 +40,12 @@ module Prodbox.Lifecycle.LiveResidue
   , residueStatusFromListing
   , residueStatusFromS3Listing
   , residueStatusFromMinioListing
+  , residueStatusFromMinioListingWithVaultGate
+  , residueStatusFromS3ListingWithVaultGate
   , residueStatusFromObjectListing
+  , residueStatusFromObjectListingWithVaultGate
+  , residueStatusBlockedByVaultGate
+  , renderResidueVaultGateBlock
   , isMissingStateBackendBucketMessage
   , awsEksTestStackName
   , awsEksSubzoneStackName
@@ -65,17 +69,12 @@ import Prodbox.Infra.LongLivedPulumiBackend
   , longLivedPulumiBackendUrlEither
   , purgeLongLivedObjectsUnderPrefix
   )
-import Prodbox.Infra.MinioBackend
-  ( pulumiBackendUrl
-  , readMinioCredentials
-  , withMinioPortForward
-  )
 import Prodbox.Infra.StackOutputs
   ( StackListEntry
   , StackName (..)
   , StackOutputsError (..)
-  , fetchOutputs
-  , listStacks
+  , fetchEncryptedOutputs
+  , listEncryptedStack
   , parseOutputsPayload
   , renderStackOutputsError
   , stackPresentInList
@@ -85,12 +84,20 @@ import Prodbox.Lifecycle.ResidueStatus
   , ResidueStatus (..)
   , ResidueUnreachableReason (..)
   )
+import Prodbox.Pulumi.EncryptedBackend (PulumiStackRef (..))
 import Prodbox.Settings
   ( Credentials (..)
   , PulumiStateBackendSection
   , loadConfigFile
   , pulumi_state_backend
   )
+import Prodbox.Vault.Client (vaultSealStatus)
+import Prodbox.Vault.Gate
+  ( VaultGateDecision (..)
+  , vaultGateAllows
+  , vaultGateDecision
+  )
+import Prodbox.Vault.Host (resolveHostVaultAddress)
 import System.Environment (getEnvironment, lookupEnv)
 import System.FilePath ((</>))
 
@@ -139,11 +146,10 @@ data PerRunResidueStatuses = PerRunResidueStatuses
   }
   deriving (Eq, Show)
 
--- | Live MinIO-backend query for the three per-run stacks. Resolves
--- MinIO root credentials, opens one port-forward, and queries
--- @pulumi stack ls --json@ inside each per-stack project directory.
--- On any failure before or during the bracket, all three fields
--- carry 'ResidueUnreachable (ResidueBackendMinioUnreachable …)'.
+-- | Live encrypted-backend query for the three per-run stacks. Each stack
+-- presence check hydrates its Vault-encrypted checkpoint into a scratch
+-- @file://@ backend; the persistent object-store is never listed with raw
+-- Pulumi/S3 semantics.
 queryPerRunResidueStatuses :: FilePath -> IO PerRunResidueStatuses
 queryPerRunResidueStatuses repoRoot = do
   absentBypass <- isTestResidueAbsentSet
@@ -153,7 +159,11 @@ queryPerRunResidueStatuses repoRoot = do
     else
       if unreachableBypass
         then pure perRunUnreachableTriple
-        else queryPerRunLive repoRoot
+        else do
+          gate <- queryResidueVaultGate
+          if vaultGateAllows gate
+            then queryPerRunLive repoRoot
+            else pure (perRunVaultGatedTriple gate)
 
 -- | All three per-run stacks reported unreachable. Used for the
 -- 'PRODBOX_TEST_RESIDUE_UNREACHABLE' bypass so the integration suite can
@@ -174,77 +184,44 @@ perRunAbsentTriple =
     , perRunAwsTest = ResidueAbsent
     }
 
+perRunVaultGatedTriple :: VaultGateDecision -> PerRunResidueStatuses
+perRunVaultGatedTriple gate =
+  let blocked = residueStatusBlockedByVaultGate gate
+   in PerRunResidueStatuses blocked blocked blocked
+
 queryPerRunLive :: FilePath -> IO PerRunResidueStatuses
 queryPerRunLive repoRoot = do
-  credsResult <- readMinioCredentials
-  case credsResult of
-    Left err -> pure (unreachableTriple (ResidueBackendMinioUnreachable err))
-    Right (accessKey, secretKey) -> do
-      bracketResult <-
-        withMinioPortForward $ \localPort -> do
-          environment <- buildMinioBackendEnv localPort accessKey secretKey
-          eks <-
-            queryOne
-              (repoRoot </> "pulumi" </> "aws-eks")
-              environment
-              awsEksTestStackName
-          subzone <-
-            queryOne
-              (repoRoot </> "pulumi" </> "aws-eks-subzone")
-              environment
-              awsEksSubzoneStackName
-          test <-
-            queryOne
-              (repoRoot </> "pulumi" </> "aws-test")
-              environment
-              awsTestStackName
-          pure (eks, subzone, test)
-      pure $ case bracketResult of
-        Left err -> unreachableTriple (ResidueBackendMinioUnreachable err)
-        Right (eks, subzone, test) ->
-          PerRunResidueStatuses
-            { perRunAwsEksTest = eks
-            , perRunAwsEksSubzone = subzone
-            , perRunAwsTest = test
-            }
- where
-  unreachableTriple reason =
-    let unreachable = ResidueUnreachable reason
-     in PerRunResidueStatuses unreachable unreachable unreachable
+  eks <- queryOne repoRoot (StackName (Text.pack awsEksTestStackName))
+  subzone <- queryOne repoRoot (StackName (Text.pack awsEksSubzoneStackName))
+  test <- queryOne repoRoot (StackName (Text.pack awsTestStackName))
+  pure
+    PerRunResidueStatuses
+      { perRunAwsEksTest = eks
+      , perRunAwsEksSubzone = subzone
+      , perRunAwsTest = test
+      }
 
--- | Live S3-backend query for the long-lived @aws-ses@ stack.
--- Authenticates with admin AWS credentials and reads the long-lived
--- bucket configuration from @prodbox-config.dhall@. Returns
--- 'ResidueUnreachable (ResidueBackendS3Unreachable …)' on any
--- credential, configuration, or subprocess failure; long-lived
--- callers treat that as still-present per the doctrine.
+-- | Live encrypted-backend query for the long-lived @aws-ses@ stack.
+-- Long-lived callers still treat unreadable state as blocking because
+-- they cannot prove the resource is absent.
 queryAwsSesResidueStatus :: FilePath -> IO ResidueStatus
 queryAwsSesResidueStatus repoRoot = do
   bypass <- isTestResidueAbsentSet
   if bypass
     then pure ResidueAbsent
-    else querySesLive repoRoot
+    else do
+      gate <- queryResidueVaultGate
+      if vaultGateAllows gate
+        then querySesLive repoRoot
+        else pure (residueStatusBlockedByVaultGate gate)
 
 querySesLive :: FilePath -> IO ResidueStatus
 querySesLive repoRoot = do
-  adminResult <- loadAdminAwsCredentials repoRoot
-  case adminResult of
-    Left err -> pure (ResidueUnreachable (ResidueBackendS3Unreachable err))
-    Right adminCreds -> do
-      configResult <- loadConfigFile repoRoot
-      case configResult of
-        Left err ->
-          pure (ResidueUnreachable (ResidueBackendS3Unreachable err))
-        Right config -> case longLivedPulumiBackendUrlEither (pulumi_state_backend config) of
-          Left err ->
-            pure
-              ( ResidueUnreachable
-                  (ResidueBackendS3Unreachable (longLivedBackendErrorMessage err))
-              )
-          Right backendUrl -> do
-            environment <- buildLongLivedBackendEnv adminCreds backendUrl
-            result <- listStacks (repoRoot </> "pulumi" </> "aws-ses") environment
-            pure (residueStatusFromS3Listing awsSesStackName result)
+  result <-
+    listEncryptedStack
+      repoRoot
+      (stackRefFor (StackName (Text.pack awsSesStackName)))
+  pure (residueStatusFromS3Listing awsSesStackName result)
 
 -- | Sprint 4.24: the canonical managed-resource name and the
 -- substrate-scoped S3 key prefix of the retained public-edge production
@@ -273,18 +250,22 @@ queryPublicEdgeTlsResidueStatus repoRoot = do
   bypass <- isTestResidueAbsentSet
   if bypass
     then pure ResidueAbsent
-    else
-      withLongLivedBucketEnv
-        repoRoot
-        ( \section environment ->
-            residueStatusFromObjectListing publicEdgeTlsResourceName
-              <$> listLongLivedObjectKeysUnderPrefix
-                repoRoot
-                environment
-                section
-                publicEdgeTlsRetentionPrefix
-        )
-        (\err -> ResidueUnreachable (ResidueBackendS3Unreachable err))
+    else do
+      gate <- queryResidueVaultGate
+      if vaultGateAllows gate
+        then
+          withLongLivedBucketEnv
+            repoRoot
+            ( \section environment ->
+                residueStatusFromObjectListing publicEdgeTlsResourceName
+                  <$> listLongLivedObjectKeysUnderPrefix
+                    repoRoot
+                    environment
+                    section
+                    publicEdgeTlsRetentionPrefix
+            )
+            (\err -> ResidueUnreachable (ResidueBackendS3Unreachable err))
+        else pure (residueStatusBlockedByVaultGate gate)
 
 -- | Sprint 4.24: the @destroy@ action for the retained public-edge
 -- production TLS certificate managed resource — purge every object
@@ -333,21 +314,23 @@ withLongLivedBucketEnv repoRoot action onError = do
                   environment <- buildLongLivedBackendEnv adminCreds backendUrl
                   action section environment
 
--- | Run one @pulumi stack ls --json@ query in the supplied project
--- directory and translate the response into a 'ResidueStatus'. The
--- error-mapping function decides whether subprocess failures count as
--- MinIO-unreachable (per-run) or S3-unreachable (long-lived).
+-- | Query one encrypted Pulumi checkpoint and translate the response into
+-- a 'ResidueStatus'. This is the Sprint 7.14 production replacement for
+-- raw @pulumi stack ls --json@ against MinIO/S3.
 queryOne
   :: FilePath
-  -- ^ Pulumi project directory.
-  -> [(String, String)]
-  -- ^ Environment for the @pulumi@ subprocess.
-  -> String
+  -- ^ Repo root.
+  -> StackName
   -- ^ Canonical stack name (e.g. @aws-eks-test@).
   -> IO ResidueStatus
-queryOne projectDir environment stackName = do
-  result <- listStacks projectDir environment
-  pure (residueStatusFromMinioListing stackName result)
+queryOne repoRoot stackName@(StackName rawName) = do
+  result <- listEncryptedStack repoRoot (stackRefFor stackName)
+  pure (residueStatusFromMinioListing (Text.unpack rawName) result)
+
+queryResidueVaultGate :: IO VaultGateDecision
+queryResidueVaultGate = do
+  address <- resolveHostVaultAddress
+  vaultGateDecision <$> vaultSealStatus address
 
 -- | Pure helper translating the 'listStacks' result into a typed
 -- 'ResidueStatus'. Exposed for unit testing because the IO query is
@@ -363,7 +346,7 @@ residueStatusFromListing stackName toReason result = case result of
     | stackPresentInList (StackName (Text.pack stackName)) entries ->
         ResiduePresent
           ResidueDetails
-            { residueEvidence = "pulumi stack ls reports stack present"
+            { residueEvidence = "Pulumi backend reports stack present"
             , residueStackName = stackName
             }
     | otherwise -> ResidueAbsent
@@ -381,14 +364,21 @@ residueStatusFromS3Listing stackName result = case result of
         ResidueAbsent
   _ -> residueStatusFromListing stackName residueReasonFromS3Error result
 
--- | Per-run MinIO backends use a never-created (or deleted) state bucket
--- as the authoritative "nothing to destroy" state: a @NoSuchBucket@ /
+residueStatusFromS3ListingWithVaultGate
+  :: VaultGateDecision
+  -> String
+  -> Either StackOutputsError [StackListEntry]
+  -> ResidueStatus
+residueStatusFromS3ListingWithVaultGate gate stackName result
+  | vaultGateAllows gate = residueStatusFromS3Listing stackName result
+  | otherwise = residueStatusBlockedByVaultGate gate
+
+-- | Per-run encrypted backends use a never-created (or deleted) object-store
+-- bucket as the authoritative "nothing to destroy" state: a @NoSuchBucket@ /
 -- @code=NotFound@ response means no per-run stacks were ever provisioned,
--- which is 'ResidueAbsent', NOT 'ResidueUnreachable'. (MinIO is
--- S3-compatible, so the blob-store error is identical to the long-lived
--- S3 case — see 'residueStatusFromS3Listing'.) Other MinIO errors (a
--- genuinely down pod, a connection refusal) still fail closed via
--- 'ResidueUnreachable' through 'residueReasonFromMinioError'.
+-- which is 'ResidueAbsent', NOT 'ResidueUnreachable'. Other MinIO/object-store
+-- errors still fail closed via 'ResidueUnreachable' through
+-- 'residueReasonFromMinioError'.
 residueStatusFromMinioListing
   :: String
   -> Either StackOutputsError [StackListEntry]
@@ -398,6 +388,15 @@ residueStatusFromMinioListing stackName result = case result of
     | isMissingStateBackendBucketMessage (stackOutputsErrorDetail err) ->
         ResidueAbsent
   _ -> residueStatusFromListing stackName residueReasonFromMinioError result
+
+residueStatusFromMinioListingWithVaultGate
+  :: VaultGateDecision
+  -> String
+  -> Either StackOutputsError [StackListEntry]
+  -> ResidueStatus
+residueStatusFromMinioListingWithVaultGate gate stackName result
+  | vaultGateAllows gate = residueStatusFromMinioListing stackName result
+  | otherwise = residueStatusBlockedByVaultGate gate
 
 -- | Sprint 4.24: translate a long-lived S3 object-key listing (from
 -- 'listLongLivedObjectKeysUnderPrefix') into a typed 'ResidueStatus'
@@ -429,6 +428,32 @@ residueStatusFromObjectListing resourceName result = case result of
               ++ " retained public-edge TLS object(s)"
         , residueStackName = resourceName
         }
+
+residueStatusFromObjectListingWithVaultGate
+  :: VaultGateDecision
+  -> String
+  -> Either String [String]
+  -> ResidueStatus
+residueStatusFromObjectListingWithVaultGate gate resourceName result
+  | vaultGateAllows gate = residueStatusFromObjectListing resourceName result
+  | otherwise = residueStatusBlockedByVaultGate gate
+
+residueStatusBlockedByVaultGate :: VaultGateDecision -> ResidueStatus
+residueStatusBlockedByVaultGate gate =
+  ResidueUnreachable (ResidueQueryFailed (renderResidueVaultGateBlock gate))
+
+renderResidueVaultGateBlock :: VaultGateDecision -> String
+renderResidueVaultGateBlock gate =
+  "vault_status="
+    ++ vaultStatusLabel gate
+    ++ " component=residue-query result=unobservable"
+
+vaultStatusLabel :: VaultGateDecision -> String
+vaultStatusLabel gate = case gate of
+  VaultGateAllow -> "unsealed"
+  VaultGateBlockSealed -> "sealed"
+  VaultGateBlockUninitialized -> "uninitialized"
+  VaultGateBlockUnreachable _ -> "unreachable"
 
 stackOutputsErrorDetail :: StackOutputsError -> String
 stackOutputsErrorDetail err = case err of
@@ -468,29 +493,6 @@ residueReasonFromS3Error err = case err of
   StackOutputsParseFailed detail -> ResidueQueryFailed detail
 
 -- | Construct the environment the @pulumi@ subprocess needs to talk
--- to the in-cluster MinIO backend through @127.0.0.1:<port>@ after
--- 'withMinioPortForward' opens the kubectl tunnel. Mirrors the
--- per-stack @pulumiBackendBaseEnv@ helper without depending on it.
-buildMinioBackendEnv :: Int -> String -> String -> IO [(String, String)]
-buildMinioBackendEnv localPort minioAccessKey minioSecretKey = do
-  currentEnv <- getEnvironment
-  let path = maybe "" id (lookup "PATH" currentEnv)
-      home = maybe "" id (lookup "HOME" currentEnv)
-  pure
-    [ ("AWS_ACCESS_KEY_ID", minioAccessKey)
-    , ("AWS_SECRET_ACCESS_KEY", minioSecretKey)
-    , ("AWS_REGION", "us-east-1")
-    , ("AWS_DEFAULT_REGION", "us-east-1")
-    , ("AWS_EC2_METADATA_DISABLED", "true")
-    , ("PULUMI_BACKEND_URL", pulumiBackendUrl localPort)
-    , ("PULUMI_CONFIG_PASSPHRASE", "")
-    , ("PULUMI_SKIP_UPDATE_CHECK", "true")
-    , ("PATH", path)
-    , ("HOME", home)
-    , ("LANG", "C.UTF-8")
-    ]
-
--- | Construct the environment the @pulumi@ subprocess needs to talk
 -- to the long-lived S3 backend using admin AWS credentials. Mirrors
 -- 'Prodbox.Infra.AwsSesStack.pulumiSesAdminBaseEnv' without depending
 -- on it.
@@ -519,10 +521,9 @@ buildLongLivedBackendEnv adminCreds backendUrl = do
         ++ sessionTokenEntries
     )
 
--- | Sprint 4.18: live source-of-truth read of one per-run stack's
--- Pulumi outputs from the in-cluster MinIO backend. Opens its own
--- MinIO port-forward; callers that need outputs from multiple per-run
--- stacks in one go should consider batching at a higher layer.
+-- | Sprint 4.18 / 7.14: live source-of-truth read of one per-run stack's
+-- Pulumi outputs from the encrypted Pulumi object-store via the
+-- decrypt-to-scratch backend.
 -- Returns the raw output map; per-stack callers parse this into their
 -- typed snapshot record.
 --
@@ -552,21 +553,17 @@ fetchPerRunStackOutputsLive
   -> StackName
   -> IO (Either String (Map Text.Text Text.Text))
 fetchPerRunStackOutputsLive repoRoot stackName = do
-  credsResult <- readMinioCredentials
-  case credsResult of
-    Left err -> pure (Left ("MinIO credentials unavailable: " ++ err))
-    Right (accessKey, secretKey) -> do
-      bracketResult <-
-        withMinioPortForward $ \localPort -> do
-          environment <- buildMinioBackendEnv localPort accessKey secretKey
-          fetchOutputs (projectDirFor repoRoot stackName) environment stackName
-      pure $ case bracketResult of
-        Left err -> Left ("MinIO port-forward failed: " ++ err)
-        Right (Left err) -> Left (renderStackOutputsError err)
-        Right (Right outputs) -> Right outputs
+  result <-
+    fetchEncryptedOutputs
+      repoRoot
+      (projectDirFor repoRoot stackName)
+      (stackRefFor stackName)
+  pure $ case result of
+    Left err -> Left (renderStackOutputsError err)
+    Right outputs -> Right outputs
 
 -- | Test-only env var that redirects 'fetchPerRunStackOutputs' away
--- from the live MinIO backend and onto a file system directory
+-- from the live encrypted backend and onto a file system directory
 -- populated by the test harness. See 'fetchPerRunStackOutputs' for
 -- the file naming contract.
 testPerRunOutputsDirEnvVar :: String
@@ -590,26 +587,18 @@ readMockOutputsFile path = do
       -- is not still open when this function exits.
       length payload `seq` pure (parseOutputsPayload payload)
 
--- | Sprint 4.18: live source-of-truth read of the long-lived
--- @aws-ses@ stack outputs from the operator-account S3 backend.
+-- | Sprint 4.18 / 7.14: live source-of-truth read of the long-lived
+-- @aws-ses@ stack outputs from the encrypted Pulumi object-store.
 fetchAwsSesStackOutputs :: FilePath -> IO (Either String (Map Text.Text Text.Text))
 fetchAwsSesStackOutputs repoRoot = do
-  adminResult <- loadAdminAwsCredentials repoRoot
-  case adminResult of
-    Left err -> pure (Left ("admin AWS credentials unavailable: " ++ err))
-    Right adminCreds -> do
-      configResult <- loadConfigFile repoRoot
-      case configResult of
-        Left err -> pure (Left ("config load failed: " ++ err))
-        Right config -> case longLivedPulumiBackendUrlEither (pulumi_state_backend config) of
-          Left err -> pure (Left ("long-lived backend unavailable: " ++ longLivedBackendErrorMessage err))
-          Right backendUrl -> do
-            environment <- buildLongLivedBackendEnv adminCreds backendUrl
-            let projectDir = repoRoot </> "pulumi" </> "aws-ses"
-            result <- fetchOutputs projectDir environment (StackName (Text.pack awsSesStackName))
-            pure $ case result of
-              Left err -> Left (renderStackOutputsError err)
-              Right outputs -> Right outputs
+  result <-
+    fetchEncryptedOutputs
+      repoRoot
+      (repoRoot </> "pulumi" </> "aws-ses")
+      (stackRefFor (StackName (Text.pack awsSesStackName)))
+  pure $ case result of
+    Left err -> Left (renderStackOutputsError err)
+    Right outputs -> Right outputs
 
 -- | Resolve the per-stack Pulumi project directory for a per-run stack
 -- name. Internal helper for 'fetchPerRunStackOutputs'.
@@ -620,4 +609,18 @@ projectDirFor repoRoot stackName =
         "aws-eks-test" -> repoRoot </> "pulumi" </> "aws-eks"
         "aws-eks-subzone" -> repoRoot </> "pulumi" </> "aws-eks-subzone"
         "aws-test" -> repoRoot </> "pulumi" </> "aws-test"
+        "aws-ses" -> repoRoot </> "pulumi" </> "aws-ses"
         other -> repoRoot </> "pulumi" </> other
+
+stackRefFor :: StackName -> PulumiStackRef
+stackRefFor (StackName raw) =
+  PulumiStackRef (Text.pack (projectNameForStackName (Text.unpack raw))) raw
+
+projectNameForStackName :: String -> String
+projectNameForStackName stackName =
+  case stackName of
+    "aws-eks-test" -> "prodbox-aws-eks-test"
+    "aws-eks-subzone" -> "prodbox-aws-eks-subzone"
+    "aws-test" -> "prodbox-aws-test"
+    "aws-ses" -> "prodbox-aws-ses"
+    other -> other

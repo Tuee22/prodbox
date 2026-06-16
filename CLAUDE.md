@@ -40,17 +40,24 @@ Prodbox manages a home Kubernetes cluster with a Haskell command surface.
 - `test/` contains the Haskell unit and integration suites.
 - `prodbox-config.dhall` is decoded into Haskell types by the native `dhall` library;
   `prodbox-config.json` is not part of the supported interface. The in-force cluster
-  configuration is the source of truth, stored as a Vault-Transit-enveloped object in
-  MinIO; the filesystem `prodbox-config.dhall` is a seed/propose input only — it seeds the
-  encrypted MinIO SSoT on first-ever bring-up, and thereafter supplying a file is a
-  proposed update, not the live config. Each binary reads the small unencrypted basics
-  locally (cluster id, this cluster's Vault address, seal mode, and for a child the parent
-  reference it contacts to auto-unseal), then fetches and decrypts the in-force config from
-  MinIO through Vault. In-cluster consumers authenticate to Vault directly via Vault
-  Kubernetes auth; there are no Secret-mounted Dhall credential fragments and no master
-  seed or HMAC derivation. Updating the root cluster's in-force config requires the root
-  Vault token (which requires an unsealed root Vault). No supported binary reads `PRODBOX_*`
-  environment variables. See
+  configuration is the source of truth, stored as a prodbox application-level
+  Vault-Transit envelope (Model B) in the shared object-store — an opaque
+  `objects/<id>.enc` entry in one generically-named MinIO bucket, not a literal
+  `in-force-config` key. That bucket holds every prodbox-owned secret-bearing object
+  (in-force config, gateway state, Pulumi backend checkpoints) under opaque
+  Vault-keyed-HMAC names; the host CLI and the in-cluster gateway daemon read and write it
+  through one shared envelope/naming/index layer, each binding its own Vault-auth cipher
+  (the host CLI via the root Vault token, the daemon via Vault Kubernetes auth over the
+  in-cluster MinIO Service DNS). The filesystem `prodbox-config.dhall` is a seed/propose
+  input only — it seeds the encrypted MinIO SSoT on first-ever bring-up, and thereafter
+  supplying a file is a proposed update, not the live config. Each binary reads the small
+  unencrypted basics locally (cluster id, this cluster's Vault address, seal mode, and for
+  a child the parent reference it contacts to auto-unseal), then fetches and decrypts the
+  in-force config from MinIO through Vault. In-cluster consumers authenticate to Vault
+  directly via Vault Kubernetes auth; there are no Secret-mounted Dhall credential
+  fragments and no master seed or HMAC derivation. Updating the root cluster's in-force
+  config requires the root Vault token (which requires an unsealed root Vault). No
+  supported binary reads `PRODBOX_*` environment variables. See
   [documents/engineering/config_doctrine.md](./documents/engineering/config_doctrine.md).
 - `pulumi/aws-eks/Pulumi.yaml` plus `pulumi/aws-eks/Main.yaml` and `pulumi/aws-test/Pulumi.yaml`
   plus `pulumi/aws-test/Main.yaml` are the supported Pulumi programs for AWS validation IaC.
@@ -65,7 +72,8 @@ local-cluster lifecycle on this host.
   the supported, expected operation, not an unauthorized state change.
 - `prodbox cluster delete --yes` is the canonical teardown. **Default mode is a pure local
   cluster uninstall**: it uninstalls RKE2 and preserves `.data/` (the MinIO-backed per-run
-  Pulumi state) **without querying, gating on, or destroying the per-run AWS Pulumi backend** —
+  Pulumi state — Vault-enveloped, opaque-named objects in the shared bucket)
+  **without querying, gating on, or destroying the per-run AWS Pulumi backend** —
   so per-run AWS stacks (if any) are left untouched and remain destroyable afterward via
   `prodbox cluster delete --cascade` or `prodbox aws stack <name> destroy --yes`. Deleting the
   cluster never affects your ability to reason about the backend, since `.data/` is preserved. When

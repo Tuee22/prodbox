@@ -13,6 +13,12 @@ image:
   repository: 127.0.0.1:30080/prodbox/prodbox-public-edge-workload
   tag: latest
 
+vault:
+  address: http://vault.vault.svc.cluster.local:8200
+  authPath: kubernetes
+  role: websocket-oidc
+  serviceAccountTokenFile: /var/run/secrets/kubernetes.io/serviceaccount/token
+
 gateway:
   name: public-edge
   namespace: vscode
@@ -38,7 +44,10 @@ oidc:
   issuer: https://test.resolvefintech.com/auth/realms/prodbox
   tokenEndpoint: http://keycloak.vscode.svc.cluster.local:8080/auth/realms/prodbox/protocol/openid-connect/token
   clientId: prodbox-websocket
-  clientSecret: change-me
+  clientSecretVaultRef:
+    mount: secret
+    path: vscode/oidc/prodbox-websocket
+    field: client_secret
   publicBaseUrl: https://test.resolvefintech.com/ws
 
 redis:

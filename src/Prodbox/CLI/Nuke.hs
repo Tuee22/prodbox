@@ -16,9 +16,10 @@
 --     mutating.
 --
 -- The orchestration sequence (run in dependency order):
---   1. K8s drain + per-run Pulumi destroys + cluster uninstall
+--   1. @aws-ses@ Pulumi destroy while Vault/MinIO are still reachable
+--      for the encrypted checkpoint backend.
+--   2. K8s drain + per-run Pulumi destroys + cluster uninstall
 --      (delegates to the @rke2 delete --cascade@ arm).
---   2. @aws-ses@ Pulumi destroy (long-lived shared infrastructure).
 --   3. @prodbox aws teardown@-equivalent operational IAM cleanup.
 --   4. Postflight tag sweep (operator-visible audit; non-fatal here
 --      because failures after this point cannot be unwound).
@@ -168,8 +169,8 @@ runNukeInteractive repoRoot = do
 --
 -- Sprint 5.6: the per-run, @aws-ses@, and long-lived-S3 destroy lines are
 -- DERIVED from the managed-resource registry / 'StackDescriptor' SSoT
--- (Sprints 4.26/4.27) — 'perRunManagedResources' for step 1's cascade
--- targets, 'awsSesPulumiResource' for step 2, and 'longLivedManagedResources'
+-- (Sprints 4.26/4.27) — 'awsSesPulumiResource' for step 1,
+-- 'perRunManagedResources' for step 2's cascade targets, and 'longLivedManagedResources'
 -- for the long-lived S3-object destroys — so the rendered plan tracks the
 -- registry rather than drifting from it. A registry-generated golden pins
 -- this, and a parity check fails if a registered resource is added without
@@ -178,40 +179,41 @@ renderNukePlan :: FilePath -> String
 renderNukePlan _repoRoot =
   unlines
     ( [ "PRODBOX_NUKE_PLAN"
-      , "STEP=1 K8s drain + per-run Pulumi destroys + cluster uninstall (rke2 delete --cascade arm)"
+      , "STEP=1 "
+          ++ resourceDestroyCommand awsSesPulumiResource
+          ++ " (long-lived shared infrastructure; requires live Vault/MinIO encrypted backend)"
+      , "STEP=2 K8s drain + per-run Pulumi destroys + cluster uninstall (rke2 delete --cascade arm)"
       ]
-        ++ [ "STEP=1 per_run_destroy " ++ resourceName resource
+        ++ [ "STEP=2 per_run_destroy " ++ resourceName resource
            | resource <- perRunManagedResources
            ]
-        ++ [ "STEP=2 "
-               ++ resourceDestroyCommand awsSesPulumiResource
-               ++ " (long-lived shared infrastructure)"
-           , "STEP=3 prodbox aws teardown (operational `prodbox` IAM user + access keys)"
+        ++ [ "STEP=3 prodbox aws teardown (operational `prodbox` IAM user + access keys)"
            , "STEP=4 postflight tag sweep (fail-closed: any prodbox-tagged AWS residue OR an unconfirmable sweep aborts nuke non-zero before step 5)"
            ]
         ++ [ "STEP=4 long_lived_destroy " ++ resourceName resource
            | resource <- longLivedManagedResources
            ]
         ++ [ "STEP=5 destroy long-lived `pulumi_state_backend` S3 bucket"
-           , "ADMIN_CREDENTIAL_SOURCE=prodbox-config.dhall::aws_admin_for_test_simulation.*"
+           , "ADMIN_CREDENTIAL_SOURCE=SecretRef.Vault refs declared at prodbox-config.dhall::aws_admin_for_test_simulation.*"
            , "STATUS=plan-only"
            , "CONFIRMATION_LITERAL=" ++ confirmationLiteral
            , "ALSO_NOTE=Each step is idempotent on retry; the operator may resume after a partial failure."
            ]
     )
 
--- | Orchestration body. Loads the admin AWS credential block from
--- @aws_admin_for_test_simulation.*@ in @prodbox-config.dhall@ before
--- destructive work begins. That is the same credential source used by
--- long-lived stack operations. Step 1 reuses the existing cascade arm,
--- which already runs the K8s drain. Failure at any step aborts; later
--- steps are idempotent, so the operator may re-run nuke after fixing
--- the failing step.
+-- | Orchestration body. Resolves the Vault-backed admin AWS credential
+-- refs declared at @aws_admin_for_test_simulation.*@ before destructive
+-- work begins. That is the same credential source used by long-lived
+-- stack operations. The aws-ses destroy runs before the local-cluster
+-- cascade so the encrypted Pulumi backend can still read Vault/MinIO.
+-- Failure at any step aborts; later steps are idempotent, so the
+-- operator may re-run nuke after fixing the failing step.
 runNukeOrchestration :: FilePath -> IO ExitCode
 runNukeOrchestration repoRoot = do
   writeOutputLine ""
-  writeOutputLine "prodbox nuke: loading admin AWS credentials from aws_admin_for_test_simulation.*."
-  writeOutputLine "That config-backed admin credential source is used for the SES destroy,"
+  writeOutputLine
+    "prodbox nuke: resolving admin AWS credentials from Vault refs declared at aws_admin_for_test_simulation.*."
+  writeOutputLine "That Vault-backed admin credential source is used for the SES destroy,"
   writeOutputLine
     "operational IAM teardown, postflight tag sweep, and long-lived state-bucket destroy."
   writeOutputLine ""
@@ -234,9 +236,9 @@ runNukeSteps
   -> PulumiStateBackendSection
   -> IO ExitCode
 runNukeSteps repoRoot adminCredentials backend = do
-  step1 <- runStep "1/5 cluster cascade" (nukeStepCascade repoRoot)
+  step1 <- runStep "1/5 aws-ses destroy" (nukeStepAwsSesDestroy repoRoot)
   abortOrContinue step1 $ do
-    step2 <- runStep "2/5 aws-ses destroy" (nukeStepAwsSesDestroy repoRoot)
+    step2 <- runStep "2/5 cluster cascade" (nukeStepCascade repoRoot)
     abortOrContinue step2 $ do
       step3 <- runStep "3/5 operational IAM teardown" (nukeStepAwsTeardown repoRoot adminCredentials)
       abortOrContinue step3 $ do

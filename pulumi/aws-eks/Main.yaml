@@ -308,7 +308,7 @@ resources:
         - ${ebsCsiDriverPolicyAttachment}
 
 outputs:
-  backend_bucket: prodbox-test-pulumi-backends
+  backend_bucket: prodbox-state
   cluster_name: ${cluster.name}
   cluster_role_name: ${clusterRole.name}
   node_group_name: ${nodeGroup.nodeGroupName}

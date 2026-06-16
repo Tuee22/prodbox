@@ -49,10 +49,11 @@ import Prodbox.PublicEdge
   )
 import Prodbox.Result (Result (..))
 import Prodbox.Settings
-  ( Credentials (..)
+  ( ConfigFile (..)
   , Route53Section (..)
   , ValidatedSettings (..)
   , aws
+  , resolveAwsCredentialsRefFromHostVault
   , route53
   , validateAndLoadSettings
   )
@@ -154,29 +155,32 @@ queryRoute53ARecordValuesInZone
   -> String
   -> IO (Either String [String])
 queryRoute53ARecordValuesInZone repoRoot settings hostedZoneId fqdn = do
-  environment <- awsCliEnvironment (aws config)
-  outputResult <-
-    captureSubprocessResult
-      Subprocess
-        { subprocessPath = "aws"
-        , subprocessArguments =
-            [ "route53"
-            , "list-resource-record-sets"
-            , "--hosted-zone-id"
-            , Text.unpack hostedZoneId
-            , "--output"
-            , "json"
-            ]
-        , subprocessEnvironment = Just environment
-        , subprocessWorkingDirectory = Just repoRoot
-        }
-  pure $
-    case outputResult of
-      Failure err -> Left ("failed to start `aws route53 list-resource-record-sets`: " ++ err)
-      Success output ->
-        case processExitCode output of
-          ExitSuccess -> parseRoute53RecordValues fqdn (processStdout output)
-          ExitFailure _ -> Left ("aws route53 list-resource-record-sets failed: " ++ outputDetail output)
+  environmentResult <- awsCliEnvironment repoRoot config
+  case environmentResult of
+    Left err -> pure (Left err)
+    Right environment -> do
+      outputResult <-
+        captureSubprocessResult
+          Subprocess
+            { subprocessPath = "aws"
+            , subprocessArguments =
+                [ "route53"
+                , "list-resource-record-sets"
+                , "--hosted-zone-id"
+                , Text.unpack hostedZoneId
+                , "--output"
+                , "json"
+                ]
+            , subprocessEnvironment = Just environment
+            , subprocessWorkingDirectory = Just repoRoot
+            }
+      pure $
+        case outputResult of
+          Failure err -> Left ("failed to start `aws route53 list-resource-record-sets`: " ++ err)
+          Success output ->
+            case processExitCode output of
+              ExitSuccess -> parseRoute53RecordValues fqdn (processStdout output)
+              ExitFailure _ -> Left ("aws route53 list-resource-record-sets failed: " ++ outputDetail output)
  where
   config = validatedConfig settings
 
@@ -191,52 +195,55 @@ changeRoute53ARecordSetInZone
 changeRoute53ARecordSetInZone repoRoot settings hostedZoneId fqdn recordValues ttlValue
   | null recordValues = pure (Left ("refusing to write empty Route 53 A record set for " ++ fqdn))
   | otherwise = do
-      environment <- awsCliEnvironment (aws config)
-      changeResult <-
-        captureSubprocessResult
-          Subprocess
-            { subprocessPath = "aws"
-            , subprocessArguments =
-                [ "route53"
-                , "change-resource-record-sets"
-                , "--hosted-zone-id"
-                , Text.unpack hostedZoneId
-                , "--change-batch"
-                , BL8.unpack (encode (route53AChangeBatch "UPSERT" fqdn recordValues ttlValue))
-                , "--query"
-                , "ChangeInfo.Id"
-                , "--output"
-                , "text"
-                ]
-            , subprocessEnvironment = Just environment
-            , subprocessWorkingDirectory = Just repoRoot
-            }
-      case changeResult of
-        Failure err -> pure (Left ("failed to start `aws route53 change-resource-record-sets`: " ++ err))
-        Success changeOutput ->
-          case processExitCode changeOutput of
-            ExitFailure _ -> pure (Left ("aws route53 change-resource-record-sets failed: " ++ outputDetail changeOutput))
-            ExitSuccess -> do
-              waitResult <-
-                captureSubprocessResult
-                  Subprocess
-                    { subprocessPath = "aws"
-                    , subprocessArguments =
-                        [ "route53"
-                        , "wait"
-                        , "resource-record-sets-changed"
-                        , "--id"
-                        , trim (processStdout changeOutput)
-                        ]
-                    , subprocessEnvironment = Just environment
-                    , subprocessWorkingDirectory = Just repoRoot
-                    }
-              pure $ case waitResult of
-                Failure err -> Left ("failed to start `aws route53 wait resource-record-sets-changed`: " ++ err)
-                Success waitOutput ->
-                  case processExitCode waitOutput of
-                    ExitSuccess -> Right ()
-                    ExitFailure _ -> Left ("aws route53 wait resource-record-sets-changed failed: " ++ outputDetail waitOutput)
+      environmentResult <- awsCliEnvironment repoRoot config
+      case environmentResult of
+        Left err -> pure (Left err)
+        Right environment -> do
+          changeResult <-
+            captureSubprocessResult
+              Subprocess
+                { subprocessPath = "aws"
+                , subprocessArguments =
+                    [ "route53"
+                    , "change-resource-record-sets"
+                    , "--hosted-zone-id"
+                    , Text.unpack hostedZoneId
+                    , "--change-batch"
+                    , BL8.unpack (encode (route53AChangeBatch "UPSERT" fqdn recordValues ttlValue))
+                    , "--query"
+                    , "ChangeInfo.Id"
+                    , "--output"
+                    , "text"
+                    ]
+                , subprocessEnvironment = Just environment
+                , subprocessWorkingDirectory = Just repoRoot
+                }
+          case changeResult of
+            Failure err -> pure (Left ("failed to start `aws route53 change-resource-record-sets`: " ++ err))
+            Success changeOutput ->
+              case processExitCode changeOutput of
+                ExitFailure _ -> pure (Left ("aws route53 change-resource-record-sets failed: " ++ outputDetail changeOutput))
+                ExitSuccess -> do
+                  waitResult <-
+                    captureSubprocessResult
+                      Subprocess
+                        { subprocessPath = "aws"
+                        , subprocessArguments =
+                            [ "route53"
+                            , "wait"
+                            , "resource-record-sets-changed"
+                            , "--id"
+                            , trim (processStdout changeOutput)
+                            ]
+                        , subprocessEnvironment = Just environment
+                        , subprocessWorkingDirectory = Just repoRoot
+                        }
+                  pure $ case waitResult of
+                    Failure err -> Left ("failed to start `aws route53 wait resource-record-sets-changed`: " ++ err)
+                    Success waitOutput ->
+                      case processExitCode waitOutput of
+                        ExitSuccess -> Right ()
+                        ExitFailure _ -> Left ("aws route53 wait resource-record-sets-changed failed: " ++ outputDetail waitOutput)
  where
   config = validatedConfig settings
 
@@ -312,8 +319,12 @@ ensureTrailingDot value = if null value || last value == '.' then value else val
 -- 'awsCliSubprocessEnvironment' builder so the bare @aws@ binary resolves on
 -- hosts where @aws@ lives outside the default exec @PATH@. Sprint 1.30 fixed
 -- the prior empty-base (`isolatedAwsEnvironment`) that dropped @PATH@.
-awsCliEnvironment :: Credentials -> IO [(String, String)]
-awsCliEnvironment = awsCliSubprocessEnvironment
+awsCliEnvironment :: FilePath -> ConfigFile -> IO (Either String [(String, String)])
+awsCliEnvironment repoRoot config = do
+  credentialsResult <- resolveAwsCredentialsRefFromHostVault repoRoot "aws" (aws config)
+  case credentialsResult of
+    Left err -> pure (Left ("load operational AWS credentials from Vault: " ++ err))
+    Right credentials -> Right <$> awsCliSubprocessEnvironment credentials
 
 outputDetail :: ProcessOutput -> String
 outputDetail output =

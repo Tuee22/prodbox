@@ -25,10 +25,27 @@ module Prodbox.Vault.Client
   , BootstrapAction (..)
   , KvV2WriteRequest (..)
   , KvV2ReadResponse (..)
+  , VaultMountInfo (..)
+  , VaultMountListing (..)
+  , VaultAuthInfo (..)
+  , VaultAuthListing (..)
+  , EnableMountRequest (..)
+  , EnableAuthMethodRequest (..)
+  , WritePolicyRequest (..)
+  , TransitKeyInfo (..)
+  , TransitKeyRequest (..)
+  , PkiIssueCertificateRequest (..)
+  , PkiIssueCertificateResponse (..)
+  , KubernetesAuthConfigRequest (..)
+  , KubernetesLoginRequest (..)
+  , KubernetesLoginResponse (..)
+  , KubernetesRoleRequest (..)
   , TransitEncryptRequest (..)
   , TransitEncryptResponse (..)
   , TransitDecryptRequest (..)
   , TransitDecryptResponse (..)
+  , TokenCreateRequest (..)
+  , TokenCreateResponse (..)
   , defaultInitRequest
   , bootstrapAction
   , initResponseToUnlockBundle
@@ -38,6 +55,19 @@ module Prodbox.Vault.Client
   , vaultSeal
   , vaultKvReadV2
   , vaultKvWriteV2
+  , vaultListMounts
+  , vaultEnableMount
+  , vaultListAuthMethods
+  , vaultEnableAuthMethod
+  , vaultWritePolicy
+  , vaultReadTransitKey
+  , vaultCreateTransitKey
+  , vaultRotateTransitKey
+  , vaultPkiIssueTestCertificate
+  , vaultWriteKubernetesAuthConfig
+  , vaultKubernetesLogin
+  , vaultWriteKubernetesRole
+  , vaultCreateToken
   , vaultTransitEncrypt
   , vaultTransitDecrypt
   )
@@ -54,10 +84,15 @@ import Data.Aeson
   , (.:?)
   , (.=)
   )
+import Data.Aeson.Key qualified as AesonKey
+import Data.Aeson.KeyMap qualified as AesonKeyMap
+import Data.Aeson.Types (Pair, Parser)
 import Data.ByteString (ByteString)
 import Data.ByteString.Base64 qualified as B64
 import Data.Map.Strict (Map)
+import Data.Map.Strict qualified as Map
 import Data.Maybe (fromMaybe)
+import Data.String (fromString)
 import Data.Text (Text)
 import Data.Text qualified as Text
 import Data.Text.Encoding qualified as TextEncoding
@@ -68,6 +103,7 @@ import Prodbox.Http.Client
   , defaultHttpConfig
   , httpGetJson
   , httpGetJsonWithHeaders
+  , httpPostJsonNoResponse
   , httpPostJsonResponseJson
   , httpPostJsonWithHeaders
   , httpRequestNoBody
@@ -103,22 +139,31 @@ instance FromJSON SealStatus where
 
 -- | The @POST \/v1\/sys\/init@ request body.
 data InitRequest = InitRequest
-  { initRequestSecretShares :: Natural
-  , initRequestSecretThreshold :: Natural
+  { initRequestSecretShares :: Maybe Natural
+  , initRequestSecretThreshold :: Maybe Natural
+  , initRequestRecoveryShares :: Maybe Natural
+  , initRequestRecoveryThreshold :: Maybe Natural
   }
   deriving (Eq, Show)
 
 instance ToJSON InitRequest where
   toJSON req =
     object
-      [ "secret_shares" .= initRequestSecretShares req
-      , "secret_threshold" .= initRequestSecretThreshold req
-      ]
+      ( maybeField "secret_shares" (initRequestSecretShares req)
+          ++ maybeField "secret_threshold" (initRequestSecretThreshold req)
+          ++ maybeField "recovery_shares" (initRequestRecoveryShares req)
+          ++ maybeField "recovery_threshold" (initRequestRecoveryThreshold req)
+      )
 
 -- | The standard 5-share / 3-threshold Shamir init parameters.
 defaultInitRequest :: InitRequest
 defaultInitRequest =
-  InitRequest {initRequestSecretShares = 5, initRequestSecretThreshold = 3}
+  InitRequest
+    { initRequestSecretShares = Just 5
+    , initRequestSecretThreshold = Just 3
+    , initRequestRecoveryShares = Nothing
+    , initRequestRecoveryThreshold = Nothing
+    }
 
 -- | The decoded @POST \/v1\/sys\/init@ response. Recovery keys are present
 -- only for auto-unseal/seal-wrapped configurations, so they default to empty.
@@ -132,10 +177,41 @@ data InitResponse = InitResponse
 instance FromJSON InitResponse where
   parseJSON =
     withObject "InitResponse" $ \o ->
-      InitResponse
-        <$> o .: "keys_base64"
+      InitResponse . fromMaybe []
+        <$> o .:? "keys_base64"
         <*> (fromMaybe [] <$> o .:? "recovery_keys_base64")
         <*> o .: "root_token"
+
+maybeField :: (ToJSON a) => Text -> Maybe a -> [Pair]
+maybeField fieldName value = case value of
+  Nothing -> []
+  Just concrete -> [fromString (Text.unpack fieldName) .= concrete]
+
+-- | The @POST \/v1\/auth\/kubernetes\/login@ request body.
+data KubernetesLoginRequest = KubernetesLoginRequest
+  { kubernetesLoginRequestRole :: Text
+  , kubernetesLoginRequestJwt :: Text
+  }
+  deriving (Eq, Show)
+
+instance ToJSON KubernetesLoginRequest where
+  toJSON req =
+    object
+      [ "role" .= kubernetesLoginRequestRole req
+      , "jwt" .= kubernetesLoginRequestJwt req
+      ]
+
+-- | The decoded token-bearing response from Vault Kubernetes auth.
+newtype KubernetesLoginResponse = KubernetesLoginResponse
+  { kubernetesLoginResponseClientToken :: Text
+  }
+  deriving (Eq, Show)
+
+instance FromJSON KubernetesLoginResponse where
+  parseJSON =
+    withObject "KubernetesLoginResponse" $ \o -> do
+      auth <- o .: "auth"
+      KubernetesLoginResponse <$> auth .: "client_token"
 
 -- | The @POST \/v1\/sys\/unseal@ request body (one key share per call).
 newtype UnsealRequest = UnsealRequest Text
@@ -204,7 +280,10 @@ vaultSubmitUnseal address key =
 -- | A Vault authentication token, sent as the @X-Vault-Token@ header on every
 -- authenticated request. Never logged.
 newtype VaultToken = VaultToken {unVaultToken :: Text}
-  deriving (Eq, Show)
+  deriving (Eq)
+
+instance Show VaultToken where
+  show _ = "VaultToken <redacted>"
 
 vaultTokenHeader :: VaultToken -> Header
 vaultTokenHeader token =
@@ -267,6 +346,36 @@ instance FromJSON TransitDecryptResponse where
       d <- o .: "data"
       TransitDecryptResponse <$> d .: "plaintext"
 
+-- | @POST \/v1\/auth\/token\/create@ request for a scoped child bootstrap
+-- token. The token itself is returned by Vault and is never logged by callers.
+data TokenCreateRequest = TokenCreateRequest
+  { tokenCreatePolicies :: [Text]
+  , tokenCreateTtl :: Text
+  , tokenCreateRenewable :: Bool
+  , tokenCreateNoParent :: Bool
+  }
+  deriving (Eq, Show)
+
+instance ToJSON TokenCreateRequest where
+  toJSON req =
+    object
+      [ "policies" .= tokenCreatePolicies req
+      , "ttl" .= tokenCreateTtl req
+      , "renewable" .= tokenCreateRenewable req
+      , "no_parent" .= tokenCreateNoParent req
+      ]
+
+newtype TokenCreateResponse = TokenCreateResponse
+  { tokenCreateClientToken :: Text
+  }
+  deriving (Eq, Show)
+
+instance FromJSON TokenCreateResponse where
+  parseJSON =
+    withObject "TokenCreateResponse" $ \o -> do
+      auth <- o .: "auth"
+      TokenCreateResponse <$> auth .: "client_token"
+
 -- | @PUT \/v1\/sys\/seal@ — re-seal an unsealed Vault. Requires a token with
 -- the @sys/seal@ capability; responds 204 No Content on success.
 vaultSeal :: VaultAddress -> VaultToken -> IO (Either HttpError ())
@@ -300,6 +409,351 @@ vaultKvWriteV2 address token mount path fields = do
       (vaultUrl address (kvV2DataPath mount path))
       (KvV2WriteRequest fields)
   pure (void (result :: Either HttpError Value))
+
+-- | One entry returned by @GET \/v1\/sys\/mounts@. Vault reports keys with a
+-- trailing slash; prodbox normalizes them to slash-free mount paths.
+data VaultMountInfo = VaultMountInfo
+  { vaultMountPath :: Text
+  , vaultMountType :: Text
+  , vaultMountOptions :: Map Text Text
+  }
+  deriving (Eq, Show)
+
+newtype VaultMountListing = VaultMountListing
+  { unVaultMountListing :: Map Text VaultMountInfo
+  }
+
+instance FromJSON VaultMountListing where
+  parseJSON =
+    withObject "VaultMountListing" $ \o -> do
+      listing <- vaultListingObject "VaultMountListing" o
+      entries <- traverse parseMount (AesonKeyMap.toList listing)
+      pure (VaultMountListing (Map.fromList entries))
+   where
+    parseMount (rawPath, value) =
+      withObject "VaultMountInfo" parseMountInfo value
+     where
+      path = normalizeVaultPath (AesonKey.toText rawPath)
+      parseMountInfo info = do
+        mountType <- info .: "type"
+        options <- fromMaybe Map.empty <$> info .:? "options"
+        pure (path, VaultMountInfo path mountType options)
+
+-- | One entry returned by @GET \/v1\/sys\/auth@, normalized the same way as
+-- mounts.
+data VaultAuthInfo = VaultAuthInfo
+  { vaultAuthPath :: Text
+  , vaultAuthType :: Text
+  }
+  deriving (Eq, Show)
+
+newtype VaultAuthListing = VaultAuthListing
+  { unVaultAuthListing :: Map Text VaultAuthInfo
+  }
+
+instance FromJSON VaultAuthListing where
+  parseJSON =
+    withObject "VaultAuthListing" $ \o -> do
+      listing <- vaultListingObject "VaultAuthListing" o
+      entries <- traverse parseAuth (AesonKeyMap.toList listing)
+      pure (VaultAuthListing (Map.fromList entries))
+   where
+    parseAuth (rawPath, value) =
+      withObject "VaultAuthInfo" parseAuthInfo value
+     where
+      path = normalizeVaultPath (AesonKey.toText rawPath)
+      parseAuthInfo info = do
+        authType <- info .: "type"
+        pure (path, VaultAuthInfo path authType)
+
+vaultListingObject
+  :: String
+  -> AesonKeyMap.KeyMap Value
+  -> Parser (AesonKeyMap.KeyMap Value)
+vaultListingObject label o =
+  case AesonKeyMap.lookup "data" o of
+    Nothing -> pure o
+    Just wrapped -> withObject (label ++ ".data") pure wrapped
+
+-- | @POST \/v1\/sys\/mounts\/\<path\>@ request.
+data EnableMountRequest = EnableMountRequest
+  { enableMountType :: Text
+  , enableMountOptions :: Map Text Text
+  }
+  deriving (Eq, Show)
+
+instance ToJSON EnableMountRequest where
+  toJSON req =
+    object
+      [ "type" .= enableMountType req
+      , "options" .= enableMountOptions req
+      ]
+
+-- | @POST \/v1\/sys\/auth\/\<path\>@ request.
+newtype EnableAuthMethodRequest = EnableAuthMethodRequest
+  { enableAuthMethodType :: Text
+  }
+  deriving (Eq, Show)
+
+instance ToJSON EnableAuthMethodRequest where
+  toJSON req =
+    object ["type" .= enableAuthMethodType req]
+
+-- | @POST \/v1\/sys\/policies\/acl\/\<name\>@ request.
+newtype WritePolicyRequest = WritePolicyRequest
+  { writePolicyPolicy :: Text
+  }
+  deriving (Eq, Show)
+
+instance ToJSON WritePolicyRequest where
+  toJSON req =
+    object ["policy" .= writePolicyPolicy req]
+
+-- | Decoded @GET \/v1\/transit\/keys\/\<name\>@ response.
+data TransitKeyInfo = TransitKeyInfo
+  { transitKeyName :: Text
+  , transitKeyType :: Text
+  }
+  deriving (Eq, Show)
+
+newtype TransitKeyReadResponse = TransitKeyReadResponse
+  { transitKeyReadType :: Text
+  }
+
+instance FromJSON TransitKeyReadResponse where
+  parseJSON =
+    withObject "TransitKeyReadResponse" $ \o -> do
+      d <- o .: "data"
+      TransitKeyReadResponse <$> d .: "type"
+
+-- | @POST \/v1\/transit\/keys\/\<name\>@ request.
+newtype TransitKeyRequest = TransitKeyRequest
+  { transitKeyRequestType :: Text
+  }
+  deriving (Eq, Show)
+
+instance ToJSON TransitKeyRequest where
+  toJSON req =
+    object ["type" .= transitKeyRequestType req]
+
+-- | @POST \/v1\/pki\/issue\/\<role\>@ request.
+data PkiIssueCertificateRequest = PkiIssueCertificateRequest
+  { pkiIssueCertificateCommonName :: Text
+  , pkiIssueCertificateTtl :: Text
+  }
+  deriving (Eq, Show)
+
+instance ToJSON PkiIssueCertificateRequest where
+  toJSON req =
+    object
+      [ "common_name" .= pkiIssueCertificateCommonName req
+      , "ttl" .= pkiIssueCertificateTtl req
+      ]
+
+-- | Decoded Vault PKI issue response. The certificate is PEM text at
+-- @.data.certificate@; private key material is intentionally ignored here.
+newtype PkiIssueCertificateResponse = PkiIssueCertificateResponse
+  { pkiIssueCertificatePem :: Text
+  }
+  deriving (Eq, Show)
+
+instance FromJSON PkiIssueCertificateResponse where
+  parseJSON =
+    withObject "PkiIssueCertificateResponse" $ \o -> do
+      d <- o .: "data"
+      PkiIssueCertificateResponse <$> d .: "certificate"
+
+-- | @POST \/v1\/auth\/kubernetes\/config@ request.
+newtype KubernetesAuthConfigRequest = KubernetesAuthConfigRequest
+  { kubernetesAuthConfigHost :: Text
+  }
+  deriving (Eq, Show)
+
+instance ToJSON KubernetesAuthConfigRequest where
+  toJSON req =
+    object ["kubernetes_host" .= kubernetesAuthConfigHost req]
+
+-- | @POST \/v1\/auth\/kubernetes\/role\/\<role\>@ request.
+data KubernetesRoleRequest = KubernetesRoleRequest
+  { kubernetesRoleServiceAccounts :: [Text]
+  , kubernetesRoleNamespaces :: [Text]
+  , kubernetesRolePolicies :: [Text]
+  , kubernetesRoleTtl :: Text
+  }
+  deriving (Eq, Show)
+
+instance ToJSON KubernetesRoleRequest where
+  toJSON req =
+    object
+      [ "bound_service_account_names" .= kubernetesRoleServiceAccounts req
+      , "bound_service_account_namespaces" .= kubernetesRoleNamespaces req
+      , "token_policies" .= kubernetesRolePolicies req
+      , "token_ttl" .= kubernetesRoleTtl req
+      ]
+
+-- | @GET \/v1\/sys\/mounts@ — list currently-enabled secret engines.
+vaultListMounts :: VaultAddress -> VaultToken -> IO (Either HttpError (Map Text VaultMountInfo))
+vaultListMounts address token = do
+  result <-
+    httpGetJsonWithHeaders
+      defaultHttpConfig
+      [vaultTokenHeader token]
+      (vaultUrl address "/v1/sys/mounts")
+  pure (fmap unVaultMountListing result)
+
+-- | @POST \/v1\/sys\/mounts\/\<path\>@ — enable a secret engine at a mount.
+vaultEnableMount
+  :: VaultAddress -> VaultToken -> Text -> Text -> Map Text Text -> IO (Either HttpError ())
+vaultEnableMount address token mount mountType options =
+  httpPostJsonNoResponse
+    defaultHttpConfig
+    [vaultTokenHeader token]
+    (vaultUrl address ("/v1/sys/mounts/" ++ Text.unpack (normalizeVaultPath mount)))
+    (EnableMountRequest mountType options)
+
+-- | @GET \/v1\/sys\/auth@ — list enabled auth methods.
+vaultListAuthMethods :: VaultAddress -> VaultToken -> IO (Either HttpError (Map Text VaultAuthInfo))
+vaultListAuthMethods address token = do
+  result <-
+    httpGetJsonWithHeaders
+      defaultHttpConfig
+      [vaultTokenHeader token]
+      (vaultUrl address "/v1/sys/auth")
+  pure (fmap unVaultAuthListing result)
+
+-- | @POST \/v1\/sys\/auth\/\<path\>@ — enable an auth method.
+vaultEnableAuthMethod
+  :: VaultAddress -> VaultToken -> Text -> Text -> IO (Either HttpError ())
+vaultEnableAuthMethod address token authPath authType =
+  httpPostJsonNoResponse
+    defaultHttpConfig
+    [vaultTokenHeader token]
+    (vaultUrl address ("/v1/sys/auth/" ++ Text.unpack (normalizeVaultPath authPath)))
+    (EnableAuthMethodRequest authType)
+
+-- | @POST \/v1\/sys\/policies\/acl\/\<name\>@ — create or replace an ACL
+-- policy.
+vaultWritePolicy :: VaultAddress -> VaultToken -> Text -> Text -> IO (Either HttpError ())
+vaultWritePolicy address token policyName policy =
+  httpPostJsonNoResponse
+    defaultHttpConfig
+    [vaultTokenHeader token]
+    (vaultUrl address ("/v1/sys/policies/acl/" ++ Text.unpack policyName))
+    (WritePolicyRequest policy)
+
+-- | @GET \/v1\/transit\/keys\/\<name\>@ — read Transit key metadata.
+vaultReadTransitKey
+  :: VaultAddress -> VaultToken -> Text -> IO (Either HttpError TransitKeyInfo)
+vaultReadTransitKey address token keyName = do
+  result <-
+    httpGetJsonWithHeaders
+      defaultHttpConfig
+      [vaultTokenHeader token]
+      (vaultUrl address ("/v1/transit/keys/" ++ Text.unpack keyName))
+  pure (fmap (\response -> TransitKeyInfo keyName (transitKeyReadType response)) result)
+
+-- | @POST \/v1\/transit\/keys\/\<name\>@ — create a Transit key. Reconcile
+-- callers should probe first with 'vaultReadTransitKey' so this remains
+-- idempotent.
+vaultCreateTransitKey
+  :: VaultAddress -> VaultToken -> Text -> Text -> IO (Either HttpError ())
+vaultCreateTransitKey address token keyName keyType =
+  httpPostJsonNoResponse
+    defaultHttpConfig
+    [vaultTokenHeader token]
+    (vaultUrl address ("/v1/transit/keys/" ++ Text.unpack keyName))
+    (TransitKeyRequest keyType)
+
+-- | @POST \/v1\/transit\/keys\/\<name\>\/rotate@ — rotate a named Transit key
+-- to a new key version.
+vaultRotateTransitKey :: VaultAddress -> VaultToken -> Text -> IO (Either HttpError ())
+vaultRotateTransitKey address token keyName =
+  httpRequestNoBody
+    defaultHttpConfig
+    "POST"
+    [vaultTokenHeader token]
+    (vaultUrl address ("/v1/transit/keys/" ++ Text.unpack keyName ++ "/rotate"))
+
+-- | @POST \/v1\/pki\/issue\/\<role\>@ — issue a short-lived test certificate
+-- from an already-configured PKI role.
+vaultPkiIssueTestCertificate
+  :: VaultAddress
+  -> VaultToken
+  -> Text
+  -> Text
+  -> Text
+  -> IO (Either HttpError Text)
+vaultPkiIssueTestCertificate address token role commonName ttl = do
+  result <-
+    httpPostJsonWithHeaders
+      defaultHttpConfig
+      [vaultTokenHeader token]
+      (vaultUrl address ("/v1/pki/issue/" ++ Text.unpack role))
+      (PkiIssueCertificateRequest commonName ttl)
+  pure (fmap pkiIssueCertificatePem result)
+
+-- | @POST \/v1\/auth\/\<path\>\/config@ — configure Kubernetes auth against
+-- the in-cluster API. The Vault server loads its local service-account token
+-- and CA cert from the pod filesystem when those fields are omitted.
+vaultWriteKubernetesAuthConfig
+  :: VaultAddress -> VaultToken -> Text -> Text -> IO (Either HttpError ())
+vaultWriteKubernetesAuthConfig address token authPath kubernetesHost =
+  httpPostJsonNoResponse
+    defaultHttpConfig
+    [vaultTokenHeader token]
+    (vaultUrl address ("/v1/auth/" ++ Text.unpack authPath ++ "/config"))
+    (KubernetesAuthConfigRequest kubernetesHost)
+
+-- | @POST \/v1\/auth\/\<path\>\/login@ — exchange a Kubernetes service-account
+-- JWT for a Vault token bound to a configured Vault role.
+vaultKubernetesLogin
+  :: VaultAddress -> Text -> Text -> Text -> IO (Either HttpError VaultToken)
+vaultKubernetesLogin address authPath role jwt = do
+  result <-
+    httpPostJsonResponseJson
+      defaultHttpConfig
+      (vaultUrl address ("/v1/auth/" ++ Text.unpack authPath ++ "/login"))
+      (KubernetesLoginRequest role jwt)
+  pure (VaultToken . kubernetesLoginResponseClientToken <$> result)
+
+-- | @POST \/v1\/auth\/kubernetes\/role\/\<role\>@ — create or replace a
+-- Kubernetes auth role.
+vaultWriteKubernetesRole
+  :: VaultAddress
+  -> VaultToken
+  -> Text
+  -> [Text]
+  -> [Text]
+  -> [Text]
+  -> Text
+  -> IO (Either HttpError ())
+vaultWriteKubernetesRole address token role serviceAccounts namespaces policies ttl =
+  httpPostJsonNoResponse
+    defaultHttpConfig
+    [vaultTokenHeader token]
+    (vaultUrl address ("/v1/auth/kubernetes/role/" ++ Text.unpack role))
+    (KubernetesRoleRequest serviceAccounts namespaces policies ttl)
+
+vaultCreateToken
+  :: VaultAddress
+  -> VaultToken
+  -> [Text]
+  -> Text
+  -> IO (Either HttpError VaultToken)
+vaultCreateToken address token policies ttl = do
+  result <-
+    httpPostJsonWithHeaders
+      defaultHttpConfig
+      [vaultTokenHeader token]
+      (vaultUrl address "/v1/auth/token/create")
+      ( TokenCreateRequest
+          { tokenCreatePolicies = policies
+          , tokenCreateTtl = ttl
+          , tokenCreateRenewable = True
+          , tokenCreateNoParent = False
+          }
+      )
+  pure (VaultToken . tokenCreateClientToken <$> result)
 
 -- | @POST \/v1\/transit\/encrypt\/\<key\>@ — wrap a plaintext blob under a
 -- Transit key, returning the @vault:v1:...@ ciphertext token.
@@ -337,3 +791,7 @@ vaultTransitDecrypt address token keyName ciphertext = do
 kvV2DataPath :: Text -> Text -> String
 kvV2DataPath mount path =
   "/v1/" ++ Text.unpack mount ++ "/data/" ++ Text.unpack path
+
+normalizeVaultPath :: Text -> Text
+normalizeVaultPath =
+  Text.dropWhileEnd (== '/')

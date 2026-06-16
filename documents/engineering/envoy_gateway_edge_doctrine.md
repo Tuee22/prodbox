@@ -396,7 +396,10 @@ The current worktree ships all three supported public-edge auth shapes:
 - `vscode` uses Envoy-managed browser OIDC enforcement through `SecurityPolicy`; the browser-facing
   authorization endpoint remains on the public issuer, and Envoy's token/provider exchange uses
   the in-cluster Keycloak Service on port 8080 through a cross-namespace backend reference granted
-  by `ReferenceGrant`.
+  by `ReferenceGrant`. Envoy Gateway still requires a Kubernetes Secret reference for the OIDC
+  client secret, but the `vscode` chart creates or patches that Secret from Vault KV with a
+  Vault-authenticated post-install/post-upgrade Job rather than rendering a Helm lookup or
+  plaintext value.
 - `api` uses request-carried bearer JWTs validated locally at Envoy from Keycloak issuer metadata,
   JWKS, audience, and route claims. The issuer stays public, while Envoy fetches JWKS from the
   in-cluster Keycloak Service on port 8080 through `remoteJWKS.backendRefs` plus a
@@ -636,7 +639,8 @@ Lifecycle and chart implications:
 6. The current `vscode` SecurityPolicy, API/WebSocket JWT `remoteJWKS` policies, Harbor/MinIO
    admin SecurityPolicies, and `websocket` workload keep token/provider/JWKS backchannels
    in-cluster rather than exposing a second public Keycloak route or relying on EKS
-   public-load-balancer hairpin behavior.
+   public-load-balancer hairpin behavior. The `vscode` SecurityPolicy's client Secret is
+   materialized from Vault KV by the chart before Envoy needs the credential.
 7. cert-manager renders one ACME `ClusterIssuer` (`zerossl-dns01`, a DNS-01-honest name for its
    DNS-01 Route 53 solver — renamed from the misleading HTTP-01-claiming name in Sprint 7.13) on
    every reconcile; the `keycloak` chart `Certificate` for the shared listener references it, per

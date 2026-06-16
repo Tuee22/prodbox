@@ -3,6 +3,7 @@
 module Prodbox.TestRunner
   ( runTests
   , clearOperationalCredsAfterPostflight
+  , integrationRunbookCommandArgs
   , PublicEdgeCertificateFailure (..)
   , awsSubstrateBootstrapCommandArgs
   , awsPostflightDestroyCommandArgs
@@ -31,6 +32,7 @@ import Prodbox.Aws
   ( runAwsIamHarnessSetup
   , runAwsIamHarnessTeardown
   )
+import Prodbox.AwsEnvironment (overlayAwsCredentials)
 import Prodbox.BuildSupport
   ( addBuildSupportEnvironment
   , canonicalOperatorBinaryPath
@@ -73,9 +75,9 @@ import Prodbox.Result
   )
 import Prodbox.Settings
   ( ConfigFile (..)
-  , Credentials (..)
   , ValidatedSettings (..)
   , aws
+  , resolveAwsCredentialsRefFromHostVault
   , validateAndLoadSettings
   )
 import Prodbox.Subprocess
@@ -421,12 +423,17 @@ emitLineAction message = writeOutputLine message >> pure ExitSuccess
 
 runbookActions :: FilePath -> [(String, String)] -> NativeSuitePlan -> [IO ExitCode]
 runbookActions repoRoot environment suitePlan =
-  if nativeRequiresIntegrationRunbook suitePlan
-    then
-      [ emitLineAction phaseOnePointFiveMessage
-      , runNativeCliCommandForExitCode repoRoot environment ["cluster", "reconcile", "--with-edge"]
-      ]
-    else []
+  case integrationRunbookCommandArgs suitePlan of
+    [] -> []
+    commands ->
+      emitLineAction phaseOnePointFiveMessage
+        : map (runNativeCliCommandForExitCode repoRoot environment) commands
+
+integrationRunbookCommandArgs :: NativeSuitePlan -> [[String]]
+integrationRunbookCommandArgs suitePlan
+  | not (nativeRequiresIntegrationRunbook suitePlan) = []
+  | nativeValidations suitePlan == [ValidationSealedVault] = [["cluster", "reconcile"]]
+  | otherwise = [["cluster", "reconcile", "--with-edge"]]
 
 supportedRuntimeBootstrapActions
   :: FilePath -> [(String, String)] -> NativeSuitePlan -> [IO ExitCode]
@@ -577,23 +584,23 @@ syncKeycloakSmtpForAwsSubstrate repoRoot = do
     Left err -> failWith err
     Right settings ->
       withEksKubeconfig repoRoot $ \kubeconfigPath -> do
-        let awsCreds = aws (validatedConfig settings)
-            envOverrides =
-              [ ("KUBECONFIG", kubeconfigPath)
-              , ("AWS_ACCESS_KEY_ID", Text.unpack (access_key_id awsCreds))
-              , ("AWS_SECRET_ACCESS_KEY", Text.unpack (secret_access_key awsCreds))
-              , ("AWS_DEFAULT_REGION", Text.unpack (region awsCreds))
-              , ("AWS_REGION", Text.unpack (region awsCreds))
-              ]
-                ++ maybe [] (\tok -> [("AWS_SESSION_TOKEN", Text.unpack tok)]) (session_token awsCreds)
-        previousValues <- mapM (\(name, _) -> lookupEnv name) envOverrides
-        bracket_
-          (mapM_ (\(name, value) -> setEnv name value) envOverrides)
-          (mapM_ restoreOne (zip envOverrides previousValues))
-          ( syncKeycloakSmtpForCurrentKubeContext
-              repoRoot
-              "AWS substrate bootstrap: syncing Keycloak SMTP Secret from aws-ses"
-          )
+        credentialsResult <-
+          resolveAwsCredentialsRefFromHostVault
+            repoRoot
+            "aws"
+            (aws (validatedConfig settings))
+        case credentialsResult of
+          Left err -> failWith ("load operational AWS credentials from Vault: " ++ err)
+          Right credentials -> do
+            let envOverrides = overlayAwsCredentials [("KUBECONFIG", kubeconfigPath)] credentials
+            previousValues <- mapM (\(name, _) -> lookupEnv name) envOverrides
+            bracket_
+              (mapM_ (\(name, value) -> setEnv name value) envOverrides)
+              (mapM_ restoreOne (zip envOverrides previousValues))
+              ( syncKeycloakSmtpForCurrentKubeContext
+                  repoRoot
+                  "AWS substrate bootstrap: syncing Keycloak SMTP Secret from aws-ses"
+              )
  where
   restoreOne :: ((String, String), Maybe String) -> IO ()
   restoreOne ((name, _), Nothing) = unsetEnv name

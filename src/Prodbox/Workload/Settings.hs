@@ -23,6 +23,7 @@ module Prodbox.Workload.Settings
   , WorkloadModeDhall (..)
   , RedisConfigDhall (..)
   , OidcConfigDhall (..)
+  , VaultKubernetesAuthDhall (..)
   , decodeWorkloadConfigDhall
   , loadWorkloadConfig
   )
@@ -33,6 +34,7 @@ import Data.Text (Text)
 import Dhall (FromDhall, auto, input, inputFile)
 import GHC.Generics (Generic)
 import Numeric.Natural (Natural)
+import Prodbox.Settings.SecretRef (SecretRef)
 
 -- | Workload mode selector. Mirrors @Prodbox.Workload.WorkloadMode@ but is
 -- a Dhall-derivable enum (uses Generic + FromDhall through Dhall's tagged
@@ -49,9 +51,17 @@ data RedisConfigDhall = RedisConfigDhall
 data OidcConfigDhall = OidcConfigDhall
   { issuer :: Text
   , client_id :: Text
-  , client_secret :: Text
+  , client_secret :: SecretRef
   , public_base_url :: Text
   , token_endpoint :: Text
+  }
+  deriving (Eq, Show, Generic, FromDhall)
+
+data VaultKubernetesAuthDhall = VaultKubernetesAuthDhall
+  { address :: Text
+  , auth_path :: Text
+  , role :: Text
+  , service_account_token_file :: Maybe Text
   }
   deriving (Eq, Show, Generic, FromDhall)
 
@@ -59,9 +69,11 @@ data OidcConfigDhall = OidcConfigDhall
 --
 -- The schema is @{ schemaVersion : Natural, mode : < Api | Websocket >,
 -- log_level : Optional Text, port : Optional Natural, redis : Optional R,
--- oidc : Optional O }@ where R and O are 'RedisConfigDhall' and
--- 'OidcConfigDhall' respectively. The decoder caller validates the mode +
--- optional-field consistency (Websocket requires both redis and oidc).
+-- oidc : Optional O, vault : Optional V }@ where R, O, and V are
+-- 'RedisConfigDhall', 'OidcConfigDhall', and 'VaultKubernetesAuthDhall'
+-- respectively. The decoder caller validates the mode + optional-field
+-- consistency (Websocket requires both redis and oidc, and Vault references
+-- require @vault = Some ...@ on the production resolver path).
 data WorkloadConfigDhall = WorkloadConfigDhall
   { schemaVersion :: Natural
   , mode :: WorkloadModeDhall
@@ -69,6 +81,7 @@ data WorkloadConfigDhall = WorkloadConfigDhall
   , workload_port :: Maybe Natural
   , redis :: Maybe RedisConfigDhall
   , oidc :: Maybe OidcConfigDhall
+  , vault :: Maybe VaultKubernetesAuthDhall
   }
   deriving (Eq, Show, Generic, FromDhall)
 

@@ -43,6 +43,7 @@ data NativeValidation
   | ValidationChartsStorage
   | ValidationLifecycle
   | ValidationKeycloakInvite
+  | ValidationSealedVault
   deriving (Eq, Show)
 
 data NativeSuitePlan = NativeSuitePlan
@@ -248,6 +249,12 @@ testExecutionPlan substrate scope =
                 , nativeRequiresSupportedRuntimePostflight = False
                 }
             )
+        IntegrationSealedVault ->
+          nativeNamedSuite
+            "integration sealed-vault"
+            "integration-sealed-vault"
+            [ValidationSealedVault]
+            True
  where
   -- \| The canonical aggregate suites ('all', 'integration-all'): the full
   -- ordered validation set, with the gate prerequisites and the
@@ -326,6 +333,7 @@ canonicalNativeValidations =
   , ValidationChartsPlatform
   , ValidationKeycloakInvite
   , ValidationChartsStorage
+  , ValidationSealedVault
   , ValidationLifecycle
   ]
 
@@ -369,6 +377,7 @@ validationInitialPrerequisites validation =
     ValidationChartsPlatform -> clusterPrerequisites
     ValidationChartsStorage -> clusterPrerequisites
     ValidationLifecycle -> clusterPrerequisites
+    ValidationSealedVault -> clusterPrerequisites
     -- keycloak-invite drives the full invite flow end-to-end: the
     -- public-edge readiness gate + curl, plus AWS credentials + Route 53
     -- for the SES capture-bucket poll.
@@ -396,6 +405,7 @@ validationDeferredPrerequisites validation =
     ValidationChartsPlatform -> []
     ValidationChartsStorage -> []
     ValidationLifecycle -> []
+    ValidationSealedVault -> []
     ValidationKeycloakInvite ->
       [ SesSendingIdentityVerified
       , SesReceiveRuleSetActive
@@ -498,6 +508,7 @@ nativeValidationId validation =
     ValidationChartsStorage -> "charts-storage"
     ValidationLifecycle -> "lifecycle"
     ValidationKeycloakInvite -> "keycloak-invite"
+    ValidationSealedVault -> "sealed-vault"
 
 orderedUnion :: [[PrerequisiteId]] -> [PrerequisiteId]
 orderedUnion = nub . concat

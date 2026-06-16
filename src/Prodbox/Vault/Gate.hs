@@ -4,9 +4,9 @@
 -- @prodbox aws stack ...@ operation consults before touching Pulumi state.
 -- The decision is pure (it folds a 'SealStatus' probe, or its failure, into a
 -- typed verdict) so it is unit-tested without a live Vault; the apply-path
--- wiring that runs the probe and refuses before any Pulumi command starts is
--- the activation step that lands once the in-cluster Vault is deployable
--- (Sprint 3.17). See
+-- wiring in 'Prodbox.CLI.Pulumi' runs the probe and refuses before any real
+-- stack action starts. The live deployed-Vault proof lands after the
+-- in-cluster Vault is deployable (Sprint 3.17). See
 -- @documents/engineering/vault_doctrine.md@ §10 (Pulumi backend under Vault).
 module Prodbox.Vault.Gate
   ( VaultGateDecision (..)
@@ -66,8 +66,7 @@ renderVaultGateBlock decision = case decision of
 -- total — 'renderVaultGateBlock' returns 'Nothing' iff the decision allows — so
 -- allow maps to proceed and every fail-closed decision maps to a refusal. This
 -- is the unit-testable decision→action seam the @prodbox aws stack ...@ wiring
--- folds over (the live wiring itself activates with the deployed Vault, Sprint
--- 3.17).
+-- folds over.
 data VaultGateOutcome
   = VaultGateProceed
   | VaultGateRefuse String

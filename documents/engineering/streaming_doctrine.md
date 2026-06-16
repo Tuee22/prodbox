@@ -140,6 +140,45 @@ stderr receives JSON-formatted log lines; stdout is reserved for the
 daemon's protocol surface or unused; `--format` and `--color` flags do not
 apply.
 
+### Sealed-State Output Redaction and the Exists-Versus-Absent Oracle
+
+Operator-facing output is one of the four surfaces governed by the
+whole-system zero-child-info invariant: when the parent cluster's Vault is
+sealed, no stdout, stderr, or structured-log line may reveal whether a child
+or stack exists, how many there are, where they live, or what they are named.
+Two output rules implement that invariant; both are owned by
+[vault_doctrine.md](./vault_doctrine.md) and restated here only as the
+streaming-side contract.
+
+- **No sensitive name in logs or output.** Output never emits a
+  child-cluster name, a Pulumi stack identity (`aws-eks`, `aws-test`, …), a
+  MinIO object key, a role-revealing bucket name, a Vault token, or recovered
+  object plaintext on a sealed-state path. Diagnostics use redacted
+  structured lines (`vault_status=sealed component=pulumi operation=preview
+  result=blocked`) rather than identifying messages such as `Cannot deploy
+  downstream cluster prod-eu-west-1 …`. Opaque-id and token types render
+  through a redacted `Show`, so an identifier can never reach a log site in
+  cleartext. This is the streaming-side restatement of
+  [vault_doctrine.md §14 — Error model and logging](./vault_doctrine.md#14-error-model-and-logging).
+- **No exists-versus-`NoSuchKey` oracle.** A residue, listing, or stack-output
+  query must not let the difference between "object/stack present" and
+  "absent" leak across the output boundary while Vault is sealed. The success
+  message, the error message, and the exit code for "stack found" and "stack
+  not found" must be indistinguishable on a sealed path — an `aws s3api`
+  `NoSuchKey` discriminator or a `pulumi stack ls` membership check that
+  surfaces a distinguishable line is itself a metadata leak. Residue and
+  listing queries are gated behind the Vault-readiness check before they emit
+  any per-object disposition. The object-store layout that makes this
+  enforceable — one generically-named bucket holding only opaque
+  `objects/<id>.enc` at a decoy-padded constant count — is owned by
+  [vault_doctrine.md §9 — MinIO as a ciphertext store](./vault_doctrine.md#9-minio-as-a-ciphertext-store).
+
+These two rules are scoped to sealed-state paths; ordinary unsealed-Vault
+operation streams the causal story per the contract above. Sprint `4.33` has
+landed the Haskell-side residue/listing gate and redacted token rendering; the
+live cross-surface red-team proof is exercised by the sealed-Vault validation
+in Sprint `5.8`.
+
 ## At-Least-Once Event Processing
 
 Event-driven systems require idempotent handlers and explicit delivery

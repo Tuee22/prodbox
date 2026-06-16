@@ -5,6 +5,7 @@
 
 module Prodbox.Settings
   ( AcmeSection (..)
+  , AwsCredentialsRef (..)
   , AwsSubstrateSection (..)
   , ConfigFile (..)
   , Credentials (..)
@@ -17,22 +18,33 @@ module Prodbox.Settings
   , StorageSection (..)
   , ValidatedSettings (..)
   , defaultConfigFile
+  , decodeConfigDhallBytes
   , loadConfigFile
+  , loadConfigForSettingsWith
+  , loadUnencryptedBasics
   , renderConfigDhall
   , renderSettingsDisplay
+  , resolveAwsCredentialsRefFromHostVault
   , supportedPublicHostname
   , validateAwsBootstrapConfig
   , validateAndLoadSettings
+  , validateAndLoadBootstrapSettings
+  , validateAndLoadSettingsWithVaultToken
   , validateOperationalAwsCredentials
   , validatePublicEdgeDeployment
+  , writeUnencryptedBasics
   )
 where
 
 import Control.Exception (SomeException, displayException, try)
+import Data.ByteString (ByteString)
+import Data.ByteString qualified as BS
 import Data.Char (isDigit, isHexDigit, toLower)
 import Data.Char qualified as Char
+import Data.Map.Strict qualified as Map
 import Data.Text (Text)
 import Data.Text qualified as Text
+import Data.Text.Encoding qualified as TextEncoding
 import Dhall
   ( FromDhall (..)
   , InterpretOptions (..)
@@ -43,15 +55,59 @@ import Dhall
   )
 import GHC.Generics (Generic)
 import Numeric.Natural (Natural)
+import Prodbox.Config.Basics
+  ( UnencryptedBasics (..)
+  , basicsFromJson
+  , basicsToJson
+  , renderBasicsError
+  , validateBasics
+  )
+import Prodbox.Config.InForce.Core
+  ( fetchInForceValueWith
+  , renderInForceConfigError
+  )
+import Prodbox.Http.Client (renderHttpError)
+import Prodbox.Infra.MinioBackend (withMinioPortForward)
+import Prodbox.Minio.EncryptedObject
+  ( LogicalObject (LogicalInForceConfig)
+  , objectKeyForOpaqueId
+  , opaqueObjectId
+  )
+import Prodbox.Minio.ObjectStore
+  ( ObjectStoreConfig (..)
+  , defaultObjectStoreBucket
+  , getObject
+  )
 import Prodbox.Repo
   ( ConfigPaths (..)
   , canonicalConfigPaths
   )
+import Prodbox.Settings.SecretRef
+  ( PromptSpec (..)
+  , SecretRef (..)
+  , VaultSecretRef (..)
+  )
+import Prodbox.Vault.Client
+  ( VaultAddress (..)
+  , VaultToken
+  , vaultKvReadV2
+  )
+import Prodbox.Vault.Host
+  ( loadReadyVaultRootToken
+  , readHostVaultKvField
+  )
+import Prodbox.Vault.TransitCipher (vaultTransitDekCipher)
 import System.Directory
-  ( doesFileExist
+  ( copyFile
+  , createDirectoryIfMissing
+  , doesFileExist
   , makeAbsolute
   )
-import System.FilePath ((</>))
+import System.FilePath
+  ( takeDirectory
+  , (</>)
+  )
+import System.IO.Temp (withSystemTempDirectory)
 
 data Credentials = Credentials
   { access_key_id :: Text
@@ -60,6 +116,25 @@ data Credentials = Credentials
   , region :: Text
   }
   deriving (Eq, Show, Generic, FromDhall)
+
+data AwsCredentialsRef = AwsCredentialsRef
+  { awsCredentialAccessKeyId :: SecretRef
+  , awsCredentialSecretAccessKey :: SecretRef
+  , awsCredentialSessionToken :: Maybe SecretRef
+  , awsCredentialRegion :: Text
+  }
+  deriving (Eq, Show, Generic)
+
+instance FromDhall AwsCredentialsRef where
+  autoWith _ =
+    genericAutoWith
+      defaultInterpretOptions {fieldModifier = awsCredentialFieldModifier}
+   where
+    awsCredentialFieldModifier :: Text -> Text
+    awsCredentialFieldModifier value =
+      case Text.stripPrefix "awsCredential" value of
+        Just stripped -> haskellCamelToDhallSnake stripped
+        Nothing -> value
 
 data Route53Section = Route53Section
   { zone_id :: Text
@@ -161,8 +236,8 @@ haskellCamelToDhallSnake value =
     )
 
 data ConfigFile = ConfigFile
-  { aws :: Credentials
-  , aws_admin_for_test_simulation :: Credentials
+  { aws :: AwsCredentialsRef
+  , aws_admin_for_test_simulation :: AwsCredentialsRef
   , route53 :: Route53Section
   , aws_substrate :: AwsSubstrateSection
   , ses :: SesSection
@@ -185,32 +260,222 @@ supportedPublicHostname = "test.resolvefintech.com"
 
 validateAndLoadSettings :: FilePath -> IO (Either String ValidatedSettings)
 validateAndLoadSettings repoRoot = do
+  configResult <- loadConfigForSettingsWith (loadRuntimeInForceConfig repoRoot) repoRoot
+  case configResult of
+    Left err -> pure (Left err)
+    Right config -> validateConfig repoRoot config
+
+-- | Lifecycle bootstrap settings are the repository Dhall seed/propose input.
+-- Use this only for the pre-Vault/pre-MinIO steps that cannot read the
+-- encrypted in-force config yet.
+validateAndLoadBootstrapSettings :: FilePath -> IO (Either String ValidatedSettings)
+validateAndLoadBootstrapSettings repoRoot = do
   configResult <- loadConfigFile repoRoot
   case configResult of
     Left err -> pure (Left err)
     Right config -> validateConfig repoRoot config
 
+validateAndLoadSettingsWithVaultToken
+  :: FilePath -> VaultToken -> IO (Either String ValidatedSettings)
+validateAndLoadSettingsWithVaultToken repoRoot token = do
+  configResult <-
+    loadConfigForSettingsWith (loadRuntimeInForceConfigWithToken repoRoot token) repoRoot
+  case configResult of
+    Left err -> pure (Left err)
+    Right config -> validateConfig repoRoot config
+
+-- | Resolve the config source for supported host settings loads. Without an
+-- unencrypted-basics file, the filesystem Dhall remains the first-bring-up seed
+-- input. Once basics exist, the filesystem file is no longer authoritative:
+-- the caller-supplied in-force loader must fetch and decrypt the MinIO SSoT.
+loadConfigForSettingsWith
+  :: (UnencryptedBasics -> IO (Either String ConfigFile))
+  -> FilePath
+  -> IO (Either String ConfigFile)
+loadConfigForSettingsWith loadInForce repoRoot = do
+  let paths = canonicalConfigPaths repoRoot
+  basicsExists <- doesFileExist (configBasicsPath paths)
+  if not basicsExists
+    then loadConfigFile repoRoot
+    else do
+      basicsResult <- loadUnencryptedBasics repoRoot
+      case basicsResult of
+        Left err -> pure (Left err)
+        Right basics -> loadInForce basics
+
+loadRuntimeInForceConfig :: FilePath -> UnencryptedBasics -> IO (Either String ConfigFile)
+loadRuntimeInForceConfig repoRoot basics = do
+  let address = VaultAddress (basicsVaultAddress basics)
+  tokenResult <- loadReadyVaultRootToken repoRoot address
+  case tokenResult of
+    Left err -> pure (Left err)
+    Right token -> loadRuntimeInForceConfigWithToken repoRoot token basics
+
+loadRuntimeInForceConfigWithToken
+  :: FilePath -> VaultToken -> UnencryptedBasics -> IO (Either String ConfigFile)
+loadRuntimeInForceConfigWithToken repoRoot token basics = do
+  let address = VaultAddress (basicsVaultAddress basics)
+  credentialsResult <- readMinioRootCredentials address token
+  case credentialsResult of
+    Left err -> pure (Left err)
+    Right (accessKey, secretKey) -> do
+      hmacKeyResult <- readObjectStoreHmacKey address token
+      case hmacKeyResult of
+        Left err -> pure (Left err)
+        Right hmacKey -> do
+          let cipher = vaultTransitDekCipher address token "prodbox-active-config"
+          portForwardResult <-
+            withMinioPortForward $ \localPort ->
+              fetchInForceValueWith
+                ( fetchInForceConfigEnvelope
+                    localPort
+                    (Text.unpack accessKey)
+                    (Text.unpack secretKey)
+                    hmacKey
+                )
+                cipher
+                (basicsClusterId basics)
+                (decodeConfigDhallBytes repoRoot)
+          pure $ case portForwardResult of
+            Left err -> Left ("failed to reach in-force config MinIO backend: " ++ err)
+            Right result -> mapLeft renderInForceConfigError result
+
+readMinioRootCredentials :: VaultAddress -> VaultToken -> IO (Either String (Text, Text))
+readMinioRootCredentials address token = do
+  result <- vaultKvReadV2 address token "secret" "minio/root"
+  pure $ case result of
+    Left err -> Left ("failed to read secret/minio/root from Vault: " ++ renderHttpError err)
+    Right fields -> do
+      accessKey <- requireVaultField "secret/minio/root" "rootUser" fields
+      secretKey <- requireVaultField "secret/minio/root" "rootPassword" fields
+      Right (accessKey, secretKey)
+
+readObjectStoreHmacKey :: VaultAddress -> VaultToken -> IO (Either String ByteString)
+readObjectStoreHmacKey address token = do
+  result <- vaultKvReadV2 address token "secret" "object-store/hmac"
+  pure $ case result of
+    Left err -> Left ("failed to read secret/object-store/hmac from Vault: " ++ renderHttpError err)
+    Right fields -> TextEncoding.encodeUtf8 <$> requireVaultField "secret/object-store/hmac" "key" fields
+
+fetchInForceConfigEnvelope
+  :: Int
+  -> String
+  -> String
+  -> ByteString
+  -> IO (Either String ByteString)
+fetchInForceConfigEnvelope localPort accessKey secretKey hmacKey = do
+  let key = objectKeyForOpaqueId (opaqueObjectId hmacKey LogicalInForceConfig)
+      config =
+        ObjectStoreConfig
+          { objectStoreEndpoint = "http://127.0.0.1:" ++ show localPort
+          , objectStoreBucket = defaultObjectStoreBucket
+          , objectStoreAccessKey = accessKey
+          , objectStoreSecretKey = secretKey
+          }
+  result <- getObject config key
+  pure $ case result of
+    Left err -> Left err
+    Right Nothing -> Left ("in-force config object missing at " ++ Text.unpack key)
+    Right (Just envelope) -> Right envelope
+
+requireVaultField :: Text -> Text -> Map.Map Text Text -> Either String Text
+requireVaultField path field fields =
+  case Map.lookup field fields of
+    Nothing -> Left ("Vault KV object " ++ Text.unpack path ++ " missing field `" ++ Text.unpack field ++ "`")
+    Just value
+      | Text.null (Text.strip value) ->
+          Left ("Vault KV object " ++ Text.unpack path ++ " field `" ++ Text.unpack field ++ "` is empty")
+      | otherwise -> Right value
+
+resolveAwsCredentialsRefFromHostVault
+  :: FilePath -> String -> AwsCredentialsRef -> IO (Either String Credentials)
+resolveAwsCredentialsRefFromHostVault repoRoot label refs = do
+  accessKeyResult <- resolveRequiredSecret "access_key_id" (awsCredentialAccessKeyId refs)
+  secretKeyResult <- resolveRequiredSecret "secret_access_key" (awsCredentialSecretAccessKey refs)
+  sessionTokenResult <- resolveOptionalSecret "session_token" (awsCredentialSessionToken refs)
+  pure $ do
+    accessKey <- accessKeyResult
+    secretKey <- secretKeyResult
+    sessionTokenValue <- sessionTokenResult
+    let regionValue = Text.strip (awsCredentialRegion refs)
+    if Text.null regionValue
+      then Left (label ++ ".region must not be empty")
+      else
+        Right
+          Credentials
+            { access_key_id = accessKey
+            , secret_access_key = secretKey
+            , session_token = sessionTokenValue
+            , region = regionValue
+            }
+ where
+  resolveRequiredSecret
+    :: String -> SecretRef -> IO (Either String Text)
+  resolveRequiredSecret field ref = do
+    result <- resolveHostSecretRef field ref
+    pure $ case result of
+      Left err -> Left err
+      Right value
+        | Text.null (Text.strip value) ->
+            Left (label ++ "." ++ field ++ " resolved from Vault as empty")
+        | otherwise -> Right (Text.strip value)
+
+  resolveOptionalSecret
+    :: String -> Maybe SecretRef -> IO (Either String (Maybe Text))
+  resolveOptionalSecret _ Nothing = pure (Right Nothing)
+  resolveOptionalSecret field (Just ref) = do
+    result <- resolveHostSecretRef field ref
+    pure $ case result of
+      Left err -> Left err
+      Right value -> Right (normalizeOptionalText value)
+
+  resolveHostSecretRef :: String -> SecretRef -> IO (Either String Text)
+  resolveHostSecretRef field ref =
+    case ref of
+      SecretRefVault resolvedVaultRef ->
+        readHostVaultKvField
+          repoRoot
+          (vaultSecretMount resolvedVaultRef)
+          (vaultSecretPath resolvedVaultRef)
+          (vaultSecretField resolvedVaultRef)
+      SecretRefTestPlaintext _ ->
+        pure
+          ( Left
+              ( label
+                  ++ "."
+                  ++ field
+                  ++ ": plaintext secret values are forbidden in production config; use a SecretRef.Vault reference"
+              )
+          )
+      SecretRefTransitKey _ ->
+        pure (Left (label ++ "." ++ field ++ ": TransitKey references are not readable AWS credentials"))
+      SecretRefPrompt spec ->
+        pure
+          ( Left
+              ( label
+                  ++ "."
+                  ++ field
+                  ++ ": prompted secret "
+                  ++ Text.unpack (promptSpecName spec)
+                  ++ " cannot be resolved non-interactively"
+              )
+          )
+
 renderSettingsDisplay :: Bool -> ValidatedSettings -> String
 renderSettingsDisplay showSecrets settings =
   unlines
-    [ "aws.region=" ++ renderText (region (aws config))
-    , "aws.access_key_id=" ++ renderSensitive showSecrets (access_key_id (aws config))
-    , "aws.secret_access_key=" ++ renderSensitive showSecrets (secret_access_key (aws config))
-    , "aws.session_token=" ++ renderSensitiveMaybe showSecrets (session_token (aws config))
+    [ "aws.region=" ++ renderText (awsCredentialRegion (aws config))
+    , "aws.access_key_id=" ++ renderSecretRefDisplay (awsCredentialAccessKeyId (aws config))
+    , "aws.secret_access_key=" ++ renderSecretRefDisplay (awsCredentialSecretAccessKey (aws config))
+    , "aws.session_token=" ++ renderMaybeSecretRefDisplay (awsCredentialSessionToken (aws config))
     , "aws_admin_for_test_simulation.access_key_id="
-        ++ renderSensitiveMaybe
-          showSecrets
-          (normalizeOptionalText (access_key_id (aws_admin_for_test_simulation config)))
+        ++ renderSecretRefDisplay (awsCredentialAccessKeyId (aws_admin_for_test_simulation config))
     , "aws_admin_for_test_simulation.secret_access_key="
-        ++ renderSensitiveMaybe
-          showSecrets
-          (normalizeOptionalText (secret_access_key (aws_admin_for_test_simulation config)))
+        ++ renderSecretRefDisplay (awsCredentialSecretAccessKey (aws_admin_for_test_simulation config))
     , "aws_admin_for_test_simulation.session_token="
-        ++ renderSensitiveMaybe
-          showSecrets
-          (normalizeMaybeText (session_token (aws_admin_for_test_simulation config)))
+        ++ renderMaybeSecretRefDisplay (awsCredentialSessionToken (aws_admin_for_test_simulation config))
     , "aws_admin_for_test_simulation.region="
-        ++ renderMaybeText (normalizeOptionalText (region (aws_admin_for_test_simulation config)))
+        ++ renderMaybeText (normalizeOptionalText (awsCredentialRegion (aws_admin_for_test_simulation config)))
     , "route53.zone_id=" ++ renderText (zone_id (route53 config))
     , "aws_substrate.hosted_zone_id=" ++ renderText (hosted_zone_id (aws_substrate config))
     , "aws_substrate.subzone_name=" ++ renderText (subzone_name (aws_substrate config))
@@ -266,6 +531,86 @@ loadConfigFile repoRoot = do
             )
         Right config -> Right config
 
+-- | Decode in-force config payload bytes as Dhall, preserving the repository
+-- import contract by materializing the payload beside
+-- @prodbox-config-types.dhall@ before calling the same Dhall decoder as
+-- 'loadConfigFile'.
+decodeConfigDhallBytes :: FilePath -> ByteString -> IO (Either String ConfigFile)
+decodeConfigDhallBytes repoRoot payload =
+  withSystemTempDirectory "prodbox-in-force-config" $ \tmpDir -> do
+    let paths = canonicalConfigPaths repoRoot
+        schemaPath = configSchemaPath paths
+        tmpSchemaPath = tmpDir </> "prodbox-config-types.dhall"
+        tmpConfigPath = tmpDir </> "prodbox-config.dhall"
+    schemaCopyResult <- try (copyFile schemaPath tmpSchemaPath) :: IO (Either SomeException ())
+    case schemaCopyResult of
+      Left err ->
+        pure
+          ( Left
+              ( "Failed to prepare Dhall schema for in-force config decode `"
+                  ++ schemaPath
+                  ++ "`: "
+                  ++ displayException err
+              )
+          )
+      Right () -> do
+        payloadWriteResult <- try (BS.writeFile tmpConfigPath payload) :: IO (Either SomeException ())
+        case payloadWriteResult of
+          Left err ->
+            pure
+              ( Left
+                  ( "Failed to materialize in-force config payload `"
+                      ++ tmpConfigPath
+                      ++ "`: "
+                      ++ displayException err
+                  )
+              )
+          Right () -> loadConfigFile tmpDir
+
+loadUnencryptedBasics :: FilePath -> IO (Either String UnencryptedBasics)
+loadUnencryptedBasics repoRoot = do
+  let basicsPath = configBasicsPath (canonicalConfigPaths repoRoot)
+  exists <- doesFileExist basicsPath
+  if not exists
+    then pure (Left ("Missing unencrypted basics file: " ++ basicsPath))
+    else do
+      readResult <- try (BS.readFile basicsPath) :: IO (Either SomeException ByteString)
+      pure $ case readResult of
+        Left err ->
+          Left
+            ( "Failed to read unencrypted basics `"
+                ++ basicsPath
+                ++ "`: "
+                ++ displayException err
+            )
+        Right bytes -> do
+          basics <- mapLeft renderBasicsError (basicsFromJson bytes)
+          mapLeft renderBasicsError (validateBasics basics)
+          pure basics
+
+writeUnencryptedBasics :: FilePath -> UnencryptedBasics -> IO (Either String ())
+writeUnencryptedBasics repoRoot basics =
+  case mapLeft renderBasicsError (validateBasics basics) of
+    Left err -> pure (Left err)
+    Right () -> do
+      let basicsPath = configBasicsPath (canonicalConfigPaths repoRoot)
+      writeResult <-
+        try
+          ( do
+              createDirectoryIfMissing True (takeDirectory basicsPath)
+              BS.writeFile basicsPath (basicsToJson basics)
+          )
+          :: IO (Either SomeException ())
+      pure $ case writeResult of
+        Left err ->
+          Left
+            ( "Failed to write unencrypted basics `"
+                ++ basicsPath
+                ++ "`: "
+                ++ displayException err
+            )
+        Right () -> Right ()
+
 validateConfig :: FilePath -> ConfigFile -> IO (Either String ValidatedSettings)
 validateConfig repoRoot config = do
   resolvedManualRoot <- makeAbsolute (repoRoot </> Text.unpack (manual_pv_host_root (storage config)))
@@ -292,8 +637,14 @@ validateLocalConfig :: ConfigFile -> Either String ()
 validateLocalConfig config = do
   validateSupportedPublicHost (demo_fqdn (domain config))
   validateDemoTtl (demo_ttl (domain config))
-  validateTestSimulationAdminCredentials (aws_admin_for_test_simulation config)
+  validateAwsCredentialsRef "aws" (aws config)
+  validateAwsCredentialsRef "aws_admin_for_test_simulation" (aws_admin_for_test_simulation config)
   validatePublicEdgeDeployment (deployment config)
+
+mapLeft :: (left -> left') -> Either left right -> Either left' right
+mapLeft f value = case value of
+  Left err -> Left (f err)
+  Right result -> Right result
 
 -- | The AWS / public-edge tier: everything 'validateLocalConfig' checks
 -- plus the Route 53 zone and ACME account required to provision public
@@ -314,8 +665,8 @@ validateAwsBootstrapConfig config = do
 -- an opaque AWS-CLI error.
 validateOperationalAwsCredentials :: ConfigFile -> Either String ()
 validateOperationalAwsCredentials config = do
-  requireNonEmpty "aws.access_key_id" (access_key_id (aws config))
-  requireNonEmpty "aws.secret_access_key" (secret_access_key (aws config))
+  validateAwsCredentialsRef "aws" (aws config)
+  requireNonEmpty "aws.region" (awsCredentialRegion (aws config))
 
 validatePublicEdgeDeployment :: DeploymentSection -> Either String ()
 validatePublicEdgeDeployment deploymentSection = do
@@ -464,17 +815,17 @@ validateAcmeBinding acmeSection
       Left "acme.eab_key_id and acme.eab_hmac_key must either both be set or both be empty"
   | otherwise = Right ()
 
-validateTestSimulationAdminCredentials :: Credentials -> Either String ()
-validateTestSimulationAdminCredentials adminSection =
-  case ( normalizeOptionalText (access_key_id adminSection)
-       , normalizeOptionalText (secret_access_key adminSection)
-       , normalizeOptionalText (region adminSection)
-       ) of
-    (Nothing, Nothing, Nothing) -> Right ()
-    (Just _, Just _, Just _) -> Right ()
-    _ ->
-      Left
-        "aws_admin_for_test_simulation.access_key_id, aws_admin_for_test_simulation.secret_access_key, and aws_admin_for_test_simulation.region must either all be set or all be empty"
+validateAwsCredentialsRef :: String -> AwsCredentialsRef -> Either String ()
+validateAwsCredentialsRef prefix refs = do
+  validateVaultRef (prefix ++ ".access_key_id") (awsCredentialAccessKeyId refs)
+  validateVaultRef (prefix ++ ".secret_access_key") (awsCredentialSecretAccessKey refs)
+  mapM_ (validateVaultRef (prefix ++ ".session_token")) (awsCredentialSessionToken refs)
+
+validateVaultRef :: String -> SecretRef -> Either String ()
+validateVaultRef fieldName ref =
+  case ref of
+    SecretRefVault _ -> Right ()
+    _ -> Left (fieldName ++ " must be a SecretRef.Vault reference")
 
 normalizeOptionalText :: Text -> Maybe Text
 normalizeOptionalText value =
@@ -521,6 +872,24 @@ renderMaybeText maybeValue =
 renderText :: Text -> String
 renderText = Text.unpack
 
+renderSecretRefDisplay :: SecretRef -> String
+renderSecretRefDisplay ref =
+  case ref of
+    SecretRefVault vault ->
+      "Vault:"
+        ++ Text.unpack (vaultSecretMount vault)
+        ++ "/"
+        ++ Text.unpack (vaultSecretPath vault)
+        ++ "#"
+        ++ Text.unpack (vaultSecretField vault)
+    SecretRefTransitKey keyName -> "TransitKey:" ++ Text.unpack keyName
+    SecretRefPrompt spec -> "Prompt:" ++ Text.unpack (promptSpecName spec)
+    SecretRefTestPlaintext _ -> "TestPlaintext:<redacted>"
+
+renderMaybeSecretRefDisplay :: Maybe SecretRef -> String
+renderMaybeSecretRefDisplay =
+  maybe "" renderSecretRefDisplay
+
 renderBool :: Bool -> String
 renderBool value =
   map toLower (show value)
@@ -554,23 +923,38 @@ maskSecret value =
     then "****" <> Text.takeEnd 4 value
     else "****"
 
+operationalAwsCredentialsRef :: Text -> AwsCredentialsRef
+operationalAwsCredentialsRef regionValue =
+  AwsCredentialsRef
+    { awsCredentialAccessKeyId = vaultRef "gateway/gateway/aws" "access_key_id"
+    , awsCredentialSecretAccessKey = vaultRef "gateway/gateway/aws" "secret_access_key"
+    , awsCredentialSessionToken = Nothing
+    , awsCredentialRegion = regionValue
+    }
+
+adminAwsCredentialsRef :: Text -> AwsCredentialsRef
+adminAwsCredentialsRef regionValue =
+  AwsCredentialsRef
+    { awsCredentialAccessKeyId = vaultRef "aws/admin-for-test-simulation" "access_key_id"
+    , awsCredentialSecretAccessKey = vaultRef "aws/admin-for-test-simulation" "secret_access_key"
+    , awsCredentialSessionToken = Nothing
+    , awsCredentialRegion = regionValue
+    }
+
+vaultRef :: Text -> Text -> SecretRef
+vaultRef path field =
+  SecretRefVault
+    VaultSecretRef
+      { vaultSecretMount = "secret"
+      , vaultSecretPath = path
+      , vaultSecretField = field
+      }
+
 defaultConfigFile :: ConfigFile
 defaultConfigFile =
   ConfigFile
-    { aws =
-        Credentials
-          { access_key_id = ""
-          , secret_access_key = ""
-          , session_token = Nothing
-          , region = "us-east-1"
-          }
-    , aws_admin_for_test_simulation =
-        Credentials
-          { access_key_id = ""
-          , secret_access_key = ""
-          , session_token = Nothing
-          , region = ""
-          }
+    { aws = operationalAwsCredentialsRef "us-east-1"
+    , aws_admin_for_test_simulation = adminAwsCredentialsRef ""
     , route53 = Route53Section {zone_id = ""}
     , aws_substrate =
         AwsSubstrateSection
@@ -623,18 +1007,19 @@ renderConfigDhall config =
     , ""
     , "in  Config::{"
     , "    , aws = Config.default.aws // {"
-    , "        , access_key_id = " ++ dhallText (access_key_id (aws config))
-    , "        , secret_access_key = " ++ dhallText (secret_access_key (aws config))
-    , "        , session_token = " ++ dhallOptionalText (session_token (aws config))
-    , "        , region = " ++ dhallText (region (aws config))
+    , "        , access_key_id = " ++ dhallSecretRef (awsCredentialAccessKeyId (aws config))
+    , "        , secret_access_key = " ++ dhallSecretRef (awsCredentialSecretAccessKey (aws config))
+    , "        , session_token = " ++ dhallOptionalSecretRef (awsCredentialSessionToken (aws config))
+    , "        , region = " ++ dhallText (awsCredentialRegion (aws config))
     , "        }"
     , "    , aws_admin_for_test_simulation = Config.default.aws_admin_for_test_simulation // {"
-    , "        , access_key_id = " ++ dhallText (access_key_id (aws_admin_for_test_simulation config))
+    , "        , access_key_id = "
+        ++ dhallSecretRef (awsCredentialAccessKeyId (aws_admin_for_test_simulation config))
     , "        , secret_access_key = "
-        ++ dhallText (secret_access_key (aws_admin_for_test_simulation config))
+        ++ dhallSecretRef (awsCredentialSecretAccessKey (aws_admin_for_test_simulation config))
     , "        , session_token = "
-        ++ dhallOptionalText (session_token (aws_admin_for_test_simulation config))
-    , "        , region = " ++ dhallText (region (aws_admin_for_test_simulation config))
+        ++ dhallOptionalSecretRef (awsCredentialSessionToken (aws_admin_for_test_simulation config))
+    , "        , region = " ++ dhallText (awsCredentialRegion (aws_admin_for_test_simulation config))
     , "        }"
     , "    , route53 = { zone_id = " ++ dhallText (zone_id (route53 config)) ++ " }"
     , "    , aws_substrate = Config.default.aws_substrate // {"
@@ -693,6 +1078,34 @@ dhallOptionalText maybeValue =
   case maybeValue of
     Nothing -> "None Text"
     Just value -> "Some " ++ dhallText value
+
+dhallSecretRef :: SecretRef -> String
+dhallSecretRef ref =
+  case ref of
+    SecretRefVault vault ->
+      "Config.SecretRef.Vault { mount = "
+        ++ dhallText (vaultSecretMount vault)
+        ++ ", path = "
+        ++ dhallText (vaultSecretPath vault)
+        ++ ", field = "
+        ++ dhallText (vaultSecretField vault)
+        ++ " }"
+    SecretRefTransitKey name ->
+      "Config.SecretRef.TransitKey " ++ dhallText name
+    SecretRefPrompt spec ->
+      "Config.SecretRef.Prompt { name = "
+        ++ dhallText (promptSpecName spec)
+        ++ ", purpose = "
+        ++ dhallText (promptSpecPurpose spec)
+        ++ " }"
+    SecretRefTestPlaintext value ->
+      "Config.SecretRef.TestPlaintext " ++ dhallText value
+
+dhallOptionalSecretRef :: Maybe SecretRef -> String
+dhallOptionalSecretRef maybeValue =
+  case maybeValue of
+    Nothing -> "None Config.SecretRef"
+    Just value -> "Some (" ++ dhallSecretRef value ++ ")"
 
 dhallOptionalNatural :: Maybe Natural -> String
 dhallOptionalNatural maybeValue =

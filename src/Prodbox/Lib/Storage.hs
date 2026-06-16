@@ -9,6 +9,8 @@ module Prodbox.Lib.Storage
   , chartStorageManifest
   , defaultChartDataRootRelative
   , renderStorageReport
+  , retainedStatefulSetPersistentVolumeClaimName
+  , retainedStatefulSetPersistentVolumeName
   , storageBinding
   )
 where
@@ -57,19 +59,10 @@ storageBinding manualPvRoot namespace releaseName spec =
     { chartStorageBindingStatefulSetName = chartStorageSpecStatefulSetName spec
     , chartStorageBindingReleaseName = releaseName
     , chartStorageBindingPersistentVolumeName =
-        Text.unpack
-          ( boundedResourceName
-              "prodbox-chart"
-              ( Text.intercalate
-                  "-"
-                  [ Text.pack namespace
-                  , Text.pack releaseName
-                  , Text.pack (chartStorageSpecStatefulSetName spec)
-                  , Text.pack (show (chartStorageSpecOrdinal spec))
-                  ]
-              )
-              (Text.pack (chartStorageSpecClaimSuffix spec))
-          )
+        retainedStatefulSetPersistentVolumeName
+          namespace
+          (chartStorageSpecStatefulSetName spec)
+          (chartStorageSpecOrdinal spec)
     , chartStorageBindingPersistentVolumeClaimName = chartStorageSpecPersistentVolumeClaimName spec
     , chartStorageBindingStorageSize = chartStorageSpecStorageSize spec
     , -- Sprint 4.31: the unified `.data/<namespace>/<StatefulSet>/<ordinal>`
@@ -83,6 +76,24 @@ storageBinding manualPvRoot namespace releaseName spec =
     , chartStorageBindingOrdinal = chartStorageSpecOrdinal spec
     , chartStorageBindingClaimSuffix = chartStorageSpecClaimSuffix spec
     }
+
+retainedStatefulSetPersistentVolumeName :: String -> String -> Int -> String
+retainedStatefulSetPersistentVolumeName namespace statefulSetName ordinal =
+  Text.unpack
+    ( boundedResourceName
+        "prodbox-retained"
+        ( Text.intercalate
+            "-"
+            [ Text.pack namespace
+            , Text.pack statefulSetName
+            ]
+        )
+        (Text.pack (show ordinal))
+    )
+
+retainedStatefulSetPersistentVolumeClaimName :: String -> Int -> String
+retainedStatefulSetPersistentVolumeClaimName statefulSetName ordinal =
+  "data-" ++ statefulSetName ++ "-" ++ show ordinal
 
 renderStorageReport :: [ChartStorageBinding] -> [String]
 renderStorageReport bindings =

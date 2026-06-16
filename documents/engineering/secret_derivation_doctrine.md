@@ -80,10 +80,9 @@ Helm template generates or stores a secret value.
 The retirement of the master-seed/HMAC mechanism (the `Prodbox.Secret.{Derive,MasterSeed,
 Inventory}` modules, the gateway daemon `/v1/secret/derive` + `/v1/secret/ensure-namespace`
 RPC, the `checkRawMasterSeedReadScope` daemon-only-seed lint, and `selfBootstrapOwnSecrets`)
-is tracked on the legacy ledger and owned by Sprint `3.19`. See
+landed in Sprint `3.19`. See
 [legacy-tracking-for-deletion.md](../../DEVELOPMENT_PLAN/legacy-tracking-for-deletion.md).
-This doctrine describes the finalized target; the implementation sprints below are Planned
-or Active until validated.
+This doctrine describes the current Vault-only supported path.
 
 ## 3. Fail-closed is absolute
 
@@ -118,8 +117,7 @@ bridged.
 The daemon-only-seed boundary is therefore gone: there is no privileged raw-seed reader to
 lint-guard, because there is no raw seed. Authorization is enforced by Vault policy — each
 consuming service account binds to a Vault Kubernetes-auth role whose policy grants read on
-exactly its own KV paths and nothing else. Removal is owned by Sprint `3.19`; the ledger
-rows are in
+exactly its own KV paths and nothing else. Removal landed in Sprint `3.19`; the ledger rows are in
 [legacy-tracking-for-deletion.md](../../DEVELOPMENT_PLAN/legacy-tracking-for-deletion.md).
 
 ## 5. Secret inventory: Vault path, owning policy, consuming service account
@@ -130,11 +128,11 @@ to it, and the Kubernetes service account that consumes it via Vault Kubernetes 
 
 | Secret | Vault object | Owning Vault policy | Consuming service account |
 |---|---|---|---|
-| Patroni application role | `secret/<ns>/<release>/patroni/app` (KV) | `policy/<ns>-<release>-pg` | `<ns>:prodbox-<release>-pg` |
-| Patroni superuser role | `secret/<ns>/<release>/patroni/superuser` (KV) | `policy/<ns>-<release>-pg` | `<ns>:prodbox-<release>-pg` |
-| Patroni standby role | `secret/<ns>/<release>/patroni/standby` (KV) | `policy/<ns>-<release>-pg` | `<ns>:prodbox-<release>-pg` |
+| Patroni application role | `secret/<ns>/<release>/patroni/app` (KV) | `policy/<ns>-<release>-pg` | `<ns>:prodbox-<ns>-pg` materializer hook |
+| Patroni superuser role | `secret/<ns>/<release>/patroni/superuser` (KV) | `policy/<ns>-<release>-pg` | `<ns>:prodbox-<ns>-pg` materializer hook |
+| Patroni standby role | `secret/<ns>/<release>/patroni/standby` (KV) | `policy/<ns>-<release>-pg` | `<ns>:prodbox-<ns>-pg` materializer hook |
 | Keycloak admin password | `secret/keycloak/admin` (KV) | `policy/keycloak` | `keycloak:keycloak` |
-| Keycloak DB credentials | `secret/keycloak/db` (KV) | `policy/keycloak` | `keycloak:keycloak` |
+| Keycloak DB credentials | `secret/<ns>/keycloak-postgres/patroni/app` (KV) | `policy/keycloak` | `<ns>:keycloak` |
 | OIDC client secrets | `secret/<ns>/oidc/<client>` (KV) | `policy/<ns>-oidc` | `<ns>:<consumer>` |
 | Keycloak SMTP credentials | `secret/keycloak/smtp` (KV) | `policy/keycloak-smtp` | `keycloak:keycloak`, `vscode:keycloak` |
 | Gateway peer-event key | `secret/<ns>/gateway/<node-id>/event-key` (KV) | `policy/<ns>-gateway` | `<ns>:prodbox-gateway` |
@@ -156,10 +154,38 @@ to `prodbox-config.dhall` and never persisted. See
 [vault_doctrine.md §12](./vault_doctrine.md#12-in-cluster-service-auth) and
 [aws_admin_credentials.md](./aws_admin_credentials.md).
 
-The Vault path / policy / service-account adoption across the canonical chart set is
-scheduled under Sprints `3.18` (chart and Keycloak secrets via Vault Kubernetes auth),
-`3.19` (retire master-seed derivation; Vault KV is the sole store), and `8.9` (Keycloak
-SMTP + invite secrets via Vault); it is not yet implemented.
+The Vault path / policy / service-account adoption across the canonical chart set is active
+under Sprint `3.18`: `Prodbox.Secret.VaultInventory` now holds the typed KV-path,
+policy, service-account, and Kubernetes-auth role inventory, and
+`Prodbox.Vault.Reconcile.defaultVaultReconcilePlan` writes those policies and roles and configures
+`auth/kubernetes/config` against `https://kubernetes.default.svc:443`. The same inventory defines
+the read-before-write Vault KV seed-object plan, and
+`prodbox vault reconcile` now bootstraps automatically managed generated/static fields with a
+32-byte random, base64url-unpadded generator while preserving existing fields. Externally-owned
+fields (for example SMTP credentials) remain inventory-owned but are refused rather than
+synthesized and are excluded from automatic seeding.
+The straightforward chart workloads (`api`, `keycloak`, `minio`, `vault`, `vscode`, and
+`websocket`) render explicit ServiceAccounts for those bindings; the Vault service account is bound
+to `system:auth-delegator` for TokenReview. The `websocket` workload OIDC client-secret is now a
+direct app-side `SecretRef.Vault` consumer: the chart renders a Vault reference to
+`secret/data/vscode/oidc/prodbox-websocket`, and the workload logs in through Vault Kubernetes auth
+before starting the WebSocket runtime. The `keycloak` chart materializes admin, Patroni app-role,
+OIDC, demo-user, and SMTP fields through a Vault-login init container; the `minio` chart
+materializes root credential files through the same pattern; and the MinIO admin bootstrap Jobs use
+the `minio` service account plus a Vault-login init container for root credential files. The
+`vscode` chart materializes Envoy's required `SecurityPolicy` client Secret from
+`secret/data/vscode/oidc/vscode` with a Vault-authenticated chart Job. The `gateway` chart now
+renders event keys plus Route 53 AWS and gateway MinIO credentials as `SecretRef.Vault`, and the
+gateway MinIO bootstrap Job materializes both root and gateway-user credentials through Vault auth.
+The `keycloak-postgres` chart materializes the app, superuser, and standby Patroni Secrets from
+Vault with a `pre-install,pre-upgrade` hook using the `prodbox-<namespace>-pg` ServiceAccount; the
+pinned Percona CRD's missing generated-Pod service-account field is handled by that materializer,
+not by broadening to namespace `default`. The AWS SES setup flow writes the externally-owned
+`secret/keycloak/smtp` Vault KV object, and host/admin helpers read the remaining Keycloak admin,
+OIDC, demo-user, and SMTP material from Vault KV. Sprint `3.18` also pins those Vault materializers
+to fail closed on sealed/unreachable Vaults; Sprint `3.19` removed the old master-seed derivation,
+gateway secret RPC, and chart-generated-secret paths; invite-flow secret completion remains Sprint
+`8.9`; the live whole-system sealed-Vault validation is Sprint `5.8`.
 
 ## 6. Host↔cluster boundary
 
@@ -203,8 +229,10 @@ order:
 4. Vault becomes ready; its KV/Transit/PKI engines and per-domain policies + Kubernetes-auth
    roles are configured.
 5. Chart deploys proceed. Each workload's service account authenticates to Vault via
-   Kubernetes auth and reads exactly the Vault objects its policy grants (§5). No chart
-   pre-install Job materializes secrets; no Helm `lookup` resolves a secret value.
+   Kubernetes auth and reads exactly the Vault objects its policy grants (§5). Chart
+   materializer Jobs may create the Kubernetes Secret objects required by third-party APIs only
+   after reading Vault; no chart Job derives or generates secret values, and no Helm `lookup`
+   resolves a secret value.
 
 **Ordering constraint: Vault ready before any secret consumer.** No consumer of a secret may
 run before Vault reports reachable, initialized, and unsealed (and, for a child cluster,
@@ -230,8 +258,9 @@ a secret mismatch is precisely the failure mode the pre-doctrine
 reported; the pure decision (loud-failure policy) is kept separate from the boundary probe
 and is unit-tested so a definite `pg_authid` rejection is the only path to a loud failure and
 an un-observable probe proceeds, so the guard never blocks an ordinary first install. This
-guard is owned by the Vault-secret-adoption sprints (`3.18` / `3.19`) and is Planned until
-validated.
+guard is covered by the Vault-secret-adoption sprints (`3.18` / `3.19`); Sprint `3.18` landed the
+Vault-backed materializer and host/helper proof, while Sprint `3.19` removed the old derivation
+machinery.
 
 ## Cross-References
 

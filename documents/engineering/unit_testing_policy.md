@@ -150,7 +150,11 @@ the command contract.
    using a one-shot assertion. Public-host suites such as `public-dns` may avoid the cluster
    runbook only when their test plan does not require it, but still prove the external port `80`
    HTTP-to-HTTPS redirect after DNS records resolve to the configured public address.
-5. Aggregate suites use the canonical validation ordering defined in `src/Prodbox/TestPlan.hs`.
+5. The sealed-Vault suite (`prodbox test integration sealed-vault`, Sprint `5.8`) is a
+   cluster-backed named validation. The code-owned surface is present as `ValidationSealedVault`
+   with the pure `sealedVaultAuditReport` forbidden-pattern oracle; full live closure remains gated
+   on deployed Vault state and the Sprint `7.14` Pulumi checkpoint interposition.
+6. Aggregate suites use the canonical validation ordering defined in `src/Prodbox/TestPlan.hs`.
 
 Sprint `5.6` makes this prerequisite surface **typed and minimal-and-precise**:
 

@@ -10,6 +10,7 @@ module Prodbox.CLI.Command
   , DaemonLaunchOptions (..)
   , DaemonStatusOptions (..)
   , EdgeCommand (..)
+  , FederationRegisterOptions (..)
   , GatewayCommand (..)
   , CommandRequest (..)
   , ConfigCommand (..)
@@ -281,7 +282,19 @@ data Rke2Command
     -- no operational @aws.*@.
     Rke2Reconcile PlanOptions Bool
   | Rke2Delete Rke2DeleteFlags PlanOptions
+  | Rke2FederationRegister String FederationRegisterOptions
   | Rke2Logs (Maybe Int)
+  deriving (Eq, Show)
+
+data FederationRegisterOptions = FederationRegisterOptions
+  { federationRegisterPlanOptions :: PlanOptions
+  , federationRegisterChildVaultAddress :: Maybe String
+  , federationRegisterChildKubeconfig :: Maybe FilePath
+  , federationRegisterChildEndpoints :: [(String, String)]
+  , federationRegisterChildKubeconfigReference :: Maybe String
+  , federationRegisterChildAccountId :: Maybe String
+  , federationRegisterChildPulumiStacks :: [(String, String)]
+  }
   deriving (Eq, Show)
 
 data PlanOptions = PlanOptions
@@ -364,6 +377,7 @@ data IntegrationSuite
   | IntegrationAdminRoutes
   | IntegrationPublicDns
   | IntegrationKeycloakInvite
+  | IntegrationSealedVault
   deriving (Eq, Show)
 
 data CoverageFlags = CoverageFlags

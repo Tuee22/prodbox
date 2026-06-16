@@ -74,26 +74,55 @@ SecretRef union (Section 6.2), the import rules (Section 5), and the cluster mou
 
 ## 1a. The in-force config lives encrypted in MinIO
 
-The **in-force cluster configuration** is stored in MinIO as a Vault-Transit-enveloped object,
-and that encrypted object is the single source of truth. When Vault is sealed the object is
-opaque ciphertext: nothing about the cluster's setup, its workloads, or its child clusters is
+The **in-force cluster configuration** is stored as a prodbox object-level Vault-Transit
+envelope, and that encrypted object is the single source of truth. It is not a distinct
+mechanism: the in-force config is one logical object routed through the same §9 object-store
+every prodbox-owned secret-bearing object uses. It lands as an opaque, HMAC-named
+`objects/<id>.enc` ciphertext in the one generically-named bucket — **never** under a literal,
+role-revealing `in-force-config` key. The id↔logical map lives only in the Vault-encrypted
+index, so a sealed-Vault MinIO listing exposes only opaque object IDs at a decoy-padded constant
+count, never the fact that an in-force config exists. When Vault is sealed the object is opaque
+ciphertext: nothing about the cluster's setup, its workloads, or its child clusters is
 determinable beyond the *unencrypted basics*. This is the same fail-closed posture every other
 prodbox-owned MinIO object obeys — a sealed Vault reduces prodbox to an opaque durable-data
 pile. See [vault_doctrine.md §9](./vault_doctrine.md#9-minio-as-a-ciphertext-store) and
 [cluster_federation_doctrine.md](./cluster_federation_doctrine.md).
+
+**One object-store, two accessors.** The same object-store — one envelope, HMAC-naming, and
+index discipline — is shared by host and daemon accessors. Each binds its own Vault-auth
+`DekCipher`: the host CLI through the root Vault token, daemon-side access through Vault
+Kubernetes auth over the in-cluster MinIO Service DNS. Sprint `4.30` lands the shared pure layer
+and the host production in-force read through an opaque object key; the current gateway daemon has
+no durable MinIO state writer left after the master-seed removal. A future daemon-side durable read
+or write uses the same `Prodbox.Minio.EncryptedObject` layer and recovers a logical object only
+while Vault is unsealed and its policy permits the Transit unwrap. See
+[vault_doctrine.md §9](./vault_doctrine.md#9-minio-as-a-ciphertext-store).
 
 **Unencrypted basics.** The basics are the minimal, non-revealing bootstrap needed only to
 reach and unseal Vault: the cluster id, this cluster's Vault address, the seal mode, and (for a
 child cluster) the parent reference it must contact to auto-unseal. The basics carry nothing
 about workloads, downstream clusters, or credentials. Reads of the basics are always free —
 they are exactly the surface a host that cannot yet reach an unsealed Vault is allowed to see.
+The Phase `1` file surface is `.data/prodbox/unencrypted-basics.json`, loaded and validated by
+`Prodbox.Settings.loadUnencryptedBasics`.
 
 **Filesystem Dhall is seed/propose, not SSoT.** A filesystem `prodbox-config.dhall` is a
 seed/propose input only. On first-ever bring-up it seeds the encrypted MinIO source of truth;
 thereafter supplying a file is a *proposed update*, reconciled into the in-force config rather
 than read as the live config. The prior host-CLI model — read the repo-root
 `prodbox-config.dhall` directly as the live config — is replaced by "read the basics locally,
-fetch and decrypt the in-force config from MinIO via Vault." (Scheduled under Sprint 1.38.)
+fetch and decrypt the in-force config from MinIO via Vault." The Sprint `1.38` foundation has
+landed the Dhall-payload decoder (`decodeConfigDhallBytes`) and the injected
+`fetchInForceConfigWith` / `storeInForceConfigWith` composition. Sprint `4.30` routes the
+production MinIO read through `Prodbox.Minio.EncryptedObject` / `ObjectStore`: `Settings` reads
+`secret/object-store/hmac` from Vault, computes the opaque key for `LogicalInForceConfig`, and
+fetches from the `prodbox-state` bucket. The global `validateAndLoadSettings` behavior flip is
+implemented: once unencrypted basics exist, ordinary host settings loads use basics → ready Vault
+root token → Vault KV MinIO credentials → object-store envelope fetch/decrypt/decode instead of
+treating repo-root Dhall as the live source of truth. The lifecycle reconcile path uses repo-root
+Dhall only as bootstrap/propose input for the pre-Vault/pre-MinIO steps, then reloads the in-force
+settings through Vault and MinIO before chart and edge work continues; for a child cluster that
+reload uses the child root token custodied in the parent Vault KV (Sprint `4.32`).
 
 **Root-token-gated config writes.** Updating the *root cluster's* in-force config requires the
 root Vault token, which in turn requires an unsealed root Vault. Root config governs every
@@ -101,8 +130,11 @@ downstream cluster — it is the keys to the kingdom. The authority ladder is: r
 are free; a full read of the in-force config requires an unsealed Vault; a write to the root
 cluster's in-force config requires the privileged root token. The root/child trust tree, the
 transit-seal auto-unseal, and downstream-cluster custody are owned by
-[cluster_federation_doctrine.md](./cluster_federation_doctrine.md). (Scheduled under
-Sprint 1.38; the federation surface under Sprint 2.26.)
+[cluster_federation_doctrine.md](./cluster_federation_doctrine.md). (The local basics and
+in-force-config foundation are in Sprint `1.38`; the federation surface is in Sprint `2.26`; the
+root Shamir / child Transit seal model is in Sprint `3.20`. The pure root-write decision and
+rendered refusal are in `Prodbox.Config.InForce`; the child lifecycle and post-MinIO settings
+reload are wired under Sprint `4.32`.)
 
 ## 2. Single Dhall surface per binary instance
 
@@ -147,7 +179,7 @@ import syntax (Section 5).
 
 | Binary instance | Canonical Dhall path | Resolution |
 |---|---|---|
-| Host CLI (`prodbox` on the operator host) | `./prodbox-config.dhall` (resolved against the repository root) | `src/Prodbox/Repo.hs::canonicalConfigPaths` + `src/Prodbox/Settings.hs::loadConfigFile` |
+| Host CLI (`prodbox` on the operator host) | Seed/propose `./prodbox-config.dhall` plus `.data/prodbox/unencrypted-basics.json` (resolved against the repository root) | `src/Prodbox/Repo.hs::canonicalConfigPaths` + `src/Prodbox/Settings.hs::loadConfigForSettingsWith`; when basics are absent it reads the filesystem file as the first-bring-up seed, and when basics exist it fetches/decrypts the in-force MinIO envelope via Vault |
 | In-cluster gateway daemon | `/etc/gateway/config.dhall` | chart-side ConfigMap mount; see [helm_chart_platform_doctrine.md](./helm_chart_platform_doctrine.md) |
 | In-cluster workload Pods (`api`, `websocket`) | `/etc/workload/config.dhall` | chart-side ConfigMap mount on the owning workload chart |
 
@@ -158,7 +190,9 @@ The host CLI has no `--config` flag; it always resolves the canonical repo-root 
 The path each binary resolves here names the *seed/propose* Dhall input, not the in-force
 config. The in-force config is the Vault-Transit-enveloped MinIO object (Section 1a); a host
 that cannot reach an unsealed Vault sees only the unencrypted basics, and supplying a file is a
-proposed update reconciled into the encrypted source of truth. (Scheduled under Sprint 1.38.)
+proposed update reconciled into the encrypted source of truth. Sprint `1.38` has landed the local
+foundations and switched host settings consumers off the `loadConfigFile` live-config path once
+unencrypted basics exist.
 
 ## 4. Decoding
 
@@ -225,7 +259,18 @@ fetched at runtime by the in-cluster consumer authenticating to Vault directly v
 Kubernetes auth. The Dhall typechecker never sees a literal secret because there is no literal
 secret in the config tree — only a reference to a Vault object. See
 [vault_doctrine.md §12](./vault_doctrine.md#12-in-cluster-service-auth) and Section 6.2.
-(Scheduled under Sprints 1.38, 3.18.)
+The `SecretRef` type/resolver foundation has landed under Sprint 1.35, and the chart
+Vault policy/role/service-account, Kubernetes-auth config, and generated/static seed-bootstrap
+foundation is active under Sprint 3.18. The `websocket` workload config now carries
+`oidc.client_secret` as `SecretRef.Vault` and resolves it through Vault Kubernetes auth at runtime;
+the Keycloak and MinIO charts materialize their covered runtime fields through Vault-login init
+containers, and MinIO admin bootstrap Jobs read root credentials through the same init-container
+pattern. The VS Code Envoy `SecurityPolicy` client Secret is materialized from Vault by a chart
+Job, and gateway event keys plus Route 53 AWS and gateway MinIO credentials now resolve through
+Vault Kubernetes auth. Patroni role Secrets are materialized from Vault by the `keycloak-postgres`
+pre-install hook. Host/admin helpers and the AWS SES SMTP setup flow now read/write their remaining
+Keycloak admin, OIDC, demo-user, and SMTP material through Vault KV. Sprint 3.18 also pins the
+sealed-startup structural proof; legacy derivation/removal remains open under Sprint 3.19.
 
 ## 6. Cluster mount contract
 
@@ -245,8 +290,20 @@ the daemon resolves them at runtime by authenticating to Vault via Vault Kuberne
 Kubernetes service account, a Vault role bound to the daemon's namespace and service account,
 and a Vault policy scoping which KV paths it may read. See
 [vault_doctrine.md §12](./vault_doctrine.md#12-in-cluster-service-auth) and
-[helm_chart_platform_doctrine.md](./helm_chart_platform_doctrine.md). (Scheduled under
-Sprint 3.18.) The operator-facing `gateway-config-<nodeId>` ConfigMap therefore contains no
+[helm_chart_platform_doctrine.md](./helm_chart_platform_doctrine.md). The Sprint 3.18
+foundation now provisions Vault roles, service accounts, Kubernetes-auth config, and
+generated/static seed KV objects for this model, and the websocket workload now resolves its OIDC
+client secret through that SecretRef path; Keycloak and MinIO materialize their covered runtime
+fields through Vault-login init containers, and MinIO admin bootstrap Jobs read root credentials
+through the same init-container pattern. The VS Code Envoy `SecurityPolicy` client Secret is
+materialized from Vault by a chart Job, and gateway event/AWS/MinIO credentials are resolved from
+Vault by the daemon and gateway MinIO bootstrap Job. Sprint `2.26` also uses the same non-secret
+gateway Vault Kubernetes-auth coordinates at runtime for the gateway federation read endpoints
+(`/v1/federation/children` and `/v1/federation/children/<child>/bootstrap`); the endpoints read
+parent-custodied child inventory from Vault KV, not from Dhall, Kubernetes Secrets, or
+gateway-local files. Patroni role Secrets are materialized from Vault by a chart hook. The
+sealed-startup structural proof has landed; legacy derivation/removal remains Sprint 3.19. The
+operator-facing `gateway-config-<nodeId>` ConfigMap therefore contains no
 secret material — only `SecretRef` references plus non-secret service endpoints rendered
 inline. The cert-manager-issued TLS keypair and CA trust anchor remain ordinary k8s Secret
 mounts referenced by file path; they are cert material under Vault's PKI authority, not Dhall
@@ -314,7 +371,10 @@ union is `< Vault | TransitKey | Prompt | TestPlaintext >`; the corresponding Ha
 constructor and its resolver are removed, and there are no Secret-mounted Dhall credential
 fragments. `Vault` / `TransitKey` are the production targets, `Prompt` is CLI-only one-off
 elevated material, and `TestPlaintext` is accepted only by the test harness from
-`test-secrets.dhall`. (Scheduled under Sprints 1.35, 1.38.)
+`test-secrets.dhall`. The ADT, Dhall decoder, production plaintext validator, and Vault KV reader
+seam (`resolveSecretRefWithVault` / `resolveSecretRefFromVault`) are implemented under Sprint
+1.35; migrating the sensitive repo config fields onto that contract is scheduled under Sprint
+1.38.
 
 - `prodbox config validate` rejects any plaintext secret value in production config and rejects
   `TestPlaintext` outside the test harness.
@@ -384,16 +444,21 @@ job, not the binary's.
 
 The host CLI applies the same contract with two simplifications: it has no `--config` flag
 (it resolves the fixed repo-root `prodbox-config.dhall`, §1–§3), and the host binary is not
-long-running, so file watching is unnecessary. `prodbox` resolves the repo root, reads the
-canonical `prodbox-config.dhall` once at the start of each invocation through the
-existence-guarded, `try`-wrapped `loadConfigFile` (§4), executes the requested subcommand,
-and exits. There is no env-var precedence ladder on the host — the on-disk file is the sole
-*local* Dhall surface.
+long-running, so file watching is unnecessary. `prodbox` resolves the repo root, then
+`loadConfigForSettingsWith` either reads the canonical `prodbox-config.dhall` as first-bring-up
+seed input when unencrypted basics are absent, or reads the basics and loads the in-force MinIO
+envelope via Vault when basics exist. There is no env-var precedence ladder on the host — the
+on-disk file is only a seed/propose Dhall surface, never the live SSoT after basics exist. Lifecycle
+reconcile is the bootstrap exception: it validates the file for the RKE2/Vault/MinIO bring-up
+steps that precede the in-force object-store read, then reloads through Vault/MinIO before
+secret-dependent chart and edge reconciliation.
 
 The on-disk file is the seed/propose input, not the in-force config. The host reads the
 unencrypted basics locally and fetches + decrypts the in-force config from MinIO via Vault
 (§1a); supplying a file is a proposed update, and a write to the root cluster's in-force config
-requires the root Vault token. (Scheduled under Sprint 1.38.)
+requires the root Vault token. The local decoding/fetch/store foundations landed in Sprint
+`1.38`; the global host-loader flip now lands there too. Without basics, `loadConfigFile`
+remains only the first-bring-up seed path.
 
 The host case is the existing baseline (Sprint 1.2). The remaining env-var-read call sites on
 the supported path are not on the host CLI but in `Prodbox.Workload`, which still reads a
@@ -432,14 +497,19 @@ so the prohibition is the intended end state rather than a present-tense fact:
 - ConfigMap-rendered credentials, and Secret-mounted Dhall credential fragments (any
   `as Text` credential import, any `gateway-secrets-*` Dhall Secret). Credentials are
   `SecretRef.Vault` references resolved at runtime through Vault Kubernetes auth, not mounted
-  Dhall values (scheduled under Sprint 3.18; see §5, §6, and
-  [vault_doctrine.md §12](./vault_doctrine.md#12-in-cluster-service-auth)).
+  Dhall values (foundation active under Sprint 3.18; websocket OIDC SecretRef consumer landed;
+  Keycloak and MinIO Vault-init consumers landed; the VS Code Envoy `SecurityPolicy` client Secret
+  is Vault-materialized by a chart Job; gateway event/AWS/MinIO Vault consumption landed; Patroni
+  role Secret materialization landed; host/admin helper and AWS SES SMTP Vault reads/writes landed;
+  sealed-startup structural proof landed; legacy derivation/removal remains Sprint 3.19; see §5,
+  §6, and [vault_doctrine.md §12](./vault_doctrine.md#12-in-cluster-service-auth)).
 - Plaintext secret values in `prodbox-config.dhall` or in ConfigMap-rendered Dhall. Sensitive
-  fields carry `SecretRef` references instead (scheduled under Sprints 1.35, 1.38; see §6.2 and
-  [vault_doctrine.md §3](./vault_doctrine.md#3-the-secretref-model)).
+  fields carry `SecretRef` references instead. The FileSecret-free `SecretRef` contract is Sprint
+  `1.35`; AWS provider credential migration is Sprint `7.14`; ACME EAB migration is Sprint `7.15`
+  (see §6.2 and [vault_doctrine.md §3](./vault_doctrine.md#3-the-secretref-model)).
 - Reading the on-disk `prodbox-config.dhall` as the in-force config SSoT. The filesystem Dhall
   is a seed/propose input only; the in-force config is the Vault-Transit-enveloped MinIO object
-  (scheduled under Sprint 1.38; see §1a).
+  (Sprint `1.38`; see §1a).
 
 ## 11. Cross-references
 

@@ -13,6 +13,8 @@ module Prodbox.Infra.MinioBackend
   , readMinioCredentials
   , ensureMinioBackendBucket
   , bucketObjectCount
+  , minioGetObjectArgs
+  , minioPutObjectArgs
   , pulumiBackendUrl
   , minioEndpointUrl
   , localKubeconfigCandidates
@@ -67,7 +69,7 @@ import System.Exit (ExitCode (..))
 import System.FilePath ((</>))
 
 minioBackendBucket :: String
-minioBackendBucket = "prodbox-test-pulumi-backends"
+minioBackendBucket = "prodbox-state"
 
 minioBackendLocalPort :: Int
 minioBackendLocalPort = 39000
@@ -191,9 +193,9 @@ withMinioPortForward action = do
 -- The Pulumi backend helpers use 'withMinioPortForward' above because
 -- backend state is anchored in the home-local RKE2 cluster even while
 -- AWS-substrate tests temporarily switch kubeconfig contexts. Chart
--- bootstrap paths need the opposite behavior: they read
--- @gateway-minio-creds@ from the active chart cluster and must write
--- @master-seed@ into that same cluster's MinIO.
+-- bootstrap paths need the opposite behavior: they read active-cluster
+-- credentials and write substrate-local object-store data into that same
+-- cluster's MinIO.
 withCurrentMinioPortForward :: (Int -> IO a) -> IO (Either String a)
 withCurrentMinioPortForward =
   withMinioPortForwardEnv Nothing minioBackendLocalPort
@@ -569,6 +571,33 @@ bucketObjectCount localPort accessKey secretKey = do
                 Just (Number n) -> pure (Right (round n))
                 _ -> pure (Right 0)
             Right _ -> pure (Right 0)
+
+minioGetObjectArgs :: String -> String -> String -> FilePath -> [String]
+minioGetObjectArgs endpoint bucket key outputPath =
+  [ "--endpoint-url"
+  , endpoint
+  , "s3api"
+  , "get-object"
+  , "--bucket"
+  , bucket
+  , "--key"
+  , key
+  , outputPath
+  ]
+
+minioPutObjectArgs :: String -> String -> String -> FilePath -> [String]
+minioPutObjectArgs endpoint bucket key inputPath =
+  [ "--endpoint-url"
+  , endpoint
+  , "s3api"
+  , "put-object"
+  , "--bucket"
+  , bucket
+  , "--key"
+  , key
+  , "--body"
+  , inputPath
+  ]
 
 minioAwsEnv :: String -> String -> [(String, String)]
 minioAwsEnv accessKey secretKey =

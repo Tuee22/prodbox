@@ -452,11 +452,12 @@ The Haskell daemon wires DNS writes through native subprocess helpers:
 - The helpers are auto-wired during daemon startup when gate config is present and no mock is injected
 - `docker/gateway.Dockerfile` installs the official AWS CLI bundle per target architecture so the
   Route 53 subprocess path remains available inside the runtime image
-- `charts/gateway/` injects AWS credentials through the `gateway-aws-credentials` secret as
-  environment variables rather than writing credentials into the daemon config
+- `charts/gateway/` renders Route 53 AWS credentials as `SecretRef.Vault` references, and the daemon
+  resolves them through Vault Kubernetes auth before projecting them only into the `aws` subprocess
+  environment
 
-AWS auth for gateway DNS writes is derived from the repository-root Dhall configuration and the
-runtime environment selected for the gateway workload.
+AWS auth for gateway DNS writes is seeded into Vault from the repository-root Dhall configuration by
+`prodbox vault reconcile` and then read in-cluster through the gateway daemon's Vault role.
 `dns_write_gate` must not contain AWS access key, secret key, session token, or similar
 credential fields.
 
@@ -529,43 +530,13 @@ port. It is separate from the peer-to-peer event-batch transport used for gatewa
 communication. The REST handler consumes the inbound HTTP request before closing the socket so the
 operator-facing response contract stays intact when queried through `kubectl port-forward`.
 
-### `GET /v1/secret/derive?context=<context-string>`
+### Removed Secret-Derivation Endpoints
 
-Returns the master-seed-derived 32-byte value for the requested context string,
-base64-url-encoded. Authoritative contract:
-[Secret Derivation Doctrine](./secret_derivation_doctrine.md) §4.
-
-```json
-{ "context": "patroni:keycloak:keycloak:app", "derived": "base64url=...", "encoding": "base64url" }
-```
-
-`400` for malformed or unknown context; `500` if the gateway cannot read
-`prodbox/master-seed` from MinIO. Used by ad-hoc callers that already know the context
-string.
-
-The `context` query parameter is subject to a pinned encode/decode round-trip:
-the exact context string the caller derives a value for must decode back to the
-identical string the handler hashes. URL-encoding of the colon-delimited context
-(`patroni:keycloak:keycloak:app`) on the wire and percent-decoding in the handler
-must round-trip byte-for-byte, so the derived value is bound to precisely the
-context the caller asked for and never to a silently mangled variant. A context
-that fails to round-trip is a `400`, not a derivation against a corrupted key.
-Sprint 2.25 pins this round-trip with an explicit encode/decode test.
-
-### `POST /v1/secret/ensure-namespace`
-
-Idempotently materializes every data-bound k8s Secret for a release from the master
-seed. Authoritative contract:
-[Secret Derivation Doctrine](./secret_derivation_doctrine.md) §4.
-
-Request:
-
-```json
-{ "namespace": "keycloak", "release": "keycloak" }
-```
-
-Response (no plaintext; the SHA-256 column lets the caller confirm the Secret exists
-and matches the derived value):
+Sprint `3.19` removed the gateway daemon's former `/v1/secret/derive` and
+`/v1/secret/ensure-namespace` endpoints. Secrets are not derived by the gateway daemon anymore:
+each secret is a Vault KV / PKI / Transit object, and each in-cluster consumer authenticates to
+Vault with its Kubernetes service account. The host-side gateway client covers status, daemon
+observability, and the Vault-backed federation read endpoints below.
 
 ```json
 {
@@ -578,8 +549,23 @@ and matches the derived value):
 }
 ```
 
-Used by chart pre-install Jobs (via the in-cluster ClusterIP) and by the host CLI (via
-the 127.0.0.1-only NodePort, see §12.1) before chart deploy.
+The removed secret-derivation payload shape above is retained only as historical context for the
+deleted RPC family; supported chart pre-install Jobs and host/admin helpers now read/write Vault
+objects directly through their owned roles/helpers.
+
+### Federation Read Endpoints
+
+Sprint `2.26` adds the gateway-owned federation read surface:
+
+- `GET /v1/federation/children` logs in to Vault through the daemon's configured Kubernetes-auth
+  block, reads `secret/data/clusters/index`, fetches each child metadata object, and returns
+  metadata-only downstream inventory. It never returns the transit-seal token.
+- `GET /v1/federation/children/<child>/bootstrap` logs in through the same Vault path and returns
+  the parent-custodied child bootstrap credential from
+  `secret/data/clusters/<child>/bootstrap`.
+
+Both endpoints fail closed when Vault auth, Vault reachability, or KV decoding fails. They do not
+read child inventory from repository Dhall, Kubernetes Secrets, or gateway-local files.
 
 ### `GET /healthz`, `GET /readyz`, and `GET /metrics`
 
@@ -620,7 +606,10 @@ host-process invocation remains a development mode, not the supported steady sta
 
 Containerization is first-class for integration/runtime image publishing:
 
-- `prodbox cluster reconcile` builds the gateway image from `docker/gateway.Dockerfile`
+- `prodbox cluster reconcile` builds the gateway image from `docker/gateway.Dockerfile`; it deploys
+  the gateway chart only after the Vault-backed operational `aws.*` credential gate resolves, and a
+  bare local reconcile skips the chart cleanly when `secret/gateway/gateway/aws` has not yet been
+  materialized
 - the publish path runs an ordinary host-native `docker build`, then pushes the resulting Harbor
   tags from the repo-owned single-stage `ubuntu:24.04` Dockerfile with in-image `ghcup` and
   pinned GHC `9.14.1`
@@ -661,26 +650,27 @@ The host CLI calls the gateway via the native Haskell HTTP client in
 legacy `curl` shell-out pattern (`src/Prodbox/Gateway.queryGatewayState` et al.) is
 removed in Sprint 2.17.
 
-Authoritative contract and bootstrap order:
-[Secret Derivation Doctrine](./secret_derivation_doctrine.md) §5 and §7.
+Authoritative contract and bootstrap order for secrets now live in
+[Secret Derivation Doctrine](./secret_derivation_doctrine.md), which describes the Vault-only
+model.
 
-### 12.2 MinIO Bucket Access for the Master Seed
+### 12.2 MinIO Bucket Access for Gateway Objects
 
-The gateway daemon is the sole reader and writer of the master seed stored at the
-`prodbox/master-seed` object in MinIO. Access control:
+The gateway daemon has a scoped MinIO IAM principal for gateway-owned object-store access. There is
+no `master-seed` object in MinIO and no HMAC derivation path.
 
 | Element | Value |
 |---|---|
-| MinIO bucket | `prodbox` |
+| MinIO bucket | `prodbox-state` |
 | MinIO IAM principal | `prodbox-gateway` |
-| Policy actions on `prodbox/*` | `s3:GetObject`, `s3:PutObject`, `s3:ListBucket` |
-| Other principals (including MinIO root) | not used to read or write `prodbox/*` |
+| Policy actions on `prodbox-state/*` | `s3:GetObject`, `s3:PutObject`, `s3:ListBucket` |
+| Other principals (including MinIO root) | not used by the gateway daemon for supported object access |
 | Persistence | MinIO PV under `.data/prodbox/minio/0` per [Retained Storage Lifecycle Doctrine](./storage_lifecycle_doctrine.md) §1 |
 
-The per-run Pulumi-state bucket (`prodbox-test-pulumi-backends`) is unaffected by this
-IAM addition — it continues to use MinIO root credentials. The `prodbox` bucket and
-the `prodbox-gateway` user are bootstrapped by reconcile (either through a Pulumi
-program or a one-shot Job using MinIO root creds) before the gateway daemon starts.
+The raw per-run Pulumi state layout still uses MinIO root credentials until Sprint `7.14`; the
+bucket itself is the shared generic `prodbox-state` bucket. The `prodbox-state` bucket and the
+`prodbox-gateway` user are bootstrapped by reconcile through the Vault-backed MinIO bootstrap Job
+before the gateway daemon starts.
 
 ---
 
@@ -688,14 +678,12 @@ program or a one-shot Job using MinIO root creds) before the gateway daemon star
 
 Gateway verification lives in five canonical places:
 
-1. `test/unit/Main.hs` for daemon logic, rendering, DNS-write gating support
-   behavior, and the secret-derivation handler unit coverage
-   (Sprint 2.19).
+1. `test/unit/Main.hs` for daemon logic, rendering, DNS-write gating support behavior, and the
+   Sprint `3.19` absence proof for the removed secret-derivation RPC/modules.
 2. `test/daemon-lifecycle/Main.hs` for process-level startup, readiness, signal drain,
    and daemon flag/env precedence coverage.
-3. `prodbox test integration gateway-daemon` for daemon-oriented validation, including
-   the `/v1/secret/derive` and `/v1/secret/ensure-namespace` round-trip against a real
-   MinIO `prodbox` bucket.
+3. `prodbox test integration gateway-daemon` for daemon-oriented validation of startup, health,
+   and status behavior.
 4. `prodbox test integration gateway-pods` for pod-backed mesh validation.
 5. `prodbox dev tla-check` plus `documents/engineering/tla/gateway_orders_rule.tla`
    for formal safety checks.

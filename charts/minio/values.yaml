@@ -30,3 +30,15 @@ resources:
     cpu: 100m
   limits:
     memory: 2Gi
+
+vault:
+  address: http://vault.vault.svc.cluster.local:8200
+  authPath: kubernetes
+  role: minio
+  serviceAccountTokenFile: /var/run/secrets/kubernetes.io/serviceaccount/token
+  image:
+    repository: hashicorp/vault
+    tag: "1.18.3"
+    pullPolicy: IfNotPresent
+  paths:
+    root: minio/root

@@ -59,7 +59,9 @@ Build a clean-room Haskell `prodbox` repository with:
 12. Native `arm64` container builds work on native `arm64` Docker daemons, while cross-arch
     builds, `docker buildx`, and mixed-arch clusters are unsupported.
 13. One local-cluster-first Pulumi backend model: the local RKE2 cluster runs MinIO and stores AWS
-    test-stack state in the dedicated bucket `prodbox-test-pulumi-backends`.
+    test-stack state in the generic `prodbox-state` bucket; Sprint `7.14` now routes main Pulumi
+    stack cycles and production residue/output reads through the decrypt-to-scratch Model-B
+    interposition, including first-touch raw checkpoint migration into the encrypted object-store.
 14. One in-cluster Haskell gateway runtime with config generation, bounded HTTP `/v1/state`
     observability, heartbeat recording, in-memory ownership projection, DNS-write gating,
     Orders-backed interval validation, HMAC-signed event state, peer-transport gossip with
@@ -132,9 +134,16 @@ every subsequent `cluster reconcile` only unseals it, so Vault KV is as durable 
 any retained PV. `prodbox-config.dhall` carries only typed `SecretRef.Vault` references (never
 plaintext secrets); the in-force cluster configuration is itself a Vault-Transit-enveloped MinIO
 object that is the **config SSoT** (a filesystem `prodbox-config.dhall` is a seed/propose input
-only); MinIO objects, Pulumi backend state, and the active daemon Dhall are stored only as
-Vault-Transit envelopes; and the TLS, Keycloak, Pulumi, and AWS-credential paths fail closed when
-Vault is sealed. The master-seed HMAC derivation model and its daemon-only seed boundary are
+only); every prodbox-owned MinIO object, the Pulumi backend state, and the active daemon Dhall are
+stored only as Vault-Transit envelopes (**Model B**: prodbox's own application-level envelope per
+object, not MinIO bucket SSE) through one shared object-store that names objects
+`objects/<vault-keyed-HMAC>.enc` under one flat prefix in **one generically-named bucket** (the
+role-revealing names `prodbox` + `prodbox-test-pulumi-backends` are retired), keeps a Vault-encrypted
+index, hashes the stored AAD (`prodbox-envelope-v2`), and decoy-pads to a constant object count — so
+a sealed Vault leaks no information about a cluster's children (existence, count, location, or name);
+Pulumi runs through a decrypt-to-scratch RAM-tmpfs interposition (its own secrets provider is
+dropped) and the long-lived `aws-ses` backend is enveloped uniformly; and the TLS, Keycloak, Pulumi,
+and AWS-credential paths fail closed when Vault is sealed. The master-seed HMAC derivation model and its daemon-only seed boundary are
 **retired, not wrapped** — `Prodbox.Secret.{Derive,MasterSeed,Inventory}`, the daemon
 `/v1/secret/*` RPC, the daemon-only-seed lint, and `selfBootstrapOwnSecrets` are removed, there is
 no `master-seed` object in MinIO, and every previously-derived or chart-generated secret becomes a
@@ -149,14 +158,69 @@ fail-closed brick cascades down the tree from the root. The load-bearing invaria
 reduces prodbox to an opaque durable-data pile — PVs and MinIO objects may still exist, but they
 reveal no secrets, no active Dhall, no Pulumi state, and no downstream-cluster inventory until Vault
 is unsealed. Adoption is scheduled (implementation Planned/Active until validated) across the
-reopened Phases `0`/`1`/`2`/`3`/`4`/`5`/`7`/`8` — Sprints `0.12`–`0.13`, `1.35`–`1.38`, `2.26`,
-`3.17`–`3.20`, `4.29`–`4.32`, `5.8`, `7.14`–`7.15`, and `8.9`. The single source of truth for the
+reopened Phases `0`/`1`/`2`/`3`/`4`/`5`/`7`/`8` — Sprints `0.12`–`0.14`, `1.35`–`1.38`, `2.26`,
+`3.17`–`3.20`, `4.29`–`4.33`, `5.8`, `7.14`–`7.15`, and `8.9`. As of 2026-06-16, Phase `1` has
+closed Sprints `1.35`–`1.38` on their owned surfaces: the FileSecret-free `SecretRef` contract, the
+native `prodbox vault` lifecycle command group, encrypted unlock bundle, sealed-Vault Pulumi gate,
+production Vault-Transit `DekCipher`, and the global in-force-config host-loader switch. Runtime AWS
+provider credential migration remains Sprint `7.14`; ACME EAB/TLS key material remains Sprint
+`7.15`. Phase `3` has reclosed on its owned surfaces: it has the Sprint `3.17` Vault
+platform/envelope foundation and the Sprint
+`3.18` chart-secret policy/role/service-account plus Kubernetes-auth config and live seed-object
+bootstrap foundation;
+the `websocket` workload OIDC client-secret is consumed directly from Vault by app-side Kubernetes
+auth, and the `keycloak` / `minio` charts materialize their covered runtime secrets through
+Vault-login init containers; MinIO admin bootstrap Jobs also read root credentials through
+Vault-login init containers; the `vscode` Envoy `SecurityPolicy` client Secret is materialized
+from Vault by a chart Job; and gateway event keys plus Route 53 AWS and gateway MinIO credentials
+now resolve through Vault Kubernetes auth. Patroni role Secrets are materialized from Vault by the
+`keycloak-postgres` pre-install hook using a dedicated `prodbox-<namespace>-pg` ServiceAccount. The
+AWS SES SMTP sync writes `secret/keycloak/smtp`, and host/admin helpers read the remaining Keycloak
+admin, OIDC, demo-user, and SMTP material from Vault KV. Sprint `3.18` also has the structural
+sealed-startup proof that those Vault materializers fail closed on sealed/unreachable Vaults with no
+non-Vault fallback. Sprint `3.19` has removed the master-seed derivation modules, gateway
+`/v1/secret/*` RPCs, daemon-only-seed lint, self-bootstrap path, and generated-secret assumptions;
+Sprint `3.20` has landed the root Shamir / child Transit seal model, recovery-key child init
+request shape, Vault chart `seal "transit"` rendering, and parent-owned child init-custody field
+map. Sprint `5.8` has the code-owned `sealed-vault` named validation, planner/parser surface, pure
+forbidden-pattern oracle, generated Dhall/config SecretRef sweep, and live home-substrate
+sealed-Vault proof; remaining AWS-substrate sealed-Vault red-team closure stays in Sprint `5.8` and
+is blocked on Sprint `7.14`'s live AWS proof, which currently cannot start until Vault contains
+`secret/aws/admin-for-test-simulation`.
+Sprint `4.29` has landed the root/local cluster lifecycle integration: `cluster reconcile`
+deploys/rebinds Vault before MinIO, waits for the Vault StatefulSet, runs init-once/unseal/reconcile,
+and `cluster status` / `edge status` surface the Vault seal state while `cluster delete` preserves
+`.data/vault/vault/0`. Sprint `4.30` has landed the Model-B object-store foundation:
+`Prodbox.Minio.ObjectStore`, `Prodbox.Minio.EncryptedObject`, `prodbox-envelope-v2` hashed stored
+AAD, `prodbox-state`, Vault-owned object-store HMAC key material, and the in-force-config read
+through the opaque key. Sprint `7.14` has landed the code-owned Pulumi decrypt-to-scratch wrapper
+for main per-run and `aws-ses` stack cycles, encrypted stack residue/output reads, first-touch raw
+checkpoint migration hooks, and Vault-only AWS provider credential resolution through
+`secret/gateway/gateway/aws`; the root `aws.*` / `aws_admin_for_test_simulation.*` schema now uses
+mandatory `SecretRef.Vault` references and setup/teardown writes or clears operational keys in
+Vault KV instead of `prodbox-config.dhall`. Bare home `cluster reconcile` resolves that Vault-backed
+operational credential gate before deploying the Route 53-writing gateway daemon; when the object is
+absent, it skips the gateway chart cleanly and keeps the local substrate healthy. The remaining
+Sprint `7.14` work is live first-touch migration/deletion proof plus the live both-substrate
+sealed-state proof, blocked until the AWS IAM harness can read
+`secret/aws/admin-for-test-simulation` from Vault. Raw backend env is now confined to `LegacyPulumiBackend` first-touch
+import/delete, while supported Pulumi actions receive provider-only input before the scratch
+`file://` rewrite.
+Sprint `5.8` now has the
+code-owned `sealed-vault` validation surface, pure audit oracle, and generated Dhall/config
+SecretRef sweep, while the live whole-system sealed-state proof remains blocked behind Sprint `7.14`.
+Sprint `4.33` has closed the
+Haskell-side host-disk/k8s/log/oracle gate and redaction surface. The 2026-06-15 Model-B refinement adds the
+docs-only Sprint `0.14` and the whole-system Sprint `4.33` (closed 2026-06-16) and reframes
+Sprints `1.37`/`4.30`/`7.14` (no new phase reopen). The
+single source of truth for the
 Vault model is [vault_doctrine.md](../documents/engineering/vault_doctrine.md); the federation trust
 tree is
 [cluster_federation_doctrine.md](../documents/engineering/cluster_federation_doctrine.md); the
 authoritative reopening narration is the 2026-06-14
 [README.md → Closure Status](README.md#closure-status) entry (superseding the 2026-06-11 framing for
-the derivation model), extended by the 2026-06-13 storage-topology-reorg entry in the same section.
+the derivation model), extended by the 2026-06-13 storage-topology-reorg and the 2026-06-15 Model-B
+entries in the same section.
 
 ## Test Substrates
 
@@ -206,6 +270,27 @@ prerequisites.
 
 ## Alignment Status
 
+**2026-06-15 — Pulumi-under-Vault + MinIO encryption finalized to Model B + whole-system
+zero-child-info framing.** The MinIO/Pulumi encryption strategy is finalized to **Model B** — prodbox's
+own application-level Vault-Transit envelope per object, not MinIO bucket SSE — under the invariant
+that a sealed parent Vault leaks **no** information about its children (existence, count, location, or
+name, down to `aws`/`aws-eks`). Every prodbox-owned object is enveloped and named
+`objects/<vault-keyed-HMAC>.enc` under one flat prefix in **one generically-named bucket** (retiring
+`prodbox` + `prodbox-test-pulumi-backends`), with a Vault-encrypted index, a HASHED stored AAD
+(`prodbox-envelope-v2`), and decoy-pad-to-constant-count + size buckets; the object-store is shared by
+the host CLI and the in-cluster gateway daemon (each binding its own Vault-auth `DekCipher`). Pulumi
+runs through a **decrypt-to-scratch RAM-tmpfs interposition** (Pulumi never touches MinIO);
+**Pulumi's own secrets provider is dropped** (the envelope is the encryption); the long-lived
+`aws-ses` backend is treated uniformly under the same envelope (the AES256-SSE-only carve-out is
+dropped). The property is whole-system — MinIO objects, the host disk, k8s objects, and logs/output
+(incl. the exists-vs-`NoSuchKey` oracle). This **refines, it does not reverse**, the 2026-06-14
+model and reopens **no new phase** — it reframes Sprints `1.37`/`4.30`/`7.14` and adds docs-only
+Sprint `0.14` + Sprint `4.33` (now closed on its code-owned Haskell surface). The full Rule-A
+narration is the authoritative
+[README.md → Closure Status](README.md#closure-status) entry of the same date; the doctrine SSoT is
+[vault_doctrine.md §9/§10](../documents/engineering/vault_doctrine.md). This section does not
+duplicate the README entry.
+
 **2026-06-14 — Vault-root finalization + cluster federation reopens Phase `2` and finalizes the
 Vault model.** The secrets model is finalized: Vault is the **sole, finalized** secrets / KMS / PKI
 root, a sealed Vault **bricks the cluster** (hard fail-closed), the master-seed HMAC derivation
@@ -214,15 +299,22 @@ model is **retired** (not extended), and `FileSecret` / Secret-mounted plaintext
 (the config SSoT); a filesystem `prodbox-config.dhall` is a seed/propose input only; root-cluster
 config writes require the root Vault token. Cluster federation adds a Vault transit-seal trust tree
 (a root cluster Shamir-sealed and operator-unsealed, child clusters `seal "transit"` against the
-parent, each parent's Vault KV owning its children's init keys). **Phase `2` reopens** for Sprint
-`2.26` (cluster-federation trust topology and downstream-cluster custody), **in addition to** Phases
+parent, each parent's Vault KV owning its children's init keys). **Phase `2` reclosed 2026-06-16**
+for Sprint `2.26` (cluster-federation trust topology and downstream-cluster custody), **in addition
+to** Phases
 `0`, `1`, `3`, `4`, `5`, `7`, `8` (reopened 2026-06-11 and finalized 2026-06-14 — new Sprints `0.13`,
 `1.38`, `3.19`, `3.20`, `4.32` join the reframed Vault sprints). **Phase `6` stays `Done`** on its
 owned clean-room/zero-Python surface. The full Rule-A narration is the authoritative
 [README.md → Closure Status](README.md#closure-status) entry of the same date; the doctrine SSoT is
 [vault_doctrine.md](../documents/engineering/vault_doctrine.md) and the federation trust tree is
-[cluster_federation_doctrine.md](../documents/engineering/cluster_federation_doctrine.md). Adoption
-is scheduled (implementation Planned/Active until validated). This section does not duplicate the
+[cluster_federation_doctrine.md](../documents/engineering/cluster_federation_doctrine.md). Sprint
+`2.26` has closed the code-owned gateway/CLI custody surface (`Prodbox.Cluster.Federation`, the
+native `cluster federation register` surface, full downstream-inventory metadata, and the
+Vault-backed gateway child-listing / bootstrap-reference endpoints), and Sprint `4.32` has landed
+the direct parent-side live registration path plus the child auto-unseal/fail-closed lifecycle
+interpreter. Sprint `4.33` has landed the Haskell-side opaque Kubernetes namespace/log redaction and
+sealed-state gate enforcement; remaining federation validation is Sprint `5.8` live
+sealed-federation proof. This section does not duplicate the
 README entry.
 
 **2026-06-09 (later) — Design-intention review reopens Phases `0`, `1`, `2`, `3`, `4`, `5`, and
@@ -521,9 +613,9 @@ The reopened ranges close on the following sprint sets:
 | Kubernetes utilities | `prodbox k8s health|wait|logs` | Haskell CLI |
 | AWS substrate provision/teardown (EKS) | `prodbox pulumi eks-resources|eks-destroy --yes` | Haskell orchestration plus Pulumi; provisions the EKS portion of the AWS substrate. The `aws-eks` canonical suite validation runs against it. |
 | AWS substrate provision/teardown (HA RKE2) | `prodbox pulumi test-resources|test-destroy --yes` | Haskell orchestration plus Pulumi; provisions the EC2 portion of the AWS substrate. The `ha-rke2-aws` canonical suite validation runs against it. |
-| Pulumi backend state | MinIO bucket `prodbox-test-pulumi-backends` on the local cluster | Local cluster bootstrap plus bounded repo-backed backend login and deleted-mount repair |
-| Per-run Pulumi state (MinIO-backed; survives cluster wipes via MinIO's PV under `.data/prodbox/minio/0`) | `s3://prodbox-test-pulumi-backends?endpoint=127.0.0.1:39000` | Haskell Pulumi orchestration and AWS substrate helpers |
-| Gateway-owned secret-derivation MinIO bucket | `s3://prodbox?endpoint=127.0.0.1:39000` (master seed at `prodbox/master-seed`) | Gateway daemon (`prodbox-gateway` MinIO principal) |
+| Pulumi backend state | MinIO bucket `prodbox-state` on the local cluster; Sprint `7.14` hydrates each stack into a RAM-backed `file://` scratch backend and stores the checkpoint back through the opaque Model-B object store | Local cluster bootstrap plus bounded backend validation, Vault readiness, and encrypted object-store access |
+| Per-run Pulumi state (MinIO-backed; survives cluster wipes via MinIO's PV under `.data/prodbox/minio/0`) | Opaque `objects/<id>.enc` Model-B objects produced by `Prodbox.Pulumi.EncryptedBackend`; first-touch raw checkpoint migration imports legacy backend state before supported writes continue encrypted | Haskell Pulumi orchestration and AWS substrate helpers |
+| Gateway-owned secret-derivation MinIO bucket — **retired** | Historical `s3://prodbox?endpoint=127.0.0.1:39000` / `prodbox/master-seed`; the master-seed derivation model is retired (Sprint `3.19`) and gateway object-store access now targets the generic `prodbox-state` bucket (Sprint `4.30`) | Gateway daemon (`prodbox-gateway` MinIO principal) |
 | Gateway runtime operations | `prodbox gateway start --config <path>|status --config <path>|config-gen <output-path> --node-id <node-id>` | Haskell gateway runtime |
 | Public workload runtime | `prodbox workload start --config <path>` | Haskell runtime selected through the `workload.mode = Api \| Websocket` field of the mounted Dhall config per [config_doctrine.md](../documents/engineering/config_doctrine.md) (migration from `PRODBOX_WORKLOAD_MODE` env-var scheduled by Sprint 3.14) for the supported path-routed API and real-WebSocket surfaces behind the shared public hostname |
 | Gateway DNS writes | `dns_write_gate` on home local; host-side public-edge reconciliation on AWS | In-cluster Haskell gateway ownership for the home public record; AWS-substrate Route 53 A records point at the Envoy NLB targets and are reconciled by `prodbox host public-edge --substrate aws` |
@@ -662,12 +754,14 @@ than restated here as a fresh rerun log.
   repo-backed Pulumi backend on a bounded `pulumi login ... --non-interactive` path and repair a
   deleted MinIO export host-path mount by recreating the declared retained directory plus
   restarting `statefulset/minio` before backend validation continues.
-- `src/Prodbox/Infra/AwsTestStack.hs` and `src/Prodbox/Infra/AwsEksTestStack.hs` generate and
-  rely on MinIO-backed Pulumi state that survives cluster wipes via MinIO's PV under
-  `.data/prodbox/minio/0` (Sprint `4.16` replaces the prior `.prodbox-state/<stack>/
-  stack-snapshot.json` file-existence predicate with `<stack>ResidueStatus` queries
-  against the MinIO/S3 backend); the HA-RKE2 validation SSH key is fetched on demand
-  from `pulumi stack output --show-secrets` into a `mktemp` file scoped to the
+- `src/Prodbox/Infra/AwsTestStack.hs`, `src/Prodbox/Infra/AwsEksTestStack.hs`, and
+  `src/Prodbox/Infra/AwsEksSubzoneStack.hs` run Pulumi through
+  `Prodbox.Pulumi.EncryptedBackend`, so the stack checkpoint survives cluster wipes as an
+  opaque Model-B object in MinIO while Pulumi only sees a scratch `file://` backend
+  (Sprint `4.16` replaces the prior `.prodbox-state/<stack>/stack-snapshot.json`
+  file-existence predicate with `<stack>ResidueStatus` queries; Sprint `7.14` moves
+  those queries onto encrypted checkpoint presence). The HA-RKE2 validation SSH key is fetched on
+  demand from `pulumi stack output --show-secrets` into a `mktemp` file scoped to the
   validation run (Sprint `4.18`); the HA-RKE2 validation destroys and recreates the
   retained
   `aws-test` stack once when Pulumi reconcile succeeds but SSH validation fails, repairing stale
@@ -694,14 +788,24 @@ than restated here as a fresh rerun log.
 - `src/Prodbox/TestRunner.hs`, `src/Prodbox/TestPlan.hs`, and `src/Prodbox/TestValidation.hs`
   own the aggregate reruns, named Haskell-owned validation flows, and destructive postflight restore
   path.
-- An in-cluster Vault platform component and a `prodbox vault` command group are the scheduled
-  (not-yet-implemented) intended structure for fail-closed secrets / KMS / PKI. The platform
-  component runs Vault in-cluster on a durable `.data/vault/vault/0` PV alongside MinIO's PV
-  (scheduled under Sprint `3.17`), and the `prodbox vault status` / `init` / `unseal` / `seal` /
-  `reconcile` / `rotate-unlock-bundle` / `rotate-transit-key <key>` / `pki status` /
-  `pki issue-test-cert` command group joins the public CLI surface (scheduled under Sprint `1.36`,
-  with the encrypted unlock bundle at `.data/prodbox/vault-unlock-bundle.age`). The typed
-  `Prodbox.Settings.SecretRef` config contract is scheduled under Sprint `1.35`. See
+- An in-cluster Vault platform component and a `prodbox vault` command group are the active
+  structure for fail-closed secrets / KMS / PKI. The platform component runs Vault
+  in-cluster on a durable `.data/vault/vault/0` PV alongside MinIO's PV (Sprint `3.17`
+  code-owned foundation), and the `prodbox vault status` / `init` / `unseal` / `seal` / `reconcile` /
+  `rotate-unlock-bundle` / `rotate-transit-key <key>` / `pki status` / `pki issue-test-cert`
+  command group is on the public CLI surface (Sprint `1.36`, with the encrypted unlock bundle at
+  `.data/prodbox/vault-unlock-bundle.age`; the base reconcile plan now covers mounts, Kubernetes
+  auth, policies, roles, and Transit keys, and all `vault` leaves have native handlers). Sprint
+  `4.29` folds root/local Vault deploy, init-if-empty, unseal, and policy reconcile into
+  `cluster reconcile` and preserves the durable Vault PV on delete; Sprint `4.32` adds the child
+  Transit-seal lifecycle branch and parent-readiness fail-closed cascade. Sprint `5.8` has landed
+  the code-owned `sealed-vault` named validation, pure audit helper, and live home proof; the live
+  AWS-substrate sealed-Vault exercise remains open in Sprint `5.8` and gated by Sprint `7.14`. The typed
+  `Prodbox.Settings.SecretRef` config contract has the
+  FileSecret-free union, Vault KV resolver seam, and production plaintext validator under Sprint
+  `1.35`; the production Vault-Transit `DekCipher` lives in `Prodbox.Vault.TransitCipher` under
+  Sprint `1.37`, and the same sprint wires the seal-status gate into real Pulumi apply/destroy
+  paths via `runPulumiCommandWithGate`. See
   [vault_doctrine.md](../documents/engineering/vault_doctrine.md).
 
 ### Canonical Validation Gates
@@ -730,16 +834,16 @@ Patroni application-database path. Compatibility-cleanup history now lives only 
 | Configuration and settings | `src/Prodbox/Settings.hs`, `src/Prodbox/Repo.hs`, `prodbox-config.dhall`, `prodbox-config-types.dhall` | Phase 1 |
 | Host and Kubernetes helpers | `src/Prodbox/Host.hs`, `src/Prodbox/K8s.hs` | Phase 1 |
 | Container packaging and registry doctrine | `docker/`, `src/Prodbox/CLI/Rke2.hs`, `src/Prodbox/ContainerImage.hs`, `src/Prodbox/Lib/ChartPlatform.hs` | Phases 1-4 |
-| Pulumi orchestration and YAML stack programs | `src/Prodbox/CLI/Pulumi.hs`, `src/Prodbox/Infra/`, `pulumi/aws-eks/Pulumi.yaml`, `pulumi/aws-eks/Main.yaml`, `pulumi/aws-test/Pulumi.yaml`, `pulumi/aws-test/Main.yaml`, plus per-run Pulumi state in the MinIO `prodbox-test-pulumi-backends` bucket (anchored to `.data/prodbox/minio/0`) | Phase 4 |
+| Pulumi orchestration and YAML stack programs | `src/Prodbox/CLI/Pulumi.hs`, `src/Prodbox/Infra/`, `pulumi/aws-eks/Pulumi.yaml`, `pulumi/aws-eks/Main.yaml`, `pulumi/aws-test/Pulumi.yaml`, `pulumi/aws-test/Main.yaml`, plus per-run Pulumi state in the MinIO `prodbox-state` bucket (anchored to `.data/prodbox/minio/0`) | Phase 4 |
 | DNS inspection | `src/Prodbox/Dns.hs` | Phase 2 |
 | Shared public-edge route catalog | `src/Prodbox/PublicEdge.hs` | Phase 3 |
 | Gateway runtime and packaging | `src/Prodbox/Gateway.hs`, `src/Prodbox/Gateway/Daemon.hs`, `src/Prodbox/Gateway/Peer.hs`, `src/Prodbox/Gateway/Types.hs`, `docker/gateway.Dockerfile` | Phase 2 |
 | Formal verification | `src/Prodbox/Tla.hs`, `documents/engineering/tla/` | Phase 2 |
-| Chart platform and retained state | `src/Prodbox/CLI/Charts.hs`, `src/Prodbox/Lib/ChartPlatform.hs`, `src/Prodbox/Lib/Storage.hs`, `src/Prodbox/PostgresPlatform.hs`, `charts/`, plus chart-secret derivation by the in-cluster gateway service from the master seed at MinIO `prodbox/master-seed` (Sprint `3.13`), and the Percona-operator-backed Patroni application-database contract | Phase 3 |
+| Chart platform and retained state | `src/Prodbox/CLI/Charts.hs`, `src/Prodbox/Lib/ChartPlatform.hs`, `src/Prodbox/Lib/Storage.hs`, `src/Prodbox/PostgresPlatform.hs`, `src/Prodbox/Secret/VaultInventory.hs`, `charts/`, the active Vault chart-secret policy/role/service-account, Kubernetes-auth config, seed-bootstrap foundation, direct websocket OIDC `SecretRef.Vault` consumer, Keycloak / MinIO / VS Code Vault materialization jobs, gateway event/AWS/MinIO Vault consumers, the Patroni Vault materializer hook (Sprint `3.18`), the Sprint `3.19` removal of the legacy master-seed derivation path, and the Percona-operator-backed Patroni application-database contract | Phase 3 |
 | Public workload runtime | `src/Prodbox/Workload.hs` | Phase 3 |
 | Public-edge diagnostics | `src/Prodbox/Host.hs` | Phase 5 |
 | Onboarding and AWS administration | `src/Prodbox/Aws.hs`, `src/Prodbox/AwsEnvironment.hs`, `src/Prodbox/CLI/Parser.hs`, `src/Prodbox/Native.hs` | Phase 7 |
-| Test harness and quality gate | `src/Prodbox/BuildSupport.hs`, `src/Prodbox/CheckCode.hs`, `src/Prodbox/TestRunner.hs`, `src/Prodbox/TestValidation.hs`, `src/Prodbox/Effect.hs`, `src/Prodbox/EffectDAG.hs`, `src/Prodbox/EffectInterpreter.hs`, `src/Prodbox/Prerequisite.hs`, `src/Prodbox/Result.hs`, `src/Prodbox/Subprocess.hs`, `src/Prodbox/TestPlan.hs`, `test/` | Phases 1 and 4 |
+| Test harness and quality gate | `src/Prodbox/BuildSupport.hs`, `src/Prodbox/CheckCode.hs`, `src/Prodbox/TestRunner.hs`, `src/Prodbox/TestValidation.hs`, `src/Prodbox/Effect.hs`, `src/Prodbox/EffectDAG.hs`, `src/Prodbox/EffectInterpreter.hs`, `src/Prodbox/Prerequisite.hs`, `src/Prodbox/Result.hs`, `src/Prodbox/Subprocess.hs`, `src/Prodbox/TestPlan.hs`, `test/` | Phases 1, 4, and 5 |
 
 ## Current Execution State
 
@@ -925,16 +1029,18 @@ Sprints `8.7`/`8.8` (and the live `8.5`/`8.6` proofs).
   `aws_admin_for_test_simulation.*` to simulate the interactive public CLI workflow because
   cert-manager Route 53 DNS01 credentials do not support an STS session-token field, and clears
   operational `aws.*` from `prodbox-config.dhall` before returning.
-- Full cluster delete preserves exactly two retained host roots: the configured manual PV root and
-  k8s Secrets materialized by the in-cluster gateway service from the master seed at
-  MinIO `prodbox/master-seed` (Sprint `3.13`).
+- Full cluster delete preserves the configured manual PV root, including the durable Vault PV under
+  `.data/vault/vault/0` and the MinIO PV under `.data/prodbox/minio/0`; chart secrets are
+  Vault-backed and the master-seed derivation baseline has been removed.
 - Secrets must never appear in `prodbox-config.dhall`, generated configs, logs, or committed Dhall;
   they are carried only as typed `SecretRef` references resolved through Vault. A sealed Vault must
   leave no secret, no active Dhall, no Pulumi state, and no downstream-cluster metadata extractable
   from the retained durable data — the fail-closed invariant of
   [vault_doctrine.md §2](../documents/engineering/vault_doctrine.md#2-the-fail-closed-invariant)
-  (scheduled across Sprints `0.12`, `1.35`–`1.37`, `3.17`–`3.18`, `4.29`–`4.30`, `5.8`,
-  `7.14`–`7.15`, `8.9`; not yet implemented).
+  (scheduled across Sprints `0.12`, `1.35`–`1.37`, `3.17`–`3.20`, `4.29`–`4.33`, `5.8`,
+  `7.14`–`7.15`, `8.9`; the 4.29 lifecycle/PV foundation, 4.33 sealed-state gate/redaction
+  surface, 5.8 code-owned validation surface, and 7.14 decrypt-to-scratch wrapper/read/migration
+  paths have landed, while the live whole-system sealed-state proof remains open).
 - Direct public-registry pulls are permitted on the supported path only for Harbor and Harbor's
   storage backend during bootstrap.
 - Every later Helm deployment must obtain its images through Harbor.

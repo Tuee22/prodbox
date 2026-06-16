@@ -13,21 +13,12 @@ workload binary. The `PRODBOX_*` env-var fallback ladder was deleted from
 fsnotify, while a `mode` / `port` edit drains-and-exits for a kubelet restart
 (Boot/Live split, config_doctrine §8).
 
-Sprint 3.13 chunks 11 + 28: the OIDC `client_secret` is read via
-cross-namespace Helm `lookup` of the gateway-daemon-managed
-`keycloak-oidc-clients` Secret. The keycloak release that registers
-the @prodbox-websocket@ client and materializes the corresponding
-`WEBSOCKET_CLIENT_SECRET` deploys via the vscode root chart's
-transitive dep chain (vscode → keycloak → keycloak-postgres) into the
-@vscode@ namespace, so that's the lookup namespace. On `helm template`
-(no cluster) the lookup returns empty and the chart falls back to the
-`.Values.oidc.clientSecret` placeholder.
+Sprint 3.18: the OIDC `client_secret` is a SecretRef.Vault Dhall value.
+The workload authenticates to Vault through Kubernetes auth as the
+`websocket` ServiceAccount and reads `secret/data/vscode/oidc/prodbox-websocket`;
+sealed, unreachable, denied, or missing Vault fails the WebSocket runtime
+closed instead of falling back to a chart-rendered value.
 */}}
-{{- $oidcSecret := lookup "v1" "Secret" "vscode" "keycloak-oidc-clients" }}
-{{- $clientSecret := .Values.oidc.clientSecret }}
-{{- if $oidcSecret }}
-{{- $clientSecret = index $oidcSecret.data "WEBSOCKET_CLIENT_SECRET" | b64dec }}
-{{- end }}
 apiVersion: v1
 kind: ConfigMap
 metadata:
@@ -40,6 +31,13 @@ data:
     , mode = < Api | Websocket >.Websocket
     , log_level = None Text
     , workload_port = Some {{ .Values.websocket.port }}
+    , vault =
+        Some
+          { address = {{ .Values.vault.address | quote }}
+          , auth_path = {{ .Values.vault.authPath | quote }}
+          , role = {{ .Values.vault.role | quote }}
+          , service_account_token_file = Some {{ .Values.vault.serviceAccountTokenFile | quote }}
+          }
     , redis =
         Some
           { host = {{ .Values.redis.host | quote }}
@@ -49,7 +47,16 @@ data:
         Some
           { issuer = {{ .Values.oidc.issuer | quote }}
           , client_id = {{ .Values.oidc.clientId | quote }}
-          , client_secret = {{ $clientSecret | quote }}
+          , client_secret =
+              < Vault : { mount : Text, path : Text, field : Text }
+              | TransitKey : Text
+              | Prompt : { name : Text, purpose : Text }
+              | TestPlaintext : Text
+              >.Vault
+                { mount = {{ .Values.oidc.clientSecretVaultRef.mount | quote }}
+                , path = {{ .Values.oidc.clientSecretVaultRef.path | quote }}
+                , field = {{ .Values.oidc.clientSecretVaultRef.field | quote }}
+                }
           , public_base_url = {{ .Values.oidc.publicBaseUrl | quote }}
           , token_endpoint = {{ .Values.oidc.tokenEndpoint | quote }}
           }

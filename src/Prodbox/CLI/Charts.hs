@@ -10,6 +10,7 @@ import Data.Char (toLower)
 import Data.List (intercalate)
 import Data.Map.Strict qualified as Map
 import Data.Text qualified as Text
+import Prodbox.AwsEnvironment (overlayAwsCredentials)
 import Prodbox.CLI.Command
   ( ChartsCommand (..)
   , buildPlan
@@ -43,12 +44,11 @@ import Prodbox.Lib.ChartPlatform
   , resolveChartSecrets
   , supportedChartNames
   )
-import Prodbox.Secret.GatewayDeriveMode (GatewayDeriveMode)
 import Prodbox.Settings
   ( ConfigFile (..)
-  , Credentials (..)
   , ValidatedSettings (..)
   , aws
+  , resolveAwsCredentialsRefFromHostVault
   , validateAndLoadSettings
   )
 import Prodbox.Substrate (Substrate (..))
@@ -61,8 +61,8 @@ import System.IO
   , stdout
   )
 
-runChartsCommand :: GatewayDeriveMode -> FilePath -> ChartsCommand -> IO ExitCode
-runChartsCommand mode repoRoot command =
+runChartsCommand :: FilePath -> ChartsCommand -> IO ExitCode
+runChartsCommand repoRoot command =
   case command of
     ChartsList ->
       withSettings repoRoot $ \settings -> do
@@ -84,10 +84,8 @@ runChartsCommand mode repoRoot command =
             case secretsResult of
               Left err -> failWith err
               Right chartSecrets -> do
-                -- Sprint 3.13 chunk 16: gateway event keys self-bootstrap
-                -- from the daemon Pod after master-seed acquisition; the
-                -- chart reads them via Helm `lookup`. The host-side
-                -- `resolveGatewayEventKeys` cache is gone.
+                -- Gateway event keys are Vault materialized by chart init /
+                -- hook logic; the legacy host-side event-key cache is gone.
                 let gatewayEventKeys = Map.empty
                 buildResult <-
                   buildChartDeploymentPlanForSubstrate
@@ -101,14 +99,14 @@ runChartsCommand mode repoRoot command =
                   Left err -> failWith err
                   Right plan ->
                     withSubstrateEnvironment repoRoot settings substrate $ do
-                      platformExit <- ensurePlatformForSubstrate mode repoRoot settings substrate
+                      platformExit <- ensurePlatformForSubstrate repoRoot settings substrate
                       case platformExit of
                         ExitFailure _ -> pure platformExit
                         ExitSuccess ->
                           runPlanWithOptions
                             planOptions
                             (buildPlan renderChartDeploymentPlan plan)
-                            (applyChartDeployWithPostHook mode rootChart substrate)
+                            (applyChartDeployWithPostHook rootChart substrate)
     ChartsDelete chartName substrate confirmed planOptions ->
       case requirePublicRootChartName chartName of
         Left err -> failWith err
@@ -180,9 +178,9 @@ applyChartPlanOutput applyPlan plan = do
 -- on the home substrate, install the iptables loopback-only rule on the
 -- gateway NodePort. Other charts and substrates pass through unchanged.
 applyChartDeployWithPostHook
-  :: GatewayDeriveMode -> String -> Substrate -> ChartDeploymentPlan -> IO ExitCode
-applyChartDeployWithPostHook mode rootChart substrate plan = do
-  deployExit <- applyChartPlanOutput (deployChartPlan mode) plan
+  :: String -> Substrate -> ChartDeploymentPlan -> IO ExitCode
+applyChartDeployWithPostHook rootChart substrate plan = do
+  deployExit <- applyChartPlanOutput deployChartPlan plan
   case (deployExit, rootChart, substrate) of
     (ExitSuccess, "gateway", SubstrateHomeLocal) ->
       runHostFirewallGatewayRestrictOptional defaultGatewayNodePort
@@ -240,11 +238,10 @@ failWith message = do
 -- `helm upgrade --install` or `kubectl apply`, so repeated runs converge
 -- without breaking existing installs.
 ensurePlatformForSubstrate
-  :: GatewayDeriveMode -> FilePath -> ValidatedSettings -> Substrate -> IO ExitCode
-ensurePlatformForSubstrate _ _ _ SubstrateHomeLocal = pure ExitSuccess
-ensurePlatformForSubstrate mode repoRoot settings SubstrateAws =
+  :: FilePath -> ValidatedSettings -> Substrate -> IO ExitCode
+ensurePlatformForSubstrate _ _ SubstrateHomeLocal = pure ExitSuccess
+ensurePlatformForSubstrate repoRoot settings SubstrateAws =
   ensureAwsSubstratePlatformRuntime
-    mode
     repoRoot
     settings
     awsSubstrateProdboxId
@@ -275,20 +272,22 @@ withSubstrateEnvironment repoRoot settings substrate action =
     SubstrateHomeLocal -> action
     SubstrateAws ->
       withEksKubeconfig repoRoot $ \kubeconfigPath -> do
-        let awsCreds = aws (validatedConfig settings)
-            envOverrides =
-              [ ("KUBECONFIG", kubeconfigPath)
-              , ("AWS_ACCESS_KEY_ID", Text.unpack (access_key_id awsCreds))
-              , ("AWS_SECRET_ACCESS_KEY", Text.unpack (secret_access_key awsCreds))
-              , ("AWS_DEFAULT_REGION", Text.unpack (region awsCreds))
-              , ("AWS_REGION", Text.unpack (region awsCreds))
-              ]
-                ++ maybe [] (\tok -> [("AWS_SESSION_TOKEN", Text.unpack tok)]) (session_token awsCreds)
-        previousValues <- mapM (\(name, _) -> lookupEnv name) envOverrides
-        bracket_
-          (mapM_ (\(name, value) -> setEnv name value) envOverrides)
-          (mapM_ restoreOne (zip envOverrides previousValues))
-          action
+        credentialsResult <-
+          resolveAwsCredentialsRefFromHostVault
+            repoRoot
+            "aws"
+            (aws (validatedConfig settings))
+        case credentialsResult of
+          Left err -> do
+            writeError (fatalError (Text.pack ("load operational AWS credentials from Vault: " ++ err)))
+            pure (ExitFailure 1)
+          Right credentials -> do
+            let envOverrides = overlayAwsCredentials [("KUBECONFIG", kubeconfigPath)] credentials
+            previousValues <- mapM (\(name, _) -> lookupEnv name) envOverrides
+            bracket_
+              (mapM_ (\(name, value) -> setEnv name value) envOverrides)
+              (mapM_ restoreOne (zip envOverrides previousValues))
+              action
  where
   restoreOne :: ((String, String), Maybe String) -> IO ()
   restoreOne ((name, _), Nothing) = unsetEnv name

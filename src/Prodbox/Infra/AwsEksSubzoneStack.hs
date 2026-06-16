@@ -40,28 +40,32 @@ import Prodbox.CLI.Output
 import Prodbox.Error (fatalError)
 import Prodbox.Infra.AwsEksTestStack
   ( loadOperationalAwsCredentials
-  , pulumiAwsProviderEnv
   , pulumiBackendBaseEnv
+  , pulumiProviderBaseEnv
   , settingsAwsEnv
   )
 import Prodbox.Infra.MinioBackend
   ( bucketObjectCount
   , ensureMinioBackendBucket
   , pulumiBackendLoginTimeoutSeconds
-  , pulumiBackendUrl
   , readMinioCredentials
   , withMinioPortForward
   )
 import Prodbox.Infra.StackOutputs qualified as StackOutputs
 import Prodbox.Lifecycle.LiveResidue qualified as LiveResidue
 import Prodbox.Lifecycle.ResidueStatus qualified as ResidueStatus
+import Prodbox.Pulumi.EncryptedBackend
+  ( LegacyPulumiBackend (..)
+  , PulumiStackRef (..)
+  , renderEncryptedBackendError
+  , withMigratedDecryptedStackEnvironment
+  )
 import Prodbox.Result (Result (..))
 import Prodbox.Settings
   ( AwsSubstrateSection (..)
   , Credentials
   , Route53Section (..)
   , ValidatedSettings (..)
-  , aws
   , aws_substrate
   , route53
   , validateAndLoadSettings
@@ -81,6 +85,10 @@ import System.FilePath ((</>))
 
 awsEksSubzoneStackName :: String
 awsEksSubzoneStackName = "aws-eks-subzone"
+
+awsEksSubzonePulumiStackRef :: PulumiStackRef
+awsEksSubzonePulumiStackRef =
+  PulumiStackRef "prodbox-aws-eks-subzone" (Text.pack awsEksSubzoneStackName)
 
 awsEksSubzonePulumiProjectDir :: FilePath -> FilePath
 awsEksSubzonePulumiProjectDir repoRoot = repoRoot </> "pulumi" </> "aws-eks-subzone"
@@ -273,34 +281,6 @@ syncAwsEksSubzoneStackConfig projectDir environment stackConfig =
 
 -- Pulumi flow helpers parameterized to the subzone stack.
 
-pulumiSubzoneBaseEnv :: FilePath -> Int -> String -> String -> IO (Either String [(String, String)])
-pulumiSubzoneBaseEnv repoRoot localPort minioAccessKey minioSecretKey = do
-  settingsResult <- validateAndLoadSettings repoRoot
-  case settingsResult of
-    Left err -> pure (Left err)
-    Right settings -> do
-      currentEnv <- getEnvironment
-      let path = maybe "" id (lookup "PATH" currentEnv)
-          home = maybe "" id (lookup "HOME" currentEnv)
-          providerEnv = pulumiAwsProviderEnv (aws (validatedConfig settings))
-      pure
-        ( Right
-            ( [ ("AWS_ACCESS_KEY_ID", minioAccessKey)
-              , ("AWS_SECRET_ACCESS_KEY", minioSecretKey)
-              , ("AWS_REGION", "us-east-1")
-              , ("AWS_DEFAULT_REGION", "us-east-1")
-              , ("AWS_EC2_METADATA_DISABLED", "true")
-              , ("PULUMI_BACKEND_URL", pulumiBackendUrl localPort)
-              , ("PULUMI_CONFIG_PASSPHRASE", "")
-              , ("PULUMI_SKIP_UPDATE_CHECK", "true")
-              , ("PATH", path)
-              , ("HOME", home)
-              , ("LANG", "C.UTF-8")
-              ]
-                ++ providerEnv
-            )
-        )
-
 pulumiLogin :: FilePath -> [(String, String)] -> IO ExitCode
 pulumiLogin projectDir environment = do
   loginResult <- pulumiLoginQuiet projectDir environment
@@ -324,7 +304,10 @@ data PulumiStackSelectResult
 
 pulumiStackSelect :: FilePath -> [(String, String)] -> Bool -> IO PulumiStackSelectResult
 pulumiStackSelect projectDir environment createIfMissing =
-  let arguments = ["stack", "select", awsEksSubzoneStackName] ++ ["--create" | createIfMissing]
+  let arguments =
+        ["stack", "select", awsEksSubzoneStackName]
+          ++ ["--create" | createIfMissing]
+          ++ if createIfMissing then ["--secrets-provider", "plaintext"] else []
    in if createIfMissing
         then do
           exitCode <- runPulumiCommand projectDir environment arguments
@@ -466,6 +449,50 @@ joinComma :: [String] -> String
 joinComma [] = ""
 joinComma items = foldr1 (\a b -> a ++ "," ++ b) items
 
+runEnsureAwsEksSubzonePulumiCycle
+  :: FilePath
+  -> AwsEksSubzoneStackConfig
+  -> Int
+  -> String
+  -> String
+  -> [(String, String)]
+  -> IO (Either String ())
+runEnsureAwsEksSubzonePulumiCycle projectDir stackConfig localPort accessKey secretKey environment = do
+  loginExit <- pulumiLogin projectDir environment
+  case loginExit of
+    ExitFailure _ -> pure (Left "pulumi login failed")
+    ExitSuccess -> do
+      selectExit <- pulumiStackSelect projectDir environment True
+      case selectExit of
+        PulumiStackMissing ->
+          pure (Left "pulumi stack select reported a missing stack after --create")
+        PulumiStackSelectFailed detail ->
+          pure (Left ("pulumi stack select failed: " ++ detail))
+        PulumiStackSelected -> do
+          syncExit <- syncAwsEksSubzoneStackConfig projectDir environment stackConfig
+          case syncExit of
+            ExitFailure _ -> pure (Left "pulumi config set failed")
+            ExitSuccess -> do
+              upExit <- pulumiUp projectDir environment
+              case upExit of
+                ExitFailure _ -> pure (Left "pulumi up failed")
+                ExitSuccess -> do
+                  outputsResult <- pulumiStackOutputs projectDir environment
+                  case outputsResult of
+                    Left err -> pure (Left err)
+                    Right outputs ->
+                      case snapshotFromOutputs outputs of
+                        Left err -> pure (Left err)
+                        Right snapshot -> do
+                          objectCountResult <-
+                            bucketObjectCount localPort accessKey secretKey
+                          case objectCountResult of
+                            Left err -> pure (Left err)
+                            Right objectCount -> do
+                              writeOutput
+                                (renderAwsEksSubzoneStackReport snapshot objectCount)
+                              pure (Right ())
+
 ensureAwsEksSubzoneStackResources :: FilePath -> IO ExitCode
 ensureAwsEksSubzoneStackResources repoRoot = do
   let projectDir = awsEksSubzonePulumiProjectDir repoRoot
@@ -486,46 +513,21 @@ ensureAwsEksSubzoneStackResources repoRoot = do
                 case bucketResult of
                   Left err -> pure (Left err)
                   Right () -> do
-                    baseEnvironmentResult <-
-                      pulumiSubzoneBaseEnv repoRoot localPort accessKey secretKey
-                    case baseEnvironmentResult of
+                    providerEnvironmentResult <- pulumiProviderBaseEnv repoRoot
+                    case providerEnvironmentResult of
                       Left err -> pure (Left err)
-                      Right baseEnvironment -> do
-                        loginExit <- pulumiLogin projectDir baseEnvironment
-                        case loginExit of
-                          ExitFailure _ -> pure (Left "pulumi login failed")
-                          ExitSuccess -> do
-                            selectExit <- pulumiStackSelect projectDir baseEnvironment True
-                            case selectExit of
-                              PulumiStackMissing ->
-                                pure (Left "pulumi stack select reported a missing stack after --create")
-                              PulumiStackSelectFailed detail ->
-                                pure (Left ("pulumi stack select failed: " ++ detail))
-                              PulumiStackSelected -> do
-                                syncExit <-
-                                  syncAwsEksSubzoneStackConfig projectDir baseEnvironment stackConfig
-                                case syncExit of
-                                  ExitFailure _ -> pure (Left "pulumi config set failed")
-                                  ExitSuccess -> do
-                                    upExit <- pulumiUp projectDir baseEnvironment
-                                    case upExit of
-                                      ExitFailure _ -> pure (Left "pulumi up failed")
-                                      ExitSuccess -> do
-                                        outputsResult <- pulumiStackOutputs projectDir baseEnvironment
-                                        case outputsResult of
-                                          Left err -> pure (Left err)
-                                          Right outputs ->
-                                            case snapshotFromOutputs outputs of
-                                              Left err -> pure (Left err)
-                                              Right snapshot -> do
-                                                objectCountResult <-
-                                                  bucketObjectCount localPort accessKey secretKey
-                                                case objectCountResult of
-                                                  Left err -> pure (Left err)
-                                                  Right objectCount -> do
-                                                    writeOutput
-                                                      (renderAwsEksSubzoneStackReport snapshot objectCount)
-                                                    pure (Right ())
+                      Right providerEnvironment -> do
+                        legacyEnvironment <- pulumiBackendBaseEnv localPort accessKey secretKey
+                        backendResult <-
+                          withMigratedDecryptedStackEnvironment
+                            repoRoot
+                            awsEksSubzonePulumiStackRef
+                            (LegacyPulumiBackend projectDir legacyEnvironment (Text.pack awsEksSubzoneStackName))
+                            providerEnvironment
+                            (runEnsureAwsEksSubzonePulumiCycle projectDir stackConfig localPort accessKey secretKey)
+                        pure $ case backendResult of
+                          Left err -> Left (renderEncryptedBackendError err)
+                          Right () -> Right ()
           case portForwardResult of
             Left err -> failWith err
             Right (Left err) -> failWith err
@@ -540,6 +542,61 @@ destroyAwsEksSubzoneStack repoRoot summary = do
       writeOutputLine ("AWS EKS subzone stack: " ++ status)
       pure ExitSuccess
 
+runDestroyAwsEksSubzonePulumiCycle
+  :: FilePath
+  -> FilePath
+  -> Maybe AwsEksSubzoneStackSnapshot
+  -> Bool
+  -> [(String, String)]
+  -> IO (Either String String)
+runDestroyAwsEksSubzonePulumiCycle repoRoot projectDir currentSnapshot summary environment = do
+  loginResult <- pulumiLoginEither projectDir environment summary
+  case loginResult of
+    Left err -> pure (Left ("pulumi login failed: " ++ err))
+    Right () -> do
+      selectExit <- pulumiStackSelect projectDir environment False
+      case selectExit of
+        PulumiStackSelected -> do
+          operationalCredentialsResult <- loadOperationalAwsCredentials repoRoot
+          case operationalCredentialsResult of
+            Left err ->
+              pure
+                ( Left
+                    ( "operational AWS credentials are required to destroy the AWS subzone stack: "
+                        ++ err
+                    )
+                )
+            Right operationalCredentials -> do
+              configResult <- resolveAwsEksSubzoneStackConfig repoRoot
+              case configResult of
+                Left err -> pure (Left err)
+                Right stackConfig -> do
+                  syncExit <-
+                    syncAwsEksSubzoneStackConfig projectDir environment stackConfig
+                  case syncExit of
+                    ExitFailure _ -> pure (Left "pulumi config set failed")
+                    ExitSuccess -> do
+                      awsCliEnvironment <- awsCliEnvironmentForCredentials operationalCredentials
+                      cleanupResult <-
+                        cleanupAwsEksSubzoneRecordSets
+                          repoRoot
+                          awsCliEnvironment
+                          currentSnapshot
+                      case cleanupResult of
+                        Left err -> pure (Left err)
+                        Right () -> do
+                          destroyResult <-
+                            pulumiDestroyEither projectDir environment summary
+                          case destroyResult of
+                            Left err -> pure (Left ("pulumi destroy failed: " ++ err))
+                            Right () -> completeDestroy repoRoot projectDir environment summary
+        PulumiStackMissing ->
+          case currentSnapshot of
+            Nothing -> pure (Right "already absent from the local Pulumi backend")
+            Just _ -> finalizeDestroy
+        PulumiStackSelectFailed detail ->
+          pure (Left ("pulumi stack select failed: " ++ detail))
+
 destroyAwsEksSubzoneStackStatus :: FilePath -> Bool -> IO (Either String String)
 destroyAwsEksSubzoneStackStatus repoRoot summary = do
   currentSnapshot <- fetchAwsEksSubzoneStackSnapshotFromBackend repoRoot
@@ -553,55 +610,21 @@ destroyAwsEksSubzoneStackStatus repoRoot summary = do
         case bucketResult of
           Left err -> pure (Left err)
           Right () -> do
-            backendEnvironment <- pulumiBackendBaseEnv localPort accessKey secretKey
-            loginResult <- pulumiLoginEither projectDir backendEnvironment summary
-            case loginResult of
-              Left err -> pure (Left ("pulumi login failed: " ++ err))
-              Right () -> do
-                selectExit <- pulumiStackSelect projectDir backendEnvironment False
-                case selectExit of
-                  PulumiStackSelected -> do
-                    operationalCredentialsResult <- loadOperationalAwsCredentials repoRoot
-                    case operationalCredentialsResult of
-                      Left err ->
-                        pure
-                          ( Left
-                              ( "operational AWS credentials are required to destroy the AWS subzone stack: "
-                                  ++ err
-                              )
-                          )
-                      Right operationalCredentials -> do
-                        configResult <- resolveAwsEksSubzoneStackConfig repoRoot
-                        case configResult of
-                          Left err -> pure (Left err)
-                          Right stackConfig -> do
-                            let providerEnvironment =
-                                  backendEnvironment ++ pulumiAwsProviderEnv operationalCredentials
-                            syncExit <-
-                              syncAwsEksSubzoneStackConfig projectDir providerEnvironment stackConfig
-                            case syncExit of
-                              ExitFailure _ -> pure (Left "pulumi config set failed")
-                              ExitSuccess -> do
-                                awsCliEnvironment <- awsCliEnvironmentForCredentials operationalCredentials
-                                cleanupResult <-
-                                  cleanupAwsEksSubzoneRecordSets
-                                    repoRoot
-                                    awsCliEnvironment
-                                    currentSnapshot
-                                case cleanupResult of
-                                  Left err -> pure (Left err)
-                                  Right () -> do
-                                    destroyResult <-
-                                      pulumiDestroyEither projectDir providerEnvironment summary
-                                    case destroyResult of
-                                      Left err -> pure (Left ("pulumi destroy failed: " ++ err))
-                                      Right () -> completeDestroy repoRoot projectDir providerEnvironment summary
-                  PulumiStackMissing ->
-                    case currentSnapshot of
-                      Nothing -> pure (Right "already absent from the local Pulumi backend")
-                      Just _ -> finalizeDestroy
-                  PulumiStackSelectFailed detail ->
-                    pure (Left ("pulumi stack select failed: " ++ detail))
+            providerEnvironmentResult <- pulumiProviderBaseEnv repoRoot
+            case providerEnvironmentResult of
+              Left err -> pure (Left err)
+              Right providerEnvironment -> do
+                legacyEnvironment <- pulumiBackendBaseEnv localPort accessKey secretKey
+                backendResult <-
+                  withMigratedDecryptedStackEnvironment
+                    repoRoot
+                    awsEksSubzonePulumiStackRef
+                    (LegacyPulumiBackend projectDir legacyEnvironment (Text.pack awsEksSubzoneStackName))
+                    providerEnvironment
+                    (runDestroyAwsEksSubzonePulumiCycle repoRoot projectDir currentSnapshot summary)
+                pure $ case backendResult of
+                  Left err -> Left (renderEncryptedBackendError err)
+                  Right status -> Right status
   case portForwardResult of
     Left err ->
       case currentSnapshot of

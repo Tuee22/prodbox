@@ -18,8 +18,8 @@
 -- per-substrate Route 53 subzone (rendered by
 -- `acmeClusterIssuerSpec SubstrateAws` in `Prodbox.CLI.Rke2`). The shared
 -- platform-component pins (Envoy Gateway, cert-manager, Harbor, MinIO,
--- Percona) come from the single `Prodbox.ContainerImage` SSoT; there is no
--- per-substrate chart-version / image re-pin.
+-- Percona, Vault) come from the single `Prodbox.ContainerImage` SSoT; there
+-- is no per-substrate chart-version / image re-pin.
 --
 -- Sprint 7.5.b.ii.d.II lands the AWS Load Balancer Controller install
 -- function `ensureAwsLoadBalancerControllerRuntime`. The corresponding
@@ -44,6 +44,7 @@ module Prodbox.Lib.AwsSubstratePlatform
   , awsSubstrateCertManagerReleaseName
   , awsSubstrateCertManagerNamespace
   , ensureAwsSubstrateAcmeRuntime
+  , ensureAwsSubstrateVaultRuntime
   , ensureAwsSubstratePlatformRuntime
   , applyEksContainerdMirrorDaemonSet
   , applyEksImageMirrorJob
@@ -68,7 +69,7 @@ import Prodbox.CLI.Output
   )
 import Prodbox.CLI.Rke2
   ( MinioImageSource (..)
-  , acmeRuntimeManifestWith
+  , acmeRuntimeManifestWithCredentials
   , ensureAdminPublicEdgeRoutes
   , ensureGatewayChartReady
   , ensureGatewayImagesForSubstrate
@@ -78,6 +79,7 @@ import Prodbox.CLI.Rke2
   , ensureMinioRuntime
   , ensurePostgresOperatorRuntime
   , ensurePublicEdgeWorkloadImageForSubstrate
+  , ensureVaultRuntime
   )
 import Prodbox.ContainerImage qualified as ContainerImage
 import Prodbox.Error (fatalError)
@@ -102,13 +104,13 @@ import Prodbox.Lifecycle.LiveResidue
   )
 import Prodbox.PublicEdge (publicEdgeClusterIssuerName, resolveSubstrateHostedZoneId)
 import Prodbox.Result (Result (..))
-import Prodbox.Secret.GatewayDeriveMode (GatewayDeriveMode)
 import Prodbox.Settings
-  ( ConfigFile (..)
-  , Credentials (..)
+  ( AwsCredentialsRef (..)
+  , ConfigFile (..)
   , DeploymentSection (..)
   , ValidatedSettings (..)
   , aws
+  , resolveAwsCredentialsRefFromHostVault
   )
 import Prodbox.Subprocess
   ( ProcessOutput (..)
@@ -634,55 +636,77 @@ ensureAwsSubstrateAcmeRuntime repoRoot settings prodboxId labelValue = do
   case hostedZoneResult of
     Left err -> failWith err
     Right hostedZoneId -> do
-      let manifest =
-            acmeRuntimeManifestWith SubstrateAws settings hostedZoneId prodboxId labelValue
-          -- Wrap the manifest list in a `v1/List` so `kubectl apply -f` accepts
-          -- the file (kubectl does not accept bare JSON arrays at the top level).
-          -- Matches the home-substrate pattern in
-          -- `Prodbox.CLI.Rke2::withTemporaryJsonManifest`.
-          manifestList =
-            object
-              [ "apiVersion" .= ("v1" :: String)
-              , "kind" .= ("List" :: String)
-              , "items" .= manifest
-              ]
-      withTempJsonFile
-        repoRoot
-        "aws-substrate-acme-runtime"
-        (encode manifestList)
-        ( \manifestPath -> do
-            applyExit <-
-              runStreaming
-                Subprocess
-                  { subprocessPath = "kubectl"
-                  , subprocessArguments = ["apply", "-f", manifestPath]
-                  , subprocessEnvironment = Nothing
-                  , subprocessWorkingDirectory = Just repoRoot
-                  }
-            case applyExit of
-              ExitFailure _ -> pure applyExit
-              ExitSuccess ->
-                -- Wait for the ZeroSSL ClusterIssuer rendered by
-                -- acmeRuntimeManifestWith to become Ready.
-                runStreaming
-                  Subprocess
-                    { subprocessPath = "kubectl"
-                    , subprocessArguments =
-                        [ "wait"
-                        , "--for=condition=Ready"
-                        , "clusterissuer/" ++ publicEdgeClusterIssuerName
-                        , "--timeout=300s"
-                        ]
-                    , subprocessEnvironment = Nothing
-                    , subprocessWorkingDirectory = Just repoRoot
-                    }
-        )
+      credentialsResult <-
+        resolveAwsCredentialsRefFromHostVault
+          repoRoot
+          "aws"
+          (aws (validatedConfig settings))
+      case credentialsResult of
+        Left err -> failWith ("load operational AWS credentials from Vault: " ++ err)
+        Right route53Credentials -> do
+          let manifest =
+                acmeRuntimeManifestWithCredentials
+                  SubstrateAws
+                  settings
+                  hostedZoneId
+                  route53Credentials
+                  prodboxId
+                  labelValue
+              -- Wrap the manifest list in a `v1/List` so `kubectl apply -f` accepts
+              -- the file (kubectl does not accept bare JSON arrays at the top level).
+              -- Matches the home-substrate pattern in
+              -- `Prodbox.CLI.Rke2::withTemporaryJsonManifest`.
+              manifestList =
+                object
+                  [ "apiVersion" .= ("v1" :: String)
+                  , "kind" .= ("List" :: String)
+                  , "items" .= manifest
+                  ]
+          withTempJsonFile
+            repoRoot
+            "aws-substrate-acme-runtime"
+            (encode manifestList)
+            ( \manifestPath -> do
+                applyExit <-
+                  runStreaming
+                    Subprocess
+                      { subprocessPath = "kubectl"
+                      , subprocessArguments = ["apply", "-f", manifestPath]
+                      , subprocessEnvironment = Nothing
+                      , subprocessWorkingDirectory = Just repoRoot
+                      }
+                case applyExit of
+                  ExitFailure _ -> pure applyExit
+                  ExitSuccess ->
+                    -- Wait for the ZeroSSL ClusterIssuer rendered by
+                    -- acmeRuntimeManifestWithCredentials to become Ready.
+                    runStreaming
+                      Subprocess
+                        { subprocessPath = "kubectl"
+                        , subprocessArguments =
+                            [ "wait"
+                            , "--for=condition=Ready"
+                            , "clusterissuer/" ++ publicEdgeClusterIssuerName
+                            , "--timeout=300s"
+                            ]
+                        , subprocessEnvironment = Nothing
+                        , subprocessWorkingDirectory = Just repoRoot
+                        }
+            )
+
+-- | Install the shared Vault chart on the AWS substrate. This intentionally
+-- reuses the same @charts/vault@ Helm helper as the home substrate so both
+-- substrates run the same Vault StatefulSet, Service, and PVC shape.
+ensureAwsSubstrateVaultRuntime :: FilePath -> IO ExitCode
+ensureAwsSubstrateVaultRuntime repoRoot = do
+  writeOutputLine "Installing Vault on the AWS-substrate EKS cluster"
+  ensureVaultRuntime repoRoot
 
 -- | Orchestrate the full AWS-substrate platform install: AWS Load
--- Balancer Controller, Envoy Gateway, cert-manager, and the
--- substrate-aware ACME `ClusterIssuer`. Idempotent: each underlying step
--- uses `helm upgrade --install` and `kubectl apply`, so repeated runs
--- converge to the desired state.
+-- Balancer Controller, Envoy Gateway, cert-manager, the substrate-aware
+-- ACME `ClusterIssuer`, Vault, and the shared storage/registry/workload
+-- bootstrap. Idempotent: each underlying step uses `helm upgrade --install`
+-- and `kubectl apply`, so repeated runs converge to the desired state.
 --
 -- Preconditions:
 --   * `prodbox aws stack eks reconcile` has been run, so the live
@@ -696,11 +720,11 @@ ensureAwsSubstrateAcmeRuntime repoRoot settings prodboxId labelValue = do
 --   * The caller has `KUBECONFIG` pointed at the EKS cluster (see
 --     `Prodbox.CLI.Charts.withSubstrateEnvironment`).
 ensureAwsSubstratePlatformRuntime
-  :: GatewayDeriveMode -> FilePath -> ValidatedSettings -> String -> String -> IO ExitCode
-ensureAwsSubstratePlatformRuntime mode repoRoot settings prodboxId labelValue = do
+  :: FilePath -> ValidatedSettings -> String -> String -> IO ExitCode
+ensureAwsSubstratePlatformRuntime repoRoot settings prodboxId labelValue = do
   writeOutputLine
     ( "Reconciling AWS-substrate platform (LB Controller + Envoy Gateway "
-        ++ "+ cert-manager + ACME + containerd registry mirror + MinIO + Harbor + admin routes)"
+        ++ "+ cert-manager + ACME + Vault + containerd registry mirror + MinIO + Harbor + admin routes)"
     )
   outputsResult <-
     fetchPerRunStackOutputs repoRoot (StackName (Text.pack awsEksTestStackName))
@@ -721,13 +745,14 @@ ensureAwsSubstratePlatformRuntime mode repoRoot settings prodboxId labelValue = 
   defaultRegion =
     let configured =
           Text.unpack
-            (Text.strip (region (aws (validatedConfig settings))))
+            (Text.strip (awsCredentialRegion (aws (validatedConfig settings))))
      in if null configured then "us-east-1" else configured
   steps snapshot =
     [ ensureAwsLoadBalancerControllerRuntime repoRoot defaultRegion snapshot
     , ensureAwsSubstrateEnvoyGatewayRuntime repoRoot settings prodboxId labelValue
     , ensureAwsSubstrateCertManagerRuntime
     , ensureAwsSubstrateAcmeRuntime repoRoot settings prodboxId labelValue
+    , ensureAwsSubstrateVaultRuntime repoRoot
     , applyEksContainerdMirrorDaemonSet repoRoot
     , ensureMinioRuntime repoRoot SubstrateAws MinioBootstrapPublic
     , ensureHarborRegistryStorageBackend repoRoot
@@ -738,10 +763,8 @@ ensureAwsSubstratePlatformRuntime mode repoRoot settings prodboxId labelValue = 
     , ensurePostgresOperatorRuntime repoRoot prodboxId labelValue
     , ensureMinioRuntime repoRoot SubstrateAws MinioSteadyStateHarbor
     , ensureGatewayMinioBootstrap repoRoot
-    , -- secret_derivation_doctrine.md §7 steps 4–6: gateway daemon deployed
-      -- and ready before the host-CLI derive in 'ensureAdminPublicEdgeRoutes'.
-      ensureGatewayChartReady mode repoRoot settings SubstrateAws
-    , ensureAdminPublicEdgeRoutes mode repoRoot settings SubstrateAws prodboxId labelValue
+    , ensureGatewayChartReady repoRoot settings SubstrateAws
+    , ensureAdminPublicEdgeRoutes repoRoot settings SubstrateAws prodboxId labelValue
     ]
 
 -- | Pure listing of the orchestration steps
@@ -755,6 +778,7 @@ awsSubstratePlatformRuntimeStepDescriptions =
   , "ensureAwsSubstrateEnvoyGatewayRuntime"
   , "ensureAwsSubstrateCertManagerRuntime"
   , "ensureAwsSubstrateAcmeRuntime"
+  , "ensureAwsSubstrateVaultRuntime"
   , "applyEksContainerdMirrorDaemonSet"
   , "ensureMinioRuntime SubstrateAws MinioBootstrapPublic"
   , "ensureHarborRegistryStorageBackend"

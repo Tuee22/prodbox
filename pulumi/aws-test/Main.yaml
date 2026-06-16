@@ -209,7 +209,7 @@ resources:
         Name: ${stackName}-node-2
 
 outputs:
-  backend_bucket: prodbox-test-pulumi-backends
+  backend_bucket: prodbox-state
   vpc_id: ${vpc.id}
   subnet_ids:
     - ${publicSubnet0.id}

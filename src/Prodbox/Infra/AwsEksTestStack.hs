@@ -13,6 +13,7 @@ module Prodbox.Infra.AwsEksTestStack
   , loadOperationalAwsCredentials
   , pulumiAwsProviderEnv
   , pulumiBackendBaseEnv
+  , pulumiProviderBaseEnv
   , settingsAwsEnv
   , renderAwsEksTestStackReport
   , parseAwsEksTestStackFromOutputs
@@ -48,6 +49,7 @@ import Prodbox.Http.Client
   , httpGetText
   , renderHttpError
   )
+import Prodbox.Infra.AwsProviderCredentials qualified as AwsProviderCredentials
 import Prodbox.Infra.MinioBackend
   ( bucketObjectCount
   , ensureMinioBackendBucket
@@ -60,13 +62,18 @@ import Prodbox.Infra.StackOutputs qualified as StackOutputs
 import Prodbox.Lifecycle.K8sDrain qualified as K8sDrain
 import Prodbox.Lifecycle.LiveResidue qualified as LiveResidue
 import Prodbox.Lifecycle.ResidueStatus qualified as ResidueStatus
+import Prodbox.Pulumi.EncryptedBackend
+  ( LegacyPulumiBackend (..)
+  , PulumiStackRef (..)
+  , renderEncryptedBackendError
+  , withMigratedDecryptedStackEnvironment
+  )
 import Prodbox.Result (Result (..))
 import Prodbox.Settings
-  ( Credentials (..)
+  ( AwsCredentialsRef (..)
+  , Credentials (..)
   , ValidatedSettings (..)
   , aws
-  , aws_admin_for_test_simulation
-  , loadConfigFile
   , validateAndLoadSettings
   )
 import Prodbox.Subprocess
@@ -87,6 +94,10 @@ import System.IO (hClose, openTempFile)
 
 awsEksTestStackName :: String
 awsEksTestStackName = "aws-eks-test"
+
+awsEksTestPulumiStackRef :: PulumiStackRef
+awsEksTestPulumiStackRef =
+  PulumiStackRef "prodbox-aws-eks-test" (Text.pack awsEksTestStackName)
 
 awsEksTestPulumiProjectDir :: FilePath -> FilePath
 awsEksTestPulumiProjectDir repoRoot = repoRoot </> "pulumi" </> "aws-eks"
@@ -430,12 +441,12 @@ renderAwsEksTestStackReport snapshot objectCount =
 
 settingsAwsEnv :: FilePath -> IO (Either String [(String, String)])
 settingsAwsEnv repoRoot = do
-  settingsResult <- validateAndLoadSettings repoRoot
-  case settingsResult of
+  credentialsResult <- AwsProviderCredentials.loadPulumiProviderCredentials repoRoot
+  case credentialsResult of
     Left err -> pure (Left err)
-    Right settings -> do
+    Right credentials -> do
       baseEnv <- getEnvironment
-      pure (Right (overlayAwsCredentials baseEnv (aws (validatedConfig settings))))
+      pure (Right (overlayAwsCredentials baseEnv credentials))
 
 fetchPublicIpv4 :: IO (Either String String)
 fetchPublicIpv4 = do
@@ -448,25 +459,19 @@ fetchPublicIpv4 = do
             then pure (Right ip)
             else pure (Left ("unexpected public IP response: " ++ ip))
 
-pulumiEksBaseEnv :: FilePath -> Int -> String -> String -> IO (Either String [(String, String)])
-pulumiEksBaseEnv repoRoot localPort minioAccessKey minioSecretKey = do
-  settingsResult <- validateAndLoadSettings repoRoot
-  case settingsResult of
+pulumiProviderBaseEnv :: FilePath -> IO (Either String [(String, String)])
+pulumiProviderBaseEnv repoRoot = do
+  credentialsResult <- AwsProviderCredentials.loadPulumiProviderCredentials repoRoot
+  case credentialsResult of
     Left err -> pure (Left err)
-    Right settings -> do
+    Right providerCredentials -> do
       currentEnv <- getEnvironment
       let path = maybe "" id (lookup "PATH" currentEnv)
           home = maybe "" id (lookup "HOME" currentEnv)
-          providerEnv = pulumiAwsProviderEnv (aws (validatedConfig settings))
+          providerEnv = pulumiAwsProviderEnv providerCredentials
       pure
         ( Right
-            ( [ ("AWS_ACCESS_KEY_ID", minioAccessKey)
-              , ("AWS_SECRET_ACCESS_KEY", minioSecretKey)
-              , ("AWS_REGION", "us-east-1")
-              , ("AWS_DEFAULT_REGION", "us-east-1")
-              , ("AWS_EC2_METADATA_DISABLED", "true")
-              , ("PULUMI_BACKEND_URL", pulumiBackendUrl localPort)
-              , ("PULUMI_CONFIG_PASSPHRASE", "")
+            ( [ ("AWS_EC2_METADATA_DISABLED", "true")
               , ("PULUMI_SKIP_UPDATE_CHECK", "true")
               , ("PATH", path)
               , ("HOME", home)
@@ -476,6 +481,11 @@ pulumiEksBaseEnv repoRoot localPort minioAccessKey minioSecretKey = do
             )
         )
 
+-- | Legacy raw MinIO backend environment used only for first-touch
+-- checkpoint import/delete through 'LegacyPulumiBackend'. Supported
+-- Pulumi actions receive 'pulumiProviderBaseEnv' and then have
+-- @PULUMI_BACKEND_URL@ rewritten to a scratch @file://@ backend by
+-- 'withMigratedDecryptedStackEnvironment'.
 pulumiBackendBaseEnv :: Int -> String -> String -> IO [(String, String)]
 pulumiBackendBaseEnv localPort minioAccessKey minioSecretKey = do
   currentEnv <- getEnvironment
@@ -509,43 +519,59 @@ pulumiAwsProviderEnv creds =
     , ("PRODBOX_PULUMI_AWS_DEFAULT_REGION", Text.unpack (region creds))
     ]
 
--- | Resolve AWS credentials for the @aws-eks-test@ Pulumi destroy path.
--- Tries operational @aws.*@ first, then falls back to admin
--- @aws_admin_for_test_simulation.*@ if operational is empty. The fallback
--- is the in-memory analog of the @withMaterializedOperationalCreds@
--- bracket from [Lifecycle Reconciliation Doctrine §5b]
--- (../../documents/engineering/lifecycle_reconciliation_doctrine.md):
--- it closes the cascade-credentials failure class observed on May 22,
--- 2026 by keeping the destroy path working when the harness teardown
--- cleared @aws.*@ before the per-run stack was destroyed. No file
--- mutation; the bracket-style restore semantics from the doctrine apply
--- to harness setup/teardown, not to the read-side credential lookup
--- here.
+-- | Resolve Vault-backed AWS provider credentials for the @aws-eks-test@
+-- Pulumi destroy path. Supported Pulumi stack operations fail closed when
+-- @secret/gateway/gateway/aws@ is absent instead of falling back to raw
+-- Dhall credentials.
 loadOperationalAwsCredentials :: FilePath -> IO (Either String Credentials)
-loadOperationalAwsCredentials repoRoot = do
-  configResult <- loadConfigFile repoRoot
-  pure $
-    case configResult of
-      Left err -> Left err
-      Right config ->
-        let operational = aws config
-            adminFallback = aws_admin_for_test_simulation config
-         in if credentialsConfigured operational
-              then Right operational
-              else
-                if credentialsConfigured adminFallback
-                  then Right adminFallback
-                  else
-                    Left
-                      "aws.access_key_id must not be empty (operational \
-                      \aws.* unset and aws_admin_for_test_simulation.* \
-                      \fallback also empty)"
+loadOperationalAwsCredentials =
+  AwsProviderCredentials.loadPulumiProviderCredentials
+
+runEnsureAwsEksPulumiCycle
+  :: FilePath
+  -> AwsEksTestStackConfig
+  -> Int
+  -> String
+  -> String
+  -> [(String, String)]
+  -> IO (Either String ())
+runEnsureAwsEksPulumiCycle projectDir stackConfig localPort accessKey secretKey environment = do
+  loginExit <- pulumiLogin projectDir environment
+  case loginExit of
+    ExitFailure _ -> pure (Left "pulumi login failed")
+    ExitSuccess -> do
+      selectExit <- pulumiStackSelect projectDir environment True
+      case selectExit of
+        PulumiStackSelected -> do
+          syncExit <- syncAwsEksTestStackConfig projectDir environment stackConfig
+          case syncExit of
+            ExitFailure _ -> pure (Left "pulumi config set failed")
+            ExitSuccess -> do
+              upExit <- pulumiUp projectDir environment
+              case upExit of
+                ExitFailure _ -> pure (Left "pulumi up failed")
+                ExitSuccess -> do
+                  outputsResult <- pulumiStackOutputs projectDir environment
+                  case outputsResult of
+                    Left err -> pure (Left err)
+                    Right outputs ->
+                      case snapshotFromOutputs outputs of
+                        Left err -> pure (Left err)
+                        Right snapshot -> do
+                          objectCountResult <- bucketObjectCount localPort accessKey secretKey
+                          case objectCountResult of
+                            Left err -> pure (Left err)
+                            Right objectCount -> do
+                              writeOutput (renderAwsEksTestStackReport snapshot objectCount)
+                              pure (Right ())
+        PulumiStackMissing ->
+          pure (Left "pulumi stack select reported a missing stack after --create")
+        PulumiStackSelectFailed detail ->
+          pure (Left ("pulumi stack select failed: " ++ detail))
 
 credentialsConfigured :: Credentials -> Bool
-credentialsConfigured creds =
-  not (Text.null (Text.strip (access_key_id creds)))
-    && not (Text.null (Text.strip (secret_access_key creds)))
-    && not (Text.null (Text.strip (region creds)))
+credentialsConfigured =
+  AwsProviderCredentials.credentialsConfigured
 
 resolveAwsEksTestStackConfig :: IO (Either String AwsEksTestStackConfig)
 resolveAwsEksTestStackConfig = do
@@ -600,7 +626,10 @@ data PulumiStackSelectResult
 
 pulumiStackSelect :: FilePath -> [(String, String)] -> Bool -> IO PulumiStackSelectResult
 pulumiStackSelect projectDir environment createIfMissing =
-  let arguments = ["stack", "select", awsEksTestStackName] ++ ["--create" | createIfMissing]
+  let arguments =
+        ["stack", "select", awsEksTestStackName]
+          ++ ["--create" | createIfMissing]
+          ++ if createIfMissing then ["--secrets-provider", "plaintext"] else []
    in if createIfMissing
         then do
           exitCode <- runPulumiCommand projectDir environment arguments
@@ -783,7 +812,7 @@ withEksKubeconfig repoRoot action = do
   settings <- case settingsResult of
     Left err -> error ("withEksKubeconfig: settings load failed: " ++ err)
     Right s -> pure s
-  let regionText = Text.unpack (Text.strip (region (aws (validatedConfig settings))))
+  let regionText = Text.unpack (Text.strip (awsCredentialRegion (aws (validatedConfig settings))))
   when (null regionText) $
     error
       "withEksKubeconfig: aws.region must be set in prodbox-config.dhall before materializing the AWS EKS kubeconfig"
@@ -1362,42 +1391,21 @@ ensureAwsEksTestStackResources repoRoot = do
                   case configResult of
                     Left err -> pure (Left err)
                     Right stackConfig -> do
-                      baseEnvironmentResult <- pulumiEksBaseEnv repoRoot localPort accessKey secretKey
-                      case baseEnvironmentResult of
+                      providerEnvironmentResult <- pulumiProviderBaseEnv repoRoot
+                      case providerEnvironmentResult of
                         Left err -> pure (Left err)
-                        Right baseEnvironment -> do
-                          loginExit <- pulumiLogin projectDir baseEnvironment
-                          case loginExit of
-                            ExitFailure _ -> pure (Left "pulumi login failed")
-                            ExitSuccess -> do
-                              selectExit <- pulumiStackSelect projectDir baseEnvironment True
-                              case selectExit of
-                                PulumiStackSelected -> do
-                                  syncExit <- syncAwsEksTestStackConfig projectDir baseEnvironment stackConfig
-                                  case syncExit of
-                                    ExitFailure _ -> pure (Left "pulumi config set failed")
-                                    ExitSuccess -> do
-                                      upExit <- pulumiUp projectDir baseEnvironment
-                                      case upExit of
-                                        ExitFailure _ -> pure (Left "pulumi up failed")
-                                        ExitSuccess -> do
-                                          outputsResult <- pulumiStackOutputs projectDir baseEnvironment
-                                          case outputsResult of
-                                            Left err -> pure (Left err)
-                                            Right outputs ->
-                                              case snapshotFromOutputs outputs of
-                                                Left err -> pure (Left err)
-                                                Right snapshot -> do
-                                                  objectCountResult <- bucketObjectCount localPort accessKey secretKey
-                                                  case objectCountResult of
-                                                    Left err -> pure (Left err)
-                                                    Right objectCount -> do
-                                                      writeOutput (renderAwsEksTestStackReport snapshot objectCount)
-                                                      pure (Right ())
-                                PulumiStackMissing ->
-                                  pure (Left "pulumi stack select reported a missing stack after --create")
-                                PulumiStackSelectFailed detail ->
-                                  pure (Left ("pulumi stack select failed: " ++ detail))
+                        Right providerEnvironment -> do
+                          legacyEnvironment <- pulumiBackendBaseEnv localPort accessKey secretKey
+                          backendResult <-
+                            withMigratedDecryptedStackEnvironment
+                              repoRoot
+                              awsEksTestPulumiStackRef
+                              (LegacyPulumiBackend projectDir legacyEnvironment (Text.pack awsEksTestStackName))
+                              providerEnvironment
+                              (runEnsureAwsEksPulumiCycle projectDir stackConfig localPort accessKey secretKey)
+                          pure $ case backendResult of
+                            Left err -> Left (renderEncryptedBackendError err)
+                            Right () -> Right ()
         case portForwardResult of
           Left err -> failWith err
           Right (Left err) -> failWith err
@@ -1412,6 +1420,64 @@ destroyAwsEksTestStack repoRoot summary = do
       writeOutputLine ("AWS EKS test stack: " ++ status)
       pure ExitSuccess
 
+runDestroyAwsEksPulumiCycle
+  :: FilePath
+  -> FilePath
+  -> Maybe AwsEksTestStackSnapshot
+  -> Bool
+  -> [(String, String)]
+  -> IO (Either String String)
+runDestroyAwsEksPulumiCycle repoRoot projectDir currentSnapshot summary environment = do
+  loginResult <- pulumiLoginEither projectDir environment summary
+  case loginResult of
+    Left err -> pure (Left ("pulumi login failed: " ++ err))
+    Right () -> do
+      selectExit <- pulumiStackSelect projectDir environment False
+      case selectExit of
+        PulumiStackSelected -> do
+          operationalCredentialsResult <- loadOperationalAwsCredentials repoRoot
+          case operationalCredentialsResult of
+            Left err ->
+              pure
+                ( Left
+                    ( "operational AWS credentials are required to destroy the AWS EKS test stack once a Pulumi stack exists: "
+                        ++ err
+                    )
+                )
+            Right operationalCredentials -> do
+              configResult <- resolveAwsEksTestStackConfig
+              case configResult of
+                Left err -> pure (Left err)
+                Right stackConfig -> do
+                  syncExit <- syncAwsEksTestStackConfig projectDir environment stackConfig
+                  case syncExit of
+                    ExitFailure _ -> pure (Left "pulumi config set failed")
+                    ExitSuccess -> do
+                      drainAwsEksClusterBeforeDestroy
+                        repoRoot
+                        operationalCredentials
+                      purgeDetachedSubnetNetworkInterfacesBeforeDestroy repoRoot currentSnapshot
+                      purgeClusterSecurityGroupBeforeDestroy repoRoot currentSnapshot
+                      destroyResult <- pulumiDestroyEither projectDir environment summary
+                      case destroyResult of
+                        Left _ -> do
+                          _ <- pulumiRefreshEither projectDir environment summary
+                          purgeDetachedSubnetNetworkInterfacesBeforeDestroy repoRoot currentSnapshot
+                          purgeClusterSecurityGroupBeforeDestroy repoRoot currentSnapshot
+                          retryResult <- pulumiDestroyEither projectDir environment summary
+                          case retryResult of
+                            Left err -> pure (Left ("pulumi destroy failed after refresh: " ++ err))
+                            Right () -> completeDestroy repoRoot projectDir environment currentSnapshot summary
+                        Right () ->
+                          completeDestroy repoRoot projectDir environment currentSnapshot summary
+        PulumiStackMissing ->
+          case currentSnapshot of
+            Nothing ->
+              pure (Right "already absent from the local Pulumi backend")
+            Just _ -> finalizeDestroy repoRoot currentSnapshot
+        PulumiStackSelectFailed detail ->
+          pure (Left ("pulumi stack select failed: " ++ detail))
+
 destroyAwsEksTestStackStatus :: FilePath -> Bool -> IO (Either String String)
 destroyAwsEksTestStackStatus repoRoot summary = do
   currentSnapshot <- fetchAwsEksTestSnapshotFromBackend repoRoot
@@ -1425,77 +1491,21 @@ destroyAwsEksTestStackStatus repoRoot summary = do
         case bucketResult of
           Left err -> pure (Left err)
           Right () -> do
-            backendEnvironment <- pulumiBackendBaseEnv localPort accessKey secretKey
-            loginResult <- pulumiLoginEither projectDir backendEnvironment summary
-            case loginResult of
-              Left err -> pure (Left ("pulumi login failed: " ++ err))
-              Right () -> do
-                selectExit <- pulumiStackSelect projectDir backendEnvironment False
-                case selectExit of
-                  PulumiStackSelected -> do
-                    operationalCredentialsResult <- loadOperationalAwsCredentials repoRoot
-                    case operationalCredentialsResult of
-                      Left err ->
-                        pure
-                          ( Left
-                              ( "operational AWS credentials are required to destroy the AWS EKS test stack once a Pulumi stack exists: "
-                                  ++ err
-                              )
-                          )
-                      Right operationalCredentials -> do
-                        configResult <- resolveAwsEksTestStackConfig
-                        case configResult of
-                          Left err -> pure (Left err)
-                          Right stackConfig -> do
-                            let providerEnvironment =
-                                  backendEnvironment ++ pulumiAwsProviderEnv operationalCredentials
-                            syncExit <- syncAwsEksTestStackConfig projectDir providerEnvironment stackConfig
-                            case syncExit of
-                              ExitFailure _ -> pure (Left "pulumi config set failed")
-                              ExitSuccess -> do
-                                -- Sprint 4.23: drain the EKS cluster's
-                                -- AWS-affecting K8s resources (LoadBalancer
-                                -- Services, ALB Ingresses, Delete-reclaim
-                                -- PVCs) before the Pulumi destroy so the AWS
-                                -- Load Balancer Controller + EBS CSI driver
-                                -- release their ELB / CNI / EBS ENIs while
-                                -- still alive. This gives AWS time to free the
-                                -- subnet's ENIs so `pulumi destroy` doesn't hit
-                                -- DependencyViolation on subnet deletion (the
-                                -- May 28/29 incidents). Best-effort + safe when
-                                -- the cluster is unreachable: a missing /
-                                -- unreachable cluster logs a diagnostic and
-                                -- proceeds to the destroy (the destroy is the
-                                -- goal). Extends Sprint 4.17.b's cascade drain
-                                -- to the per-run eks-destroy path, which both
-                                -- the harness postflight
-                                -- (`prodbox aws stack eks destroy --yes`) and the
-                                -- cascade (`reconcileAbsent` -> PulumiEksDestroy)
-                                -- route through.
-                                drainAwsEksClusterBeforeDestroy
-                                  repoRoot
-                                  operationalCredentials
-                                purgeDetachedSubnetNetworkInterfacesBeforeDestroy repoRoot currentSnapshot
-                                purgeClusterSecurityGroupBeforeDestroy repoRoot currentSnapshot
-                                destroyResult <- pulumiDestroyEither projectDir providerEnvironment summary
-                                case destroyResult of
-                                  Left _ -> do
-                                    _ <- pulumiRefreshEither projectDir providerEnvironment summary
-                                    purgeDetachedSubnetNetworkInterfacesBeforeDestroy repoRoot currentSnapshot
-                                    purgeClusterSecurityGroupBeforeDestroy repoRoot currentSnapshot
-                                    retryResult <- pulumiDestroyEither projectDir providerEnvironment summary
-                                    case retryResult of
-                                      Left err -> pure (Left ("pulumi destroy failed after refresh: " ++ err))
-                                      Right () -> completeDestroy repoRoot projectDir providerEnvironment currentSnapshot summary
-                                  Right () ->
-                                    completeDestroy repoRoot projectDir providerEnvironment currentSnapshot summary
-                  PulumiStackMissing -> do
-                    case currentSnapshot of
-                      Nothing ->
-                        pure (Right "already absent from the local Pulumi backend")
-                      Just _ -> finalizeDestroy repoRoot currentSnapshot
-                  PulumiStackSelectFailed detail ->
-                    pure (Left ("pulumi stack select failed: " ++ detail))
+            providerEnvironmentResult <- pulumiProviderBaseEnv repoRoot
+            case providerEnvironmentResult of
+              Left err -> pure (Left err)
+              Right providerEnvironment -> do
+                legacyEnvironment <- pulumiBackendBaseEnv localPort accessKey secretKey
+                backendResult <-
+                  withMigratedDecryptedStackEnvironment
+                    repoRoot
+                    awsEksTestPulumiStackRef
+                    (LegacyPulumiBackend projectDir legacyEnvironment (Text.pack awsEksTestStackName))
+                    providerEnvironment
+                    (runDestroyAwsEksPulumiCycle repoRoot projectDir currentSnapshot summary)
+                pure $ case backendResult of
+                  Left err -> Left (renderEncryptedBackendError err)
+                  Right status -> Right status
   case portForwardResult of
     Left err ->
       case currentSnapshot of
@@ -1619,9 +1629,8 @@ drainAwsEksClusterBeforeDestroy repoRoot operationalCredentials = do
 -- | Sprint 4.23 helper: build the @KUBECONFIG@ + @AWS_*@ environment for
 -- the per-run EKS drain's kubectl subprocesses. Mirrors
 -- 'Prodbox.CLI.Rke2.buildDrainEnvironment' for @SubstrateAws@ but takes
--- already-resolved 'Credentials' (operational, with the
--- admin-simulation fallback from 'loadOperationalAwsCredentials') so the
--- drain reuses the same credential the destroy will use. @KUBECONFIG@
+-- already-resolved Vault-backed provider 'Credentials' so the drain
+-- reuses the same credential class the destroy will use. @KUBECONFIG@
 -- and the @AWS_*@ overrides are prepended so they take precedence over
 -- any inherited values when @aws eks get-token@ authenticates.
 buildAwsEksDrainEnv

@@ -10,6 +10,7 @@ module Prodbox.Gateway.Types
   , DnsWriteGate (..)
   , GatewayAwsCreds (..)
   , GatewayMinioCreds (..)
+  , GatewayVaultAuth (..)
   , ChannelName (..)
   , ConnectionKey (..)
   , Disposition (..)
@@ -149,10 +150,9 @@ data DnsWriteGate = DnsWriteGate
   }
   deriving (Eq, Show)
 
--- | Sprint 2.22: AWS Route 53 credentials for the daemon, sourced from the
--- daemon's mounted Dhall config (typically imported from a Secret-mounted
--- Dhall fragment per @config_doctrine.md §6@). Optional so daemons that do
--- not own DNS writes (e.g. non-DNS-leader nodes) can omit the field.
+-- | AWS Route 53 credentials for the daemon. Sprint 3.18 resolves these from
+-- SecretRef.Vault values in the mounted Dhall config through Vault Kubernetes
+-- auth. Optional so daemons that do not own DNS writes can omit the field.
 data GatewayAwsCreds = GatewayAwsCreds
   { gatewayAwsAccessKeyId :: String
   , gatewayAwsSecretAccessKey :: String
@@ -161,12 +161,19 @@ data GatewayAwsCreds = GatewayAwsCreds
   }
   deriving (Eq, Show)
 
--- | Sprint 2.22: MinIO IAM credentials for the master-seed read/write path.
--- Sourced from the daemon's mounted Dhall config (typically imported from a
--- Secret-mounted Dhall fragment) instead of env vars.
+-- | MinIO IAM credentials for gateway-owned object-store access. Sprint 3.18
+-- resolves these from SecretRef.Vault values in the mounted Dhall config.
 data GatewayMinioCreds = GatewayMinioCreds
   { gatewayMinioAccessKey :: String
   , gatewayMinioSecretKey :: String
+  }
+  deriving (Eq, Show)
+
+data GatewayVaultAuth = GatewayVaultAuth
+  { gatewayVaultAddress :: String
+  , gatewayVaultAuthPath :: String
+  , gatewayVaultRole :: String
+  , gatewayVaultServiceAccountTokenFile :: FilePath
   }
   deriving (Eq, Show)
 
@@ -183,15 +190,13 @@ data DaemonConfig = DaemonConfig
   , daemonMaxClockSkewSeconds :: Double
   , daemonDrainDeadlineSeconds :: Maybe Int
   , daemonConfigLogLevel :: Maybe String
+  , daemonVaultAuth :: Maybe GatewayVaultAuth
   , daemonDnsWriteGate :: Maybe DnsWriteGate
   , daemonAwsCreds :: Maybe GatewayAwsCreds
   , daemonMinioCreds :: Maybe GatewayMinioCreds
-  , -- \^ Sprint 2.19: in-cluster MinIO Service endpoint URL the daemon
-    --   uses for master-seed read/write. Sourced from
-    --   @boot.minio_endpoint_url@ of the mounted Dhall config. When
-    --   'Nothing', 'acquireInitialMasterSeed' logs
-    --   @master_seed_unavailable@ and the daemon serves 503 on
-    --   @/v1/secret/derive@. Canonical home-substrate value:
+  , -- \^ In-cluster MinIO Service endpoint URL for gateway-owned
+    --   object-store access. Sourced from @boot.minio_endpoint_url@ of the
+    --   mounted Dhall config. Canonical home-substrate value:
     --   @http://minio.prodbox.svc.cluster.local:9000@.
     daemonMinioEndpointUrl :: Maybe String
   }

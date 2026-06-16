@@ -243,6 +243,7 @@ commandPathOfRequest request =
               Rke2Restart -> ["restart"]
               Rke2Reconcile _ _ -> ["reconcile"]
               Rke2Delete _ _ -> ["delete"]
+              Rke2FederationRegister _ _ -> ["federation", "register"]
               Rke2Logs _ -> ["logs"]
         NativeTest testCommand ->
           "test"
@@ -273,6 +274,7 @@ commandPathOfRequest request =
                     IntegrationAdminRoutes -> ["admin-routes"]
                     IntegrationPublicDns -> ["public-dns"]
                     IntegrationKeycloakInvite -> ["keycloak-invite"]
+                    IntegrationSealedVault -> ["sealed-vault"]
         NativeNuke _ -> ["nuke"]
         NativeTlaCheck -> ["dev", "tla-check"]
         NativeUsers usersCommand ->

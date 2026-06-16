@@ -11,7 +11,6 @@
 module Prodbox.UsersAdmin
   ( UserSummary (..)
   , UserVerificationStatus (..)
-  , decodeKeycloakSmtpSecretJson
   , inviteUser
   , inviteUserAtPublicHost
   , listUsers
@@ -19,17 +18,14 @@ module Prodbox.UsersAdmin
   , revokeUserAtPublicHost
   , loadKeycloakAdminPassword
   , loadKeycloakSmtpSettings
+  , smtpSettingsFromVaultFields
   )
 where
 
-import Data.Aeson (Value (..), eitherDecode)
-import Data.Aeson.Key qualified as Key
-import Data.Aeson.KeyMap qualified as KeyMap
-import Data.ByteString.Base64 qualified as Base64
-import Data.ByteString.Lazy.Char8 qualified as BL8
+import Data.Map.Strict (Map)
+import Data.Map.Strict qualified as Map
 import Data.Text (Text)
 import Data.Text qualified as Text
-import Data.Text.Encoding qualified as Text
 import Prodbox.CLI.Command (UsersListStatus (..))
 import Prodbox.Keycloak.Admin
   ( KeycloakClient
@@ -47,10 +43,11 @@ import Prodbox.Keycloak.Admin
   )
 import Prodbox.Keycloak.Admin qualified as KCAdmin
 import Prodbox.Result (Result (..))
-import Prodbox.Service (HasPg (runPg))
 import Prodbox.Settings (ValidatedSettings)
-import Prodbox.Subprocess (processExitCode, processStderr, processStdout)
-import System.Exit (ExitCode (..))
+import Prodbox.Vault.Host
+  ( readHostVaultKvField
+  , readHostVaultKvObject
+  )
 
 data UserVerificationStatus
   = UserVerified
@@ -66,140 +63,44 @@ data UserSummary = UserSummary
   }
   deriving (Eq, Show)
 
--- | Read the Keycloak admin password from the cluster's @keycloak-runtime@
--- @Secret@ (namespace @vscode@, key @KEYCLOAK_ADMIN_PASSWORD@). Sprint 3.13
--- chunks 8 + 28 + 32: the gateway daemon's @ensure-namespace@ handler is the
--- sole writer of this Secret (the master-seed-derived value lands via the
--- chart's pre-install Job), so reading it via @kubectl@ is the host-side
--- analogue of asking the daemon to surface the same derivation. The lookup
--- namespace is @vscode@ because @prodbox test all@ deploys the @vscode@
--- root chart, which transitively pulls keycloak into the @vscode@ namespace
--- (chunk 28's namespace-aware Inventory mirrors this on the daemon side).
--- The 'FilePath' parameter is retained in the signature for source-compatible
--- callers; the value is unused.
+-- | Read the Keycloak admin password from Vault KV. The operator-facing users
+-- CLI targets the shared public stack, where Keycloak is deployed transitively
+-- by the @vscode@ root chart and therefore reads @secret/vscode/keycloak/admin@.
+-- This is intentionally a Vault read: if Vault is sealed, unreachable, or the
+-- field is missing, admin flows fail loud instead of falling back to a
+-- Kubernetes Secret.
 loadKeycloakAdminPassword :: FilePath -> IO (Either String Text)
-loadKeycloakAdminPassword _repoRoot = do
-  result <-
-    runPg
-      [ "get"
-      , "secret"
-      , "keycloak-runtime"
-      , "--namespace"
-      , "vscode"
-      , "-o"
-      , "go-template={{index .data \"KEYCLOAK_ADMIN_PASSWORD\" | base64decode}}"
-      ]
-  case result of
-    Left err ->
-      pure
-        ( Left
-            ( "could not run `kubectl get secret keycloak-runtime`: "
-                <> show err
-                <> " — is kubectl configured and the cluster reachable?"
-            )
-        )
-    Right output ->
-      case processExitCode output of
-        ExitFailure _ ->
-          pure
-            ( Left
-                ( "kubectl get secret keycloak-runtime failed: "
-                    <> trim (processStderr output)
-                    <> " — run `prodbox rke2 reconcile` and `prodbox charts deploy keycloak` so the gateway daemon materializes the Secret."
-                )
-            )
-        ExitSuccess ->
-          let raw = trim (processStdout output)
-           in if null raw
-                then
-                  pure
-                    ( Left
-                        ( "kubectl returned an empty KEYCLOAK_ADMIN_PASSWORD;"
-                            <> " the gateway daemon's `ensure-namespace` Job may not have run yet."
-                        )
-                    )
-                else pure (Right (Text.pack raw))
- where
-  trim =
-    reverse
-      . dropWhile (`elem` (" \t\r\n" :: String))
-      . reverse
-      . dropWhile (`elem` (" \t\r\n" :: String))
+loadKeycloakAdminPassword repoRoot =
+  readHostVaultKvField repoRoot "secret" "vscode/keycloak/admin" "password"
 
--- | Read and decode the cluster-owned Keycloak SMTP Secret. The Secret is
--- applied by the AWS SES sync path and is the source of truth for the realm
--- SMTP map used by operator invite emails.
+-- | Read Keycloak SMTP settings from the externally-owned Vault KV object fed
+-- by the AWS SES setup path. A missing path or denied policy is a retryable
+-- setup error, not a signal to read any non-Vault store.
 loadKeycloakSmtpSettings :: FilePath -> IO (Either String RealmSmtpSettings)
-loadKeycloakSmtpSettings _repoRoot = do
-  result <-
-    runPg
-      [ "get"
-      , "secret"
-      , "keycloak-smtp"
-      , "--namespace"
-      , "vscode"
-      , "-o"
-      , "json"
-      ]
-  case result of
-    Left err ->
-      pure
-        ( Left
-            ( "could not run `kubectl get secret keycloak-smtp`: "
-                <> show err
-                <> " — is kubectl configured and the cluster reachable?"
-            )
-        )
-    Right output ->
-      case processExitCode output of
-        ExitFailure _ ->
-          pure
-            ( Left
-                ( "kubectl get secret keycloak-smtp failed: "
-                    <> trim (processStderr output)
-                    <> " — run `prodbox aws stack aws-ses reconcile` or an invite-aware test harness so the SES SMTP Secret is synced."
-                )
-            )
-        ExitSuccess ->
-          pure (decodeKeycloakSmtpSecretJson (processStdout output))
- where
-  trim =
-    reverse
-      . dropWhile (`elem` (" \t\r\n" :: String))
-      . reverse
-      . dropWhile (`elem` (" \t\r\n" :: String))
+loadKeycloakSmtpSettings repoRoot = do
+  fieldsResult <- readHostVaultKvObject repoRoot "secret" "keycloak/smtp"
+  pure $ fieldsResult >>= smtpSettingsFromVaultFields
 
-decodeKeycloakSmtpSecretJson :: String -> Either String RealmSmtpSettings
-decodeKeycloakSmtpSecretJson raw =
-  case eitherDecode (BL8.pack raw) of
-    Left err -> Left ("keycloak-smtp Secret JSON decode failed: " <> err)
-    Right (Object obj) ->
-      case KeyMap.lookup (Key.fromString "data") obj of
-        Just (Object dataObj) ->
-          RealmSmtpSettings
-            <$> requireSecretText dataObj "KC_SMTP_HOST"
-            <*> requireSecretText dataObj "KC_SMTP_PORT"
-            <*> requireSecretText dataObj "KC_SMTP_FROM"
-            <*> requireSecretText dataObj "KC_SMTP_FROM_DISPLAY_NAME"
-            <*> requireSecretText dataObj "KC_SMTP_REPLY_TO"
-            <*> requireSecretText dataObj "KC_SMTP_USER"
-            <*> requireSecretText dataObj "KC_SMTP_PASSWORD"
-        Just _ -> Left "keycloak-smtp Secret `.data` was not a JSON object"
-        Nothing -> Left "keycloak-smtp Secret missing `.data`"
-    Right _ -> Left "keycloak-smtp Secret JSON was not an object"
+smtpSettingsFromVaultFields :: Map Text Text -> Either String RealmSmtpSettings
+smtpSettingsFromVaultFields fields =
+  RealmSmtpSettings
+    <$> requireVaultField fields "host"
+    <*> requireVaultField fields "port"
+    <*> requireVaultField fields "from"
+    <*> requireVaultField fields "from_display_name"
+    <*> requireVaultField fields "reply_to"
+    <*> requireVaultField fields "username"
+    <*> requireVaultField fields "password"
 
-requireSecretText :: KeyMap.KeyMap Value -> String -> Either String Text
-requireSecretText dataObj fieldName =
-  case KeyMap.lookup (Key.fromString fieldName) dataObj of
-    Nothing -> Left ("keycloak-smtp Secret missing `" <> fieldName <> "`")
-    Just (String encoded) ->
-      case Base64.decode (Text.encodeUtf8 encoded) of
-        Left err -> Left ("keycloak-smtp Secret field `" <> fieldName <> "` was not valid base64: " <> err)
-        Right decoded ->
-          case Text.decodeUtf8' decoded of
-            Left err -> Left ("keycloak-smtp Secret field `" <> fieldName <> "` was not valid UTF-8: " <> show err)
-            Right decodedText -> Right decodedText
-    Just _ -> Left ("keycloak-smtp Secret field `" <> fieldName <> "` was not a string")
+requireVaultField :: Map Text Text -> Text -> Either String Text
+requireVaultField fields fieldName =
+  case Map.lookup fieldName fields of
+    Nothing ->
+      Left ("keycloak/smtp Vault KV object missing `" <> Text.unpack fieldName <> "`")
+    Just value
+      | Text.null (Text.strip value) ->
+          Left ("keycloak/smtp Vault KV field `" <> Text.unpack fieldName <> "` is empty")
+      | otherwise -> Right value
 
 -- | Invite a new operator-owned user. Creates the Keycloak user with `enabled: true`,
 -- `emailVerified: false`, and `requiredActions: ["VERIFY_EMAIL", "UPDATE_PASSWORD"]`,

@@ -27,8 +27,10 @@ library
         Prodbox.CLI.Tree
         Prodbox.CLI.Users
         Prodbox.CLI.Vault
+        Prodbox.Cluster.Federation
         Prodbox.Config.Basics
         Prodbox.Config.InForce
+        Prodbox.Config.InForce.Core
         Prodbox.ContainerImage
         Prodbox.Daemon.Events
         Prodbox.Crypto.Envelope
@@ -46,6 +48,7 @@ library
         Prodbox.Gateway.Types
         Prodbox.Host
         Prodbox.Http.Client
+        Prodbox.Infra.AwsProviderCredentials
         Prodbox.Infra.AwsEksSubzoneStack
         Prodbox.Infra.AwsEksTestStack
         Prodbox.Infra.AwsSesStack
@@ -55,6 +58,7 @@ library
         Prodbox.Infra.StackOutputs
         Prodbox.Infra.SubstrateKubectl
         Prodbox.CLI.Nuke
+        Prodbox.Lifecycle.FederatedVault
         Prodbox.Lifecycle.K8sDrain
         Prodbox.Lifecycle.LiveResidue
         Prodbox.Lifecycle.Preconditions
@@ -78,22 +82,19 @@ library
         Prodbox.Lib.EksImageMirror
         Prodbox.Lib.Storage
         Prodbox.Lint
+        Prodbox.Minio.EncryptedObject
+        Prodbox.Minio.ObjectStore
         Prodbox.Naming
         Prodbox.Native
         Prodbox.PostgresPlatform
         Prodbox.Prerequisite
         Prodbox.PrerequisiteId
         Prodbox.PublicEdge
+        Prodbox.Pulumi.EncryptedBackend
         Prodbox.Repo
         Prodbox.Retry
         Prodbox.Result
-        Prodbox.Secret.Derive
-        Prodbox.Secret.EnsureNamespace
-        Prodbox.Secret.GatewayDeriveMode
-        Prodbox.Secret.HostBootstrap
-        Prodbox.Secret.Inventory
-        Prodbox.Secret.MasterSeed
-        Prodbox.Secret.Wire
+        Prodbox.Secret.VaultInventory
         Prodbox.Service
         Prodbox.Settings
         Prodbox.Settings.SecretRef
@@ -101,12 +102,16 @@ library
         Prodbox.Subprocess
         Prodbox.TestPlan
         Prodbox.TestRunner
-        Prodbox.TestSeam.GatewayDerive
         Prodbox.TestValidation
         Prodbox.Tla
         Prodbox.Vault.Client
         Prodbox.Vault.Gate
+        Prodbox.Vault.Host
         Prodbox.Vault.Orchestration
+        Prodbox.Vault.Reconcile
+        Prodbox.Vault.Seal
+        Prodbox.Vault.Status
+        Prodbox.Vault.TransitCipher
         Prodbox.Vault.UnlockBundle
         Prodbox.Workload
         Prodbox.Workload.PodIdentity

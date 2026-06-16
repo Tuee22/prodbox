@@ -42,6 +42,7 @@ import Prodbox.Gateway.Daemon qualified as Daemon
 import Prodbox.Gateway.Settings qualified as GatewaySettings
 import Prodbox.Gateway.Types
   ( DaemonConfig (..)
+  , GatewayVaultAuth (..)
   , Orders (..)
   , PeerEndpoint (..)
   , supportedDaemonConfigSchemaVersion
@@ -51,7 +52,8 @@ import Prodbox.Prerequisite (prerequisiteRegistry)
 import Prodbox.PrerequisiteId (PrerequisiteId (..))
 import Prodbox.Result (Result (..))
 import Prodbox.Settings
-  ( Credentials (..)
+  ( AwsCredentialsRef (..)
+  , Credentials (..)
   , DomainSection (..)
   , Route53Section (..)
   , ValidatedSettings (..)
@@ -178,6 +180,13 @@ renderGatewayConfigTemplate :: ValidatedSettings -> String -> String
 renderGatewayConfigTemplate settings nodeId =
   unlines
     [ "{ schemaVersion = " ++ show supportedDaemonConfigSchemaVersion
+    , ", vault ="
+    , "    Some"
+    , "      { address = \"http://vault.vault.svc.cluster.local:8200\""
+    , "      , auth_path = \"kubernetes\""
+    , "      , role = \"gateway-gateway\""
+    , "      , service_account_token_file = Some \"/var/run/secrets/kubernetes.io/serviceaccount/token\""
+    , "      }"
     , ", boot ="
     , "  { node_id = " ++ show nodeId
     , "  , cert_file = " ++ show ("/path/to/" ++ nodeId ++ ".crt")
@@ -185,18 +194,35 @@ renderGatewayConfigTemplate settings nodeId =
     , "  , ca_file = \"/path/to/ca.crt\""
     , "  , orders_file = \"/path/to/orders.dhall\""
     , "  , event_keys ="
-    , "    [ { name = " ++ show nodeId ++ ", value = \"REPLACE_WITH_SECRET_KEY\" } ]"
+    , "    [ { name = " ++ show nodeId
+    , "      , value ="
+    , indent 10 (renderVaultSecretRef "secret" ("gateway/gateway/" ++ nodeId ++ "/event-key") "key")
+    , "      }"
+    , "    ]"
     , "  , dns_write_gate ="
     , "      Some"
     , "        { zone_id = " ++ show (Text.unpack (zone_id (route53 config)))
     , "        , fqdn = " ++ show (preferredGatewayFqdn settings)
     , "        , ttl = " ++ show (fromIntegral (demo_ttl (domain config)) :: Integer)
-    , "        , aws_region = " ++ show (Text.unpack (region (aws config)))
+    , "        , aws_region = " ++ show (Text.unpack (awsCredentialRegion (aws config)))
     , "        }"
     , "  , aws_creds ="
-    , "      None { access_key_id : Text, secret_access_key : Text, session_token : Optional Text, region : Text }"
+    , "      Some"
+    , "        { access_key_id ="
+    , indent 12 (renderVaultSecretRef "secret" "gateway/gateway/aws" "access_key_id")
+    , "        , secret_access_key ="
+    , indent 12 (renderVaultSecretRef "secret" "gateway/gateway/aws" "secret_access_key")
+    , "        , session_token ="
+    , indent 12 (renderOptionalVaultSecretRef "secret" "gateway/gateway/aws" "session_token")
+    , "        , region = " ++ show (Text.unpack (awsCredentialRegion (aws config)))
+    , "        }"
     , "  , minio_creds ="
-    , "      None { minio_access_key : Text, minio_secret_key : Text }"
+    , "      Some"
+    , "        { minio_access_key ="
+    , indent 12 (renderVaultSecretRef "secret" "gateway/gateway/minio" "minio_access_key")
+    , "        , minio_secret_key ="
+    , indent 12 (renderVaultSecretRef "secret" "gateway/gateway/minio" "minio_secret_key")
+    , "        }"
     , "  , minio_endpoint_url = None Text"
     , "  }"
     , ", live ="
@@ -211,6 +237,32 @@ renderGatewayConfigTemplate settings nodeId =
     ]
  where
   config = validatedConfig settings
+
+renderVaultSecretRef :: String -> String -> String -> String
+renderVaultSecretRef mount path field =
+  unlines
+    [ "< Vault : { mount : Text, path : Text, field : Text }"
+    , "| TransitKey : Text"
+    , "| Prompt : { name : Text, purpose : Text }"
+    , "| TestPlaintext : Text"
+    , ">.Vault"
+    , "  { mount = " ++ show mount
+    , "  , path = " ++ show path
+    , "  , field = " ++ show field
+    , "  }"
+    ]
+
+renderOptionalVaultSecretRef :: String -> String -> String -> String
+renderOptionalVaultSecretRef mount path field =
+  unlines
+    ( ["Some ("]
+        ++ map ("  " ++) (lines (renderVaultSecretRef mount path field))
+        ++ [")"]
+    )
+
+indent :: Int -> String -> String
+indent spaces =
+  unlines . map (replicate spaces ' ' ++) . lines
 
 renderGatewayStatusReport :: Value -> Either String String
 renderGatewayStatusReport payload =
@@ -280,7 +332,15 @@ resolveDaemonInputPaths configPath config =
         , daemonKeyFile = resolveRelativePath baseDir (daemonKeyFile config)
         , daemonCaFile = resolveRelativePath baseDir (daemonCaFile config)
         , daemonOrdersFile = resolveRelativePath baseDir (daemonOrdersFile config)
+        , daemonVaultAuth = resolveGatewayVaultAuthPath baseDir <$> daemonVaultAuth config
         }
+
+resolveGatewayVaultAuthPath :: FilePath -> GatewayVaultAuth -> GatewayVaultAuth
+resolveGatewayVaultAuthPath baseDir auth =
+  auth
+    { gatewayVaultServiceAccountTokenFile =
+        resolveRelativePath baseDir (gatewayVaultServiceAccountTokenFile auth)
+    }
 
 lookupTextField :: String -> KeyMap.KeyMap Value -> Maybe String
 lookupTextField fieldName obj =

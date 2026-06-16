@@ -32,6 +32,7 @@ module Prodbox.Infra.LongLivedPulumiBackend
     -- * Sprint 7.11: single-object put/get for the substrate-scoped cert retention store
   , putLongLivedObject
   , getLongLivedObject
+  , renderLongLivedObjectVaultGateBlock
   , isLongLivedNoSuchKeyMessage
   , resolveLongLivedAdminS3Context
   )
@@ -57,12 +58,20 @@ import Prodbox.Settings
   , Credentials (..)
   , PulumiStateBackendSection (..)
   , loadConfigFile
+  , resolveAwsCredentialsRefFromHostVault
   )
 import Prodbox.Subprocess
   ( ProcessOutput (..)
   , Subprocess (..)
   , captureSubprocessResult
   )
+import Prodbox.Vault.Client (vaultSealStatus)
+import Prodbox.Vault.Gate
+  ( VaultGateDecision (..)
+  , vaultGateAllows
+  , vaultGateDecision
+  )
+import Prodbox.Vault.Host (resolveHostVaultAddress)
 import System.Environment (getEnvironment, lookupEnv, setEnv, unsetEnv)
 import System.Exit (ExitCode (..))
 
@@ -106,18 +115,32 @@ longLivedBackendErrorMessage err = case err of
 loadAdminAwsCredentials :: FilePath -> IO (Either String Credentials)
 loadAdminAwsCredentials repoRoot = do
   configResult <- loadConfigFile repoRoot
-  pure $ case configResult of
-    Left err -> Left err
-    Right config ->
-      let creds = aws_admin_for_test_simulation config
-       in if adminCredentialsConfigured creds
+  case configResult of
+    Left err -> pure (Left err)
+    Right config -> do
+      credentialsResult <-
+        resolveAwsCredentialsRefFromHostVault
+          repoRoot
+          "aws_admin_for_test_simulation"
+          (aws_admin_for_test_simulation config)
+      pure $ case credentialsResult of
+        Left err ->
+          Left
+            ( "aws_admin_for_test_simulation must resolve from Vault before \
+              \long-lived stack operations (`prodbox aws stack aws-ses reconcile`, \
+              \`aws-ses-destroy`, `aws-ses-migrate-backend`) or `prodbox nuke` \
+              \can authenticate: "
+                ++ err
+            )
+        Right creds ->
+          if adminCredentialsConfigured creds
             then Right creds
             else
               Left
                 "aws_admin_for_test_simulation.access_key_id, \
                 \aws_admin_for_test_simulation.secret_access_key, and \
-                \aws_admin_for_test_simulation.region must all be set \
-                \in prodbox-config.dhall before long-lived stack operations \
+                \aws_admin_for_test_simulation.region must all resolve to \
+                \non-empty values before long-lived stack operations \
                 \(`prodbox aws stack aws-ses reconcile`, `aws-ses-destroy`, \
                 \`aws-ses-migrate-backend`) or `prodbox nuke` can authenticate."
 
@@ -662,6 +685,20 @@ getLongLivedObject
   -- ^ Local path the object body is written to.
   -> IO (Either String Bool)
 getLongLivedObject workingDir environment section key outputPath =
+  do
+    gate <- queryLongLivedObjectVaultGate
+    if vaultGateAllows gate
+      then getLongLivedObjectUnlocked workingDir environment section key outputPath
+      else pure (Left (renderLongLivedObjectVaultGateBlock gate))
+
+getLongLivedObjectUnlocked
+  :: FilePath
+  -> [(String, String)]
+  -> PulumiStateBackendSection
+  -> String
+  -> FilePath
+  -> IO (Either String Bool)
+getLongLivedObjectUnlocked workingDir environment section key outputPath =
   case longLivedPulumiBackendUrlEither section of
     Left err -> pure (Left (longLivedBackendErrorMessage err))
     Right _url -> do
@@ -692,6 +729,24 @@ getLongLivedObject workingDir environment section key outputPath =
                       ++ ": "
                       ++ processStderr output
                   )
+
+queryLongLivedObjectVaultGate :: IO VaultGateDecision
+queryLongLivedObjectVaultGate = do
+  address <- resolveHostVaultAddress
+  vaultGateDecision <$> vaultSealStatus address
+
+renderLongLivedObjectVaultGateBlock :: VaultGateDecision -> String
+renderLongLivedObjectVaultGateBlock gate =
+  "vault_status="
+    ++ vaultStatusLabel gate
+    ++ " component=long-lived-object result=unobservable"
+
+vaultStatusLabel :: VaultGateDecision -> String
+vaultStatusLabel gate = case gate of
+  VaultGateAllow -> "unsealed"
+  VaultGateBlockSealed -> "sealed"
+  VaultGateBlockUninitialized -> "uninitialized"
+  VaultGateBlockUnreachable _ -> "unreachable"
 
 -- | Sprint 8.7: resolve everything needed for a long-lived bucket
 -- object operation from @prodbox-config.dhall@: the admin AWS @aws

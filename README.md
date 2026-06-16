@@ -45,7 +45,9 @@ validation environments.
 - The supported configuration contract is described by
   [documents/engineering/config_doctrine.md](./documents/engineering/config_doctrine.md):
   the in-force cluster configuration is the source of truth, stored as a
-  Vault-Transit-enveloped object in MinIO. A filesystem `prodbox-config.dhall` is a
+  prodbox application-level Vault-Transit envelope in the shared object-store — an
+  opaque `objects/<id>.enc` entry in the one generically-named MinIO bucket, not a
+  literal `in-force-config` key. A filesystem `prodbox-config.dhall` is a
   seed/propose input only — on first-ever bring-up it seeds the encrypted MinIO SSoT, and
   thereafter supplying a file is a proposed update, not the live config. Each `prodbox`
   binary instance reads the small unencrypted basics locally (cluster id, this cluster's
@@ -90,10 +92,19 @@ validation environments.
   HMAC derivation, and no Secret-mounted Dhall credential fragments — every previously-derived
   secret is a Vault KV object fetched via Vault Kubernetes auth. Vault runs in-cluster on a
   durable `.data/`-backed PV (preserved across cluster wipes exactly like the MinIO PV) and is
-  initialized exactly once, then only unsealed on each rebuild. MinIO objects and Pulumi backend
-  state are Vault-Transit envelopes, and the TLS, Keycloak, Pulumi, and AWS-credential paths fail
-  closed when Vault is sealed — a sealed Vault bricks the cluster, reducing it to an opaque
-  durable-data pile that reveals no secrets until it is unsealed. Cluster federation forms a Vault
+  initialized exactly once, then only unsealed on each rebuild. Every prodbox-owned secret-bearing
+  object — the in-force config, gateway state, and the Pulumi backend checkpoints — is a
+  prodbox application-level Vault-Transit envelope (Model B), written under opaque
+  Vault-keyed-HMAC names into one generically-named MinIO bucket that the host CLI and the
+  in-cluster gateway daemon share through a single envelope/naming/index layer; the bucket-,
+  object-, and stack-level names a sealed-Vault listing could enumerate therefore carry no
+  signal. Pulumi never reads or writes MinIO directly and has no encryption role of its own:
+  each operation decrypts its stack into a RAM-tmpfs `file://` backend, runs `pulumi`, then
+  re-envelopes the checkpoint back to MinIO, and this interposition applies uniformly to both
+  per-run and long-lived (`aws-ses`) backends. The TLS, Keycloak, Pulumi, and AWS-credential
+  paths fail closed when Vault is sealed — a sealed Vault bricks the cluster, reducing it to an
+  opaque durable-data pile that reveals no secrets, and no information about its children, until
+  it is unsealed. Cluster federation forms a Vault
   transit-seal trust tree: a root cluster (Shamir-sealed, operator-unsealed) and child clusters
   that auto-unseal against their parent's Vault, with each parent holding custody of its children's
   init keys. The doctrine single source of truth is
@@ -290,7 +301,9 @@ What this does:
 
 All supported configuration is authored in Dhall and decoded in-process by the native
 Haskell `dhall` library. The in-force cluster configuration is the source of truth, held
-as a Vault-Transit-enveloped object in MinIO; the repository-root `prodbox-config.dhall`
+as a prodbox application-level Vault-Transit envelope in the shared object-store — an
+opaque-named entry in the one generically-named MinIO bucket; the repository-root
+`prodbox-config.dhall`
 (validated against the schema in `prodbox-config-types.dhall`) is a seed/propose input
 only, never the live SSoT. Each binary reads the small unencrypted basics locally to reach
 and unseal Vault, then fetches and decrypts the in-force config through Vault; in-cluster
@@ -309,8 +322,7 @@ contract lives in
 
 ### Secret References (SecretRef)
 
-Scheduled under Sprint 1.35 (intended structure, not yet shipped): sensitive configuration fields
-carry typed `SecretRef` values — a Dhall union of
+Sensitive configuration fields carry typed `SecretRef` values — a Dhall union of
 `Vault | TransitKey | Prompt | TestPlaintext` — rather than inline plaintext secrets. `Vault` and
 `TransitKey` are the production targets; there is no `FileSecret` arm and no Secret-mounted Dhall
 fragment path. `prodbox config validate` rejects plaintext secrets in production config; plaintext

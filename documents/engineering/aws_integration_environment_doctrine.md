@@ -30,7 +30,7 @@
   validations.
 - The local `prodbox` RKE2 cluster and its MinIO service must exist before any remote AWS test
   stack is created because Pulumi state for those stacks lives only in
-  `prodbox-test-pulumi-backends`.
+  `prodbox-state`.
 - AWS-substrate canonical-suite runs (`--substrate aws`) require the operator-supplied
   `aws_substrate.hosted_zone_id` and `aws_substrate.subzone_name` Dhall fields, populated by
   `prodbox aws stack aws-subzone reconcile` provisioning a per-substrate Route 53 subzone with NS
@@ -147,13 +147,13 @@
   to an optional prompt with an explanatory hint. The four user-facing prompt strings
   were renamed from "Elevated AWS …" / "elevated operations" to "Temporary admin AWS …"
   / "admin operations" inline with the May 2026 doctrine alignment.
-- **Sprint `4.10`**: long-lived Pulumi state is decoupled from the in-cluster
-  MinIO backend onto a dedicated AWS S3 bucket configured via the
-  `pulumi_state_backend` block in `prodbox-config.dhall`. The `aws-ses` stack uses
-  this S3 backend so its state survives arbitrary `rke2 delete + rke2 reconcile` cycles;
-  the per-run stacks (`aws-eks`, `aws-eks-subzone`, `aws-test`) continue using the
-  in-cluster MinIO backend. State lifetime matches resource lifetime per class — this is
-  the current enforced structure, detailed in § 4.5 below.
+- **Sprint `4.10` / `7.14`**: long-lived shared-infrastructure operations use admin
+  credentials, while Pulumi checkpoint state is routed through the encrypted Model-B backend.
+  Sprint `7.14` makes the main `aws-ses` reconcile/destroy/read paths use the same
+  decrypt-to-scratch wrapper as the per-run stacks. The `pulumi_state_backend` S3 bucket remains
+  for retained public-edge TLS objects and as the optional first-touch source for old `aws-ses`
+  checkpoints; the `aws-ses migrate-backend` compatibility command now drives the encrypted
+  wrapper instead of raw MinIO-to-S3 export/import.
   See [lifecycle_reconciliation_doctrine.md → §2 State-Lifetime Rule](lifecycle_reconciliation_doctrine.md).
 - **Sprint `4.11` (planned)**: `prodbox cluster delete` carries a symmetric refuse-path
   scoped to per-run Pulumi stacks (`aws-eks`, `aws-eks-subzone`, `aws-test`). `aws-ses`
@@ -434,39 +434,31 @@ configuration file but a separate credential section:
 
 ### 4.5 Pulumi State Backend Prerequisite
 
-The Pulumi state backend is split by resource lifecycle class — state lifetime must match
-resource lifetime (Sprint `4.10`; see
-[lifecycle_reconciliation_doctrine.md → §2 State-Lifetime Rule](lifecycle_reconciliation_doctrine.md)).
+Pulumi checkpoint state is a Vault-sealed Model-B object-store concern. Sprint `7.14` routes the
+main per-run stacks (`aws-eks`, `aws-eks-subzone`, `aws-test`) and the main long-lived
+`aws-ses` reconcile/destroy/read paths through `Prodbox.Pulumi.EncryptedBackend`: the command
+hydrates the checkpoint into a RAM-backed `file://` scratch backend, runs Pulumi there, and stores
+the resulting checkpoint back as an opaque object in the home substrate's `prodbox-state` MinIO
+bucket.
 
-**Per-run stacks** (`aws-eks`, `aws-eks-subzone`, `aws-test`) project the home substrate's
-in-cluster MinIO as their Pulumi state backend. The projection happens through
-`withMinioPortForward` in `src/Prodbox/Infra/AwsEksTestStack.hs` (and the analogous wrappers
-in the sibling `Infra/Aws*.hs` modules). Their state is intentionally co-located with the
-cluster: a per-run stack has no steady state to preserve across a cluster wipe, so its state
-backend is the cluster's MinIO.
-
-**The long-lived `aws-ses` stack** projects the dedicated AWS S3 bucket configured via the
-`pulumi_state_backend` block in `prodbox-config.dhall` as its Pulumi state backend — **not**
-the in-cluster MinIO. This is required, not incidental: `aws-ses` is long-lived
-cross-substrate shared infrastructure whose state must survive arbitrary
-`rke2 delete + rke2 reconcile` cycles, so it cannot live in a backend that disappears with the
-cluster. The idempotent `ensureLongLivedPulumiStateBucket` precondition (shared by
-`aws-ses reconcile` and the invite bootstrap) provisions/repairs that bucket; the long-lived
-bucket is destroyed only by `prodbox nuke`, never by `rke2 delete` or per-run postflight.
+The lifecycle class still matters, but it no longer means a separate raw Pulumi backend for
+`aws-ses`. Per-run stacks remain harness-owned and auto-destroyed by suite postflight; `aws-ses`
+remains long-lived and is destroyed only by an explicit long-lived teardown command. The dedicated
+`pulumi_state_backend` S3 bucket configured in `prodbox-config.dhall` remains supported for retained
+public-edge TLS material and as the optional first-touch source for old `aws-ses` checkpoints.
 
 Concretely, this means:
 
-1. For per-run stacks, the home substrate must be running before any per-run
+1. For Pulumi stack operations, the home substrate must be running before any
    `prodbox aws stack` call. Operator runs `prodbox cluster reconcile` once; the command is
    idempotent and a no-op when the home substrate is already up.
-2. For per-run stacks, the MinIO `prodbox-test-pulumi-backends` bucket must exist before the
-   first stack is created. The reconcile contract ensures this — see § 0 above for the
-   canonical statement.
-3. Per-run AWS-substrate work does not bootstrap its own Pulumi backend; there is no AWS-side
-   alternative to the home MinIO state store for per-run stacks on the supported path.
-4. For the long-lived `aws-ses` stack, the home substrate need not be running: its S3 state
-   backend is independent of cluster lifetime. The `pulumi_state_backend` bucket is the
-   prerequisite, and `ensureLongLivedPulumiStateBucket` is the idempotent guarantee.
+2. The MinIO `prodbox-state` bucket must exist before the first stack is created. The reconcile
+   contract ensures this — see § 0 above for the canonical statement.
+3. AWS-substrate work does not bootstrap an AWS-side Pulumi backend on the supported path; Pulumi
+   sees only the scratch `file://` backend prepared by the encrypted backend wrapper.
+4. The long-lived `pulumi_state_backend` bucket is no longer the main `aws-ses` Pulumi checkpoint
+   backend. It remains the retained public-edge TLS store and an optional first-touch import source
+   for old `aws-ses` state while `prodbox aws stack aws-ses migrate-backend` exists.
 
 The per-run partition (`aws-eks`, `aws-eks-subzone`, `aws-test`) vs long-lived partition
 (`aws-ses` + the non-stack `public-edge-tls` cert) is fixed by `Prodbox.Aws.perRunStackNames` /
@@ -610,17 +602,15 @@ the receive subdomain.
 
 The SMTP IAM user's `aws:iam:AccessKey` is exported by the Pulumi stack as
 `smtp_iam_access_key_id` / `smtp_iam_secret_access_key`; the Keycloak chart (Sprint `8.2`)
-consumes the SES IAM-to-SMTP-credentials derivation as a Kubernetes secret. Fresh per-run AWS
-clusters and invite-aware home-runtime bootstraps must sync that retained stack output into the
-current Kubernetes context before Helm renders Keycloak: the test bootstrap reads the long-lived
-`aws-ses` outputs via `aws_admin_for_test_simulation.*`, first running the same idempotent
-`ensureLongLivedPulumiStateBucket` precondition used by `aws-ses reconcile`, and applies
-`keycloak-smtp` into the supported Keycloak release namespaces (`vscode` for the canonical
-shared-edge stack, `keycloak` for the standalone root chart). Because Keycloak's realm import does
-not update an already-created realm, `prodbox users invite` also patches the live realm's
-`smtpServer` from `keycloak-smtp` before it sends an execute-actions email. If the long-lived stack
-state is missing while retained fixed-name SES/S3/IAM resources still exist, `aws-ses reconcile`
-repairs state by importing the retained capture bucket, SMTP IAM user, SES receipt rule set, and receipt
+consumes the SES IAM-to-SMTP-credentials derivation from Vault KV. Fresh per-run AWS clusters and
+invite-aware home-runtime bootstraps must sync that retained stack output into the current cluster's
+Vault before Helm renders Keycloak: the test bootstrap reads the long-lived `aws-ses` outputs
+through the encrypted stack-output helper using `aws_admin_for_test_simulation.*`, derives the SES
+SMTP password, and writes `secret/keycloak/smtp`. Because Keycloak's realm import does not update an
+already-created realm, `prodbox users invite` also patches the live realm's `smtpServer` from
+`secret/keycloak/smtp` before it sends an execute-actions email. If the long-lived stack state is
+missing while retained fixed-name SES/S3/IAM resources still exist, `aws-ses reconcile` repairs
+state by importing the retained capture bucket, SMTP IAM user, SES receipt rule set, and receipt
 rule, rotating stale SMTP access keys so Pulumi owns a fresh retrievable secret, and reconciling
 overwrite-tolerant Route 53 verification/DKIM/MX records. The `ValidationKeycloakInvite`
 canonical-suite member (Sprint `8.5`) reads inbound capture from the S3 bucket via the same IAM

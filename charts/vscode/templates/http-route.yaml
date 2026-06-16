@@ -10,33 +10,6 @@
 {{/* ADMIN_ROUTE harbor=/harbor */}}
 {{/* ADMIN_ROUTE minio=/minio */}}
 {{/* prodbox:route-registry:end */}}
-{{- /*
-Sprint 3.13 chunks 11 + 28: read VSCODE_CLIENT_SECRET via Helm `lookup`
-of the gateway-daemon-managed `keycloak-oidc-clients` Secret. The
-keycloak release that materializes this Secret deploys into the SAME
-namespace as the vscode root chart (vscode → keycloak transitive dep
-chain via helm), so `.Release.Namespace` is the correct lookup
-namespace. The chart's `configmap.yaml` (Keycloak realm import) reads
-the same Secret in the same namespace, so the OIDC flow's two halves
-agree on the same master-seed-derived value. On `helm template` (no
-cluster) the lookup returns empty and the chart falls back to the
-`.Values.oidc.clientSecret` placeholder.
-*/}}
-{{- $oidcSecret := lookup "v1" "Secret" .Release.Namespace "keycloak-oidc-clients" }}
-{{- $clientSecret := .Values.oidc.clientSecret }}
-{{- if $oidcSecret }}
-{{- $clientSecret = index $oidcSecret.data "VSCODE_CLIENT_SECRET" | b64dec }}
-{{- end }}
-apiVersion: v1
-kind: Secret
-metadata:
-  name: {{ printf "%s-client" .Values.oidc.securityPolicyName | quote }}
-  labels:
-    {{- include "vscode.labels" . | nindent 4 }}
-type: Opaque
-stringData:
-  client-secret: {{ $clientSecret | quote }}
----
 apiVersion: gateway.networking.k8s.io/v1
 kind: HTTPRoute
 metadata:

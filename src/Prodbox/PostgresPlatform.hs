@@ -20,6 +20,7 @@ module Prodbox.PostgresPlatform
   , patroniSuperuserSecretName
   , patroniTeamId
   , patroniUsername
+  , patroniVaultMaterializerServiceAccountName
   )
 where
 
@@ -128,3 +129,7 @@ patroniStandbySecretName rootChart =
         (Text.pack "primaryuser")
         Text.empty
     )
+
+patroniVaultMaterializerServiceAccountName :: String -> String
+patroniVaultMaterializerServiceAccountName namespace =
+  patroniClusterName namespace

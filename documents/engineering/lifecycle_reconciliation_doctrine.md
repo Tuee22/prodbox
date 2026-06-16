@@ -32,7 +32,7 @@ exactly one of these classes. Cleanup ownership is defined per class.
 
 | Class | Examples | Tracked by | Cluster-tag signature | Cleanup owner |
 |---|---|---|---|---|
-| 1. Pulumi-tracked stack resources | `aws-eks` VPC, EKS cluster, node group; `aws-test` EC2 nodes; `aws-eks-subzone` Route 53 records; `aws-ses` SES identity, DKIM, S3 capture bucket, SMTP IAM user | The Pulumi stack file (MinIO backend for per-run, S3 backend for long-lived; see §2) | Stack-name tag and `pulumi:project` tag | `prodbox aws stack <stack> destroy --yes` (canonical per stack) |
+| 1. Pulumi-tracked stack resources | `aws-eks` VPC, EKS cluster, node group; `aws-test` EC2 nodes; `aws-eks-subzone` Route 53 records; `aws-ses` SES identity, DKIM, S3 capture bucket, SMTP IAM user | The encrypted Pulumi checkpoint object (Sprint `7.14`; see §2) | Stack-name tag and `pulumi:project` tag | `prodbox aws stack <stack> destroy --yes` (canonical per stack) |
 | 2. CSI-driver-created EBS volumes | The MinIO PVC EBS volume in EKS; any future StatefulSet PVC | None — created via the Kubernetes API by `ebs.csi.aws.com` | `kubernetes.io/cluster/<cluster-name>: owned`, `ebs.csi.aws.com/cluster-name: <cluster-name>` | K8s drain phase (Sprint 4.12); fallback postflight tag sweep |
 | 3. AWS Load Balancer Controller resources | ALBs, NLBs, target groups, and security groups created in response to `Service type=LoadBalancer` and `Ingress` resources | None — created via the AWS API by the LBC pod | `kubernetes.io/cluster/<cluster-name>: owned`, `elbv2.k8s.aws/cluster`, `ingress.k8s.aws/stack` | K8s drain phase (Sprint 4.12); fallback postflight tag sweep |
 | 4. cert-manager DNS01 records | `_acme-challenge.<host>` TXT records in Route 53 during ACME issuance | None — created via the Route 53 API by the cert-manager solver | Record name pattern `_acme-challenge.*` | K8s drain phase (Sprint 4.12) handles graceful clean-up by deleting `Certificate` resources first; fallback is the postflight tag sweep |
@@ -54,48 +54,43 @@ ENIs / ALBs / EBS volumes block the underlying network teardown.
 
 **Pulumi state lifetime must match resource lifetime per class.**
 
-| Class | Backend | URL shape | Lifetime |
+| Class | Checkpoint store | Runtime backend URL shape | Lifetime |
 |---|---|---|---|
-| Per-run stacks (`aws-eks`, `aws-eks-subzone`, `aws-test`) | MinIO in-cluster | `s3://prodbox-test-pulumi-backends?endpoint=127.0.0.1:39000&disableSSL=true&s3ForcePathStyle=true` | Dies with the cluster, by design |
-| Long-lived shared stacks (`aws-ses`, and any future cross-substrate long-lived stack) | Dedicated AWS S3 bucket configured via `pulumi_state_backend` in `prodbox-config.dhall` | `s3://<bucket_name>/<key_prefix>?region=<region>` | Independent of any cluster; durable across operator-machine churn |
+| Per-run stacks (`aws-eks`, `aws-eks-subzone`, `aws-test`) | Opaque Model-B object in MinIO `prodbox-state` | Scratch `file://<tmp>` backend hydrated by `Prodbox.Pulumi.EncryptedBackend` | Auto-managed by the harness; persistent checkpoint survives while `.data/` is preserved |
+| Long-lived shared stacks (`aws-ses`, and any future cross-substrate long-lived stack) | Opaque Model-B object in MinIO `prodbox-state` for main paths | Scratch `file://<tmp>` backend hydrated by `Prodbox.Pulumi.EncryptedBackend` | Long-lived resource class; destroyed only by explicit long-lived teardown |
 
-The dedicated S3 bucket is itself a long-lived shared resource owned
-by the operator AWS account. It lives in the same lifecycle class as
-the `aws-ses` capture bucket and the operator-owned parent Route 53
-zone.
+The dedicated S3 bucket configured by `pulumi_state_backend` is still a long-lived shared resource
+owned by the operator AWS account, but it is no longer the main Pulumi checkpoint backend. It stores
+retained public-edge TLS material and remains available as the optional first-touch import source
+for old `aws-ses` checkpoints when encrypted state is absent.
 
 **Per-run state survives cluster wipes via `.data/` preservation.** MinIO runs from a
 host-pathed PV under `.data/prodbox/minio/0`
 ([storage_lifecycle_doctrine.md](storage_lifecycle_doctrine.md) §1, §7). Whenever
 `.data/` is preserved (the default for both `prodbox cluster delete --yes` and
-`prodbox cluster delete --cascade --yes`), MinIO's bucket contents — the per-run Pulumi
-state, and the gateway-owned master seed at `prodbox/master-seed` — persist across the
-cluster cycle. This is exactly why the **default `prodbox cluster delete` is a pure local
+`prodbox cluster delete --cascade --yes`), MinIO's bucket contents — including encrypted Pulumi
+checkpoint objects and gateway-owned object-store data — persist across the cluster cycle. This
+is exactly why the **default `prodbox cluster delete` is a pure local
 uninstall** that never touches the per-run AWS backend: abandoning the cluster leaves the
 state intact in MinIO; rebuild RKE2 on the same `.data/`; MinIO returns with the same
 bucket data; `prodbox aws stack <stack> destroy --yes` (or `prodbox cluster delete
 --cascade`) releases the AWS resources cleanly. No permanent leak even under abnormal
 teardown sequences.
 
-**Configuration.** The bucket and region are declared in
-`prodbox-config.dhall` under the `pulumi_state_backend` block. The
-schema lives in `prodbox-config-types.dhall` (record type
-`PulumiStateBackend` with `bucket_name : Text`, `region : Text`,
-`key_prefix : Text`). Empty defaults force the operator to set
-`bucket_name` and `region` before any long-lived stack operation can
-succeed; the `ensureLongLivedPulumiStateBucket` precondition returns
-a structured error pointing at the config keys when either is empty.
+**Retained S3 compatibility store.** The `pulumi_state_backend` block in
+`prodbox-config.dhall` declares the long-lived S3 bucket still used for public-edge TLS retention
+and as the optional first-touch source for old `aws-ses` Pulumi checkpoints. The schema lives in
+`prodbox-config-types.dhall` (record type `PulumiStateBackend` with `bucket_name : Text`,
+`region : Text`, `key_prefix : Text`). Empty defaults force the operator to set `bucket_name` and
+`region` before a command that still touches that retained S3 store can succeed; the
+`ensureLongLivedPulumiStateBucket` precondition returns a structured error pointing at the config
+keys when either is empty.
 
-**Bootstrapping the bucket.** Pulumi cannot manage its own backend
-bucket. The bucket is created by an idempotent admin-credentialed
-operation — implemented as `ensureLongLivedPulumiStateBucket` in
-`src/Prodbox/Infra/LongLivedPulumiBackend.hs`, invoked as a precondition
-by every command that touches a long-lived stack
-(`prodbox aws stack aws-ses reconcile`, `prodbox aws stack aws-ses destroy`,
-`prodbox nuke`). Required bucket properties: versioning enabled,
-server-side encryption with AES256 (S3-managed keys; KMS is overkill
-and entangles key lifecycle), block-all-public-access on, lifecycle
-rule to expire non-current versions after 90 days. Tagged
+**Bootstrapping the retained bucket.** The retained bucket is created by an idempotent
+admin-credentialed operation — implemented as `ensureLongLivedPulumiStateBucket` in
+`src/Prodbox/Infra/LongLivedPulumiBackend.hs`. Required bucket properties: versioning enabled,
+server-side encryption with AES256 (S3-managed keys; KMS is overkill and entangles key lifecycle),
+block-all-public-access on, lifecycle rule to expire non-current versions after 90 days. Tagged
 `prodbox.io/purpose=pulumi-state`, `prodbox.io/substrate=shared`.
 
 **Credentials per class.**
@@ -103,24 +98,22 @@ rule to expire non-current versions after 90 days. Tagged
 | Class | Credential block | Source field in `prodbox-config.dhall` |
 |---|---|---|
 | Per-run stacks | Operational `aws.*` | `aws.access_key_id`, `aws.secret_access_key` (populated by `prodbox aws setup`, cleared by `prodbox aws teardown`) |
-| Long-lived stacks + bucket bootstrap | Admin `aws_admin_for_test_simulation.*` | `aws_admin_for_test_simulation.access_key_id`, `aws_admin_for_test_simulation.secret_access_key` (long-lived; never cleared by any teardown command) |
+| Long-lived stacks + retained-bucket compatibility | Admin `aws_admin_for_test_simulation.*` | `aws_admin_for_test_simulation.access_key_id`, `aws_admin_for_test_simulation.secret_access_key` (long-lived; never cleared by any teardown command) |
 
-Long-lived stack management uses admin credentials because admin creds
-outlive any single cluster cycle, matching the state lifetime. The
-operational `prodbox` IAM user does not need `s3:GetObject`/`PutObject`
-permission on the state bucket.
+Long-lived stack management uses admin credentials because admin creds outlive any single cluster
+cycle, matching the resource lifetime. The operational `prodbox` IAM user does not need
+`s3:GetObject`/`PutObject` permission on the retained S3 bucket.
 
-**Migration recipe** (one-time, per long-lived stack):
+**Legacy checkpoint migration.** First-touch migration is owned by
+`Prodbox.Pulumi.EncryptedBackend`. When the encrypted `LogicalPulumiStack <stack-id>` object is
+absent, the wrapper can log into a configured legacy backend, export the old checkpoint into a
+temporary file, hydrate scratch from those bytes, and remove the legacy stack only after the
+supported Pulumi action and encrypted store/delete succeed.
 
-1. Bring up the MinIO backend (`prodbox cluster reconcile`).
-2. `pulumi stack export --stack <name>` against the current MinIO backend.
-3. `pulumi login s3://<bucket>/<prefix>?region=<region>` (after
-   `ensureLongLivedPulumiStateBucket` has run).
-4. `pulumi stack import --file <export>.json` into the new backend.
-
-The operator command `prodbox aws stack aws-ses migrate-backend` wraps
-this recipe and is idempotent: if `aws-ses` state is already on S3,
-the command is a no-op.
+The operator command `prodbox aws stack aws-ses migrate-backend` is kept as a TTY-only
+compatibility entrypoint while old `aws-ses` checkpoints may still exist. It now opens the same
+encrypted scratch backend as reconcile/destroy and triggers the first-touch import/delete path; it
+does not run raw MinIO-to-S3 `pulumi stack export` / `pulumi stack import`.
 
 **Rule.** No new Pulumi stack may be added to any prodbox code path
 without first deciding its lifetime class, selecting the matching
@@ -145,8 +138,8 @@ no shared in-memory state.
    state. The canonical example for Pulumi residue is the
    `<stack>ResidueStatus :: ... -> IO ResidueStatus` family in
    `src/Prodbox/Infra/Aws*Stack.hs` (introduced in Sprint 4.16): each
-   per-run stack queries its MinIO Pulumi backend; the long-lived
-   `aws-ses` stack queries the S3 backend. The result ADT is
+   per-run stack and the long-lived `aws-ses` stack query their encrypted Pulumi checkpoints.
+   The result ADT is
 
    ```haskell
    data ResidueStatus
@@ -167,9 +160,9 @@ no shared in-memory state.
      **not** the same as "the resources are gone." This applies to
      `prodbox aws teardown`'s long-lived gate (`noLiveLongLivedPulumiStacks`)
      and is honored when the cascade queries per-run residue. Note a
-     never-created backend bucket (`NoSuchBucket` / 404) is **not**
+     never-created backend bucket or missing encrypted checkpoint is **not**
      `Unreachable` — it is positive evidence of `Absent` (nothing to
-     destroy), classified as such for both the S3 and MinIO backends.
+     destroy), classified as such for both encrypted checkpoint and retained-bucket reads.
      (Default `prodbox cluster delete` no longer carries a per-run
      refuse-path at all — it is a pure local uninstall — so this
      fail-closed rule is moot there.)
@@ -388,7 +381,7 @@ is the per-resource view of one uniform mechanism, not a parallel one.
 
 | Predicate | Returns `Left` when | Used by |
 |---|---|---|
-| `noLiveLongLivedPulumiStacks` | `aws-ses` returns `ResiduePresent` against its S3 backend, **or** (Sprint 4.24) the `public-edge-tls` retained certificate returns `ResiduePresent` against the long-lived bucket, **or** either returns `ResidueUnreachable` (S3 unreachable is a real failure for long-lived resources; failing closed is the correct behavior) | `prodbox aws teardown` (default); `prodbox nuke` (handled by destroying not refusing — the certificate transitively via the whole-bucket destroy) |
+| `noLiveLongLivedPulumiStacks` | `aws-ses` returns `ResiduePresent` against its encrypted checkpoint, **or** (Sprint 4.24) the `public-edge-tls` retained certificate returns `ResiduePresent` against the long-lived bucket, **or** either returns `ResidueUnreachable` (unreachable long-lived evidence is a real failure; failing closed is the correct behavior) | `prodbox aws teardown` (default); `prodbox nuke` (handled by destroying not refusing — the certificate transitively via the whole-bucket destroy) |
 | `noLiveClusterTaggedAws` | The AWS Resource Tagging API returns any resource carrying `kubernetes.io/cluster/<cluster-name>` | Postflight of `prodbox cluster delete --cascade` and `prodbox nuke` |
 | `noUndrainedK8sAwsResources` | `kubectl` reports any LoadBalancer Service, ALB Ingress, or Delete-reclaim PVC that hasn't been drained, **and** the cluster was reachable on the pre-drain `kubectl cluster-info --request-timeout=5s` probe | Postflight of K8s drain (Sprint 4.12); preflight of per-run Pulumi destroys when `--cascade` is set |
 
@@ -494,7 +487,7 @@ to trip on.
 
 | # | Phase | What it does | Failure mode |
 |---|---|---|---|
-| 1 | Confirm MinIO reachable | `<stack>ResidueStatus` queries the MinIO backend for each per-run stack. If MinIO is reachable, the result is `ResidueAbsent` or `ResiduePresent`; if unreachable, the result is `ResidueUnreachable` and the cascade treats per-run residue as absent (the per-run state died with the cluster, per the per-run lifetime class). | Misclassification is impossible because `ResidueUnreachable` for a per-run stack is by definition the same outcome as "the state is gone". |
+| 1 | Confirm encrypted checkpoint reachability | `<stack>ResidueStatus` queries the encrypted checkpoint object for each per-run stack. If MinIO and Vault are reachable, the result is `ResidueAbsent` or `ResiduePresent`; if unreachable, the result is `ResidueUnreachable` and the cascade treats per-run residue as absent (the per-run state died with the cluster, per the per-run lifetime class). | Misclassification is impossible because `ResidueUnreachable` for a per-run stack is by definition the same outcome as "the state is gone". |
 | 2 | K8s drain | Delete LoadBalancer Services, ALB Ingresses, and Delete-reclaim PVCs so the in-cluster controllers unwind their AWS-side state (Sprint 4.12). On the AWS substrate the drain MUST target the EKS API server, not the local RKE2 cluster — see "Substrate-aware drain" below. If the K8s API is unreachable, this phase emits `DrainSkipped` and the cascade proceeds to phase 3 only on the home substrate (where the absent cluster cannot have created new AWS resources). On the AWS substrate, `DrainSkipped` is a hard failure because the EKS cluster is the source of the resources Pulumi is about to fail to delete. | `DrainFailed` is the only failure path on the home substrate; `DrainSkipped` is success-with-reason there. On the AWS substrate, both `DrainSkipped` and `DrainFailed` are hard-failure paths. |
 | 3 | Per-run Pulumi destroys | For each per-run stack reporting `ResiduePresent`, run `pulumi destroy` against MinIO inside `withMaterializedOperationalCreds` (Sprint 4.17). The bracket fills `aws.*` from `aws_admin_for_test_simulation.*` when `aws.*` is empty and restores-to-empty on exit (success or exception). Because phase 2 already drained the controller-owned resources, every per-run subnet / VPC / cluster delete now has no live ENI / ALB / EBS dependency. | Empty `aws.*` no longer refuses the destroy; the bracket fills it transparently. `DependencyViolation` from AWS indicates phase 2 did not in fact drain (most often: drain ran against the wrong kubeconfig). |
 | 4 | RKE2 uninstall | `/usr/local/bin/rke2-uninstall.sh` under the lifecycle-local quiet path. Removes substrate + managed kubeconfig. `.data/` is preserved. | Non-zero uninstall exit is reported through `summarizeRke2DeleteFailure`. |
@@ -664,10 +657,9 @@ The only sanctioned paths to destroy them are:
 - Manual operator action against the parent Route 53 zone (it is
   operator-managed; the harness does not own it).
 
-The long-lived state bucket is created idempotently by
-`ensureLongLivedPulumiStateBucket` and destroyed only by
-`prodbox nuke`'s final pass — never by `aws teardown`, never by
-`cluster delete`, never as a side effect of any other command.
+The retained long-lived bucket is created idempotently by `ensureLongLivedPulumiStateBucket` and
+destroyed only by `prodbox nuke`'s final pass — never by `aws teardown`, never by `cluster delete`,
+never as a side effect of any other command.
 
 ## Vault in the cluster lifecycle
 
@@ -683,8 +675,7 @@ section records only how the lifecycle commands integrate it. See
   if the backend is empty, unseals from the encrypted unlock bundle (or prompts the
   operator), and runs `vault reconcile` **before** the MinIO and chart reconcile
   phases — so MinIO ciphertext and chart secrets have a live Transit/KV authority by
-  the time they are needed. This is the intended structure scheduled under
-  Sprint 4.29. See
+  the time they are needed. See
   [vault_doctrine.md §7](./vault_doctrine.md#7-vault-lifecycle-commands).
 - **Teardown preserves the durable Vault PV.** `prodbox cluster delete --yes` and
   `prodbox cluster delete --cascade --yes` preserve the durable Vault PV exactly
@@ -694,15 +685,14 @@ section records only how the lifecycle commands integrate it. See
 - **A sealed Vault is a first-class status line, never hidden.** A sealed or
   unreachable Vault surfaces as an explicit `cluster status` / `edge status` line;
   secret-dependent lifecycle work fails closed behind an explicit readiness gate
-  rather than degrading silently. This is the intended structure scheduled under
-  Sprint 4.29. See
+  rather than degrading silently. See
   [vault_doctrine.md §15](./vault_doctrine.md#15-sealed-state-behavior-matrix).
-- **Pulumi/AWS operations gate on Vault readiness.** Every `prodbox aws stack ...`
-  operation runs the Vault readiness check (reachable / initialized / unsealed /
-  Transit available / backend decryptable) before touching state and refuses with a
-  redacted sealed-Vault error **before any AWS mutation** — because the Pulumi
-  backend state is stored only as Vault-Transit envelopes. This is the intended
-  structure scheduled under Sprints 1.37 / 7.14. See
+- **Pulumi/AWS operations gate on Vault readiness.** Every real `prodbox aws stack ...`
+  apply/destroy/migrate action runs the Sprint `1.37` Vault gate before touching state and
+  refuses with a redacted sealed-Vault error **before any AWS mutation** when Vault is
+  unreachable, uninitialized, or sealed. Dry-runs render the plan without probing Vault. Sprint
+  `7.14` extends the same gate with Transit-key and backend-decryptability checks for the encrypted
+  Pulumi checkpoint wrapper. See
   [vault_doctrine.md §10](./vault_doctrine.md#10-pulumi-backend-under-vault).
 
 ## Related Documents

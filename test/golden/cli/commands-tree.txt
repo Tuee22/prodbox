@@ -34,6 +34,8 @@ prodbox
     reconcile
     delete
     logs
+    federation
+      register
     wait
     workload-logs
   commands
@@ -96,6 +98,7 @@ prodbox
       admin-routes
       public-dns
       keycloak-invite
+      sealed-vault
   users
     invite
     list

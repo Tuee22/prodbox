@@ -16,6 +16,7 @@ spec:
       labels:
         {{- include "keycloak.labels" . | nindent 8 }}
     spec:
+      serviceAccountName: keycloak
       {{- if .Values.podAntiAffinity.enabled }}
       affinity:
         podAntiAffinity:
@@ -26,19 +27,79 @@ spec:
                   app.kubernetes.io/instance: {{ .Release.Name }}
               topologyKey: kubernetes.io/hostname
       {{- end }}
+      initContainers:
+        - name: vault-secrets
+          image: "{{ .Values.vault.image.repository }}:{{ .Values.vault.image.tag }}"
+          imagePullPolicy: {{ .Values.vault.image.pullPolicy }}
+          env:
+            - name: VAULT_ADDR
+              value: {{ .Values.vault.address | quote }}
+            - name: VAULT_AUTH_PATH
+              value: {{ .Values.vault.authPath | quote }}
+            - name: VAULT_ROLE
+              value: {{ .Values.vault.role | quote }}
+            - name: VAULT_SA_TOKEN_FILE
+              value: {{ .Values.vault.serviceAccountTokenFile | quote }}
+          command:
+            - /bin/sh
+            - -ec
+            - |
+              set -eu
+
+              shell_quote() {
+                printf "'"
+                printf "%s" "$1" | sed "s/'/'\\\\''/g"
+                printf "'"
+              }
+
+              write_export() {
+                printf 'export %s=' "$1"
+                shell_quote "$2"
+                printf '\n'
+              }
+
+              jwt="$(cat "${VAULT_SA_TOKEN_FILE}")"
+              export VAULT_TOKEN="$(vault write -field=token "auth/${VAULT_AUTH_PATH}/login" role="${VAULT_ROLE}" jwt="${jwt}")"
+              umask 077
+              {
+                write_export KEYCLOAK_ADMIN_PASSWORD "$(vault kv get -field=password secret/{{ .Values.vault.paths.admin }})"
+                write_export KC_DB_PASSWORD "$(vault kv get -field=password secret/{{ .Values.vault.paths.db }})"
+                write_export PRODBOX_VSCODE_CLIENT_SECRET "$(vault kv get -field=client_secret secret/{{ .Values.vault.paths.oidcVscode }})"
+                write_export PRODBOX_API_CLIENT_SECRET "$(vault kv get -field=client_secret secret/{{ .Values.vault.paths.oidcApi }})"
+                write_export PRODBOX_WEBSOCKET_CLIENT_SECRET "$(vault kv get -field=client_secret secret/{{ .Values.vault.paths.oidcWebsocket }})"
+                write_export PRODBOX_DEMO_USER_PASSWORD "$(vault kv get -field=password secret/{{ .Values.vault.paths.demoUser }})"
+                {{- if .Values.smtp.enabled }}
+                write_export PRODBOX_SMTP_HOST "$(vault kv get -field=host secret/{{ .Values.vault.paths.smtp }})"
+                write_export PRODBOX_SMTP_PORT "$(vault kv get -field=port secret/{{ .Values.vault.paths.smtp }})"
+                write_export PRODBOX_SMTP_FROM "$(vault kv get -field=from secret/{{ .Values.vault.paths.smtp }})"
+                write_export PRODBOX_SMTP_FROM_DISPLAY_NAME "$(vault kv get -field=from_display_name secret/{{ .Values.vault.paths.smtp }})"
+                write_export PRODBOX_SMTP_REPLY_TO "$(vault kv get -field=reply_to secret/{{ .Values.vault.paths.smtp }})"
+                write_export PRODBOX_SMTP_USER "$(vault kv get -field=username secret/{{ .Values.vault.paths.smtp }})"
+                write_export PRODBOX_SMTP_PASSWORD "$(vault kv get -field=password secret/{{ .Values.vault.paths.smtp }})"
+                {{- end }}
+              } > /vault-materialized/keycloak.env
+          volumeMounts:
+            - name: vault-materialized
+              mountPath: /vault-materialized
       {{- $healthPathPrefix := trimSuffix "/" .Values.keycloak.httpRelativePath }}
       containers:
         - name: keycloak
           image: "{{ .Values.image.repository }}:{{ .Values.image.tag }}"
           imagePullPolicy: IfNotPresent
-          args:
-            - start
-            - --http-enabled=true
-            - --health-enabled=true
-            - --proxy-headers=xforwarded
-            - --hostname={{ .Values.keycloak.publicHost }}
-            - --http-relative-path={{ .Values.keycloak.httpRelativePath }}
-            - --import-realm
+          command:
+            - /bin/sh
+            - -ec
+            - |
+              set -eu
+              . /vault-materialized/keycloak.env
+              exec /opt/keycloak/bin/kc.sh \
+                start \
+                --http-enabled=true \
+                --health-enabled=true \
+                --proxy-headers=xforwarded \
+                --hostname={{ .Values.keycloak.publicHost }} \
+                --http-relative-path={{ .Values.keycloak.httpRelativePath }} \
+                --import-realm
           ports:
             - name: http
               containerPort: 8080
@@ -51,21 +112,14 @@ spec:
               value: {{ .Values.postgres.database | quote }}
             - name: KC_DB_USERNAME
               value: {{ .Values.postgres.username | quote }}
-            - name: KC_DB_PASSWORD
-              valueFrom:
-                secretKeyRef:
-                  name: {{ .Values.postgres.passwordSecretName | quote }}
-                  key: password
             - name: KEYCLOAK_ADMIN
               value: {{ .Values.keycloak.adminUser | quote }}
-            - name: KEYCLOAK_ADMIN_PASSWORD
-              valueFrom:
-                secretKeyRef:
-                  name: keycloak-runtime
-                  key: KEYCLOAK_ADMIN_PASSWORD
           volumeMounts:
             - name: realm-import
               mountPath: /opt/keycloak/data/import
+              readOnly: true
+            - name: vault-materialized
+              mountPath: /vault-materialized
               readOnly: true
           startupProbe:
             httpGet:
@@ -89,3 +143,7 @@ spec:
         - name: realm-import
           configMap:
             name: keycloak-realm-import
+        - name: vault-materialized
+          emptyDir:
+            medium: Memory
+            sizeLimit: 1Mi

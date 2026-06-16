@@ -2,15 +2,6 @@ global:
   namespace: default
   rootChart: keycloak
 
-# Sprint 3.13 seventh chunk: prodbox-gateway daemon's in-cluster
-# endpoint the pre-install Job in `secret-bootstrap-job.yaml` calls to
-# materialize the three Patroni-role Secrets before the chart's
-# `00-secrets.yaml` renders. The default targets the unsuffixed
-# ClusterIP Service emitted by `charts/gateway/templates/service-clusterip.yaml`
-# in the `gateway` namespace on the daemon's REST port (8443).
-prodboxGateway:
-  restPort: 8443
-
 cluster:
   name: prodbox-keycloak-pg
   instances: 3
@@ -36,15 +27,33 @@ secrets:
   application:
     name: prodbox-keycloak-pg-pguser-keycloak
     username: keycloak
-    password: change-me
   superuser:
     name: prodbox-keycloak-pg-pguser-postgres
     username: postgres
-    password: change-me
   standby:
     name: prodbox-keycloak-pg-primaryuser
     username: primaryuser
-    password: change-me
+
+vault:
+  address: http://vault.vault.svc.cluster.local:8200
+  authPath: kubernetes
+  role: keycloak-keycloak-postgres-pg
+  serviceAccountTokenFile: /var/run/secrets/kubernetes.io/serviceaccount/token
+  image:
+    repository: hashicorp/vault
+    tag: "1.18.3"
+    pullPolicy: IfNotPresent
+  paths:
+    application: keycloak/keycloak-postgres/patroni/app
+    superuser: keycloak/keycloak-postgres/patroni/superuser
+    standby: keycloak/keycloak-postgres/patroni/standby
+
+secretMaterializer:
+  serviceAccountName: prodbox-keycloak-pg
+  image:
+    repository: 127.0.0.1:30080/prodbox/curl-mirror
+    tag: "8.11.0"
+    pullPolicy: IfNotPresent
 
 storage:
   className: manual

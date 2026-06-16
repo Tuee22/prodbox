@@ -74,8 +74,6 @@ import Data.Map.Strict (Map)
 import Data.Map.Strict qualified as Map
 import Data.Text qualified as Text
 import Prodbox.ContainerImage qualified as ContainerImage
-import Prodbox.Gateway.Client qualified as GatewayClient
-import Prodbox.Host (defaultGatewayNodePort)
 import Prodbox.Infra.LongLivedPulumiBackend
   ( getLongLivedObject
   , putLongLivedObject
@@ -109,6 +107,7 @@ import Prodbox.PostgresPlatform
   , patroniStorageSpecs
   , patroniSuperuserSecretName
   , patroniUsername
+  , patroniVaultMaterializerServiceAccountName
   )
 import Prodbox.PublicEdge
   ( apiPathPrefix
@@ -131,20 +130,14 @@ import Prodbox.Retry
   , RetryPolicy (..)
   , pollUntilReady
   )
-import Prodbox.Secret.Derive
-  ( PatroniRole (..)
-  , patroniRoleContext
-  )
-import Prodbox.Secret.GatewayDeriveMode (GatewayDeriveMode)
-import Prodbox.Secret.HostBootstrap (preApplyDerivedSecretsForRelease)
-import Prodbox.Secret.Wire (DeriveResponse (..))
 import Prodbox.Service
   ( AsServiceError (..)
   , HasPg (..)
   , serviceErrorMessage
   )
 import Prodbox.Settings
-  ( AwsSubstrateSection (..)
+  ( AwsCredentialsRef (..)
+  , AwsSubstrateSection (..)
   , ConfigFile (..)
   , Credentials (..)
   , DeploymentSection (..)
@@ -158,6 +151,7 @@ import Prodbox.Subprocess
   , captureSubprocessResult
   )
 import Prodbox.Substrate (Substrate (..), substrateId)
+import Prodbox.Vault.Host (readHostVaultKvField)
 import System.Directory
   ( createDirectoryIfMissing
   , doesDirectoryExist
@@ -175,16 +169,10 @@ import System.IO
   , openTempFile
   )
 
--- Sprint 3.13 chunk 16: the @chartStateRootRelative = ".prodbox-state"@
--- constant + its derived 'chartStateDir' helper are removed. Every Sprint
--- 3.13 consumer of the @.prodbox-state/<ns>/.secrets.json@ chart-secret
--- cache (chunks 8\8211\&14) and the @.gateway-event-keys.json@ event-key
--- cache (chunk 16) reads its values from k8s @Secret@s instead — the
--- daemon writes them via 'Prodbox.Secret.EnsureNamespace.applyDerivedSecrets'
--- and the charts read them via Helm @lookup@. With these consumers gone,
--- nothing in @src/@ writes to @.prodbox-state/charts/@ any more, and
--- 'Prodbox.CheckCode.checkForbidDotProdboxState' broadens to refuse any
--- new @.prodbox-state/@ string literal anywhere in @src/@ + @app/@.
+-- Sprint 3.19: the retired chart-secret cache and daemon-derived Secret
+-- materialization paths are gone. Chart secrets are sourced from Vault KV by
+-- explicit init / hook materializers; nothing in @src/@ writes to
+-- @.prodbox-state/charts/@ any more.
 
 -- The keycloak / vscode chart @Certificate@ issuer is the single ZeroSSL
 -- @ClusterIssuer@ ('Prodbox.PublicEdge.publicEdgeClusterIssuerName').
@@ -554,11 +542,8 @@ renderChartStatus repoRoot settings chartName = do
       case secretsResult of
         Left err -> pure (Left err)
         Right chartSecrets -> do
-          -- Sprint 3.13 chunk 16: gateway event keys self-bootstrap from the
-          -- daemon Pod after master-seed acquisition (see
-          -- 'Prodbox.Gateway.Daemon.selfBootstrapOwnSecrets'). The chart
-          -- reads them via Helm `lookup` of the daemon-written
-          -- `gateway-event-keys` Secret. No host-side resolution needed.
+          -- Gateway event keys are Vault materialized by the gateway chart.
+          -- No host-side resolution needed.
           let gatewayEventKeys = Map.empty :: Map String String
           rootPlanResult <-
             buildChartDeploymentPlan repoRoot settings runtimeNamespace chartSecrets gatewayEventKeys
@@ -595,8 +580,8 @@ renderChartStatus repoRoot settings chartName = do
                 ++ releaseLines
                 ++ renderStorageReport (chartReleasePlanStorageBindings chartRelease)
 
-deployChartPlan :: GatewayDeriveMode -> ChartDeploymentPlan -> IO (Either String String)
-deployChartPlan mode plan = do
+deployChartPlan :: ChartDeploymentPlan -> IO (Either String String)
+deployChartPlan plan = do
   snapshotsResult <- helmReleaseSnapshots
   case snapshotsResult of
     Left err -> pure (Left err)
@@ -631,48 +616,24 @@ deployChartPlan mode plan = do
     | chartReleasePlanReleaseName release == "keycloak-postgres" =
         deployPatroniRelease release
     | otherwise = do
-        -- Sprint 3.13 chunk 33: host-side pre-apply of every Inventory
-        -- entry for (namespace, release) so Helm @lookup@ in the chart
-        -- templates finds the daemon-derived Secret at render time on
-        -- first install. The chart's pre-install Job remains the
-        -- in-cluster idempotent fallback.
-        preApplyResult <-
-          preApplyDerivedSecretsForRelease
-            mode
-            (chartReleasePlanNamespace release)
-            (chartReleasePlanReleaseName release)
-        case preApplyResult of
+        installResult <- helmUpgradeInstall release
+        case installResult of
           Left err -> pure (Left err)
           Right () -> do
-            installResult <- helmUpgradeInstall release
-            case installResult of
+            storageResult <- ensureReleaseStorageBindings release
+            case storageResult of
               Left err -> pure (Left err)
-              Right () -> do
-                storageResult <- ensureReleaseStorageBindings release
-                case storageResult of
-                  Left err -> pure (Left err)
-                  Right () -> validateReleaseReady release
+              Right () -> validateReleaseReady release
 
   deployPatroniRelease :: ChartReleasePlan -> IO (Either String ())
   deployPatroniRelease release = do
-    -- Sprint 3.13 chunk 33: same pre-apply as the non-Patroni path so
-    -- the Crunchy operator finds the three Patroni-role Secrets when
-    -- it reconciles the PostgresCluster CR. See 'deployRelease'.
-    preApplyResult <-
-      preApplyDerivedSecretsForRelease
-        mode
-        (chartReleasePlanNamespace release)
-        (chartReleasePlanReleaseName release)
-    case preApplyResult of
-      Left err -> pure (Left err)
-      Right () ->
-        case chartDeploymentPlanSubstrate plan of
-          SubstrateHomeLocal -> deployPatroniReleaseStaged release
-          SubstrateAws -> do
-            installResult <- helmUpgradeInstall release
-            case installResult of
-              Left err -> pure (Left err)
-              Right () -> validateReleaseReady release
+    case chartDeploymentPlanSubstrate plan of
+      SubstrateHomeLocal -> deployPatroniReleaseStaged release
+      SubstrateAws -> do
+        installResult <- helmUpgradeInstall release
+        case installResult of
+          Left err -> pure (Left err)
+          Right () -> validateReleaseReady release
 
   deployPatroniReleaseStaged :: ChartReleasePlan -> IO (Either String ())
   deployPatroniReleaseStaged release = do
@@ -1319,24 +1280,16 @@ deleteChartPlan plan = do
       , "--wait=true"
       ]
 
--- | Sprint 3.13 chunk 12: the per-namespace @.prodbox-state/charts/<ns>/.secrets.json@
--- cache is gone. Every key that previously lived here is now either materialized
--- by the gateway daemon's @ensure-namespace@ pre-install Job into a k8s
--- @Secret@ (see [secret_derivation_doctrine.md §6](../../documents/engineering/secret_derivation_doctrine.md))
--- or read via Helm @lookup@ from a sibling cluster Secret. This function
--- therefore returns an empty map; the returned @Map@ is still threaded through
--- 'buildChartDeploymentPlanPure' / 'valuesForXxx' for signature compatibility,
--- but every consumer ignores it. The chart's own pre-install Job + cluster
--- Secret lookups are the structural source-of-truth.
+-- | The retired per-namespace @.prodbox-state/charts/<ns>/.secrets.json@
+-- cache is gone. Vault KV plus chart-local materializers are the structural
+-- source of truth; this function returns an empty map for signature
+-- compatibility while every current consumer ignores it.
 resolveChartSecrets :: FilePath -> String -> IO (Either String (Map String String))
 resolveChartSecrets _repoRoot _namespace = pure (Right Map.empty)
 
--- Sprint 3.13 chunk 16: 'resolveGatewayEventKeys' is gone. Per-node event
--- keys are now derived from the master seed and materialized by the
--- gateway daemon's startup self-bootstrap loop (see
--- 'Prodbox.Gateway.Daemon.selfBootstrapOwnSecrets'); the chart reads the
--- resulting @gateway-event-keys@ Secret via Helm @lookup@. No host-side
--- resolution needed.
+-- 'resolveGatewayEventKeys' is gone. Per-node event keys are Vault KV
+-- objects materialized by the gateway chart; no host-side resolution is
+-- needed.
 
 readOptionalPatroniClusterStatus :: String -> IO (Maybe String)
 readOptionalPatroniClusterStatus namespace = do
@@ -1394,7 +1347,7 @@ normalizedPatroniClusterStatus = fmap (map toLower . trimWhitespace)
 -- 'reconcileChartPlatform' is now a no-op, and 'resetRetainedPatroniReplicaBindings'
 -- derives the anchor PV from live k8s state via
 -- 'discoverPatroniAnchorPersistentVolumeName'. The spec's loud-failure
--- mismatch check (derived password vs @pg_authid@ probe) lands when the live
+-- mismatch check (Vault-backed password vs @pg_authid@ probe) lands when the live
 -- preserved-data exercise drives the failure paths.
 discoverPatroniAnchorPersistentVolumeName :: String -> IO (Maybe String)
 discoverPatroniAnchorPersistentVolumeName namespace = do
@@ -1403,42 +1356,43 @@ discoverPatroniAnchorPersistentVolumeName namespace = do
     Nothing -> pure Nothing
     Just claimName -> readOptionalPersistentVolumeNameForClaim namespace claimName
 
--- | Sprint 3.16 (boundary probe). Observe whether the gateway-derived
--- Patroni application-role password still authenticates against the
--- preserved cluster's @pg_authid@ hash. This is the effectful half of the
--- loud-failure guard; the pure policy is 'patroniSeedMismatchDecision'.
+-- | Observe whether the Vault-backed Patroni application-role password still
+-- authenticates against the preserved cluster's @pg_authid@ hash. This is
+-- the effectful half of the loud-failure guard; the pure policy is
+-- 'patroniSeedMismatchDecision'.
 --
 -- Steps, all best-effort (any failure short of a definite authentication
 -- rejection classifies as 'PatroniAuthUnobservable' so a fresh install or
 -- a transient probe miss never blocks the deploy):
 --
---   1. Ask the gateway daemon to derive the @patroni:<ns>:keycloak-postgres:app@
---      password over the loopback NodePort. The host never reads the raw
---      master seed (Sprint 3.16).
+--   1. Read the application-role password from Vault KV through the host
+--      Vault helper.
 --   2. Resolve the primary Pod for the cluster. Absent ⇒ no running
 --      Postgres to probe ⇒ unobservable.
 --   3. Run a probe-only @psql@ connection inside the primary Pod using the
---      derived password. Exit 0 ⇒ matches; an authentication-failure
+--      Vault-backed password. Exit 0 ⇒ matches; an authentication-failure
 --      diagnostic ⇒ rejected; anything else ⇒ unobservable.
-probePatroniAppRoleAuth :: String -> IO PatroniAuthObservation
-probePatroniAppRoleAuth namespace = do
-  deriveResult <-
-    GatewayClient.derive
-      (GatewayClient.hostLoopbackGatewayEndpoint defaultGatewayNodePort)
-      (patroniRoleContext (Text.pack namespace) "keycloak-postgres" PatroniRoleApp)
-  case deriveResult of
+probePatroniAppRoleAuth :: FilePath -> String -> IO PatroniAuthObservation
+probePatroniAppRoleAuth repoRoot namespace = do
+  passwordResult <-
+    readHostVaultKvField
+      repoRoot
+      "secret"
+      (Text.pack (keycloakPostgresAppVaultPath namespace))
+      "password"
+  case passwordResult of
     Left err ->
       pure
         ( PatroniAuthUnobservable
-            ("gateway derive of Patroni app-role password failed: " ++ GatewayClient.renderGatewayError err)
+            ("Vault read of Patroni app-role password failed: " ++ err)
         )
-    Right response -> do
+    Right password -> do
       maybePrimaryPodName <- readOptionalPatroniPrimaryPodName namespace
       case maybePrimaryPodName of
         Nothing ->
           pure (PatroniAuthUnobservable "no Patroni primary Pod found; nothing to probe")
         Just primaryPodName ->
-          probePatroniPsqlAuth namespace primaryPodName (Text.unpack (deriveResponseDerived response))
+          probePatroniPsqlAuth namespace primaryPodName (Text.unpack password)
 
 -- | Sprint 3.16 (boundary probe). Run a probe-only @psql@ connection in the
 -- primary Pod authenticating as the Patroni application role with the
@@ -1776,13 +1730,13 @@ valuesForKeycloak
   -> String
   -> Either String Value
 valuesForKeycloak namespace rootChart settings _chartSecrets sharedHostFqdn = do
-  -- Sprint 3.13 chunks 8 + 11: the admin password, OAuth client secrets, and
-  -- demo-user password are all materialized into k8s Secrets by the gateway
-  -- daemon's pre-install Job and consumed by the chart via Helm `lookup`
-  -- (see `charts/keycloak/templates/configmap.yaml` and `secret.yaml`). The
-  -- chart's `values.yaml` still carries `change-me` defaults so `helm template`
-  -- (no cluster) renders deterministically; on a live install the lookup
-  -- supersedes the default.
+  -- Sprint 3.18: Keycloak's admin password, Patroni application-role
+  -- password, OIDC client secrets, demo-user password, and SMTP settings are
+  -- read directly from Vault KV by the Pod's Kubernetes-auth init container.
+  -- The namespace controls the least-privilege Vault role and the
+  -- namespace-scoped KV paths used by the transitive vscode deployment.
+  let keycloakVaultRole =
+        if namespace == "keycloak" then "keycloak" else namespace ++ "-keycloak"
   pure
     ( object
         [ "replicaCount" .= (1 :: Int)
@@ -1807,6 +1761,29 @@ valuesForKeycloak namespace rootChart settings _chartSecrets sharedHostFqdn = do
               , "publicHost" .= sharedHostFqdn
               , "httpRelativePath" .= authPathPrefix
               , "realmName" .= keycloakRealmName
+              ]
+        , "vault"
+            .= object
+              [ "address" .= ("http://vault.vault.svc.cluster.local:8200" :: String)
+              , "authPath" .= ("kubernetes" :: String)
+              , "role" .= keycloakVaultRole
+              , "serviceAccountTokenFile" .= ("/var/run/secrets/kubernetes.io/serviceaccount/token" :: String)
+              , "image"
+                  .= object
+                    [ "repository" .= ("hashicorp/vault" :: String)
+                    , "tag" .= ("1.18.3" :: String)
+                    , "pullPolicy" .= ("IfNotPresent" :: String)
+                    ]
+              , "paths"
+                  .= object
+                    [ "admin" .= keycloakAdminVaultPath namespace
+                    , "db" .= keycloakPostgresAppVaultPath namespace
+                    , "oidcVscode" .= (namespace ++ "/oidc/vscode")
+                    , "oidcApi" .= (namespace ++ "/oidc/prodbox-api")
+                    , "oidcWebsocket" .= (namespace ++ "/oidc/prodbox-websocket")
+                    , "demoUser" .= (namespace ++ "/oidc/demo-user")
+                    , "smtp" .= ("keycloak/smtp" :: String)
+                    ]
               ]
         , "gateway"
             .= object
@@ -1855,6 +1832,14 @@ valuesForKeycloak namespace rootChart settings _chartSecrets sharedHostFqdn = do
         ]
     )
 
+keycloakAdminVaultPath :: String -> String
+keycloakAdminVaultPath namespace =
+  if namespace == "keycloak" then "keycloak/admin" else namespace ++ "/keycloak/admin"
+
+keycloakPostgresAppVaultPath :: String -> String
+keycloakPostgresAppVaultPath namespace =
+  namespace ++ "/keycloak-postgres/patroni/app"
+
 valuesForKeycloakPostgres
   :: String
   -> String
@@ -1868,12 +1853,10 @@ valuesForKeycloakPostgres namespace rootChart settings _chartSecrets storageClas
   when
     (length storageBindings /= 3)
     (Left "keycloak-postgres requires exactly three storage bindings")
-  -- Sprint 3.13 chunk 8: the three Patroni Secrets the Crunchy operator
-  -- watches (`prodbox-keycloak-pg-pguser-{keycloak,postgres}` and
-  -- `prodbox-keycloak-pg-primaryuser`) are materialized by the gateway
-  -- daemon's pre-install Job with `username` + master-seed-derived `password`.
-  -- The chart no longer renders `00-secrets.yaml`; this function therefore
-  -- no longer needs to project the passwords into Helm values.
+  -- Sprint 3.18: the three Patroni Secrets the Percona operator watches are
+  -- materialized by a pre-install Vault-auth Job. The CRD does not expose a
+  -- generated-Pod serviceAccountName field, so the least-privilege Vault read
+  -- belongs to that materializer instead of the operator-created Postgres Pods.
   pure
     ( object
         [ "global"
@@ -1941,6 +1924,36 @@ valuesForKeycloakPostgres namespace rootChart settings _chartSecrets storageClas
                     , "username" .= ("postgres" :: String)
                     ]
               ]
+        , "vault"
+            .= object
+              [ "address" .= ("http://vault.vault.svc.cluster.local:8200" :: String)
+              , "authPath" .= ("kubernetes" :: String)
+              , "role" .= (namespace ++ "-keycloak-postgres-pg")
+              , "serviceAccountTokenFile"
+                  .= ("/var/run/secrets/kubernetes.io/serviceaccount/token" :: String)
+              , "image"
+                  .= object
+                    [ "repository" .= ("hashicorp/vault" :: String)
+                    , "tag" .= ("1.18.3" :: String)
+                    , "pullPolicy" .= ("IfNotPresent" :: String)
+                    ]
+              , "paths"
+                  .= object
+                    [ "application" .= (namespace ++ "/keycloak-postgres/patroni/app")
+                    , "superuser" .= (namespace ++ "/keycloak-postgres/patroni/superuser")
+                    , "standby" .= (namespace ++ "/keycloak-postgres/patroni/standby")
+                    ]
+              ]
+        , "secretMaterializer"
+            .= object
+              [ "serviceAccountName" .= patroniVaultMaterializerServiceAccountName namespace
+              , "image"
+                  .= object
+                    [ "repository" .= ("127.0.0.1:30080/prodbox/curl-mirror" :: String)
+                    , "tag" .= ("8.11.0" :: String)
+                    , "pullPolicy" .= ("IfNotPresent" :: String)
+                    ]
+              ]
         , "storage"
             .= object
               [ "className" .= storageClassName
@@ -1975,23 +1988,14 @@ valuesForGateway
   -> String
   -> Either String Value
 valuesForGateway substrate namespace rootChart settings _gatewayEventKeys sharedHostFqdn maybeGatewayImage zoneId = do
-  -- Sprint 3.13 chunk 16: the per-node event keys are owned by the
-  -- gateway daemon's startup self-bootstrap (see
-  -- 'Prodbox.Gateway.Daemon.selfBootstrapOwnSecrets'); the chart's
-  -- 'configmap-config.yaml' reads them via Helm `lookup` of the
-  -- daemon-applied @gateway-event-keys@ Secret. The legacy
-  -- 'gatewayEventKeys' parameter is vestigial and arrives empty; the
-  -- prior non-empty / per-node membership preconditions are gone with
-  -- it. The Helm `eventKeys` value below is left empty for the same
-  -- reason — the chart no longer reads it.
+  -- Sprint 3.18: the per-node event keys and gateway AWS/MinIO credentials
+  -- are Vault KV objects rendered into config.dhall as SecretRef.Vault
+  -- references. The legacy 'gatewayEventKeys' parameter is vestigial and
+  -- arrives empty; the chart no longer reads or writes a k8s Secret for these
+  -- fields.
   let config = validatedConfig settings
       operationalAws = aws config
-      awsAccessKeyId = Text.unpack (access_key_id operationalAws)
-      awsSecretAccessKey = Text.unpack (secret_access_key operationalAws)
-      awsRegion = Text.unpack (region operationalAws)
-      sessionTokenValue = maybe "" Text.unpack (session_token operationalAws)
-  when (null awsAccessKeyId) (Left "gateway chart requires aws_access_key_id in settings")
-  when (null awsSecretAccessKey) (Left "gateway chart requires aws_secret_access_key in settings")
+      awsRegion = Text.unpack (awsCredentialRegion operationalAws)
   when (null awsRegion) (Left "gateway chart requires aws_region in settings")
   when
     (substrate == SubstrateHomeLocal && null zoneId)
@@ -2033,11 +2037,21 @@ valuesForGateway substrate namespace rootChart settings _gatewayEventKeys shared
               ]
         , "nodes" .= object ["rankedIds" .= gatewayNodeIds]
         , "dnsWriteGate" .= gatewayDnsWriteGateValue substrate zoneId sharedHostFqdn awsRegion
-        , "aws"
+        , "vault"
             .= object
-              [ "accessKeyId" .= awsAccessKeyId
-              , "secretAccessKey" .= awsSecretAccessKey
-              , "sessionToken" .= sessionTokenValue
+              [ "address" .= ("http://vault.vault.svc.cluster.local:8200" :: String)
+              , "authPath" .= ("kubernetes" :: String)
+              , "role" .= ("gateway-gateway" :: String)
+              , "serviceAccountTokenFile"
+                  .= ("/var/run/secrets/kubernetes.io/serviceaccount/token" :: String)
+              , "paths"
+                  .= object
+                    [ "eventKeyNodeA" .= ("gateway/gateway/node-a/event-key" :: String)
+                    , "eventKeyNodeB" .= ("gateway/gateway/node-b/event-key" :: String)
+                    , "eventKeyNodeC" .= ("gateway/gateway/node-c/event-key" :: String)
+                    , "aws" .= ("gateway/gateway/aws" :: String)
+                    , "minio" .= ("gateway/gateway/minio" :: String)
+                    ]
               ]
         , "certManager"
             .= object
@@ -2080,19 +2094,17 @@ valuesForVscode
   -> String
   -> Either String Value
 valuesForVscode namespace rootChart settings _chartSecrets storageClassName binding sharedHostFqdn = do
-  -- Sprint 3.13 chunk 11: the vscode chart reads the OIDC `client-secret`
-  -- via Helm `lookup` of the gateway-daemon-managed `keycloak-oidc-clients`
-  -- Secret in the release namespace. The chart's `values.yaml` `change-me`
-  -- default flows through only on `helm template` (no cluster); on a real
-  -- install the lookup supersedes. Keep the browser authorization endpoint on
-  -- the public issuer, but send Envoy's provider backchannel to the in-cluster
-  -- Keycloak Service so EKS never depends on public-NLB hairpin behavior.
+  -- The browser authorization endpoint stays on the public issuer, but Envoy's
+  -- provider backchannel uses the in-cluster Keycloak Service so EKS never
+  -- depends on public-NLB hairpin behavior. The Envoy `SecurityPolicy` client
+  -- Secret is materialized from Vault by the vscode chart's hook Job.
   let keycloakIssuer =
         "https://" ++ sharedHostFqdn ++ authPathPrefix ++ "/realms/" ++ keycloakRealmName
       keycloakOidcPath =
         authPathPrefix ++ "/realms/" ++ keycloakRealmName ++ "/protocol/openid-connect"
       keycloakInternalBase =
         "http://keycloak." ++ namespace ++ ".svc.cluster.local:8080"
+      curlImage = ContainerImage.harborCurlImage
   pure
     ( object
         [ "replicaCount" .= (1 :: Int)
@@ -2126,6 +2138,36 @@ valuesForVscode namespace rootChart settings _chartSecrets storageClassName bind
               , "redirectURL" .= ("https://" ++ sharedHostFqdn ++ vscodePathPrefix ++ "/oauth2/callback")
               , "logoutPath" .= ("/logout" :: String)
               , "securityPolicyName" .= publicEdgeVscodeSecurityPolicyName
+              ]
+        , "vault"
+            .= object
+              [ "address" .= ("http://vault.vault.svc.cluster.local:8200" :: String)
+              , "authPath" .= ("kubernetes" :: String)
+              , "role" .= ("vscode-oidc" :: String)
+              , "serviceAccountTokenFile" .= ("/var/run/secrets/kubernetes.io/serviceaccount/token" :: String)
+              , "image"
+                  .= object
+                    [ "repository" .= ("hashicorp/vault" :: String)
+                    , "tag" .= ("1.18.3" :: String)
+                    , "pullPolicy" .= ("IfNotPresent" :: String)
+                    ]
+              , "paths"
+                  .= object
+                    [ "oidcVscode" .= (namespace ++ "/oidc/vscode")
+                    ]
+              ]
+        , "secretMaterializer"
+            .= object
+              [ "image"
+                  .= object
+                    [ "repository"
+                        .= ( ContainerImage.imageRegistry curlImage
+                               ++ "/"
+                               ++ ContainerImage.imageRepository curlImage
+                           )
+                    , "tag" .= ContainerImage.imageTag curlImage
+                    , "pullPolicy" .= ("IfNotPresent" :: String)
+                    ]
               ]
         , "vscode"
             .= object
@@ -2248,11 +2290,10 @@ valuesForWebsocket namespace rootChart settings _chartSecrets sharedHostFqdn may
     case maybePublicEdgeWorkloadImage of
       Just imageInfo -> Right imageInfo
       Nothing -> Left "websocket chart requires a resolved public-edge workload image reference"
-  -- Sprint 3.13 chunk 11: the websocket chart reads the OIDC `client_secret`
-  -- via cross-namespace Helm `lookup` of the gateway-daemon-managed
-  -- `keycloak-oidc-clients` Secret in the shared `vscode` namespace. The
-  -- chart's `values.yaml` `change-me` default flows through only on `helm
-  -- template` (no cluster); on a real install the lookup supersedes.
+  -- Sprint 3.18: the websocket chart renders a SecretRef.Vault for the OIDC
+  -- client secret. The workload binary authenticates to Vault through its
+  -- Kubernetes service account and reads KV directly; Helm no longer looks up
+  -- or renders the secret value.
   let workloadRepository = resolvedCustomImageRepository resolvedWorkloadImage
       workloadTag = resolvedCustomImageTag resolvedWorkloadImage
       keycloakIssuer =
@@ -2275,6 +2316,13 @@ valuesForWebsocket namespace rootChart settings _chartSecrets sharedHostFqdn may
             .= object
               [ "repository" .= workloadRepository
               , "tag" .= workloadTag
+              ]
+        , "vault"
+            .= object
+              [ "address" .= ("http://vault.vault.svc.cluster.local:8200" :: String)
+              , "authPath" .= ("kubernetes" :: String)
+              , "role" .= ("websocket-oidc" :: String)
+              , "serviceAccountTokenFile" .= ("/var/run/secrets/kubernetes.io/serviceaccount/token" :: String)
               ]
         , "gateway"
             .= object
@@ -2311,6 +2359,12 @@ valuesForWebsocket namespace rootChart settings _chartSecrets sharedHostFqdn may
                          :: String
                      )
               , "clientId" .= keycloakWebsocketClientId
+              , "clientSecretVaultRef"
+                  .= object
+                    [ "mount" .= ("secret" :: String)
+                    , "path" .= ("vscode/oidc/prodbox-websocket" :: String)
+                    , "field" .= ("client_secret" :: String)
+                    ]
               , "publicBaseUrl" .= ("https://" ++ sharedHostFqdn ++ websocketPathPrefix)
               ]
         , "redis"
@@ -2473,18 +2527,17 @@ renderDeleteReport plan =
     ]
       ++ renderStorageReport (chartReleasePlanStorageBindings release)
 
--- | Sprint 3.16 (pure decision). The observable result of probing a
--- preserved Patroni datadir for whether the gateway-derived role password
--- still authenticates against the @pg_authid@ hash the datadir carries.
--- Kept deliberately separate from the boundary probe so the loud-failure
--- policy is unit-testable without a live Postgres.
+-- | The observable result of probing a preserved Patroni datadir for whether
+-- the Vault-backed role password still authenticates against the @pg_authid@
+-- hash the datadir carries. Kept deliberately separate from the boundary
+-- probe so the loud-failure policy is unit-testable without a live Postgres.
 data PatroniAuthObservation
-  = -- | The probe connected with the gateway-derived password — the
-    -- preserved @pg_authid@ hash matches the current seed's derivation.
+  = -- | The probe connected with the Vault-backed password — the preserved
+    -- @pg_authid@ hash matches the current Vault KV value.
     PatroniAuthMatches
-  | -- | The probe reached Postgres but the derived password was rejected:
-    -- the preserved @.data/@ was written under a different master seed.
-    -- This is the load-bearing failure case (@secret_derivation_doctrine.md §8@).
+  | -- | The probe reached Postgres but the Vault-backed password was
+    -- rejected: the preserved @.data/@ does not match the current Vault KV
+    -- value.
     PatroniAuthRejected
   | -- | The probe could not observe @pg_authid@ at all (no primary Pod
     -- yet, psql unavailable, connection refused). The 'String' carries the
@@ -2498,7 +2551,7 @@ data PatroniAuthObservation
 -- | Sprint 3.16 (pure decision). Whether the Patroni storage step may
 -- proceed, or must fail loudly before any chart deploy mutates state.
 data PatroniResetDecision
-  = -- | Proceed: either the derived password authenticates, or the datadir
+  = -- | Proceed: either the Vault-backed password authenticates, or the datadir
     -- could not be observed (so there is no proven mismatch to be loud
     -- about).
     PatroniResetProceed
@@ -2519,7 +2572,7 @@ patroniSeedMismatchDecision
   :: String
   -- ^ Kubernetes namespace of the preserved Patroni cluster.
   -> String
-  -- ^ Patroni role name whose derived password was probed.
+  -- ^ Patroni role name whose Vault-backed password was probed.
   -> PatroniAuthObservation
   -> PatroniResetDecision
 patroniSeedMismatchDecision namespace role observation =
@@ -2528,7 +2581,7 @@ patroniSeedMismatchDecision namespace role observation =
     PatroniAuthUnobservable _ -> PatroniResetProceed
     PatroniAuthRejected ->
       PatroniResetLoudFailure
-        ( "Patroni preserved-data mismatch: the master-seed-derived password for role `"
+        ( "Patroni preserved-data mismatch: the Vault-backed password for role `"
             ++ role
             ++ "` in namespace `"
             ++ namespace
@@ -2536,14 +2589,14 @@ patroniSeedMismatchDecision namespace role observation =
             ++ "The preserved `.data/"
             ++ namespace
             ++ "/keycloak-postgres/...` datadir was written under a different "
-            ++ "master seed (the seed in MinIO was regenerated while the datadir "
-            ++ "was retained). prodbox refuses to silently reset preserved Postgres "
-            ++ "storage. Resolve by either (a) restoring the `.data/` snapshot whose "
-            ++ "master seed matches this datadir, or (b) deliberately wiping the "
+            ++ "Vault KV password (or an earlier secret root) while the datadir was "
+            ++ "retained. prodbox refuses to silently reset preserved Postgres "
+            ++ "storage. Resolve by either (a) restoring the Vault data / `.data/` "
+            ++ "snapshot pair whose password matches this datadir, or (b) deliberately wiping the "
             ++ "affected `.data/"
             ++ namespace
             ++ "/keycloak-postgres/` subtree so a fresh cluster is provisioned "
-            ++ "against the current seed."
+            ++ "against the current Vault password."
         )
 
 -- | Sprint 3.16. Render a 'PatroniResetDecision' to the
@@ -2623,20 +2676,20 @@ ensureChartStorage plan = do
   -- escape hatch can never fire. The previous silent-reset arm of
   -- 'shouldResetPatroniStorage' (chunk 14 in the spec) is therefore dead too.
   --
-  -- Sprint 3.16 lands the doctrine-prescribed replacement
-  -- (@secret_derivation_doctrine.md §8@): instead of silently resetting
-  -- preserved storage, probe whether the gateway-derived Patroni app-role
-  -- password still authenticates against the preserved `pg_authid` hash and
+  -- Instead of silently resetting preserved storage, probe whether the
+  -- Vault-backed Patroni app-role password still authenticates against the
+  -- preserved `pg_authid` hash and
   -- FAIL LOUDLY on a proven mismatch. The pure loud-failure policy lives in
   -- 'patroniSeedMismatchDecision' (unit-tested); this arm is only the
-  -- boundary probe that derives the expected password over the gateway RPC
-  -- and observes `pg_authid` through a probe-only Postgres connection. The
-  -- probe is best-effort: a fresh install (no primary Pod) or any
+  -- boundary probe that reads the expected password from Vault and observes
+  -- `pg_authid` through a probe-only Postgres connection. The probe is
+  -- best-effort: a fresh install (no primary Pod) or any
   -- transient probe failure classifies as "cannot observe" and proceeds —
   -- only a definite authentication rejection triggers the loud failure.
   resetPatroniStorageIfRequested :: IO (Either String ())
   resetPatroniStorageIfRequested = do
-    observation <- probePatroniAppRoleAuth (chartDeploymentPlanNamespace plan)
+    observation <-
+      probePatroniAppRoleAuth (chartDeploymentPlanRepoRoot plan) (chartDeploymentPlanNamespace plan)
     pure
       ( renderPatroniResetDecision
           (patroniSeedMismatchDecision (chartDeploymentPlanNamespace plan) patroniUsername observation)
@@ -3286,13 +3339,11 @@ helmReleaseSnapshots = do
         pure (Map.fromList [(chartInstallSnapshotReleaseName snapshot, snapshot) | snapshot <- snapshots])
       ExitFailure _ -> Left ("helm list failed: " ++ processStderr output ++ processStdout output)
 
--- Sprint 3.13 chunk 16: 'resolveOrGenerateStringMap', 'writeGeneratedMap',
--- 'mergeRequiredKeys', 'writeStringMap' are all gone. They were the
--- random-key-generation + JSON persistence machinery that backed the
--- @.prodbox-state/<ns>/.gateway-event-keys.json@ cache (and the prior
--- chart-secret cache before chunk 12). Both caches now flow through
--- k8s @Secret@s materialized by the gateway daemon's ensure-namespace
--- handler / startup self-bootstrap.
+-- 'resolveOrGenerateStringMap', 'writeGeneratedMap', 'mergeRequiredKeys',
+-- and 'writeStringMap' are all gone. They were the random-key-generation +
+-- JSON persistence machinery that backed the retired @.prodbox-state/@
+-- caches. Current secrets flow through Vault KV plus chart-local
+-- materializers.
 
 -- Sprint 3.13 chunk 16: 'chartStateDir', 'ensureChartStateDir', and
 -- 'repairChartStateDir' are removed alongside 'chartStateRootRelative'.

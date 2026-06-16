@@ -40,7 +40,7 @@ integrationEnvSuite = do
 
         exitCode `shouldBe` ExitSuccess
         stderrText `shouldBe` ""
-        stdoutText `shouldContain` "aws.access_key_id=****-key"
+        stdoutText `shouldContain` "aws.access_key_id=Vault:secret/gateway/gateway/aws#access_key_id"
         stdoutText `shouldContain` "acme.email=****.com"
         doesFileExist (tmpDir </> "prodbox-config.json") `shouldReturn` False
 
@@ -103,11 +103,46 @@ writeRepoMarkers repoRoot = do
   createDirectoryIfMissing True (repoRoot </> "DEVELOPMENT_PLAN")
   writeFile (repoRoot </> "DEVELOPMENT_PLAN/README.md") "# temp\n"
 
+secretRefTypeDhall :: String
+secretRefTypeDhall =
+  "< Vault : { mount : Text, path : Text, field : Text }"
+    ++ " | TransitKey : Text"
+    ++ " | Prompt : { name : Text, purpose : Text }"
+    ++ " | TestPlaintext : Text"
+    ++ " >"
+
+vaultSecretRefDhall :: String -> String -> String
+vaultSecretRefDhall path field =
+  unlines
+    [ secretRefTypeDhall ++ ".Vault"
+    , "  { mount = \"secret\""
+    , "  , path = " ++ show path
+    , "  , field = " ++ show field
+    , "  }"
+    ]
+
+awsCredentialRefDhall :: String -> String -> Bool -> String
+awsCredentialRefDhall path regionValue includeSessionToken =
+  concat
+    [ "{ access_key_id = "
+    , vaultSecretRefDhall path "access_key_id"
+    , ", secret_access_key = "
+    , vaultSecretRefDhall path "secret_access_key"
+    , ", session_token = "
+    , if includeSessionToken
+        then "Some (" ++ vaultSecretRefDhall path "session_token" ++ ")"
+        else "None (" ++ secretRefTypeDhall ++ ")"
+    , ", region = "
+    , show regionValue
+    , " }"
+    ]
+
 validConfig :: String
 validConfig =
   unlines
-    [ "{ aws = { access_key_id = \"test-access-key\", secret_access_key = \"test-secret-key\", session_token = Some \"test-session-token\", region = \"us-east-1\" }"
-    , ", aws_admin_for_test_simulation = { access_key_id = \"\", secret_access_key = \"\", session_token = None Text, region = \"\" }"
+    [ "{ aws = " ++ awsCredentialRefDhall "gateway/gateway/aws" "us-east-1" True
+    , ", aws_admin_for_test_simulation = "
+        ++ awsCredentialRefDhall "aws/admin-for-test-simulation" "" False
     , ", route53 = { zone_id = \"Z1234567890ABC\" }"
     , ", aws_substrate = { hosted_zone_id = \"\", subzone_name = \"\" }"
     , ", ses = { sender_domain = \"\", receive_subdomain = \"\", capture_bucket = \"\" }"
@@ -122,8 +157,9 @@ validConfig =
 invalidConfig :: String
 invalidConfig =
   unlines
-    [ "{ aws = { access_key_id = \"\", secret_access_key = \"test-secret-key\", session_token = None Text, region = \"us-east-1\" }"
-    , ", aws_admin_for_test_simulation = { access_key_id = \"\", secret_access_key = \"\", session_token = None Text, region = \"\" }"
+    [ "{ aws = " ++ awsCredentialRefDhall "gateway/gateway/aws" "us-east-1" False
+    , ", aws_admin_for_test_simulation = "
+        ++ awsCredentialRefDhall "aws/admin-for-test-simulation" "" False
     , ", route53 = { zone_id = \"Z1234567890ABC\" }"
     , ", aws_substrate = { hosted_zone_id = \"\", subzone_name = \"\" }"
     , ", ses = { sender_domain = \"\", receive_subdomain = \"\", capture_bucket = \"\" }"

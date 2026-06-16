@@ -595,7 +595,7 @@ For `prodbox`:
 3. the supported remote AWS stacks are one ephemeral Pulumi-managed EKS cluster plus exactly three
    Pulumi-managed Ubuntu 24.04 EC2 instances in separate availability zones for the HA RKE2 path,
    both backed by Pulumi state stored in the local-cluster MinIO bucket
-   `prodbox-test-pulumi-backends`
+   `prodbox-state`
 4. general integration setup and cleanup ownership is defined in [Integration Fixture Doctrine](./integration_fixture_doctrine.md)
 5. unit vs integration execution policy is defined in [Unit Testing Policy](./unit_testing_policy.md#2-unit-vs-integration-tests)
 

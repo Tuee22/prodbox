@@ -6,6 +6,7 @@ module Prodbox.Workload
   , WorkloadMode (..)
   , workloadBootConfigFromDhall
   , workloadLiveConfigFromDhall
+  , workloadLiveConfigFromDhallWith
   , workloadBootFieldsChanged
   , runWorkloadCommand
   )
@@ -29,6 +30,7 @@ import Control.Concurrent.STM
 import Control.Exception
   ( SomeException
   , bracket
+  , displayException
   , finally
   , try
   )
@@ -58,6 +60,7 @@ import Data.Map.Strict qualified as Map
 import Data.Maybe (fromMaybe)
 import Data.Scientific (toBoundedInteger)
 import Data.Text qualified as Text
+import Data.Text.IO qualified as TextIO
 import Data.Time.Clock.POSIX (getPOSIXTime)
 import Data.Word (Word8)
 import GHC.Conc (threadWaitRead)
@@ -97,10 +100,22 @@ import Prodbox.Gateway.Logging
   , severityFromLogLevel
   )
 import Prodbox.Result (Result (..))
+import Prodbox.Settings.SecretRef
+  ( SecretRef
+  , SecretRefError (..)
+  , SecretRefMode (..)
+  , renderSecretRefError
+  , resolveSecretRef
+  , resolveSecretRefFromVault
+  )
 import Prodbox.Subprocess
   ( ProcessOutput (..)
   , Subprocess (..)
   , captureSubprocessResult
+  )
+import Prodbox.Vault.Client
+  ( VaultAddress (..)
+  , vaultKubernetesLogin
   )
 import Prodbox.Workload.PodIdentity (resolvePodName)
 import Prodbox.Workload.Settings qualified as WorkloadSettings
@@ -292,6 +307,10 @@ data WorkloadEnv = WorkloadEnv
   , workloadEnvWebsocketRuntime :: Maybe WebsocketRuntime
   }
 
+defaultVaultServiceAccountTokenFile :: FilePath
+defaultVaultServiceAccountTokenFile =
+  "/var/run/secrets/kubernetes.io/serviceaccount/token"
+
 -- | Sprint 3.15: the mounted Dhall config is the sole config source. A
 -- missing @--config@ is a fast, structured failure (no env-var fallback);
 -- a present-but-unparseable @--config@ likewise fails fast through
@@ -308,7 +327,7 @@ runWorkloadServer options =
         Left err -> failWith err
         Right dhall -> do
           let bootConfig = workloadBootConfigFromDhall dhall
-          liveConfigResult <- pure (workloadLiveConfigFromDhall (bootMode bootConfig) dhall)
+          liveConfigResult <- workloadLiveConfigFromDhall (bootMode bootConfig) dhall
           case liveConfigResult of
             Left err -> failWith err
             Right liveConfig -> do
@@ -484,9 +503,11 @@ reloadLiveConfig env = do
         then do
           atomically (writeTQueue (workloadEnvDrainSignals env) ())
           pure (Left "public_workload_config_reload_boot_change_detected")
-        else case workloadLiveConfigFromDhall (bootMode newBootConfig) dhall of
-          Left _ -> pure (Left "config_schema_mismatch")
-          Right liveConfig -> pure (Right liveConfig)
+        else do
+          liveResult <- workloadLiveConfigFromDhall (bootMode newBootConfig) dhall
+          case liveResult of
+            Left _ -> pure (Left "config_schema_mismatch")
+            Right liveConfig -> pure (Right liveConfig)
 
 handleClient :: WorkloadMode -> String -> Maybe WebsocketRuntime -> Socket -> IO ()
 handleClient mode podName maybeRuntime clientSocket = do
@@ -906,35 +927,50 @@ workloadBootConfigFromDhall dto =
         fromMaybe 8080 (WorkloadSettings.workload_port dto >>= naturalToPositiveInt)
     }
 
--- | Sprint 3.15: build the live-reloadable config from the mounted Dhall.
--- Pure and total: classifies which fields can change in place. The
--- @log_level@ defaults to @info@. For 'WorkloadWebsocket' the Redis and OIDC
--- records are required and validated here (a missing or empty required field
--- is a structured 'Left'); for 'WorkloadApi' they are 'Nothing'.
+-- | Sprint 3.15 + 3.18: build the live-reloadable config from the mounted
+-- Dhall, resolving any SecretRef-backed live fields before exposing the
+-- runtime config. The @log_level@ defaults to @info@. For 'WorkloadWebsocket'
+-- the Redis and OIDC records are required and validated here (a missing,
+-- empty, or unreadable required field is a structured 'Left'); for
+-- 'WorkloadApi' they are 'Nothing'.
 workloadLiveConfigFromDhall
   :: WorkloadMode
   -> WorkloadSettings.WorkloadConfigDhall
-  -> Either String WorkloadLiveConfig
+  -> IO (Either String WorkloadLiveConfig)
 workloadLiveConfigFromDhall mode dto =
+  workloadLiveConfigFromDhallWith (resolveWorkloadSecretRef dto) mode dto
+
+workloadLiveConfigFromDhallWith
+  :: (SecretRef -> IO (Either SecretRefError Text.Text))
+  -> WorkloadMode
+  -> WorkloadSettings.WorkloadConfigDhall
+  -> IO (Either String WorkloadLiveConfig)
+workloadLiveConfigFromDhallWith secretResolver mode dto =
   let logLevel =
         fromMaybe "info" (WorkloadSettings.log_level dto >>= textToNonEmptyString)
    in case mode of
         WorkloadApi ->
-          Right
-            WorkloadLiveConfig
-              { liveLogLevel = logLevel
-              , liveRedisConfig = Nothing
-              , liveOidcConfig = Nothing
-              }
+          pure
+            ( Right
+                WorkloadLiveConfig
+                  { liveLogLevel = logLevel
+                  , liveRedisConfig = Nothing
+                  , liveOidcConfig = Nothing
+                  }
+            )
         WorkloadWebsocket -> do
-          redisConfig <- redisConfigFromDhall dto
-          oidcConfig <- oidcConfigFromDhall dto
-          Right
-            WorkloadLiveConfig
-              { liveLogLevel = logLevel
-              , liveRedisConfig = Just redisConfig
-              , liveOidcConfig = Just oidcConfig
-              }
+          case redisConfigFromDhall dto of
+            Left err -> pure (Left err)
+            Right redisConfig -> do
+              oidcResult <- oidcConfigFromDhall secretResolver dto
+              pure $ do
+                oidcConfig <- oidcResult
+                Right
+                  WorkloadLiveConfig
+                    { liveLogLevel = logLevel
+                    , liveRedisConfig = Just redisConfig
+                    , liveOidcConfig = Just oidcConfig
+                    }
 
 -- | Sprint 3.15: the Boot-field change classifier, mirroring
 -- 'Prodbox.Gateway.Daemon.daemonBootFieldsChanged'. A change to the
@@ -961,30 +997,101 @@ redisConfigFromDhall dto =
     Nothing ->
       Left "redis must be Some in the workload Dhall config for websocket mode"
 
-oidcConfigFromDhall :: WorkloadSettings.WorkloadConfigDhall -> Either String OidcConfig
-oidcConfigFromDhall dto =
+oidcConfigFromDhall
+  :: (SecretRef -> IO (Either SecretRefError Text.Text))
+  -> WorkloadSettings.WorkloadConfigDhall
+  -> IO (Either String OidcConfig)
+oidcConfigFromDhall secretResolver dto =
   case WorkloadSettings.oidc dto of
-    Just dhallOidc ->
+    Just dhallOidc -> do
+      secretResult <- secretResolver (WorkloadSettings.client_secret dhallOidc)
       let issuer = Text.unpack (WorkloadSettings.issuer dhallOidc)
           clientId = Text.unpack (WorkloadSettings.client_id dhallOidc)
-          clientSecret = Text.unpack (WorkloadSettings.client_secret dhallOidc)
           publicBaseUrl = Text.unpack (WorkloadSettings.public_base_url dhallOidc)
           tokenEndpoint = Text.unpack (WorkloadSettings.token_endpoint dhallOidc)
-       in if "" `notElem` [issuer, clientId, clientSecret, publicBaseUrl, tokenEndpoint]
-            then
-              Right
-                OidcConfig
-                  { oidcIssuer = issuer
-                  , oidcClientId = clientId
-                  , oidcClientSecret = clientSecret
-                  , oidcPublicBaseUrl = publicBaseUrl
-                  , oidcTokenEndpoint = tokenEndpoint
-                  }
-            else
-              Left
-                "oidc.{issuer,client_id,client_secret,public_base_url,token_endpoint} must be non-empty in the workload Dhall config for websocket mode"
+      pure $ do
+        clientSecretText <- firstSecretError secretResult
+        let clientSecret = Text.unpack clientSecretText
+        if "" `notElem` [issuer, clientId, clientSecret, publicBaseUrl, tokenEndpoint]
+          then
+            Right
+              OidcConfig
+                { oidcIssuer = issuer
+                , oidcClientId = clientId
+                , oidcClientSecret = clientSecret
+                , oidcPublicBaseUrl = publicBaseUrl
+                , oidcTokenEndpoint = tokenEndpoint
+                }
+          else
+            Left
+              "oidc.{issuer,client_id,client_secret,public_base_url,token_endpoint} must be non-empty in the workload Dhall config for websocket mode"
     Nothing ->
-      Left "oidc must be Some in the workload Dhall config for websocket mode"
+      pure (Left "oidc must be Some in the workload Dhall config for websocket mode")
+ where
+  firstSecretError result =
+    case result of
+      Left err -> Left (renderSecretRefError err)
+      Right value -> Right value
+
+resolveWorkloadSecretRef
+  :: WorkloadSettings.WorkloadConfigDhall
+  -> SecretRef
+  -> IO (Either SecretRefError Text.Text)
+resolveWorkloadSecretRef dto ref =
+  case WorkloadSettings.vault dto of
+    Nothing -> resolveSecretRef ProductionMode ref
+    Just vaultAuth -> do
+      let tokenPath =
+            Text.unpack
+              ( fromMaybe
+                  (Text.pack defaultVaultServiceAccountTokenFile)
+                  (WorkloadSettings.service_account_token_file vaultAuth)
+              )
+      jwtResult <- readServiceAccountToken tokenPath
+      case jwtResult of
+        Left err -> pure (Left err)
+        Right jwt -> do
+          loginResult <-
+            vaultKubernetesLogin
+              (VaultAddress (WorkloadSettings.address vaultAuth))
+              (WorkloadSettings.auth_path vaultAuth)
+              (WorkloadSettings.role vaultAuth)
+              jwt
+          case loginResult of
+            Left err ->
+              pure
+                ( Left
+                    (SecretRefVaultReadFailed ("Vault Kubernetes auth login failed: " ++ show err))
+                )
+            Right token ->
+              resolveSecretRefFromVault
+                ProductionMode
+                (VaultAddress (WorkloadSettings.address vaultAuth))
+                token
+                ref
+
+readServiceAccountToken :: FilePath -> IO (Either SecretRefError Text.Text)
+readServiceAccountToken path = do
+  result <- try (TextIO.readFile path) :: IO (Either SomeException Text.Text)
+  pure $ case result of
+    Left ex ->
+      Left
+        ( SecretRefVaultReadFailed
+            ( "failed to read Kubernetes service-account token `"
+                ++ path
+                ++ "`: "
+                ++ displayException ex
+            )
+        )
+    Right rawToken ->
+      let token = Text.strip rawToken
+       in if Text.null token
+            then
+              Left
+                ( SecretRefVaultReadFailed
+                    ("Kubernetes service-account token `" ++ path ++ "` is empty")
+                )
+            else Right token
 
 naturalToPositiveInt :: (Integral n) => n -> Maybe Int
 naturalToPositiveInt n =

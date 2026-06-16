@@ -196,11 +196,11 @@ Examples:
 - prodbox charts delete --dry-run vscode  # Render the chart deletion plan.
 
 ## prodbox cluster status
-prodbox cluster status - Check cluster service status
+prodbox cluster status - Check cluster and Vault status
 
-Inspect the local cluster service status.
+Inspect the local cluster service status and the in-cluster Vault seal state.
 Examples:
-- prodbox cluster status  # Inspect local cluster status.
+- prodbox cluster status  # Inspect local cluster and Vault status.
 
 ## prodbox cluster health
 prodbox cluster health - Check Kubernetes health
@@ -247,7 +247,7 @@ Examples:
 ## prodbox cluster delete
 prodbox cluster delete - Delete the local cluster
 
-Delete the local cluster. Default mode is a PURE LOCAL UNINSTALL: it uninstalls RKE2 and preserves `.data/` (the MinIO-backed per-run Pulumi state) without querying, gating on, or destroying the per-run AWS Pulumi backend  so per-run AWS stacks (if any) are left untouched and remain destroyable afterward via `prodbox cluster delete --cascade` or `prodbox aws stack <name> destroy --yes`. `--cascade` orchestrates the full teardown (K8s drain + per-run Pulumi destroys + cluster uninstall + postflight tag sweep) as one atomic operator action; the K8s drain phase skips gracefully when no cluster is reachable.
+Delete the local cluster. Default mode is a PURE LOCAL UNINSTALL: it uninstalls RKE2 and preserves `.data/` (including the MinIO-backed per-run Pulumi state and the durable Vault PV) without querying, gating on, or destroying the per-run AWS Pulumi backend  so per-run AWS stacks (if any) are left untouched and remain destroyable afterward via `prodbox cluster delete --cascade` or `prodbox aws stack <name> destroy --yes`. `--cascade` orchestrates the full teardown (K8s drain + per-run Pulumi destroys + cluster uninstall + postflight tag sweep) as one atomic operator action; the K8s drain phase skips gracefully when no cluster is reachable.
 Options:
 - --yes, -y - Confirm full cluster deletion
 - --cascade - Orchestrate the full teardown (K8s drain + per-run Pulumi destroys + cluster uninstall + postflight tag sweep) as one atomic operator action
@@ -267,6 +267,24 @@ Options:
 
 Examples:
 - prodbox cluster logs --lines 50  # Show recent cluster service logs.
+
+## prodbox cluster federation register
+prodbox cluster federation register - Register a downstream cluster
+
+Register parent-owned custody for a downstream cluster: child metadata, child init-key custody path, opaque Vault namespace, Transit key name, and the child bootstrap token Secret.
+Options:
+- --dry-run - Render the registration plan without mutating state
+- --plan-file <PATH> - Write the rendered plan to a file
+- --child-vault-address <URL> - Host-reachable Vault API address for the child cluster
+- --child-kubeconfig <PATH> - Kubeconfig for applying the child transit-seal token Secret
+- --child-endpoint <NAME=URL> - Child endpoint inventory entry to custody in the parent Vault; repeatable
+- --child-kubeconfig-reference <REF> - Parent-custodied kubeconfig reference for the child cluster
+- --child-account-id <ACCOUNT_ID> - Parent-custodied cloud/account identifier for the child cluster
+- --child-pulumi-stack <NAME=REF> - Child Pulumi stack reference to custody in the parent Vault; repeatable
+
+Examples:
+- prodbox cluster federation register child-a --dry-run  # Render the downstream custody plan.
+- prodbox cluster federation register child-a --child-vault-address http://child-vault.example:8200 --child-kubeconfig /secure/child-a.kubeconfig --child-kubeconfig-reference vault:secret/clusters/child-a/kubeconfig --child-account-id 123456789012 --child-endpoint api=https://api.child-a.example --child-pulumi-stack aws-eks=org/prodbox-child-a/aws-eks  # Register child-a and apply its transit-seal token Secret.
 
 ## prodbox cluster wait
 prodbox cluster wait - Wait for deployments to be ready
@@ -425,7 +443,7 @@ Examples:
 ## prodbox edge status
 prodbox edge status - Check public DNS/TLS edge state
 
-Inspect Route 53, certificate, and shared-host readiness.
+Inspect Route 53, certificate, shared-host readiness, and the in-cluster Vault seal state.
 Options:
 - --substrate <SUBSTRATE> - Target substrate (home-local, aws); default home-local
 
@@ -796,6 +814,18 @@ Options:
 
 Examples:
 - prodbox test integration keycloak-invite  # Run the `keycloak-invite` integration suite.
+
+## prodbox test integration sealed-vault
+prodbox test integration sealed-vault - Run sealed-Vault fail-closed integration tests
+
+Run sealed-Vault fail-closed integration tests
+Options:
+- --coverage - Enable coverage reporting for the selected test scope
+- --cov-fail-under <INTEGER> - Require a minimum coverage percentage
+- --substrate <SUBSTRATE> - Target substrate (home-local, aws); default home-local
+
+Examples:
+- prodbox test integration sealed-vault  # Run the `sealed-vault` integration suite.
 
 ## prodbox users invite
 prodbox users invite - Invite an operator-owned user by email

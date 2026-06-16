@@ -52,6 +52,7 @@ import Prodbox.CLI.Command
   , DnsCommand (..)
   , DocsCommand (..)
   , EdgeCommand (..)
+  , FederationRegisterOptions (..)
   , GatewayCommand (..)
   , HostCommand (..)
   , IntegrationSuite (..)
@@ -442,6 +443,11 @@ parserForPath path =
         )
     ["cluster", "delete"] ->
       Just (rke2DeleteParser <$> rke2DeleteFlagsParser <*> planOptionsParser)
+    ["cluster", "federation", "register"] ->
+      Just $
+        (\childClusterId options' -> RunNative (NativeRke2 (Rke2FederationRegister childClusterId options')))
+          <$> strArgument (metavar "CHILD")
+          <*> federationRegisterOptionsParser
     ["cluster", "logs"] ->
       Just $
         fmap
@@ -483,6 +489,7 @@ parserForPath path =
     ["test", "integration", "admin-routes"] -> Just (withCoverage (TestIntegration IntegrationAdminRoutes))
     ["test", "integration", "public-dns"] -> Just (withCoverage (TestIntegration IntegrationPublicDns))
     ["test", "integration", "keycloak-invite"] -> Just (withCoverage (TestIntegration IntegrationKeycloakInvite))
+    ["test", "integration", "sealed-vault"] -> Just (withCoverage (TestIntegration IntegrationSealedVault))
     ["nuke"] ->
       Just
         ( fmap
@@ -549,6 +556,67 @@ planOptionsParser =
               <> help "Write the rendered plan to a file"
           )
       )
+
+federationRegisterOptionsParser :: Parser FederationRegisterOptions
+federationRegisterOptionsParser =
+  FederationRegisterOptions
+    <$> planOptionsParser
+    <*> optional
+      ( strOption
+          ( long "child-vault-address"
+              <> metavar "URL"
+              <> help "Host-reachable Vault API address for the child cluster"
+          )
+      )
+    <*> optional
+      ( strOption
+          ( long "child-kubeconfig"
+              <> metavar "PATH"
+              <> help "Kubeconfig for applying the child transit-seal token Secret"
+          )
+      )
+    <*> many
+      ( option
+          keyValueReader
+          ( long "child-endpoint"
+              <> metavar "NAME=URL"
+              <> help "Child endpoint inventory entry to custody in the parent Vault; repeatable"
+          )
+      )
+    <*> optional
+      ( strOption
+          ( long "child-kubeconfig-reference"
+              <> metavar "REF"
+              <> help "Parent-custodied kubeconfig reference for the child cluster"
+          )
+      )
+    <*> optional
+      ( strOption
+          ( long "child-account-id"
+              <> metavar "ACCOUNT_ID"
+              <> help "Parent-custodied cloud/account identifier for the child cluster"
+          )
+      )
+    <*> many
+      ( option
+          keyValueReader
+          ( long "child-pulumi-stack"
+              <> metavar "NAME=REF"
+              <> help "Child Pulumi stack reference to custody in the parent Vault; repeatable"
+          )
+      )
+
+keyValueReader :: ReadM (String, String)
+keyValueReader = eitherReader parseKeyValue
+
+parseKeyValue :: String -> Either String (String, String)
+parseKeyValue raw =
+  case break (== '=') raw of
+    ("", _) -> Left "expected NAME=VALUE with a non-empty NAME"
+    (_, "") -> Left "expected NAME=VALUE"
+    (name, _ : rawValue)
+      | null rawValue -> Left "expected NAME=VALUE with a non-empty VALUE"
+      | otherwise -> Right (name, rawValue)
 
 -- | @--with-edge@ for @rke2 reconcile@: also reconcile the AWS-gated public
 -- edge (Route 53 DNS + ZeroSSL TLS). Bare reconcile is local-only and needs
@@ -1336,10 +1404,10 @@ clusterGroup =
     "Local Kubernetes cluster lifecycle. AWS-free: every command here decodes config and runs with an empty aws.* block. Public DNS + TLS lives under `prodbox edge`."
     [ leaf
         "status"
-        "Check cluster service status"
-        "Inspect the local cluster service status."
+        "Check cluster and Vault status"
+        "Inspect the local cluster service status and the in-cluster Vault seal state."
         []
-        [example ["cluster", "status"] "Inspect local cluster status."]
+        [example ["cluster", "status"] "Inspect local cluster and Vault status."]
     , leaf
         "health"
         "Check Kubernetes health"
@@ -1383,7 +1451,7 @@ clusterGroup =
     , leaf
         "delete"
         "Delete the local cluster"
-        "Delete the local cluster. Default mode is a PURE LOCAL UNINSTALL: it uninstalls RKE2 and preserves `.data/` (the MinIO-backed per-run Pulumi state) without querying, gating on, or destroying the per-run AWS Pulumi backend — so per-run AWS stacks (if any) are left untouched and remain destroyable afterward via `prodbox cluster delete --cascade` or `prodbox aws stack <name> destroy --yes`. `--cascade` orchestrates the full teardown (K8s drain + per-run Pulumi destroys + cluster uninstall + postflight tag sweep) as one atomic operator action; the K8s drain phase skips gracefully when no cluster is reachable."
+        "Delete the local cluster. Default mode is a PURE LOCAL UNINSTALL: it uninstalls RKE2 and preserves `.data/` (including the MinIO-backed per-run Pulumi state and the durable Vault PV) without querying, gating on, or destroying the per-run AWS Pulumi backend — so per-run AWS stacks (if any) are left untouched and remain destroyable afterward via `prodbox cluster delete --cascade` or `prodbox aws stack <name> destroy --yes`. `--cascade` orchestrates the full teardown (K8s drain + per-run Pulumi destroys + cluster uninstall + postflight tag sweep) as one atomic operator action; the K8s drain phase skips gracefully when no cluster is reachable."
         [ flagOption "yes" (Just 'y') Nothing "Confirm full cluster deletion"
         , flagOption
             "cascade"
@@ -1406,6 +1474,77 @@ clusterGroup =
         "Show the local cluster service (RKE2) journal logs."
         [optionalOption "lines" (Just 'n') "INTEGER" "Number of log lines to show"]
         [example ["cluster", "logs", "--lines", "50"] "Show recent cluster service logs."]
+    , group
+        "federation"
+        "Downstream cluster custody"
+        "Downstream-cluster federation custody. Registering a child provisions the parent-owned Transit key, metadata, and child bootstrap token; dry-run renders the parent-owned Vault KV and opaque-name plan."
+        [ leafWithArgs
+            "register"
+            "Register a downstream cluster"
+            "Register parent-owned custody for a downstream cluster: child metadata, child init-key custody path, opaque Vault namespace, Transit key name, and the child bootstrap token Secret."
+            [argument "child" "CHILD" "Downstream cluster id to register"]
+            [ flagOption "dry-run" Nothing Nothing "Render the registration plan without mutating state"
+            , optionalOption "plan-file" Nothing "PATH" "Write the rendered plan to a file"
+            , optionalOption
+                "child-vault-address"
+                Nothing
+                "URL"
+                "Host-reachable Vault API address for the child cluster"
+            , optionalOption
+                "child-kubeconfig"
+                Nothing
+                "PATH"
+                "Kubeconfig for applying the child transit-seal token Secret"
+            , optionalOption
+                "child-endpoint"
+                Nothing
+                "NAME=URL"
+                "Child endpoint inventory entry to custody in the parent Vault; repeatable"
+            , optionalOption
+                "child-kubeconfig-reference"
+                Nothing
+                "REF"
+                "Parent-custodied kubeconfig reference for the child cluster"
+            , optionalOption
+                "child-account-id"
+                Nothing
+                "ACCOUNT_ID"
+                "Parent-custodied cloud/account identifier for the child cluster"
+            , optionalOption
+                "child-pulumi-stack"
+                Nothing
+                "NAME=REF"
+                "Child Pulumi stack reference to custody in the parent Vault; repeatable"
+            ]
+            [ example
+                ["cluster", "federation", "register", "child-a", "--dry-run"]
+                "Render the downstream custody plan."
+            , example
+                [ "cluster"
+                , "federation"
+                , "register"
+                , "child-a"
+                , "--child-vault-address"
+                , "http://child-vault.example:8200"
+                , "--child-kubeconfig"
+                , "/secure/child-a.kubeconfig"
+                , "--child-kubeconfig-reference"
+                , "vault:secret/clusters/child-a/kubeconfig"
+                , "--child-account-id"
+                , "123456789012"
+                , "--child-endpoint"
+                , "api=https://api.child-a.example"
+                , "--child-pulumi-stack"
+                , "aws-eks=org/prodbox-child-a/aws-eks"
+                ]
+                "Register child-a and apply its transit-seal token Secret."
+            ]
+        ]
+        []
+        [ example
+            ["cluster", "federation", "register", "child-a", "--dry-run"]
+            "Render the downstream custody plan."
+        ]
     , leaf
         "wait"
         "Wait for deployments to be ready"
@@ -1445,7 +1584,7 @@ edgeGroup =
     , leaf
         "status"
         "Check public DNS/TLS edge state"
-        "Inspect Route 53, certificate, and shared-host readiness."
+        "Inspect Route 53, certificate, shared-host readiness, and the in-cluster Vault seal state."
         [substrateOption]
         [ example ["edge", "status"] "Inspect public-edge readiness (home substrate)."
         , example
@@ -1576,6 +1715,7 @@ testGroupSpec =
         , integrationLeaf "admin-routes" "Run shared-host admin-route integration tests"
         , integrationLeaf "public-dns" "Run public DNS integration tests"
         , integrationLeaf "keycloak-invite" "Run Keycloak operator-invite integration tests"
+        , integrationLeaf "sealed-vault" "Run sealed-Vault fail-closed integration tests"
         ]
         []
         [example ["test", "integration", "cli"] "Run the CLI integration suite."]

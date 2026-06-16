@@ -1,19 +1,12 @@
 {{- /*
-Sprint 3.13 seventh chunk: unified in-cluster ClusterIP Service for
-the gateway daemon, per
-[Secret Derivation Doctrine §5](../../../documents/engineering/secret_derivation_doctrine.md).
-In-cluster callers (chart pre-install Jobs that POST to
-`/v1/secret/ensure-namespace`) reach the daemon at the stable DNS name
-`gateway.<gateway-namespace>.svc.cluster.local:<rest-port>`, which
-routes to any gateway pod (the selector intentionally omits the
-`gateway-node` label so the daemon's idempotent endpoints are answered
-by whichever pod the kube-proxy picks).
+Unified in-cluster ClusterIP Service for the gateway daemon. It routes to
+any gateway pod (the selector intentionally omits the `gateway-node` label)
+for status and daemon-local HTTP calls.
 
 The per-node `gateway-<nodeId>` Services in `headless-service.yaml`
 remain for stable per-pod DNS (used by the peer-gossip event channel).
 The NodePort in `service-nodeport.yaml` remains for host-CLI access on
-the operator host. This unsuffixed ClusterIP is the third shape —
-the in-cluster RPC entrypoint.
+the operator host.
 */ -}}
 apiVersion: v1
 kind: Service

@@ -28,7 +28,7 @@
 | `prodbox charts status` | Show detailed chart status |
 | `prodbox charts reconcile` | Reconcile a root chart stack |
 | `prodbox charts delete` | Delete a root chart stack |
-| `prodbox cluster status` | Check cluster service status |
+| `prodbox cluster status` | Check cluster and Vault status |
 | `prodbox cluster health` | Check Kubernetes health |
 | `prodbox cluster start` | Start the cluster service |
 | `prodbox cluster stop` | Stop the cluster service |
@@ -36,6 +36,7 @@
 | `prodbox cluster reconcile` | Reconcile the local cluster |
 | `prodbox cluster delete` | Delete the local cluster |
 | `prodbox cluster logs` | Show cluster service logs |
+| `prodbox cluster federation register` | Register a downstream cluster |
 | `prodbox cluster wait` | Wait for deployments to be ready |
 | `prodbox cluster workload-logs` | Show recent workload logs |
 | `prodbox commands` | Render the command registry |
@@ -87,6 +88,7 @@
 | `prodbox test integration admin-routes` | Run shared-host admin-route integration tests |
 | `prodbox test integration public-dns` | Run public DNS integration tests |
 | `prodbox test integration keycloak-invite` | Run Keycloak operator-invite integration tests |
+| `prodbox test integration sealed-vault` | Run sealed-Vault fail-closed integration tests |
 | `prodbox users invite` | Invite an operator-owned user by email |
 | `prodbox users list` | List operator-managed users |
 | `prodbox users revoke` | Disable or delete an operator-managed user |

@@ -1,32 +1,9 @@
 {{- /*
-Sprint 3.13 sixth chunk: per-target-namespace Role + RoleBinding pairs
-granting the gateway daemon's ServiceAccount the
-`secrets:get,create,patch` verbs in every namespace whose chart pre-install
-Job calls `POST /v1/secret/ensure-namespace` (or whose daemon-side
-startup self-bootstrap writes a Secret). The Role lives in the target
-namespace (so the binding is scoped narrowly) but binds the
-ServiceAccount in the gateway namespace.
-
-Sprint 3.13 chunk 16 added `gateway` itself to the list (the daemon
-self-bootstraps the gateway-event-keys Secret in its own namespace at
-startup). Sprint 3.13 chunks 8 + 11 cover the `keycloak` namespace
-(Patroni passwords + admin password + OAuth client secrets +
-demo-user password).
-
-Sprint 3.13 chunk 20: this template also emits a Namespace resource
-per target namespace that isn't the chart's own (which Helm
-auto-creates via `--namespace`). The gateway chart deploys BEFORE the
-keycloak chart, so without this emit the keycloak namespace doesn't
-exist yet when the RoleBinding tries to apply against it. A Namespace
-apply is idempotent so subsequent reconciles + the keycloak chart's
-own namespace handling are unaffected.
-
-Sprint 8.6: AWS-substrate SMTP sync must create keycloak/vscode
-before this chart renders so the keycloak-smtp Secret can exist for
-Helm lookup. These Namespace manifests therefore declare the Helm
-ownership metadata that the pre-sync stamps onto existing namespaces,
-and use resource-policy keep so gateway uninstall does not delete
-workload namespaces and their retained Secrets.
+Sprint 3.19: the gateway daemon no longer writes cross-namespace
+Kubernetes Secrets. This template keeps only the namespace bootstrap
+surface for workload namespaces that must exist before dependent chart
+stacks run. A Namespace apply is idempotent, and the keep policy preserves
+workload namespaces across gateway uninstall.
 */ -}}
 {{- range $.Values.rbac.targetNamespaces }}
 {{- if ne . $.Values.global.namespace }}
@@ -43,39 +20,4 @@ metadata:
     meta.helm.sh/release-namespace: {{ $.Release.Namespace | quote }}
     helm.sh/resource-policy: keep
 {{- end }}
----
-apiVersion: rbac.authorization.k8s.io/v1
-kind: Role
-metadata:
-  name: prodbox-gateway-secret-writer
-  namespace: {{ . }}
-  labels:
-    {{- include "gateway.labels" $ | nindent 4 }}
-rules:
-  - apiGroups: [""]
-    resources: ["secrets"]
-    # Sprint 3.13 chunk 22: `update` is required because
-    # 'Prodbox.K8s.InCluster.inClusterK8sSecretOps' uses HTTP PUT (which
-    # maps to the k8s `update` verb) for both create-and-replace flows
-    # — the API server picks insert-vs-update server-side. Without
-    # `update` the daemon's selfBootstrapOwnSecrets path and every
-    # subsequent ensure-namespace re-apply hit 403 Forbidden on
-    # already-existing Secrets.
-    verbs: ["get", "create", "update", "patch"]
----
-apiVersion: rbac.authorization.k8s.io/v1
-kind: RoleBinding
-metadata:
-  name: prodbox-gateway-secret-writer
-  namespace: {{ . }}
-  labels:
-    {{- include "gateway.labels" $ | nindent 4 }}
-subjects:
-  - kind: ServiceAccount
-    name: prodbox-gateway-daemon
-    namespace: {{ $.Values.global.namespace }}
-roleRef:
-  apiGroup: rbac.authorization.k8s.io
-  kind: Role
-  name: prodbox-gateway-secret-writer
 {{- end }}

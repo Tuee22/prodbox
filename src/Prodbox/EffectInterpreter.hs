@@ -65,6 +65,7 @@ import Prodbox.Settings
   , SesSection (..)
   , ValidatedSettings (..)
   , loadConfigFile
+  , resolveAwsCredentialsRefFromHostVault
   , validateAndLoadSettings
   , validateAwsBootstrapConfig
   , validateOperationalAwsCredentials
@@ -416,7 +417,7 @@ runValidation context validation =
         case validateOperationalAwsCredentials (validatedConfig settings) of
           Left err -> pure (Failure err)
           Right () -> do
-            environment <- awsCommandEnvironment settings
+            environment <- awsCommandEnvironment (interpreterRepoRoot context) settings
             requireAwsValidationCommandSuccess
               "AWS credential check failed"
               Subprocess
@@ -429,18 +430,33 @@ runValidation context validation =
   requireAwsIamHarnessReady :: IO (Result ())
   requireAwsIamHarnessReady = do
     configResult <- loadConfigFile (interpreterRepoRoot context)
-    pure $
-      case configResult of
-        Left err -> Failure err
-        Right config ->
-          case validateAwsBootstrapConfig config of
-            Left err -> Failure err
-            Right () ->
-              if hasHarnessAdminCredentials (aws_admin_for_test_simulation config)
-                then Success ()
-                else
+    case configResult of
+      Left err -> pure (Failure err)
+      Right config ->
+        case validateAwsBootstrapConfig config of
+          Left err -> pure (Failure err)
+          Right () -> do
+            credentialsResult <-
+              resolveAwsCredentialsRefFromHostVault
+                (interpreterRepoRoot context)
+                "aws_admin_for_test_simulation"
+                (aws_admin_for_test_simulation config)
+            pure $
+              case credentialsResult of
+                Left err ->
                   Failure
-                    "Native IAM validation requires aws_admin_for_test_simulation.access_key_id, aws_admin_for_test_simulation.secret_access_key, and aws_admin_for_test_simulation.region in prodbox-config.dhall."
+                    ( "Native IAM validation requires Vault-backed \
+                      \aws_admin_for_test_simulation.access_key_id, \
+                      \aws_admin_for_test_simulation.secret_access_key, and \
+                      \aws_admin_for_test_simulation.region: "
+                        ++ err
+                    )
+                Right credentials ->
+                  if hasHarnessAdminCredentials credentials
+                    then Success ()
+                    else
+                      Failure
+                        "Native IAM validation requires aws_admin_for_test_simulation.access_key_id, aws_admin_for_test_simulation.secret_access_key, and aws_admin_for_test_simulation.region to resolve to non-empty values."
 
   requireRoute53Access :: IO (Result ())
   requireRoute53Access = do
@@ -448,7 +464,7 @@ runValidation context validation =
     case settingsResult of
       Left err -> pure (Failure err)
       Right settings -> do
-        environment <- awsCommandEnvironment settings
+        environment <- awsCommandEnvironment (interpreterRepoRoot context) settings
         let zoneId = Text.unpack (zone_id (route53 (validatedConfig settings)))
         requireAwsValidationCommandSuccess
           "Route 53 access check failed"
@@ -465,7 +481,7 @@ runValidation context validation =
     case settingsResult of
       Left err -> pure (Failure err)
       Right settings -> do
-        environment <- awsCommandEnvironment settings
+        environment <- awsCommandEnvironment (interpreterRepoRoot context) settings
         let configuredZoneId = Text.unpack (zone_id (route53 (validatedConfig settings)))
         baseZoneResult <-
           captureAwsValidationCommandOutput
@@ -568,7 +584,7 @@ runValidation context validation =
       case settingsResult of
         Left _ -> pure ()
         Right settings -> do
-          environment <- awsCommandEnvironment settings
+          environment <- awsCommandEnvironment (interpreterRepoRoot context) settings
           _ <-
             requireAwsValidationCommandSuccess
               "Route 53 lifecycle capability cleanup failed"
@@ -679,7 +695,7 @@ runValidation context validation =
                   "ses.sender_domain must be set in prodbox-config.dhall before checking the SES sending identity. Run `prodbox aws stack aws-ses reconcile` after populating the ses.* block."
               )
           else do
-            environment <- awsCommandEnvironment settings
+            environment <- awsCommandEnvironment (interpreterRepoRoot context) settings
             requireAwsValidationCommandSuccess
               "SES sending-identity verification check failed"
               Subprocess
@@ -704,7 +720,7 @@ runValidation context validation =
     case settingsResult of
       Left err -> pure (Failure err)
       Right settings -> do
-        environment <- awsCommandEnvironment settings
+        environment <- awsCommandEnvironment (interpreterRepoRoot context) settings
         requireAwsValidationCommandSuccess
           "SES active receive rule set check failed"
           Subprocess
@@ -736,7 +752,7 @@ runValidation context validation =
                   "ses.capture_bucket must be set in prodbox-config.dhall before checking SES capture-bucket reachability."
               )
           else do
-            environment <- awsCommandEnvironment settings
+            environment <- awsCommandEnvironment (interpreterRepoRoot context) settings
             requireAwsValidationCommandSuccess
               "SES capture-bucket reachability check failed"
               Subprocess
@@ -872,10 +888,17 @@ echoProcessOutput output = do
   writeOutput (processStdout output)
   writeDiagnostic (processStderr output)
 
-awsCommandEnvironment :: ValidatedSettings -> IO [(String, String)]
-awsCommandEnvironment settings = do
+awsCommandEnvironment :: FilePath -> ValidatedSettings -> IO [(String, String)]
+awsCommandEnvironment repoRoot settings = do
   currentEnvironment <- getEnvironment
-  pure (overlayAwsCredentials currentEnvironment (aws (validatedConfig settings)))
+  credentialsResult <-
+    resolveAwsCredentialsRefFromHostVault
+      repoRoot
+      "aws"
+      (aws (validatedConfig settings))
+  case credentialsResult of
+    Left err -> fail ("load operational AWS credentials from Vault: " ++ err)
+    Right credentials -> pure (overlayAwsCredentials currentEnvironment credentials)
 
 parseOsRelease :: String -> [(String, String)]
 parseOsRelease contents =

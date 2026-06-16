@@ -13,6 +13,7 @@ module Prodbox.Http.Client
   , httpGetJsonWithHeaders
   , httpPostJsonResponseJson
   , httpPostJsonWithHeaders
+  , httpPostJsonNoResponse
   , httpRequestNoBody
   , renderHttpError
   )
@@ -247,6 +248,23 @@ httpPostJsonWithHeaders
 httpPostJsonWithHeaders config extraHeaders url payload = do
   result <- sendRequestRaw config "POST" extraHeaders url (Just (encode payload))
   pure (result >>= decodeJsonResponse)
+
+-- | POST a JSON payload with extra request headers and ignore the response
+-- body. Any 2xx (including Vault's common 204 No Content) is success.
+httpPostJsonNoResponse
+  :: (ToJSON a)
+  => HttpConfig
+  -> [Header]
+  -> String
+  -> a
+  -> IO (Either HttpError ())
+httpPostJsonNoResponse config extraHeaders url payload = do
+  result <- sendRequestRaw config "POST" extraHeaders url (Just (encode payload))
+  pure $ case result of
+    Left err -> Left err
+    Right (status, body)
+      | status >= 200 && status < 300 -> Right ()
+      | otherwise -> Left (HttpStatus status (BL8.unpack body))
 
 -- | Send a bodyless request (e.g. @PUT \/v1\/sys\/seal@) with extra headers;
 -- any 2xx (including 204 No Content) is success and the response body is

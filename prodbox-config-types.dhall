@@ -4,19 +4,28 @@
 --
 -- Usage:
 --   let Config = ./prodbox-config-types.dhall
---   in  Config::{ aws = Config.default.aws // { access_key_id = "AKIA...", ... }, ... }
+--   in  Config::{ aws = Config.default.aws // { region = "us-west-2" }, ... }
 
-{ Type =
+let SecretRef =
+      < Vault : { mount : Text, path : Text, field : Text }
+      | TransitKey : Text
+      | Prompt : { name : Text, purpose : Text }
+      | TestPlaintext : Text
+      >
+
+in
+{ SecretRef = SecretRef
+, Type =
     { aws :
-        { access_key_id : Text
-        , secret_access_key : Text
-        , session_token : Optional Text
+        { access_key_id : SecretRef
+        , secret_access_key : SecretRef
+        , session_token : Optional SecretRef
         , region : Text
         }
     , aws_admin_for_test_simulation :
-        { access_key_id : Text
-        , secret_access_key : Text
-        , session_token : Optional Text
+        { access_key_id : SecretRef
+        , secret_access_key : SecretRef
+        , session_token : Optional SecretRef
         , region : Text
         }
     , route53 : { zone_id : Text }
@@ -70,15 +79,19 @@
     }
 , default =
     { aws =
-        { access_key_id = ""
-        , secret_access_key = ""
-        , session_token = None Text
+        { access_key_id =
+            SecretRef.Vault { mount = "secret", path = "gateway/gateway/aws", field = "access_key_id" }
+        , secret_access_key =
+            SecretRef.Vault { mount = "secret", path = "gateway/gateway/aws", field = "secret_access_key" }
+        , session_token = None SecretRef
         , region = "us-east-1"
         }
     , aws_admin_for_test_simulation =
-        { access_key_id = ""
-        , secret_access_key = ""
-        , session_token = None Text
+        { access_key_id =
+            SecretRef.Vault { mount = "secret", path = "aws/admin-for-test-simulation", field = "access_key_id" }
+        , secret_access_key =
+            SecretRef.Vault { mount = "secret", path = "aws/admin-for-test-simulation", field = "secret_access_key" }
+        , session_token = None SecretRef
         , region = ""
         }
     , route53 = { zone_id = "" }

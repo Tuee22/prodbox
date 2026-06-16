@@ -2,6 +2,7 @@ module Prodbox.CLI.Pulumi
   ( EphemeralPulumiStack (..)
   , EphemeralPulumiOutputs (..)
   , readEphemeralPulumiOutputs
+  , runPulumiCommandWithGate
   , renderPulumiPlan
   , runPulumiCommand
   , withEphemeralPulumiStack
@@ -29,17 +30,27 @@ import Prodbox.CLI.Command
   , buildPlan
   , runPlanWithOptions
   )
+import Prodbox.CLI.Output (writeDiagnosticLine)
 import Prodbox.Infra.AwsEksSubzoneStack qualified as SubzoneStack
 import Prodbox.Infra.AwsEksTestStack qualified as EksStack
 import Prodbox.Infra.AwsSesStack qualified as SesStack
 import Prodbox.Infra.AwsTestStack qualified as TestStack
+import Prodbox.Vault.Client
+  ( VaultAddress (..)
+  , vaultSealStatus
+  )
+import Prodbox.Vault.Gate
+  ( VaultGateOutcome (..)
+  , vaultGateOutcome
+  )
 import System.Directory
   ( createDirectoryIfMissing
   , doesDirectoryExist
   , removeFile
   , removePathForcibly
   )
-import System.Exit (ExitCode)
+import System.Environment (lookupEnv)
+import System.Exit (ExitCode (..))
 import System.FilePath ((</>))
 import System.IO (hClose, openTempFile)
 
@@ -57,53 +68,80 @@ data EphemeralPulumiOutputs = EphemeralPulumiOutputs
   deriving (Eq, Show)
 
 runPulumiCommand :: FilePath -> PulumiCommand -> IO ExitCode
-runPulumiCommand repoRoot command =
+runPulumiCommand =
+  runPulumiCommandWithGate probePulumiVaultGate
+
+runPulumiCommandWithGate :: IO VaultGateOutcome -> FilePath -> PulumiCommand -> IO ExitCode
+runPulumiCommandWithGate gate repoRoot command =
   case command of
     PulumiEksResources planOptions ->
       runPlanWithOptions
         planOptions
         (buildPulumiExecutionPlan "eks-resources" False)
-        (\_ -> EksStack.ensureAwsEksTestStackResources repoRoot)
+        (\_ -> runGatedPulumiApply gate (EksStack.ensureAwsEksTestStackResources repoRoot))
     PulumiEksDestroy summary planOptions ->
       runPlanWithOptions
         planOptions
         (buildPulumiExecutionPlan "eks-destroy" summary)
-        (\_ -> EksStack.destroyAwsEksTestStack repoRoot summary)
+        (\_ -> runGatedPulumiApply gate (EksStack.destroyAwsEksTestStack repoRoot summary))
     PulumiTestResources planOptions ->
       runPlanWithOptions
         planOptions
         (buildPulumiExecutionPlan "test-resources" False)
-        (\_ -> TestStack.ensureAwsTestStackResources repoRoot)
+        (\_ -> runGatedPulumiApply gate (TestStack.ensureAwsTestStackResources repoRoot))
     PulumiTestDestroy summary planOptions ->
       runPlanWithOptions
         planOptions
         (buildPulumiExecutionPlan "test-destroy" summary)
-        (\_ -> TestStack.destroyAwsTestStack repoRoot summary)
+        (\_ -> runGatedPulumiApply gate (TestStack.destroyAwsTestStack repoRoot summary))
     PulumiAwsSubzoneResources planOptions ->
       runPlanWithOptions
         planOptions
         (buildPulumiExecutionPlan "aws-subzone-resources" False)
-        (\_ -> SubzoneStack.ensureAwsEksSubzoneStackResources repoRoot)
+        (\_ -> runGatedPulumiApply gate (SubzoneStack.ensureAwsEksSubzoneStackResources repoRoot))
     PulumiAwsSubzoneDestroy summary planOptions ->
       runPlanWithOptions
         planOptions
         (buildPulumiExecutionPlan "aws-subzone-destroy" summary)
-        (\_ -> SubzoneStack.destroyAwsEksSubzoneStack repoRoot summary)
+        (\_ -> runGatedPulumiApply gate (SubzoneStack.destroyAwsEksSubzoneStack repoRoot summary))
     PulumiAwsSesResources planOptions ->
       runPlanWithOptions
         planOptions
         (buildPulumiExecutionPlan "aws-ses-resources" False)
-        (\_ -> SesStack.ensureAwsSesStackResources repoRoot)
+        (\_ -> runGatedPulumiApply gate (SesStack.ensureAwsSesStackResources repoRoot))
     PulumiAwsSesDestroy summary planOptions ->
       runPlanWithOptions
         planOptions
         (buildPulumiExecutionPlan "aws-ses-destroy" summary)
-        (\_ -> SesStack.destroyAwsSesStack repoRoot summary)
+        (\_ -> runGatedPulumiApply gate (SesStack.destroyAwsSesStack repoRoot summary))
     PulumiAwsSesMigrateBackend planOptions ->
       runPlanWithOptions
         planOptions
         (buildPulumiExecutionPlan "aws-ses-migrate-backend" False)
-        (\_ -> SesStack.migrateAwsSesStackBackend repoRoot)
+        (\_ -> runGatedPulumiApply gate (SesStack.migrateAwsSesStackBackend repoRoot))
+
+runGatedPulumiApply :: IO VaultGateOutcome -> IO ExitCode -> IO ExitCode
+runGatedPulumiApply gate action = do
+  outcome <- gate
+  case outcome of
+    VaultGateProceed -> action
+    VaultGateRefuse message -> do
+      writeDiagnosticLine message
+      pure (ExitFailure 1)
+
+probePulumiVaultGate :: IO VaultGateOutcome
+probePulumiVaultGate = do
+  testGate <- lookupEnv "PRODBOX_TEST_PULUMI_VAULT_GATE"
+  case testGate of
+    Just "allow" -> pure VaultGateProceed
+    _ -> do
+      address <- pulumiVaultAddress
+      vaultGateOutcome <$> vaultSealStatus address
+
+pulumiVaultAddress :: IO VaultAddress
+pulumiVaultAddress = do
+  override <- lookupEnv "PRODBOX_TEST_PULUMI_VAULT_ADDR"
+  pure (VaultAddress (Text.pack (maybe "http://127.0.0.1:31820" id override)))
 
 buildPulumiExecutionPlan :: String -> Bool -> Plan String
 buildPulumiExecutionPlan commandName confirmed =

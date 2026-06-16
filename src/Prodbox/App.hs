@@ -44,7 +44,6 @@ import Prodbox.CLI.Tree (renderCommandTree)
 import Prodbox.Error (fatalError)
 import Prodbox.Native (runNativeCommand)
 import Prodbox.Repo (findRepoRoot)
-import Prodbox.Secret.GatewayDeriveMode (GatewayDeriveMode, resolveGatewayDeriveMode)
 import System.Environment (getArgs)
 import System.Exit (ExitCode (ExitFailure), exitWith)
 
@@ -83,27 +82,17 @@ main = do
   -- that appear in chart-rendered config comments per
   -- documents/engineering/config_doctrine.md §6.
   setLocaleEncoding utf8
-  -- The gateway-derive capability is resolved once here, at the process
-  -- boundary: production reads no env var and dials the in-cluster gateway;
-  -- the integration harness sets PRODBOX_TEST_GATEWAY_DERIVE_SEED_HEX in this
-  -- spawned subprocess so the host computes the daemon's response locally. The
-  -- resolved 'GatewayDeriveMode' is threaded explicitly to the derived-secret
-  -- consumers, so no production code path re-reads the environment.
-  modeResult <- resolveGatewayDeriveMode
-  case modeResult of
+  argv <- getArgs
+  case validateCommandArgv argv of
     Left err -> failWith err
-    Right mode -> do
-      argv <- getArgs
-      case validateCommandArgv argv of
-        Left err -> failWith err
-        Right () -> do
-          options <- customExecParser parserPrefs parserInfo
-          runCommandRequest mode (optRequest options)
+    Right () -> do
+      options <- customExecParser parserPrefs parserInfo
+      runCommandRequest (optRequest options)
  where
   parserPrefs = prefs (showHelpOnEmpty <> showHelpOnError)
 
-runCommandRequest :: GatewayDeriveMode -> CommandRequest -> IO ()
-runCommandRequest mode request =
+runCommandRequest :: CommandRequest -> IO ()
+runCommandRequest request =
   case request of
     RunNative command -> do
       repoRootResult <- findRepoRoot
@@ -124,7 +113,7 @@ runCommandRequest mode request =
         Just spec -> writeOutput (renderCommandHelp commandPath spec)
  where
   dispatch repoRoot command = do
-    exitCode <- runNativeCommand mode repoRoot command
+    exitCode <- runNativeCommand repoRoot command
     exitWith exitCode
 
 canRunWithoutRepoRoot :: NativeCommand -> Bool

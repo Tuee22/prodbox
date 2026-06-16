@@ -8,7 +8,7 @@ Local Kubernetes cluster lifecycle. AWS-free: every command here decodes config 
 .SH SUBCOMMANDS
 .TP
 \fBstatus\fR
-Check cluster service status
+Check cluster and Vault status
 .TP
 \fBhealth\fR
 Check Kubernetes health
@@ -30,6 +30,9 @@ Delete the local cluster
 .TP
 \fBlogs\fR
 Show cluster service logs
+.TP
+\fBfederation\fR
+Downstream cluster custody
 .TP
 \fBwait\fR
 Wait for deployments to be ready

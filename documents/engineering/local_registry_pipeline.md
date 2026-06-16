@@ -26,12 +26,11 @@ This document is the SSoT for the local image-registry doctrine:
    repository-owned nginx auth-proxy image.
 
 Retained storage and MinIO persistence doctrine remain defined in
-[Storage Lifecycle Doctrine](./storage_lifecycle_doctrine.md). The same MinIO server
-hosts a separate `prodbox` bucket used by the gateway daemon for the master-seed object,
-governed by [Secret Derivation Doctrine](./secret_derivation_doctrine.md). The
-`prodbox` bucket is access-restricted to the MinIO IAM principal `prodbox-gateway`;
-the Harbor-backing `prodbox-test-pulumi-backends` and any Harbor-internal buckets
-continue to use MinIO root credentials and are unaffected.
+[Storage Lifecycle Doctrine](./storage_lifecycle_doctrine.md). The same MinIO server hosts
+prodbox-owned object-store buckets; gateway object-store access uses the scoped
+`prodbox-gateway` MinIO IAM principal, while Harbor storage uses its generated, persisted MinIO
+user rather than the root credential. Administrative bucket bootstrap reads the MinIO root
+credentials through Vault Kubernetes auth.
 
 ## 2. Runtime Contract
 
@@ -42,7 +41,9 @@ The native Haskell lifecycle reconciles Harbor state in this order:
 
 1. Helm repository reconcile
 2. Harbor storage-backend bootstrap from public `quay.io/minio/*` image refs, including MinIO
-   reconcile plus Harbor-registry bucket and credential bootstrap
+   reconcile plus Harbor-registry bucket and credential bootstrap. The bootstrap Job reads MinIO
+   root credentials through the `minio` service account and Vault Kubernetes auth; Harbor itself
+   receives a generated, persisted MinIO user in its storage Secret.
 3. Harbor chart upgrade or install configured to use that storage backend
 4. Harbor readiness-contract reconcile
 5. Harbor readiness wait

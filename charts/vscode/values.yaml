@@ -20,7 +20,6 @@ gateway:
 
 oidc:
   clientId: vscode
-  clientSecret: change-me
   issuer: https://test.resolvefintech.com/auth/realms/prodbox
   authorizationEndpoint: https://test.resolvefintech.com/auth/realms/prodbox/protocol/openid-connect/auth
   tokenEndpoint: http://keycloak.vscode.svc.cluster.local:8080/auth/realms/prodbox/protocol/openid-connect/token
@@ -30,6 +29,24 @@ oidc:
   redirectURL: https://test.resolvefintech.com/vscode/oauth2/callback
   logoutPath: /logout
   securityPolicyName: vscode-oidc
+
+vault:
+  address: http://vault.vault.svc.cluster.local:8200
+  authPath: kubernetes
+  role: vscode-oidc
+  serviceAccountTokenFile: /var/run/secrets/kubernetes.io/serviceaccount/token
+  image:
+    repository: hashicorp/vault
+    tag: "1.18.3"
+    pullPolicy: IfNotPresent
+  paths:
+    oidcVscode: vscode/oidc/vscode
+
+secretMaterializer:
+  image:
+    repository: 127.0.0.1:30080/prodbox/curl-mirror
+    tag: "8.11.0"
+    pullPolicy: IfNotPresent
 
 vscode:
   image: 127.0.0.1:30080/prodbox/code-server-mirror:4.98.2

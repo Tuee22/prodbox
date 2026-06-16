@@ -13,26 +13,12 @@ sourced credentials from `deployments.yaml`; both depend on the daemon-side
 Dhall import wiring (Sprint 2.19 closure work).
 */}}
 {{- /*
-Sprint 3.13 chunk 16: per-node `event_keys` are read via Helm `lookup`
-of the daemon-self-bootstrapped `gateway-event-keys` Secret. On the
-first install the lookup returns empty and the chart renders an empty
-event_keys list — that's fine because the daemon's own startup loop
-materializes the Secret right after acquiring the master seed; the
-next `helm upgrade` (or any subsequent reconcile) picks up the
-daemon-written values.
-
-On `helm template` (no cluster context) the lookup returns empty too,
-so the rendered manifest is deterministic for golden tests.
+Sprint 3.18: event keys, AWS credentials, and MinIO credentials are direct
+SecretRef.Vault values. The gateway daemon authenticates to Vault through
+Kubernetes auth as the `prodbox-gateway-daemon` ServiceAccount and resolves
+these fields before constructing its runtime config; no Helm `lookup`, no
+Secret-mounted Dhall fragments, and no plaintext values are rendered.
 */ -}}
-{{- $eventKeysSecret := lookup "v1" "Secret" .Release.Namespace "gateway-event-keys" }}
-{{- $nodeAKey := "" }}
-{{- $nodeBKey := "" }}
-{{- $nodeCKey := "" }}
-{{- if $eventKeysSecret }}
-{{- $nodeAKey = index $eventKeysSecret.data "NODE_A_EVENT_KEY" | b64dec }}
-{{- $nodeBKey = index $eventKeysSecret.data "NODE_B_EVENT_KEY" | b64dec }}
-{{- $nodeCKey = index $eventKeysSecret.data "NODE_C_EVENT_KEY" | b64dec }}
-{{- end }}
 {{- range $idx, $nodeId := .Values.nodes.rankedIds }}
 ---
 apiVersion: v1
@@ -45,6 +31,13 @@ metadata:
 data:
   config.dhall: |-
     { schemaVersion = 1
+    , vault =
+        Some
+          { address = {{ $.Values.vault.address | quote }}
+          , auth_path = {{ $.Values.vault.authPath | quote }}
+          , role = {{ $.Values.vault.role | quote }}
+          , service_account_token_file = Some {{ $.Values.vault.serviceAccountTokenFile | quote }}
+          }
     , boot =
       { node_id = {{ $nodeId | quote }}
       , cert_file = "/tls/tls.crt"
@@ -52,14 +45,19 @@ data:
       , ca_file = "/ca/ca.crt"
       , orders_file = "/etc/gateway/orders.dhall"
       , event_keys =
-          {{- if $eventKeysSecret }}
-        [ { name = "node-a", value = {{ $nodeAKey | quote }} }
-        , { name = "node-b", value = {{ $nodeBKey | quote }} }
-        , { name = "node-c", value = {{ $nodeCKey | quote }} }
+        [ { name = "node-a"
+          , value =
+{{ include "gateway.secretRefVault" (dict "mount" "secret" "path" $.Values.vault.paths.eventKeyNodeA "field" "key") | nindent 14 }}
+          }
+        , { name = "node-b"
+          , value =
+{{ include "gateway.secretRefVault" (dict "mount" "secret" "path" $.Values.vault.paths.eventKeyNodeB "field" "key") | nindent 14 }}
+          }
+        , { name = "node-c"
+          , value =
+{{ include "gateway.secretRefVault" (dict "mount" "secret" "path" $.Values.vault.paths.eventKeyNodeC "field" "key") | nindent 14 }}
+          }
         ]
-          {{- else }}
-        ([] : List { name : Text, value : Text })
-          {{- end }}
       , dns_write_gate =
           {{- if $.Values.dnsWriteGate.enabled }}
           Some
@@ -71,17 +69,30 @@ data:
           {{- else }}
           None { zone_id : Text, fqdn : Text, ttl : Natural, aws_region : Text }
           {{- end }}
-      -- Sprint 2.22: credentials are imported from Secret-mounted Dhall
-      -- fragments per documents/engineering/config_doctrine.md §6. The
-      -- daemon's Dhall decoder evaluates these imports in-process and binds
-      -- the resulting records into boot.aws_creds / boot.minio_creds.
-      , aws_creds = Some /etc/gateway/secrets/aws.dhall
-      , minio_creds = Some /etc/gateway/secrets/minio.dhall
-      -- Sprint 2.19: in-cluster MinIO Service endpoint URL used by the
-      -- daemon's master-seed acquisition. Operator-overridable via the
-      -- chart value @minio.endpointUrl@; default is the home-substrate
-      -- canonical Service DNS per
-      -- documents/engineering/secret_derivation_doctrine.md §2.
+      , aws_creds =
+          Some
+            { access_key_id =
+{{ include "gateway.secretRefVault" (dict "mount" "secret" "path" $.Values.vault.paths.aws "field" "access_key_id") | nindent 16 }}
+            , secret_access_key =
+{{ include "gateway.secretRefVault" (dict "mount" "secret" "path" $.Values.vault.paths.aws "field" "secret_access_key") | nindent 16 }}
+            , session_token =
+                Some
+                  (
+{{ include "gateway.secretRefVault" (dict "mount" "secret" "path" $.Values.vault.paths.aws "field" "session_token") | nindent 20 }}
+                  )
+            , region = {{ $.Values.dnsWriteGate.awsRegion | quote }}
+            }
+      , minio_creds =
+          Some
+            { minio_access_key =
+{{ include "gateway.secretRefVault" (dict "mount" "secret" "path" $.Values.vault.paths.minio "field" "minio_access_key") | nindent 16 }}
+            , minio_secret_key =
+{{ include "gateway.secretRefVault" (dict "mount" "secret" "path" $.Values.vault.paths.minio "field" "minio_secret_key") | nindent 16 }}
+            }
+      -- In-cluster MinIO Service endpoint URL for gateway-owned object-store
+      -- access. Operator-overridable via the chart value
+      -- @minio.endpointUrl@; default is the home-substrate canonical
+      -- Service DNS.
       , minio_endpoint_url = Some {{ $.Values.minio.endpointUrl | quote }}
       }
     , live =

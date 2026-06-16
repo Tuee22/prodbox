@@ -23,27 +23,40 @@
   There is no per-host machine-id directory prefix. Every stateful workload is a
   StatefulSet (MinIO, the namespace-local Patroni PostgreSQL cluster, `vscode`, and
   Vault), so every retained PVC is a StatefulSet `volumeClaimTemplate` claim
-  (`data-<statefulset>-<ordinal>`) that a deterministic PV `claimRef`-binds.
+  (`data-<statefulset>-<ordinal>`) that a deterministic PV `claimRef`-binds. PV
+  names derive from `(namespace, StatefulSet, ordinal)` through
+  `Prodbox.Naming.boundedResourceName` and render as
+  `prodbox-retained-<namespace>-<statefulset>-<ordinal>` before bounded-name
+  truncation.
 - `prodbox cluster reconcile` recreates the cluster-scoped `manual` `StorageClass` and
   removes every other `StorageClass` before retained-storage reconciliation succeeds.
 - The manual PV host root stores PV contents and the per-cluster MinIO bucket files.
-  MinIO's own PV lives under `.data/prodbox/minio/0`; therefore the per-run Pulumi state
-  backend (`prodbox-test-pulumi-backends`) and the Vault-Transit-enveloped in-force cluster
-  configuration in the `prodbox` bucket both survive cluster wipes whenever `.data/` is
-  preserved.
+  MinIO's own PV lives under `.data/prodbox/minio/0`; therefore per-run Pulumi backend
+  checkpoints and the Vault-Transit-enveloped in-force cluster configuration survive cluster wipes
+  whenever `.data/` is preserved. Sprint `4.30` collapses prodbox-owned MinIO state into the
+  generic `prodbox-state` bucket and routes the in-force config read through the Model-B opaque
+  object key. Sprint `7.14` routes main Pulumi stack cycles and production stack reads through the
+  same Model-B object envelope and imports legacy raw checkpoints on first touch. Sprint `4.33`
+  gates the Haskell-side residue/oracle/log surfaces behind Vault readiness, and Sprint `5.8` owns
+  the deployed on-disk/oracle/log proof. See
+  [vault_doctrine.md §9](./vault_doctrine.md#9-minio-as-a-ciphertext-store).
 - Vault runs in-cluster on a durable PV under `.data/vault/vault/0`, preserved across cluster
   wipes exactly like MinIO's PV; cluster teardown never destroys Vault state. The cluster is
   ephemeral but its storage is not: **a cluster rebuild is not a fresh Vault.** `vault init`
   runs exactly once, ever (the first time the PV is empty); every subsequent
   `prodbox cluster reconcile` redeploys the Vault chart against the existing data and only
   **unseals** it — no re-init, no key regeneration — so Vault KV, Transit, and PKI material is
-  as durable across rebuilds as any retained PV. (Scheduled under Sprints 3.17 / 4.29.)
-- prodbox-owned MinIO objects in the `prodbox` bucket — the in-force cluster configuration,
-  gateway state, the Pulumi backend state, checkpoints, and indexes — are stored as
-  Vault-Transit ciphertext envelopes (`prodbox-envelope-v1`), not plaintext, per
-  [vault_doctrine.md §9](./vault_doctrine.md#9-minio-as-a-ciphertext-store). There is no
-  master-seed object; the HMAC-derivation model is retired and every secret is a Vault KV
-  object. (Scheduled under Sprints 3.17 / 4.29.)
+  as durable across rebuilds as any retained PV.
+- Model-B MinIO logical objects in the generically-named bucket are stored as Vault-Transit
+  ciphertext envelopes (`prodbox-envelope-v2`, hashed stored AAD) under the flat opaque-named
+  layout (`objects/<opaque-id>.enc`; encrypted index payloads use the same envelope discipline),
+  per [vault_doctrine.md §9](./vault_doctrine.md#9-minio-as-a-ciphertext-store). Sprint `4.30`
+  implements the shared object layer and production in-force-config read. The current gateway
+  daemon has no durable MinIO state writer left after master-seed removal; any future durable
+  daemon object uses the same layer. Sprint `7.14` stores main Pulumi checkpoints through that
+  layer and imports legacy raw checkpoints on first touch. There is no master-seed object; the
+  HMAC-derivation model is retired and every secret is a Vault KV object. (Scheduled/landed across
+  Sprints `3.17`, `4.29`, `4.30`, `4.33`, and `7.14`.)
 - Namespace-local Patroni PostgreSQL clusters created for Helm-managed application stacks
   use deterministic CLI-owned PVs rooted at
   `.data/<namespace>/prodbox-<root-chart>-pg/<ordinal>`.
@@ -84,7 +97,7 @@ This doctrine governs:
 8. the Vault durable PV under `.data/vault/vault/0` and its preservation across
    delete/reinstall — persistence is in scope here; the Vault model itself (seal/unseal,
    Transit, KV, PKI, Kubernetes auth) is owned by
-   [vault_doctrine.md](./vault_doctrine.md) (scheduled under Sprints 3.17 / 4.29)
+   [vault_doctrine.md](./vault_doctrine.md) (implemented by Sprints 3.17 / 4.29)
 
 Harbor registry details remain in
 [Local Registry Pipeline](./local_registry_pipeline.md).
@@ -113,10 +126,11 @@ The retained-storage effect must reconcile:
    and Harbor-backed steady-state workload reconcile continue
 7. deleted MinIO export-mount detection and a bounded recreate-plus-restart repair before
    MinIO-backed Pulumi validation continues
-8. MinIO IAM bootstrap (the `prodbox` bucket and the `prodbox-gateway` user + policy)
-   per [secret_derivation_doctrine.md](./secret_derivation_doctrine.md) §7 so the
-   gateway daemon can read or write the Vault-Transit-enveloped in-force config and gateway
-   state before any chart deploy requires Vault-backed secrets
+8. MinIO IAM bootstrap (the single generically-named object-store bucket and the
+   `prodbox-gateway` user + policy) per
+   [secret_derivation_doctrine.md](./secret_derivation_doctrine.md) §7 so supported object-store
+   access uses the same `prodbox-state` bucket. The host in-force-config read uses the Model-B
+   object key in Sprint `4.30`; any future durable gateway object uses the same object layer.
 
 `rke2 delete` must preserve the configured manual PV host root and nothing else on the
 operator host.
@@ -141,7 +155,7 @@ Deterministic rebinding is guaranteed only when all of these hold:
 7. the Vault PV at `.data/vault/vault/0` rebinds across reinstall exactly like the MinIO PV,
    so the rebuild only unseals the existing Vault — it never re-inits — and the unsealed Vault
    re-attaches to the same Transit keys, KV, and PKI material that were active when the
-   preserved data was written (scheduled under Sprint 4.29).
+   preserved data was written.
 
 ## 5. Delete Contract
 
@@ -177,7 +191,7 @@ Both `prodbox cluster delete --yes` and `prodbox cluster delete --cascade --yes`
 the Vault PV (`.data/vault/vault/0`) just as they preserve `.data/` and the MinIO PV; cluster
 teardown never destroys Vault state. Because Vault state survives teardown, the rebuild path
 after a delete never re-inits Vault — the next `prodbox cluster reconcile` redeploys the chart
-against the preserved data and only unseals it (scheduled under Sprint 4.29).
+against the preserved data and only unseals it.
 
 Both delete shapes preserve `.data/` and remove nothing else on the operator host. The
 host iptables rule installed by reconcile (per
@@ -231,14 +245,24 @@ Cleanup ownership is defined in
 Rules:
 
 1. `.data/` stores PV content. The MinIO PV at `.data/prodbox/minio/0` is the persistence
-   anchor for per-run Pulumi state and for the Vault-Transit-enveloped in-force cluster
-   configuration and gateway state in the `prodbox` bucket. The Vault PV at
+   anchor for the per-run Pulumi backend checkpoints and for the Vault-Transit-enveloped
+   in-force cluster configuration, all held in the `prodbox-state` bucket. The Vault PV at
    `.data/vault/vault/0` anchors the secret material itself (KV, Transit, PKI).
+   - **On-disk consequence (whole-system zero-child-info).** Sprint `4.30` ensures Model-B logical
+     objects use `prodbox-envelope-v2` ciphertext stored under Vault-keyed-HMAC opaque IDs
+     (`objects/<opaque-id>.enc`) in the single generic bucket, with the production in-force config
+     read using that opaque key. Sprint `7.14` routes main Pulumi checkpoints behind the same
+     decrypt-to-scratch object-store interposition; Sprint `4.33` gates the Haskell-side
+     host-disk/Kubernetes/log/oracle renderers behind Vault readiness, and Sprint `5.8` proves the
+     deployed sealed-state sweep reveals no logical object name, stack key, cleartext body, or
+     child-count signal across all surfaces.
 2. The internal `keycloak-postgres` release uses the deterministic path
    `.data/<namespace>/prodbox-<root-chart>-pg/<ordinal>`.
 3. The `vscode` StatefulSet uses the deterministic path
    `.data/vscode/vscode/0`.
-4. Deterministic PV and Patroni resource names flow through `src/Prodbox/Naming.hs`.
+4. Deterministic PV and Patroni resource names flow through `src/Prodbox/Naming.hs`;
+   retained PVs use the `prodbox-retained-<namespace>-<statefulset>-<ordinal>`
+   shape before bounded-name truncation.
 5. Patroni service names, PVC names, and storage-spec inventory flow through
    `src/Prodbox/PostgresPlatform.hs` rather than through chart-platform string
    concatenation.
@@ -250,8 +274,10 @@ Rules:
    replicas rejoin a restored cluster.
 8. `prodbox charts delete <chart>` deletes PV/PVC objects but never removes `.data/`.
 9. Cluster delete preserves `.data/` so reinstall can reconnect stateful services and
-   so MinIO bucket contents (Pulumi state, the Vault-encrypted in-force config) and the
-   Vault PV remain available across the cycle.
+   so the MinIO `prodbox-state` bucket contents plus the Vault PV remain available across the
+   cycle. The in-force config uses the opaque Model-B object key; main Pulumi checkpoints use the
+   Sprint `7.14` decrypt-to-scratch interposition, with first-touch raw checkpoint migration into
+   the encrypted object-store.
 10. Deleting `.data/` is an operator-only action. It is the supported way to start from
     a truly empty baseline; on the next reconcile a brand-new Vault is initialized from
     the empty anchor and every secret is generated fresh as a new Vault KV object.
@@ -260,7 +286,7 @@ Rules:
     preserved anchor never re-inits Vault — `vault init` runs exactly once, when the anchor
     is first empty, and every later reconcile only unseals the existing data. Vault state is
     lost only when the operator deliberately wipes `.data/`, at which point the next reconcile
-    inits a brand-new Vault from an empty anchor (scheduled under Sprints 3.17 / 4.29).
+    inits a brand-new Vault from an empty anchor.
 12. The host-side encrypted Vault recovery material — the unlock bundle — lives at
     `.data/prodbox/vault-unlock-bundle.age` (Argon2id/age authenticated encryption); see
     [vault_doctrine.md §6](./vault_doctrine.md#6-the-unlock-bundle) (scheduled under

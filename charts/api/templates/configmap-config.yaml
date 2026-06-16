@@ -25,6 +25,13 @@ data:
     , mode = < Api | Websocket >.Api
     , log_level = None Text
     , workload_port = Some {{ .Values.api.port }}
+    , vault =
+        None
+          { address : Text
+          , auth_path : Text
+          , role : Text
+          , service_account_token_file : Optional Text
+          }
     , redis =
         None { host : Text, port : Text }
     , oidc =

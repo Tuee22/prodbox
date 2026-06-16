@@ -14,23 +14,36 @@
 
 ## Phase Status
 
-🔄 **Finalized 2026-06-14** (Vault-root + cluster federation) — the Phase `1` Vault model is
+✅ **Reclosed 2026-06-16** (Vault-root + cluster federation foundations) — the Phase `1` Vault model is
 finalized to the Vault-root end state: Vault is the sole secrets/KMS/PKI root, the master-seed
 derivation model is retired (not extended), and `SecretRef` has no `FileSecret` arm. Sprint `1.38`
 (Config SSoT Inversion and Root-Token-Gated Config Authority — the in-force config is the
 Vault-Transit-enveloped MinIO object, filesystem `prodbox-config.dhall` is a seed/propose input
 only, and root-cluster config writes require the root Vault token) joins the reframed Sprints
-`1.35`–`1.37` (the `SecretRef` union carries **no** `FileSecret` arm and rejects production
-plaintext; the `prodbox vault` group covers root init/unseal plus child-cluster seal custody; the
-Pulumi sealed-Vault gate is mandatory before any `aws stack` op) — all 📋 Planned on their owned
-surfaces (see [README.md](README.md) Closure Status 2026-06-14, rule A,
+`1.35`–`1.37` (the `SecretRef` union carries **no** `FileSecret` arm; the `prodbox vault` group covers root init/unseal plus root lifecycle recovery; the
+Pulumi sealed-Vault gate is mandatory before any `aws stack` op) — done on their Phase-owned surfaces
+with the landed increments recorded below (see [README.md](README.md) Closure Status 2026-06-14,
+rule A,
 [vault_doctrine.md](../documents/engineering/vault_doctrine.md), and
 [cluster_federation_doctrine.md](../documents/engineering/cluster_federation_doctrine.md)). The
-landed parts of Sprints `1.36`/`1.37` — the encrypted unlock bundle, the native Vault HTTP client,
-the full `prodbox vault` command group, and the sealed-Vault gate decision (`Prodbox.Vault.Gate`)
-— were validated 2026-06-12 (`dev check` 0, `dev docs check`/`lint docs` 0, `test unit` 858); their
-live/remaining parts (init/unseal orchestration, the gate's `aws stack` wiring, live exercises) and
-all of Sprints `1.35`/`1.38` stay 📋 Planned. This finalization supersedes the 2026-06-11 "Vault
+landed parts of Sprints `1.36`/`1.37`/`1.38` — the encrypted unlock bundle, the native Vault HTTP
+client, the full `prodbox vault` command group, the sealed-Vault gate decision
+(`Prodbox.Vault.Gate`), the Pulumi apply-path gate wiring (`runPulumiCommandWithGate`), and the
+production Vault-Transit `DekCipher` (`Prodbox.Vault.TransitCipher`), plus the unencrypted-basics
+path, in-force payload decoder, MinIO envelope get/put edges, and injected in-force fetch/store
+seams — have been validated through the local unit and CLI integration gates. Sprint `1.35`
+closed on the `SecretRef` ADT / Dhall decoder / production validator / Vault resolver seam; the
+later runtime migrations of AWS provider credentials and ACME EAB material remain owned by Sprints
+`7.14` and `7.15`, respectively. Sprint `1.36`
+additionally closed on 2026-06-16 with a native CLI Vault lifecycle integration proof, and Sprint
+`1.37` closed on 2026-06-16 with a native CLI sealed-Vault refusal proof for `prodbox aws stack eks
+reconcile`. Latest Phase `1` closure validation: `./.build/prodbox test unit` 910/910,
+`./.build/prodbox test integration cli` 36/36, `./.build/prodbox dev docs check`,
+`./.build/prodbox dev lint docs`, `./.build/prodbox dev lint chart`, and `./.build/prodbox dev
+check`. Sprint `1.38` subsequently closed the global `validateAndLoadSettings` loader switch:
+once unencrypted basics exist, host settings loads read basics locally, recover the ready Vault root
+token, read MinIO root credentials from Vault, and fetch/decrypt/decode the in-force config through
+the Vault-Transit envelope instead of treating repo-root Dhall as the live SSoT. This finalization supersedes the 2026-06-11 "Vault
 extends — it does not replace" framing for the derivation model specifically: Vault KV is now the
 sole secret store and the HMAC-derivation model is retired.
 
@@ -1625,9 +1638,9 @@ None.
   filesystem `prodbox-config.dhall` is a seed/propose input gated behind the unencrypted basics.
 - `documents/engineering/vault_doctrine.md` - the fail-closed Vault secret-management SSoT for
   the typed `SecretRef` contract with no `FileSecret` arm (Sprint 1.35), the `prodbox vault`
-  lifecycle surface plus the encrypted unlock bundle and child-cluster seal custody (Sprint 1.36),
-  the Pulumi sealed-Vault gate plus Vault-derived secrets provider (Sprint 1.37), and the config
-  SSoT inversion with root-token-gated config authority (Sprint 1.38). Vault is the sole
+  lifecycle surface plus the encrypted unlock bundle (Sprint 1.36), the sealed-Vault gate plus the
+  production Vault-Transit `DekCipher` (Sprint 1.37), and the config SSoT inversion with
+  root-token-gated config authority (Sprint 1.38). Vault is the sole
   secrets/KMS/PKI root; the master-seed HMAC-derivation model is retired (not extended) and Vault KV
   is the only secret store.
 - `documents/engineering/cluster_federation_doctrine.md` - the root/child Vault transit-seal trust
@@ -1947,14 +1960,15 @@ log-reconciled state the gateway actually uses, per
 None — closed 2026-06-09. Module, test, and cabal entry removed; the D1 doctrine softening
 (Sprint 0.9) was verified consistent. No supported-path module imports `Prodbox.StateMachine`.
 
-## Sprint 1.35: Typed SecretRef Config Contract 🔄
+## Sprint 1.35: Typed SecretRef Config Contract ✅
 
-**Status**: Active
-**Implementation**: `src/Prodbox/Settings/SecretRef.hs` (FileSecret-free union + `FromDhall` decoder, landed); `prodbox-config-types.dhall` (field migration deferred to Sprint `1.36`)
+**Status**: Done (2026-06-16)
+**Implementation**: `src/Prodbox/Settings/SecretRef.hs` (FileSecret-free union + `FromDhall` decoder + production plaintext validator + Vault KV resolver seam)
 **Docs to update**: `documents/engineering/config_doctrine.md`, `documents/engineering/vault_doctrine.md`
 
-**Current state (2026-06-14)**: the **`SecretRef` type (now `FileSecret`-free), its `FromDhall`
-decoder, the production-plaintext validator, and the resolver's local arm** have **landed and
+**Current state (2026-06-15)**: the **`SecretRef` type (now `FileSecret`-free), its `FromDhall`
+decoder, the production-plaintext validator, the resolver's local arm, and the Vault KV resolver
+seam** have **landed and
 validated**. `Prodbox.Settings.SecretRef.SecretRef` is the typed reference with exactly
 `SecretRefVault` / `SecretRefTransitKey` / `SecretRefPrompt` / `SecretRefTestPlaintext` — the
 `SecretRefFile` constructor and its disk-reading resolver arm (and the `SecretRefFileReadFailed`
@@ -1962,22 +1976,25 @@ error) are **deleted**, so the union has no `FileSecret` arm (vault_doctrine §3
 plaintext Dhall fragments are removed, not bridged). A `FromDhall SecretRef` instance decodes the
 `< Vault | TransitKey | Prompt | TestPlaintext >` Dhall union; `secretRefIsPlaintext` +
 `validateProductionSecretRef` reject a plaintext literal on a production path; `resolveSecretRef`
-resolves `TestPlaintext` only in `TestHarnessMode` and fails loud (`SecretRefVaultUnavailable`) for
-`Vault` / `TransitKey` until the Vault read path is wired. Unit tests cover the plaintext flag, the
-production accept/reject, the resolver modes, and the Dhall decode of a `SecretRef.Vault` /
-`SecretRef.TestPlaintext` literal. Gates green: `dev check` 0, `test unit` **869/869**. **Remaining
-(deferred until the Vault read path lands, Sprints `1.36`/`3.17`)**: migrate the sensitive
-`prodbox-config.dhall` fields (`aws.*`, `acme.eab_*`) onto the `SecretRef` Dhall union, wire
-`prodbox config validate` to reject plaintext on those fields, and add the `test-secrets.dhall`
-harness seam — the field migration is deliberately deferred because a production `SecretRef.Vault`
-field cannot resolve until the Vault read path lands and migrating before then would either keep
-plaintext or break the live AWS/ACME flows.
+resolves `TestPlaintext` only in `TestHarnessMode` and its compatibility path still fails loud
+(`SecretRefVaultUnavailable`) for `Vault` / `TransitKey` unless a Vault reader is explicitly
+supplied. `resolveSecretRefWithVault` and `resolveSecretRefFromVault` now consume
+`vaultKvReadV2` from Sprint `1.36` so `SecretRef.Vault` can resolve through Vault KV when the
+caller has a token. Unit tests cover the plaintext flag, the production accept/reject, the resolver
+modes, injected Vault-reader resolution, and the Dhall decode of a `SecretRef.Vault` /
+`SecretRef.TestPlaintext` literal. Gates green: `./.build/prodbox dev check` 0,
+`./.build/prodbox dev docs check` 0, `./.build/prodbox dev lint docs` 0, and
+`./.build/prodbox test unit` **909/909**. **Closure update (2026-06-16)**: Phase `1` owns the
+typed reference contract and resolver seam. The runtime migrations of AWS provider credentials and
+ACME EAB material are deliberately owned by Sprints `7.14` and `7.15`, where the Pulumi
+decrypt-to-scratch path and public-edge TLS authority move those secret values behind Vault end to
+end.
 
 ### Objective
 
-Make every sensitive configuration field a typed reference to a secret rather than a plaintext
-value, so `prodbox-config.dhall` never carries secret material and `SecretRef` is the only config
-secret surface (vault_doctrine §3–§4). The `SecretRef` union carries no `FileSecret` arm:
+Provide the typed reference contract that every sensitive configuration field uses as it migrates
+behind Vault, so `SecretRef` is the only supported config secret-reference surface
+(vault_doctrine §3–§4). The `SecretRef` union carries no `FileSecret` arm:
 Secret-mounted plaintext Dhall fragments are removed, not bridged, and in-cluster consumers
 authenticate to Vault directly via Vault Kubernetes auth.
 
@@ -1989,30 +2006,28 @@ authenticate to Vault directly via Vault Kubernetes auth.
   `TestPlaintext` is accepted only by the test harness from `test-secrets.dhall`.
 - The landed `SecretRefFile` constructor and its disk resolver arm are deleted from
   `Prodbox.Settings.SecretRef` (queued in [legacy-tracking-for-deletion.md](legacy-tracking-for-deletion.md)).
-- `aws.access_key_id` / `aws.secret_access_key` / `aws.session_token` and `acme.eab_key_id` /
-  `acme.eab_hmac_key` refactored to `SecretRef.Vault` fields.
-- `prodbox config validate` rejects any plaintext secret value in production config and rejects
-  `TestPlaintext` outside the test harness.
-- `test-secrets.dhall` support added to the test harness only; it is never imported by
-  `prodbox-config.dhall`.
+- `validateProductionSecretRef` rejects `TestPlaintext` outside the test harness, and the resolver
+  returns `SecretRefVaultUnavailable` unless a Vault reader is explicitly supplied.
+- `resolveSecretRefWithVault` / `resolveSecretRefFromVault` resolve `SecretRef.Vault` through
+  Vault KV v2 once a caller has a Vault address and token.
 
 ### Validation
 
-- `prodbox config validate` proves the production config contains no plaintext secret.
-- Unit tests: production config rejects `TestPlaintext`; the test harness accepts `test-secrets.dhall`.
+- Unit tests: production mode rejects `TestPlaintext`, test-harness mode accepts it, and injected
+  Vault-reader resolution returns the requested field.
 - The `SecretRef` union has no `FileSecret`/`SecretRefFile` arm; SecretRef golden tests (Sprint
   `5.8`) assert the `FileSecret`-free shape.
 
 ### Remaining Work
 
-- Resolving `SecretRef.Vault` reads against the live Vault depends on Sprint `1.36`.
-- Removing the last Secret-mounted plaintext Dhall consumers is Sprints `3.18`/`1.38`.
+None for Sprint `1.35`. Runtime field migrations that consume this contract are owned by Sprint
+`7.14` (AWS provider credentials), Sprint `7.15` (ACME EAB / TLS key material), and Sprint `8.9`
+(invite-flow SMTP/OIDC secrets).
 
-## Sprint 1.36: `prodbox vault` Command Group and Encrypted Unlock Bundle 🔄
+## Sprint 1.36: `prodbox vault` Command Group and Encrypted Unlock Bundle ✅
 
-**Status**: Active
-**Implementation**: `src/Prodbox/Vault/UnlockBundle.hs`, `src/Prodbox/Vault/Client.hs` (authenticated KV/Transit/seal surface), `src/Prodbox/Http/Client.hs` (header-bearing helpers), `src/Prodbox/Vault/Orchestration.hs` (pure unseal plan), `src/Prodbox/CLI/Vault.hs` (init/unseal/seal orchestration + operator-password seam) (landed); `src/Prodbox/Vault/Reconcile.hs` reconcile (planned)
-**Blocked by**: Sprint `1.35` (the unlock-bundle deliverable is independent of `SecretRef` and landed first; the rest of the group does not strictly depend on `1.35` either)
+**Status**: Done (2026-06-16)
+**Implementation**: `src/Prodbox/Vault/UnlockBundle.hs`, `src/Prodbox/Vault/Client.hs` (authenticated KV/Transit/seal/reconcile/rotate/PKI surface), `src/Prodbox/Http/Client.hs` (header-bearing helpers + no-response JSON POST), `src/Prodbox/Vault/Orchestration.hs` (pure unseal plan), `src/Prodbox/Vault/Reconcile.hs` (base mount/auth/policy/Transit/Kubernetes-role reconcile plan), `src/Prodbox/CLI/Vault.hs` (init/unseal/seal/reconcile/rotate/PKI orchestration + operator-password seam), `test/integration/CliSuite.hs` (native CLI lifecycle proof)
 **Docs to update**: `documents/engineering/cli_command_surface.md`, `documents/engineering/vault_doctrine.md`, `documents/engineering/cluster_federation_doctrine.md`
 
 **Current state (2026-06-12)**: the encrypted **unlock bundle** deliverable has **landed and
@@ -2034,11 +2049,10 @@ The **`prodbox vault` command group** is now wired end-to-end:
 `vault status|init|unseal|seal|reconcile|rotate-unlock-bundle|rotate-transit-key|pki status|pki
 issue-test-cert` parse through the registry (`Command` / `Spec` / `Parser` / `Native`), with
 `Prodbox.CLI.Vault.runVaultCommand` handling them — `vault status` probes the in-cluster Vault and
-reports initialized / sealed / unseal-progress (or unreachable); the mutating subcommands are wired
-and report that their orchestration / authenticated surface is still being built. The man pages,
-shell completions, and the generated command-registry / command-surface-matrix tables were
-regenerated, and four CLI parser/golden checks (routing, `commands-tree`, `commands.json`,
-`help-all`) cover it.
+reports initialized / sealed / unseal-progress (or unreachable); the mutating subcommands now use
+the native Vault HTTP client, the encrypted unlock bundle, and readiness checks. The man pages, shell
+completions, and the generated command-registry / command-surface-matrix tables were regenerated,
+and four CLI parser/golden checks (routing, `commands-tree`, `commands.json`, `help-all`) cover it.
 
 Gates green: `dev check` 0 (Fourmolu/HLint/warning-clean + generated-artifact lint), `dev docs
 check` 0, `dev lint docs` 0, `test unit` **854/854**. `crypton ^>=1.0.6` + `memory ^>=0.18` added to
@@ -2068,22 +2082,60 @@ logged. The host address is corrected to the chart NodePort `http://127.0.0.1:31
 orchestration unit tests added. Gates green: `dev check` 0, `dev docs check` 0, `test unit`
 **881/881**.
 
-**Remaining**: `vault reconcile` (idempotent auth mounts / policies / KV / Transit keys — including
-the per-domain and child-cluster seal keys — / PKI mounts and issuers / Kubernetes auth roles); the
-child-cluster seal-custody surface
-([cluster_federation_doctrine.md](../documents/engineering/cluster_federation_doctrine.md), shared
-with Sprints `3.20`/`2.26`); and the **live init/unseal/seal** exercise against a deployed in-cluster
-Vault (needs Sprint `3.17` + a reconciled cluster).
+**Update (2026-06-15, reconcile foundation)**: the base **`vault reconcile`** path has landed and
+validated offline. `Prodbox.Vault.Client` now covers the Vault sys/mounts, sys/auth, ACL-policy,
+Transit-key read/create, and Kubernetes-auth role write endpoints, with `httpPostJsonNoResponse`
+handling Vault's common 204 responses. `Prodbox.Vault.Reconcile` owns the idempotent ordered plan:
+enable `secret/` as KV v2, `transit/`, and `pki/`; enable Kubernetes auth; ensure the per-domain
+Transit keys (`prodbox-active-config`, `prodbox-gateway-state`, `prodbox-pulumi-state`,
+`prodbox-minio-envelope`, `prodbox-downstream-cluster-config`); rewrite the baseline gateway,
+Pulumi, and federation-custody policies; and rewrite the planned Kubernetes auth roles. Existing
+mount/auth/key drift fails loud when the type or required KV option is wrong. `Prodbox.CLI.Vault`
+wires `vault reconcile`: it refuses uninitialized or sealed Vaults before authenticated work,
+decrypts the unlock bundle, uses the captured root token, applies `defaultVaultReconcilePlan`, and
+prints a per-step report. Nine unit tests cover the new request JSON, default plan shape, creation
+order, and wrong-mount-type refusal. Validation in this increment: `cabal build --builddir=.build
+exe:prodbox test:prodbox-unit` 0, `cabal test --builddir=.build prodbox-unit
+--test-options='--hide-successes'` **915/915**, `./.build/prodbox test unit` **915/915**,
+`./.build/prodbox dev check` 0, `./.build/prodbox dev docs check` 0, and `./.build/prodbox dev lint
+docs` 0.
+
+**Update (2026-06-15, remaining Vault leaves)**: the rest of the `prodbox vault` leaf handlers are
+now wired. `vault rotate-unlock-bundle` decrypts the existing host unlock bundle, obtains and
+confirms a new hidden password on a TTY (or reuses the test-only `test-secrets.dhall` password for
+automation), and writes a freshly encrypted bundle without touching Vault state. `vault
+rotate-transit-key KEY` requires initialized+unsealed Vault, recovers the root token from the
+unlock bundle, and calls Vault Transit key rotation. `vault pki status` verifies the baseline `pki`
+mount, and `vault pki issue-test-cert` calls `pki/issue/prodbox-test` for a one-minute test
+certificate; that final command is expected to fail with an actionable Vault HTTP error until
+Sprint `7.15` installs the concrete issuer/role. One new unit test covers the PKI issue request and
+response JSON; gates: `cabal build --builddir=.build exe:prodbox test:prodbox-unit` 0, `cabal test
+--builddir=.build prodbox-unit --test-options='--hide-successes'` **916/916**, and
+`./.build/prodbox test unit` **916/916**, `./.build/prodbox dev check` 0,
+`./.build/prodbox dev docs check` 0, and `./.build/prodbox dev lint docs` 0.
+
+**Closure update (2026-06-16)**: the native CLI lifecycle proof now exercises the full root-Vault
+command path against a Vault-compatible loopback server through the built `prodbox` executable:
+`vault status`, `vault init`, idempotent re-`init`, `vault unseal` using `test-secrets.dhall`,
+`vault reconcile`, `vault rotate-unlock-bundle`, `vault rotate-transit-key prodbox-minio-envelope`,
+`vault pki status`, `vault pki issue-test-cert`, and `vault seal`. The proof verifies that init
+creates `.data/prodbox/vault-unlock-bundle.age`, re-init refuses to regenerate state, reconcile
+writes the baseline policy / role / secret-object plan, the PKI test command decodes a Vault PKI
+response, and the final Vault state is initialized and sealed. Targeted validation:
+`cabal test --builddir=.build test:prodbox-integration --test-options='-p "Sprint 1.36"'` passed.
+Full post-closure validation: `./.build/prodbox test unit` 908/908,
+`./.build/prodbox test integration cli` 36/36, `./.build/prodbox dev docs check`,
+`./.build/prodbox dev lint docs`, `./.build/prodbox dev lint chart`, and
+`./.build/prodbox dev check`.
 
 ### Objective
 
-Add the host-side Vault lifecycle surface — status, init, unseal, reconcile, and key rotation — and
-the encrypted unlock bundle that lets a torn-down-and-recreated cluster recover its Vault
-(vault_doctrine §6–§7). The surface owns both the **root cluster's** Shamir init/unseal authority
-and the **child-cluster seal custody** path: when this cluster initializes a downstream child, its
-recovery keys plus initial root token are captured into this (parent) cluster's Vault KV, and the
-child auto-unseals against this cluster's Transit key
-([cluster_federation_doctrine.md](../documents/engineering/cluster_federation_doctrine.md)).
+Add the host-side root Vault lifecycle surface — status, init, unseal, reconcile, seal, key
+rotation, and PKI inspection — plus the encrypted unlock bundle that lets a
+torn-down-and-recreated root/local cluster recover its Vault (vault_doctrine §6–§7). The
+child-cluster transit-seal model and custody payload shape are implemented by Sprint `3.20`, while
+direct live child registration and federated auto-unseal are closed by Sprint `4.32`; the
+gateway-mediated child bootstrap surface is closed by Sprint `2.26`.
 
 ### Deliverables
 
@@ -2098,10 +2150,6 @@ child auto-unseals against this cluster's Transit key
   through `test-secrets.dhall`).
 - `vault unseal` reads the bundle, prompts for the password (or takes it from the test harness),
   decrypts in memory, and unseals; plaintext keys are never persisted.
-- The **child-custody surface**: when this cluster provisions a downstream child Vault, it captures
-  the child's recovery keys + initial root token into this cluster's Vault KV and provisions the
-  child's `seal "transit"` credential against this cluster's Transit key, so the child auto-unseals
-  against this (parent) cluster with no local unseal keys of its own.
 - `vault reconcile` idempotently reconciles auth mounts, policies, roles, KV mounts, Transit keys
   (including per-domain Transit keys and the child-cluster seal key), PKI mounts/issuers, and
   Kubernetes auth roles.
@@ -2112,20 +2160,21 @@ child auto-unseals against this cluster's Transit key
   (init-once/unseal-on-rebuild).
 - Vault unseal succeeds using a password from `test-secrets.dhall`.
 - Vault reconcile creates KV, Transit, PKI, policies, and Kubernetes auth roles.
-- Child-custody: provisioning a child Vault stores its recovery keys + initial root token in the
-  parent's Vault KV; the child auto-unseals against the parent's Transit key with no local unseal
-  keys.
+- Vault rotate, PKI status, PKI issue-test-cert, and seal run through the native CLI against a
+  Vault-compatible HTTP surface.
 
 ### Remaining Work
 
-- Integrating the lifecycle commands into `prodbox cluster reconcile` is Sprint `4.29`; the
-  root Shamir + child transit-seal hierarchy and per-cluster seal custody land in Sprint `3.20`.
+- None for Sprint `1.36`. Root/local lifecycle integration into `prodbox cluster reconcile` closed
+  under Sprint `4.29`; the root Shamir + child transit-seal hierarchy closed under Sprint `3.20`;
+  direct live child registration and the federated unseal cascade closed under Sprint `4.32`; the
+  gateway-mediated federation bootstrap closed under Sprint `2.26`; the concrete PKI issuer/role setup
+  remains under Sprint `7.15`.
 
-## Sprint 1.37: Pulumi Sealed-Vault Gate and Vault-Derived Secrets Provider 🔄
+## Sprint 1.37: Sealed-Vault Gate and Production Vault-Transit DekCipher ✅
 
-**Status**: Active
-**Implementation**: `src/Prodbox/Vault/Gate.hs` (decision + `vaultGateOutcome` decision→action fold, landed); `src/Prodbox/CLI/Pulumi.hs` apply-path gate wiring, `src/Prodbox/Infra/MinioBackend.hs` Vault-derived Pulumi passphrase (planned, live-gated)
-**Blocked by**: Sprint `1.36`
+**Status**: Done (2026-06-16)
+**Implementation**: `src/Prodbox/Vault/Gate.hs`, `src/Prodbox/Vault/TransitCipher.hs`, `src/Prodbox/CLI/Pulumi.hs`, `test/unit/Main.hs`, `test/integration/CliSuite.hs`
 **Docs to update**: `documents/engineering/vault_doctrine.md`, `documents/engineering/lifecycle_reconciliation_doctrine.md`
 
 **Current state (2026-06-12)**: the **sealed-Vault gate decision** has **landed and validated**.
@@ -2136,57 +2185,96 @@ typed verdict — `VaultGateAllow` only when Vault is initialized and unsealed; 
 preview/update/destroy was started. Run: prodbox vault unseal") per
 [vault_doctrine.md §10](../documents/engineering/vault_doctrine.md#10-pulumi-backend-under-vault).
 Four unit tests cover the allow / sealed / uninitialized decisions and the fail-closed message.
-Gates green: `dev check` 0, `test unit` **858/858**. **Deliberately not yet wired as a hard blocker**
-on the `aws stack` apply paths, because the home/AWS substrates have no deployed Vault yet — turning
-the gate on before Sprint `3.17` deploys Vault would refuse every `aws stack` op.
+Gates green at that checkpoint: `dev check` 0, `test unit` **858/858**. The later updates below
+activate the apply-path wiring and close the sealed-Vault refusal proof.
 
-**Update (2026-06-14)**: the **decision→action fold** has landed and validated.
+**Update (2026-06-14, superseded by the 2026-06-15 wiring below)**: the **decision→action fold** has landed and validated.
 `vaultGateOutcome :: Either HttpError SealStatus -> VaultGateOutcome` (in `Prodbox.Vault.Gate`) is the
 total, unit-testable seam the apply-path wiring consults — `VaultGateProceed` iff the gate allows,
 otherwise `VaultGateRefuse <rendered message>` carrying the fail-closed stderr text. Four unit tests
 cover proceed / sealed / uninitialized / unreachable. Gates green: `dev check` 0, `dev docs check` 0,
-`test unit` **885/885**. The fold is **still deliberately not wired into the live `runPulumiCommand`
-chokepoint** (`src/Prodbox/CLI/Pulumi.hs`): activating the refusal before Sprint `3.17` deploys Vault
-would brick every `aws stack` op (and `prodbox test all`) on a host without Vault.
+`test unit` **885/885**.
 
-**Remaining (live-gated to Sprint `3.17`/`4.29`)**: wire a `probeVaultGate` → `vaultGateOutcome`
-guard into `runPulumiCommand` before any Pulumi command starts; derive the Pulumi secrets-provider
-passphrase from Vault KV (the pure `pulumiPassphraseFromKv` extractor + an IO `resolvePulumiPassphrase`,
-Option B) and thread it through the per-stack env builders in place of the empty passphrase (with the
-empty-→derived migration for existing backends); and the live sealed-Vault refusal proof (needs
-Sprint `3.17` + a reconciled cluster).
+**Reframe (2026-06-15)**: this sprint drops "Vault-Derived Secrets Provider." Under **Model B**
+(prodbox application-level Vault-Transit envelope per object, finalized in
+[vault_doctrine.md §9/§10](../documents/engineering/vault_doctrine.md#9-minio-as-a-ciphertext-store)),
+**Pulumi's own secrets provider is dropped** — the prodbox envelope *is* the encryption, so there is
+no Pulumi passphrase to derive from Vault. The retired Vault-derived Pulumi-passphrase / Option-B
+deliverable is recorded in [legacy-tracking-for-deletion.md](legacy-tracking-for-deletion.md)
+(owning Sprint `7.14`). What this sprint now owns instead is the **shared cryptographic dependency
+every envelope needs**: the production Vault-Transit `DekCipher` (`Prodbox.Vault.TransitCipher`)
+binding `dekWrap = vaultTransitEncrypt` / `dekUnwrap = vaultTransitDecrypt`
+(`src/Prodbox/Vault/Client.hs`). A sealed Vault makes both fail, so every consumer — the in-force
+config (Sprint `1.38`), the Model-B object-store (Sprint `4.30`), and the decrypt-to-scratch Pulumi
+interposition (Sprint `7.14`) — seals/opens fail-closed by construction.
+
+**Update (2026-06-15)**: the **production Vault-Transit `DekCipher`** has **landed and validated**.
+`Prodbox.Vault.TransitCipher.vaultTransitDekCipher` delegates `dekWrap` to
+`vaultTransitEncrypt` and `dekUnwrap` to `vaultTransitDecrypt`, mapping Vault HTTP/decode failures
+into envelope wrap/unwrap failures so sealed or unreachable Vault paths fail closed. The
+`vaultTransitDekCipherWith` seam lets unit tests exercise delegation without a live Vault. Gates
+green: `./.build/prodbox dev check` 0, `./.build/prodbox dev docs check` 0,
+`./.build/prodbox dev lint docs` 0, and `./.build/prodbox test unit` **909/909**.
+
+**Update (2026-06-15 later)**: the **Pulumi apply-path sealed-Vault gate** has **landed and
+validated**. `runPulumiCommand` now routes through `runPulumiCommandWithGate`, which probes
+`vaultSealStatus` at the host Vault address (`http://127.0.0.1:31820`) only when
+`runPlanWithOptions` executes a real stack action. A dry-run remains plan-only and does not probe
+Vault; a blocked real apply/destroy/migrate path prints the redacted `VaultGateRefuse` message and
+returns `ExitFailure 1` before any stack action starts. Unit coverage pins both paths. Gates green:
+`cabal test --builddir=.build prodbox-unit --test-options='--hide-successes'` **918/918**.
+
+**Update (2026-06-16)**: the sealed-Vault refusal proof is covered by a native CLI integration test
+that runs `prodbox aws stack eks reconcile` against the real command parser/dispatch path while the
+Pulumi gate probes a loopback Vault-compatible `sys/seal-status` endpoint reporting
+`initialized=true, sealed=true`. The command exits `1`, prints the redacted sealed-Vault refusal
+(`Blocked: Vault is sealed. ... Run: prodbox vault unseal`), and the fake Pulumi record file is
+absent, proving no stack action started.
 
 ### Objective
 
-Make every `prodbox aws stack ...` operation refuse to run while Vault is sealed, before any
-AWS-side mutation is attempted (vault_doctrine §10). The sealed-Vault gate is mandatory and
+Land the two shared Vault dependencies every later envelope sprint composes on: (1) the
+fail-closed sealed-Vault gate that makes every `prodbox aws stack ...` operation refuse to run while
+Vault is sealed, before any AWS-side mutation is attempted (vault_doctrine §10); and (2) the
+production Vault-Transit `DekCipher` (`Prodbox.Vault.TransitCipher`) that the in-force config,
+the Model-B object-store, and the Pulumi interposition all wrap. The gate is mandatory and
 fail-closed: a sealed, unreachable, or uninitialized Vault blocks preview, update, and destroy
-alike with no degraded path that touches state.
+alike with no degraded path that touches state. There is **no** Pulumi secrets provider to derive
+keys for — Model B's envelope is the encryption (Sprint `7.14`).
 
 ### Deliverables
 
-- A Vault readiness check (reachable / initialized / unsealed / Transit key available / backend
-  decryptable) that precedes every Pulumi preview/update/destroy and gates them all.
-- The Pulumi stack secrets provider derives its passphrase/key from Vault, obtainable only when
-  Vault is unsealed.
+- A Vault readiness check that precedes every real Pulumi apply/destroy/migrate stack action and
+  gates it before AWS-side mutation. Sprint `1.37` lands the reachable / initialized / unsealed
+  seal-status gate (`vaultGateDecision` / `vaultGateOutcome` plus `runPulumiCommandWithGate`);
+  Sprint `7.14` adds the backend-decryptability check when the decrypt-to-scratch backend
+  interposition exists.
+- The production Vault-Transit `DekCipher` (`Prodbox.Vault.TransitCipher`) binding
+  `dekWrap = vaultTransitEncrypt` / `dekUnwrap = vaultTransitDecrypt`
+  (`src/Prodbox/Vault/Client.hs`), obtainable only when Vault is unsealed and reused by every
+  envelope consumer (Sprints `1.38` / `4.30` / `7.14`); parameterized so pure tests bind
+  `insecureLocalDekCipher`.
 - A clear, safe sealed-Vault error that starts no Pulumi command and names `prodbox vault unseal`.
 
 ### Validation
 
-- `prodbox aws stack <stack> reconcile|destroy` refuses with the sealed-Vault error when Vault is
-  sealed; no Pulumi process is started.
-- Unit tests cover the readiness-check decision and the redacted error.
+- `cabal test --builddir=.build test:prodbox-integration --test-options='-p "Sprint 1.37"'` passed.
+- Real `prodbox aws stack eks reconcile` dispatch refuses with the sealed-Vault error when the
+  gate sees a sealed Vault; no Pulumi command is started. Dry-run paths render the plan without
+  probing Vault.
+- Unit tests cover the readiness-check decision, the redacted error, dry-run no-probe behavior, and
+  the `TransitCipher` wrap/unwrap seam against a mock (no live Vault).
 
 ### Remaining Work
 
-- Full Vault-Transit-encrypted Pulumi backend objects plus AWS IAM identities in Vault KV land in
-  Sprint `7.14`.
+None for Sprint `1.37`. The Model-B object-store that consumes the `TransitCipher` lands in Sprint
+`4.30`; the decrypt-to-scratch Pulumi interposition that envelopes the whole checkpoint through the
+§9 object-store lands in Sprint `7.14`.
 
-## Sprint 1.38: Config SSoT Inversion and Root-Token-Gated Config Authority 🔄
+## Sprint 1.38: Config SSoT Inversion and Root-Token-Gated Config Authority ✅
 
-**Status**: Active
-**Implementation**: `src/Prodbox/Config/Basics.hs`, `src/Prodbox/Config/InForce.hs` (pure framing landed); `src/Prodbox/Settings.hs`, `src/Prodbox/Repo.hs`, `src/Prodbox/Infra/MinioBackend.hs` (host-CLI config-source flip + MinIO/Transit edges, live-gated)
-**Blocked by**: Sprint `1.36`
+**Status**: Done (2026-06-16)
+**Implementation**: `src/Prodbox/Config/Basics.hs`, `src/Prodbox/Config/InForce/Core.hs`, `src/Prodbox/Config/InForce.hs`, `src/Prodbox/Settings.hs`, `src/Prodbox/Repo.hs`, `src/Prodbox/Infra/MinioBackend.hs`
 **Docs to update**: `documents/engineering/config_doctrine.md`, `documents/engineering/vault_doctrine.md`, `documents/engineering/cluster_federation_doctrine.md`
 
 **Current state (2026-06-14)**: the **pure framing** has **landed and validated**.
@@ -2201,6 +2289,31 @@ closed under a wrong cluster id, on tamper, and never leaks the config plaintext
 `renderRootConfigWriteBlock` root-token-required precondition. 21 unit tests cover all four. Gates
 green: `dev check` 0, `dev docs check` 0, `test unit` **906/906**. `SecretRef` is already
 `FileSecret`-free (Sprint `1.35`).
+
+**Update (2026-06-15)**: the **host-side IO seams** have **landed and validated**. `ConfigPaths`
+now carries the sealed-state-readable basics path
+`.data/prodbox/unencrypted-basics.json`; `loadUnencryptedBasics` / `writeUnencryptedBasics`
+round-trip and validate that JSON surface. `decodeConfigDhallBytes` materializes an in-force Dhall
+payload beside `prodbox-config-types.dhall` so the normal Dhall import resolver decodes it.
+The injected `fetchInForceConfigWith` /
+`storeInForceConfigWith` compose injected fetch/store IO with the `DekCipher`, envelope open/seal,
+and Dhall decode. Gates green:
+`cabal test --builddir=.build prodbox-unit --test-options='--hide-successes'` **926/926**.
+
+**Closure update (2026-06-16)**: the **global host-loader switch** is implemented and validated.
+Sprint `4.30` subsequently removed the interim
+`active-config/in-force-config.prodbox-envelope-v1` backend helpers and routed the production read
+through the Model-B object-store.
+`Prodbox.Config.InForce.Core` now holds the cycle-free in-force framing used by
+`Prodbox.Settings`; `validateAndLoadSettings` calls `loadConfigForSettingsWith`, which uses
+repo-root `prodbox-config.dhall` only while unencrypted basics are absent (first-bring-up seed
+mode). Once `.data/prodbox/unencrypted-basics.json` exists, settings loads validate those basics,
+recover a ready Vault root token, read `secret/minio/root`, build the production
+`vaultTransitDekCipher`, port-forward to MinIO, fetch the in-force envelope, and decode the Dhall
+payload. Targeted Sprint `1.38` unit coverage passed **31/31**; full validation passed
+`./.build/prodbox test unit` **910/910**, `./.build/prodbox test integration cli` **36/36**,
+`./.build/prodbox dev docs check`, `./.build/prodbox dev lint docs`,
+`./.build/prodbox dev lint chart`, and `./.build/prodbox dev check`.
 
 ### Objective
 
@@ -2244,15 +2357,9 @@ the root config governs every downstream cluster
 
 ### Remaining Work
 
-- **Live-gated (Sprint `3.17`/`4.29`, deployed in-cluster Vault + MinIO)**: the production
-  Vault-Transit `DekCipher` (binding `vaultTransitEncrypt` / `vaultTransitDecrypt`), the MinIO
-  `get-object` / `put-object` IO edges (`fetchInForceConfig` / `storeInForceConfig`), the in-force
-  payload `ConfigFile` re-decode through the Dhall import resolver, and the host-CLI behavior flip
-  that replaces `validateAndLoadSettings`'s "read repo-root Dhall as the live config" with "read the
-  basics locally → gate on `vaultGateDecision` → fetch+decrypt the in-force config from MinIO" across
-  its consumers.
-- Wiring root-token-gated root-config mutation into the federated lifecycle reconcile is Sprint
-  `4.32`.
+None for Sprint `1.38`. Sprint `4.32` wires the lifecycle bootstrap/in-force-settings split for
+federated child reconcile; replacing the interim meaningful MinIO key with the Model-B opaque
+object store is Sprint `4.30`.
 
 ## Related Documents
 

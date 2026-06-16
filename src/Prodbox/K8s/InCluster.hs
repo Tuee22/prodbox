@@ -165,8 +165,8 @@ secretApiPath namespace name =
 --   as 'stringData' (rather than already-base64-encoded 'data') lets
 --   the API server do the base64 step server-side, which matches every
 --   chart manifest in @charts/*/templates/secret.yaml@ and keeps the
---   derivation pipeline working on the raw 'Text' value the
---   master-seed derivation produces.
+--   materialization pipeline working on the raw 'Text' value Vault-backed
+--   callers provide.
 secretManifestJson :: Text -> Text -> Map Text Text -> Value
 secretManifestJson namespace name stringData =
   object
@@ -191,13 +191,9 @@ secretManifestStringData :: Map Text Text -> Value
 secretManifestStringData stringData =
   object [Key.fromText k .= v | (k, v) <- Map.toAscList stringData]
 
--- | Sprint 3.13 third chunk: capability record bundling the namespaced
---   @v1.Secret@ operations the daemon's @ensure-namespace@ handler
---   needs. Lets the handler logic be unit-tested against an in-process
---   mock without spinning up an HTTPS stack. The production constructor
---   is built atop 'http-client-tls' with the in-pod CA store +
---   ServiceAccount bearer token; that wiring lands in a follow-on
---   chunk so the present module stays pure-FP and dep-stable.
+-- | Capability record bundling namespaced @v1.Secret@ operations. The
+--   production constructor is built atop 'http-client-tls' with the in-pod
+--   CA store and ServiceAccount bearer token.
 --
 -- * 'secretOpsGet' returns @Right Nothing@ for an absent Secret
 --   (HTTP 404), @Right (Just value)@ for an existing one, and @Left@

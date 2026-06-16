@@ -19,6 +19,7 @@ spec:
       labels:
         {{- include "websocket.labels" . | nindent 8 }}
     spec:
+      serviceAccountName: websocket
       terminationGracePeriodSeconds: 30
       {{- if .Values.podAntiAffinity.enabled }}
       affinity:

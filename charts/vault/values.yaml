@@ -22,6 +22,21 @@ storage:
   className: manual
   size: 1Gi
 
+seal:
+  # Root clusters use Vault's default Shamir seal. Child clusters set mode to
+  # transit and point at the parent Vault's Transit key.
+  mode: shamir
+  transit:
+    address: ""
+    disableRenewal: false
+    keyName: ""
+    mountPath: transit/
+    tlsSkipVerify: false
+    # The token value is not rendered into vault.hcl. Vault reads it from the
+    # VAULT_TOKEN environment variable sourced from this Secret.
+    tokenSecretName: vault-transit-seal-token
+    tokenSecretKey: token
+
 service:
   # Host-CLI access to the in-cluster Vault, restricted to 127.0.0.1 by the host
   # firewall rule (the NodePort-on-loopback pattern the gateway daemon uses).

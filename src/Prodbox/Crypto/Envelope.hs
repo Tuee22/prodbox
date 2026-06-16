@@ -2,10 +2,11 @@
 {-# LANGUAGE ScopedTypeVariables #-}
 
 -- | Sprint 3.17: Vault-Transit envelope encryption. Each secret-bearing
--- object (the master seed, the active Dhall, Pulumi backend state) is sealed
+-- object (for example active Dhall or Pulumi backend state) is sealed
 -- under a fresh random data-encryption key (DEK): the plaintext is encrypted
 -- locally with a ChaCha20-Poly1305 AEAD, and the DEK is wrapped by Vault
--- Transit. The result is a self-describing @prodbox-envelope-v1@ JSON document.
+-- Transit. New writes emit a self-describing @prodbox-envelope-v2@ JSON document
+-- whose stored AAD is a SHA-256 hash, not the cleartext logical binding.
 --
 -- The DEK wrap/unwrap is abstracted behind 'DekCipher' so the envelope format,
 -- the local AEAD, and the AAD binding are unit-tested with a local cipher,
@@ -28,6 +29,7 @@ where
 
 import Crypto.Cipher.ChaChaPoly1305 qualified as CCP
 import Crypto.Error (CryptoError, CryptoFailable, eitherCryptoError)
+import Crypto.Hash.SHA256 qualified as SHA256
 import Crypto.Random (getRandomBytes)
 import Data.Aeson
   ( FromJSON (..)
@@ -36,6 +38,7 @@ import Data.Aeson
   , object
   , withObject
   , (.:)
+  , (.:?)
   , (.=)
   )
 import Data.Aeson qualified as Aeson
@@ -47,6 +50,8 @@ import Data.ByteString.Lazy qualified as BL
 import Data.Text (Text)
 import Data.Text qualified as Text
 import Data.Text.Encoding qualified as TextEncoding
+import Data.Time.Clock (getCurrentTime)
+import Data.Time.Format.ISO8601 (iso8601Show)
 
 -- | A pluggable data-encryption-key wrapper. Production binds these to Vault
 -- Transit @encrypt@ / @decrypt@; tests inject a local symmetric cipher. The
@@ -66,6 +71,9 @@ data Envelope = Envelope
   , envelopeNonce :: Text
   , envelopeAad :: Text
   , envelopeCiphertext :: Text
+  , envelopeTransitKey :: Maybe Text
+  , envelopeCreatedAt :: Maybe Text
+  , envelopeKeyVersion :: Maybe Text
   }
   deriving (Eq, Show)
 
@@ -77,6 +85,9 @@ instance ToJSON Envelope where
       , "nonce" .= envelopeNonce env
       , "aad" .= envelopeAad env
       , "ciphertext" .= envelopeCiphertext env
+      , "transit_key" .= envelopeTransitKey env
+      , "created_at" .= envelopeCreatedAt env
+      , "key_version" .= envelopeKeyVersion env
       ]
 
 instance FromJSON Envelope where
@@ -88,6 +99,9 @@ instance FromJSON Envelope where
         <*> o .: "nonce"
         <*> o .: "aad"
         <*> o .: "ciphertext"
+        <*> o .:? "transit_key"
+        <*> o .:? "created_at"
+        <*> o .:? "key_version"
 
 data EnvelopeError
   = EnvelopeCipherFailed CryptoError
@@ -108,6 +122,9 @@ renderEnvelopeError err = case err of
 envelopeFormatV1 :: Text
 envelopeFormatV1 = "prodbox-envelope-v1"
 
+envelopeFormatV2 :: Text
+envelopeFormatV2 = "prodbox-envelope-v2"
+
 dekBytes :: Int
 dekBytes = 32
 
@@ -123,6 +140,7 @@ sealEnvelope :: DekCipher -> ByteString -> ByteString -> IO (Either EnvelopeErro
 sealEnvelope cipher aad plaintext = do
   dek <- getRandomBytes dekBytes
   nonce <- getRandomBytes nonceBytes
+  createdAt <- Text.pack . iso8601Show <$> getCurrentTime
   case aeadSeal dek nonce aad plaintext of
     Left cipherErr -> pure (Left cipherErr)
     Right sealed -> do
@@ -134,11 +152,14 @@ sealEnvelope cipher aad plaintext = do
             ( BL.toStrict
                 ( Aeson.encode
                     Envelope
-                      { envelopeFormat = envelopeFormatV1
+                      { envelopeFormat = envelopeFormatV2
                       , envelopeWrappedDek = wrappedDek
                       , envelopeNonce = base64Text nonce
-                      , envelopeAad = base64Text aad
+                      , envelopeAad = base64Text (SHA256.hash aad)
                       , envelopeCiphertext = base64Text sealed
+                      , envelopeTransitKey = Just "configured-by-dek-cipher"
+                      , envelopeCreatedAt = Just createdAt
+                      , envelopeKeyVersion = Just "unknown"
                       }
                 )
             )
@@ -160,12 +181,13 @@ decodeEnvelope envelopeBytes = do
   env <- case eitherDecodeStrict' envelopeBytes of
     Left detail -> Left (EnvelopeMalformed detail)
     Right value -> Right value
-  if envelopeFormat env /= envelopeFormatV1
-    then Left (EnvelopeMalformed ("unknown format: " ++ Text.unpack (envelopeFormat env)))
-    else do
-      nonce <- decodeField "nonce" (envelopeNonce env)
-      sealed <- decodeField "ciphertext" (envelopeCiphertext env)
-      Right (nonce, sealed, envelopeWrappedDek env)
+  case envelopeFormat env of
+    format
+      | format == envelopeFormatV1 || format == envelopeFormatV2 -> do
+          nonce <- decodeField "nonce" (envelopeNonce env)
+          sealed <- decodeField "ciphertext" (envelopeCiphertext env)
+          Right (nonce, sealed, envelopeWrappedDek env)
+    _ -> Left (EnvelopeMalformed ("unknown format: " ++ Text.unpack (envelopeFormat env)))
  where
   decodeField :: String -> Text -> Either EnvelopeError ByteString
   decodeField fieldName value =

@@ -196,6 +196,7 @@ The per-group command matrix (generated; do not edit by hand):
 | `prodbox cluster reconcile` | none | `--dry-run`, `--plan-file`, `--with-edge` |
 | `prodbox cluster delete` | none | `--yes`, `--cascade`, `--dry-run`, `--plan-file` |
 | `prodbox cluster logs` | none | `--lines` |
+| `prodbox cluster federation register` | `CHILD` | `--dry-run`, `--plan-file`, `--child-vault-address`, `--child-kubeconfig`, `--child-endpoint`, `--child-kubeconfig-reference`, `--child-account-id`, `--child-pulumi-stack` |
 | `prodbox cluster wait` | none | `--timeout`, `--namespace` |
 | `prodbox cluster workload-logs` | none | `--namespace`, `--tail` |
 
@@ -297,6 +298,7 @@ The per-group command matrix (generated; do not edit by hand):
 | `prodbox test integration admin-routes` | none | `--coverage`, `--cov-fail-under`, `--substrate` |
 | `prodbox test integration public-dns` | none | `--coverage`, `--cov-fail-under`, `--substrate` |
 | `prodbox test integration keycloak-invite` | none | `--coverage`, `--cov-fail-under`, `--substrate` |
+| `prodbox test integration sealed-vault` | none | `--coverage`, `--cov-fail-under`, `--substrate` |
 
 ### `prodbox users`
 
@@ -327,13 +329,13 @@ The per-group command matrix (generated; do not edit by hand):
 | `prodbox workload start` | none | `--config` |
 <!-- prodbox:command-surface-matrix:end -->
 
-### `prodbox vault` (scheduled — Sprint 1.36)
+### `prodbox vault` (Sprint 1.36)
 
 The `prodbox vault` command group is the host-side Vault lifecycle surface. It is the
-intended structure scheduled under Sprint 1.36 (`prodbox vault` command group + encrypted
-unlock bundle); it is not yet part of the registry-generated matrix above and will join the
-generated `command-surface-matrix` section when the typed `commandRegistry` gains its leaves.
-The rows below are the planned surface, not an implemented one:
+Sprint 1.36 structure for the `prodbox vault` command group plus the encrypted unlock bundle.
+The leaves are now part of the typed command registry and have native handlers. The PKI
+`issue-test-cert` handler calls the later-configured `prodbox-test` role, so it is expected to
+return a Vault HTTP error until the concrete PKI issuer/role sprint lands.
 
 | Command | Arguments | Options | Owning Sprint |
 |---------|-----------|---------|---------------|
@@ -341,13 +343,13 @@ The rows below are the planned surface, not an implemented one:
 | `prodbox vault init` | none | none | Sprint 1.36 |
 | `prodbox vault unseal` | none | none | Sprint 1.36 |
 | `prodbox vault seal` | none | none | Sprint 1.36 |
-| `prodbox vault reconcile` | none | `--dry-run`, `--plan-file` | Sprint 1.36 |
+| `prodbox vault reconcile` | none | none | Sprint 1.36 |
 | `prodbox vault rotate-unlock-bundle` | none | none | Sprint 1.36 |
 | `prodbox vault rotate-transit-key` | `KEY` | none | Sprint 1.36 |
 | `prodbox vault pki status` | none | none | Sprint 1.36 |
 | `prodbox vault pki issue-test-cert` | none | none | Sprint 1.36 |
 
-Planned per-command intent (authoritative model in
+Per-command intent (authoritative model in
 [vault_doctrine.md § 7](./vault_doctrine.md#7-vault-lifecycle-commands)):
 
 - `prodbox vault status` — report whether Vault is deployed, initialized, sealed/unsealed, and
@@ -357,14 +359,17 @@ Planned per-command intent (authoritative model in
   `.data/prodbox/vault-unlock-bundle.age` (Argon2id/age authenticated encryption).
 - `prodbox vault unseal` — read the unlock bundle, prompt for its password, and unseal Vault.
 - `prodbox vault seal` — seal Vault (fail-closed back to the sealed-state invariant).
-- `prodbox vault reconcile` — idempotently reconcile auth mounts, policies, roles, KV mounts,
-  Transit keys, PKI, and Kubernetes auth roles, in keeping with the single-reconcile doctrine.
+- `prodbox vault reconcile` — idempotently reconcile the baseline auth mounts, policies, roles, KV
+  mount, Transit keys, PKI mount, and Kubernetes auth roles, in keeping with the single-reconcile
+  doctrine. The current native handler refuses uninitialized/sealed Vaults, decrypts the unlock
+  bundle for the root token, then applies `Prodbox.Vault.Reconcile.defaultVaultReconcilePlan`.
 - `prodbox vault rotate-unlock-bundle` — re-encrypt the unlock bundle under a new password
   without re-initializing Vault.
 - `prodbox vault rotate-transit-key <key>` — rotate a named Transit key version (envelope
   re-wrap is forward-compatible via the `prodbox-envelope-v1` tag).
 - `prodbox vault pki status` / `prodbox vault pki issue-test-cert` — inspect the Vault PKI mount
-  and issue a throwaway certificate for verification.
+  and issue a throwaway certificate for verification against the `prodbox-test` role once the PKI
+  issuer sprint has configured it.
 
 The sealed-state invariant, the typed `SecretRef` config contract, and startup-config sourcing
 that these commands operate against are owned by
@@ -510,9 +515,10 @@ predicate library and the full leak-class inventory.
 surface. `prodbox nuke` is the **only** sanctioned command that destroys long-lived shared
 infrastructure transitively (`aws-ses` stack, the long-lived `pulumi_state_backend` bucket).
 For per-stack teardown of `aws-ses` alone, use `prodbox aws stack aws-ses destroy --yes`.
-Its admin AWS credential source is `prodbox-config.dhall::aws_admin_for_test_simulation.*`,
-matching the long-lived stack operations and suite-driven destructive validations; it does not
-prompt for admin credentials after the typed confirmation gate.
+Its admin AWS credential source is the `SecretRef.Vault` refs declared at
+`prodbox-config.dhall::aws_admin_for_test_simulation.*`, matching the long-lived stack operations
+and suite-driven destructive validations; it does not prompt for admin credentials after the typed
+confirmation gate.
 
 Discipline (mirrors `aws teardown`):
 
@@ -540,14 +546,13 @@ full doctrine.
 
 `src/Prodbox/CLI/Pulumi.hs` owns the full public `prodbox aws stack ...` surface.
 
-`prodbox aws stack aws-ses migrate-backend` is the operator-interactive (TTY-only) command that
-migrates the `aws-ses` stack's Pulumi state from the in-cluster MinIO backend onto the
-dedicated long-lived S3 bucket named by `pulumi_state_backend` in `prodbox-config.dhall` —
-so the SES sending identity and receive-rule-set state outlives cluster wipes. It is
-idempotent (a no-op when the stack already lives in the long-lived backend) and refuses
-non-interactive contexts. See
+`prodbox aws stack aws-ses migrate-backend` is a legacy operator-interactive (TTY-only)
+compatibility command. Sprint `7.14` moved the main `aws-ses` reconcile/destroy/read paths to the
+encrypted decrypt-to-scratch backend; this command now opens the same wrapper and triggers
+first-touch import/delete from the old long-lived S3 source when encrypted state is absent. It
+refuses non-interactive contexts. See
 [aws_integration_environment_doctrine.md §4.5](./aws_integration_environment_doctrine.md)
-for the per-run-vs-long-lived backend contract.
+for the current backend contract and why this command is not part of the automation path.
 
 This matrix is the supported entrypoint set for AWS substrate provisioning and teardown.
 Invoking any entry does not require additional user approval beyond the original request —
@@ -844,11 +849,11 @@ validator command.
 
 ### `prodbox vault`
 
-The `prodbox vault` group (scheduled under Sprint 1.36) is the host-side Vault lifecycle
-surface — `status`, `init`, `unseal`, `seal`, `reconcile`, `rotate-unlock-bundle`,
-`rotate-transit-key`, and the `pki` inspection leaves (full row set in
-[§3 Command Matrix](#3-command-matrix)). These commands manage the in-cluster Vault backend
-and its encrypted unlock bundle from the operator host. Startup-config sourcing, the typed
+The `prodbox vault` group (Sprint 1.36) is the host-side Vault lifecycle surface — `status`,
+`init`, `unseal`, `seal`, `reconcile`, `rotate-unlock-bundle`, `rotate-transit-key`, and the
+`pki` inspection leaves (full row set in [§3 Command Matrix](#3-command-matrix)). These commands
+manage the in-cluster Vault backend and its encrypted unlock bundle from the operator host.
+Startup-config sourcing, the typed
 `SecretRef` contract, and the sealed-state fail-closed invariant are not owned here; they are
 owned by [vault_doctrine.md](./vault_doctrine.md) and
 [config_doctrine.md](./config_doctrine.md). This surface extends the existing config and

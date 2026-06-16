@@ -22,6 +22,7 @@ spec:
       labels:
         {{- include "vault.labels" . | nindent 8 }}
     spec:
+      serviceAccountName: vault
       containers:
         - name: vault
           image: "{{ .Values.image.repository }}:{{ .Values.image.tag }}"
@@ -38,6 +39,13 @@ spec:
           env:
             - name: VAULT_ADDR
               value: "http://127.0.0.1:{{ .Values.ports.api }}"
+{{ if eq .Values.seal.mode "transit" }}
+            - name: VAULT_TOKEN
+              valueFrom:
+                secretKeyRef:
+                  name: {{ required "seal.transit.tokenSecretName is required when seal.mode=transit" .Values.seal.transit.tokenSecretName | quote }}
+                  key: {{ required "seal.transit.tokenSecretKey is required when seal.mode=transit" .Values.seal.transit.tokenSecretKey | quote }}
+{{ end }}
           readinessProbe:
             httpGet:
               path: /v1/sys/health?standbyok=true&sealedcode=204&uninitcode=204

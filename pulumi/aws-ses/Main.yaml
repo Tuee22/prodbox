@@ -226,7 +226,7 @@ resources:
       user: ${smtpUser.name}
 
 outputs:
-  backend_bucket: prodbox-test-pulumi-backends
+  backend_bucket: prodbox-state
   sending_domain: ${sendingIdentity.domain}
   sending_identity_verification_token: ${sendingIdentity.verificationToken}
   dkim_tokens: ${sendingIdentityDkim.dkimTokens}

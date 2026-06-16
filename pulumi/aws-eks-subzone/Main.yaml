@@ -52,7 +52,7 @@ resources:
       records: ${subzone.nameServers}
 
 outputs:
-  backend_bucket: prodbox-test-pulumi-backends
+  backend_bucket: prodbox-state
   subzone_id: ${subzone.zoneId}
   subzone_name: ${subzone.name}
   subzone_name_servers: ${subzone.nameServers}

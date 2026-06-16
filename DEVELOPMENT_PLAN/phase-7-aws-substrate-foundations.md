@@ -18,17 +18,52 @@
 
 ## Phase Status
 
+⏸️ **Blocked 2026-06-16 after code-owned landing** — Sprint `7.14` has landed the code-owned
+decrypt-to-scratch Pulumi
+interposition over the Sprint `4.30` Model-B object-store. `Prodbox.Pulumi.EncryptedBackend`
+hydrates checkpoints into a RAM-backed `file://` backend, strips raw MinIO/S3 backend credentials
+and Pulumi passphrases from the Pulumi subprocess environment, and re-envelopes the resulting
+checkpoint as `LogicalPulumiStack <stack-id>` through `Prodbox.Minio.EncryptedObject`. The main
+per-run stack cycles (`aws-eks`, `aws-eks-subzone`, `aws-test`) and the main `aws-ses`
+reconcile/destroy/SMTP-sync paths now run through that wrapper; the production residue/output reads
+in `StackOutputs` / `LiveResidue` also consult encrypted checkpoint presence and scratch-backed
+`pulumi stack output` instead of raw backend listings. The first-touch migration path now imports
+legacy raw MinIO / long-lived S3 checkpoints when the encrypted object is absent and deletes the
+legacy stack only after the encrypted store/delete and Pulumi action succeed. Pulumi provider
+credentials now resolve through `Prodbox.Infra.AwsProviderCredentials`, which requires the Vault KV
+object at `secret/gateway/gateway/aws` and does not fall back to raw config credentials. The root
+AWS credential schema now uses mandatory Vault KV `SecretRef.Vault` references for `aws.*` and
+`aws_admin_for_test_simulation.*`; setup/config-setup write generated operational keys to
+`secret/gateway/gateway/aws`, and teardown clears that Vault object without writing provider
+secrets to `prodbox-config.dhall`. Honest status:
+⏸️ Blocked, not Done. Remaining Sprint `7.14` work is live first-touch migration/deletion proof and
+live sealed-Vault opacity proof across both substrates, blocked until Vault contains
+`secret/aws/admin-for-test-simulation` for the AWS IAM harness preflight. Raw backend environment is now confined to
+`LegacyPulumiBackend` first-touch import/delete; supported Pulumi actions receive provider-only
+input before the scratch `file://` rewrite. The
+`aws-ses migrate-backend` compatibility command now drives the encrypted wrapper instead of raw
+MinIO-to-S3 export/import; its remaining cleanup is deciding whether the alias itself can be
+removed after live proof. See
+[vault_doctrine.md §9/§10](../documents/engineering/vault_doctrine.md) and
+[legacy ledger](legacy-tracking-for-deletion.md).
+
 🔄 **Reopened 2026-06-14** — the Vault-root finalization (narrated in
 [README.md → Closure Status](README.md) per rule A) makes Vault the sole, finalized
 secrets / KMS / PKI root for the AWS substrate. Sprints `7.14` and `7.15` are reframed to own
 that finalized end state: the master-seed HMAC-derivation model is **retired** (not extended),
 `FileSecret` / Secret-mounted plaintext Dhall is **removed** (not bridged), and a sealed Vault
-fails every AWS-substrate Pulumi op and TLS issuance **closed**. Sprint `7.14` (📋 Planned) owns
+fails every AWS-substrate Pulumi op and TLS issuance **closed**. Sprint `7.14` (⏸️ Blocked) owns
 Vault-Transit-enveloped Pulumi backend objects and prodbox-created AWS identities as Vault KV
-`SecretRef.Vault` references; Sprint `7.15` (📋 Planned) owns ACME EAB and TLS private-key material
-as the Vault-protected sole authority. Both are blocked on the cross-phase Vault platform and
-transit-seal sprints (`1.37`, `3.17`, `3.18`, `3.20`, `1.35`, `1.36`). Honest status: 📋 Planned —
-the Vault-root AWS-substrate implementation is not yet validated. All earlier Phase 7 sprints
+`SecretRef.Vault` references; its decrypt-to-scratch wrapper/read path has landed, first-touch raw
+migration is code-owned, and the AWS credential schema migration is landed. Sprint `7.15`
+(📋 Planned) owns ACME EAB and TLS private-key material as the Vault-protected sole authority. Both
+depend on the cross-phase Vault platform and transit
+seal surfaces: the `1.35`–`1.37`, `3.17`, `3.18`, `3.20`, `4.29`, and `4.32` foundations have
+landed, including chart-secret Vault auth, Kubernetes-auth config, generated/static seed bootstrap,
+the structural sealed-startup proof, transit-seal hierarchy, and federated lifecycle cascade. Honest
+status: ⏸️ Blocked — the
+Vault-root AWS-substrate implementation
+is not yet live-validated because the required admin credential Vault object is absent. All earlier Phase 7 sprints
 (`7.1`–`7.13`) stay `Done` on their owned scope. See
 [vault_doctrine.md](../documents/engineering/vault_doctrine.md),
 [cluster_federation_doctrine.md](../documents/engineering/cluster_federation_doctrine.md), and the
@@ -2543,10 +2578,11 @@ IAM user — the opposite of the leak-free goal.
    `aws.*` creds, so clearing `aws.*` genuinely stranded `aws-ses` from its destroy surface.
    The refusal was correct then.
 2. **Sprint 4.10 (May 21, 2026)** moved `aws-ses` to **admin** creds
-   (`aws_admin_for_test_simulation.*`) and the long-lived S3 backend.
-   `ensureAwsSesStackResources` / `destroyAwsSesStackStatus` now authenticate via
-   `pulumiSesAdminBaseEnv` / `loadAdminAwsCredentials` (admin), never operational. After this,
-   clearing operational `aws.*` can no longer strand `aws-ses`.
+   (`aws_admin_for_test_simulation.*`) and the then-current long-lived S3 backend.
+   Sprint `7.14` keeps main `aws-ses` operations admin-credentialed but runs them through
+   `pulumiSesProviderBaseEnv` + `Prodbox.Pulumi.EncryptedBackend`; `pulumiSesAdminBaseEnv` remains
+   only as the optional first-touch import/delete source for old long-lived S3 checkpoints. Clearing
+   operational `aws.*` can no longer strand `aws-ses`.
 3. **Sprint 7.5.c.v.c (May 20, 2026)** fixed the *preflight* `runAwsIamHarnessSetup` the same
    way (switched it to the new `BypassAllResidueForHarnessRefresh` constructor) but deliberately
    left the *postflight* `runAwsIamHarnessTeardown` on `BypassPerRunResidueOnly` "because at
@@ -2922,50 +2958,148 @@ None — closed 2026-06-09. The issuer rename, the route-ownership doctrine corr
 issuer-rename-on-rebuild (`rke2 delete --cascade` + reconcile, restoring the retained cert under the
 new name) and the AWS-substrate `test all` exercise are operator-driven.
 
-## Sprint 7.14: Vault-Encrypted Pulumi Backend and AWS Secrets in Vault KV 📋
+## Sprint 7.14: Decrypt-to-Scratch Pulumi Interposition over the Model-B Object-Store ⏸️
 
-**Status**: Planned
-**Implementation**: `src/Prodbox/Pulumi/EncryptedBackend.hs`, `src/Prodbox/Aws.hs`
-**Blocked by**: Sprints `1.37`, `3.17`, `3.18`
-**Docs to update**: `documents/engineering/aws_admin_credentials.md`, `documents/engineering/aws_integration_environment_doctrine.md`, `documents/engineering/vault_doctrine.md`
+**Status**: Blocked (2026-06-16, code-owned wrapper/read/migration/provider path landed; live AWS proof cannot start)
+**Implementation**: `src/Prodbox/Pulumi/EncryptedBackend.hs`, `src/Prodbox/Infra/StackOutputs.hs`, `src/Prodbox/Lifecycle/LiveResidue.hs`, `src/Prodbox/Infra/AwsEksTestStack.hs`, `src/Prodbox/Infra/AwsTestStack.hs`, `src/Prodbox/Infra/AwsEksSubzoneStack.hs`, `src/Prodbox/Infra/AwsSesStack.hs`, `src/Prodbox/Infra/LongLivedPulumiBackend.hs`, `src/Prodbox/Aws.hs`
+**Blocked by**: Missing Vault KV object `secret/aws/admin-for-test-simulation`; `prodbox test integration aws-eks --substrate aws` stops in IAM-harness preflight before any AWS provisioning
+**Docs to update**: `documents/engineering/vault_doctrine.md`, `documents/engineering/aws_admin_credentials.md`, `documents/engineering/aws_integration_environment_doctrine.md`
 
 ### Objective
 
-Make the AWS-substrate Pulumi backend objects themselves Vault-Transit envelopes and hold every
-prodbox-created AWS identity as a Vault KV object (vault_doctrine §8, §10, §13). Vault is the sole
-authority over Pulumi backend state and AWS credentials: there is no plaintext fallback and no
-non-Vault store. A sealed Vault makes the backend opaque and fails every `aws stack` op closed.
+Interpose prodbox between Pulumi and MinIO so Pulumi never touches the object-store directly. Each
+Pulumi operation hydrates its stack checkpoint into a RAM-tmpfs `file://` backend (decrypt), runs
+`pulumi`, then re-envelopes and opaque-names the result back through the Model-B object-store
+(`vault_doctrine §10`). The persistent volume only ever holds opaque ciphertext, even mid-run.
+**Pulumi's own secrets provider is dropped** — the prodbox Vault-Transit envelope from Sprint `4.30`
+*is* the encryption, so there is no Pulumi passphrase and no second crypto layer. This treatment is
+**uniform**: the per-run stacks (`aws-eks`, `aws-eks-subzone`, `aws-test`) and the long-lived
+`aws-ses` backend are stored identically — the historical `aws-ses` AES256-SSE-only carve-out is
+retired. Vault is the sole authority over Pulumi backend state: a sealed Vault makes every backend
+opaque and fails every `aws stack` op closed.
 
 ### Deliverables
 
-- Pulumi backend objects in MinIO are stored as `prodbox-envelope-v1` Vault-Transit envelopes; a
-  sealed Vault reveals only opaque ids — no resource names, account IDs, or topology.
-- Every `aws stack` op performs a Vault reachable / initialized / unsealed / decryptable readiness
-  gate before touching state; a sealed Vault blocks preview / update / destroy with a clear
-  safe error rather than a degraded path that leaks.
-- IAM users / roles / access keys prodbox creates are Vault KV objects, referenced from Dhall as
-  `SecretRef.Vault` only — there is no plaintext AWS secret field in `prodbox-config.dhall`.
-- The elevated / admin AWS credential is prompted, used, and discarded: the prompt provisions a
-  least-privilege identity stored in Vault KV and never writes the prompted elevated credential to
-  `prodbox-config.dhall`.
+- `Prodbox.Pulumi.EncryptedBackend.withDecryptedStack` is the bracket every Pulumi op runs inside:
+  it gates on the Vault-readiness check (`vaultGateOutcome` from Sprint `1.37`), reads the stack
+  checkpoint via the §9 object-store (`getLogical (LogicalPulumiStack sid)`), hydrates a RAM-tmpfs
+  `file://.../.pulumi/stacks/<project>/<sid>.json`, runs `pulumi login file://…; pulumi <op>`
+  **without a passphrase**, re-envelopes the result via `putLogical`, and shreds the scratch tmpfs
+  on exit (success, failure, or signal).
+- The interposition is applied **uniformly** to the per-run runners
+  (`AwsEksTestStack.hs`, `AwsTestStack.hs`, `AwsEksSubzoneStack.hs`) **and** the main long-lived
+  `AwsSesStack.hs` paths. The AES256-SSE-only long-lived carve-out is removed from the supported
+  path; the long-lived backend goes through the same enveloped/opaque-named object-store.
+- **Pulumi's own secrets provider is dropped**: the stack runners use a scratch `file://` backend
+  with `--secrets-provider plaintext`, `fileBackendEnvironment` strips raw backend credentials and
+  `PULUMI_CONFIG_PASSPHRASE`, and no Pulumi passphrase / `secretsprovider` is configured.
+- Production stack list/output reads (`src/Prodbox/Infra/StackOutputs.hs`) consult encrypted
+  checkpoint presence (gated behind unseal) rather than listing raw MinIO keys. Sprint `7.14`
+  chooses deterministic direct addressing for Pulumi checkpoints:
+  `LogicalPulumiStack <stack-id>` flows through `opaqueObjectId`, so the general Model-B index is not
+  required for stack presence.
+- AWS **input** credentials Pulumi needs (the access key / secret the provider authenticates with)
+  are held as Vault KV objects, referenced from Dhall as `SecretRef.Vault` only — there is no
+  plaintext AWS secret field in `prodbox-config.dhall`. The elevated / admin credential is
+  prompted, used to provision a least-privilege identity stored in Vault KV, and discarded; it is
+  never written to `prodbox-config.dhall`.
+- The empty-passphrase → enveloped migration: a backend currently written under the empty
+  Pulumi passphrase (or the `aws-ses` AES256-SSE bucket) is read once on first touch, re-stored as
+  an opaque `objects/<id>.enc` envelope through the object-store, and the old raw key is deleted.
+
+### Current State
+
+- `Prodbox.Pulumi.EncryptedBackend` exists and is wired into the main apply/destroy cycles for
+  `aws-eks`, `aws-eks-subzone`, `aws-test`, and `aws-ses`. It gates on unsealed Vault before
+  loading state, reads and writes `LogicalPulumiStack <stack-id>` through the Model-B object-store,
+  hydrates Pulumi's real local-backend path
+  (`.pulumi/stacks/<Pulumi.yaml project name>/<stack-id>.json`), runs against a scratch `file://`
+  backend, and removes scratch state when the bracket exits.
+- `fileBackendEnvironment` rewrites `PULUMI_BACKEND_URL` to the scratch `file://` backend and strips
+  raw backend AWS credentials plus `PULUMI_CONFIG_PASSPHRASE`. Stack creation uses
+  `--secrets-provider plaintext`, so the only durable encryption layer is the prodbox envelope.
+- Per-run runners (`AwsEksTestStack`, `AwsEksSubzoneStack`, `AwsTestStack`) now build two separate
+  environments: `pulumiProviderBaseEnv` feeds supported Pulumi actions with provider-only input,
+  while `pulumiBackendBaseEnv` is passed only inside `LegacyPulumiBackend` for first-touch raw
+  checkpoint export/delete. The wrapper still strips backend credentials defensively before Pulumi
+  starts against scratch.
+- Production residue and output reads now use `StackOutputs.listEncryptedStack` and
+  `StackOutputs.fetchEncryptedOutputs`: checkpoint presence is determined from a decryptable
+  encrypted object, and `pulumi stack output --show-secrets --json` runs only against the scratch
+  file backend.
+- The `aws-ses` main reconcile/destroy/SMTP-sync paths no longer require or export the long-lived
+  S3 backend environment. They pass provider credentials into the encrypted wrapper; `aws-ses
+  migrate-backend` is also wrapper-backed and uses the legacy long-lived S3 backend only as an
+  optional first-touch checkpoint source when encrypted state is absent.
+- `Prodbox.Infra.AwsProviderCredentials` is the shared provider-credential resolver for per-run
+  Pulumi stacks and AWS-stack cleanup helpers. It requires the Vault KV object
+  `secret/gateway/gateway/aws`; a missing, sealed, unreachable, or invalid object fails loud before
+  Pulumi receives provider credentials. There is no raw `aws.*` /
+  `aws_admin_for_test_simulation.*` fallback on the Pulumi provider path.
+- The home-cluster bootstrap path now resolves the Vault-backed operational `aws.*` gate before
+  deploying the Route 53-writing gateway chart or admin public-edge routes. Missing or empty
+  `secret/gateway/gateway/aws` is treated as an absent operational credential for bare
+  `cluster reconcile`, so the local substrate reaches a clean platform state and skips the gateway
+  daemon instead of deploying pods that fail on unresolved `SecretRef.Vault` values. Unexpected Vault
+  failures still fail the reconcile.
+- `withMigratedDecryptedStackEnvironment` provides first-touch migration for legacy checkpoint
+  layouts: if the encrypted `LogicalPulumiStack` object is absent, it logs into the legacy backend,
+  exports the stack checkpoint to a temp file, hydrates scratch from those bytes, stores/deletes via
+  the encrypted object-store after the Pulumi action, and removes the legacy stack only after the
+  encrypted operation succeeds. The per-run stacks pass their old MinIO backend env as the legacy
+  source; `aws-ses` constructs an optional long-lived S3 legacy source from `pulumi_state_backend`
+  when that config exists.
+- Pulumi checkpoint presence uses deterministic direct addressing:
+  `LogicalPulumiStack <stack-id>` -> `opaqueObjectId` -> `objects/<hmac>.enc`. The general Model-B
+  index remains available for other logical-object classes, but Sprint `7.14` does not need an
+  additional id↔logical index or MinIO lock object for stack presence.
 
 ### Validation
 
-- A MinIO dump of the Pulumi backend while Vault is sealed reveals no resource names, account IDs,
-  or topology — only opaque ids.
-- A sealed Vault blocks `prodbox aws stack <stack> reconcile` / `destroy` with a clear safe error.
-- `prodbox config validate` confirms no AWS secret is plaintext in the config (only `SecretRef.Vault`
-  references).
+- Current code-owned validation (2026-06-16): `cabal build --builddir=.build exe:prodbox`, Haskell
+  lint with no hints, focused Sprint `7.14` units 9/9, focused operational AWS-credential gate
+  units 2/2, focused Vault KV object units 3/3, Sprint `4.16` residue/StackOutputs units 54/54,
+  Sprint `4.10` long-lived-backend/admin-credential units 12/12, full unit suite 950/950,
+  `./.build/prodbox test integration cli` 38/38, `./.build/prodbox test integration env` 38/38,
+  docs check/lint 0, `git diff --check` 0, and canonical `./.build/prodbox dev check` 0.
+- Live home-substrate bootstrap validation (2026-06-16): `./.build/prodbox cluster reconcile`
+  completed with Vault initialized/unsealed, MinIO and Harbor healthy, image publication/import
+  working, MetalLB/Envoy/cert-manager/Percona reconciled, gateway MinIO bootstrap passing, and the
+  gateway release cleanly skipped because operational `aws.*` was absent from Vault. Follow-up
+  inspection showed no gateway Helm release and no CrashLoopBackOff pods.
+- Live AWS-substrate validation attempts (2026-06-16): `./.build/prodbox test integration aws-eks
+  --substrate aws` stopped in the IAM harness preflight before provisioning because Vault does not
+  contain `secret/aws/admin-for-test-simulation`. The harness reported that
+  `aws_admin_for_test_simulation.access_key_id`, `secret_access_key`, and `region` must be present
+  as Vault-backed admin references before it can mint temporary operational credentials. No AWS
+  stack reconcile or AWS resource provisioning began in this attempt.
+- Required live closure validation still pending: a MinIO dump of the Pulumi backend while Vault is
+  sealed reveals only opaque `objects/<hmac>.enc` ciphertext — no `aws-eks` / stack-name key, no
+  resource names, no account IDs, no topology — for **both** per-run and `aws-ses` backends.
+- Required live closure validation still pending: sealed Vault blocks
+  `prodbox aws stack <stack> reconcile` / `destroy` with a clear safe error before any Pulumi op
+  starts, and a host-disk walk of `.data/prodbox/minio/0` mid-run shows only opaque ciphertext while
+  the decrypted checkpoint lives only in RAM-backed scratch.
 
 ### Remaining Work
 
-- The both-substrate live exercise is operator-driven.
+- Live-verify first-touch migration/deletion for old empty-passphrase / raw MinIO checkpoints and
+  the former `aws-ses` long-lived S3 backend across both substrates, including a host-disk proof
+  that no plaintext raw checkpoint survives after the encrypted migration.
+- Populate `secret/aws/admin-for-test-simulation` in Vault on this host, then rerun the targeted
+  AWS harness proof so the live first-touch/deletion and sealed-opacity checks can reach actual AWS
+  stack operations.
+- Decide whether to remove the now-wrapper-backed
+  `prodbox aws stack aws-ses migrate-backend` compatibility alias after live migration proof. It no
+  longer performs raw `pulumi stack export` / `pulumi stack import` between MinIO and long-lived S3.
+- The both-substrate live exercise (sealed-Vault opacity across per-run and `aws-ses` backends) is
+  operator-driven and shares the Sprint `5.8` cross-surface red-team gate.
 
 ## Sprint 7.15: ACME EAB and TLS Key Material Behind Vault 📋
 
 **Status**: Planned
 **Implementation**: `src/Prodbox/PublicEdge.hs`, `src/Prodbox/Settings.hs`, `charts/keycloak/`, `charts/vscode/`
-**Blocked by**: Sprints `1.35`, `1.36`, `3.18`
+**Blocked by**: Sprints `1.35`, `1.36`
 **Docs to update**: `documents/engineering/acme_provider_guide.md`, `documents/engineering/envoy_gateway_edge_doctrine.md`, `documents/engineering/vault_doctrine.md`
 
 ### Objective
@@ -3038,17 +3172,20 @@ contract protects is Vault-owned — there is no plaintext key material a sealed
   SSoT constant) replacing the historically-inaccurate HTTP-01-claiming name on a
   wipe-and-rebuild boundary.
 - [documents/engineering/vault_doctrine.md](../documents/engineering/vault_doctrine.md) - Sprint
-  `7.14` Pulumi backend objects stored as `prodbox-envelope-v1` Vault-Transit envelopes
-  ([§8](../documents/engineering/vault_doctrine.md#8-envelope-encryption-with-vault-transit),
-  [§10](../documents/engineering/vault_doctrine.md#10-pulumi-backend-under-vault)) with a sealed-Vault
-  readiness gate on every `aws stack` op, and prodbox-created AWS identities held in Vault KV
-  referenced by `SecretRef.Vault`
+  `7.14` decrypt-to-scratch Pulumi interposition: each `aws stack` op hydrates its checkpoint into a
+  RAM-tmpfs `file://` backend, runs `pulumi` without a passphrase, and re-envelopes opaque-named
+  objects back through the Model-B object-store
+  ([§9](../documents/engineering/vault_doctrine.md#9-minio-as-a-ciphertext-store),
+  [§10](../documents/engineering/vault_doctrine.md#10-pulumi-backend-under-vault)) — applied
+  uniformly to per-run and long-lived (`aws-ses`) backends, with Pulumi's own secrets provider
+  dropped (the prodbox envelope is the encryption) and a sealed-Vault readiness gate on every op.
+  AWS input credentials prodbox creates are held in Vault KV referenced by `SecretRef.Vault`
   ([§13](../documents/engineering/vault_doctrine.md#13-config-and-state-classification)); Sprint
   `7.15` ACME EAB + TLS private-key material as Vault-owned objects that fail closed when Vault is
   sealed ([§11](../documents/engineering/vault_doctrine.md#11-tls-and-pki-under-vault)). Vault is the
-  sole authority over both surfaces: the per-run MinIO backend lifetime class and the single ZeroSSL
-  issuer + S3 retain-restore behavior are unchanged, but their secret and key material is Vault-owned
-  with no plaintext fallback.
+  sole authority over both surfaces: the per-run and long-lived backend lifetime classes and the
+  single ZeroSSL issuer + S3 retain-restore behavior are unchanged, but their secret and key
+  material is Vault-owned with no plaintext fallback.
 - `documents/engineering/aws_admin_credentials.md` - Sprint `7.14` elevated/admin AWS credential
   stored as a least-privilege identity in Vault KV (never written to `prodbox-config.dhall`).
 - `documents/engineering/envoy_gateway_edge_doctrine.md` - Sprint `7.15` public-edge TLS

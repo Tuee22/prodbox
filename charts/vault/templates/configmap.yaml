@@ -21,6 +21,16 @@ data:
     storage "file" {
       path = "/vault/data"
     }
+{{ if eq .Values.seal.mode "transit" }}
+
+    seal "transit" {
+      address         = {{ required "seal.transit.address is required when seal.mode=transit" .Values.seal.transit.address | quote }}
+      disable_renewal = {{ .Values.seal.transit.disableRenewal | quote }}
+      key_name        = {{ required "seal.transit.keyName is required when seal.mode=transit" .Values.seal.transit.keyName | quote }}
+      mount_path      = {{ .Values.seal.transit.mountPath | quote }}
+      tls_skip_verify = {{ .Values.seal.transit.tlsSkipVerify | quote }}
+    }
+{{ end }}
 
     listener "tcp" {
       address     = "0.0.0.0:{{ .Values.ports.api }}"

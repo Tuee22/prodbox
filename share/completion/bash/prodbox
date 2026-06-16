@@ -34,7 +34,10 @@ _prodbox()
         words="list status reconcile delete"
         ;;
       "cluster")
-        words="status health start stop restart reconcile delete logs wait workload-logs"
+        words="status health start stop restart reconcile delete logs federation wait workload-logs"
+        ;;
+      "cluster federation")
+        words="register"
         ;;
       "config")
         words="setup show validate"
@@ -67,7 +70,7 @@ _prodbox()
         words="all lint unit integration"
         ;;
       "test integration")
-        words="all cli aws-iam dns-aws aws-eks env gateway-daemon gateway-pods gateway-partition ha-rke2-aws lifecycle pulumi charts-storage charts-platform charts-vscode charts-api charts-websocket admin-routes public-dns keycloak-invite"
+        words="all cli aws-iam dns-aws aws-eks env gateway-daemon gateway-pods gateway-partition ha-rke2-aws lifecycle pulumi charts-storage charts-platform charts-vscode charts-api charts-websocket admin-routes public-dns keycloak-invite sealed-vault"
         ;;
       "users")
         words="invite list revoke"

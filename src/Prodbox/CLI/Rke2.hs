@@ -3,6 +3,7 @@
 module Prodbox.CLI.Rke2
   ( acmeRuntimeManifest
   , acmeRuntimeManifestWith
+  , acmeRuntimeManifestWithCredentials
   , acmeClusterIssuerSpec
   , ensureGatewayImagesForSubstrate
   , ensureGatewayMinioBootstrap
@@ -14,15 +15,20 @@ module Prodbox.CLI.Rke2
   , ensureMinioRuntime
   , ensurePostgresOperatorRuntime
   , ensureVaultRuntime
+  , ensureRootVaultLifecycle
   , ensurePublicEdgeWorkloadImageForSubstrate
   , MinioImageSource (..)
   , cascadeOrderNarration
   , inferCascadeSubstrate
+  , isMinioSecretKeyArgumentSafe
+  , OperationalAwsCredentialGate (..)
   , buildNativeDeletePlan
   , renderNativeDeletePlan
   , renderNativeInstallPlan
   , renderInotifySysctlDropIn
   , renderMinioChartArgs
+  , operationalAwsCredentialGateFromResult
+  , reconcileStepsMinioRootChanged
   , runEdgeCommand
   , runNativeDeleteCascade
   , runRke2Command
@@ -68,6 +74,7 @@ import Data.List
 import Data.Map qualified as Map
 import Data.Maybe (fromMaybe)
 import Data.Text qualified as Text
+import Data.Text.Encoding qualified as TextEncoding
 import Data.Word (Word8)
 import Prodbox.Aws (adminAwsEnvironment)
 import Prodbox.AwsEnvironment
@@ -75,6 +82,7 @@ import Prodbox.AwsEnvironment
   )
 import Prodbox.CLI.Command
   ( EdgeCommand (..)
+  , FederationRegisterOptions (..)
   , Plan (..)
   , PlanOptions (..)
   , Rke2Command (..)
@@ -89,17 +97,52 @@ import Prodbox.CLI.Output
   , writeOutput
   , writeOutputLine
   )
+import Prodbox.CLI.Vault
+  ( VaultReconcileCommandResult (..)
+  , runVaultInit
+  , runVaultReconcileCommandDetailed
+  , runVaultUnseal
+  )
+import Prodbox.Cluster.Federation
+  ( ChildBootstrapCredential (..)
+  , ChildIndex (..)
+  , ChildInitCustody (..)
+  , ChildMetadata (..)
+  , ChildRegistrationPlan (..)
+  , childBootstrapKvLogicalPath
+  , childBootstrapVaultFields
+  , childIndexVaultFields
+  , childInitKvLogicalPath
+  , childMetadataKvLogicalPath
+  , childMetadataVaultFields
+  , childRegistrationPlan
+  , childRegistrationTransitKey
+  , childRegistrationVaultNamespace
+  , childTransitSealPolicyDocument
+  , decodeChildIndex
+  , decodeChildInitCustody
+  , decodePayloadJsonField
+  , federationChildrenIndexKvLogicalPath
+  , renderChildRegistrationPlan
+  , upsertChildIndex
+  )
+import Prodbox.Config.Basics
+  ( ParentRef (..)
+  )
 import Prodbox.ContainerImage qualified as ContainerImage
 import Prodbox.Dns (fetchPublicIp)
 import Prodbox.Dns qualified as Dns
 import Prodbox.Error (fatalError)
-import Prodbox.Gateway.Client qualified as GatewayClient
 import Prodbox.Host
   ( LanAddressing (..)
   , defaultGatewayNodePort
   , detectLanAddressing
   , runHostFirewallGatewayRestrictOptional
   , runHostFirewallGatewayUnrestrict
+  )
+import Prodbox.Http.Client
+  ( HttpError (..)
+  , renderHttpError
   )
 import Prodbox.Infra.AwsEksTestStack (awsEksCanonicalClusterName, withEksKubeconfig)
 import Prodbox.Infra.LongLivedPulumiBackend (loadAdminAwsCredentials)
@@ -115,6 +158,18 @@ import Prodbox.Lib.EksCustomImagePush
   , defaultEksCustomImagePushConfig
   , eksCustomImagePushPodManifest
   , rewriteChartRefForInClusterPush
+  )
+import Prodbox.Lib.Storage
+  ( retainedStatefulSetPersistentVolumeClaimName
+  , retainedStatefulSetPersistentVolumeName
+  )
+import Prodbox.Lifecycle.FederatedVault
+  ( FederatedVaultLifecycle (..)
+  , ParentVaultReadiness (..)
+  , parentReadinessDecision
+  , renderParentReadinessBlock
+  , vaultLifecycleFromBasics
+  , vaultLifecycleHelmSealArgs
   )
 import Prodbox.Lifecycle.K8sDrain qualified as K8sDrain
 import Prodbox.Lifecycle.LiveResidue
@@ -146,11 +201,9 @@ import Prodbox.Retry
   ( RetryPolicy (..)
   , retryDelayMicros
   )
-import Prodbox.Secret.Derive (deriveBase64Url, oidcClientSecretContext)
-import Prodbox.Secret.GatewayDeriveMode (GatewayDeriveMode (..))
-import Prodbox.Secret.Wire (DeriveResponse (..))
 import Prodbox.Settings
   ( AcmeSection (..)
+  , AwsCredentialsRef (..)
   , ConfigFile (..)
   , Credentials (..)
   , DeploymentSection (..)
@@ -158,7 +211,6 @@ import Prodbox.Settings
   , MetallbBgpPeer (..)
   , Route53Section (..)
   , ValidatedSettings (..)
-  , access_key_id
   , acme
   , aws
   , bootstrap_public_ip_override
@@ -169,15 +221,17 @@ import Prodbox.Settings
   , eab_key_id
   , email
   , loadConfigFile
+  , loadUnencryptedBasics
   , manual_pv_host_root
   , pulumi_enable_dns_bootstrap
   , region
+  , resolveAwsCredentialsRefFromHostVault
   , route53
-  , secret_access_key
   , server
-  , session_token
   , storage
+  , validateAndLoadBootstrapSettings
   , validateAndLoadSettings
+  , validateAndLoadSettingsWithVaultToken
   , validateOperationalAwsCredentials
   , validatedConfig
   , zone_id
@@ -189,6 +243,39 @@ import Prodbox.Subprocess
   , runSubprocessStreaming
   )
 import Prodbox.Substrate (Substrate (..), substrateId)
+import Prodbox.Vault.Client
+  ( BootstrapAction (..)
+  , VaultAddress (..)
+  , VaultToken (..)
+  , bootstrapAction
+  , vaultCreateToken
+  , vaultCreateTransitKey
+  , vaultInit
+  , vaultKvReadV2
+  , vaultKvWriteV2
+  , vaultReadTransitKey
+  , vaultSealStatus
+  , vaultWritePolicy
+  )
+import Prodbox.Vault.Host (hostVaultAddress, loadReadyVaultRootToken, readHostVaultKvField)
+import Prodbox.Vault.Reconcile
+  ( VaultReconcileAction (..)
+  , VaultReconcileStep (..)
+  , VaultReconcileTarget (..)
+  , defaultVaultReconcilePlan
+  , renderVaultReconcileError
+  , renderVaultReconcileStep
+  , runVaultReconcile
+  )
+import Prodbox.Vault.Seal
+  ( ChildSealCustody (..)
+  , VaultSealMode (..)
+  , childInitCustodyVaultFields
+  , childSealCustodyFromInitResponse
+  , defaultTransitSealConfig
+  , initRequestForSealMode
+  )
+import Prodbox.Vault.Status (probeVaultStatusLine)
 import System.Directory
   ( doesDirectoryExist
   , doesFileExist
@@ -282,6 +369,12 @@ rke2InstallPresent = do
 
 prodboxNamespace :: String
 prodboxNamespace = "prodbox"
+
+vaultNamespace :: String
+vaultNamespace = "vault"
+
+vaultTransitSealTokenSecretName :: String
+vaultTransitSealTokenSecretName = "vault-transit-seal-token"
 
 prodboxIdentityConfigMap :: String
 prodboxIdentityConfigMap = "prodbox-identity"
@@ -379,39 +472,31 @@ harborRegistryStorageSecretName = "harbor-registry-s3"
 harborRegistryStorageBucket :: String
 harborRegistryStorageBucket = "prodbox-harbor-registry"
 
+harborStorageUserPrefix :: String
+harborStorageUserPrefix = "prodbox-harbor-"
+
+harborStoragePolicyName :: String
+harborStoragePolicyName = "prodbox-harbor-registry-policy"
+
 harborRegistryStorageBootstrapJobName :: String
 harborRegistryStorageBootstrapJobName = "harbor-registry-bucket-init"
 
--- | Sprint 2.19: the Job name + bucket name + canonical IAM principal
--- and policy name for the gateway daemon's master-seed MinIO surface,
--- provisioned in one unified pass by 'ensureGatewayMinioBootstrap'.
+-- | Job name + bucket name + canonical IAM principal and policy name for the
+-- gateway daemon's MinIO object-store surface, provisioned in one unified pass
+-- by 'ensureGatewayMinioBootstrap'.
 gatewayMinioBootstrapJobName :: String
 gatewayMinioBootstrapJobName = "gateway-minio-bootstrap"
 
 gatewayMinioBucket :: String
-gatewayMinioBucket = "prodbox"
+gatewayMinioBucket = "prodbox-state"
 
--- | Namespace where the gateway chart deploys. Reconcile pre-creates
--- it so the chart-side 'gateway-minio-creds' Secret has a place to
--- live before @prodbox charts deploy gateway@ runs.
+-- | Namespace where the gateway chart deploys. Reconcile pre-creates it
+-- before @prodbox charts deploy gateway@ runs.
 gatewayNamespace :: String
 gatewayNamespace = "gateway"
 
--- | k8s Secret name carrying the @prodbox-gateway@ MinIO credentials
--- (as a Dhall fragment under the @minio.dhall@ key). Created by
--- 'ensureGatewayMinioBootstrap' and consumed by the gateway chart's
--- @secret-minio-creds.yaml@ template via Helm @lookup@.
-gatewayMinioCredsSecretName :: String
-gatewayMinioCredsSecretName = "gateway-minio-creds"
-
--- | Canonical IAM principal name for the gateway daemon's MinIO
--- access. Suffixed with 8 random hex chars on first provisioning so
--- the principal name doesn't collide if cluster state diverges.
-gatewayMinioUserPrefix :: String
-gatewayMinioUserPrefix = "prodbox-gateway-"
-
 -- | Canonical IAM policy name granting the gateway user
--- @s3:GetObject@/@s3:PutObject@/@s3:ListBucket@ on @prodbox/*@.
+-- @s3:GetObject@/@s3:PutObject@/@s3:ListBucket@ on @prodbox-state/*@.
 gatewayMinioPolicyName :: String
 gatewayMinioPolicyName = "prodbox-gateway-policy"
 
@@ -526,15 +611,6 @@ data CustomImageBuildPlan = CustomImageBuildPlan
   }
   deriving (Eq, Show)
 
-minioPersistentVolume :: String
-minioPersistentVolume = "prodbox-minio-pv-0"
-
--- Sprint 4.31: MinIO is now a single-replica StatefulSet, so its PVC is the
--- `data` volumeClaimTemplate claim `data-minio-0` (the StatefulSet adopts the
--- prebound PV the reconciler creates at `.data/prodbox/minio/0`).
-minioPersistentClaim :: String
-minioPersistentClaim = "data-minio-0"
-
 minioStorageSize :: String
 minioStorageSize = "200Gi"
 
@@ -544,12 +620,6 @@ minioStorageSize = "200Gi"
 -- volumeClaimTemplate adopts the prebound `data-vault-0` PVC.
 vaultStorageNamespace :: String
 vaultStorageNamespace = "vault"
-
-vaultPersistentVolume :: String
-vaultPersistentVolume = "prodbox-vault-pv-0"
-
-vaultPersistentClaim :: String
-vaultPersistentClaim = "data-vault-0"
 
 vaultStorageSize :: String
 vaultStorageSize = "1Gi"
@@ -593,18 +663,11 @@ doctrineCrdSuffixes =
   , ".postgres-operator.crunchydata.com"
   ]
 
-runRke2Command :: GatewayDeriveMode -> FilePath -> Rke2Command -> IO ExitCode
-runRke2Command mode repoRoot command =
+runRke2Command :: FilePath -> Rke2Command -> IO ExitCode
+runRke2Command repoRoot command =
   case command of
     Rke2Status ->
-      requireLinux $
-        runCommand
-          Subprocess
-            { subprocessPath = "systemctl"
-            , subprocessArguments = ["is-active", rke2ServiceName]
-            , subprocessEnvironment = Nothing
-            , subprocessWorkingDirectory = Just repoRoot
-            }
+      requireLinux (runClusterStatus repoRoot)
     Rke2Start ->
       requireLinux $
         runCommand
@@ -633,7 +696,7 @@ runRke2Command mode repoRoot command =
             , subprocessWorkingDirectory = Just repoRoot
             }
     Rke2Reconcile planOptions withEdge ->
-      requireLinux (runNativeInstall mode repoRoot planOptions withEdge)
+      requireLinux (runNativeInstall repoRoot planOptions withEdge)
     Rke2Delete flags planOptions ->
       requireLinux $
         if not (rke2DeleteYes flags)
@@ -650,6 +713,8 @@ runRke2Command mode repoRoot command =
               planOptions
               (buildNativeDeletePlan repoRoot flags)
               (applyNativeDelete repoRoot)
+    Rke2FederationRegister childClusterId options ->
+      runClusterFederationRegister repoRoot childClusterId options
     Rke2Logs maybeLines ->
       requireLinux $
         case normalizeLogLines maybeLines of
@@ -669,22 +734,315 @@ runRke2Command mode repoRoot command =
                 , subprocessWorkingDirectory = Just repoRoot
                 }
 
-runNativeInstall :: GatewayDeriveMode -> FilePath -> PlanOptions -> Bool -> IO ExitCode
-runNativeInstall mode repoRoot planOptions withEdge = do
-  settingsResult <- validateAndLoadSettings repoRoot
+runClusterStatus :: FilePath -> IO ExitCode
+runClusterStatus repoRoot = do
+  serviceResult <- captureToolOutput repoRoot "systemctl" ["is-active", rke2ServiceName]
+  case serviceResult of
+    Left err -> failWith err
+    Right serviceOutput -> do
+      writeOutputLine ("RKE2_SERVICE=" ++ serviceStatusLine serviceOutput)
+      (vaultLine, _vaultExit) <- probeVaultStatusLine hostVaultAddress
+      writeOutputLine vaultLine
+      pure (processExitCode serviceOutput)
+ where
+  serviceStatusLine output =
+    case trimWhitespace (processStdout output) of
+      "" -> trimWhitespace (outputDetail output)
+      status -> status
+
+data FederationRegisterPayload = FederationRegisterPayload
+  { federationRegisterPayloadPlan :: ChildRegistrationPlan
+  , federationRegisterPayloadChildVaultAddress :: Maybe String
+  , federationRegisterPayloadChildKubeconfig :: Maybe FilePath
+  , federationRegisterPayloadChildEndpoints :: [(String, String)]
+  , federationRegisterPayloadChildKubeconfigReference :: Maybe String
+  , federationRegisterPayloadChildAccountId :: Maybe String
+  , federationRegisterPayloadChildPulumiStacks :: [(String, String)]
+  }
+  deriving (Eq, Show)
+
+runClusterFederationRegister :: FilePath -> String -> FederationRegisterOptions -> IO ExitCode
+runClusterFederationRegister repoRoot childClusterId options = do
+  planResult <- buildFederationRegisterPayload repoRoot childClusterId options
+  case planResult of
+    Left err -> failWith err
+    Right payload ->
+      runPlanWithOptions
+        (federationRegisterPlanOptions options)
+        (buildPlan (renderChildRegistrationPlan . federationRegisterPayloadPlan) payload)
+        (applyClusterFederationRegister repoRoot)
+
+buildFederationRegisterPayload
+  :: FilePath -> String -> FederationRegisterOptions -> IO (Either String FederationRegisterPayload)
+buildFederationRegisterPayload repoRoot childClusterId options = do
+  hmacKeyResult <-
+    if dryRun (federationRegisterPlanOptions options)
+      then pure (Right "prodbox-federation-preview-only")
+      else loadFederationHmacKeyForRegister repoRoot
+  pure $ do
+    hmacKey <- hmacKeyResult
+    let plan = childRegistrationPlan (TextEncoding.encodeUtf8 hmacKey) (Text.pack childClusterId)
+    Right
+      FederationRegisterPayload
+        { federationRegisterPayloadPlan = plan
+        , federationRegisterPayloadChildVaultAddress = federationRegisterChildVaultAddress options
+        , federationRegisterPayloadChildKubeconfig = federationRegisterChildKubeconfig options
+        , federationRegisterPayloadChildEndpoints = federationRegisterChildEndpoints options
+        , federationRegisterPayloadChildKubeconfigReference =
+            federationRegisterChildKubeconfigReference options
+        , federationRegisterPayloadChildAccountId = federationRegisterChildAccountId options
+        , federationRegisterPayloadChildPulumiStacks = federationRegisterChildPulumiStacks options
+        }
+
+applyClusterFederationRegister :: FilePath -> FederationRegisterPayload -> IO ExitCode
+applyClusterFederationRegister repoRoot payload =
+  case ( federationRegisterPayloadChildVaultAddress payload
+       , federationRegisterPayloadChildKubeconfig payload
+       ) of
+    (Nothing, _) ->
+      failWith "cluster federation register apply requires --child-vault-address URL"
+    (_, Nothing) ->
+      failWith "cluster federation register apply requires --child-kubeconfig PATH"
+    (Just childVaultAddress, Just childKubeconfig) -> do
+      parentResult <- loadParentFederationAuthority repoRoot
+      case parentResult of
+        Left err -> failWith err
+        Right (parentClusterId, parentAddress, parentToken) -> do
+          let plan = federationRegisterPayloadPlan payload
+              childId = childRegistrationChildId plan
+              transitKey = childRegistrationTransitKey plan
+              policyName = childTransitSealPolicyName plan
+          keyResult <- ensureParentTransitKey parentAddress parentToken transitKey
+          case keyResult of
+            Left err -> failWith err
+            Right () -> do
+              policyResult <-
+                vaultWritePolicy
+                  parentAddress
+                  parentToken
+                  policyName
+                  (childTransitSealPolicyDocument childId transitKey)
+              case policyResult of
+                Left err -> failWith ("write child transit-seal Vault policy: " ++ renderHttpError err)
+                Right () -> do
+                  tokenResult <- vaultCreateToken parentAddress parentToken [policyName] "24h"
+                  case tokenResult of
+                    Left err -> failWith ("create child transit-seal Vault token: " ++ renderHttpError err)
+                    Right childToken -> do
+                      let metadata =
+                            childMetadataFromRegisterPayload
+                              parentClusterId
+                              childVaultAddress
+                              payload
+                              plan
+                          bootstrapCredential =
+                            ChildBootstrapCredential
+                              { childBootstrapClusterId = childId
+                              , childBootstrapParentVaultAddress = unVaultAddress parentAddress
+                              , childBootstrapTransitKey = transitKey
+                              , childBootstrapVaultNamespace = childRegistrationVaultNamespace plan
+                              , childBootstrapToken = unVaultToken childToken
+                              }
+                      metadataResult <-
+                        vaultKvWriteV2
+                          parentAddress
+                          parentToken
+                          "secret"
+                          (childMetadataKvLogicalPath childId)
+                          (childMetadataVaultFields metadata)
+                      case metadataResult of
+                        Left err -> failWith ("write child metadata Vault KV: " ++ renderHttpError err)
+                        Right () -> do
+                          bootstrapResult <-
+                            vaultKvWriteV2
+                              parentAddress
+                              parentToken
+                              "secret"
+                              (childBootstrapKvLogicalPath childId)
+                              (childBootstrapVaultFields bootstrapCredential)
+                          case bootstrapResult of
+                            Left err -> failWith ("write child bootstrap Vault KV: " ++ renderHttpError err)
+                            Right () -> do
+                              indexResult <- updateParentChildIndex parentAddress parentToken childId
+                              case indexResult of
+                                Left err -> failWith err
+                                Right () -> do
+                                  secretExit <- applyChildTransitSealSecret repoRoot childKubeconfig childToken
+                                  case secretExit of
+                                    ExitFailure _ -> pure secretExit
+                                    ExitSuccess -> do
+                                      writeOutput
+                                        ( unlines
+                                            [ "Cluster federation registration complete:"
+                                            , "  child_cluster_id=" ++ Text.unpack childId
+                                            , "  metadata_kv_path=secret/" ++ Text.unpack (childMetadataKvLogicalPath childId)
+                                            , "  init_kv_path=secret/" ++ Text.unpack (childInitKvLogicalPath childId)
+                                            , "  bootstrap_kv_path=secret/" ++ Text.unpack (childBootstrapKvLogicalPath childId)
+                                            , "  children_index_kv_path=secret/" ++ Text.unpack federationChildrenIndexKvLogicalPath
+                                            , "  transit_key=" ++ Text.unpack transitKey
+                                            , "  child_bootstrap_secret=vault/vault-transit-seal-token"
+                                            ]
+                                        )
+                                      pure ExitSuccess
+
+childMetadataFromRegisterPayload
+  :: Text.Text
+  -> String
+  -> FederationRegisterPayload
+  -> ChildRegistrationPlan
+  -> ChildMetadata
+childMetadataFromRegisterPayload parentClusterId childVaultAddress payload plan =
+  ChildMetadata
+    { childMetadataClusterId = childRegistrationChildId plan
+    , childMetadataVaultAddress = Text.pack childVaultAddress
+    , childMetadataTransitKey = childRegistrationTransitKey plan
+    , childMetadataVaultNamespace = childRegistrationVaultNamespace plan
+    , childMetadataParentClusterId = parentClusterId
+    , childMetadataEndpoints =
+        Map.fromList
+          ( map
+              textPair
+              (("vault", childVaultAddress) : federationRegisterPayloadChildEndpoints payload)
+          )
+    , childMetadataKubeconfigReference =
+        Text.pack <$> federationRegisterPayloadChildKubeconfigReference payload
+    , childMetadataAccountId =
+        Text.pack <$> federationRegisterPayloadChildAccountId payload
+    , childMetadataPulumiStacks =
+        Map.fromList (map textPair (federationRegisterPayloadChildPulumiStacks payload))
+    }
+ where
+  textPair (key, value) = (Text.pack key, Text.pack value)
+
+updateParentChildIndex :: VaultAddress -> VaultToken -> Text.Text -> IO (Either String ())
+updateParentChildIndex parentAddress parentToken childId = do
+  readResult <- vaultKvReadV2 parentAddress parentToken "secret" federationChildrenIndexKvLogicalPath
+  case readResult of
+    Left (HttpStatus 404 _) ->
+      writeIndex (ChildIndex [])
+    Left err ->
+      pure (Left ("read child federation index Vault KV: " ++ renderHttpError err))
+    Right fields ->
+      case decodePayloadJsonField decodeChildIndex fields of
+        Left err -> pure (Left ("decode child federation index Vault KV: " ++ err))
+        Right index -> writeIndex index
+ where
+  writeIndex index = do
+    let updatedIndex = upsertChildIndex childId index
+    writeResult <-
+      vaultKvWriteV2
+        parentAddress
+        parentToken
+        "secret"
+        federationChildrenIndexKvLogicalPath
+        (childIndexVaultFields updatedIndex)
+    pure $ case writeResult of
+      Left err -> Left ("write child federation index Vault KV: " ++ renderHttpError err)
+      Right () -> Right ()
+
+loadParentFederationAuthority
+  :: FilePath -> IO (Either String (Text.Text, VaultAddress, VaultToken))
+loadParentFederationAuthority repoRoot = do
+  basicsResult <- loadUnencryptedBasics repoRoot
+  case basicsResult of
+    Left err -> pure (Left ("cluster federation register requires unencrypted basics for the parent: " ++ err))
+    Right basics ->
+      case vaultLifecycleFromBasics basics of
+        Left err -> pure (Left err)
+        Right (RootVaultLifecycle parentClusterId parentVaultAddress) -> do
+          let parentAddress = VaultAddress parentVaultAddress
+          tokenResult <- loadReadyVaultRootToken repoRoot parentAddress
+          pure $ case tokenResult of
+            Left err -> Left err
+            Right token -> Right (parentClusterId, parentAddress, token)
+        Right ChildVaultLifecycle {} ->
+          pure (Left "cluster federation register currently requires a root-cluster parent authority")
+
+loadFederationHmacKeyForRegister :: FilePath -> IO (Either String Text.Text)
+loadFederationHmacKeyForRegister repoRoot = do
+  parentResult <- loadParentFederationAuthority repoRoot
+  case parentResult of
+    Left err -> pure (Left err)
+    Right (_, parentAddress, parentToken) -> do
+      readResult <- vaultKvReadV2 parentAddress parentToken "secret" "federation/hmac"
+      pure $ case readResult of
+        Left err -> Left ("read secret/federation/hmac: " ++ renderHttpError err)
+        Right fields ->
+          case Map.lookup "key" fields of
+            Nothing -> Left "Vault KV object secret/federation/hmac missing field `key`"
+            Just value
+              | Text.null (Text.strip value) -> Left "Vault KV object secret/federation/hmac field `key` is empty"
+              | otherwise -> Right value
+
+ensureParentTransitKey :: VaultAddress -> VaultToken -> Text.Text -> IO (Either String ())
+ensureParentTransitKey address token keyName = do
+  readResult <- vaultReadTransitKey address token keyName
+  case readResult of
+    Right _ -> pure (Right ())
+    Left (HttpStatus 404 _) -> do
+      createResult <- vaultCreateTransitKey address token keyName "aes256-gcm96"
+      pure $ case createResult of
+        Left err -> Left ("create child Transit key " ++ Text.unpack keyName ++ ": " ++ renderHttpError err)
+        Right () -> Right ()
+    Left err -> pure (Left ("read child Transit key " ++ Text.unpack keyName ++ ": " ++ renderHttpError err))
+
+applyChildTransitSealSecret :: FilePath -> FilePath -> VaultToken -> IO ExitCode
+applyChildTransitSealSecret repoRoot childKubeconfig childToken =
+  withTemporaryJsonManifest "child-transit-seal-token" (childTransitSealSecretManifest childToken) $ \manifestPath -> do
+    outputResult <-
+      captureToolOutput
+        repoRoot
+        "kubectl"
+        ["--kubeconfig", childKubeconfig, "apply", "-f", manifestPath]
+    case outputResult of
+      Left err -> failWith err
+      Right output ->
+        case processExitCode output of
+          ExitSuccess -> pure ExitSuccess
+          ExitFailure _ ->
+            failWith ("failed to apply child transit-seal token Secret: " ++ outputDetail output)
+
+childTransitSealSecretManifest :: VaultToken -> [Value]
+childTransitSealSecretManifest token =
+  [ object
+      [ "apiVersion" .= ("v1" :: String)
+      , "kind" .= ("Namespace" :: String)
+      , "metadata" .= object ["name" .= vaultNamespace]
+      ]
+  , object
+      [ "apiVersion" .= ("v1" :: String)
+      , "kind" .= ("Secret" :: String)
+      , "metadata"
+          .= object
+            [ "name" .= vaultTransitSealTokenSecretName
+            , "namespace" .= vaultNamespace
+            ]
+      , "type" .= ("Opaque" :: String)
+      , "stringData" .= object ["token" .= Text.unpack (unVaultToken token)]
+      ]
+  ]
+
+childTransitSealPolicyName :: ChildRegistrationPlan -> Text.Text
+childTransitSealPolicyName plan =
+  "prodbox-child-seal-" <> childRegistrationVaultNamespace plan
+
+runNativeInstall :: FilePath -> PlanOptions -> Bool -> IO ExitCode
+runNativeInstall repoRoot planOptions withEdge = do
+  settingsResult <- validateAndLoadBootstrapSettings repoRoot
   case settingsResult of
     Left err -> failWith err
-    Right settings -> do
+    Right bootstrapSettings -> do
       identityResult <- resolveMachineIdentity
       case identityResult of
         Left err -> failWith err
         Right (machineId, prodboxId) ->
           let labelValue = prodboxIdToLabelValue prodboxId
-              plan = buildNativeInstallExecutionPlan repoRoot settings machineId prodboxId labelValue withEdge
+              plan =
+                buildNativeInstallExecutionPlan repoRoot bootstrapSettings machineId prodboxId labelValue withEdge
            in runPlanWithOptions
                 planOptions
                 plan
-                (applyNativeInstallPlan mode repoRoot settings withEdge)
+                (applyNativeInstallPlan repoRoot bootstrapSettings withEdge)
 
 -- | @prodbox edge ...@ dispatch. @edge reconcile@ is the AWS-gated,
 -- edge-only reconcile (the same plan @cluster reconcile --with-edge@
@@ -746,7 +1104,11 @@ renderNativeInstallPlan repoRoot settings machineId prodboxId labelValue withEdg
       , "STEP=delete_non_manual_storage_classes"
       , "STEP=ensure_prodbox_identity_config_map"
       , "STEP=ensure_retained_local_storage"
+      , "STEP=ensure_vault_runtime"
+      , "STEP=ensure_federated_vault_lifecycle"
       , "STEP=ensure_minio_runtime_bootstrap"
+      , "STEP=restart_minio_if_vault_root_changed"
+      , "STEP=load_in_force_settings_after_vault_and_minio"
       , "STEP=ensure_harbor_registry_storage_backend"
       , "STEP=ensure_harbor_registry_runtime"
       , "STEP=mirror_cluster_images_once"
@@ -791,15 +1153,15 @@ buildNativeInstallExecutionPlan repoRoot settings machineId prodboxId labelValue
     (machineId, prodboxId, labelValue)
 
 applyNativeInstallPlan
-  :: GatewayDeriveMode
-  -> FilePath
+  :: FilePath
   -> ValidatedSettings
   -> Bool
   -> (String, String, String)
   -> IO ExitCode
-applyNativeInstallPlan mode repoRoot settings withEdge (machineId, prodboxId, labelValue) =
-  runSequentially
-    ( [ ensureHostInotifyLimits repoRoot
+applyNativeInstallPlan repoRoot bootstrapSettings withEdge (machineId, prodboxId, labelValue) = do
+  bootstrapExit <-
+    runSequentially
+      [ ensureHostInotifyLimits repoRoot
       , ensureRke2ServerInstalled repoRoot
       , ensureRke2IngressController repoRoot
       , runCommand
@@ -821,31 +1183,85 @@ applyNativeInstallPlan mode repoRoot settings withEdge (machineId, prodboxId, la
       , waitForClusterNodesReady repoRoot
       , deleteNonManualStorageClasses repoRoot
       , ensureProdboxIdentityConfigMap repoRoot machineId prodboxId labelValue
-      , ensureRetainedLocalStorage repoRoot settings prodboxId labelValue
+      , ensureHostControlDataDirectory repoRoot bootstrapSettings
+      , ensureRetainedLocalStorage repoRoot bootstrapSettings prodboxId labelValue
       , ensureVaultRuntime repoRoot
-      , ensureMinioRuntime repoRoot SubstrateHomeLocal MinioBootstrapPublic
-      , ensureHarborRegistryStorageBackend repoRoot
-      , ensureHarborRegistryRuntime repoRoot SubstrateHomeLocal
-      , mirrorClusterImagesOnce repoRoot
-      , ensureGatewayImages repoRoot prodboxId
-      , ensurePublicEdgeWorkloadImage repoRoot prodboxId
-      , ensureRke2RegistriesConfig repoRoot
-      , ensureClusterPlatformRuntime repoRoot settings prodboxId labelValue
-      , ensureMinioRuntime repoRoot SubstrateHomeLocal MinioSteadyStateHarbor
-      , ensureGatewayMinioBootstrap repoRoot
-      , -- secret_derivation_doctrine.md §7 steps 4–6: the gateway daemon must
-        -- be deployed and ready before the host-CLI derive in
-        -- 'ensureAdminPublicEdgeRoutes' (§5/§7 ordering constraint).
-        ensureGatewayChartReady mode repoRoot settings SubstrateHomeLocal
-      , ensureAdminPublicEdgeRoutes mode repoRoot settings SubstrateHomeLocal prodboxId labelValue
-      , reconcileManagedAnnotations repoRoot prodboxId labelValue
       ]
-        -- The public edge (Route 53 DNS + ZeroSSL DNS-01 TLS) is the only
-        -- part of reconcile that needs operational AWS credentials. It runs
-        -- only with @--with-edge@; bare @cluster reconcile@ stands up a fully
-        -- working local cluster with an empty @aws.*@ block.
-        ++ [applyPublicEdgeReconcile repoRoot settings prodboxId labelValue | withEdge]
-    )
+  case bootstrapExit of
+    ExitFailure _ -> pure bootstrapExit
+    ExitSuccess -> do
+      vaultLifecycleResult <- ensureFederatedVaultLifecycleDetailed repoRoot
+      case vaultLifecycleExitCode vaultLifecycleResult of
+        ExitFailure _ -> pure (vaultLifecycleExitCode vaultLifecycleResult)
+        ExitSuccess -> do
+          minioBootstrapExit <- ensureMinioRuntime repoRoot SubstrateHomeLocal MinioBootstrapPublic
+          case minioBootstrapExit of
+            ExitFailure _ -> pure minioBootstrapExit
+            ExitSuccess -> do
+              minioRestartExit <-
+                restartMinioIfVaultRootChanged
+                  repoRoot
+                  (vaultLifecycleMinioRootChanged vaultLifecycleResult)
+              case minioRestartExit of
+                ExitFailure _ -> pure minioRestartExit
+                ExitSuccess -> do
+                  settingsResult <- loadPostMinioLifecycleSettings repoRoot bootstrapSettings
+                  case settingsResult of
+                    Left err -> failWith err
+                    Right settings ->
+                      runSequentially
+                        ( [ ensureHarborRegistryStorageBackend repoRoot
+                          , ensureHarborRegistryRuntime repoRoot SubstrateHomeLocal
+                          , mirrorClusterImagesOnce repoRoot
+                          , ensureGatewayImages repoRoot prodboxId
+                          , ensurePublicEdgeWorkloadImage repoRoot prodboxId
+                          , ensureRke2RegistriesConfig repoRoot
+                          , ensureClusterPlatformRuntime repoRoot settings prodboxId labelValue
+                          , ensureMinioRuntime repoRoot SubstrateHomeLocal MinioSteadyStateHarbor
+                          , ensureGatewayMinioBootstrap repoRoot
+                          , ensureGatewayChartReady repoRoot settings SubstrateHomeLocal
+                          , ensureAdminPublicEdgeRoutes repoRoot settings SubstrateHomeLocal prodboxId labelValue
+                          , reconcileManagedAnnotations repoRoot prodboxId labelValue
+                          ]
+                            -- The public edge (Route 53 DNS + ZeroSSL DNS-01 TLS) is the only
+                            -- part of reconcile that needs operational AWS credentials. It runs
+                            -- only with @--with-edge@; bare @cluster reconcile@ stands up a fully
+                            -- working local cluster with an empty @aws.*@ block.
+                            ++ [applyPublicEdgeReconcile repoRoot settings prodboxId labelValue | withEdge]
+                        )
+
+loadPostMinioLifecycleSettings
+  :: FilePath -> ValidatedSettings -> IO (Either String ValidatedSettings)
+loadPostMinioLifecycleSettings repoRoot bootstrapSettings = do
+  basicsResult <- loadUnencryptedBasics repoRoot
+  case basicsResult of
+    Left err
+      | "Missing unencrypted basics file:" `isPrefixOf` err ->
+          pure (Right bootstrapSettings)
+      | otherwise -> pure (Left err)
+    Right basics ->
+      case vaultLifecycleFromBasics basics of
+        Left err -> pure (Left err)
+        Right (RootVaultLifecycle _ _) ->
+          validateAndLoadSettings repoRoot
+        Right (ChildVaultLifecycle childId _ parent) -> do
+          tokenResult <- readChildRootTokenFromParentCustody repoRoot childId parent
+          case tokenResult of
+            Left err -> pure (Left err)
+            Right childRootToken ->
+              validateAndLoadSettingsWithVaultToken repoRoot childRootToken
+
+readChildRootTokenFromParentCustody
+  :: FilePath -> Text.Text -> ParentRef -> IO (Either String VaultToken)
+readChildRootTokenFromParentCustody repoRoot childId parent = do
+  parentTokenResult <- readChildTransitSealToken repoRoot
+  case parentTokenResult of
+    Left err -> pure (Left ("child in-force settings reload cannot read transit-seal token: " ++ err))
+    Right parentToken -> do
+      custodyResult <- readChildInitCustodyFromParent childId parent parentToken
+      pure $ case custodyResult of
+        Left err -> Left err
+        Right custody -> Right (VaultToken (childInitRootToken custody))
 
 -- | The AWS-gated public-edge reconcile, factored out of the local cluster
 -- plan (Phase 2). Fails fast naming @prodbox aws setup@ when operational
@@ -1224,19 +1640,19 @@ buildDrainEnvironment repoRoot substrate maybeAwsKubeconfig = do
       settingsResult <- validateAndLoadSettings repoRoot
       case settingsResult of
         Left _ -> pure (("KUBECONFIG", kubeconfigPath) : parentEnv)
-        Right settings ->
-          let awsCreds = aws (validatedConfig settings)
-              baseOverrides =
-                [ ("KUBECONFIG", kubeconfigPath)
-                , ("AWS_ACCESS_KEY_ID", Text.unpack (access_key_id awsCreds))
-                , ("AWS_SECRET_ACCESS_KEY", Text.unpack (secret_access_key awsCreds))
-                , ("AWS_DEFAULT_REGION", Text.unpack (region awsCreds))
-                , ("AWS_REGION", Text.unpack (region awsCreds))
-                ]
-              tokenOverrides = case session_token awsCreds of
-                Nothing -> []
-                Just tok -> [("AWS_SESSION_TOKEN", Text.unpack tok)]
-           in pure (baseOverrides ++ tokenOverrides ++ parentEnv)
+        Right settings -> do
+          credentialsResult <-
+            resolveAwsCredentialsRefFromHostVault
+              repoRoot
+              "aws"
+              (aws (validatedConfig settings))
+          pure $
+            case credentialsResult of
+              Left _ -> ("KUBECONFIG", kubeconfigPath) : parentEnv
+              Right credentials ->
+                overlayAwsCredentials
+                  (("KUBECONFIG", kubeconfigPath) : parentEnv)
+                  credentials
 
 -- | Sprint 4.17 helper: the postflight cluster-tag sweep extracted from
 -- the canonical cascade. Best-effort: a non-zero sweep exit is reported
@@ -1479,18 +1895,118 @@ ensureRetainedLocalStorage repoRoot settings prodboxId labelValue = do
   case nodeNameResult of
     Left err -> failWith err
     Right nodeName -> do
-      let root = resolvedManualPvHostRoot settings
-          minioHostPath = root </> minioNamespace </> "minio" </> "0"
-          vaultHostPath = root </> vaultStorageNamespace </> "vault" </> "0"
+      let bindings =
+            map
+              (retainedLocalStorageBinding (resolvedManualPvHostRoot settings))
+              retainedLocalStorageEntries
       runSequentially
-        [ ensureHostStoragePath repoRoot minioHostPath "1000:1000"
-        , ensureHostStoragePath repoRoot vaultHostPath "100:100"
-        , resetReleasedPersistentVolume repoRoot minioPersistentVolume
-        , resetReleasedPersistentVolume repoRoot vaultPersistentVolume
-        , applyRetainedStorageManifest
-            repoRoot
-            (storageManifestItems minioHostPath vaultHostPath nodeName prodboxId labelValue)
-        ]
+        ( map
+            ( \binding ->
+                ensureHostStoragePath
+                  repoRoot
+                  (retainedLocalStorageBindingHostPath binding)
+                  (retainedLocalStorageBindingOwner binding)
+            )
+            bindings
+            ++ map
+              (resetReleasedPersistentVolume repoRoot . retainedLocalStorageBindingPersistentVolume)
+              bindings
+            ++ [ applyRetainedStorageManifest
+                   repoRoot
+                   (storageManifestItems bindings nodeName prodboxId labelValue)
+               ]
+        )
+
+-- | Create the host-side control directory for operator-owned artifacts
+-- such as the encrypted Vault unlock bundle. Workload PV leaf directories
+-- keep their runtime uid/gid ownerships in 'ensureRetainedLocalStorage'.
+ensureHostControlDataDirectory :: FilePath -> ValidatedSettings -> IO ExitCode
+ensureHostControlDataDirectory repoRoot settings = do
+  ownerResult <- currentOwnerSpec repoRoot
+  case ownerResult of
+    Left err -> failWith err
+    Right ownerSpec ->
+      let hostControlPath = resolvedManualPvHostRoot settings </> "prodbox"
+       in runSequentially
+            [ runCommand
+                Subprocess
+                  { subprocessPath = "sudo"
+                  , subprocessArguments = ["mkdir", "-p", hostControlPath]
+                  , subprocessEnvironment = Nothing
+                  , subprocessWorkingDirectory = Just repoRoot
+                  }
+            , runCommand
+                Subprocess
+                  { subprocessPath = "sudo"
+                  , subprocessArguments = ["chown", ownerSpec, hostControlPath]
+                  , subprocessEnvironment = Nothing
+                  , subprocessWorkingDirectory = Just repoRoot
+                  }
+            , runCommand
+                Subprocess
+                  { subprocessPath = "sudo"
+                  , subprocessArguments = ["chmod", "0750", hostControlPath]
+                  , subprocessEnvironment = Nothing
+                  , subprocessWorkingDirectory = Just repoRoot
+                  }
+            ]
+
+data RetainedLocalStorageEntry = RetainedLocalStorageEntry
+  { retainedLocalStorageEntryNamespace :: String
+  , retainedLocalStorageEntryStatefulSet :: String
+  , retainedLocalStorageEntryOrdinal :: Int
+  , retainedLocalStorageEntryStorageSize :: String
+  , retainedLocalStorageEntryOwner :: String
+  }
+
+data RetainedLocalStorageBinding = RetainedLocalStorageBinding
+  { retainedLocalStorageBindingNamespace :: String
+  , retainedLocalStorageBindingPersistentVolume :: String
+  , retainedLocalStorageBindingPersistentClaim :: String
+  , retainedLocalStorageBindingStorageSize :: String
+  , retainedLocalStorageBindingHostPath :: FilePath
+  , retainedLocalStorageBindingOwner :: String
+  }
+
+retainedLocalStorageEntries :: [RetainedLocalStorageEntry]
+retainedLocalStorageEntries =
+  [ RetainedLocalStorageEntry
+      { retainedLocalStorageEntryNamespace = minioNamespace
+      , retainedLocalStorageEntryStatefulSet = "minio"
+      , retainedLocalStorageEntryOrdinal = 0
+      , retainedLocalStorageEntryStorageSize = minioStorageSize
+      , retainedLocalStorageEntryOwner = "1000:1000"
+      }
+  , RetainedLocalStorageEntry
+      { retainedLocalStorageEntryNamespace = vaultStorageNamespace
+      , retainedLocalStorageEntryStatefulSet = "vault"
+      , retainedLocalStorageEntryOrdinal = 0
+      , retainedLocalStorageEntryStorageSize = vaultStorageSize
+      , retainedLocalStorageEntryOwner = "100:100"
+      }
+  ]
+
+retainedLocalStorageBinding :: FilePath -> RetainedLocalStorageEntry -> RetainedLocalStorageBinding
+retainedLocalStorageBinding root entry =
+  RetainedLocalStorageBinding
+    { retainedLocalStorageBindingNamespace = retainedLocalStorageEntryNamespace entry
+    , retainedLocalStorageBindingPersistentVolume =
+        retainedStatefulSetPersistentVolumeName
+          (retainedLocalStorageEntryNamespace entry)
+          (retainedLocalStorageEntryStatefulSet entry)
+          (retainedLocalStorageEntryOrdinal entry)
+    , retainedLocalStorageBindingPersistentClaim =
+        retainedStatefulSetPersistentVolumeClaimName
+          (retainedLocalStorageEntryStatefulSet entry)
+          (retainedLocalStorageEntryOrdinal entry)
+    , retainedLocalStorageBindingStorageSize = retainedLocalStorageEntryStorageSize entry
+    , retainedLocalStorageBindingHostPath =
+        root
+          </> retainedLocalStorageEntryNamespace entry
+          </> retainedLocalStorageEntryStatefulSet entry
+          </> show (retainedLocalStorageEntryOrdinal entry)
+    , retainedLocalStorageBindingOwner = retainedLocalStorageEntryOwner entry
+    }
 
 -- | Delete a retained PV only when it is stuck @Released@/@Failed@ (e.g. after a
 -- PVC delete left the @Retain@ PV behind) so the next apply can recreate it and
@@ -1537,23 +2053,341 @@ applyRetainedStorageManifest repoRoot manifestItems =
 -- @charts/vault@ chart — a single-replica StatefulSet on a durable PV. Vault
 -- comes up sealed; the operator runs @prodbox vault unseal@ next. Vault is a
 -- shared platform component declared in 'homeSubstratePlatformComponents' and
--- 'awsSubstratePlatformComponents'; splicing this call into the home/AWS
--- reconcile sequences and the live deploy are the remaining Sprint 3.17 work
--- (deferred from the reconcile sequence until the live `cluster reconcile`
--- exercise can validate it, so a chart defect cannot break the working
--- platform install before then).
+-- 'awsSubstratePlatformComponents'. The home and AWS platform reconcilers both
+-- install this same chart so the Vault StatefulSet/Service/PVC shape remains
+-- substrate-equivalent.
 ensureVaultRuntime :: FilePath -> IO ExitCode
-ensureVaultRuntime repoRoot =
-  runHelmCommandWithRetries
-    repoRoot
-    [ "upgrade"
-    , "--install"
-    , "vault"
-    , repoRoot ++ "/charts/vault"
-    , "--namespace"
-    , "vault"
-    , "--create-namespace"
+ensureVaultRuntime repoRoot = do
+  lifecycleResult <- resolveVaultLifecycle repoRoot
+  case lifecycleResult of
+    Left err -> failWith err
+    Right lifecycle ->
+      case lifecycle of
+        RootVaultLifecycle _ _ ->
+          applyVaultRuntime repoRoot lifecycle
+        ChildVaultLifecycle _ _ parent -> do
+          parentReadiness <- probeParentVaultReadiness parent
+          case renderParentReadinessBlock parent parentReadiness of
+            Just block -> failWith block
+            Nothing -> do
+              tokenResult <- childTransitSealTokenPresent repoRoot
+              case tokenResult of
+                Left err -> failWith err
+                Right () -> applyVaultRuntime repoRoot lifecycle
+
+applyVaultRuntime :: FilePath -> FederatedVaultLifecycle -> IO ExitCode
+applyVaultRuntime repoRoot lifecycle =
+  runSequentially
+    [ runHelmCommandWithRetries
+        repoRoot
+        ( [ "upgrade"
+          , "--install"
+          , "vault"
+          , repoRoot ++ "/charts/vault"
+          , "--namespace"
+          , vaultNamespace
+          , "--create-namespace"
+          ]
+            ++ vaultLifecycleHelmSealArgs lifecycle
+        )
+    , runCommand
+        Subprocess
+          { subprocessPath = "kubectl"
+          , subprocessArguments =
+              [ "rollout"
+              , "status"
+              , "statefulset/vault"
+              , "-n"
+              , vaultNamespace
+              , "--timeout=300s"
+              ]
+          , subprocessEnvironment = Nothing
+          , subprocessWorkingDirectory = Just repoRoot
+          }
     ]
+
+probeParentVaultReadiness :: ParentRef -> IO ParentVaultReadiness
+probeParentVaultReadiness parent = do
+  statusResult <- vaultSealStatus (VaultAddress (parentRefVaultAddress parent))
+  pure (parentReadinessDecision (mapLeftEither renderHttpError statusResult))
+
+childTransitSealTokenPresent :: FilePath -> IO (Either String ())
+childTransitSealTokenPresent repoRoot = do
+  tokenResult <- readChildTransitSealToken repoRoot
+  pure $ case tokenResult of
+    Left err ->
+      Left
+        ( "missing child transit-seal token Secret "
+            ++ vaultNamespace
+            ++ "/"
+            ++ vaultTransitSealTokenSecretName
+            ++ ": "
+            ++ err
+            ++ ". Run `prodbox cluster federation register <child> --child-vault-address URL --child-kubeconfig PATH` on the parent first."
+        )
+    Right _ -> Right ()
+
+data VaultLifecycleResult = VaultLifecycleResult
+  { vaultLifecycleExitCode :: ExitCode
+  , vaultLifecycleMinioRootChanged :: Bool
+  }
+  deriving (Eq, Show)
+
+data OperationalAwsCredentialGate
+  = OperationalAwsCredentialsReady
+  | OperationalAwsCredentialsAbsent String
+  | OperationalAwsCredentialsInvalid String
+  deriving (Eq, Show)
+
+-- | Sprint 4.29: after the Vault StatefulSet is deployed/rebound, reconcile
+-- the root Vault lifecycle before any secret-dependent platform step starts.
+-- @vault init@ is guarded by Vault's initialized flag and refuses to re-init;
+-- @vault unseal@ is a no-op for an already-unsealed Vault; @vault reconcile@
+-- applies the baseline mounts, policies, auth, roles, and generated KV seed
+-- objects only after Vault is initialized and unsealed.
+ensureRootVaultLifecycle :: FilePath -> IO ExitCode
+ensureRootVaultLifecycle repoRoot =
+  vaultLifecycleExitCode <$> ensureRootVaultLifecycleDetailed repoRoot
+
+ensureRootVaultLifecycleDetailed :: FilePath -> IO VaultLifecycleResult
+ensureRootVaultLifecycleDetailed repoRoot = do
+  testLifecycle <- lookupEnv "PRODBOX_TEST_ROOT_VAULT_LIFECYCLE"
+  case testLifecycle of
+    Just "ready" -> do
+      writeOutputLine "Vault lifecycle: test-ready"
+      pure (VaultLifecycleResult ExitSuccess False)
+    Just other ->
+      lifecycleFailure <$> failWith ("invalid PRODBOX_TEST_ROOT_VAULT_LIFECYCLE=" ++ other)
+    Nothing -> do
+      initExit <- runVaultInit repoRoot hostVaultAddress
+      case initExit of
+        ExitFailure _ -> pure (lifecycleFailure initExit)
+        ExitSuccess -> do
+          unsealExit <- runVaultUnseal repoRoot hostVaultAddress
+          case unsealExit of
+            ExitFailure _ -> pure (lifecycleFailure unsealExit)
+            ExitSuccess -> do
+              reconcileResult <- runVaultReconcileCommandDetailed repoRoot hostVaultAddress
+              pure
+                VaultLifecycleResult
+                  { vaultLifecycleExitCode = vaultReconcileCommandExitCode reconcileResult
+                  , vaultLifecycleMinioRootChanged =
+                      reconcileStepsMinioRootChanged (vaultReconcileCommandSteps reconcileResult)
+                  }
+
+ensureFederatedVaultLifecycleDetailed :: FilePath -> IO VaultLifecycleResult
+ensureFederatedVaultLifecycleDetailed repoRoot = do
+  lifecycleResult <- resolveVaultLifecycle repoRoot
+  case lifecycleResult of
+    Left err -> lifecycleFailure <$> failWith err
+    Right (RootVaultLifecycle _ _) -> ensureRootVaultLifecycleDetailed repoRoot
+    Right (ChildVaultLifecycle childId _ parent) ->
+      ensureChildVaultLifecycleDetailed repoRoot childId parent
+
+ensureChildVaultLifecycleDetailed :: FilePath -> Text.Text -> ParentRef -> IO VaultLifecycleResult
+ensureChildVaultLifecycleDetailed repoRoot childId parent = do
+  tokenResult <- readChildTransitSealToken repoRoot
+  case tokenResult of
+    Left err ->
+      lifecycleFailure <$> failWith ("child Vault lifecycle cannot read transit-seal token: " ++ err)
+    Right parentToken -> do
+      statusResult <- vaultSealStatus hostVaultAddress
+      case statusResult of
+        Left err -> lifecycleFailure <$> failWith ("child Vault status failed: " ++ renderHttpError err)
+        Right status ->
+          case bootstrapAction status of
+            BootstrapInitialize ->
+              initializeChildVaultAndWriteCustody repoRoot childId parent parentToken
+            BootstrapUnseal ->
+              lifecycleFailure
+                <$> failWith
+                  ( "Blocked: child Vault is initialized but sealed after the parent readiness check. "
+                      ++ "Transit auto-unseal did not complete; no local unseal fallback exists."
+                  )
+            BootstrapReady ->
+              reconcileChildVaultFromParentCustody repoRoot childId parent parentToken
+
+initializeChildVaultAndWriteCustody
+  :: FilePath -> Text.Text -> ParentRef -> VaultToken -> IO VaultLifecycleResult
+initializeChildVaultAndWriteCustody repoRoot childId parent parentToken = do
+  let parentAddress = VaultAddress (parentRefVaultAddress parent)
+      transitKey = normalizeTransitKeyName (parentRefTransitKey parent)
+      sealConfig = defaultTransitSealConfig parentAddress transitKey
+  initResult <-
+    vaultInit
+      hostVaultAddress
+      (initRequestForSealMode (VaultSealChildTransit sealConfig))
+  case initResult of
+    Left err -> lifecycleFailure <$> failWith ("child Vault init failed: " ++ renderHttpError err)
+    Right initResponse -> do
+      let custody =
+            childSealCustodyFromInitResponse
+              (parentRefClusterId parent)
+              childId
+              (unVaultAddress hostVaultAddress)
+              ("child-local")
+              transitKey
+              initResponse
+          initFields = childInitCustodyVaultFields (childSealCustodyInit custody)
+      writeResult <-
+        vaultKvWriteV2
+          parentAddress
+          parentToken
+          "secret"
+          (childInitKvLogicalPath childId)
+          initFields
+      case writeResult of
+        Left err ->
+          lifecycleFailure
+            <$> failWith ("write child init custody to parent Vault KV: " ++ renderHttpError err)
+        Right () ->
+          reconcileChildVaultWithToken
+            repoRoot
+            (VaultToken (childInitRootToken (childSealCustodyInit custody)))
+
+reconcileChildVaultFromParentCustody
+  :: FilePath -> Text.Text -> ParentRef -> VaultToken -> IO VaultLifecycleResult
+reconcileChildVaultFromParentCustody repoRoot childId parent parentToken = do
+  custodyResult <- readChildInitCustodyFromParent childId parent parentToken
+  case custodyResult of
+    Left err -> lifecycleFailure <$> failWith err
+    Right custody ->
+      reconcileChildVaultWithToken repoRoot (VaultToken (childInitRootToken custody))
+
+readChildInitCustodyFromParent
+  :: Text.Text -> ParentRef -> VaultToken -> IO (Either String ChildInitCustody)
+readChildInitCustodyFromParent childId parent parentToken = do
+  readResult <-
+    vaultKvReadV2
+      (VaultAddress (parentRefVaultAddress parent))
+      parentToken
+      "secret"
+      (childInitKvLogicalPath childId)
+  pure $ case readResult of
+    Left err -> Left ("read child init custody from parent Vault KV: " ++ renderHttpError err)
+    Right fields ->
+      case Map.lookup "payload_json" fields of
+        Nothing -> Left "child init custody in parent Vault KV is missing field `payload_json`"
+        Just payload ->
+          case decodeChildInitCustody (TextEncoding.encodeUtf8 payload) of
+            Left err -> Left ("decode child init custody from parent Vault KV: " ++ err)
+            Right custody -> Right custody
+
+reconcileChildVaultWithToken :: FilePath -> VaultToken -> IO VaultLifecycleResult
+reconcileChildVaultWithToken _repoRoot childRootToken = do
+  reconcileResult <- runVaultReconcile hostVaultAddress childRootToken defaultVaultReconcilePlan
+  case reconcileResult of
+    Left err -> do
+      writeOutput ("Child Vault reconcile failed: " ++ renderVaultReconcileError err)
+      pure (VaultLifecycleResult (ExitFailure 1) False)
+    Right steps -> do
+      writeOutput
+        ( unlines
+            ( "Child Vault reconcile complete:"
+                : map (("  " ++) . renderVaultReconcileStep) steps
+            )
+        )
+      pure
+        VaultLifecycleResult
+          { vaultLifecycleExitCode = ExitSuccess
+          , vaultLifecycleMinioRootChanged = reconcileStepsMinioRootChanged steps
+          }
+
+lifecycleFailure :: ExitCode -> VaultLifecycleResult
+lifecycleFailure exitCode =
+  VaultLifecycleResult
+    { vaultLifecycleExitCode = exitCode
+    , vaultLifecycleMinioRootChanged = False
+    }
+
+reconcileStepsMinioRootChanged :: [VaultReconcileStep] -> Bool
+reconcileStepsMinioRootChanged =
+  any isChangedMinioRootStep
+ where
+  isChangedMinioRootStep step =
+    vaultReconcileStepTarget step == VaultReconcileSecretObject
+      && vaultReconcileStepName step == "secret/minio/root"
+      && vaultReconcileStepAction step `elem` [VaultReconcileCreated, VaultReconcileWritten]
+
+restartMinioIfVaultRootChanged :: FilePath -> Bool -> IO ExitCode
+restartMinioIfVaultRootChanged _repoRoot False = pure ExitSuccess
+restartMinioIfVaultRootChanged repoRoot True = do
+  writeOutputLine
+    "Vault secret/minio/root changed; restarting statefulset/minio before MinIO bucket bootstrap."
+  runSequentially
+    [ runCommand
+        Subprocess
+          { subprocessPath = "kubectl"
+          , subprocessArguments =
+              [ "rollout"
+              , "restart"
+              , "statefulset/" ++ minioReleaseName
+              , "-n"
+              , minioNamespace
+              ]
+          , subprocessEnvironment = Nothing
+          , subprocessWorkingDirectory = Just repoRoot
+          }
+    , runCommand
+        Subprocess
+          { subprocessPath = "kubectl"
+          , subprocessArguments =
+              [ "rollout"
+              , "status"
+              , "statefulset/" ++ minioReleaseName
+              , "-n"
+              , minioNamespace
+              , "--timeout=300s"
+              ]
+          , subprocessEnvironment = Nothing
+          , subprocessWorkingDirectory = Just repoRoot
+          }
+    ]
+
+resolveVaultLifecycle :: FilePath -> IO (Either String FederatedVaultLifecycle)
+resolveVaultLifecycle repoRoot = do
+  basicsResult <- loadUnencryptedBasics repoRoot
+  pure $ case basicsResult of
+    Left err
+      | "Missing unencrypted basics file:" `isPrefixOf` err ->
+          Right (RootVaultLifecycle "prodbox-home" (unVaultAddress hostVaultAddress))
+      | otherwise -> Left err
+    Right basics -> vaultLifecycleFromBasics basics
+
+readChildTransitSealToken :: FilePath -> IO (Either String VaultToken)
+readChildTransitSealToken repoRoot = do
+  outputResult <-
+    runTextCommand
+      Subprocess
+        { subprocessPath = "kubectl"
+        , subprocessArguments =
+            [ "get"
+            , "secret"
+            , vaultTransitSealTokenSecretName
+            , "-n"
+            , vaultNamespace
+            , "-o"
+            , "go-template={{index .data \"token\" | base64decode}}"
+            ]
+        , subprocessEnvironment = Nothing
+        , subprocessWorkingDirectory = Just repoRoot
+        }
+  pure $ case outputResult of
+    Left err -> Left err
+    Right token
+      | null (trimWhitespace token) -> Left "Secret field token is empty"
+      | otherwise -> Right (VaultToken (Text.pack (trimWhitespace token)))
+
+normalizeTransitKeyName :: Text.Text -> Text.Text
+normalizeTransitKeyName raw =
+  fromMaybe stripped (Text.stripPrefix "transit/" stripped)
+ where
+  stripped = Text.dropWhileEnd (== '/') (Text.dropWhile (== '/') raw)
+
+mapLeftEither :: (left -> left') -> Either left right -> Either left' right
+mapLeftEither f value = case value of
+  Left err -> Left (f err)
+  Right result -> Right result
 
 -- | Sprint 4.31: deploy MinIO from the prodbox-owned @charts/minio@ chart — a
 -- single-replica StatefulSet on the unified retained-storage scheme — replacing
@@ -1635,7 +2469,7 @@ minioChartImages imageSource =
 
 ensureHarborRegistryStorageBackend :: FilePath -> IO ExitCode
 ensureHarborRegistryStorageBackend repoRoot = do
-  credentialsResult <- readMinioRootCredentials repoRoot
+  credentialsResult <- resolveHarborStorageCredentials repoRoot
   case credentialsResult of
     Left err -> failWith err
     Right (accessKey, secretKey) ->
@@ -1698,31 +2532,23 @@ ensureHarborRegistryStorageBackend repoRoot = do
               }
         ]
 
--- | Sprint 2.19: idempotently bootstrap the gateway daemon's MinIO
--- surface in one unified pass:
+-- | Sprint 3.18: idempotently bootstrap the gateway daemon's MinIO surface
+-- in one unified, Vault-backed pass:
 --
 --   1. Create the @gateway@ namespace if absent.
---   2. Read existing 'gateway-minio-creds' Secret if any (extracting
---      the @prodbox-gateway-...@ username + password from its
---      @minio.dhall@ Dhall fragment); otherwise generate fresh
---      credentials.
---   3. Write/overwrite the 'gateway-minio-creds' Secret with the
---      resolved credentials so the gateway chart's
---      @secret-minio-creds.yaml@ template finds it via Helm @lookup@
---      and the daemon Pod mounts the canonical Dhall fragment.
---   4. Apply a Job in the @minio@ namespace that uses the cluster
---      MinIO root Secret to: create the @prodbox@ bucket
---      (idempotent), create or update the @prodbox-gateway-...@ user
---      with the resolved password, create or update the
---      @prodbox-gateway-policy@ IAM policy granting
---      @s3:GetObject@/@s3:PutObject@ on @prodbox/*@ and
---      @s3:ListBucket@ on @prodbox@, and attach the policy to the
---      user.
+--   2. Apply a Job in the @minio@ namespace that authenticates to Vault with
+--      the @minio@ ServiceAccount, materializes both the MinIO root
+--      credentials and gateway MinIO user credentials on tmpfs, creates the
+--      @prodbox-state@ bucket (idempotent), creates or updates the @prodbox-gateway@
+--      user with the Vault-managed password, creates or updates the
+--      @prodbox-gateway-policy@ IAM policy granting @s3:GetObject@ /
+--      @s3:PutObject@ on @prodbox-state/*@ and @s3:ListBucket@ on @prodbox-state@, and
+--      attaches the policy to the user.
 --
--- Idempotent across reconciles: the existing credentials are reused;
--- @mc admin user add@ silently overwrites the password if it differs
--- (ensuring MinIO state matches the Secret); @mc admin policy create@
--- + @attach@ are tolerant of pre-existing state via @|| true@.
+-- Idempotent across reconciles: @mc admin user add@ silently overwrites the
+-- password if it differs (ensuring MinIO state matches Vault); the named policy
+-- is detached, removed, recreated, and reattached so permission drift is
+-- repaired when the chart-side storage contract changes.
 ensureGatewayMinioBootstrap :: FilePath -> IO ExitCode
 ensureGatewayMinioBootstrap repoRoot = do
   -- Step 1: ensure gateway namespace exists.
@@ -1757,239 +2583,160 @@ ensureGatewayMinioBootstrap repoRoot = do
             , subprocessEnvironment = Nothing
             , subprocessWorkingDirectory = Just repoRoot
             }
-      -- Step 2: resolve gateway-minio credentials (read existing or
-      -- generate fresh).
-      credsResult <- resolveGatewayMinioCredentials repoRoot
-      case credsResult of
-        Left err -> failWith err
-        Right (gwUser, gwPass) -> do
-          -- Step 3: write/overwrite gateway-minio-creds Secret.
-          secretExit <- writeGatewayMinioCredsSecret repoRoot gwUser gwPass
-          case secretExit of
-            ExitFailure _ -> pure secretExit
-            ExitSuccess ->
-              -- Step 4: apply MinIO bootstrap Job (bucket + user + policy + attach).
-              runSequentially
-                [ runCommand
-                    Subprocess
-                      { subprocessPath = "kubectl"
-                      , subprocessArguments =
-                          [ "delete"
-                          , "job"
-                          , gatewayMinioBootstrapJobName
-                          , "-n"
-                          , minioNamespace
-                          , "--ignore-not-found=true"
-                          , "--wait=true"
-                          ]
-                      , subprocessEnvironment = Nothing
-                      , subprocessWorkingDirectory = Just repoRoot
-                      }
-                , withTemporaryJsonManifest
-                    "gateway-minio-bootstrap"
-                    (gatewayMinioBootstrapManifestItems gwUser gwPass)
-                    ( \manifestPath ->
-                        runCommand
-                          Subprocess
-                            { subprocessPath = "kubectl"
-                            , subprocessArguments = ["apply", "-f", manifestPath]
-                            , subprocessEnvironment = Nothing
-                            , subprocessWorkingDirectory = Just repoRoot
-                            }
-                    )
-                , runCommand
-                    Subprocess
-                      { subprocessPath = "kubectl"
-                      , subprocessArguments =
-                          [ "wait"
-                          , "--for=condition=complete"
-                          , "job/" ++ gatewayMinioBootstrapJobName
-                          , "-n"
-                          , minioNamespace
-                          , "--timeout=300s"
-                          ]
-                      , subprocessEnvironment = Nothing
-                      , subprocessWorkingDirectory = Just repoRoot
-                      }
-                , runCommand
-                    Subprocess
-                      { subprocessPath = "kubectl"
-                      , subprocessArguments =
-                          [ "delete"
-                          , "job"
-                          , gatewayMinioBootstrapJobName
-                          , "-n"
-                          , minioNamespace
-                          , "--ignore-not-found=true"
-                          , "--wait=true"
-                          ]
-                      , subprocessEnvironment = Nothing
-                      , subprocessWorkingDirectory = Just repoRoot
-                      }
-                ]
-
--- | Sprint 2.19: resolve the gateway-minio credentials, preferring
--- existing values in the 'gateway-minio-creds' Secret. The Secret
--- carries credentials as a Dhall fragment under the @minio.dhall@
--- key — we extract the username and password by scanning for the
--- @minio_access_key = "..."@ and @minio_secret_key = "..."@ literal
--- lines (the Dhall content is small and operator-controlled, so a
--- token-boundary parse is sufficient). When the Secret is absent,
--- generate fresh credentials by reading from @/dev/urandom@.
-resolveGatewayMinioCredentials :: FilePath -> IO (Either String (String, String))
-resolveGatewayMinioCredentials repoRoot = do
-  existingResult <- readGatewayMinioCredsSecret repoRoot
-  case existingResult of
-    Right (user, password) -> pure (Right (user, password))
-    Left _ -> do
-      freshUserSuffixResult <-
-        try
-          ( do
-              handle <- openBinaryFile "/dev/urandom" ReadMode
-              bytes <- BS.hGet handle 34
-              hClose handle
-              pure bytes
-          )
-          :: IO (Either SomeException BS.ByteString)
-      case freshUserSuffixResult of
-        Left e ->
-          pure
-            ( Left
-                ( "failed to read /dev/urandom for gateway-minio credentials: "
-                    ++ displayException e
-                )
+      -- Step 2: apply the Vault-backed MinIO bootstrap Job.
+      runSequentially
+        [ runCommand
+            Subprocess
+              { subprocessPath = "kubectl"
+              , subprocessArguments =
+                  [ "delete"
+                  , "job"
+                  , gatewayMinioBootstrapJobName
+                  , "-n"
+                  , minioNamespace
+                  , "--ignore-not-found=true"
+                  , "--wait=true"
+                  ]
+              , subprocessEnvironment = Nothing
+              , subprocessWorkingDirectory = Just repoRoot
+              }
+        , withTemporaryJsonManifest
+            "gateway-minio-bootstrap"
+            gatewayMinioBootstrapManifestItems
+            ( \manifestPath ->
+                runCommand
+                  Subprocess
+                    { subprocessPath = "kubectl"
+                    , subprocessArguments = ["apply", "-f", manifestPath]
+                    , subprocessEnvironment = Nothing
+                    , subprocessWorkingDirectory = Just repoRoot
+                    }
             )
-        Right entropyBytes -> do
-          let suffixHex =
-                take 8 . concatMap (printf "%02x" :: Word8 -> String) . BS.unpack $
-                  BS.take 4 entropyBytes
-              passwordBytes = BS.take 30 (BS.drop 4 entropyBytes)
-              passwordBase64 =
-                take 40 . filter isAsciiAlphaNumeric . BS8.unpack $
-                  Base64.encode passwordBytes
-              password =
-                passwordBase64
-                  ++ replicate (40 - length passwordBase64) 'A'
-          pure (Right (gatewayMinioUserPrefix ++ suffixHex, password))
+        , runCommand
+            Subprocess
+              { subprocessPath = "kubectl"
+              , subprocessArguments =
+                  [ "wait"
+                  , "--for=condition=complete"
+                  , "job/" ++ gatewayMinioBootstrapJobName
+                  , "-n"
+                  , minioNamespace
+                  , "--timeout=300s"
+                  ]
+              , subprocessEnvironment = Nothing
+              , subprocessWorkingDirectory = Just repoRoot
+              }
+        , runCommand
+            Subprocess
+              { subprocessPath = "kubectl"
+              , subprocessArguments =
+                  [ "delete"
+                  , "job"
+                  , gatewayMinioBootstrapJobName
+                  , "-n"
+                  , minioNamespace
+                  , "--ignore-not-found=true"
+                  , "--wait=true"
+                  ]
+              , subprocessEnvironment = Nothing
+              , subprocessWorkingDirectory = Just repoRoot
+              }
+        ]
+
+generateMinioCredentials :: String -> String -> IO (Either String (String, String))
+generateMinioCredentials label userPrefix = do
+  freshUserSuffixResult <-
+    try
+      ( do
+          handle <- openBinaryFile "/dev/urandom" ReadMode
+          bytes <- BS.hGet handle 34
+          hClose handle
+          pure bytes
+      )
+      :: IO (Either SomeException BS.ByteString)
+  case freshUserSuffixResult of
+    Left e ->
+      pure
+        ( Left
+            ( "failed to read /dev/urandom for "
+                ++ label
+                ++ " credentials: "
+                ++ displayException e
+            )
+        )
+    Right entropyBytes -> do
+      let suffixHex =
+            take 8 . concatMap (printf "%02x" :: Word8 -> String) . BS.unpack $
+              BS.take 4 entropyBytes
+          passwordBytes = BS.take 30 (BS.drop 4 entropyBytes)
+          passwordBase64 =
+            take 40 . filter isAsciiAlphaNumeric . BS8.unpack $
+              Base64.encode passwordBytes
+          password =
+            passwordBase64
+              ++ replicate (40 - length passwordBase64) 'A'
+      pure (Right (userPrefix ++ suffixHex, password))
  where
   isAsciiAlphaNumeric c = isAsciiUpper c || isAsciiLower c || isDigit c
 
--- | Sprint 2.19: read the existing 'gateway-minio-creds' Secret (if
--- any). Returns 'Left' when the Secret is absent or unparseable so
--- 'resolveGatewayMinioCredentials' can fall through to fresh
--- generation.
-readGatewayMinioCredsSecret :: FilePath -> IO (Either String (String, String))
-readGatewayMinioCredsSecret repoRoot = do
-  dhallTextResult <-
+resolveHarborStorageCredentials :: FilePath -> IO (Either String (String, String))
+resolveHarborStorageCredentials repoRoot = do
+  existingResult <- readHarborStorageCredentialsSecret repoRoot
+  case existingResult of
+    Right creds -> pure (Right creds)
+    Left _ -> generateMinioCredentials "harbor-storage" harborStorageUserPrefix
+
+readHarborStorageCredentialsSecret :: FilePath -> IO (Either String (String, String))
+readHarborStorageCredentialsSecret repoRoot = do
+  accessKeyResult <- readHarborStorageSecretField "REGISTRY_STORAGE_S3_ACCESSKEY"
+  secretKeyResult <- readHarborStorageSecretField "REGISTRY_STORAGE_S3_SECRETKEY"
+  pure $ do
+    accessKey <- accessKeyResult
+    secretKey <- secretKeyResult
+    let trimmedAccessKey = trimWhitespace accessKey
+        trimmedSecretKey = trimWhitespace secretKey
+    if not (isMinioAccessKeyArgumentSafe trimmedAccessKey)
+      then Left "Harbor storage access key secret field is empty"
+      else
+        if not (isMinioSecretKeyArgumentSafe trimmedSecretKey)
+          then Left "Harbor storage secret key field is empty or not argument-safe for mc"
+          else Right (trimmedAccessKey, trimmedSecretKey)
+ where
+  readHarborStorageSecretField fieldName =
     runTextCommand
       Subprocess
         { subprocessPath = "kubectl"
         , subprocessArguments =
             [ "get"
             , "secret"
-            , gatewayMinioCredsSecretName
+            , harborRegistryStorageSecretName
             , "-n"
-            , gatewayNamespace
+            , harborNamespace
             , "-o"
-            , "go-template={{index .data \"minio.dhall\" | base64decode}}"
+            , "go-template={{index .data \"" ++ fieldName ++ "\" | base64decode}}"
             ]
         , subprocessEnvironment = Nothing
         , subprocessWorkingDirectory = Just repoRoot
         }
-  pure $ case dhallTextResult of
-    Left err -> Left err
-    Right dhallText ->
-      case extractMinioCredsFromDhall dhallText of
-        Nothing ->
-          Left "gateway-minio-creds Dhall content did not contain a minio_access_key/minio_secret_key pair"
-        Just creds -> Right creds
 
--- | Sprint 2.19: extract @(access_key, secret_key)@ from the
--- chart-rendered Dhall fragment shape. The expected shape is
--- @{ minio_access_key = "<user>", minio_secret_key = "<password>" }@;
--- the helper scans on @=@ and quote boundaries.
-extractMinioCredsFromDhall :: String -> Maybe (String, String)
-extractMinioCredsFromDhall dhallText =
-  let lns = lines dhallText
-      extractFor needle =
-        listToMaybeFirst
-          [ scanQuoted rest
-          | line <- lns
-          , Just rest <- [stripPrefix needle (dropWhile (`elem` (" ,{" :: String)) line)]
-          ]
-      access = extractFor "minio_access_key = "
-      secret = extractFor "minio_secret_key = "
-   in (,) <$> access <*> secret
+isMinioAccessKeyArgumentSafe :: String -> Bool
+isMinioAccessKeyArgumentSafe value =
+  let trimmed = trimWhitespace value
+   in trimmed /= "" && not ("-" `isPrefixOf` trimmed) && not (any isSpace trimmed)
+
+isMinioSecretKeyArgumentSafe :: String -> Bool
+isMinioSecretKeyArgumentSafe value =
+  let trimmed = trimWhitespace value
+   in trimmed /= "" && all isAsciiAlphaNumeric trimmed
  where
-  scanQuoted :: String -> String
-  scanQuoted s = case dropWhile (/= '"') s of
-    '"' : rest -> takeWhile (/= '"') rest
-    _ -> ""
-  listToMaybeFirst :: [String] -> Maybe String
-  listToMaybeFirst [] = Nothing
-  listToMaybeFirst (x : _) = if null x then Nothing else Just x
+  isAsciiAlphaNumeric c = isAsciiUpper c || isAsciiLower c || isDigit c
 
--- | Sprint 2.19: write/overwrite the 'gateway-minio-creds' Secret in
--- the gateway namespace with the canonical Dhall fragment shape. Uses
--- the @kubectl create secret --dry-run | apply@ idiom so the Secret
--- is created on first reconcile and updated on subsequent reconciles.
---
--- Sprint 2.19 closure (2026-05-29): also stamps
--- @helm.sh/resource-policy: keep@ so a subsequent
--- @prodbox charts delete gateway@ (the suite bootstrap's helm
--- uninstall) does NOT delete this Secret. Together with the chart-side
--- consume-only template (no @randAlphaNum@), this makes
--- 'ensureGatewayMinioBootstrap' the single source of truth for the
--- gateway MinIO credentials: the Secret persists across
--- @charts delete gateway@ + @charts deploy gateway@ cycles, so the
--- daemon's mounted credentials always match the user that the
--- bootstrap Job registered in MinIO (closing the master-seed 403
--- multi-writer credential divergence diagnosed live on 2026-05-29).
--- @kubectl annotate --overwrite@ is idempotent.
-writeGatewayMinioCredsSecret :: FilePath -> String -> String -> IO ExitCode
-writeGatewayMinioCredsSecret repoRoot gwUser gwPass = do
-  let dhallContent =
-        "{ minio_access_key = "
-          ++ show gwUser
-          ++ "\n, minio_secret_key = "
-          ++ show gwPass
-          ++ "\n}\n"
-  runCommand
-    Subprocess
-      { subprocessPath = "sh"
-      , subprocessArguments =
-          [ "-c"
-          , "kubectl create secret generic "
-              ++ gatewayMinioCredsSecretName
-              ++ " --from-literal=minio.dhall="
-              ++ shellQuote dhallContent
-              ++ " -n "
-              ++ gatewayNamespace
-              ++ " --dry-run=client -o yaml | kubectl apply -f - && "
-              ++ "kubectl annotate secret "
-              ++ gatewayMinioCredsSecretName
-              ++ " -n "
-              ++ gatewayNamespace
-              ++ " helm.sh/resource-policy=keep --overwrite"
-          ]
-      , subprocessEnvironment = Nothing
-      , subprocessWorkingDirectory = Just repoRoot
-      }
-
--- | Shell-quote a string for safe inclusion inside a single-quoted
--- shell argument. Replaces every internal single quote with the
--- @'\\''@ escape sequence.
-shellQuote :: String -> String
-shellQuote s = "'" ++ concatMap escape s ++ "'"
- where
-  escape '\'' = "'\\''"
-  escape c = [c]
-
--- | Sprint 2.19: Job manifest that bootstraps the gateway daemon's
--- MinIO surface (@prodbox@ bucket + @prodbox-gateway-...@ user + IAM
--- policy + policy attachment) in one pass.
-gatewayMinioBootstrapManifestItems :: String -> String -> [Value]
-gatewayMinioBootstrapManifestItems gwUser gwPass =
+-- | Sprint 3.18: Job manifest that bootstraps the gateway daemon's MinIO
+-- surface (@prodbox-state@ bucket + @prodbox-gateway@ user + IAM policy + policy
+-- attachment) in one pass, with every secret-bearing input read from Vault
+-- inside the cluster.
+gatewayMinioBootstrapManifestItems :: [Value]
+gatewayMinioBootstrapManifestItems =
   [ object
       [ "apiVersion" .= ("batch/v1" :: String)
       , "kind" .= ("Job" :: String)
@@ -2007,6 +2754,9 @@ gatewayMinioBootstrapManifestItems gwUser gwPass =
                   [ "spec"
                       .= object
                         [ "restartPolicy" .= ("OnFailure" :: String)
+                        , "serviceAccountName" .= minioReleaseName
+                        , "initContainers" .= [gatewayMinioVaultInitContainer]
+                        , "volumes" .= [minioRootVaultMaterializedVolume]
                         , "containers"
                             .= [ object
                                    [ "name" .= ("gateway-minio-bootstrap" :: String)
@@ -2015,6 +2765,10 @@ gatewayMinioBootstrapManifestItems gwUser gwPass =
                                    , "args"
                                        .= [ unlines
                                               [ "set -eu"
+                                              , "MINIO_ROOT_USER=\"$(cat \"$MINIO_ROOT_USER_FILE\")\""
+                                              , "MINIO_ROOT_PASSWORD=\"$(cat \"$MINIO_ROOT_PASSWORD_FILE\")\""
+                                              , "GW_USER=\"$(cat \"$GW_USER_FILE\")\""
+                                              , "GW_PASS=\"$(cat \"$GW_PASS_FILE\")\""
                                               , "mc alias set local "
                                                   ++ minioClusterEndpoint
                                                   ++ " \"$MINIO_ROOT_USER\" \"$MINIO_ROOT_PASSWORD\""
@@ -2023,50 +2777,25 @@ gatewayMinioBootstrapManifestItems gwUser gwPass =
                                               , "cat > /tmp/policy.json <<'POLICY_EOF'"
                                               , gatewayMinioPolicyJson
                                               , "POLICY_EOF"
+                                              , "mc admin policy detach local "
+                                                  ++ gatewayMinioPolicyName
+                                                  ++ " --user \"$GW_USER\" || true"
+                                              , "mc admin policy rm local "
+                                                  ++ gatewayMinioPolicyName
+                                                  ++ " || true"
                                               , "mc admin policy create local "
                                                   ++ gatewayMinioPolicyName
-                                                  ++ " /tmp/policy.json || mc admin policy add local "
-                                                  ++ gatewayMinioPolicyName
-                                                  ++ " /tmp/policy.json || true"
+                                                  ++ " /tmp/policy.json"
                                               , "mc admin policy attach local "
                                                   ++ gatewayMinioPolicyName
-                                                  ++ " --user \"$GW_USER\" || mc admin policy set local "
-                                                  ++ gatewayMinioPolicyName
-                                                  ++ " user=\"$GW_USER\""
+                                                  ++ " --user \"$GW_USER\""
                                               ]
                                           ]
                                    , "env"
-                                       .= [ object
-                                              [ "name" .= ("MINIO_ROOT_USER" :: String)
-                                              , "valueFrom"
-                                                  .= object
-                                                    [ "secretKeyRef"
-                                                        .= object
-                                                          [ "name" .= minioReleaseName
-                                                          , "key" .= ("rootUser" :: String)
-                                                          ]
-                                                    ]
-                                              ]
-                                          , object
-                                              [ "name" .= ("MINIO_ROOT_PASSWORD" :: String)
-                                              , "valueFrom"
-                                                  .= object
-                                                    [ "secretKeyRef"
-                                                        .= object
-                                                          [ "name" .= minioReleaseName
-                                                          , "key" .= ("rootPassword" :: String)
-                                                          ]
-                                                    ]
-                                              ]
-                                          , object
-                                              [ "name" .= ("GW_USER" :: String)
-                                              , "value" .= gwUser
-                                              ]
-                                          , object
-                                              [ "name" .= ("GW_PASS" :: String)
-                                              , "value" .= gwPass
-                                              ]
-                                          ]
+                                       .= ( minioRootFileEnv
+                                              ++ gatewayMinioFileEnv
+                                          )
+                                   , "volumeMounts" .= [minioRootVaultMaterializedVolumeMount]
                                    ]
                                ]
                         ]
@@ -2075,10 +2804,10 @@ gatewayMinioBootstrapManifestItems gwUser gwPass =
       ]
   ]
 
--- | Sprint 2.19: canonical IAM policy granting the @prodbox-gateway@
--- principal the minimum permissions needed for master-seed
--- read/write: @s3:GetObject@/@s3:PutObject@ on @prodbox/*@ plus
--- @s3:ListBucket@ on @prodbox@.
+-- | Canonical IAM policy granting the @prodbox-gateway@ principal the
+-- minimum permissions needed for gateway-owned object-store reads/writes:
+-- @s3:GetObject@/@s3:PutObject@ on @prodbox-state/*@ plus @s3:ListBucket@ on
+-- @prodbox-state@.
 gatewayMinioPolicyJson :: String
 gatewayMinioPolicyJson =
   unlines
@@ -2099,51 +2828,171 @@ gatewayMinioPolicyJson =
     , "}"
     ]
 
-readMinioRootCredentials :: FilePath -> IO (Either String (String, String))
-readMinioRootCredentials repoRoot = do
-  accessKeyResult <-
-    runTextCommand
-      Subprocess
-        { subprocessPath = "kubectl"
-        , subprocessArguments =
-            [ "get"
-            , "secret"
-            , minioReleaseName
-            , "-n"
-            , minioNamespace
-            , "-o"
-            , "go-template={{index .data \"rootUser\" | base64decode}}"
-            ]
-        , subprocessEnvironment = Nothing
-        , subprocessWorkingDirectory = Just repoRoot
-        }
-  secretKeyResult <-
-    runTextCommand
-      Subprocess
-        { subprocessPath = "kubectl"
-        , subprocessArguments =
-            [ "get"
-            , "secret"
-            , minioReleaseName
-            , "-n"
-            , minioNamespace
-            , "-o"
-            , "go-template={{index .data \"rootPassword\" | base64decode}}"
-            ]
-        , subprocessEnvironment = Nothing
-        , subprocessWorkingDirectory = Just repoRoot
-        }
-  pure $ do
-    accessKey <- accessKeyResult
-    secretKey <- secretKeyResult
-    let trimmedAccessKey = trimWhitespace accessKey
-        trimmedSecretKey = trimWhitespace secretKey
-    if trimmedAccessKey == ""
-      then Left "MinIO rootUser secret field is empty"
-      else
-        if trimmedSecretKey == ""
-          then Left "MinIO rootPassword secret field is empty"
-          else Right (trimmedAccessKey, trimmedSecretKey)
+harborStoragePolicyJson :: String
+harborStoragePolicyJson =
+  unlines
+    [ "{"
+    , "  \"Version\": \"2012-10-17\","
+    , "  \"Statement\": ["
+    , "    {"
+    , "      \"Effect\": \"Allow\","
+    , "      \"Action\": [\"s3:GetObject\", \"s3:PutObject\", \"s3:DeleteObject\", \"s3:AbortMultipartUpload\", \"s3:ListMultipartUploadParts\"],"
+    , "      \"Resource\": [\"arn:aws:s3:::" ++ harborRegistryStorageBucket ++ "/*\"]"
+    , "    },"
+    , "    {"
+    , "      \"Effect\": \"Allow\","
+    , "      \"Action\": [\"s3:ListBucket\", \"s3:GetBucketLocation\", \"s3:ListBucketMultipartUploads\"],"
+    , "      \"Resource\": [\"arn:aws:s3:::" ++ harborRegistryStorageBucket ++ "\"]"
+    , "    }"
+    , "  ]"
+    , "}"
+    ]
+
+minioRootVaultMaterializedVolumeName :: String
+minioRootVaultMaterializedVolumeName = "minio-root-vault"
+
+minioRootVaultMaterializedPath :: String
+minioRootVaultMaterializedPath = "/vault-materialized"
+
+minioRootVaultInitContainer :: Value
+minioRootVaultInitContainer =
+  object
+    [ "name" .= ("vault-minio-root" :: String)
+    , "image" .= ("hashicorp/vault:1.18.3" :: String)
+    , "imagePullPolicy" .= ("IfNotPresent" :: String)
+    , "env"
+        .= [ object
+               [ "name" .= ("VAULT_ADDR" :: String)
+               , "value" .= ("http://vault.vault.svc.cluster.local:8200" :: String)
+               ]
+           , object
+               [ "name" .= ("VAULT_AUTH_PATH" :: String)
+               , "value" .= ("kubernetes" :: String)
+               ]
+           , object
+               [ "name" .= ("VAULT_ROLE" :: String)
+               , "value" .= ("minio" :: String)
+               ]
+           , object
+               [ "name" .= ("VAULT_SA_TOKEN_FILE" :: String)
+               , "value" .= ("/var/run/secrets/kubernetes.io/serviceaccount/token" :: String)
+               ]
+           ]
+    , "command" .= ["sh" :: String, "-ec"]
+    , "args"
+        .= [ unlines
+               [ "set -eu"
+               , "jwt=\"$(cat \"${VAULT_SA_TOKEN_FILE}\")\""
+               , "export VAULT_TOKEN=\"$(vault write -field=token \"auth/${VAULT_AUTH_PATH}/login\" role=\"${VAULT_ROLE}\" jwt=\"${jwt}\")\""
+               , "umask 077"
+               , "vault kv get -field=rootUser secret/minio/root > "
+                   ++ minioRootVaultMaterializedPath
+                   ++ "/rootUser"
+               , "vault kv get -field=rootPassword secret/minio/root > "
+                   ++ minioRootVaultMaterializedPath
+                   ++ "/rootPassword"
+               ]
+           ]
+    , "volumeMounts" .= [minioRootVaultMaterializedInitVolumeMount]
+    ]
+
+gatewayMinioVaultInitContainer :: Value
+gatewayMinioVaultInitContainer =
+  object
+    [ "name" .= ("vault-gateway-minio" :: String)
+    , "image" .= ("hashicorp/vault:1.18.3" :: String)
+    , "imagePullPolicy" .= ("IfNotPresent" :: String)
+    , "env"
+        .= [ object
+               [ "name" .= ("VAULT_ADDR" :: String)
+               , "value" .= ("http://vault.vault.svc.cluster.local:8200" :: String)
+               ]
+           , object
+               [ "name" .= ("VAULT_AUTH_PATH" :: String)
+               , "value" .= ("kubernetes" :: String)
+               ]
+           , object
+               [ "name" .= ("VAULT_ROLE" :: String)
+               , "value" .= ("gateway-minio-bootstrap" :: String)
+               ]
+           , object
+               [ "name" .= ("VAULT_SA_TOKEN_FILE" :: String)
+               , "value" .= ("/var/run/secrets/kubernetes.io/serviceaccount/token" :: String)
+               ]
+           ]
+    , "command" .= ["sh" :: String, "-ec"]
+    , "args"
+        .= [ unlines
+               [ "set -eu"
+               , "jwt=\"$(cat \"${VAULT_SA_TOKEN_FILE}\")\""
+               , "export VAULT_TOKEN=\"$(vault write -field=token \"auth/${VAULT_AUTH_PATH}/login\" role=\"${VAULT_ROLE}\" jwt=\"${jwt}\")\""
+               , "umask 077"
+               , "vault kv get -field=rootUser secret/minio/root > "
+                   ++ minioRootVaultMaterializedPath
+                   ++ "/rootUser"
+               , "vault kv get -field=rootPassword secret/minio/root > "
+                   ++ minioRootVaultMaterializedPath
+                   ++ "/rootPassword"
+               , "vault kv get -field=minio_access_key secret/gateway/gateway/minio > "
+                   ++ minioRootVaultMaterializedPath
+                   ++ "/gatewayMinioAccessKey"
+               , "vault kv get -field=minio_secret_key secret/gateway/gateway/minio > "
+                   ++ minioRootVaultMaterializedPath
+                   ++ "/gatewayMinioSecretKey"
+               ]
+           ]
+    , "volumeMounts" .= [minioRootVaultMaterializedInitVolumeMount]
+    ]
+
+minioRootFileEnv :: [Value]
+minioRootFileEnv =
+  [ object
+      [ "name" .= ("MINIO_ROOT_USER_FILE" :: String)
+      , "value" .= (minioRootVaultMaterializedPath ++ "/rootUser")
+      ]
+  , object
+      [ "name" .= ("MINIO_ROOT_PASSWORD_FILE" :: String)
+      , "value" .= (minioRootVaultMaterializedPath ++ "/rootPassword")
+      ]
+  ]
+
+gatewayMinioFileEnv :: [Value]
+gatewayMinioFileEnv =
+  [ object
+      [ "name" .= ("GW_USER_FILE" :: String)
+      , "value" .= (minioRootVaultMaterializedPath ++ "/gatewayMinioAccessKey")
+      ]
+  , object
+      [ "name" .= ("GW_PASS_FILE" :: String)
+      , "value" .= (minioRootVaultMaterializedPath ++ "/gatewayMinioSecretKey")
+      ]
+  ]
+
+minioRootVaultMaterializedVolumeMount :: Value
+minioRootVaultMaterializedVolumeMount =
+  object
+    [ "name" .= minioRootVaultMaterializedVolumeName
+    , "mountPath" .= minioRootVaultMaterializedPath
+    , "readOnly" .= True
+    ]
+
+minioRootVaultMaterializedInitVolumeMount :: Value
+minioRootVaultMaterializedInitVolumeMount =
+  object
+    [ "name" .= minioRootVaultMaterializedVolumeName
+    , "mountPath" .= minioRootVaultMaterializedPath
+    ]
+
+minioRootVaultMaterializedVolume :: Value
+minioRootVaultMaterializedVolume =
+  object
+    [ "name" .= minioRootVaultMaterializedVolumeName
+    , "emptyDir"
+        .= object
+          [ "medium" .= ("Memory" :: String)
+          , "sizeLimit" .= ("1Mi" :: String)
+          ]
+    ]
 
 harborStorageBackendManifestItems :: String -> String -> [Value]
 harborStorageBackendManifestItems accessKey secretKey =
@@ -2187,6 +3036,9 @@ harborStorageBackendManifestItems accessKey secretKey =
                   [ "spec"
                       .= object
                         [ "restartPolicy" .= ("OnFailure" :: String)
+                        , "serviceAccountName" .= minioReleaseName
+                        , "initContainers" .= [minioRootVaultInitContainer]
+                        , "volumes" .= [minioRootVaultMaterializedVolume]
                         , "containers"
                             .= [ object
                                    [ "name" .= ("bucket-bootstrap" :: String)
@@ -2195,34 +3047,41 @@ harborStorageBackendManifestItems accessKey secretKey =
                                    , "args"
                                        .= [ unlines
                                               [ "set -eu"
+                                              , "MINIO_ROOT_USER=\"$(cat \"$MINIO_ROOT_USER_FILE\")\""
+                                              , "MINIO_ROOT_PASSWORD=\"$(cat \"$MINIO_ROOT_PASSWORD_FILE\")\""
                                               , "mc alias set local " ++ minioClusterEndpoint ++ " \"$MINIO_ROOT_USER\" \"$MINIO_ROOT_PASSWORD\""
                                               , "mc mb --ignore-existing local/" ++ harborRegistryStorageBucket
+                                              , "mc admin user add local \"$HARBOR_STORAGE_ACCESS_KEY\" \"$HARBOR_STORAGE_SECRET_KEY\""
+                                              , "cat > /tmp/policy.json <<'POLICY_EOF'"
+                                              , harborStoragePolicyJson
+                                              , "POLICY_EOF"
+                                              , "mc admin policy detach local "
+                                                  ++ harborStoragePolicyName
+                                                  ++ " --user \"$HARBOR_STORAGE_ACCESS_KEY\" || true"
+                                              , "mc admin policy rm local "
+                                                  ++ harborStoragePolicyName
+                                                  ++ " || true"
+                                              , "mc admin policy create local "
+                                                  ++ harborStoragePolicyName
+                                                  ++ " /tmp/policy.json"
+                                              , "mc admin policy attach local "
+                                                  ++ harborStoragePolicyName
+                                                  ++ " --user \"$HARBOR_STORAGE_ACCESS_KEY\""
                                               ]
                                           ]
                                    , "env"
-                                       .= [ object
-                                              [ "name" .= ("MINIO_ROOT_USER" :: String)
-                                              , "valueFrom"
-                                                  .= object
-                                                    [ "secretKeyRef"
-                                                        .= object
-                                                          [ "name" .= minioReleaseName
-                                                          , "key" .= ("rootUser" :: String)
-                                                          ]
-                                                    ]
-                                              ]
-                                          , object
-                                              [ "name" .= ("MINIO_ROOT_PASSWORD" :: String)
-                                              , "valueFrom"
-                                                  .= object
-                                                    [ "secretKeyRef"
-                                                        .= object
-                                                          [ "name" .= minioReleaseName
-                                                          , "key" .= ("rootPassword" :: String)
-                                                          ]
-                                                    ]
-                                              ]
-                                          ]
+                                       .= ( minioRootFileEnv
+                                              ++ [ object
+                                                     [ "name" .= ("HARBOR_STORAGE_ACCESS_KEY" :: String)
+                                                     , "value" .= accessKey
+                                                     ]
+                                                 , object
+                                                     [ "name" .= ("HARBOR_STORAGE_SECRET_KEY" :: String)
+                                                     , "value" .= secretKey
+                                                     ]
+                                                 ]
+                                          )
+                                   , "volumeMounts" .= [minioRootVaultMaterializedVolumeMount]
                                    ]
                                ]
                         ]
@@ -2688,59 +3547,78 @@ homeSubstratePlatformComponents =
   , ContainerImage.ComponentVault
   ]
 
--- | secret_derivation_doctrine.md §7 steps 4–6 for the gateway chart, run
--- as a reconcile-time prerequisite of the host-CLI derived-secret consumer
--- 'ensureAdminPublicEdgeRoutes'. The host-CLI derive of the vscode OIDC
--- client secret (§5) "may [not] run before the gateway daemon reports
--- ready" (§7 ordering constraint), so reconcile must stand the daemon up
--- and gate on it here rather than racing it.
---
--- Steps: deploy the gateway chart (the daemon self-bootstraps its own
--- @gateway-event-keys@ Secret, so 'preApplyDerivedSecretsForRelease' skips
--- the gateway release rather than dialing a not-yet-running daemon),
+-- | Deploy the gateway chart as a reconcile-time platform component and
 -- install the loopback-only NodePort iptables restriction on home (mirrors
--- the @charts deploy gateway@ post-hook), then poll the daemon's derive
--- surface over the loopback NodePort until it answers.
+-- the @charts deploy gateway@ post-hook).
 --
 -- Idempotent: 'deployChartPlan' no-ops when the gateway release is already
--- installed, and the firewall + readiness steps are safe to repeat.
+-- installed, and the firewall step is safe to repeat.
 ensureGatewayChartReady
-  :: GatewayDeriveMode -> FilePath -> ValidatedSettings -> Substrate -> IO ExitCode
-ensureGatewayChartReady mode repoRoot settings substrate =
-  case mode of
-    -- 'TestSeed' means the integration harness is standing in for the
-    -- in-cluster gateway daemon (fake kubectl/helm/docker, no real cluster).
-    -- There is no real gateway to deploy a chart for or to dial for readiness,
-    -- and 'ensureAdminPublicEdgeRoutes' already derives the vscode secret from
-    -- the seed locally, so skip the real chart deploy + derive poll here.
-    -- Production ('ProductionGateway') runs the full path below.
-    TestSeed _ -> pure ExitSuccess
-    ProductionGateway -> ensureGatewayChartReadyForSubstrate mode repoRoot settings substrate
+  :: FilePath -> ValidatedSettings -> Substrate -> IO ExitCode
+ensureGatewayChartReady repoRoot settings substrate =
+  ensureGatewayChartReadyForSubstrate repoRoot settings substrate
+
+resolveOperationalAwsCredentialGate
+  :: FilePath -> ValidatedSettings -> IO OperationalAwsCredentialGate
+resolveOperationalAwsCredentialGate repoRoot settings =
+  case validateOperationalAwsCredentials config of
+    Left err -> pure (operationalAwsCredentialGateFromResult (Left err))
+    Right () -> do
+      credentialsResult <- resolveAwsCredentialsRefFromHostVault repoRoot "aws" (aws config)
+      pure (operationalAwsCredentialGateFromResult credentialsResult)
+ where
+  config = validatedConfig settings
+
+operationalAwsCredentialGateFromResult
+  :: Either String Credentials -> OperationalAwsCredentialGate
+operationalAwsCredentialGateFromResult result =
+  case result of
+    Left err
+      | operationalAwsCredentialAbsentError err -> OperationalAwsCredentialsAbsent err
+      | otherwise -> OperationalAwsCredentialsInvalid err
+    Right credentials
+      | operationalAwsCredentialsConfigured credentials -> OperationalAwsCredentialsReady
+      | otherwise ->
+          OperationalAwsCredentialsAbsent "operational aws.* resolved with an empty field"
+
+operationalAwsCredentialsConfigured :: Credentials -> Bool
+operationalAwsCredentialsConfigured credentials =
+  not (Text.null (Text.strip (access_key_id credentials)))
+    && not (Text.null (Text.strip (secret_access_key credentials)))
+    && not (Text.null (Text.strip (region credentials)))
+
+operationalAwsCredentialAbsentError :: String -> Bool
+operationalAwsCredentialAbsentError err =
+  any (`Text.isInfixOf` rendered) ["missing", "empty"]
+ where
+  rendered = Text.toLower (Text.pack err)
 
 ensureGatewayChartReadyForSubstrate
-  :: GatewayDeriveMode -> FilePath -> ValidatedSettings -> Substrate -> IO ExitCode
-ensureGatewayChartReadyForSubstrate mode repoRoot settings substrate =
-  case validateOperationalAwsCredentials (validatedConfig settings) of
-    -- The gateway chart needs operational AWS credentials (Route 53 / DNS
-    -- write gate; 'Prodbox.Lib.ChartPlatform' rejects an empty
-    -- @access_key_id@). A bare @cluster reconcile@ "stands up a fully
-    -- working local cluster with an empty aws.* block", so skip the gateway
-    -- daemon — and, downstream, 'ensureAdminPublicEdgeRoutes' — rather than
-    -- failing. The test harness materializes operational @aws.*@ before its
-    -- Phase 1.5 reconcile, and @--with-edge@ requires it, so both run there.
-    Left _ -> do
+  :: FilePath -> ValidatedSettings -> Substrate -> IO ExitCode
+ensureGatewayChartReadyForSubstrate repoRoot settings substrate = do
+  credentialGate <- resolveOperationalAwsCredentialGate repoRoot settings
+  case credentialGate of
+    -- The gateway chart needs resolved operational AWS credentials for its
+    -- Route 53 DNS write gate. A bare @cluster reconcile@ is allowed to stand
+    -- up the local substrate before @aws.*@ has been materialized into Vault,
+    -- so skip the gateway daemon rather than deploy pods that crash on a
+    -- missing SecretRef.
+    OperationalAwsCredentialsAbsent _ -> do
       writeOutputLine
-        ( "Skipping gateway daemon deploy: operational aws.* is empty (bare"
-            ++ " local cluster reconcile). The gateway chart needs Route 53"
-            ++ " credentials; populate aws.* via the test harness or"
+        ( "Skipping gateway daemon deploy: operational aws.* is empty or"
+            ++ " missing in Vault (bare local cluster reconcile). The gateway"
+            ++ " chart needs Route 53 credentials; populate aws.* via the test harness or"
             ++ " `prodbox aws setup` to bring the gateway up."
         )
       pure ExitSuccess
-    Right () -> ensureGatewayChartReadyCredentialed mode repoRoot settings substrate
+    OperationalAwsCredentialsInvalid err ->
+      failWith ("load operational AWS credentials from Vault: " ++ err)
+    OperationalAwsCredentialsReady ->
+      ensureGatewayChartReadyCredentialed repoRoot settings substrate
 
 ensureGatewayChartReadyCredentialed
-  :: GatewayDeriveMode -> FilePath -> ValidatedSettings -> Substrate -> IO ExitCode
-ensureGatewayChartReadyCredentialed mode repoRoot settings substrate = do
+  :: FilePath -> ValidatedSettings -> Substrate -> IO ExitCode
+ensureGatewayChartReadyCredentialed repoRoot settings substrate = do
   secretsResult <- resolveChartSecrets repoRoot gatewayNamespace
   case secretsResult of
     Left err -> failWith err
@@ -2756,7 +3634,7 @@ ensureGatewayChartReadyCredentialed mode repoRoot settings substrate = do
       case planResult of
         Left err -> failWith err
         Right plan -> do
-          deployResult <- deployChartPlan mode plan
+          deployResult <- deployChartPlan plan
           case deployResult of
             Left err -> failWith err
             Right report -> do
@@ -2767,68 +3645,25 @@ ensureGatewayChartReadyCredentialed mode repoRoot settings substrate = do
                 _ -> pure ExitSuccess
               case firewallExit of
                 ExitFailure _ -> pure firewallExit
-                ExitSuccess -> waitForGatewayDeriveReady
-
--- | Bounded poll of the gateway daemon's @/v1/secret/derive@ surface over
--- the loopback NodePort, so the host-CLI derived-secret consumer that runs
--- next ('ensureAdminPublicEdgeRoutes') cannot race a not-yet-ready daemon
--- (secret_derivation_doctrine.md §7 step 6). A successful derive proves the
--- daemon is up, reachable on the loopback NodePort, and has read or minted
--- the master seed — exactly the conditions the subsequent derive needs.
-waitForGatewayDeriveReady :: IO ExitCode
-waitForGatewayDeriveReady = go gatewayDeriveReadyAttempts
- where
-  endpoint = GatewayClient.hostLoopbackGatewayEndpoint defaultGatewayNodePort
-  go :: Int -> IO ExitCode
-  go remaining = do
-    deriveResult <- GatewayClient.derive endpoint vscodeClientSecretContext
-    case deriveResult of
-      Right _ -> pure ExitSuccess
-      Left err
-        | remaining <= 1 ->
-            failWith
-              ( "gateway daemon did not become ready for host-CLI secret"
-                  ++ " derivation over the loopback NodePort after "
-                  ++ show gatewayDeriveReadyAttempts
-                  ++ " attempts: "
-                  ++ GatewayClient.renderGatewayError err
-              )
-        | otherwise -> do
-            threadDelay gatewayDeriveReadyDelayMicroseconds
-            go (remaining - 1)
-
--- | Readiness-poll budget for 'waitForGatewayDeriveReady': 60 attempts at a
--- 3-second cadence bounds the wait at ~3 minutes, comfortably covering
--- gateway Pod scheduling plus master-seed acquisition from MinIO.
-gatewayDeriveReadyAttempts :: Int
-gatewayDeriveReadyAttempts = 60
-
-gatewayDeriveReadyDelayMicroseconds :: Int
-gatewayDeriveReadyDelayMicroseconds = 3 * 1000 * 1000
+                ExitSuccess -> pure ExitSuccess
 
 ensureAdminPublicEdgeRoutes
-  :: GatewayDeriveMode -> FilePath -> ValidatedSettings -> Substrate -> String -> String -> IO ExitCode
-ensureAdminPublicEdgeRoutes mode repoRoot settings substrate prodboxId labelValue =
-  case validateOperationalAwsCredentials (validatedConfig settings) of
-    -- Admin public-edge routes derive the vscode OIDC secret over the
-    -- gateway daemon, which 'ensureGatewayChartReady' only stands up when
-    -- operational credentials are present. Mirror that gate so a bare
-    -- @cluster reconcile@ (empty aws.*, no gateway) skips cleanly rather
-    -- than dialing a daemon that was intentionally not deployed.
-    Left _ -> pure ExitSuccess
-    Right () -> ensureAdminPublicEdgeRoutesCredentialed mode repoRoot settings substrate prodboxId labelValue
+  :: FilePath -> ValidatedSettings -> Substrate -> String -> String -> IO ExitCode
+ensureAdminPublicEdgeRoutes repoRoot settings substrate prodboxId labelValue = do
+  credentialGate <- resolveOperationalAwsCredentialGate repoRoot settings
+  case credentialGate of
+    -- Admin public-edge routes need the vscode OIDC secret from Vault and are
+    -- only meaningful once the Route 53-writing gateway is credentialed.
+    OperationalAwsCredentialsAbsent _ -> pure ExitSuccess
+    OperationalAwsCredentialsInvalid err ->
+      failWith ("load operational AWS credentials from Vault: " ++ err)
+    OperationalAwsCredentialsReady ->
+      ensureAdminPublicEdgeRoutesCredentialed repoRoot settings substrate prodboxId labelValue
 
 ensureAdminPublicEdgeRoutesCredentialed
-  :: GatewayDeriveMode -> FilePath -> ValidatedSettings -> Substrate -> String -> String -> IO ExitCode
-ensureAdminPublicEdgeRoutesCredentialed mode repoRoot settings substrate prodboxId labelValue = do
-  -- Sprint 3.13 chunks 11 + 12: the OIDC client secrets (vscode / api /
-  -- websocket / demo-user) are now master-seed-derived and materialized
-  -- by the gateway daemon's `ensure-namespace` handler into the
-  -- `keycloak-oidc-clients` Secret in the `keycloak` namespace. The
-  -- host-side `resolveChartSecrets` cache is gone; this function reads
-  -- `VSCODE_CLIENT_SECRET` (which the harbor / minio admin SecurityPolicies
-  -- both reuse) directly from the cluster Secret via @kubectl@.
-  clientSecretResult <- readKeycloakVscodeClientSecret mode
+  :: FilePath -> ValidatedSettings -> Substrate -> String -> String -> IO ExitCode
+ensureAdminPublicEdgeRoutesCredentialed repoRoot settings substrate prodboxId labelValue = do
+  clientSecretResult <- readKeycloakVscodeClientSecret repoRoot
   case clientSecretResult of
     Left err -> failWith err
     Right clientSecret ->
@@ -2845,50 +3680,12 @@ ensureAdminPublicEdgeRoutesCredentialed mode repoRoot settings substrate prodbox
                   ExitFailure _ -> failWith ("kubectl apply failed: " ++ outputDetail output)
         )
 
--- | Host-side acquisition of the @VSCODE_CLIENT_SECRET@ — the value the
--- gateway daemon writes into the @keycloak-oidc-clients@ Secret — for the
--- @ensureAdminPublicEdgeRoutes@ ordering fix: that reconciler runs
--- /during/ platform setup, before any chart deploys, so the
--- @keycloak-oidc-clients@ Secret doesn't exist yet (the keycloak namespace
--- doesn't even exist). The host therefore asks the gateway daemon to
--- derive the value over the loopback NodePort
--- ('Prodbox.Gateway.Client.derive') instead of reading the raw master
--- seed itself (Sprint 3.16, @secret_derivation_doctrine.md §2/§5@). The
--- context string — @oidcClientSecretContext "vscode" "vscode"@ — matches
--- the daemon's Inventory exactly, so the host and daemon agree on the
--- value byte-for-byte.
---
--- Returns the URL-safe-base64 string Keycloak will register for the
--- @vscode@ OIDC client, which the harbor and minio admin
--- @SecurityPolicy@'s reuse as their client secret too.
-readKeycloakVscodeClientSecret :: GatewayDeriveMode -> IO (Either String String)
-readKeycloakVscodeClientSecret mode =
-  case mode of
-    TestSeed seed ->
-      pure (Right (Text.unpack (deriveBase64Url seed vscodeClientSecretContext)))
-    ProductionGateway -> do
-      deriveResult <-
-        GatewayClient.derive
-          (GatewayClient.hostLoopbackGatewayEndpoint defaultGatewayNodePort)
-          vscodeClientSecretContext
-      pure $ case deriveResult of
-        Left err ->
-          Left
-            ( "gateway derive of vscode OIDC client secret failed: "
-                ++ GatewayClient.renderGatewayError err
-            )
-        Right response -> Right (Text.unpack (deriveResponseDerived response))
-
--- | The host-side derive context for the vscode OIDC client secret. Sprint
--- 3.13 chunk 32: the daemon's Inventory uses the deploy-namespace (`vscode`
--- for the vscode root chart's transitive keycloak dep), so the host-side
--- derive context must match. Pre-chunk-32 this was hardcoded to `"keycloak"`
--- and named a context Keycloak never registered, breaking the harbor/minio
--- admin SecurityPolicy OIDC handshake. Shared by
--- 'readKeycloakVscodeClientSecret' and the reconcile-time gateway readiness
--- gate 'waitForGatewayDeriveReady'.
-vscodeClientSecretContext :: Text.Text
-vscodeClientSecretContext = oidcClientSecretContext "vscode" "vscode"
+-- | Host-side acquisition of the @vscode@ OIDC client secret, which the
+-- harbor and minio admin @SecurityPolicy@ resources reuse.
+readKeycloakVscodeClientSecret :: FilePath -> IO (Either String String)
+readKeycloakVscodeClientSecret repoRoot = do
+  result <- readHostVaultKvField repoRoot "secret" "vscode/oidc/vscode" "client_secret"
+  pure (Text.unpack <$> result)
 
 adminPublicEdgeManifestItems
   :: ValidatedSettings -> Substrate -> String -> String -> String -> [Value]
@@ -3481,37 +4278,52 @@ certManagerHelmValues _prodboxId labelValue =
 ensureAcmeRuntime :: FilePath -> ValidatedSettings -> String -> String -> IO ExitCode
 ensureAcmeRuntime repoRoot settings prodboxId labelValue = do
   currentEnvironment <- getEnvironment
-  withTemporaryJsonManifest
-    "prodbox-acme-runtime"
-    (acmeRuntimeManifest SubstrateHomeLocal settings prodboxId labelValue)
-    ( \manifestPath -> do
-        applyExit <-
-          runCommand
-            Subprocess
-              { subprocessPath = "kubectl"
-              , subprocessArguments = ["apply", "-f", manifestPath]
-              , subprocessEnvironment = Nothing
-              , subprocessWorkingDirectory = Just repoRoot
-              }
-        case applyExit of
-          ExitFailure _ -> pure applyExit
-          ExitSuccess -> do
-            issuerWaitEnv <- awsCommandEnvironment currentEnvironment settings
-            -- Wait for the ZeroSSL ClusterIssuer rendered from the manifest
-            -- to become Ready before reporting the ACME runtime up.
-            runCommand
-              Subprocess
-                { subprocessPath = "kubectl"
-                , subprocessArguments =
-                    [ "wait"
-                    , "--for=condition=Ready"
-                    , "clusterissuer/" ++ publicEdgeClusterIssuerName
-                    , "--timeout=300s"
-                    ]
-                , subprocessEnvironment = Just issuerWaitEnv
-                , subprocessWorkingDirectory = Just repoRoot
-                }
-    )
+  credentialsResult <-
+    resolveAwsCredentialsRefFromHostVault
+      repoRoot
+      "aws"
+      (aws (validatedConfig settings))
+  case credentialsResult of
+    Left err -> failWith ("load operational AWS credentials from Vault: " ++ err)
+    Right route53Credentials ->
+      withTemporaryJsonManifest
+        "prodbox-acme-runtime"
+        ( acmeRuntimeManifestWithCredentials
+            SubstrateHomeLocal
+            settings
+            (substrateHostedZoneId settings SubstrateHomeLocal)
+            route53Credentials
+            prodboxId
+            labelValue
+        )
+        ( \manifestPath -> do
+            applyExit <-
+              runCommand
+                Subprocess
+                  { subprocessPath = "kubectl"
+                  , subprocessArguments = ["apply", "-f", manifestPath]
+                  , subprocessEnvironment = Nothing
+                  , subprocessWorkingDirectory = Just repoRoot
+                  }
+            case applyExit of
+              ExitFailure _ -> pure applyExit
+              ExitSuccess -> do
+                issuerWaitEnv <- awsCommandEnvironment repoRoot currentEnvironment settings
+                -- Wait for the ZeroSSL ClusterIssuer rendered from the manifest
+                -- to become Ready before reporting the ACME runtime up.
+                runCommand
+                  Subprocess
+                    { subprocessPath = "kubectl"
+                    , subprocessArguments =
+                        [ "wait"
+                        , "--for=condition=Ready"
+                        , "clusterissuer/" ++ publicEdgeClusterIssuerName
+                        , "--timeout=300s"
+                        ]
+                    , subprocessEnvironment = Just issuerWaitEnv
+                    , subprocessWorkingDirectory = Just repoRoot
+                    }
+        )
 
 acmeRuntimeManifest :: Substrate -> ValidatedSettings -> String -> String -> [Value]
 acmeRuntimeManifest substrate settings =
@@ -3525,7 +4337,16 @@ acmeRuntimeManifest substrate settings =
 -- compliant resolution algorithm.
 acmeRuntimeManifestWith
   :: Substrate -> ValidatedSettings -> Text.Text -> String -> String -> [Value]
-acmeRuntimeManifestWith _substrate settings hostedZoneId prodboxId labelValue =
+acmeRuntimeManifestWith substrate settings hostedZoneId =
+  acmeRuntimeManifestWithCredentials
+    substrate
+    settings
+    hostedZoneId
+    (emptyRoute53Credentials settings)
+
+acmeRuntimeManifestWithCredentials
+  :: Substrate -> ValidatedSettings -> Text.Text -> Credentials -> String -> String -> [Value]
+acmeRuntimeManifestWithCredentials _substrate settings hostedZoneId route53Credentials prodboxId labelValue =
   route53Secret
     : maybe [] pure maybeEabSecret
     ++ [clusterIssuer]
@@ -3545,8 +4366,8 @@ acmeRuntimeManifestWith _substrate settings hostedZoneId prodboxId labelValue =
       , "type" .= ("Opaque" :: String)
       , "stringData"
           .= object
-            [ "access-key-id" .= Text.unpack (access_key_id (aws config))
-            , "secret-access-key" .= Text.unpack (secret_access_key (aws config))
+            [ "access-key-id" .= Text.unpack (access_key_id route53Credentials)
+            , "secret-access-key" .= Text.unpack (secret_access_key route53Credentials)
             ]
       ]
   maybeEabSecret =
@@ -3609,6 +4430,15 @@ acmeRoute53Solver awsRegion hostedZoneId =
           ]
     ]
 
+emptyRoute53Credentials :: ValidatedSettings -> Credentials
+emptyRoute53Credentials settings =
+  Credentials
+    { access_key_id = ""
+    , secret_access_key = ""
+    , session_token = Nothing
+    , region = awsCredentialRegion (aws (validatedConfig settings))
+    }
+
 -- | The ZeroSSL ACME @ClusterIssuer@ @spec.acme@ object: the
 -- @acme.server@ directory, the ZeroSSL account key, the DNS-01 Route 53
 -- solver, and the required ZeroSSL external account binding.
@@ -3618,7 +4448,7 @@ acmeClusterIssuerSpec settings hostedZoneId =
     [ "server" .= Text.unpack (server acmeConfig)
     , "email" .= Text.unpack (email acmeConfig)
     , "privateKeySecretRef" .= object ["name" .= zerosslAccountKeySecretName]
-    , "solvers" .= [acmeRoute53Solver (region awsConfig) hostedZoneId]
+    , "solvers" .= [acmeRoute53Solver (awsCredentialRegion awsConfig) hostedZoneId]
     ]
       ++ maybe [] (\binding -> ["externalAccountBinding" .= binding]) externalAccountBinding
  where
@@ -3685,7 +4515,7 @@ reconcileDnsBootstrapRecord repoRoot settings =
         Left err -> failWith err
         Right publicIp -> do
           environment <- getEnvironment
-          awsEnvironment <- awsCommandEnvironment environment settings
+          awsEnvironment <- awsCommandEnvironment repoRoot environment settings
           let config = validatedConfig settings
               zoneIdValue = Text.unpack (zone_id (route53 config))
               ttlValue = fromIntegral (demo_ttl (domain config)) :: Integer
@@ -3936,9 +4766,17 @@ kubectlApplyJsonManifest repoRoot prefix items =
           ExitSuccess -> pure ExitSuccess
           ExitFailure _ -> failWith ("kubectl apply failed: " ++ outputDetail output)
 
-awsCommandEnvironment :: [(String, String)] -> ValidatedSettings -> IO [(String, String)]
-awsCommandEnvironment baseEnvironment settings =
-  pure (overlayAwsCredentials baseEnvironment (aws (validatedConfig settings)))
+awsCommandEnvironment
+  :: FilePath -> [(String, String)] -> ValidatedSettings -> IO [(String, String)]
+awsCommandEnvironment repoRoot baseEnvironment settings = do
+  credentialsResult <-
+    resolveAwsCredentialsRefFromHostVault
+      repoRoot
+      "aws"
+      (aws (validatedConfig settings))
+  case credentialsResult of
+    Left err -> fail ("load operational AWS credentials from Vault: " ++ err)
+    Right credentials -> pure (overlayAwsCredentials baseEnvironment credentials)
 
 lookupNonEmptyEnv :: String -> IO (Maybe String)
 lookupNonEmptyEnv name = do
@@ -4812,6 +5650,7 @@ renderRetainedStateNotice _repoRoot retainedManualPvRoot = do
   writeOutputLine "Local cluster uninstalled. Preserved host state:"
   writeOutputLine ("  - manual PV root: " ++ retainedManualPvRoot)
   writeOutputLine ("  - `.data/` (MinIO-backed per-run Pulumi state) is preserved")
+  writeOutputLine ("  - Vault durable PV: " ++ retainedManualPvRoot </> "vault" </> "vault" </> "0")
   writeOutputLine
     "Per-run AWS stacks (if any) were NOT destroyed by this local uninstall. To destroy them, run `prodbox cluster delete --cascade` or `prodbox aws stack <name> destroy --yes`."
   -- Sprint 3.13 chunk 16: the @.prodbox-state/charts/@ chart-state root is
@@ -4922,28 +5761,12 @@ ensureHostStoragePath repoRoot hostPath owner =
 -- | Sprint 4.31: the retained StorageClass plus the deterministic PV + prebound
 -- PVC for every always-on retained StatefulSet (MinIO, Vault), all on the
 -- unified @.data/<namespace>/<StatefulSet>/<ordinal>@ scheme.
-storageManifestItems :: FilePath -> FilePath -> String -> String -> String -> [Value]
-storageManifestItems minioHostPath vaultHostPath nodeName prodboxId labelValue =
-  [ storageClassItem
-  , retainedPersistentVolume
-      minioNamespace
-      minioPersistentVolume
-      minioPersistentClaim
-      minioStorageSize
-      minioHostPath
-      nodeName
-      prodboxId
-      labelValue
-  , retainedPersistentVolume
-      vaultStorageNamespace
-      vaultPersistentVolume
-      vaultPersistentClaim
-      vaultStorageSize
-      vaultHostPath
-      nodeName
-      prodboxId
-      labelValue
-  ]
+storageManifestItems :: [RetainedLocalStorageBinding] -> String -> String -> String -> [Value]
+storageManifestItems bindings nodeName prodboxId labelValue =
+  storageClassItem
+    : map
+      (\binding -> retainedPersistentVolume binding nodeName prodboxId labelValue)
+      bindings
  where
   storageClassItem =
     object
@@ -4970,15 +5793,14 @@ storageManifestItems minioHostPath vaultHostPath nodeName prodboxId labelValue =
 -- namespace, for one, is created later by 'ensureVaultRuntime'). Each
 -- StatefulSet's @data@ volumeClaimTemplate creates the matching PVC, which the
 -- @claimRef@ plus @WaitForFirstConsumer@ binds to this PV on first pod schedule.
-retainedPersistentVolume
-  :: String -> String -> String -> String -> FilePath -> String -> String -> String -> Value
-retainedPersistentVolume namespace pvName pvcName size hostPath nodeName prodboxId labelValue =
+retainedPersistentVolume :: RetainedLocalStorageBinding -> String -> String -> String -> Value
+retainedPersistentVolume binding nodeName prodboxId labelValue =
   object
     [ "apiVersion" .= ("v1" :: String)
     , "kind" .= ("PersistentVolume" :: String)
     , "metadata"
         .= object
-          [ "name" .= pvName
+          [ "name" .= retainedLocalStorageBindingPersistentVolume binding
           , "annotations"
               .= object [Key.fromString prodboxAnnotationKey .= prodboxId]
           , "labels"
@@ -4986,19 +5808,19 @@ retainedPersistentVolume namespace pvName pvcName size hostPath nodeName prodbox
           ]
     , "spec"
         .= object
-          [ "capacity" .= object ["storage" .= size]
+          [ "capacity" .= object ["storage" .= retainedLocalStorageBindingStorageSize binding]
           , "volumeMode" .= ("Filesystem" :: String)
           , "accessModes" .= (["ReadWriteOnce" :: String] :: [String])
           , "persistentVolumeReclaimPolicy" .= ("Retain" :: String)
           , "storageClassName" .= manualStorageClass
           , "claimRef"
               .= object
-                [ "namespace" .= namespace
-                , "name" .= pvcName
+                [ "namespace" .= retainedLocalStorageBindingNamespace binding
+                , "name" .= retainedLocalStorageBindingPersistentClaim binding
                 ]
           , "hostPath"
               .= object
-                [ "path" .= hostPath
+                [ "path" .= retainedLocalStorageBindingHostPath binding
                 , "type" .= ("DirectoryOrCreate" :: String)
                 ]
           , "nodeAffinity"

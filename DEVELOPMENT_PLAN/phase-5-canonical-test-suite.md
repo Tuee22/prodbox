@@ -15,7 +15,9 @@
 
 ## Phase Status
 
-🔄 **Reopened 2026-06-11, finalized 2026-06-14** (Vault-root + cluster federation) — Sprint `5.8`
+⏸️ **Blocked 2026-06-16 after code-owned landing** — reopened 2026-06-11, finalized 2026-06-14,
+refined 2026-06-15 (Vault-root + cluster
+federation; Model-B whole-system zero-child-info refinement) — Sprint `5.8`
 reframes to the finalized end state: the `sealed-vault` canonical validation seals Vault and asserts
 the whole stack fails closed (no secret resolves, no cert issues, no MinIO object decrypts, no
 Pulumi op runs, gateway daemon and Keycloak fail their readiness gates) without leaking metadata.
@@ -23,13 +25,28 @@ It now **also** covers the retired master-seed derivation surface — there is n
 and no daemon `/v1/secret/*` RPC to fall back to, so the sealed stack cannot reconstruct a secret
 from any non-Vault source — and the cluster-federation auto-unseal cascade, where a sealed or
 unreachable parent Vault bricks its children (the fail-closed brick cascades down the transit-seal
-trust tree from the root). The SecretRef golden tests prove generated Dhall/config artifacts carry
+trust tree from the root). The 2026-06-15 refinement (Model B + whole-system zero-child-info; see the
+2026-06-15 Closure Status in [README.md](README.md) and
+[vault_doctrine.md §9/§10](../documents/engineering/vault_doctrine.md)) adds the
+**cross-surface sealed-Vault red-team** to `5.8`: with the parent Vault sealed, a combined
+bucket-level `aws s3api ls` + `list-objects` against the one generically-named bucket, a host-disk
+walk of `.data/prodbox/minio/0`, a Kubernetes ConfigMap/Secret dump, and a log/output audit together
+reveal only opaque `objects/<hmac>.enc` at a constant decoy-padded count — no role-revealing bucket
+name, no `aws-eks`/stack-name object key, no cleartext body, no child-named namespace, and no
+exists-vs-absent (`NoSuchKey`) oracle. The SecretRef golden tests prove generated Dhall/config artifacts carry
 only `SecretRef.Vault` / `SecretRef.TransitKey` values on the `FileSecret`-free union — there is no
 `SecretRefFile` constructor to render — per
 [vault_doctrine.md](../documents/engineering/vault_doctrine.md) and
 [cluster_federation_doctrine.md](../documents/engineering/cluster_federation_doctrine.md). Sprint
-`5.8` is 📋 Planned on its owned surface; existing validations are unchanged and the new sealed-Vault
-suite content extends them. See the 2026-06-14 Closure Status entry in [README.md](README.md).
+`5.8` is ⏸️ Blocked on its remaining live suite surface: the named `sealed-vault` validation, planner
+surface, parser/docs surface, pure sealed-state forbidden-pattern audit helper, generated
+Dhall/config SecretRef sweep, and live home-substrate proof have landed. Existing validations are
+unchanged and the new sealed-Vault suite content extends them. The full live AWS-substrate and
+parent/child red-team remains open until Sprint `7.14` moves raw Pulumi checkpoints behind the
+Model-B interposition; Sprint `7.14` live validation is currently blocked in IAM-harness preflight
+until Vault contains `secret/aws/admin-for-test-simulation`. See the 2026-06-14 and 2026-06-16
+Closure Status entries in
+[README.md](README.md).
 
 ✅ **Prior closure preserved — reclosed 2026-06-09** — Sprints `5.1`–`5.5` remain closed on the
 canonical-suite content that proves public-host behavior (the public-edge diagnostic, named external
@@ -54,9 +71,8 @@ validations is tracked in [phase-7-aws-substrate-foundations.md](phase-7-aws-sub
 
 Per [development_plan_standards.md](development_plan_standards.md) standards rule E, Phase `6` (the
 clean-room handoff) stays ✅ Done on its owned surface, while the overall handoff still depends on
-the separately reopened implementation phases `1`–`4`, `7`, and `8` and the newly reopened Phase `2`
-(cluster-federation custody, Sprint `2.26`) carrying the finalized Vault-root + cluster-federation
-model.
+the separately reopened implementation phases `3`–`5`, `7`, and `8`. Phases `1` and `2` have
+reclosed their finalized Vault-root + cluster-federation foundations.
 
 ## Phase Summary
 
@@ -101,6 +117,7 @@ The full inventory of canonical-suite validations owned by this phase lives in
 | `charts-websocket` | `public_edge_ready`, `tool_curl` | Real WebSocket upgrade against `/ws`; cross-pod broadcast; revocation-driven reconnect; readiness-based drain |
 | `admin-routes` | `public_edge_ready`, `tool_curl` | Harbor and MinIO auth + RBAC on the shared public edge |
 | `keycloak-invite` | `aws_credentials_valid`, `route53_accessible`, `ses_sending_identity_verified`, `ses_receive_rule_set_active`, `ses_receive_bucket_accessible`, `pulumi_logged_in` | Operator-invited Keycloak flow end-to-end: `prodbox users invite` → SES capture-bucket poll → invite link follow → credential setup → OIDC login |
+| `sealed-vault` | `k8s_ready`, chart-platform prereqs | Seals Vault after a reconciled runtime, asserts sealed-state fail-closed behavior, and runs the cross-surface zero-child-info audit |
 
 The "Prerequisites" column names declared prerequisite nodes from `src/Prodbox/Prerequisite.hs`,
 keyed by the typed `PrerequisiteId` ADT (Sprint `5.6`; the registry is no longer keyed by raw
@@ -499,11 +516,11 @@ prerequisites, capability-derived IAM tier, the `public_edge_ready` split, the s
 `verifyAwsEksSnapshot`, and the three registry-generated destructive goldens). The live
 AWS-substrate aggregate and the live public-edge-readiness exercise are operator-driven.
 
-## Sprint 5.8: Sealed-Vault Canonical Validation and SecretRef Golden Tests 📋
+## Sprint 5.8: Sealed-Vault Canonical Validation and SecretRef Golden Tests ⏸️
 
-**Status**: Planned
+**Status**: Blocked (2026-06-16, code-owned named-suite surface landed; live red-team remains)
 **Implementation**: `src/Prodbox/TestValidation.hs`, `src/Prodbox/TestPlan.hs`, `test/`
-**Blocked by**: Sprints `1.37`, `3.17`, `3.19`, `3.20`, `4.29`, `4.32`
+**Blocked by**: Sprint `7.14` live AWS proof; Vault is missing `secret/aws/admin-for-test-simulation`, so the AWS IAM harness stops before provisioning
 **Docs to update**: `documents/engineering/unit_testing_policy.md`, `documents/engineering/vault_doctrine.md`, `documents/engineering/cluster_federation_doctrine.md`
 
 ### Objective
@@ -519,7 +536,10 @@ the two finalized surfaces this end state adds: the
 retired master-seed derivation surface (no `master-seed` object, no daemon `/v1/secret/*` RPC to
 fall back to) and the cluster-federation auto-unseal cascade (a sealed or unreachable parent Vault
 bricks its children) per
-[cluster_federation_doctrine.md](../documents/engineering/cluster_federation_doctrine.md). This
+[cluster_federation_doctrine.md](../documents/engineering/cluster_federation_doctrine.md). Under the
+2026-06-15 Model-B + whole-system zero-child-info refinement it also owns the **cross-surface
+sealed-Vault red-team** — a combined bucket/object/host-disk/Kubernetes/log probe proving the
+whole-system zero-child-info invariant ([vault_doctrine.md §9/§10/§19](../documents/engineering/vault_doctrine.md)). This
 extends the canonical suite; existing validations are unchanged.
 
 ### Deliverables
@@ -538,6 +558,23 @@ extends the canonical suite; existing validations are unchanged.
   cluster's `seal "transit"`-backed Vault cannot auto-unseal, and the child's own fail-closed brick
   follows — proving the unseal cascade roots in the operator unsealing the root cluster
   (Sprint `3.20`, Sprint `4.32`).
+- Cross-surface sealed-Vault red-team (Model-B whole-system zero-child-info; gated on the
+  Sprint `3.17` deployed Vault): with the parent Vault sealed, the suite runs a combined probe across
+  all four leak surfaces and asserts none carries child information —
+  - a bucket-level `aws s3api ls` plus `list-objects` against the **one generically-named bucket**
+    returns no role-revealing bucket name (`prodbox` / `prodbox-test-pulumi-backends` are retired)
+    and only opaque `objects/<hmac>.enc` keys under one flat prefix — no `aws-eks`/stack-name object
+    key — at a **constant** decoy-padded count, so the listing count carries no signal;
+  - a host-disk walk of the `.data/prodbox/minio/0` hostPath PV reveals only opaque-named ciphertext,
+    no cleartext object body and no legible logical name (the `prodbox-envelope-v2` stored AAD is
+    `base64(SHA256(aad))`, not cleartext);
+  - a Kubernetes ConfigMap/Secret dump reveals no child-cluster name and no child-named namespace —
+    downstream identity is custodied in Vault KV, namespaces are opaque IDs;
+  - a log/output audit across the residue-query, MinIO-backend, Pulumi-backend, and stack-output
+    sites emits no bucket/key/stack/child name and exposes **no exists-vs-absent (`NoSuchKey`)
+    oracle**, because residue queries are gated behind the Vault-readiness check (Sprint `4.33`);
+  - the gateway daemon on its Kubernetes-auth path likewise cannot read the Vault-enveloped in-force
+    config while the parent Vault is sealed.
 - Golden tests that generated Dhall/config artifacts contain only `SecretRef.Vault` /
   `SecretRef.TransitKey` values — there is no `SecretRefFile` constructor to render — with no
   forbidden plaintext pattern (`AKIA`, `aws_secret_access_key`, `BEGIN PRIVATE KEY`,
@@ -547,17 +584,62 @@ extends the canonical suite; existing validations are unchanged.
   the test harness from `test-secrets.dhall`, never in production), Vault init/unseal/reconcile,
   fixture seeding from `test-secrets.dhall`, and teardown-preserves-Vault-PV.
 
+### Current State
+
+- `IntegrationSealedVault` and `ValidationSealedVault` are wired into the native `prodbox test
+  integration sealed-vault` surface, generated CLI docs, completions, and manpage.
+- The aggregate native validation order now runs `sealed-vault` after `charts-storage` and before
+  the destructive `lifecycle` validation.
+- `runSealedVaultValidation` records the runtime shape: detect the current Vault seal state, seal if
+  the runtime starts unsealed, assert `vault status` reports `sealed=True`, assert `aws stack eks
+  reconcile` fails at the sealed-Vault gate before Pulumi work, audit the MinIO hostPath and
+  Kubernetes ConfigMap/Secret names, and unseal again if the validation sealed Vault.
+- The targeted `sealed-vault` runbook reconciles the local platform with plain `cluster reconcile`
+  rather than `cluster reconcile --with-edge`, so a bare home cluster can prove sealed-Vault
+  behavior without requiring operational Route 53 credentials for the gateway chart. Public-edge
+  suites still use the edge runbook.
+- `sealedVaultAuditReport` is the pure forbidden-pattern oracle for the cross-surface red-team. It
+  accepts only the generic `prodbox-state` bucket, opaque `objects/<id>.enc` / `indexes/<id>.enc`
+  keys, and redacted `vault_status=... result=unobservable` output; it rejects stack names,
+  role-revealing buckets, child names, removed gateway `/v1/secret/*` RPCs, `SecretRefFile`, AWS
+  key literals, private-key literals, plaintext client secrets, passwords, Pulumi passphrases, and
+  kubeconfig user-token markers.
+- The generated Dhall/config SecretRef sweep is now executable in the unit suite. It covers
+  `renderConfigDhall`, `renderInForcePayload`, `gateway config-gen`, and the chart-side API,
+  gateway, gateway-orders, and websocket Dhall templates, failing on any sealed-Vault forbidden
+  pattern, rendered `SecretRefFile`, or plaintext/prompt `SecretRef` value constructor.
+
 ### Validation
 
 - `prodbox test integration sealed-vault` asserts every sealed-state row fails closed, including the
   no-derivation-fallback rows and the federation auto-unseal-cascade rows.
+- The cross-surface sealed-Vault red-team asserts the combined bucket-level `aws s3api ls` +
+  `list-objects`, host-disk walk of `.data/prodbox/minio/0`, Kubernetes ConfigMap/Secret dump, and
+  log/output audit reveal only opaque `objects/<hmac>.enc` at a constant count — no role-revealing
+  bucket name, no `aws-eks`/stack-name key, no cleartext body, no child-named namespace, and no
+  exists-vs-absent (`NoSuchKey`) oracle.
 - The SecretRef golden tests fail on any forbidden plaintext pattern and on any rendered
   `SecretRefFile` constructor.
+- Current code-owned validation: `cabal build --builddir=.build exe:prodbox` passes;
+  `./.build/prodbox dev lint haskell --write` reports no hints; focused Sprint `5.8` unit tests pass
+  2/2; the generated Dhall/config SecretRef sweep passes 1/1; the `test planning` unit filter
+  passes 42/42; the parser filter passes 260/260; and the CLI generated-output goldens pass 3/3 for
+  the new `sealed-vault` command. Full local gates also pass: full unit suite 950/950,
+  `./.build/prodbox test integration cli` 38/38, `./.build/prodbox test integration env` 38/38,
+  `./.build/prodbox dev docs check` 0, `./.build/prodbox dev lint docs` 0,
+  `git diff --check` 0, and `./.build/prodbox dev check` 0.
+- Live home-substrate validation (2026-06-16): `./.build/prodbox test integration sealed-vault`
+  passes. The runbook reconciled the local platform, skipped the gateway chart because operational
+  `aws.*` was absent from Vault, sealed Vault, proved `aws stack eks reconcile` stops at the
+  sealed-Vault gate before Pulumi starts, emitted `SEALED_VAULT_AUDIT=pass`, and restored Vault to
+  `sealed=False`. Follow-up inspection showed all cluster pods Running/Completed and no gateway Helm
+  release.
 
 ### Remaining Work
 
-- The both-substrate live sealed-Vault exercise, and the live parent/child federation auto-unseal
-  cascade exercise, are operator-driven.
+- The AWS-substrate side of the sealed-Vault exercise, the live parent/child federation auto-unseal
+  cascade exercise, and the live cross-surface sealed-Vault red-team remain open. They are gated on
+  the deployed Vault plus Sprint `7.14`'s raw Pulumi checkpoint decrypt-to-scratch interposition.
 
 ## Documentation Requirements
 
@@ -586,7 +668,11 @@ extends the canonical suite; existing validations are unchanged.
   ([vault_doctrine.md §19](../documents/engineering/vault_doctrine.md#19-red-team-checklist)) the
   `sealed-vault` validation and the SecretRef golden tests prove against the canonical suite,
   including the retired master-seed derivation surface (no `master-seed` object, no daemon
-  `/v1/secret/*` RPC) and the `FileSecret`-free `SecretRef` union.
+  `/v1/secret/*` RPC) and the `FileSecret`-free `SecretRef` union, plus the Model-B object-store and
+  whole-system zero-child-info surfaces (§9/§10) the cross-surface sealed-Vault red-team probes — the
+  one generically-named bucket, opaque `objects/<hmac>.enc` naming at a constant decoy-padded count,
+  the opaque-only `.data/prodbox/minio/0` hostPath, opaque Kubernetes namespaces, and the
+  no-exists-vs-absent-oracle log/output rule.
 - [documents/engineering/cluster_federation_doctrine.md](../documents/engineering/cluster_federation_doctrine.md) -
   for Sprint `5.8`, the Vault transit-seal trust tree and the fail-closed unseal cascade the
   `sealed-vault` validation proves when a parent Vault is sealed or unreachable.

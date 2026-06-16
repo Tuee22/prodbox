@@ -12,24 +12,26 @@
 -- real backend after manual @pulumi destroy@ runs, operator-machine
 -- moves, or any failure mode that left the file behind while the
 -- backend no longer carried the stack. This module talks to the
--- backend directly via @pulumi stack ls --json@ and
--- @pulumi stack output --show-secrets --json@.
+-- backend through the Sprint 7.14 encrypted decrypt-to-scratch helpers.
+-- The raw @listStacks@ / @fetchOutputs@ functions remain for compatibility
+-- and migration code that already holds an explicit @file://@ or legacy
+-- backend environment.
 --
--- The module is intentionally credential-agnostic: callers thread the
--- environment vector (which carries @PULUMI_BACKEND_URL@, MinIO or S3
--- credentials, and any other Pulumi knobs) and the working directory
--- (the per-stack Pulumi project root). That mirrors how the per-stack
--- modules already shell out for @pulumi up@ \/ @pulumi destroy@, so
--- nothing about the auth model changes here.
+-- The encrypted helpers own the supported production path: they hydrate
+-- a checkpoint into a RAM-backed @file://@ backend, run Pulumi there, and
+-- persist only the re-enveloped Model-B object-store body.
 module Prodbox.Infra.StackOutputs
   ( StackName (..)
   , StackOutputsError (..)
   , StackListEntry (..)
   , renderStackOutputsError
   , listStacks
+  , listEncryptedStack
   , parseListStacksPayload
   , stackPresentInList
+  , stackListFromCheckpointPresence
   , fetchOutputs
+  , fetchEncryptedOutputs
   , parseOutputsPayload
   )
 where
@@ -47,12 +49,23 @@ import Data.Map.Strict (Map)
 import Data.Map.Strict qualified as Map
 import Data.Text (Text)
 import Data.Text qualified as Text
+import Prodbox.Pulumi.EncryptedBackend
+  ( EncryptedBackendError
+  , PulumiScratch
+  , PulumiStackRef (..)
+  , fileBackendEnvironment
+  , pulumiScratchCheckpointPath
+  , renderEncryptedBackendError
+  , withDecryptedStack
+  )
 import Prodbox.Result (Result (..))
 import Prodbox.Subprocess
   ( ProcessOutput (..)
   , Subprocess (..)
   , captureSubprocessResult
   )
+import System.Directory (doesFileExist)
+import System.Environment (getEnvironment)
 import System.Exit (ExitCode (..))
 
 -- | Canonical Pulumi stack name. Wrapped to keep call sites from
@@ -100,7 +113,7 @@ renderStackOutputsError err = case err of
   StackOutputsParseFailed detail ->
     "failed to parse pulumi JSON output: " ++ detail
 
--- | Run @pulumi stack ls --json@ inside the supplied project directory
+-- | Legacy/migration helper: run @pulumi stack ls --json@ inside the supplied project directory
 -- with the supplied environment (which must carry
 -- @PULUMI_BACKEND_URL@ and any credentials the backend requires).
 -- Returns the list of stacks the backend currently reports. An empty
@@ -132,6 +145,39 @@ listStacks projectDir environment = do
         ExitSuccess -> case parseListStacksPayload (processStdout output) of
           Left detail -> Left (StackOutputsParseFailed detail)
           Right entries -> Right entries
+
+-- | Production Sprint 7.14 listing path. A stack is present when the
+-- Vault-encrypted Model-B object-store can decrypt its checkpoint into
+-- the scratch file backend. This avoids raw @pulumi stack ls@ against
+-- MinIO/S3 object names.
+listEncryptedStack
+  :: FilePath
+  -- ^ Repo root.
+  -> PulumiStackRef
+  -- ^ Pulumi project name + stack id.
+  -> IO (Either StackOutputsError [StackListEntry])
+listEncryptedStack repoRoot stackRef = do
+  result <-
+    withDecryptedStack repoRoot stackRef $ \scratch -> do
+      checkpointExists <- doesFileExist (pulumiScratchCheckpointPath scratch)
+      pure
+        ( Right
+            ( stackListFromCheckpointPresence
+                (StackName (pulumiStackName stackRef))
+                checkpointExists
+            )
+        )
+  pure (mapEncryptedBackendResult result)
+
+stackListFromCheckpointPresence :: StackName -> Bool -> [StackListEntry]
+stackListFromCheckpointPresence (StackName name) present
+  | present =
+      [ StackListEntry
+          { stackListEntryName = name
+          , stackListEntryCurrent = True
+          }
+      ]
+  | otherwise = []
 
 -- | Pure parser for @pulumi stack ls --json@ output. Exposed so the
 -- unit suite can pin the wire shape without forcing a live pulumi
@@ -172,7 +218,7 @@ stackPresentInList (StackName name) entries =
     let candidate = Text.unpack (stackListEntryName entry)
      in candidate == Text.unpack name || needle `isSuffixOf` candidate
 
--- | Run @pulumi stack output --show-secrets --json --stack <name>@
+-- | Legacy/migration helper: run @pulumi stack output --show-secrets --json --stack <name>@
 -- inside the supplied project directory. Returns the decoded
 -- top-level outputs as a @Map@ from output name to its rendered value
 -- (strings stay as strings; non-string outputs are re-encoded to
@@ -211,6 +257,87 @@ fetchOutputs projectDir environment (StackName name) = do
         ExitSuccess -> case parseOutputsPayload (processStdout output) of
           Left detail -> Left (StackOutputsParseFailed detail)
           Right outputs -> Right outputs
+
+-- | Production Sprint 7.14 output path. Hydrates the encrypted checkpoint
+-- into a scratch @file://@ backend, runs Pulumi's read-only output command
+-- there, then lets 'withDecryptedStack' re-envelope the resulting checkpoint
+-- back to the Model-B object-store.
+fetchEncryptedOutputs
+  :: FilePath
+  -- ^ Repo root.
+  -> FilePath
+  -- ^ Working directory: the per-stack Pulumi project root.
+  -> PulumiStackRef
+  -- ^ Pulumi project name + stack id.
+  -> IO (Either StackOutputsError (Map Text Text))
+fetchEncryptedOutputs repoRoot projectDir stackRef = do
+  result <-
+    withDecryptedStack repoRoot stackRef $ \scratch -> do
+      checkpointExists <- doesFileExist (pulumiScratchCheckpointPath scratch)
+      if not checkpointExists
+        then
+          pure
+            ( Right
+                ( Left
+                    ( StackOutputsCommandFailed
+                        ("encrypted Pulumi checkpoint is absent for stack " ++ Text.unpack (pulumiStackName stackRef))
+                    )
+                )
+            )
+        else do
+          environment <- encryptedPulumiReadEnv scratch
+          loginResult <- loginFileBackend projectDir environment
+          case loginResult of
+            Left err -> pure (Right (Left err))
+            Right () ->
+              Right
+                <$> fetchOutputs
+                  projectDir
+                  environment
+                  (StackName (pulumiStackName stackRef))
+  pure $
+    case mapEncryptedBackendResult result of
+      Left err -> Left err
+      Right outputs -> outputs
+
+encryptedPulumiReadEnv :: PulumiScratch -> IO [(String, String)]
+encryptedPulumiReadEnv scratch = do
+  currentEnv <- getEnvironment
+  let path = maybe "" id (lookup "PATH" currentEnv)
+      home = maybe "" id (lookup "HOME" currentEnv)
+  pure
+    ( fileBackendEnvironment
+        scratch
+        [ ("PULUMI_SKIP_UPDATE_CHECK", "true")
+        , ("PATH", path)
+        , ("HOME", home)
+        , ("LANG", "C.UTF-8")
+        ]
+    )
+
+loginFileBackend :: FilePath -> [(String, String)] -> IO (Either StackOutputsError ())
+loginFileBackend projectDir environment = do
+  result <-
+    captureSubprocessResult
+      Subprocess
+        { subprocessPath = "pulumi"
+        , subprocessArguments = ["login", maybe "" id (lookup "PULUMI_BACKEND_URL" environment)]
+        , subprocessEnvironment = Just environment
+        , subprocessWorkingDirectory = Just projectDir
+        }
+  pure $ case result of
+    Failure detail -> Left (StackOutputsSubprocessFailed detail)
+    Success output ->
+      case processExitCode output of
+        ExitFailure _ -> Left (StackOutputsCommandFailed (renderProcessTail output))
+        ExitSuccess -> Right ()
+
+mapEncryptedBackendResult
+  :: Either EncryptedBackendError a
+  -> Either StackOutputsError a
+mapEncryptedBackendResult result = case result of
+  Left err -> Left (StackOutputsCommandFailed (renderEncryptedBackendError err))
+  Right value -> Right value
 
 -- | Pure parser for @pulumi stack output --json@. The decoded top
 -- level is a JSON object; string values are passed through verbatim,

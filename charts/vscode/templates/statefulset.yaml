@@ -23,6 +23,7 @@ spec:
       labels:
         {{- include "vscode.labels" . | nindent 8 }}
     spec:
+      serviceAccountName: vscode
       {{- if .Values.podAntiAffinity.enabled }}
       affinity:
         podAntiAffinity:

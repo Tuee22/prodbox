@@ -23,7 +23,6 @@ module Prodbox.CheckCode
   , prodboxMarkerKeysPresent
   , pulumiCreateSiteOwners
   , pulumiCreateSiteViolations
-  , rawMasterSeedReadScopeViolations
   , relativeLinkResolves
   , renderGeneratedSection
   , renderTrackedGeneratedPath
@@ -460,7 +459,6 @@ runDoctrineAlignmentCheck repoRoot = do
   let surfaceViolations =
         map (("- " ++) . renderDoctrineViolation) (doctrineViolationsInPaths repoPaths)
   serviceErrorViolations <- checkServiceErrorRetryableLiteral repoRoot
-  rawMasterSeedViolations <- checkRawMasterSeedReadScope repoRoot
   planOptionsHonoredViolations' <- checkPlanOptionsHonored repoRoot
   -- Sprint 4.27: the create-site coverage lint (the §3.1 totality gate
   -- over every `aws`/`pulumi` create call site, now generalized from
@@ -475,7 +473,6 @@ runDoctrineAlignmentCheck repoRoot = do
   substrateImagePinningViolations' <- checkSubstrateImagePinning repoRoot
   case surfaceViolations
     ++ map ("- " ++) serviceErrorViolations
-    ++ map ("- " ++) rawMasterSeedViolations
     ++ map ("- " ++) planOptionsHonoredViolations'
     ++ map ("- " ++) createCallSiteViolations
     ++ map ("- " ++) substrateImagePinningViolations' of
@@ -484,7 +481,7 @@ runDoctrineAlignmentCheck repoRoot = do
       failWith
         ( unlines
             ( ( "Doctrine alignment failed. Remove unsupported workflow or git-hook surfaces, "
-                  ++ "hand-set ServiceError retryable literals, host-side raw master-seed reads, "
+                  ++ "hand-set ServiceError retryable literals, "
                   ++ "destructive dispatch arms that discard their --dry-run / --plan-file "
                   ++ "options, and AWS/Pulumi create call sites with no registered managed "
                   ++ "resource:"
@@ -948,83 +945,6 @@ checkEnvVarConfigReads repoRoot =
       "src/Prodbox/PublicEdge.hs"
     ]
 
--- | Sprint 3.16: confine the raw master-seed read to the in-cluster
--- gateway daemon. The raw 32-byte seed is the entropy source for every
--- data-bound secret; per @secret_derivation_doctrine.md §2/§5@ it must
--- never leave the cluster as plaintext, and the host consumes only
--- *derived* values over the gateway RPC. The seed is read in exactly one
--- module — 'Prodbox.Secret.MasterSeed' (@ensureMasterSeed@ against MinIO)
--- — and that reader may be imported only by the in-cluster daemon module
--- set. Any host-side command, validation flow, or chart helper that
--- imports the raw-seed reader (or calls @ensureMasterSeed@) re-exports the
--- boundary the way Sprint 3.13's tail did, so this lint refuses it.
---
--- Mirrors the 'checkEnvVarConfigReads' shape: scan every owned
--- @src/Prodbox/**.hs@ source, strip string literals (so a comment or a
--- diagnostic message that merely names the reader is allowed), tokenize,
--- and fail any out-of-scope file that references the forbidden tokens. The
--- allowed set is the in-cluster daemon path plus the reader's own
--- definition site.
-checkRawMasterSeedReadScope :: FilePath -> IO [String]
-checkRawMasterSeedReadScope repoRoot = do
-  repoPaths <- listRepoOwnedPaths repoRoot
-  concat
-    <$> forM
-      [ path
-      | path <- repoPaths
-      , "src/Prodbox/" `isPrefixOf` path
-      , ".hs" `isSuffixOf` path
-      , path /= "src/Prodbox/CheckCode.hs"
-      ]
-      ( \relativePath -> do
-          contents <- readFile (repoRoot </> relativePath)
-          pure (rawMasterSeedReadScopeViolations relativePath contents)
-      )
-
--- | The in-cluster daemon module set permitted to read the raw seed, plus
--- the reader's own definition site. 'Prodbox.Secret.EnsureNamespace' is
--- the in-cluster materializer; it takes a 'MasterSeed' value today but is
--- named here so it may import the reader without regressing the lint.
-allowedRawSeedReaderPaths :: [FilePath]
-allowedRawSeedReaderPaths =
-  [ "src/Prodbox/Gateway/Daemon.hs"
-  , "src/Prodbox/Secret/EnsureNamespace.hs"
-  , "src/Prodbox/Secret/MasterSeed.hs"
-  ]
-
--- | Sprint 3.16 (pure). Emit a violation when @relativePath@ — outside the
--- 'allowedRawSeedReaderPaths' in-cluster daemon set — references the
--- raw-seed reader: an @import ... Prodbox.Secret.MasterSeed@ line, or a
--- call to @ensureMasterSeed@. Line comments (@--@) and string literals are
--- stripped first so a Haddock comment or a diagnostic message that merely
--- names the reader is allowed (e.g. 'Prodbox.Secret.Derive' references the
--- module only in a comment). Pure so the unit suite can pin the
--- fires-on-offending-input contract.
-rawMasterSeedReadScopeViolations :: FilePath -> String -> [String]
-rawMasterSeedReadScopeViolations relativePath contents
-  | relativePath `elem` allowedRawSeedReaderPaths = []
-  | importsReader || callsReader =
-      [ relativePath
-          ++ " must not read the raw master seed. The raw-seed reader "
-          ++ "(`Prodbox.Secret.MasterSeed` / `ensureMasterSeed`) is confined to "
-          ++ "the in-cluster gateway daemon module set; host-side code consumes "
-          ++ "*derived* values via `Prodbox.Gateway.Client`. See "
-          ++ "`documents/engineering/secret_derivation_doctrine.md` § 2/§ 5."
-      ]
-  | otherwise = []
- where
-  -- Strip string literals, then each line's `--` comment tail.
-  codeLines = map dropLineComment (lines (stripStringLiterals contents))
-  importsReader =
-    any
-      (\line -> "import" `elem` words line && "Prodbox.Secret.MasterSeed" `isInfixOf` line)
-      codeLines
-  callsReader = "ensureMasterSeed" `elem` tokenizeSource (unlines codeLines)
-  dropLineComment line =
-    case findInfixIndex "--" line of
-      Just idx -> take idx line
-      Nothing -> line
-
 -- | First index at which @needle@ occurs in @haystack@, or 'Nothing'.
 findInfixIndex :: String -> String -> Maybe Int
 findInfixIndex needle haystack =
@@ -1389,14 +1309,11 @@ serviceErrorWindow = 4
 -- @.prodbox-state/@ host-side directory:
 --
 --   * chunks 8–14 — chart-secret cache (@.prodbox-state/<ns>/.secrets.json@):
---     data-bound chart secrets now flow through k8s @Secret@s materialized
---     by the gateway daemon's @ensure-namespace@ handler; chart templates
---     read them via Helm @lookup@.
+--     data-bound chart secrets now flow through Vault KV and chart-local
+--     materializers.
 --   * chunk 16 — gateway per-node event-key cache
 --     (@.prodbox-state/<ns>/.gateway-event-keys.json@): gateway event keys
---     derive from the master seed and the daemon self-bootstraps its own
---     @gateway-event-keys@ Secret at startup; the chart reads them via
---     Helm @lookup@.
+--     now come from Vault KV and the gateway chart materializer.
 --
 -- With both caches gone, any new @`.prodbox-state/`@ literal in
 -- production source is by definition a regression of the closed cache
@@ -1977,9 +1894,10 @@ pulumiCreateSiteViolations registeredNames commandContents =
 --   * @create-user@ \/ @create-access-key@ \/ @put-user-policy@ — the
 --     @operational-iam-user@ owner module @src/Prodbox/Aws.hs@.
 --   * @create-bucket@ — the long-lived @pulumi_state_backend@ bucket
---     owner @src/Prodbox/Infra/LongLivedPulumiBackend.hs@ and the
---     in-cluster MinIO backend bucket owner
---     @src/Prodbox/Infra/MinioBackend.hs@.
+--     owner @src/Prodbox/Infra/LongLivedPulumiBackend.hs@, the
+--     in-cluster Pulumi MinIO backend bucket owner
+--     @src/Prodbox/Infra/MinioBackend.hs@, and the Sprint 4.30
+--     object-store bucket owner @src/Prodbox/Minio/ObjectStore.hs@.
 --
 -- @create-hosted-zone@ is deliberately NOT in this list — see
 -- 'awsCreateProbeVerbs'. The verbs are matched as raw substrings because
@@ -1996,6 +1914,7 @@ awsCreateVerbs =
     ,
       [ "src/Prodbox/Infra/LongLivedPulumiBackend.hs"
       , "src/Prodbox/Infra/MinioBackend.hs"
+      , "src/Prodbox/Minio/ObjectStore.hs"
       ]
     )
   ]

@@ -74,6 +74,7 @@ import Data.List
   , partition
   , transpose
   )
+import Data.Map.Strict qualified as Map
 import Data.Text (Text)
 import Data.Text qualified as Text
 import Data.Vector qualified as Vector
@@ -131,6 +132,7 @@ import Prodbox.Repo
 import Prodbox.Result (Result (..))
 import Prodbox.Settings
   ( AcmeSection (..)
+  , AwsCredentialsRef (..)
   , ConfigFile (..)
   , Credentials (..)
   , DeploymentSection (..)
@@ -141,6 +143,7 @@ import Prodbox.Settings
   , defaultConfigFile
   , loadConfigFile
   , renderConfigDhall
+  , resolveAwsCredentialsRefFromHostVault
   , supportedPublicHostname
   , validateAndLoadSettings
   , validateAwsBootstrapConfig
@@ -151,6 +154,9 @@ import Prodbox.Subprocess
   , Subprocess (..)
   , captureSubprocessResult
   , runSubprocessStreaming
+  )
+import Prodbox.Vault.Host
+  ( writeHostVaultKvObject
   )
 import System.Directory
   ( doesFileExist
@@ -864,7 +870,8 @@ interactiveAwsTeardownInputAfterLongLived repoRoot policy = do
       pure (Left (renderPulumiResidueRefusal live))
     _ -> do
       configForCheck <- loadConfigForWrite repoRoot
-      let operationalConfigured = operationalCredentialsConfigured (aws configForCheck)
+      operationalConfiguredResult <- operationalCredentialsConfiguredFromVault repoRoot configForCheck
+      let operationalConfigured = either (const True) id operationalConfiguredResult
       case (null residue, operationalConfigured, policy) of
         (True, False, _) ->
           -- Nothing to do regardless of policy: no residue and no
@@ -1143,40 +1150,49 @@ runAwsIamHarnessSetup repoRoot policyTier = do
 runAwsIamHarnessInspect :: FilePath -> IO String
 runAwsIamHarnessInspect repoRoot = do
   config <- loadConfigForWrite repoRoot
-  if not (operationalCredentialsConfigured (aws config))
-    then throwAws "AWS IAM harness inspection requires populated operational aws.* credentials."
-    else do
-      identity <- probeOperationalIdentity repoRoot (aws config)
-      case identity of
-        OperationalCredentialsMissing ->
-          throwAws "AWS IAM harness inspection did not find populated operational aws.* credentials."
-        OperationalIdentityProbeFailed err ->
-          throwAws
-            ( "AWS IAM harness inspection failed to validate operational aws.* credentials via `aws sts get-caller-identity`: "
-                ++ err
-            )
-        OperationalIdentityNonUserArn arn ->
-          throwAws
-            ( "AWS IAM harness inspection expected an IAM user identity for operational aws.* credentials but received ARN `"
-                ++ Text.unpack arn
-                ++ "`."
-            )
-        OperationalIdentityIamUser userName ->
-          pure
-            ( unlines
-                [ "IAM_USER=" ++ Text.unpack userName
-                , "IAM_PRINCIPAL=iam-user"
-                , "CONFIG_PATH=" ++ configDhallPath (canonicalConfigPaths repoRoot)
-                ]
-            )
-        OperationalIdentityFederatedUser userName ->
-          pure
-            ( unlines
-                [ "IAM_USER=" ++ Text.unpack userName
-                , "IAM_PRINCIPAL=federated-user"
-                , "CONFIG_PATH=" ++ configDhallPath (canonicalConfigPaths repoRoot)
-                ]
-            )
+  credentialsResult <- resolveAwsCredentialsRefFromHostVault repoRoot "aws" (aws config)
+  case credentialsResult of
+    Left err ->
+      throwAws
+        ( "AWS IAM harness inspection requires populated operational aws.* \
+          \credentials in Vault: "
+            ++ err
+        )
+    Right credentials ->
+      if not (operationalCredentialsConfigured credentials)
+        then throwAws "AWS IAM harness inspection requires populated operational aws.* credentials."
+        else do
+          identity <- probeOperationalIdentity repoRoot credentials
+          case identity of
+            OperationalCredentialsMissing ->
+              throwAws "AWS IAM harness inspection did not find populated operational aws.* credentials."
+            OperationalIdentityProbeFailed err ->
+              throwAws
+                ( "AWS IAM harness inspection failed to validate operational aws.* credentials via `aws sts get-caller-identity`: "
+                    ++ err
+                )
+            OperationalIdentityNonUserArn arn ->
+              throwAws
+                ( "AWS IAM harness inspection expected an IAM user identity for operational aws.* credentials but received ARN `"
+                    ++ Text.unpack arn
+                    ++ "`."
+                )
+            OperationalIdentityIamUser userName ->
+              pure
+                ( unlines
+                    [ "IAM_USER=" ++ Text.unpack userName
+                    , "IAM_PRINCIPAL=iam-user"
+                    , "CONFIG_PATH=" ++ configDhallPath (canonicalConfigPaths repoRoot)
+                    ]
+                )
+            OperationalIdentityFederatedUser userName ->
+              pure
+                ( unlines
+                    [ "IAM_USER=" ++ Text.unpack userName
+                    , "IAM_PRINCIPAL=federated-user"
+                    , "CONFIG_PATH=" ++ configDhallPath (canonicalConfigPaths repoRoot)
+                    ]
+                )
 
 runAwsIamHarnessTeardown :: FilePath -> IO String
 runAwsIamHarnessTeardown repoRoot = do
@@ -1245,12 +1261,26 @@ loadHarnessAdminCredentials repoRoot = do
       case validateAwsBootstrapConfig config of
         Left err -> throwAws err
         Right () -> do
-          let credentials = aws_admin_for_test_simulation config
-          if harnessAdminCredentialsConfigured credentials
-            then validateAdminCredentialsInput credentials
-            else
+          credentialsResult <-
+            resolveAwsCredentialsRefFromHostVault
+              repoRoot
+              "aws_admin_for_test_simulation"
+              (aws_admin_for_test_simulation config)
+          case credentialsResult of
+            Left err ->
               throwAws
-                "Native IAM validation requires aws_admin_for_test_simulation.access_key_id, aws_admin_for_test_simulation.secret_access_key, and aws_admin_for_test_simulation.region in prodbox-config.dhall."
+                ( "Native IAM validation requires Vault-backed \
+                  \aws_admin_for_test_simulation.access_key_id, \
+                  \aws_admin_for_test_simulation.secret_access_key, and \
+                  \aws_admin_for_test_simulation.region: "
+                    ++ err
+                )
+            Right credentials ->
+              if harnessAdminCredentialsConfigured credentials
+                then validateAdminCredentialsInput credentials
+                else
+                  throwAws
+                    "Native IAM validation requires aws_admin_for_test_simulation.access_key_id, aws_admin_for_test_simulation.secret_access_key, and aws_admin_for_test_simulation.region to resolve to non-empty values."
 
 harnessAdminCredentialsConfigured :: Credentials -> Bool
 harnessAdminCredentialsConfigured credentials =
@@ -1537,9 +1567,13 @@ applyAwsSetupWithFallbackMode allowFederatedFallback repoRoot input = do
       (nonEmptyText (zone_id (route53 currentConfig)))
       newAccessKeyId
       newSecretAccessKey
+  writeOperationalAwsVaultCredentials repoRoot operationalCredentials
   let updatedConfig =
         currentConfig
-          { aws = operationalCredentials
+          { aws =
+              (aws currentConfig)
+                { awsCredentialRegion = region operationalCredentials
+                }
           }
       paths = canonicalConfigPaths repoRoot
   writeConfigFile (configDhallPath paths) updatedConfig
@@ -1728,31 +1762,36 @@ operationalManagedResources adminCreds =
   ]
 
 -- | Sprint 7.8: clear the operational @aws.*@ credential block in
--- @prodbox-config.dhall@ (factored out of the previous inline
+-- Vault (factored out of the previous inline
 -- @runTeardown@ body so it can serve as the @operational-aws-config@
 -- managed resource's destroy action). Idempotent: writing empty
--- credentials over already-empty ones is a no-op write. The region is
--- preserved from the current config, falling back to the admin
--- credential's region when the config region is blank. Returns
--- 'ExitSuccess'.
+-- credentials over already-empty ones is a no-op write. The Dhall
+-- config keeps its SecretRef targets and preserves the region, falling
+-- back to the admin credential's region when the config region is blank.
+-- Returns 'ExitSuccess'.
 clearOperationalAwsConfig :: FilePath -> Credentials -> IO ExitCode
 clearOperationalAwsConfig repoRoot adminCreds = do
   currentConfig <- loadConfigForWrite repoRoot
   let currentRegion =
-        if Text.null (Text.strip (region (aws currentConfig)))
+        if Text.null (Text.strip (awsCredentialRegion (aws currentConfig)))
           then region adminCreds
-          else region (aws currentConfig)
+          else awsCredentialRegion (aws currentConfig)
+      emptyOperationalCredentials =
+        Credentials
+          { access_key_id = ""
+          , secret_access_key = ""
+          , session_token = Nothing
+          , region = currentRegion
+          }
       updatedConfig =
         currentConfig
           { aws =
-              Credentials
-                { access_key_id = ""
-                , secret_access_key = ""
-                , session_token = Nothing
-                , region = currentRegion
+              (aws currentConfig)
+                { awsCredentialRegion = currentRegion
                 }
           }
       paths = canonicalConfigPaths repoRoot
+  writeOperationalAwsVaultCredentials repoRoot emptyOperationalCredentials
   writeConfigFile (configDhallPath paths) updatedConfig
   pure ExitSuccess
 
@@ -1761,7 +1800,8 @@ clearOperationalAwsConfig repoRoot adminCreds = do
 -- status comes from 'operationalIamUserExists' piped through
 -- 'operationalIamUserResidueFromExists'; the @aws.*@-config status from
 -- the configured @aws.access_key_id@ via
--- 'operationalAwsConfigResidueFromKey' (a failed config load is treated
+-- 'operationalAwsConfigResidueFromKey' after resolving the SecretRef
+-- from Vault (a failed config load is treated
 -- as unreachable so the fail-closed gate refuses rather than presuming
 -- the block is clear).
 discoverOperationalResidue
@@ -1769,10 +1809,13 @@ discoverOperationalResidue
 discoverOperationalResidue repoRoot adminCreds = do
   iamUserExists <- operationalIamUserExists repoRoot adminCreds
   configResult <- loadConfigFile repoRoot
+  awsConfigStatus <-
+    case configResult of
+      Left err -> pure (ResidueStatus.ResidueUnreachable (ResidueStatus.ResidueQueryFailed err))
+      Right config -> do
+        credentialsResult <- resolveAwsCredentialsRefFromHostVault repoRoot "aws" (aws config)
+        pure (operationalAwsConfigResidueFromCredentialsResult credentialsResult)
   let iamUserStatus = operationalIamUserResidueFromExists iamUserExists
-      awsConfigStatus = case configResult of
-        Left err -> ResidueStatus.ResidueUnreachable (ResidueStatus.ResidueQueryFailed err)
-        Right config -> operationalAwsConfigResidueFromKey (access_key_id (aws config))
   pure (zip (operationalManagedResources adminCreds) [iamUserStatus, awsConfigStatus])
 
 -- | Sprint 7.8: read-only listing of the operational IAM user's
@@ -1986,14 +2029,19 @@ applyConfigSetup repoRoot input = do
     newAccessKeyId
     newSecretAccessKey
   currentConfig <- loadConfigForWrite repoRoot
+  let operationalCredentials =
+        Credentials
+          { access_key_id = newAccessKeyId
+          , secret_access_key = newSecretAccessKey
+          , session_token = Nothing
+          , region = region adminCredentials
+          }
+  writeOperationalAwsVaultCredentials repoRoot operationalCredentials
   let updatedConfig =
         currentConfig
           { aws =
-              Credentials
-                { access_key_id = newAccessKeyId
-                , secret_access_key = newSecretAccessKey
-                , session_token = Nothing
-                , region = region adminCredentials
+              (aws currentConfig)
+                { awsCredentialRegion = region adminCredentials
                 }
           , route53 = Route53Section {zone_id = configSetupRoute53ZoneIdInput input}
           , domain =
@@ -2602,7 +2650,12 @@ cleanupIamUserResidue repoRoot adminCredentials userName = do
 probeConfiguredOperationalIdentity :: FilePath -> IO OperationalIdentityProbe
 probeConfiguredOperationalIdentity repoRoot = do
   config <- loadConfigForWrite repoRoot
-  probeOperationalIdentity repoRoot (aws config)
+  credentialsResult <- resolveAwsCredentialsRefFromHostVault repoRoot "aws" (aws config)
+  case credentialsResult of
+    Left err
+      | operationalCredentialsAbsentError err -> pure OperationalCredentialsMissing
+      | otherwise -> pure (OperationalIdentityProbeFailed err)
+    Right credentials -> probeOperationalIdentity repoRoot credentials
 
 probeOperationalIdentity :: FilePath -> Credentials -> IO OperationalIdentityProbe
 probeOperationalIdentity repoRoot credentials =
@@ -2636,12 +2689,60 @@ operationalCredentialsConfigured credentials =
 operationalCredentialsCleared :: FilePath -> IO Bool
 operationalCredentialsCleared repoRoot = do
   config <- loadConfigForWrite repoRoot
-  let credentials = aws config
-  pure
-    ( Text.null (Text.strip (access_key_id credentials))
-        && Text.null (Text.strip (secret_access_key credentials))
-        && session_token credentials == Nothing
-    )
+  credentialsResult <- resolveAwsCredentialsRefFromHostVault repoRoot "aws" (aws config)
+  pure $
+    case credentialsResult of
+      Left err -> operationalCredentialsAbsentError err
+      Right credentials -> not (operationalCredentialsConfigured credentials)
+
+operationalCredentialsConfiguredFromVault :: FilePath -> ConfigFile -> IO (Either String Bool)
+operationalCredentialsConfiguredFromVault repoRoot config = do
+  credentialsResult <- resolveAwsCredentialsRefFromHostVault repoRoot "aws" (aws config)
+  pure $ operationalCredentialsConfiguredResult credentialsResult
+
+operationalCredentialsConfiguredResult :: Either String Credentials -> Either String Bool
+operationalCredentialsConfiguredResult credentialsResult =
+  case credentialsResult of
+    Left err
+      | operationalCredentialsAbsentError err -> Right False
+      | otherwise -> Left err
+    Right credentials -> Right (operationalCredentialsConfigured credentials)
+
+operationalAwsConfigResidueFromCredentialsResult
+  :: Either String Credentials -> ResidueStatus.ResidueStatus
+operationalAwsConfigResidueFromCredentialsResult credentialsResult =
+  case credentialsResult of
+    Left err
+      | operationalCredentialsAbsentError err -> ResidueStatus.ResidueAbsent
+      | otherwise -> ResidueStatus.ResidueUnreachable (ResidueStatus.ResidueQueryFailed err)
+    Right credentials -> operationalAwsConfigResidueFromKey (access_key_id credentials)
+
+operationalCredentialsAbsentError :: String -> Bool
+operationalCredentialsAbsentError err =
+  any (`Text.isInfixOf` rendered) ["missing", "empty"]
+ where
+  rendered = Text.toLower (Text.pack err)
+
+writeOperationalAwsVaultCredentials :: FilePath -> Credentials -> IO ()
+writeOperationalAwsVaultCredentials repoRoot credentials = do
+  result <-
+    writeHostVaultKvObject
+      repoRoot
+      "secret"
+      "gateway/gateway/aws"
+      (operationalAwsVaultFields credentials)
+  case result of
+    Left err -> throwAws err
+    Right () -> pure ()
+
+operationalAwsVaultFields :: Credentials -> Map.Map Text Text
+operationalAwsVaultFields credentials =
+  Map.fromList
+    [ ("access_key_id", access_key_id credentials)
+    , ("secret_access_key", secret_access_key credentials)
+    , ("session_token", maybe "" id (session_token credentials))
+    , ("region", region credentials)
+    ]
 
 operationalIdentityFromArn :: Text -> Maybe OperationalIdentityProbe
 operationalIdentityFromArn arn = do
@@ -2813,7 +2914,7 @@ renderPolicyTier policyTier =
 currentRegionDefault :: FilePath -> IO Text
 currentRegionDefault repoRoot = do
   config <- loadConfigForWrite repoRoot
-  let configuredRegion = Text.strip (region (aws config))
+  let configuredRegion = Text.strip (awsCredentialRegion (aws config))
   pure (if Text.null configuredRegion then defaultAwsRegion else configuredRegion)
 
 loadConfigForWrite :: FilePath -> IO ConfigFile

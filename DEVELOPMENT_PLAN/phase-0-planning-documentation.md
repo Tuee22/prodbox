@@ -13,6 +13,27 @@
 
 ## Phase Status
 
+✅ **Done on owned surface 2026-06-15** — Phase 0 owns the docs / plan-only Sprint `0.14`
+(Model-B Pulumi/MinIO and Whole-System Sealed-State Doctrine Harmony), which refines the
+sealed-state architecture in doctrine: MinIO-stored state and Pulumi backend state are encrypted
+under **Model B** — a `prodbox` application-level Vault-Transit envelope per object — and the
+sealed-Vault invariant is extended to a **whole-system zero-child-info** property covering MinIO
+objects, the host disk, Kubernetes objects, and logs / output. Pulumi's own secrets provider is
+**dropped** (the `prodbox` envelope is the encryption), the Pulumi backend is interposed through a
+decrypt-to-scratch RAM-tmpfs `file://` hydration so Pulumi never touches MinIO, the long-lived
+`aws-ses` backend is treated under the **uniform** Vault-envelope (the AES256-SSE-only carve-out is
+dropped), object IDs are Vault-keyed-HMAC opaque names, the object count is decoy-padded to a
+constant, the stored envelope AAD is hashed (`prodbox-envelope-v2`), and all `prodbox`-owned
+secret-bearing state lives in **one generically-named bucket** shared by the host CLI and the
+in-cluster gateway daemon. Sprint `0.14` rewrote
+[vault_doctrine.md](../documents/engineering/vault_doctrine.md) §9 / §10 / §13 / §14 / §19, the
+config / cluster-federation / helm / storage / streaming doctrine docs, the repo-root `README.md`
+and `CLAUDE.md`, and the plan suite, and repointed the legacy ledger. This **refines, it does not
+reverse**, the 2026-06-14 Vault-root model and **reopens no new phase** — every affected phase
+(0 / 1 / 4 / 5 / 7) was already reopened on 2026-06-14. The code adoption is owned by the reframed
+and new implementation sprints (`1.37`, `4.30`, `4.33`, `7.14`); Phase 0 stays `Done` on its owned
+doc / plan surface.
+
 ✅ **Done on owned surface 2026-06-14** — Phase 0 owns the docs / plan-only Sprint `0.13`
 (Vault-Root Finalization and Cluster-Federation Doctrine Harmony), which finalizes the secrets
 architecture in doctrine: Vault is the sole, fail-closed secrets / KMS / PKI root; the master-seed
@@ -1168,6 +1189,132 @@ adoption lands in the cited implementation sprints.
   lands in the cited implementation sprints (`1.35`–`1.38`, `3.17`–`3.20`, `4.29`–`4.32`, `5.8`,
   `7.14`–`7.15`, `8.9`, and the federation surface under `2.26`); each closes on its own owned
   surface when its validation gates pass.
+
+## Sprint 0.14: Model-B Pulumi/MinIO and Whole-System Sealed-State Doctrine Harmony ✅
+
+**Status**: Done (2026-06-15)
+**Implementation**: the rewritten doctrine docs —
+`documents/engineering/vault_doctrine.md` (§9 promoted to the full Model-B object-store spec,
+§10 rewritten to the decrypt-to-scratch Pulumi interposition with Pulumi's secrets provider
+dropped, the new "Whole-system zero-child-info" subsection, and the §13 / §14 / §19
+classification / logging / red-team extensions),
+`documents/engineering/config_doctrine.md` (§1a in-force config flows through the §9
+object-store), `documents/engineering/cluster_federation_doctrine.md` (§3–§4 downstream
+identity custodied in Vault KV, opaque child namespaces, no child name on a sealed log path),
+`documents/engineering/helm_chart_platform_doctrine.md` (§6 opaque-named MinIO hostPath),
+`documents/engineering/storage_lifecycle_doctrine.md` (the `.data/prodbox/minio/0` hostPath
+holds opaque-named ciphertext only), `documents/engineering/streaming_doctrine.md`
+(no-name-in-logs + no exists-vs-absent oracle cross-link); the legacy-ledger repoint
+(`DEVELOPMENT_PLAN/legacy-tracking-for-deletion.md`); and the plan-suite harmony —
+`DEVELOPMENT_PLAN/README.md`, `DEVELOPMENT_PLAN/00-overview.md`,
+`DEVELOPMENT_PLAN/system-components.md`, and the reframed / new implementation sprints
+(`1.37`, `4.30`, `4.33`, `7.14`); repo-root `README.md` and `CLAUDE.md`
+**Docs to update**: `documents/engineering/vault_doctrine.md`,
+`documents/engineering/config_doctrine.md`,
+`documents/engineering/cluster_federation_doctrine.md`,
+`documents/engineering/helm_chart_platform_doctrine.md`,
+`documents/engineering/storage_lifecycle_doctrine.md`,
+`documents/engineering/streaming_doctrine.md`, repo-root `README.md` and `CLAUDE.md`,
+`DEVELOPMENT_PLAN/README.md`, `DEVELOPMENT_PLAN/00-overview.md`,
+`DEVELOPMENT_PLAN/system-components.md`,
+`DEVELOPMENT_PLAN/legacy-tracking-for-deletion.md`, and the reframed phase files
+(`phase-1-runtime-cli-aws-foundations.md`, `phase-4-lifecycle-canonical-paths.md`,
+`phase-7-aws-substrate-foundations.md`)
+
+### Objective
+
+Finalize how `prodbox` encrypts MinIO-stored state and Pulumi backend state under the
+Vault-root model, and bring the governed documentation set into harmony with that decision.
+The governing invariant: when the parent cluster's Vault is sealed, it must be impossible to
+extract any information about its children — whether it has any, how many, where, or what —
+down to object / key names like `aws` / `aws-eks`. The settled answer is **Model B**: a
+`prodbox` application-level Vault-Transit envelope per object (not MinIO bucket SSE), which is
+Vault-native, AAD-bound, and keeps naming / index / padding in the same trusted layer. Pulumi's
+own secrets provider is **dropped** — the `prodbox` envelope is the encryption. The invariant is
+an existence / metadata property, so the scope is the **whole system** — MinIO objects, the host
+disk, Kubernetes objects, and logs / output (including the exists-vs-`NoSuchKey` oracle) — not a
+MinIO-only content control. This **refines** the 2026-06-14 Vault-root finalization; it does not
+reverse it, and reopens no new phase. Like Sprints `0.12` and `0.13`, this is a docs / plan-only
+sprint; the code adoption lands in the cited implementation sprints.
+
+### Deliverables
+
+- `documents/engineering/vault_doctrine.md` rewritten as the SSoT for Model B and the
+  whole-system invariant:
+  - **§9 (MinIO as a ciphertext store)** promoted from the opaque-ID sketch to the full
+    **Model-B object-store** spec — every `prodbox`-owned object flows through one
+    application-level layer that envelopes via Vault Transit, names objects
+    `objects/<vault-keyed-HMAC>.enc` under one flat prefix, keeps a Vault-encrypted
+    `indexes/*.enc` id↔logical map, **hashes the stored AAD** (`prodbox-envelope-v2`), and
+    **decoy-pads to a constant object count** plus size buckets. The on-disk consequence is
+    stated: the hostPath PV (`.data/prodbox/minio/0`) holds only opaque-named ciphertext. All
+    `prodbox`-owned secret-bearing state lives in **one generically-named bucket** (the
+    role-revealing `prodbox` + `prodbox-test-pulumi-backends` names retired), and the
+    object-store is **shared by the host CLI and the in-cluster gateway daemon** — one
+    envelope / naming / index discipline, each accessor binding its own Vault-auth `DekCipher`
+    (host root token; daemon Kubernetes auth over the in-cluster MinIO Service DNS).
+  - **§10 (Pulumi backend under Vault)** rewritten to commit to the **decrypt-to-scratch
+    interposition** as the mechanism — each op hydrates the stack into a RAM-tmpfs `file://`
+    backend, runs `pulumi`, then re-envelopes and opaque-names back through the §9 object-store,
+    so Pulumi never touches MinIO and the PV only ever holds opaque ciphertext. **Pulumi's own
+    secrets provider is dropped**; the Option-A/B/C ladder and the Vault-derived-passphrase
+    sequencing are removed; the two layers are stated explicitly (AWS input creds in Vault KV +
+    the readiness gate; the whole checkpoint enveloped + opaque-named through §9); and the
+    long-lived-SSE carve-out is removed — per-run and `aws-ses` are treated uniformly.
+  - A new **"Whole-system zero-child-info"** subsection enumerates the four covered surfaces —
+    MinIO objects, the host disk, Kubernetes objects, and logs / output (including the
+    exists-vs-`NoSuchKey` oracle).
+  - The **§13 classification table** "Sensitive topology" row adds object names / counts +
+    Pulumi stack identities; **§14 logging** and the **§19 red-team checklist** add the
+    opaque-name layout, constant count, no exists-vs-absent oracle, host-disk-walk-reveals-only-
+    opaque-ciphertext, and k8s-leaks-no-child-name checks.
+- `config_doctrine.md` §1a notes the in-force config flows through the §9 object-store (an opaque
+  `objects/<id>.enc`, not the literal `in-force-config` key).
+- `cluster_federation_doctrine.md` §3–§4 state that downstream kubeconfig / identity is custodied
+  in the parent's Vault KV (`secret/clusters/<child-id>/*`), never a k8s Secret; child-named
+  namespaces use opaque IDs; logs never emit a child name on a sealed path.
+- `helm_chart_platform_doctrine.md` §6 and `storage_lifecycle_doctrine.md` state the
+  `.data/prodbox/minio/0` hostPath holds opaque-named ciphertext only.
+- `streaming_doctrine.md` cross-links the no-name-in-logs and no exists-vs-absent oracle rules.
+- Repo-root `README.md` and `CLAUDE.md` harmonize the MinIO / Pulumi / Vault summary paragraphs to
+  Model B + uniform envelope, dropping any "long-lived SSE" wording.
+- The plan suite — `DEVELOPMENT_PLAN/README.md` (new dated 2026-06-15 Closure Status entry
+  framed as a refinement that reopens no new phase), `00-overview.md`, `system-components.md`
+  (the "Pulumi backend state" row → enveloped + opaque-named via the object-store; MinIO objects
+  opaque-named), and `legacy-tracking-for-deletion.md` (a 2026-06-15 Ledger Status paragraph and
+  the repointed / added Pending Removal rows) — harmonized to Model B, and the implementation
+  sprints reframed: Sprint `1.37` drops the "Vault-Derived Secrets Provider" framing and owns the
+  production Vault-Transit `DekCipher`; Sprint `4.30` reframed to the Model-B object-store (HMAC
+  opaque IDs, hashed-AAD `prodbox-envelope-v2`, Vault-encrypted index, decoy-pad-to-constant-count,
+  one generically-named bucket shared host-CLI ↔ daemon); Sprint `4.33` closed the Haskell-side
+  whole-system sealed-state scrub (on-disk, Kubernetes, log surfaces, oracle closure); Sprint
+  `7.14` reframed to
+  the decrypt-to-scratch Pulumi interposition with Pulumi's secrets provider dropped.
+
+### Validation
+
+1. `prodbox dev lint docs` exit 0 (header↔markers↔registry and relative-link discipline across
+   every governed doc).
+2. `prodbox dev docs check` exit 0 (this sprint's doc edits touch no generated content).
+3. `prodbox dev check` exit 0 — by no-op for the docs-only part.
+4. Every governed doc's `**Referenced by**` header and cross-reference list agree (bidirectional
+   link discipline), and rule-J harmony holds across `README.md`, `00-overview.md`, the phase
+   files, and the legacy ledger.
+5. A grep replay confirms no "Option A/B/C" Pulumi ladder and no "long-lived SSE" wording
+   survives in any governed doc, the 2026-06-15 Closure Status reads as a refinement (not a phase
+   reopen), and every `📋` / `🔄` implementation status stays honest.
+
+### Remaining Work
+
+- None — the doc and plan rewrites land in this change. The code adoption of Model B lands in the
+  cited implementation sprints: the production Vault-Transit `DekCipher` under Sprint `1.37`, the
+  Model-B object-store (`Prodbox.Minio.ObjectStore` + `Prodbox.Minio.EncryptedObject`,
+  `prodbox-envelope-v2`, HMAC opaque IDs, Vault-encrypted index, decoy-pad-to-constant-count, the
+  one generically-named bucket shared by the host CLI and the gateway daemon) under Sprint `4.30`,
+  the whole-system sealed-state scrub (oracle closure, log / output redaction, opaque k8s
+  namespaces, downstream identity to Vault KV) under Sprint `4.33`, and the decrypt-to-scratch
+  Pulumi interposition under Sprint `7.14`; the live sealed-Vault cross-surface red-team is owned
+  by Sprint `5.8`. Each closes on its own owned surface when its validation gates pass.
 
 ## Related Documents
 

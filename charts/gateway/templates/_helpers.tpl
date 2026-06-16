@@ -37,3 +37,21 @@ as Dhall `Double` via the in-process `Dhall.inputFile auto` decoder
 {{- printf "%s.0" $rendered -}}
 {{- end -}}
 {{- end -}}
+
+{{- /*
+gateway.secretRefVault renders the Dhall union value consumed by
+Prodbox.Settings.SecretRef. Gateway chart-secret consumers read Vault
+directly through Kubernetes auth; no k8s Secret-mounted Dhall fragments are
+part of the supported path.
+*/ -}}
+{{- define "gateway.secretRefVault" -}}
+< Vault : { mount : Text, path : Text, field : Text }
+| TransitKey : Text
+| Prompt : { name : Text, purpose : Text }
+| TestPlaintext : Text
+>.Vault
+  { mount = {{ .mount | quote }}
+  , path = {{ .path | quote }}
+  , field = {{ .field | quote }}
+  }
+{{- end -}}

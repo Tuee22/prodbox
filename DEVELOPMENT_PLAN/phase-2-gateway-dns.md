@@ -13,7 +13,7 @@
 
 ## Phase Status
 
-🔄 **Reopened 2026-06-14** — the Vault-root finalization (see [README.md](README.md) Closure Status
+✅ **Reclosed 2026-06-16** — the Vault-root finalization (see [README.md](README.md) Closure Status
 2026-06-14, [vault_doctrine.md](../documents/engineering/vault_doctrine.md), and
 [cluster_federation_doctrine.md](../documents/engineering/cluster_federation_doctrine.md)) makes
 prodbox manage a hierarchy of clusters whose trust and unseal authority form a Vault transit-seal
@@ -22,8 +22,15 @@ child cluster auto-unseals against its parent's Vault, which also custodies the 
 A cluster's knowledge of its downstream clusters — their existence, identities, endpoints,
 kubeconfigs, account ids, and Pulumi stacks — is secret data legible only behind an unsealed Vault.
 This reopens Phase `2` to own the gateway/CLI federation-trust surface that did not exist when the
-phase last closed. Sprint `2.26` (📋 Planned, blocked by Sprint `3.20`) adds the cluster-federation
-trust topology and downstream-cluster custody surface. **Prior closure preserved**: ✅ Done on the
+phase last closed. Sprint `2.26` is now ✅ Done: the typed custody foundation, direct parent-side
+live registration path, gateway-mediated child-listing / bootstrap-reference endpoints, and full
+downstream-inventory metadata shape are landed and validated. The 2026-06-15 Model-B + whole-system
+zero-child-info refinement (see the 2026-06-15 Closure Status in [README.md](README.md) and
+[vault_doctrine.md §9](../documents/engineering/vault_doctrine.md)) extends Sprint `2.26`'s custody
+surface with the downstream-identity-to-Vault-KV + opaque-namespace deliverable: downstream identity
+rides the Model-B object-store as `DownstreamCluster <id>` logical objects, and per-child Kubernetes
+namespaces are opaque IDs, so a sealed-parent Kubernetes dump leaks no child name — refines, does not
+reverse, the 2026-06-14 model and reopens no new phase. **Prior closure preserved**: ✅ Done on the
 code-owned gateway-runtime, DNS-ownership, peer-transport, and daemon-lifecycle surfaces
 (Sprints `2.1`–`2.25`); the reclosure detail below is retained verbatim and is unchanged by this
 reopen.
@@ -1360,10 +1367,10 @@ for the authoritative algorithm, endpoint contract, and bootstrap order.
   `ensure-namespace` returns Secret names + SHA-256 of each derived value (never
   plaintext).
 - MinIO IAM bootstrap (one of: a Pulumi program addition, or a chart-deployed
-  one-shot Job using MinIO root creds) creates the `prodbox` bucket, the
+  one-shot Job using MinIO root creds) creates the `prodbox-state` bucket, the
   `prodbox-gateway` MinIO user, and the policy granting only that user
   `s3:GetObject` / `s3:PutObject` / `s3:ListBucket` on the bucket. The
-  Pulumi-backend bucket `prodbox-test-pulumi-backends` is unchanged.
+  raw Pulumi checkpoint layout remains separately owned by Sprint `7.14`.
 - Gateway pod mounts `gateway-minio-creds` k8s Secret (created by the chart via
   Helm `lookup` + `randAlphaNum` on first install).
 - `prodbox.cabal` adds `amazonka-s3` (or `minio-hs`) as a new dep for the native
@@ -1506,12 +1513,12 @@ live-exercise package:
    `/dev/urandom`), writes them back as the canonical `minio.dhall`
    fragment Secret, and applies a one-shot Job in the `minio`
    namespace (using the cluster MinIO root Secret) that creates the
-   `prodbox` bucket, creates/updates the `prodbox-gateway-<suffix>`
+   `prodbox-state` bucket, creates/updates the `prodbox-gateway-<suffix>`
    user, creates/attaches the `prodbox-gateway-policy` IAM policy
    (`gatewayMinioPolicyJson`) granting only `s3:GetObject`/`s3:PutObject`
-   on `prodbox/*` and `s3:ListBucket` on `prodbox`. This replaces the
+   on `prodbox-state/*` and `s3:ListBucket` on `prodbox-state`. This replaces the
    transitional MinIO-root credential path. The
-   `prodbox-test-pulumi-backends` bucket is unaffected. The remaining
+   raw Pulumi checkpoint layout remains Sprint `7.14`. The remaining
    gate is the live exercise (deliverable 6).
 3. **Gateway pod consumes `gateway-minio-creds`** (Done May 23, 2026):
    `charts/gateway/templates/deployments.yaml` now wires the
@@ -2150,12 +2157,15 @@ reframe verified). Remaining: the operator-driven live `gateway-daemon` / `gatew
 `gateway-partition` integration validations against a running RKE2 cluster (cannot run in a
 non-cluster environment), matching the live-gate pattern the substrate sprints use.
 
-## Sprint 2.26: Cluster Federation Trust Topology and Downstream-Cluster Custody 📋
+## Sprint 2.26: Cluster Federation Trust Topology and Downstream-Cluster Custody ✅
 
-**Status**: Planned
-**Implementation**: `src/Prodbox/Gateway.hs`, `src/Prodbox/Gateway/Daemon.hs`,
-`src/Prodbox/Gateway/Types.hs`, `src/Prodbox/Cluster/Federation.hs` (new), `test/unit/Main.hs`
-**Blocked by**: Sprint `3.20`
+**Status**: Done
+**Implementation**: `src/Prodbox/Cluster/Federation.hs`, `src/Prodbox/CLI/Command.hs`,
+`src/Prodbox/CLI/Spec.hs`, `src/Prodbox/CLI/Rke2.hs`, `src/Prodbox/Gateway/Types.hs`,
+`src/Prodbox/Gateway/Settings.hs`, `src/Prodbox/Gateway/Daemon.hs`,
+`src/Prodbox/Gateway/Client.hs`, `test/unit/Main.hs`, `test/unit/Parser.hs`,
+`test/integration/CliSuite.hs`, `documents/cli/commands.md`, `share/completion/`,
+`share/man/man1/`
 **Docs to update**: `documents/engineering/cluster_federation_doctrine.md`,
 `documents/engineering/vault_doctrine.md`,
 `documents/engineering/config_doctrine.md`,
@@ -2171,9 +2181,13 @@ Shamir-sealed and unsealed only by the operator, while each child cluster's Vaul
 `seal "transit"` pointed at its parent's Vault and auto-unseals against the parent with no human and
 no local unseal keys. The parent custodies each child's init keys (recovery keys plus initial root
 token) in its own Vault KV, and a cluster's knowledge of its downstream clusters is secret data
-legible only behind an unsealed Vault. This sprint owns the registration and custody surface — the
-seal-mode wiring and per-cluster seal custody itself land in Sprint `3.20`, which this sprint is
-blocked by.
+legible only behind an unsealed Vault. This sprint owns the registration and custody surface. The
+seal-mode wiring and per-cluster seal custody model have landed in Sprint `3.20`; Sprint `4.32`
+now supplies the parent-side live registration writer plus the child `cluster reconcile`
+auto-unseal and fail-closed cascade lifecycle interpreter. Sprint `2.26` closes the gateway-owned
+read path: the daemon logs in to Vault through its configured Kubernetes auth block, lists children
+from the parent-custodied child index, and returns a child bootstrap credential only from the
+parent's unsealed Vault KV.
 
 ### Deliverables
 
@@ -2193,6 +2207,17 @@ blocked by.
   unencrypted basics (cluster id, this cluster's Vault address, seal mode, and a child's parent
   reference) defined by
   [config_doctrine.md](../documents/engineering/config_doctrine.md).
+- Downstream identity is custodied in the parent's Vault KV (`secret/data/clusters/<child-id>/*`
+  as the KV v2 API path), never as a Kubernetes Secret or a child-named Kubernetes namespace: any
+  in-cluster namespace prodbox derives per child uses an opaque ID, so a Kubernetes ConfigMap/Secret
+  dump under a sealed parent Vault reveals no child-cluster name — the same whole-system
+  zero-child-info invariant the Model-B object-store enforces for MinIO objects (the parent's
+  downstream-cluster references ride the §9 object-store as `DownstreamCluster <id>` logical objects
+  under opaque `objects/<hmac>.enc` keys), per
+  [vault_doctrine.md §9](../documents/engineering/vault_doctrine.md) and
+  [cluster_federation_doctrine.md](../documents/engineering/cluster_federation_doctrine.md). The
+  k8s-namespace and log redaction enforcement land in Sprint `4.33`, which this sprint's custody
+  surface composes with.
 - The gateway exposes a child-listing and child-bootstrap-reference surface so a child cluster can
   fetch the bootstrap reference and transit-seal credential it needs to reach its parent's Vault and
   auto-unseal, with that material provisioned and owned by the parent.
@@ -2209,15 +2234,62 @@ blocked by.
    through the parent's unsealed Vault and refuses to run against a sealed parent Vault.
 4. A negative test proves a root-cluster federation-state mutation is rejected without the root
    Vault token.
-5. Operator-driven live validation: registering a child cluster against a running parent cluster and
+5. Opaque-namespace proof: any per-child Kubernetes namespace prodbox derives is an opaque ID, so a
+   ConfigMap/Secret dump under a sealed parent Vault carries no child-cluster name (the whole-system
+   zero-child-info invariant; enforced and red-teamed end-to-end by Sprints `4.33` and `5.8`).
+6. Operator-driven live validation: registering a child cluster against a running parent cluster and
    confirming the child auto-unseals against the parent's Transit key (requires two live clusters;
    matches the live-gate pattern the substrate sprints use).
 
+### Current State
+
+- The landed foundation covers the pure typed custody contract:
+  `Prodbox.Cluster.Federation` owns child metadata/init-key Vault KV JSON framing, parent-owned
+  KV path construction, the parent child-index KV object, the bootstrap-credential KV object,
+  opaque child namespace/Transit key derivation, root-token write gating, and the plan renderer;
+  `prodbox cluster federation register <child>` is wired through the native command registry and
+  generated CLI docs/completions/manpages.
+- Sprint `4.32` landed the direct parent-side live apply path: it requires a ready parent root
+  Vault, child Vault address, and child kubeconfig; writes the child Transit key, scoped policy,
+  metadata KV, bootstrap-credential KV, child index KV, and child bootstrap Secret; and leaves the
+  token out of command output.
+- Sprint `2.26` extends the registration payload with parent-custodied endpoint inventory,
+  kubeconfig reference, account id, and Pulumi stack references. The gateway daemon exposes
+  `/v1/federation/children` for metadata-only inventory and
+  `/v1/federation/children/<child>/bootstrap` for the child bootstrap credential; both read through
+  Vault Kubernetes auth and fail closed when Vault is unavailable.
+- The end-to-end opaque Kubernetes namespace/log redaction proof is composed from the Sprint `4.33`
+  Haskell-side gate/redaction work and the sealed-state red-team in Sprint `5.8`.
+
 ### Remaining Work
 
-Planned; blocked by Sprint `3.20` (Vault transit-seal hierarchy and per-cluster seal custody), which
-provides the root Shamir + `.age` unlock bundle, the child `seal "transit"` wiring, and the
-per-cluster init-key custody this sprint registers against.
+- None on Sprint `2.26`'s code-owned gateway/CLI custody surface. The opaque Kubernetes
+  namespace/log redaction enforcement is closed on the Haskell side by Sprint `4.33`; the live
+  two-cluster sealed-Vault proof remains Sprint `5.8`.
+
+### Current Validation State
+
+- `cabal build --builddir=.build exe:prodbox` passes with
+  `src/Prodbox/Cluster/Federation.hs` in the library module set.
+- `cabal test --builddir=.build test:prodbox-unit --test-options='-p "cluster federation custody"'`
+  passes 9/9 after the child index, bootstrap-credential KV, and downstream-inventory additions.
+- `cabal test --builddir=.build test:prodbox-unit --test-options='-p "native gateway helpers"'`
+  passes 3/3, including the daemon Vault-auth coordinate decode.
+- `cabal test --builddir=.build test:prodbox-unit --test-options='-p "parser"'` passes 258/258,
+  including the updated generated command examples for `cluster federation register`.
+- `cabal test --builddir=.build test:prodbox-integration --test-options='-p "Sprint 2.26"'`
+  passes 1/1, proving the built gateway daemon serves the Vault-backed child listing and bootstrap
+  credential endpoints without leaking the child token in the list response.
+- `cabal test --builddir=.build test:prodbox-integration --test-options='-p "Sprint 4.32"'`
+  passes 1/1 after the registration writer records metadata, bootstrap credential, and child-index
+  KV objects against fake Vault and fake kubectl without printing the child token.
+- `./.build/prodbox test unit` passes 924/924 after accepting the updated generated CLI
+  registry/help goldens for the new federation-register inventory flags.
+- `./.build/prodbox test integration cli` passes 38/38, including the new Sprint `2.26` gateway
+  federation endpoint proof and the existing Sprint `4.32` registration proof.
+- `./.build/prodbox dev docs check`, `./.build/prodbox dev lint docs`, and `git diff --check`
+  all exit 0 after the plan/docs closure update.
+- `./.build/prodbox dev check` exits 0 as the canonical local quality gate.
 
 ## Documentation Requirements
 

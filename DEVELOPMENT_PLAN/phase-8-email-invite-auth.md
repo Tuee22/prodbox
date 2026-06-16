@@ -204,7 +204,7 @@ seam the other interactive surfaces (`aws setup`/`teardown`, `config setup`) use
 `test/integration/CliSuite.hs` cases prove it: (1) `nuke --dry-run` plans the step-5 long-lived
 `pulumi_state_backend` bucket destroy (where the retained cert lives); (2) the typed-confirmation
 gate rejects a wrong literal and destroys nothing; (3) on `NUKE EVERYTHING` the full five-step
-total-teardown orchestration runs end-to-end (cluster cascade → `aws-ses` destroy → operational
+total-teardown orchestration runs end-to-end (`aws-ses` destroy while Vault/MinIO are still live → cluster cascade → operational
 IAM teardown → tag sweep → long-lived state-bucket destroy) and completes, with step 5 removing
 the bucket. Combined with the Sprint `4.24` `LongLived` registry classification (the cert is
 carved out of `rke2 delete` / `aws teardown`, so only `nuke` / the explicit registered destroy
@@ -1250,7 +1250,7 @@ The live runs above; home gate first (ordering), then AWS parity.
 
 **Status**: Planned
 **Implementation**: `src/Prodbox/Infra/AwsSesStack.hs`, `src/Prodbox/UsersAdmin.hs`, `charts/keycloak/`
-**Blocked by**: Sprints `3.18`, `3.19`, `7.14`
+**Blocked by**: Sprints `3.19`, `7.14`
 **Docs to update**: `documents/engineering/vault_doctrine.md`, `documents/engineering/aws_integration_environment_doctrine.md`
 
 ### Objective

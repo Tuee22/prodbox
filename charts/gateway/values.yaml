@@ -2,25 +2,9 @@ global:
   namespace: gateway
   rootChart: gateway
 
-# Sprint 3.13 sixth chunk + chunks 16/22/27: namespaces in which the
-# gateway daemon's `POST /v1/secret/ensure-namespace` handler (and
-# Sprint 3.13 chunk 16's startup self-bootstrap path) creates derived
-# k8s Secrets. One Role + RoleBinding pair is emitted per entry so the
-# daemon's ServiceAccount has `secrets:get,create,update,patch` scoped
-# to only the namespaces it actually writes to (per
-# `Prodbox.Secret.Inventory.derivedSecretInventoryFor`).
-#
-# The `gateway` entry authorizes the daemon's own startup self-bootstrap
-# to write `gateway-event-keys` in its own namespace.
-#
-# The `keycloak` + `vscode` entries cover the two namespaces where the
-# keycloak-postgres dependency deploys a Patroni cluster: keycloak chart
-# directly, vscode chart transitively (vscode → keycloak →
-# keycloak-postgres). Both clusters need their three Patroni-role
-# Secrets materialized by the daemon's ensure-namespace handler (chunk
-# 21 made the Inventory entry namespace-aware so the same handler
-# writes prodbox-keycloak-pg-* or prodbox-vscode-pg-* depending on the
-# request's namespace).
+# Namespaces the gateway chart keeps present before dependent chart stacks
+# run. Secret materialization is Vault-backed in each workload chart; the
+# gateway daemon no longer writes cross-namespace Kubernetes Secrets.
 rbac:
   targetNamespaces:
     - keycloak
@@ -47,9 +31,8 @@ ports:
   rest: 8443
   events: 8444
 
-# NodePort exposed by the gateway-nodeport Service for host-CLI access
-# (127.0.0.1:<rest> per documents/engineering/secret_derivation_doctrine.md
-# §5). The default matches the port the iptables rule installed by
+# NodePort exposed by the gateway-nodeport Service for host-CLI access.
+# The default matches the port the iptables rule installed by
 # `prodbox host firewall gateway-restrict` restricts to loopback ingress.
 nodePort:
   rest: 30443
@@ -80,19 +63,25 @@ dnsWriteGate:
   ttl: 60
   awsRegion: ""
 
-# AWS credentials are mounted as environment variables on the gateway
-# pod and consumed by the daemon's Route 53 client. They are intentionally
-# never written to the daemon config file.
-aws:
-  accessKeyId: ""
-  secretAccessKey: ""
-  sessionToken: ""
+# Sprint 3.18: gateway secret-bearing config fields are rendered as
+# SecretRef.Vault Dhall values and resolved directly by the daemon through
+# Vault Kubernetes auth.
+vault:
+  address: http://vault.vault.svc.cluster.local:8200
+  authPath: kubernetes
+  role: gateway-gateway
+  serviceAccountTokenFile: /var/run/secrets/kubernetes.io/serviceaccount/token
+  paths:
+    eventKeyNodeA: gateway/gateway/node-a/event-key
+    eventKeyNodeB: gateway/gateway/node-b/event-key
+    eventKeyNodeC: gateway/gateway/node-c/event-key
+    aws: gateway/gateway/aws
+    minio: gateway/gateway/minio
 
-# Sprint 2.19: in-cluster MinIO endpoint URL the daemon uses to read or
-# create the master seed at prodbox/master-seed. The default points at
-# the home-substrate MinIO Service; AWS-substrate deploys override this
-# via `prodbox charts deploy gateway --substrate aws` (the substrate
-# adapter renders the AWS-side Service DNS).
+# In-cluster MinIO endpoint URL for gateway-owned object-store access.
+# The default points at the home-substrate MinIO Service; AWS-substrate
+# deploys override this via `prodbox charts deploy gateway --substrate aws`
+# (the substrate adapter renders the AWS-side Service DNS).
 minio:
   endpointUrl: "http://minio.prodbox.svc.cluster.local:9000"
 

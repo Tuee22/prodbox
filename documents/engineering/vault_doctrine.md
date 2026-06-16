@@ -15,6 +15,7 @@
 [aws_admin_credentials.md](./aws_admin_credentials.md),
 [aws_integration_environment_doctrine.md](./aws_integration_environment_doctrine.md),
 [cli_command_surface.md](./cli_command_surface.md),
+[streaming_doctrine.md](./streaming_doctrine.md),
 [../../DEVELOPMENT_PLAN/README.md](../../DEVELOPMENT_PLAN/README.md),
 [../../DEVELOPMENT_PLAN/00-overview.md](../../DEVELOPMENT_PLAN/00-overview.md),
 [../../DEVELOPMENT_PLAN/system-components.md](../../DEVELOPMENT_PLAN/system-components.md),
@@ -95,8 +96,8 @@ The architecture below is the finalized target. Where this doctrine prescribes b
 worktree does not yet honor, it names the owning sprint; until that sprint lands the statement is
 the intended structure, not a present-tense implementation fact. Adoption is scheduled across the
 reopened phases — see the [Development Plan](../../DEVELOPMENT_PLAN/README.md) Closure Status entry
-for the Vault-root finalization and the per-surface sprints (`0.13`, `1.35`–`1.38`, `2.26`,
-`3.17`–`3.20`, `4.29`–`4.32`, `5.8`, `7.14`–`7.15`, `8.9`).
+for the Vault-root finalization and the per-surface sprints (`0.13`, `0.14`, `1.35`–`1.38`, `2.26`,
+`3.17`–`3.20`, `4.29`–`4.33`, `5.8`, `7.14`–`7.15`, `8.9`).
 
 ## 2. The fail-closed invariant
 
@@ -151,7 +152,9 @@ let SecretRef =
 in  SecretRef
 ```
 
-Conceptual Haskell shape (scheduled in `Prodbox.Settings.SecretRef`, Sprints `1.35`, `1.38`):
+Haskell shape (the ADT, Dhall decoder, production plaintext validator, and Vault KV resolver seam
+land in `Prodbox.Settings.SecretRef`; AWS provider credential migration is Sprint `7.14`, and ACME
+EAB migration is Sprint `7.15`):
 
 ```haskell
 -- Example: Prodbox.Settings.SecretRef
@@ -174,7 +177,7 @@ Constructor rules:
 | `TestPlaintext` | **Rejected** | Accepted only by the test harness, only from `test-secrets.dhall` (§4). |
 
 `prodbox config validate` rejects any plaintext secret value in production config and rejects
-`TestPlaintext` outside the test harness (Sprints `1.35`, `1.38`). Any secret a deployed
+`TestPlaintext` outside the test harness (Sprint `1.35`). Any secret a deployed
 in-cluster component needs must be a `VaultSecret` / `VaultTransitKey` reference before
 deployment.
 
@@ -224,6 +227,9 @@ Requirements:
   single-node affinity), preserved across cluster teardown exactly like MinIO's PV. Cluster
   teardown must not destroy Vault state (see
   [storage_lifecycle_doctrine.md](./storage_lifecycle_doctrine.md)).
+- The Vault chart defaults to root Shamir mode. Child clusters set `seal.mode = transit`, render a
+  `seal "transit"` stanza pointing at the parent Vault, and source the parent Transit token from
+  `VAULT_TOKEN` rather than from the ConfigMap.
 - Startup readiness gates that distinguish: not deployed; deployed but uninitialized; initialized
   but sealed; initialized and unsealed; policy reconciled.
 
@@ -232,10 +238,11 @@ Requirements:
 The cluster is ephemeral; its storage is **not**. Vault KV is therefore as durable across rebuilds
 as any retained PV:
 
-- `vault init` runs **exactly once, ever** — the first time the PV is empty. It captures the
-  unseal/recovery keys and the initial root token, writes them to the host-side unlock bundle (§6,
-  for the root cluster) or the parent's Vault KV (§16, for a child cluster), and is never rerun
-  against existing state.
+- `vault init` runs **exactly once, ever** — the first time the PV is empty. Root Shamir init uses
+  `secret_shares` / `secret_threshold` and writes the resulting unseal material to the host-side
+  unlock bundle (§6). Child Transit init uses `recovery_shares` / `recovery_threshold` and writes
+  the resulting recovery keys plus initial root token to the parent's Vault KV (§16). Init is never
+  rerun against existing state.
 - Every subsequent `cluster reconcile` redeploys the Vault chart against the existing data and
   only **unseals** it. No re-init, no key regeneration. **A cluster rebuild is not a fresh Vault.**
 
@@ -349,8 +356,18 @@ prodbox vault pki issue-test-cert
   mounts, policies, roles, KV mounts, Transit keys, PKI mounts and issuers, Kubernetes
   service-account auth for in-cluster workloads, the MinIO bucket encryption policy metadata, and
   the Pulumi encryption configuration. It is safe to run on every cluster spin-up.
+  The current Sprint `1.36` native foundation applies the baseline `secret` KV v2 / Transit / PKI
+  mounts, Kubernetes auth, per-domain Transit keys, and baseline policies/roles through
+  `Prodbox.Vault.Reconcile`; it also wires unlock-bundle re-encryption, Transit-key rotation, PKI
+  mount status, and a PKI test-issue call against the later-configured `prodbox-test` role.
+  Chart-by-chart Vault-auth adoption, PKI issuer generation, and child-custody workflows land in
+  their owning later sprints (§12, §16, §18).
 
-Lifecycle integration into `prodbox cluster reconcile` (Sprints `4.29`, `4.32`):
+Lifecycle integration into `prodbox cluster reconcile` is split by cluster role: Sprint `4.29`
+lands the root/local deploy, init-if-empty, unseal, and policy reconcile sequence; Sprint `4.32`
+adds the child-cluster Transit-seal branch, parent-readiness fail-closed cascade, parent-custodied
+child init write, and post-MinIO settings reload through the child root token stored in the parent
+KV.
 
 ```text
 prodbox cluster reconcile
@@ -360,7 +377,7 @@ prodbox cluster reconcile
   -> vault unseal (root: from unlock bundle / operator prompt; child: auto-unseal from parent, §16)
   -> vault reconcile
   -> deploy/rebind MinIO
-  -> ensure the prodbox bucket and its Vault-Transit encryption path
+  -> ensure the `prodbox-state` object-store bucket and its Vault-Transit encryption path
   -> fetch + decrypt the in-force config from the MinIO SSoT (or seed it on first bring-up; §16)
   -> reconcile charts that depend on Vault
 ```
@@ -393,11 +410,11 @@ Object envelope format (`Prodbox.Crypto.Envelope`, Sprint `3.17`):
 
 ```json
 {
-  "format": "prodbox-envelope-v1",
+  "format": "prodbox-envelope-v2",
   "transit_key": "prodbox-minio-envelope",
   "wrapped_dek": "vault:v1:...",
   "nonce": "...",
-  "aad": "...",
+  "aad_sha256": "base64(SHA256(aad))",
   "ciphertext": "...",
   "created_at": "...",
   "key_version": 1
@@ -405,7 +422,13 @@ Object envelope format (`Prodbox.Crypto.Envelope`, Sprint `3.17`):
 ```
 
 The AAD binds cluster ID, object logical type, object generation, schema version, and the
-expected object identity, so an envelope cannot be replayed under a different identity.
+expected object identity, so an envelope cannot be replayed under a different identity. The
+**stored** AAD is hashed — `base64(SHA256(aad))`, never the cleartext binding (`prodbox-envelope-v2`,
+Sprint `4.30`). The earlier `prodbox-envelope-v1` persisted the cleartext binding (e.g.
+`base64("clusterId|aws-eks")`) in the object body, which leaked a logical name even while the
+ciphertext stayed sealed; v2 removes that leak. Open re-supplies the real AAD via `expectedAad`
+and checks it against the stored hash, so binding strength is unchanged — only the stored form is
+hashed (§9 rule 4).
 
 Transit keys are split by blast-radius domain so a leaked decrypt grant is contained:
 
@@ -423,43 +446,91 @@ keys; application workloads use only their assigned Transit keys. The
 `prodbox-downstream-cluster-config` key and its policy gate a parent cluster's custody of child
 clusters (§16).
 
-The envelope template above pins the format tag (`prodbox-envelope-v1`) and field set; the exact
+The envelope template above pins the format tag (`prodbox-envelope-v2`) and field set; the exact
 local AEAD cipher (e.g. AES-256-GCM or ChaCha20-Poly1305), the on-disk serialization, and the AAD
 canonicalization are deliberately left to the implementing sprint (`Prodbox.Crypto.Envelope`,
-Sprint `3.17`) rather than fixed here, so the wire format can be chosen against the available
-crypto libraries without a doctrine change.
+Sprint `3.17`, with the v2 hashed-AAD landing in `4.30`) rather than fixed here, so the wire format
+can be chosen against the available crypto libraries without a doctrine change.
 
 ## 9. MinIO as a ciphertext store
 
-The gateway daemon's `prodbox` MinIO bucket is a secret-bearing state store. MinIO itself is just
-object storage; its own root credentials come from Vault KV (§5, §13). Every prodbox-owned object
-is ciphertext (a §8 envelope) unless it is an explicitly public, non-sensitive artifact.
-Secret-bearing objects include the in-force cluster configuration, the gateway state, downstream
-cluster configuration and custody material, Pulumi state and history, generated manifests carrying
-secret references plus sensitive topology, bootstrap records, and reconciliation checkpoints that
-reveal managed resources. There is **no `master-seed` object** — the HMAC-derivation model is
-retired (Sprint `3.19`; §1).
+prodbox's MinIO store is a secret-bearing state store fronted by one application-level **Model B
+object-store** (the §8 envelope layer). MinIO itself is just object storage; its
+own root credentials come from Vault KV (§5, §13). Every prodbox-owned object is ciphertext (a §8
+envelope) unless it is an explicitly public, non-sensitive artifact. Secret-bearing objects
+include the in-force cluster configuration, the gateway state, downstream cluster configuration
+and custody material, Pulumi state and history, generated manifests carrying secret references
+plus sensitive topology, bootstrap records, and reconciliation checkpoints that reveal managed
+resources. There is **no `master-seed` object** — the HMAC-derivation model is retired (Sprint
+`3.19`; §1).
 
-Object names must not carry sensitive meaning. If an object name or prefix reveals a downstream
-cluster, the name itself is a metadata leak. The target layout uses opaque object IDs plus
-Vault-encrypted indexes (Sprint `4.30`):
+The encryption strategy is **Model B**: a single prodbox application-level layer that envelopes
+logical prodbox objects through Vault Transit (§8). It is not MinIO bucket server-side encryption — content
+encryption alone leaves object names, prefixes, counts, sizes, and bucket names as plaintext
+metadata, and the fail-closed invariant (§2) is an *existence/metadata* property, not just a
+content property. Because prodbox owns this layer, it controls naming, indexing, and padding in
+the same trusted, Vault-bound code path that does the encryption. The layer enforces five rules.
+Sprint `4.30` implements the shared layer and routes the in-force config read through it; Sprint
+`7.14` routes main Pulumi stack cycles and production stack reads through the same layer:
 
-```text
-s3://prodbox/
-  objects/<opaque-id>.enc
-  indexes/active-config.enc
-  indexes/pulumi.enc
-  indexes/gateway.enc
-```
+1. **Envelope via Vault Transit.** Each object body is a §8 envelope — local AEAD over a random
+   DEK, the DEK wrapped by Vault Transit. A sealed Vault cannot unwrap any DEK, so no object body
+   decrypts.
+2. **Opaque object names.** Every object is stored at `objects/<vault-keyed-HMAC>.enc` under one
+   flat prefix. The opaque ID is a Vault-keyed HMAC of the object's logical name (deterministic,
+   directly addressable, and index-loss tolerant); the MAC key lives in Vault KV, so a sealed
+   Vault cannot recompute or invert the mapping from a logical name to its `objects/<id>.enc`
+   path. The name therefore carries no signal — not the object's role, not a downstream cluster,
+   not a Pulumi stack identity.
+3. **Vault-encrypted indexes.** The id↔logical map lives in `indexes/*.enc`, themselves §8
+   envelopes. A sealed Vault reveals only the opaque IDs; the logical meaning behind each ID is
+   recoverable only once Vault is unsealed and policy allows the read.
+4. **Hashed stored AAD (`prodbox-envelope-v2`).** The AAD persisted in the object body is
+   `base64(SHA256(aad))`, never the cleartext binding (§8). The earlier `prodbox-envelope-v1`
+   wrote `base64("clusterId|objectName")` — e.g. a literal `aws-eks` — into the object body, a
+   metadata leak even while the ciphertext stayed sealed. Open still re-supplies the real AAD via
+   `expectedAad`, so binding strength is unchanged; only the *stored* form is hashed.
+5. **Decoy-pad to a constant object count + size buckets.** The shared object layer defines a fixed
+   decoy key pool so a sealed-Vault `list-objects` can return a **constant** object count carrying
+   no signal about how many real objects exist. Sprint `4.33` gates the Haskell-side
+   listing/oracle/log renderers behind Vault readiness; Sprint `5.8` owns the deployed
+   cross-surface red-team and any remaining size-bucket evidence beyond the object-layer foundation.
 
-Because the indexes are Vault-encrypted, a sealed Vault reveals only opaque object IDs. The
-in-force config is an envelope here: the host CLI and the gateway daemon authenticate to Vault
-(the host CLI with the root token for privileged writes; the daemon with Kubernetes auth for
-scoped reads), ask Transit to unwrap the DEK, and recover the in-force config **only** when Vault
-is unsealed and policy allows it (Sprints `3.17`, `1.38`). Sealed Vault therefore means nothing
-about the cluster's setup or its child clusters is determinable beyond the unencrypted basics
-(§16). The operator unlock-bundle password is the ephemeral root that gates all of this — see
-[The unlock chain](#the-unlock-chain).
+**On-disk consequence.** For objects already routed through the Model-B layer, the hostPath PV that
+backs MinIO (`.data/prodbox/minio/0`; see
+[storage_lifecycle_doctrine.md](./storage_lifecycle_doctrine.md)) holds opaque-named ciphertext —
+`objects/<hmac>.enc` and `indexes/*.enc`. Sprint `7.14` stores main Pulumi stack checkpoints behind
+this same layout; first-touch migration/deletion imports any pre-existing raw checkpoint layout into
+the encrypted object-store before supported writes continue. Sprint `4.33` gates the Haskell
+residue/listing/oracle surfaces and
+token-bearing debug rendering behind Vault readiness; Sprint `5.8` proves the deployed
+on-disk/k8s/log sweep while Vault is sealed.
+
+**One generically-named bucket.** Prodbox-owned MinIO state uses the **single generic bucket**
+`prodbox-state` (Sprint `4.30`). The role-revealing bucket name
+`prodbox-test-pulumi-backends` is retired; a bucket-level `s3api ls` no longer advertises the
+Pulumi role. Harbor's public image layers stay a separate, non-secret store — the §13 public class,
+not enveloped. The Sprint `7.14` interposition makes Pulumi see only a scratch `file://` backend on
+main stack cycles; persistent checkpoints are opaque `objects/<id>.enc` Model-B objects.
+
+**One object-store, shared by host and daemon accessors.** The pure envelope / HMAC-naming / index /
+decoy layer is **shared and identical** across accessors; they differ only in how each binds its
+Vault-auth `DekCipher` and its MinIO transport:
+
+- the **host CLI** binds a Transit `DekCipher` via the root Vault token (privileged writes) and
+  reaches MinIO through the current port-forward;
+- the **gateway daemon** binds a Transit `DekCipher` via Vault **Kubernetes auth** (scoped reads)
+  and reaches MinIO over the in-cluster MinIO Service DNS
+  (`minio.prodbox.svc.cluster.local`).
+
+Post-`3.19` the master seed is gone and the current gateway daemon has no durable MinIO state
+writer left to migrate in Sprint `4.30`. A daemon-side durable read or write uses this same
+`Prodbox.Minio.EncryptedObject` layer. Either accessor recovers a logical object **only** when
+Vault is unsealed and policy allows it (Sprints `3.17`, `1.38`, `4.30`):
+authenticate to Vault, ask Transit to unwrap the DEK, decrypt. Sealed Vault therefore means
+nothing about the cluster's setup or its child clusters is determinable beyond the unencrypted
+basics (§16). The operator unlock-bundle password is the ephemeral root that gates all of this —
+see [The unlock chain](#the-unlock-chain).
 
 Two transit/residency hardening rules apply to secret-bearing transfers. **In transit:**
 secret-bearing transfers to and from MinIO use TLS; the daemon↔MinIO hop is plaintext HTTP today
@@ -472,12 +543,41 @@ container overlay — valid as long as node swap is off, which the kubelet requi
 daemon drops the CLI file handoff for a native in-process S3 path that keeps recovered plaintext
 only in scrubbed memory (no file and no child process at all).
 
+### Whole-system zero-child-info
+
+The fail-closed invariant (§2) is a **whole-system** property, not a MinIO-only one. When the
+parent cluster's Vault is sealed, it must be impossible to extract any information about its
+children — whether it has any, how many, where, or what, down to object/key names like
+`aws`/`aws-eks`. The invariant covers four surfaces, each of which must leak nothing while sealed:
+
+1. **MinIO objects.** Opaque `objects/<hmac>.enc` names, Vault-encrypted `indexes/*.enc`, a
+   constant decoy-padded object count, and size-bucketed bodies — no role-revealing bucket name,
+   no logical key, no count signal (this §9).
+2. **The host disk.** A raw walk of `.data/prodbox/minio/0` reveals only opaque-named ciphertext
+   at a constant count; no plaintext name, body, or count, and no recovered plaintext secret on
+   any physical-disk-backed path (this §9; [storage_lifecycle_doctrine.md](./storage_lifecycle_doctrine.md)).
+3. **Kubernetes objects.** No ConfigMap, Secret, namespace name, or other k8s object encodes a
+   downstream-cluster name; child-named namespaces use opaque IDs and downstream identity is
+   custodied in the parent's Vault KV, not a k8s Secret (§13, §16;
+   [cluster_federation_doctrine.md](./cluster_federation_doctrine.md)).
+4. **Logs and output.** No structured log, error, or command output emits a child name, opaque-id
+   plaintext, or token on a sealed path — including the **exists-vs-`NoSuchKey` oracle**: a query
+   for whether a given logical object is present must not distinguish "present" from "absent"
+   while Vault is sealed, because presence itself is metadata (§14).
+
+This subsection is enforced cross-surface by Sprints `4.30` (object-store foundation and
+in-force-config object read), `4.33` (host disk, k8s, logs, and the oracle), and `7.14` (the Pulumi
+backend, §10); the sealed-Vault validation
+asserts every surface fails closed (§19; Sprint `5.8`).
+
 ## 10. Pulumi backend under Vault
 
-Pulumi backend state in MinIO can reveal AWS resource names, account IDs, cluster names,
-endpoints, dependency topology, and provider configuration. Under this doctrine that is secret
-data: the backend objects are Vault-encrypted, and every `prodbox aws stack ...` command performs
-the readiness check before touching state (Sprints `1.37`, `7.14`):
+Pulumi backend state reveals AWS resource names, account IDs, cluster names, endpoints, dependency
+topology, and provider configuration. Under this doctrine that is secret data, and the leak is not
+only the body but the **stack identity** itself — a backend object keyed `aws-eks` advertises a
+child cluster's existence by its name alone. So the whole checkpoint is enveloped and the stack
+identity is opaque-named through the §9 object-store. Every `prodbox aws stack ...` command
+performs the readiness check before touching state (Sprints `1.37`, `7.14`):
 
 ```text
 check Vault reachable
@@ -488,6 +588,11 @@ check Pulumi backend decryptable
 only then run Pulumi
 ```
 
+Sprint `1.37` enforces the host-side apply-path gate for the readiness checks that exist before the
+encrypted backend interposition: Vault reachable, initialized, and unsealed. Dry-runs render the
+plan without probing Vault. Sprint `7.14` extends the same gate with Transit-key and backend
+decryptability checks for the decrypt-to-scratch Pulumi backend.
+
 A sealed Vault produces a clear, safe error before any AWS-side mutation is attempted:
 
 ```text
@@ -497,28 +602,66 @@ No preview/update/destroy was started.
 Run: prodbox vault unseal
 ```
 
-The implementation path: start by deriving the Pulumi secrets provider/passphrase from Vault and
-gating every operation on unsealed Vault (Sprint `1.37`), then move to fully Vault-encrypted
-backend objects so the raw backend metadata is itself opaque while Vault is sealed (Sprint
-`7.14`). The gate on unsealed Vault holds from the beginning.
+### Decrypt-to-scratch interposition
 
-Three implementation options exist for the encrypted backend; prodbox starts with Option B and
-moves to A or C for full metadata secrecy:
+The mechanism is **decrypt-to-scratch interposition**, applied uniformly to every Pulumi backend.
+Pulumi never touches MinIO directly. For each operation, prodbox brackets the run
+(`Prodbox.Pulumi.EncryptedBackend.withDecryptedStack`, Sprint `7.14`):
 
-- **Option A — prodbox-managed encrypted-S3 wrapper:** backend objects are stored as envelopes and
-  Pulumi runs against a decrypted temporary local view that prodbox re-encrypts afterward. Strong
-  control; more locking and crash-recovery complexity.
-- **Option B — Vault-derived secrets provider:** the backend stays MinIO and the Pulumi stack
-  secrets provider uses a Vault-derived passphrase obtainable only when unsealed. Simplest; raw
-  backend metadata can still leak unless the object itself is encrypted. This is the Sprint `1.37`
-  starting point.
-- **Option C — Vault-aware state proxy:** prodbox exposes a local S3-compatible/filesystem proxy
-  that encrypts/decrypts state through Vault Transit. Cleanest sealed-state invariant; most work.
+1. **Gate** on unsealed Vault (the readiness check above).
+2. **Decrypt** — `getLogical (LogicalPulumiStack <id>)` through the §9 object-store, hydrating the
+   stack checkpoint into a RAM-tmpfs `file://` local backend
+   (`.../.pulumi/stacks/<project>/<id>.json`). The scratch backend lives only in RAM-backed
+   tmpfs, never on a physical disk (§9 at-rest rule).
+3. **Run** `pulumi login file://…; pulumi <op>` against that decrypted local view, with **no
+   passphrase** — Pulumi's own secrets provider is dropped (see below).
+4. **Re-envelope** — `putLogical` the resulting checkpoint back through the object-store, so it
+   returns to MinIO as an opaque-named §8 envelope (`objects/<hmac>.enc`).
+5. **Shred** the scratch.
 
-Scope note: the unencrypted-metadata concern targets the **per-run MinIO backend**; the long-lived
-`pulumi_state_backend` S3 bucket already carries AES256 server-side encryption and gains the
-Vault-unsealed gate on top of it. The operator unlock-bundle password is the ephemeral root that
-gates the decrypt — see [The unlock chain](#the-unlock-chain).
+Because Pulumi only ever sees the RAM-tmpfs `file://` view, the MinIO PV holds opaque ciphertext
+**even mid-run** — there is no window in which a plaintext, stack-named, or unencrypted backend
+object exists on disk or in the bucket.
+
+**Pulumi's own secrets provider is dropped.** The §8 envelope *is* the encryption; there is no
+Vault-derived Pulumi passphrase and no Pulumi-managed secrets provider layered on top. Running
+`pulumi` with no passphrase against the decrypted scratch keeps exactly one encryption boundary —
+the prodbox envelope — rather than two competing ones.
+
+### Two layers
+
+Two distinct layers protect a Pulumi operation, and they are not the same concern:
+
+1. **AWS input credentials in Vault KV + the readiness gate.** The AWS deployment credentials a
+   Pulumi run consumes are Vault KV objects, obtainable only when Vault is unsealed; the readiness
+   check blocks every operation before any AWS-side mutation when Vault is sealed.
+2. **The whole checkpoint enveloped + opaque-named through the §9 object-store.** The backend
+   state itself — every checkpoint and history object — is a §8 envelope stored at an opaque
+   `objects/<hmac>.enc` name via the shared object-store, so the stack identity and body are both
+   sealed-opaque.
+
+Current Sprint `7.14` implementation status: the checkpoint layer is active for main per-run stack
+cycles (`aws-eks`, `aws-eks-subzone`, `aws-test`), the main long-lived `aws-ses` reconcile/destroy
+paths, and production stack residue/output reads. Runtime AWS provider credentials require the Vault
+KV object at `secret/gateway/gateway/aws` through `Prodbox.Infra.AwsProviderCredentials`; the
+Pulumi provider path has no raw config fallback. The root AWS setup/teardown schema fields now
+carry mandatory `SecretRef.Vault` references for `aws.*` and `aws_admin_for_test_simulation.*`;
+setup/config-setup write generated operational provider keys to `secret/gateway/gateway/aws`, and
+teardown clears that Vault object without writing provider secrets to `prodbox-config.dhall`.
+First-touch deletion/import of pre-existing raw Pulumi checkpoint layouts is code-owned: the per-run raw
+backend environment is confined to `LegacyPulumiBackend` first-touch export/delete, while supported
+Pulumi actions receive provider-only input before `fileBackendEnvironment` rewrites the backend to
+scratch `file://`. Live host-disk proof remains before Sprint `7.14` closes. The legacy
+`aws-ses migrate-backend` command is now wrapper-backed as well: it opens the encrypted scratch
+backend and relies on first-touch migration to import/delete the old long-lived S3 checkpoint when
+encrypted state is absent, instead of running raw MinIO-to-S3 `pulumi stack export` /
+`pulumi stack import`.
+
+The target treatment is still **uniform**: per-run backends and the long-lived `aws-ses` backend go
+through the same enveloped, opaque-named object-store. There is no AES256-SSE-only carve-out for the
+long-lived backend — a sealed Vault yields opaque holds uniformly across every backend. The
+operator unlock-bundle password is the ephemeral root that gates the decrypt — see
+[The unlock chain](#the-unlock-chain).
 
 ## 11. TLS and PKI under Vault
 
@@ -555,6 +698,28 @@ certificate reconciler, an in-cluster Pulumi runner if present, and any workload
 encryption-as-a-service. Long term, prefer the Vault Agent Injector, the CSI Secret Store Vault
 provider, or direct application-side Vault auth depending on chart ergonomics (Sprints `3.18`,
 `3.19`, `8.9`; see [helm_chart_platform_doctrine.md](./helm_chart_platform_doctrine.md)).
+The Sprint `3.18` foundation is active: `Prodbox.Secret.VaultInventory` enumerates chart-secret
+KV paths, policies, service accounts, and roles, `Prodbox.Vault.Reconcile` writes those policies
+and Kubernetes-auth roles, configures `auth/kubernetes/config` against
+`https://kubernetes.default.svc:443`, and the straightforward workload charts render explicit
+service accounts. The Vault chart binds its service account to `system:auth-delegator` for
+TokenReview. The same inventory defines the read-before-write KV seed-object bootstrap plan for
+generated/static/external fields, and `prodbox vault reconcile` now seeds the automatically managed
+generated/static KV objects with a 32-byte random, base64url-unpadded generator while excluding
+externally-owned objects from automatic writes. The `websocket` workload OIDC client-secret now
+uses direct app-side `SecretRef.Vault` resolution through Vault Kubernetes auth; the Keycloak and
+MinIO charts materialize their covered runtime fields through Vault-login init containers; and the
+MinIO admin bootstrap Jobs use the `minio` service account plus a Vault-login init container for
+root credential files. The VS Code Envoy `SecurityPolicy` client Secret is materialized from Vault
+by a chart Job using a dedicated materializer ServiceAccount. Gateway event keys plus Route 53 AWS
+and gateway MinIO credentials now resolve through Vault Kubernetes auth, including the
+`gateway-minio-bootstrap` materializer role. Patroni role Secrets are materialized from Vault by the
+`keycloak-postgres` pre-install hook using the `prodbox-<namespace>-pg` ServiceAccount; this is the
+least-privilege path for the pinned Percona CRD, which does not expose a generated-Pod
+`serviceAccountName` field. Externally-owned SMTP setup now writes `secret/keycloak/smtp`, and
+host/admin helpers read remaining admin, OIDC, demo-user, and SMTP material from Vault KV. Sprint
+`3.18` also pins the migrated chart materializers to fail closed on sealed or unreachable Vaults;
+the live whole-system sealed-Vault validation is Sprint `5.8`.
 
 ## 13. Config and state classification
 
@@ -563,7 +728,7 @@ Every prodbox datum is classified explicitly.
 | Class | Examples | Storage rule |
 |---|---|---|
 | **Public / non-secret** | Static chart names; non-cluster-revealing feature flags; public docs; non-sensitive local defaults; expected command topology; the unencrypted-basics bootstrap surface (§16) | May live in plain Dhall or logs |
-| **Sensitive topology** | Downstream cluster names/endpoints/accounts; Pulumi stack identities that reveal inventory; the in-force config; generated downstream manifests; resource-graph/checkpoint state | Encrypted at rest; unavailable when Vault is sealed |
+| **Sensitive topology** | Downstream cluster names/endpoints/accounts; Pulumi stack identities (`aws-eks`, `aws-ses`, …) and their existence; the logical names and the *count* of prodbox-owned MinIO objects; the in-force config; generated downstream manifests; resource-graph/checkpoint state | Encrypted at rest; opaque-named + decoy-count-padded in the §9 object-store; unavailable when Vault is sealed |
 | **Secret material** | Passwords; access keys; private keys; tokens; ACME EAB material; Keycloak client secrets; MinIO root credentials; Pulumi passphrases; child-cluster init keys (recovery keys + initial root token); unseal/recovery material | In Vault, or in a Vault-encrypted envelope; the root cluster's unseal/recovery material in the unlock bundle |
 
 ## 14. Error model and logging
@@ -587,13 +752,32 @@ data VaultError
 Errors are operator-clear and never include secret values. Logging never emits SecretRef-resolved
 values, unlock-bundle plaintext, Vault tokens, child-cluster init keys, Pulumi passphrases, object
 plaintext, or downstream-cluster names on sealed-state failure paths when those names are
-sensitive. Prefer redacted structured logs:
+sensitive. The redaction extends to the §9 object-store and the whole-system surfaces:
+
+- **No logical name on a sealed path.** Logs reference the opaque `objects/<hmac>.enc` layout, not
+  the logical object behind it; a sealed-path log line never resolves an opaque ID to its logical
+  name, a Pulumi stack identity (`aws-eks`), or a child-cluster name.
+- **No object count.** A sealed-state log never emits a real prodbox-owned object count — the
+  store is decoy-padded to a constant, and logs do not undo that by reporting the true count.
+- **No exists-vs-absent oracle.** A sealed-state query for a logical object never distinguishes
+  "present" from "absent" in its output or error — the exists-vs-`NoSuchKey` discriminator is
+  itself metadata (§9 whole-system), so the redacted/gated result is identical either way. Sprint
+  `4.33` gates the Haskell residue/listing translators and the retained-object `NoSuchKey`
+  classifier behind the Vault-readiness check before interpreting a present/absent result.
+- **Redacted `Show`.** Opaque-id and token types carry a redacted `Show` so an opaque ID or a
+  Vault token never reaches a log through an incidental `show` (Sprint `4.33`). The token-bearing
+  federation custody shapes redact their child/root tokens and recovery keys for the same reason.
+
+Prefer redacted structured logs:
 
 ```text
 vault_status=sealed component=pulumi operation=preview result=blocked
 ```
 
-over identifying messages such as `Cannot deploy downstream cluster prod-eu-west-1 …`.
+over identifying messages such as `Cannot deploy downstream cluster prod-eu-west-1 …` or
+`object aws-eks not found`. The no-name-in-logs and exists-vs-absent-oracle rules are cross-linked
+from the output doctrine — see
+[streaming_doctrine.md](./streaming_doctrine.md).
 
 ## 15. Sealed-state behavior matrix
 
@@ -610,9 +794,12 @@ When Vault is sealed, each surface fails closed:
 | Downstream-cluster inventory and custody | Not extractable from MinIO, ConfigMaps, Secrets, Pulumi backends, or logs |
 | Child clusters (federation) | Cannot auto-unseal against a sealed parent; the brick cascades down the tree (§16) |
 
-The sealed-Vault canonical validation (`prodbox test integration sealed-vault`, Sprint `5.8`)
-seals Vault after a full reconcile and asserts every row above fails closed without leaking
-metadata.
+The sealed-Vault canonical validation (`prodbox test integration sealed-vault`, Sprint `5.8`) is
+active on its code-owned suite surface: `ValidationSealedVault` is wired into the native planner and
+parser, and `sealedVaultAuditReport` pins the forbidden-pattern oracle for the cross-surface
+red-team. Full live closure seals Vault after a full reconcile and asserts every row above fails
+closed without leaking metadata; that deployed proof remains gated on Sprint `7.14` live
+first-touch deletion proof.
 
 ## 16. Cluster federation: a Vault transit-seal trust tree
 
@@ -657,16 +844,25 @@ the auto-unseal mechanics, and the custody and config-authority flows.
   first-ever bring-up it seeds the encrypted MinIO SSoT; thereafter supplying a file is a
   *proposed update*. The prior host-CLI model of reading repo-root `prodbox-config.dhall` directly
   as the config is replaced by "read the basics locally, fetch+decrypt the in-force config from
-  MinIO via Vault" (Sprint `1.38`).
+  MinIO via Vault" (Sprint `1.38`). The Sprint `1.38` local foundations and global host-loader
+  switch are landed
+  (`loadUnencryptedBasics`, `decodeConfigDhallBytes`, MinIO envelope get/put, injected
+  fetch/open/decode + seal/store, and `loadConfigForSettingsWith`).
 - **Updating the root cluster's in-force config requires the root Vault token** (which requires an
   unsealed root Vault). Root config governs every downstream cluster — it is the keys to the
   kingdom. Reads of the basics are always free; full reads require unseal; writes require the
   privileged root token.
 
 The CLI/gateway surface to register a child cluster and custody its init keys, and the
-parent-owns-child-init-keys contract, land in Sprint `2.26`; the transit-seal hierarchy and
-per-cluster seal custody land in Sprint `3.20`; the child auto-unseal and the fail-closed unseal
-cascade wired into lifecycle land in Sprint `4.32`. See
+parent-owns-child-init-keys contract, are closed on the code-owned surface by Sprint `2.26`; the
+transit-seal hierarchy and per-cluster seal custody model are implemented by Sprint `3.20`
+(`Prodbox.Vault.Seal`, the recovery-key init wire shape, and the Vault chart transit seal branch);
+the direct parent-side registration writer, live child auto-unseal, and fail-closed lifecycle
+cascade land in Sprint `4.32`. Sprint `2.26` also records full downstream inventory in parent Vault
+KV and exposes the gateway-mediated child listing / bootstrap-reference endpoints through the
+gateway daemon's Vault Kubernetes-auth login. Sprint `4.33` closes the Haskell-side opaque namespace
+audit and sealed-state gate/redaction surface; Sprint `5.8` owns the deployed sealed-federation
+red-team proof. See
 [cluster_federation_doctrine.md](./cluster_federation_doctrine.md).
 
 ## 17. The chicken-and-egg floor
@@ -694,11 +890,11 @@ here with its current lean and owning sprint so it is resolved on purpose, not b
 |---|----------|--------------|---------------|
 | 1 | Vault storage backend | Integrated storage on the retained `.data/vault/vault/0` PV (file storage acceptable for dev); the load-bearing property is only that teardown never destroys Vault state and `init` never reruns (§5). | `3.17` / `4.29` |
 | 2 | Initial root-token lifetime | Store unseal/recovery material in the unlock bundle (root) or the parent's Vault KV (child), create named admin roles/tokens, and rotate or revoke the initial root token out of the steady-state admin path after bootstrap (§6, §16). | `1.36` / `3.20` |
-| 3 | Opaque object names / indexes | Opaque object IDs + Vault-encrypted indexes, since config/topology metadata is secret (§9). | `4.30` |
-| 4 | Pulumi encrypted-backend approach | Option B (Vault-derived passphrase) first, then Option A or C for full metadata secrecy (§10). | `1.37` / `7.14` |
+| 3 | Opaque object names / indexes | **Resolved — Model B object-store** (§9): every prodbox-owned object goes through one application-level layer that envelopes via Vault Transit, names objects `objects/<vault-keyed-HMAC>.enc`, keeps a Vault-encrypted `indexes/*.enc` map, hashes the stored AAD (`prodbox-envelope-v2`), and decoy-pads to a constant object count + size buckets, in one generically-named bucket shared by the host CLI and the gateway daemon. | `4.30` |
+| 4 | Pulumi encrypted-backend approach | **Resolved — decrypt-to-scratch interposition** (§10): hydrate the stack into a RAM-tmpfs `file://` backend, run `pulumi` with no passphrase, re-envelope + opaque-name back through the §9 object-store. Pulumi's own secrets provider is dropped; applied uniformly to per-run and the long-lived `aws-ses` backend (no AES256-SSE carve-out). | `1.37` / `7.14` |
 | 5 | TLS private-key generation | cert-manager Vault issuer vs native Vault PKI vs ACME-with-Vault-stored-credentials — pick on cert-manager integration + operational simplicity (§11). | `7.15` |
 | 6 | Fail-closed strictness for running workloads | Already-running workloads continue only to the extent they need no new Vault operation; security-sensitive paths prefer explicit fail-closed readiness gates over silent degraded operation (§2). The exact per-component strictness (block new reads vs fail existing readiness) is pinned by the lifecycle and sealed-vault sprints. | `4.29` / `5.8` |
-| 7 | Federation depth + child-registration surface | A single root with direct children first; deeper trees and the child-registration CLI/gateway surface follow once the two-tier custody contract is proven (§16). | `2.26` / `4.32` |
+| 7 | Federation depth + child-registration surface | Direct root-to-child registration, the gateway-mediated child listing/bootstrap surface, and the child lifecycle interpreter are live. Deeper parent-as-child registration is a future extension of the same parent-owned custody rules (§16). | `2.26` / `4.32` |
 
 ## 19. Red-team checklist
 
@@ -708,10 +904,26 @@ Before the Vault-root finalization is considered complete (tracked across the re
   consumer remains.
 - A generated cluster-manifest grep finds no real secret and no chart-generated
   `lookup`+`randAlphaNum` Secret.
-- A Kubernetes Secret dump reveals no downstream-cluster metadata or Vault-bypass credential.
+- A Kubernetes Secret dump reveals no downstream-cluster metadata or Vault-bypass credential, and
+  no ConfigMap, Secret, or namespace name encodes a child-cluster name (k8s leaks no child name;
+  §9 whole-system).
 - A MinIO bucket dump while Vault is sealed reveals no in-force-config or Pulumi plaintext, and no
   `master-seed` object exists at all.
-- Object names and indexes reveal no downstream-cluster inventory.
+- A bucket-level `s3api ls` while Vault is sealed reveals one generically-named bucket — neither
+  the retired `prodbox` nor `prodbox-test-pulumi-backends` role-revealing name survives (§9).
+- Object names and indexes reveal no downstream-cluster inventory: every object is
+  `objects/<hmac>.enc` under one flat prefix (opaque-name layout), the `indexes/*.enc` map is
+  itself a sealed envelope, and no `aws-eks`/stack-named or otherwise logical key exists (§9).
+- A sealed-Vault `list-objects` returns a **constant** object count — decoy-padding hides how many
+  real objects exist — and the bodies are size-bucketed, so neither count nor length leaks (§9).
+- No exists-vs-absent oracle: a sealed-Vault query for a logical object cannot distinguish
+  "present" from "absent" (the exists-vs-`NoSuchKey`/`stackPresentInList` discriminator is gated
+  behind the readiness check; §9, §14; the Haskell-side gate landed in Sprint `4.33`).
+- A raw host-disk walk of `.data/prodbox/minio/0` while Vault is sealed reveals only opaque-named
+  ciphertext at a constant count — no plaintext name, body, or count (§9; Haskell-side gates landed
+  in Sprint `4.33`; deployed proof is Sprint `5.8`).
+- The object body stores a **hashed** AAD (`prodbox-envelope-v2`, `base64(SHA256(aad))`); a sealed
+  envelope never contains a cleartext binding such as `aws-eks` (§8, §9; Sprint `4.30`).
 - Sealed Vault blocks Pulumi before any preview/update/destroy starts.
 - Sealed Vault blocks gateway daemon config recovery, Keycloak bootstrap/recovery, and TLS
   private-key reconstruction, and prevents every child cluster from auto-unsealing.
@@ -728,9 +940,12 @@ Before the Vault-root finalization is considered complete (tracked across the re
 - Cluster teardown preserves the Vault and MinIO PVs; cluster recreate cannot recover secrets
   without unsealing Vault — and is not a fresh Vault (unseal-on-rebuild; §5).
 
-The forbidden golden-output patterns for the SecretRef golden tests (Sprint `5.8`) include
-`AKIA`, `aws_secret_access_key`, `BEGIN PRIVATE KEY`, `client_secret = "…"`, `password = "…"`,
-Pulumi passphrase strings, and kubeconfig user tokens.
+The forbidden golden-output patterns for the SecretRef / sealed-state golden tests (Sprint `5.8`)
+include `AKIA`, `aws_secret_access_key`, `BEGIN PRIVATE KEY`, `client_secret = "…"`,
+`password = "…"`, Pulumi passphrase strings, kubeconfig user tokens, `SecretRefFile`, removed
+gateway `/v1/secret/*` RPC paths, child names, and stack names such as `aws-eks`. The pure
+sealed-state audit helper is landed; the full generated-artifact SecretRef sweep remains part of
+Sprint `5.8` closure.
 
 ## Cross-References
 

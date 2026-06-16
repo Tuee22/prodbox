@@ -19,6 +19,7 @@
 module Prodbox.Gateway.Settings
   ( loadDaemonConfig
   , decodeDaemonConfigDhall
+  , decodeDaemonConfigDhallWith
   , DaemonConfigDhall (..)
   , DaemonBootDhall (..)
   , DaemonLiveDhall (..)
@@ -26,9 +27,9 @@ module Prodbox.Gateway.Settings
   , EventKeyDhall (..)
   , AwsCredsDhall (..)
   , MinioCredsDhall (..)
+  , VaultKubernetesAuthDhall (..)
   , toDaemonConfig
-  , awsCredsFromConfig
-  , minioCredsFromConfig
+  , toDaemonConfigWith
   , loadOrders
   , decodeOrdersDhall
   , OrdersDhall (..)
@@ -40,8 +41,10 @@ where
 
 import Control.Exception (SomeException, displayException, try)
 import Data.List (nub)
+import Data.Maybe (fromMaybe)
 import Data.Text (Text)
 import Data.Text qualified as Text
+import Data.Text.IO qualified as TextIO
 import Dhall (FromDhall, auto, input, inputFile)
 import GHC.Generics (Generic)
 import Numeric.Natural (Natural)
@@ -51,8 +54,22 @@ import Prodbox.Gateway.Types
   , GatewayAwsCreds (..)
   , GatewayMinioCreds (..)
   , GatewayRule (..)
+  , GatewayVaultAuth (..)
   , Orders (..)
   , PeerEndpoint (..)
+  )
+import Prodbox.Http.Client (renderHttpError)
+import Prodbox.Settings.SecretRef
+  ( SecretRef
+  , SecretRefError (..)
+  , SecretRefMode (..)
+  , renderSecretRefError
+  , resolveSecretRef
+  , resolveSecretRefFromVault
+  )
+import Prodbox.Vault.Client
+  ( VaultAddress (..)
+  , vaultKubernetesLogin
   )
 
 -- | Dhall-friendly DTO for the daemon config.
@@ -64,8 +81,17 @@ import Prodbox.Gateway.Types
 -- 'toDaemonConfig'.
 data DaemonConfigDhall = DaemonConfigDhall
   { schemaVersion :: Natural
+  , vault :: Maybe VaultKubernetesAuthDhall
   , boot :: DaemonBootDhall
   , live :: DaemonLiveDhall
+  }
+  deriving (Eq, Show, Generic, FromDhall)
+
+data VaultKubernetesAuthDhall = VaultKubernetesAuthDhall
+  { address :: Text
+  , auth_path :: Text
+  , role :: Text
+  , service_account_token_file :: Maybe Text
   }
   deriving (Eq, Show, Generic, FromDhall)
 
@@ -80,32 +106,30 @@ data DaemonBootDhall = DaemonBootDhall
   , aws_creds :: Maybe AwsCredsDhall
   , minio_creds :: Maybe MinioCredsDhall
   , minio_endpoint_url :: Maybe Text
-  -- ^ Sprint 2.19: in-cluster MinIO Service endpoint URL used by
-  -- the daemon's master-seed acquisition path. Sibling field on
-  -- @boot@ rather than nested inside @minio_creds@ so the endpoint
-  -- can be rendered by the chart-side ConfigMap while credentials
-  -- stay in the Secret-mounted Dhall fragment. Canonical home value:
+  -- ^ In-cluster MinIO Service endpoint URL used for gateway-owned
+  -- object-store access. Sibling field on @boot@ rather than nested inside
+  -- @minio_creds@ so the endpoint can be rendered by the chart-side
+  -- ConfigMap while credentials stay Vault-backed SecretRef values.
+  -- Canonical home value:
   -- @http://minio.prodbox.svc.cluster.local:9000@.
   }
   deriving (Eq, Show, Generic, FromDhall)
 
--- | Sprint 2.22: AWS credentials Dhall fragment imported by the daemon's
--- config.dhall (typically from a Secret-mounted file at
--- @/etc/gateway/secrets/aws.dhall@ per @config_doctrine.md §6@).
+-- | Sprint 3.18: AWS credentials are Vault-backed SecretRefs, resolved by the
+-- daemon through Vault Kubernetes auth during config load.
 data AwsCredsDhall = AwsCredsDhall
-  { access_key_id :: Text
-  , secret_access_key :: Text
-  , session_token :: Maybe Text
+  { access_key_id :: SecretRef
+  , secret_access_key :: SecretRef
+  , session_token :: Maybe SecretRef
   , region :: Text
   }
   deriving (Eq, Show, Generic, FromDhall)
 
--- | Sprint 2.22: MinIO credentials Dhall fragment imported by the daemon's
--- config.dhall (typically from a Secret-mounted file at
--- @/etc/gateway/secrets/minio.dhall@ per @config_doctrine.md §6@).
+-- | Sprint 3.18: MinIO credentials are Vault-backed SecretRefs, resolved by
+-- the daemon through Vault Kubernetes auth during config load.
 data MinioCredsDhall = MinioCredsDhall
-  { minio_access_key :: Text
-  , minio_secret_key :: Text
+  { minio_access_key :: SecretRef
+  , minio_secret_key :: SecretRef
   }
   deriving (Eq, Show, Generic, FromDhall)
 
@@ -129,7 +153,7 @@ data DnsWriteGateDhall = DnsWriteGateDhall
 
 data EventKeyDhall = EventKeyDhall
   { name :: Text
-  , value :: Text
+  , value :: SecretRef
   }
   deriving (Eq, Show, Generic, FromDhall)
 
@@ -138,14 +162,24 @@ data EventKeyDhall = EventKeyDhall
 supportedDhallSchemaVersion :: Natural
 supportedDhallSchemaVersion = 1
 
--- | Convert the Dhall DTO to the runtime 'DaemonConfig'. Fails fast on
--- schema-version mismatches and on the obvious validation invariants the
--- legacy JSON parser already enforces (positive intervals, non-negative drain
--- deadline, no inline AWS credentials on the DNS gate).
-toDaemonConfig :: DaemonConfigDhall -> Either String DaemonConfig
-toDaemonConfig
+-- | Convert the Dhall DTO to the runtime 'DaemonConfig' with the test-harness
+-- SecretRef resolver. Production callers must use 'loadDaemonConfig', which
+-- resolves Vault references through Kubernetes auth.
+toDaemonConfig :: DaemonConfigDhall -> IO (Either String DaemonConfig)
+toDaemonConfig = toDaemonConfigWith (resolveSecretRef TestHarnessMode)
+
+-- | Convert the Dhall DTO to the runtime 'DaemonConfig' using the supplied
+-- SecretRef resolver. Fails fast on schema-version mismatches, timing
+-- invariants, and any secret reference that cannot be resolved.
+toDaemonConfigWith
+  :: (SecretRef -> IO (Either SecretRefError Text))
+  -> DaemonConfigDhall
+  -> IO (Either String DaemonConfig)
+toDaemonConfigWith
+  secretResolver
   DaemonConfigDhall
     { schemaVersion = sv
+    , vault = maybeVaultAuth
     , boot =
       DaemonBootDhall
         { node_id = nodeIdText
@@ -168,86 +202,164 @@ toDaemonConfig
         , drain_deadline_seconds = ddl
         , log_level = ll
         }
-    } = do
-    if sv == supportedDhallSchemaVersion
-      then Right ()
-      else
-        Left
-          ( "config_schema_mismatch: expected schemaVersion "
-              ++ show supportedDhallSchemaVersion
-              ++ ", got "
-              ++ show sv
-          )
-    requireNonEmpty "node_id" nodeIdText
-    requireNonEmpty "cert_file" certFileText
-    requireNonEmpty "key_file" keyFileText
-    requireNonEmpty "ca_file" caFileText
-    requireNonEmpty "orders_file" ordersFileText
-    validatePositive "heartbeat_interval_seconds" hb
-    validatePositive "reconnect_interval_seconds" rc
-    validatePositive "sync_interval_seconds" sy
-    validateNonNegative "max_clock_skew_seconds" ms
-    case ddl of
-      Just deadline | deadline == 0 -> Left "drain_deadline_seconds must be positive when set"
-      _ -> Right ()
-    pure
-      DaemonConfig
-        { daemonNodeId = Text.unpack nodeIdText
-        , daemonCertFile = Text.unpack certFileText
-        , daemonKeyFile = Text.unpack keyFileText
-        , daemonCaFile = Text.unpack caFileText
-        , daemonOrdersFile = Text.unpack ordersFileText
-        , daemonEventKeys =
-            [ (Text.unpack (name k), Text.unpack (value k))
-            | k <- eventKeysList
-            ]
-        , daemonHeartbeatInterval = hb
-        , daemonReconnectInterval = rc
-        , daemonSyncInterval = sy
-        , daemonMaxClockSkewSeconds = ms
-        , daemonDrainDeadlineSeconds = fromIntegral <$> ddl
-        , daemonConfigLogLevel = Text.unpack <$> ll
-        , daemonDnsWriteGate = toDnsWriteGate <$> maybeDnsGate
-        , daemonAwsCreds = toGatewayAwsCreds <$> maybeAwsCreds
-        , daemonMinioCreds = toGatewayMinioCreds <$> maybeMinioCreds
-        , daemonMinioEndpointUrl = Text.unpack <$> maybeMinioEndpoint
-        }
+    } =
+    case validateDaemonStaticFields of
+      Left err -> pure (Left err)
+      Right () -> do
+        eventKeysResult <- traverseEitherIO (toEventKey secretResolver) eventKeysList
+        awsCredsResult <- traverseMaybeEitherIO (toGatewayAwsCreds secretResolver) maybeAwsCreds
+        minioCredsResult <- traverseMaybeEitherIO (toGatewayMinioCreds secretResolver) maybeMinioCreds
+        pure $ do
+          resolvedEventKeys <- eventKeysResult
+          resolvedAwsCreds <- awsCredsResult
+          resolvedMinioCreds <- minioCredsResult
+          Right
+            DaemonConfig
+              { daemonNodeId = Text.unpack nodeIdText
+              , daemonCertFile = Text.unpack certFileText
+              , daemonKeyFile = Text.unpack keyFileText
+              , daemonCaFile = Text.unpack caFileText
+              , daemonOrdersFile = Text.unpack ordersFileText
+              , daemonEventKeys = resolvedEventKeys
+              , daemonHeartbeatInterval = hb
+              , daemonReconnectInterval = rc
+              , daemonSyncInterval = sy
+              , daemonMaxClockSkewSeconds = ms
+              , daemonDrainDeadlineSeconds = fromIntegral <$> ddl
+              , daemonConfigLogLevel = Text.unpack <$> ll
+              , daemonVaultAuth = toGatewayVaultAuth <$> maybeVaultAuth
+              , daemonDnsWriteGate = toDnsWriteGate <$> maybeDnsGate
+              , daemonAwsCreds = resolvedAwsCreds
+              , daemonMinioCreds = resolvedMinioCreds
+              , daemonMinioEndpointUrl = Text.unpack <$> maybeMinioEndpoint
+              }
+   where
+    validateDaemonStaticFields = do
+      if sv == supportedDhallSchemaVersion
+        then Right ()
+        else
+          Left
+            ( "config_schema_mismatch: expected schemaVersion "
+                ++ show supportedDhallSchemaVersion
+                ++ ", got "
+                ++ show sv
+            )
+      requireNonEmpty "node_id" nodeIdText
+      requireNonEmpty "cert_file" certFileText
+      requireNonEmpty "key_file" keyFileText
+      requireNonEmpty "ca_file" caFileText
+      requireNonEmpty "orders_file" ordersFileText
+      validatePositive "heartbeat_interval_seconds" hb
+      validatePositive "reconnect_interval_seconds" rc
+      validatePositive "sync_interval_seconds" sy
+      validateNonNegative "max_clock_skew_seconds" ms
+      case ddl of
+        Just deadline | deadline == 0 -> Left "drain_deadline_seconds must be positive when set"
+        _ -> Right ()
 
-toGatewayAwsCreds :: AwsCredsDhall -> GatewayAwsCreds
+toEventKey
+  :: (SecretRef -> IO (Either SecretRefError Text))
+  -> EventKeyDhall
+  -> IO (Either String (String, String))
+toEventKey secretResolver EventKeyDhall {name = keyName, value = keyValueRef} = do
+  keyValueResult <-
+    resolveRequiredSecret secretResolver ("event_keys." ++ Text.unpack keyName ++ ".value") keyValueRef
+  pure $ do
+    keyValue <- keyValueResult
+    Right (Text.unpack keyName, Text.unpack keyValue)
+
 toGatewayAwsCreds
+  :: (SecretRef -> IO (Either SecretRefError Text))
+  -> AwsCredsDhall
+  -> IO (Either String GatewayAwsCreds)
+toGatewayAwsCreds
+  secretResolver
   AwsCredsDhall
     { access_key_id = ak
     , secret_access_key = sk
     , session_token = st
     , region = rg
     } =
-    GatewayAwsCreds
-      { gatewayAwsAccessKeyId = Text.unpack ak
-      , gatewayAwsSecretAccessKey = Text.unpack sk
-      , gatewayAwsSessionToken = Text.unpack <$> st
-      , gatewayAwsRegion = Text.unpack rg
-      }
+    if Text.null rg
+      then pure (Left "aws_creds.region is required")
+      else do
+        accessKeyResult <- resolveRequiredSecret secretResolver "aws_creds.access_key_id" ak
+        secretKeyResult <- resolveRequiredSecret secretResolver "aws_creds.secret_access_key" sk
+        sessionTokenResult <- resolveOptionalSecret secretResolver "aws_creds.session_token" st
+        pure $ do
+          accessKey <- accessKeyResult
+          secretKey <- secretKeyResult
+          session <- sessionTokenResult
+          Right
+            GatewayAwsCreds
+              { gatewayAwsAccessKeyId = Text.unpack accessKey
+              , gatewayAwsSecretAccessKey = Text.unpack secretKey
+              , gatewayAwsSessionToken = Text.unpack <$> session
+              , gatewayAwsRegion = Text.unpack rg
+              }
 
-toGatewayMinioCreds :: MinioCredsDhall -> GatewayMinioCreds
 toGatewayMinioCreds
+  :: (SecretRef -> IO (Either SecretRefError Text))
+  -> MinioCredsDhall
+  -> IO (Either String GatewayMinioCreds)
+toGatewayMinioCreds
+  secretResolver
   MinioCredsDhall
     { minio_access_key = ak
     , minio_secret_key = sk
-    } =
-    GatewayMinioCreds
-      { gatewayMinioAccessKey = Text.unpack ak
-      , gatewayMinioSecretKey = Text.unpack sk
-      }
+    } = do
+    accessKeyResult <- resolveRequiredSecret secretResolver "minio_creds.minio_access_key" ak
+    secretKeyResult <- resolveRequiredSecret secretResolver "minio_creds.minio_secret_key" sk
+    pure $ do
+      accessKey <- accessKeyResult
+      secretKey <- secretKeyResult
+      Right
+        GatewayMinioCreds
+          { gatewayMinioAccessKey = Text.unpack accessKey
+          , gatewayMinioSecretKey = Text.unpack secretKey
+          }
 
--- | Extract AWS credentials directly from a 'DaemonConfigDhall' DTO. Exposed
--- so callers that need credentials before 'toDaemonConfig' validation can
--- still read them.
-awsCredsFromConfig :: DaemonConfigDhall -> Maybe GatewayAwsCreds
-awsCredsFromConfig dto = toGatewayAwsCreds <$> aws_creds (boot dto)
+resolveRequiredSecret
+  :: (SecretRef -> IO (Either SecretRefError Text))
+  -> String
+  -> SecretRef
+  -> IO (Either String Text)
+resolveRequiredSecret secretResolver fieldName ref = do
+  result <- secretResolver ref
+  pure $ case result of
+    Left err -> Left (fieldName ++ ": " ++ renderSecretRefError err)
+    Right value ->
+      if Text.null value
+        then Left (fieldName ++ " resolved to an empty value")
+        else Right value
 
--- | Extract MinIO credentials directly from a 'DaemonConfigDhall' DTO.
-minioCredsFromConfig :: DaemonConfigDhall -> Maybe GatewayMinioCreds
-minioCredsFromConfig dto = toGatewayMinioCreds <$> minio_creds (boot dto)
+resolveOptionalSecret
+  :: (SecretRef -> IO (Either SecretRefError Text))
+  -> String
+  -> Maybe SecretRef
+  -> IO (Either String (Maybe Text))
+resolveOptionalSecret _ _ Nothing = pure (Right Nothing)
+resolveOptionalSecret secretResolver fieldName (Just ref) = do
+  result <- secretResolver ref
+  pure $ case result of
+    Left err -> Left (fieldName ++ ": " ++ renderSecretRefError err)
+    Right value ->
+      let stripped = Text.strip value
+       in Right (if Text.null stripped then Nothing else Just stripped)
+
+traverseEitherIO :: (a -> IO (Either String b)) -> [a] -> IO (Either String [b])
+traverseEitherIO _ [] = pure (Right [])
+traverseEitherIO f (x : xs) = do
+  result <- f x
+  case result of
+    Left err -> pure (Left err)
+    Right value -> do
+      rest <- traverseEitherIO f xs
+      pure ((value :) <$> rest)
+
+traverseMaybeEitherIO :: (a -> IO (Either String b)) -> Maybe a -> IO (Either String (Maybe b))
+traverseMaybeEitherIO _ Nothing = pure (Right Nothing)
+traverseMaybeEitherIO f (Just value) = fmap Just <$> f value
 
 toDnsWriteGate :: DnsWriteGateDhall -> DnsWriteGate
 toDnsWriteGate g =
@@ -256,6 +368,20 @@ toDnsWriteGate g =
     , dnsWriteGateFqdn = Text.unpack (fqdn g)
     , dnsWriteGateTtl = fromIntegral (ttl g)
     , dnsWriteGateAwsRegion = Text.unpack (aws_region g)
+    }
+
+toGatewayVaultAuth :: VaultKubernetesAuthDhall -> GatewayVaultAuth
+toGatewayVaultAuth auth =
+  GatewayVaultAuth
+    { gatewayVaultAddress = Text.unpack (address auth)
+    , gatewayVaultAuthPath = Text.unpack (auth_path auth)
+    , gatewayVaultRole = Text.unpack (role auth)
+    , gatewayVaultServiceAccountTokenFile =
+        Text.unpack
+          ( fromMaybe
+              (Text.pack defaultVaultServiceAccountTokenFile)
+              (service_account_token_file auth)
+          )
     }
 
 requireNonEmpty :: String -> Text -> Either String ()
@@ -280,10 +406,17 @@ validateNonNegative fieldName fieldValue =
 -- fixtures that supply Dhall source as a string rather than a file path.
 decodeDaemonConfigDhall :: Text -> IO (Either String DaemonConfig)
 decodeDaemonConfigDhall src = do
+  decodeDaemonConfigDhallWith (resolveSecretRef TestHarnessMode) src
+
+decodeDaemonConfigDhallWith
+  :: (SecretRef -> IO (Either SecretRefError Text))
+  -> Text
+  -> IO (Either String DaemonConfig)
+decodeDaemonConfigDhallWith secretResolver src = do
   result <- try (input auto src) :: IO (Either SomeException DaemonConfigDhall)
-  pure $ case result of
-    Left e -> Left ("failed to decode gateway daemon Dhall config: " ++ displayException e)
-    Right dto -> toDaemonConfig dto
+  case result of
+    Left e -> pure (Left ("failed to decode gateway daemon Dhall config: " ++ displayException e))
+    Right dto -> toDaemonConfigWith secretResolver dto
 
 -- | Canonical entrypoint: load the daemon config from the file at the path
 -- passed via `--config <path>`. Sprint 2.20 closure: the JSON dispatch arm
@@ -302,7 +435,73 @@ loadDaemonConfig path = do
                 ++ displayException e
             )
         )
-    Right dto -> pure (toDaemonConfig dto)
+    Right dto -> toDaemonConfigWith (resolveGatewaySecretRef dto) dto
+
+defaultVaultServiceAccountTokenFile :: FilePath
+defaultVaultServiceAccountTokenFile =
+  "/var/run/secrets/kubernetes.io/serviceaccount/token"
+
+resolveGatewaySecretRef
+  :: DaemonConfigDhall
+  -> SecretRef
+  -> IO (Either SecretRefError Text)
+resolveGatewaySecretRef dto ref =
+  case vault dto of
+    Nothing -> resolveSecretRef ProductionMode ref
+    Just vaultAuth -> do
+      let tokenPath =
+            Text.unpack
+              ( fromMaybe
+                  (Text.pack defaultVaultServiceAccountTokenFile)
+                  (service_account_token_file vaultAuth)
+              )
+      jwtResult <- readServiceAccountToken tokenPath
+      case jwtResult of
+        Left err -> pure (Left err)
+        Right jwt -> do
+          loginResult <-
+            vaultKubernetesLogin
+              (VaultAddress (address vaultAuth))
+              (auth_path vaultAuth)
+              (role vaultAuth)
+              jwt
+          case loginResult of
+            Left err ->
+              pure
+                ( Left
+                    ( SecretRefVaultReadFailed
+                        ("Vault Kubernetes auth login failed: " ++ renderHttpError err)
+                    )
+                )
+            Right token ->
+              resolveSecretRefFromVault
+                ProductionMode
+                (VaultAddress (address vaultAuth))
+                token
+                ref
+
+readServiceAccountToken :: FilePath -> IO (Either SecretRefError Text)
+readServiceAccountToken path = do
+  result <- try (TextIO.readFile path) :: IO (Either SomeException Text)
+  pure $ case result of
+    Left ex ->
+      Left
+        ( SecretRefVaultReadFailed
+            ( "failed to read Kubernetes service-account token `"
+                ++ path
+                ++ "`: "
+                ++ displayException ex
+            )
+        )
+    Right rawToken ->
+      let token = Text.strip rawToken
+       in if Text.null token
+            then
+              Left
+                ( SecretRefVaultReadFailed
+                    ("Kubernetes service-account token `" ++ path ++ "` is empty")
+                )
+            else Right token
 
 -- | Dhall-friendly DTO for the gateway Orders file (Sprint 2.22).
 --

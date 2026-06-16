@@ -2,15 +2,6 @@ global:
   namespace: default
   rootChart: keycloak
 
-# Sprint 3.13 seventh chunk: prodbox-gateway daemon's in-cluster
-# endpoint the pre-install Job in `secret-bootstrap-job.yaml` calls to
-# materialize the `keycloak-runtime` admin-password Secret before the
-# chart's `secret.yaml` renders. Separate top-level key (not nested
-# under the existing `gateway:` block) so it doesn't collide with the
-# Envoy Gateway HTTPRoute configuration below.
-prodboxGateway:
-  restPort: 8443
-
 replicaCount: 1
 
 podAntiAffinity:
@@ -39,7 +30,6 @@ gateway:
 
 keycloak:
   adminUser: admin
-  adminPassword: change-me
   publicHost: test.resolvefintech.com
   httpRelativePath: /auth
   realmName: prodbox
@@ -51,47 +41,47 @@ keycloak:
   # home substrate without an invite round-trip.
   requireEmailVerification: true
 
-# SES SMTP credentials consumed by Keycloak's smtpServer block. The shared SES
-# infrastructure provisioned by `prodbox pulumi aws-ses-resources` (Sprint 8.1) outputs
-# `smtp_endpoint`, `smtp_iam_access_key_id`, and `smtp_iam_secret_access_key`; the
-# operator (or the chart-platform integration in Sprint 8.5) translates the IAM secret
-# key into the SES SMTP password via the IAM-to-SMTP-credentials algorithm and supplies
-# the result here.
 smtp:
   enabled: true
-  host: email-smtp.us-west-2.amazonaws.com
   port: 587
-  starttls: true
-  auth: true
-  from: noreply@test.resolvefintech.com
-  fromDisplayName: prodbox
-  replyTo: noreply@test.resolvefintech.com
-  user: change-me-ses-smtp-user
-  password: change-me-ses-smtp-password
 
 oidc:
   vscodeClientId: vscode
-  vscodeClientSecret: change-me
   redirectUri: https://test.resolvefintech.com/vscode/oauth2/callback
   adminRedirectUris:
     - https://test.resolvefintech.com/harbor/oauth2/callback
     - https://test.resolvefintech.com/minio/oauth2/callback
   apiClientId: prodbox-api
-  apiClientSecret: change-me
   apiAudience: prodbox-api
   apiRouteClaimName: prodbox_route
   apiRouteClaimValue: api
   websocketClientId: prodbox-websocket
-  websocketClientSecret: change-me
   websocketAudience: prodbox-websocket
   websocketRouteClaimName: prodbox_route
   websocketRouteClaimValue: websocket
   websocketRedirectUri: https://test.resolvefintech.com/ws/oidc/callback
   demoUserName: demo-user
-  demoUserPassword: change-me
 
 postgres:
   host: prodbox-keycloak-pg-ha.default.svc.cluster.local
   database: keycloak
   username: keycloak
   passwordSecretName: prodbox-keycloak-pg-pguser-keycloak
+
+vault:
+  address: http://vault.vault.svc.cluster.local:8200
+  authPath: kubernetes
+  role: keycloak
+  serviceAccountTokenFile: /var/run/secrets/kubernetes.io/serviceaccount/token
+  image:
+    repository: hashicorp/vault
+    tag: "1.18.3"
+    pullPolicy: IfNotPresent
+  paths:
+    admin: keycloak/admin
+    db: keycloak/keycloak-postgres/patroni/app
+    oidcVscode: keycloak/oidc/vscode
+    oidcApi: keycloak/oidc/prodbox-api
+    oidcWebsocket: keycloak/oidc/prodbox-websocket
+    demoUser: keycloak/oidc/demo-user
+    smtp: keycloak/smtp

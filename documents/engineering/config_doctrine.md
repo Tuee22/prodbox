@@ -345,8 +345,8 @@ in `prodbox-config.dhall`:
 |---|---|---|
 | `acme.email` | `Text` | expiry-notice email; required and non-empty |
 | `acme.server` | `Text` | ZeroSSL ACME directory URL rendered into the `ClusterIssuer` |
-| `acme.eab_key_id` | `Optional Text` | EAB key ID (required for ZeroSSL) |
-| `acme.eab_hmac_key` | `Optional Text` | EAB HMAC key (required for ZeroSSL) |
+| `acme.eab_key_id` | `Optional SecretRef` | EAB key ID (required for ZeroSSL); `SecretRef.Vault` into `secret/acme/eab#key_id` |
+| `acme.eab_hmac_key` | `Optional SecretRef` | EAB HMAC key (required for ZeroSSL); `SecretRef.Vault` into `secret/acme/eab#hmac_key` |
 
 `acme.server` is a non-empty ACME directory `Text` that defaults to the ZeroSSL directory
 `https://acme.zerossl.com/v2/DV90` and feeds the single `ClusterIssuer` (`zerossl-dns01`).
@@ -357,11 +357,17 @@ S3-backed retain-and-restore of the issued certificate so rebuilds do not re-ord
 owned by [acme_provider_guide.md](./acme_provider_guide.md) and
 [envoy_gateway_edge_doctrine.md](./envoy_gateway_edge_doctrine.md).
 
-`acme.eab_key_id` / `acme.eab_hmac_key` move from plaintext config fields into Vault KV,
-referenced by `SecretRef.Vault` rather than carried inline (scheduled under Sprint 7.15; see
-[vault_doctrine.md §11](./vault_doctrine.md#11-tls-and-pki-under-vault)). The field names and
-their required-for-ZeroSSL semantics are unchanged; only their at-rest carrier moves behind
-Vault.
+**Sprint 7.15 (landed):** `acme.eab_key_id` / `acme.eab_hmac_key` are `Optional SecretRef`
+references into the `secret/acme/eab` Vault KV object (fields `key_id` / `hmac_key`), not
+plaintext `Optional Text`. `validateAcmeBinding` rejects a plaintext (non-`Vault`) EAB reference
+through the same `validateVaultRef` discipline used for `aws.*` (the rejection reads
+`acme.eab_* must be a SecretRef.Vault reference`), so `prodbox config validate` fails fast on any
+plaintext EAB value. The non-secret key ID is resolved host-side and rendered inline into the
+issuer; the HMAC key is materialized in-cluster by a Vault-login Job and never appears in the
+config or as inline plaintext. The field names and their required-for-ZeroSSL semantics are
+unchanged; only their at-rest carrier moved behind Vault. See
+[vault_doctrine.md §11](./vault_doctrine.md#11-tls-and-pki-under-vault) and
+[acme_provider_guide.md](./acme_provider_guide.md).
 
 ## 6.2 SecretRef: typed secret references
 

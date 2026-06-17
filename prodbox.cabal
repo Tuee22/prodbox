@@ -11,6 +11,7 @@ library
     exposed-modules:
         Prodbox.App
         Prodbox.Aws
+        Prodbox.Aws.AdminCredentials
         Prodbox.AwsEnvironment
         Prodbox.BuildSupport
         Prodbox.CheckCode

@@ -77,7 +77,7 @@ pulumi/aws-test/Pulumi.aws-test.yaml
 # Dhall config and legacy local config artifacts (contain secrets; never committed)
 prodbox-config.dhall
 prodbox-config.json
-test-secrets.dhall
+test-config.dhall
 
 # OS
 .DS_Store

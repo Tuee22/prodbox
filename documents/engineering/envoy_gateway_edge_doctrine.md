@@ -210,18 +210,24 @@ behavior above and does not replace it. The retained-and-restored public-edge ce
 contract (substrate-scoped S3 key, restore-before-issue, LongLived managed resource) is
 unchanged. Under the refactor:
 
-- The ACME EAB material (the ZeroSSL external-account-binding key id and HMAC) moves into
-  Vault KV and is referenced from `prodbox-config.dhall` by a typed `SecretRef.Vault` rather
-  than carried as plaintext.
-- TLS private-key material is generated-in / stored-in / wrapped-by Vault rather than living
-  only in plaintext Kubernetes Secrets, so new certificate issuance and private-key retrieval
-  fail closed when Vault is sealed.
-- Envoy/Gateway listener TLS is not regenerated from plaintext Kubernetes Secrets on restart;
-  a sealed Vault means no new certificate can be ordered and no private key can be retrieved
-  until Vault is unsealed.
+- **Landed (Sprint 7.15):** the ACME EAB material (the ZeroSSL external-account-binding key id
+  and HMAC) lives in the `secret/acme/eab` Vault KV object and is referenced from
+  `prodbox-config.dhall` by a typed `Optional SecretRef` (`SecretRef.Vault`) rather than carried
+  as plaintext. The non-secret key id is resolved host-side and rendered inline on the
+  `zerossl-dns01` `ClusterIssuer`; the HMAC key is materialized into the `cert-manager` namespace
+  as the `acme-eab-credentials` Secret by a Vault-login materializer Job (the same Sprint 3.18
+  chart-side pattern used for the `vscode` OIDC client Secret), never as inline plaintext.
+  `prodbox config validate` rejects any plaintext EAB value.
+- New ZeroSSL issuance fails closed when Vault is sealed: the EAB key id cannot be resolved and
+  the materializer Job cannot read the HMAC key, so the issuer cannot authenticate to ZeroSSL.
+  This is structurally guaranteed by the `SecretRef.Vault` resolver (a sealed Vault cannot
+  resolve the reference) and needs no separate enforcement.
+- The broader native-Vault-PKI internal-cert authority and the live "sealed Vault blocks
+  issuance" proof are a non-blocking `Live-proof: pending` axis (no new PKI subsystem was built
+  in 7.15); cert-manager remains the issuer.
 
-This is the intended structure, scheduled under Sprint 7.15; see
-[vault_doctrine.md §11](./vault_doctrine.md#11-tls-and-pki-under-vault).
+See [vault_doctrine.md §11](./vault_doctrine.md#11-tls-and-pki-under-vault) and
+[acme_provider_guide.md](./acme_provider_guide.md).
 
 ### Redis
 

@@ -79,6 +79,14 @@ import Data.Text (Text)
 import Data.Text qualified as Text
 import Data.Vector qualified as Vector
 import Numeric.Natural (Natural)
+import Prodbox.Aws.AdminCredentials
+  ( SessionTokenPromptShape (..)
+  , acquireAdminAwsCredentials
+  , promptAdminCredentials
+  , sessionTokenPromptShape
+  , validateAdminCredentials
+  , validateAdminCredentialsInput
+  )
 import Prodbox.AwsEnvironment
   ( awsCliSubprocessEnvironment
   )
@@ -160,7 +168,6 @@ import Prodbox.Vault.Host
   )
 import System.Directory
   ( doesFileExist
-  , findExecutable
   )
 import System.Exit
   ( ExitCode (ExitFailure, ExitSuccess)
@@ -269,32 +276,6 @@ data AwsTeardownInput = AwsTeardownInput
   , awsTeardownResiduePolicy :: PulumiResiduePolicy
   }
   deriving (Eq, Show)
-
--- | Sprint 7.7 — pure helper for auto-detecting whether the operator's
--- pasted AWS access-key ID needs a session-token follow-up prompt.
---
--- * @AKIA…@ — long-lived IAM user key created via IAM console. No
---   session token; skip the prompt.
--- * @ASIA…@ — STS-derived temporary credentials (IAM Identity Center,
---   @aws sts get-session-token@, @aws sts assume-role@, EC2 instance
---   metadata). Session token is required; prompt as a hidden field.
--- * any other prefix (rare: @AGPA@, @AROA@, etc., or empty input) —
---   fall back to an optional prompt with an explanatory hint so the
---   operator is never silently forced into the wrong shape.
-data SessionTokenPromptShape
-  = SkipPrompt
-  | PromptRequiredHidden
-  | PromptOptionalWithHint
-  deriving (Eq, Show)
-
--- | Sprint 7.7 — auto-detect the prompt shape from the access-key prefix.
--- Extracted as a pure helper so unit tests can cover the AKIA / ASIA /
--- unknown branches without exercising IO.
-sessionTokenPromptShape :: Text -> SessionTokenPromptShape
-sessionTokenPromptShape accessKeyId
-  | "AKIA" `Text.isPrefixOf` accessKeyId = SkipPrompt
-  | "ASIA" `Text.isPrefixOf` accessKeyId = PromptRequiredHidden
-  | otherwise = PromptOptionalWithHint
 
 -- | Per-run Pulumi stack names per
 -- @DEVELOPMENT_PLAN/substrates.md → Resource Lifecycle Classes@. These
@@ -734,13 +715,6 @@ prettyConfig = AesonPretty.defConfig {AesonPretty.confIndent = AesonPretty.Space
 throwAws :: String -> IO a
 throwAws = throwIO . AwsError
 
-ensureAwsCliAvailable :: IO ()
-ensureAwsCliAvailable = do
-  maybeAws <- findExecutable "aws"
-  case maybeAws of
-    Nothing -> throwAws "The AWS CLI is required for interactive setup flows"
-    Just _ -> pure ()
-
 interactiveConfigSetupInput :: FilePath -> IO ConfigSetupInput
 interactiveConfigSetupInput repoRoot = do
   requireInteractiveTty configSetupGuard
@@ -964,28 +938,6 @@ showAwsAccountGuidance = do
   writeOutputLine "5 GiB of S3 standard storage, and Route 53 usage billed separately."
   writeOutputLine ""
 
-showAdminCredentialsGuidance :: IO ()
-showAdminCredentialsGuidance = do
-  writeOutputLine "Temporary admin AWS credential guidance:"
-  writeOutputLine
-    "1. Sign in with an identity that can manage IAM users, access keys, Route 53"
-  writeOutputLine "   hosted zones, and Service Quotas. Two credential shapes are supported:"
-  writeOutputLine
-    "   a. Long-lived IAM user key (AKIA…): IAM console -> Users -> <temporary admin user>"
-  writeOutputLine "      -> Security credentials -> Create access key. No session token."
-  writeOutputLine
-    "   b. STS-derived temporary key (ASIA…): IAM Identity Center \"Access keys\" panel,"
-  writeOutputLine
-    "      or `aws sts get-session-token` / `aws sts assume-role`. Includes a session"
-  writeOutputLine "      token; paste it when prompted."
-  writeOutputLine
-    "2. Paste the access key ID and secret below. `prodbox` auto-detects the shape from"
-  writeOutputLine
-    "   the access-key prefix and only asks for a session token when needed (ASIA…)."
-  writeOutputLine "3. `prodbox` never persists this temporary admin key. Delete it after the"
-  writeOutputLine "   command completes."
-  writeOutputLine ""
-
 showRegionChoiceGuidance :: IO ()
 showRegionChoiceGuidance = do
   writeOutputLine "AWS region guidance:"
@@ -1038,53 +990,6 @@ promptBgpPeers = do
         , my_asn = fromIntegral myAsn
         , ebgp_multi_hop = Just multiHop
         }
-
-promptAdminCredentials :: Text -> IO Credentials
-promptAdminCredentials defaultRegion = do
-  ensureAwsCliAvailable
-  showAdminCredentialsGuidance
-  accessKeyId <-
-    Text.pack . trim
-      <$> promptText "Temporary admin AWS access key ID (from the AWS console or IAM Identity Center)" Nothing
-  secretAccessKey <-
-    Text.pack . trim
-      <$> promptSecret "Temporary admin AWS secret access key (hidden input)"
-  -- Sprint 7.7 auto-detect: AKIA… skips the session-token prompt
-  -- entirely; ASIA… makes it a required hidden field; any other
-  -- prefix falls back to an optional prompt with an explanatory hint.
-  sessionToken <- promptSessionTokenForKey accessKeyId
-  regionRaw <-
-    promptText
-      "AWS region for admin operations (you can change it after regions are listed)"
-      (Just (Text.unpack defaultRegion))
-  validateAdminCredentialsInput
-    Credentials
-      { access_key_id = accessKeyId
-      , secret_access_key = secretAccessKey
-      , session_token = sessionToken
-      , region = Text.pack (trim regionRaw)
-      }
-
--- | Sprint 7.7 — IO wrapper around 'sessionTokenPromptShape'. The pure
--- helper lives next to its tests; this function exists so
--- 'promptAdminCredentials' has a single clean call.
-promptSessionTokenForKey :: Text -> IO (Maybe Text)
-promptSessionTokenForKey accessKeyId =
-  case sessionTokenPromptShape accessKeyId of
-    SkipPrompt -> pure Nothing
-    PromptRequiredHidden -> do
-      raw <-
-        promptSecret
-          "AWS session token (required for STS-derived keys, hidden input)"
-      pure (Just (Text.pack (trim raw)))
-    PromptOptionalWithHint -> do
-      writeOutputLine
-        ( "  Access key prefix not recognized (AKIA/ASIA); if this came from "
-            ++ "STS / Identity Center, paste the matching session token, "
-            ++ "otherwise press Enter."
-        )
-      raw <- promptText "AWS session token (leave blank for long-lived IAM user keys)" Nothing
-      pure (normalizeOptionalText (Text.pack raw))
 
 promptAdminCredentialsWithRegionChoice :: FilePath -> IO Credentials
 promptAdminCredentialsWithRegionChoice repoRoot = do
@@ -1252,6 +1157,12 @@ runAwsIamHarnessTeardown repoRoot = do
     )
   pure (renderAwsTeardownResult result ++ "POST_RUN_OPERATIONAL_CONFIG_CLEARED=true\n")
 
+-- | Sprint 7.16: acquire the EPHEMERAL admin AWS credential for the IAM
+-- harness setup/teardown flows. The Route 53 / ACME bootstrap fields are still
+-- validated from @prodbox-config.dhall@ (they belong to the production config),
+-- but the admin credential itself comes from the unified acquisition cascade:
+-- a populated @aws_admin_for_test_simulation@ in @test-config.dhall@ (the
+-- harness simulating the prompt) → an interactive TTY prompt → fail loud.
 loadHarnessAdminCredentials :: FilePath -> IO Credentials
 loadHarnessAdminCredentials repoRoot = do
   configResult <- loadConfigFile repoRoot
@@ -1261,18 +1172,14 @@ loadHarnessAdminCredentials repoRoot = do
       case validateAwsBootstrapConfig config of
         Left err -> throwAws err
         Right () -> do
-          credentialsResult <-
-            resolveAwsCredentialsRefFromHostVault
-              repoRoot
-              "aws_admin_for_test_simulation"
-              (aws_admin_for_test_simulation config)
+          credentialsResult <- acquireAdminAwsCredentials repoRoot
           case credentialsResult of
             Left err ->
               throwAws
-                ( "Native IAM validation requires Vault-backed \
-                  \aws_admin_for_test_simulation.access_key_id, \
-                  \aws_admin_for_test_simulation.secret_access_key, and \
-                  \aws_admin_for_test_simulation.region: "
+                ( "Native IAM validation requires an ephemeral admin AWS \
+                  \credential (from test-config.dhall's \
+                  \aws_admin_for_test_simulation block, or the interactive \
+                  \prompt): "
                     ++ err
                 )
             Right credentials ->
@@ -1280,7 +1187,7 @@ loadHarnessAdminCredentials repoRoot = do
                 then validateAdminCredentialsInput credentials
                 else
                   throwAws
-                    "Native IAM validation requires aws_admin_for_test_simulation.access_key_id, aws_admin_for_test_simulation.secret_access_key, and aws_admin_for_test_simulation.region to resolve to non-empty values."
+                    "Native IAM validation requires the acquired admin AWS credential to have a non-empty access key id, secret access key, and region."
 
 harnessAdminCredentialsConfigured :: Credentials -> Bool
 harnessAdminCredentialsConfigured credentials =
@@ -1435,30 +1342,6 @@ safeIndex 0 (x : _) = Just x
 safeIndex n (_ : xs)
   | n > 0 = safeIndex (n - 1) xs
   | otherwise = Nothing
-
-validateAdminCredentials :: Credentials -> Either String Credentials
-validateAdminCredentials credentials = do
-  let normalized =
-        Credentials
-          { access_key_id = Text.strip (access_key_id credentials)
-          , secret_access_key = Text.strip (secret_access_key credentials)
-          , session_token = normalizeOptionalText =<< session_token credentials
-          , region = Text.strip (region credentials)
-          }
-  if Text.null (access_key_id normalized)
-    then Left "Admin AWS access key ID is required"
-    else pure ()
-  if Text.null (secret_access_key normalized)
-    then Left "Admin AWS secret access key is required"
-    else pure ()
-  if Text.null (region normalized)
-    then Left "Admin AWS region is required"
-    else pure ()
-  pure normalized
-
-validateAdminCredentialsInput :: Credentials -> IO Credentials
-validateAdminCredentialsInput credentials =
-  either throwAws pure (validateAdminCredentials credentials)
 
 validateConfigSetupInput
   :: Credentials
@@ -2037,6 +1920,14 @@ applyConfigSetup repoRoot input = do
           , region = region adminCredentials
           }
   writeOperationalAwsVaultCredentials repoRoot operationalCredentials
+  -- Sprint 7.15: the prompted ZeroSSL EAB key ID + HMAC key are written to
+  -- Vault (@secret/acme/eab@, fields @key_id@ / @hmac_key@), mirroring the
+  -- operational AWS credentials above. They are never persisted into
+  -- @prodbox-config.dhall@; the config keeps the @SecretRef.Vault@ references.
+  writeAcmeEabVaultCredentials
+    repoRoot
+    (configSetupAcmeEabKeyIdInput input)
+    (configSetupAcmeEabHmacKeyInput input)
   let updatedConfig =
         currentConfig
           { aws =
@@ -2050,11 +1941,9 @@ applyConfigSetup repoRoot input = do
                 , demo_ttl = configSetupDemoTtlInput input
                 }
           , acme =
-              AcmeSection
+              (acme currentConfig)
                 { email = configSetupAcmeEmailInput input
                 , server = configSetupAcmeServerInput input
-                , eab_key_id = configSetupAcmeEabKeyIdInput input
-                , eab_hmac_key = configSetupAcmeEabHmacKeyInput input
                 }
           , deployment =
               DeploymentSection
@@ -2743,6 +2632,29 @@ operationalAwsVaultFields credentials =
     , ("session_token", maybe "" id (session_token credentials))
     , ("region", region credentials)
     ]
+
+-- | Sprint 7.15: write the ZeroSSL external-account-binding material to Vault
+-- at @secret/acme/eab@ so the config can reference it through
+-- @SecretRef.Vault@ rather than persisting plaintext. When both fields are
+-- absent (a non-ZeroSSL server with no EAB), nothing is written.
+writeAcmeEabVaultCredentials :: FilePath -> Maybe Text -> Maybe Text -> IO ()
+writeAcmeEabVaultCredentials repoRoot maybeKeyId maybeHmacKey =
+  case (maybeKeyId, maybeHmacKey) of
+    (Nothing, Nothing) -> pure ()
+    _ -> do
+      result <-
+        writeHostVaultKvObject
+          repoRoot
+          "secret"
+          "acme/eab"
+          ( Map.fromList
+              [ ("key_id", maybe "" id maybeKeyId)
+              , ("hmac_key", maybe "" id maybeHmacKey)
+              ]
+          )
+      case result of
+        Left err -> throwAws err
+        Right () -> pure ()
 
 operationalIdentityFromArn :: Text -> Maybe OperationalIdentityProbe
 operationalIdentityFromArn arn = do

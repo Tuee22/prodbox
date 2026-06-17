@@ -27,6 +27,7 @@ import Data.Set
 import Data.Set qualified as Set
 import Data.Text qualified as Text
 import Data.Time.Clock.POSIX (getPOSIXTime)
+import Prodbox.Aws.AdminCredentials (acquireAdminAwsCredentials)
 import Prodbox.AwsEnvironment
   ( overlayAwsCredentials
   )
@@ -436,19 +437,20 @@ runValidation context validation =
         case validateAwsBootstrapConfig config of
           Left err -> pure (Failure err)
           Right () -> do
-            credentialsResult <-
-              resolveAwsCredentialsRefFromHostVault
-                (interpreterRepoRoot context)
-                "aws_admin_for_test_simulation"
-                (aws_admin_for_test_simulation config)
+            -- Sprint 7.16: the IAM harness's admin credential is the EPHEMERAL
+            -- credential acquired from test-config.dhall's
+            -- aws_admin_for_test_simulation block (harness simulating the
+            -- prompt) or an interactive TTY prompt; it is never read from
+            -- prodbox-config.dhall or Vault.
+            credentialsResult <- acquireAdminAwsCredentials (interpreterRepoRoot context)
             pure $
               case credentialsResult of
                 Left err ->
                   Failure
-                    ( "Native IAM validation requires Vault-backed \
-                      \aws_admin_for_test_simulation.access_key_id, \
-                      \aws_admin_for_test_simulation.secret_access_key, and \
-                      \aws_admin_for_test_simulation.region: "
+                    ( "Native IAM validation requires an ephemeral admin AWS \
+                      \credential (from test-config.dhall's \
+                      \aws_admin_for_test_simulation block, or the interactive \
+                      \prompt): "
                         ++ err
                     )
                 Right credentials ->
@@ -456,7 +458,7 @@ runValidation context validation =
                     then Success ()
                     else
                       Failure
-                        "Native IAM validation requires aws_admin_for_test_simulation.access_key_id, aws_admin_for_test_simulation.secret_access_key, and aws_admin_for_test_simulation.region to resolve to non-empty values."
+                        "Native IAM validation requires the acquired admin AWS credential to have a non-empty access key id, secret access key, and region."
 
   requireRoute53Access :: IO (Result ())
   requireRoute53Access = do

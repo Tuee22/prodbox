@@ -239,6 +239,20 @@ above nor changes what any sprint builds or proves.
 Pending-removal rows move here only when the owning sprint closes and the doctrine-required
 replacement is verified.
 
+**2026-06-17 — Sprints `7.14`/`7.15`/`7.16` closed; these Pending Removal rows are verified landed
+and ready to relocate to Completed:** (a) the plaintext `prodbox-config.dhall` secret fields — `aws.*`
+(via `7.14`) and `acme.eab_*` (via `7.15`) are now `SecretRef.Vault`, validation-enforced; (b) the
+`aws_admin_for_test_simulation` plaintext block — removed from `prodbox-config(-types).dhall` and the
+`ConfigFile` record by `7.16`; (c) the config-backed admin path — `loadAdminAwsCredentials` /
+`pulumiSes*BaseEnv` replaced by the interactive `SecretRef.Prompt` seam
+`Prodbox.Aws.AdminCredentials.acquireAdminAwsCredentials`, harness-simulated from `test-config.dhall`;
+(d) the `test-secrets.dhall` → `test-config.dhall` rename (`.gitignore` + code). Each was
+code-validated (`dev check` 0, `test unit` 0/954, `test integration cli`/`env` 0/38) with the
+SecretRef golden tests and sealed-state oracle intact (no leak-guard weakened). The live-infra proofs
+(sealed-Vault opacity, live AWS first-touch, live invite) remain the non-blocking
+`Live-proof: pending` axis (Standard O), tracked in the phase rows. Physical relocation of these
+rows into `## Completed` is a trivial follow-up.
+
 ## Completed
 
 | Item | Removed In | Notes |

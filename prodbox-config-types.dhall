@@ -22,12 +22,6 @@ in
         , session_token : Optional SecretRef
         , region : Text
         }
-    , aws_admin_for_test_simulation :
-        { access_key_id : SecretRef
-        , secret_access_key : SecretRef
-        , session_token : Optional SecretRef
-        , region : Text
-        }
     , route53 : { zone_id : Text }
     , aws_substrate :
         { hosted_zone_id : Text
@@ -45,8 +39,8 @@ in
     , acme :
         { email : Text
         , server : Text
-        , eab_key_id : Optional Text
-        , eab_hmac_key : Optional Text
+        , eab_key_id : Optional SecretRef
+        , eab_hmac_key : Optional SecretRef
         }
     , deployment :
         { dev_mode : Bool
@@ -86,14 +80,6 @@ in
         , session_token = None SecretRef
         , region = "us-east-1"
         }
-    , aws_admin_for_test_simulation =
-        { access_key_id =
-            SecretRef.Vault { mount = "secret", path = "aws/admin-for-test-simulation", field = "access_key_id" }
-        , secret_access_key =
-            SecretRef.Vault { mount = "secret", path = "aws/admin-for-test-simulation", field = "secret_access_key" }
-        , session_token = None SecretRef
-        , region = ""
-        }
     , route53 = { zone_id = "" }
     , aws_substrate =
         { hosted_zone_id = ""
@@ -111,8 +97,10 @@ in
     , acme =
         { email = ""
         , server = "https://acme.zerossl.com/v2/DV90"
-        , eab_key_id = None Text
-        , eab_hmac_key = None Text
+        , eab_key_id =
+            Some (SecretRef.Vault { mount = "secret", path = "acme/eab", field = "key_id" })
+        , eab_hmac_key =
+            Some (SecretRef.Vault { mount = "secret", path = "acme/eab", field = "hmac_key" })
         }
     , deployment =
         { dev_mode = True

@@ -172,8 +172,8 @@ data MetallbBgpPeer = MetallbBgpPeer
 data AcmeSection = AcmeSection
   { email :: Text
   , server :: Text
-  , eab_key_id :: Maybe Text
-  , eab_hmac_key :: Maybe Text
+  , eab_key_id :: Maybe SecretRef
+  , eab_hmac_key :: Maybe SecretRef
   }
   deriving (Eq, Show, Generic, FromDhall)
 
@@ -237,7 +237,6 @@ haskellCamelToDhallSnake value =
 
 data ConfigFile = ConfigFile
   { aws :: AwsCredentialsRef
-  , aws_admin_for_test_simulation :: AwsCredentialsRef
   , route53 :: Route53Section
   , aws_substrate :: AwsSubstrateSection
   , ses :: SesSection
@@ -468,14 +467,6 @@ renderSettingsDisplay showSecrets settings =
     , "aws.access_key_id=" ++ renderSecretRefDisplay (awsCredentialAccessKeyId (aws config))
     , "aws.secret_access_key=" ++ renderSecretRefDisplay (awsCredentialSecretAccessKey (aws config))
     , "aws.session_token=" ++ renderMaybeSecretRefDisplay (awsCredentialSessionToken (aws config))
-    , "aws_admin_for_test_simulation.access_key_id="
-        ++ renderSecretRefDisplay (awsCredentialAccessKeyId (aws_admin_for_test_simulation config))
-    , "aws_admin_for_test_simulation.secret_access_key="
-        ++ renderSecretRefDisplay (awsCredentialSecretAccessKey (aws_admin_for_test_simulation config))
-    , "aws_admin_for_test_simulation.session_token="
-        ++ renderMaybeSecretRefDisplay (awsCredentialSessionToken (aws_admin_for_test_simulation config))
-    , "aws_admin_for_test_simulation.region="
-        ++ renderMaybeText (normalizeOptionalText (awsCredentialRegion (aws_admin_for_test_simulation config)))
     , "route53.zone_id=" ++ renderText (zone_id (route53 config))
     , "aws_substrate.hosted_zone_id=" ++ renderText (hosted_zone_id (aws_substrate config))
     , "aws_substrate.subzone_name=" ++ renderText (subzone_name (aws_substrate config))
@@ -486,8 +477,8 @@ renderSettingsDisplay showSecrets settings =
     , "domain.demo_ttl=" ++ show (demo_ttl (domain config))
     , "acme.email=" ++ renderSensitive showSecrets (email (acme config))
     , "acme.server=" ++ renderText (server (acme config))
-    , "acme.eab_key_id=" ++ renderMaybeText (eab_key_id (acme config))
-    , "acme.eab_hmac_key=" ++ renderSensitiveMaybe showSecrets (eab_hmac_key (acme config))
+    , "acme.eab_key_id=" ++ renderMaybeSecretRefDisplay (eab_key_id (acme config))
+    , "acme.eab_hmac_key=" ++ renderMaybeSecretRefDisplay (eab_hmac_key (acme config))
     , "deployment.dev_mode=" ++ renderBool (dev_mode (deployment config))
     , "deployment.bootstrap_public_ip_override="
         ++ renderMaybeText (bootstrap_public_ip_override (deployment config))
@@ -628,17 +619,15 @@ validateConfig repoRoot config = do
         }
 
 -- | Purely-local config invariants: the supported public hostname, the
--- demo TTL bounds, the all-set-or-all-empty admin-simulation fixture
--- shape, and the public-edge deployment knobs. No operational AWS
--- credentials, Route 53 zone, or ACME account are required here, so a
--- host with an empty @aws.*@ block still decodes config for every local
--- cluster command.
+-- demo TTL bounds, the operational @aws.*@ SecretRef shape, and the
+-- public-edge deployment knobs. No operational AWS credentials, Route 53
+-- zone, or ACME account are required here, so a host with an empty @aws.*@
+-- block still decodes config for every local cluster command.
 validateLocalConfig :: ConfigFile -> Either String ()
 validateLocalConfig config = do
   validateSupportedPublicHost (demo_fqdn (domain config))
   validateDemoTtl (demo_ttl (domain config))
   validateAwsCredentialsRef "aws" (aws config)
-  validateAwsCredentialsRef "aws_admin_for_test_simulation" (aws_admin_for_test_simulation config)
   validatePublicEdgeDeployment (deployment config)
 
 mapLeft :: (left -> left') -> Either left right -> Either left' right
@@ -806,6 +795,13 @@ validateDemoTtl ttl
   | ttl > 86400 = Left "domain.demo_ttl must be between 30 and 86400"
   | otherwise = Right ()
 
+-- | Sprint 7.15: the ZeroSSL external-account-binding (EAB) key ID and HMAC
+-- key are no longer plaintext @Optional Text@; they are @SecretRef.Vault@
+-- references into @secret/acme/eab@ (fields @key_id@ / @hmac_key@), resolved
+-- through Vault exactly like the operational @aws.*@ credentials. ZeroSSL
+-- still requires both present; non-ZeroSSL servers may omit both; one without
+-- the other is rejected; and a plaintext (non-@Vault@) reference is rejected
+-- through the same 'validateVaultRef' discipline used for @aws.*@.
 validateAcmeBinding :: AcmeSection -> Either String ()
 validateAcmeBinding acmeSection
   | isZeroSslServer (server acmeSection)
@@ -813,7 +809,9 @@ validateAcmeBinding acmeSection
       Left "acme.eab_key_id and acme.eab_hmac_key are required for ZeroSSL ACME"
   | hasExactlyOne (eab_key_id acmeSection) (eab_hmac_key acmeSection) =
       Left "acme.eab_key_id and acme.eab_hmac_key must either both be set or both be empty"
-  | otherwise = Right ()
+  | otherwise = do
+      mapM_ (validateVaultRef "acme.eab_key_id") (eab_key_id acmeSection)
+      mapM_ (validateVaultRef "acme.eab_hmac_key") (eab_hmac_key acmeSection)
 
 validateAwsCredentialsRef :: String -> AwsCredentialsRef -> Either String ()
 validateAwsCredentialsRef prefix refs = do
@@ -853,17 +851,6 @@ renderSensitive showSecrets value =
     if Text.strip value == ""
       then Nothing
       else Just (if showSecrets then value else maskSecret value)
-
-renderSensitiveMaybe :: Bool -> Maybe Text -> String
-renderSensitiveMaybe showSecrets maybeValue =
-  renderMaybeText $
-    fmap
-      ( \value ->
-          if showSecrets
-            then value
-            else maskSecret value
-      )
-      maybeValue
 
 renderMaybeText :: Maybe Text -> String
 renderMaybeText maybeValue =
@@ -932,15 +919,6 @@ operationalAwsCredentialsRef regionValue =
     , awsCredentialRegion = regionValue
     }
 
-adminAwsCredentialsRef :: Text -> AwsCredentialsRef
-adminAwsCredentialsRef regionValue =
-  AwsCredentialsRef
-    { awsCredentialAccessKeyId = vaultRef "aws/admin-for-test-simulation" "access_key_id"
-    , awsCredentialSecretAccessKey = vaultRef "aws/admin-for-test-simulation" "secret_access_key"
-    , awsCredentialSessionToken = Nothing
-    , awsCredentialRegion = regionValue
-    }
-
 vaultRef :: Text -> Text -> SecretRef
 vaultRef path field =
   SecretRefVault
@@ -954,7 +932,6 @@ defaultConfigFile :: ConfigFile
 defaultConfigFile =
   ConfigFile
     { aws = operationalAwsCredentialsRef "us-east-1"
-    , aws_admin_for_test_simulation = adminAwsCredentialsRef ""
     , route53 = Route53Section {zone_id = ""}
     , aws_substrate =
         AwsSubstrateSection
@@ -976,8 +953,8 @@ defaultConfigFile =
         AcmeSection
           { email = ""
           , server = "https://acme.zerossl.com/v2/DV90"
-          , eab_key_id = Nothing
-          , eab_hmac_key = Nothing
+          , eab_key_id = Just (vaultRef "acme/eab" "key_id")
+          , eab_hmac_key = Just (vaultRef "acme/eab" "hmac_key")
           }
     , deployment =
         DeploymentSection
@@ -1012,15 +989,6 @@ renderConfigDhall config =
     , "        , session_token = " ++ dhallOptionalSecretRef (awsCredentialSessionToken (aws config))
     , "        , region = " ++ dhallText (awsCredentialRegion (aws config))
     , "        }"
-    , "    , aws_admin_for_test_simulation = Config.default.aws_admin_for_test_simulation // {"
-    , "        , access_key_id = "
-        ++ dhallSecretRef (awsCredentialAccessKeyId (aws_admin_for_test_simulation config))
-    , "        , secret_access_key = "
-        ++ dhallSecretRef (awsCredentialSecretAccessKey (aws_admin_for_test_simulation config))
-    , "        , session_token = "
-        ++ dhallOptionalSecretRef (awsCredentialSessionToken (aws_admin_for_test_simulation config))
-    , "        , region = " ++ dhallText (awsCredentialRegion (aws_admin_for_test_simulation config))
-    , "        }"
     , "    , route53 = { zone_id = " ++ dhallText (zone_id (route53 config)) ++ " }"
     , "    , aws_substrate = Config.default.aws_substrate // {"
     , "        , hosted_zone_id = " ++ dhallText (hosted_zone_id (aws_substrate config))
@@ -1038,8 +1006,8 @@ renderConfigDhall config =
     , "    , acme = Config.default.acme // {"
     , "        , email = " ++ dhallText (email (acme config))
     , "        , server = " ++ dhallText (server (acme config))
-    , "        , eab_key_id = " ++ dhallOptionalText (eab_key_id (acme config))
-    , "        , eab_hmac_key = " ++ dhallOptionalText (eab_hmac_key (acme config))
+    , "        , eab_key_id = " ++ dhallOptionalSecretRef (eab_key_id (acme config))
+    , "        , eab_hmac_key = " ++ dhallOptionalSecretRef (eab_hmac_key (acme config))
     , "        }"
     , "    , deployment = Config.default.deployment // {"
     , "        , dev_mode = " ++ dhallBool (dev_mode (deployment config))

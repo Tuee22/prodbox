@@ -1024,7 +1024,7 @@ integrationCliSuite = do
         binary <- resolveBinaryPath
         writeRepoMarkers tmpDir
         writeFile (tmpDir </> "prodbox-config.dhall") validConfig
-        writeFile (tmpDir </> "test-secrets.dhall") testSecretsDhall
+        writeFile (tmpDir </> "test-config.dhall") testConfigDhall
         withFakeVaultLifecycleServer $ \vaultPort stateRef -> do
           envVars <- fakeVaultLifecycleEnvironment vaultPort
           let runVault args =
@@ -1190,6 +1190,9 @@ integrationCliSuite = do
           repoRoot <- getCurrentDirectory
           writeRepoMarkers tmpDir
           writeFile (tmpDir </> "prodbox-config.dhall") validConfigForNuke
+          writeFile
+            (tmpDir </> "test-config.dhall")
+            (testConfigDhallWithAdmin "CONFIGADMINKEY" "config-admin-secret" "us-west-2" Nothing)
           writeRootBasics tmpDir (fakeVaultAddress vaultPort)
           createDirectoryIfMissing True (tmpDir </> ".kube")
           writeFile (tmpDir </> ".kube" </> "config") "server: https://127.0.0.1:6443\n"
@@ -1263,12 +1266,21 @@ integrationCliSuite = do
         applyManifest <-
           readAppliedManifestContaining (tmpDir </> "fake-rke2-state") "\"externalAccountBinding\""
         applyManifest `shouldContain` "\"ClusterIssuer\""
-        applyManifest `shouldContain` "\"Secret\""
         applyManifest `shouldContain` "\"externalAccountBinding\""
+        -- The EAB key ID is the host-resolved (Vault-sourced) value, rendered
+        -- inline on the issuer (it is not secret). The keySecretRef points at
+        -- the materialized Secret.
         applyManifest `shouldContain` "\"keyID\":\"test-eab-key-id\""
         applyManifest `shouldContain` "\"name\":\"acme-eab-credentials\""
         applyManifest `shouldContain` "\"namespace\":\"cert-manager\""
-        applyManifest `shouldContain` "\"stringData\":{\"secret\":\"test-eab-hmac-key\"}"
+        -- Sprint 7.15: the EAB HMAC key is materialized from Vault by a
+        -- Vault-login Job, not rendered as inline plaintext stringData. The
+        -- materializer + its RBAC are present; the HMAC value never appears.
+        applyManifest `shouldContain` "acme-eab-secret-materializer"
+        applyManifest `shouldContain` "vault-materialized"
+        applyManifest `shouldContain` "hmac_key"
+        applyManifest `shouldNotContain` "test-eab-hmac-key"
+        applyManifest `shouldNotContain` "\"stringData\":{\"secret\":"
 
     it "runs native gateway start and fails gracefully with a missing config" $
       withSystemTempDirectory "prodbox-hs-cli" $ \tmpDir -> do
@@ -1354,8 +1366,18 @@ integrationCliSuite = do
         configText `shouldContain` "zone_id = \"Z1234567890ABC\""
         configText `shouldContain` "demo_fqdn = \"test.resolvefintech.com\""
         configText `shouldContain` "public_edge_advertisement_mode = Some \"l2\""
+        -- Sprint 7.15: the prompted EAB key ID + HMAC key are written to Vault
+        -- (secret/acme/eab), never persisted into prodbox-config.dhall. The
+        -- config references them through SecretRef.Vault.
+        configText `shouldContain` "eab_hmac_key = Some (Config.SecretRef.Vault"
+        configText `shouldNotContain` "test-eab-hmac-key"
+        configText `shouldNotContain` "test-eab-key-id"
         setupVaultAccessKey <- readFakeVaultField tmpDir "secret" gatewayAwsVaultPath "access_key_id"
         setupVaultAccessKey `shouldBe` "AKIAFAKESETUP"
+        setupVaultEabKeyId <- readFakeVaultField tmpDir "secret" acmeEabVaultPath "key_id"
+        setupVaultEabKeyId `shouldBe` "test-eab-key-id"
+        setupVaultEabHmacKey <- readFakeVaultField tmpDir "secret" acmeEabVaultPath "hmac_key"
+        setupVaultEabHmacKey `shouldBe` "test-eab-hmac-key"
         jsonExists <- doesFileExist (tmpDir </> "prodbox-config.json")
         jsonExists `shouldBe` False
 
@@ -1366,13 +1388,9 @@ integrationCliSuite = do
         writeRepoMarkers tmpDir
         copySchema repoRoot tmpDir
         writeFile (tmpDir </> "prodbox-config.dhall") validConfigWithBlankOperationalAwsAndConfiguredAdmin
-        seedFakeVaultAwsCredentials
-          tmpDir
-          adminAwsVaultPath
-          "CONFIGADMINKEY"
-          "config-admin-secret"
-          Nothing
-          "us-west-2"
+        writeFile
+          (tmpDir </> "test-config.dhall")
+          (testConfigDhallWithAdmin "CONFIGADMINKEY" "config-admin-secret" "us-west-2" Nothing)
         envVars <- fakeAwsEnvironment tmpDir
 
         let setupInput = unlines ["ADMINKEY", "admin-secret", "", "", "1"]
@@ -1431,18 +1449,14 @@ integrationCliSuite = do
         writeRepoMarkers tmpDir
         copySchema repoRoot tmpDir
         writeFile (tmpDir </> "prodbox-config.dhall") validConfigWithLeakedOperationalAwsAndConfiguredAdmin
+        writeFile
+          (tmpDir </> "test-config.dhall")
+          (testConfigDhallWithAdmin "CONFIGADMINKEY" "config-admin-secret" "us-west-2" Nothing)
         seedFakeVaultAwsCredentials
           tmpDir
           gatewayAwsVaultPath
           "AKIALEAKED"
           "leaked-secret"
-          Nothing
-          "us-west-2"
-        seedFakeVaultAwsCredentials
-          tmpDir
-          adminAwsVaultPath
-          "CONFIGADMINKEY"
-          "config-admin-secret"
           Nothing
           "us-west-2"
         seedFakeAwsHarnessState tmpDir
@@ -1921,9 +1935,31 @@ writeRootBasics repoRoot vaultAddress = do
         ++ "}"
     )
 
-testSecretsDhall :: String
-testSecretsDhall =
-  "{ vaultOperatorPassword = \"test-vault-unlock-password\" }\n"
+-- | Sprint 7.16: the test-harness cleartext fixture (@test-config.dhall@).
+-- Carries the unlock-bundle password plus the EPHEMERAL admin AWS credential
+-- the harness feeds into the same interactive admin prompt a real operator
+-- would answer. Decoded structurally by @inputFile auto@, so no schema import
+-- is required. This base value leaves the admin block empty (the vault
+-- lifecycle test only needs the password).
+testConfigDhall :: String
+testConfigDhall = testConfigDhallWithAdmin "" "" "" Nothing
+
+-- | A @test-config.dhall@ with a populated @aws_admin_for_test_simulation@
+-- block, so the suite-level IAM harness acquires the ephemeral admin credential
+-- non-interactively (the harness simulating the prompt).
+testConfigDhallWithAdmin :: String -> String -> String -> Maybe String -> String
+testConfigDhallWithAdmin accessKeyId secretAccessKey regionValue sessionTokenValue =
+  unlines
+    [ "{ vault_operator_password = \"test-vault-unlock-password\""
+    , ", aws_admin_for_test_simulation ="
+    , "    { access_key_id = " ++ show accessKeyId
+    , "    , secret_access_key = " ++ show secretAccessKey
+    , "    , session_token = "
+        ++ maybe "None Text" (\token -> "Some " ++ show token) sessionTokenValue
+    , "    , region = " ++ show regionValue
+    , "    }"
+    , "}"
+    ]
 
 secretRefTypeDhall :: String
 secretRefTypeDhall =
@@ -1946,8 +1982,18 @@ vaultSecretRefDhall mount path field =
 gatewayAwsVaultPath :: String
 gatewayAwsVaultPath = "gateway/gateway/aws"
 
-adminAwsVaultPath :: String
-adminAwsVaultPath = "aws/admin-for-test-simulation"
+-- | Sprint 7.15: the Vault KV logical path that holds the ZeroSSL EAB
+-- material (key ID + HMAC key) seeded by @prodbox config setup@.
+acmeEabVaultPath :: String
+acmeEabVaultPath = "acme/eab"
+
+-- | Sprint 7.15: a @Some SecretRef.Vault@ expression into @secret/acme/eab@
+-- for the given field, in the schema-less inline-union style the integration
+-- fixtures use. The EAB material now references Vault rather than carrying
+-- plaintext.
+eabVaultRefDhall :: String -> String
+eabVaultRefDhall field =
+  "Some (" ++ vaultSecretRefDhall "secret" acmeEabVaultPath field ++ ")"
 
 awsCredentialRefDhall :: String -> String -> Bool -> String
 awsCredentialRefDhall path regionValue includeSessionToken =
@@ -3420,19 +3466,22 @@ validConfig =
     "us-east-1"
     True
     "https://acme.zerossl.com/v2/DV90"
-    "Some \"test-eab-key-id\""
-    "Some \"test-eab-hmac-key\""
+    (eabVaultRefDhall "key_id")
+    (eabVaultRefDhall "hmac_key")
 
 validConfigWithBlankOperationalAwsAndConfiguredAdmin :: String
 validConfigWithBlankOperationalAwsAndConfiguredAdmin =
   unlines
     [ "{ aws = " ++ awsCredentialRefDhall gatewayAwsVaultPath "us-east-1" False
-    , ", aws_admin_for_test_simulation = " ++ awsCredentialRefDhall adminAwsVaultPath "us-west-2" False
     , ", route53 = { zone_id = \"Z1234567890ABC\" }"
     , ", aws_substrate = { hosted_zone_id = \"\", subzone_name = \"\" }"
     , ", ses = { sender_domain = \"\", receive_subdomain = \"\", capture_bucket = \"\" }"
     , ", domain = { demo_fqdn = \"test.resolvefintech.com\", demo_ttl = 60 }"
-    , ", acme = { email = \"test@resolvefintech.com\", server = \"https://acme.zerossl.com/v2/DV90\", eab_key_id = Some \"test-eab-key-id\", eab_hmac_key = Some \"test-eab-hmac-key\" }"
+    , ", acme = { email = \"test@resolvefintech.com\", server = \"https://acme.zerossl.com/v2/DV90\", eab_key_id = "
+        ++ eabVaultRefDhall "key_id"
+        ++ ", eab_hmac_key = "
+        ++ eabVaultRefDhall "hmac_key"
+        ++ " }"
     , ", deployment = " ++ deploymentDhallFragment
     , ", storage = { manual_pv_host_root = \".data\" }"
     , ", pulumi_state_backend = { bucket_name = \"\", region = \"\", key_prefix = \"\" }"
@@ -3447,12 +3496,15 @@ validConfigForNuke :: String
 validConfigForNuke =
   unlines
     [ "{ aws = " ++ awsCredentialRefDhall gatewayAwsVaultPath "us-east-1" False
-    , ", aws_admin_for_test_simulation = " ++ awsCredentialRefDhall adminAwsVaultPath "us-west-2" False
     , ", route53 = { zone_id = \"Z1234567890ABC\" }"
     , ", aws_substrate = { hosted_zone_id = \"\", subzone_name = \"\" }"
     , ", ses = { sender_domain = \"test.resolvefintech.com\", receive_subdomain = \"inbox.test.resolvefintech.com\", capture_bucket = \"prodbox-test-ses-capture\" }"
     , ", domain = { demo_fqdn = \"test.resolvefintech.com\", demo_ttl = 60 }"
-    , ", acme = { email = \"test@resolvefintech.com\", server = \"https://acme.zerossl.com/v2/DV90\", eab_key_id = Some \"test-eab-key-id\", eab_hmac_key = Some \"test-eab-hmac-key\" }"
+    , ", acme = { email = \"test@resolvefintech.com\", server = \"https://acme.zerossl.com/v2/DV90\", eab_key_id = "
+        ++ eabVaultRefDhall "key_id"
+        ++ ", eab_hmac_key = "
+        ++ eabVaultRefDhall "hmac_key"
+        ++ " }"
     , ", deployment = " ++ deploymentDhallFragment
     , ", storage = { manual_pv_host_root = \".data\" }"
     , ", pulumi_state_backend = { bucket_name = \"prodbox-test-pulumi-long-lived\", region = \"us-west-2\", key_prefix = \"pulumi/\" }"
@@ -3463,12 +3515,15 @@ validConfigWithLeakedOperationalAwsAndConfiguredAdmin :: String
 validConfigWithLeakedOperationalAwsAndConfiguredAdmin =
   unlines
     [ "{ aws = " ++ awsCredentialRefDhall gatewayAwsVaultPath "us-west-2" False
-    , ", aws_admin_for_test_simulation = " ++ awsCredentialRefDhall adminAwsVaultPath "us-west-2" False
     , ", route53 = { zone_id = \"Z1234567890ABC\" }"
     , ", aws_substrate = { hosted_zone_id = \"\", subzone_name = \"\" }"
     , ", ses = { sender_domain = \"\", receive_subdomain = \"\", capture_bucket = \"\" }"
     , ", domain = { demo_fqdn = \"test.resolvefintech.com\", demo_ttl = 60 }"
-    , ", acme = { email = \"test@resolvefintech.com\", server = \"https://acme.zerossl.com/v2/DV90\", eab_key_id = Some \"test-eab-key-id\", eab_hmac_key = Some \"test-eab-hmac-key\" }"
+    , ", acme = { email = \"test@resolvefintech.com\", server = \"https://acme.zerossl.com/v2/DV90\", eab_key_id = "
+        ++ eabVaultRefDhall "key_id"
+        ++ ", eab_hmac_key = "
+        ++ eabVaultRefDhall "hmac_key"
+        ++ " }"
     , ", deployment = " ++ deploymentDhallFragment
     , ", storage = { manual_pv_host_root = \".data\" }"
     , ", pulumi_state_backend = { bucket_name = \"\", region = \"\", key_prefix = \"\" }"
@@ -3482,8 +3537,8 @@ zeroSslConfig =
     "us-east-1"
     True
     "https://acme.zerossl.com/v2/DV90"
-    "Some \"test-eab-key-id\""
-    "Some \"test-eab-hmac-key\""
+    (eabVaultRefDhall "key_id")
+    (eabVaultRefDhall "hmac_key")
 
 deploymentDhallFragment :: String
 deploymentDhallFragment =
@@ -3505,7 +3560,6 @@ configWithAwsAndAcme :: String -> String -> Bool -> String -> String -> String -
 configWithAwsAndAcme awsVaultPath regionValue includeSessionToken acmeServer eabKeyIdValue eabHmacKeyValue =
   unlines
     [ "{ aws = " ++ awsCredentialRefDhall awsVaultPath regionValue includeSessionToken
-    , ", aws_admin_for_test_simulation = " ++ awsCredentialRefDhall adminAwsVaultPath "" False
     , ", route53 = { zone_id = \"Z1234567890ABC\" }"
     , ", aws_substrate = { hosted_zone_id = \"\", subzone_name = \"\" }"
     , ", ses = { sender_domain = \"\", receive_subdomain = \"\", capture_bucket = \"\" }"

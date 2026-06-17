@@ -8182,36 +8182,79 @@ main = mainWithSuite "prodbox-unit" $ do
     let settings = testValidatedSettings "/tmp"
         zoneId = "ZHOSTEDZONE"
         baseConfig = validatedConfig settings
+        -- Sprint 7.15: EAB references are SecretRef.Vault into secret/acme/eab.
+        -- The resolved key ID is supplied separately (host-resolved from
+        -- Vault); the HMAC key is materialized in-cluster, never rendered.
         eabSettings =
           settings
             { validatedConfig =
                 baseConfig
                   { acme =
                       (acme baseConfig)
-                        { eab_key_id = Just "test-eab-key-id"
-                        , eab_hmac_key = Just "test-eab-hmac-key"
+                        { eab_key_id =
+                            Just (SecretRefVault (VaultSecretRef "secret" "acme/eab" "key_id"))
+                        , eab_hmac_key =
+                            Just (SecretRefVault (VaultSecretRef "secret" "acme/eab" "hmac_key"))
                         }
                   }
             }
+        noEabSettings =
+          settings
+            { validatedConfig =
+                baseConfig
+                  { acme =
+                      (acme baseConfig)
+                        { eab_key_id = Nothing
+                        , eab_hmac_key = Nothing
+                        }
+                  }
+            }
+        resolvedKeyId = Just "test-eab-key-id"
 
     it "the issuer spec renders acme.server (ZeroSSL) and the ZeroSSL account key" $ do
-      let rendered = BL8.unpack (encode (acmeClusterIssuerSpec settings zoneId))
+      let rendered = BL8.unpack (encode (acmeClusterIssuerSpec settings resolvedKeyId zoneId))
       rendered `shouldContain` "https://acme.zerossl.com/v2/DV90"
       rendered `shouldContain` "zerossl-account-key"
 
     it "the issuer spec references the DNS-01 Route 53 solver secret and hosted zone" $ do
-      let rendered = BL8.unpack (encode (acmeClusterIssuerSpec settings zoneId))
+      let rendered = BL8.unpack (encode (acmeClusterIssuerSpec settings resolvedKeyId zoneId))
       rendered `shouldContain` "route53-credentials"
       rendered `shouldContain` "ZHOSTEDZONE"
 
     it "the issuer spec includes the ZeroSSL external account binding when configured" $ do
-      let rendered = BL8.unpack (encode (acmeClusterIssuerSpec eabSettings zoneId))
+      let rendered = BL8.unpack (encode (acmeClusterIssuerSpec eabSettings resolvedKeyId zoneId))
       rendered `shouldContain` "externalAccountBinding"
+      -- The EAB key ID is the host-resolved (Vault-sourced) value, inline.
+      rendered `shouldContain` "test-eab-key-id"
+      -- The HMAC key is materialized in-cluster; it never appears in the spec,
+      -- only the keySecretRef to the materialized Secret.
+      rendered `shouldContain` "acme-eab-credentials"
 
-    it "acmeRuntimeManifestWith renders the single ZeroSSL ClusterIssuer" $
-      clusterIssuerNamesIn
-        (acmeRuntimeManifestWith SubstrateHomeLocal settings zoneId "pid" "lbl")
-        `shouldBe` [publicEdgeClusterIssuerName]
+    it "the issuer spec omits the external account binding when EAB is not configured" $ do
+      let rendered = BL8.unpack (encode (acmeClusterIssuerSpec noEabSettings Nothing zoneId))
+      rendered `shouldNotContain` "externalAccountBinding"
+
+    it "the issuer spec omits the binding when EAB is configured but the key ID is unresolved" $ do
+      -- A sealed Vault yields an unresolved key ID; the binding is then omitted
+      -- (fail-closed) rather than rendered without its key ID.
+      let rendered = BL8.unpack (encode (acmeClusterIssuerSpec eabSettings Nothing zoneId))
+      rendered `shouldNotContain` "externalAccountBinding"
+
+    it "acmeRuntimeManifestWith renders the EAB materializer Job and the single issuer" $ do
+      let manifests = acmeRuntimeManifestWith SubstrateHomeLocal eabSettings zoneId resolvedKeyId "pid" "lbl"
+          rendered = BL8.unpack (encode manifests)
+      clusterIssuerNamesIn manifests `shouldBe` [publicEdgeClusterIssuerName]
+      -- The EAB HMAC key is materialized by a Vault-login Job, not rendered
+      -- as inline plaintext stringData.
+      rendered `shouldContain` "acme-eab-secret-materializer"
+      rendered `shouldContain` "vault-materialized"
+      rendered `shouldNotContain` "test-eab-hmac-key"
+
+    it "acmeRuntimeManifestWith omits the EAB materializer when EAB is not configured" $ do
+      let rendered =
+            BL8.unpack
+              (encode (acmeRuntimeManifestWith SubstrateHomeLocal noEabSettings zoneId Nothing "pid" "lbl"))
+      rendered `shouldNotContain` "acme-eab-secret-materializer"
 
     it "the public-edge ClusterIssuer name is the ZeroSSL cert-manager issuer" $
       publicEdgeClusterIssuerName `shouldBe` "zerossl-dns01"
@@ -9117,7 +9160,7 @@ main = mainWithSuite "prodbox-unit" $ do
       plan `shouldContain` "STEP=4 postflight tag sweep"
       plan `shouldContain` "STEP=5 destroy long-lived `pulumi_state_backend` S3 bucket"
       plan
-        `shouldContain` "ADMIN_CREDENTIAL_SOURCE=SecretRef.Vault refs declared at prodbox-config.dhall::aws_admin_for_test_simulation.*"
+        `shouldContain` "ADMIN_CREDENTIAL_SOURCE=ephemeral admin AWS credential from the interactive prompt (harness-simulated from test-config.dhall::aws_admin_for_test_simulation.*); never read from prodbox-config.dhall or Vault"
       plan `shouldContain` "CONFIRMATION_LITERAL=NUKE EVERYTHING"
 
   describe "Sprint 7.7 residue lifecycle partition" $ do
@@ -9490,6 +9533,23 @@ main = mainWithSuite "prodbox-unit" $ do
               Left err -> err `shouldContain` "required for ZeroSSL ACME"
               Right () -> expectationFailure "expected AWS-tier validation failure"
 
+    -- Sprint 7.15 leak guard: a plaintext (non-Vault) ACME EAB reference must
+    -- be rejected at the AWS tier, mirroring the aws.* SecretRef.Vault
+    -- discipline. The EAB key ID and HMAC key live in Vault (secret/acme/eab),
+    -- never inline in prodbox-config.dhall.
+    it "rejects a plaintext ACME EAB reference at the AWS tier" $
+      withSystemTempDirectory "prodbox-hs-unit" $ \tmpDir -> do
+        writeFile (tmpDir </> "prodbox-config.dhall") plaintextEabZeroSslConfig
+
+        configResult <- loadConfigFile tmpDir
+        case configResult of
+          Left err -> expectationFailure err
+          Right config ->
+            case validateAwsBootstrapConfig config of
+              Left err -> err `shouldContain` "must be a SecretRef.Vault reference"
+              Right () ->
+                expectationFailure "expected plaintext EAB reference to be rejected"
+
     it "fails fast with setup guidance when the repo Dhall config is missing" $
       withSystemTempDirectory "prodbox-hs-unit" $ \tmpDir -> do
         result <- validateAndLoadSettings tmpDir
@@ -9776,12 +9836,11 @@ validConfig :: String
 validConfig =
   unlines
     [ "{ aws = " ++ awsCredentialRefDhall "gateway/gateway/aws" "us-east-1"
-    , ", aws_admin_for_test_simulation = " ++ awsCredentialRefDhall "aws/admin-for-test-simulation" ""
     , ", route53 = { zone_id = \"Z1234567890ABC\" }"
     , ", aws_substrate = { hosted_zone_id = \"\", subzone_name = \"\" }"
     , ", ses = { sender_domain = \"\", receive_subdomain = \"\", capture_bucket = \"\" }"
     , ", domain = { demo_fqdn = \"test.resolvefintech.com\", demo_ttl = 60 }"
-    , ", acme = { email = \"test@resolvefintech.com\", server = \"https://acme.zerossl.com/v2/DV90\", eab_key_id = Some \"test-eab-key-id\", eab_hmac_key = Some \"test-eab-hmac-key\" }"
+    , ", acme = " ++ acmeSectionDhall (eabRefDhall "key_id") (eabRefDhall "hmac_key")
     , ", deployment = " ++ deploymentDhallFragment
     , ", storage = { manual_pv_host_root = \".data\" }"
     , ", pulumi_state_backend = " ++ pulumiStateBackendDhallFragment
@@ -9791,17 +9850,59 @@ invalidZeroSslConfig :: String
 invalidZeroSslConfig =
   unlines
     [ "{ aws = " ++ awsCredentialRefDhall "gateway/gateway/aws" "us-east-1"
-    , ", aws_admin_for_test_simulation = " ++ awsCredentialRefDhall "aws/admin-for-test-simulation" ""
     , ", route53 = { zone_id = \"Z1234567890ABC\" }"
     , ", aws_substrate = { hosted_zone_id = \"\", subzone_name = \"\" }"
     , ", ses = { sender_domain = \"\", receive_subdomain = \"\", capture_bucket = \"\" }"
     , ", domain = { demo_fqdn = \"test.resolvefintech.com\", demo_ttl = 60 }"
-    , ", acme = { email = \"test@resolvefintech.com\", server = \"https://acme.zerossl.com/v2/DV90\", eab_key_id = None Text, eab_hmac_key = None Text }"
+    , ", acme = "
+        ++ acmeSectionDhall
+          ("None (" ++ secretRefTypeDhall ++ ")")
+          ("None (" ++ secretRefTypeDhall ++ ")")
     , ", deployment = " ++ deploymentDhallFragment
     , ", storage = { manual_pv_host_root = \".data\" }"
     , ", pulumi_state_backend = " ++ pulumiStateBackendDhallFragment
     , "}"
     ]
+
+-- | Sprint 7.15 leak-guard fixture: a ZeroSSL config whose EAB references
+-- carry plaintext @TestPlaintext@ values instead of @SecretRef.Vault@. The
+-- AWS-tier validator must reject it.
+plaintextEabZeroSslConfig :: String
+plaintextEabZeroSslConfig =
+  unlines
+    [ "{ aws = " ++ awsCredentialRefDhall "gateway/gateway/aws" "us-east-1"
+    , ", route53 = { zone_id = \"Z1234567890ABC\" }"
+    , ", aws_substrate = { hosted_zone_id = \"\", subzone_name = \"\" }"
+    , ", ses = { sender_domain = \"\", receive_subdomain = \"\", capture_bucket = \"\" }"
+    , ", domain = { demo_fqdn = \"test.resolvefintech.com\", demo_ttl = 60 }"
+    , ", acme = "
+        ++ acmeSectionDhall
+          ("Some (" ++ secretRefTypeDhall ++ ".TestPlaintext \"test-eab-key-id\")")
+          ("Some (" ++ secretRefTypeDhall ++ ".TestPlaintext \"test-eab-hmac-key\")")
+    , ", deployment = " ++ deploymentDhallFragment
+    , ", storage = { manual_pv_host_root = \".data\" }"
+    , ", pulumi_state_backend = " ++ pulumiStateBackendDhallFragment
+    , "}"
+    ]
+
+-- | Sprint 7.15: an @acme@ section with the given Optional SecretRef
+-- expressions for @eab_key_id@ / @eab_hmac_key@ (the EAB material now
+-- references Vault rather than carrying plaintext).
+acmeSectionDhall :: String -> String -> String
+acmeSectionDhall eabKeyIdExpr eabHmacKeyExpr =
+  "{ email = \"test@resolvefintech.com\""
+    ++ ", server = \"https://acme.zerossl.com/v2/DV90\""
+    ++ ", eab_key_id = "
+    ++ eabKeyIdExpr
+    ++ ", eab_hmac_key = "
+    ++ eabHmacKeyExpr
+    ++ " }"
+
+-- | A @Some SecretRef.Vault@ expression into @secret/acme/eab@ for the
+-- given field, in the schema-less inline-union style the unit fixtures use.
+eabRefDhall :: String -> String
+eabRefDhall fieldValue =
+  "Some (" ++ vaultSecretRefDhall "acme/eab" fieldValue ++ ")"
 
 awsCredentialRefDhall :: String -> String -> String
 awsCredentialRefDhall pathValue regionValue =
@@ -10044,16 +10145,6 @@ roundTripConfigFile =
           , awsCredentialSessionToken =
               Just (SecretRefVault (VaultSecretRef "secret" "gateway/gateway/aws" "session_token"))
           , awsCredentialRegion = "us-east-1"
-          }
-    , aws_admin_for_test_simulation =
-        AwsCredentialsRef
-          { awsCredentialAccessKeyId =
-              SecretRefVault (VaultSecretRef "secret" "aws/admin-for-test-simulation" "access_key_id")
-          , awsCredentialSecretAccessKey =
-              SecretRefVault (VaultSecretRef "secret" "aws/admin-for-test-simulation" "secret_access_key")
-          , awsCredentialSessionToken =
-              Just (SecretRefVault (VaultSecretRef "secret" "aws/admin-for-test-simulation" "session_token"))
-          , awsCredentialRegion = "us-west-2"
           }
     , route53 = Route53Section {zone_id = "Z1234567890ABC"}
     , domain =

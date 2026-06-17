@@ -17,6 +17,12 @@ module Prodbox.Vault.Host
   , requireReadyVault
   , resolveHostVaultAddress
   , writeHostVaultKvObject
+
+    -- * Sprint 7.16: the test-harness cleartext fixture (@test-config.dhall@)
+  , TestConfig (..)
+  , TestConfigAdminCredentials (..)
+  , testConfigPath
+  , loadTestConfig
   )
 where
 
@@ -218,6 +224,11 @@ testHostVaultFields =
     , ("reply_to", "support@test.resolvefintech.com")
     , ("username", "smtp-user")
     , ("key", "test-vault-hmac-key")
+    , -- Sprint 7.15: ZeroSSL EAB material (secret/acme/eab). The key ID is
+      -- read host-side for the ClusterIssuer; the HMAC key is materialized
+      -- in-cluster and only present here for completeness.
+      ("key_id", "test-eab-key-id")
+    , ("hmac_key", "test-eab-hmac-key")
     ]
 
 -- | Read the on-disk encrypted unlock bundle and decrypt it with the operator
@@ -252,38 +263,32 @@ requireReadyVault address = do
       | otherwise -> Right ()
 
 -- | The operator unlock-bundle password seam. The doctrine-blessed cleartext
--- home is @test-secrets.dhall@ (test harness only); a host operator is prompted
+-- home is @test-config.dhall@ (test harness only); a host operator is prompted
 -- on a TTY with echo disabled; a non-interactive host with no
--- @test-secrets.dhall@ fails loud rather than blocking.
+-- @test-config.dhall@ fails loud rather than blocking.
 obtainOperatorPassword :: FilePath -> IO (Either String Text)
 obtainOperatorPassword repoRoot = do
-  let testSecretsPath = repoRoot </> "test-secrets.dhall"
-  hasTestSecrets <- doesFileExist testSecretsPath
-  if hasTestSecrets
-    then do
-      decoded <-
-        try (inputFile auto testSecretsPath) :: IO (Either SomeException TestSecrets)
-      pure $ case decoded of
-        Left ex -> Left ("failed to decode test-secrets.dhall: " ++ show ex)
-        Right secrets -> Right (vaultOperatorPassword secrets)
-    else do
+  testConfigResult <- loadTestConfig repoRoot
+  case testConfigResult of
+    Just (Left err) -> pure (Left err)
+    Just (Right testConfig) -> pure (Right (vault_operator_password testConfig))
+    Nothing -> do
       isTty <- hIsTerminalDevice stdin
       if isTty
         then Right <$> promptOperatorPassword
         else
           pure
             ( Left
-                "no TTY for the Vault unlock-bundle password and no test-secrets.dhall present; supply test-secrets.dhall for automation"
+                "no TTY for the Vault unlock-bundle password and no test-config.dhall present; supply test-config.dhall for automation"
             )
 
 -- | The new unlock-bundle password. Test harness automation reuses the
--- test-only password from @test-secrets.dhall@; real operators must confirm a
+-- test-only password from @test-config.dhall@; real operators must confirm a
 -- fresh hidden password on a TTY.
 obtainNewOperatorPassword :: FilePath -> IO (Either String Text)
 obtainNewOperatorPassword repoRoot = do
-  let testSecretsPath = repoRoot </> "test-secrets.dhall"
-  hasTestSecrets <- doesFileExist testSecretsPath
-  if hasTestSecrets
+  testConfigPresent <- doesFileExist (testConfigPath repoRoot)
+  if testConfigPresent
     then obtainOperatorPassword repoRoot
     else do
       isTty <- hIsTerminalDevice stdin
@@ -292,16 +297,56 @@ obtainNewOperatorPassword repoRoot = do
         else
           pure
             ( Left
-                "no TTY for the new Vault unlock-bundle password and no test-secrets.dhall present; rerun from a terminal"
+                "no TTY for the new Vault unlock-bundle password and no test-config.dhall present; rerun from a terminal"
             )
 
--- | The test-harness cleartext source for the unlock-bundle password.
-newtype TestSecrets = TestSecrets
-  { vaultOperatorPassword :: Text
-  }
-  deriving (Generic)
+-- | The canonical path of the test-harness cleartext fixture relative to a
+-- repository root. The file is git-ignored; only the harness (or an
+-- operator-driven automation run) ever supplies it.
+testConfigPath :: FilePath -> FilePath
+testConfigPath repoRoot = repoRoot </> "test-config.dhall"
 
-instance FromDhall TestSecrets
+-- | The test-harness cleartext fixture. Carries the unlock-bundle password and
+-- the EPHEMERAL admin AWS credential the harness feeds into the same
+-- interactive admin prompt a real operator would answer. Decoded from
+-- @test-config.dhall@ (imports the committed @test-config-types.dhall@ schema).
+data TestConfig = TestConfig
+  { vault_operator_password :: Text
+  , aws_admin_for_test_simulation :: TestConfigAdminCredentials
+  }
+  deriving (Generic, Show)
+
+instance FromDhall TestConfig
+
+-- | The cleartext admin AWS credential carried by @test-config.dhall@. Field
+-- names mirror the @aws_admin_for_test_simulation@ record in
+-- @test-config-types.dhall@.
+data TestConfigAdminCredentials = TestConfigAdminCredentials
+  { access_key_id :: Text
+  , secret_access_key :: Text
+  , session_token :: Maybe Text
+  , region :: Text
+  }
+  deriving (Generic, Show)
+
+instance FromDhall TestConfigAdminCredentials
+
+-- | Load and decode @test-config.dhall@ if present. @Nothing@ means the file
+-- is absent (so the caller falls back to a TTY prompt or fails loud);
+-- @Just (Left err)@ means it exists but failed to decode; @Just (Right cfg)@
+-- is the decoded fixture.
+loadTestConfig :: FilePath -> IO (Maybe (Either String TestConfig))
+loadTestConfig repoRoot = do
+  let path = testConfigPath repoRoot
+  present <- doesFileExist path
+  if not present
+    then pure Nothing
+    else do
+      decoded <- try (inputFile auto path) :: IO (Either SomeException TestConfig)
+      pure $
+        Just $ case decoded of
+          Left ex -> Left ("failed to decode test-config.dhall: " ++ show ex)
+          Right testConfig -> Right testConfig
 
 promptOperatorPassword :: IO Text
 promptOperatorPassword =

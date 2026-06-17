@@ -34,8 +34,10 @@ marks an earlier phase or this phase's code-owned closure ⏸️ Blocked.
 
 🔄 **Reopened 2026-06-11, finalized 2026-06-14** (Vault-root + cluster federation) — the
 Vault-root finalization (narrated in [README.md → Closure Status](README.md) per rule A) makes
-Vault the sole, finalized secrets / KMS / PKI root for the whole stack. Sprint `8.9` (📋 Planned)
-is **reframed** to own that finalized end state for the invite-auth surface: the `keycloak-smtp`
+Vault the sole, finalized secrets / KMS / PKI root for the whole stack. Sprint `8.9`
+(✅ Done on its code-owned surface, 2026-06-17 — its deliverables were already provided by the
+Sprint `3.18` Vault-materialization work and verified here; live invite is `Live-proof: pending`)
+owns that finalized end state for the invite-auth surface: the `keycloak-smtp`
 SMTP credential and the invite-flow OIDC client secrets are Vault KV objects referenced by
 `SecretRef.Vault` and consumed by Keycloak via Vault Kubernetes auth. The master-seed HMAC-derivation
 model is **retired** (not extended), the chart-generated `lookup`+`randAlphaNum` Secrets behind the
@@ -1280,11 +1282,24 @@ The live runs above; home gate first (ordering), then AWS parity.
 
 - This is the live closure gate; Phase `8` stays Active until it lands.
 
-## Sprint 8.9: Keycloak SMTP and Invite Secrets via Vault 📋
+## Sprint 8.9: Keycloak SMTP and Invite Secrets via Vault ✅
 
-**Status**: Planned
-**Implementation**: `src/Prodbox/Infra/AwsSesStack.hs`, `src/Prodbox/UsersAdmin.hs`, `charts/keycloak/`
-**Blocked by**: Sprints `3.19`, `7.14`
+**Status**: Done (2026-06-17) on its code-owned surface — already delivered by the Sprint `3.18`
+Vault-materialization work and verified here: locally validated (`dev check` 0, `test unit` 0/954,
+`test integration cli` 0/38, `test integration env` 0/38) with the existing leak-guard tests intact.
+**Implementation** (existing, confirmed): `src/Prodbox/Infra/AwsSesStack.hs`
+(`persistKeycloakSmtpChartSecrets` / `syncKeycloakSmtpChartSecrets` derive the SES SMTP password via
+`Prodbox.Ses.SmtpPassword.derivedSesSmtpPassword` and write `secret/keycloak/smtp` through
+`writeHostVaultKvObject`); `charts/keycloak/` (no plaintext `keycloak-smtp` Secret — a Vault-login
+init container materializes `PRODBOX_SMTP_*` and the per-namespace `secret/<ns>/oidc/*`
+`client_secret` objects via Vault Kubernetes auth); `src/Prodbox/UsersAdmin.hs`
+(`loadKeycloakSmtpSettings` reads `secret/keycloak/smtp` through `requireReadyVault`, so
+`prodbox users invite` fails closed on a sealed Vault before sending); `src/Prodbox/Secret/VaultInventory.hs`
+(`secret/keycloak/smtp` + the generated `secret/<ns>/oidc/*` objects — no master-seed derivation,
+no chart `lookup`+`randAlphaNum`).
+**Live-proof**: pending — the both-substrate live `keycloak-invite` exercise (real SES send +
+link-follow + a live sealed-Vault-fails-invite proof) is the non-blocking live-infra axis
+(Standard O). Earlier-phase dependencies (Sprints `3.19`, `7.14`) were satisfied.
 **Docs to update**: `documents/engineering/vault_doctrine.md`, `documents/engineering/aws_integration_environment_doctrine.md`
 
 ### Objective

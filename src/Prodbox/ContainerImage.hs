@@ -45,6 +45,7 @@ module Prodbox.ContainerImage
   , parseImageRef
   , publicCurlImage
   , publicRedisImage
+  , publicVaultImage
   , renderImageRef
   , requiredPublicImageCandidatePairs
   , requiredPublicImagePairs
@@ -228,6 +229,13 @@ publicCurlImage = ImageRef "docker.io" "curlimages/curl" "8.11.0"
 
 harborCurlImage :: ImageRef
 harborCurlImage = harborImageRefFromRepository "curl-mirror" "8.11.0"
+
+-- | Sprint 7.15: the HashiCorp Vault CLI image used by the in-cluster
+-- Vault-login init container that materializes the ACME EAB HMAC secret
+-- (and matching the @vault.image@ the Sprint 3.18 chart materializers use,
+-- e.g. @charts/vscode/templates/securitypolicy-client-secret-job.yaml@).
+publicVaultImage :: ImageRef
+publicVaultImage = ImageRef "docker.io" "hashicorp/vault" "1.18.3"
 
 publicRedisImage :: ImageRef
 publicRedisImage = ImageRef "docker.io" "library/redis" "7.4.2"

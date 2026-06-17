@@ -211,6 +211,21 @@ chartVaultSecretConsumers =
       , vaultSecretConsumerKvPaths = [VaultSecretPath "secret" "minio/root"]
       , vaultSecretConsumerTtl = "1h"
       }
+  , -- Sprint 7.15: the ACME EAB material (ZeroSSL external-account-binding
+    -- key ID + HMAC key) lives at secret/acme/eab. The in-cluster EAB
+    -- secret materializer (SA acme-eab-secret-materializer in cert-manager,
+    -- rendered by Prodbox.CLI.Rke2.acmeEabMaterializerManifests) reads it via
+    -- Vault Kubernetes auth (policy/role "acme") and materializes the
+    -- acme-eab-credentials Secret that the ZeroSSL ClusterIssuer references.
+    VaultSecretConsumer
+      { vaultSecretConsumerName = "acme"
+      , vaultSecretConsumerPolicyName = "acme"
+      , vaultSecretConsumerRoleName = "acme"
+      , vaultSecretConsumerNamespaces = ["cert-manager"]
+      , vaultSecretConsumerServiceAccounts = ["acme-eab-secret-materializer"]
+      , vaultSecretConsumerKvPaths = [VaultSecretPath "secret" "acme/eab"]
+      , vaultSecretConsumerTtl = "1h"
+      }
   ]
 
 chartVaultSecretObjects :: [VaultSecretObjectSpec]
@@ -274,6 +289,14 @@ chartVaultSecretObjects =
           "secret"
           "federation/hmac"
           [generatedField "key" "federation-hmac-key"]
+      , -- Sprint 7.15: ZeroSSL EAB material. Both fields are external —
+        -- the key ID and HMAC key are issued by ZeroSSL and supplied by
+        -- the operator/harness (`prodbox config setup` or `vault kv put`),
+        -- never randomly generated, so they are not auto-seeded.
+        kvObject
+          "secret"
+          "acme/eab"
+          [externalField "key_id", externalField "hmac_key"]
       ]
     ]
 

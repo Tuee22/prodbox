@@ -80,6 +80,7 @@ import Prodbox.CLI.Rke2
   , ensurePostgresOperatorRuntime
   , ensurePublicEdgeWorkloadImageForSubstrate
   , ensureVaultRuntime
+  , resolveAcmeEabKeyId
   )
 import Prodbox.ContainerImage qualified as ContainerImage
 import Prodbox.Error (fatalError)
@@ -644,55 +645,63 @@ ensureAwsSubstrateAcmeRuntime repoRoot settings prodboxId labelValue = do
       case credentialsResult of
         Left err -> failWith ("load operational AWS credentials from Vault: " ++ err)
         Right route53Credentials -> do
-          let manifest =
-                acmeRuntimeManifestWithCredentials
-                  SubstrateAws
-                  settings
-                  hostedZoneId
-                  route53Credentials
-                  prodboxId
-                  labelValue
-              -- Wrap the manifest list in a `v1/List` so `kubectl apply -f` accepts
-              -- the file (kubectl does not accept bare JSON arrays at the top level).
-              -- Matches the home-substrate pattern in
-              -- `Prodbox.CLI.Rke2::withTemporaryJsonManifest`.
-              manifestList =
-                object
-                  [ "apiVersion" .= ("v1" :: String)
-                  , "kind" .= ("List" :: String)
-                  , "items" .= manifest
-                  ]
-          withTempJsonFile
-            repoRoot
-            "aws-substrate-acme-runtime"
-            (encode manifestList)
-            ( \manifestPath -> do
-                applyExit <-
-                  runStreaming
-                    Subprocess
-                      { subprocessPath = "kubectl"
-                      , subprocessArguments = ["apply", "-f", manifestPath]
-                      , subprocessEnvironment = Nothing
-                      , subprocessWorkingDirectory = Just repoRoot
-                      }
-                case applyExit of
-                  ExitFailure _ -> pure applyExit
-                  ExitSuccess ->
-                    -- Wait for the ZeroSSL ClusterIssuer rendered by
-                    -- acmeRuntimeManifestWithCredentials to become Ready.
-                    runStreaming
-                      Subprocess
-                        { subprocessPath = "kubectl"
-                        , subprocessArguments =
-                            [ "wait"
-                            , "--for=condition=Ready"
-                            , "clusterissuer/" ++ publicEdgeClusterIssuerName
-                            , "--timeout=300s"
-                            ]
-                        , subprocessEnvironment = Nothing
-                        , subprocessWorkingDirectory = Just repoRoot
-                        }
-            )
+          -- Sprint 7.15: resolve the non-secret EAB key ID host-side from
+          -- Vault (the HMAC key is materialized in-cluster). A sealed Vault
+          -- fails closed here.
+          eabKeyIdResult <- resolveAcmeEabKeyId repoRoot settings
+          case eabKeyIdResult of
+            Left err -> failWith ("resolve ACME EAB key ID from Vault: " ++ err)
+            Right resolvedEabKeyId -> do
+              let manifest =
+                    acmeRuntimeManifestWithCredentials
+                      SubstrateAws
+                      settings
+                      hostedZoneId
+                      route53Credentials
+                      resolvedEabKeyId
+                      prodboxId
+                      labelValue
+                  -- Wrap the manifest list in a `v1/List` so `kubectl apply -f`
+                  -- accepts the file (kubectl does not accept bare JSON arrays at
+                  -- the top level). Matches the home-substrate pattern in
+                  -- `Prodbox.CLI.Rke2::withTemporaryJsonManifest`.
+                  manifestList =
+                    object
+                      [ "apiVersion" .= ("v1" :: String)
+                      , "kind" .= ("List" :: String)
+                      , "items" .= manifest
+                      ]
+              withTempJsonFile
+                repoRoot
+                "aws-substrate-acme-runtime"
+                (encode manifestList)
+                ( \manifestPath -> do
+                    applyExit <-
+                      runStreaming
+                        Subprocess
+                          { subprocessPath = "kubectl"
+                          , subprocessArguments = ["apply", "-f", manifestPath]
+                          , subprocessEnvironment = Nothing
+                          , subprocessWorkingDirectory = Just repoRoot
+                          }
+                    case applyExit of
+                      ExitFailure _ -> pure applyExit
+                      ExitSuccess ->
+                        -- Wait for the ZeroSSL ClusterIssuer rendered by
+                        -- acmeRuntimeManifestWithCredentials to become Ready.
+                        runStreaming
+                          Subprocess
+                            { subprocessPath = "kubectl"
+                            , subprocessArguments =
+                                [ "wait"
+                                , "--for=condition=Ready"
+                                , "clusterissuer/" ++ publicEdgeClusterIssuerName
+                                , "--timeout=300s"
+                                ]
+                            , subprocessEnvironment = Nothing
+                            , subprocessWorkingDirectory = Just repoRoot
+                            }
+                )
 
 -- | Install the shared Vault chart on the AWS substrate. This intentionally
 -- reuses the same @charts/vault@ Helm helper as the home substrate so both

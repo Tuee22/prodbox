@@ -64,13 +64,11 @@ import Prodbox.Pulumi.EncryptedBackend
 import Prodbox.Result (Result (..))
 import Prodbox.Ses.SmtpPassword (derivedSesSmtpPassword)
 import Prodbox.Settings
-  ( AwsCredentialsRef (..)
-  , ConfigFile
+  ( ConfigFile
   , Credentials (..)
   , PulumiStateBackendSection
   , Route53Section (..)
   , SesSection (..)
-  , aws_admin_for_test_simulation
   , loadConfigFile
   , pulumi_state_backend
   , route53
@@ -268,15 +266,25 @@ renderAwsSesStackReport snapshot objectCount =
     , "SMTP_IAM_ACCESS_KEY_ID=" ++ sesSnapshotSmtpIamAccessKeyId snapshot
     ]
 
+-- | Sprint 7.16: the SES stack's AWS region now comes from the EPHEMERAL admin
+-- credential acquired through 'loadAdminAwsCredentials' (test-config.dhall's
+-- @aws_admin_for_test_simulation@ block, or the interactive prompt), not from a
+-- @prodbox-config.dhall@ field. The production config still supplies the
+-- Route 53 zone, sender domain, receive subdomain, and capture bucket.
 resolveAwsSesStackConfig :: FilePath -> IO (Either String AwsSesStackConfig)
 resolveAwsSesStackConfig repoRoot = do
   configResult <- loadConfigFile repoRoot
-  pure $ case configResult of
-    Left err -> Left err
-    Right config -> awsSesStackConfigFromConfig config
+  case configResult of
+    Left err -> pure (Left err)
+    Right config -> do
+      adminResult <- loadAdminAwsCredentials repoRoot
+      pure $ case adminResult of
+        Left err -> Left err
+        Right adminCreds ->
+          awsSesStackConfigFromConfig config (Text.unpack (Text.strip (region adminCreds)))
 
-awsSesStackConfigFromConfig :: ConfigFile -> Either String AwsSesStackConfig
-awsSesStackConfigFromConfig config = do
+awsSesStackConfigFromConfig :: ConfigFile -> String -> Either String AwsSesStackConfig
+awsSesStackConfigFromConfig config adminRegion = do
   validateAwsBootstrapConfig config
   if null parentZoneId
     then Left "route53.zone_id must be set before provisioning the AWS SES stack"
@@ -295,7 +303,7 @@ awsSesStackConfigFromConfig config = do
                   if null awsRegionValue
                     then
                       Left
-                        "aws_admin_for_test_simulation.region must be set before provisioning the AWS SES stack"
+                        "the admin AWS credential region must be set before provisioning the AWS SES stack"
                     else
                       Right
                         AwsSesStackConfig
@@ -311,8 +319,7 @@ awsSesStackConfigFromConfig config = do
   senderDomainValue = Text.unpack (Text.strip (sender_domain sesSection))
   receiveSubdomainValue = Text.unpack (Text.strip (receive_subdomain sesSection))
   captureBucketValue = Text.unpack (Text.strip (capture_bucket sesSection))
-  awsRegionValue =
-    Text.unpack (Text.strip (awsCredentialRegion (aws_admin_for_test_simulation config)))
+  awsRegionValue = adminRegion
 
 syncAwsSesStackConfig :: FilePath -> [(String, String)] -> AwsSesStackConfig -> IO ExitCode
 syncAwsSesStackConfig projectDir environment stackConfig =

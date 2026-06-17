@@ -3176,11 +3176,31 @@ This sprint is Done on its code-owned surface; everything below is the non-block
 - The both-substrate live exercise (sealed-Vault opacity across per-run and `aws-ses` backends) is
   operator-driven and shares the Sprint `5.8` cross-surface red-team gate.
 
-## Sprint 7.15: ACME EAB and TLS Key Material Behind Vault 📋
+## Sprint 7.15: ACME EAB and TLS Key Material Behind Vault ✅
 
-**Status**: Planned
-**Implementation**: `src/Prodbox/PublicEdge.hs`, `src/Prodbox/Settings.hs`, `charts/keycloak/`, `charts/vscode/`
-**Blocked by**: Sprints `1.35`, `1.36`
+**Status**: Done (2026-06-17) on its code-owned surface — locally validated: `dev check` 0,
+`test unit` 0 (954, incl. a new plaintext-EAB-rejection leak guard), `test integration cli` 0,
+`test integration env` 0.
+**Implementation**: `acme.eab_key_id` / `acme.eab_hmac_key` are now `Optional SecretRef.Vault`
+(default `secret/acme/eab` fields `key_id` / `hmac_key`) in `prodbox-config-types.dhall` and
+`src/Prodbox/Settings.hs` (`AcmeSection` + decoder; `validateAcmeBinding` rejects plaintext EAB via
+`validateVaultRef`, keeping the ZeroSSL both-or-neither rule). The host-applied ACME `ClusterIssuer`
+(`src/Prodbox/CLI/Rke2.hs`) renders the EAB HMAC through a Vault-login materializer Job in
+`cert-manager` (`acme-eab-secret-materializer` SA/Role/RoleBinding + Job, mirroring the Sprint `3.18`
+vscode-SecurityPolicy materializer); the non-secret key ID is host-resolved (`resolveAcmeEabKeyId`)
+and rendered inline; `ensureAcmeRuntime` fails closed if Vault cannot resolve it.
+`src/Prodbox/Lib/AwsSubstratePlatform.hs` threads it identically on the AWS substrate.
+`src/Prodbox/Secret/VaultInventory.hs` adds the `secret/acme/eab` object + the `acme` consumer
+(policy/role/SA in `cert-manager`); `src/Prodbox/ContainerImage.hs` adds the materializer Vault
+image; `src/Prodbox/Aws.hs` `config setup` writes the prompted EAB to `secret/acme/eab` and leaves
+the config carrying only `SecretRef.Vault` references. `prodbox config validate` rejects plaintext
+EAB. Docs reconciled: `acme_provider_guide.md`, `config_doctrine.md` §6.1,
+`envoy_gateway_edge_doctrine.md`, `vault_doctrine.md` §11 + §18.
+**Live-proof**: pending — native-Vault-PKI internal-cert issuance and live ZeroSSL issuance
+(including a sealed-Vault-blocks-issuance live proof) are the non-blocking live-infra axis
+(Standard O); the cert-manager-issuer-vs-native-PKI deep choice remains an open design decision
+(vault_doctrine §18). The `SecretRef.Vault` resolver already structurally fails EAB resolution
+closed on a sealed Vault. Earlier-phase dependencies (Sprints `1.35`, `1.36`) were satisfied.
 **Docs to update**: `documents/engineering/acme_provider_guide.md`, `documents/engineering/envoy_gateway_edge_doctrine.md`, `documents/engineering/vault_doctrine.md`
 
 ### Objective
@@ -3212,17 +3232,28 @@ contract protects is Vault-owned — there is no plaintext key material a sealed
 
 - The both-substrate live TLS exercise is operator-driven.
 
-## Sprint 7.16: Test-Simulation Credentials Move to test-config.dhall; Admin Acquisition Unifies on the Prompt 📋
+## Sprint 7.16: Test-Simulation Credentials Move to test-config.dhall; Admin Acquisition Unifies on the Prompt ✅
 
-**Status**: Planned (ready)
-**Implementation**: `prodbox-config.dhall`, `prodbox-config-types.dhall`, `test-config.dhall`
-(new test-harness-only file), `src/Prodbox/Aws.hs`, `src/Prodbox/Infra/AwsSesStack.hs`,
-`src/Prodbox/Settings.hs`, `test/unit/Main.hs`
-**Blocked by**: Sprint `7.14`'s landed `SecretRef.Vault` treatment of the generated operational
-`aws.*` (an earlier-or-same-phase dependency on already-landed code, not on incomplete work — this
-sprint is ready now). Forward ordering: this sprint's `test-config.dhall` fixture is then consumed
-by Sprint `7.14`'s `Live-proof: pending` axis; that is one-directional consumption, not a mutual
-block.
+**Status**: Done (2026-06-17) on its code-owned surface — locally validated: `dev check` 0,
+`test unit` 0, `test integration cli` 0, `test integration env` 0.
+**Implementation**: `aws_admin_for_test_simulation` removed from `prodbox-config-types.dhall` and the
+`ConfigFile` record (`src/Prodbox/Settings.hs`); new committed `test-config-types.dhall` schema; new
+`src/Prodbox/Aws/AdminCredentials.hs` — `acquireAdminAwsCredentials`, the single ephemeral
+admin-credential seam (test-config.dhall → TTY prompt → fail-loud), placed low in the import graph to
+avoid a cycle; `src/Prodbox/Vault/Host.hs` (`TestSecrets` → `TestConfig` + `loadTestConfig`,
+`test-secrets.dhall` → `test-config.dhall`); re-pointed consumers
+`src/Prodbox/Infra/LongLivedPulumiBackend.hs`, `src/Prodbox/Aws.hs`,
+`src/Prodbox/Infra/AwsSesStack.hs`, `src/Prodbox/CLI/Nuke.hs`, `src/Prodbox/CLI/Rke2.hs`,
+`src/Prodbox/Lifecycle/LiveResidue.hs`, `src/Prodbox/EffectInterpreter.hs`; `.gitignore`
+(`test-secrets.dhall` → `test-config.dhall`); fixtures `test/golden/destructive/nuke.txt`,
+`test/unit/Main.hs`, `test/integration/CliSuite.hs`, `test/integration/EnvSuite.hs`. `prodbox config
+validate` rejects any plaintext admin/operational AWS key in `prodbox-config.dhall`; the SecretRef
+golden tests and sealed-state oracle remain meaningful (no leak-guard weakened).
+**Live-proof**: pending — the live AWS exercise of the harness-simulated admin prompt path (the
+suite-level IAM bring-up against real AWS) is a non-blocking live-infra axis (Standard O). Its
+dependency, Sprint `7.14`'s landed `SecretRef.Vault` treatment of `aws.*`, was satisfied; this
+sprint's `test-config.dhall` fixture is consumed one-directionally by `7.14`'s own
+`Live-proof: pending` axis.
 **Independent Validation**: Validatable on its own surface — the config-schema move,
 `test-config.dhall` introduction, prompt unification, and `config validate` rejection all build and
 pass local validation (`check-code`, `test unit`, `test integration`, `test all` on the home

@@ -5,6 +5,7 @@ module Prodbox.CLI.Rke2
   , acmeRuntimeManifestWith
   , acmeRuntimeManifestWithCredentials
   , acmeClusterIssuerSpec
+  , resolveAcmeEabKeyId
   , ensureGatewayImagesForSubstrate
   , ensureGatewayMinioBootstrap
   , ensureAdminPublicEdgeRoutes
@@ -235,6 +236,10 @@ import Prodbox.Settings
   , validateOperationalAwsCredentials
   , validatedConfig
   , zone_id
+  )
+import Prodbox.Settings.SecretRef
+  ( SecretRef (..)
+  , VaultSecretRef (..)
   )
 import Prodbox.Subprocess
   ( ProcessOutput (..)
@@ -595,6 +600,31 @@ acmeEabSecretName = "acme-eab-credentials"
 
 acmeEabSecretKey :: String
 acmeEabSecretKey = "secret"
+
+-- | Sprint 7.15: the EAB HMAC key is materialized into the
+-- 'acmeEabSecretName' Secret from Vault @secret/acme/eab@ (field
+-- @hmac_key@) by a Vault-login Job in the @cert-manager@ namespace,
+-- reusing the Sprint 3.18 chart-side materialization pattern (init
+-- container logs into Vault via Kubernetes auth, main container creates
+-- the k8s Secret). The HMAC key never transits the operator host; only
+-- the non-secret EAB key ID is read host-side for the issuer @keyID@.
+acmeEabMaterializerName :: String
+acmeEabMaterializerName = "acme-eab-secret-materializer"
+
+-- | The Vault Kubernetes-auth role bound to 'acmeEabMaterializerName'.
+-- Declared in 'Prodbox.Secret.VaultInventory.chartVaultSecretConsumers'
+-- (policy @acme@, role @acme@, namespace @cert-manager@).
+acmeEabVaultRole :: String
+acmeEabVaultRole = "acme"
+
+-- | The Vault KV logical path (under mount @secret@) that holds the EAB
+-- material, matching the secret inventory and the config 'SecretRef.Vault'
+-- defaults.
+acmeEabVaultPath :: String
+acmeEabVaultPath = "acme/eab"
+
+acmeEabVaultHmacField :: String
+acmeEabVaultHmacField = "hmac_key"
 
 data MinioImageSource
   = MinioBootstrapPublic
@@ -1685,8 +1715,9 @@ runCascadePostflightTagSweep repoRoot = do
   case adminResult of
     Left _ -> do
       writeOutputLine
-        "Postflight tag sweep: skipped (aws_admin_for_test_simulation.* not configured, \
-        \so no AWS resources could have been created by this cluster lifecycle)."
+        "Postflight tag sweep: skipped (no ephemeral admin AWS credential available \
+        \— no test-config.dhall and no TTY — so no AWS resources could have been \
+        \created by this cluster lifecycle)."
     Right adminCredentials -> do
       environment <- adminAwsEnvironment adminCredentials
       let input =
@@ -4285,47 +4316,80 @@ ensureAcmeRuntime repoRoot settings prodboxId labelValue = do
       (aws (validatedConfig settings))
   case credentialsResult of
     Left err -> failWith ("load operational AWS credentials from Vault: " ++ err)
-    Right route53Credentials ->
-      withTemporaryJsonManifest
-        "prodbox-acme-runtime"
-        ( acmeRuntimeManifestWithCredentials
-            SubstrateHomeLocal
-            settings
-            (substrateHostedZoneId settings SubstrateHomeLocal)
-            route53Credentials
-            prodboxId
-            labelValue
-        )
-        ( \manifestPath -> do
-            applyExit <-
-              runCommand
-                Subprocess
-                  { subprocessPath = "kubectl"
-                  , subprocessArguments = ["apply", "-f", manifestPath]
-                  , subprocessEnvironment = Nothing
-                  , subprocessWorkingDirectory = Just repoRoot
-                  }
-            case applyExit of
-              ExitFailure _ -> pure applyExit
-              ExitSuccess -> do
-                issuerWaitEnv <- awsCommandEnvironment repoRoot currentEnvironment settings
-                -- Wait for the ZeroSSL ClusterIssuer rendered from the manifest
-                -- to become Ready before reporting the ACME runtime up.
-                runCommand
-                  Subprocess
-                    { subprocessPath = "kubectl"
-                    , subprocessArguments =
-                        [ "wait"
-                        , "--for=condition=Ready"
-                        , "clusterissuer/" ++ publicEdgeClusterIssuerName
-                        , "--timeout=300s"
-                        ]
-                    , subprocessEnvironment = Just issuerWaitEnv
-                    , subprocessWorkingDirectory = Just repoRoot
-                    }
+    Right route53Credentials -> do
+      -- Sprint 7.15: resolve the non-secret EAB key ID host-side from Vault
+      -- (the HMAC key is never read here — it is materialized in-cluster).
+      eabKeyIdResult <- resolveAcmeEabKeyId repoRoot settings
+      case eabKeyIdResult of
+        Left err -> failWith ("resolve ACME EAB key ID from Vault: " ++ err)
+        Right resolvedEabKeyId ->
+          withTemporaryJsonManifest
+            "prodbox-acme-runtime"
+            ( acmeRuntimeManifestWithCredentials
+                SubstrateHomeLocal
+                settings
+                (substrateHostedZoneId settings SubstrateHomeLocal)
+                route53Credentials
+                resolvedEabKeyId
+                prodboxId
+                labelValue
+            )
+            ( \manifestPath -> do
+                applyExit <-
+                  runCommand
+                    Subprocess
+                      { subprocessPath = "kubectl"
+                      , subprocessArguments = ["apply", "-f", manifestPath]
+                      , subprocessEnvironment = Nothing
+                      , subprocessWorkingDirectory = Just repoRoot
+                      }
+                case applyExit of
+                  ExitFailure _ -> pure applyExit
+                  ExitSuccess -> do
+                    issuerWaitEnv <- awsCommandEnvironment repoRoot currentEnvironment settings
+                    -- Wait for the ZeroSSL ClusterIssuer rendered from the
+                    -- manifest to become Ready before reporting the ACME
+                    -- runtime up.
+                    runCommand
+                      Subprocess
+                        { subprocessPath = "kubectl"
+                        , subprocessArguments =
+                            [ "wait"
+                            , "--for=condition=Ready"
+                            , "clusterissuer/" ++ publicEdgeClusterIssuerName
+                            , "--timeout=300s"
+                            ]
+                        , subprocessEnvironment = Just issuerWaitEnv
+                        , subprocessWorkingDirectory = Just repoRoot
+                        }
+            )
+
+-- | Sprint 7.15: resolve the non-secret ACME EAB key ID host-side from
+-- Vault. Returns @Right Nothing@ when EAB is not configured (no
+-- @eab_key_id@ reference); @Right (Just keyId)@ when the configured
+-- @SecretRef.Vault@ resolves; and @Left@ on a non-Vault reference or a
+-- Vault read failure (a sealed Vault therefore fails closed). The HMAC key
+-- is intentionally never read here.
+resolveAcmeEabKeyId :: FilePath -> ValidatedSettings -> IO (Either String (Maybe Text.Text))
+resolveAcmeEabKeyId repoRoot settings =
+  case eab_key_id (acme (validatedConfig settings)) of
+    Nothing -> pure (Right Nothing)
+    Just (SecretRefVault vaultRef) -> do
+      result <-
+        readHostVaultKvField
+          repoRoot
+          (vaultSecretMount vaultRef)
+          (vaultSecretPath vaultRef)
+          (vaultSecretField vaultRef)
+      pure (fmap Just result)
+    Just _ ->
+      pure
+        ( Left
+            "acme.eab_key_id must be a SecretRef.Vault reference"
         )
 
-acmeRuntimeManifest :: Substrate -> ValidatedSettings -> String -> String -> [Value]
+acmeRuntimeManifest
+  :: Substrate -> ValidatedSettings -> Maybe Text.Text -> String -> String -> [Value]
 acmeRuntimeManifest substrate settings =
   acmeRuntimeManifestWith substrate settings (substrateHostedZoneId settings substrate)
 
@@ -4335,8 +4399,13 @@ acmeRuntimeManifest substrate settings =
 -- @aws_substrate.hosted_zone_id@ is empty in @prodbox-config.dhall@. See
 -- 'Prodbox.PublicEdge.resolveSubstrateHostedZoneId' for the doctrine-
 -- compliant resolution algorithm.
+--
+-- Sprint 7.15: the ACME EAB key ID is no longer plaintext in config; the
+-- IO caller resolves it host-side from Vault @secret/acme/eab#key_id@ and
+-- threads it through as @Maybe Text@. The EAB HMAC key is never read
+-- host-side — it is materialized in-cluster by the EAB materializer Job.
 acmeRuntimeManifestWith
-  :: Substrate -> ValidatedSettings -> Text.Text -> String -> String -> [Value]
+  :: Substrate -> ValidatedSettings -> Text.Text -> Maybe Text.Text -> String -> String -> [Value]
 acmeRuntimeManifestWith substrate settings hostedZoneId =
   acmeRuntimeManifestWithCredentials
     substrate
@@ -4345,13 +4414,21 @@ acmeRuntimeManifestWith substrate settings hostedZoneId =
     (emptyRoute53Credentials settings)
 
 acmeRuntimeManifestWithCredentials
-  :: Substrate -> ValidatedSettings -> Text.Text -> Credentials -> String -> String -> [Value]
-acmeRuntimeManifestWithCredentials _substrate settings hostedZoneId route53Credentials prodboxId labelValue =
+  :: Substrate
+  -> ValidatedSettings
+  -> Text.Text
+  -> Credentials
+  -> Maybe Text.Text
+  -> String
+  -> String
+  -> [Value]
+acmeRuntimeManifestWithCredentials _substrate settings hostedZoneId route53Credentials resolvedEabKeyId prodboxId labelValue =
   route53Secret
-    : maybe [] pure maybeEabSecret
+    : eabMaterializerResources
     ++ [clusterIssuer]
  where
   config = validatedConfig settings
+  acmeConfig = acme config
   route53Secret =
     object
       [ "apiVersion" .= ("v1" :: String)
@@ -4370,27 +4447,20 @@ acmeRuntimeManifestWithCredentials _substrate settings hostedZoneId route53Crede
             , "secret-access-key" .= Text.unpack (secret_access_key route53Credentials)
             ]
       ]
-  maybeEabSecret =
-    case (eab_key_id (acme config), eab_hmac_key (acme config)) of
-      (Just _, Just hmacKey) ->
-        Just
-          ( object
-              [ "apiVersion" .= ("v1" :: String)
-              , "kind" .= ("Secret" :: String)
-              , "metadata"
-                  .= object
-                    [ "name" .= acmeEabSecretName
-                    , "namespace" .= certManagerNamespace
-                    , "annotations" .= object [Key.fromString prodboxAnnotationKey .= prodboxId]
-                    , "labels" .= object [Key.fromString prodboxLabelKey .= labelValue]
-                    ]
-              , "type" .= ("Opaque" :: String)
-              , "stringData" .= object [Key.fromString acmeEabSecretKey .= Text.unpack hmacKey]
-              ]
-          )
-      _ -> Nothing
+  -- Sprint 7.15: when EAB is configured, render the Vault-login materializer
+  -- (ServiceAccount + Role + RoleBinding + Job) that creates the
+  -- 'acmeEabSecretName' Secret from Vault @secret/acme/eab#hmac_key@ rather
+  -- than rendering the plaintext HMAC key inline. The materializer reuses
+  -- the Sprint 3.18 chart-side pattern (see
+  -- charts/vscode/templates/securitypolicy-client-secret-job.yaml).
+  eabMaterializerResources =
+    case (eab_key_id acmeConfig, eab_hmac_key acmeConfig) of
+      (Just _, Just _) -> acmeEabMaterializerManifests prodboxId labelValue
+      _ -> []
   clusterIssuer =
-    clusterIssuerResource publicEdgeClusterIssuerName (acmeClusterIssuerSpec settings hostedZoneId)
+    clusterIssuerResource
+      publicEdgeClusterIssuerName
+      (acmeClusterIssuerSpec settings resolvedEabKeyId hostedZoneId)
   clusterIssuerResource issuerName issuerSpec =
     object
       [ "apiVersion" .= ("cert-manager.io/v1" :: String)
@@ -4403,6 +4473,203 @@ acmeRuntimeManifestWithCredentials _substrate settings hostedZoneId route53Crede
             ]
       , "spec" .= object ["acme" .= issuerSpec]
       ]
+
+-- | Sprint 7.15: the EAB HMAC secret materializer — a ServiceAccount, a
+-- least-privilege Role (create the @acme-eab-credentials@ Secret;
+-- get/update/patch only it), a RoleBinding, and a Job that logs into Vault
+-- via Kubernetes auth (role @acme@), reads @secret/acme/eab#hmac_key@, and
+-- creates the @acme-eab-credentials@ Secret in @cert-manager@. This mirrors
+-- @charts/vscode/templates/securitypolicy-client-secret-job.yaml@ exactly;
+-- the HMAC key never transits the operator host.
+acmeEabMaterializerManifests :: String -> String -> [Value]
+acmeEabMaterializerManifests prodboxId labelValue =
+  [ serviceAccount
+  , role
+  , roleBinding
+  , job
+  ]
+ where
+  managedMetadata extra =
+    object
+      ( [ "name" .= acmeEabMaterializerName
+        , "namespace" .= certManagerNamespace
+        , "annotations" .= object [Key.fromString prodboxAnnotationKey .= prodboxId]
+        , "labels" .= object [Key.fromString prodboxLabelKey .= labelValue]
+        ]
+          ++ extra
+      )
+  serviceAccount =
+    object
+      [ "apiVersion" .= ("v1" :: String)
+      , "kind" .= ("ServiceAccount" :: String)
+      , "metadata" .= managedMetadata []
+      ]
+  role =
+    object
+      [ "apiVersion" .= ("rbac.authorization.k8s.io/v1" :: String)
+      , "kind" .= ("Role" :: String)
+      , "metadata" .= managedMetadata []
+      , "rules"
+          .= [ object
+                 [ "apiGroups" .= ([""] :: [String])
+                 , "resources" .= (["secrets"] :: [String])
+                 , "verbs" .= (["create"] :: [String])
+                 ]
+             , object
+                 [ "apiGroups" .= ([""] :: [String])
+                 , "resources" .= (["secrets"] :: [String])
+                 , "resourceNames" .= ([acmeEabSecretName] :: [String])
+                 , "verbs" .= (["get", "update", "patch"] :: [String])
+                 ]
+             ]
+      ]
+  roleBinding =
+    object
+      [ "apiVersion" .= ("rbac.authorization.k8s.io/v1" :: String)
+      , "kind" .= ("RoleBinding" :: String)
+      , "metadata" .= managedMetadata []
+      , "subjects"
+          .= [ object
+                 [ "kind" .= ("ServiceAccount" :: String)
+                 , "name" .= acmeEabMaterializerName
+                 , "namespace" .= certManagerNamespace
+                 ]
+             ]
+      , "roleRef"
+          .= object
+            [ "apiGroup" .= ("rbac.authorization.k8s.io" :: String)
+            , "kind" .= ("Role" :: String)
+            , "name" .= acmeEabMaterializerName
+            ]
+      ]
+  vaultImage = ContainerImage.renderImageRef ContainerImage.publicVaultImage
+  curlImage = ContainerImage.renderImageRef ContainerImage.harborCurlImage
+  initScript =
+    unlines
+      [ "set -eu"
+      , "jwt=\"$(cat \"${VAULT_SA_TOKEN_FILE}\")\""
+      , "export VAULT_TOKEN=\"$(vault write -field=token \"auth/${VAULT_AUTH_PATH}/login\" role=\"${VAULT_ROLE}\" jwt=\"${jwt}\")\""
+      , "umask 077"
+      , "vault kv get -field="
+          ++ acmeEabVaultHmacField
+          ++ " secret/"
+          ++ acmeEabVaultPath
+          ++ " > /vault-materialized/hmac-key"
+      ]
+  materializeScript =
+    unlines
+      [ "set -eu"
+      , "api_server=\"https://${KUBERNETES_SERVICE_HOST}:${KUBERNETES_SERVICE_PORT_HTTPS:-443}\""
+      , "token=\"$(cat \"${SERVICEACCOUNT_TOKEN_FILE}\")\""
+      , "hmac_b64=\"$(base64 < /vault-materialized/hmac-key | tr -d '\\n')\""
+      , "cat > /tmp/secret-create.json <<EOF"
+      , "{\"apiVersion\":\"v1\",\"kind\":\"Secret\",\"metadata\":{\"name\":\"${SECRET_NAME}\",\"labels\":{\"app.kubernetes.io/managed-by\":\"prodbox\"}},\"type\":\"Opaque\",\"data\":{\""
+          ++ acmeEabSecretKey
+          ++ "\":\"${hmac_b64}\"}}"
+      , "EOF"
+      , "cat > /tmp/secret-patch.json <<EOF"
+      , "{\"type\":\"Opaque\",\"data\":{\"" ++ acmeEabSecretKey ++ "\":\"${hmac_b64}\"}}"
+      , "EOF"
+      , "create_code=\"$(curl -sS --cacert \"${SERVICEACCOUNT_CA_FILE}\" -H \"Authorization: Bearer ${token}\" -H \"Content-Type: application/json\" -o /tmp/secret-create-response.json -w '%{http_code}' --data-binary @/tmp/secret-create.json \"${api_server}/api/v1/namespaces/${POD_NAMESPACE}/secrets\" || true)\""
+      , "case \"${create_code}\" in"
+      , "  201) exit 0 ;;"
+      , "  409)"
+      , "    patch_code=\"$(curl -sS --cacert \"${SERVICEACCOUNT_CA_FILE}\" -H \"Authorization: Bearer ${token}\" -H \"Content-Type: application/merge-patch+json\" -o /tmp/secret-patch-response.json -w '%{http_code}' --request PATCH --data-binary @/tmp/secret-patch.json \"${api_server}/api/v1/namespaces/${POD_NAMESPACE}/secrets/${SECRET_NAME}\" || true)\""
+      , "    case \"${patch_code}\" in 200|201) exit 0 ;; *) cat /tmp/secret-patch-response.json >&2 ; exit 1 ;; esac ;;"
+      , "  *) cat /tmp/secret-create-response.json >&2 ; exit 1 ;;"
+      , "esac"
+      ]
+  job =
+    object
+      [ "apiVersion" .= ("batch/v1" :: String)
+      , "kind" .= ("Job" :: String)
+      , "metadata" .= managedMetadata []
+      , "spec"
+          .= object
+            [ "backoffLimit" .= (6 :: Int)
+            , "ttlSecondsAfterFinished" .= (60 :: Int)
+            , "template"
+                .= object
+                  [ "metadata"
+                      .= object
+                        [ "labels" .= object [Key.fromString prodboxLabelKey .= labelValue]
+                        ]
+                  , "spec"
+                      .= object
+                        [ "serviceAccountName" .= acmeEabMaterializerName
+                        , "restartPolicy" .= ("OnFailure" :: String)
+                        , "initContainers"
+                            .= [ object
+                                   [ "name" .= ("vault-secrets" :: String)
+                                   , "image" .= vaultImage
+                                   , "imagePullPolicy" .= ("IfNotPresent" :: String)
+                                   , "env"
+                                       .= [ envVar "VAULT_ADDR" "http://vault.vault.svc.cluster.local:8200"
+                                          , envVar "VAULT_AUTH_PATH" "kubernetes"
+                                          , envVar "VAULT_ROLE" acmeEabVaultRole
+                                          , envVar
+                                              "VAULT_SA_TOKEN_FILE"
+                                              "/var/run/secrets/kubernetes.io/serviceaccount/token"
+                                          ]
+                                   , "command" .= (["/bin/sh", "-ec", initScript] :: [String])
+                                   , "volumeMounts"
+                                       .= [ object
+                                              [ "name" .= ("vault-materialized" :: String)
+                                              , "mountPath" .= ("/vault-materialized" :: String)
+                                              ]
+                                          ]
+                                   ]
+                               ]
+                        , "containers"
+                            .= [ object
+                                   [ "name" .= ("materialize-eab-secret" :: String)
+                                   , "image" .= curlImage
+                                   , "imagePullPolicy" .= ("IfNotPresent" :: String)
+                                   , "env"
+                                       .= [ object
+                                              [ "name" .= ("POD_NAMESPACE" :: String)
+                                              , "valueFrom"
+                                                  .= object
+                                                    [ "fieldRef"
+                                                        .= object
+                                                          ["fieldPath" .= ("metadata.namespace" :: String)]
+                                                    ]
+                                              ]
+                                          , envVar "SECRET_NAME" acmeEabSecretName
+                                          , envVar
+                                              "SERVICEACCOUNT_TOKEN_FILE"
+                                              "/var/run/secrets/kubernetes.io/serviceaccount/token"
+                                          , envVar
+                                              "SERVICEACCOUNT_CA_FILE"
+                                              "/var/run/secrets/kubernetes.io/serviceaccount/ca.crt"
+                                          ]
+                                   , "command" .= (["sh", "-c", materializeScript] :: [String])
+                                   , "volumeMounts"
+                                       .= [ object
+                                              [ "name" .= ("vault-materialized" :: String)
+                                              , "mountPath" .= ("/vault-materialized" :: String)
+                                              , "readOnly" .= True
+                                              ]
+                                          ]
+                                   ]
+                               ]
+                        , "volumes"
+                            .= [ object
+                                   [ "name" .= ("vault-materialized" :: String)
+                                   , "emptyDir"
+                                       .= object
+                                         [ "medium" .= ("Memory" :: String)
+                                         , "sizeLimit" .= ("1Mi" :: String)
+                                         ]
+                                   ]
+                               ]
+                        ]
+                  ]
+            ]
+      ]
+  envVar :: String -> String -> Value
+  envVar name value =
+    object ["name" .= name, "value" .= value]
 
 -- | The DNS-01 Route 53 ACME solver block referenced by the ZeroSSL
 -- 'ClusterIssuer'. Keyed off 'route53CredentialsSecretName' and the
@@ -4442,8 +4709,17 @@ emptyRoute53Credentials settings =
 -- | The ZeroSSL ACME @ClusterIssuer@ @spec.acme@ object: the
 -- @acme.server@ directory, the ZeroSSL account key, the DNS-01 Route 53
 -- solver, and the required ZeroSSL external account binding.
-acmeClusterIssuerSpec :: ValidatedSettings -> Text.Text -> Value
-acmeClusterIssuerSpec settings hostedZoneId =
+--
+-- Sprint 7.15: the @externalAccountBinding.keyID@ is no longer plaintext
+-- in config; the IO caller resolves it host-side from Vault
+-- @secret/acme/eab#key_id@ and supplies it as @Maybe Text@. The binding is
+-- rendered only when EAB is configured (both @SecretRef.Vault@ references
+-- present) /and/ the key ID resolved; its @keySecretRef@ points at the
+-- @acme-eab-credentials@ Secret the EAB materializer Job creates from
+-- Vault. The key ID is not secret, hence inline; the HMAC key never
+-- transits the operator host.
+acmeClusterIssuerSpec :: ValidatedSettings -> Maybe Text.Text -> Text.Text -> Value
+acmeClusterIssuerSpec settings resolvedEabKeyId hostedZoneId =
   object $
     [ "server" .= Text.unpack (server acmeConfig)
     , "email" .= Text.unpack (email acmeConfig)
@@ -4455,9 +4731,13 @@ acmeClusterIssuerSpec settings hostedZoneId =
   config = validatedConfig settings
   awsConfig = aws config
   acmeConfig = acme config
-  externalAccountBinding =
+  eabConfigured =
     case (eab_key_id acmeConfig, eab_hmac_key acmeConfig) of
-      (Just keyId, Just _) ->
+      (Just _, Just _) -> True
+      _ -> False
+  externalAccountBinding =
+    case (eabConfigured, resolvedEabKeyId) of
+      (True, Just keyId) ->
         Just
           ( object
               [ "keyID" .= Text.unpack keyId

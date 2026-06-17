@@ -121,6 +121,12 @@ vaultSecretRefDhall path field =
     , "  }"
     ]
 
+-- | Sprint 7.15: a @Some SecretRef.Vault@ expression into @secret/acme/eab@
+-- for the given field (the EAB material now references Vault, not plaintext).
+eabVaultRefDhall :: String -> String
+eabVaultRefDhall field =
+  "Some (" ++ vaultSecretRefDhall "acme/eab" field ++ ")"
+
 awsCredentialRefDhall :: String -> String -> Bool -> String
 awsCredentialRefDhall path regionValue includeSessionToken =
   concat
@@ -141,13 +147,15 @@ validConfig :: String
 validConfig =
   unlines
     [ "{ aws = " ++ awsCredentialRefDhall "gateway/gateway/aws" "us-east-1" True
-    , ", aws_admin_for_test_simulation = "
-        ++ awsCredentialRefDhall "aws/admin-for-test-simulation" "" False
     , ", route53 = { zone_id = \"Z1234567890ABC\" }"
     , ", aws_substrate = { hosted_zone_id = \"\", subzone_name = \"\" }"
     , ", ses = { sender_domain = \"\", receive_subdomain = \"\", capture_bucket = \"\" }"
     , ", domain = { demo_fqdn = \"test.resolvefintech.com\", demo_ttl = 60 }"
-    , ", acme = { email = \"test@resolvefintech.com\", server = \"https://acme.zerossl.com/v2/DV90\", eab_key_id = Some \"test-eab-key-id\", eab_hmac_key = Some \"test-eab-hmac-key\" }"
+    , ", acme = { email = \"test@resolvefintech.com\", server = \"https://acme.zerossl.com/v2/DV90\", eab_key_id = "
+        ++ eabVaultRefDhall "key_id"
+        ++ ", eab_hmac_key = "
+        ++ eabVaultRefDhall "hmac_key"
+        ++ " }"
     , ", deployment = " ++ deploymentDhallFragment
     , ", storage = { manual_pv_host_root = \".data\" }"
     , ", pulumi_state_backend = { bucket_name = \"\", region = \"\", key_prefix = \"\" }"
@@ -158,8 +166,6 @@ invalidConfig :: String
 invalidConfig =
   unlines
     [ "{ aws = " ++ awsCredentialRefDhall "gateway/gateway/aws" "us-east-1" False
-    , ", aws_admin_for_test_simulation = "
-        ++ awsCredentialRefDhall "aws/admin-for-test-simulation" "" False
     , ", route53 = { zone_id = \"Z1234567890ABC\" }"
     , ", aws_substrate = { hosted_zone_id = \"\", subzone_name = \"\" }"
     , ", ses = { sender_domain = \"\", receive_subdomain = \"\", capture_bucket = \"\" }"
@@ -168,7 +174,11 @@ invalidConfig =
       -- intentionally VALID now (populated on demand by the harness /
       -- `--with-edge`), so an empty `aws.access_key_id` no longer fails fast.
       ", domain = { demo_fqdn = \"\", demo_ttl = 60 }"
-    , ", acme = { email = \"test@resolvefintech.com\", server = \"https://acme.zerossl.com/v2/DV90\", eab_key_id = Some \"test-eab-key-id\", eab_hmac_key = Some \"test-eab-hmac-key\" }"
+    , ", acme = { email = \"test@resolvefintech.com\", server = \"https://acme.zerossl.com/v2/DV90\", eab_key_id = "
+        ++ eabVaultRefDhall "key_id"
+        ++ ", eab_hmac_key = "
+        ++ eabVaultRefDhall "hmac_key"
+        ++ " }"
     , ", deployment = " ++ deploymentDhallFragment
     , ", storage = { manual_pv_host_root = \".data\" }"
     , ", pulumi_state_backend = { bucket_name = \"\", region = \"\", key_prefix = \"\" }"

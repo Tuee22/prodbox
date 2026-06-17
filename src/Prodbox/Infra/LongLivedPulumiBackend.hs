@@ -52,13 +52,13 @@ import Data.ByteString.Lazy.Char8 qualified as BL8
 import Data.Char (toLower)
 import Data.List (isInfixOf)
 import Data.Text qualified as Text
+import Prodbox.Aws.AdminCredentials (acquireAdminAwsCredentials)
 import Prodbox.Result (Result (..))
 import Prodbox.Settings
   ( ConfigFile (..)
   , Credentials (..)
   , PulumiStateBackendSection (..)
   , loadConfigFile
-  , resolveAwsCredentialsRefFromHostVault
   )
 import Prodbox.Subprocess
   ( ProcessOutput (..)
@@ -99,50 +99,41 @@ longLivedBackendErrorMessage err = case err of
   BucketEnsureFailed detail ->
     "failed to ensure long-lived Pulumi state bucket: " ++ detail
 
--- | Sprint 4.10: read the admin AWS credential block from
--- @aws_admin_for_test_simulation@ in @prodbox-config.dhall@. Returns
--- @Left@ when any required field (access key, secret, region) is
--- empty.
+-- | Sprint 7.16: acquire the EPHEMERAL admin AWS credential. This is the
+-- canonical loader every long-lived / teardown consumer calls. It delegates
+-- to 'Prodbox.Aws.AdminCredentials.acquireAdminAwsCredentials', which runs the
+-- doctrine cascade: a populated @aws_admin_for_test_simulation@ block in
+-- @test-config.dhall@ (the harness simulating the prompt) → an interactive TTY
+-- prompt for a temporary admin key → fail loud. The admin credential is never
+-- read from @prodbox-config.dhall@ or Vault.
 --
 -- Long-lived stack operations (`prodbox aws stack aws-ses reconcile`,
--- `prodbox aws stack aws-ses destroy`) and `prodbox nuke`
--- authenticate with the admin credential block rather than the
--- operational @aws.*@ block, so the operational @prodbox@ IAM user
--- does not need @s3:GetObject@ / @PutObject@ on the long-lived state
--- bucket. In test simulation the harness materializes operational
--- credentials from the same admin credential class used for
--- operator-interactive flows.
+-- `prodbox aws stack aws-ses destroy`) and `prodbox nuke` authenticate with
+-- this ephemeral admin credential rather than the operational @aws.*@ block,
+-- so the operational @prodbox@ IAM user does not need @s3:GetObject@ /
+-- @PutObject@ on the long-lived state bucket.
 loadAdminAwsCredentials :: FilePath -> IO (Either String Credentials)
 loadAdminAwsCredentials repoRoot = do
-  configResult <- loadConfigFile repoRoot
-  case configResult of
-    Left err -> pure (Left err)
-    Right config -> do
-      credentialsResult <-
-        resolveAwsCredentialsRefFromHostVault
-          repoRoot
-          "aws_admin_for_test_simulation"
-          (aws_admin_for_test_simulation config)
-      pure $ case credentialsResult of
-        Left err ->
+  credentialsResult <- acquireAdminAwsCredentials repoRoot
+  pure $ case credentialsResult of
+    Left err ->
+      Left
+        ( "an ephemeral admin AWS credential is required before long-lived \
+          \stack operations (`prodbox aws stack aws-ses reconcile`, \
+          \`aws-ses-destroy`, `aws-ses-migrate-backend`) or `prodbox nuke` \
+          \can authenticate: "
+            ++ err
+        )
+    Right creds ->
+      if adminCredentialsConfigured creds
+        then Right creds
+        else
           Left
-            ( "aws_admin_for_test_simulation must resolve from Vault before \
-              \long-lived stack operations (`prodbox aws stack aws-ses reconcile`, \
-              \`aws-ses-destroy`, `aws-ses-migrate-backend`) or `prodbox nuke` \
-              \can authenticate: "
-                ++ err
-            )
-        Right creds ->
-          if adminCredentialsConfigured creds
-            then Right creds
-            else
-              Left
-                "aws_admin_for_test_simulation.access_key_id, \
-                \aws_admin_for_test_simulation.secret_access_key, and \
-                \aws_admin_for_test_simulation.region must all resolve to \
-                \non-empty values before long-lived stack operations \
-                \(`prodbox aws stack aws-ses reconcile`, `aws-ses-destroy`, \
-                \`aws-ses-migrate-backend`) or `prodbox nuke` can authenticate."
+            "the acquired admin AWS credential must have a non-empty access \
+            \key id, secret access key, and region before long-lived stack \
+            \operations (`prodbox aws stack aws-ses reconcile`, \
+            \`aws-ses-destroy`, `aws-ses-migrate-backend`) or `prodbox nuke` \
+            \can authenticate."
 
 adminCredentialsConfigured :: Credentials -> Bool
 adminCredentialsConfigured creds =

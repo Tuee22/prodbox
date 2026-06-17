@@ -322,7 +322,7 @@ shift plus relocated reopened-phase narrative are recorded in
 adoption in [phase-0-planning-documentation.md](phase-0-planning-documentation.md).
 
 **2026-06-16 — Test-simulation credentials move to `test-config.dhall`; admin acquisition unifies
-on the prompt (Sprint `7.16`, Planned).** Three credential roles are kept strictly distinct: the
+on the prompt (Sprint `7.16`, ✅ Done on its code-owned surface 2026-06-17).** Three credential roles are kept strictly distinct: the
 **ephemeral elevated/admin credential** a human operator holds (enters only through the interactive
 `SecretRef.Prompt`, used once to mint the dedicated identity, then discarded — never in
 `prodbox-config.dhall`, never in Vault, never on disk); the **generated operational `prodbox` IAM
@@ -335,8 +335,8 @@ production binary, never in Vault. There is exactly one runtime path by which el
 enters prodbox — the interactive prompt — for `prodbox config setup`, `prodbox aws setup`, the
 native IAM harness, `aws-ses` reconcile/destroy/migrate-backend, and `prodbox nuke`; the harness
 automates that prompt from `test-config.dhall`. None of our testing secrets live in Vault; Vault
-holds production secrets only. Sprint `7.16` (Planned, in
-[phase-7-aws-substrate-foundations.md](phase-7-aws-substrate-foundations.md)) removes the
+holds production secrets only. Sprint `7.16` (✅ Done on its code-owned surface 2026-06-17, in
+[phase-7-aws-substrate-foundations.md](phase-7-aws-substrate-foundations.md)) removed the
 `aws_admin_for_test_simulation` block from `prodbox-config.dhall` / `prodbox-config-types.dhall`,
 introduces `test-config.dhall`, unifies admin acquisition on the prompt, and mints the generated
 `aws.*` into Vault only. The doctrine SSoT is

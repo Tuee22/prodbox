@@ -47,14 +47,23 @@ Canonical server URL:
 https://acme.zerossl.com/v2/DV90
 ```
 
-Supported cluster projection:
+Supported cluster projection (Sprint 7.15 — EAB material is Vault-sourced, never plaintext):
 
-1. `acme.eab_key_id` is rendered into the supported `ClusterIssuer` as
-   `spec.acme.externalAccountBinding.keyID`.
-2. `acme.eab_hmac_key` is rendered into the `cert-manager` namespace as the
-   `acme-eab-credentials` secret and referenced from
+1. `acme.eab_key_id` and `acme.eab_hmac_key` are `SecretRef.Vault` references into the
+   `secret/acme/eab` KV object (fields `key_id` / `hmac_key`), not plaintext `Optional Text`.
+   The operator/harness seeds that object via `prodbox config setup` (which prompts for the
+   ZeroSSL values and writes them to Vault, never to `prodbox-config.dhall`) or `vault kv put`.
+2. The **EAB key ID** is not secret. The host CLI resolves it from Vault
+   (`secret/acme/eab#key_id`) at reconcile time and renders it inline into the `ClusterIssuer`
+   as `spec.acme.externalAccountBinding.keyID`.
+3. The **EAB HMAC key** is materialized into the `cert-manager` namespace as the
+   `acme-eab-credentials` Secret by a Vault-login materializer Job — the same Sprint 3.18
+   chart-side pattern used for the vscode OIDC client Secret (init container logs into Vault via
+   Kubernetes auth, reads `secret/acme/eab#hmac_key`, the main container creates the Secret). The
+   HMAC key never transits the operator host and is never rendered as inline plaintext
+   `stringData`. The `ClusterIssuer` references it through
    `spec.acme.externalAccountBinding.keySecretRef`.
-3. The ZeroSSL ACME account registration is stored under the `zerossl-account-key`
+4. The ZeroSSL ACME account registration is stored under the `zerossl-account-key`
    `privateKeySecretRef`.
 
 ---
@@ -63,12 +72,16 @@ Supported cluster projection:
 
 Keep the ZeroSSL fields coherent:
 
-1. ZeroSSL requires both `acme.eab_key_id` and `acme.eab_hmac_key`.
+1. ZeroSSL requires both `acme.eab_key_id` and `acme.eab_hmac_key`, and each must be a
+   `SecretRef.Vault` reference (plaintext is rejected, mirroring the operational `aws.*`
+   discipline).
 2. `acme.server` must be the ZeroSSL ACME directory URL above (an `https://` URL).
 3. A valid `acme.email` is required for expiry notices.
 
 `prodbox config setup` and settings validation (`validateAcmeBinding`) enforce these combinations
-before the config is accepted: a ZeroSSL `acme.server` with a missing EAB field is rejected.
+before the config is accepted: a ZeroSSL `acme.server` with a missing EAB field is rejected, a
+present-without-its-pair field is rejected, and a plaintext (non-`Vault`) EAB reference is
+rejected (`acme.eab_* must be a SecretRef.Vault reference`).
 
 ---
 
@@ -109,20 +122,26 @@ and
 ## ACME credentials and TLS key material under Vault
 
 Vault is the TLS authority for the entire stack. The ZeroSSL EAB Key ID and EAB HMAC key are
-Vault KV objects, referenced from Dhall by `SecretRef.Vault` rather than carried as plaintext in
-the `acme.eab_key_id` / `acme.eab_hmac_key` config fields. All TLS private-key material is
-generated in, stored in, or wrapped by Vault: Vault PKI is the certificate authority for internal
-certs, and the public ZeroSSL public-edge certificate keeps the S3 retain-and-restore contract of
-[§ 4](#4-single-issuer-and-rebuild-safe-certificate-retention) (unchanged) with its key material
-Vault-protected at rest. (The EAB-material move out of plaintext config and the Vault-PKI internal
-authority land under Sprint 7.15; until that sprint lands, the EAB fields and ZeroSSL key material
-materialize as described in §§ 2–4.)
+Vault KV objects (`secret/acme/eab`, fields `key_id` / `hmac_key`), referenced from Dhall by
+`SecretRef.Vault` rather than carried as plaintext in the `acme.eab_key_id` / `acme.eab_hmac_key`
+config fields. **Sprint 7.15 landed this EAB-material move** (the config-owned surface): the
+fields are `Optional SecretRef`, the HMAC key is materialized in-cluster by a Vault-login Job
+(see §2), and `prodbox config validate` rejects any plaintext EAB value. The public ZeroSSL
+public-edge certificate keeps the S3 retain-and-restore contract of
+[§ 4](#4-single-issuer-and-rebuild-safe-certificate-retention) (unchanged).
 
-Certificate issuance and key retrieval fail closed when Vault is sealed. With the EAB material and
-private-key paths behind a sealed (or unreachable, or uninitialized) Vault, the `ClusterIssuer`
-cannot authenticate to ZeroSSL and no key can be retrieved or minted, so the reconcile surfaces a
-sealed-Vault error rather than proceeding. There is no plaintext fallback for ACME credentials or
-TLS keys.
+The broader native-Vault-PKI internal-cert authority (Vault PKI minting internal certs) and live
+ZeroSSL issuance against the Vault-sourced EAB are a separate, non-blocking `Live-proof: pending`
+axis — the cert-manager-vs-native-Vault-PKI choice is an open design decision (see
+[vault_doctrine.md §18](./vault_doctrine.md#18-open-decisions)); cert-manager remains the issuer
+today and only the EAB / key material is Vault-sourced.
+
+Certificate issuance fails closed when Vault is sealed. With the EAB material behind a sealed (or
+unreachable, or uninitialized) Vault, the EAB key ID cannot be resolved host-side and the
+in-cluster materializer Job cannot read the HMAC key, so the `ClusterIssuer` cannot authenticate
+to ZeroSSL — the reconcile surfaces a sealed-Vault error rather than proceeding. This fail-closed
+behavior is structurally guaranteed by the `SecretRef.Vault` resolver (a sealed Vault cannot
+resolve the reference); there is no plaintext fallback for ACME credentials or TLS keys.
 
 ZeroSSL remains the sole public ACME provider, and the single-issuer (`zerossl-dns01`) plus
 S3 retain-restore behavior of [§ 4](#4-single-issuer-and-rebuild-safe-certificate-retention) is

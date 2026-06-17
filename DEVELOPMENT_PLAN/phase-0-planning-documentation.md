@@ -13,6 +13,27 @@
 
 ## Phase Status
 
+✅ **Done on owned surface 2026-06-16** — Phase 0 owns the docs / plan-only Sprint `0.15`
+(Phase-Independence Doctrine Adoption), which lands the phase-independence doctrine into
+[development_plan_standards.md](development_plan_standards.md) as Standards N (Phase
+Independence) + O (Code-Local vs Live-Infra Proof) plus amendments to Standards A / C / H / M,
+and harmonizes the plan suite and governed docs to it. The doctrine lets every earlier phase be
+validated independently of later phases: each phase is validatable on its owned surface (against
+the home / local substrate, a fake, or a stub where a dependency is owned by a later phase) even
+when any other phase is incomplete; `Blocked by` is forward-only (an earlier-or-same-phase sprint
+or an external prerequisite, never a later phase); code-local completion (builds + passes local
+validation) is the phase-closure axis, while a proof needing live infrastructure is a
+non-blocking `Live-proof: pending` note, not `⏸️ Blocked`; and AWS-substrate coverage of a
+suite-content validation is tracked only in `substrates.md`'s parity table, never marking a
+suite-content sprint or its phase blocked. The code / live adoption is owned by the reframed
+implementation sprints (phase-5 Sprint `5.8`, phase-7 Sprint `7.14` / `7.16`); Phase 0 stays
+`Done` on its owned doc / plan surface.
+
+**Independent Validation**: Phase 0 owns the development-plan and governed-documentation surface;
+it is validated on that owned surface with no dependency on a later phase via `prodbox dev docs
+check`, `prodbox dev lint docs`, and `prodbox dev check` exiting 0, plus a grep replay confirming
+no backward `Blocked by` survives — all runnable on the home / local substrate.
+
 ✅ **Done on owned surface 2026-06-15** — Phase 0 owns the docs / plan-only Sprint `0.14`
 (Model-B Pulumi/MinIO and Whole-System Sealed-State Doctrine Harmony), which refines the
 sealed-state architecture in doctrine: MinIO-stored state and Pulumi backend state are encrypted
@@ -53,8 +74,8 @@ Harmony an enforced plan invariant; both have now landed. ✅ **Sprint `0.9`**: 
 corrections + the repo-wide `**Generated sections**` header sweep, plus the header↔markers↔registry
 reconciler + governed-doc relative-link check wired into `runGeneratedArtifactLint` (the sha256-freeze
 over-claim struck). ✅ **Sprint `0.10`**: the §2/§3 command matrix (from `commandRegistry`, Sprint
-`1.29`) and the registry-name↔CLI-command table (from `StackDescriptor`, Sprint `4.27`) are generated
-sections; the chart→edge-resource ownership table was deliberately left editorial per the design
+`1.29`) and the registry-name↔CLI-command table (composed with the `StackDescriptor` record, Sprint
+`4.27`) are generated sections; the chart→edge-resource ownership table was deliberately left editorial per the design
 guardrail (no typed owning-chart source — generating it would relocate drift; Sprint `7.13` owns the
 doctrine reattribution). Validation at reclosure: `check-code` 0, `test unit` 802, `lint docs` 0,
 `docs check` 0. All earlier Phase 0 sprints (`0.1`–`0.8`) remain `Done`; Documentation Harmony is now
@@ -99,7 +120,12 @@ forbidden inputs, production-no-op / test-injected hook contract, and the
 extends that governance contract again for the `prodbox rke2 delete --yes` success-summary
 surface, scheduling hermetic suppression of benign upstream uninstall chatter plus the governed
 documentation updates required by
-[../documents/documentation_standards.md](../documents/documentation_standards.md).
+[../documents/documentation_standards.md](../documents/documentation_standards.md). Sprint
+0.15 extends the governance contract once more with the phase-independence doctrine, adopting
+Standards N (Phase Independence) and O (Code-Local vs Live-Infra Proof) plus the A / C / H / M
+amendments into [development_plan_standards.md](development_plan_standards.md) and harmonizing
+the plan suite and governed docs so an incomplete later phase can never block, gate, or reopen
+an earlier phase.
 
 ## Sprint 0.1: Canonical Plan Suite for the Haskell Rewrite ✅
 
@@ -567,7 +593,7 @@ harmony):
   Transit envelope encryption (`prodbox-envelope-v1`), the sealed-state fail-closed invariant,
   in-cluster Vault Kubernetes auth, the config/state classification, and the red-team checklist.
 - `documents/engineering/config_doctrine.md` — defer to `vault_doctrine.md` for the typed
-  `SecretRef` config contract and the `test-secrets.dhall` test-only plaintext split.
+  `SecretRef` config contract and the `test-config.dhall` test-only plaintext split.
 - `documents/engineering/secret_derivation_doctrine.md` — defer to `vault_doctrine.md` for the
   Vault-Transit envelope over the at-rest master seed while keeping the master-seed HMAC-SHA-256
   derivation and daemon-only seed boundary intact.
@@ -997,10 +1023,11 @@ the over-prefixed `aws_integration_environment_doctrine.md` link).
 
 ## Sprint 0.10: Generate Drift-Prone Tables from Typed Registries ✅
 
-**Status**: Done (2026-06-09, after Sprint `4.27` unblocked it). Two of the three drift-prone tables
+**Status**: Done (2026-06-09). Two of the three drift-prone tables
 are now generated from typed registries: the §2/§3 command matrix from `commandRegistry` (Sprint
 `1.29`: `command-surface-toplevel`/`command-surface-matrix`) and the registry-name↔CLI-command table
-from `StackDescriptor` (Sprint `4.27`: `stack-command-surface` in `substrates.md`). The third — the
+that composes with the `StackDescriptor` record (Sprint `4.27`: `stack-command-surface` in
+`substrates.md`). The third — the
 **chart→edge-resource ownership table** — was deliberately **not** generated, per the design
 guardrail (generate only a faithful projection of a typed value, with no new hand-authored
 annotation): `PublicEdgeRoute` has no owning-chart field, the shared Gateway / listener-cert /
@@ -1315,6 +1342,115 @@ sprint; the code adoption lands in the cited implementation sprints.
   namespaces, downstream identity to Vault KV) under Sprint `4.33`, and the decrypt-to-scratch
   Pulumi interposition under Sprint `7.14`; the live sealed-Vault cross-surface red-team is owned
   by Sprint `5.8`. Each closes on its own owned surface when its validation gates pass.
+
+## Sprint 0.15: Phase-Independence Doctrine Adoption ✅
+
+**Status**: Done on the doc-owned surface (2026-06-16). This change lands the
+phase-independence doctrine into the standards SSoT and harmonizes the plan suite and governed
+docs; it changes only dependency framing, status semantics, and where cross-phase narrative
+lives — no objective, feature, or validation is added, removed, or altered. Like Sprints `0.12`
+/ `0.13` / `0.14` it is a docs / plan-only sprint, and it **reopens no new phase**: the brief
+re-scopes of phase-5 Sprint `5.8` and phase-7 Sprint `7.14` / `7.16` are recorded in the legacy
+ledger per `development_plan_standards.md` Standards I / D.
+**Implementation**: `DEVELOPMENT_PLAN/development_plan_standards.md` (new Standards N + O and
+the A / C / H / M amendments), `DEVELOPMENT_PLAN/README.md`, `DEVELOPMENT_PLAN/00-overview.md`,
+`DEVELOPMENT_PLAN/system-components.md`, `DEVELOPMENT_PLAN/substrates.md`,
+`DEVELOPMENT_PLAN/legacy-tracking-for-deletion.md`, the per-phase files
+(`phase-0-planning-documentation.md` … `phase-8-email-invite-auth.md`, adding per-phase
+Independent Validation lines and re-scoping phase-5 Sprint `5.8` and phase-7 Sprint `7.14` /
+`7.16`), the governed docs `documents/engineering/vault_doctrine.md` and
+`documents/engineering/cli_command_surface.md`, and repo-root `README.md`
+**Docs to update**: every file listed above.
+
+**Independent Validation**: Phase 0 is validated on its owned development-plan / governed-doc
+surface with no dependency on a later phase — `prodbox dev docs check`, `prodbox dev lint docs`,
+and `prodbox dev check` all exit 0 on the home / local substrate, and a grep replay over
+`DEVELOPMENT_PLAN/*.md` finds no backward `Blocked by`. No live infrastructure is required to
+close this sprint.
+
+### Objective
+
+Adopt the phase-independence doctrine into the standards SSoT and bring the plan suite and
+governed documentation into harmony with it, so the development plan lets earlier phases be
+validated independently of later phases. An incomplete later phase must never block, gate, or
+reopen an earlier phase; reopening is only ever to expand a phase's own owned surface. The
+authoritative statement lives in `development_plan_standards.md` Standards N (Phase
+Independence) and O (Code-Local vs Live-Infra Proof) plus the amendments to Standards A / C /
+H / M; every other doc defers to it. This is a purely structural change to the dependency
+model, status semantics, and where cross-phase narrative lives — every objective, feature, and
+validation stays exactly the same.
+
+### Deliverables
+
+- `development_plan_standards.md` gains **Standard N (Phase Independence)** — each phase is
+  validatable on its owned surface even when any other phase is incomplete, against the home /
+  local substrate, a fake, or a stub where a validation would touch a dependency owned by
+  another phase; every phase document carries an `Independent Validation` line; forward build
+  order is kept but is not a validation gate — and **Standard O (Code-Local vs Live-Infra
+  Proof)** — code-local completion (builds + passes local validation: `prodbox dev check`,
+  `test unit`, `test integration cli` / `env`) is the phase-closure axis, while a proof needing
+  live infrastructure is a non-blocking `Live-proof: pending` note, never `⏸️ Blocked`.
+- The amendments to Standards A / C / H / M land: a `Blocked by` may name only an
+  earlier-or-same-phase sprint or an external prerequisite, never a later phase or a
+  higher-numbered sprint (a backward `Blocked by` is a structural defect to be re-scoped); `⏸️
+  Blocked` is reserved strictly for a genuine unmet earlier-phase or external prerequisite; and
+  substrate coverage is orthogonal — a suite-content sprint is Done when its validation exists
+  and passes on the home substrate, with AWS-substrate coverage tracked only in `substrates.md`'s
+  parity table.
+- The plan suite is re-scoped to remove backward blocking: phase-5 Sprint `5.8` and phase-7
+  Sprint `7.14` / `7.16` are re-scoped so their owned surface is validatable now, with any
+  genuinely-later-dependent extension tracked separately via the substrate parity table; each
+  reopen is noted briefly per Standard A (reopened to adopt the phase-independence doctrine).
+- Per-phase `Independent Validation` lines are added to every phase document stating how the
+  phase is validated on its owned surface with no dependency on a later phase.
+- Every `⏸️` used only for a live-infrastructure proof (live AWS spend, deployed cluster,
+  unsealed Vault, operator-supplied credential) is reframed to Done on the code-owned surface
+  plus a non-blocking `Live-proof: pending` note.
+- Cross-phase "reopened-phase" narrative relocated to
+  `DEVELOPMENT_PLAN/legacy-tracking-for-deletion.md` per Standards I / D, which also records the
+  doctrine shift.
+- `README.md`, `00-overview.md`, and `system-components.md` stay in harmony (Standard J); the
+  governed docs `vault_doctrine.md` and `cli_command_surface.md` and repo-root `README.md` defer
+  to Standards N / O rather than restating the doctrine.
+
+### Validation
+
+1. `prodbox dev docs check` exit 0 (this sprint's doc edits touch no generated content).
+2. `prodbox dev lint docs` exit 0 (header↔markers↔registry and relative-link discipline across
+   every governed doc).
+3. `prodbox dev check` exit 0 — by no-op for the docs-only part.
+4. Rule-J harmony holds across `README.md`, `00-overview.md`, the phase files, and the legacy
+   ledger.
+5. A grep replay over `DEVELOPMENT_PLAN/*.md` finds no backward `Blocked by` (none naming a
+   later phase or a higher-numbered sprint), and every `⏸️` that remains names a genuine
+   earlier-phase or external prerequisite rather than a live-infrastructure proof.
+
+### Documentation Requirements
+
+**Engineering docs to create/update:**
+
+- `documents/engineering/vault_doctrine.md` — defer to `development_plan_standards.md`
+  Standards N / O for the phase-independence and code-local-vs-live-infra-proof framing of the
+  Vault adoption sprints, rather than restating the doctrine.
+- `documents/engineering/cli_command_surface.md` — defer to Standards N / O for the
+  independent-validation framing of the command-surface sprints.
+
+**Product docs to create/update:**
+
+- Repo-root `README.md` — point to `development_plan_standards.md` Standards N / O as the SSoT
+  for phase independence and the code-local-vs-live-infra-proof status axis, per
+  [../documents/documentation_standards.md](../documents/documentation_standards.md) (link, do
+  not duplicate).
+
+**Cross-references to add:**
+
+- The phase-independence doctrine is cited by name (Standards N / O) per
+  `development_plan_standards.md` Standard L wherever a sprint or phase adopts it; all other
+  docs defer to that SSoT.
+
+### Remaining Work
+
+None.
 
 ## Related Documents
 

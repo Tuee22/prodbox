@@ -325,18 +325,21 @@ contract lives in
 Sensitive configuration fields carry typed `SecretRef` values — a Dhall union of
 `Vault | TransitKey | Prompt | TestPlaintext` — rather than inline plaintext secrets. `Vault` and
 `TransitKey` are the production targets; there is no `FileSecret` arm and no Secret-mounted Dhall
-fragment path. `prodbox config validate` rejects plaintext secrets in production config; plaintext
-test inputs live only in `test-secrets.dhall`, which is never imported by `prodbox-config.dhall`.
-The seed/propose `prodbox-config.dhall` holds references in place of raw secret material; the
-in-force config it seeds is the Vault-encrypted MinIO object. The authoritative model is
+fragment path. `prodbox config validate` rejects plaintext secrets in production config; all
+test-only plaintext — including the `aws_admin_for_test_simulation.*` simulation fixture that
+feeds the operator prompts non-interactively — lives only in `test-config.dhall`, which is never
+imported by `prodbox-config.dhall` and is never stored in Vault. The seed/propose
+`prodbox-config.dhall` holds references in place of raw secret material; the in-force config it
+seeds is the Vault-encrypted MinIO object. The authoritative model is
 [documents/engineering/vault_doctrine.md](./documents/engineering/vault_doctrine.md) (see
 [§3 The SecretRef model](./documents/engineering/vault_doctrine.md#3-the-secretref-model) and
 [§4 Config split](./documents/engineering/vault_doctrine.md#4-config-split-production-references-vs-test-plaintext)).
 
-> **Note**: the current plaintext `aws.access_key_id`, `aws.secret_access_key`, and `acme.eab_*`
-> fields listed below are scheduled to become `SecretRef.Vault` references (Sprints 1.35 / 7.15).
-> The Validation-Required-Fields table stays valid as the field inventory; only the value form
-> changes from inline plaintext to a typed Vault reference.
+> **Note**: the `aws.access_key_id`, `aws.secret_access_key`, and `acme.eab_*` fields listed below
+> are `SecretRef.Vault` references, not inline plaintext (Sprints 1.35 / 7.15). The generated
+> operational `prodbox` `aws.*` credential is minted into Vault KV after Vault is unsealed, and
+> `prodbox-config.dhall` carries only the typed Vault reference to it. The Validation-Required-Fields
+> table stays valid as the field inventory; only the value form is a typed Vault reference.
 
 ### Supported Onboarding
 
@@ -346,10 +349,13 @@ in-force config it seeds is the Vault-encrypted MinIO object. The authoritative 
 
 The wizard guides AWS account setup, Route 53 zone selection, ACME provider choice, operational IAM
 bootstrap, and repository-root Dhall authoring. On the supported public path it prompts for one
-temporary admin AWS credential set when needed (historically called "elevated credential");
-`aws_admin_for_test_simulation.*` is reserved for suite-driven destructive validation and
-long-lived teardown/provisioning flows (`aws-ses` and `prodbox nuke`), not the ordinary
-public `aws setup` onboarding prompt.
+temporary, ephemeral admin AWS credential set when needed (historically called "elevated
+credential") — the operator types it at the interactive `SecretRef.Prompt`; it is used once to
+mint the dedicated least-privilege `prodbox` IAM identity and then discarded, never written to
+`prodbox-config.dhall` or stored in Vault. The `aws_admin_for_test_simulation.*` block is not a
+reserved `prodbox-config.dhall` section; it is a test-harness fixture living only in
+`test-config.dhall` that simulates that prompt so the suite can drive admin-credentialed flows
+non-interactively.
 
 ### Validation-Required Fields
 
@@ -380,12 +386,17 @@ These fields are not all parser-required, but they matter for normal operation:
 | Config Path | Description |
 |-------------|-------------|
 | `aws.session_token` | Optional AWS session token |
-| `aws_admin_for_test_simulation.*` | Stored admin credential block for suite-driven destructive validation plus long-lived stack and `prodbox nuke` flows |
 | `domain.demo_ttl` | DNS TTL in seconds |
 | `acme.server` | ZeroSSL ACME directory URL (the issuer for the once-issued, S3-retained public-edge certificate); defaults to the ZeroSSL endpoint |
 | `deployment.bootstrap_public_ip_override` | Bootstrap-only DNS A-record IP override |
 | `deployment.pulumi_enable_dns_bootstrap` | Bootstrap toggle for DNS reconciliation during the supported flow |
 | `deployment.public_edge_bgp_peers` | Optional BGP peer list when `deployment.public_edge_advertisement_mode = Some "bgp"` |
+
+`aws_admin_for_test_simulation.*` is **not** a `prodbox-config.dhall` field — it is a
+`TestPlaintext`-class test-harness fixture in `test-config.dhall` (see
+[aws_admin_credentials.md](./documents/engineering/aws_admin_credentials.md)) that simulates the
+operator's interactive admin-credential prompt; it is never read by any production binary and never
+stored in Vault.
 
 Validate the repository config:
 
@@ -513,9 +524,12 @@ inspect/request supported AWS quotas:
 ./.build/prodbox aws quotas request --tier full
 ```
 
-The supported public `aws ...` flow prompts for temporary admin credentials when needed.
-`aws_admin_for_test_simulation.*` remains outside the ordinary public `aws setup` prompt path,
-but is the configured admin credential source for long-lived stack operations and `prodbox nuke`.
+The supported public `aws ...` flow prompts for an ephemeral temporary admin credential when
+needed — including the long-lived `aws-ses` stack operations and `prodbox nuke`. There is exactly
+one runtime path by which elevated admin power enters prodbox: the interactive `SecretRef.Prompt`.
+The test harness automates that prompt by reading `aws_admin_for_test_simulation.*` from
+`test-config.dhall` (a test fixture, never a `prodbox-config.dhall` section and never a Vault
+object); there is no production config-backed admin path.
 
 ### AWS Validation Stacks
 

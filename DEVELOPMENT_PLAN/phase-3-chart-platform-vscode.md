@@ -97,6 +97,21 @@ Gateway API plus Envoy Gateway `SecurityPolicy` for the public route, and keeps 
 Percona-operator-backed Patroni HA path for every Helm-managed application stack: exactly three
 replicas, synchronous replication, and no embedded chart-local PostgreSQL subchart.
 
+**Independent Validation** (per
+[development_plan_standards.md](development_plan_standards.md) Standard N): Phase 3 is
+validatable on its owned chart-platform surface — the Haskell chart runtime, retained-storage
+binding, Patroni/Vault rendering, and Gateway-API/Envoy route generation — without depending on
+any later phase. Code-owned closure is proven locally (`prodbox dev check`, `prodbox test unit`,
+`prodbox test integration cli`/`env`, `prodbox dev lint chart`, and `helm template` rendering),
+and the home-substrate live exercise validates the chart stack end-to-end where a dependency owned
+by another phase is touched. Proofs that require live infrastructure (a deployed cluster, an
+unsealed Vault, operator-supplied unlock material, or live AWS substrate) are recorded as
+non-blocking Live-proof items, per Standard O, and never gate this phase's code-owned closure; the
+live whole-system sealed-Vault validation is owned by Sprint `5.8`, and AWS-substrate coverage of
+the same chart validations is tracked in
+[substrates.md](substrates.md)'s parity table. No incomplete later phase reopens Phase 3 — reopening
+is only to expand its own owned chart-platform surface.
+
 ## Current Baseline In Worktree
 
 - The public `prodbox charts ...` runtime lives in `src/Prodbox/CLI/Charts.hs`,
@@ -2056,7 +2071,7 @@ unseal without a live, unsealed parent — the fail-closed brick cascades down t
 - The root cluster's Vault uses a Shamir seal; its unseal/recovery keys + initial root token are
   emitted into the `.age` unlock bundle on retained host storage
   (`.data/prodbox/vault-unlock-bundle.age`), decrypted only by the operator's memorized password
-  (the test harness simulates the password via `test-secrets.dhall`).
+  (the test harness simulates the password via `test-config.dhall`).
 - A child cluster's Vault config carries `seal "transit"` against the parent cluster's Vault; the
   chart renders that stanza only when `seal.mode = transit` and supplies the parent Transit token
   through `VAULT_TOKEN` from a Kubernetes Secret instead of embedding it in `vault.hcl`.

@@ -95,6 +95,22 @@ capability classes + `AsServiceError` (Sprints `1.12`/`1.13`) — not a change t
 
 ## Phase Summary
 
+**Independent Validation** (per
+[development_plan_standards.md](development_plan_standards.md) Standards N/O): this phase is
+validated entirely on its own owned surface — the host `prodbox` binary, the Haskell runtime,
+the CLI/`CommandSpec` registry, the Dhall config and `SecretRef`/Vault contracts, and the Pulumi
+program shape — through `prodbox dev check`, `prodbox test unit`, and
+`prodbox test integration cli`/`env`, with no dependency on any later phase. Where a Phase `1`
+contract touches infrastructure owned by a later phase (a deployed cluster, an unsealed live
+Vault, live AWS spend, a live MinIO object store), it is exercised against the home/local
+substrate, a fake, or a loopback Vault-compatible/Pulumi-record stub (e.g. the Sprint `1.36`
+native CLI Vault lifecycle proof and the Sprint `1.37` sealed-Vault refusal proof both run
+against loopback stubs). Forward build order is preserved — later phases compose these
+deliverables — but build order is not a validation gate, and an incomplete later phase never
+blocks, gates, or reopens Phase `1`; reopening this phase is only ever to expand its own owned
+surface. Any proof that genuinely requires live infrastructure is a non-blocking
+`Live-proof: pending` note on the owning later-phase sprint, never a Phase `1` gate.
+
 This phase establishes the Haskell `prodbox` binary, the canonical Cabal build topology, the
 repository-root Dhall config loader, the Haskell command runtime and test harness, and the Pulumi
 foundations for true IaC plus AWS-substrate provisioning. It also owns the canonical frontend
@@ -2003,7 +2019,7 @@ authenticate to Vault directly via Vault Kubernetes auth.
 - A shared `SecretRef` Dhall union (`Vault | TransitKey | Prompt | TestPlaintext`, with **no**
   `FileSecret` arm) in `prodbox-config-types.dhall` and a matching `Prodbox.Settings.SecretRef` ADT.
   `Vault`/`TransitKey` are the production targets; `Prompt` is CLI-only one-off elevated material;
-  `TestPlaintext` is accepted only by the test harness from `test-secrets.dhall`.
+  `TestPlaintext` is accepted only by the test harness from `test-config.dhall`.
 - The landed `SecretRefFile` constructor and its disk resolver arm are deleted from
   `Prodbox.Settings.SecretRef` (queued in [legacy-tracking-for-deletion.md](legacy-tracking-for-deletion.md)).
 - `validateProductionSecretRef` rejects `TestPlaintext` outside the test harness, and the resolver
@@ -2076,7 +2092,7 @@ per-submission classification, the canonical `.data/prodbox/vault-unlock-bundle.
 and is an idempotent no-op on an already-initialized Vault → `vaultInit` → `initResponseToUnlockBundle`
 → `encryptUnlockBundle` → write the `.age` bundle), `vault unseal` (read+decrypt the bundle →
 `planUnseal` → submit shares until unsealed, aborting on a stalled share), and `vault seal` (root
-token from the decrypted bundle → `vaultSeal`). The operator-password seam reads `test-secrets.dhall`
+token from the decrypted bundle → `vaultSeal`). The operator-password seam reads `test-config.dhall`
 when present and otherwise prompts on a TTY with echo disabled; keys / token / password are never
 logged. The host address is corrected to the chart NodePort `http://127.0.0.1:31820`. Eight pure
 orchestration unit tests added. Gates green: `dev check` 0, `dev docs check` 0, `test unit`
@@ -2102,7 +2118,7 @@ docs` 0.
 
 **Update (2026-06-15, remaining Vault leaves)**: the rest of the `prodbox vault` leaf handlers are
 now wired. `vault rotate-unlock-bundle` decrypts the existing host unlock bundle, obtains and
-confirms a new hidden password on a TTY (or reuses the test-only `test-secrets.dhall` password for
+confirms a new hidden password on a TTY (or reuses the test-only `test-config.dhall` password for
 automation), and writes a freshly encrypted bundle without touching Vault state. `vault
 rotate-transit-key KEY` requires initialized+unsealed Vault, recovers the root token from the
 unlock bundle, and calls Vault Transit key rotation. `vault pki status` verifies the baseline `pki`
@@ -2116,7 +2132,7 @@ response JSON; gates: `cabal build --builddir=.build exe:prodbox test:prodbox-un
 
 **Closure update (2026-06-16)**: the native CLI lifecycle proof now exercises the full root-Vault
 command path against a Vault-compatible loopback server through the built `prodbox` executable:
-`vault status`, `vault init`, idempotent re-`init`, `vault unseal` using `test-secrets.dhall`,
+`vault status`, `vault init`, idempotent re-`init`, `vault unseal` using `test-config.dhall`,
 `vault reconcile`, `vault rotate-unlock-bundle`, `vault rotate-transit-key prodbox-minio-envelope`,
 `vault pki status`, `vault pki issue-test-cert`, and `vault seal`. The proof verifies that init
 creates `.data/prodbox/vault-unlock-bundle.age`, re-init refuses to regenerate state, reconcile
@@ -2147,7 +2163,7 @@ gateway-mediated child bootstrap surface is closed by Sprint `2.26`.
 - The root cluster's unlock bundle at `.data/prodbox/vault-unlock-bundle.age` uses an Argon2id (or
   scrypt) KDF + age/sops-style authenticated encryption — never raw SHA-256. The unlock-bundle
   password unseals the root Vault and is stored nowhere persistent (the test harness simulates it
-  through `test-secrets.dhall`).
+  through `test-config.dhall`).
 - `vault unseal` reads the bundle, prompts for the password (or takes it from the test harness),
   decrypts in memory, and unseals; plaintext keys are never persisted.
 - `vault reconcile` idempotently reconciles auth mounts, policies, roles, KV mounts, Transit keys
@@ -2158,7 +2174,7 @@ gateway-mediated child bootstrap surface is closed by Sprint `2.26`.
 
 - Vault init creates an encrypted unlock bundle; re-running init against existing state is a no-op
   (init-once/unseal-on-rebuild).
-- Vault unseal succeeds using a password from `test-secrets.dhall`.
+- Vault unseal succeeds using a password from `test-config.dhall`.
 - Vault reconcile creates KV, Transit, PKI, policies, and Kubernetes auth roles.
 - Vault rotate, PKI status, PKI issue-test-cert, and seal run through the native CLI against a
   Vault-compatible HTTP surface.

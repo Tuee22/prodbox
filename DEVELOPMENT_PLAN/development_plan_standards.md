@@ -35,9 +35,12 @@ end state.
   delivery, then to cleanup, public-host proof, and final rerun.
 - A reader unfamiliar with the repository should be able to follow the plan from top to bottom
   without reconstructing hidden dependencies from multiple documents.
-- If a previously closed phase reopens because the repository end state expands later, the top
-  level docs must say exactly which earlier phase reopened, which later phases remain closed on
-  their owned surfaces, and why the overall handoff is still incomplete.
+- The "previous phase has already closed" relationship is a *build* dependency (later phases
+  compose earlier deliverables), **not a validation gate** (Standard N): every phase stays
+  independently validatable on its owned surface while later phases are incomplete.
+- Reopening a closed phase is permitted only to expand that phase's **own** owned surface — never
+  to attach a later phase's dependency to an earlier phase (Standard N). When a phase reopens to
+  expand its own surface, the top-level docs say which phase reopened and why.
 
 ### B. Detailed, Implementation-Oriented Content
 
@@ -61,15 +64,21 @@ Status must describe reality, not intent.
 | ✅ | Completed and validated |
 | 🔄 | Active and partially complete |
 | 📋 | Planned and ready to start |
-| ⏸️ | Blocked by an unmet prerequisite |
+| ⏸️ | Blocked by an unmet **earlier-phase or external** prerequisite (never a later phase, never a pending live-infra proof — Standards N/O) |
+| 🧪 Live-proof pending | Code-owned surface `Done` and locally validated; a live-infra proof (live AWS / deployed cluster / unsealed Vault / operator credential) is outstanding. **Non-blocking** (Standard O) |
 
-- `Done` requires passing validation, aligned docs, and no remaining sprint-owned work.
+- `Done` requires passing validation on the code-owned surface, aligned docs, and no remaining
+  sprint-owned code work; a pending live-infra proof does not prevent `Done` (track it as
+  Live-proof pending — Standard O).
 - `Active` requires a `Remaining Work` section.
-- `Blocked` requires a `Blocked by` line.
+- `Blocked` requires a `Blocked by` line naming an earlier-or-same-phase sprint or an external
+  prerequisite — never a later phase (Standard N) and never a pending live-infra proof (Standard O).
 - `Planned` means dependencies are already satisfied; it must not list unmet blockers.
 - Status is always scoped to the sprint or phase-owned surface. A later phase may remain `Done`
   when an earlier phase reopens, but the reopened dependency must be called out explicitly in
-  `README.md` and `00-overview.md`.
+  `README.md` and `00-overview.md`. An earlier phase stays `Done` and independently validatable
+  while later phases are incomplete (Standard N); a later phase's incompleteness never reopens or
+  blocks it.
 
 ### D. Declarative Plan Language
 
@@ -155,7 +164,9 @@ Every sprint should use the same basic structure:
 
 **Status**: Done | Active | Planned | Blocked
 **Implementation**: `path/to/file` (required for Done, recommended otherwise)
-**Blocked by**: sprint id(s) or external prerequisite (required for Blocked)
+**Blocked by**: earlier-or-same-phase sprint id(s) or external prerequisite (required for Blocked); never a later phase or higher-numbered sprint (Standard N)
+**Live-proof**: pending | proven (optional; the non-blocking live-infra axis — Standard O)
+**Independent Validation**: how this sprint/phase is validated on its owned surface with no dependency on a later phase (Standard N)
 **Docs to update**: `file.md`, `other.md`
 
 ### Objective
@@ -305,6 +316,29 @@ A phase may own (a) canonical test suite content, (b) a substrate's provision an
 (c) a substrate's foundations (such as AWS IAM and quota for the AWS substrate, or shared SES
 infrastructure for the email-invite auth path). A phase may not own a substrate-specific
 validation, because validations are suite content.
+
+#### Suite-content closure is home-substrate-scoped
+
+A suite-content sprint is `Done` when its validation exists and passes on the home local
+substrate; AWS-substrate coverage of that same validation is tracked only in the
+[substrates.md](substrates.md) parity table and never marks the suite-content sprint or its phase
+`Blocked` (Standards N/O).
+
+### N. Phase Independence (No Backward Blocking)
+
+A phase's validation never depends on another phase being complete. Forward build-order (Standard A — later phases compose earlier deliverables) remains the narrative spine, but it is **not a validation gate**.
+
+- **Independent validation.** Each phase is validatable on its owned surface even when any other phase is incomplete. Where a validation would touch a dependency owned by another phase, it is exercised against the home/local substrate, a fake, or a stub. Every phase document must carry an **Independent Validation** line stating how the phase is validated on its owned surface with no dependency on a later phase.
+- **Forward-only blocking.** A `**Blocked by**` entry may name only an **earlier-or-same-phase** sprint or an **external** prerequisite. It must **never** name a later phase or a higher-numbered sprint. A backward `Blocked by` is a structural defect: re-scope the sprint so its owned surface is validatable now, and track any genuinely-later-dependent extension separately (Standard O / the [substrates.md](substrates.md) parity table) — do not record the backward block.
+- **No backward reopen.** An incomplete later phase never reopens or blocks an earlier phase. Reopening a closed phase (Standard A) is permitted only to expand that phase's **own** owned surface.
+
+### O. Code-Local Completion vs. Live-Infra Proof
+
+A sprint has two independent completion axes; keep them distinct.
+
+- **Code-owned surface.** A sprint is `✅ Done` on its code-owned surface once it builds and passes local validation (`prodbox dev check`, `prodbox test unit`, `prodbox test integration cli` / `env`). This axis determines phase closure.
+- **Live-infra proof.** A proof that requires live infrastructure (live AWS spend, a deployed cluster, an unsealed Vault, an operator-supplied credential) is tracked as a distinct, **non-blocking** `Live-proof: pending` note on the sprint. A pending live-infra proof is **not** `⏸️ Blocked` and never gates an earlier phase or the sprint's code-owned closure.
+- **`⏸️ Blocked` is reserved** strictly for a genuine unmet **earlier-phase or external** prerequisite — never for a pending live-infra proof, and never pointing at a later phase.
 
 ## Related Documents
 

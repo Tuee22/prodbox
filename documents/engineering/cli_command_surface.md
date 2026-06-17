@@ -382,15 +382,21 @@ command contract.
 
 `src/Prodbox/Aws.hs` owns `config setup`. `src/Prodbox/Settings.hs` owns `config show` and
 `config validate`. `prodbox config compile` is not part of the supported command surface. The
-supported public `config setup` path prompts for one temporary admin AWS credential set when
-needed; stored `aws_admin_for_test_simulation.*` remains reserved for suite-driven destructive
-validation and long-lived stack/`prodbox nuke` flows, not ordinary onboarding.
+supported public `config setup` path prompts for one ephemeral elevated/admin AWS credential
+set (the interactive `SecretRef.Prompt` arm) when needed — held in memory for the one command,
+used once, then discarded. The `aws_admin_for_test_simulation.*` block is not a
+`prodbox-config.dhall` section: it is a test-harness-only fixture in `test-config.dhall` that
+simulates the operator at this prompt so the suite can drive admin-credentialed flows
+non-interactively. See [vault_doctrine.md § 4](./vault_doctrine.md#4-config-split) and
+[aws_admin_credentials.md](./aws_admin_credentials.md).
 
 ### `prodbox aws` notes
 
 `src/Prodbox/Aws.hs` owns the full public `prodbox aws ...` surface. The supported public contract
-is prompt-driven for temporary admin AWS credentials; stored
-`aws_admin_for_test_simulation.*` is not part of the intended public `aws setup` flow.
+is prompt-driven for the ephemeral elevated/admin AWS credential (the interactive
+`SecretRef.Prompt` arm). The `aws_admin_for_test_simulation.*` block is not part of the public
+`aws setup` flow and is not a `prodbox-config.dhall` section: it is a test-harness-only fixture
+in `test-config.dhall` that simulates the operator at that prompt.
 
 `prodbox aws teardown` carries the Sprint `7.6` orphan-safety refuse-path: it refuses to delete
 the operational IAM user while any Pulumi-managed stack (`aws-eks`, `aws-eks-subzone`,
@@ -411,7 +417,7 @@ exit 1 from optparse-applicative via the `flag' <|> flag' <|> pure RefuseOnAnyRe
 in `awsTeardownFlagsParser`. The `prodbox aws teardown --help` usage line displays them as
 `[--destroy-pulumi-residue | --allow-pulumi-residue]` to make the exclusivity visible.
 
-Sprint `7.7` also moved the file-based residue check **before** the temporary-admin-credential
+Sprint `7.7` also moved the file-based residue check **before** the ephemeral elevated-credential
 prompt and added a "Nothing to do." exit (zero) when residue is empty AND operational
 `aws.*` is empty, so the operator never enters credentials that the tool was about to refuse.
 The credential prompt itself auto-detects the access-key prefix and only asks for a session
@@ -487,8 +493,10 @@ Before either mode, `prodbox cluster delete` probes for an installed RKE2 (the o
   in-cluster controllers unwind their AWS-side ENIs / ALBs / EBS volumes while still
   alive; (3) `prodbox aws stack <stack> destroy --yes` for stacks reporting
   `ResiduePresent`, wrapped in `withMaterializedOperationalCreds` so empty operational
-  `aws.*` is filled transparently from `aws_admin_for_test_simulation.*` and restored
-  on exit; (4) cluster uninstall; (5) postflight tag sweep that fails the command if
+  `aws.*` is filled transparently — under the harness, by simulating the admin prompt
+  from the `aws_admin_for_test_simulation.*` fixture in `test-config.dhall` and minting
+  the operational `aws.*` credential into Vault — and restored on exit; (4) cluster
+  uninstall; (5) postflight tag sweep that fails the command if
   any cluster-tagged AWS resource survives. The
   [Lifecycle Reconciliation Doctrine](lifecycle_reconciliation_doctrine.md) §5b is the
   authoritative cascade-order reference. This is the recommended path for
@@ -515,10 +523,13 @@ predicate library and the full leak-class inventory.
 surface. `prodbox nuke` is the **only** sanctioned command that destroys long-lived shared
 infrastructure transitively (`aws-ses` stack, the long-lived `pulumi_state_backend` bucket).
 For per-stack teardown of `aws-ses` alone, use `prodbox aws stack aws-ses destroy --yes`.
-Its admin AWS credential source is the `SecretRef.Vault` refs declared at
-`prodbox-config.dhall::aws_admin_for_test_simulation.*`, matching the long-lived stack operations
-and suite-driven destructive validations; it does not prompt for admin credentials after the typed
-confirmation gate.
+Like every admin-credentialed flow, it acquires elevated AWS power through the one unified
+runtime path — the interactive `SecretRef.Prompt` arm: after the typed confirmation gate the
+operator supplies the ephemeral elevated credential at the prompt (held in memory for the one
+command, used once, discarded). The test harness automates that prompt by feeding the
+`aws_admin_for_test_simulation.*` fixture from `test-config.dhall`. There is no stored admin
+section in `prodbox-config.dhall` and no `SecretRef.Vault` admin ref — the simulation fixture
+is `TestPlaintext` in `test-config.dhall`, never a Vault object.
 
 Discipline (mirrors `aws teardown`):
 
@@ -722,8 +733,10 @@ Named suite commands:
   `prodbox test integration all`, and `prodbox test all` before AWS-backed prerequisite checks
   begin, then clears operational `aws.*` again before the suite returns
 - applies the canonical aggregate ordering
-- keeps stored `aws_admin_for_test_simulation.*` confined to suite-driven destructive validation
-  and long-lived stack/`nuke` flows rather than the ordinary public onboarding surface
+- uses the `aws_admin_for_test_simulation.*` fixture from `test-config.dhall` only to simulate
+  the operator's elevated-credential prompt for suite-driven destructive validation and
+  long-lived stack flows; the fixture never reaches `prodbox-config.dhall`, Vault, or generated
+  cluster config
 - performs supported-runtime bootstrap and postflight when required
 - waits for `prodbox edge status` to report `CLASSIFICATION=ready-for-external-proof` before
   external `charts-vscode`, `charts-api`, `charts-websocket`, or `admin-routes` proof continues
@@ -757,14 +770,20 @@ runtime roots such as `.build/`, `dist-newstyle/`, and `.data/`.
 confirmation prompt) reads input from stdin. The **non-interactive
 automation surface** (the managed test harness — `prodbox test all`,
 `prodbox test integration all`, `prodbox test integration aws-iam`, and targeted
-`prodbox test integration <name> --substrate aws` validations) reads operational
-`aws.*` from `prodbox-config.dhall`'s `aws_admin_for_test_simulation.*` block
-through the suite-level IAM harness and clears it on suite exit.
+`prodbox test integration <name> --substrate aws` validations) drives the same
+interactive admin-credential prompt non-interactively: the suite-level IAM harness
+simulates the operator at the `SecretRef.Prompt` arm by feeding the
+`aws_admin_for_test_simulation.*` fixture from `test-config.dhall`, materializes
+operational `aws.*` (minted into Vault), and clears it on suite exit. There is no
+production "config-backed admin path" that reads stored admin credentials from
+`prodbox-config.dhall`.
 
-`prodbox nuke` is TTY-confirmed because of the typed `NUKE EVERYTHING` guard, but its
-admin AWS credential source is non-prompting: it loads
-`aws_admin_for_test_simulation.*` from `prodbox-config.dhall`, matching the long-lived
-`aws-ses` and state-bucket paths.
+`prodbox nuke` is TTY-confirmed because of the typed `NUKE EVERYTHING` guard, and
+after that gate it acquires elevated AWS power through the same unified prompt path
+as the long-lived `aws-ses` and state-bucket operations: the operator supplies the
+ephemeral elevated credential at the interactive prompt (the harness simulates this
+from the `test-config.dhall` fixture). It does not read a stored admin section from
+`prodbox-config.dhall`.
 
 The interactive surface **refuses to run when stdin is not a TTY**. Each
 interactive entry point calls `Prodbox.CLI.Interactive.requireInteractiveTty`
@@ -801,7 +820,7 @@ violation and should be flagged.
 ## 4. Doctrine-Adoption Command Surface
 
 The CLI doctrine in [the engineering doctrine docs](../../documents/engineering/README.md) introduces several
-commands that land through the Phase `1`–`3` reopens. They are listed here as the canonical
+commands scheduled across Phases `1`–`3`. They are listed here as the canonical
 surface; per-sprint deliverables live in
 [../../DEVELOPMENT_PLAN/](../../DEVELOPMENT_PLAN/).
 

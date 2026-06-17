@@ -93,16 +93,24 @@ server-side encryption with AES256 (S3-managed keys; KMS is overkill and entangl
 block-all-public-access on, lifecycle rule to expire non-current versions after 90 days. Tagged
 `prodbox.io/purpose=pulumi-state`, `prodbox.io/substrate=shared`.
 
-**Credentials per class.**
+**Credentials per class.** This table is the per-stack credential-class SSoT; the SecretRef
+model, the two-file config split, and the test-fixture classification are owned by
+[vault_doctrine.md §3, §4, §13](vault_doctrine.md) and the
+`aws_admin_for_test_simulation` block specifics by
+[aws_admin_credentials.md](aws_admin_credentials.md) — this section only assigns each stack a
+class.
 
-| Class | Credential block | Source field in `prodbox-config.dhall` |
+| Class | Credential class | How the credential is obtained |
 |---|---|---|
-| Per-run stacks | Operational `aws.*` | `aws.access_key_id`, `aws.secret_access_key` (populated by `prodbox aws setup`, cleared by `prodbox aws teardown`) |
-| Long-lived stacks + retained-bucket compatibility | Admin `aws_admin_for_test_simulation.*` | `aws_admin_for_test_simulation.access_key_id`, `aws_admin_for_test_simulation.secret_access_key` (long-lived; never cleared by any teardown command) |
+| Per-run stacks | Generated operational `prodbox` IAM credential | The least-privilege `aws.*` identity, minted into Vault KV (`secret/gateway/gateway/aws`); `prodbox-config.dhall` carries only a `SecretRef.Vault` reference, never the plaintext key. Materialized for the run by `prodbox aws setup`, cleared by `prodbox aws teardown`. |
+| Long-lived stacks + retained-bucket compatibility | Ephemeral elevated/admin credential | Supplied at runtime through the one interactive `SecretRef.Prompt` arm — held in memory for one command, used once, then discarded. It is never written to `prodbox-config.dhall`, never stored in Vault. In tests the harness simulates that prompt by feeding `aws_admin_for_test_simulation.*` from `test-config.dhall` (a `TestPlaintext` fixture, not a production-config section). |
 
-Long-lived stack management uses admin credentials because admin creds outlive any single cluster
-cycle, matching the resource lifetime. The operational `prodbox` IAM user does not need
-`s3:GetObject`/`PutObject` permission on the retained S3 bucket.
+Long-lived stack management uses the elevated/admin credential because that level of power
+outlives any single cluster cycle, matching the resource lifetime; there is no stored admin
+block in `prodbox-config.dhall` — real ops prompt for the ephemeral elevated credential and the
+harness simulates that prompt from `test-config.dhall`. The generated operational `prodbox` IAM
+user does not need `s3:GetObject`/`PutObject` permission on the retained S3 bucket. Migrating any
+code path off the stored-admin model is scheduled as Sprint `7.16`.
 
 **Legacy checkpoint migration.** First-touch migration is owned by
 `Prodbox.Pulumi.EncryptedBackend`. When the encrypted `LogicalPulumiStack <stack-id>` object is
@@ -269,8 +277,9 @@ state machine fixes: (a) a **fail-open predicate** — a `discover` whose
 pre-Sprint-4.19 per-run gate, and the file-existence proxy before
 Sprint 4.16); or (b) **incomplete coverage** — a resource the system can
 create that has no registered `discover`/destroy at all (the operational
-`prodbox` IAM user, the operational `aws.*` config block, fixed-name IAM
-left by a partial `pulumi up`; see §6a). The registry closes both
+`prodbox` IAM user, the generated operational `aws.*` Vault KV credential
+and its `SecretRef.Vault` reference in `prodbox-config.dhall`, fixed-name
+IAM left by a partial `pulumi up`; see §6a). The registry closes both
 structurally.
 
 **The registry is a single, pure list of typed managed resources** — the
@@ -489,7 +498,7 @@ to trip on.
 |---|---|---|---|
 | 1 | Confirm encrypted checkpoint reachability | `<stack>ResidueStatus` queries the encrypted checkpoint object for each per-run stack. If MinIO and Vault are reachable, the result is `ResidueAbsent` or `ResiduePresent`; if unreachable, the result is `ResidueUnreachable` and the cascade treats per-run residue as absent (the per-run state died with the cluster, per the per-run lifetime class). | Misclassification is impossible because `ResidueUnreachable` for a per-run stack is by definition the same outcome as "the state is gone". |
 | 2 | K8s drain | Delete LoadBalancer Services, ALB Ingresses, and Delete-reclaim PVCs so the in-cluster controllers unwind their AWS-side state (Sprint 4.12). On the AWS substrate the drain MUST target the EKS API server, not the local RKE2 cluster — see "Substrate-aware drain" below. If the K8s API is unreachable, this phase emits `DrainSkipped` and the cascade proceeds to phase 3 only on the home substrate (where the absent cluster cannot have created new AWS resources). On the AWS substrate, `DrainSkipped` is a hard failure because the EKS cluster is the source of the resources Pulumi is about to fail to delete. | `DrainFailed` is the only failure path on the home substrate; `DrainSkipped` is success-with-reason there. On the AWS substrate, both `DrainSkipped` and `DrainFailed` are hard-failure paths. |
-| 3 | Per-run Pulumi destroys | For each per-run stack reporting `ResiduePresent`, run `pulumi destroy` against MinIO inside `withMaterializedOperationalCreds` (Sprint 4.17). The bracket fills `aws.*` from `aws_admin_for_test_simulation.*` when `aws.*` is empty and restores-to-empty on exit (success or exception). Because phase 2 already drained the controller-owned resources, every per-run subnet / VPC / cluster delete now has no live ENI / ALB / EBS dependency. | Empty `aws.*` no longer refuses the destroy; the bracket fills it transparently. `DependencyViolation` from AWS indicates phase 2 did not in fact drain (most often: drain ran against the wrong kubeconfig). |
+| 3 | Per-run Pulumi destroys | For each per-run stack reporting `ResiduePresent`, run `pulumi destroy` against MinIO inside `withMaterializedOperationalCreds` (Sprint 4.17). The bracket materializes operational creds for the run (in tests, via the harness-simulated admin prompt sourced from `test-config.dhall`) when `aws.*` is empty and restores-to-empty on exit (success or exception). Because phase 2 already drained the controller-owned resources, every per-run subnet / VPC / cluster delete now has no live ENI / ALB / EBS dependency. | Empty `aws.*` no longer refuses the destroy; the bracket materializes it transparently. `DependencyViolation` from AWS indicates phase 2 did not in fact drain (most often: drain ran against the wrong kubeconfig). |
 | 4 | RKE2 uninstall | `/usr/local/bin/rke2-uninstall.sh` under the lifecycle-local quiet path. Removes substrate + managed kubeconfig. `.data/` is preserved. | Non-zero uninstall exit is reported through `summarizeRke2DeleteFailure`. |
 | 5 | Postflight cluster-tag sweep | `discoverClusterTaggedAwsResources` against the AWS Resource Tagging API. Any surviving cluster-tagged resource fails the command with a structured leak list and the per-class remedy command. | Non-empty leak list is the hard-failure case. |
 
@@ -605,10 +614,11 @@ How the doctrine handles this class without scanning AWS behind Pulumi
 leaks):
 
 1. **Register the durable classes (§3.1).** The operational `prodbox`
-   IAM user and the operational `aws.*` config block become registered
-   `Operational` resources in the managed-resource registry, each with
-   a `discover` (`aws iam get-user` / config-non-empty) and a `destroy`
-   (the existing delete/clear paths) — so `aws teardown`'s
+   IAM user and the generated operational `aws.*` Vault KV credential
+   (referenced from `prodbox-config.dhall` only by `SecretRef.Vault`)
+   become registered `Operational` resources in the managed-resource
+   registry, each with a `discover` (`aws iam get-user` / Vault-KV-present)
+   and a `destroy` (the existing delete/clear paths) — so `aws teardown`'s
    `reconcileAbsent` pass observes and reconciles them like any other
    resource, and `check-code` totality refuses any future create without
    a registered counterpart. This closes the *coverage* half of the

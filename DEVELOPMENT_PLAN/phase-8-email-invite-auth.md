@@ -19,6 +19,19 @@
 
 ## Phase Status
 
+**Independent Validation** (development_plan_standards.md Standard N): Phase `8`'s owned surface —
+the operator-invited, email-verified Keycloak flow, the `prodbox users invite|list|revoke`
+command family, the SES SMTP/IAM-to-SMTP derivation, and `ValidationKeycloakInvite` — is
+validatable on the home/local substrate with no dependency on any later phase. Code-owned closure
+runs against the local gates (`prodbox check-code`, `prodbox test unit`, `prodbox test integration
+cli`/`env`), with the SES capture exercised against the operator's account already required for
+Route 53 DNS validation and Keycloak parsing exercised against fixture emails; `keycloak-invite`
+is canonical suite content proven on the home substrate first, and AWS-substrate coverage of that
+same validation is tracked in [substrates.md](substrates.md)'s parity table per Standard O — never
+gating an earlier phase. Per Standards N/O a live-infrastructure proof (live AWS spend, deployed
+cluster, unsealed Vault) is tracked as a distinct non-blocking 'Live-proof: pending' note and never
+marks an earlier phase or this phase's code-owned closure ⏸️ Blocked.
+
 🔄 **Reopened 2026-06-11, finalized 2026-06-14** (Vault-root + cluster federation) — the
 Vault-root finalization (narrated in [README.md → Closure Status](README.md) per rule A) makes
 Vault the sole, finalized secrets / KMS / PKI root for the whole stack. Sprint `8.9` (📋 Planned)
@@ -71,8 +84,11 @@ exposed that the Keycloak chart's public auth `HTTPRoute` omitted the `/auth/adm
 the operator invite admin API. The first targeted `keycloak-invite --substrate aws` rerun after
 the route fix then failed in phase 1 because the standalone AWS-substrate validation still
 expected pre-populated operational `aws.*`; the targeted-harness fix now wraps targeted
-AWS-substrate validations in the same `aws_admin_for_test_simulation.*`-driven IAM harness as
-aggregate runs. The follow-up targeted AWS run proved that credential materialization path and
+AWS-substrate validations in the same IAM harness as aggregate runs — the harness simulates
+the operator's interactive elevated-credential prompt from the test-only
+`aws_admin_for_test_simulation.*` fixture in `test-config.dhall`, mints the dedicated
+least-privilege `prodbox` IAM identity, and writes the generated operational `aws.*` credential
+straight into Vault KV. The follow-up targeted AWS run proved that credential materialization path and
 reached the Keycloak admin invite flow, then failed because the per-run EKS cluster did not have
 the retained SES SMTP settings synced into the Keycloak release namespace before Helm rendered the
 realm import. The active fix syncs the long-lived `aws-ses` SMTP outputs into the fresh cluster's
@@ -340,9 +356,11 @@ Provision the long-lived, account-scoped SES resources both substrates depend on
 - The receive subdomain resolves to SES, MX records are in Route 53, the receive rule set is
   active, and mail to a test recipient at the subdomain lands as an S3 object within seconds.
 - The IAM user and SES SMTP credentials are reachable from the supported chart deploy paths.
-- `prodbox-config.dhall` carries the SES sender, receive subdomain, capture bucket, and the
-  IAM credentials reference; the dhall schema in `prodbox-config-types.dhall` is extended
-  to require these fields when phase-8 functionality is enabled.
+- `prodbox-config.dhall` carries the SES sender, receive subdomain, capture bucket, and a
+  `SecretRef.Vault` reference to the generated operational `aws.*` credential (the generated
+  credential itself lives only in Vault KV, never as plaintext in `prodbox-config.dhall`); the
+  dhall schema in `prodbox-config-types.dhall` is extended to require these fields when phase-8
+  functionality is enabled.
 
 ### Validation
 
@@ -420,10 +438,11 @@ DNS records added when the Pulumi program was extended to write the `_amazonses`
 verification record and the three DKIM `_domainkey` CNAMEs into the parent Route 53
 zone — without those Route 53 records the SES sending identity stays in `Pending`
 forever). `pulumi/aws-ses/Main.yaml` and `src/Prodbox/Infra/AwsSesStack.hs` also
-gained an explicit `awsRegion` stack config input (now sourced from
-`aws_admin_for_test_simulation.region` in `prodbox-config.dhall`) so the SES MX target
-and SMTP endpoint hostnames interpolate correctly without depending on the `aws:region`
-provider config.
+gained an explicit `awsRegion` stack config input (the operator supplies it at the
+interactive prompt during the `aws-ses` stack op; the test harness simulates that prompt from
+the test-only `aws_admin_for_test_simulation.region` fixture in `test-config.dhall`) so the SES
+MX target and SMTP endpoint hostnames interpolate correctly without depending on the
+`aws:region` provider config.
 
 Validation gate against the live install:
 - `aws ses get-identity-verification-attributes --identities test.resolvefintech.com`
@@ -467,7 +486,9 @@ delivers email via SES SMTP.
     `requiredActions: ["VERIFY_EMAIL"]`.
   - `smtpServer` block populated from substrate config: `host`, `port`, `auth: true`,
     `starttls: true`, `from`, `user`, `password` (sourced from a K8s secret rendered by the
-    chart from the SES SMTP credentials in `prodbox-config.dhall`).
+    chart from the generated SES SMTP credential, which is derived from the `aws-ses` IAM
+    secret access key and persisted into Vault KV — never carried as plaintext in
+    `prodbox-config.dhall`; Sprint `8.9` finalizes Vault as its sole source).
 - A K8s secret in the chart that materializes the SES SMTP credentials at deploy time, with
   a chart-helper marker so the secret is regenerated when the underlying credential rotates.
 - The chart still deploys cleanly against the existing `keycloak-postgres` dependency.
@@ -845,7 +866,9 @@ on whichever substrate is active.
   derived SMTP password into Kubernetes immediately after the Pulumi `up` succeeds:
   `pulumiStackOutputSecret` fetches `smtp_iam_secret_access_key` via
   `pulumi stack output --show-secrets`, `derivedSesSmtpPassword` derives the password
-  using `aws_admin_for_test_simulation.region`, and
+  using the configured region (the operator supplies it at the interactive prompt; the
+  harness simulates that prompt from the `aws_admin_for_test_simulation.region` fixture in
+  `test-config.dhall`), and
   `persistKeycloakSmtpChartSecrets` applies the seven `KC_SMTP_*` fields directly into
   the `keycloak-smtp` k8s Secret in every supported Keycloak release namespace
   (`vscode` for the canonical shared-edge chart stack, `keycloak` for standalone
@@ -919,14 +942,17 @@ on whichever substrate is active.
 **Status**: Done — `keycloak-invite` is ✅ on both substrates (home 2026-06-08, AWS 2026-06-09, OIDC claims verified), and the AWS aggregate `prodbox test all --substrate aws` closed green (`TESTALL_AWS_EXIT=0`). Historical detail: (doc parity rows updated May 18, 2026; June 5 live AWS aggregate and targeted
 runs moved the active residual to canonical validation ordering, substrate public-FQDN selection,
 the Keycloak `/auth/admin` public-route match used by operator invites, and targeted
-AWS-substrate validation credential materialization from `aws_admin_for_test_simulation.*`, then
+AWS-substrate validation credential materialization (the harness simulates the operator's
+elevated-credential prompt from the test-only `aws_admin_for_test_simulation.*` fixture in
+`test-config.dhall`, mints the dedicated `prodbox` IAM identity, and writes the generated
+operational `aws.*` credential into Vault KV), then
 to fresh-cluster `keycloak-smtp` sync before AWS Keycloak chart render, Phase `1.6/2` local
 restore deduplication, gateway Namespace adoption for SMTP pre-created Keycloak release
 namespaces, Keycloak multipart invite-link normalization, public-edge certificate reissue repair,
 and ZeroSSL repository-validation ACME selection. The June 6 targeted AWS
 `keycloak-invite` rerun now passes through invite capture/link-follow and cleanup; AWS aggregate
 rerun plus live Sprint `8.5` POST/OIDC substrate validation remain open.)
-**Blocked by**: Live Sprint `8.5` POST/OIDC substrate validation for full claim assertions
+**Blocked by**: Sprint `8.5` (same phase, earlier sprint)
 **Implementation**: `DEVELOPMENT_PLAN/substrates.md`, `DEVELOPMENT_PLAN/system-components.md`
 **Docs to update**: `DEVELOPMENT_PLAN/substrates.md`, `DEVELOPMENT_PLAN/README.md`
 
@@ -985,13 +1011,19 @@ parity rows accordingly.
   `./.build/prodbox test integration keycloak-invite --substrate aws`, failed before provisioning
   with `settings_loaded ... aws.access_key_id must not be empty`. Root cause: standalone
   AWS-substrate native validation plans still ran their initial `aws_credentials_valid` prerequisite
-  before the suite-level IAM harness could materialize operational `aws.*` from
-  `aws_admin_for_test_simulation.*`. The active code fix normalizes non-empty native validation
+  before the suite-level IAM harness could materialize operational `aws.*` (the harness
+  simulates the operator's elevated-credential prompt from the test-only
+  `aws_admin_for_test_simulation.*` fixture in `test-config.dhall`, mints the dedicated
+  `prodbox` IAM identity, and writes the generated `aws.*` credential into Vault KV). The
+  active code fix normalizes non-empty native validation
   suites on `SubstrateAws` into the managed IAM harness and gives the runner a per-run-stack
   cleanup classifier so targeted AWS-substrate suites that bootstrap or directly provision per-run
   stacks destroy them before clearing operational credentials.
 - The follow-up targeted AWS rerun proved that mismatch fixed: the run materialized operational
-  `aws.*` from `aws_admin_for_test_simulation.*`, provisioned the per-run AWS substrate, deployed
+  `aws.*` (the harness simulated the elevated-credential prompt from the test-only
+  `aws_admin_for_test_simulation.*` fixture in `test-config.dhall`, minted the dedicated
+  `prodbox` IAM identity, and wrote the generated `aws.*` credential into Vault KV), provisioned
+  the per-run AWS substrate, deployed
   the chart set, selected `KEYCLOAK_INVITE_PUBLIC_FQDN=aws.test.resolvefintech.com`, and reached
   Keycloak's admin invite-email call. It then failed with Keycloak HTTP 500 because the realm had
   no configured email sender. Root cause: the retained `aws-ses` stack is account-scoped while the
@@ -1116,8 +1148,10 @@ parity rows accordingly.
 ### Remaining Work
 
 - Run an AWS aggregate validation so `ValidationKeycloakInvite` exercises the now-targeted-green
-  path inside the full suite: operational credentials materialize from
-  `aws_admin_for_test_simulation.*`, the validation executes before destructive
+  path inside the full suite: operational credentials materialize when the harness simulates the
+  operator's elevated-credential prompt from the test-only `aws_admin_for_test_simulation.*`
+  fixture in `test-config.dhall`, mints the dedicated `prodbox` IAM identity, and writes the
+  generated `aws.*` credential into Vault KV; the validation executes before destructive
   `ValidationChartsStorage` / `ValidationLifecycle`, uses the selected substrate public FQDN,
   reaches the Keycloak admin invite-email endpoint, adopts SMTP pre-created Keycloak release
   namespaces during gateway deployment, uses the ZeroSSL ACME path, and accepts text/html
@@ -1302,6 +1336,16 @@ re-derived from any non-Vault source on each consumer.
 - `documents/engineering/prerequisite_doctrine.md` — the new SES prerequisite nodes.
 - `documents/engineering/aws_integration_environment_doctrine.md` — shared cross-substrate
   SES infrastructure ownership.
+- [`documents/engineering/aws_admin_credentials.md`](../documents/engineering/aws_admin_credentials.md)
+  and [`documents/engineering/vault_doctrine.md`](../documents/engineering/vault_doctrine.md)
+  §3/§4/§13 own the credential-role model the SES flows above rely on: the elevated/admin AWS
+  credential enters prodbox only through the interactive `SecretRef.Prompt` and is
+  prompt-use-discard; the generated operational `aws.*` credential is minted into Vault KV after
+  Vault is unsealed and referenced from `prodbox-config.dhall` only by `SecretRef.Vault`; and the
+  test-only `aws_admin_for_test_simulation.*` fixture lives in `test-config.dhall`
+  (TestPlaintext, never imported by `prodbox-config.dhall`, never in Vault) and exists solely to
+  simulate the operator's prompt for the test harness. The implementation move is scheduled under
+  [Sprint `7.16`](phase-7-aws-substrate-foundations.md).
 - `documents/engineering/unit_testing_policy.md` — `ValidationKeycloakInvite` as canonical
   suite content; SES receive-rules-and-S3 as the canonical email-verification test
   mechanism.

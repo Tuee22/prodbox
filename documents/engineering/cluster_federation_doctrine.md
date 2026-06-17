@@ -43,7 +43,7 @@ keys + initial root token):
 
 | Tier | Vault seal mode | Who unseals it | Init keys owned by |
 |------|-----------------|----------------|--------------------|
-| **Root cluster** | Shamir | The operator only, via the `.age` unlock bundle decrypted by a memorized password stored nowhere persistent (`test-secrets.dhall` simulates it in tests) | The operator (the password) |
+| **Root cluster** | Shamir | The operator only, via the `.age` unlock bundle decrypted by a memorized password stored nowhere persistent (`test-config.dhall` simulates it in tests) | The operator (the password) |
 | **Child cluster** | `seal "transit"` pointed at the **parent** cluster's Vault | Auto-unseals against the parent — no human, no local unseal keys | The **parent** cluster's Vault KV |
 
 The root cluster is the only tier a human ever unseals. Its Vault uses Shamir seal mode; its
@@ -51,7 +51,7 @@ unseal/recovery keys live only inside the host-side `.age` unlock bundle on reta
 (`.data/prodbox/vault-unlock-bundle.age`), and the only secret the operator memorizes is the
 bundle password (see [vault_doctrine.md § 6](./vault_doctrine.md#6-the-unlock-bundle)). The
 test harness simulates the operator at the unseal prompt by reading that password from
-`test-secrets.dhall`; there is no production path that stores or logs it.
+`test-config.dhall`; there is no production path that stores or logs it.
 
 A child cluster never holds its own unseal keys and never prompts a human. Its Vault is configured
 with Vault `seal "transit"` whose target is its parent cluster's Vault Transit mount. At startup

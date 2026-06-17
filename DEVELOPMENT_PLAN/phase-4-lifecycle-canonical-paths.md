@@ -133,6 +133,19 @@ the gateway or workload ConfigMaps trigger a Pod restart without operator action
 design — there is no separate "reload running daemons" step in the cascade. See
 [Sprint 2.21](phase-2-gateway-dns.md) for the implementation.
 
+**Independent Validation** (development_plan_standards.md Standard N): Phase 4 is
+validatable on its owned surface — the local-cluster lifecycle reconcile/delete paths,
+the Pulumi-decoupling and Python-removal surfaces, and the destructive Plan/Apply gates —
+without depending on any later phase. Lifecycle, refuse-path, cascade-order, and tag-sweep
+logic are exercised on the home/local substrate (with the per-run Pulumi state backend,
+AWS substrate stacks, and live tag-sweep against fakes or stubs where a later phase owns
+the live dependency) via `prodbox dev check`, `prodbox test unit`, and
+`prodbox test integration cli`/`lifecycle`. Per Standard O, each sprint's code-owned
+closure rests on those local validations; proofs that need live AWS spend, a deployed
+cluster, or an unsealed Vault are tracked as non-blocking `Live-proof: pending` notes and
+never gate this phase or an earlier one. AWS-substrate coverage of the same validations is
+orthogonal and tracked only in [substrates.md](substrates.md)'s parity table.
+
 ## Current Baseline In Worktree
 
 - `src/Prodbox/CLI/Rke2.hs` owns the supported local lifecycle.
@@ -309,8 +322,12 @@ local-cluster supported ownership from the public Pulumi path.
   on the lifecycle path rather than on the public `prodbox pulumi ...` surface.
 - The AWS substrate stack inputs are split by sensitivity: non-secret operator-CIDR and
   SSH-public-key values are synchronized through explicit Pulumi stack config written by the
-  Haskell infra modules, while AWS provider credentials stay in `prodbox-config.dhall` and are
-  projected into Pulumi through the Haskell-owned subprocess environment.
+  Haskell infra modules, while the generated operational `prodbox` IAM provider credential is
+  minted into Vault KV (`secret/gateway/gateway/aws`) and `prodbox-config.dhall` carries only a
+  `SecretRef.Vault` reference to it — never the plaintext key; the Haskell-owned subprocess
+  environment resolves that reference from Vault and projects the credential into Pulumi.
+  (Original framing read the provider credential from a stored `prodbox-config.dhall` block;
+  reframed per [Sprint 7.16](phase-7-aws-substrate-foundations.md).)
 - `src/Prodbox/Infra/AwsTestStack.hs` and `src/Prodbox/Infra/AwsEksTestStack.hs` retain stack
   snapshots under `.prodbox-state/aws-test/` and `.prodbox-state/aws-eks-test/`, and the
   HA-RKE2 validation SSH key stays under `.prodbox-state/aws-test/`; stale retained EC2 nodes are
@@ -602,11 +619,13 @@ per-run stacks stayed on MinIO, and both substrate-stack discovery paths reporte
 `Prodbox.Lifecycle.LiveResidue`. As of Sprint `7.14`, Pulumi checkpoints for both classes are
 superseded by the encrypted Model-B decrypt-to-scratch wrapper; the S3 bucket remains retained for
 public-edge TLS material and as an optional first-touch import/delete source for old `aws-ses`
-checkpoints. New `loadAdminAwsCredentials` helper in
-`src/Prodbox/Infra/LongLivedPulumiBackend.hs`; new `pulumiSesAdminBaseEnv` in
-`src/Prodbox/Infra/AwsSesStack.hs`; `ensureAwsSesStackResources` +
-`destroyAwsSesStackStatus` were rewritten to authenticate with
-`aws_admin_for_test_simulation.*`. The Sprint `4.10` raw export/import migration body was
+checkpoints. The historical `loadAdminAwsCredentials` helper in
+`src/Prodbox/Infra/LongLivedPulumiBackend.hs` and `pulumiSesAdminBaseEnv` in
+`src/Prodbox/Infra/AwsSesStack.hs` read a stored admin block; under the corrected model
+(scheduled as [Sprint 7.16](phase-7-aws-substrate-foundations.md)) `ensureAwsSesStackResources` +
+`destroyAwsSesStackStatus` acquire their elevated/admin credential through the interactive
+`SecretRef.Prompt` (the test harness simulating that prompt from `test-config.dhall`), not from a
+stored config block. The Sprint `4.10` raw export/import migration body was
 superseded by Sprint `7.14`'s encrypted-wrapper-backed first-touch migration command.
 `destroyLongLivedPulumiStateBucket` helper added to support Sprint 4.13's nuke step 5.
 **Implementation**: `prodbox-config-types.dhall` (already includes
@@ -665,9 +684,13 @@ per class.
   module; per-run stacks continue using `MinioBackend`. The per-run vs
   long-lived partition stays sourced from `perRunStackNames` /
   `longLivedStackNames`.
-- Long-lived stack operations authenticate with the admin credential block
-  (`aws_admin_for_test_simulation.*`) rather than the operational `aws.*` block. The operational
-  `prodbox` IAM user is no longer granted retained-bucket state access.
+- Long-lived stack operations acquire their elevated/admin credential through the interactive
+  `SecretRef.Prompt` (the test harness simulating that prompt from `test-config.dhall`'s
+  `aws_admin_for_test_simulation.*` fixture) rather than the operational `aws.*` credential. The
+  operational `prodbox` IAM user — minted into Vault KV and referenced from
+  `prodbox-config.dhall` only as a `SecretRef.Vault` value — is no longer granted retained-bucket
+  state access. (Original framing read a stored admin block; reframed per
+  [Sprint 7.16](phase-7-aws-substrate-foundations.md).)
 - `prodbox pulumi aws-ses-migrate-backend` was introduced as a TTY-gated migration command for the
   historical MinIO-to-S3 move. Sprint `7.14` later rewrote the compatibility path to run through
   `Prodbox.Pulumi.EncryptedBackend` and first-touch import/delete instead of raw export/import.
@@ -954,8 +977,10 @@ Blocked by Sprint `4.11`. Blocks Sprint `4.13`.
 **Status**: Done. CLI scaffold + parser + TTY guard + dry-run plan
 renderer landed May 21, 2026; the five-step orchestration body landed
 May 21, 2026 (composes the existing destroy commands in-process and
-resolves the Vault-backed refs declared under
-`aws_admin_for_test_simulation.*` as its admin credential source); live
+acquires its elevated/admin credential through the interactive `SecretRef.Prompt`, prompt-used
+once then discarded — the test harness simulating that prompt from `test-config.dhall`'s
+`aws_admin_for_test_simulation.*` fixture; reframed per
+[Sprint 7.16](phase-7-aws-substrate-foundations.md)); live
 end-to-end `nuke` closure completed June 3, 2026.
 **Implementation**: `src/Prodbox/CLI/Nuke.hs` (orchestration body
 landed; exports `runNukeCommand`, `confirmationLiteral`,
@@ -974,14 +999,18 @@ empties the versioned bucket before deletion);
 so nuke step 2 delegates to the actual cascade arm after the retained
 `aws-ses` destroy);
 `src/Prodbox/Infra/AwsSesStack.hs` (long-lived SES operations load
-raw Dhall config for non-secret settings, authenticate from the
-resolved `aws_admin_for_test_simulation.*` credential refs, and source
-the SES `awsRegion` stack config from the same admin block); `src/Prodbox/Lifecycle/LiveResidue.hs`
+raw Dhall config for non-secret settings and acquire their elevated/admin credential through the
+interactive `SecretRef.Prompt` — the harness simulating it from `test-config.dhall`'s
+`aws_admin_for_test_simulation.*` fixture — sourcing the SES `awsRegion` stack config from the
+non-secret topology; reframed per [Sprint 7.16](phase-7-aws-substrate-foundations.md));
+`src/Prodbox/Lifecycle/LiveResidue.hs`
 (treats `NoSuchBucket` from the long-lived Pulumi S3 backend as
 `ResidueAbsent` while preserving fail-closed behavior for ordinary S3
 errors); `src/Prodbox/Aws.hs` (exports `adminAwsEnvironment` so the
-orchestration body can reuse the Vault-backed admin credential across
-steps 3, 4, 5).
+orchestration body can reuse the prompt-acquired elevated/admin credential across
+steps 3, 4, 5; under the corrected model that credential comes from the interactive
+`SecretRef.Prompt`, harness-simulated from `test-config.dhall`, not from Vault or a stored
+config block — reframed per [Sprint 7.16](phase-7-aws-substrate-foundations.md)).
 **Docs to update**: [`../documents/engineering/lifecycle_reconciliation_doctrine.md`](../documents/engineering/lifecycle_reconciliation_doctrine.md),
 [`../documents/engineering/cli_command_surface.md`](../documents/engineering/cli_command_surface.md),
 [`../CLAUDE.md`](../CLAUDE.md), [`../documents/engineering/README.md`](../documents/engineering/README.md),
@@ -1037,10 +1066,11 @@ TTY refusal exercised via `nukeInteractiveGuard`. After
 typed-confirmation acceptance, the orchestration body now runs the
 five-step destructive sequence (`aws-ses` destroy while Vault/MinIO are
 still live → cascade arm → operational IAM teardown → postflight tag
-sweep → long-lived state-bucket destroy) in-process. The admin credential source is
-the `SecretRef.Vault` refs declared at
-`prodbox-config.dhall::aws_admin_for_test_simulation.*`, matching the long-lived `aws-ses` and
-state-bucket paths.
+sweep → long-lived state-bucket destroy) in-process. The elevated/admin credential is acquired
+through the interactive `SecretRef.Prompt` (prompt-used once then discarded; the test harness
+simulating that prompt from `test-config.dhall`'s `aws_admin_for_test_simulation.*` fixture),
+matching the long-lived `aws-ses` and state-bucket paths. There is no stored admin block in
+`prodbox-config.dhall`; reframed per [Sprint 7.16](phase-7-aws-substrate-foundations.md).
 
 2026-06-03 validation refresh: `./.build/prodbox nuke --dry-run`
 exits 0 and renders the expected five-step plan (`aws-ses` destroy,
@@ -1340,9 +1370,9 @@ cascade with live `aws-eks-test` + `aws-test` per-run stacks present
 the live EKS cluster's LoadBalancer / ALB / Delete-reclaim PVCs, and
 completed without `DependencyViolation` on subnet deletion (Sprint 4.17.b
 substrate-aware drain validated live). Every code-owned half landed
-May 23, 2026. (a) Credential-fallback half (May 23, 2026 a.m.) — each per-run `loadOperationalAwsCredentials` (in `AwsEksTestStack`, `AwsTestStack`, and transitively `AwsEksSubzoneStack` via re-import) falls back to `aws_admin_for_test_simulation.*` when operational `aws.*` is empty. (b) Cascade-order rewrite (May 23, 2026 p.m.) reorders `runNativeDeleteCascade` to the canonical sequence (confirm-MinIO via per-stack `<stack>ResidueStatus` → per-run Pulumi destroys for any `ResiduePresent` stack → K8s drain → RKE2 uninstall + cluster-substrate cleanup → postflight cluster-tag sweep) per [lifecycle_reconciliation_doctrine.md §5b](../documents/engineering/lifecycle_reconciliation_doctrine.md). (c) **Postflight tag sweep wiring (May 23, 2026 later session)** — `runCascadePostflightTagSweep` now loads admin credentials via `Prodbox.Infra.LongLivedPulumiBackend.loadAdminAwsCredentials`, builds the AWS env via `Prodbox.Aws.adminAwsEnvironment`, and calls `Prodbox.Lifecycle.TagSweep.discoverClusterTaggedAwsResources` with `tagSweepClusterName = Just awsEksCanonicalClusterName`; an empty result is reported as "clean (no cluster-tagged or prodbox-owned AWS residue)" and a non-empty result is reported with the full `renderTagSweepRefusal` block, while the cascade still returns `ExitSuccess` (best-effort per doctrine §6). When admin credentials are not configured (home-only operator with no AWS substrate), the sweep emits a single-line skip diagnostic explaining that no AWS resources could exist. 4 new unit tests in `test/unit/Main.hs::"Sprint 4.17 postflight tag sweep wiring"` cover the refusal-block ARN/tag rendering, the multi-resource bullet output, the empty-list path, and the `TagSweepInput` record shape. The remaining live operator validation closes the sprint: a real cascade run on this host (or a substrate-equivalent) that exercises the new order end-to-end against a live cluster with at least one per-run Pulumi stack alive.
-**Blocked by**: live operator step only (real cascade against a host with a live `aws-eks` stack); every code-owned deliverable is shipped.
-**Implementation**: `src/Prodbox/Infra/AwsEksTestStack.hs::loadOperationalAwsCredentials` and `src/Prodbox/Infra/AwsTestStack.hs::loadOperationalAwsCredentials` (May 23, 2026 a.m., in-memory operational→admin fallback). `src/Prodbox/CLI/Rke2.hs::runNativeDeleteCascade` (May 23, 2026 p.m., reordered to confirm-MinIO → per-run destroys → drain → uninstall → postflight sweep); new helpers `perRunCascadeInventory` (pure, exported, drives test coverage), `runCascadeDrainPhase`, `runCascadePostflightTagSweep`; cascade now consumes the typed `<stack>ResidueStatus` adapter from Sprint 4.16 and skips per-run destroys whose stack reports `ResidueAbsent` (or `ResidueUnreachable` per the per-run lifecycle class). 7 new unit tests in `test/unit/Main.hs::"Sprint 4.17 cascade per-run inventory"` cover all-absent / all-present / individual-stack-present / `ResidueUnreachable`-treated-as-absent permutations. **Tag sweep wiring (May 23, 2026 later session)**: `runCascadePostflightTagSweep` rewritten in `src/Prodbox/CLI/Rke2.hs` to invoke `Prodbox.Lifecycle.TagSweep.discoverClusterTaggedAwsResources` against the admin AWS environment when `aws_admin_for_test_simulation.*` is configured; new exports `awsEksCanonicalClusterName` on `Prodbox.Infra.AwsEksTestStack` so the cascade can build the canonical `kubernetes.io/cluster/<name>` filter; 4 new unit tests in `"Sprint 4.17 postflight tag sweep wiring"` lift `renderTagSweepRefusal` + `TagSweepInput` invariants out of the live-only path (test count 519/519, up from 515).
+May 23, 2026. (a) Credential-fallback half (May 23, 2026 a.m.) — each per-run `loadOperationalAwsCredentials` (in `AwsEksTestStack`, `AwsTestStack`, and transitively `AwsEksSubzoneStack` via re-import) falls back to the harness-simulated elevated/admin prompt (sourced from `test-config.dhall`'s `aws_admin_for_test_simulation.*` fixture; reframed per [Sprint 7.16](phase-7-aws-substrate-foundations.md)) when the operational `aws.*` `SecretRef.Vault` reference resolves empty. (b) Cascade-order rewrite (May 23, 2026 p.m.) reorders `runNativeDeleteCascade` to the canonical sequence (confirm-MinIO via per-stack `<stack>ResidueStatus` → per-run Pulumi destroys for any `ResiduePresent` stack → K8s drain → RKE2 uninstall + cluster-substrate cleanup → postflight cluster-tag sweep) per [lifecycle_reconciliation_doctrine.md §5b](../documents/engineering/lifecycle_reconciliation_doctrine.md). (c) **Postflight tag sweep wiring (May 23, 2026 later session)** — `runCascadePostflightTagSweep` now loads admin credentials via `Prodbox.Infra.LongLivedPulumiBackend.loadAdminAwsCredentials`, builds the AWS env via `Prodbox.Aws.adminAwsEnvironment`, and calls `Prodbox.Lifecycle.TagSweep.discoverClusterTaggedAwsResources` with `tagSweepClusterName = Just awsEksCanonicalClusterName`; an empty result is reported as "clean (no cluster-tagged or prodbox-owned AWS residue)" and a non-empty result is reported with the full `renderTagSweepRefusal` block, while the cascade still returns `ExitSuccess` (best-effort per doctrine §6). When no elevated/admin credential is supplied (home-only operator with no AWS substrate, and no harness-simulated `test-config.dhall` `aws_admin_for_test_simulation.*` fixture), the sweep emits a single-line skip diagnostic explaining that no AWS resources could exist. 4 new unit tests in `test/unit/Main.hs::"Sprint 4.17 postflight tag sweep wiring"` cover the refusal-block ARN/tag rendering, the multi-resource bullet output, the empty-list path, and the `TagSweepInput` record shape. The remaining live operator validation closes the sprint: a real cascade run on this host (or a substrate-equivalent) that exercises the new order end-to-end against a live cluster with at least one per-run Pulumi stack alive.
+**Blocked by**: none — every code-owned deliverable is shipped and locally validated. **Live-proof: closed** (development_plan_standards.md Standard O): the real-cascade-against-a-host-with-a-live-`aws-eks`-stack proof is a live-infrastructure axis that never gated this sprint's code-owned closure; it was exercised live on 2026-06-01 via `prodbox test all` retry 21.
+**Implementation**: `src/Prodbox/Infra/AwsEksTestStack.hs::loadOperationalAwsCredentials` and `src/Prodbox/Infra/AwsTestStack.hs::loadOperationalAwsCredentials` (May 23, 2026 a.m., in-memory operational→admin fallback). `src/Prodbox/CLI/Rke2.hs::runNativeDeleteCascade` (May 23, 2026 p.m., reordered to confirm-MinIO → per-run destroys → drain → uninstall → postflight sweep); new helpers `perRunCascadeInventory` (pure, exported, drives test coverage), `runCascadeDrainPhase`, `runCascadePostflightTagSweep`; cascade now consumes the typed `<stack>ResidueStatus` adapter from Sprint 4.16 and skips per-run destroys whose stack reports `ResidueAbsent` (or `ResidueUnreachable` per the per-run lifecycle class). 7 new unit tests in `test/unit/Main.hs::"Sprint 4.17 cascade per-run inventory"` cover all-absent / all-present / individual-stack-present / `ResidueUnreachable`-treated-as-absent permutations. **Tag sweep wiring (May 23, 2026 later session)**: `runCascadePostflightTagSweep` rewritten in `src/Prodbox/CLI/Rke2.hs` to invoke `Prodbox.Lifecycle.TagSweep.discoverClusterTaggedAwsResources` against the admin AWS environment when an elevated/admin credential is supplied (the harness simulating the prompt from `test-config.dhall`'s `aws_admin_for_test_simulation.*` fixture; reframed per [Sprint 7.16](phase-7-aws-substrate-foundations.md)); new exports `awsEksCanonicalClusterName` on `Prodbox.Infra.AwsEksTestStack` so the cascade can build the canonical `kubernetes.io/cluster/<name>` filter; 4 new unit tests in `"Sprint 4.17 postflight tag sweep wiring"` lift `renderTagSweepRefusal` + `TagSweepInput` invariants out of the live-only path (test count 519/519, up from 515).
 **Docs to update**: `documents/engineering/lifecycle_reconciliation_doctrine.md`, `documents/engineering/aws_integration_environment_doctrine.md`, `documents/engineering/cli_command_surface.md`
 
 ### Objective
@@ -1359,8 +1389,11 @@ for the authoritative cascade-order table.
 - **Credential-fallback half (Done May 23, 2026)**: each per-run
   `loadOperationalAwsCredentials` (in
   `src/Prodbox/Infra/AwsEksTestStack.hs` and
-  `src/Prodbox/Infra/AwsTestStack.hs`) tries operational `aws.*` first and
-  transparently falls back to `aws_admin_for_test_simulation.*` when
+  `src/Prodbox/Infra/AwsTestStack.hs`) tries the operational `aws.*` credential
+  (resolved from its `SecretRef.Vault` reference) first and transparently falls back to the
+  harness-simulated elevated/admin prompt (sourced from `test-config.dhall`'s
+  `aws_admin_for_test_simulation.*` fixture; reframed per
+  [Sprint 7.16](phase-7-aws-substrate-foundations.md)) when
   operational is empty. `src/Prodbox/Infra/AwsEksSubzoneStack.hs` inherits
   the new behavior because it re-imports `loadOperationalAwsCredentials`
   from `AwsEksTestStack`. No file mutation: the destroy paths only *read*
@@ -1391,10 +1424,13 @@ for the authoritative cascade-order table.
   / `runCascadePostflightTagSweep` are preserved as named phases. Sprint
   4.17.b adds substrate-aware kubeconfig handling to the drain phase.
 - **Optional ergonomic bracket (Remaining)**: an explicit
-  `Prodbox.Aws.withMaterializedOperationalCreds :: IO a -> IO a` that
-  *mutates* `aws.*` in `prodbox-config.dhall` for the body and restores
-  on exit. Only required if a future call site needs the mutating
-  semantics (today's in-memory fallback satisfies every destroy-path
+  `Prodbox.Aws.withMaterializedOperationalCreds :: IO a -> IO a` whose source under the
+  corrected model is the harness-simulated elevated/admin prompt (from `test-config.dhall`),
+  materializing operational `aws.*` into the in-memory environment for the body and clearing it
+  on exit — never writing a plaintext key into `prodbox-config.dhall` (the generated operational
+  `aws.*` is minted into Vault KV and referenced only as a `SecretRef.Vault` value; reframed per
+  [Sprint 7.16](phase-7-aws-substrate-foundations.md)). Only required if a future call site needs
+  the materializing semantics (today's in-memory fallback satisfies every destroy-path
   reader). Lands when the postflight tag sweep grows admin-credentials
   wiring.
 
@@ -1423,10 +1459,12 @@ for the authoritative cascade-order table.
 
 All code-owned work is shipped. The postflight tag sweep now invokes
 `Prodbox.Lifecycle.TagSweep.discoverClusterTaggedAwsResources` against
-the admin AWS environment when `aws_admin_for_test_simulation.*` is
-populated; the explicit `Prodbox.Aws.withMaterializedOperationalCreds`
+the admin AWS environment when an elevated/admin credential is supplied (the harness simulating
+the prompt from `test-config.dhall`'s `aws_admin_for_test_simulation.*` fixture; reframed per
+[Sprint 7.16](phase-7-aws-substrate-foundations.md)); the explicit
+`Prodbox.Aws.withMaterializedOperationalCreds`
 bracket remains an optional ergonomic future addition only if a call
-site needs the file-mutating semantics (today's in-memory fallback
+site needs the in-memory materializing semantics (today's in-memory fallback
 satisfies every destroy-path reader, and the postflight is a
 read-only AWS Resource Tagging API query). The remaining closure is
 the live operator step: bring up `aws-eks` via
@@ -2920,6 +2958,11 @@ yields only `objects/<hmac>.enc` at a constant count and no exists-vs-absent ora
   registry-name↔CLI-command section.
 - `documents/engineering/unit_testing_policy.md` - native lifecycle and aggregate validation
   ownership.
+- [`DEVELOPMENT_PLAN/development_plan_standards.md`](development_plan_standards.md) - SSoT for the
+  phase-independence doctrine (Standard N: Phase Independence — the phase-level Independent
+  Validation line above; Standard O: Code-Local vs Live-Infra Proof — the non-blocking
+  `Live-proof` axis used for the cascade live-closure proof in Sprint `4.17`); this phase defers
+  to those standards rather than restating the doctrine.
 - [`documents/engineering/vault_doctrine.md`](../documents/engineering/vault_doctrine.md) - SSoT
   for the fail-closed Vault-root secret-management model (Vault is the sole secrets/KMS/PKI root; the
   master-seed HMAC derivation model is retired, not extended); for Sprint `4.29` it records Vault
@@ -2951,7 +2994,20 @@ yields only `objects/<hmac>.enc` at a constant count and no exists-vs-absent ora
   reconcile that auto-unseals a child against its parent and cascades the fail-closed brick down the
   tree when a parent is sealed or unreachable; for Sprint `4.33` it records downstream
   kubeconfig/identity custodied in the parent's Vault KV (`secret/clusters/<child-id>/*`, never a
-  k8s Secret) and child-named namespaces using opaque IDs.
+  k8s Secret) and child-named namespaces using opaque IDs. For
+  [Sprint 7.16](phase-7-aws-substrate-foundations.md) the AWS-credential narrative across the
+  `aws-ses`, cascade, and `nuke` paths in this phase is reframed onto the corrected three-role
+  model — the ephemeral elevated/admin credential enters only through the interactive
+  `SecretRef.Prompt` (the harness simulating it from `test-config.dhall`'s
+  `aws_admin_for_test_simulation.*` fixture, never a stored block in `prodbox-config.dhall`), the
+  generated operational `prodbox` `aws.*` is minted into Vault KV after Vault is unsealed and
+  referenced from `prodbox-config.dhall` only as a `SecretRef.Vault` value, and no testing secret
+  lives in Vault (vault_doctrine
+  [§3](../documents/engineering/vault_doctrine.md), [§4](../documents/engineering/vault_doctrine.md),
+  [§13](../documents/engineering/vault_doctrine.md); the `aws_admin_for_test_simulation` block
+  specifics in [`aws_admin_credentials.md`](../documents/engineering/aws_admin_credentials.md); the
+  per-stack credential-class assignment in
+  [`lifecycle_reconciliation_doctrine.md` §2](../documents/engineering/lifecycle_reconciliation_doctrine.md)).
 
 **Product docs to create/update:**
 

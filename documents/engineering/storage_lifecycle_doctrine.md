@@ -169,9 +169,10 @@ must not restate the phase sequence independently. For storage context the order
 2. K8s drain phase (LoadBalancer Services, Ingresses, Delete-reclaim PVCs) so the
    in-cluster controllers are still alive to unwind their AWS-side state.
 3. Per-run Pulumi destroys against MinIO with the
-   `withMaterializedOperationalCreds` bracket filling `aws.*` from
-   `aws_admin_for_test_simulation.*` when empty — only after the drain so subnet / VPC /
-   cluster deletes have no live ENI / ALB / EBS dependency to trip on.
+   `withMaterializedOperationalCreds` bracket materializing the operational creds for the
+   run (in tests, via the harness-simulated admin prompt sourced from `test-config.dhall`)
+   — only after the drain so subnet / VPC / cluster deletes have no live ENI / ALB / EBS
+   dependency to trip on.
 4. RKE2 uninstall, removing the substrate and managed kubeconfig.
 5. Postflight cluster-tag sweep that fails the command with the leak list if anything
    cluster-tagged survives.

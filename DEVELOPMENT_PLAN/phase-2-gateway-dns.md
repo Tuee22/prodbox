@@ -106,6 +106,18 @@ parser branch from `src/Prodbox/Host.hs`, so the supported host doctrine closes 
 24.04's `System clock synchronized: yes/no` field. This phase does not own the Kubernetes Gateway
 API or Envoy Gateway public edge; those surfaces remain in Phases `1`, `3`, `4`, and `5`.
 
+**Independent Validation** (Standard N — see
+[development_plan_standards.md](development_plan_standards.md) Standards N/O): this phase is
+validatable in full on its owned surface — the Haskell gateway daemon runtime, peer transport,
+DNS-write-gate logic, claim/yield protocol, Orders-promotion coordination, secret-derivation
+endpoints, and the formal TLA+ entrypoint — with no dependency on any later phase. The code-owned
+surface closes on local validation (`prodbox check-code`, `prodbox test unit`,
+`prodbox test integration cli`/`env`, the `prodbox-daemon-lifecycle` stanza, and `prodbox tla-check`);
+where a validation would touch Route 53, a deployed cluster, an unsealed Vault, or running MinIO,
+it is exercised on the home/local substrate or against a stub, and the live-infrastructure exercise
+is tracked as a non-blocking `Live-proof: pending` note rather than as `⏸️ Blocked`. Live AWS or
+deployed-cluster proof never gates this phase's closure or reopens it.
+
 ## Current Baseline In Worktree
 
 - `src/Prodbox/Gateway.hs` owns the public `prodbox gateway start|status|config-gen` entry
@@ -1331,11 +1343,17 @@ on this host (without MinIO running): the daemon starts cleanly, logs
 `master_seed_unavailable`, and `curl /v1/secret/derive?context=test-context`
 returns the structured 503 response. The `/v1/secret/ensure-namespace` endpoint
 keeps its 503 placeholder pending the K8s-API materialization wiring.
-Sprint closes when the live exercise on this host succeeds end-to-end with a
-running MinIO: master seed materializes; `/v1/secret/derive` returns deterministic
-values across cluster wipes; `/v1/secret/ensure-namespace` writes the per-namespace
-data-bound Secrets via kubectl.
-**Blocked by**: 2.17, 2.18, 2.20, 2.21, 2.22
+The code-owned surface (the derive / ensure-namespace endpoints, master-seed
+acquisition, and the structured 503 paths) closes on local validation. The
+end-to-end exercise with a running MinIO — master seed materializes,
+`/v1/secret/derive` returns deterministic values across cluster wipes, and
+`/v1/secret/ensure-namespace` writes the per-namespace data-bound Secrets via
+kubectl — is a `Live-proof: pending` note (Standard O) that was confirmed by the
+2026-05-30 live closure and never gated this sprint's code-owned closure.
+**Blocked by**: 2.17, 2.18 (earlier-or-same-phase prerequisites). The Dhall
+settings module (2.20), the file-watch trigger (2.21), and the chart-side
+credential plumbing (2.22) are forward BUILD-order composition that this sprint
+integrates, not blocking validation gates (Standard N).
 **Implementation**: new `src/Prodbox/Secret/Derive.hs`, new `src/Prodbox/Secret/MasterSeed.hs`, `src/Prodbox/Gateway/Daemon.hs` HTTP server extensions, MinIO IAM bootstrap (Pulumi or one-shot Job), `charts/gateway/` Secret + Deployment volume mount additions, `Prodbox.Gateway.Client` extensions, `prodbox.cabal` dep addition
 **Docs to update**: `documents/engineering/secret_derivation_doctrine.md` (new SSoT — already created by Part 1 doctrine work), `documents/engineering/distributed_gateway_architecture.md`, `documents/engineering/storage_lifecycle_doctrine.md`, `documents/engineering/helm_chart_platform_doctrine.md`
 
@@ -2295,6 +2313,10 @@ parent's unsealed Vault KV.
 
 **Engineering docs to create/update:**
 
+- `DEVELOPMENT_PLAN/development_plan_standards.md` - the SSoT for Standards N (Phase Independence)
+  and O (Code-Local vs Live-Infra Proof) that this phase's Independent Validation line and
+  forward-only `Blocked by` framing defer to; the engineering docs link to those standards rather
+  than restating the doctrine.
 - `documents/engineering/cli_command_surface.md` - Haskell gateway command surface, including the
   distinct native `gateway-partition` validation contract, the `--config <path>`-only
   daemon-launching flag set after Sprint 2.24 removes `--log-level` / `--port` / `--foreground`, and

@@ -16,16 +16,31 @@
 
 ✅ **Done on owned surfaces** — Sprints `6.1`–`6.3` remain closed on the destructive rerun
 contract and zero-Python handoff surfaces. Per
-[development_plan_standards.md](development_plan_standards.md) standards rule E, Phase 6 stays
-`Done` on its owned scope while Phases `1`–`4` have reclosed after downstream adoption of
-[the engineering doctrine docs](../documents/engineering/README.md). Final handoff is reclaimed after the remaining
-reopened sprints moved to `Done`.
+[development_plan_standards.md](development_plan_standards.md) standards rules E and N, Phase 6
+stays `Done` on its owned scope independently of any other phase's completion state; it is never
+reopened or gated by an incomplete later phase. The doctrine-adoption rows once held against
+Phases `1`–`4` are closed, and final handoff closure follows from Phase 6's own owned-surface
+validation rather than from a later phase.
+
+**Independent Validation** (Standard N): Phase 6 is validatable on its owned surface — the
+destructive clean-room rerun contract, the zero-Python repository handoff, and the single-host
+handoff criteria — with no dependency on a later phase. The owned-surface proof runs on the
+home/local substrate through `prodbox test all`, `prodbox config show`, `prodbox config validate`,
+and `prodbox host public-edge`, plus `prodbox check-code` and `prodbox test unit` and the
+repository artifact/text-search closures; where the rerun composes deliverables owned by earlier
+phases it exercises them against the home/local substrate. AWS-substrate coverage of the rerun is
+tracked in [substrates.md](substrates.md)'s parity table, and any proof needing live
+infrastructure (live AWS spend, deployed cluster, unsealed Vault, operator-supplied credential) is
+a non-blocking `Live-proof: pending` note per Standard O rather than a gate on phase closure.
 
 ## Phase Summary
 
 This phase defines the clean-room and zero-Python handoff criteria for the Haskell-only
 repository. It owns the destructive rerun contract, the final zero-Python handoff criteria, and
-the dependency between those surfaces and the earlier lifecycle, gateway, chart, and AWS phases.
+the forward build-order composition of those surfaces over the earlier lifecycle, gateway, chart,
+and AWS phase deliverables. Build order is not a validation gate (Standard N): Phase 6's owned
+surfaces are validatable on the home/local substrate independently of any other phase's completion
+state, and an incomplete later phase never blocks, gates, or reopens this phase.
 The supported repository surfaces are Haskell-only, and the single-host doctrine is implemented.
 Sprint `6.1`, Sprint `6.2`, and Sprint `6.3` remain closed on their repository-owned rerun
 orchestration, zero-Python baseline, and single-host handoff surfaces. The cleanup ledger remains
@@ -120,9 +135,12 @@ None.
 
 ### Objective
 
-Close the rewrite with no supported-path Python artifacts left in the repository while leaving any
-surviving non-Python cleanup explicitly owned by its originating phase in the legacy ledger after
-the Phase `7` onboarding and AWS administration surfaces close on Haskell-only paths.
+Close the rewrite with no supported-path Python artifacts left in the repository, leaving any
+surviving non-Python cleanup explicitly owned by its originating phase in the legacy ledger. The
+zero-Python repository handoff is Phase 6's owned surface and is validatable now on the
+home/local substrate; the Haskell-only onboarding and AWS administration surfaces are owned by
+Phase `7` and tracked there, so Phase 6 closure follows from its own owned-surface validation and
+is never gated on Phase `7` completing.
 
 ### Deliverables
 
@@ -275,6 +293,9 @@ None.
 
 - Keep the final handoff criteria linked to
   [legacy-tracking-for-deletion.md](legacy-tracking-for-deletion.md).
+- Keep the phase-independence framing deferred to the SSoT,
+  [development_plan_standards.md](development_plan_standards.md) Standards N (Phase Independence)
+  and O (Code-Local vs Live-Infra Proof), rather than restating the doctrine here.
 
 ## Related Documents
 

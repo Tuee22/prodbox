@@ -18,13 +18,19 @@ The supported onboarding path is:
 prodbox config setup
 ```
 
-That flow expects one AWS account, one accessible Route 53 hosted zone, and one temporary admin
-credential set (historically called "elevated credential") that exists only long enough for
-`prodbox` to create the dedicated operational IAM user and write the steady-state `aws.*`
-section in `prodbox-config.dhall`.
+That flow expects one AWS account, one accessible Route 53 hosted zone, and one ephemeral
+elevated/admin credential set that the operator pastes at the interactive prompt
+(`SecretRef.Prompt`). That credential is held in memory for one command, used once to mint the
+dedicated least-privilege operational `prodbox` IAM identity, then discarded — it is never
+written to `prodbox-config.dhall`, never stored in Vault, and never persisted to disk. The
+generated operational `aws.*` credential is minted straight into Vault KV
+(`secret/gateway/gateway/aws`); `prodbox-config.dhall` carries only a `SecretRef.Vault`
+reference to it.
 
 The supported goal is full from-scratch bootstrap: `prodbox` can create the operational AWS
-credentials it needs once the operator supplies one temporary admin credential interactively.
+credentials it needs once the operator supplies one ephemeral elevated credential interactively
+at the prompt. See [vault_doctrine.md § 3](./vault_doctrine.md) for the `SecretRef` model and
+[§ 4](./vault_doctrine.md) for the config split.
 
 ---
 
@@ -49,8 +55,9 @@ Free Tier context relevant to `prodbox`:
 
 ## 3. Create One Temporary Admin Access Key
 
-`prodbox config setup` and the public `prodbox aws ...` command family need one temporary admin
-AWS credential set presented interactively so they can:
+`prodbox config setup` and the public `prodbox aws ...` command family need one ephemeral
+elevated/admin AWS credential set presented interactively at the prompt (`SecretRef.Prompt`) so
+they can:
 
 1. list AWS regions
 2. list Route 53 hosted zones
@@ -63,9 +70,10 @@ The simplest supported operator workflow is:
 1. Preferred path: open AWS console -> IAM -> Users -> your temporary admin user ->
    Security credentials -> Create access key.
 2. Paste the access key ID and secret access key into the `prodbox` prompts; include the session
-   token too if AWS gave you one.
+   token too if AWS gave you one. This is the only runtime path by which elevated/admin AWS power
+   enters `prodbox` — the prompted credential is held in memory, used once, then discarded.
 3. Keep the key only long enough to finish the interactive `prodbox` command you are running.
-4. Delete the key after `prodbox` has written its own operational `aws.*` credentials.
+4. Delete the key after `prodbox` has minted its own operational `aws.*` credential into Vault KV.
 
 ### 3.1 Two Credential Shapes — When To Paste A Session Token
 
@@ -89,9 +97,13 @@ prompt entirely, `ASIA…` makes the session-token prompt required (hidden input
 other prefix falls back to an optional prompt with an explanatory hint. The operator no
 longer has to remember when to leave the field blank.
 
-Do not treat `aws_admin_for_test_simulation.*` as the ordinary operator path for this workflow.
-That section is reserved for suite-driven destructive validation and long-lived teardown /
-provisioning flows (`aws-ses` and `prodbox nuke`) that need the same admin credential class. The
+`aws_admin_for_test_simulation.*` is **not** an operator path at all. It is a test-harness-only
+fixture living in `test-config.dhall` (`TestPlaintext` class) whose sole purpose is to drive the
+UI — feeding the same interactive prompts a real operator answers so the harness can exercise
+admin-credentialed flows non-interactively. Real operators **always** paste the ephemeral
+elevated credential at the interactive prompt described in section 3 above; there is no
+production path that reads a stored admin credential. The fixture is never imported by
+`prodbox-config.dhall`, never read by any production binary, and never stored in Vault. The
 canonical rules live in
 [aws_admin_credentials.md](./aws_admin_credentials.md).
 
@@ -117,7 +129,7 @@ create the hosted zone for you.
 
 ## 5. Run The Supported Setup Flow
 
-Once the account, hosted zone, and temporary admin key are ready:
+Once the account, hosted zone, and ephemeral elevated/admin key are ready:
 
 ```bash
 prodbox config setup
@@ -129,11 +141,18 @@ The wizard walks through:
 2. hosted-zone selection from live AWS data
 3. FQDN and deployment defaults
 4. ACME provider selection
-5. dedicated IAM user creation
-6. `prodbox-config.dhall` write and direct-Dhall validation
+5. dedicated least-privilege `prodbox` IAM identity creation — performed after Vault is set up and
+   unsealed, using the prompted elevated credential, with the generated `aws.*` credential minted
+   straight into Vault KV (`secret/gateway/gateway/aws`)
+6. `prodbox-config.dhall` write (carrying only a `SecretRef.Vault` reference to the generated
+   `aws.*` credential) and direct-Dhall validation
 
-The supported public setup path prompts for the temporary admin credential when needed. It does
-not require pre-populating `aws_admin_for_test_simulation.*`.
+The supported public setup path prompts for the ephemeral elevated credential when needed
+(`SecretRef.Prompt`). The credential-supplying interaction happens after Vault is unsealed, and
+the moment the generated `prodbox` IAM credential exists it is written straight into Vault — it
+never transits cleartext storage. This path does not read any stored admin credential;
+`aws_admin_for_test_simulation.*` is a `test-config.dhall` fixture used only by the test harness
+to simulate this prompt.
 
 ---
 
@@ -141,13 +160,16 @@ not require pre-populating `aws_admin_for_test_simulation.*`.
 
 After the wizard succeeds:
 
-1. delete the temporary admin access key you used for setup
-2. keep the generated `aws.*` operational credentials in `prodbox-config.dhall`
-3. leave `aws_admin_for_test_simulation.*` empty unless you are intentionally preparing the native
-   IAM lifecycle test harness, another repository test that simulates the interactive
-   temporary-admin-credential prompt, a long-lived stack operation, or `prodbox nuke`
+1. delete the ephemeral elevated/admin access key you pasted at the prompt for setup
+2. the generated `aws.*` operational credential lives in Vault KV (`secret/gateway/gateway/aws`);
+   `prodbox-config.dhall` carries only a `SecretRef.Vault` reference to it, never the plaintext key
+3. `aws_admin_for_test_simulation.*` is not a `prodbox-config.dhall` field — it lives in
+   `test-config.dhall` as a `TestPlaintext` fixture for the native IAM lifecycle test harness (and
+   other repository tests that simulate the interactive elevated-credential prompt), never in
+   production config and never in Vault
 
-Normal `prodbox` runtime uses only the operational `aws.*` section.
+Normal `prodbox` runtime resolves the operational `aws.*` section from Vault via its
+`SecretRef.Vault` reference.
 
 ## Related Documents
 

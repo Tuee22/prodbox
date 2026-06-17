@@ -18,7 +18,19 @@
 
 ## Phase Status
 
-⏸️ **Blocked 2026-06-16 after code-owned landing** — Sprint `7.14` has landed the code-owned
+**Independent Validation**: Phase 7 is validatable on its owned surface — the AWS substrate
+foundations, the standalone `prodbox aws ...` command surface, the substrate-provisioning code,
+and the decrypt-to-scratch Pulumi interposition — independently of any later phase, per
+[development_plan_standards.md → N. Phase Independence](development_plan_standards.md#n-phase-independence-no-backward-blocking).
+Code-owned closure is proven locally (`prodbox dev check`, `prodbox test unit`,
+`prodbox test integration cli`/`env`) plus live home-substrate reconcile; validations that touch a
+later-phase dependency are exercised against the home/local substrate or a fixture. Proof that
+needs live AWS spend, an unsealed Vault, or an operator-supplied credential is tracked as a
+non-blocking `Live-proof: pending` note per
+[development_plan_standards.md → O. Code-Local vs Live-Infra Proof](development_plan_standards.md#o-code-local-completion-vs-live-infra-proof);
+it never gates this phase or an earlier one.
+
+✅ **Sprint `7.14` Done (code-owned surface) 2026-06-16** — Sprint `7.14` has landed the
 decrypt-to-scratch Pulumi
 interposition over the Sprint `4.30` Model-B object-store. `Prodbox.Pulumi.EncryptedBackend`
 hydrates checkpoints into a RAM-backed `file://` backend, strips raw MinIO/S3 backend credentials
@@ -32,13 +44,17 @@ legacy raw MinIO / long-lived S3 checkpoints when the encrypted object is absent
 legacy stack only after the encrypted store/delete and Pulumi action succeed. Pulumi provider
 credentials now resolve through `Prodbox.Infra.AwsProviderCredentials`, which requires the Vault KV
 object at `secret/gateway/gateway/aws` and does not fall back to raw config credentials. The root
-AWS credential schema now uses mandatory Vault KV `SecretRef.Vault` references for `aws.*` and
-`aws_admin_for_test_simulation.*`; setup/config-setup write generated operational keys to
-`secret/gateway/gateway/aws`, and teardown clears that Vault object without writing provider
-secrets to `prodbox-config.dhall`. Honest status:
-⏸️ Blocked, not Done. Remaining Sprint `7.14` work is live first-touch migration/deletion proof and
-live sealed-Vault opacity proof across both substrates, blocked until Vault contains
-`secret/aws/admin-for-test-simulation` for the AWS IAM harness preflight. Raw backend environment is now confined to
+AWS credential schema now uses a mandatory Vault KV `SecretRef.Vault` reference for the generated
+operational `aws.*` (the `aws_admin_for_test_simulation.*` test fixture is not a production-config
+section and is being moved to `test-config.dhall` by Sprint `7.16`); setup/config-setup write
+generated operational keys to `secret/gateway/gateway/aws`, and teardown clears that Vault object
+without writing provider secrets to `prodbox-config.dhall`. Code-owned closure is proven locally
+(full unit 950/950, `test integration cli`/`env` 38/38, docs check/lint 0, `dev check` 0) plus a
+live home-substrate reconcile. **Live-proof**: pending — the live AWS first-touch
+migration/deletion proof and the both-substrate sealed-Vault opacity proof are tracked as a
+non-blocking live-infra note (Standard O); they consume the `aws_admin_for_test_simulation.*`
+TestPlaintext fixture that Sprint `7.16` lands in `test-config.dhall` (the fixture is never a Vault
+object). Raw backend environment is now confined to
 `LegacyPulumiBackend` first-touch import/delete; supported Pulumi actions receive provider-only
 input before the scratch `file://` rewrite. The
 `aws-ses migrate-backend` compatibility command now drives the encrypted wrapper instead of raw
@@ -47,23 +63,29 @@ removed after live proof. See
 [vault_doctrine.md §9/§10](../documents/engineering/vault_doctrine.md) and
 [legacy ledger](legacy-tracking-for-deletion.md).
 
-🔄 **Reopened 2026-06-14** — the Vault-root finalization (narrated in
+🔄 **Reopened 2026-06-14 to expand Phase 7's own owned surface** — the Vault-root finalization
+(narrated in
 [README.md → Closure Status](README.md) per rule A) makes Vault the sole, finalized
 secrets / KMS / PKI root for the AWS substrate. Sprints `7.14` and `7.15` are reframed to own
-that finalized end state: the master-seed HMAC-derivation model is **retired** (not extended),
+that finalized end state on Phase 7's own surface: the master-seed HMAC-derivation model is
+**retired** (not extended),
 `FileSecret` / Secret-mounted plaintext Dhall is **removed** (not bridged), and a sealed Vault
-fails every AWS-substrate Pulumi op and TLS issuance **closed**. Sprint `7.14` (⏸️ Blocked) owns
+fails every AWS-substrate Pulumi op and TLS issuance **closed**. Sprint `7.14` (✅ Done on its
+code-owned surface) owns
 Vault-Transit-enveloped Pulumi backend objects and prodbox-created AWS identities as Vault KV
 `SecretRef.Vault` references; its decrypt-to-scratch wrapper/read path has landed, first-touch raw
 migration is code-owned, and the AWS credential schema migration is landed. Sprint `7.15`
 (📋 Planned) owns ACME EAB and TLS private-key material as the Vault-protected sole authority. Both
-depend on the cross-phase Vault platform and transit
-seal surfaces: the `1.35`–`1.37`, `3.17`, `3.18`, `3.20`, `4.29`, and `4.32` foundations have
+compose the cross-phase Vault platform and transit
+seal surfaces (forward build order, not a validation gate): the `1.35`–`1.37`, `3.17`, `3.18`,
+`3.20`, `4.29`, and `4.32` foundations have
 landed, including chart-secret Vault auth, Kubernetes-auth config, generated/static seed bootstrap,
 the structural sealed-startup proof, transit-seal hierarchy, and federated lifecycle cascade. Honest
-status: ⏸️ Blocked — the
-Vault-root AWS-substrate implementation
-is not yet live-validated because the required admin credential Vault object is absent. All earlier Phase 7 sprints
+status: the Vault-root AWS-substrate implementation is code-Done on its owned surface; its
+live-AWS validation is a non-blocking `Live-proof: pending` note (Standard O) that consumes the
+`aws_admin_for_test_simulation.*` test-simulation
+fixture (a TestPlaintext fixture in `test-config.dhall` per Sprint `7.16`, never a Vault
+object). All earlier Phase 7 sprints
 (`7.1`–`7.13`) stay `Done` on their owned scope. See
 [vault_doctrine.md](../documents/engineering/vault_doctrine.md),
 [cluster_federation_doctrine.md](../documents/engineering/cluster_federation_doctrine.md), and the
@@ -168,11 +190,16 @@ sequential, separately validatable sessions:
 This phase owns AWS substrate foundations:
 
 1. **AWS substrate foundations (historical, ✅ Done)** — interactive config authoring, policy
-   generation, IAM user management, service-quota automation, and the stored
-   temporary-admin-credential harness. The implemented credential boundary is Haskell-owned:
-   public onboarding and public AWS administration prompt for temporary admin credentials, while
-   stored `aws_admin_for_test_simulation.*` is reserved for suite-driven destructive validation
-   plus long-lived stack / `prodbox nuke` flows. The shared suite-level IAM harness keeps the
+   generation, IAM user management, service-quota automation, and the test-simulation
+   admin-credential harness. The implemented credential boundary is Haskell-owned: there is exactly
+   one runtime path by which elevated/admin AWS power enters prodbox — the interactive
+   `SecretRef.Prompt`; public onboarding and public AWS administration prompt for one ephemeral
+   elevated credential (prompt-use-discard). The test-harness fixture `aws_admin_for_test_simulation.*`
+   is a TestPlaintext fixture whose sole purpose is to simulate that prompt non-interactively for
+   suite-driven destructive validation plus long-lived stack / `prodbox nuke` flows. Sprint `7.16`
+   moves that fixture out of `prodbox-config.dhall` into a test-harness-only `test-config.dhall` and
+   unifies all admin acquisition on the prompt; the fixture is never read by any production binary
+   and is never stored in Vault. The shared suite-level IAM harness keeps the
    aggregate Pulumi-backend proof behind the visible local runbook and closes the supported
    aggregate validation path on Haskell-owned AWS-user and config cleanup. Sprint `7.4` is
    closed on the single-host onboarding and placeholder-domain removal doctrine for
@@ -208,8 +235,10 @@ subdomain, capture bucket, and the IAM policy granting the runner SES send and S
 - `src/Prodbox/TestPlan.hs` and `src/Prodbox/EffectInterpreter.hs` now gate `aws-iam` on an
   explicit native IAM harness readiness check before the validation body runs. The retired
   non-test `aws_admin_for_test_simulation.*` recovery path is removed; later Phase 4 work
-  deliberately reuses the same stored admin block for long-lived stack / `prodbox nuke`
-  teardown flows.
+  reuses the same test-simulation fixture to drive the interactive admin prompt for long-lived
+  stack / `prodbox nuke` teardown flows. (Sprint `7.16` moves that fixture to `test-config.dhall`
+  and unifies the runtime path on the interactive `SecretRef.Prompt`, which the harness simulates
+  from `test-config.dhall`.)
 - `src/Prodbox/TestPlan.hs` already routes `prodbox test integration aws-iam`, targeted
   `prodbox test integration <name> --substrate aws` validations,
   `prodbox test integration all`, and `prodbox test all` through the same managed IAM harness
@@ -343,11 +372,15 @@ or operational `aws.*` credentials behind.
   provisions fresh operational credentials.
 - Real IAM setup and teardown validation closes on the Haskell stack without leaving a dedicated
   `prodbox` IAM user or operational `aws.*` credentials behind.
-- Stored `aws_admin_for_test_simulation.*` remains the single exception to the
-  no-stored-admin-credentials rule and is reserved for suite-driven destructive validation plus
-  long-lived stack / `prodbox nuke` flows.
-- The native IAM validation harness, long-lived stack operations, and `prodbox nuke` are the
-  supported runtime consumers of `aws_admin_for_test_simulation.*`.
+- The `aws_admin_for_test_simulation.*` test-simulation fixture is reserved for suite-driven
+  destructive validation plus simulating the admin prompt that long-lived stack / `prodbox nuke`
+  flows present. (Sprint `7.16` supersedes the historical placement of this fixture inside
+  `prodbox-config.dhall`: it is a TestPlaintext fixture that lives only in `test-config.dhall`,
+  is never read by a production binary, and is never stored in Vault; the runtime admin path is the
+  interactive `SecretRef.Prompt`, which the harness simulates from `test-config.dhall`.)
+- The native IAM validation harness, and the harness-simulated runs of long-lived stack operations
+  and `prodbox nuke`, are the consumers of the `aws_admin_for_test_simulation.*` fixture (real
+  operator runs of those flows prompt for the ephemeral elevated credential instead).
 - The shared harness simulates the interactive public CLI workflow by materializing operational
   `aws.*` only from `aws_admin_for_test_simulation.*` for the duration of the validation run.
 - The shared harness clears operational `aws.*` from `prodbox-config.dhall` before returning.
@@ -460,8 +493,14 @@ None.
 **Status**: Active (`7.5.a` ✅ Done May 17, 2026; `7.5.b` ✅ Done May 17, 2026; `7.5.b.iii`
 ✅ Done May 18, 2026; `7.5.c` 🔄 Active — child Sprint `7.5.c.v` carries the only remaining
 operator-driven live AWS-substrate canonical-suite re-run)
-**Blocked by**: Existing AWS substrate foundations (Sprints `7.1`–`7.4`); Sprint `5.X` if the
-canonical-suite content gains new prerequisites that need cross-substrate parity
+**Blocked by**: Existing AWS substrate foundations (Sprints `7.1`–`7.4`)
+
+This sprint's owned surface is the AWS substrate's provisioning side, validatable now against
+its own surface independently of any later phase (Standard N). New canonical-suite prerequisites
+introduced by Phase 5 are not a backward block on this phase: AWS-substrate *coverage* of any
+suite-content validation is tracked only in
+[substrates.md](substrates.md)'s parity table (Standard M / Standard N principle 4), never as a
+block that reopens or gates this sprint.
 
 The May 17, 2026 scoping review split this sprint into three sequentially-validatable
 sub-sprints. The overall objective and deliverables remain the same; the split exists so each
@@ -1002,8 +1041,15 @@ None. Code reconciliation is owned by Sprint `7.5.c`.
 ## Sprint 7.5.c: Live AWS-Substrate Canonical-Suite Validation 🔄
 
 **Status**: Active (sub-sprints `7.5.c.i` ✅, `7.5.c.ii` ✅, `7.5.c.iii` ✅, `7.5.c.iv` ✅,
-`7.5.c.v.b` ✅ all Done May 19, 2026; child Sprint `7.5.c.v` 🔄 Active — operator-driven
-live AWS-substrate canonical-suite re-run remains the only remaining work)
+`7.5.c.v.b` ✅ all Done May 19, 2026; child Sprint `7.5.c.v` 🔄 Active — the operator-driven
+live AWS-substrate canonical-suite re-run is the only remaining work, tracked as a non-blocking
+`Live-proof: pending` note on this phase's own substrate-provisioning surface per
+[development_plan_standards.md → O. Code-Local vs Live-Infra Proof](development_plan_standards.md#o-code-local-completion-vs-live-infra-proof);
+the code-owned surface is Done and this work never blocks an earlier phase)
+**Independent Validation**: The Phase 7-owned substrate-provisioning surface is validatable on its
+own surface now (`prodbox check-code`, `prodbox test unit`, the substrate-platform install unit
+ordering tests); the remaining proof needs live AWS spend and is a `Live-proof: pending` note
+(Standard O), not a block.
 **Implementation**: `src/Prodbox/TestValidation.hs`, `src/Prodbox/Infra/AwsEksTestStack.hs`,
 `src/Prodbox/Infra/AwsTestStack.hs`, `src/Prodbox/Lib/AwsSubstratePlatform.hs`,
 `src/Prodbox/CLI/Charts.hs`, `src/Prodbox/PublicEdge.hs`,
@@ -1071,20 +1117,26 @@ not driven by `prodbox test all`, so the Sprint `7.6` auto-managed setup + teard
 contract does not apply; the operator owns Steps `0`, `0.5`, and the symmetric closing
 teardown step explicitly.
 
-0. **AWS admin credentials populated.** Operational `prodbox.aws.*` credentials must be
-   present in `prodbox-config.dhall` before any other step. Two supported population
-   paths exist:
+0. **AWS admin credentials populated.** The generated operational `prodbox.aws.*`
+   credential must be minted into Vault KV (`secret/gateway/gateway/aws`) before any
+   other step; `prodbox-config.dhall` carries only a `SecretRef.Vault` reference to it,
+   never the plaintext key. Because the credential is minted into Vault, this step runs
+   after Vault is set up and unsealed. Two supported population paths exist:
    - **Public path** (recommended for this standalone workflow):
-     `prodbox aws setup`. Interactive — prompts for one temporary admin credential
-     pasted from the AWS console, derives the dedicated `prodbox` IAM user via
-     STS-federated session, writes operational `aws.*` to `prodbox-config.dhall`. The
-     temporary admin credential is not persisted.
-   - **Config-backed admin path** (reserved for runs driven by
+     `prodbox aws setup`. Interactive — prompts (via `SecretRef.Prompt`) for one
+     ephemeral elevated admin credential pasted from the AWS console, derives the
+     dedicated least-privilege `prodbox` IAM identity via STS-federated session, and
+     mints the generated operational `aws.*` straight into Vault KV (Sprint `7.16`).
+     The prompted elevated credential is held in memory for the one command and
+     discarded — never written to `prodbox-config.dhall`, never stored in Vault.
+   - **Harness-simulated prompt path** (reserved for runs driven by
      `prodbox test integration aws-iam`, `prodbox test all`, or later long-lived teardown /
-     `prodbox nuke` flows):
-     `aws_admin_for_test_simulation.*` populated in `prodbox-config.dhall`; consumed
-     non-interactively by `runAwsIamHarnessSetup` to simulate the prompt input. The
-     same provision-derive-write contract runs.
+     `prodbox nuke` flows): the `aws_admin_for_test_simulation.*` TestPlaintext fixture in
+     `test-config.dhall` (a test-harness-only file, never imported by `prodbox-config.dhall`,
+     never stored in Vault) is consumed non-interactively by `runAwsIamHarnessSetup` to simulate
+     the operator typing the ephemeral elevated credential at the interactive `SecretRef.Prompt`.
+     The same provision-derive contract runs; the generated operational `aws.*` is minted into
+     Vault KV (Sprint `7.16`).
 
    Per Sprint `7.3`, both paths clear `aws.*` on teardown. Because the standalone
    Sprint `7.5.c.v` workflow is not wrapped by the `prodbox test all` setup/teardown
@@ -1907,7 +1959,8 @@ long-lived shared infrastructure (`aws-ses`), which protects
 operator-driven teardowns from stranding `aws.*`. Applied to
 `runAwsIamHarnessSetup`'s preflight, however, that protection is
 misapplied: the preflight is a transient `aws.*` refresh paired with
-an immediate re-materialization from `aws_admin_for_test_simulation.*`
+an immediate re-materialization driven by the `aws_admin_for_test_simulation.*`
+test fixture (Sprint `7.16` sources it from `test-config.dhall`)
 in the same function call, so neither per-run nor long-lived residue
 strands anything across that gap. Refusing on `aws-ses` blocked every
 test-harness run because `aws-ses` is the intended steady state.
@@ -1927,7 +1980,10 @@ test-harness run because `aws-ses` is the intended steady state.
   at end-of-run. **(Superseded by Sprint 7.9: that premise was a
   pre-Sprint-4.10 artifact — `aws-ses` is admin-credentialed post-4.10,
   so the postflight was switched to `BypassAllResidueForHarnessRefresh`
-  to stop stranding the operational IAM user.)**
+  to stop stranding the operational IAM user.)** (Sprint `7.16` supersedes the
+  stored-admin-in-`prodbox-config.dhall` model: real `aws-ses` ops prompt for the
+  ephemeral elevated credential via the interactive `SecretRef.Prompt`, which the
+  harness simulates from the `test-config.dhall` fixture.)
 - Two new unit tests in
   `test/unit/Main.hs::"Sprint 7.7 applyAwsTeardown residue policy"`:
   Scenario M (`aws-ses` live only, policy proceeds) and Scenario N
@@ -2582,7 +2638,11 @@ IAM user — the opposite of the leak-free goal.
    Sprint `7.14` keeps main `aws-ses` operations admin-credentialed but runs them through
    `pulumiSesProviderBaseEnv` + `Prodbox.Pulumi.EncryptedBackend`; `pulumiSesAdminBaseEnv` remains
    only as the optional first-touch import/delete source for old long-lived S3 checkpoints. Clearing
-   operational `aws.*` can no longer strand `aws-ses`.
+   operational `aws.*` can no longer strand `aws-ses`. (Sprint `7.16` supersedes the
+   stored-admin-in-`prodbox-config.dhall` model that this dated note assumes: real `aws-ses` ops
+   acquire the ephemeral elevated credential through the interactive `SecretRef.Prompt`, and the
+   harness simulates that prompt from the `test-config.dhall` fixture — there is no production
+   config-backed admin path.)
 3. **Sprint 7.5.c.v.c (May 20, 2026)** fixed the *preflight* `runAwsIamHarnessSetup` the same
    way (switched it to the new `BypassAllResidueForHarnessRefresh` constructor) but deliberately
    left the *postflight* `runAwsIamHarnessTeardown` on `BypassPerRunResidueOnly` "because at
@@ -2958,11 +3018,21 @@ None — closed 2026-06-09. The issuer rename, the route-ownership doctrine corr
 issuer-rename-on-rebuild (`rke2 delete --cascade` + reconcile, restoring the retained cert under the
 new name) and the AWS-substrate `test all` exercise are operator-driven.
 
-## Sprint 7.14: Decrypt-to-Scratch Pulumi Interposition over the Model-B Object-Store ⏸️
+## Sprint 7.14: Decrypt-to-Scratch Pulumi Interposition over the Model-B Object-Store ✅
 
-**Status**: Blocked (2026-06-16, code-owned wrapper/read/migration/provider path landed; live AWS proof cannot start)
+**Status**: Done (code-owned surface) (2026-06-16, wrapper/read/migration/provider path landed and
+locally validated)
 **Implementation**: `src/Prodbox/Pulumi/EncryptedBackend.hs`, `src/Prodbox/Infra/StackOutputs.hs`, `src/Prodbox/Lifecycle/LiveResidue.hs`, `src/Prodbox/Infra/AwsEksTestStack.hs`, `src/Prodbox/Infra/AwsTestStack.hs`, `src/Prodbox/Infra/AwsEksSubzoneStack.hs`, `src/Prodbox/Infra/AwsSesStack.hs`, `src/Prodbox/Infra/LongLivedPulumiBackend.hs`, `src/Prodbox/Aws.hs`
-**Blocked by**: Missing Vault KV object `secret/aws/admin-for-test-simulation`; `prodbox test integration aws-eks --substrate aws` stops in IAM-harness preflight before any AWS provisioning
+**Live-proof**: pending — the live AWS first-touch migration/deletion proof and the both-substrate
+sealed-Vault opacity proof are tracked as a non-blocking live-infra note per
+[development_plan_standards.md → O. Code-Local vs Live-Infra Proof](development_plan_standards.md#o-code-local-completion-vs-live-infra-proof).
+They consume the `aws_admin_for_test_simulation.*` TestPlaintext fixture that Sprint `7.16` lands
+in `test-config.dhall` (the fixture is never a Vault object), and never gate this sprint's
+code-owned closure or any earlier phase.
+**Independent Validation**: Validatable on this sprint's owned surface now — the wrapper, read,
+migration, and provider-resolution paths build and pass local validation (`dev check`, `test unit`,
+`test integration cli`/`env`) plus the live home-substrate reconcile recorded below; the AWS
+first-touch and sealed-opacity proofs are the live-infra axis (Standard O), not a block.
 **Docs to update**: `documents/engineering/vault_doctrine.md`, `documents/engineering/aws_admin_credentials.md`, `documents/engineering/aws_integration_environment_doctrine.md`
 
 ### Objective
@@ -3067,28 +3137,39 @@ opaque and fails every `aws stack` op closed.
   working, MetalLB/Envoy/cert-manager/Percona reconciled, gateway MinIO bootstrap passing, and the
   gateway release cleanly skipped because operational `aws.*` was absent from Vault. Follow-up
   inspection showed no gateway Helm release and no CrashLoopBackOff pods.
-- Live AWS-substrate validation attempts (2026-06-16): `./.build/prodbox test integration aws-eks
-  --substrate aws` stopped in the IAM harness preflight before provisioning because Vault does not
-  contain `secret/aws/admin-for-test-simulation`. The harness reported that
+- Live AWS-substrate validation attempts (2026-06-16; live-proof axis only, non-blocking per
+  Standard O — the code-owned surface is already Done): `./.build/prodbox test integration aws-eks
+  --substrate aws` stopped in the IAM harness preflight before provisioning because the harness
+  could not obtain a test-simulation admin credential. The harness reported that
   `aws_admin_for_test_simulation.access_key_id`, `secret_access_key`, and `region` must be present
-  as Vault-backed admin references before it can mint temporary operational credentials. No AWS
-  stack reconcile or AWS resource provisioning began in this attempt.
-- Required live closure validation still pending: a MinIO dump of the Pulumi backend while Vault is
+  before it can mint temporary operational credentials. No AWS stack reconcile or AWS resource
+  provisioning began in this attempt. **(Sprint `7.16` supersedes the dated assumption that this
+  fixture is sourced from Vault: it is a TestPlaintext fixture that lives only in `test-config.dhall`
+  — none of our testing secrets live in Vault — and the harness reads it from there to simulate the
+  operator typing the ephemeral elevated credential at the interactive `SecretRef.Prompt`.)**
+- Live-proof (pending, non-blocking per Standard O): a MinIO dump of the Pulumi backend while Vault
+  is
   sealed reveals only opaque `objects/<hmac>.enc` ciphertext — no `aws-eks` / stack-name key, no
   resource names, no account IDs, no topology — for **both** per-run and `aws-ses` backends.
-- Required live closure validation still pending: sealed Vault blocks
+- Live-proof (pending, non-blocking per Standard O): sealed Vault blocks
   `prodbox aws stack <stack> reconcile` / `destroy` with a clear safe error before any Pulumi op
   starts, and a host-disk walk of `.data/prodbox/minio/0` mid-run shows only opaque ciphertext while
   the decrypted checkpoint lives only in RAM-backed scratch.
 
 ### Remaining Work
 
+This sprint is Done on its code-owned surface; everything below is the non-blocking
+`Live-proof: pending` axis (Standard O), not a block.
+
 - Live-verify first-touch migration/deletion for old empty-passphrase / raw MinIO checkpoints and
   the former `aws-ses` long-lived S3 backend across both substrates, including a host-disk proof
   that no plaintext raw checkpoint survives after the encrypted migration.
-- Populate `secret/aws/admin-for-test-simulation` in Vault on this host, then rerun the targeted
-  AWS harness proof so the live first-touch/deletion and sealed-opacity checks can reach actual AWS
-  stack operations.
+- Live-proof forward ordering with Sprint `7.16`: `7.16`'s only dependency is this sprint's landed
+  code, so `7.16` is ready (📋 Planned) now; once `7.16` lands the
+  `aws_admin_for_test_simulation.*` TestPlaintext fixture in `test-config.dhall` (the fixture is
+  never stored in Vault), this sprint's live first-touch/deletion and sealed-opacity proofs consume
+  that fixture to reach actual AWS stack operations. This is a one-directional live-proof
+  consumption, not a mutual block.
 - Decide whether to remove the now-wrapper-backed
   `prodbox aws stack aws-ses migrate-backend` compatibility alias after live migration proof. It no
   longer performs raw `pulumi stack export` / `pulumi stack import` between MinIO and long-lived S3.
@@ -3131,7 +3212,100 @@ contract protects is Vault-owned — there is no plaintext key material a sealed
 
 - The both-substrate live TLS exercise is operator-driven.
 
+## Sprint 7.16: Test-Simulation Credentials Move to test-config.dhall; Admin Acquisition Unifies on the Prompt 📋
+
+**Status**: Planned (ready)
+**Implementation**: `prodbox-config.dhall`, `prodbox-config-types.dhall`, `test-config.dhall`
+(new test-harness-only file), `src/Prodbox/Aws.hs`, `src/Prodbox/Infra/AwsSesStack.hs`,
+`src/Prodbox/Settings.hs`, `test/unit/Main.hs`
+**Blocked by**: Sprint `7.14`'s landed `SecretRef.Vault` treatment of the generated operational
+`aws.*` (an earlier-or-same-phase dependency on already-landed code, not on incomplete work — this
+sprint is ready now). Forward ordering: this sprint's `test-config.dhall` fixture is then consumed
+by Sprint `7.14`'s `Live-proof: pending` axis; that is one-directional consumption, not a mutual
+block.
+**Independent Validation**: Validatable on its own surface — the config-schema move,
+`test-config.dhall` introduction, prompt unification, and `config validate` rejection all build and
+pass local validation (`check-code`, `test unit`, `test integration`, `test all` on the home
+substrate) with no dependency on a later phase.
+**Docs to update**: `documents/engineering/vault_doctrine.md` (§3 SecretRef model, §4 config
+split, §13 classification), `documents/engineering/aws_admin_credentials.md`,
+`documents/engineering/config_doctrine.md`,
+`documents/engineering/aws_integration_environment_doctrine.md`,
+`documents/engineering/aws_account_setup_guide.md`,
+`documents/engineering/lifecycle_reconciliation_doctrine.md` (§2 per-stack credential-class
+assignment), `DEVELOPMENT_PLAN/legacy-tracking-for-deletion.md`, `DEVELOPMENT_PLAN/README.md`,
+`DEVELOPMENT_PLAN/00-overview.md`, `DEVELOPMENT_PLAN/system-components.md`
+
+### Objective
+
+Converge the credential model on three strictly distinct roles and one runtime admin-acquisition
+path. There is exactly one way elevated/admin AWS power enters prodbox at runtime: the interactive
+`SecretRef.Prompt` (prompt-use-discard — held in memory for one command, used once to mint the
+dedicated least-privilege `prodbox` IAM identity, then discarded; never written to
+`prodbox-config.dhall`, never stored in Vault, never persisted to disk). The generated operational
+`prodbox` IAM credential (the `aws.*` section) is minted into Vault KV
+(`secret/gateway/gateway/aws`) the instant it is created, with `prodbox-config.dhall` carrying only
+a `SecretRef.Vault` reference to it; because it is minted into Vault, the mint step runs after Vault
+is set up and unsealed. The `aws_admin_for_test_simulation.*` block is a TestPlaintext test-harness
+fixture whose sole purpose is to drive the UI — feeding the same interactive prompts a real operator
+answers so the harness can exercise admin-credentialed flows non-interactively — and it lives only
+in `test-config.dhall`, never imported by `prodbox-config.dhall`, never read by any production
+binary, never stored in Vault. None of our testing secrets live in Vault; Vault holds production
+secrets only. Sequencing: bring up + unseal Vault → (operator at the prompt, or the harness
+simulating it from `test-config.dhall`) supplies the ephemeral elevated credential → prodbox mints
+the dedicated least-privilege `prodbox` IAM identity → writes the generated `aws.*` credential into
+Vault KV → discards the prompted elevated credential. This SSoT statement is owned by
+[vault_doctrine.md §§3/4/13](../documents/engineering/vault_doctrine.md),
+[aws_admin_credentials.md](../documents/engineering/aws_admin_credentials.md), and
+[lifecycle_reconciliation_doctrine.md §2](../documents/engineering/lifecycle_reconciliation_doctrine.md);
+this sprint adopts it rather than restating it.
+
+### Deliverables
+
+- Remove the `aws_admin_for_test_simulation` block from `prodbox-config.dhall` and
+  `prodbox-config-types.dhall`.
+- Introduce a test-harness-only `test-config.dhall` (TestPlaintext) consumed only by the
+  suite-level IAM harness to simulate the operator prompt. It carries the test-only plaintext that
+  simulates operator prompts and seeds fixtures (the Vault unlock-bundle password, the
+  `aws_admin_for_test_simulation.*` fixture, fake ACME/EAB values, fake MinIO/Keycloak bootstrap,
+  Vault seed fixtures); it is never imported by `prodbox-config.dhall`, never in Vault, never in
+  production.
+- Unify `aws-ses` reconcile/destroy/migrate-backend and `prodbox nuke` admin acquisition on the
+  interactive `SecretRef.Prompt`, with the harness simulating it from `test-config.dhall` (retire
+  `loadAdminAwsCredentials` / `pulumiSes*BaseEnv` reading a stored config block). There is no
+  production config-backed admin path.
+- Mint the generated operational `aws.*` into Vault KV (`secret/gateway/gateway/aws`) only after
+  Vault is unsealed, with `prodbox-config.dhall` carrying only the `SecretRef.Vault` reference (the
+  generated credential never transits cleartext storage).
+- `prodbox config validate` rejects any plaintext admin/operational AWS key present in
+  `prodbox-config.dhall` (production-safe topology + unencrypted basics + `SecretRef` references
+  only; no plaintext secrets, no `aws_admin_for_test_simulation` block).
+
+### Validation
+
+1. `prodbox check-code`
+2. `prodbox test unit`
+3. `prodbox config validate` rejects a `prodbox-config.dhall` carrying any plaintext admin or
+   operational AWS key, and rejects an `aws_admin_for_test_simulation` block.
+4. `prodbox test integration aws-iam` drives the harness from `test-config.dhall` and proves the
+   mint-into-Vault-after-unseal ordering.
+5. `prodbox test all` (home substrate) stays green.
+
+### Remaining Work
+
+- Scheduled. The code-owned moves (config-schema removal, `test-config.dhall` introduction,
+  `aws-ses` / `prodbox nuke` prompt unification, Vault-KV mint ordering, `config validate`
+  rejection) land under this sprint; the live AWS-substrate proof shares the operator-driven gate.
+
 ## Documentation Requirements
+
+The phase-independence doctrine adopted here (Sprint `7.14` reframed to `Done` on its code-owned
+surface with a non-blocking `Live-proof: pending` note; Sprint `7.5`/`7.5.c` reframed so live-AWS
+proof never blocks an earlier phase; the `Independent Validation` lines) defers to
+[development_plan_standards.md → N. Phase Independence](development_plan_standards.md#n-phase-independence-no-backward-blocking)
+and [O. Code-Local vs Live-Infra Proof](development_plan_standards.md#o-code-local-completion-vs-live-infra-proof)
+as SSoT; the doctrine-adoption sprint and the relocated reopen narrative are recorded in
+[legacy-tracking-for-deletion.md](legacy-tracking-for-deletion.md).
 
 **Engineering docs to create/update:**
 
@@ -3191,6 +3365,32 @@ contract protects is Vault-owned — there is no plaintext key material a sealed
 - `documents/engineering/envoy_gateway_edge_doctrine.md` - Sprint `7.15` public-edge TLS
   private-key material wrapped by Vault; new issuance and private-key retrieval fail closed when
   Vault is sealed.
+- [documents/engineering/vault_doctrine.md](../documents/engineering/vault_doctrine.md) - Sprint
+  `7.16` SSoT for the SecretRef model (§3), the two-config-file split (§4 — `prodbox-config.dhall`
+  carries `SecretRef` references only; `test-config.dhall` carries all test-only plaintext), and
+  classification (§13 — the generated operational `aws.*` is `SecretRef.Vault`; the
+  `aws_admin_for_test_simulation.*` fixture is TestPlaintext that never enters Vault).
+- `documents/engineering/aws_admin_credentials.md` - Sprint `7.16` owns the
+  `aws_admin_for_test_simulation` block specifics: a TestPlaintext test-harness fixture in
+  `test-config.dhall` that simulates the interactive elevated-credential prompt; never imported by
+  `prodbox-config.dhall`, never read by a production binary, never stored in Vault.
+- `documents/engineering/config_doctrine.md` - Sprint `7.16` `prodbox config validate` rejects any
+  plaintext admin/operational AWS key or `aws_admin_for_test_simulation` block in
+  `prodbox-config.dhall`.
+- `documents/engineering/aws_integration_environment_doctrine.md` - Sprint `7.16` unified
+  admin-acquisition path: real ops prompt for the ephemeral elevated credential via the interactive
+  `SecretRef.Prompt`; the harness simulates that prompt from `test-config.dhall`.
+- `documents/engineering/aws_account_setup_guide.md` - Sprint `7.16` operator onboarding reflects
+  prompt-use-discard for the elevated credential and the generated `aws.*` minted into Vault KV
+  after unseal.
+- [documents/engineering/lifecycle_reconciliation_doctrine.md](../documents/engineering/lifecycle_reconciliation_doctrine.md)
+  - Sprint `7.16` §2 per-stack credential-class assignment for the prompt-driven admin path
+  (`aws-ses` reconcile/destroy/migrate-backend and `prodbox nuke`).
+- `DEVELOPMENT_PLAN/legacy-tracking-for-deletion.md` - Sprint `7.16` Pending-Removal entries: the
+  `aws_admin_for_test_simulation` plaintext block in `prodbox-config.dhall` /
+  `prodbox-config-types.dhall`, the config-backed admin path for `aws-ses` / `nuke`
+  (`loadAdminAwsCredentials` / `pulumiSesProviderBaseEnv` / `pulumiSesAdminBaseEnv` reading the
+  stored block), and the historical test-fixture filename (renamed to `test-config.dhall`).
 
 **Product docs to create/update:**
 

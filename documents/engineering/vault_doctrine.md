@@ -94,10 +94,17 @@ prior secret machinery:
 
 The architecture below is the finalized target. Where this doctrine prescribes behavior the
 worktree does not yet honor, it names the owning sprint; until that sprint lands the statement is
-the intended structure, not a present-tense implementation fact. Adoption is scheduled across the
-reopened phases — see the [Development Plan](../../DEVELOPMENT_PLAN/README.md) Closure Status entry
-for the Vault-root finalization and the per-surface sprints (`0.13`, `0.14`, `1.35`–`1.38`, `2.26`,
-`3.17`–`3.20`, `4.29`–`4.33`, `5.8`, `7.14`–`7.15`, `8.9`).
+the intended structure, not a present-tense implementation fact. Adoption is **phase-independent**
+per the development-plan phase-independence doctrine (development_plan_standards.md Standards N /
+O): each surface's adoption closes on its **own** owned-surface sprint once that sprint builds and
+passes local validation (`prodbox dev check`, `test unit`, `test integration cli`/`env`); a proof
+that needs live infrastructure (live AWS spend, a deployed cluster, an unsealed Vault, an
+operator-supplied credential) is tracked separately as a non-blocking `Live-proof: pending` note
+and never gates a sprint's code-owned closure. No earlier phase is blocked by a later phase — a
+`Blocked by` may name only an earlier-or-same-phase sprint or an external prerequisite. See the
+[Development Plan](../../DEVELOPMENT_PLAN/README.md) Closure Status entry for the Vault-root
+finalization and the per-surface owning sprints (`0.13`, `0.14`, `0.15`, `1.35`–`1.38`, `2.26`,
+`3.17`–`3.20`, `4.29`–`4.33`, `5.8`, `7.14`–`7.16`, `8.9`).
 
 ## 2. The fail-closed invariant
 
@@ -174,7 +181,7 @@ Constructor rules:
 |---|---|---|
 | `VaultSecret` / `VaultTransitKey` | Allowed | The target for every in-cluster-consumed secret. |
 | `PromptedSecret` | Allowed (CLI only) | One-off elevated operator material; never written to disk. |
-| `TestPlaintext` | **Rejected** | Accepted only by the test harness, only from `test-secrets.dhall` (§4). |
+| `TestPlaintext` | **Rejected** | Accepted only by the test harness, only from `test-config.dhall` (§4). |
 
 `prodbox config validate` rejects any plaintext secret value in production config and rejects
 `TestPlaintext` outside the test harness (Sprint `1.35`). Any secret a deployed
@@ -199,17 +206,21 @@ Two files, one rule each:
 
 | File | Content | Consumed by |
 |---|---|---|
-| `prodbox-config.dhall` | Production-safe topology, the unencrypted basics, and `SecretRef` values only — a seed/propose input, not the in-force SSoT (§16) | Every supported binary, host and in-cluster |
-| `test-secrets.dhall` | Plaintext values that simulate operator prompts and seed fixtures | The test harness only |
+| `prodbox-config.dhall` | Production-safe topology, the unencrypted basics, and `SecretRef` values only — a seed/propose input, not the in-force SSoT (§16). NO plaintext secrets; NO `aws_admin_for_test_simulation` block | Every supported binary, host and in-cluster |
+| `test-config.dhall` (formerly `test-secrets.dhall`) | All test-only plaintext that simulates operator prompts and seeds fixtures — the Vault unlock-bundle password (simulates the unseal prompt) and the `aws_admin_for_test_simulation.*` elevated-AWS credentials (simulates the elevated-credential prompt) among them | The test harness only |
 
-`test-secrets.dhall` may carry the Vault unlock-bundle password used by tests, elevated AWS
-credentials that simulate the operator prompt, fake ACME/EAB values, fake MinIO credentials, fake
-Keycloak bootstrap passwords, and fixtures used to seed Vault in integration tests. It must never
-be required for production, imported by `prodbox-config.dhall`, copied into generated cluster
-config, stored in MinIO, mounted into the cluster, or committed with real values. The test-only
-unlock-bundle password simulates an operator entering the password at the prompt (§6); it has no
-production role. It is the only cleartext home of the root operator's memorized unseal password
-(§6, §16).
+`test-config.dhall` may carry the Vault unlock-bundle password used by tests (which simulates the
+operator entering the password at the unseal prompt; §6), the `aws_admin_for_test_simulation.*`
+elevated AWS credentials that simulate the operator typing the elevated/admin credential at the
+`SecretRef.Prompt` arm, fake ACME/EAB values, fake MinIO credentials, fake Keycloak bootstrap
+passwords, and fixtures used to seed Vault in integration tests. None of these testing secrets live
+in Vault — Vault holds production secrets only. `test-config.dhall` must never be required for
+production, imported by `prodbox-config.dhall`, copied into generated cluster config, stored in
+MinIO, mounted into the cluster, or committed with real values; it has no production role. It is the
+only cleartext home of the root operator's memorized unseal password (§6, §16) and the only home of
+the `aws_admin_for_test_simulation.*` test fixture (a test-harness fixture, not a production-config
+section or a Vault object; see [aws_admin_credentials.md](./aws_admin_credentials.md) for the block
+specifics).
 
 ## 5. Vault deployment model and durability
 
@@ -323,7 +334,7 @@ else. The consequences:
   auto-unseal, exactly per the fail-closed invariant (§2) and the federation cascade (§16).
 - The password is the only secret the operator memorizes; Vault's actual unseal keys are
   machine-generated and live only inside the encrypted bundle.
-- The password's **only cleartext home is `test-secrets.dhall`**, read solely by the test harness
+- The password's **only cleartext home is `test-config.dhall`**, read solely by the test harness
   to simulate the operator at the unseal prompt (§4); no production path stores or logs it.
 
 ## 7. Vault lifecycle commands
@@ -644,10 +655,15 @@ Current Sprint `7.14` implementation status: the checkpoint layer is active for 
 cycles (`aws-eks`, `aws-eks-subzone`, `aws-test`), the main long-lived `aws-ses` reconcile/destroy
 paths, and production stack residue/output reads. Runtime AWS provider credentials require the Vault
 KV object at `secret/gateway/gateway/aws` through `Prodbox.Infra.AwsProviderCredentials`; the
-Pulumi provider path has no raw config fallback. The root AWS setup/teardown schema fields now
-carry mandatory `SecretRef.Vault` references for `aws.*` and `aws_admin_for_test_simulation.*`;
-setup/config-setup write generated operational provider keys to `secret/gateway/gateway/aws`, and
-teardown clears that Vault object without writing provider secrets to `prodbox-config.dhall`.
+Pulumi provider path has no raw config fallback. The generated operational `aws.*` schema field
+carries a mandatory `SecretRef.Vault` reference (never the plaintext key); the elevated/admin
+credential never enters config at all — it is supplied through the interactive `SecretRef.Prompt`
+arm and discarded after use (the test harness simulates that prompt from the
+`aws_admin_for_test_simulation.*` `TestPlaintext` fixture in `test-config.dhall`, not from a
+`prodbox-config.dhall` section). Setup/config-setup mint the dedicated least-privilege `prodbox`
+identity using the prompted elevated credential and write the generated operational provider keys
+straight into `secret/gateway/gateway/aws`, and teardown clears that Vault object without writing
+provider secrets to `prodbox-config.dhall`.
 First-touch deletion/import of pre-existing raw Pulumi checkpoint layouts is code-owned: the per-run raw
 backend environment is confined to `LegacyPulumiBackend` first-touch export/delete, while supported
 Pulumi actions receive provider-only input before `fileBackendEnvironment` rewrites the backend to
@@ -798,8 +814,10 @@ The sealed-Vault canonical validation (`prodbox test integration sealed-vault`, 
 active on its code-owned suite surface: `ValidationSealedVault` is wired into the native planner and
 parser, and `sealedVaultAuditReport` pins the forbidden-pattern oracle for the cross-surface
 red-team. Full live closure seals Vault after a full reconcile and asserts every row above fails
-closed without leaking metadata; that deployed proof remains gated on Sprint `7.14` live
-first-touch deletion proof.
+closed without leaking metadata; that deployed assertion needs live infrastructure (an unsealed,
+then sealed, Vault behind a full reconcile against live AWS/Pulumi infrastructure) and is therefore
+recorded as a standalone non-blocking `Live-proof: pending` note (§1) that does not gate Sprint
+`5.8`'s code-owned closure or its phase.
 
 ## 16. Cluster federation: a Vault transit-seal trust tree
 
@@ -813,7 +831,7 @@ the auto-unseal mechanics, and the custody and config-authority flows.
 
 | Tier | Vault seal mode | Who unseals it | Init keys (recovery keys + initial root token) owned by |
 |---|---|---|---|
-| **Root cluster** | Shamir | Operator only, via the `.age` unlock bundle decrypted by a memorized password stored nowhere persistent (`test-secrets.dhall` simulates it in tests; §4, §6) | The operator (the password) |
+| **Root cluster** | Shamir | Operator only, via the `.age` unlock bundle decrypted by a memorized password stored nowhere persistent (`test-config.dhall` simulates it in tests; §4, §6) | The operator (the password) |
 | **Child cluster** | `seal "transit"` pointed at the **parent** cluster's Vault | Auto-unseals against the parent — no human, no local unseal keys | The **parent** cluster's Vault KV |
 
 - A child Vault literally cannot unseal without a live, unsealed parent. If any parent is
@@ -898,7 +916,10 @@ here with its current lean and owning sprint so it is resolved on purpose, not b
 
 ## 19. Red-team checklist
 
-Before the Vault-root finalization is considered complete (tracked across the reopened phases):
+Before the Vault-root finalization is considered complete (each item tracked per its owning sprint
+on that phase's owned surface; live-infrastructure proofs are non-blocking `Live-proof: pending`
+notes that never gate an earlier phase or a sprint's code-owned closure — development_plan_standards.md
+Standards N / O):
 
 - A repo grep finds no real secret in Dhall, and no `FileSecret` / Secret-mounted Dhall fragment
   consumer remains.
@@ -928,10 +949,10 @@ Before the Vault-root finalization is considered complete (tracked across the re
 - Sealed Vault blocks gateway daemon config recovery, Keycloak bootstrap/recovery, and TLS
   private-key reconstruction, and prevents every child cluster from auto-unsealing.
 - A child cluster cannot unseal while its parent is sealed/unreachable.
-- Test-harness plaintext is isolated to `test-secrets.dhall` and never used by production paths.
+- Test-harness plaintext is isolated to `test-config.dhall` and never used by production paths.
 - The unlock-bundle password is handled by KDF + authenticated encryption, not raw SHA-256.
 - The unlock-bundle password is the only operator-memorized secret; its only cleartext home is
-  `test-secrets.dhall`, and no production path stores or logs it.
+  `test-config.dhall`, and no production path stores or logs it.
 - No recovered plaintext secret lands on a physical-disk-backed path, and secret-bearing
   daemon↔MinIO transfers use TLS.
 - The Vault root token is not the steady-state admin path; `vault init` never reruns against

@@ -371,7 +371,7 @@ union is `< Vault | TransitKey | Prompt | TestPlaintext >`; the corresponding Ha
 constructor and its resolver are removed, and there are no Secret-mounted Dhall credential
 fragments. `Vault` / `TransitKey` are the production targets, `Prompt` is CLI-only one-off
 elevated material, and `TestPlaintext` is accepted only by the test harness from
-`test-secrets.dhall`. The ADT, Dhall decoder, production plaintext validator, and Vault KV reader
+`test-config.dhall`. The ADT, Dhall decoder, production plaintext validator, and Vault KV reader
 seam (`resolveSecretRefWithVault` / `resolveSecretRefFromVault`) are implemented under Sprint
 1.35; migrating the sensitive repo config fields onto that contract is scheduled under Sprint
 1.38.
@@ -379,8 +379,9 @@ seam (`resolveSecretRefWithVault` / `resolveSecretRefFromVault`) are implemented
 - `prodbox config validate` rejects any plaintext secret value in production config and rejects
   `TestPlaintext` outside the test harness.
 - Production config and test plaintext are split: `prodbox-config.dhall` holds references only,
-  while `test-secrets.dhall` holds plaintext used solely by the test harness and is never
-  imported by `prodbox-config.dhall`. See
+  while `test-config.dhall` holds plaintext used solely by the test harness — including the
+  `aws_admin_for_test_simulation.*` elevated-credential simulation — never imported by
+  `prodbox-config.dhall` and never in Vault. See
   [vault_doctrine.md §4](./vault_doctrine.md#4-config-split-production-references-vs-test-plaintext).
 
 This is the SSoT-deferring summary; [vault_doctrine.md §3](./vault_doctrine.md#3-the-secretref-model)
@@ -527,7 +528,7 @@ so the prohibition is the intended end state rather than a present-tense fact:
   mapping each secret to its Vault KV / PKI / Transit path (the HMAC master-seed derivation
   model is retired; secrets are Vault objects).
 - [vault_doctrine.md](./vault_doctrine.md) — the finalized Vault-root model: the `SecretRef`
-  contract, the production references vs. `test-secrets.dhall` plaintext split, MinIO as a
+  contract, the production references vs. `test-config.dhall` plaintext split, MinIO as a
   ciphertext store, and in-cluster Vault Kubernetes auth.
 - [cluster_federation_doctrine.md](./cluster_federation_doctrine.md) — the root/child trust
   tree, transit-seal auto-unseal, parent custody of child init keys, and the

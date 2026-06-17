@@ -15,9 +15,12 @@
 
 ## Phase Status
 
-⏸️ **Blocked 2026-06-16 after code-owned landing** — reopened 2026-06-11, finalized 2026-06-14,
+✅ **Closed on its code-owned surface 2026-06-16** — reopened 2026-06-11, finalized 2026-06-14,
 refined 2026-06-15 (Vault-root + cluster
-federation; Model-B whole-system zero-child-info refinement) — Sprint `5.8`
+federation; Model-B whole-system zero-child-info refinement), reopened 2026-06-16 to adopt the
+phase-independence doctrine (Sprint `0.15`;
+[development_plan_standards.md → N. Phase Independence / O. Code-Local vs Live-Infra Proof](development_plan_standards.md#n-phase-independence-no-backward-blocking)) —
+Sprint `5.8`
 reframes to the finalized end state: the `sealed-vault` canonical validation seals Vault and asserts
 the whole stack fails closed (no secret resolves, no cert issues, no MinIO object decrypts, no
 Pulumi op runs, gateway daemon and Keycloak fail their readiness gates) without leaking metadata.
@@ -38,14 +41,18 @@ only `SecretRef.Vault` / `SecretRef.TransitKey` values on the `FileSecret`-free 
 `SecretRefFile` constructor to render — per
 [vault_doctrine.md](../documents/engineering/vault_doctrine.md) and
 [cluster_federation_doctrine.md](../documents/engineering/cluster_federation_doctrine.md). Sprint
-`5.8` is ⏸️ Blocked on its remaining live suite surface: the named `sealed-vault` validation, planner
+`5.8` is ✅ Done on its code-owned/home-substrate surface: the named `sealed-vault` validation, planner
 surface, parser/docs surface, pure sealed-state forbidden-pattern audit helper, generated
-Dhall/config SecretRef sweep, and live home-substrate proof have landed. Existing validations are
-unchanged and the new sealed-Vault suite content extends them. The full live AWS-substrate and
-parent/child red-team remains open until Sprint `7.14` moves raw Pulumi checkpoints behind the
-Model-B interposition; Sprint `7.14` live validation is currently blocked in IAM-harness preflight
-until Vault contains `secret/aws/admin-for-test-simulation`. See the 2026-06-14 and 2026-06-16
-Closure Status entries in
+Dhall/config SecretRef sweep, and live home-substrate proof have landed and validate locally.
+Existing validations are
+unchanged and the new sealed-Vault suite content extends them. The live AWS-substrate cross-surface
+red-team and the live parent/child federation auto-unseal cascade are tracked as a non-blocking
+**Live-proof: pending** note on Sprint `5.8` (Standards N/O); the later Model-B raw-Pulumi-checkpoint
+interposition that the AWS-substrate proof composes against is owned by Sprint `7.14` as a forward
+build dependency, and AWS-substrate coverage of the same validation is tracked in
+[substrates.md](substrates.md) (Standard M) — neither gates `5.8`'s code-owned closure or this phase.
+See the 2026-06-14 and
+2026-06-16 Closure Status entries in
 [README.md](README.md).
 
 ✅ **Prior closure preserved — reclosed 2026-06-09** — Sprints `5.1`–`5.5` remain closed on the
@@ -516,11 +523,27 @@ prerequisites, capability-derived IAM tier, the `public_edge_ready` split, the s
 `verifyAwsEksSnapshot`, and the three registry-generated destructive goldens). The live
 AWS-substrate aggregate and the live public-edge-readiness exercise are operator-driven.
 
-## Sprint 5.8: Sealed-Vault Canonical Validation and SecretRef Golden Tests ⏸️
+## Sprint 5.8: Sealed-Vault Canonical Validation and SecretRef Golden Tests ✅
 
-**Status**: Blocked (2026-06-16, code-owned named-suite surface landed; live red-team remains)
+**Status**: Done (2026-06-16) on its code-owned/home-substrate surface — the
+`IntegrationSealedVault` / `ValidationSealedVault` named-suite entrypoint, the `sealedVaultAuditReport`
+forbidden-pattern oracle, and the SecretRef golden tests have landed and validate locally
+(`prodbox dev check`, `test unit`, `test integration cli`/`env`); reopened 2026-06-16 to adopt the
+phase-independence doctrine (Sprint `0.15`), removing the former backward block on Sprint `7.14`.
 **Implementation**: `src/Prodbox/TestValidation.hs`, `src/Prodbox/TestPlan.hs`, `test/`
-**Blocked by**: Sprint `7.14` live AWS proof; Vault is missing `secret/aws/admin-for-test-simulation`, so the AWS IAM harness stops before provisioning
+**Independent Validation**: The sealed-Vault canonical validation and SecretRef golden tests are
+validated on this phase's owned surface (the canonical-suite content in `src/Prodbox/TestValidation.hs`)
+with no dependency on a later phase: `prodbox test integration sealed-vault` runs against the
+home/local substrate, sealing the home-cluster Vault and asserting fail-closed behavior plus the
+cross-surface zero-child-info audit, while the pure `sealedVaultAuditReport` oracle and the generated
+Dhall/config SecretRef sweep run as local unit tests against fixtures and rendered artifacts. Where the
+red-team would touch a later-phase-owned AWS substrate, it is exercised against the home substrate
+today; the AWS-substrate variant is the orthogonal coverage row, not a gate.
+**Live-proof**: pending — the home-substrate live sealed-Vault red-team (live deployed Vault, sealed
+parent/child cascade, host-disk and Kubernetes probes) is tracked as a distinct, non-blocking
+Live-proof note per [development_plan_standards.md → O. Code-Local vs Live-Infra Proof](development_plan_standards.md#o-code-local-completion-vs-live-infra-proof); it does not gate this sprint's
+code-owned closure. AWS-substrate coverage of the same validation is tracked only in
+[substrates.md](substrates.md)'s parity table (Standards N/O/M) and is not a `5.8` blocker.
 **Docs to update**: `documents/engineering/unit_testing_policy.md`, `documents/engineering/vault_doctrine.md`, `documents/engineering/cluster_federation_doctrine.md`
 
 ### Objective
@@ -581,8 +604,15 @@ extends the canonical suite; existing validations are unchanged.
   `client_secret = "…"`, `password = "…"`, Pulumi passphrase, kubeconfig user token, raw master
   seed).
 - Unit proofs for plaintext-secret rejection (the `SecretRef.TestPlaintext` arm is accepted only by
-  the test harness from `test-secrets.dhall`, never in production), Vault init/unseal/reconcile,
-  fixture seeding from `test-secrets.dhall`, and teardown-preserves-Vault-PV.
+  the test harness from `test-config.dhall`, never in production), Vault init/unseal/reconcile,
+  fixture seeding from `test-config.dhall`, and teardown-preserves-Vault-PV. The plaintext-rejection
+  proof also asserts `prodbox-config.dhall` carries no plaintext admin/operational AWS key — the
+  `aws_admin_for_test_simulation.*` test-simulation block is a `TestPlaintext` fixture that lives
+  only in `test-config.dhall` (never imported by `prodbox-config.dhall`, never in Vault), while the
+  generated operational `aws.*` credential is minted into Vault KV and `prodbox-config.dhall` carries
+  only a `SecretRef.Vault` reference to it (see
+  [vault_doctrine.md §3/§4/§13](../documents/engineering/vault_doctrine.md) and
+  [aws_admin_credentials.md](../documents/engineering/aws_admin_credentials.md)).
 
 ### Current State
 
@@ -637,9 +667,14 @@ extends the canonical suite; existing validations are unchanged.
 
 ### Remaining Work
 
-- The AWS-substrate side of the sealed-Vault exercise, the live parent/child federation auto-unseal
-  cascade exercise, and the live cross-surface sealed-Vault red-team remain open. They are gated on
-  the deployed Vault plus Sprint `7.14`'s raw Pulumi checkpoint decrypt-to-scratch interposition.
+- None on this sprint's code-owned surface — it is ✅ Done and validates locally.
+- **Live-proof: pending** (non-blocking, Standards N/O). The AWS-substrate side of the sealed-Vault
+  exercise, the live parent/child federation auto-unseal cascade exercise, and the live cross-surface
+  sealed-Vault red-team are live-infrastructure proofs, not code-owned closure work: they need a live
+  deployed Vault, and the AWS-substrate variant composes (forward build order) against Sprint `7.14`'s
+  raw Pulumi checkpoint decrypt-to-scratch interposition. These are tracked here as a non-blocking
+  Live-proof note and, for AWS-substrate parity, in [substrates.md](substrates.md)'s parity table;
+  neither reopens this sprint or gates its phase.
 
 ## Documentation Requirements
 

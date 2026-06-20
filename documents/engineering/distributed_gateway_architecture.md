@@ -432,6 +432,30 @@ The structured `schemaVersion` / `boot` / `live` template is the implemented gat
 runtime shape. Config-schema hygiene remains governed by the shared config discipline rather
 than by a separate gateway-local defaults file.
 
+### Tier-0 Non-Secret Config Delivery (Cluster Mount Contract)
+
+The daemon's non-secret config source is the Tier-0 `prodbox.dhall` (binary-owned, project-local
+parameters + context + witness, never secrets) defined in
+[config_doctrine.md §0](./config_doctrine.md#0-three-tier-config-model). This doctrine owns the
+in-cluster delivery contract for that file: it is mounted into the gateway Pod through the existing
+per-node `gateway-config-<nodeId>` ConfigMap at `/etc/gateway/config`. The mount is a
+**directory** mount, not a file mount, so kubelet's atomic `..data` symlink swap on ConfigMap
+update fires the daemon's fsnotify watcher and drives the file-watch reload path (§7.5 for the
+boot-field restart contract; the live-field swap is governed by
+[config_doctrine.md §7](./config_doctrine.md#7-file-watch-reload-trigger)).
+
+This realizes hostbootstrap's container-default + ConfigMap-overwrite (context-init) pattern: the
+built container is expected to ship a default Tier-0 `prodbox.dhall`, which the cluster daemon then
+overwrites from the per-node ConfigMap at frame init. **Current gap**: the built gateway container
+ships **no** default `prodbox.dhall` yet — the rendered `gateway-config-<nodeId>` ConfigMap is the
+only config source, so an in-container default plus the binary-context shape and rename are
+outstanding. See [config_doctrine.md §0](./config_doctrine.md#0-three-tier-config-model) for the
+canonical tier model; it is not duplicated here.
+
+Secrets are never carried in the Tier-0 mount. The daemon resolves every credential through
+`SecretRef.Vault` pointers (Tier-2 operational secrets) using its own Vault Kubernetes-auth
+identity at startup, as described throughout §10 and §12.2.
+
 ### Structured Logging
 
 The gateway daemon and public workload daemon entrypoints emit structured JSON log lines to
@@ -566,6 +590,37 @@ Sprint `2.26` adds the gateway-owned federation read surface:
 
 Both endpoints fail closed when Vault auth, Vault reachability, or KV decoding fails. They do not
 read child inventory from repository Dhall, Kubernetes Secrets, or gateway-local files.
+
+### Operator-Write Endpoint (`POST /v1/secret/<logical>`)
+
+Sprint `1.44` adds a single write-capable REST route so the host CLI (a real operator, or the
+test harness simulating one) persists the two host-minted operator secrets through the in-cluster
+daemon over the loopback-restricted NodePort instead of a host root-token direct Vault write:
+
+- `POST /v1/secret/acme/eab` — the ZeroSSL external-account-binding material.
+- `POST /v1/secret/gateway/gateway/aws` — the minted operational `aws.*` credential.
+
+The logical path is a fixed two-entry allowlist (`allowedOperatorSecretPaths`); any other
+`/v1/secret/*` path is a `404`, and a non-`POST` method on an allowlisted path is a `405`. The
+endpoint never echoes the written secret back — the secrets it owns are read in-cluster via Vault
+Kubernetes auth, never returned over REST.
+
+Authentication is by an **operator-injected Kubernetes JWT** carried in the
+`X-Prodbox-Operator-Jwt` header (operator decision 2026-06-19). The daemon exchanges that JWT for
+a short-lived Vault token under the dedicated, narrowly-scoped `prodbox-operator-write` Kubernetes
+auth role (create/update on exactly those two KV paths) and writes the KV v2 object — it never
+uses the daemon's own read-only `prodbox-gateway-daemon` identity for the write. A missing JWT is
+`401`, a failed Vault login is `403`, an unconfigured gateway Vault auth is `503`, and a Vault KV
+write failure is `502`.
+
+The host side (`Prodbox.Gateway.Client.writeOperatorSecret`) mints the JWT with
+`kubectl create token prodbox-operator-write --namespace gateway` and posts the field map.
+`Prodbox.Aws.writeOperatorSecretViaDaemonOrHost` prefers this daemon path and falls back to the
+host root-token Vault write only when the daemon path is unavailable (no live cluster, no operator
+service-account token, or the unit/integration host-vault seam is active), so non-daemon contexts
+never regress. The `vault_operator_password` (needed before Vault is unsealed) and the ephemeral
+`aws_admin_for_test_simulation` credential (deliberately never stored in Vault) stay host-side —
+a daemon needing an already-unsealed Vault cannot bootstrap them.
 
 ### `GET /healthz`, `GET /readyz`, and `GET /metrics`
 

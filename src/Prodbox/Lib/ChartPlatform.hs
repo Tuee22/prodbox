@@ -12,12 +12,14 @@ module Prodbox.Lib.ChartPlatform
   , buildChartDeploymentPlan
   , buildChartDeploymentPlanForSubstrate
   , certManagerAdoptionAnnotations
+  , chartReleasesToDeploy
   , classifyPublicEdgePreserve
   , deleteChartPlan
   , deployChartPlan
   , gatewayNodeIds
   , keycloakVscodeClientId
   , keycloakRealmName
+  , kubernetesSecretDecodedDataField
   , patroniSeedMismatchDecision
   , renderChartList
   , renderChartStatus
@@ -58,6 +60,7 @@ import Data.Aeson.Encode.Pretty qualified as Pretty
 import Data.Aeson.Key qualified as Key
 import Data.Aeson.KeyMap qualified as KeyMap
 import Data.Aeson.Types (Parser, parseEither)
+import Data.ByteString.Base64 qualified as B64
 import Data.ByteString.Lazy qualified as BL
 import Data.ByteString.Lazy.Char8 qualified as BL8
 import Data.Char (isDigit, isHexDigit, toLower)
@@ -73,6 +76,7 @@ import Data.List
 import Data.Map.Strict (Map)
 import Data.Map.Strict qualified as Map
 import Data.Text qualified as Text
+import Data.Text.Encoding qualified as TextEncoding
 import Prodbox.ContainerImage qualified as ContainerImage
 import Prodbox.Infra.LongLivedPulumiBackend
   ( getLongLivedObject
@@ -139,7 +143,6 @@ import Prodbox.Settings
   ( AwsCredentialsRef (..)
   , AwsSubstrateSection (..)
   , ConfigFile (..)
-  , Credentials (..)
   , DeploymentSection (..)
   , Route53Section (..)
   , ValidatedSettings (..)
@@ -151,7 +154,7 @@ import Prodbox.Subprocess
   , captureSubprocessResult
   )
 import Prodbox.Substrate (Substrate (..), substrateId)
-import Prodbox.Vault.Host (readHostVaultKvField)
+import Prodbox.Vault.Host (readHostVaultKvField, writeHostVaultKvObject)
 import System.Directory
   ( createDirectoryIfMissing
   , doesDirectoryExist
@@ -580,34 +583,51 @@ renderChartStatus repoRoot settings chartName = do
                 ++ releaseLines
                 ++ renderStorageReport (chartReleasePlanStorageBindings chartRelease)
 
+-- | Pure: the releases in @plan@ that are NOT yet present in @helm list@
+-- (keyed by release name). @reconcile@ deploys exactly these, so a chart root
+-- whose deploy was partially rolled back (e.g. a sibling release uninstalled
+-- by a failed @helm --wait@) converges on the next reconcile. An empty result
+-- means every release is already installed — an idempotent no-op. Exposed for
+-- unit testing because 'deployChartPlan' is otherwise IO-bound on @helm@.
+chartReleasesToDeploy :: Map.Map String v -> ChartDeploymentPlan -> [ChartReleasePlan]
+chartReleasesToDeploy snapshots plan =
+  [ release
+  | release <- chartDeploymentPlanReleases plan
+  , not (Map.member (chartReleasePlanReleaseName release) snapshots)
+  ]
+
 deployChartPlan :: ChartDeploymentPlan -> IO (Either String String)
 deployChartPlan plan = do
   snapshotsResult <- helmReleaseSnapshots
   case snapshotsResult of
     Left err -> pure (Left err)
     Right snapshots -> do
-      let duplicates =
-            sort
-              [ chartReleasePlanReleaseName release
-              | release <- chartDeploymentPlanReleases plan
-              , Map.member (chartReleasePlanReleaseName release) snapshots
-              ]
-      if not (null duplicates)
-        then pure (Right (renderDeployReport plan))
-        else do
-          requirementResult <- validateExternalRequirements plan
+      case chartReleasesToDeploy snapshots plan of
+        -- Every release in this chart root is already present in `helm list`:
+        -- idempotent no-op. (Was: "ANY release in the plan present → skip the
+        -- WHOLE plan", which could never re-deploy a single rolled-back release
+        -- while its siblings remained installed — leaving a partially-rolled-back
+        -- chart root unrecoverable without a full `charts delete`.)
+        [] -> pure (Right (renderDeployReport plan))
+        missing -> do
+          -- Deploy only the releases MISSING from `helm list`, so `reconcile`
+          -- converges a partially-deployed chart root. Already-present siblings
+          -- are left untouched. The plan preamble (requirements / storage / TLS
+          -- restore) runs over the missing-release subset.
+          let planToDeploy = plan {chartDeploymentPlanReleases = missing}
+          requirementResult <- validateExternalRequirements planToDeploy
           case requirementResult of
             Left err -> pure (Left err)
             Right () -> do
-              ensureResult <- ensureChartStorage plan
+              ensureResult <- ensureChartStorage planToDeploy
               case ensureResult of
                 Left err -> pure (Left err)
                 Right () -> do
-                  restoreResult <- restorePublicEdgeTlsSecretAfterNamespaceCreate plan
+                  restoreResult <- restorePublicEdgeTlsSecretAfterNamespaceCreate planToDeploy
                   case restoreResult of
                     Left err -> pure (Left err)
                     Right () -> do
-                      deployResult <- foldM deployRelease (Right ()) (chartDeploymentPlanReleases plan)
+                      deployResult <- foldM deployRelease (Right ()) missing
                       pure (deployResult >> Right (renderDeployReport plan))
  where
   deployRelease :: Either String () -> ChartReleasePlan -> IO (Either String ())
@@ -647,7 +667,7 @@ deployChartPlan plan = do
             storageResult <- ensureReleaseStorageBindings release
             case storageResult of
               Left err -> pure (Left err)
-              Right () -> validateReleaseReady release
+              Right () -> finishStagedPatroniRelease release
       Just anchorBinding ->
         case chartReleaseWithPatroniInstanceCount 1 release of
           Left err -> pure (Left err)
@@ -680,7 +700,23 @@ deployChartPlan plan = do
                             storageResult <- ensureReleaseStorageBindings release
                             case storageResult of
                               Left err -> pure (Left err)
-                              Right () -> validateReleaseReady release
+                              Right () -> finishStagedPatroniRelease release
+
+  -- After the staged Patroni bring-up reports ready, mirror the
+  -- operator-generated pguser password into Vault so the keycloak release
+  -- deployed later in this same plan reads a @KC_DB_PASSWORD@ that matches the
+  -- live role (see 'syncPatroniAppPasswordToVault'). Scoped to the home
+  -- substrate's staged path, mirroring the preflight reset.
+  finishStagedPatroniRelease :: ChartReleasePlan -> IO (Either String ())
+  finishStagedPatroniRelease release = do
+    readyResult <- validateReleaseReady release
+    case readyResult of
+      Left err -> pure (Left err)
+      Right () ->
+        syncPatroniAppPasswordToVault
+          (chartDeploymentPlanRepoRoot plan)
+          (chartReleasePlanNamespace release)
+          (chartDeploymentPlanRootChart plan)
 
   -- Sprint 3.13 chunk 13: derive the bootstrap anchor PV from live k8s state
   -- (the Patroni primary endpoint -> primary pod -> its PVC -> bound PV) when
@@ -2688,12 +2724,26 @@ ensureChartStorage plan = do
   -- only a definite authentication rejection triggers the loud failure.
   resetPatroniStorageIfRequested :: IO (Either String ())
   resetPatroniStorageIfRequested = do
-    observation <-
-      probePatroniAppRoleAuth (chartDeploymentPlanRepoRoot plan) (chartDeploymentPlanNamespace plan)
-    pure
-      ( renderPatroniResetDecision
-          (patroniSeedMismatchDecision (chartDeploymentPlanNamespace plan) patroniUsername observation)
-      )
+    -- Percona owns the pguser password (see 'syncPatroniAppPasswordToVault');
+    -- mirror the live operator-generated value into Vault BEFORE probing so a
+    -- cluster that is already running is measured against the password the
+    -- operator actually applied — not the now-stale Vault seed. On a fresh
+    -- install the operator Secret is absent and this is a no-op, leaving the
+    -- probe's "no primary Pod ⇒ unobservable ⇒ proceed" path intact.
+    syncResult <-
+      syncPatroniAppPasswordToVault
+        (chartDeploymentPlanRepoRoot plan)
+        (chartDeploymentPlanNamespace plan)
+        (chartDeploymentPlanRootChart plan)
+    case syncResult of
+      Left err -> pure (Left ("sync Patroni app password to Vault: " ++ err))
+      Right () -> do
+        observation <-
+          probePatroniAppRoleAuth (chartDeploymentPlanRepoRoot plan) (chartDeploymentPlanNamespace plan)
+        pure
+          ( renderPatroniResetDecision
+              (patroniSeedMismatchDecision (chartDeploymentPlanNamespace plan) patroniUsername observation)
+          )
 
   -- The Patroni anchor decision now derives from live k8s state alone
   -- (Sprint 3.13 chunk 13). 'discoverPatroniAnchorPersistentVolumeName'
@@ -3063,6 +3113,83 @@ readOptionalKubernetesSecret namespace secretName = do
               ++ processStderr output
               ++ processStdout output
           )
+
+-- | Extract and base64-decode a @data@ field from a Kubernetes Secret JSON
+-- payload (as returned by @kubectl get secret -o json@). Returns @Right
+-- Nothing@ when the Secret has no @data@ map or the field is absent/null, so a
+-- caller can treat "not present yet" as a benign no-op. Pure so the
+-- Secret→Vault password sync's decode step can be unit-tested without a live
+-- cluster.
+kubernetesSecretDecodedDataField :: Text.Text -> Value -> Either String (Maybe String)
+kubernetesSecretDecodedDataField field =
+  parseEither parser
+ where
+  parser = withObject "Secret" $ \obj -> do
+    maybeData <- obj .:? "data"
+    case (maybeData :: Maybe (KeyMap.KeyMap Value)) of
+      Nothing -> pure Nothing
+      Just dataObj ->
+        case KeyMap.lookup (Key.fromText field) dataObj of
+          Nothing -> pure Nothing
+          Just Null -> pure Nothing
+          Just (String b64) ->
+            case decodeBase64SecretField b64 of
+              Left err -> fail err
+              Right decoded -> pure (Just decoded)
+          Just _ ->
+            fail ("Secret data field `" ++ Text.unpack field ++ "` is not a string")
+
+-- | Decode a standard (single-line) base64 Secret @data@ value to its plain
+-- text. Pure; shared by 'kubernetesSecretDecodedDataField'.
+decodeBase64SecretField :: Text.Text -> Either String String
+decodeBase64SecretField b64 =
+  case B64.decode (TextEncoding.encodeUtf8 (Text.strip b64)) of
+    Left err -> Left ("base64 decode of Secret data field failed: " ++ err)
+    Right bytes ->
+      case TextEncoding.decodeUtf8' bytes of
+        Left err -> Left ("utf8 decode of Secret data field failed: " ++ show err)
+        Right text -> Right (Text.unpack text)
+
+-- | Percona PGO v2 (crVersion 2.9.0) OWNS the @pguser@ password: the operator
+-- generates its own random value, writes it into the operator-managed
+-- @<cluster>-pguser-keycloak@ Secret, and computes the role's SCRAM verifier
+-- from it — overwriting the password the pre-install materializer seeded from
+-- Vault. The Vault-authority model therefore inverts for this one role: Vault
+-- must FOLLOW the operator-generated password, not seed it. This reads the
+-- operator-owned Secret's @password@ and writes it into the Vault KV object the
+-- keycloak Deployment and the preserved-data preflight both read
+-- (@secret/<ns>/keycloak-postgres/patroni/app@), so all three — the live
+-- @pg_authid@ hash, keycloak's @KC_DB_PASSWORD@, and the preflight probe — agree.
+--
+-- Idempotent and best-effort: when the operator Secret is absent (fresh
+-- install, cluster not yet created) it is a no-op success; the post-readiness
+-- caller re-runs it once the operator has generated the password. Because the
+-- chart-secret bootstrap only ever generates a Vault field that is absent
+-- ('materializeMissingFields'/'fieldSatisfied'), a value synced here survives
+-- every subsequent reconcile.
+syncPatroniAppPasswordToVault :: FilePath -> String -> String -> IO (Either String ())
+syncPatroniAppPasswordToVault repoRoot namespace rootChart = do
+  secretResult <-
+    readOptionalKubernetesSecret namespace (patroniCredentialsSecretName rootChart)
+  case secretResult of
+    Left err -> pure (Left ("read operator pguser Secret: " ++ err))
+    Right Nothing -> pure (Right ())
+    Right (Just secretValue) ->
+      case kubernetesSecretDecodedDataField "password" secretValue of
+        Left err -> pure (Left err)
+        Right Nothing -> pure (Right ())
+        Right (Just password)
+          | null (trimWhitespace password) -> pure (Right ())
+          | otherwise ->
+              writeHostVaultKvObject
+                repoRoot
+                "secret"
+                (Text.pack (keycloakPostgresAppVaultPath namespace))
+                ( Map.fromList
+                    [ ("username", Text.pack patroniUsername)
+                    , ("password", Text.pack password)
+                    ]
+                )
 
 retainedPublicEdgeTlsSecretManifest :: String -> String -> Value -> Either String Value
 retainedPublicEdgeTlsSecretManifest targetNamespace targetName secretValue =

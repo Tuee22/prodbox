@@ -34,6 +34,11 @@ module Prodbox.Lifecycle.LiveResidue
   , fetchPerRunStackOutputs
   , fetchAwsSesStackOutputs
 
+    -- * Sprint 7.22: per-run destroy-invocation gate + corrupt-checkpoint prune
+  , PerRunDestroyDecision (..)
+  , perRunDestroyDecisionFromStatus
+  , pruneCorruptPerRunCheckpoint
+
     -- * Pure helpers (exported for tests)
   , residueReasonFromMinioError
   , residueReasonFromS3Error
@@ -42,6 +47,8 @@ module Prodbox.Lifecycle.LiveResidue
   , residueStatusFromMinioListing
   , residueStatusFromMinioListingWithVaultGate
   , residueStatusFromS3ListingWithVaultGate
+  , residueStatusFromCheckpointObservability
+  , residueStatusFromCheckpointObservabilityResult
   , residueStatusFromObjectListing
   , residueStatusFromObjectListingWithVaultGate
   , residueStatusBlockedByVaultGate
@@ -75,6 +82,7 @@ import Prodbox.Infra.StackOutputs
   , StackOutputsError (..)
   , fetchEncryptedOutputs
   , listEncryptedStack
+  , observeEncryptedStackCheckpoint
   , parseOutputsPayload
   , renderStackOutputsError
   , stackPresentInList
@@ -83,8 +91,14 @@ import Prodbox.Lifecycle.ResidueStatus
   ( ResidueDetails (..)
   , ResidueStatus (..)
   , ResidueUnreachableReason (..)
+  , renderResidueUnreachableReason
   )
-import Prodbox.Pulumi.EncryptedBackend (PulumiStackRef (..))
+import Prodbox.Pulumi.EncryptedBackend
+  ( CheckpointObservability (..)
+  , PulumiStackRef (..)
+  , pruneLogicalPulumiStack
+  , renderEncryptedBackendError
+  )
 import Prodbox.Settings
   ( Credentials (..)
   , PulumiStateBackendSection
@@ -317,6 +331,17 @@ withLongLivedBucketEnv repoRoot action onError = do
 -- | Query one encrypted Pulumi checkpoint and translate the response into
 -- a 'ResidueStatus'. This is the Sprint 7.14 production replacement for
 -- raw @pulumi stack ls --json@ against MinIO/S3.
+--
+-- Sprint 7.21: classifies the checkpoint by observability
+-- ('observeEncryptedStackCheckpoint') instead of bare presence, so the
+-- per-run destroy distinguishes ABSENT\/EMPTY (nothing to destroy →
+-- 'ResidueAbsent') from a non-empty-unparseable CORRUPT checkpoint
+-- ("cannot observe" → 'ResidueUnreachable', fail-closed per
+-- @lifecycle_reconciliation_doctrine.md § 3.1@). A bare @doesFileExist@
+-- on the hydrated scratch file (the old listing path) treated empty and
+-- corrupt checkpoints alike as present, which hard-failed the home-
+-- substrate per-run destroy on @pulumi stack output: unexpected end of
+-- JSON input@.
 queryOne
   :: FilePath
   -- ^ Repo root.
@@ -324,8 +349,125 @@ queryOne
   -- ^ Canonical stack name (e.g. @aws-eks-test@).
   -> IO ResidueStatus
 queryOne repoRoot stackName@(StackName rawName) = do
-  result <- listEncryptedStack repoRoot (stackRefFor stackName)
-  pure (residueStatusFromMinioListing (Text.unpack rawName) result)
+  result <- observeEncryptedStackCheckpoint repoRoot (stackRefFor stackName)
+  pure (residueStatusFromCheckpointObservabilityResult (Text.unpack rawName) result)
+
+-- | Sprint 7.22: a per-run destroy gate decision derived from a freshly
+-- observed 'ResidueStatus'. The per-run destroy-INVOCATION path
+-- (@destroy\<Stack>Status@ in the per-stack modules) consults this BEFORE
+-- fetching stack outputs or running @pulumi destroy@, so a corrupt / absent
+-- checkpoint never reaches a crashing @pulumi@ subprocess or an absent
+-- in-cluster @minio@ k8s secret. Sprint 7.21 gated the residue *observation*
+-- funnel ('queryOne'); this gates the destroy *invocation* itself.
+data PerRunDestroyDecision
+  = -- | Positively-observed absent checkpoint: nothing to destroy. The
+    -- 'String' is the operator-visible skip message.
+    PerRunDestroySkip String
+  | -- | Valid checkpoint: run the real destroy body.
+    PerRunDestroyProceed
+  | -- | Corrupt or unreadable checkpoint: refuse (fail-closed, per
+    -- @lifecycle_reconciliation_doctrine.md § 3.1@). The 'String' is the
+    -- actionable refusal naming the prune recovery.
+    PerRunDestroyRefuse String
+  deriving (Eq, Show)
+
+-- | Pure mapping from a freshly-observed 'ResidueStatus' to a
+-- 'PerRunDestroyDecision'. 'ResidueAbsent' → skip (the home-substrate case:
+-- the per-run AWS stacks were never provisioned, or were already destroyed);
+-- 'ResiduePresent' → proceed with the real destroy; 'ResidueUnreachable'
+-- (corrupt checkpoint or unreadable backend) → refuse, with the recovery
+-- pointing at @prune-corrupt-checkpoint@. Pure so the unit suite can pin the
+-- skip / proceed / refuse discrimination without a live backend.
+perRunDestroyDecisionFromStatus
+  :: String
+  -- ^ Display name of the stack (e.g. @aws-eks-test@).
+  -> String
+  -- ^ The prune-recovery command to name in the refusal.
+  -> ResidueStatus
+  -> PerRunDestroyDecision
+perRunDestroyDecisionFromStatus displayName pruneCommand status = case status of
+  ResidueAbsent ->
+    PerRunDestroySkip
+      ("absent (no per-run checkpoint to destroy for " ++ displayName ++ ")")
+  ResiduePresent _ -> PerRunDestroyProceed
+  ResidueUnreachable reason ->
+    PerRunDestroyRefuse
+      ( "refusing to destroy "
+          ++ displayName
+          ++ ": its encrypted Pulumi checkpoint cannot be observed ("
+          ++ renderResidueUnreachableReason reason
+          ++ "). A corrupt or unreadable checkpoint may hide live AWS resources, so this is fail-closed. "
+          ++ "If it is known-corrupt leftover state with no live resources behind it, clear it with `"
+          ++ pruneCommand
+          ++ "`."
+      )
+
+-- | Sprint 7.22: clear a genuinely-corrupt (or empty) per-run encrypted
+-- Pulumi checkpoint from the Model-B object store, so a cluster carrying
+-- stale corrupt checkpoints (e.g. truncated leftovers from an interrupted
+-- run) can converge. Observes the checkpoint first and only deletes when it
+-- is positively NOT a valid stack state:
+--
+--   * 'CheckpointCorrupt' / 'CheckpointEmpty' — delete the opaque object (the
+--     prune this command exists for) and report it.
+--   * 'CheckpointAbsent' — nothing to prune (idempotent success).
+--   * 'CheckpointPresent' — REFUSE: a valid checkpoint may map to live AWS
+--     resources, so pruning it would orphan them; the operator must use the
+--     normal @destroy@ path instead.
+--   * unreadable backend — REFUSE: cannot observe, so cannot safely prune
+--     (fail-closed), unless the state-backend bucket itself is absent (then
+--     there is genuinely nothing to prune).
+pruneCorruptPerRunCheckpoint :: FilePath -> StackName -> IO (Either String String)
+pruneCorruptPerRunCheckpoint repoRoot stackName@(StackName rawName) = do
+  let name = Text.unpack rawName
+  observed <- observeEncryptedStackCheckpoint repoRoot (stackRefFor stackName)
+  case observed of
+    Left err
+      | isMissingStateBackendBucketMessage (stackOutputsErrorDetail err) ->
+          pure (Right ("no per-run state-backend bucket; nothing to prune for " ++ name ++ "."))
+      | otherwise ->
+          pure
+            ( Left
+                ( "cannot observe the encrypted Pulumi checkpoint for "
+                    ++ name
+                    ++ "; refusing to prune an unobservable backend (fail-closed): "
+                    ++ renderStackOutputsError err
+                )
+            )
+    Right CheckpointAbsent ->
+      pure (Right ("encrypted Pulumi checkpoint already absent; nothing to prune for " ++ name ++ "."))
+    Right CheckpointEmpty -> deleteAndReport name "empty (zero-length)"
+    Right (CheckpointCorrupt detail) -> deleteAndReport name ("corrupt (" ++ detail ++ ")")
+    Right CheckpointPresent ->
+      pure
+        ( Left
+            ( "the encrypted Pulumi checkpoint for "
+                ++ name
+                ++ " decodes to a valid non-empty stack state; refusing to prune a live checkpoint "
+                ++ "(it may map to live AWS resources). Use `prodbox aws stack <stack> destroy --yes` instead."
+            )
+        )
+ where
+  deleteAndReport name kind = do
+    deleteResult <- pruneLogicalPulumiStack repoRoot (stackRefFor stackName)
+    pure $ case deleteResult of
+      Left err ->
+        Left
+          ( "failed to prune the "
+              ++ kind
+              ++ " encrypted Pulumi checkpoint for "
+              ++ name
+              ++ ": "
+              ++ renderEncryptedBackendError err
+          )
+      Right () ->
+        Right
+          ( "pruned the "
+              ++ kind
+              ++ " encrypted Pulumi checkpoint object for "
+              ++ name
+              ++ "."
+          )
 
 queryResidueVaultGate :: IO VaultGateDecision
 queryResidueVaultGate = do
@@ -397,6 +539,62 @@ residueStatusFromMinioListingWithVaultGate
 residueStatusFromMinioListingWithVaultGate gate stackName result
   | vaultGateAllows gate = residueStatusFromMinioListing stackName result
   | otherwise = residueStatusBlockedByVaultGate gate
+
+-- | Sprint 7.21 (pure): map a per-run stack's checkpoint observability
+-- onto a 'ResidueStatus', applying the doctrine's
+-- present\/absent\/unreachable classification
+-- (@lifecycle_reconciliation_doctrine.md § 3.1@):
+--
+--   * 'CheckpointAbsent' — the object was never created or is already
+--     destroyed: 'ResidueAbsent' (nothing to destroy → SKIP). This is the
+--     home-substrate case.
+--   * 'CheckpointEmpty' — a zero-length object yields no stack state:
+--     'ResidueAbsent' (nothing to destroy → SKIP). Precisely the empty
+--     case, distinct from a non-empty-unparseable blob.
+--   * 'CheckpointCorrupt' — present-but-unparseable: "cannot observe" the
+--     stack state, so 'ResidueUnreachable' (REFUSE; a corrupt checkpoint
+--     may hide live resources, so it must never silently skip). The
+--     evidence string names the stack and the parse detail so the refusal
+--     is actionable.
+--   * 'CheckpointPresent' — a real checkpoint: 'ResiduePresent' (DESTROY).
+residueStatusFromCheckpointObservability :: String -> CheckpointObservability -> ResidueStatus
+residueStatusFromCheckpointObservability stackName observability = case observability of
+  CheckpointAbsent -> ResidueAbsent
+  CheckpointEmpty -> ResidueAbsent
+  CheckpointCorrupt detail ->
+    ResidueUnreachable
+      ( ResidueQueryFailed
+          ( "corrupt (non-empty, unparseable) encrypted Pulumi checkpoint for stack "
+              ++ stackName
+              ++ ": "
+              ++ detail
+          )
+      )
+  CheckpointPresent ->
+    ResiduePresent
+      ResidueDetails
+        { residueEvidence = "encrypted Pulumi checkpoint decodes to a non-empty stack state"
+        , residueStackName = stackName
+        }
+
+-- | Sprint 7.21 (pure): same as 'residueStatusFromCheckpointObservability'
+-- but over the @Either StackOutputsError CheckpointObservability@ the IO
+-- query ('observeEncryptedStackCheckpoint') returns. A backend that could
+-- not be read at all (e.g. the @minio@ root credential is absent in Vault)
+-- arrives as a @Left@ and is classified using the same MinIO-aware rule as
+-- the listing path: a never-created state bucket is authoritative evidence
+-- of @Absent@; every other read failure is 'ResidueUnreachable'
+-- (fail-closed). This keeps an unreadable MinIO\/Vault backend a clean,
+-- actionable refusal rather than an ungraceful crash.
+residueStatusFromCheckpointObservabilityResult
+  :: String
+  -> Either StackOutputsError CheckpointObservability
+  -> ResidueStatus
+residueStatusFromCheckpointObservabilityResult stackName result = case result of
+  Left err
+    | isMissingStateBackendBucketMessage (stackOutputsErrorDetail err) -> ResidueAbsent
+    | otherwise -> ResidueUnreachable (residueReasonFromMinioError err)
+  Right observability -> residueStatusFromCheckpointObservability stackName observability
 
 -- | Sprint 4.24: translate a long-lived S3 object-key listing (from
 -- 'listLongLivedObjectKeysUnderPrefix') into a typed 'ResidueStatus'

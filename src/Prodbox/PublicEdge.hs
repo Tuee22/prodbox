@@ -178,7 +178,7 @@ substrateHostedZoneId settings substrate =
                 "substrateHostedZoneId: aws_substrate.hosted_zone_id is empty; \
                 \--substrate aws runs require aws_substrate.hosted_zone_id per \
                 \development_plan_standards.md \xc2\xa7 M (no fallback). Either \
-                \set it in prodbox-config.dhall or call resolveSubstrateHostedZoneId \
+                \set it in prodbox.dhall or call resolveSubstrateHostedZoneId \
                 \from an IO context to consult the live aws-eks-subzone Pulumi stack \
                 \snapshot."
             else stripped
@@ -186,7 +186,7 @@ substrateHostedZoneId settings substrate =
 -- | IO-context variant of 'substrateHostedZoneId' that, for the AWS substrate,
 -- falls back to the live aws-eks-subzone Pulumi stack snapshot when the
 -- operator has not populated @aws_substrate.hosted_zone_id@ in
--- @prodbox-config.dhall@. The Pulumi snapshot is written by
+-- @prodbox.dhall@. The Pulumi snapshot is written by
 -- 'Prodbox.Infra.AwsEksSubzoneStack.ensureAwsEksSubzoneStackResources' as
 -- part of the substrate-platform install, so by the time any AWS-substrate
 -- canonical validation runs the snapshot is guaranteed to exist.
@@ -236,7 +236,7 @@ resolveSubstrateHostedZoneId repoRoot settings substrate =
                     ++ err
                     ++ ". Run `prodbox aws stack aws-subzone reconcile` to provision \
                        \the subzone, or set aws_substrate.hosted_zone_id in \
-                       \prodbox-config.dhall."
+                       \prodbox.dhall."
                 )
             Right outputs ->
               case parseAwsEksSubzoneStackFromOutputs outputs of
@@ -250,7 +250,7 @@ resolveSubstrateHostedZoneId repoRoot settings substrate =
                         ++ err
                         ++ ". Run `prodbox aws stack aws-subzone reconcile` to provision \
                            \the subzone, or set aws_substrate.hosted_zone_id in \
-                           \prodbox-config.dhall."
+                           \prodbox.dhall."
                     )
 
 renderHelmRouteInventory :: String

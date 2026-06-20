@@ -2,6 +2,15 @@
 
 module Prodbox.Gateway.Daemon
   ( runGatewayDaemon
+
+    -- * Sprint 1.44: operator-write REST endpoint (pure routing helpers)
+  , allowedOperatorSecretPaths
+  , operatorWriteRoleName
+  , operatorSecretLogicalPath
+  , operatorSecretRequestMethod
+  , operatorSecretJwtHeader
+  , requestBodyBytes
+  , decodeOperatorSecretFields
   )
 where
 
@@ -37,6 +46,7 @@ import Control.Monad (forever, void, when)
 import Crypto.Hash.SHA256 (hash, hmac)
 import Data.Aeson
   ( Value (..)
+  , eitherDecodeStrict'
   , encode
   , object
   , toJSON
@@ -48,7 +58,7 @@ import Data.ByteString qualified as BS
 import Data.ByteString.Char8 qualified as BS8
 import Data.ByteString.Lazy qualified as BL
 import Data.ByteString.Lazy.Char8 qualified as BL8
-import Data.Char (intToDigit, toLower)
+import Data.Char (intToDigit, isSpace, toLower)
 import Data.Foldable (for_)
 import Data.List (intercalate, isPrefixOf, isSuffixOf, stripPrefix)
 import Data.Map.Strict (Map)
@@ -97,6 +107,14 @@ import Prodbox.Cluster.Federation
   , decodeChildMetadata
   , decodePayloadJsonField
   , federationChildrenIndexKvLogicalPath
+  )
+import Prodbox.Config.Tier0
+  ( ContextKind (..)
+  , ProdboxContext (..)
+  , ProdboxProjectConfig (..)
+  , Tier0Source (..)
+  , daemonContainerDefaultPath
+  , loadDaemonBinaryContext
   )
 import Prodbox.Error
   ( AppError (..)
@@ -164,6 +182,7 @@ import Prodbox.Vault.Client
   , VaultToken
   , vaultKubernetesLogin
   , vaultKvReadV2
+  , vaultKvWriteV2
   )
 import System.Directory (doesFileExist)
 import System.Exit (ExitCode (..))
@@ -299,6 +318,14 @@ runGatewayDaemon maybeConfigPath config = withSocketsDo $ do
     [ field "node_id" (daemonNodeId config)
     , field "log_level" logLevel
     ]
+  -- Sprint 1.40: establish the Tier-0 binary context (config_doctrine.md §0).
+  -- The container ships a baked-in default `prodbox.dhall`; the
+  -- `gateway-config-<nodeId>` ConfigMap mount OVERWRITES it (a `prodbox.dhall`
+  -- sibling next to the runtime `config.dhall` in the same directory mount).
+  -- This is purely a non-secret binary-context observation logged at startup;
+  -- it does NOT replace the daemon's existing `DaemonConfig` runtime (secrets
+  -- stay `SecretRef.Vault` pointers resolved through Vault Kubernetes auth).
+  logDaemonBinaryContext logLevel maybeConfigPath
   -- Sprint 2.22: dispatch by file extension via GatewaySettings.loadOrders
   -- so the chart-rendered Dhall Orders content decodes through the native
   -- dhall library; legacy JSON Orders files continue to work during the
@@ -385,6 +412,47 @@ runGatewayDaemon maybeConfigPath config = withSocketsDo $ do
                     Right () -> do
                       logForEnv env Info "gateway_stopped" []
                       pure ExitSuccess
+
+-- | Sprint 1.40: load and log the Tier-0 binary context using hostbootstrap's
+-- per-frame context-init pattern — the `gateway-config-<nodeId>` ConfigMap
+-- `prodbox.dhall` OVERWRITES the baked-in container default. The runtime
+-- `--config` path's directory IS the ConfigMap directory mount, so the
+-- ConfigMap-supplied `prodbox.dhall` (when present) sits beside the runtime
+-- `config.dhall`. A decode failure is logged as a warning rather than fatal:
+-- the binary context is a non-secret observation surface this sprint, and the
+-- daemon's operational `DaemonConfig` runtime (already loaded) is unaffected.
+logDaemonBinaryContext :: String -> Maybe FilePath -> IO ()
+logDaemonBinaryContext logLevel maybeConfigPath = do
+  let configMapDir = maybe "/etc/gateway/config" takeDirectory maybeConfigPath
+  result <- loadDaemonBinaryContext configMapDir daemonContainerDefaultPath
+  case result of
+    Left err ->
+      logAtLevel logLevel Warn "tier0_binary_context_decode_failed" [field "detail" err]
+    Right (source, projectConfig) -> do
+      let ctx = context projectConfig
+      logAtLevel
+        logLevel
+        Info
+        "tier0_binary_context_loaded"
+        [ field "source" (renderTier0Source source)
+        , field "project" (project ctx)
+        , field "binary" (binary ctx)
+        , field "context_kind" (renderContextKind (context_kind ctx))
+        , field "cluster_id" (cluster_id ctx)
+        ]
+
+renderTier0Source :: Tier0Source -> String
+renderTier0Source source = case source of
+  Tier0FromConfigMap path -> "configmap:" ++ path
+  Tier0FromContainerDefault path -> "container-default:" ++ path
+  Tier0FromCompiledDefault -> "compiled-default"
+
+renderContextKind :: ContextKind -> String
+renderContextKind kind = case kind of
+  HostOrchestrator -> "HostOrchestrator"
+  Daemon -> "Daemon"
+  ClusterService -> "ClusterService"
+  OtherContext -> "OtherContext"
 
 liveConfigFromDaemonConfig :: String -> DaemonConfig -> LiveConfig
 liveConfigFromDaemonConfig logLevel config =
@@ -874,46 +942,63 @@ handleRestClient sock env = do
 
   handleParsedRequest rawRequest = do
     now <- getCurrentTime
-    case requestPath rawRequest of
-      "/healthz" ->
-        sendHttpResponse sock 200 "text/plain" "ok\n"
-      "/readyz" -> do
-        readiness <- readTVarIO (envReadiness env)
-        case readiness of
-          Ready -> sendHttpResponse sock 200 "text/plain" "ready\n"
-          Draining -> sendHttpResponse sock 503 "text/plain" "draining\n"
-          Starting -> sendHttpResponse sock 503 "text/plain" "starting\n"
-      "/metrics" -> do
-        state <- readTVarIO (envState env)
-        sendHttpResponse sock 200 "text/plain" (renderMetricsText now env state)
-      "/v1/state" -> do
-        state <- readTVarIO (envState env)
-        sendLazyHttpResponse sock 200 "application/json" (renderStateJson now (envBootConfig env) state)
-      "/v1/federation/children" -> do
-        childrenResult <- readFederationChildren (envBootConfig env)
-        case childrenResult of
-          Left err -> sendHttpResponse sock 503 "text/plain" (err ++ "\n")
-          Right children ->
-            sendLazyHttpResponse
-              sock
-              200
-              "application/json"
-              (encode (object ["children" .= children]))
-      _ ->
-        case federationBootstrapChildId (requestPath rawRequest) of
-          Just childId -> do
-            bootstrapResult <- readFederationChildBootstrap (envBootConfig env) (Text.pack childId)
-            case bootstrapResult of
-              Left err ->
-                case err of
-                  FederationChildBootstrapMissing ->
-                    sendHttpResponse sock 404 "text/plain" "not found\n"
-                  FederationVaultUnavailable detail ->
-                    sendHttpResponse sock 503 "text/plain" (detail ++ "\n")
-              Right credential ->
-                sendLazyHttpResponse sock 200 "application/json" (encode credential)
-          Nothing ->
-            sendHttpResponse sock 404 "text/plain" "not found\n"
+    case operatorSecretLogicalPath (requestPath rawRequest) of
+      Just logical
+        | operatorSecretRequestMethod rawRequest == "POST" ->
+            handleOperatorSecretWrite sock env rawRequest logical
+        | otherwise ->
+            -- The write endpoint exists only for POST; a GET/PUT/etc. against
+            -- it is a client error, never a Vault read (the secrets it owns are
+            -- read in-cluster via Vault Kubernetes auth, never echoed back).
+            sendHttpResponse sock 405 "text/plain" "method not allowed\n"
+      Nothing -> handleReadRequest sock env now rawRequest
+
+-- | The read-only REST dispatch (health, readiness, metrics, state, and the
+-- federation inventory/bootstrap endpoints). Split out of 'handleRestClient'
+-- (Sprint 1.44) so the operator-write @POST /v1/secret/<logical>@ route can be
+-- handled ahead of it without re-indenting this block.
+handleReadRequest :: Socket -> DaemonEnv -> UTCTime -> BS.ByteString -> IO ()
+handleReadRequest sock env now rawRequest =
+  case requestPath rawRequest of
+    "/healthz" ->
+      sendHttpResponse sock 200 "text/plain" "ok\n"
+    "/readyz" -> do
+      readiness <- readTVarIO (envReadiness env)
+      case readiness of
+        Ready -> sendHttpResponse sock 200 "text/plain" "ready\n"
+        Draining -> sendHttpResponse sock 503 "text/plain" "draining\n"
+        Starting -> sendHttpResponse sock 503 "text/plain" "starting\n"
+    "/metrics" -> do
+      state <- readTVarIO (envState env)
+      sendHttpResponse sock 200 "text/plain" (renderMetricsText now env state)
+    "/v1/state" -> do
+      state <- readTVarIO (envState env)
+      sendLazyHttpResponse sock 200 "application/json" (renderStateJson now (envBootConfig env) state)
+    "/v1/federation/children" -> do
+      childrenResult <- readFederationChildren (envBootConfig env)
+      case childrenResult of
+        Left err -> sendHttpResponse sock 503 "text/plain" (err ++ "\n")
+        Right children ->
+          sendLazyHttpResponse
+            sock
+            200
+            "application/json"
+            (encode (object ["children" .= children]))
+    _ ->
+      case federationBootstrapChildId (requestPath rawRequest) of
+        Just childId -> do
+          bootstrapResult <- readFederationChildBootstrap (envBootConfig env) (Text.pack childId)
+          case bootstrapResult of
+            Left err ->
+              case err of
+                FederationChildBootstrapMissing ->
+                  sendHttpResponse sock 404 "text/plain" "not found\n"
+                FederationVaultUnavailable detail ->
+                  sendHttpResponse sock 503 "text/plain" (detail ++ "\n")
+            Right credential ->
+              sendLazyHttpResponse sock 200 "application/json" (encode credential)
+        Nothing ->
+          sendHttpResponse sock 404 "text/plain" "not found\n"
 
 sendHttpResponse :: Socket -> Int -> String -> String -> IO ()
 sendHttpResponse sock statusCode contentType responseBody =
@@ -951,6 +1036,164 @@ requestPath rawRequest =
   case words (takeWhile (/= '\r') (takeWhile (/= '\n') (BS8.unpack rawRequest))) of
     _method : path : _ -> path
     _ -> "/v1/state"
+
+-- Sprint 1.44: the operator-write REST endpoint (@POST /v1/secret/<logical>@).
+--
+-- The host CLI (a real operator, or the test harness simulating one) routes the
+-- two host-minted operator secrets through the in-cluster daemon over the
+-- loopback NodePort instead of writing them to Vault with the host root token:
+--
+--   * @secret/acme/eab@ — the ZeroSSL external-account-binding material.
+--   * @secret/gateway/gateway/aws@ — the minted operational @aws.*@ credential.
+--
+-- The request carries an operator-injected Kubernetes JWT (header
+-- @X-Prodbox-Operator-Jwt@); the daemon exchanges it for a Vault token under the
+-- narrow @prodbox-operator-write@ role and writes the KV object. The daemon's
+-- own read-only @prodbox-gateway-daemon@ identity is never used for the write.
+
+-- | The exact KV logical paths the operator-write endpoint accepts. Anything
+-- else is a 404 — the endpoint is a deliberately tiny allowlist, not a generic
+-- Vault proxy.
+allowedOperatorSecretPaths :: [String]
+allowedOperatorSecretPaths = ["acme/eab", "gateway/gateway/aws"]
+
+-- | The Vault Kubernetes-auth role the daemon logs into for operator writes.
+operatorWriteRoleName :: Text.Text
+operatorWriteRoleName = "prodbox-operator-write"
+
+-- | The request header carrying the operator-injected Kubernetes JWT.
+operatorJwtHeaderName :: String
+operatorJwtHeaderName = "x-prodbox-operator-jwt"
+
+-- | Map a request path to an allowlisted operator-secret logical path. Returns
+-- @Nothing@ for any non-@/v1/secret/@ path or any path outside the allowlist,
+-- so the read dispatch handles everything else unchanged.
+operatorSecretLogicalPath :: String -> Maybe String
+operatorSecretLogicalPath path = do
+  logical <- stripPrefix "/v1/secret/" path
+  if logical `elem` allowedOperatorSecretPaths
+    then Just logical
+    else Nothing
+
+-- | The HTTP method of a raw request: the first whitespace-delimited token of
+-- the request line, verbatim (HTTP methods are case-sensitive and uppercase per
+-- RFC 7231). Defaults to @GET@ for a malformed request line.
+operatorSecretRequestMethod :: BS.ByteString -> String
+operatorSecretRequestMethod rawRequest =
+  case words (takeWhile (/= '\r') (takeWhile (/= '\n') (BS8.unpack rawRequest))) of
+    method : _ -> method
+    _ -> "GET"
+
+-- | Extract the operator JWT header value (case-insensitive name match), if
+-- present and non-empty.
+operatorSecretJwtHeader :: BS.ByteString -> Maybe String
+operatorSecretJwtHeader rawRequest =
+  case [ trimHeader (drop 1 value)
+       | line <- drop 1 (splitCrlfLines (BS8.unpack rawRequest))
+       , let (name, value) = break (== ':') line
+       , map toLower (trimHeader name) == operatorJwtHeaderName
+       , not (null value)
+       ] of
+    (jwt : _) | not (null jwt) -> Just jwt
+    _ -> Nothing
+
+-- | The request body: everything after the first blank (CRLF CRLF) line.
+requestBodyBytes :: BS.ByteString -> BS.ByteString
+requestBodyBytes rawRequest =
+  case BS.breakSubstring crlfCrlf rawRequest of
+    (_, rest)
+      | BS.null rest -> BS.empty
+      | otherwise -> BS.drop (BS.length crlfCrlf) rest
+ where
+  crlfCrlf = BS8.pack "\r\n\r\n"
+
+-- | Decode the operator-secret request body as a flat @{ field: value }@ JSON
+-- object of string fields — exactly the Vault KV v2 field-map shape.
+decodeOperatorSecretFields :: BS.ByteString -> Either String (Map Text.Text Text.Text)
+decodeOperatorSecretFields body
+  | BS.null (BS8.dropWhile isSpace body) =
+      Left "empty request body; expected a JSON object of secret fields"
+  | otherwise =
+      case eitherDecodeStrict' body of
+        Left err -> Left ("invalid secret JSON body: " ++ err)
+        Right fields -> Right fields
+
+splitCrlfLines :: String -> [String]
+splitCrlfLines = foldr step [""] . filter (/= '\r')
+ where
+  step '\n' acc = "" : acc
+  step c (cur : rest) = (c : cur) : rest
+  step c [] = [[c]]
+
+trimHeader :: String -> String
+trimHeader = f . f where f = reverse . dropWhile isSpace
+
+-- | Errors from the operator-secret write path, mapped to HTTP status codes.
+data OperatorWriteError
+  = OperatorWriteAuthUnconfigured String
+  | OperatorWriteAuthFailed String
+  | OperatorWriteVaultFailed String
+  deriving (Eq, Show)
+
+-- | Handle @POST /v1/secret/<logical>@: require the operator JWT, decode the
+-- body, exchange the JWT for a Vault token under the operator-write role, and
+-- write the KV object. Never echoes the written secret back.
+handleOperatorSecretWrite :: Socket -> DaemonEnv -> BS.ByteString -> String -> IO ()
+handleOperatorSecretWrite sock env rawRequest logical =
+  case operatorSecretJwtHeader rawRequest of
+    Nothing ->
+      sendHttpResponse sock 401 "text/plain" ("missing " ++ operatorJwtHeaderName ++ " header\n")
+    Just jwt ->
+      case decodeOperatorSecretFields (requestBodyBytes rawRequest) of
+        Left err -> sendHttpResponse sock 400 "text/plain" (err ++ "\n")
+        Right fields -> do
+          writeResult <-
+            writeOperatorSecret (envBootConfig env) (Text.pack jwt) (Text.pack logical) fields
+          case writeResult of
+            Left (OperatorWriteAuthUnconfigured detail) ->
+              sendHttpResponse sock 503 "text/plain" (detail ++ "\n")
+            Left (OperatorWriteAuthFailed detail) ->
+              sendHttpResponse sock 403 "text/plain" (detail ++ "\n")
+            Left (OperatorWriteVaultFailed detail) ->
+              sendHttpResponse sock 502 "text/plain" (detail ++ "\n")
+            Right () ->
+              sendLazyHttpResponse sock 200 "application/json" (encode (object ["written" .= True]))
+
+-- | Exchange the operator JWT for a Vault token under the operator-write role
+-- and write the KV v2 object at @secret/<logical>@.
+writeOperatorSecret
+  :: DaemonConfig
+  -> Text.Text
+  -> Text.Text
+  -> Map Text.Text Text.Text
+  -> IO (Either OperatorWriteError ())
+writeOperatorSecret config jwt logical fields =
+  case daemonVaultAuth config of
+    Nothing ->
+      pure
+        ( Left
+            (OperatorWriteAuthUnconfigured "operator-write unavailable: gateway Vault auth is not configured")
+        )
+    Just auth -> do
+      let address = VaultAddress (Text.pack (gatewayVaultAddress auth))
+      loginResult <-
+        vaultKubernetesLogin
+          address
+          (Text.pack (gatewayVaultAuthPath auth))
+          operatorWriteRoleName
+          jwt
+      case loginResult of
+        Left err ->
+          pure
+            ( Left
+                (OperatorWriteAuthFailed ("operator-write Vault Kubernetes auth failed: " ++ renderHttpError err))
+            )
+        Right token -> do
+          writeResult <- vaultKvWriteV2 address token "secret" logical fields
+          pure $ case writeResult of
+            Left err ->
+              Left (OperatorWriteVaultFailed ("operator-write Vault KV write failed: " ++ renderHttpError err))
+            Right () -> Right ()
 
 data FederationChildBootstrapError
   = FederationVaultUnavailable String

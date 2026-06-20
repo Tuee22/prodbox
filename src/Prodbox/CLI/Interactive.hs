@@ -65,7 +65,7 @@ awsSetupGuard =
           , "  prodbox test integration <name> --substrate aws"
           , ""
           , "The suite-level IAM harness materializes operational aws.* from"
-          , "aws_admin_for_test_simulation.* in prodbox-config.dhall and clears it"
+          , "aws_admin_for_test_simulation.* in test-secrets.dhall and clears it"
           , "on suite exit. No prompt."
           ]
     }
@@ -89,7 +89,7 @@ awsCheckQuotasGuard =
     , guardAutomationHint =
         unlines
           [ "prodbox aws check-quotas is operator-only. Populate operational aws.*"
-          , "first (via the test harness or by editing prodbox-config.dhall) and"
+          , "first (via the test harness or by editing prodbox.dhall) and"
           , "re-run from a terminal."
           ]
     }
@@ -101,7 +101,7 @@ awsRequestQuotasGuard =
     , guardAutomationHint =
         unlines
           [ "prodbox aws request-quotas is operator-only. Populate operational"
-          , "aws.* first (via the test harness or by editing prodbox-config.dhall)"
+          , "aws.* first (via the test harness or by editing prodbox.dhall)"
           , "and re-run from a terminal."
           ]
     }
@@ -112,7 +112,7 @@ configSetupGuard =
     { guardCommand = "prodbox config setup"
     , guardAutomationHint =
         unlines
-          [ "Edit prodbox-config.dhall directly against the"
+          [ "Edit prodbox.dhall directly against the"
           , "prodbox-config-types.dhall schema. The test harness reads it as-is."
           ]
     }

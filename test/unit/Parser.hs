@@ -25,6 +25,7 @@ import Prodbox.CLI.Command
   , K8sCommand (..)
   , LintCommand (..)
   , NativeCommand (..)
+  , PerRunPruneTarget (..)
   , PulumiCommand (..)
   , Rke2Command (..)
   , TestCommand (..)
@@ -178,6 +179,7 @@ commandPathOfRequest request =
               ConfigSetup _ -> ["setup"]
               ConfigShow _ -> ["show"]
               ConfigValidate -> ["validate"]
+              ConfigSchema -> ["schema"]
         NativeDns dnsCommand ->
           "dns"
             : case dnsCommand of
@@ -234,6 +236,11 @@ commandPathOfRequest request =
               PulumiAwsSesResources _ -> ["aws-ses", "reconcile"]
               PulumiAwsSesDestroy _ _ -> ["aws-ses", "destroy"]
               PulumiAwsSesMigrateBackend _ -> ["aws-ses", "migrate-backend"]
+              PulumiPruneCorruptCheckpoint target _ ->
+                case target of
+                  PrunePerRunEks -> ["eks", "prune-corrupt-checkpoint"]
+                  PrunePerRunSubzone -> ["aws-subzone", "prune-corrupt-checkpoint"]
+                  PrunePerRunTest -> ["test", "prune-corrupt-checkpoint"]
         NativeRke2 rke2Command ->
           "cluster"
             : case rke2Command of

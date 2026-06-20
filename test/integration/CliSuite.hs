@@ -79,7 +79,7 @@ integrationCliSuite = do
       withSystemTempDirectory "prodbox-hs-cli" $ \tmpDir -> do
         binary <- resolveBinaryPath
         writeRepoMarkers tmpDir
-        writeFile (tmpDir </> "prodbox-config.dhall") validConfig
+        writeFile (tmpDir </> "prodbox.dhall") (wrapTier0 validConfig)
 
         (exitCode, stdoutText, stderrText) <-
           readCreateProcessWithExitCode
@@ -95,7 +95,7 @@ integrationCliSuite = do
       withSystemTempDirectory "prodbox-hs-cli" $ \tmpDir -> do
         binary <- resolveBinaryPath
         writeRepoMarkers tmpDir
-        writeFile (tmpDir </> "prodbox-config.dhall") validConfig
+        writeFile (tmpDir </> "prodbox.dhall") (wrapTier0 validConfig)
 
         (exitCode, _, stderrText) <-
           readCreateProcessWithExitCode
@@ -154,7 +154,7 @@ integrationCliSuite = do
       withSystemTempDirectory "prodbox-hs-cli" $ \tmpDir -> do
         binary <- resolveBinaryPath
         writeRepoMarkers tmpDir
-        writeFile (tmpDir </> "prodbox-config.dhall") validConfig
+        writeFile (tmpDir </> "prodbox.dhall") (wrapTier0 validConfig)
         let outputPath = tmpDir </> "gateway.dhall"
 
         (exitCode, stdoutText, stderrText) <-
@@ -200,7 +200,7 @@ integrationCliSuite = do
         withFakeVaultServer $ \vaultPort -> do
           binary <- resolveBinaryPath
           writeRepoMarkers tmpDir
-          writeFile (tmpDir </> "prodbox-config.dhall") validConfig
+          writeFile (tmpDir </> "prodbox.dhall") (wrapTier0 validConfig)
           (restPort, socketPort) <- allocateTwoLoopbackTcpPorts
           let tokenPath = tmpDir </> "gateway.jwt"
               ordersPath = tmpDir </> "orders.dhall"
@@ -308,7 +308,7 @@ integrationCliSuite = do
       $ \tmpDir -> do
         binary <- resolveBinaryPath
         writeRepoMarkers tmpDir
-        writeFile (tmpDir </> "prodbox-config.dhall") validConfig
+        writeFile (tmpDir </> "prodbox.dhall") (wrapTier0 validConfig)
         envVars <- fakeChartEnvironment tmpDir
 
         (listExitCode, listStdout, listStderr) <-
@@ -337,6 +337,9 @@ integrationCliSuite = do
             (proc binary ["charts", "reconcile", "vscode"]) {cwd = Just tmpDir, env = Just envVars}
             ""
 
+        when
+          (deployExitCode /= ExitSuccess)
+          (expectationFailure ("deploy STDOUT:\n" ++ deployStdout ++ "\ndeploy STDERR:\n" ++ deployStderr))
         deployExitCode `shouldBe` ExitSuccess
         deployStderr `shouldBe` ""
         deployStdout `shouldContain` "CHART_DEPLOYMENT"
@@ -376,9 +379,19 @@ integrationCliSuite = do
                 | path <- initialChartStateFiles
                 , take 13 path == "kubectl-apply"
                 ]
+            -- The second reconcile models the fully-deployed steady state, so
+            -- ALL THREE releases of the `vscode` chart root must appear in the
+            -- helm list — including `keycloak-postgres`. Under the deploy-missing
+            -- reconcile (`chartReleasesToDeploy`), omitting any release marks it
+            -- as needing (re)deployment; leaving `keycloak-postgres` out would
+            -- drive a redundant Patroni redeploy instead of the intended
+            -- idempotent no-op. (The partial-rollback heal — deploy only the
+            -- missing release — is covered by the `chartReleasesToDeploy` unit
+            -- test.)
             alreadyDeployedEnvVars =
               ( "PRODBOX_FAKE_HELM_LIST_JSON"
-              , "[{\"name\":\"keycloak\",\"namespace\":\"vscode\",\"status\":\"deployed\"},"
+              , "[{\"name\":\"keycloak-postgres\",\"namespace\":\"vscode\",\"status\":\"deployed\"},"
+                  ++ "{\"name\":\"keycloak\",\"namespace\":\"vscode\",\"status\":\"deployed\"},"
                   ++ "{\"name\":\"vscode\",\"namespace\":\"vscode\",\"status\":\"deployed\"}]"
               )
                 : filter ((/= "PRODBOX_FAKE_HELM_LIST_JSON") . fst) envVars
@@ -391,6 +404,11 @@ integrationCliSuite = do
               }
             ""
 
+        when
+          (secondDeployExitCode /= ExitSuccess)
+          ( expectationFailure
+              ("secondDeploy STDOUT:\n" ++ secondDeployStdout ++ "\nsecondDeploy STDERR:\n" ++ secondDeployStderr)
+          )
         secondDeployExitCode `shouldBe` ExitSuccess
         secondDeployStderr `shouldBe` ""
         secondDeployStdout `shouldContain` "CHART_DEPLOYMENT"
@@ -412,6 +430,9 @@ integrationCliSuite = do
             (proc binary ["charts", "delete", "vscode", "--yes"]) {cwd = Just tmpDir, env = Just envVars}
             ""
 
+        when
+          (deleteExitCode /= ExitSuccess)
+          (expectationFailure ("delete STDOUT:\n" ++ deleteStdout ++ "\ndelete STDERR:\n" ++ deleteStderr))
         deleteExitCode `shouldBe` ExitSuccess
         deleteStderr `shouldBe` ""
         deleteStdout `shouldContain` "CHART_DELETION"
@@ -436,7 +457,7 @@ integrationCliSuite = do
       withSystemTempDirectory "prodbox-hs-cli" $ \tmpDir -> do
         binary <- resolveBinaryPath
         writeRepoMarkers tmpDir
-        writeFile (tmpDir </> "prodbox-config.dhall") validConfig
+        writeFile (tmpDir </> "prodbox.dhall") (wrapTier0 validConfig)
         -- Sprint 4.31: the retained ordinal-0 host data lives at the unified
         -- `.data/<namespace>/<StatefulSet>/<ordinal>` path (no `<release>` /
         -- `<claim>` segment), so the restore-staging detects it here.
@@ -467,7 +488,7 @@ integrationCliSuite = do
       withSystemTempDirectory "prodbox-hs-cli" $ \tmpDir -> do
         binary <- resolveBinaryPath
         writeRepoMarkers tmpDir
-        writeFile (tmpDir </> "prodbox-config.dhall") validConfig
+        writeFile (tmpDir </> "prodbox.dhall") (wrapTier0 validConfig)
         envVars <- fakeChartEnvironment tmpDir
 
         (statusExitCode, _, statusStderr) <-
@@ -542,8 +563,13 @@ integrationCliSuite = do
       $ \tmpDir -> do
         binary <- resolveBinaryPath
         writeRepoMarkers tmpDir
-        writeFile (tmpDir </> "prodbox-config.dhall") validConfig
-        envVars <- fakeRke2Environment tmpDir
+        writeFile (tmpDir </> "prodbox.dhall") (wrapTier0 validConfig)
+        -- Sprint 1.42 Part B: with the Tier-0 prodbox.dhall floor present, the
+        -- post-MinIO settings reload obtains the host Vault root token; supply
+        -- the test seam so it does not try to decrypt an unlock bundle (none
+        -- exists in this temp repo). The in-force SSoT seed against the real
+        -- Vault fail-WARNs and the config read falls back to .parameters.
+        envVars <- (("PRODBOX_TEST_HOST_VAULT_TOKEN", "fake-root-token") :) <$> fakeRke2Environment tmpDir
 
         (installExitCode, installStdout, installStderr) <-
           readCreateProcessWithExitCode
@@ -759,12 +785,13 @@ integrationCliSuite = do
       withSystemTempDirectory "prodbox-hs-cli" $ \tmpDir -> do
         binary <- resolveBinaryPath
         writeRepoMarkers tmpDir
-        writeFile (tmpDir </> "prodbox-config.dhall") validConfig
+        writeFile (tmpDir </> "prodbox.dhall") (wrapTier0 validConfig)
         baseEnvVars <- fakeRke2Environment tmpDir
         let envVars =
               ( "PRODBOX_FAKE_DOCKER_PULL_RATE_LIMIT_REF"
               , "docker.io/percona/percona-distribution-postgresql:17.9-1"
               )
+                : ("PRODBOX_TEST_HOST_VAULT_TOKEN", "fake-root-token")
                 : baseEnvVars
 
         (installExitCode, installStdout, installStderr) <-
@@ -795,7 +822,7 @@ integrationCliSuite = do
       withSystemTempDirectory "prodbox-hs-cli" $ \tmpDir -> do
         binary <- resolveBinaryPath
         writeRepoMarkers tmpDir
-        writeFile (tmpDir </> "prodbox-config.dhall") validConfig
+        writeFile (tmpDir </> "prodbox.dhall") (wrapTier0 validConfig)
         baseEnvVars <- fakeRke2Environment tmpDir
         let envVars = ("PRODBOX_FAKE_RKE2_UNINSTALL_EXISTS", "1") : baseEnvVars
 
@@ -845,7 +872,7 @@ integrationCliSuite = do
       withSystemTempDirectory "prodbox-hs-cli" $ \tmpDir -> do
         binary <- resolveBinaryPath
         writeRepoMarkers tmpDir
-        writeFile (tmpDir </> "prodbox-config.dhall") validConfig
+        writeFile (tmpDir </> "prodbox.dhall") (wrapTier0 validConfig)
         baseEnvVars <- fakeRke2Environment tmpDir
         let envVars =
               ("PRODBOX_FAKE_RKE2_UNINSTALL_EXISTS", "1")
@@ -874,7 +901,9 @@ integrationCliSuite = do
       withSystemTempDirectory "prodbox-hs-cli" $ \tmpDir -> do
         binary <- resolveBinaryPath
         writeRepoMarkers tmpDir
-        writeFile (tmpDir </> "prodbox-config.dhall") validConfigWithBlankOperationalAwsAndConfiguredAdmin
+        writeFile
+          (tmpDir </> "prodbox.dhall")
+          (wrapTier0 validConfigWithBlankOperationalAwsAndConfiguredAdmin)
         envVars <- fakeRke2Environment tmpDir
 
         createDirectoryIfMissing True (tmpDir </> ".kube")
@@ -908,7 +937,9 @@ integrationCliSuite = do
       withSystemTempDirectory "prodbox-hs-cli" $ \tmpDir -> do
         binary <- resolveBinaryPath
         writeRepoMarkers tmpDir
-        writeFile (tmpDir </> "prodbox-config.dhall") validConfigWithBlankOperationalAwsAndConfiguredAdmin
+        writeFile
+          (tmpDir </> "prodbox.dhall")
+          (wrapTier0 validConfigWithBlankOperationalAwsAndConfiguredAdmin)
         baseEnvVars <- fakeRke2Environment tmpDir
         -- Even with the per-run backend forced unreachable, the default
         -- delete never queries, gates on, or destroys it — it is a pure
@@ -937,7 +968,9 @@ integrationCliSuite = do
       withSystemTempDirectory "prodbox-hs-cli" $ \tmpDir -> do
         binary <- resolveBinaryPath
         writeRepoMarkers tmpDir
-        writeFile (tmpDir </> "prodbox-config.dhall") validConfigWithBlankOperationalAwsAndConfiguredAdmin
+        writeFile
+          (tmpDir </> "prodbox.dhall")
+          (wrapTier0 validConfigWithBlankOperationalAwsAndConfiguredAdmin)
         -- Reproduce the real "cluster already gone" host: no RKE2 install AND an
         -- unreachable in-cluster MinIO state backend. The short-circuit must win
         -- over the residue gate's fail-closed refusal.
@@ -960,7 +993,9 @@ integrationCliSuite = do
       withSystemTempDirectory "prodbox-hs-cli" $ \tmpDir -> do
         binary <- resolveBinaryPath
         writeRepoMarkers tmpDir
-        writeFile (tmpDir </> "prodbox-config.dhall") validConfigWithBlankOperationalAwsAndConfiguredAdmin
+        writeFile
+          (tmpDir </> "prodbox.dhall")
+          (wrapTier0 validConfigWithBlankOperationalAwsAndConfiguredAdmin)
         envVars <- withNoRke2Install <$> fakeRke2Environment tmpDir
 
         (deleteExitCode, deleteStdout, deleteStderr) <-
@@ -986,7 +1021,7 @@ integrationCliSuite = do
       $ \tmpDir -> do
         binary <- resolveBinaryPath
         writeRepoMarkers tmpDir
-        writeFile (tmpDir </> "prodbox-config.dhall") validConfigForNuke
+        writeFile (tmpDir </> "prodbox.dhall") (wrapTier0 validConfigForNuke)
 
         (exitCode, stdoutText, _) <-
           readCreateProcessWithExitCode
@@ -1002,7 +1037,7 @@ integrationCliSuite = do
       withSystemTempDirectory "prodbox-hs-cli" $ \tmpDir -> do
         binary <- resolveBinaryPath
         writeRepoMarkers tmpDir
-        writeFile (tmpDir </> "prodbox-config.dhall") validConfigForNuke
+        writeFile (tmpDir </> "prodbox.dhall") (wrapTier0 validConfigForNuke)
         envVars <- fakeRke2Environment tmpDir
         let nukeEnv = ("PRODBOX_ALLOW_NON_TTY_INTERACTIVE", "1") : envVars
 
@@ -1023,8 +1058,8 @@ integrationCliSuite = do
       $ \tmpDir -> do
         binary <- resolveBinaryPath
         writeRepoMarkers tmpDir
-        writeFile (tmpDir </> "prodbox-config.dhall") validConfig
-        writeFile (tmpDir </> "test-config.dhall") testConfigDhall
+        writeFile (tmpDir </> "prodbox.dhall") (wrapTier0 validConfig)
+        writeFile (tmpDir </> "test-secrets.dhall") testSecretsDhall
         withFakeVaultLifecycleServer $ \vaultPort stateRef -> do
           envVars <- fakeVaultLifecycleEnvironment vaultPort
           let runVault args =
@@ -1098,7 +1133,9 @@ integrationCliSuite = do
       withSystemTempDirectory "prodbox-hs-cli" $ \tmpDir -> do
         binary <- resolveBinaryPath
         writeRepoMarkers tmpDir
-        writeFile (tmpDir </> "prodbox-config.dhall") validConfigWithBlankOperationalAwsAndConfiguredAdmin
+        writeFile
+          (tmpDir </> "prodbox.dhall")
+          (wrapTier0 validConfigWithBlankOperationalAwsAndConfiguredAdmin)
         baseEnv <- fakeRke2Environment tmpDir
         withGatewayStateServer sealedVaultStatusJson $ \port _ -> do
           let envVars =
@@ -1122,10 +1159,9 @@ integrationCliSuite = do
       withSystemTempDirectory "prodbox-hs-cli" $ \tmpDir -> do
         binary <- resolveBinaryPath
         writeRepoMarkers tmpDir
-        writeFile (tmpDir </> "prodbox-config.dhall") validConfig
         withFakeVaultLifecycleServer $ \vaultPort stateRef -> do
           modifyMVar stateRef $ \_ -> pure (FakeVaultLifecycleState True False 3, ())
-          writeRootBasics tmpDir (fakeVaultAddress vaultPort)
+          writeRootBasics tmpDir (fakeVaultAddress vaultPort) validConfig
           baseEnv <- fakeRke2Environment tmpDir
           let envVars =
                 ("PRODBOX_TEST_HOST_VAULT_TOKEN", "fake-parent-root-token")
@@ -1189,11 +1225,10 @@ integrationCliSuite = do
           binary <- resolveBinaryPath
           repoRoot <- getCurrentDirectory
           writeRepoMarkers tmpDir
-          writeFile (tmpDir </> "prodbox-config.dhall") validConfigForNuke
           writeFile
-            (tmpDir </> "test-config.dhall")
-            (testConfigDhallWithAdmin "CONFIGADMINKEY" "config-admin-secret" "us-west-2" Nothing)
-          writeRootBasics tmpDir (fakeVaultAddress vaultPort)
+            (tmpDir </> "test-secrets.dhall")
+            (testSecretsDhallWithAdmin "CONFIGADMINKEY" "config-admin-secret" "us-west-2" Nothing)
+          writeRootBasics tmpDir (fakeVaultAddress vaultPort) validConfigForNuke
           createDirectoryIfMissing True (tmpDir </> ".kube")
           writeFile (tmpDir </> ".kube" </> "config") "server: https://127.0.0.1:6443\n"
           -- Step 1 (aws-ses destroy) runs `pulumi` in the aws-ses program dir;
@@ -1235,8 +1270,8 @@ integrationCliSuite = do
       withSystemTempDirectory "prodbox-hs-cli" $ \tmpDir -> do
         binary <- resolveBinaryPath
         writeRepoMarkers tmpDir
-        writeFile (tmpDir </> "prodbox-config.dhall") zeroSslConfig
-        envVars <- fakeRke2Environment tmpDir
+        writeFile (tmpDir </> "prodbox.dhall") (wrapTier0 zeroSslConfig)
+        envVars <- (("PRODBOX_TEST_HOST_VAULT_TOKEN", "fake-root-token") :) <$> fakeRke2Environment tmpDir
 
         -- The refactor moved the ZeroSSL ACME ClusterIssuer (and the Route 53
         -- DNS bootstrap) behind `--with-edge`; bare `cluster reconcile` stands
@@ -1360,16 +1395,23 @@ integrationCliSuite = do
         stderrText `shouldBe` ""
         stdoutText `shouldContain` "ROUTE53_ZONE_ID=Z1234567890ABC"
         stdoutText `shouldContain` "AWS_ACCESS_KEY_ID=AKIAFAKESETUP"
-        configText <- readFile (tmpDir </> "prodbox-config.dhall")
-        configText `shouldContain` "access_key_id = Config.SecretRef.Vault"
+        configText <- readFile (tmpDir </> "prodbox.dhall")
+        -- Sprint 1.42 Part B: `config setup` now authors the operator config into
+        -- prodbox.dhall's `parameters` block, rendered canonically by Dhall.inject
+        -- (no `Config.SecretRef.Vault` schema-qualified syntax). The sensitive
+        -- AWS access key is a Vault pointer (mount/path/field), never plaintext.
+        configText `shouldContain` ">.Vault"
+        configText `shouldContain` "path = \"gateway/gateway/aws\""
+        configText `shouldContain` "field = \"access_key_id\""
         configText `shouldNotContain` "AKIAFAKESETUP"
         configText `shouldContain` "zone_id = \"Z1234567890ABC\""
         configText `shouldContain` "demo_fqdn = \"test.resolvefintech.com\""
         configText `shouldContain` "public_edge_advertisement_mode = Some \"l2\""
         -- Sprint 7.15: the prompted EAB key ID + HMAC key are written to Vault
-        -- (secret/acme/eab), never persisted into prodbox-config.dhall. The
-        -- config references them through SecretRef.Vault.
-        configText `shouldContain` "eab_hmac_key = Some (Config.SecretRef.Vault"
+        -- (secret/acme/eab), never persisted into prodbox.dhall. The
+        -- config references them through a Vault SecretRef pointer.
+        configText `shouldContain` "eab_hmac_key = Some"
+        configText `shouldContain` "field = \"hmac_key\""
         configText `shouldNotContain` "test-eab-hmac-key"
         configText `shouldNotContain` "test-eab-key-id"
         setupVaultAccessKey <- readFakeVaultField tmpDir "secret" gatewayAwsVaultPath "access_key_id"
@@ -1387,10 +1429,12 @@ integrationCliSuite = do
         binary <- resolveBinaryPath
         writeRepoMarkers tmpDir
         copySchema repoRoot tmpDir
-        writeFile (tmpDir </> "prodbox-config.dhall") validConfigWithBlankOperationalAwsAndConfiguredAdmin
         writeFile
-          (tmpDir </> "test-config.dhall")
-          (testConfigDhallWithAdmin "CONFIGADMINKEY" "config-admin-secret" "us-west-2" Nothing)
+          (tmpDir </> "prodbox.dhall")
+          (wrapTier0 validConfigWithBlankOperationalAwsAndConfiguredAdmin)
+        writeFile
+          (tmpDir </> "test-secrets.dhall")
+          (testSecretsDhallWithAdmin "CONFIGADMINKEY" "config-admin-secret" "us-west-2" Nothing)
         envVars <- fakeAwsEnvironment tmpDir
 
         let setupInput = unlines ["ADMINKEY", "admin-secret", "", "", "1"]
@@ -1405,8 +1449,12 @@ integrationCliSuite = do
         setupStdout `shouldContain` "POLICY_TIER=full"
         setupStdout `shouldContain` "AWS_ACCESS_KEY_ID=AKIAFAKESETUP"
 
-        configAfterSetup <- readFile (tmpDir </> "prodbox-config.dhall")
-        configAfterSetup `shouldContain` "access_key_id = Config.SecretRef.Vault"
+        configAfterSetup <- readFile (tmpDir </> "prodbox.dhall")
+        -- Sprint 1.42 Part B: the operator config is merged into prodbox.dhall's
+        -- `parameters` block, canonically rendered by Dhall.inject. The AWS access
+        -- key stays a Vault pointer (path/field), never a plaintext credential.
+        configAfterSetup `shouldContain` "path = \"gateway/gateway/aws\""
+        configAfterSetup `shouldContain` "field = \"access_key_id\""
         configAfterSetup `shouldNotContain` "AKIAFAKESETUP"
         vaultAccessKeyAfterSetup <- readFakeVaultField tmpDir "secret" gatewayAwsVaultPath "access_key_id"
         vaultAccessKeyAfterSetup `shouldBe` "AKIAFAKESETUP"
@@ -1427,8 +1475,9 @@ integrationCliSuite = do
         teardownStdout `shouldContain` "USER_DELETED=true"
         teardownStdout `shouldContain` "DELETED_ACCESS_KEYS=1"
 
-        configAfterTeardown <- readFile (tmpDir </> "prodbox-config.dhall")
-        configAfterTeardown `shouldContain` "access_key_id = Config.SecretRef.Vault"
+        configAfterTeardown <- readFile (tmpDir </> "prodbox.dhall")
+        configAfterTeardown `shouldContain` "path = \"gateway/gateway/aws\""
+        configAfterTeardown `shouldContain` "field = \"access_key_id\""
         configAfterTeardown `shouldNotContain` "AKIAFAKESETUP"
         configAfterTeardown `shouldNotContain` "fake-secret-access-key"
         vaultAccessKeyAfterTeardown <-
@@ -1448,10 +1497,12 @@ integrationCliSuite = do
         binary <- resolveBinaryPath
         writeRepoMarkers tmpDir
         copySchema repoRoot tmpDir
-        writeFile (tmpDir </> "prodbox-config.dhall") validConfigWithLeakedOperationalAwsAndConfiguredAdmin
         writeFile
-          (tmpDir </> "test-config.dhall")
-          (testConfigDhallWithAdmin "CONFIGADMINKEY" "config-admin-secret" "us-west-2" Nothing)
+          (tmpDir </> "prodbox.dhall")
+          (wrapTier0 validConfigWithLeakedOperationalAwsAndConfiguredAdmin)
+        writeFile
+          (tmpDir </> "test-secrets.dhall")
+          (testSecretsDhallWithAdmin "CONFIGADMINKEY" "config-admin-secret" "us-west-2" Nothing)
         seedFakeVaultAwsCredentials
           tmpDir
           gatewayAwsVaultPath
@@ -1480,8 +1531,9 @@ integrationCliSuite = do
         stdoutText `shouldContain` "IAM_PRINCIPAL=iam-user"
         stdoutText `shouldContain` "POST_RUN_OPERATIONAL_CONFIG_CLEARED=true"
 
-        configAfterHarness <- readFile (tmpDir </> "prodbox-config.dhall")
-        configAfterHarness `shouldContain` "access_key_id = Config.SecretRef.Vault"
+        configAfterHarness <- readFile (tmpDir </> "prodbox.dhall")
+        configAfterHarness `shouldContain` "path = \"gateway/gateway/aws\""
+        configAfterHarness `shouldContain` "field = \"access_key_id\""
         configAfterHarness `shouldNotContain` "AKIALEAKED"
         configAfterHarness `shouldNotContain` "leaked-secret"
         vaultAccessKeyAfterHarness <- readFakeVaultField tmpDir "secret" gatewayAwsVaultPath "access_key_id"
@@ -1492,6 +1544,52 @@ integrationCliSuite = do
 
         deletedUsers <- fmap lines (readFile (tmpDir </> "fake-aws-state" </> "iam_deleted_users"))
         deletedUsers `shouldBe` ["prodbox", "leaked-user", "prodbox"]
+
+    it
+      "seeds the ACME EAB into Vault non-interactively from test-secrets.dhall's acme_eab block"
+      $ withSystemTempDirectory "prodbox-hs-cli"
+      $ \tmpDir -> do
+        repoRoot <- getCurrentDirectory
+        binary <- resolveBinaryPath
+        writeRepoMarkers tmpDir
+        copySchema repoRoot tmpDir
+        writeFile
+          (tmpDir </> "prodbox.dhall")
+          (wrapTier0 validConfigWithLeakedOperationalAwsAndConfiguredAdmin)
+        writeFile
+          (tmpDir </> "test-secrets.dhall")
+          ( testSecretsDhallWithAdminAndAcmeEab
+              "CONFIGADMINKEY"
+              "config-admin-secret"
+              "us-west-2"
+              Nothing
+              "test-eab-key-id"
+              "test-eab-hmac-key"
+          )
+        seedFakeVaultAwsCredentials
+          tmpDir
+          gatewayAwsVaultPath
+          "AKIALEAKED"
+          "leaked-secret"
+          Nothing
+          "us-west-2"
+        seedFakeAwsHarnessState tmpDir
+        envVars <- fakeAwsHarnessEnvironment tmpDir binary
+
+        (exitCode, _stdoutText, _stderrText) <-
+          readCreateProcessWithExitCode
+            (proc binary ["test", "integration", "aws-iam"]) {cwd = Just tmpDir, env = Just envVars}
+            ""
+
+        exitCode `shouldBe` ExitSuccess
+
+        -- The suite-level IAM harness preflight materialized the ACME EAB into
+        -- the fake Vault at secret/acme/eab from the acme_eab fixture block,
+        -- the non-interactive analog of `prodbox config setup`'s EAB prompt.
+        eabKeyId <- readFakeVaultField tmpDir "secret" acmeEabVaultPath "key_id"
+        eabHmacKey <- readFakeVaultField tmpDir "secret" acmeEabVaultPath "hmac_key"
+        eabKeyId `shouldBe` "test-eab-key-id"
+        eabHmacKey `shouldBe` "test-eab-hmac-key"
 
     it
       "runs native aws quota inspection and request flows through the built frontend with a fake AWS CLI"
@@ -1918,37 +2016,60 @@ fakeVaultLifecycleEnvironment port = do
 writeFakeVaultToken :: FilePath -> IO ()
 writeFakeVaultToken path = writeFile path "fake-service-account-jwt\n"
 
-writeRootBasics :: FilePath -> String -> IO ()
-writeRootBasics repoRoot vaultAddress = do
-  let basicsDir = repoRoot </> ".data" </> "prodbox"
-  createDirectoryIfMissing True basicsDir
+-- | Sprint 7.18 / Sprint 1.42 Part B: establish the root sealed-Vault bootstrap
+-- floor by writing the Tier-0 @prodbox.dhall@ at the repo root. The floor is
+-- projected straight off @prodbox.dhall@'s @context@ (there is no separate
+-- @prodbox-basics.json@), so a root context with the supplied Vault address,
+-- Shamir seal mode, and no parent ref is the whole floor surface the binary's
+-- 'loadUnencryptedBasics' reads. The same file now also carries the operator
+-- config under @parameters@ (the retired @prodbox-config.dhall@ payload), so a
+-- command that loads the operator config — federation register, nuke — reads it
+-- from the one Tier-0 file. @prodbox.dhall@ is self-contained (no imports), so
+-- this single record is sufficient.
+writeRootBasics :: FilePath -> String -> String -> IO ()
+writeRootBasics repoRoot vaultAddress configParameters =
   writeFile
-    (basicsDir </> "unencrypted-basics.json")
-    ( "{"
-        ++ "\"cluster_id\":\"prodbox-home\","
-        ++ "\"vault_address\":\""
-        ++ vaultAddress
-        ++ "\","
-        ++ "\"seal_mode\":\"shamir\","
-        ++ "\"parent_ref\":null,"
-        ++ "\"format_version\":1"
-        ++ "}"
+    (repoRoot </> "prodbox.dhall")
+    ( unlines
+        [ "{ parameters = " ++ configParameters
+        , ", context ="
+        , "    { project = \"prodbox\""
+        , "    , binary = \"prodbox\""
+        , "    , context_kind = < HostOrchestrator | Daemon | ClusterService | OtherContext >.HostOrchestrator"
+        , "    , cluster_id = \"prodbox-home\""
+        , "    , vault_address = \"" ++ vaultAddress ++ "\""
+        , "    , minio_endpoint = \"http://minio.prodbox.svc.cluster.local:9000\""
+        , "    , minio_bucket = \"prodbox-state\""
+        , "    , topology ="
+        , "        { seal_mode = < Tier0Shamir | Tier0Transit >.Tier0Shamir"
+        , "        , parent_ref ="
+        , "            None"
+        , "              { parent_cluster_id : Text"
+        , "              , parent_vault_address : Text"
+        , "              , parent_transit_key : Text"
+        , "              }"
+        , "        }"
+        , "    , capabilities = [ < DurableStore | VaultAuth | PublicEdge | OtherCapability >.DurableStore, < DurableStore | VaultAuth | PublicEdge | OtherCapability >.VaultAuth ]"
+        , "    }"
+        , ", witness = [] : List Text"
+        , "}"
+        ]
     )
 
--- | Sprint 7.16: the test-harness cleartext fixture (@test-config.dhall@).
+-- | Sprint 7.16: the test-harness cleartext fixture (@test-secrets.dhall@).
 -- Carries the unlock-bundle password plus the EPHEMERAL admin AWS credential
 -- the harness feeds into the same interactive admin prompt a real operator
 -- would answer. Decoded structurally by @inputFile auto@, so no schema import
 -- is required. This base value leaves the admin block empty (the vault
 -- lifecycle test only needs the password).
-testConfigDhall :: String
-testConfigDhall = testConfigDhallWithAdmin "" "" "" Nothing
+testSecretsDhall :: String
+testSecretsDhall = testSecretsDhallWithAdmin "" "" "" Nothing
 
--- | A @test-config.dhall@ with a populated @aws_admin_for_test_simulation@
+-- | A @test-secrets.dhall@ with a populated @aws_admin_for_test_simulation@
 -- block, so the suite-level IAM harness acquires the ephemeral admin credential
 -- non-interactively (the harness simulating the prompt).
-testConfigDhallWithAdmin :: String -> String -> String -> Maybe String -> String
-testConfigDhallWithAdmin accessKeyId secretAccessKey regionValue sessionTokenValue =
+testSecretsDhallWithAdmin :: String -> String -> String -> Maybe String -> String
+testSecretsDhallWithAdmin accessKeyId secretAccessKey regionValue sessionTokenValue =
   unlines
     [ "{ vault_operator_password = \"test-vault-unlock-password\""
     , ", aws_admin_for_test_simulation ="
@@ -1958,6 +2079,31 @@ testConfigDhallWithAdmin accessKeyId secretAccessKey regionValue sessionTokenVal
         ++ maybe "None Text" (\token -> "Some " ++ show token) sessionTokenValue
     , "    , region = " ++ show regionValue
     , "    }"
+    , -- Sprint 7.18: the optional ACME EAB block. A bare Dhall record literal
+      -- must still carry every field the Haskell decoder expects, so the
+      -- Optional `acme_eab` is rendered explicitly as `None`. Tests that
+      -- exercise EAB seeding use `testSecretsDhallWithAdminAndAcmeEab`.
+      ", acme_eab = None { key_id : Text, hmac_key : Text }"
+    , "}"
+    ]
+
+-- | Sprint 7.18: a @test-secrets.dhall@ that also populates the optional
+-- @acme_eab@ block, so the suite-level IAM harness seeds @secret/acme/eab@
+-- non-interactively (the harness simulating the interactive @config setup@ EAB
+-- prompt). Placeholder EAB values only — never real ZeroSSL credentials.
+testSecretsDhallWithAdminAndAcmeEab
+  :: String -> String -> String -> Maybe String -> String -> String -> String
+testSecretsDhallWithAdminAndAcmeEab accessKeyId secretAccessKey regionValue sessionTokenValue eabKeyId eabHmacKey =
+  unlines
+    [ "{ vault_operator_password = \"test-vault-unlock-password\""
+    , ", aws_admin_for_test_simulation ="
+    , "    { access_key_id = " ++ show accessKeyId
+    , "    , secret_access_key = " ++ show secretAccessKey
+    , "    , session_token = "
+        ++ maybe "None Text" (\token -> "Some " ++ show token) sessionTokenValue
+    , "    , region = " ++ show regionValue
+    , "    }"
+    , ", acme_eab = Some { key_id = " ++ show eabKeyId ++ ", hmac_key = " ++ show eabHmacKey ++ " }"
     , "}"
     ]
 

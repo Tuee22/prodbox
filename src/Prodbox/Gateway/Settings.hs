@@ -229,7 +229,7 @@ toDaemonConfigWith
               , daemonConfigLogLevel = Text.unpack <$> ll
               , daemonVaultAuth = toGatewayVaultAuth <$> maybeVaultAuth
               , daemonDnsWriteGate = toDnsWriteGate <$> maybeDnsGate
-              , daemonAwsCreds = resolvedAwsCreds
+              , daemonAwsCreds = fromMaybe Nothing resolvedAwsCreds
               , daemonMinioCreds = resolvedMinioCreds
               , daemonMinioEndpointUrl = Text.unpack <$> maybeMinioEndpoint
               }
@@ -271,7 +271,7 @@ toEventKey secretResolver EventKeyDhall {name = keyName, value = keyValueRef} = 
 toGatewayAwsCreds
   :: (SecretRef -> IO (Either SecretRefError Text))
   -> AwsCredsDhall
-  -> IO (Either String GatewayAwsCreds)
+  -> IO (Either String (Maybe GatewayAwsCreds))
 toGatewayAwsCreds
   secretResolver
   AwsCredsDhall
@@ -279,24 +279,35 @@ toGatewayAwsCreds
     , secret_access_key = sk
     , session_token = st
     , region = rg
-    } =
-    if Text.null rg
-      then pure (Left "aws_creds.region is required")
-      else do
-        accessKeyResult <- resolveRequiredSecret secretResolver "aws_creds.access_key_id" ak
-        secretKeyResult <- resolveRequiredSecret secretResolver "aws_creds.secret_access_key" sk
-        sessionTokenResult <- resolveOptionalSecret secretResolver "aws_creds.session_token" st
-        pure $ do
-          accessKey <- accessKeyResult
-          secretKey <- secretKeyResult
-          session <- sessionTokenResult
-          Right
-            GatewayAwsCreds
-              { gatewayAwsAccessKeyId = Text.unpack accessKey
-              , gatewayAwsSecretAccessKey = Text.unpack secretKey
-              , gatewayAwsSessionToken = Text.unpack <$> session
-              , gatewayAwsRegion = Text.unpack rg
-              }
+    } = do
+    accessKeyResult <- secretResolver ak
+    case accessKeyResult of
+      Left err -> pure (Left ("aws_creds.access_key_id: " ++ renderSecretRefError err))
+      Right accessKey
+        -- Present-but-EMPTY AWS creds: on the home substrate the operational
+        -- `aws.*` block is unpopulated outside AWS-substrate runs, so the
+        -- gateway's `aws_creds` Vault references resolve to empty values. The
+        -- daemon has no AWS work to do there, so run WITHOUT aws creds
+        -- (daemonAwsCreds = Nothing) rather than crash-looping the daemon on an
+        -- empty required field (`aws_creds.access_key_id resolved to an empty
+        -- value`). A non-empty access key still requires the secret key + region.
+        | Text.null accessKey -> pure (Right Nothing)
+        | Text.null rg -> pure (Left "aws_creds.region is required")
+        | otherwise -> do
+            secretKeyResult <- resolveRequiredSecret secretResolver "aws_creds.secret_access_key" sk
+            sessionTokenResult <- resolveOptionalSecret secretResolver "aws_creds.session_token" st
+            pure $ do
+              secretKey <- secretKeyResult
+              session <- sessionTokenResult
+              Right
+                ( Just
+                    GatewayAwsCreds
+                      { gatewayAwsAccessKeyId = Text.unpack accessKey
+                      , gatewayAwsSecretAccessKey = Text.unpack secretKey
+                      , gatewayAwsSessionToken = Text.unpack <$> session
+                      , gatewayAwsRegion = Text.unpack rg
+                      }
+                )
 
 toGatewayMinioCreds
   :: (SecretRef -> IO (Either SecretRefError Text))

@@ -10,12 +10,15 @@ prodbox
       eks
         reconcile
         destroy
+        prune-corrupt-checkpoint
       test
         reconcile
         destroy
+        prune-corrupt-checkpoint
       aws-subzone
         reconcile
         destroy
+        prune-corrupt-checkpoint
       aws-ses
         reconcile
         destroy
@@ -43,6 +46,7 @@ prodbox
     setup
     show
     validate
+    schema
   dev
     check
     lint

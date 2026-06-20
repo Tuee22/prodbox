@@ -167,10 +167,13 @@ The per-group command matrix (generated; do not edit by hand):
 | `prodbox aws quotas request` | none | `--tier` |
 | `prodbox aws stack eks reconcile` | none | `--dry-run`, `--plan-file` |
 | `prodbox aws stack eks destroy` | none | `--yes`, `--dry-run`, `--plan-file` |
+| `prodbox aws stack eks prune-corrupt-checkpoint` | none | `--yes` |
 | `prodbox aws stack test reconcile` | none | `--dry-run`, `--plan-file` |
 | `prodbox aws stack test destroy` | none | `--yes`, `--dry-run`, `--plan-file` |
+| `prodbox aws stack test prune-corrupt-checkpoint` | none | `--yes` |
 | `prodbox aws stack aws-subzone reconcile` | none | `--dry-run`, `--plan-file` |
 | `prodbox aws stack aws-subzone destroy` | none | `--yes`, `--dry-run`, `--plan-file` |
+| `prodbox aws stack aws-subzone prune-corrupt-checkpoint` | none | `--yes` |
 | `prodbox aws stack aws-ses reconcile` | none | `--dry-run`, `--plan-file` |
 | `prodbox aws stack aws-ses destroy` | none | `--yes`, `--dry-run`, `--plan-file` |
 | `prodbox aws stack aws-ses migrate-backend` | none | `--dry-run`, `--plan-file` |
@@ -213,6 +216,7 @@ The per-group command matrix (generated; do not edit by hand):
 | `prodbox config setup` | none | `--dry-run`, `--plan-file` |
 | `prodbox config show` | none | `--show-secrets` |
 | `prodbox config validate` | none | none |
+| `prodbox config schema` | none | none |
 
 ### `prodbox dev`
 
@@ -385,7 +389,7 @@ command contract.
 supported public `config setup` path prompts for one ephemeral elevated/admin AWS credential
 set (the interactive `SecretRef.Prompt` arm) when needed — held in memory for the one command,
 used once, then discarded. The `aws_admin_for_test_simulation.*` block is not a
-`prodbox-config.dhall` section: it is a test-harness-only fixture in `test-config.dhall` that
+`prodbox-config.dhall` section: it is a test-harness-only fixture in `test-secrets.dhall` that
 simulates the operator at this prompt so the suite can drive admin-credentialed flows
 non-interactively. See [vault_doctrine.md § 4](./vault_doctrine.md#4-config-split) and
 [aws_admin_credentials.md](./aws_admin_credentials.md).
@@ -396,7 +400,7 @@ non-interactively. See [vault_doctrine.md § 4](./vault_doctrine.md#4-config-spl
 is prompt-driven for the ephemeral elevated/admin AWS credential (the interactive
 `SecretRef.Prompt` arm). The `aws_admin_for_test_simulation.*` block is not part of the public
 `aws setup` flow and is not a `prodbox-config.dhall` section: it is a test-harness-only fixture
-in `test-config.dhall` that simulates the operator at that prompt.
+in `test-secrets.dhall` that simulates the operator at that prompt.
 
 `prodbox aws teardown` carries the Sprint `7.6` orphan-safety refuse-path: it refuses to delete
 the operational IAM user while any Pulumi-managed stack (`aws-eks`, `aws-eks-subzone`,
@@ -494,7 +498,7 @@ Before either mode, `prodbox cluster delete` probes for an installed RKE2 (the o
   alive; (3) `prodbox aws stack <stack> destroy --yes` for stacks reporting
   `ResiduePresent`, wrapped in `withMaterializedOperationalCreds` so empty operational
   `aws.*` is filled transparently — under the harness, by simulating the admin prompt
-  from the `aws_admin_for_test_simulation.*` fixture in `test-config.dhall` and minting
+  from the `aws_admin_for_test_simulation.*` fixture in `test-secrets.dhall` and minting
   the operational `aws.*` credential into Vault — and restored on exit; (4) cluster
   uninstall; (5) postflight tag sweep that fails the command if
   any cluster-tagged AWS resource survives. The
@@ -527,9 +531,9 @@ Like every admin-credentialed flow, it acquires elevated AWS power through the o
 runtime path — the interactive `SecretRef.Prompt` arm: after the typed confirmation gate the
 operator supplies the ephemeral elevated credential at the prompt (held in memory for the one
 command, used once, discarded). The test harness automates that prompt by feeding the
-`aws_admin_for_test_simulation.*` fixture from `test-config.dhall`. There is no stored admin
+`aws_admin_for_test_simulation.*` fixture from `test-secrets.dhall`. There is no stored admin
 section in `prodbox-config.dhall` and no `SecretRef.Vault` admin ref — the simulation fixture
-is `TestPlaintext` in `test-config.dhall`, never a Vault object.
+is `TestPlaintext` in `test-secrets.dhall`, never a Vault object.
 
 Discipline (mirrors `aws teardown`):
 
@@ -733,7 +737,7 @@ Named suite commands:
   `prodbox test integration all`, and `prodbox test all` before AWS-backed prerequisite checks
   begin, then clears operational `aws.*` again before the suite returns
 - applies the canonical aggregate ordering
-- uses the `aws_admin_for_test_simulation.*` fixture from `test-config.dhall` only to simulate
+- uses the `aws_admin_for_test_simulation.*` fixture from `test-secrets.dhall` only to simulate
   the operator's elevated-credential prompt for suite-driven destructive validation and
   long-lived stack flows; the fixture never reaches `prodbox-config.dhall`, Vault, or generated
   cluster config
@@ -773,7 +777,7 @@ automation surface** (the managed test harness — `prodbox test all`,
 `prodbox test integration <name> --substrate aws` validations) drives the same
 interactive admin-credential prompt non-interactively: the suite-level IAM harness
 simulates the operator at the `SecretRef.Prompt` arm by feeding the
-`aws_admin_for_test_simulation.*` fixture from `test-config.dhall`, materializes
+`aws_admin_for_test_simulation.*` fixture from `test-secrets.dhall`, materializes
 operational `aws.*` (minted into Vault), and clears it on suite exit. There is no
 production "config-backed admin path" that reads stored admin credentials from
 `prodbox-config.dhall`.
@@ -782,7 +786,7 @@ production "config-backed admin path" that reads stored admin credentials from
 after that gate it acquires elevated AWS power through the same unified prompt path
 as the long-lived `aws-ses` and state-bucket operations: the operator supplies the
 ephemeral elevated credential at the interactive prompt (the harness simulates this
-from the `test-config.dhall` fixture). It does not read a stored admin section from
+from the `test-secrets.dhall` fixture). It does not read a stored admin section from
 `prodbox-config.dhall`.
 
 The interactive surface **refuses to run when stdin is not a TTY**. Each

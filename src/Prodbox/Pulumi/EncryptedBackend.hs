@@ -8,15 +8,21 @@
 -- the object-store cipher/HMAC inputs from Vault; tests use the explicit hook
 -- seam below.
 module Prodbox.Pulumi.EncryptedBackend
-  ( EncryptedBackendError (..)
+  ( CheckpointObservability (..)
+  , EncryptedBackendError (..)
   , EncryptedBackendHooks (..)
   , LegacyPulumiBackend (..)
   , PulumiScratch (..)
   , PulumiStackRef (..)
+  , classifyCheckpointBytes
   , collectScratchCheckpoint
   , deleteLogicalPulumiStackWith
   , fileBackendEnvironment
   , hydrateScratchCheckpoint
+  , observeStackCheckpoint
+  , observeStackCheckpointWith
+  , pruneLogicalPulumiStack
+  , renderCheckpointObservability
   , renderEncryptedBackendError
   , stackCheckpointPath
   , withDecryptedStack
@@ -27,9 +33,12 @@ module Prodbox.Pulumi.EncryptedBackend
 where
 
 import Control.Exception (IOException, bracket, try)
+import Data.Aeson (Value (Object), eitherDecodeStrict')
+import Data.Aeson.KeyMap qualified as KeyMap
 import Data.ByteString (ByteString)
 import Data.ByteString qualified as BS
-import Data.Char (toLower)
+import Data.ByteString.Char8 qualified as BS8
+import Data.Char (isSpace, toLower)
 import Data.Foldable (traverse_)
 import Data.List (isInfixOf)
 import Data.Map.Strict qualified as Map
@@ -153,6 +162,63 @@ data LoadedCheckpoint = LoadedCheckpoint
   , loadedCheckpointFromLegacy :: Bool
   }
 
+-- | Sprint 7.21: the observability classes of a per-run Pulumi
+-- checkpoint, applying the
+-- @documents\/engineering\/lifecycle_reconciliation_doctrine.md § 3.1@
+-- soundness invariant to the encrypted-checkpoint backend. A destructive
+-- teardown must distinguish "nothing to destroy" (absent\/empty) from
+-- "cannot observe" (corrupt) so it never silently skips a possibly-live
+-- stack, and never hard-fails on a genuinely-absent one.
+--
+--   * 'CheckpointAbsent' — the encrypted checkpoint object is missing
+--     (@NoSuchKey@\/@Nothing@ loaded): the stack was never created or was
+--     already destroyed. Positive evidence of @Absent@ — nothing to
+--     destroy. This is the home-substrate case (the per-run AWS stacks
+--     are never provisioned on home).
+--   * 'CheckpointEmpty' — the object exists but is zero-length\/all
+--     whitespace (the @"unexpected end of JSON input"@ failure mode when
+--     Pulumi loads it). No stack state — also nothing to destroy.
+--   * 'CheckpointCorrupt' — the object is non-empty but does not parse as
+--     JSON. The carried 'String' is the parser detail. This is the
+--     "cannot observe" class: a corrupt checkpoint may hide live
+--     resources, so callers must REFUSE rather than skip.
+--   * 'CheckpointPresent' — the object is non-empty and parses as a JSON
+--     value: a real checkpoint to destroy.
+data CheckpointObservability
+  = CheckpointAbsent
+  | CheckpointEmpty
+  | CheckpointCorrupt !String
+  | CheckpointPresent
+  deriving (Eq, Show)
+
+-- | Pure classifier (Sprint 7.21): map the loaded encrypted-checkpoint
+-- bytes onto a 'CheckpointObservability'. The argument is exactly what
+-- the backend load returns — @Nothing@ for an absent object, @Just bytes@
+-- for a present one (which may be empty or corrupt). Kept pure so the
+-- absent\/empty\/corrupt\/present discrimination is unit-testable without
+-- a live MinIO\/Vault round-trip; the IO wrapper ('observeStackCheckpoint')
+-- only fetches the bytes and hands them here.
+--
+-- The empty case is matched precisely on zero-length-or-whitespace bytes,
+-- so it is distinguishable from a non-empty-but-unparseable blob: only
+-- 'CheckpointAbsent' and 'CheckpointEmpty' are "nothing to destroy".
+classifyCheckpointBytes :: Maybe ByteString -> CheckpointObservability
+classifyCheckpointBytes Nothing = CheckpointAbsent
+classifyCheckpointBytes (Just bytes)
+  | BS8.all isSpace bytes = CheckpointEmpty
+  | otherwise =
+      case eitherDecodeStrict' bytes :: Either String Value of
+        Right _ -> CheckpointPresent
+        Left detail -> CheckpointCorrupt detail
+
+-- | Operator-visible rendering of a 'CheckpointObservability'.
+renderCheckpointObservability :: CheckpointObservability -> String
+renderCheckpointObservability observability = case observability of
+  CheckpointAbsent -> "absent"
+  CheckpointEmpty -> "empty (zero-length checkpoint object)"
+  CheckpointCorrupt detail -> "corrupt (" ++ detail ++ ")"
+  CheckpointPresent -> "present"
+
 withDecryptedStack
   :: FilePath
   -> PulumiStackRef
@@ -225,7 +291,7 @@ withDecryptedStackWith hooks stackRef action = do
   case gateResult of
     VaultGateRefuse message -> pure (Left (EncryptedBackendVaultRefused message))
     VaultGateProceed -> do
-      loadResult <- loadEncryptedOrLegacyCheckpoint hooks stackRef
+      loadResult <- loadHydratableCheckpoint hooks stackRef
       case loadResult of
         Left err -> pure (Left (EncryptedBackendLoadFailed err))
         Right loaded ->
@@ -251,21 +317,136 @@ withDecryptedStackWith hooks stackRef action = do
                       Right () ->
                         finalizeAction hooks stackRef (loadedCheckpointFromLegacy loaded) actionResult
 
+-- | Sprint 7.21: read-only observability query for a per-run stack's
+-- encrypted checkpoint. Production entry point used by the residue path
+-- ('Prodbox.Infra.StackOutputs.observeEncryptedStackCheckpoint') so the
+-- per-run destroy can fail-close on a corrupt checkpoint and skip cleanly
+-- on an absent\/empty one — *without* hydrating scratch, running Pulumi,
+-- or re-storing the object (it must not mutate teardown state just to
+-- observe it). Resolves the same Vault-backed material as
+-- 'withDecryptedStack', then classifies the loaded bytes purely.
+observeStackCheckpoint
+  :: FilePath
+  -> PulumiStackRef
+  -> IO (Either EncryptedBackendError CheckpointObservability)
+observeStackCheckpoint repoRoot stackRef = do
+  materialInputResult <- resolvePulumiBackendMaterialInput repoRoot
+  case materialInputResult of
+    Left err -> pure (Left (EncryptedBackendLoadFailed err))
+    Right materialInput -> do
+      forwardResult <-
+        withMinioPortForward $ \localPort ->
+          observeStackCheckpointWith
+            (productionHooks (materialFromInput materialInput localPort))
+            stackRef
+      pure $ case forwardResult of
+        Left err ->
+          Left
+            ( EncryptedBackendLoadFailed
+                ("failed to reach Pulumi object-store MinIO backend: " ++ err)
+            )
+        Right result -> result
+
+-- | Sprint 7.22: delete one per-run stack's encrypted Model-B checkpoint
+-- object from the object-store. Resolves the same Vault-backed material as
+-- 'observeStackCheckpoint' (so the Vault gate is enforced via
+-- 'resolvePulumiBackendMaterialInput') and reaches MinIO through the shared
+-- port-forward, then removes the opaque object via 'deleteLogicalPulumiStackWith'.
+-- This is the prune primitive behind
+-- @prodbox aws stack \<stack> prune-corrupt-checkpoint@; the caller
+-- ('Prodbox.Lifecycle.LiveResidue.pruneCorruptPerRunCheckpoint') first
+-- observes the checkpoint and only invokes this for a genuinely-corrupt
+-- (non-empty, unparseable) or empty checkpoint — never for a present one,
+-- which would orphan live AWS resources.
+pruneLogicalPulumiStack
+  :: FilePath
+  -> PulumiStackRef
+  -> IO (Either EncryptedBackendError ())
+pruneLogicalPulumiStack repoRoot stackRef = do
+  materialInputResult <- resolvePulumiBackendMaterialInput repoRoot
+  case materialInputResult of
+    Left err -> pure (Left (EncryptedBackendLoadFailed err))
+    Right materialInput -> do
+      forwardResult <-
+        withMinioPortForward $ \localPort -> do
+          let material = materialFromInput materialInput localPort
+          deleteResult <-
+            deleteLogicalPulumiStackWith
+              (materialObjectStore material)
+              (materialHmacKey material)
+              stackRef
+          pure (mapLeft EncryptedBackendDeleteFailed deleteResult)
+      pure $ case forwardResult of
+        Left err ->
+          Left
+            ( EncryptedBackendDeleteFailed
+                ("failed to reach Pulumi object-store MinIO backend: " ++ err)
+            )
+        Right result -> result
+
+-- | Hooks-driven read-only observability query (testable seam). Runs the
+-- Vault gate, loads the encrypted-or-legacy checkpoint bytes, and applies
+-- the pure 'classifyCheckpointBytes'. No scratch hydration, no Pulumi
+-- subprocess, no store\/delete — so observing a stack never mutates its
+-- backend state.
+observeStackCheckpointWith
+  :: EncryptedBackendHooks a
+  -> PulumiStackRef
+  -> IO (Either EncryptedBackendError CheckpointObservability)
+observeStackCheckpointWith hooks stackRef = do
+  gateResult <- encryptedBackendGate hooks
+  case gateResult of
+    VaultGateRefuse message -> pure (Left (EncryptedBackendVaultRefused message))
+    VaultGateProceed -> do
+      loadResult <- loadEncryptedOrLegacyCheckpoint hooks stackRef
+      pure $ case loadResult of
+        Left err -> Left (EncryptedBackendLoadFailed err)
+        Right loaded -> Right (classifyCheckpointBytes (loadedCheckpointBytes loaded))
+
+-- | OBSERVE-path load: return the raw Model-B object as-loaded (so the residue
+-- observation can classify it as Empty/Corrupt/Present via
+-- 'classifyCheckpointBytes'); fall back to the legacy backend only when the
+-- Model-B object is positively ABSENT. Does NOT fall back on a present-but-
+-- unusable object — observation must report the object's true state.
 loadEncryptedOrLegacyCheckpoint
   :: EncryptedBackendHooks a -> PulumiStackRef -> IO (Either String LoadedCheckpoint)
-loadEncryptedOrLegacyCheckpoint hooks stackRef = do
+loadEncryptedOrLegacyCheckpoint = loadEncryptedOrLegacyCheckpointWith False
+
+-- | HYDRATE-path load: as above, but ALSO fall back to the legacy backend when
+-- the Model-B object is present-but-UNUSABLE — blank
+-- (zero-length / all whitespace, the Sprint 7.21 `CheckpointEmpty` case),
+-- non-blank-but-unparseable (`CheckpointCorrupt`, e.g. a truncated JSON left by
+-- an interrupted store), or in the @pulumi stack export@ wire format rather than
+-- the file-backend on-disk format ('checkpointBytesUsable'). Raw-hydrating such
+-- an object onto the scratch state path makes pulumi fail with
+-- @failed to load checkpoint: unexpected end of JSON input@. For aws-ses this
+-- recovers the real state from the legacy S3 backend (so the S3 → Model-B migrate
+-- can complete); for stacks whose legacy also yields nothing it produces a clean
+-- fresh scratch (fresh up) rather than a truncated-checkpoint crash. (Recovery
+-- semantics for the reconcile LOAD path — distinct from the per-run DESTROY gate,
+-- which fail-closed REFUSES on corrupt per §3.1, since destroying-on-cannot-observe
+-- is the unsafe direction; and distinct from the observe path above, which must
+-- report the object's true classification.)
+loadHydratableCheckpoint
+  :: EncryptedBackendHooks a -> PulumiStackRef -> IO (Either String LoadedCheckpoint)
+loadHydratableCheckpoint = loadEncryptedOrLegacyCheckpointWith True
+
+loadEncryptedOrLegacyCheckpointWith
+  :: Bool -> EncryptedBackendHooks a -> PulumiStackRef -> IO (Either String LoadedCheckpoint)
+loadEncryptedOrLegacyCheckpointWith fallbackOnUnusable hooks stackRef = do
   encryptedResult <- encryptedBackendLoad hooks stackRef
   case encryptedResult of
     Left err -> pure (Left err)
-    Right (Just checkpoint) ->
-      pure
-        ( Right
-            LoadedCheckpoint
-              { loadedCheckpointBytes = Just checkpoint
-              , loadedCheckpointFromLegacy = False
-              }
-        )
-    Right Nothing -> do
+    Right (Just checkpoint)
+      | not fallbackOnUnusable || checkpointBytesUsable checkpoint ->
+          pure
+            ( Right
+                LoadedCheckpoint
+                  { loadedCheckpointBytes = Just checkpoint
+                  , loadedCheckpointFromLegacy = False
+                  }
+            )
+    _ -> do
       legacyResult <- encryptedBackendLoadLegacy hooks stackRef
       pure $ case legacyResult of
         Left err -> Left err
@@ -275,6 +456,34 @@ loadEncryptedOrLegacyCheckpoint hooks stackRef = do
               { loadedCheckpointBytes = checkpoint
               , loadedCheckpointFromLegacy = maybe False (const True) checkpoint
               }
+
+-- | Sprint 7.23: a Model-B object is a usable checkpoint to RAW-HYDRATE onto
+-- the scratch file-backend state path iff it is (a) 'CheckpointPresent'
+-- (non-blank, decodes as JSON) AND (b) in the file-backend on-disk format
+-- ('collectScratchCheckpoint' round-trips that format), NOT the
+-- @pulumi stack export@ wire format. A first-touch legacy migration that
+-- stored the @{ "version", "deployment" }@ EXPORT format (rather than the
+-- @{ "version", "checkpoint" }@ on-disk format) leaves a Model-B object that
+-- decodes fine as JSON but makes @pulumi up@ fail with
+-- @failed to load checkpoint: unexpected end of JSON input@ when raw-written to
+-- the state path. Treating such a foreign-format object as unusable makes
+-- 'loadEncryptedOrLegacyCheckpoint' fall back (to the legacy backend, or to a
+-- clean fresh scratch that the ensure cycle re-imports from live resources),
+-- and the subsequent 'collectScratchCheckpoint' re-stores the correct on-disk
+-- format — self-healing the object.
+checkpointBytesUsable :: ByteString -> Bool
+checkpointBytesUsable bytes = case classifyCheckpointBytes (Just bytes) of
+  CheckpointPresent -> not (isPulumiExportFormat bytes)
+  _ -> False
+
+-- | True when the bytes are a top-level JSON object carrying a @deployment@ key
+-- but no @checkpoint@ key — the signature of the @pulumi stack export@ wire
+-- format, distinct from the file-backend on-disk @checkpoint@ wrapper.
+isPulumiExportFormat :: ByteString -> Bool
+isPulumiExportFormat bytes =
+  case eitherDecodeStrict' bytes :: Either String Value of
+    Right (Object o) -> KeyMap.member "deployment" o && not (KeyMap.member "checkpoint" o)
+    _ -> False
 
 finalizeAction
   :: EncryptedBackendHooks a
@@ -320,6 +529,19 @@ stackCheckpointPath scratchRoot stackRef =
 fileBackendEnvironment :: PulumiScratch -> [(String, String)] -> [(String, String)]
 fileBackendEnvironment scratch =
   upsert "PULUMI_BACKEND_URL" (pulumiScratchBackendUrl scratch)
+    -- The scratch @file://@ backend must carry an EMPTY config passphrase, not
+    -- a stripped one: a stack config (@Pulumi.\<stack>.yaml@) that carries an
+    -- @encryptionsalt@ — today only @aws-ses@ — forces pulumi to initialize its
+    -- passphrase secrets manager while loading the stack configuration, and a
+    -- bare strip yields @get stack secrets manager: passphrase must be set@
+    -- (the failure that blocked the @aws-ses@ S3 → Model-B migrate reconcile).
+    -- The salt was generated under the empty passphrase
+    -- (@pulumiSesAdminBaseEnv@ sets @PULUMI_CONFIG_PASSPHRASE = ""@), so "" both
+    -- satisfies the must-be-set check and correctly decrypts. We still strip any
+    -- INHERITED (legacy-S3-backend) passphrase first, then set the empty value,
+    -- so a mismatched value can never leak into the scratch backend. Stacks
+    -- without an @encryptionsalt@ (the per-run stacks) ignore it.
+    . upsert "PULUMI_CONFIG_PASSPHRASE" ""
     . filter ((`notElem` removedBackendKeys) . fst)
  where
   removedBackendKeys =

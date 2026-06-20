@@ -303,6 +303,49 @@ fake, or a stub; AWS-substrate coverage of suite content is orthogonal and track
 
 ## Alignment Status
 
+**2026-06-18 — Config-topology end-state canonicalized: drop the JSON floor, all Dhall
+generated/not-version-controlled, seed the in-force MinIO SSoT and retire the
+`prodbox-config.dhall` seed.** The Tier-0 floor is now read directly from the self-contained,
+generated, non-secret `prodbox.dhall` via `projectBasics` — there is **no separate JSON floor**
+(`prodbox-basics.json` and the legacy `.data/prodbox/unencrypted-basics.json` are both eliminated);
+every `.dhall` is generated or locally-authored and **none is version-controlled**; the in-force
+config is an encrypted MinIO SSoT object seeded from the operator config on first bring-up
+(`storeInForceConfigWith`), after which `prodbox-config.dhall` (the legacy seed/propose input,
+secret-safety verified — only `SecretRef.Vault` pointers) is retired. The doctrine SSoT for the tier
+model is [config_doctrine.md §0](../documents/engineering/config_doctrine.md#0-three-tier-config-model);
+this section does not duplicate it. Owning sprints, each forward-only-blocked on an earlier-or-same-phase
+sprint per [Standard N](development_plan_standards.md#n-phase-independence-no-backward-blocking) (no
+earlier phase blocked by a later one): Phase `1` Sprint `1.41` (✅ Done 2026-06-18 — JSON floor
+dropped, all-Dhall-generated) and Sprint `1.42` (✅ Done — Part A seed 2026-06-18 / Part B
+`prodbox-config.dhall` retirement 2026-06-19; the operator non-secret config now lives in the
+generated Tier-0 `prodbox.dhall` `parameters`). Phase `1` further reopened with the new Sprints
+`1.43` (✅ Done 2026-06-20 — split the durable test secrets into the sole `test-secrets.dhall`; the
+now-empty `test-config.dhall` removed) and `1.44` (✅ Done code-owned 2026-06-20, 🧪 Live-proof
+pending — routes the Vault-written secrets through the gateway daemon's `POST /v1/secret/<logical>`
+endpoint under a dedicated `prodbox-operator-write` Vault role via a simulated CLI→NodePort k8s JWT),
+per the operator's 2026-06-19 config/secrets target. Phase `5` Sprint `5.9` (daemon-lifecycle suite
+fixture SecretRef repair) and Phase `7`/`8` follow-ups are tracked in their phase docs. See the
+Closure Status in [README.md](README.md#closure-status).
+
+**2026-06-17 — Three-tier config separation canonicalized; Phase `1` and Phase `7` reopened on
+their own surfaces.** The config model is named explicitly as three tiers, with
+[config_doctrine.md §0](../documents/engineering/config_doctrine.md#0-three-tier-config-model) as the
+single canonical home: **Tier 0** the non-secret binary-context `prodbox.dhall` (shaped to align with
+hostbootstrap's binary-context contract, with a derived `prodbox-basics.json` sealed-Vault bootstrap
+floor); **Tier 1** the password-gated Vault unlock material relocated to the durable MinIO bucket as a
+password-AEAD object read via a password-derived bootstrap MinIO credential; and **Tier 2** the
+opaque-named Vault-Transit operational secrets in the same bucket. Phase `1` reopens (📋 Sprints
+`1.39`/`1.40`, Tier 0) and Phase `7` reopens (📋 Sprint `7.19` Tier 1 + Sprint `7.20` — IAM
+credential-lifecycle doctrine ✅ on its code-owned surface, 📋 for the doctrine + teardown-completeness
+guard), each forward-only-blocked on an earlier-or-same-phase sprint per
+[Standard N](development_plan_standards.md#n-phase-independence-no-backward-blocking); no earlier phase
+is blocked by a later one. The doctrine SSoT for the tier definitions is
+[config_doctrine.md §0](../documents/engineering/config_doctrine.md#0-three-tier-config-model) and for
+the MinIO-resident unlock bundle is
+[vault_doctrine.md §6/§6.1](../documents/engineering/vault_doctrine.md#6-the-unlock-bundle-root-cluster);
+this section does not duplicate them. See the 2026-06-17 Closure Status in
+[README.md](README.md).
+
 **2026-06-16 — Phase-independence doctrine adopted (Sprint `0.15`).** The development plan's
 dependency model, status semantics, and narrative placement are restructured — with **no** change
 to any objective, feature, or validation — so that earlier phases are validated independently of

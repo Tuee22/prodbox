@@ -815,7 +815,7 @@ withEksKubeconfig repoRoot action = do
   let regionText = Text.unpack (Text.strip (awsCredentialRegion (aws (validatedConfig settings))))
   when (null regionText) $
     error
-      "withEksKubeconfig: aws.region must be set in prodbox-config.dhall before materializing the AWS EKS kubeconfig"
+      "withEksKubeconfig: aws.region must be set in prodbox.dhall before materializing the AWS EKS kubeconfig"
   snapshotMaybe <- fetchAwsEksTestSnapshotFromBackend repoRoot
   snapshot <- case snapshotMaybe of
     Nothing ->
@@ -1478,8 +1478,25 @@ runDestroyAwsEksPulumiCycle repoRoot projectDir currentSnapshot summary environm
         PulumiStackSelectFailed detail ->
           pure (Left ("pulumi stack select failed: " ++ detail))
 
+-- | Sprint 7.22: gate the per-run destroy INVOCATION on a read-only
+-- checkpoint observation before touching @pulumi stack output@ / @pulumi
+-- destroy@ or the in-cluster @minio@ k8s secret. Absent → skip (the
+-- home-substrate case); corrupt / unreadable → clean refuse naming the
+-- prune recovery; present → the real destroy body
+-- ('destroyAwsEksTestStackStatusPresent').
 destroyAwsEksTestStackStatus :: FilePath -> Bool -> IO (Either String String)
 destroyAwsEksTestStackStatus repoRoot summary = do
+  status <- LiveResidue.perRunAwsEksTest <$> LiveResidue.queryPerRunResidueStatuses repoRoot
+  case LiveResidue.perRunDestroyDecisionFromStatus
+    awsEksTestStackName
+    "prodbox aws stack eks prune-corrupt-checkpoint --yes"
+    status of
+    LiveResidue.PerRunDestroySkip skipMessage -> pure (Right skipMessage)
+    LiveResidue.PerRunDestroyRefuse refusal -> pure (Left refusal)
+    LiveResidue.PerRunDestroyProceed -> destroyAwsEksTestStackStatusPresent repoRoot summary
+
+destroyAwsEksTestStackStatusPresent :: FilePath -> Bool -> IO (Either String String)
+destroyAwsEksTestStackStatusPresent repoRoot summary = do
   currentSnapshot <- fetchAwsEksTestSnapshotFromBackend repoRoot
   let projectDir = awsEksTestPulumiProjectDir repoRoot
   portForwardResult <- withMinioPortForward $ \localPort -> do

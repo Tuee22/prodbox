@@ -53,7 +53,6 @@ import Prodbox.PrerequisiteId (PrerequisiteId (..))
 import Prodbox.Result (Result (..))
 import Prodbox.Settings
   ( AwsCredentialsRef (..)
-  , Credentials (..)
   , DomainSection (..)
   , Route53Section (..)
   , ValidatedSettings (..)

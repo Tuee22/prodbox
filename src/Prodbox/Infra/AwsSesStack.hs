@@ -267,9 +267,9 @@ renderAwsSesStackReport snapshot objectCount =
     ]
 
 -- | Sprint 7.16: the SES stack's AWS region now comes from the EPHEMERAL admin
--- credential acquired through 'loadAdminAwsCredentials' (test-config.dhall's
+-- credential acquired through 'loadAdminAwsCredentials' (test-secrets.dhall's
 -- @aws_admin_for_test_simulation@ block, or the interactive prompt), not from a
--- @prodbox-config.dhall@ field. The production config still supplies the
+-- @prodbox.dhall@ field. The production config still supplies the
 -- Route 53 zone, sender domain, receive subdomain, and capture bucket.
 resolveAwsSesStackConfig :: FilePath -> IO (Either String AwsSesStackConfig)
 resolveAwsSesStackConfig repoRoot = do
@@ -444,7 +444,15 @@ pulumiStackSelect projectDir environment createIfMissing =
   let arguments =
         ["stack", "select", awsSesStackName]
           ++ ["--create" | createIfMissing]
-          ++ if createIfMissing then ["--secrets-provider", "plaintext"] else []
+          -- Sprint 7.23: the scratch file-backend stack uses the `passphrase`
+          -- secrets provider (with the empty PULUMI_CONFIG_PASSPHRASE the
+          -- scratch env sets), matching the committed `encryptionsalt` in
+          -- Pulumi.aws-ses.yaml. The historical `plaintext` value is not a
+          -- valid pulumi secrets-provider URL on current pulumi
+          -- (`open secrets.Keeper: no scheme in URL "plaintext"`); at-rest
+          -- secrecy is provided by the Model-B Vault-Transit envelope, and the
+          -- empty-passphrase provider keeps the in-checkpoint secrets pulumi-valid.
+          ++ if createIfMissing then ["--secrets-provider", "passphrase"] else []
    in if createIfMissing
         then do
           exitCode <- runPulumiCommand projectDir environment arguments
@@ -837,7 +845,7 @@ runEnsureAwsSesPulumiUp repoRoot projectDir baseEnvironment stackConfig = do
 
 recoverAwsSesPulumiStateFromLiveResources
   :: FilePath -> [(String, String)] -> AwsSesStackConfig -> IO (Either String ())
-recoverAwsSesPulumiStateFromLiveResources projectDir environment stackConfig = do
+recoverAwsSesPulumiStateFromLiveResources projectDir scratchEnvironment stackConfig = do
   bucketExists <-
     awsCommandSucceeds
       projectDir
@@ -912,6 +920,15 @@ recoverAwsSesPulumiStateFromLiveResources projectDir environment stackConfig = d
                 "receiveRule"
                 (sesReceiveRuleSetName ++ ":" ++ sesReceiveRuleName)
  where
+  -- Sprint 7.23: the scratch file-backend env strips standard AWS_* creds
+  -- ('Prodbox.Pulumi.EncryptedBackend.fileBackendEnvironment'), but state
+  -- recovery's live-resource probes (`aws` CLI), `pulumi import` (default aws
+  -- provider), and stale-IAM-key rotation all need them — otherwise every
+  -- probe fails, nothing is imported, and `pulumi up` tries to CREATE
+  -- already-live resources (EntityAlreadyExists / AlreadyExists /
+  -- BucketAlreadyOwnedByYou). Re-derive AWS_* from the PRODBOX_PULUMI_AWS_*
+  -- provider creds that survive in the scratch env.
+  environment = awsCliCredsFromProviderEnv scratchEnvironment
   importIf False _ _ _ = pure (Right ())
   importIf True resourceType resourceName resourceId =
     pulumiImportResource projectDir environment resourceType resourceName resourceId
@@ -983,6 +1000,30 @@ pulumiImportResource projectDir environment resourceType resourceName resourceId
             ++ err
         )
     Right () -> Right ()
+
+-- | Sprint 7.23: re-derive standard @AWS_*@ credentials from the
+-- @PRODBOX_PULUMI_AWS_*@ provider credentials that survive in the scratch
+-- file-backend env. The standard @AWS_*@ names are stripped by
+-- 'Prodbox.Pulumi.EncryptedBackend.fileBackendEnvironment' (to keep the scratch
+-- backend isolated from the object-store credentials), but AWS-SES state
+-- recovery's @aws@ CLI probes, @pulumi import@ (default aws provider), and IAM
+-- key rotation must authenticate to AWS. Overlays the mapped values onto the
+-- env, leaving @PULUMI_BACKEND_URL@ and everything else intact.
+awsCliCredsFromProviderEnv :: [(String, String)] -> [(String, String)]
+awsCliCredsFromProviderEnv environment =
+  foldr overlay environment providerToAwsCli
+ where
+  providerToAwsCli =
+    [ ("PRODBOX_PULUMI_AWS_ACCESS_KEY_ID", "AWS_ACCESS_KEY_ID")
+    , ("PRODBOX_PULUMI_AWS_SECRET_ACCESS_KEY", "AWS_SECRET_ACCESS_KEY")
+    , ("PRODBOX_PULUMI_AWS_SESSION_TOKEN", "AWS_SESSION_TOKEN")
+    , ("PRODBOX_PULUMI_AWS_REGION", "AWS_REGION")
+    , ("PRODBOX_PULUMI_AWS_DEFAULT_REGION", "AWS_DEFAULT_REGION")
+    ]
+  overlay (fromKey, toKey) env =
+    case lookup fromKey env of
+      Just value -> (toKey, value) : filter ((/= toKey) . fst) env
+      Nothing -> env
 
 awsCommandSucceeds :: FilePath -> [(String, String)] -> [String] -> IO Bool
 awsCommandSucceeds workingDir environment arguments = do

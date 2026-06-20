@@ -60,6 +60,7 @@ import Prodbox.CLI.Command
   , LintCommand (..)
   , NativeCommand (..)
   , NukeOptions (..)
+  , PerRunPruneTarget (..)
   , PlanOptions (..)
   , PolicyTier (..)
   , PulumiCommand (..)
@@ -277,6 +278,7 @@ parserForPath path =
               )
           )
     ["config", "validate"] -> Just (pure (RunNative (NativeConfig ConfigValidate)))
+    ["config", "schema"] -> Just (pure (RunNative (NativeConfig ConfigSchema)))
     ["vault", "status"] -> Just (pure (RunNative (NativeVault VaultStatus)))
     ["vault", "init"] -> Just (pure (RunNative (NativeVault VaultInit)))
     ["vault", "unseal"] -> Just (pure (RunNative (NativeVault VaultUnseal)))
@@ -396,6 +398,15 @@ parserForPath path =
           ((,) <$> yesSwitchParser "Skip confirmation prompts" <*> planOptionsParser)
     ["aws", "stack", "aws-ses", "migrate-backend"] ->
       Just (fmap (RunNative . NativePulumi . PulumiAwsSesMigrateBackend) planOptionsParser)
+    ["aws", "stack", "eks", "prune-corrupt-checkpoint"] ->
+      Just
+        (fmap (prunePerRunCheckpointCommand PrunePerRunEks) (yesSwitchParser "Skip confirmation prompts"))
+    ["aws", "stack", "test", "prune-corrupt-checkpoint"] ->
+      Just
+        (fmap (prunePerRunCheckpointCommand PrunePerRunTest) (yesSwitchParser "Skip confirmation prompts"))
+    ["aws", "stack", "aws-subzone", "prune-corrupt-checkpoint"] ->
+      Just
+        (fmap (prunePerRunCheckpointCommand PrunePerRunSubzone) (yesSwitchParser "Skip confirmation prompts"))
     ["users", "invite"] ->
       Just $
         ( \email maybeRole planOptions' ->
@@ -746,6 +757,12 @@ writeSwitchParser =
         <> help "Rewrite the target surface instead of only checking for drift"
     )
 
+-- | Sprint 7.22: build the @aws stack \<stack> prune-corrupt-checkpoint@
+-- request for a per-run stack. The 'Bool' is the @--yes@ confirmation.
+prunePerRunCheckpointCommand :: PerRunPruneTarget -> Bool -> CommandRequest
+prunePerRunCheckpointCommand target confirmed =
+  RunNative (NativePulumi (PulumiPruneCorruptCheckpoint target confirmed))
+
 yesSwitchParser :: String -> Parser Bool
 yesSwitchParser helpText =
   switch
@@ -988,6 +1005,12 @@ configGroup =
         "Validate the repository-root config file."
         []
         [example ["config", "validate"] "Validate the current config."]
+    , leaf
+        "schema"
+        "Regenerate Dhall schema files"
+        "Regenerate prodbox-config-types.dhall + test-secrets-types.dhall from the Haskell source of truth."
+        []
+        [example ["config", "schema"] "Regenerate the committed Dhall schema files."]
     ]
     []
     [example ["config", "validate"] "Validate the config before running lifecycle commands."]
@@ -1331,19 +1354,19 @@ awsStackGroup =
         "EKS validation stack"
         "Reconcile the EKS validation stack."
         "Destroy the EKS validation stack."
-        []
+        [pruneCorruptCheckpointLeaf "eks"]
     , stackVerbGroup
         "test"
         "HA RKE2 validation stack"
         "Reconcile the HA RKE2 validation stack."
         "Destroy the HA RKE2 validation stack."
-        []
+        [pruneCorruptCheckpointLeaf "test"]
     , stackVerbGroup
         "aws-subzone"
         "Per-substrate Route 53 subzone"
         "Reconcile the AWS-substrate Route 53 hosted subzone and NS delegation."
         "Destroy the AWS-substrate Route 53 hosted subzone and remove the parent NS delegation."
-        []
+        [pruneCorruptCheckpointLeaf "aws-subzone"]
     , stackVerbGroup
         "aws-ses"
         "Cross-substrate AWS SES infrastructure"
@@ -1352,7 +1375,7 @@ awsStackGroup =
         [ leaf
             "migrate-backend"
             "Migrate aws-ses Pulumi state onto the long-lived S3 backend"
-            "Operator-interactive command: migrate the `aws-ses` stack's Pulumi state from the in-cluster MinIO backend onto the dedicated long-lived S3 bucket named by `pulumi_state_backend` in `prodbox-config.dhall`. Idempotent; no-op when the stack already lives in the long-lived backend. TTY-only; refuses non-interactive contexts."
+            "Operator-interactive command: migrate the `aws-ses` stack's Pulumi state from the in-cluster MinIO backend onto the dedicated long-lived S3 bucket named by `pulumi_state_backend` in `prodbox.dhall`. Idempotent; no-op when the stack already lives in the long-lived backend. TTY-only; refuses non-interactive contexts."
             [ flagOption "dry-run" Nothing Nothing "Render the migration plan without mutating state"
             , optionalOption "plan-file" Nothing "PATH" "Write the rendered plan to a file"
             ]
@@ -1364,6 +1387,24 @@ awsStackGroup =
     ]
     []
     [example ["aws", "stack", "eks", "reconcile"] "Reconcile the EKS validation stack."]
+
+-- | Sprint 7.22: the @prune-corrupt-checkpoint@ recovery leaf for a per-run
+-- stack group. Per-run stacks only — a corrupt long-lived @aws-ses@
+-- checkpoint always refuses.
+pruneCorruptCheckpointLeaf :: String -> CommandSpec
+pruneCorruptCheckpointLeaf stackName =
+  leaf
+    "prune-corrupt-checkpoint"
+    ("Clear a corrupt " ++ stackName ++ " per-run Pulumi checkpoint")
+    ( "Recovery: clear a genuinely-corrupt (or empty) per-run encrypted Pulumi checkpoint for the "
+        ++ stackName
+        ++ " stack from the Model-B object store, so a cluster carrying stale corrupt checkpoints (truncated leftovers from an interrupted run) can converge. Observes the checkpoint first and refuses to prune a valid (present) checkpoint — use `destroy` for that. Fail-closed on an unobservable backend."
+    )
+    [flagOption "yes" (Just 'y') Nothing "Skip confirmation prompts"]
+    [ example
+        ["aws", "stack", stackName, "prune-corrupt-checkpoint", "--yes"]
+        ("Clear a corrupt " ++ stackName ++ " per-run checkpoint.")
+    ]
 
 -- | One @aws stack <name>@ subgroup with the canonical @reconcile@ /
 -- @destroy@ verbs plus any extra leaves (e.g. @aws-ses migrate-backend@).

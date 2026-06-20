@@ -133,7 +133,7 @@ queryRoute53Record repoRoot settings fqdn =
 -- (`prodbox host public-edge --substrate aws`) can target the
 -- AWS-substrate subzone instead of the home substrate's zone. The
 -- subprocess environment still authenticates with the operational
--- `aws.*` credentials from `prodbox-config.dhall` because every supported
+-- `aws.*` credentials from `prodbox.dhall` because every supported
 -- Route 53 read on the supported path runs through that block.
 queryRoute53RecordInZone
   :: FilePath

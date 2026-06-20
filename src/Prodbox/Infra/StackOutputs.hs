@@ -27,6 +27,7 @@ module Prodbox.Infra.StackOutputs
   , renderStackOutputsError
   , listStacks
   , listEncryptedStack
+  , observeEncryptedStackCheckpoint
   , parseListStacksPayload
   , stackPresentInList
   , stackListFromCheckpointPresence
@@ -50,10 +51,12 @@ import Data.Map.Strict qualified as Map
 import Data.Text (Text)
 import Data.Text qualified as Text
 import Prodbox.Pulumi.EncryptedBackend
-  ( EncryptedBackendError
+  ( CheckpointObservability
+  , EncryptedBackendError
   , PulumiScratch
   , PulumiStackRef (..)
   , fileBackendEnvironment
+  , observeStackCheckpoint
   , pulumiScratchCheckpointPath
   , renderEncryptedBackendError
   , withDecryptedStack
@@ -168,6 +171,29 @@ listEncryptedStack repoRoot stackRef = do
             )
         )
   pure (mapEncryptedBackendResult result)
+
+-- | Sprint 7.21: read-only observability query for one per-run stack's
+-- encrypted checkpoint. Unlike 'listEncryptedStack' (which collapses
+-- present-but-empty and present-but-corrupt into "present" via a bare
+-- @doesFileExist@ on the hydrated scratch file, then hydrates\/runs\/
+-- re-stores), this classifies the loaded checkpoint bytes purely into
+-- 'CheckpointObservability' without mutating backend state. The residue
+-- path uses this so a corrupt checkpoint fails closed and an
+-- absent\/empty one skips cleanly. The 'EncryptedBackendError' is mapped
+-- to 'StackOutputsCommandFailed' so the residue layer can fail-close on
+-- an unreadable backend (the @kubectl get secret … minio not found@
+-- failure mode), the same as the listing path.
+observeEncryptedStackCheckpoint
+  :: FilePath
+  -- ^ Repo root.
+  -> PulumiStackRef
+  -- ^ Pulumi project name + stack id.
+  -> IO (Either StackOutputsError CheckpointObservability)
+observeEncryptedStackCheckpoint repoRoot stackRef = do
+  result <- observeStackCheckpoint repoRoot stackRef
+  pure $ case result of
+    Left err -> Left (StackOutputsCommandFailed (renderEncryptedBackendError err))
+    Right observability -> Right observability
 
 stackListFromCheckpointPresence :: StackName -> Bool -> [StackListEntry]
 stackListFromCheckpointPresence (StackName name) present

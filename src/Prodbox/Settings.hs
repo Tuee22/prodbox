@@ -17,14 +17,18 @@ module Prodbox.Settings
   , SesSection (..)
   , StorageSection (..)
   , ValidatedSettings (..)
+  , SeedInForceOutcome (..)
   , defaultConfigFile
   , decodeConfigDhallBytes
+  , inForceConfigObjectAbsent
   , loadConfigFile
   , loadConfigForSettingsWith
   , loadUnencryptedBasics
   , renderConfigDhall
+  , renderSeedInForceOutcome
   , renderSettingsDisplay
   , resolveAwsCredentialsRefFromHostVault
+  , seedInForceConfigFromFileWithToken
   , supportedPublicHostname
   , validateAwsBootstrapConfig
   , validateAndLoadSettings
@@ -32,7 +36,6 @@ module Prodbox.Settings
   , validateAndLoadSettingsWithVaultToken
   , validateOperationalAwsCredentials
   , validatePublicEdgeDeployment
-  , writeUnencryptedBasics
   )
 where
 
@@ -48,23 +51,27 @@ import Data.Text.Encoding qualified as TextEncoding
 import Dhall
   ( FromDhall (..)
   , InterpretOptions (..)
+  , ToDhall (..)
   , auto
   , defaultInterpretOptions
   , genericAutoWith
+  , genericToDhallWith
+  , input
   , inputFile
   )
 import GHC.Generics (Generic)
 import Numeric.Natural (Natural)
 import Prodbox.Config.Basics
   ( UnencryptedBasics (..)
-  , basicsFromJson
-  , basicsToJson
-  , renderBasicsError
-  , validateBasics
   )
+import Prodbox.Config.FloorDhall (loadUnencryptedBasics)
 import Prodbox.Config.InForce.Core
-  ( fetchInForceValueWith
+  ( ConfigSource (..)
+  , SeedProposeDecision (..)
+  , fetchInForceValueWith
   , renderInForceConfigError
+  , seedProposeDecision
+  , storeInForcePayloadWith
   )
 import Prodbox.Http.Client (renderHttpError)
 import Prodbox.Infra.MinioBackend (withMinioPortForward)
@@ -77,6 +84,7 @@ import Prodbox.Minio.ObjectStore
   ( ObjectStoreConfig (..)
   , defaultObjectStoreBucket
   , getObject
+  , putObject
   )
 import Prodbox.Repo
   ( ConfigPaths (..)
@@ -96,16 +104,15 @@ import Prodbox.Vault.Host
   ( loadReadyVaultRootToken
   , readHostVaultKvField
   )
+import Prodbox.Vault.Orchestration (vaultUnlockBundlePath)
 import Prodbox.Vault.TransitCipher (vaultTransitDekCipher)
 import System.Directory
   ( copyFile
-  , createDirectoryIfMissing
   , doesFileExist
   , makeAbsolute
   )
 import System.FilePath
-  ( takeDirectory
-  , (</>)
+  ( (</>)
   )
 import System.IO.Temp (withSystemTempDirectory)
 
@@ -115,7 +122,7 @@ data Credentials = Credentials
   , session_token :: Maybe Text
   , region :: Text
   }
-  deriving (Eq, Show, Generic, FromDhall)
+  deriving (Eq, Show, Generic, FromDhall, ToDhall)
 
 data AwsCredentialsRef = AwsCredentialsRef
   { awsCredentialAccessKeyId :: SecretRef
@@ -136,29 +143,40 @@ instance FromDhall AwsCredentialsRef where
         Just stripped -> haskellCamelToDhallSnake stripped
         Nothing -> value
 
+instance ToDhall AwsCredentialsRef where
+  injectWith _ =
+    genericToDhallWith
+      defaultInterpretOptions {fieldModifier = awsCredentialFieldModifier}
+   where
+    awsCredentialFieldModifier :: Text -> Text
+    awsCredentialFieldModifier value =
+      case Text.stripPrefix "awsCredential" value of
+        Just stripped -> haskellCamelToDhallSnake stripped
+        Nothing -> value
+
 data Route53Section = Route53Section
   { zone_id :: Text
   }
-  deriving (Eq, Show, Generic, FromDhall)
+  deriving (Eq, Show, Generic, FromDhall, ToDhall)
 
 data AwsSubstrateSection = AwsSubstrateSection
   { hosted_zone_id :: Text
   , subzone_name :: Text
   }
-  deriving (Eq, Show, Generic, FromDhall)
+  deriving (Eq, Show, Generic, FromDhall, ToDhall)
 
 data SesSection = SesSection
   { sender_domain :: Text
   , receive_subdomain :: Text
   , capture_bucket :: Text
   }
-  deriving (Eq, Show, Generic, FromDhall)
+  deriving (Eq, Show, Generic, FromDhall, ToDhall)
 
 data DomainSection = DomainSection
   { demo_fqdn :: Text
   , demo_ttl :: Natural
   }
-  deriving (Eq, Show, Generic, FromDhall)
+  deriving (Eq, Show, Generic, FromDhall, ToDhall)
 
 data MetallbBgpPeer = MetallbBgpPeer
   { peer_name :: Text
@@ -167,7 +185,7 @@ data MetallbBgpPeer = MetallbBgpPeer
   , my_asn :: Natural
   , ebgp_multi_hop :: Maybe Bool
   }
-  deriving (Eq, Show, Generic, FromDhall)
+  deriving (Eq, Show, Generic, FromDhall, ToDhall)
 
 data AcmeSection = AcmeSection
   { email :: Text
@@ -175,7 +193,7 @@ data AcmeSection = AcmeSection
   , eab_key_id :: Maybe SecretRef
   , eab_hmac_key :: Maybe SecretRef
   }
-  deriving (Eq, Show, Generic, FromDhall)
+  deriving (Eq, Show, Generic, FromDhall, ToDhall)
 
 data DeploymentSection = DeploymentSection
   { dev_mode :: Bool
@@ -188,12 +206,12 @@ data DeploymentSection = DeploymentSection
   , api_replicas :: Maybe Natural
   , websocket_replicas :: Maybe Natural
   }
-  deriving (Eq, Show, Generic, FromDhall)
+  deriving (Eq, Show, Generic, FromDhall, ToDhall)
 
 data StorageSection = StorageSection
   { manual_pv_host_root :: Text
   }
-  deriving (Eq, Show, Generic, FromDhall)
+  deriving (Eq, Show, Generic, FromDhall, ToDhall)
 
 -- | Sprint 4.10: dedicated S3 bucket that backs long-lived Pulumi
 -- stacks (today: @aws-ses@). Per-run stacks (@aws-eks@,
@@ -224,6 +242,16 @@ instance FromDhall PulumiStateBackendSection where
       Just stripped -> haskellCamelToDhallSnake stripped
       Nothing -> value
 
+instance ToDhall PulumiStateBackendSection where
+  injectWith _ =
+    genericToDhallWith
+      defaultInterpretOptions {fieldModifier = stripPsbPrefix}
+   where
+    stripPsbPrefix :: Text -> Text
+    stripPsbPrefix value = case Text.stripPrefix "psb" value of
+      Just stripped -> haskellCamelToDhallSnake stripped
+      Nothing -> value
+
 haskellCamelToDhallSnake :: Text -> Text
 haskellCamelToDhallSnake value =
   Text.toLower
@@ -246,7 +274,7 @@ data ConfigFile = ConfigFile
   , storage :: StorageSection
   , pulumi_state_backend :: PulumiStateBackendSection
   }
-  deriving (Eq, Show, Generic, FromDhall)
+  deriving (Eq, Show, Generic, FromDhall, ToDhall)
 
 data ValidatedSettings = ValidatedSettings
   { validatedConfig :: ConfigFile
@@ -283,24 +311,63 @@ validateAndLoadSettingsWithVaultToken repoRoot token = do
     Left err -> pure (Left err)
     Right config -> validateConfig repoRoot config
 
--- | Resolve the config source for supported host settings loads. Without an
--- unencrypted-basics file, the filesystem Dhall remains the first-bring-up seed
--- input. Once basics exist, the filesystem file is no longer authoritative:
--- the caller-supplied in-force loader must fetch and decrypt the MinIO SSoT.
+-- | Resolve the config source for supported host settings loads. Without a
+-- sealed-Vault basics floor (no Tier-0 @prodbox.dhall@ to project it from), the
+-- filesystem Dhall remains the first-bring-up seed input. Once a floor exists,
+-- the filesystem file is no longer authoritative: the caller-supplied in-force
+-- loader must fetch and decrypt the MinIO SSoT.
+--
+-- Sprint 7.18: the floor is projected straight off @prodbox.dhall@ (via
+-- 'Prodbox.Config.FloorDhall.loadUnencryptedBasics') — there is no separate
+-- derived @prodbox-basics.json@ artifact. A floor read that fails because the
+-- Tier-0 @prodbox.dhall@ is absent means the cluster is not yet established, so
+-- the filesystem seed is the right fallback.
 loadConfigForSettingsWith
   :: (UnencryptedBasics -> IO (Either String ConfigFile))
   -> FilePath
   -> IO (Either String ConfigFile)
 loadConfigForSettingsWith loadInForce repoRoot = do
-  let paths = canonicalConfigPaths repoRoot
-  basicsExists <- doesFileExist (configBasicsPath paths)
-  if not basicsExists
-    then loadConfigFile repoRoot
-    else do
-      basicsResult <- loadUnencryptedBasics repoRoot
-      case basicsResult of
-        Left err -> pure (Left err)
-        Right basics -> loadInForce basics
+  basicsResult <- loadUnencryptedBasics repoRoot
+  case basicsResult of
+    -- No Tier-0 prodbox.dhall floor at all: the cluster is not configured.
+    -- 'loadConfigFile' surfaces the actionable "run config setup" message.
+    Left _ -> loadConfigFile repoRoot
+    Right basics -> do
+      -- Sprint 1.42 Part B: the "established" signal is the presence of the
+      -- Vault unlock bundle. Before establishment — first-ever bring-up, and
+      -- every host integration test with no real cluster — there is no bundle,
+      -- so the in-force SSoT cannot exist yet: read the operator-authored Tier-0
+      -- @prodbox.dhall@ @parameters@ directly (the seed/pre-establishment
+      -- source). This is NOT a fallback for a sealed Vault. (The bundle lives on
+      -- host disk today; Sprint 7.19 relocates it to durable MinIO and must
+      -- update this establishment probe accordingly.)
+      established <- doesFileExist (vaultUnlockBundlePath repoRoot)
+      if not established
+        then loadConfigFile repoRoot
+        else do
+          inForceResult <- loadInForce basics
+          case inForceResult of
+            Right config -> pure (Right config)
+            Left err
+              -- The cluster IS established but the in-force SSoT object was not
+              -- seeded yet (the brief window between @vault init@ and the
+              -- first-bring-up seed): read the Tier-0 @parameters@ seed. Every
+              -- OTHER in-force error — a sealed or unreachable Vault, a decrypt
+              -- failure — is returned as-is: per the fail-closed doctrine the
+              -- cluster simply cannot read its config (it keeps running), with
+              -- NO fallback to the authored @parameters@ (operator decision
+              -- 2026-06-19).
+              | inForceConfigObjectAbsent err -> loadConfigFile repoRoot
+              | otherwise -> pure (Left err)
+
+-- | True when an in-force config load failed specifically because the SSoT
+-- object is absent from MinIO (not yet seeded), as distinct from a sealed
+-- Vault, an unreachable backend, or a decrypt failure — which must stay
+-- fail-closed. Mirrors the 'in-force config object missing' surface emitted by
+-- 'fetchInForceConfigEnvelope'.
+inForceConfigObjectAbsent :: String -> Bool
+inForceConfigObjectAbsent err =
+  Text.isInfixOf "in-force config object missing" (Text.pack err)
 
 loadRuntimeInForceConfig :: FilePath -> UnencryptedBasics -> IO (Either String ConfigFile)
 loadRuntimeInForceConfig repoRoot basics = do
@@ -376,6 +443,121 @@ fetchInForceConfigEnvelope localPort accessKey secretKey hmacKey = do
     Left err -> Left err
     Right Nothing -> Left ("in-force config object missing at " ++ Text.unpack key)
     Right (Just envelope) -> Right envelope
+
+-- | Sprint 1.42 PART A: the outcome of the in-force MinIO SSoT seed step, so
+-- the reconcile can log precisely what happened. Seeding is the establish step;
+-- it is a no-op once the SSoT exists or when there is no filesystem seed.
+data SeedInForceOutcome
+  = -- | The SSoT object was absent and the filesystem operator config was
+    -- present, so the operator config was sealed and written as the SSoT
+    -- ('SeedProposeDecision.SeedInForce').
+    SeededInForce
+  | -- | The SSoT object already exists; the seed is a no-op
+    -- ('SeedProposeDecision.UseInForceAsIs').
+    InForceAlreadyPresent
+  | -- | Both the SSoT object and a filesystem operator config exist; the file
+    -- is a proposed update, which PART A does not auto-apply
+    -- ('SeedProposeDecision.ProposeUpdate').
+    InForceProposeUpdateSkipped
+  | -- | Neither the SSoT object nor a filesystem operator config is available;
+    -- there is nothing to seed ('SeedProposeDecision.NoConfigAvailable').
+    NoConfigToSeed
+  deriving (Eq, Show)
+
+renderSeedInForceOutcome :: SeedInForceOutcome -> String
+renderSeedInForceOutcome outcome = case outcome of
+  SeededInForce ->
+    "Seeded the in-force config SSoT in MinIO from the filesystem operator config."
+  InForceAlreadyPresent ->
+    "In-force config SSoT already present in MinIO; seed is a no-op."
+  InForceProposeUpdateSkipped ->
+    "In-force config SSoT present and a filesystem config exists; the file is a"
+      ++ " proposed update (not auto-applied)."
+  NoConfigToSeed ->
+    "No in-force config SSoT and no filesystem operator config; nothing to seed."
+
+-- | Sprint 1.42 PART A: establish the in-force MinIO SSoT on first-ever
+-- bring-up. Mirrors the read path 'loadRuntimeInForceConfigWithToken' exactly —
+-- same Vault-derived MinIO root credentials ('readMinioRootCredentials'), same
+-- HMAC key ('readObjectStoreHmacKey'), same MinIO port-forward
+-- ('withMinioPortForward'), same Vault-Transit DEK cipher
+-- (@prodbox-active-config@), same opaque object key
+-- (@objectKeyForOpaqueId . opaqueObjectId@ over 'LogicalInForceConfig') — but
+-- it GETs to observe presence and then PUTs the sealed operator config envelope
+-- instead of GETting to read.
+--
+-- The seed decision is 'seedProposeDecision': SSoT-absent + file-present ⇒
+-- 'SeedInForce' (seal + write); SSoT-present ⇒ 'UseInForceAsIs' / 'ProposeUpdate'
+-- (no-op, PART A never auto-applies a proposed update); both absent ⇒
+-- 'NoConfigAvailable' (no-op). The sealed envelope is the same shape the read
+-- path decodes back to the identical 'ConfigFile' (unit-tested round-trip).
+seedInForceConfigFromFileWithToken
+  :: FilePath -> VaultToken -> UnencryptedBasics -> IO (Either String SeedInForceOutcome)
+seedInForceConfigFromFileWithToken repoRoot token basics = do
+  let address = VaultAddress (basicsVaultAddress basics)
+  credentialsResult <- readMinioRootCredentials address token
+  case credentialsResult of
+    Left err -> pure (Left err)
+    Right (accessKey, secretKey) -> do
+      hmacKeyResult <- readObjectStoreHmacKey address token
+      case hmacKeyResult of
+        Left err -> pure (Left err)
+        Right hmacKey -> do
+          let cipher = vaultTransitDekCipher address token "prodbox-active-config"
+              key = objectKeyForOpaqueId (opaqueObjectId hmacKey LogicalInForceConfig)
+          portForwardResult <-
+            withMinioPortForward $ \localPort -> do
+              let storeConfig =
+                    ObjectStoreConfig
+                      { objectStoreEndpoint = "http://127.0.0.1:" ++ show localPort
+                      , objectStoreBucket = defaultObjectStoreBucket
+                      , objectStoreAccessKey = Text.unpack accessKey
+                      , objectStoreSecretKey = Text.unpack secretKey
+                      }
+              -- Observe SSoT presence the same way the read path does (GET the
+              -- opaque key); a present object short-circuits the seal.
+              presenceResult <- getObject storeConfig key
+              case presenceResult of
+                Left err -> pure (Left ("failed to observe in-force config SSoT: " ++ err))
+                Right inForcePresence -> do
+                  fileResult <- loadConfigFile repoRoot
+                  let inForcePresent = maybe False (const True) inForcePresence
+                      filePresent = either (const False) (const True) fileResult
+                      source =
+                        ConfigSource
+                          { configSourceFilePresent = filePresent
+                          , configSourceInForcePresent = inForcePresent
+                          }
+                  case seedProposeDecision source of
+                    SeedInForce ->
+                      case fileResult of
+                        Left err ->
+                          -- Should not happen (filePresent implies a Right),
+                          -- but stay total and fail-closed if the file vanished.
+                          pure (Left ("failed to load filesystem operator config to seed SSoT: " ++ err))
+                        Right config -> do
+                          storeResult <-
+                            storeInForcePayloadWith
+                              (putObject storeConfig key)
+                              cipher
+                              (basicsClusterId basics)
+                              (renderInForceSeedPayload config)
+                          pure $ case storeResult of
+                            Left err -> Left (renderInForceConfigError err)
+                            Right () -> Right SeededInForce
+                    UseInForceAsIs -> pure (Right InForceAlreadyPresent)
+                    ProposeUpdate -> pure (Right InForceProposeUpdateSkipped)
+                    NoConfigAvailable -> pure (Right NoConfigToSeed)
+          pure $ case portForwardResult of
+            Left err -> Left ("failed to reach in-force config MinIO backend: " ++ err)
+            Right result -> result
+
+-- | Serialize a 'ConfigFile' to its in-force payload bytes (the same Dhall text
+-- the read path decodes via 'decodeConfigDhallBytes'). Mirrors
+-- 'Prodbox.Config.InForce.renderInForcePayload' without importing it (that
+-- module depends on this one).
+renderInForceSeedPayload :: ConfigFile -> ByteString
+renderInForceSeedPayload = TextEncoding.encodeUtf8 . Text.pack . renderConfigDhall
 
 requireVaultField :: Text -> Text -> Map.Map Text Text -> Either String Text
 requireVaultField path field fields =
@@ -504,9 +686,13 @@ renderSettingsDisplay showSecrets settings =
  where
   config = validatedConfig settings
 
-loadConfigFile :: FilePath -> IO (Either String ConfigFile)
-loadConfigFile repoRoot = do
-  let configPath = configDhallPath (canonicalConfigPaths repoRoot)
+-- | Decode a @ConfigFile@-shaped Dhall file directly at @configPath@. The file
+-- is a @prodbox-config.dhall@-shaped record (a @let Config = ./prodbox-config-types.dhall@
+-- body) sitting beside its schema. This is the in-force SSoT payload decoder
+-- ('decodeConfigDhallBytes'); the repository-root operator config is read from
+-- the Tier-0 @prodbox.dhall@ by 'loadConfigFile' instead (Sprint 1.42 Part B).
+decodeConfigFileAtPath :: FilePath -> IO (Either String ConfigFile)
+decodeConfigFileAtPath configPath = do
   configExists <- doesFileExist configPath
   if not configExists
     then pure (Left (missingConfigMessage configPath))
@@ -517,6 +703,35 @@ loadConfigFile repoRoot = do
           Left
             ( "Failed to decode Dhall config `"
                 ++ configPath
+                ++ "`: "
+                ++ displayException e
+            )
+        Right config -> Right config
+
+-- | Sprint 1.42 Part B: the operator's non-secret config is read from the
+-- Tier-0 @prodbox.dhall@'s @parameters@ sub-record (structurally a 'ConfigFile'),
+-- retiring the standalone @prodbox-config.dhall@ seed/propose file. The decode
+-- projects @( <abs prodbox.dhall> ).parameters@ via a Dhall field-access
+-- expression so this stays in "Prodbox.Settings" without importing
+-- "Prodbox.Config.Tier0" (which imports this module). All existing
+-- 'loadConfigFile' callers (the seed, the pre-establishment fallback in
+-- 'loadConfigForSettingsWith', the direct config readers, and the authoring
+-- read in 'loadConfigForWrite') therefore now read the Tier-0 file.
+loadConfigFile :: FilePath -> IO (Either String ConfigFile)
+loadConfigFile repoRoot = do
+  let tier0Path = configTier0Path (canonicalConfigPaths repoRoot)
+  tier0Exists <- doesFileExist tier0Path
+  if not tier0Exists
+    then pure (Left (missingConfigMessage tier0Path))
+    else do
+      absPath <- makeAbsolute tier0Path
+      let expr = "( " <> Text.pack absPath <> " ).parameters"
+      result <- try (input auto expr)
+      pure $ case result of
+        Left (e :: SomeException) ->
+          Left
+            ( "Failed to decode Tier-0 prodbox.dhall `parameters` from `"
+                ++ tier0Path
                 ++ "`: "
                 ++ displayException e
             )
@@ -556,51 +771,7 @@ decodeConfigDhallBytes repoRoot payload =
                       ++ displayException err
                   )
               )
-          Right () -> loadConfigFile tmpDir
-
-loadUnencryptedBasics :: FilePath -> IO (Either String UnencryptedBasics)
-loadUnencryptedBasics repoRoot = do
-  let basicsPath = configBasicsPath (canonicalConfigPaths repoRoot)
-  exists <- doesFileExist basicsPath
-  if not exists
-    then pure (Left ("Missing unencrypted basics file: " ++ basicsPath))
-    else do
-      readResult <- try (BS.readFile basicsPath) :: IO (Either SomeException ByteString)
-      pure $ case readResult of
-        Left err ->
-          Left
-            ( "Failed to read unencrypted basics `"
-                ++ basicsPath
-                ++ "`: "
-                ++ displayException err
-            )
-        Right bytes -> do
-          basics <- mapLeft renderBasicsError (basicsFromJson bytes)
-          mapLeft renderBasicsError (validateBasics basics)
-          pure basics
-
-writeUnencryptedBasics :: FilePath -> UnencryptedBasics -> IO (Either String ())
-writeUnencryptedBasics repoRoot basics =
-  case mapLeft renderBasicsError (validateBasics basics) of
-    Left err -> pure (Left err)
-    Right () -> do
-      let basicsPath = configBasicsPath (canonicalConfigPaths repoRoot)
-      writeResult <-
-        try
-          ( do
-              createDirectoryIfMissing True (takeDirectory basicsPath)
-              BS.writeFile basicsPath (basicsToJson basics)
-          )
-          :: IO (Either SomeException ())
-      pure $ case writeResult of
-        Left err ->
-          Left
-            ( "Failed to write unencrypted basics `"
-                ++ basicsPath
-                ++ "`: "
-                ++ displayException err
-            )
-        Right () -> Right ()
+          Right () -> decodeConfigFileAtPath tmpConfigPath
 
 validateConfig :: FilePath -> ConfigFile -> IO (Either String ValidatedSettings)
 validateConfig repoRoot config = do

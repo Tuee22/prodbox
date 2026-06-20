@@ -74,6 +74,16 @@ Options:
 Examples:
 - prodbox aws stack eks destroy --yes  # Destroy the EKS validation stack.
 
+## prodbox aws stack eks prune-corrupt-checkpoint
+prodbox aws stack eks prune-corrupt-checkpoint - Clear a corrupt eks per-run Pulumi checkpoint
+
+Recovery: clear a genuinely-corrupt (or empty) per-run encrypted Pulumi checkpoint for the eks stack from the Model-B object store, so a cluster carrying stale corrupt checkpoints (truncated leftovers from an interrupted run) can converge. Observes the checkpoint first and refuses to prune a valid (present) checkpoint  use `destroy` for that. Fail-closed on an unobservable backend.
+Options:
+- --yes, -y - Skip confirmation prompts
+
+Examples:
+- prodbox aws stack eks prune-corrupt-checkpoint --yes  # Clear a corrupt eks per-run checkpoint.
+
 ## prodbox aws stack test reconcile
 prodbox aws stack test reconcile - Provision or inspect the test stack
 
@@ -97,6 +107,16 @@ Options:
 Examples:
 - prodbox aws stack test destroy --yes  # Destroy the HA RKE2 validation stack.
 
+## prodbox aws stack test prune-corrupt-checkpoint
+prodbox aws stack test prune-corrupt-checkpoint - Clear a corrupt test per-run Pulumi checkpoint
+
+Recovery: clear a genuinely-corrupt (or empty) per-run encrypted Pulumi checkpoint for the test stack from the Model-B object store, so a cluster carrying stale corrupt checkpoints (truncated leftovers from an interrupted run) can converge. Observes the checkpoint first and refuses to prune a valid (present) checkpoint  use `destroy` for that. Fail-closed on an unobservable backend.
+Options:
+- --yes, -y - Skip confirmation prompts
+
+Examples:
+- prodbox aws stack test prune-corrupt-checkpoint --yes  # Clear a corrupt test per-run checkpoint.
+
 ## prodbox aws stack aws-subzone reconcile
 prodbox aws stack aws-subzone reconcile - Provision or inspect the aws-subzone stack
 
@@ -119,6 +139,16 @@ Options:
 
 Examples:
 - prodbox aws stack aws-subzone destroy --yes  # Destroy the AWS-substrate Route 53 hosted subzone and remove the parent NS delegation.
+
+## prodbox aws stack aws-subzone prune-corrupt-checkpoint
+prodbox aws stack aws-subzone prune-corrupt-checkpoint - Clear a corrupt aws-subzone per-run Pulumi checkpoint
+
+Recovery: clear a genuinely-corrupt (or empty) per-run encrypted Pulumi checkpoint for the aws-subzone stack from the Model-B object store, so a cluster carrying stale corrupt checkpoints (truncated leftovers from an interrupted run) can converge. Observes the checkpoint first and refuses to prune a valid (present) checkpoint  use `destroy` for that. Fail-closed on an unobservable backend.
+Options:
+- --yes, -y - Skip confirmation prompts
+
+Examples:
+- prodbox aws stack aws-subzone prune-corrupt-checkpoint --yes  # Clear a corrupt aws-subzone per-run checkpoint.
 
 ## prodbox aws stack aws-ses reconcile
 prodbox aws stack aws-ses reconcile - Provision or inspect the aws-ses stack
@@ -146,7 +176,7 @@ Examples:
 ## prodbox aws stack aws-ses migrate-backend
 prodbox aws stack aws-ses migrate-backend - Migrate aws-ses Pulumi state onto the long-lived S3 backend
 
-Operator-interactive command: migrate the `aws-ses` stack's Pulumi state from the in-cluster MinIO backend onto the dedicated long-lived S3 bucket named by `pulumi_state_backend` in `prodbox-config.dhall`. Idempotent; no-op when the stack already lives in the long-lived backend. TTY-only; refuses non-interactive contexts.
+Operator-interactive command: migrate the `aws-ses` stack's Pulumi state from the in-cluster MinIO backend onto the dedicated long-lived S3 bucket named by `pulumi_state_backend` in `prodbox.dhall`. Idempotent; no-op when the stack already lives in the long-lived backend. TTY-only; refuses non-interactive contexts.
 Options:
 - --dry-run - Render the migration plan without mutating state
 - --plan-file <PATH> - Write the rendered plan to a file
@@ -348,6 +378,13 @@ prodbox config validate - Validate current config
 Validate the repository-root config file.
 Examples:
 - prodbox config validate  # Validate the current config.
+
+## prodbox config schema
+prodbox config schema - Regenerate Dhall schema files
+
+Regenerate prodbox-config-types.dhall + test-secrets-types.dhall from the Haskell source of truth.
+Examples:
+- prodbox config schema  # Regenerate the committed Dhall schema files.
 
 ## prodbox dev check
 prodbox dev check - Run policy, lint, and type checks

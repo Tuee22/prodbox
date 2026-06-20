@@ -89,7 +89,7 @@ longLivedBackendErrorMessage :: LongLivedBackendError -> String
 longLivedBackendErrorMessage err = case err of
   BackendNotConfigured ->
     "pulumi_state_backend is not configured. Set pulumi_state_backend.bucket_name and \
-    \pulumi_state_backend.region in prodbox-config.dhall, then run \
+    \pulumi_state_backend.region in prodbox.dhall, then run \
     \`prodbox aws stack aws-ses migrate-backend` to migrate existing state from the \
     \in-cluster MinIO backend onto the dedicated long-lived S3 bucket."
   BackendBucketNameEmpty ->
@@ -103,9 +103,9 @@ longLivedBackendErrorMessage err = case err of
 -- canonical loader every long-lived / teardown consumer calls. It delegates
 -- to 'Prodbox.Aws.AdminCredentials.acquireAdminAwsCredentials', which runs the
 -- doctrine cascade: a populated @aws_admin_for_test_simulation@ block in
--- @test-config.dhall@ (the harness simulating the prompt) → an interactive TTY
+-- @test-secrets.dhall@ (the harness simulating the prompt) → an interactive TTY
 -- prompt for a temporary admin key → fail loud. The admin credential is never
--- read from @prodbox-config.dhall@ or Vault.
+-- read from @prodbox.dhall@ or Vault.
 --
 -- Long-lived stack operations (`prodbox aws stack aws-ses reconcile`,
 -- `prodbox aws stack aws-ses destroy`) and `prodbox nuke` authenticate with
@@ -740,7 +740,7 @@ vaultStatusLabel gate = case gate of
   VaultGateBlockUnreachable _ -> "unreachable"
 
 -- | Sprint 8.7: resolve everything needed for a long-lived bucket
--- object operation from @prodbox-config.dhall@: the admin AWS @aws
+-- object operation from @prodbox.dhall@: the admin AWS @aws
 -- s3api@ environment and the configured 'PulumiStateBackendSection'.
 -- Returns @Left@ (for graceful degradation by the caller) when admin
 -- credentials are not configured, the config cannot be read, or no

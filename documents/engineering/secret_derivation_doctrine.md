@@ -151,7 +151,7 @@ operator host is forbidden; the `forbidDotProdboxState` lint in `prodbox dev che
 this. The one-off elevated operator AWS admin credential is the sole exception to the
 "in Vault" rule — it is prompted via `SecretRef.Prompt`, used, and discarded, never written
 to `prodbox-config.dhall` and never persisted; its test-simulation counterpart
-`aws_admin_for_test_simulation.*` is a `test-config.dhall` TestPlaintext fixture that drives
+`aws_admin_for_test_simulation.*` is a `test-secrets.dhall` TestPlaintext fixture that drives
 that prompt in tests and is never a Vault object (see
 [aws_admin_credentials.md](./aws_admin_credentials.md)). See
 [vault_doctrine.md §12](./vault_doctrine.md#12-in-cluster-service-auth) and

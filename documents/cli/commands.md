@@ -17,10 +17,13 @@
 | `prodbox aws quotas request` | Request supported AWS quotas |
 | `prodbox aws stack eks reconcile` | Provision or inspect the eks stack |
 | `prodbox aws stack eks destroy` | Destroy the eks stack |
+| `prodbox aws stack eks prune-corrupt-checkpoint` | Clear a corrupt eks per-run Pulumi checkpoint |
 | `prodbox aws stack test reconcile` | Provision or inspect the test stack |
 | `prodbox aws stack test destroy` | Destroy the test stack |
+| `prodbox aws stack test prune-corrupt-checkpoint` | Clear a corrupt test per-run Pulumi checkpoint |
 | `prodbox aws stack aws-subzone reconcile` | Provision or inspect the aws-subzone stack |
 | `prodbox aws stack aws-subzone destroy` | Destroy the aws-subzone stack |
+| `prodbox aws stack aws-subzone prune-corrupt-checkpoint` | Clear a corrupt aws-subzone per-run Pulumi checkpoint |
 | `prodbox aws stack aws-ses reconcile` | Provision or inspect the aws-ses stack |
 | `prodbox aws stack aws-ses destroy` | Destroy the aws-ses stack |
 | `prodbox aws stack aws-ses migrate-backend` | Migrate aws-ses Pulumi state onto the long-lived S3 backend |
@@ -43,6 +46,7 @@
 | `prodbox config setup` | Interactively author config |
 | `prodbox config show` | Display current config |
 | `prodbox config validate` | Validate current config |
+| `prodbox config schema` | Regenerate Dhall schema files |
 | `prodbox dev check` | Run policy, lint, and type checks |
 | `prodbox dev lint all` | Run every lint surface |
 | `prodbox dev lint files` | Run repository-policy lint checks |

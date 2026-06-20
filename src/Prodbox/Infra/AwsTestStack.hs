@@ -965,8 +965,24 @@ runDestroyAwsTestPulumiCycle repoRoot projectDir currentSnapshot summary environ
         PulumiStackSelectFailed detail ->
           pure (Left ("pulumi stack select failed: " ++ detail))
 
+-- | Sprint 7.22: gate the per-run destroy INVOCATION on a read-only
+-- checkpoint observation before touching @pulumi stack output@ / @pulumi
+-- destroy@ or the in-cluster @minio@ k8s secret. Absent → skip; corrupt /
+-- unreadable → clean refuse naming the prune recovery; present → the real
+-- destroy body ('destroyAwsTestStackStatusPresent').
 destroyAwsTestStackStatus :: FilePath -> Bool -> IO (Either String String)
 destroyAwsTestStackStatus repoRoot summary = do
+  status <- LiveResidue.perRunAwsTest <$> LiveResidue.queryPerRunResidueStatuses repoRoot
+  case LiveResidue.perRunDestroyDecisionFromStatus
+    awsTestStackName
+    "prodbox aws stack test prune-corrupt-checkpoint --yes"
+    status of
+    LiveResidue.PerRunDestroySkip skipMessage -> pure (Right skipMessage)
+    LiveResidue.PerRunDestroyRefuse refusal -> pure (Left refusal)
+    LiveResidue.PerRunDestroyProceed -> destroyAwsTestStackStatusPresent repoRoot summary
+
+destroyAwsTestStackStatusPresent :: FilePath -> Bool -> IO (Either String String)
+destroyAwsTestStackStatusPresent repoRoot summary = do
   currentSnapshot <- fetchAwsTestSnapshotFromBackend repoRoot
   let projectDir = awsTestPulumiProjectDir repoRoot
   portForwardResult <- withMinioPortForward $ \localPort -> do

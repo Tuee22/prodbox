@@ -6,7 +6,7 @@
 **Generated sections**: none
 
 > **Purpose**: Define the `aws_admin_for_test_simulation` test-harness fixture in
-> `test-config.dhall` and the supported way to populate and clear it so the test harness can
+> `test-secrets.dhall` and the supported way to populate and clear it so the test harness can
 > simulate the operator at the interactive temporary-admin prompt for suite-driven destructive
 > validation.
 
@@ -17,7 +17,7 @@
 The repository rule is: there is exactly one runtime path by which elevated/admin AWS power
 enters `prodbox` — the interactive `SecretRef.Prompt` arm. No production binary reads a stored
 admin credential from `prodbox-config.dhall`. The `aws_admin_for_test_simulation.*` block is a
-**test-harness-only fixture** that lives solely in `test-config.dhall`; its sole purpose is to
+**test-harness-only fixture** that lives solely in `test-secrets.dhall`; its sole purpose is to
 simulate the operator at that interactive temporary-admin prompt, so the test harness can
 exercise admin-credentialed flows non-interactively. It is not a section of
 `prodbox-config.dhall` and not a credential source for real operator flows.
@@ -38,7 +38,7 @@ power — public `prodbox config setup`, public `prodbox aws ...`, the native IA
 long-lived `aws-ses` stack operations, and `prodbox nuke` — prompts for the ephemeral elevated
 credential through the interactive `SecretRef.Prompt` arm. They must not treat
 `aws_admin_for_test_simulation.*` as their credential source. In tests, the harness simulates
-that prompt by feeding `aws_admin_for_test_simulation.*` from `test-config.dhall`. The
+that prompt by feeding `aws_admin_for_test_simulation.*` from `test-secrets.dhall`. The
 `SecretRef.Prompt` arm and config-split rule are owned by
 [vault_doctrine.md §3](./vault_doctrine.md) and [§4](./vault_doctrine.md); this document owns
 the `aws_admin_for_test_simulation` fixture specifics.
@@ -48,12 +48,12 @@ the `aws_admin_for_test_simulation` fixture specifics.
 ## 2. Dhall Shape
 
 The `aws_admin_for_test_simulation` fixture is `TestPlaintext`-class and lives only in
-`test-config.dhall` (never in `prodbox-config.dhall`, never in Vault). It carries the plaintext
+`test-secrets.dhall` (never in `prodbox-config.dhall`, never in Vault). It carries the plaintext
 admin key the harness types into the temporary-admin prompt on the operator's behalf:
 
 ```dhall
--- test-config.dhall (test-harness-only fixture; never imported by prodbox-config.dhall)
-let TestConfig = ./test-config-types.dhall
+-- test-secrets.dhall (test-harness-only fixture; never imported by prodbox-config.dhall)
+let TestConfig = ./test-secrets-types.dhall
 
 in  TestConfig.default // {
       aws_admin_for_test_simulation = TestConfig.default.aws_admin_for_test_simulation // {
@@ -83,9 +83,9 @@ temporary-admin-credential prompt. This is a test-harness-only step:
 
 1. preferred path: AWS console -> IAM -> Users -> temporary admin user -> Security credentials ->
    Create access key
-2. open `test-config.dhall`
+2. open `test-secrets.dhall`
 3. place the temporary admin key in `aws_admin_for_test_simulation.*`
-4. never copy it into `prodbox-config.dhall`, never import `test-config.dhall` from
+4. never copy it into `prodbox-config.dhall`, never import `test-secrets.dhall` from
    `prodbox-config.dhall`, and never write it to Vault
 5. run the intended test entrypoint (`prodbox test integration aws-iam`,
    `prodbox test integration all`, `prodbox test all`, etc.)
@@ -98,19 +98,19 @@ This split is deliberate:
 
 1. the generated operational `aws.*` identity (a `SecretRef.Vault` reference) is used by normal
    `prodbox` runtime
-2. `aws_admin_for_test_simulation.*` is the `TestPlaintext` fixture in `test-config.dhall` that
+2. `aws_admin_for_test_simulation.*` is the `TestPlaintext` fixture in `test-secrets.dhall` that
    simulates the operator at the temporary-admin prompt for suite-driven destructive validation
 3. real elevated/admin flows (public onboarding, `prodbox aws ...`, the long-lived `aws-ses`
    stack operations, `prodbox nuke`) always prompt for the ephemeral elevated credential through
    the interactive `SecretRef.Prompt` arm; in tests the harness simulates that prompt from
-   `test-config.dhall`
+   `test-secrets.dhall`
 
 ---
 
 ## 4. Cleanup Rule
 
 Do not treat `aws_admin_for_test_simulation.*` as a working credential source for any production
-flow; it is a `test-config.dhall` fixture only. The steady state of `prodbox-config.dhall` has no
+flow; it is a `test-secrets.dhall` fixture only. The steady state of `prodbox-config.dhall` has no
 admin block at all.
 
 When `prodbox test integration aws-iam`, targeted
@@ -131,7 +131,7 @@ When `prodbox test integration aws-iam`, targeted
 6. destroys validation-owned per-run stacks when the targeted suite may provision them
 7. clears operational `aws.*` again before the suite returns, including prerequisite failure paths
 
-After you finish the native IAM validation task, blank the fixture in `test-config.dhall`:
+After you finish the native IAM validation task, blank the fixture in `test-secrets.dhall`:
 
 1. remove or blank `aws_admin_for_test_simulation.access_key_id`
 2. remove or blank `aws_admin_for_test_simulation.secret_access_key`
@@ -167,7 +167,7 @@ operation and is never derived from operational `aws.*` (see
 > the ephemeral elevated credential. Under the corrected model, real `aws-ses` reconcile/destroy/
 > migrate-backend and `prodbox nuke` prompt for the ephemeral elevated credential through the
 > interactive `SecretRef.Prompt` arm — exactly as `prodbox aws setup` does — and the test harness
-> simulates that prompt from `aws_admin_for_test_simulation.*` in `test-config.dhall`. There is no
+> simulates that prompt from `aws_admin_for_test_simulation.*` in `test-secrets.dhall`. There is no
 > stored admin section in `prodbox-config.dhall`. Reconciling these code paths with the corrected
 > model is scheduled as Sprint 7.16; the dated notes below describe the pre-7.16 behavior.
 
@@ -205,6 +205,57 @@ was emptied. Recovery:
    `prodbox aws teardown --destroy-pulumi-residue` in one step (warns about the SES costs
    before dispatching).
 
+### 4.2 Canonical Test-Harness Credential Lifecycle
+
+This is the authoritative description of the end-to-end credential lifecycle the suite-level
+IAM harness drives whenever a managed AWS-substrate run engages it (`prodbox test integration
+aws-iam`, targeted `prodbox test integration <name> --substrate aws`, `prodbox test integration
+all`, `prodbox test all`). Other documents reference this subsection rather than restating it.
+The fixture-and-prompt simulation rules (§1–§4.1) and the Vault storage rules ("AWS credentials
+under Vault" below) are unchanged; this subsection is the single place that names the full
+ordered lifecycle.
+
+1. **Init.** The harness drives `vault init` for the run using the operator password carried in
+   `test-secrets.dhall`. This stands in for the operator who unseals Vault before any
+   credential-supplying interaction, and it is why every step below happens against an unsealed
+   Vault.
+2. **Mint.** The harness simulates the interactive temporary-admin prompt by feeding the
+   elevated `aws_admin_for_test_simulation.*` fixture from `test-secrets.dhall` — the
+   non-interactive stand-in for the operator's ephemeral elevated CLI credential. `prodbox` uses
+   that elevated identity once to mint the dedicated least-privilege operational `prodbox` IAM
+   user and its access key.
+3. **Write to Vault.** The generated operational `aws.*` access key is written **directly** to
+   Vault KV at `secret/gateway/gateway/aws` and is referenced from Dhall only by a
+   `SecretRef.Vault` pointer. It is **never** written to `prodbox-config.dhall`, which carries
+   only the non-secret `SecretRef.Vault` coordinates that resolve here at use time (the Tier 2
+   operational-secret rule in
+   [config_doctrine.md §0](./config_doctrine.md)). The simulated elevated credential is held in
+   memory for the one mint and then discarded.
+4. **Validate.** The harness runs the validation body using the freshly-minted operational
+   `aws.*` identity (gated on STS and Route 53 hosted-zone probes per §4 item 4).
+5. **Postflight teardown.** On suite exit — success, failure, and Ctrl-C — the harness
+   **deletes the operational `prodbox` IAM user and its access keys from AWS** and **clears the
+   operational `aws.*` credentials in Vault**. The same teardown is idempotent on preflight, so
+   a re-run first removes any residue a prior interrupted run left behind before minting fresh.
+   The retained-by-design long-lived `aws-ses` stack is intentionally **not** torn down here
+   (see §4.1 and §5).
+
+> **Nuance (Vault clear is an empty-value write, not a hard delete).** The Vault clear in step 5
+> is currently implemented by writing empty-string values to `secret/gateway/gateway/aws`
+> (`clearOperationalAwsConfig` → `writeOperationalAwsVaultCredentials` with empty credentials in
+> `src/Prodbox/Aws.hs`), **not** by issuing a true Vault KV delete. The operational key material
+> is overwritten so it can no longer be resolved, but the KV path itself is left present with
+> blank fields. Converting this to a genuine KV delete is an **optional future refinement**; do
+> not describe the current behavior as a hard delete.
+
+The IAM-credential lifecycle code described here is already implemented as intended — the
+canonicalization work is doctrinal, with the empty-value clear noted above as the one optional
+follow-up. The harness fixture-ownership and explicit-cleanup obligations this lifecycle obeys
+are owned by
+[integration_fixture_doctrine.md §2](./integration_fixture_doctrine.md); the operational-secret
+classification it writes into Vault is owned by
+[config_doctrine.md §0](./config_doctrine.md).
+
 ---
 
 ## 5. Standalone Substrate-Provisioning Credentials
@@ -225,7 +276,7 @@ profiles, or instance metadata — see
 no-ambient-auth rule. Named validations under
 `prodbox test integration <name> --substrate aws` are the automation exception: the test runner
 first mints the operational `prodbox` IAM identity by simulating the temporary-admin prompt from
-`aws_admin_for_test_simulation.*` in `test-config.dhall` (writing the generated `aws.*` into
+`aws_admin_for_test_simulation.*` in `test-secrets.dhall` (writing the generated `aws.*` into
 Vault), runs the validation, destroys any per-run stacks the validation may have provisioned, and
 clears the materialized operational credentials again.
 
@@ -234,7 +285,7 @@ credentialed, not operationally credentialed. `prodbox aws stack aws-ses reconci
 `prodbox aws stack aws-ses destroy` therefore do **not** require operational `aws.*` to be
 populated — they do not fail fast on an empty operational section. Under the corrected model these
 ops prompt for the ephemeral elevated credential through the interactive `SecretRef.Prompt` arm
-(the harness simulates that prompt from `test-config.dhall`); reconciling the current
+(the harness simulates that prompt from `test-secrets.dhall`); reconciling the current
 `loadAdminAwsCredentials` / `pulumiSesProviderBaseEnv` code paths with this model is scheduled as
 Sprint 7.16 (§4.1). This is why the Sprint 7.9 harness postflight can clear operational `aws.*`
 even while `aws-ses` is live without stranding it. The credential-class assignment is owned by
@@ -249,8 +300,8 @@ distinguish *who answers the prompt*, not separate credential stores:
 | Workflow shape | How elevated/admin power is supplied | Entrypoints |
 |----------------|-----------------|-------------|
 | Standalone substrate provisioning (e.g. the [Sprint 7.5.c.v operator workflow](../../DEVELOPMENT_PLAN/phase-7-aws-substrate-foundations.md)) | **Public prompt path**: `prodbox aws setup` — prompts interactively (the `SecretRef.Prompt` arm) for one ephemeral elevated credential pasted from the AWS console; mints the dedicated least-privilege `prodbox` IAM identity via STS federation; writes the generated `aws.*` into Vault KV (`SecretRef.Vault`). The prompted elevated credential is held in memory for the one command and then discarded — never written to `prodbox-config.dhall`, never stored in Vault. | `prodbox aws setup` at start; `prodbox aws teardown` at end |
-| Suite-driven runs (the canonical test surface) | **Test-harness simulation path**: the harness simulates the same prompt by feeding `aws_admin_for_test_simulation.*` from `test-config.dhall` (a `TestPlaintext` fixture); `runAwsIamHarnessSetup` runs the same prompt-mint-write-to-Vault-discard contract non-interactively. | `prodbox test integration aws-iam`, `prodbox test integration <name> --substrate aws`, `prodbox test integration all`, `prodbox test all` |
-| Long-lived shared-infrastructure operations | **Same prompt path as standalone**: `aws-ses` reconcile/destroy/migrate-backend and `prodbox nuke` prompt for the ephemeral elevated credential through the interactive `SecretRef.Prompt` arm (the harness simulates that prompt from `test-config.dhall`); no operational `aws.*` is materialized. Reconciling the current `loadAdminAwsCredentials` / `pulumiSesProviderBaseEnv` code paths with this prompt model is scheduled as Sprint 7.16 (§4.1). | `prodbox aws stack aws-ses reconcile`, `prodbox aws stack aws-ses destroy --yes`, `prodbox aws stack aws-ses migrate-backend`, `prodbox nuke` |
+| Suite-driven runs (the canonical test surface) | **Test-harness simulation path**: the harness simulates the same prompt by feeding `aws_admin_for_test_simulation.*` from `test-secrets.dhall` (a `TestPlaintext` fixture); `runAwsIamHarnessSetup` runs the same prompt-mint-write-to-Vault-discard contract non-interactively. | `prodbox test integration aws-iam`, `prodbox test integration <name> --substrate aws`, `prodbox test integration all`, `prodbox test all` |
+| Long-lived shared-infrastructure operations | **Same prompt path as standalone**: `aws-ses` reconcile/destroy/migrate-backend and `prodbox nuke` prompt for the ephemeral elevated credential through the interactive `SecretRef.Prompt` arm (the harness simulates that prompt from `test-secrets.dhall`); no operational `aws.*` is materialized. Reconciling the current `loadAdminAwsCredentials` / `pulumiSesProviderBaseEnv` code paths with this prompt model is scheduled as Sprint 7.16 (§4.1). | `prodbox aws stack aws-ses reconcile`, `prodbox aws stack aws-ses destroy --yes`, `prodbox aws stack aws-ses migrate-backend`, `prodbox nuke` |
 
 These paths are not mixed in a single workflow. A standalone substrate run uses
 `prodbox aws setup` and `prodbox aws teardown` symmetrically; a suite-driven run lets the
@@ -281,7 +332,7 @@ generated credential is minted directly into Vault. The order is:
 
 1. bring up and unseal Vault
 2. the operator at the interactive `SecretRef.Prompt` (or, in tests, the harness simulating it
-   from `aws_admin_for_test_simulation.*` in `test-config.dhall`) supplies the ephemeral elevated
+   from `aws_admin_for_test_simulation.*` in `test-secrets.dhall`) supplies the ephemeral elevated
    credential
 3. `prodbox` uses it once to mint the dedicated least-privilege `prodbox` IAM identity
 4. `prodbox` writes the generated `aws.*` credential into Vault KV (`secret/gateway/gateway/aws`)
@@ -297,13 +348,13 @@ In-cluster consumers of these AWS credentials authenticate to Vault directly via
 auth; there is no gateway-side Secret-mounted `aws.dhall` fragment in the delivery path.
 
 The `aws_admin_for_test_simulation.*` fixture is **not** part of the Vault model. It is a
-`TestPlaintext`-class fixture that lives only in `test-config.dhall` — never imported by
+`TestPlaintext`-class fixture that lives only in `test-secrets.dhall` — never imported by
 `prodbox-config.dhall`, never read by any production binary, never stored in Vault, never copied
 into generated cluster config or MinIO. It is a retained test-harness simulation input (not
 deletable residue); its meaning, population, and cleanup rules in §1–§4 are unchanged. See
 [vault_doctrine.md §13](./vault_doctrine.md#13-config-and-state-classification) for the
 authoritative config-and-state classification, and [vault_doctrine.md §4](./vault_doctrine.md) for
-the `prodbox-config.dhall` / `test-config.dhall` split this fixture obeys.
+the `prodbox-config.dhall` / `test-secrets.dhall` split this fixture obeys.
 
 ## Related Documents
 

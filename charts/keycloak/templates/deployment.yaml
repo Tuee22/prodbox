@@ -78,6 +78,14 @@ spec:
                 write_export PRODBOX_SMTP_PASSWORD "$(vault kv get -field=password secret/{{ .Values.vault.paths.smtp }})"
                 {{- end }}
               } > /vault-materialized/keycloak.env
+              # The init container writes under `umask 077` (0600, owner-only),
+              # but the keycloak container runs as a DIFFERENT UID and sources
+              # this file at startup — without this it dies with
+              # `/vault-materialized/keycloak.env: Permission denied` and
+              # CrashLoopBackOffs. Make it world-readable within the pod, the
+              # same cross-container materializer handoff fix as the ACME EAB
+              # hmac-key (`chmod 0644 /vault-materialized/hmac-key`).
+              chmod 0644 /vault-materialized/keycloak.env
           volumeMounts:
             - name: vault-materialized
               mountPath: /vault-materialized

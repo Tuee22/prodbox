@@ -2735,7 +2735,7 @@ runKeycloakInviteValidation repoRoot substrate _environment = do
           if null subdomain
             then
               failWith
-                "ValidationKeycloakInvite: ses.receive_subdomain must be set in prodbox-config.dhall."
+                "ValidationKeycloakInvite: ses.receive_subdomain must be set in prodbox.dhall."
             else do
               let recipient = "test-" ++ nonce ++ "@" ++ subdomain
                   invitePassword = inviteCredentialPassword nonce

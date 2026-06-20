@@ -676,6 +676,60 @@ extends the canonical suite; existing validations are unchanged.
   Live-proof note and, for AWS-substrate parity, in [substrates.md](substrates.md)'s parity table;
   neither reopens this sprint or gates its phase.
 
+## Sprint 5.9: Repair the daemon-lifecycle Suite Fixture (SecretRef Schema Drift) ✅
+
+**Status**: ✅ Done (validated 2026-06-18). `test/daemon-lifecycle/Main.hs::renderConfig` was repaired to the current `DaemonConfigDhall` `SecretRef`-union schema (the top-level `vault = None {…}`, `aws_creds`/`minio_creds` as `None` of the current `SecretRef`-field records, `event_keys = []` with the current union element type) so `loadDaemonConfig` decodes the fixture again. The standalone `prodbox-daemon-lifecycle` suite is now **11/11 PASS** (was ~8/11 red); no assertion weakened (the launching tests exercise health/readiness/metrics/`/v1/state`/SIGTERM-drain, none sign a node-a event, and the daemon tolerates a missing event key). No production code changed; main gate unaffected (`dev check` 0, `test unit` 0, `integration cli`/`env` 0). Only `test/daemon-lifecycle/Main.hs` changed.
+**Blocked by**: Sprint `1.35` (the landed typed `SecretRef` config contract — the `FileSecret`-free
+union the fixture must render against).
+**Implementation**: `test/daemon-lifecycle/Main.hs`
+**Docs to update**: `documents/engineering/unit_testing_policy.md`,
+`documents/engineering/integration_fixture_doctrine.md`
+
+### Objective
+
+Repair the standalone `prodbox-daemon-lifecycle` cabal suite (the `test/daemon-lifecycle` source dir
+declared in `prodbox.cabal`), which is currently 8/11 red because its fixture renderer emits the
+pre-Vault-root config shape rather than the current `SecretRef` union. The drift predates the
+Vault-root migration (Sprint `1.35`) and reproduces on pristine `HEAD`. This suite is **not** part of
+the `prodbox test` frontend gate (`dev check`, `test unit`, `test integration cli`/`env`), so the
+drift is invisible to the canonical-suite gates that gate this phase; this sprint brings the
+standalone fixture back in line with the schema the gated surfaces already prove.
+
+### Root Cause
+
+`test/daemon-lifecycle/Main.hs::renderConfig` emits the pre-Vault-root plaintext `boot` shape — inline
+`event_keys = [ { name, value } ]`, `aws_creds = None { access_key_id, secret_access_key, … }`, and
+`minio_creds = None { minio_access_key, minio_secret_key }` — instead of the current
+`DaemonConfigDhall` `SecretRef` union. The daemon decodes the current `FileSecret`-free `SecretRef`
+contract (Sprint `1.35`), so the legacy plaintext field shapes no longer parse and the suite fails at
+config decode.
+
+### Deliverables
+
+- `test/daemon-lifecycle/Main.hs::renderConfig` is repaired to the current `DaemonConfigDhall`
+  `SecretRef` schema, so the rendered fixture decodes against the `FileSecret`-free `SecretRef` union
+  (Sprint `1.35`). The fixture's test-only secret values use the `SecretRef.TestPlaintext` arm that the
+  test harness accepts (never a production constructor), consistent with the canonical-suite
+  plaintext-rejection contract in Sprint `5.8`.
+- The standalone `prodbox-daemon-lifecycle` cabal suite returns to green (11/11) on pristine `HEAD`.
+- A short note records that this suite is a standalone cabal `test-suite`, not part of the
+  `prodbox test` frontend gate, so its repair does not change the frontend gate result; it closes a
+  schema-drift gap that the frontend gates do not exercise.
+
+### Validation
+
+1. `cabal test prodbox-daemon-lifecycle --builddir=.build` passes 11/11.
+2. `prodbox dev check`, `prodbox test unit`, `prodbox test integration cli`, and
+   `prodbox test integration env` remain green and unchanged (the standalone suite is outside this
+   gate; the repair does not touch frontend-gated surfaces).
+3. Schema-drift proof: the repaired `renderConfig` emits only `SecretRef` union values on the
+   `FileSecret`-free contract, with no inline plaintext `event_keys` / `aws_creds` / `minio_creds`
+   field shape remaining.
+
+### Remaining Work
+
+- Pending — fixture repair not yet landed.
+
 ## Documentation Requirements
 
 **Engineering docs to create/update:**

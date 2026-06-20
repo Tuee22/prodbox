@@ -17,6 +17,7 @@ module Prodbox.Vault.Reconcile
   , VaultReconcileStep (..)
   , VaultReconcileError (..)
   , defaultVaultReconcilePlan
+  , operatorWritePolicy
   , runVaultReconcile
   , runVaultReconcileWith
   , renderVaultReconcileStep
@@ -187,6 +188,7 @@ defaultVaultReconcilePlan =
         [ VaultPolicySpec "prodbox-gateway" gatewayPolicy
         , VaultPolicySpec "prodbox-pulumi" pulumiPolicy
         , VaultPolicySpec "prodbox-federation-custody" federationPolicy
+        , VaultPolicySpec "prodbox-operator-write" operatorWritePolicy
         ]
           ++ map chartSecretPolicy chartVaultSecretConsumers
     , vaultReconcileKubernetesRoles =
@@ -208,6 +210,18 @@ defaultVaultReconcilePlan =
             ["gateway"]
             ["prodbox-federation-custody"]
             "1h"
+        , -- Sprint 1.44: the operator-write role the gateway daemon's
+          -- @POST /v1/secret/<logical>@ endpoint logs into Vault under, using
+          -- the operator-injected Kubernetes JWT presented on the request (NOT
+          -- the daemon's own read-only @prodbox-gateway-daemon@ identity). It is
+          -- scoped to exactly the two host-minted operator secrets routed
+          -- through the daemon: @secret/acme/eab@ and @secret/gateway/gateway/aws@.
+          VaultKubernetesRoleSpec
+            "prodbox-operator-write"
+            ["prodbox-operator-write"]
+            ["gateway"]
+            ["prodbox-operator-write"]
+            "5m"
         ]
           ++ map chartSecretRole chartVaultSecretConsumers
     , vaultReconcileSecretObjects = chartVaultManagedSecretObjects
@@ -658,6 +672,30 @@ gatewayPolicy =
     , ""
     , "path \"transit/decrypt/prodbox-gateway-state\" {"
     , "  capabilities = [\"update\"]"
+    , "}"
+    ]
+
+-- | Sprint 1.44: the operator-write policy. The gateway daemon's
+-- @POST /v1/secret/<logical>@ endpoint logs into Vault under this policy (via
+-- the operator-injected Kubernetes JWT) to persist exactly the two host-minted
+-- operator secrets that route through the daemon instead of a host root-token
+-- direct write:
+--
+--   * @secret/acme/eab@ — the ZeroSSL external-account-binding material.
+--   * @secret/gateway/gateway/aws@ — the minted operational @aws.*@ credential.
+--
+-- It is deliberately narrow (create/update on those two KV paths only) so a
+-- compromised operator JWT cannot reach the rest of the KV store, the transit
+-- keys, or the federation custody tree.
+operatorWritePolicy :: Text
+operatorWritePolicy =
+  Text.unlines
+    [ "path \"secret/data/acme/eab\" {"
+    , "  capabilities = [\"create\", \"update\"]"
+    , "}"
+    , ""
+    , "path \"secret/data/gateway/gateway/aws\" {"
+    , "  capabilities = [\"create\", \"update\"]"
     , "}"
     ]
 

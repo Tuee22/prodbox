@@ -98,7 +98,7 @@ other prefix falls back to an optional prompt with an explanatory hint. The oper
 longer has to remember when to leave the field blank.
 
 `aws_admin_for_test_simulation.*` is **not** an operator path at all. It is a test-harness-only
-fixture living in `test-config.dhall` (`TestPlaintext` class) whose sole purpose is to drive the
+fixture living in `test-secrets.dhall` (`TestPlaintext` class) whose sole purpose is to drive the
 UI — feeding the same interactive prompts a real operator answers so the harness can exercise
 admin-credentialed flows non-interactively. Real operators **always** paste the ephemeral
 elevated credential at the interactive prompt described in section 3 above; there is no
@@ -151,7 +151,7 @@ The supported public setup path prompts for the ephemeral elevated credential wh
 (`SecretRef.Prompt`). The credential-supplying interaction happens after Vault is unsealed, and
 the moment the generated `prodbox` IAM credential exists it is written straight into Vault — it
 never transits cleartext storage. This path does not read any stored admin credential;
-`aws_admin_for_test_simulation.*` is a `test-config.dhall` fixture used only by the test harness
+`aws_admin_for_test_simulation.*` is a `test-secrets.dhall` fixture used only by the test harness
 to simulate this prompt.
 
 ---
@@ -164,7 +164,7 @@ After the wizard succeeds:
 2. the generated `aws.*` operational credential lives in Vault KV (`secret/gateway/gateway/aws`);
    `prodbox-config.dhall` carries only a `SecretRef.Vault` reference to it, never the plaintext key
 3. `aws_admin_for_test_simulation.*` is not a `prodbox-config.dhall` field — it lives in
-   `test-config.dhall` as a `TestPlaintext` fixture for the native IAM lifecycle test harness (and
+   `test-secrets.dhall` as a `TestPlaintext` fixture for the native IAM lifecycle test harness (and
    other repository tests that simulate the interactive elevated-credential prompt), never in
    production config and never in Vault
 

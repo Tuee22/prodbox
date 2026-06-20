@@ -33,7 +33,8 @@
 
 > **Purpose**: Single source of truth for Vault as the sole, fail-closed secrets,
 > key-management, encryption-as-a-service, and PKI root of every prodbox-managed cluster — the
-> SecretRef configuration contract, the host-side unlock bundle, Vault Transit envelope
+> SecretRef configuration contract, the password-AEAD-sealed unlock bundle in durable MinIO and
+> the bootstrap MinIO credential that reaches it before unseal, Vault Transit envelope
 > encryption of MinIO and Pulumi state, the init-once / unseal-on-rebuild durability model, the
 > cluster-federation transit-seal trust tree, the sealed-state brick invariant, and in-cluster
 > Vault Kubernetes auth.
@@ -181,7 +182,7 @@ Constructor rules:
 |---|---|---|
 | `VaultSecret` / `VaultTransitKey` | Allowed | The target for every in-cluster-consumed secret. |
 | `PromptedSecret` | Allowed (CLI only) | One-off elevated operator material; never written to disk. |
-| `TestPlaintext` | **Rejected** | Accepted only by the test harness, only from `test-config.dhall` (§4). |
+| `TestPlaintext` | **Rejected** | Accepted only by the test harness, only from `test-secrets.dhall` (§4). |
 
 `prodbox config validate` rejects any plaintext secret value in production config and rejects
 `TestPlaintext` outside the test harness (Sprint `1.35`). Any secret a deployed
@@ -207,14 +208,14 @@ Two files, one rule each:
 | File | Content | Consumed by |
 |---|---|---|
 | `prodbox-config.dhall` | Production-safe topology, the unencrypted basics, and `SecretRef` values only — a seed/propose input, not the in-force SSoT (§16). NO plaintext secrets; NO `aws_admin_for_test_simulation` block | Every supported binary, host and in-cluster |
-| `test-config.dhall` (formerly `test-secrets.dhall`) | All test-only plaintext that simulates operator prompts and seeds fixtures — the Vault unlock-bundle password (simulates the unseal prompt) and the `aws_admin_for_test_simulation.*` elevated-AWS credentials (simulates the elevated-credential prompt) among them | The test harness only |
+| `test-secrets.dhall` (Sprint `1.43`; formerly `test-config.dhall`) | All test-only plaintext that simulates operator prompts and seeds fixtures — the Vault unlock-bundle password (simulates the unseal prompt) and the `aws_admin_for_test_simulation.*` elevated-AWS credentials (simulates the elevated-credential prompt) among them | The test harness only |
 
-`test-config.dhall` may carry the Vault unlock-bundle password used by tests (which simulates the
+`test-secrets.dhall` may carry the Vault unlock-bundle password used by tests (which simulates the
 operator entering the password at the unseal prompt; §6), the `aws_admin_for_test_simulation.*`
 elevated AWS credentials that simulate the operator typing the elevated/admin credential at the
 `SecretRef.Prompt` arm, fake ACME/EAB values, fake MinIO credentials, fake Keycloak bootstrap
 passwords, and fixtures used to seed Vault in integration tests. None of these testing secrets live
-in Vault — Vault holds production secrets only. `test-config.dhall` must never be required for
+in Vault — Vault holds production secrets only. `test-secrets.dhall` must never be required for
 production, imported by `prodbox-config.dhall`, copied into generated cluster config, stored in
 MinIO, mounted into the cluster, or committed with real values; it has no production role. It is the
 only cleartext home of the root operator's memorized unseal password (§6, §16) and the only home of
@@ -250,10 +251,10 @@ The cluster is ephemeral; its storage is **not**. Vault KV is therefore as durab
 as any retained PV:
 
 - `vault init` runs **exactly once, ever** — the first time the PV is empty. Root Shamir init uses
-  `secret_shares` / `secret_threshold` and writes the resulting unseal material to the host-side
-  unlock bundle (§6). Child Transit init uses `recovery_shares` / `recovery_threshold` and writes
-  the resulting recovery keys plus initial root token to the parent's Vault KV (§16). Init is never
-  rerun against existing state.
+  `secret_shares` / `secret_threshold` and writes the resulting unseal material to the
+  password-AEAD-sealed unlock bundle in the durable MinIO bucket (§6) — not to host disk. Child
+  Transit init uses `recovery_shares` / `recovery_threshold` and writes the resulting recovery keys
+  plus initial root token to the parent's Vault KV (§16). Init is never rerun against existing state.
 - Every subsequent `cluster reconcile` redeploys the Vault chart against the existing data and
   only **unseals** it. No re-init, no key regeneration. **A cluster rebuild is not a fresh Vault.**
 
@@ -264,32 +265,48 @@ that cluster teardown never destroys Vault state and `init` never reruns.
 ```text
 .data/
   prodbox/
-    minio/0/                     durable MinIO StatefulSet PV — ciphertext objects only (§9)
-    vault-unlock-bundle.age      host-side encrypted Vault recovery material — ROOT cluster only (§6)
+    minio/0/                     durable MinIO StatefulSet PV — ciphertext objects only (§9),
+                                 incl. the password-AEAD-sealed unlock bundle at the fixed
+                                 bootstrap key — ROOT cluster only (§6, §6.1, §9)
   vault/
     vault/0/                     durable Vault StatefulSet PV, preserved across cluster wipe
 ```
+
+The unlock bundle is **not** a host-disk file. It is a password-AEAD-sealed object in the durable
+MinIO bucket (§6, §9); host disk holds no Vault recovery material. The Vault PV
+(`.data/vault/vault/0`, `Retain`) is still preserved across cluster wipe exactly as above —
+moving the bundle into MinIO does not change the Vault PV's durability contract.
 
 ## 6. The unlock bundle (root cluster)
 
 The root cluster's Vault uses **Shamir** seal mode: the operator is the only one who can unseal
 it. Initialization happens once and produces unseal/recovery keys plus the initial root token.
-prodbox captures that material exactly once and immediately writes it to a host-side **unlock
-bundle**, then never prints raw keys or the root token to logs. (A child cluster's Vault uses
-`seal "transit"` against its parent instead and has no host-side unlock bundle — see §16 and
-[cluster_federation_doctrine.md](./cluster_federation_doctrine.md).)
+prodbox captures that material exactly once and immediately writes it to a password-AEAD-sealed
+**unlock bundle** stored in the **durable MinIO bucket** — not on host disk — then never prints raw
+keys or the root token to logs. (A child cluster's Vault uses `seal "transit"` against its parent
+instead and has no unlock bundle at all; its recovery keys live in the parent's Vault KV — see §16
+and [cluster_federation_doctrine.md](./cluster_federation_doctrine.md). The unlock bundle is
+Tier-1 bootstrap-secret material per [config_doctrine.md §0](./config_doctrine.md), and Tier 1 is
+**root-cluster-only**.)
 
-The unlock bundle uses authenticated encryption with a real password-based key-derivation
-function — **never raw SHA-256**, which is a hash, not encryption:
+The unlock bundle is **not** a Vault-Transit envelope: it is precisely the material that *unseals*
+Vault, so it cannot depend on an unsealed Vault. Instead it is sealed directly under the operator
+password using authenticated encryption with a real password-based key-derivation function —
+**never raw SHA-256**, which is a hash, not encryption:
 
 ```text
 operator password
-  -> Argon2id (or scrypt) KDF
-  -> age / sops-style authenticated encryption
-  -> .data/prodbox/vault-unlock-bundle.age
+  -> Argon2id KDF
+  -> ChaCha20-Poly1305 AEAD
+  -> a password-AEAD-sealed object in the durable MinIO bucket
+     (fixed bootstrap key, NOT a Vault-Transit envelope; §6.1, §9)
 ```
 
-Conceptual plaintext (before encryption) — the on-disk bundle is always ciphertext:
+The operator password is the **sole ephemeral secret**: it derives both the AEAD key that seals
+the bundle body and (via §6.1) the bootstrap MinIO credential that can fetch that object before
+Vault is reachable. Nothing about the bundle touches host disk.
+
+Conceptual plaintext (before encryption) — the stored bundle object is always ciphertext:
 
 ```json
 {
@@ -303,10 +320,10 @@ Conceptual plaintext (before encryption) — the on-disk bundle is always cipher
 }
 ```
 
-The bundle backend is pluggable behind a single interface (local encrypted file today; 1Password,
-pass/gopass, cloud KMS, YubiKey/age identity, or a TPM-backed host secret later). The initial
-root token is bootstrap-only: prodbox creates named admin roles/tokens and rotates or revokes the
-initial root token out of the steady-state admin path (an [open design
+The bundle backend is pluggable behind a single interface (the password-AEAD-sealed MinIO object
+today; 1Password, pass/gopass, cloud KMS, YubiKey/age identity, or a TPM-backed host secret
+later). The initial root token is bootstrap-only: prodbox creates named admin roles/tokens and
+rotates or revokes the initial root token out of the steady-state admin path (an [open design
 decision](#18-open-design-decisions)).
 
 ### The unlock chain
@@ -317,7 +334,9 @@ CLI unseal prompt, used in memory, and never persisted:
 
 ```text
 operator CLI password
-  -> Argon2id / age authenticated decryption of .data/prodbox/vault-unlock-bundle.age
+  -> KDF-derived bootstrap MinIO read credential (§6.1)
+  -> fetch the password-AEAD-sealed unlock bundle from the durable MinIO bucket (fixed key; §6.1, §9)
+  -> Argon2id + ChaCha20-Poly1305 authenticated decryption of the bundle body
   -> recover the root Vault's unseal/recovery keys (held only inside the bundle)
   -> submit the unseal keys -> UNSEAL THE ROOT VAULT
   -> the unsealed root Vault's Transit keys decrypt the in-force config envelope, the gateway
@@ -334,8 +353,44 @@ else. The consequences:
   auto-unseal, exactly per the fail-closed invariant (§2) and the federation cascade (§16).
 - The password is the only secret the operator memorizes; Vault's actual unseal keys are
   machine-generated and live only inside the encrypted bundle.
-- The password's **only cleartext home is `test-config.dhall`**, read solely by the test harness
+- The password's **only cleartext home is `test-secrets.dhall`**, read solely by the test harness
   to simulate the operator at the unseal prompt (§4); no production path stores or logs it.
+
+### 6.1 Bootstrap MinIO credential
+
+Because the unlock bundle lives in MinIO rather than on host disk (§6), prodbox must reach a MinIO
+object *before* Vault is unsealed — yet MinIO's steady-state root credentials are themselves a
+Vault KV secret (§9, §13). The bootstrap path that resolves this is a **password-derived bootstrap
+credential**, scoped to exactly that one fetch:
+
+```text
+operator password
+  -> KDF (Argon2id; the same memorized password, distinct derivation context/salt from the
+     bundle-body AEAD key)
+  -> a scoped bootstrap MinIO READ credential
+  -> read-only GET of the fixed-key unlock-bundle object in the durable bucket (§9)
+```
+
+This bootstrap credential is **not** a Vault-Transit handle and resolves no Vault path — by
+construction it must work while Vault is sealed. It is read-only and scoped to the single
+fixed-key bootstrap object, so it cannot read the opaque-named, Vault-Transit-enveloped Tier-2
+operational objects (§9) even if leaked; those still require an unsealed Vault. The operator
+password remains the sole ephemeral secret (§6): one password derives both the bundle-body AEAD
+key and this bootstrap MinIO credential.
+
+**Bootstrap reorder.** Reaching the bundle before unseal means **MinIO must be reachable before
+Vault unseal**, which inverts the historical `cluster reconcile` ordering (Vault first, then
+MinIO; §7). The reconcile sequence therefore brings MinIO up to a bootstrap-readable state ahead
+of the unseal step, then proceeds with Vault deploy → init-if-empty → fetch+decrypt the unlock
+bundle → unseal. This bootstrap reorder is staged together with the **MinIO-root-decoupling
+reorder** — decoupling MinIO's own steady-state root credentials from the unseal path so MinIO can
+serve the bootstrap read before Vault is unsealed — which is sequenced **last** among the bootstrap
+reorders so the rest of the model lands against the current ordering first.
+
+**Child clusters take none of this.** A child Vault uses transit-seal and auto-unseals against its
+parent (§16); it has no unlock bundle, no bootstrap MinIO credential, and no password prompt — its
+recovery keys live in the parent's Vault KV. Tier 1 (the password-gated bootstrap secret) is
+**root-cluster-only** ([config_doctrine.md §0](./config_doctrine.md)).
 
 ## 7. Vault lifecycle commands
 
@@ -380,15 +435,23 @@ adds the child-cluster Transit-seal branch, parent-readiness fail-closed cascade
 child init write, and post-MinIO settings reload through the child root token stored in the parent
 KV.
 
+Because the root unseal step now fetches the unlock bundle from MinIO (§6, §6.1), MinIO must be
+bootstrap-readable **before** Vault unseal — the bootstrap reorder of §6.1, staged with the
+MinIO-root-decoupling reorder last:
+
 ```text
 prodbox cluster reconcile
   -> reconcile RKE2 + retained PV layer
+  -> deploy/rebind MinIO to a bootstrap-readable state (durable bucket present; §6.1)
   -> deploy/rebind Vault on its durable PV
   -> vault init-if-empty (init-once; §5)
-  -> vault unseal (root: from unlock bundle / operator prompt; child: auto-unseal from parent, §16)
+  -> vault unseal
+       (root: KDF-derive the bootstrap MinIO read credential from the operator prompt, fetch the
+        fixed-key unlock bundle from MinIO, password-AEAD-decrypt, submit unseal keys; §6.1.
+        child: auto-unseal from parent, §16)
   -> vault reconcile
-  -> deploy/rebind MinIO
-  -> ensure the `prodbox-state` object-store bucket and its Vault-Transit encryption path
+  -> finish MinIO reconcile (steady-state root creds now resolvable; ensure the `prodbox-state`
+     object-store bucket and its Vault-Transit encryption path)
   -> fetch + decrypt the in-force config from the MinIO SSoT (or seed it on first bring-up; §16)
   -> reconcile charts that depend on Vault
 ```
@@ -475,6 +538,17 @@ plus sensitive topology, bootstrap records, and reconciliation checkpoints that 
 resources. There is **no `master-seed` object** — the HMAC-derivation model is retired (Sprint
 `3.19`; §1).
 
+The same durable bucket also holds the **root cluster's password-AEAD-sealed unlock bundle** (§6,
+§6.1). This object is the single, deliberate exception to the opaque-name + Vault-Transit rules
+below: it is the Tier-1 bootstrap secret that *unseals* Vault, so it cannot be a Vault-Transit
+Tier-2 envelope and cannot hide behind a Vault-keyed-HMAC name a sealed Vault could not compute.
+It is sealed under the operator password (Argon2id + ChaCha20-Poly1305; §6) and stored at a
+**fixed, well-known bootstrap key** so the §6.1 bootstrap credential can find it pre-unseal. Its
+discoverability and password-AEAD sealing are intentional and do not weaken the fail-closed
+invariant — its body still requires the operator password, and the operational Tier-2 objects
+below remain opaque-named and Vault-gated. Child clusters carry no such object (Tier 1 is
+root-only; [config_doctrine.md §0](./config_doctrine.md)).
+
 The encryption strategy is **Model B**: a single prodbox application-level layer that envelopes
 logical prodbox objects through Vault Transit (§8). It is not MinIO bucket server-side encryption — content
 encryption alone leaves object names, prefixes, counts, sizes, and bucket names as plaintext
@@ -487,12 +561,16 @@ Sprint `4.30` implements the shared layer and routes the in-force config read th
 1. **Envelope via Vault Transit.** Each object body is a §8 envelope — local AEAD over a random
    DEK, the DEK wrapped by Vault Transit. A sealed Vault cannot unwrap any DEK, so no object body
    decrypts.
-2. **Opaque object names.** Every object is stored at `objects/<vault-keyed-HMAC>.enc` under one
-   flat prefix. The opaque ID is a Vault-keyed HMAC of the object's logical name (deterministic,
-   directly addressable, and index-loss tolerant); the MAC key lives in Vault KV, so a sealed
-   Vault cannot recompute or invert the mapping from a logical name to its `objects/<id>.enc`
-   path. The name therefore carries no signal — not the object's role, not a downstream cluster,
-   not a Pulumi stack identity.
+2. **Opaque object names.** Every operational (Tier-2) object is stored at
+   `objects/<vault-keyed-HMAC>.enc` under one flat prefix. The opaque ID is a Vault-keyed HMAC of
+   the object's logical name (deterministic, directly addressable, and index-loss tolerant); the
+   MAC key lives in Vault KV, so a sealed Vault cannot recompute or invert the mapping from a
+   logical name to its `objects/<id>.enc` path. The name therefore carries no signal — not the
+   object's role, not a downstream cluster, not a Pulumi stack identity. The **one exception** is
+   the root unlock bundle (§6.1): it sits at a fixed, well-known bootstrap key (not HMAC-opaque)
+   precisely because it must be findable while Vault is sealed — and it is decoy-padding-counted
+   as part of the constant-count pool (rule 5) so its presence reveals nothing beyond "this is the
+   root cluster".
 3. **Vault-encrypted indexes.** The id↔logical map lives in `indexes/*.enc`, themselves §8
    envelopes. A sealed Vault reveals only the opaque IDs; the logical meaning behind each ID is
    recoverable only once Vault is unsealed and policy allows the read.
@@ -659,7 +737,7 @@ Pulumi provider path has no raw config fallback. The generated operational `aws.
 carries a mandatory `SecretRef.Vault` reference (never the plaintext key); the elevated/admin
 credential never enters config at all — it is supplied through the interactive `SecretRef.Prompt`
 arm and discarded after use (the test harness simulates that prompt from the
-`aws_admin_for_test_simulation.*` `TestPlaintext` fixture in `test-config.dhall`, not from a
+`aws_admin_for_test_simulation.*` `TestPlaintext` fixture in `test-secrets.dhall`, not from a
 `prodbox-config.dhall` section). Setup/config-setup mint the dedicated least-privilege `prodbox`
 identity using the prompted elevated credential and write the generated operational provider keys
 straight into `secret/gateway/gateway/aws`, and teardown clears that Vault object without writing
@@ -750,6 +828,18 @@ host/admin helpers read remaining admin, OIDC, demo-user, and SMTP material from
 `3.18` also pins the migrated chart materializers to fail closed on sealed or unreachable Vaults;
 the live whole-system sealed-Vault validation is Sprint `5.8`.
 
+Sprint `1.44` adds one **operator-write** Kubernetes auth role, `prodbox-operator-write` (bound to
+the `prodbox-operator-write` service account in the `gateway` namespace), backed by a deliberately
+narrow policy with `create`/`update` on exactly two KV paths — `secret/data/acme/eab` and
+`secret/data/gateway/gateway/aws`. It exists so the gateway daemon's `POST /v1/secret/<logical>`
+endpoint can persist the two host-minted operator secrets routed through the daemon (the ACME EAB
+and the minted operational `aws.*`) on behalf of an operator-injected Kubernetes JWT, instead of a
+host root-token direct write. The daemon never uses its own read-only `prodbox-gateway-daemon`
+identity for the write, and the role cannot reach the rest of the KV store, the Transit keys, or
+the federation custody tree. The `vault_operator_password` (needed before Vault is unsealed) and
+the ephemeral `aws_admin_for_test_simulation` credential (never stored in Vault) stay host-side.
+See [distributed_gateway_architecture.md §11](./distributed_gateway_architecture.md#11-rest-api).
+
 ## 13. Config and state classification
 
 Every prodbox datum is classified explicitly.
@@ -774,8 +864,9 @@ data VaultError
   | VaultPolicyMissing Text
   | VaultSecretMissing SecretRef
   | VaultDecryptDenied Text
-  | UnlockBundleMissing FilePath
-  | UnlockBundleDecryptFailed
+  | UnlockBundleMissing BootstrapObjectKey   -- absent at the fixed MinIO bootstrap key (§6.1)
+  | UnlockBundleDecryptFailed                -- wrong operator password / corrupt AEAD body
+  | BootstrapMinioUnreachable                -- cannot reach MinIO to fetch the bundle pre-unseal (§6.1)
 ```
 
 Errors are operator-clear and never include secret values. Logging never emits SecretRef-resolved
@@ -844,7 +935,7 @@ the auto-unseal mechanics, and the custody and config-authority flows.
 
 | Tier | Vault seal mode | Who unseals it | Init keys (recovery keys + initial root token) owned by |
 |---|---|---|---|
-| **Root cluster** | Shamir | Operator only, via the `.age` unlock bundle decrypted by a memorized password stored nowhere persistent (`test-config.dhall` simulates it in tests; §4, §6) | The operator (the password) |
+| **Root cluster** | Shamir | Operator only, via the password-AEAD-sealed unlock bundle in durable MinIO, decrypted by a memorized password stored nowhere persistent (`test-secrets.dhall` simulates it in tests; §4, §6, §6.1) | The operator (the password) |
 | **Child cluster** | `seal "transit"` pointed at the **parent** cluster's Vault | Auto-unseals against the parent — no human, no local unseal keys | The **parent** cluster's Vault KV |
 
 - A child Vault literally cannot unseal without a live, unsealed parent. If any parent is
@@ -855,7 +946,8 @@ the auto-unseal mechanics, and the custody and config-authority flows.
   initial root token are stored in the parent's Vault KV (under the
   `transit/prodbox-downstream-cluster-config` blast-radius domain; §8); the parent's transit key
   is the child's unseal authority. The root cluster's own init keys are the only ones held outside
-  Vault — in the host unlock bundle (§6, the chicken-and-egg floor; §17).
+  Vault — in the password-AEAD-sealed unlock bundle in durable MinIO (§6, §6.1, the chicken-and-egg
+  floor; §17).
 - A cluster's knowledge of its child clusters (their existence, identities, endpoints,
   kubeconfigs, account IDs, Pulumi stacks) is **secret data** — only legible behind an unsealed
   Vault (§13, sensitive topology).
@@ -903,9 +995,11 @@ Vault may not own:
 
 1. RKE2's self-signed cluster CA + admin kubeconfig (Vault runs inside this cluster's PKI).
 2. The Vault PV binding itself.
-3. **Root cluster only:** the operator unseal-bundle password (the key that unseals the root
-   Vault) plus the `.age` unlock bundle on retained host storage
-   (`.data/prodbox/vault-unlock-bundle.age`; §6).
+3. **Root cluster only:** the operator unseal-bundle password (the sole ephemeral secret, the key
+   that unseals the root Vault). The password-AEAD-sealed unlock bundle it decrypts lives in the
+   durable MinIO bucket, not on host disk (§6); it is not a Vault-owned object — it is what
+   *unseals* Vault — but it is reachable pre-unseal only via the password-derived bootstrap MinIO
+   credential (§6.1), so the password remains the genuine off-box floor.
 4. **Child cluster only:** the bootstrap reference + transit-seal credential the child uses to
    reach its parent's Vault to auto-unseal — itself provisioned and owned by the parent (§16).
 
@@ -943,6 +1037,11 @@ Standards N / O):
   §9 whole-system).
 - A MinIO bucket dump while Vault is sealed reveals no in-force-config or Pulumi plaintext, and no
   `master-seed` object exists at all.
+- The root unlock-bundle object — the one deliberately fixed-key, password-AEAD-sealed exception
+  in the bucket (§6.1, §9) — has a body that requires the operator password, not Vault; a
+  sealed-Vault bucket dump recovers no unseal key from it, and it is decoy-count-padded so its
+  presence reveals only "this is the root cluster", never a workload, downstream cluster, or count
+  signal. Child clusters have no such object at all.
 - A bucket-level `s3api ls` while Vault is sealed reveals one generically-named bucket — neither
   the retired `prodbox` nor `prodbox-test-pulumi-backends` role-revealing name survives (§9).
 - Object names and indexes reveal no downstream-cluster inventory: every object is
@@ -954,18 +1053,20 @@ Standards N / O):
   "present" from "absent" (the exists-vs-`NoSuchKey`/`stackPresentInList` discriminator is gated
   behind the readiness check; §9, §14; the Haskell-side gate landed in Sprint `4.33`).
 - A raw host-disk walk of `.data/prodbox/minio/0` while Vault is sealed reveals only opaque-named
-  ciphertext at a constant count — no plaintext name, body, or count (§9; Haskell-side gates landed
-  in Sprint `4.33`; deployed proof is Sprint `5.8`).
+  ciphertext at a constant count — no plaintext name, body, or count — save the single fixed-key,
+  password-AEAD-sealed unlock-bundle object on the root cluster, whose body is still password-gated
+  and whose presence is decoy-count-padded (§6.1, §9; Haskell-side gates landed in Sprint `4.33`;
+  deployed proof is Sprint `5.8`).
 - The object body stores a **hashed** AAD (`prodbox-envelope-v2`, `base64(SHA256(aad))`); a sealed
   envelope never contains a cleartext binding such as `aws-eks` (§8, §9; Sprint `4.30`).
 - Sealed Vault blocks Pulumi before any preview/update/destroy starts.
 - Sealed Vault blocks gateway daemon config recovery, Keycloak bootstrap/recovery, and TLS
   private-key reconstruction, and prevents every child cluster from auto-unsealing.
 - A child cluster cannot unseal while its parent is sealed/unreachable.
-- Test-harness plaintext is isolated to `test-config.dhall` and never used by production paths.
+- Test-harness plaintext is isolated to `test-secrets.dhall` and never used by production paths.
 - The unlock-bundle password is handled by KDF + authenticated encryption, not raw SHA-256.
 - The unlock-bundle password is the only operator-memorized secret; its only cleartext home is
-  `test-config.dhall`, and no production path stores or logs it.
+  `test-secrets.dhall`, and no production path stores or logs it.
 - No recovered plaintext secret lands on a physical-disk-backed path, and secret-bearing
   daemon↔MinIO transfers use TLS.
 - The Vault root token is not the steady-state admin path; `vault init` never reruns against

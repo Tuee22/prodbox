@@ -5,7 +5,8 @@
 **Referenced by**: [vault_doctrine.md](./vault_doctrine.md),
 [config_doctrine.md](./config_doctrine.md),
 [distributed_gateway_architecture.md](./distributed_gateway_architecture.md),
-[storage_lifecycle_doctrine.md](./storage_lifecycle_doctrine.md)
+[storage_lifecycle_doctrine.md](./storage_lifecycle_doctrine.md),
+[../../DEVELOPMENT_PLAN/phase-7-aws-substrate-foundations.md](../../DEVELOPMENT_PLAN/phase-7-aws-substrate-foundations.md)
 **Generated sections**: none
 
 > **Purpose**: Single source of truth for prodbox cluster federation — the root/child Vault
@@ -43,7 +44,7 @@ keys + initial root token):
 
 | Tier | Vault seal mode | Who unseals it | Init keys owned by |
 |------|-----------------|----------------|--------------------|
-| **Root cluster** | Shamir | The operator only, via the `.age` unlock bundle decrypted by a memorized password stored nowhere persistent (`test-config.dhall` simulates it in tests) | The operator (the password) |
+| **Root cluster** | Shamir | The operator only, via the `.age` unlock bundle decrypted by a memorized password stored nowhere persistent (`test-secrets.dhall` simulates it in tests) | The operator (the password) |
 | **Child cluster** | `seal "transit"` pointed at the **parent** cluster's Vault | Auto-unseals against the parent — no human, no local unseal keys | The **parent** cluster's Vault KV |
 
 The root cluster is the only tier a human ever unseals. Its Vault uses Shamir seal mode; its
@@ -51,7 +52,7 @@ unseal/recovery keys live only inside the host-side `.age` unlock bundle on reta
 (`.data/prodbox/vault-unlock-bundle.age`), and the only secret the operator memorizes is the
 bundle password (see [vault_doctrine.md § 6](./vault_doctrine.md#6-the-unlock-bundle)). The
 test harness simulates the operator at the unseal prompt by reading that password from
-`test-config.dhall`; there is no production path that stores or logs it.
+`test-secrets.dhall`; there is no production path that stores or logs it.
 
 A child cluster never holds its own unseal keys and never prompts a human. Its Vault is configured
 with Vault `seal "transit"` whose target is its parent cluster's Vault Transit mount. At startup
@@ -190,6 +191,20 @@ unseal its own Vault — and nothing more:
 The basics carry nothing about workloads, downstream clusters, or credentials. Everything else —
 the full in-force config, the downstream-cluster inventory, every secret — is behind the
 cluster's unsealed Vault.
+
+The unencrypted basics are projected from the non-secret binary-context tier defined in
+[config_doctrine.md § 0](./config_doctrine.md#0-three-tier-config-model). That tier is
+**orthogonal** to the SSoT inversion described here: it is non-secret context the binary carries
+locally, never a route around the sealed-Vault posture, and it never widens what a sealed cluster
+reveals beyond the four basics above. The SSoT inversion and the fail-closed seal model are
+prodbox's additive secrecy layer on top of that non-secret tier; neither displaces the other.
+
+A child cluster's federation **orders** — the downstream-cluster inventory, identities, endpoints,
+kubeconfigs, account IDs, and Pulumi stacks — likewise live entirely within the operational-secret
+tier: the existing `LogicalDownstreamCluster` Vault-Transit object in the shared object-store (§3,
+§4), never a new on-disk encrypted file. There is no separate child-orders artifact on host disk;
+the non-secret basics locate the parent Vault, and the orders themselves resolve only behind an
+unsealed Vault.
 
 A filesystem `prodbox-config.dhall` is a **seed/propose input only, not the SSoT**. On first-ever
 bring-up it seeds the encrypted MinIO SSoT; thereafter supplying a file is a *proposed update*

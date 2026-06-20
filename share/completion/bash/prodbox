@@ -19,13 +19,13 @@ _prodbox()
         words="eks test aws-subzone aws-ses"
         ;;
       "aws stack eks")
-        words="reconcile destroy"
+        words="reconcile destroy prune-corrupt-checkpoint"
         ;;
       "aws stack test")
-        words="reconcile destroy"
+        words="reconcile destroy prune-corrupt-checkpoint"
         ;;
       "aws stack aws-subzone")
-        words="reconcile destroy"
+        words="reconcile destroy prune-corrupt-checkpoint"
         ;;
       "aws stack aws-ses")
         words="reconcile destroy migrate-backend"
@@ -40,7 +40,7 @@ _prodbox()
         words="register"
         ;;
       "config")
-        words="setup show validate"
+        words="setup show validate schema"
         ;;
       "dev")
         words="check lint docs tla-check"

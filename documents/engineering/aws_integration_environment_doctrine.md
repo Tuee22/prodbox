@@ -12,7 +12,7 @@
 
 - Operational `prodbox` AWS authentication material in the repository-root
   `prodbox-config.dhall` is a `SecretRef.Vault` reference (the generated `aws.*` identity), never
-  a plaintext key; test-simulation credentials live in `test-config.dhall`, not in
+  a plaintext key; test-simulation credentials live in `test-secrets.dhall`, not in
   `prodbox-config.dhall`. The SecretRef model, the config split, and the secret classification
   are owned by [vault_doctrine.md §3, §4, §13](./vault_doctrine.md) — this document defers to that
   SSoT rather than restating it.
@@ -24,7 +24,7 @@
   ephemeral temporary-admin AWS credential (historically called "elevated credentials"); none of
   them read a stored admin section from `prodbox-config.dhall`. The prompted credential is held in
   memory for one command, used once, and discarded — never written to config, never stored in Vault.
-- `aws_admin_for_test_simulation.*` is a test-harness-only fixture that lives in `test-config.dhall`
+- `aws_admin_for_test_simulation.*` is a test-harness-only fixture that lives in `test-secrets.dhall`
   and exists solely to drive the interactive UI: it feeds the same temporary-admin prompt a real
   operator answers so the harness can exercise admin-credentialed flows non-interactively. It is
   `TestPlaintext`-class, is never imported by `prodbox-config.dhall`, never read by a production
@@ -140,7 +140,7 @@
     operational `aws.*` then genuinely stranded it).
   - Sprint `4.10` moved `aws-ses` to the temporary-admin credential class — real ops prompt for
     the ephemeral elevated credential, and the harness simulates that prompt from
-    `aws_admin_for_test_simulation.*` in `test-config.dhall`; Sprint `7.5.c.v.c` then switched the preflight
+    `aws_admin_for_test_simulation.*` in `test-secrets.dhall`; Sprint `7.5.c.v.c` then switched the preflight
     (`runAwsIamHarnessSetup`) to `BypassAllResidueForHarnessRefresh` but left the postflight
     on `BypassPerRunResidueOnly`. Sprint `7.9` (2026-05-29) finishes the reconciliation:
     the postflight (`runAwsIamHarnessTeardown`) also uses `BypassAllResidueForHarnessRefresh`.
@@ -216,7 +216,7 @@ frontend and explicit AWS CLI subprocess environments, and they prompt for the e
 temporary-admin credential through the interactive `SecretRef.Prompt`. There is no production
 config-backed admin path: managed suite-driven validation, targeted AWS-substrate validation, and
 long-lived stack / `prodbox nuke` teardown all use the same prompt; the test harness simply
-automates it by feeding `aws_admin_for_test_simulation.*` from `test-config.dhall` (a test-harness
+automates it by feeding `aws_admin_for_test_simulation.*` from `test-secrets.dhall` (a test-harness
 fixture, not a `prodbox-config.dhall` section).
 
 ## 2. Authentication Source And Storage Rules
@@ -236,7 +236,7 @@ Operational config fields (each a `SecretRef.Vault` reference, never plaintext):
 3. `aws.region`
 4. `aws.session_token` (optional)
 
-Test-simulation admin fixture (in `test-config.dhall`, `TestPlaintext`-class — NOT in
+Test-simulation admin fixture (in `test-secrets.dhall`, `TestPlaintext`-class — NOT in
 `prodbox-config.dhall`):
 
 1. `aws_admin_for_test_simulation.access_key_id`
@@ -246,7 +246,7 @@ Test-simulation admin fixture (in `test-config.dhall`, `TestPlaintext`-class —
 
 `prodbox-config.dhall` holds no plaintext secrets and no `aws_admin_for_test_simulation` block.
 The `aws_admin_for_test_simulation.*` fixture is a test-harness-only simulation of the interactive
-temporary-admin-credential prompt; it lives only in `test-config.dhall`, is never imported by
+temporary-admin-credential prompt; it lives only in `test-secrets.dhall`, is never imported by
 `prodbox-config.dhall`, and is never stored in Vault. It exists so the harness can drive
 `prodbox test integration aws-iam`, targeted `prodbox test integration <name> --substrate aws`
 validation, aggregate-harness execution of that suite, long-lived `aws-ses` / state-backend
@@ -257,7 +257,7 @@ Public `prodbox config setup`, public `prodbox aws ...` commands, and every admi
 flow prompt for the ephemeral temporary-admin credential through `SecretRef.Prompt`; none of them
 read a stored admin section from `prodbox-config.dhall`.
 
-The harness simulates that prompt from `aws_admin_for_test_simulation.*` in `test-config.dhall`;
+The harness simulates that prompt from `aws_admin_for_test_simulation.*` in `test-secrets.dhall`;
 a missing or partial fixture must fail fast with an actionable error rather than falling back to
 ambient AWS auth.
 
@@ -321,7 +321,7 @@ Before an AWS-mutating validation runs, the harness must prove:
    `prodbox test integration <name> --substrate aws` validations), the native IAM harness config
    is complete enough to mint the generated operational `aws.*` identity (written straight into
    Vault) from the harness-simulated temporary-admin prompt sourced from
-   `aws_admin_for_test_simulation.*` in `test-config.dhall`, without falling back to pre-existing
+   `aws_admin_for_test_simulation.*` in `test-secrets.dhall`, without falling back to pre-existing
    operational credentials
 
 ### 3.2 Required Check Semantics
@@ -335,7 +335,7 @@ The required checks map to:
    Route 53 validations must be able to create and fully own a fresh hosted-zone lifecycle;
    Pulumi-backed validations must be able to drive the canonical `prodbox aws stack` command surface
 4. native IAM harness check: managed suite-driven runs must fail before their validation bodies
-   when the `aws_admin_for_test_simulation.*` fixture in `test-config.dhall` (the source the
+   when the `aws_admin_for_test_simulation.*` fixture in `test-secrets.dhall` (the source the
    harness uses to simulate the temporary-admin prompt) is missing, partial, or paired with an
    otherwise incomplete harness config
 
@@ -440,9 +440,19 @@ simulating it), then `prodbox` mints the dedicated least-privilege `prodbox` IAM
 the generated `aws.*` credential straight into Vault KV, and discards the prompted elevated
 credential — it never transits cleartext storage.
 
+The full ordered init → mint → write-to-Vault → postflight-delete-and-clear lifecycle the
+suite-level IAM harness drives (the harness drives `vault init` with the `test-secrets.dhall`
+operator password; the elevated `aws_admin_for_test_simulation.*` fixture mints the operational
+IAM user/keys; those keys are written directly to Vault at `secret/gateway/gateway/aws`, never to
+`prodbox-config.dhall`; and postflight deletes the IAM user/keys from AWS and clears the Vault
+creds on success/failure/Ctrl-C with preflight idempotency, the Vault clear being an empty-value
+write rather than a hard delete) is canonicalized in
+[aws_admin_credentials.md §4.2](./aws_admin_credentials.md). This document defers to that SSoT for
+the lifecycle; the items below state the credential-boundary invariants the lifecycle obeys.
+
 1. `aws.*` remains the normal operational identity, minted into Vault KV and referenced from
    `prodbox-config.dhall` as a `SecretRef.Vault` value
-2. `aws_admin_for_test_simulation.*` is the test-harness-only fixture in `test-config.dhall`
+2. `aws_admin_for_test_simulation.*` is the test-harness-only fixture in `test-secrets.dhall`
    (`TestPlaintext`-class) that simulates the ephemeral temporary-admin prompt the real flows
    answer interactively — driving `prodbox test integration aws-iam`,
    `prodbox test integration <name> --substrate aws`, `prodbox test integration all`,
@@ -635,7 +645,7 @@ consumes the SES IAM-to-SMTP-credentials derivation from Vault KV. Fresh per-run
 invite-aware home-runtime bootstraps must sync that retained stack output into the current cluster's
 Vault before Helm renders Keycloak: the bootstrap reads the long-lived `aws-ses` outputs
 through the encrypted stack-output helper using the temporary-admin credential (prompted in real
-ops, harness-simulated from `aws_admin_for_test_simulation.*` in `test-config.dhall` under test),
+ops, harness-simulated from `aws_admin_for_test_simulation.*` in `test-secrets.dhall` under test),
 derives the SES SMTP password, and writes `secret/keycloak/smtp`. Because Keycloak's realm import does not update an
 already-created realm, `prodbox users invite` also patches the live realm's `smtpServer` from
 `secret/keycloak/smtp` before it sends an execute-actions email. If the long-lived stack state is

@@ -41,6 +41,7 @@ import Prodbox.CLI.Parser
   )
 import Prodbox.CLI.Spec (CommandSpec (..), commandRegistry, findCommandSpec)
 import Prodbox.CLI.Tree (renderCommandTree)
+import Prodbox.Config.SchemaDhall (materializeSchemaFilesIfStale)
 import Prodbox.Error (fatalError)
 import Prodbox.Native (runNativeCommand)
 import Prodbox.Repo (findRepoRoot)
@@ -97,7 +98,17 @@ runCommandRequest request =
     RunNative command -> do
       repoRootResult <- findRepoRoot
       case repoRootResult of
-        Right repoRoot -> dispatch repoRoot command
+        Right repoRoot -> do
+          -- Sprint 7.17/7.18: ALL Dhall is generated or locally authored and
+          -- NONE is version-controlled — including the two `*-types.dhall`
+          -- schemas. Materialize them from the Haskell source of truth before
+          -- dispatch so any command that decodes a config importing
+          -- `./prodbox-config-types.dhall` (e.g. `cluster reconcile` via
+          -- `validateAndLoadBootstrapSettings`) resolves the schema even on a
+          -- fresh checkout that never committed it. Idempotent + cheap (writes
+          -- only when absent/stale).
+          materializeSchemaFilesIfStale repoRoot
+          dispatch repoRoot command
         Left err ->
           if canRunWithoutRepoRoot command
             then dispatch "." command

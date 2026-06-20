@@ -18,11 +18,20 @@ module Prodbox.Vault.Host
   , resolveHostVaultAddress
   , writeHostVaultKvObject
 
-    -- * Sprint 7.16: the test-harness cleartext fixture (@test-config.dhall@)
-  , TestConfig (..)
-  , TestConfigAdminCredentials (..)
-  , testConfigPath
-  , loadTestConfig
+    -- * Sprint 7.19 P3: pure bootstrap-bundle unseal-source classification
+  , BootstrapMinioRead (..)
+  , BootstrapSourceDecision (..)
+  , classifyBootstrapMinioSource
+  , renderBootstrapSourceWarning
+
+    -- * Sprint 1.43: the test-harness secrets fixture (@test-secrets.dhall@)
+  , TestSecrets (..)
+  , TestSecretsAdminCredentials (..)
+  , AcmeEabFixture (..)
+  , defaultTestSecrets
+  , testSecretsPath
+  , loadTestSecrets
+  , seedAcmeEabFromTestSecrets
   )
 where
 
@@ -33,10 +42,20 @@ import Data.Map.Strict (Map)
 import Data.Map.Strict qualified as Map
 import Data.Text (Text)
 import Data.Text qualified as Text
-import Dhall (FromDhall, auto, inputFile)
+import Dhall (FromDhall, ToDhall, auto, inputFile)
 import GHC.Generics (Generic)
-import Prodbox.CLI.Output (writeDiagnostic, writeDiagnosticLine)
+import Prodbox.CLI.Output (writeDiagnostic, writeDiagnosticLine, writeOutputLine)
+import Prodbox.Config.Basics (UnencryptedBasics (..))
+import Prodbox.Config.FloorDhall qualified as FloorDhall
 import Prodbox.Http.Client (HttpError (..), renderHttpError)
+import Prodbox.Infra.MinioBackend (withMinioPortForward)
+import Prodbox.Vault.BootstrapBundle
+  ( bootstrapObjectStoreConfig
+  , bootstrapSaltForClusterId
+  , bootstrapUnlockBundleKey
+  , deriveBootstrapMinioCredential
+  , getBundleObject
+  )
 import Prodbox.Vault.Client
   ( SealStatus (..)
   , VaultAddress (..)
@@ -48,6 +67,7 @@ import Prodbox.Vault.Client
 import Prodbox.Vault.Orchestration (vaultUnlockBundlePath)
 import Prodbox.Vault.UnlockBundle
   ( UnlockBundle (..)
+  , UnlockBundleError (..)
   , decryptUnlockBundle
   , renderUnlockBundleError
   )
@@ -231,24 +251,179 @@ testHostVaultFields =
     , ("hmac_key", "test-eab-hmac-key")
     ]
 
--- | Read the on-disk encrypted unlock bundle and decrypt it with the operator
--- password. Shared by host-side Vault commands and admin/helper flows. Errors
--- are secret-free.
+-- | Read the encrypted unlock bundle and decrypt it with the operator password.
+-- Shared by host-side Vault commands and admin/helper flows. Errors are
+-- secret-free.
+--
+-- Sprint 7.19 (staged): the bundle source is now PREFER-MinIO, FALL-BACK-disk.
+-- The operator password (obtained once) decrypts whichever source supplies the
+-- ciphertext envelope: first the Tier-1 fixed-key object in the durable MinIO
+-- bucket, fetched via the password-derived bootstrap credential (§6.1); if MinIO
+-- is unreachable, the object is absent, or the credential cannot be derived, it
+-- falls back to the host-disk bundle, which remains the load-bearing source this
+-- stage. The bundle bytes are identical in both places (the @vault init@
+-- dual-write), so the password decrypts either one the same way.
+--
+-- Sprint 7.19 (live-proof): once the MinIO-before-Vault-unseal +
+-- MinIO-root-decouple reorder lands, the disk fallback is removed and MinIO
+-- becomes the sole source. NOT done this stage.
 loadAndDecryptBundle :: FilePath -> IO (Either String UnlockBundle)
 loadAndDecryptBundle repoRoot = do
+  passwordResult <- obtainOperatorPassword repoRoot
+  case passwordResult of
+    Left err -> pure (Left err)
+    Right password -> do
+      minioRead <- fetchBootstrapBundleEnvelope repoRoot password
+      case classifyBootstrapMinioSource password minioRead of
+        BootstrapUseMinio bundle -> do
+          writeOutputLine
+            ( "Tier-1 unlock bundle read from the durable MinIO bucket at "
+                ++ Text.unpack bootstrapUnlockBundleKey
+                ++ "."
+            )
+          pure (Right bundle)
+        BootstrapFallBackToDisk warning -> do
+          -- Sprint 7.19 (P3): never SILENTLY mask a present-but-undecryptable
+          -- MinIO bootstrap object or a MinIO read/credential failure. Surface
+          -- the reason as a WARNING (secret-free) before falling back to the
+          -- host-disk bundle, which remains the recovery source this stage. The
+          -- overall path still fails CLOSED when the password is wrong, because
+          -- the byte-identical disk envelope fails to decrypt too.
+          case warning of
+            Just message -> writeOutputLine ("WARNING: " ++ message)
+            Nothing -> pure ()
+          loadAndDecryptDiskBundle repoRoot password
+
+-- | The classified MinIO read outcome handed to the pure
+-- 'classifyBootstrapMinioSource' decision. Keeps the IO (port-forward, MinIO
+-- read) separate from the policy so the fall-back / warn decision is unit
+-- testable without a cluster.
+data BootstrapMinioRead
+  = -- | The fixed bootstrap object was present; carries its ciphertext envelope.
+    BootstrapMinioPresent BS.ByteString
+  | -- | The object was cleanly absent (no object at the bootstrap key).
+    BootstrapMinioAbsent
+  | -- | The MinIO read or bootstrap-credential derivation failed; carries a
+    -- secret-free reason. This is NOT "absent" — it is a failure to observe.
+    BootstrapMinioUnavailable String
+  deriving (Eq, Show)
+
+-- | The pure unseal-source decision: whether to use the MinIO-sourced bundle or
+-- fall back to the host disk, and (when falling back) an optional secret-free
+-- WARNING to surface so the failure is never silently masked.
+data BootstrapSourceDecision
+  = -- | The MinIO object decrypted cleanly; use it.
+    BootstrapUseMinio UnlockBundle
+  | -- | Fall back to the host-disk bundle. @Just@ a warning when the fall-back
+    -- is due to an integrity/availability problem worth surfacing; @Nothing@
+    -- when MinIO was cleanly absent (the ordinary pre-dual-write case).
+    BootstrapFallBackToDisk (Maybe String)
+  deriving (Eq, Show)
+
+-- | Decide the unseal source from a classified MinIO read and the operator
+-- password. Pure, so the warn / fall-back policy is testable:
+--
+--   * a present object that DECRYPTS cleanly is used directly;
+--   * a present object that does NOT decrypt is treated as corruption — fall
+--     back to disk WITH a warning naming the integrity failure (the disk copy
+--     is byte-identical, so a wrong password still fails closed there);
+--   * a clean absence falls back to disk SILENTLY (the ordinary case before the
+--     dual-write has run);
+--   * a MinIO read / credential-derivation failure falls back to disk WITH a
+--     warning naming the reason (a failure to OBSERVE is never silently treated
+--     as absent).
+classifyBootstrapMinioSource :: Text -> BootstrapMinioRead -> BootstrapSourceDecision
+classifyBootstrapMinioSource password minioRead = case minioRead of
+  BootstrapMinioPresent envelopeBytes ->
+    case decryptUnlockBundle password envelopeBytes of
+      Right bundle -> BootstrapUseMinio bundle
+      Left err -> BootstrapFallBackToDisk (Just (renderBootstrapSourceWarning err))
+  BootstrapMinioAbsent -> BootstrapFallBackToDisk Nothing
+  BootstrapMinioUnavailable reason ->
+    BootstrapFallBackToDisk
+      ( Just
+          ( "could not read the Tier-1 unlock bundle from the durable MinIO bucket at "
+              ++ Text.unpack bootstrapUnlockBundleKey
+              ++ " ("
+              ++ reason
+              ++ "); falling back to the host-disk bundle."
+          )
+      )
+
+-- | Render the secret-free warning for a MinIO bootstrap object that was present
+-- but did not decrypt. 'UnlockBundleMalformed' / 'UnlockBundleDecodeFailed' are
+-- unambiguous corruption; 'UnlockBundleAuthFailed' is wrong-password-or-tamper
+-- (kept indistinguishable). Either way it is surfaced, never masked.
+renderBootstrapSourceWarning :: UnlockBundleError -> String
+renderBootstrapSourceWarning err =
+  "the Tier-1 unlock bundle in the durable MinIO bucket at "
+    ++ Text.unpack bootstrapUnlockBundleKey
+    ++ " is present but UNDECRYPTABLE ("
+    ++ renderUnlockBundleError err
+    ++ "); falling back to the host-disk bundle. If this is not a wrong-password "
+    ++ "run, the MinIO object is corrupt and should be re-written from the host "
+    ++ "disk via `prodbox vault rotate-unlock-bundle`."
+
+-- | The host-disk fallback half of 'loadAndDecryptBundle': read the on-disk
+-- ciphertext envelope and decrypt it. Used when the preferred MinIO source is
+-- unreachable, absent, or corrupt.
+loadAndDecryptDiskBundle :: FilePath -> Text -> IO (Either String UnlockBundle)
+loadAndDecryptDiskBundle repoRoot password = do
   let bundlePath = vaultUnlockBundlePath repoRoot
   bundleExists <- doesFileExist bundlePath
   if not bundleExists
     then pure (Left ("no unlock bundle at " ++ bundlePath ++ "; run `prodbox vault init` first"))
     else do
       envelopeBytes <- BS.readFile bundlePath
-      passwordResult <- obtainOperatorPassword repoRoot
-      case passwordResult of
-        Left err -> pure (Left err)
-        Right password ->
-          pure $ case decryptUnlockBundle password envelopeBytes of
-            Left err -> Left (renderUnlockBundleError err)
-            Right bundle -> Right bundle
+      pure $ case decryptUnlockBundle password envelopeBytes of
+        Left err -> Left (renderUnlockBundleError err)
+        Right bundle -> Right bundle
+
+-- | Best-effort read of the Tier-1 unlock-bundle ciphertext envelope from the
+-- durable MinIO bucket (§6.1). Derives the password-derived bootstrap MinIO
+-- credential from the operator password + the public per-cluster salt, opens the
+-- local MinIO port-forward, and reads the fixed bootstrap key. Returns a
+-- classified 'BootstrapMinioRead' so the caller can DISTINGUISH a clean absence
+-- (fall back silently) from a failure to observe or a present-but-corrupt object
+-- (fall back WITH a warning). Sprint 7.19 (P3): a read/credential failure is no
+-- longer collapsed to "absent" — it is surfaced as 'BootstrapMinioUnavailable'.
+fetchBootstrapBundleEnvelope :: FilePath -> Text -> IO BootstrapMinioRead
+fetchBootstrapBundleEnvelope repoRoot password = do
+  clusterId <- resolveBootstrapClusterId repoRoot
+  case deriveBootstrapMinioCredential password (bootstrapSaltForClusterId clusterId) of
+    Left credErr ->
+      pure
+        ( BootstrapMinioUnavailable
+            ("bootstrap credential derivation failed: " ++ renderUnlockBundleError credErr)
+        )
+    Right credential -> do
+      result <-
+        withMinioPortForward $ \localPort ->
+          getBundleObject (bootstrapObjectStoreConfig localPort credential)
+      pure $ case result of
+        Right (Right (Just envelopeBytes)) -> BootstrapMinioPresent envelopeBytes
+        Right (Right Nothing) -> BootstrapMinioAbsent
+        Right (Left readErr) -> BootstrapMinioUnavailable ("MinIO read failed: " ++ readErr)
+        Left portErr -> BootstrapMinioUnavailable ("MinIO unreachable: " ++ portErr)
+
+-- | The public per-cluster cluster id used to derive the bootstrap MinIO salt.
+-- Read best-effort from the Tier-0 @prodbox.dhall@ sealed-Vault bootstrap floor
+-- (the non-secret bootstrap surface, projected via
+-- 'Prodbox.Config.FloorDhall.loadUnencryptedBasics'); on any absence/decode
+-- failure it falls back to the documented default cluster id, which matches what
+-- @vault init@ stamps.
+resolveBootstrapClusterId :: FilePath -> IO Text
+resolveBootstrapClusterId repoRoot = do
+  floorResult <- FloorDhall.loadUnencryptedBasics repoRoot
+  pure $ case floorResult of
+    Left _ -> defaultBootstrapClusterId
+    Right basics -> basicsClusterId basics
+
+-- | The documented default cluster id (mirrors @Prodbox.Config.Tier0@'s
+-- @defaultProdboxContext@ and @Prodbox.CLI.Vault.defaultClusterId@). Kept local
+-- to avoid an import cycle through the CLI layer.
+defaultBootstrapClusterId :: Text
+defaultBootstrapClusterId = "prodbox-home"
 
 requireReadyVault :: VaultAddress -> IO (Either String ())
 requireReadyVault address = do
@@ -263,15 +438,17 @@ requireReadyVault address = do
       | otherwise -> Right ()
 
 -- | The operator unlock-bundle password seam. The doctrine-blessed cleartext
--- home is @test-config.dhall@ (test harness only); a host operator is prompted
+-- home is @test-secrets.dhall@ (test harness only); a host operator is prompted
 -- on a TTY with echo disabled; a non-interactive host with no
--- @test-config.dhall@ fails loud rather than blocking.
+-- @test-secrets.dhall@ fails loud rather than blocking. The password unseals
+-- Vault, so it lives host-side (Sprint 1.44: it cannot route through the
+-- daemon, which needs an already-unsealed Vault).
 obtainOperatorPassword :: FilePath -> IO (Either String Text)
 obtainOperatorPassword repoRoot = do
-  testConfigResult <- loadTestConfig repoRoot
-  case testConfigResult of
+  testSecretsResult <- loadTestSecrets repoRoot
+  case testSecretsResult of
     Just (Left err) -> pure (Left err)
-    Just (Right testConfig) -> pure (Right (vault_operator_password testConfig))
+    Just (Right testSecrets) -> pure (Right (vault_operator_password testSecrets))
     Nothing -> do
       isTty <- hIsTerminalDevice stdin
       if isTty
@@ -279,16 +456,16 @@ obtainOperatorPassword repoRoot = do
         else
           pure
             ( Left
-                "no TTY for the Vault unlock-bundle password and no test-config.dhall present; supply test-config.dhall for automation"
+                "no TTY for the Vault unlock-bundle password and no test-secrets.dhall present; supply test-secrets.dhall for automation"
             )
 
 -- | The new unlock-bundle password. Test harness automation reuses the
--- test-only password from @test-config.dhall@; real operators must confirm a
+-- test-only password from @test-secrets.dhall@; real operators must confirm a
 -- fresh hidden password on a TTY.
 obtainNewOperatorPassword :: FilePath -> IO (Either String Text)
 obtainNewOperatorPassword repoRoot = do
-  testConfigPresent <- doesFileExist (testConfigPath repoRoot)
-  if testConfigPresent
+  testSecretsPresent <- doesFileExist (testSecretsPath repoRoot)
+  if testSecretsPresent
     then obtainOperatorPassword repoRoot
     else do
       isTty <- hIsTerminalDevice stdin
@@ -297,56 +474,152 @@ obtainNewOperatorPassword repoRoot = do
         else
           pure
             ( Left
-                "no TTY for the new Vault unlock-bundle password and no test-config.dhall present; rerun from a terminal"
+                "no TTY for the new Vault unlock-bundle password and no test-secrets.dhall present; rerun from a terminal"
             )
 
--- | The canonical path of the test-harness cleartext fixture relative to a
+-- | The canonical path of the test-harness secrets fixture relative to a
 -- repository root. The file is git-ignored; only the harness (or an
--- operator-driven automation run) ever supplies it.
-testConfigPath :: FilePath -> FilePath
-testConfigPath repoRoot = repoRoot </> "test-config.dhall"
+-- operator-driven automation run) ever supplies it. Sprint 1.43 renamed this
+-- from @test-config.dhall@: @test-secrets.dhall@ is now the ONLY durable-secret
+-- fixture file (operator decision 2026-06-19).
+testSecretsPath :: FilePath -> FilePath
+testSecretsPath repoRoot = repoRoot </> "test-secrets.dhall"
 
--- | The test-harness cleartext fixture. Carries the unlock-bundle password and
+-- | The test-harness secrets fixture. Carries the unlock-bundle password,
 -- the EPHEMERAL admin AWS credential the harness feeds into the same
--- interactive admin prompt a real operator would answer. Decoded from
--- @test-config.dhall@ (imports the committed @test-config-types.dhall@ schema).
-data TestConfig = TestConfig
+-- interactive admin prompt a real operator would answer, and (optionally) the
+-- ZeroSSL ACME external-account-binding material the harness seeds into Vault
+-- so the public edge can come up non-interactively. Decoded from
+-- @test-secrets.dhall@ (imports the generated @test-secrets-types.dhall@
+-- schema). Sprint 1.43: these are the only durable secrets the harness owns —
+-- there is no non-secret @test-config.dhall@ (it would carry no fields).
+data TestSecrets = TestSecrets
   { vault_operator_password :: Text
-  , aws_admin_for_test_simulation :: TestConfigAdminCredentials
+  , aws_admin_for_test_simulation :: TestSecretsAdminCredentials
+  , -- Sprint 7.18: optional so existing @test-secrets.dhall@ fixtures (and the
+    -- @TestSecrets.default@ used by the round-trip drift guard) without the EAB
+    -- block still decode. When present and populated, the suite-level IAM
+    -- harness seeds @secret/acme/eab@ the same way it materializes @aws.*@,
+    -- mirroring the interactive @prodbox config setup@ EAB prompt.
+    acme_eab :: Maybe AcmeEabFixture
   }
-  deriving (Generic, Show)
+  deriving (Eq, Generic, Show)
 
-instance FromDhall TestConfig
+instance FromDhall TestSecrets
 
--- | The cleartext admin AWS credential carried by @test-config.dhall@. Field
+-- | Sprint 7.17: the dual encoder, used by 'Prodbox.Config.SchemaDhall' to
+-- render the @default@ record of the generated @test-secrets-types.dhall@
+-- schema from this Haskell source of truth. The default mirrors the all-empty
+-- @default@ of the hand-written schema.
+instance ToDhall TestSecrets
+
+-- | The cleartext admin AWS credential carried by @test-secrets.dhall@. Field
 -- names mirror the @aws_admin_for_test_simulation@ record in
--- @test-config-types.dhall@.
-data TestConfigAdminCredentials = TestConfigAdminCredentials
+-- @test-secrets-types.dhall@.
+data TestSecretsAdminCredentials = TestSecretsAdminCredentials
   { access_key_id :: Text
   , secret_access_key :: Text
   , session_token :: Maybe Text
   , region :: Text
   }
-  deriving (Generic, Show)
+  deriving (Eq, Generic, Show)
 
-instance FromDhall TestConfigAdminCredentials
+instance FromDhall TestSecretsAdminCredentials
 
--- | Load and decode @test-config.dhall@ if present. @Nothing@ means the file
+instance ToDhall TestSecretsAdminCredentials
+
+-- | Sprint 7.18: the cleartext ZeroSSL ACME external-account-binding material
+-- carried by the optional @acme_eab@ block of @test-secrets.dhall@. Field names
+-- mirror the @secret/acme/eab@ Vault object (@key_id@ / @hmac_key@) the harness
+-- seeds via 'writeAcmeEabVaultCredentials'. Never production config; never
+-- committed with real values (the committed fixture uses placeholders).
+data AcmeEabFixture = AcmeEabFixture
+  { key_id :: Text
+  , hmac_key :: Text
+  }
+  deriving (Eq, Generic, Show)
+
+instance FromDhall AcmeEabFixture
+
+instance ToDhall AcmeEabFixture
+
+-- | The all-empty @default@ for @test-secrets-types.dhall@, matching the
+-- hand-written schema. The harness/operator overrides every field; this is the
+-- value the generated schema's @default@ record carries. The optional
+-- @acme_eab@ block defaults to @None@ so a fixture without it still decodes.
+defaultTestSecrets :: TestSecrets
+defaultTestSecrets =
+  TestSecrets
+    { vault_operator_password = ""
+    , aws_admin_for_test_simulation =
+        TestSecretsAdminCredentials
+          { access_key_id = ""
+          , secret_access_key = ""
+          , session_token = Nothing
+          , region = ""
+          }
+    , acme_eab = Nothing
+    }
+
+-- | Load and decode @test-secrets.dhall@ if present. @Nothing@ means the file
 -- is absent (so the caller falls back to a TTY prompt or fails loud);
 -- @Just (Left err)@ means it exists but failed to decode; @Just (Right cfg)@
 -- is the decoded fixture.
-loadTestConfig :: FilePath -> IO (Maybe (Either String TestConfig))
-loadTestConfig repoRoot = do
-  let path = testConfigPath repoRoot
+loadTestSecrets :: FilePath -> IO (Maybe (Either String TestSecrets))
+loadTestSecrets repoRoot = do
+  let path = testSecretsPath repoRoot
   present <- doesFileExist path
   if not present
     then pure Nothing
     else do
-      decoded <- try (inputFile auto path) :: IO (Either SomeException TestConfig)
+      decoded <- try (inputFile auto path) :: IO (Either SomeException TestSecrets)
       pure $
         Just $ case decoded of
-          Left ex -> Left ("failed to decode test-config.dhall: " ++ show ex)
-          Right testConfig -> Right testConfig
+          Left ex -> Left ("failed to decode test-secrets.dhall: " ++ show ex)
+          Right testSecrets -> Right testSecrets
+
+-- | Sprint 7.18: load @test-secrets.dhall@ and, when it carries a populated
+-- optional @acme_eab@ block, seed @secret/acme/eab@ in Vault (fields
+-- @key_id@ / @hmac_key@) so the in-cluster ACME EAB materializer Job reads a
+-- non-empty HMAC. This is the non-interactive analog of the interactive
+-- @prodbox config setup@ EAB prompt.
+--
+-- It lives here (low in the import graph) so both the AWS IAM harness preflight
+-- ('Prodbox.Aws.runAwsIamHarnessSetup') and the edge/ACME reconcile
+-- ('Prodbox.CLI.Rke2.ensureAcmeRuntime', which must seed before applying the
+-- materializer Job) can call it without an import cycle.
+--
+-- A missing file, a decode failure, an absent block, or empty fields are all
+-- silent no-ops: this is a best-effort fixture seam (real operators have no
+-- @test-secrets.dhall@ and seed the EAB interactively via @config setup@), and
+-- the public-edge prerequisites fail loud later if the EAB is genuinely
+-- required but unset. A decode failure here is already surfaced by the
+-- admin-credential acquisition path (which decodes the same file and fails
+-- loud), so we avoid a second redundant failure path for the EAB seam.
+seedAcmeEabFromTestSecrets :: FilePath -> IO ()
+seedAcmeEabFromTestSecrets repoRoot = do
+  testSecretsResult <- loadTestSecrets repoRoot
+  case testSecretsResult of
+    Just (Right testSecrets) ->
+      case acme_eab testSecrets of
+        Just eab
+          | not (Text.null (Text.strip (key_id eab)))
+          , not (Text.null (Text.strip (hmac_key eab))) -> do
+              result <-
+                writeHostVaultKvObject
+                  repoRoot
+                  "secret"
+                  "acme/eab"
+                  ( Map.fromList
+                      [ ("key_id", key_id eab)
+                      , ("hmac_key", hmac_key eab)
+                      ]
+                  )
+              case result of
+                Left err -> ioError (userError err)
+                Right () -> pure ()
+        _ -> pure ()
+    _ -> pure ()
 
 promptOperatorPassword :: IO Text
 promptOperatorPassword =

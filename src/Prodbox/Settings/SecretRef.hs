@@ -4,7 +4,7 @@
 
 -- | Sprint 1.35: the typed secret-reference contract. Sensitive configuration
 -- fields carry a 'SecretRef' — a reference to where a secret lives — rather
--- than a plaintext value, so @prodbox-config.dhall@ never holds secret
+-- than a plaintext value, so @prodbox.dhall@ never holds secret
 -- material (see @documents/engineering/vault_doctrine.md@ §3–§4).
 --
 -- The union has __no @FileSecret@ arm__: Secret-mounted plaintext Dhall
@@ -43,8 +43,10 @@ import Data.Text qualified as Text
 import Dhall
   ( FromDhall (..)
   , InterpretOptions (..)
+  , ToDhall (..)
   , defaultInterpretOptions
   , genericAutoWith
+  , genericToDhallWith
   )
 import GHC.Generics (Generic)
 import Prodbox.Http.Client (renderHttpError)
@@ -79,6 +81,15 @@ instance FromDhall SecretRef where
     genericAutoWith
       defaultInterpretOptions {constructorModifier = dropPrefix "SecretRef"}
 
+-- | Sprint 7.17: the dual encoder, used to render the @default@ value and the
+-- committed @prodbox-config-types.dhall@ schema from the Haskell source of
+-- truth. The 'InterpretOptions' MUST mirror the 'FromDhall' decoder above so
+-- the emitted Dhall round-trips through the same decoder.
+instance ToDhall SecretRef where
+  injectWith _ =
+    genericToDhallWith
+      defaultInterpretOptions {constructorModifier = dropPrefix "SecretRef"}
+
 data VaultSecretRef = VaultSecretRef
   { vaultSecretMount :: Text
   , vaultSecretPath :: Text
@@ -91,6 +102,11 @@ instance FromDhall VaultSecretRef where
     genericAutoWith
       defaultInterpretOptions {fieldModifier = dropPrefixLowerFirst "vaultSecret"}
 
+instance ToDhall VaultSecretRef where
+  injectWith _ =
+    genericToDhallWith
+      defaultInterpretOptions {fieldModifier = dropPrefixLowerFirst "vaultSecret"}
+
 data PromptSpec = PromptSpec
   { promptSpecName :: Text
   , promptSpecPurpose :: Text
@@ -100,6 +116,11 @@ data PromptSpec = PromptSpec
 instance FromDhall PromptSpec where
   autoWith _ =
     genericAutoWith
+      defaultInterpretOptions {fieldModifier = dropPrefixLowerFirst "promptSpec"}
+
+instance ToDhall PromptSpec where
+  injectWith _ =
+    genericToDhallWith
       defaultInterpretOptions {fieldModifier = dropPrefixLowerFirst "promptSpec"}
 
 -- | Strip a Haskell field-name prefix and lower-case the first remaining

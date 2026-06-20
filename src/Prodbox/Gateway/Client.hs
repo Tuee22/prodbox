@@ -13,16 +13,25 @@ module Prodbox.Gateway.Client
   , statusUrl
   , renderGatewayError
   , hostLoopbackGatewayEndpoint
+
+    -- * Sprint 1.44: operator-write secret endpoint
+  , operatorSecretUrl
+  , writeOperatorSecret
   )
 where
 
 import Data.Aeson (Value)
+import Data.Map.Strict (Map)
+import Data.Text (Text)
+import Data.Text.Encoding qualified as TextEncoding
+import Network.HTTP.Types.Header (Header)
 import Prodbox.Gateway.Types (PeerEndpoint (..), peerRestUrl)
 import Prodbox.Http.Client
   ( HttpConfig (..)
   , HttpError
   , defaultHttpConfig
   , httpGetJson
+  , httpPostJsonNoResponse
   , renderHttpError
   )
 
@@ -90,3 +99,31 @@ queryGatewayJson url = do
   pure $ case result of
     Left httpErr -> Left (GatewayTransport httpErr)
     Right value -> Right value
+
+-- | Sprint 1.44: the gateway daemon's operator-write endpoint for a given KV
+-- logical path (e.g. @acme/eab@ or @gateway/gateway/aws@).
+operatorSecretUrl :: PeerEndpoint -> String -> String
+operatorSecretUrl endpoint logical = peerRestUrl endpoint ++ "/v1/secret/" ++ logical
+
+-- | Write an operator-minted secret through the in-cluster gateway daemon,
+-- presenting an operator-injected Kubernetes JWT (the daemon exchanges it for a
+-- Vault token under the narrow @prodbox-operator-write@ role and persists the
+-- KV object). Replaces the host root-token direct Vault write for the two
+-- secrets that route through the daemon (Sprint 1.44).
+writeOperatorSecret
+  :: PeerEndpoint -> Text -> String -> Map Text Text -> IO (Either GatewayError ())
+writeOperatorSecret endpoint operatorJwt logical fields = do
+  let config = defaultHttpConfig {httpRequestTimeoutMicros = 5 * 1000 * 1000}
+  result <-
+    httpPostJsonNoResponse
+      config
+      [operatorJwtHeader operatorJwt]
+      (operatorSecretUrl endpoint logical)
+      fields
+  pure $ case result of
+    Left httpErr -> Left (GatewayTransport httpErr)
+    Right () -> Right ()
+
+operatorJwtHeader :: Text -> Header
+operatorJwtHeader operatorJwt =
+  ("X-Prodbox-Operator-Jwt", TextEncoding.encodeUtf8 operatorJwt)

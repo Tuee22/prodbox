@@ -169,7 +169,7 @@ settingsObject =
     { effectNodeId = SettingsObject
     , effectNodeDescription = "Load validated prodbox settings"
     , effectNodeRemedyHint =
-        "Run `prodbox config setup`/`prodbox config validate` until `prodbox-config.dhall` loads cleanly."
+        "Run `prodbox config setup`/`prodbox config validate` until `prodbox.dhall` loads cleanly."
     , effectNodePrerequisites = []
     , effectNodeEffect = Validate RequireSettings
     }
@@ -180,7 +180,7 @@ awsIamHarnessReady =
     { effectNodeId = AwsIamHarnessReady
     , effectNodeDescription = "Validate native IAM harness config and test-simulation admin credentials"
     , effectNodeRemedyHint =
-        "Configure the AWS IAM harness inputs in `prodbox-config.dhall` before rerunning."
+        "Configure the AWS IAM harness inputs in `prodbox.dhall` before rerunning."
     , effectNodePrerequisites = []
     , effectNodeEffect = Validate RequireAwsIamHarnessReady
     }

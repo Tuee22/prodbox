@@ -725,7 +725,7 @@ ensureAwsSubstrateVaultRuntime repoRoot = do
 --     `fetchPerRunStackOutputs`, not from a host-side snapshot cache.
 --   * `prodbox aws stack aws-subzone reconcile` has been run, so
 --     `aws_substrate.hosted_zone_id` and `aws_substrate.subzone_name` in
---     `prodbox-config.dhall` point at a live Route 53 subzone.
+--     `prodbox.dhall` point at a live Route 53 subzone.
 --   * The caller has `KUBECONFIG` pointed at the EKS cluster (see
 --     `Prodbox.CLI.Charts.withSubstrateEnvironment`).
 ensureAwsSubstratePlatformRuntime

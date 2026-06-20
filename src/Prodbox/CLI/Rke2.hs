@@ -129,6 +129,13 @@ import Prodbox.Cluster.Federation
   )
 import Prodbox.Config.Basics
   ( ParentRef (..)
+  , UnencryptedBasics (..)
+  )
+import Prodbox.Config.Tier0
+  ( Tier0ParentRef (..)
+  , ensureBasicsFloor
+  , ensureChildBasicsFloor
+  , renderDaemonContainerDefaultDhall
   )
 import Prodbox.ContainerImage qualified as ContainerImage
 import Prodbox.Dns (fetchPublicIp)
@@ -226,8 +233,10 @@ import Prodbox.Settings
   , manual_pv_host_root
   , pulumi_enable_dns_bootstrap
   , region
+  , renderSeedInForceOutcome
   , resolveAwsCredentialsRefFromHostVault
   , route53
+  , seedInForceConfigFromFileWithToken
   , server
   , storage
   , validateAndLoadBootstrapSettings
@@ -262,7 +271,12 @@ import Prodbox.Vault.Client
   , vaultSealStatus
   , vaultWritePolicy
   )
-import Prodbox.Vault.Host (hostVaultAddress, loadReadyVaultRootToken, readHostVaultKvField)
+import Prodbox.Vault.Host
+  ( hostVaultAddress
+  , loadReadyVaultRootToken
+  , readHostVaultKvField
+  , seedAcmeEabFromTestSecrets
+  )
 import Prodbox.Vault.Reconcile
   ( VaultReconcileAction (..)
   , VaultReconcileStep (..)
@@ -282,7 +296,8 @@ import Prodbox.Vault.Seal
   )
 import Prodbox.Vault.Status (probeVaultStatusLine)
 import System.Directory
-  ( doesDirectoryExist
+  ( createDirectoryIfMissing
+  , doesDirectoryExist
   , doesFileExist
   , getHomeDirectory
   , getTemporaryDirectory
@@ -1272,14 +1287,45 @@ loadPostMinioLifecycleSettings repoRoot bootstrapSettings = do
     Right basics ->
       case vaultLifecycleFromBasics basics of
         Left err -> pure (Left err)
-        Right (RootVaultLifecycle _ _) ->
-          validateAndLoadSettings repoRoot
+        Right (RootVaultLifecycle _ _) -> do
+          tokenResult <- loadReadyVaultRootToken repoRoot (VaultAddress (basicsVaultAddress basics))
+          case tokenResult of
+            Left err -> pure (Left err)
+            Right rootToken -> do
+              seedInForceConfigStep repoRoot rootToken basics
+              validateAndLoadSettings repoRoot
         Right (ChildVaultLifecycle childId _ parent) -> do
           tokenResult <- readChildRootTokenFromParentCustody repoRoot childId parent
           case tokenResult of
             Left err -> pure (Left err)
-            Right childRootToken ->
+            Right childRootToken -> do
+              seedInForceConfigStep repoRoot childRootToken basics
               validateAndLoadSettingsWithVaultToken repoRoot childRootToken
+
+-- | Sprint 1.42 PART A: the @load_in_force_settings_after_vault_and_minio@
+-- seed step. After MinIO is up and Vault is unsealed and @secret/minio/root@ +
+-- @secret/object-store/hmac@ are reconciled (the same prerequisites the read
+-- path 'loadRuntimeInForceConfigWithToken' needs), establish the in-force MinIO
+-- SSoT from the filesystem operator config if it is absent. It is the establish
+-- step; the subsequent settings read is the consumer.
+--
+-- SAFETY: a seed failure (transient MinIO/Vault) MUST NOT brick the reconcile.
+-- The existing 'inForceConfigObjectAbsent' filesystem fallback in
+-- 'loadConfigForSettingsWith' still covers the read this run, and the seed is
+-- retried on the next reconcile, so a failed seed is logged and swallowed
+-- rather than propagated.
+seedInForceConfigStep :: FilePath -> VaultToken -> UnencryptedBasics -> IO ()
+seedInForceConfigStep repoRoot token basics = do
+  seedResult <- seedInForceConfigFromFileWithToken repoRoot token basics
+  case seedResult of
+    Left err ->
+      writeOutputLine
+        ( "WARN: in-force config SSoT seed step failed (continuing; the filesystem"
+            ++ " seed/propose fallback still covers this run, and the seed is retried"
+            ++ " on the next reconcile): "
+            ++ err
+        )
+    Right outcome -> writeOutputLine (renderSeedInForceOutcome outcome)
 
 readChildRootTokenFromParentCustody
   :: FilePath -> Text.Text -> ParentRef -> IO (Either String VaultToken)
@@ -1716,7 +1762,7 @@ runCascadePostflightTagSweep repoRoot = do
     Left _ -> do
       writeOutputLine
         "Postflight tag sweep: skipped (no ephemeral admin AWS credential available \
-        \— no test-config.dhall and no TTY — so no AWS resources could have been \
+        \— no test-secrets.dhall and no TTY — so no AWS resources could have been \
         \created by this cluster lifecycle)."
     Right adminCredentials -> do
       environment <- adminAwsEnvironment adminCredentials
@@ -2198,13 +2244,23 @@ ensureRootVaultLifecycleDetailed repoRoot = do
           case unsealExit of
             ExitFailure _ -> pure (lifecycleFailure unsealExit)
             ExitSuccess -> do
-              reconcileResult <- runVaultReconcileCommandDetailed repoRoot hostVaultAddress
-              pure
-                VaultLifecycleResult
-                  { vaultLifecycleExitCode = vaultReconcileCommandExitCode reconcileResult
-                  , vaultLifecycleMinioRootChanged =
-                      reconcileStepsMinioRootChanged (vaultReconcileCommandSteps reconcileResult)
-                  }
+              -- Sprint 1.39 (self-heal): @vault init@ writes the Tier-0 basics
+              -- floor only at first-ever bring-up; on a rebuild against a
+              -- durable Vault PV it early-returns and the floor is never
+              -- rewritten. Guarantee it idempotently here — AFTER init/unseal
+              -- succeed and BEFORE reconcile — so the per-run Pulumi destroy and
+              -- the other `loadUnencryptedBasics` consumers always find it.
+              floorResult <- ensureBasicsFloor repoRoot (unVaultAddress hostVaultAddress)
+              case floorResult of
+                Left err -> lifecycleFailure <$> failWith err
+                Right () -> do
+                  reconcileResult <- runVaultReconcileCommandDetailed repoRoot hostVaultAddress
+                  pure
+                    VaultLifecycleResult
+                      { vaultLifecycleExitCode = vaultReconcileCommandExitCode reconcileResult
+                      , vaultLifecycleMinioRootChanged =
+                          reconcileStepsMinioRootChanged (vaultReconcileCommandSteps reconcileResult)
+                      }
 
 ensureFederatedVaultLifecycleDetailed :: FilePath -> IO VaultLifecycleResult
 ensureFederatedVaultLifecycleDetailed repoRoot = do
@@ -2274,6 +2330,8 @@ initializeChildVaultAndWriteCustody repoRoot childId parent parentToken = do
         Right () ->
           reconcileChildVaultWithToken
             repoRoot
+            childId
+            parent
             (VaultToken (childInitRootToken (childSealCustodyInit custody)))
 
 reconcileChildVaultFromParentCustody
@@ -2283,7 +2341,7 @@ reconcileChildVaultFromParentCustody repoRoot childId parent parentToken = do
   case custodyResult of
     Left err -> lifecycleFailure <$> failWith err
     Right custody ->
-      reconcileChildVaultWithToken repoRoot (VaultToken (childInitRootToken custody))
+      reconcileChildVaultWithToken repoRoot childId parent (VaultToken (childInitRootToken custody))
 
 readChildInitCustodyFromParent
   :: Text.Text -> ParentRef -> VaultToken -> IO (Either String ChildInitCustody)
@@ -2304,8 +2362,33 @@ readChildInitCustodyFromParent childId parent parentToken = do
             Left err -> Left ("decode child init custody from parent Vault KV: " ++ err)
             Right custody -> Right custody
 
-reconcileChildVaultWithToken :: FilePath -> VaultToken -> IO VaultLifecycleResult
-reconcileChildVaultWithToken _repoRoot childRootToken = do
+reconcileChildVaultWithToken
+  :: FilePath -> Text.Text -> ParentRef -> VaultToken -> IO VaultLifecycleResult
+reconcileChildVaultWithToken repoRoot childId parent childRootToken = do
+  -- Sprint 1.39 (self-heal): guarantee this child's Transit-mode basics floor
+  -- exists before reconcile, mirroring the root self-heal. The floor carries
+  -- the parent reference this child auto-unseals against, reconstructed from the
+  -- in-scope identity when missing (e.g. a rebuild against a durable child PV).
+  floorResult <-
+    ensureChildBasicsFloor
+      repoRoot
+      childId
+      (unVaultAddress hostVaultAddress)
+      (parentRefToTier0 parent)
+  case floorResult of
+    Left err -> lifecycleFailure <$> failWith err
+    Right () -> reconcileChildVaultBody childId childRootToken
+
+parentRefToTier0 :: ParentRef -> Tier0ParentRef
+parentRefToTier0 ref =
+  Tier0ParentRef
+    { parent_cluster_id = parentRefClusterId ref
+    , parent_vault_address = parentRefVaultAddress ref
+    , parent_transit_key = parentRefTransitKey ref
+    }
+
+reconcileChildVaultBody :: Text.Text -> VaultToken -> IO VaultLifecycleResult
+reconcileChildVaultBody _childId childRootToken = do
   reconcileResult <- runVaultReconcile hostVaultAddress childRootToken defaultVaultReconcilePlan
   case reconcileResult of
     Left err -> do
@@ -4322,7 +4405,16 @@ ensureAcmeRuntime repoRoot settings prodboxId labelValue = do
       eabKeyIdResult <- resolveAcmeEabKeyId repoRoot settings
       case eabKeyIdResult of
         Left err -> failWith ("resolve ACME EAB key ID from Vault: " ++ err)
-        Right resolvedEabKeyId ->
+        Right resolvedEabKeyId -> do
+          -- Sprint 7.18: seed @secret/acme/eab@ in Vault from the optional
+          -- @acme_eab@ block of @test-secrets.dhall@ BEFORE applying the manifest
+          -- below, which includes the in-cluster EAB materializer Job. Without
+          -- this, the materializer reads an empty @secret/acme/eab#hmac_key@ and
+          -- writes an empty @acme-eab-credentials@ Secret, so the ZeroSSL
+          -- ClusterIssuer fails with "cannot sign JWS with an empty MAC key".
+          -- A no-op when @test-secrets.dhall@ is absent or its @acme_eab@ is
+          -- empty (real operators seed the EAB via interactive @config setup@).
+          seedAcmeEabFromTestSecrets repoRoot
           withTemporaryJsonManifest
             "prodbox-acme-runtime"
             ( acmeRuntimeManifestWithCredentials
@@ -4396,7 +4488,7 @@ acmeRuntimeManifest substrate settings =
 -- | Sprint 7.5.c.v follow-up: variant of 'acmeRuntimeManifest' that takes
 -- an externally-resolved hosted-zone ID so the IO caller can fall back to
 -- the live aws-eks-subzone Pulumi stack snapshot when
--- @aws_substrate.hosted_zone_id@ is empty in @prodbox-config.dhall@. See
+-- @aws_substrate.hosted_zone_id@ is empty in @prodbox.dhall@. See
 -- 'Prodbox.PublicEdge.resolveSubstrateHostedZoneId' for the doctrine-
 -- compliant resolution algorithm.
 --
@@ -4555,6 +4647,15 @@ acmeEabMaterializerManifests prodboxId labelValue =
           ++ " secret/"
           ++ acmeEabVaultPath
           ++ " > /vault-materialized/hmac-key"
+      , -- The sibling 'materialize-eab-secret' container runs the curl image
+        -- as a different (non-root) UID than this vault-image init container,
+        -- so the @umask 077@ file (0600, owned by the init UID) is otherwise
+        -- unreadable to it — base64 reads nothing and the materialized Secret
+        -- comes out empty (ZeroSSL then fails with "empty MAC key"). The
+        -- volume is a pod-scoped in-memory emptyDir, so widening this handoff
+        -- file to 0644 for the sibling read keeps the secret inside the pod
+        -- trust boundary.
+        "chmod 0644 /vault-materialized/hmac-key"
       ]
   materializeScript =
     unlines
@@ -4562,6 +4663,11 @@ acmeEabMaterializerManifests prodboxId labelValue =
       , "api_server=\"https://${KUBERNETES_SERVICE_HOST}:${KUBERNETES_SERVICE_PORT_HTTPS:-443}\""
       , "token=\"$(cat \"${SERVICEACCOUNT_TOKEN_FILE}\")\""
       , "hmac_b64=\"$(base64 < /vault-materialized/hmac-key | tr -d '\\n')\""
+      , -- Fail loud rather than materialize an empty Secret: an empty HMAC
+        -- here surfaces only later as the opaque ZeroSSL "cannot sign JWS
+        -- with an empty MAC key" error. If the handoff file is empty or
+        -- unreadable, abort the Job (backoffLimit retries) instead.
+        "[ -n \"${hmac_b64}\" ] || { echo 'materialized EAB HMAC is empty: secret/acme/eab#hmac_key is missing/empty in Vault or the handoff file was unreadable' >&2 ; exit 1 ; }"
       , "cat > /tmp/secret-create.json <<EOF"
       , "{\"apiVersion\":\"v1\",\"kind\":\"Secret\",\"metadata\":{\"name\":\"${SECRET_NAME}\",\"labels\":{\"app.kubernetes.io/managed-by\":\"prodbox\"}},\"type\":\"Opaque\",\"data\":{\""
           ++ acmeEabSecretKey
@@ -5438,30 +5544,67 @@ buildAndPushCustomImageVariants repoRoot imageBuildPlan taggedRefs =
 buildCustomImageOnce
   :: FilePath -> HostArchitecture -> CustomImageBuildPlan -> [String] -> IO ExitCode
 buildCustomImageOnce repoRoot hostArchitecture imageBuildPlan taggedRefs = do
-  let arguments =
-        [ "build"
-        , "-f"
-        , customImageDockerfile imageBuildPlan
-        ]
-          ++ concat [["-t", tagRef] | tagRef <- taggedRefs]
-          ++ ["."]
-  outputResult <- captureToolOutput repoRoot "docker" arguments
-  case outputResult of
+  -- The prodbox/gateway images COPY `docker/default-prodbox.dhall` (the baked-in
+  -- Tier-0 binary context). It is NOT version-controlled — it is regenerated
+  -- from the Haskell source of truth into the build context immediately before
+  -- every `docker build`, so the in-container default can never drift from the
+  -- renderer. This covers both Dockerfiles and both substrates (this is the
+  -- single `docker build` chokepoint).
+  defaultDhallResult <- ensureDaemonContainerDefaultDhall repoRoot
+  case defaultDhallResult of
     Left err -> failWith err
-    Right output ->
-      case processExitCode output of
-        ExitSuccess -> do
-          emitCapturedProcessOutput output
-          pure ExitSuccess
-        ExitFailure _ ->
-          failWith
-            ( "Failed to build "
-                ++ customImageDockerfile imageBuildPlan
-                ++ " for "
-                ++ renderHostArchitecture hostArchitecture
-                ++ ": "
-                ++ outputDetail output
-            )
+    Right () -> do
+      let arguments =
+            [ "build"
+            , "-f"
+            , customImageDockerfile imageBuildPlan
+            ]
+              ++ concat [["-t", tagRef] | tagRef <- taggedRefs]
+              ++ ["."]
+      outputResult <- captureToolOutput repoRoot "docker" arguments
+      case outputResult of
+        Left err -> failWith err
+        Right output ->
+          case processExitCode output of
+            ExitSuccess -> do
+              emitCapturedProcessOutput output
+              pure ExitSuccess
+            ExitFailure _ ->
+              failWith
+                ( "Failed to build "
+                    ++ customImageDockerfile imageBuildPlan
+                    ++ " for "
+                    ++ renderHostArchitecture hostArchitecture
+                    ++ ": "
+                    ++ outputDetail output
+                )
+
+-- | Sprint 7.18: regenerate the prodbox/gateway container's baked-in default
+-- Tier-0 @docker\/default-prodbox.dhall@ into the build context from the
+-- Haskell source of truth ('renderDaemonContainerDefaultDhall') immediately
+-- before a @docker build@. The file is NOT version-controlled (ALL Dhall is
+-- generated or locally authored, NONE committed); regenerating it on every
+-- build means the in-container default can never drift from the renderer, so it
+-- no longer needs a committed-artifact drift check.
+ensureDaemonContainerDefaultDhall :: FilePath -> IO (Either String ())
+ensureDaemonContainerDefaultDhall repoRoot = do
+  let defaultDhallPath = repoRoot </> "docker" </> "default-prodbox.dhall"
+  writeResult <-
+    try
+      ( do
+          createDirectoryIfMissing True (takeDirectory defaultDhallPath)
+          BS.writeFile defaultDhallPath (TextEncoding.encodeUtf8 renderDaemonContainerDefaultDhall)
+      )
+      :: IO (Either SomeException ())
+  pure $ case writeResult of
+    Left err ->
+      Left
+        ( "Failed to regenerate the container-default Tier-0 config `"
+            ++ defaultDhallPath
+            ++ "`: "
+            ++ displayException err
+        )
+    Right () -> Right ()
 
 pushDockerImageWithRetry :: FilePath -> String -> String -> IO ExitCode
 pushDockerImageWithRetry repoRoot imageRef description = go (retryPolicyMaxAttempts customImagePushRetryPolicy)

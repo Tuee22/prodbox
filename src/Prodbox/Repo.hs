@@ -16,7 +16,15 @@ import System.FilePath
 data ConfigPaths = ConfigPaths
   { configDhallPath :: FilePath
   , configSchemaPath :: FilePath
-  , configBasicsPath :: FilePath
+  , configTier0Path :: FilePath
+  -- ^ Sprint 1.39: the Tier-0 binary-owned, project-local non-secret config
+  -- (@prodbox.dhall@ at the repository root). Carries
+  -- @{ parameters, context, witness }@ and never a secret value. Sprint 7.18:
+  -- this is also the SOLE source of the sealed-Vault bootstrap floor — the
+  -- floor is projected straight off @prodbox.dhall@'s @context@
+  -- ('Prodbox.Config.FloorDhall.loadUnencryptedBasics'); there is no longer a
+  -- separate derived @prodbox-basics.json@ or legacy
+  -- @.data\/prodbox\/unencrypted-basics.json@ artifact.
   }
   deriving (Eq, Show)
 
@@ -40,5 +48,5 @@ canonicalConfigPaths repoRoot =
   ConfigPaths
     { configDhallPath = repoRoot </> "prodbox-config.dhall"
     , configSchemaPath = repoRoot </> "prodbox-config-types.dhall"
-    , configBasicsPath = repoRoot </> ".data" </> "prodbox" </> "unencrypted-basics.json"
+    , configTier0Path = repoRoot </> "prodbox.dhall"
     }

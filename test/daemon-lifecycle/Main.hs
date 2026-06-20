@@ -544,10 +544,43 @@ httpRequest :: String -> String
 httpRequest path =
   "GET " ++ path ++ " HTTP/1.1\r\nHost: 127.0.0.1\r\nConnection: close\r\n\r\n"
 
+-- | Render a current-schema gateway daemon config (Sprint 3.18 SecretRef
+-- shape, decoded by 'Prodbox.Gateway.Settings.loadDaemonConfig').
+--
+-- The daemon's production config loader resolves @event_keys@,
+-- @aws_creds@, and @minio_creds@ through Vault Kubernetes auth
+-- ('resolveGatewaySecretRef' with @ProductionMode@). The lifecycle suite
+-- launches a real daemon without a live Vault and exercises only the
+-- health / readiness / metrics / @/v1/state@ / SIGTERM-drain surface — it
+-- never signs an event for @node-a@, so the fixture carries no resolvable
+-- secret material:
+--
+--   * @event_keys = []@ — no SecretRef is resolved, so the loader never
+--     reaches a Vault read. A daemon with no key for its own node logs a
+--     tolerated @event_key_missing@ warning and keeps serving (see
+--     'heartbeatLoop' / 'appendOwnershipEvent' in @Gateway/Daemon.hs@), so
+--     this does not weaken any lifecycle assertion. The
+--     @prodbox_gateway_events_total@ metric is emitted unconditionally.
+--   * @aws_creds = None@ / @minio_creds = None@ — both are @Optional@ on the
+--     current @boot@ schema; the lifecycle suite drives no DNS-write or
+--     object-store path.
+--   * @vault = None@ — no Vault Kubernetes auth is attempted.
+--
+-- Vault-pointer placeholders (@SecretRef.Vault { mount, path, field }@,
+-- matching @charts/gateway/templates/configmap-config.yaml@) are not used
+-- here precisely because they would force a Vault read at load time that the
+-- test context cannot satisfy.
 renderConfig :: FilePath -> FilePath -> FilePath -> FilePath -> Int -> Maybe String -> String
 renderConfig certPath keyPath caPath ordersPath drainDeadlineSeconds maybeLogLevel =
   unlines
     [ "{ schemaVersion = 1"
+    , ", vault ="
+    , "    None"
+    , "      { address : Text"
+    , "      , auth_path : Text"
+    , "      , role : Text"
+    , "      , service_account_token_file : Optional Text"
+    , "      }"
     , ", boot ="
     , "  { node_id = \"node-a\""
     , "  , cert_file = " ++ show certPath
@@ -555,13 +588,21 @@ renderConfig certPath keyPath caPath ordersPath drainDeadlineSeconds maybeLogLev
     , "  , ca_file = " ++ show caPath
     , "  , orders_file = " ++ show ordersPath
     , "  , event_keys ="
-    , "    [ { name = \"node-a\", value = \"test-key\" } ]"
+    , "    [] : List { name : Text, value : < Vault : { mount : Text, path : Text, field : Text } | TransitKey : Text | Prompt : { name : Text, purpose : Text } | TestPlaintext : Text > }"
     , "  , dns_write_gate ="
     , "      None { zone_id : Text, fqdn : Text, ttl : Natural, aws_region : Text }"
     , "  , aws_creds ="
-    , "      None { access_key_id : Text, secret_access_key : Text, session_token : Optional Text, region : Text }"
+    , "      None"
+    , "        { access_key_id : < Vault : { mount : Text, path : Text, field : Text } | TransitKey : Text | Prompt : { name : Text, purpose : Text } | TestPlaintext : Text >"
+    , "        , secret_access_key : < Vault : { mount : Text, path : Text, field : Text } | TransitKey : Text | Prompt : { name : Text, purpose : Text } | TestPlaintext : Text >"
+    , "        , session_token : Optional < Vault : { mount : Text, path : Text, field : Text } | TransitKey : Text | Prompt : { name : Text, purpose : Text } | TestPlaintext : Text >"
+    , "        , region : Text"
+    , "        }"
     , "  , minio_creds ="
-    , "      None { minio_access_key : Text, minio_secret_key : Text }"
+    , "      None"
+    , "        { minio_access_key : < Vault : { mount : Text, path : Text, field : Text } | TransitKey : Text | Prompt : { name : Text, purpose : Text } | TestPlaintext : Text >"
+    , "        , minio_secret_key : < Vault : { mount : Text, path : Text, field : Text } | TransitKey : Text | Prompt : { name : Text, purpose : Text } | TestPlaintext : Text >"
+    , "        }"
     , "  , minio_endpoint_url = None Text"
     , "  }"
     , ", live ="

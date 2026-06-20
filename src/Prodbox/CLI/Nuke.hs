@@ -194,7 +194,7 @@ renderNukePlan _repoRoot =
            | resource <- longLivedManagedResources
            ]
         ++ [ "STEP=5 destroy long-lived `pulumi_state_backend` S3 bucket"
-           , "ADMIN_CREDENTIAL_SOURCE=ephemeral admin AWS credential from the interactive prompt (harness-simulated from test-config.dhall::aws_admin_for_test_simulation.*); never read from prodbox-config.dhall or Vault"
+           , "ADMIN_CREDENTIAL_SOURCE=ephemeral admin AWS credential from the interactive prompt (harness-simulated from test-secrets.dhall::aws_admin_for_test_simulation.*); never read from prodbox.dhall or Vault"
            , "STATUS=plan-only"
            , "CONFIRMATION_LITERAL=" ++ confirmationLiteral
            , "ALSO_NOTE=Each step is idempotent on retry; the operator may resume after a partial failure."
@@ -204,8 +204,8 @@ renderNukePlan _repoRoot =
 -- | Orchestration body. Acquires the EPHEMERAL admin AWS credential before
 -- destructive work begins. Because @prodbox nuke@ is TTY-only, the operator is
 -- prompted for a temporary admin key (the harness simulates the prompt from
--- @test-config.dhall@'s @aws_admin_for_test_simulation@ block); it is never
--- read from @prodbox-config.dhall@ or Vault. That same credential is used by
+-- @test-secrets.dhall@'s @aws_admin_for_test_simulation@ block); it is never
+-- read from @prodbox.dhall@ or Vault. That same credential is used by
 -- long-lived stack operations. The aws-ses destroy runs before the
 -- local-cluster cascade so the encrypted Pulumi backend can still read
 -- Vault/MinIO. Failure at any step aborts; later steps are idempotent, so the
@@ -214,7 +214,7 @@ runNukeOrchestration :: FilePath -> IO ExitCode
 runNukeOrchestration repoRoot = do
   writeOutputLine ""
   writeOutputLine
-    "prodbox nuke: acquiring the ephemeral admin AWS credential (interactive prompt; harness-simulated from test-config.dhall)."
+    "prodbox nuke: acquiring the ephemeral admin AWS credential (interactive prompt; harness-simulated from test-secrets.dhall)."
   writeOutputLine "That ephemeral admin credential is used for the SES destroy,"
   writeOutputLine
     "operational IAM teardown, postflight tag sweep, and long-lived state-bucket destroy."

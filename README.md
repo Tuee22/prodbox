@@ -312,6 +312,33 @@ Secret-mounted credential fragments. The complete sourcing, seed/propose, and de
 contract lives in
 [documents/engineering/config_doctrine.md](./documents/engineering/config_doctrine.md).
 
+Configuration separates into three tiers (the canonical definitions live in
+[config_doctrine.md §0](./documents/engineering/config_doctrine.md#0-three-tier-config-model)):
+
+- **Tier 0 — non-secret binary context**: a binary-owned, generated, self-contained (no
+  imports) `prodbox.dhall` carrying parameters, context, and witness but never secrets. It
+  *is* the sealed-Vault bootstrap floor — the binary decodes it and projects the basics
+  directly; there is no separate JSON floor (the derived `prodbox-basics.json` is eliminated,
+  Sprint 1.41). Tier 0 is shaped to align with hostbootstrap's binary-context contract, so
+  the eventual refactor onto hostbootstrap is a clean extension rather than a rewrite.
+- **Tier 1 — bootstrap secret (password-gated)**: the Vault unlock material is
+  password-AEAD-sealed (Argon2id + ChaCha20-Poly1305) and lives in the durable MinIO
+  bucket, read via a password-derived bootstrap MinIO credential — never on host disk, and
+  root-cluster-only (child clusters auto-unseal via transit-seal).
+- **Tier 2 — operational secrets (Vault-gated)**: all other secrets are opaque-named,
+  Vault-Transit-enveloped objects in the same durable MinIO bucket, decryptable only with
+  an unsealed Vault; config carries only `SecretRef.Vault` pointers that resolve here at
+  use time.
+
+Every `.dhall` file in the repository is generated or locally-authored, and none is
+version-controlled (Sprint 1.41): `prodbox.dhall` and the `prodbox-config-types.dhall` /
+`test-config-types.dhall` schemas are generated; `docker/default-prodbox.dhall` is generated at
+image-build time; and `prodbox-config.dhall` / `test-config.dhall` are git-ignored
+operator/test inputs. `prodbox-config.dhall` is the legacy seed/propose input, retired once the
+in-force MinIO SSoT is seeded (Sprint 1.42); it carries no plaintext secrets, only `SecretRef.Vault`
+pointers. See
+[config_doctrine.md §0](./documents/engineering/config_doctrine.md#0-three-tier-config-model).
+
 - `prodbox config setup` writes and validates Dhall directly.
 - `prodbox config show` renders the decoded Haskell settings model, masking secrets by default.
 - `prodbox config validate` verifies the required fields and binding rules.

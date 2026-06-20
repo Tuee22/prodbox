@@ -22,6 +22,11 @@ module Prodbox.Vault.UnlockBundle
   , encryptUnlockBundle
   , decryptUnlockBundle
   , renderUnlockBundleError
+
+    -- * Sprint 7.19: Argon2id KDF primitive (reused by the Tier-1 bootstrap-MinIO credential, distinct context/salt)
+  , Argon2.Options
+  , bootstrapKdfOptions
+  , deriveKey
   )
 where
 
@@ -137,6 +142,14 @@ argon2Options =
     , Argon2.variant = Argon2.Argon2id
     , Argon2.version = Argon2.Version13
     }
+
+-- | Sprint 7.19: the Argon2id parameters the Tier-1 bootstrap-MinIO credential
+-- derivation reuses (the same cost profile as the bundle-body key). The
+-- independence between the bundle-body AEAD key and the bootstrap credential
+-- comes from a DISTINCT salt and a DISTINCT password-prefixing context applied
+-- by "Prodbox.Vault.BootstrapBundle", never from differing KDF parameters.
+bootstrapKdfOptions :: Argon2.Options
+bootstrapKdfOptions = argon2Options
 
 derivedKeyBytes :: Int
 derivedKeyBytes = 32

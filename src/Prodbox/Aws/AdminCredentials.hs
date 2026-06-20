@@ -10,20 +10,20 @@
 --      operator's temporary admin key. It enters @prodbox@ ONLY via the
 --      interactive prompt, is used once to mint the dedicated @prodbox@ IAM
 --      identity, then discarded. It is never written to
---      @prodbox-config.dhall@, never written to Vault, never persisted on
+--      @prodbox.dhall@, never written to Vault, never persisted on
 --      disk.
 --   2. The GENERATED OPERATIONAL @aws.*@ identity prodbox mints (lives in
---      Vault KV; @prodbox-config.dhall@ carries only a @SecretRef.Vault@
+--      Vault KV; @prodbox.dhall@ carries only a @SecretRef.Vault@
 --      reference). Not handled here.
 --   3. The TEST-SIMULATION admin credential
 --      (@aws_admin_for_test_simulation@), a TEST-HARNESS-ONLY plaintext
---      fixture in @test-config.dhall@ whose sole job is to feed the same
+--      fixture in @test-secrets.dhall@ whose sole job is to feed the same
 --      interactive admin prompt so the suite-level IAM harness runs
 --      non-interactively.
 --
 -- 'acquireAdminAwsCredentials' implements the unified cascade:
 --
---   (a) if a @test-config.dhall@ with a populated
+--   (a) if a @test-secrets.dhall@ with a populated
 --       @aws_admin_for_test_simulation@ exists, use it (the harness
 --       simulating the prompt); else
 --   (b) if stdin is a TTY, prompt the operator (with AKIA/ASIA session-token
@@ -54,9 +54,9 @@ import Data.Text qualified as Text
 import Prodbox.CLI.Output (writeOutput, writeOutputLine)
 import Prodbox.Settings (Credentials (..))
 import Prodbox.Vault.Host
-  ( TestConfig (..)
-  , TestConfigAdminCredentials
-  , loadTestConfig
+  ( TestSecrets (..)
+  , TestSecretsAdminCredentials
+  , loadTestSecrets
   )
 import Prodbox.Vault.Host qualified as VaultHost
 import System.Directory (findExecutable)
@@ -71,17 +71,17 @@ import System.IO
 import System.IO.Error (isEOFError)
 
 -- | Sprint 7.16: acquire the EPHEMERAL admin AWS credential. See the module
--- header for the (a) test-config / (b) TTY prompt / (c) fail-loud cascade.
+-- header for the (a) test-secrets / (b) TTY prompt / (c) fail-loud cascade.
 -- Returns @Left@ with actionable guidance rather than throwing, so the
 -- callers in 'Prodbox.Infra.LongLivedPulumiBackend' can wrap it in their
 -- structured error rendering.
 acquireAdminAwsCredentials :: FilePath -> IO (Either String Credentials)
 acquireAdminAwsCredentials repoRoot = do
-  testConfigResult <- loadTestConfig repoRoot
-  case testConfigResult of
+  testSecretsResult <- loadTestSecrets repoRoot
+  case testSecretsResult of
     Just (Left err) -> pure (Left err)
-    Just (Right testConfig) ->
-      pure (testConfigAdminCredentials (aws_admin_for_test_simulation testConfig))
+    Just (Right testSecrets) ->
+      pure (testSecretsAdminCredentials (aws_admin_for_test_simulation testSecrets))
     Nothing -> do
       isTty <- hIsTerminalDevice stdin
       if isTty
@@ -92,20 +92,20 @@ acquireAdminAwsCredentials repoRoot = do
           pure
             ( Left
                 "no admin AWS credential available: stdin is not a TTY and no \
-                \test-config.dhall with a populated aws_admin_for_test_simulation \
+                \test-secrets.dhall with a populated aws_admin_for_test_simulation \
                 \block is present. Re-run interactively to enter a temporary admin \
-                \credential at the prompt, or supply test-config.dhall (test \
+                \credential at the prompt, or supply test-secrets.dhall (test \
                 \harness / automation) so the admin prompt is simulated \
                 \non-interactively. The ephemeral admin credential is never read \
-                \from prodbox-config.dhall or Vault."
+                \from prodbox.dhall or Vault."
             )
 
--- | Project the cleartext test-config admin block onto 'Credentials',
+-- | Project the cleartext test-secrets admin block onto 'Credentials',
 -- enforcing the same all-or-nothing population rule the prompt validation
--- enforces. The test-config fixture is the harness simulating the operator
+-- enforces. The test-secrets fixture is the harness simulating the operator
 -- prompt, so an incompletely populated block is a misconfigured fixture.
-testConfigAdminCredentials :: TestConfigAdminCredentials -> Either String Credentials
-testConfigAdminCredentials block =
+testSecretsAdminCredentials :: TestSecretsAdminCredentials -> Either String Credentials
+testSecretsAdminCredentials block =
   validateAdminCredentials
     Credentials
       { access_key_id = VaultHost.access_key_id block

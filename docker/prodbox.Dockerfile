@@ -54,4 +54,14 @@ RUN --mount=type=cache,target=/root/.cabal \
     && cabal build --builddir=.build exe:prodbox \
     && cp "$(cabal list-bin --builddir=.build exe:prodbox)" /usr/local/bin/prodbox
 
+# Sprint 1.40: bake in the default Tier-0 `prodbox.dhall` binary context so a
+# freshly started container has a valid non-secret binary context BEFORE any
+# ConfigMap is mounted (config_doctrine.md §0, §3). The in-cluster daemon
+# OVERWRITES this from the `gateway-config-<nodeId>` ConfigMap mount at startup.
+# The file is the Haskell-rendered source of truth
+# (`Prodbox.Config.Tier0.defaultDaemonProjectConfig`), kept in sync with the
+# renderer by `prodbox dev check` (a tracked generated artifact). It carries no
+# secret values — only `SecretRef.Vault` pointers.
+COPY docker/default-prodbox.dhall /etc/prodbox/prodbox.dhall
+
 ENTRYPOINT ["/usr/local/bin/prodbox"]

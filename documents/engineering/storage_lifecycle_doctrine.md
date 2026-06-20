@@ -170,7 +170,7 @@ must not restate the phase sequence independently. For storage context the order
    in-cluster controllers are still alive to unwind their AWS-side state.
 3. Per-run Pulumi destroys against MinIO with the
    `withMaterializedOperationalCreds` bracket materializing the operational creds for the
-   run (in tests, via the harness-simulated admin prompt sourced from `test-config.dhall`)
+   run (in tests, via the harness-simulated admin prompt sourced from `test-secrets.dhall`)
    — only after the drain so subnet / VPC / cluster deletes have no live ENI / ALB / EBS
    dependency to trip on.
 4. RKE2 uninstall, removing the substrate and managed kubeconfig.

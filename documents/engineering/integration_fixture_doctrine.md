@@ -2,7 +2,7 @@
 
 **Status**: Authoritative source
 **Supersedes**: N/A
-**Referenced by**: documents/engineering/README.md, documents/engineering/unit_testing_policy.md, documents/engineering/aws_test_environment.md
+**Referenced by**: documents/engineering/README.md, documents/engineering/unit_testing_policy.md, documents/engineering/aws_test_environment.md, documents/engineering/aws_admin_credentials.md
 **Generated sections**: none
 
 > **Purpose**: Define integration setup, teardown, and cleanup ownership for real-system

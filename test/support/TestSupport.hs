@@ -13,6 +13,7 @@ module TestSupport
   , shouldNotContain
   , shouldReturn
   , shouldSatisfy
+  , wrapTier0
   )
 where
 
@@ -29,6 +30,36 @@ import Test.Tasty.HUnit
   , testCase
   )
 import Test.Tasty.QuickCheck (Testable, testProperty)
+
+-- | Sprint 1.42 Part B: wrap a @ConfigFile@-shaped Dhall record (the legacy
+-- @prodbox-config.dhall@ payload our fixtures emit) into a Tier-0
+-- @prodbox.dhall@ @{ parameters, context, witness }@ record, so a fixture that
+-- authors the operator's non-secret config writes the retired file's
+-- replacement. The embedded @context@ is a valid @HostOrchestrator@ binary
+-- context; because the temp repo has no Vault unlock bundle, the cluster is
+-- "not established", so config loading reads the @parameters@ directly —
+-- exactly as a host CLI command does before bring-up.
+wrapTier0 :: String -> String
+wrapTier0 configRecord =
+  unlines
+    [ "{ parameters = " ++ configRecord
+    , ", context ="
+    , "  { project = \"prodbox\""
+    , "  , binary = \"prodbox\""
+    , "  , context_kind = < HostOrchestrator | Daemon | ClusterService | OtherContext >.HostOrchestrator"
+    , "  , cluster_id = \"prodbox-home\""
+    , "  , vault_address = \"http://127.0.0.1:31820\""
+    , "  , minio_endpoint = \"http://minio.prodbox.svc.cluster.local:9000\""
+    , "  , minio_bucket = \"prodbox-state\""
+    , "  , topology ="
+    , "    { seal_mode = < Tier0Shamir | Tier0Transit >.Tier0Shamir"
+    , "    , parent_ref = None { parent_cluster_id : Text, parent_vault_address : Text, parent_transit_key : Text }"
+    , "    }"
+    , "  , capabilities = [ < DurableStore | VaultAuth | PublicEdge | OtherCapability >.DurableStore, < DurableStore | VaultAuth | PublicEdge | OtherCapability >.VaultAuth ]"
+    , "  }"
+    , ", witness = [] : List Text"
+    , "}"
+    ]
 
 type Expectation = Assertion
 

@@ -32,6 +32,12 @@ import Prodbox.CheckCode
   , runDocsCommand
   , runLintCommand
   )
+import Prodbox.Config.SchemaDhall
+  ( configTypesSchemaPath
+  , materializeSchemaFilesIfStale
+  , testSecretsTypesSchemaPath
+  , writeSchemaFiles
+  )
 import Prodbox.Dns (runDnsCommand)
 import Prodbox.Error (fatalError)
 import Prodbox.Gateway (runGatewayCommand)
@@ -153,7 +159,12 @@ commandPrerequisites command =
 runConfigCommand :: FilePath -> ConfigCommand -> IO ExitCode
 runConfigCommand repoRoot configCommand =
   case configCommand of
-    ConfigSetup planOptions -> runInteractiveConfigSetupWithPlan repoRoot planOptions
+    ConfigSetup planOptions -> do
+      -- Sprint 7.17: ensure the operator's `import ./prodbox-config-types.dhall`
+      -- always resolves to the in-sync, Haskell-generated schema before
+      -- `config setup` authors (and re-decodes) `prodbox.dhall`.
+      materializeSchemaFilesIfStale repoRoot
+      runInteractiveConfigSetupWithPlan repoRoot planOptions
     ConfigShow showSecrets -> do
       result <- validateAndLoadSettings repoRoot
       case result of
@@ -162,8 +173,21 @@ runConfigCommand repoRoot configCommand =
           writeOutput (renderSettingsDisplay showSecrets settings)
           pure ExitSuccess
     ConfigValidate -> do
+      -- Materialize the schema first so a config that imports it can decode
+      -- even when the committed schema file is absent or stale.
+      materializeSchemaFilesIfStale repoRoot
       result <- validateAndLoadSettings repoRoot
       either failWith (const (pure ExitSuccess)) result
+    ConfigSchema -> do
+      writeSchemaFiles repoRoot
+      writeOutput
+        ( unlines
+            [ "Regenerated Dhall config schema from the Haskell source of truth:"
+            , "  " ++ configTypesSchemaPath repoRoot
+            , "  " ++ testSecretsTypesSchemaPath repoRoot
+            ]
+        )
+      pure ExitSuccess
 
 failWith :: String -> IO ExitCode
 failWith message = do

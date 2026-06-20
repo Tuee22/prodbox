@@ -31,7 +31,7 @@ integrationEnvSuite = do
       withSystemTempDirectory "prodbox-hs-env" $ \tmpDir -> do
         binary <- resolveBinaryPath
         writeRepoMarkers tmpDir
-        writeFile (tmpDir </> "prodbox-config.dhall") validConfig
+        writeFile (tmpDir </> "prodbox.dhall") (wrapTier0 validConfig)
 
         (exitCode, stdoutText, stderrText) <-
           readCreateProcessWithExitCode
@@ -48,7 +48,7 @@ integrationEnvSuite = do
       withSystemTempDirectory "prodbox-hs-env" $ \tmpDir -> do
         binary <- resolveBinaryPath
         writeRepoMarkers tmpDir
-        writeFile (tmpDir </> "prodbox-config.dhall") invalidConfig
+        writeFile (tmpDir </> "prodbox.dhall") (wrapTier0 invalidConfig)
 
         (exitCode, _, stderrText) <-
           readCreateProcessWithExitCode
@@ -63,7 +63,7 @@ integrationEnvSuite = do
         binary <- resolveBinaryPath
         let nestedDir = tmpDir </> "nested"
         writeRepoMarkers tmpDir
-        writeFile (tmpDir </> "prodbox-config.dhall") validConfig
+        writeFile (tmpDir </> "prodbox.dhall") (wrapTier0 validConfig)
         createDirectoryIfMissing True nestedDir
 
         (exitCode, _, stderrText) <-

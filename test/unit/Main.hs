@@ -1,3 +1,4 @@
+{-# LANGUAGE DuplicateRecordFields #-}
 {-# LANGUAGE GADTs #-}
 {-# LANGUAGE OverloadedStrings #-}
 {-# LANGUAGE PatternSynonyms #-}
@@ -15,7 +16,9 @@ import Data.Aeson
   )
 import Data.Aeson.Key qualified as Key
 import Data.Aeson.KeyMap qualified as KeyMap
+import Data.ByteArray qualified as ByteArray
 import Data.ByteString qualified as BS
+import Data.ByteString.Char8 qualified as BS8
 import Data.ByteString.Lazy qualified as BL
 import Data.ByteString.Lazy.Char8 qualified as BL8
 import Data.Either (isLeft, isRight)
@@ -55,7 +58,11 @@ import Prodbox.Aws
   ( AwsSetupInput (..)
   , AwsTeardownInput (..)
   , ConfigSetupInput (..)
+  , IamProbe (..)
+  , ResidueError (..)
   , SessionTokenPromptShape (..)
+  , VaultProbe (..)
+  , awsErrorCodeIsTransient
   , buildIamPolicyDocument
   , harnessPostflightResiduePolicy
   , longLivedResourceNames
@@ -70,6 +77,8 @@ import Prodbox.Aws
   , renderConfigSetupPlan
   , renderPulumiResidueLongLivedRefusal
   , renderPulumiResidueRefusal
+  , renderResidueError
+  , residueFromProbe
   , sessionTokenPromptShape
   )
 import Prodbox.AwsEnvironment
@@ -99,6 +108,7 @@ import Prodbox.CLI.Command
   , K8sCommand (..)
   , NativeCommand (..)
   , NukeOptions (..)
+  , PerRunPruneTarget (..)
   , PlanOptions (..)
   , PolicyTier (..)
   , PulumiCommand (..)
@@ -265,6 +275,33 @@ import Prodbox.Config.InForce
   , seedProposeDecision
   , storeInForceConfigWith
   )
+import Prodbox.Config.SchemaDhall
+  ( renderConfigTypesDhall
+  , renderTestSecretsTypesDhall
+  )
+import Prodbox.Config.Tier0
+  ( ContextKind (..)
+  , ProdboxContext (..)
+  , ProdboxProjectConfig (..)
+  , ProdboxTopology (..)
+  , Tier0ParentRef (..)
+  , Tier0SealMode (..)
+  , Tier0Source (..)
+  , daemonConfigMapTier0Path
+  , daemonContainerDefaultPath
+  , defaultDaemonContext
+  , defaultDaemonProjectConfig
+  , defaultProjectConfig
+  , ensureBasicsFloor
+  , ensureChildBasicsFloor
+  , loadDaemonBinaryContext
+  , projectBasics
+  , renderDaemonContainerDefaultDhall
+  , renderProjectConfigDhall
+  , tier0CarriesNoSecretValues
+  , writeTier0
+  )
+import Prodbox.Config.Tier0 qualified as Tier0
 import Prodbox.ContainerImage qualified as ContainerImage
 import Prodbox.Crypto.Envelope
   ( DekCipher (..)
@@ -301,6 +338,15 @@ import Prodbox.Gateway
   , renderGatewayStatusReport
   )
 import Prodbox.Gateway.Client qualified
+import Prodbox.Gateway.Daemon
+  ( allowedOperatorSecretPaths
+  , decodeOperatorSecretFields
+  , operatorSecretJwtHeader
+  , operatorSecretLogicalPath
+  , operatorSecretRequestMethod
+  , operatorWriteRoleName
+  , requestBodyBytes
+  )
 import Prodbox.Gateway.Logging
   ( Severity (..)
   , severityFromLogLevel
@@ -395,7 +441,9 @@ import Prodbox.Lib.ChartPlatform
   , buildChartDeploymentPlan
   , buildChartDeploymentPlanForSubstrate
   , certManagerAdoptionAnnotations
+  , chartReleasesToDeploy
   , classifyPublicEdgePreserve
+  , kubernetesSecretDecodedDataField
   , patroniSeedMismatchDecision
   , renderPatroniResetDecision
   , renderPublicEdgePreserveOutcome
@@ -447,7 +495,8 @@ import Prodbox.Minio.EncryptedObject
   , putLogicalWith
   )
 import Prodbox.Minio.ObjectStore
-  ( defaultObjectStoreBucket
+  ( ObjectStoreConfig (..)
+  , defaultObjectStoreBucket
   , objectStoreCreateBucketArgs
   , objectStoreHeadBucketArgs
   )
@@ -478,11 +527,15 @@ import Prodbox.PublicEdge
   , publicEdgeTlsRetentionKey
   )
 import Prodbox.Pulumi.EncryptedBackend
-  ( EncryptedBackendError (..)
+  ( CheckpointObservability (..)
+  , EncryptedBackendError (..)
   , EncryptedBackendHooks (..)
   , PulumiScratch (..)
   , PulumiStackRef (..)
+  , classifyCheckpointBytes
   , fileBackendEnvironment
+  , observeStackCheckpointWith
+  , renderCheckpointObservability
   , stackCheckpointPath
   , withDecryptedStackWith
   )
@@ -518,6 +571,7 @@ import Prodbox.Settings
   , ValidatedSettings (..)
   , decodeConfigDhallBytes
   , defaultConfigFile
+  , inForceConfigObjectAbsent
   , loadConfigFile
   , loadConfigForSettingsWith
   , loadUnencryptedBasics
@@ -526,7 +580,6 @@ import Prodbox.Settings
   , validateAndLoadSettings
   , validateAwsBootstrapConfig
   , validatePublicEdgeDeployment
-  , writeUnencryptedBasics
   )
 import Prodbox.Settings.SecretRef
   ( SecretRef (..)
@@ -573,6 +626,13 @@ import Prodbox.TestValidation
   , verifyAwsTestSshReachability
   )
 import Prodbox.UsersAdmin qualified
+import Prodbox.Vault.BootstrapBundle
+  ( BootstrapMinioCredential (..)
+  , bootstrapObjectStoreConfig
+  , bootstrapSaltForClusterId
+  , bootstrapUnlockBundleKey
+  , deriveBootstrapMinioCredential
+  )
 import Prodbox.Vault.Client
   ( BootstrapAction (..)
   , EnableAuthMethodRequest (..)
@@ -611,6 +671,15 @@ import Prodbox.Vault.Gate
   , vaultGateDecision
   , vaultGateOutcome
   )
+import Prodbox.Vault.Host
+  ( AcmeEabFixture (..)
+  , BootstrapMinioRead (..)
+  , BootstrapSourceDecision (..)
+  , TestSecrets (acme_eab)
+  , classifyBootstrapMinioSource
+  , defaultTestSecrets
+  , seedAcmeEabFromTestSecrets
+  )
 import Prodbox.Vault.Orchestration
   ( UnsealOutcome (..)
   , UnsealStep (..)
@@ -632,6 +701,7 @@ import Prodbox.Vault.Reconcile
   , VaultReconcileTarget (..)
   , VaultTransitKeySpec (..)
   , defaultVaultReconcilePlan
+  , operatorWritePolicy
   , runVaultReconcileWith
   )
 import Prodbox.Vault.Seal
@@ -655,7 +725,9 @@ import Prodbox.Vault.TransitCipher
 import Prodbox.Vault.UnlockBundle
   ( UnlockBundle (..)
   , UnlockBundleError (..)
+  , bootstrapKdfOptions
   , decryptUnlockBundle
+  , deriveKey
   , encryptUnlockBundle
   )
 import Prodbox.Workload
@@ -678,6 +750,7 @@ import System.Directory
   , getCurrentDirectory
   , getPermissions
   , getTemporaryDirectory
+  , removeFile
   , setPermissions
   )
 import System.Environment
@@ -686,7 +759,7 @@ import System.Environment
   , unsetEnv
   )
 import System.Exit (ExitCode (..))
-import System.FilePath ((</>))
+import System.FilePath (takeDirectory, (</>))
 import System.IO.Temp (withSystemTempDirectory)
 import TestSupport
 
@@ -764,6 +837,24 @@ sampleParentRef =
     , parentRefTransitKey = "transit/prodbox-child-seal"
     }
 
+-- | Sprint 7.21: build read-only-observability hooks for
+-- 'observeStackCheckpointWith'. The Vault gate proceeds and the encrypted
+-- load is supplied by the caller; the scratch / store / delete hooks are
+-- never exercised by the observe path (it must not mutate backend state),
+-- so they are stubbed to fail loudly if accidentally invoked.
+observabilityHooks
+  :: IO (Either String (Maybe BS.ByteString)) -> EncryptedBackendHooks CheckpointObservability
+observabilityHooks loadAction =
+  EncryptedBackendHooks
+    { encryptedBackendGate = pure VaultGateProceed
+    , encryptedBackendLoad = const loadAction
+    , encryptedBackendLoadLegacy = const (pure (Right Nothing))
+    , encryptedBackendStore = \_ _ -> error "observe path must not store"
+    , encryptedBackendDelete = const (error "observe path must not delete")
+    , encryptedBackendDeleteLegacy = const (error "observe path must not delete legacy")
+    , encryptedBackendWithScratch = \_ _ -> error "observe path must not hydrate scratch"
+    }
+
 sampleRootBasics :: UnencryptedBasics
 sampleRootBasics =
   UnencryptedBasics
@@ -782,6 +873,34 @@ sampleChildBasics =
     , basicsSealMode = SealModeTransit
     , basicsParentRef = Just sampleParentRef
     , basicsFormatVersion = 1
+    }
+
+-- | Sprint 1.39: a populated Tier-0 binary-context record for the
+-- @{ parameters, context, witness }@ tests. The context carries a child-cluster
+-- topology so the projected floor exercises the parent-ref arm; the parameters
+-- reuse the non-secret defaults (SecretRef.Vault pointers only).
+sampleTier0Child :: ProdboxProjectConfig
+sampleTier0Child =
+  defaultProjectConfig
+    { context =
+        (context defaultProjectConfig)
+          { project = "prodbox"
+          , binary = "prodbox"
+          , context_kind = HostOrchestrator
+          , cluster_id = "prodbox-child"
+          , vault_address = "http://127.0.0.1:31820"
+          , topology =
+              ProdboxTopology
+                { seal_mode = Tier0Transit
+                , parent_ref =
+                    Just
+                      Tier0ParentRef
+                        { parent_cluster_id = "prodbox-root"
+                        , parent_vault_address = "http://10.0.0.1:8200"
+                        , parent_transit_key = "transit/prodbox-child-seal"
+                        }
+                }
+          }
     }
 
 main :: IO ()
@@ -815,6 +934,97 @@ main = mainWithSuite "prodbox-unit" $ do
         Left err -> expectationFailure ("encrypt failed: " ++ show err)
         Right envelope ->
           BS.isInfixOf "s.rootsecrettoken" envelope `shouldBe` False
+  describe "vault Tier-1 bootstrap bundle (Sprint 7.19)" $ do
+    it "pins the fixed, well-known bootstrap object key (not HMAC-opaque)" $ do
+      -- The Tier-1 unlock-bundle object MUST sit at a fixed key a sealed Vault
+      -- can find pre-unseal (vault_doctrine.md §6.1, §9), never an opaque
+      -- objects/<hmac>.enc name.
+      bootstrapUnlockBundleKey `shouldBe` "bootstrap/vault-unlock-bundle.v1"
+      Text.isPrefixOf "objects/" bootstrapUnlockBundleKey `shouldBe` False
+      Text.isSuffixOf ".enc" bootstrapUnlockBundleKey `shouldBe` False
+    it "derives a deterministic bootstrap MinIO credential from (password, salt)" $ do
+      let salt = bootstrapSaltForClusterId "cluster-xyz"
+      deriveBootstrapMinioCredential sampleUnlockBundlePassword salt
+        `shouldBe` deriveBootstrapMinioCredential sampleUnlockBundlePassword salt
+    it "derives printable credential halves of non-trivial length" $ do
+      let salt = bootstrapSaltForClusterId "cluster-xyz"
+      case deriveBootstrapMinioCredential sampleUnlockBundlePassword salt of
+        Left err -> expectationFailure ("derive failed: " ++ show err)
+        Right credential -> do
+          not (null (bootstrapMinioAccessKey credential)) `shouldBe` True
+          not (null (bootstrapMinioSecretKey credential)) `shouldBe` True
+          -- URL-safe base64 with no padding: no '+', '/', or '=' that would
+          -- corrupt the AWS_* env-var transport.
+          any (`elem` ("+/=" :: String)) (bootstrapMinioAccessKey credential) `shouldBe` False
+          any (`elem` ("+/=" :: String)) (bootstrapMinioSecretKey credential) `shouldBe` False
+          -- The two halves are independent, not a duplicated key.
+          (bootstrapMinioAccessKey credential /= bootstrapMinioSecretKey credential)
+            `shouldBe` True
+    it "differs from the bundle-body AEAD key (distinct context + salt)" $ do
+      -- The bundle body uses the bare password + a fresh random salt; the
+      -- bootstrap credential prefixes a distinct context and uses the
+      -- per-cluster salt. Re-deriving the bundle-body key with deriveKey under
+      -- the bare password and the SAME per-cluster salt must NOT equal either
+      -- credential half — proving the §6.1 independence is real, not nominal.
+      let salt = bootstrapSaltForClusterId "cluster-xyz"
+      case ( deriveKey bootstrapKdfOptions sampleUnlockBundlePassword salt
+           , deriveBootstrapMinioCredential sampleUnlockBundlePassword salt
+           ) of
+        (Right bundleBodyKey, Right credential) -> do
+          let bodyBytes = ByteArray.convert bundleBodyKey :: BS.ByteString
+              credHalves =
+                BS.append
+                  (TextEncoding.encodeUtf8 (Text.pack (bootstrapMinioAccessKey credential)))
+                  (TextEncoding.encodeUtf8 (Text.pack (bootstrapMinioSecretKey credential)))
+          -- Distinct context means the same (password, salt) yields a different
+          -- 32-byte key, so neither base64-encoded credential half can equal the
+          -- raw bundle-body key bytes.
+          BS.isInfixOf bodyBytes credHalves `shouldBe` False
+        _ -> expectationFailure "key derivation failed"
+    it "yields a different bootstrap credential for the wrong password (fails closed)" $ do
+      let salt = bootstrapSaltForClusterId "cluster-xyz"
+      case ( deriveBootstrapMinioCredential sampleUnlockBundlePassword salt
+           , deriveBootstrapMinioCredential "wrong-password" salt
+           ) of
+        (Right right, Right wrong) -> (right /= wrong) `shouldBe` True
+        _ -> expectationFailure "key derivation failed"
+    it "yields a different bootstrap credential per cluster (salt domain-separates)" $ do
+      case ( deriveBootstrapMinioCredential
+               sampleUnlockBundlePassword
+               (bootstrapSaltForClusterId "cluster-a")
+           , deriveBootstrapMinioCredential
+               sampleUnlockBundlePassword
+               (bootstrapSaltForClusterId "cluster-b")
+           ) of
+        (Right a, Right b) -> (a /= b) `shouldBe` True
+        _ -> expectationFailure "key derivation failed"
+    it "builds an object-store config carrying the durable bucket + derived creds" $ do
+      let salt = bootstrapSaltForClusterId "cluster-xyz"
+      case deriveBootstrapMinioCredential sampleUnlockBundlePassword salt of
+        Left err -> expectationFailure ("derive failed: " ++ show err)
+        Right credential -> do
+          let config = bootstrapObjectStoreConfig 39000 credential
+          objectStoreBucket config `shouldBe` defaultObjectStoreBucket
+          objectStoreEndpoint config `shouldBe` "http://127.0.0.1:39000"
+          objectStoreAccessKey config `shouldBe` bootstrapMinioAccessKey credential
+          objectStoreSecretKey config `shouldBe` bootstrapMinioSecretKey credential
+    it "round-trips the bundle bytes through an in-memory store at the fixed key" $ do
+      -- A pure stand-in for the MinIO put/get path: store the password-AEAD
+      -- envelope at the fixed bootstrap key, read it back, and require byte
+      -- equality (no live MinIO needed).
+      encrypted <- encryptUnlockBundle sampleUnlockBundlePassword sampleUnlockBundle
+      case encrypted of
+        Left err -> expectationFailure ("encrypt failed: " ++ show err)
+        Right envelope -> do
+          let store = Map.singleton bootstrapUnlockBundleKey envelope
+          Map.lookup bootstrapUnlockBundleKey store `shouldBe` Just envelope
+          -- The bytes recovered from the store still decrypt with the password,
+          -- exactly like the host-disk path.
+          case Map.lookup bootstrapUnlockBundleKey store of
+            Just bytes ->
+              decryptUnlockBundle sampleUnlockBundlePassword bytes
+                `shouldBe` Right sampleUnlockBundle
+            Nothing -> expectationFailure "round-trip lost the bundle object"
   describe "vault client (Sprint 1.36)" $ do
     it "decides initialize when Vault is uninitialized" $ do
       bootstrapAction (SealStatus False True 0 0 0) `shouldBe` BootstrapInitialize
@@ -1618,7 +1828,7 @@ main = mainWithSuite "prodbox-unit" $ do
         `shouldBe` Left
           (EncryptedBackendVaultRefused "Blocked: Vault is sealed. No preview/update/destroy was started.")
       readIORef callsRef `shouldReturn` []
-    it "uses a file backend env and strips raw MinIO/S3 backend credentials" $ do
+    it "uses a file backend env, strips raw MinIO/S3 creds, and sets an EMPTY config passphrase" $ do
       let scratch =
             PulumiScratch
               { pulumiScratchRoot = "/dev/shm/prodbox-pulumi-test"
@@ -1639,7 +1849,12 @@ main = mainWithSuite "prodbox-unit" $ do
       lookup "PULUMI_BACKEND_URL" environment `shouldBe` Just "file:///dev/shm/prodbox-pulumi-test"
       lookup "AWS_ACCESS_KEY_ID" environment `shouldBe` Nothing
       lookup "AWS_SECRET_ACCESS_KEY" environment `shouldBe` Nothing
-      lookup "PULUMI_CONFIG_PASSPHRASE" environment `shouldBe` Nothing
+      -- The scratch backend must carry an EMPTY config passphrase (not a
+      -- stripped one) so a stack config bearing an `encryptionsalt` (today only
+      -- aws-ses) can initialize its passphrase secrets manager; any inherited
+      -- value is stripped first, then re-set to "". Stacks without a salt ignore
+      -- it. (Sprint 7.23: fixes `get stack secrets manager: passphrase must be set`.)
+      lookup "PULUMI_CONFIG_PASSPHRASE" environment `shouldBe` Just ""
       lookup "PRODBOX_PULUMI_AWS_ACCESS_KEY_ID" environment `shouldBe` Just "provider-key"
       lookup "PATH" environment `shouldBe` Just "/bin"
     it "loads Vault-backed AWS provider credentials without a raw config fallback" $ do
@@ -1696,7 +1911,10 @@ main = mainWithSuite "prodbox-unit" $ do
           hooks =
             EncryptedBackendHooks
               { encryptedBackendGate = pure VaultGateProceed
-              , encryptedBackendLoad = const (pure (Right (Just "old-checkpoint")))
+              , -- A realistic file-backend on-disk checkpoint (valid JSON,
+                -- `checkpoint` wrapper) so the Sprint 7.23 hydrate-usability
+                -- check accepts it for raw hydration.
+                encryptedBackendLoad = const (pure (Right (Just "{\"version\":3,\"checkpoint\":{}}")))
               , encryptedBackendLoadLegacy = const (pure (Right Nothing))
               , encryptedBackendStore = \ref bytes ->
                   modifyIORef' storedRef (++ [(ref, bytes)]) >> pure (Right ())
@@ -1715,7 +1933,7 @@ main = mainWithSuite "prodbox-unit" $ do
       result <-
         withDecryptedStackWith hooks stackRef $ \scratch -> do
           initial <- BS.readFile (pulumiScratchCheckpointPath scratch)
-          initial `shouldBe` "old-checkpoint"
+          initial `shouldBe` "{\"version\":3,\"checkpoint\":{}}"
           BS.writeFile (pulumiScratchCheckpointPath scratch) "new-checkpoint"
           pure (Right ("ok" :: String))
       result `shouldBe` Right "ok"
@@ -1789,14 +2007,279 @@ main = mainWithSuite "prodbox-unit" $ do
     it "identifies the root cluster and a child cluster" $ do
       isRootCluster sampleRootBasics `shouldBe` True
       isRootCluster sampleChildBasics `shouldBe` False
-    it "persists and reloads the unencrypted basics JSON surface" $
+    it "projects the floor from prodbox.dhall (the sole floor source)" $
+      -- Sprint 7.18: there is no separate prodbox-basics.json. The floor is read
+      -- straight off the Tier-0 prodbox.dhall's context; writing the default
+      -- root record (prodbox-home, shamir, no parent) yields the root floor.
       withSystemTempDirectory "prodbox-basics" $ \tmpDir -> do
-        writeUnencryptedBasics tmpDir sampleRootBasics `shouldReturn` Right ()
+        writeTier0 tmpDir defaultProjectConfig `shouldReturn` Right ()
         loadUnencryptedBasics tmpDir `shouldReturn` Right sampleRootBasics
-    it "refuses to persist invalid unencrypted basics" $
+    it "fails the floor read when no prodbox.dhall is present" $
+      -- A repo with no Tier-0 prodbox.dhall has no floor source, so the read
+      -- fails (the seed/propose fallback then takes over upstream).
       withSystemTempDirectory "prodbox-basics" $ \tmpDir -> do
-        result <- writeUnencryptedBasics tmpDir (sampleRootBasics {basicsClusterId = ""})
+        result <- loadUnencryptedBasics tmpDir
         result `shouldSatisfy` isLeft
+  describe "Tier 0 binary-owned prodbox.dhall (Sprint 1.39)" $ do
+    it "round-trips: decode . encode == id for the Tier-0 record" $
+      withSystemTempDirectory "prodbox-tier0-roundtrip" $ \tmpDir -> do
+        -- The schema is emitted from the Haskell record (one typed SoT) via the
+        -- same Dhall.inject mechanism; rendering then decoding must yield the
+        -- original record back.
+        let tier0Path = tmpDir </> "prodbox.dhall"
+        writeFile tier0Path (Text.unpack (renderProjectConfigDhall sampleTier0Child))
+        decoded <- Dhall.inputFile Dhall.auto tier0Path :: IO ProdboxProjectConfig
+        decoded `shouldBe` sampleTier0Child
+    it "round-trips: the default Tier-0 record decodes to defaultProjectConfig" $
+      withSystemTempDirectory "prodbox-tier0-roundtrip" $ \tmpDir -> do
+        let tier0Path = tmpDir </> "prodbox.dhall"
+        writeFile tier0Path (Text.unpack (renderProjectConfigDhall defaultProjectConfig))
+        decoded <- Dhall.inputFile Dhall.auto tier0Path :: IO ProdboxProjectConfig
+        decoded `shouldBe` defaultProjectConfig
+    it "projects the floor deterministically from the Tier-0 context" $ do
+      -- The floor derivation is a pure function of the Tier-0 context (the
+      -- parameters / witness never reach the floor), so it is identical across
+      -- repeated projections of the same record.
+      projectBasics sampleTier0Child `shouldBe` projectBasics sampleTier0Child
+      projectBasics sampleTier0Child
+        `shouldBe` UnencryptedBasics
+          { basicsClusterId = "prodbox-child"
+          , basicsVaultAddress = "http://127.0.0.1:31820"
+          , basicsSealMode = SealModeTransit
+          , basicsParentRef = Just sampleParentRef
+          , basicsFormatVersion = 1
+          }
+    it "writeTier0 derives a floor that loadUnencryptedBasics reads back" $
+      withSystemTempDirectory "prodbox-tier0-write" $ \tmpDir -> do
+        writeTier0 tmpDir sampleTier0Child `shouldReturn` Right ()
+        loadUnencryptedBasics tmpDir `shouldReturn` Right (projectBasics sampleTier0Child)
+  describe "Tier 0 basics-floor self-heal on reconcile (Sprint 1.39 P1)" $ do
+    it "missing floor + no prodbox.dhall reconstructs a valid root floor from the known local identity" $
+      -- A cluster initialized before 1.39 (or rebuilt against a durable Vault
+      -- PV, so `vault init` early-returned) has NO floor and NO prodbox.dhall.
+      -- The self-heal must write a coherent root (shamir, no parent) floor from
+      -- the default identity, with the caller-supplied Vault address.
+      withSystemTempDirectory "prodbox-floor-selfheal-default" $ \tmpDir -> do
+        before <- loadUnencryptedBasics tmpDir
+        before `shouldSatisfy` isLeft
+        ensureBasicsFloor tmpDir "http://127.0.0.1:31820" `shouldReturn` Right ()
+        loaded <- loadUnencryptedBasics tmpDir
+        loaded
+          `shouldBe` Right
+            UnencryptedBasics
+              { basicsClusterId = "prodbox-home"
+              , basicsVaultAddress = "http://127.0.0.1:31820"
+              , basicsSealMode = SealModeShamir
+              , basicsParentRef = Nothing
+              , basicsFormatVersion = 1
+              }
+    it "present operator-authored prodbox.dhall IS the floor and self-heal preserves it" $
+      -- Sprint 7.18: prodbox.dhall is the SOLE floor source. When the
+      -- operator-authored prodbox.dhall exists, the floor loads straight off its
+      -- context (matching the operator's binary context), and ensureBasicsFloor
+      -- is a no-op that leaves it byte-for-byte untouched — the supplied Vault
+      -- address is ignored because the existing floor is already valid.
+      withSystemTempDirectory "prodbox-floor-selfheal-tier0" $ \tmpDir -> do
+        writeFile (tmpDir </> "prodbox.dhall") (Text.unpack (renderProjectConfigDhall sampleTier0Child))
+        before <- loadUnencryptedBasics tmpDir
+        before `shouldBe` Right (projectBasics sampleTier0Child)
+        let tier0Path = tmpDir </> "prodbox.dhall"
+        beforeBytes <- BS.readFile tier0Path
+        ensureBasicsFloor tmpDir "http://10.0.0.99:8200" `shouldReturn` Right ()
+        afterBytes <- BS.readFile tier0Path
+        afterBytes `shouldBe` beforeBytes
+        loadUnencryptedBasics tmpDir `shouldReturn` Right (projectBasics sampleTier0Child)
+    it "is a no-op when a valid floor already exists" $
+      -- Idempotent: a present, valid prodbox.dhall floor is left byte-for-byte
+      -- untouched.
+      withSystemTempDirectory "prodbox-floor-selfheal-noop" $ \tmpDir -> do
+        writeTier0 tmpDir sampleTier0Child `shouldReturn` Right ()
+        let tier0Path = tmpDir </> "prodbox.dhall"
+        before <- BS.readFile tier0Path
+        ensureBasicsFloor tmpDir "http://10.0.0.99:8200" `shouldReturn` Right ()
+        after <- BS.readFile tier0Path
+        -- The supplied address (different from the record's) is ignored because
+        -- the existing floor is valid: no-op, bytes unchanged.
+        after `shouldBe` before
+    it "child self-heal reconstructs a coherent transit floor from the supplied identity" $
+      -- The child analog: no floor, no prodbox.dhall → reconstruct a transit
+      -- (child) floor carrying the supplied parent reference.
+      withSystemTempDirectory "prodbox-floor-selfheal-child" $ \tmpDir -> do
+        let parentRef =
+              Tier0ParentRef
+                { parent_cluster_id = "prodbox-root"
+                , parent_vault_address = "http://10.0.0.1:8200"
+                , parent_transit_key = "transit/prodbox-child-seal"
+                }
+        ensureChildBasicsFloor tmpDir "prodbox-child" "http://127.0.0.1:31820" parentRef
+          `shouldReturn` Right ()
+        loaded <- loadUnencryptedBasics tmpDir
+        loaded
+          `shouldBe` Right
+            UnencryptedBasics
+              { basicsClusterId = "prodbox-child"
+              , basicsVaultAddress = "http://127.0.0.1:31820"
+              , basicsSealMode = SealModeTransit
+              , basicsParentRef = Just sampleParentRef
+              , basicsFormatVersion = 1
+              }
+    it "fails LOUD (Left) when the floor write itself fails" $
+      -- P2 belt-and-suspenders: a floor write that cannot complete must surface
+      -- as a Left, never a silent Right. Force the write to fail by occupying
+      -- the prodbox.dhall path with a DIRECTORY so the file write errors.
+      withSystemTempDirectory "prodbox-floor-selfheal-fail" $ \tmpDir -> do
+        createDirectoryIfMissing True (tmpDir </> "prodbox.dhall")
+        result <- ensureBasicsFloor tmpDir "http://127.0.0.1:31820"
+        result `shouldSatisfy` isLeft
+  describe "Bootstrap-bundle unseal source classification (Sprint 7.19 P3)" $ do
+    it "uses the MinIO object when it decrypts cleanly" $ do
+      encrypted <- encryptUnlockBundle sampleUnlockBundlePassword sampleUnlockBundle
+      case encrypted of
+        Left err -> expectationFailure ("expected encrypt to succeed, got: " ++ show err)
+        Right envelope ->
+          classifyBootstrapMinioSource sampleUnlockBundlePassword (BootstrapMinioPresent envelope)
+            `shouldBe` BootstrapUseMinio sampleUnlockBundle
+    it "present-but-undecryptable MinIO object falls back to disk WITH a warning (never silent)" $ do
+      encrypted <- encryptUnlockBundle sampleUnlockBundlePassword sampleUnlockBundle
+      case encrypted of
+        Left err -> expectationFailure ("expected encrypt to succeed, got: " ++ show err)
+        Right envelope -> do
+          -- A tampered (corrupt) ciphertext is present but does not decrypt: the
+          -- classifier must choose disk fallback AND carry a surfaced warning,
+          -- so the integrity failure is never silently masked.
+          let corrupt = BS.snoc envelope 0x21
+          case classifyBootstrapMinioSource sampleUnlockBundlePassword (BootstrapMinioPresent corrupt) of
+            BootstrapFallBackToDisk (Just _warning) -> pure ()
+            other -> expectationFailure ("expected disk fallback with a warning, got: " ++ show other)
+    it "a clean absence falls back to disk SILENTLY (no warning)" $
+      classifyBootstrapMinioSource sampleUnlockBundlePassword BootstrapMinioAbsent
+        `shouldBe` BootstrapFallBackToDisk Nothing
+    it
+      "a MinIO read / credential failure falls back to disk WITH a warning (failure to observe is not absence)"
+      $ case classifyBootstrapMinioSource
+        sampleUnlockBundlePassword
+        (BootstrapMinioUnavailable "MinIO unreachable: port-forward failed") of
+        BootstrapFallBackToDisk (Just _warning) -> pure ()
+        other -> expectationFailure ("expected disk fallback with a warning, got: " ++ show other)
+  describe "AWS transient-error classifier (Sprint 7.20 P4)" $ do
+    it "classifies well-known throttle / service-unavailable codes as transient" $ do
+      awsErrorCodeIsTransient (Just "Throttling") `shouldBe` True
+      awsErrorCodeIsTransient (Just "ThrottlingException") `shouldBe` True
+      awsErrorCodeIsTransient (Just "RequestLimitExceeded") `shouldBe` True
+      awsErrorCodeIsTransient (Just "ServiceUnavailable") `shouldBe` True
+    it "treats NoSuchEntity / AccessDenied / no-code as permanent (NOT transient)" $ do
+      awsErrorCodeIsTransient (Just "NoSuchEntity") `shouldBe` False
+      awsErrorCodeIsTransient (Just "AccessDenied") `shouldBe` False
+      awsErrorCodeIsTransient Nothing `shouldBe` False
+    it "secret-free guard: a default Tier-0 record carries no secret values" $
+      tier0CarriesNoSecretValues defaultProjectConfig `shouldBe` True
+    it "secret-free guard: rejects a Tier-0 record with a literal credential" $ do
+      let base = Tier0.parameters defaultProjectConfig
+          poisonedAws =
+            (Tier0.aws base)
+              { awsCredentialAccessKeyId = SecretRefTestPlaintext "AKIA-LITERAL-CREDENTIAL"
+              }
+          -- Construct the poisoned parameters via the explicit constructor so
+          -- the shared field labels resolve unambiguously to ProdboxParameters.
+          poisonedParams =
+            Tier0.ProdboxParameters
+              { Tier0.aws = poisonedAws
+              , Tier0.route53 = Tier0.route53 base
+              , Tier0.aws_substrate = Tier0.aws_substrate base
+              , Tier0.ses = Tier0.ses base
+              , Tier0.domain = Tier0.domain base
+              , Tier0.acme = Tier0.acme base
+              , Tier0.deployment = Tier0.deployment base
+              , Tier0.storage = Tier0.storage base
+              , Tier0.pulumi_state_backend = Tier0.pulumi_state_backend base
+              }
+          poisoned = defaultProjectConfig {parameters = poisonedParams}
+      tier0CarriesNoSecretValues poisoned `shouldBe` False
+  describe "in-force config object-absent tolerance (Sprint 1.39 follow-up)" $ do
+    it "treats an 'in-force config object missing' error as object-absent (seed fallback)" $
+      inForceConfigObjectAbsent
+        "failed to fetch in-force config envelope: in-force config object missing at objects/abc.enc"
+        `shouldBe` True
+    it "keeps every other in-force error fail-closed (NOT object-absent)" $ do
+      inForceConfigObjectAbsent "Vault is sealed" `shouldBe` False
+      inForceConfigObjectAbsent
+        "failed to reach in-force config MinIO backend: connection refused"
+        `shouldBe` False
+      inForceConfigObjectAbsent
+        "failed to read secret/minio/root from Vault: 403"
+        `shouldBe` False
+  describe "Tier 0 in-cluster daemon binary context (Sprint 1.40)" $ do
+    it "the daemon default is the Daemon-frame variant of the host default" $ do
+      -- The in-cluster default reuses the shared non-secret parameters but
+      -- names the gateway daemon frame, so the host CLI and the daemon decode
+      -- the same { parameters, context, witness } schema.
+      Tier0.context_kind defaultDaemonContext `shouldBe` Daemon
+      Tier0.binary defaultDaemonContext `shouldBe` "gateway"
+      Tier0.parameters defaultDaemonProjectConfig `shouldBe` Tier0.parameters defaultProjectConfig
+    it "the baked-in container default prodbox.dhall decodes to a valid Tier-0 binary context" $
+      withSystemTempDirectory "prodbox-tier0-container-default" $ \tmpDir -> do
+        -- No ConfigMap mount present: a freshly started container decodes its
+        -- baked-in default. Emulate the on-disk container layout and decode it
+        -- through the daemon's loader.
+        let containerDefault = tmpDir </> "etc-prodbox" </> "prodbox.dhall"
+            configMapDir = tmpDir </> "etc-gateway-config"
+        createDirectoryIfMissing True (takeDirectory containerDefault)
+        createDirectoryIfMissing True configMapDir
+        writeFile containerDefault (Text.unpack renderDaemonContainerDefaultDhall)
+        result <- loadDaemonBinaryContext configMapDir containerDefault
+        case result of
+          Left err -> expectationFailure ("expected container default to decode, got: " ++ err)
+          Right (source, projectConfig) -> do
+            source `shouldBe` Tier0FromContainerDefault containerDefault
+            projectConfig `shouldBe` defaultDaemonProjectConfig
+            Tier0.context_kind (Tier0.context projectConfig) `shouldBe` Daemon
+    it "the decoded daemon Tier-0 context carries no secret values" $
+      withSystemTempDirectory "prodbox-tier0-daemon-secretfree" $ \tmpDir -> do
+        let containerDefault = tmpDir </> "prodbox.dhall"
+            configMapDir = tmpDir </> "no-configmap"
+        writeFile containerDefault (Text.unpack renderDaemonContainerDefaultDhall)
+        result <- loadDaemonBinaryContext configMapDir containerDefault
+        case result of
+          Left err -> expectationFailure ("expected decode, got: " ++ err)
+          Right (_, projectConfig) ->
+            tier0CarriesNoSecretValues projectConfig `shouldBe` True
+    it "the ConfigMap-derived Tier 0 overwrites the in-container default" $
+      withSystemTempDirectory "prodbox-tier0-overwrite" $ \tmpDir -> do
+        -- The baked-in default ships the prodbox-home cluster id; the ConfigMap
+        -- supplies a distinct binary context. With both present, the loader
+        -- chooses the ConfigMap (overwrite), matching hostbootstrap's per-frame
+        -- context-init pattern (config_doctrine.md §0).
+        let containerDefault = tmpDir </> "etc-prodbox" </> "prodbox.dhall"
+            configMapDir = tmpDir </> "etc-gateway-config"
+            overwritten =
+              defaultDaemonProjectConfig
+                { Tier0.context =
+                    (Tier0.context defaultDaemonProjectConfig)
+                      { Tier0.cluster_id = "prodbox-configmap-override"
+                      }
+                }
+        createDirectoryIfMissing True (takeDirectory containerDefault)
+        createDirectoryIfMissing True configMapDir
+        writeFile containerDefault (Text.unpack renderDaemonContainerDefaultDhall)
+        writeFile
+          (daemonConfigMapTier0Path configMapDir)
+          (Text.unpack (renderProjectConfigDhall overwritten))
+        result <- loadDaemonBinaryContext configMapDir containerDefault
+        case result of
+          Left err -> expectationFailure ("expected ConfigMap decode, got: " ++ err)
+          Right (source, projectConfig) -> do
+            source `shouldBe` Tier0FromConfigMap (daemonConfigMapTier0Path configMapDir)
+            projectConfig `shouldBe` overwritten
+            Tier0.cluster_id (Tier0.context projectConfig) `shouldBe` "prodbox-configmap-override"
+    it "falls back to the compiled-in default when no file is present" $
+      withSystemTempDirectory "prodbox-tier0-compiled-fallback" $ \tmpDir -> do
+        let configMapDir = tmpDir </> "absent-configmap"
+            containerDefault = tmpDir </> "absent-prodbox.dhall"
+        result <- loadDaemonBinaryContext configMapDir containerDefault
+        result `shouldBe` Right (Tier0FromCompiledDefault, defaultDaemonProjectConfig)
+    it "exposes the canonical in-cluster Tier-0 paths" $ do
+      daemonContainerDefaultPath `shouldBe` "/etc/prodbox/prodbox.dhall"
+      daemonConfigMapTier0Path "/etc/gateway/config" `shouldBe` "/etc/gateway/config/prodbox.dhall"
   describe "in-force config envelope (Sprint 1.38)" $ do
     it "round-trips the in-force config payload through the envelope" $ do
       let payload = renderInForcePayload defaultConfigFile
@@ -1884,6 +2367,228 @@ main = mainWithSuite "prodbox-unit" $ do
           "cluster1"
           roundTripConfigFile
       result `shouldBe` Left (InForceConfigStoreFailed "bucket unavailable")
+    -- Sprint 1.42 PART A: the seed -> read round-trip. The seed path
+    -- (storeInForceConfigWith) seals + PUTs the operator ConfigFile into a fake
+    -- object store; the read path (fetchInForceConfigWith over the same fake
+    -- store + decodeConfigDhallBytes) GETs + opens + decodes it back to the
+    -- IDENTICAL ConfigFile. A round-trip bug here would make the SSoT object
+    -- present-but-undecodable, which the production read path treats as a hard
+    -- error (not the absent-fallback), so this guards the load-bearing edge.
+    it "seed -> read round-trips the in-force config to the same ConfigFile" $
+      withSystemTempDirectory "prodbox-in-force-seed-roundtrip" $ \tmpDir -> do
+        repoRoot <- getCurrentDirectory
+        copyFile
+          (repoRoot </> "prodbox-config-types.dhall")
+          (tmpDir </> "prodbox-config-types.dhall")
+        -- The fake MinIO object store: one mutable slot keyed by the opaque key.
+        storeRef <- newIORef Nothing
+        let put envelope = writeIORef storeRef (Just envelope) >> pure (Right ())
+            get = readIORef storeRef
+        -- SEED: seal + store the operator config (mirrors the reconcile seed).
+        seedResult <-
+          storeInForceConfigWith put insecureLocalDekCipher "cluster1" roundTripConfigFile
+        seedResult `shouldBe` Right ()
+        -- READ: fetch + open + decode through the same store + cipher + decoder
+        -- the production read path uses, asserting the SSoT decodes back.
+        readResult <-
+          fetchInForceConfigWith
+            (maybe (Left "in-force config object missing") Right <$> get)
+            insecureLocalDekCipher
+            "cluster1"
+            (decodeConfigDhallBytes tmpDir)
+        readResult `shouldBe` Right roundTripConfigFile
+    -- Sprint 1.42 PART A: the classification PART A acts on. SSoT-absent +
+    -- file-present seeds; both present is a proposed update (NOT seeded by PART
+    -- A); SSoT-present (no file) is a no-op. Field semantics are explicit so the
+    -- positional-constructor order can never silently invert.
+    it "seedProposeDecision drives the PART A seed/no-op classification" $ do
+      seedProposeDecision
+        ConfigSource {configSourceFilePresent = True, configSourceInForcePresent = False}
+        `shouldBe` SeedInForce
+      seedProposeDecision
+        ConfigSource {configSourceFilePresent = True, configSourceInForcePresent = True}
+        `shouldBe` ProposeUpdate
+      seedProposeDecision
+        ConfigSource {configSourceFilePresent = False, configSourceInForcePresent = True}
+        `shouldBe` UseInForceAsIs
+      seedProposeDecision
+        ConfigSource {configSourceFilePresent = False, configSourceInForcePresent = False}
+        `shouldBe` NoConfigAvailable
+  describe "Dhall schema generated from the Haskell source of truth (Sprint 7.17)" $ do
+    it "round-trips: a default config against the GENERATED schema decodes to defaultConfigFile" $
+      withSystemTempDirectory "prodbox-schema-roundtrip" $ \tmpDir -> do
+        -- Write the schema text generated from the Haskell types (not the
+        -- on-disk file), then author a config that imports it and overrides
+        -- nothing — it must decode back to `defaultConfigFile`.
+        writeFile (tmpDir </> "prodbox-config-types.dhall") (Text.unpack renderConfigTypesDhall)
+        writeFile
+          (tmpDir </> "prodbox.dhall")
+          (wrapTier0 (unlines ["let Config = ./prodbox-config-types.dhall", "in  Config.default"]))
+        result <- loadConfigFile tmpDir
+        result `shouldBe` Right defaultConfigFile
+    it "round-trips: a config that overrides via Config::{ ... } + SecretRef.Vault decodes" $
+      withSystemTempDirectory "prodbox-schema-roundtrip" $ \tmpDir -> do
+        writeFile (tmpDir </> "prodbox-config-types.dhall") (Text.unpack renderConfigTypesDhall)
+        -- Exercise the operator-facing affordances the schema must expose:
+        -- the `::` completion operator, `Config.default.<section>`, and the
+        -- `Config.SecretRef.Vault {...}` constructor.
+        writeFile
+          (tmpDir </> "prodbox.dhall")
+          ( wrapTier0
+              ( unlines
+                  [ "let Config = ./prodbox-config-types.dhall"
+                  , "in  Config::{"
+                  , "    , aws = Config.default.aws // {"
+                  , "        , access_key_id ="
+                  , "            Config.SecretRef.Vault"
+                  , "              { mount = \"secret\", path = \"gateway/gateway/aws\", field = \"access_key_id\" }"
+                  , "        }"
+                  , "    , route53 = { zone_id = \"Z1234567890ABC\" }"
+                  , "    }"
+                  ]
+              )
+          )
+        result <- loadConfigFile tmpDir
+        case result of
+          Left err -> expectationFailure ("decode failed: " ++ err)
+          Right config -> zone_id (route53 config) `shouldBe` "Z1234567890ABC"
+    it "round-trips: the in-force payload resolver decodes against the GENERATED schema" $
+      withSystemTempDirectory "prodbox-schema-roundtrip" $ \tmpDir -> do
+        writeFile (tmpDir </> "prodbox-config-types.dhall") (Text.unpack renderConfigTypesDhall)
+        decodeConfigDhallBytes tmpDir (renderInForcePayload roundTripConfigFile)
+          `shouldReturn` Right roundTripConfigFile
+    it "round-trips: test-secrets against the GENERATED test schema decodes to defaultTestSecrets" $
+      withSystemTempDirectory "prodbox-schema-roundtrip" $ \tmpDir -> do
+        writeFile (tmpDir </> "test-secrets-types.dhall") (Text.unpack renderTestSecretsTypesDhall)
+        writeFile
+          (tmpDir </> "test-secrets.dhall")
+          (unlines ["let TestSecrets = ./test-secrets-types.dhall", "in  TestSecrets.default"])
+        decoded <- Dhall.inputFile Dhall.auto (tmpDir </> "test-secrets.dhall") :: IO TestSecrets
+        decoded `shouldBe` defaultTestSecrets
+    it "round-trips: a populated acme_eab block decodes through the GENERATED test schema" $
+      withSystemTempDirectory "prodbox-schema-roundtrip-eab" $ \tmpDir -> do
+        writeFile (tmpDir </> "test-secrets-types.dhall") (Text.unpack renderTestSecretsTypesDhall)
+        writeFile
+          (tmpDir </> "test-secrets.dhall")
+          ( unlines
+              [ "let TestSecrets = ./test-secrets-types.dhall"
+              , "in  TestSecrets::{"
+              , "    , acme_eab ="
+              , "        Some { key_id = \"test-eab-key-id\", hmac_key = \"test-eab-hmac-key\" }"
+              , "    }"
+              ]
+          )
+        decoded <- Dhall.inputFile Dhall.auto (tmpDir </> "test-secrets.dhall") :: IO TestSecrets
+        acme_eab decoded
+          `shouldBe` Just (AcmeEabFixture {key_id = "test-eab-key-id", hmac_key = "test-eab-hmac-key"})
+    it "drift guard: the committed prodbox-config-types.dhall equals the renderer output" $ do
+      repoRoot <- getCurrentDirectory
+      onDisk <- readFile (repoRoot </> "prodbox-config-types.dhall")
+      onDisk `shouldBe` Text.unpack renderConfigTypesDhall
+    it "drift guard: the committed test-secrets-types.dhall equals the renderer output" $ do
+      repoRoot <- getCurrentDirectory
+      onDisk <- readFile (repoRoot </> "test-secrets-types.dhall")
+      onDisk `shouldBe` Text.unpack renderTestSecretsTypesDhall
+  describe "ACME EAB seeding from test-secrets.dhall (Sprint 7.18)" $ do
+    -- Regression guard for the ordering bug where the in-cluster EAB
+    -- materializer Job read an empty `secret/acme/eab#hmac_key` because the
+    -- harness seeded it too late. `seedAcmeEabFromTestSecrets` must populate the
+    -- Vault object whenever it is invoked (the edge/ACME reconcile now calls it
+    -- immediately before applying the materializer manifest), and must be a
+    -- no-op when no `test-secrets.dhall` is present.
+    let withSeededKvDir body =
+          withSystemTempDirectory "prodbox-acme-eab-seed" $ \tmpDir -> do
+            let kvDir = tmpDir </> "kv"
+            createDirectoryIfMissing True kvDir
+            originalKvDir <- lookupEnv "PRODBOX_TEST_HOST_VAULT_KV_DIR"
+            let restoreEnv key previous =
+                  case previous of
+                    Just value -> setEnv key value
+                    Nothing -> unsetEnv key
+            setEnv "PRODBOX_TEST_HOST_VAULT_KV_DIR" kvDir
+            body tmpDir kvDir
+              `finally` restoreEnv "PRODBOX_TEST_HOST_VAULT_KV_DIR" originalKvDir
+    it "seeds secret/acme/eab key_id + hmac_key from a populated acme_eab block" $
+      withSeededKvDir $ \tmpDir kvDir -> do
+        writeFile (tmpDir </> "test-secrets-types.dhall") (Text.unpack renderTestSecretsTypesDhall)
+        writeFile
+          (tmpDir </> "test-secrets.dhall")
+          ( unlines
+              [ "let TestSecrets = ./test-secrets-types.dhall"
+              , "in  TestSecrets::{"
+              , "    , acme_eab ="
+              , "        Some { key_id = \"seed-eab-key-id\", hmac_key = \"seed-eab-hmac-key\" }"
+              , "    }"
+              ]
+          )
+        seedAcmeEabFromTestSecrets tmpDir
+        let objectDir = kvDir </> "secret" </> "acme" </> "eab"
+        readFile (objectDir </> "key_id") `shouldReturn` "seed-eab-key-id"
+        readFile (objectDir </> "hmac_key") `shouldReturn` "seed-eab-hmac-key"
+    it "is a no-op when test-secrets.dhall is absent (real operators seed via config setup)" $
+      withSeededKvDir $ \tmpDir kvDir -> do
+        seedAcmeEabFromTestSecrets tmpDir
+        doesFileExist (kvDir </> "secret" </> "acme" </> "eab" </> "hmac_key")
+          `shouldReturn` False
+    it "is a no-op when the acme_eab block is absent (decodes to None)" $
+      withSeededKvDir $ \tmpDir kvDir -> do
+        writeFile (tmpDir </> "test-secrets-types.dhall") (Text.unpack renderTestSecretsTypesDhall)
+        writeFile
+          (tmpDir </> "test-secrets.dhall")
+          (unlines ["let TestSecrets = ./test-secrets-types.dhall", "in  TestSecrets.default"])
+        seedAcmeEabFromTestSecrets tmpDir
+        doesFileExist (kvDir </> "secret" </> "acme" </> "eab" </> "hmac_key")
+          `shouldReturn` False
+  describe "operator-write gateway daemon endpoint (Sprint 1.44)" $ do
+    it "routes only the two allowlisted KV logical paths" $ do
+      allowedOperatorSecretPaths `shouldBe` ["acme/eab", "gateway/gateway/aws"]
+      operatorSecretLogicalPath "/v1/secret/acme/eab" `shouldBe` Just "acme/eab"
+      operatorSecretLogicalPath "/v1/secret/gateway/gateway/aws"
+        `shouldBe` Just "gateway/gateway/aws"
+    it "rejects non-allowlisted or non-secret paths (handled by the read dispatch)" $ do
+      operatorSecretLogicalPath "/v1/secret/keycloak/smtp" `shouldBe` Nothing
+      operatorSecretLogicalPath "/v1/secret/" `shouldBe` Nothing
+      operatorSecretLogicalPath "/v1/state" `shouldBe` Nothing
+      operatorSecretLogicalPath "/healthz" `shouldBe` Nothing
+    it "extracts the request method verbatim (uppercase per RFC 7231)" $ do
+      operatorSecretRequestMethod (BS8.pack "POST /v1/secret/acme/eab HTTP/1.1\r\n\r\n")
+        `shouldBe` "POST"
+      operatorSecretRequestMethod (BS8.pack "GET /v1/state HTTP/1.1\r\n\r\n")
+        `shouldBe` "GET"
+      operatorSecretRequestMethod (BS8.pack "") `shouldBe` "GET"
+    it "extracts the operator JWT header case-insensitively, else Nothing" $ do
+      operatorSecretJwtHeader
+        (BS8.pack "POST /v1/secret/acme/eab HTTP/1.1\r\nX-Prodbox-Operator-Jwt: tok123\r\n\r\n")
+        `shouldBe` Just "tok123"
+      operatorSecretJwtHeader
+        (BS8.pack "POST /v1/secret/acme/eab HTTP/1.1\r\nx-prodbox-operator-jwt:   spaced \r\n\r\n")
+        `shouldBe` Just "spaced"
+      operatorSecretJwtHeader
+        (BS8.pack "POST /v1/secret/acme/eab HTTP/1.1\r\nContent-Type: application/json\r\n\r\n")
+        `shouldBe` Nothing
+    it "isolates the request body after the blank line" $ do
+      requestBodyBytes
+        (BS8.pack "POST /v1/secret/acme/eab HTTP/1.1\r\nContent-Length: 9\r\n\r\n{\"k\":\"v\"}")
+        `shouldBe` BS8.pack "{\"k\":\"v\"}"
+      requestBodyBytes (BS8.pack "POST /x HTTP/1.1\r\n\r\n") `shouldBe` BS.empty
+    it "decodes a flat JSON object of string fields, rejecting empty/invalid bodies" $ do
+      decodeOperatorSecretFields (BS8.pack "{\"key_id\":\"a\",\"hmac_key\":\"b\"}")
+        `shouldBe` Right (Map.fromList [("key_id", "a"), ("hmac_key", "b")])
+      decodeOperatorSecretFields (BS8.pack "") `shouldSatisfy` isLeft
+      decodeOperatorSecretFields (BS8.pack "not json") `shouldSatisfy` isLeft
+    it "names the dedicated operator-write Vault role" $
+      operatorWriteRoleName `shouldBe` "prodbox-operator-write"
+    it "scopes the operator-write Vault policy to exactly the two KV paths" $ do
+      let policy = Text.unpack operatorWritePolicy
+      policy `shouldContain` "path \"secret/data/acme/eab\""
+      policy `shouldContain` "path \"secret/data/gateway/gateway/aws\""
+      policy `shouldContain` "capabilities = [\"create\", \"update\"]"
+      policy `shouldNotContain` "transit/"
+      policy `shouldNotContain` "secret/data/clusters/"
+    it "builds the operator-secret URL on the loopback gateway endpoint" $ do
+      let endpoint = Prodbox.Gateway.Client.hostLoopbackGatewayEndpoint 30443
+      Prodbox.Gateway.Client.operatorSecretUrl endpoint "acme/eab"
+        `shouldBe` "http://127.0.0.1:30443/v1/secret/acme/eab"
   describe "Model B object store (Sprint 4.30)" $ do
     it "uses one generic bucket name for object-store and Pulumi backend paths" $ do
       defaultObjectStoreBucket `shouldBe` "prodbox-state"
@@ -1993,19 +2698,25 @@ main = mainWithSuite "prodbox-unit" $ do
       seedProposeDecision (ConfigSource False True) `shouldBe` UseInForceAsIs
     it "reports no config available when neither is present" $ do
       seedProposeDecision (ConfigSource False False) `shouldBe` NoConfigAvailable
-    it "uses the filesystem config as the first-bring-up seed when basics are absent" $
+    it "uses the filesystem config as the first-bring-up seed when not established" $
       withSystemTempDirectory "prodbox-config-loader" $ \tmpDir -> do
         repoRoot <- getCurrentDirectory
         copyFile
           (repoRoot </> "prodbox-config-types.dhall")
           (tmpDir </> "prodbox-config-types.dhall")
-        writeFile (tmpDir </> "prodbox-config.dhall") (renderConfigDhall roundTripConfigFile)
+        writeFile (tmpDir </> "prodbox.dhall") (wrapTier0 (renderConfigDhall roundTripConfigFile))
         result <- loadConfigForSettingsWith (\_ -> pure (Left "in-force should not be loaded")) tmpDir
         result `shouldBe` Right roundTripConfigFile
-    it "uses the in-force config loader once unencrypted basics exist" $
+    it "uses the in-force config loader once the cluster is established" $
       withSystemTempDirectory "prodbox-config-loader" $ \tmpDir -> do
-        writeUnencryptedBasics tmpDir sampleRootBasics `shouldReturn` Right ()
-        writeFile (tmpDir </> "prodbox-config.dhall") "this is only a proposed update"
+        -- The default Tier-0 record projects to the root floor (prodbox-home,
+        -- shamir, no parent) == sampleRootBasics. Sprint 1.42 Part B: the
+        -- "established" signal is the presence of the Vault unlock bundle, which
+        -- flips the loader from the seed/propose Tier-0 `parameters` read to the
+        -- encrypted in-force SSoT.
+        writeTier0 tmpDir defaultProjectConfig `shouldReturn` Right ()
+        createDirectoryIfMissing True (takeDirectory (tmpDir </> vaultUnlockBundleRelPath))
+        writeFile (tmpDir </> vaultUnlockBundleRelPath) "unlock-bundle-present"
         result <-
           loadConfigForSettingsWith
             (\basics -> basics `shouldBe` sampleRootBasics >> pure (Right roundTripConfigFile))
@@ -2469,6 +3180,21 @@ main = mainWithSuite "prodbox-unit" $ do
           ( Options
               False
               (RunNative (NativePulumi (PulumiEksDestroy True (PlanOptions False Nothing))))
+          )
+
+      -- Sprint 7.22: the per-run corrupt-checkpoint prune recovery leaf.
+      parseArgs ["aws", "stack", "eks", "prune-corrupt-checkpoint", "--yes"]
+        `shouldBe` Right
+          ( Options
+              False
+              (RunNative (NativePulumi (PulumiPruneCorruptCheckpoint PrunePerRunEks True)))
+          )
+
+      parseArgs ["aws", "stack", "test", "prune-corrupt-checkpoint"]
+        `shouldBe` Right
+          ( Options
+              False
+              (RunNative (NativePulumi (PulumiPruneCorruptCheckpoint PrunePerRunTest False)))
           )
 
     it "routes charts commands through the native Haskell runtime" $ do
@@ -4417,7 +5143,7 @@ main = mainWithSuite "prodbox-unit" $ do
         copyFile
           (repoRoot </> "prodbox-config-types.dhall")
           (tmpDir </> "prodbox-config-types.dhall")
-        writeFile (tmpDir </> "prodbox-config.dhall") (renderConfigDhall roundTripConfigFile)
+        writeFile (tmpDir </> "prodbox.dhall") (wrapTier0 (renderConfigDhall roundTripConfigFile))
 
         loadConfigFile tmpDir `shouldReturn` Right roundTripConfigFile
 
@@ -4926,6 +5652,55 @@ main = mainWithSuite "prodbox-unit" $ do
       manifestJson `shouldNotContain` "\"volumeName\""
       manifestJson `shouldNotContain` "\"storageClassName\":\"manual\""
 
+    it
+      "chartReleasesToDeploy deploys only the releases missing from helm list (heals a partial rollback)"
+      $ do
+        result <-
+          buildChartDeploymentPlan
+            "/tmp/prodbox"
+            (testValidatedSettings "/tmp/prodbox/.data")
+            "vscode"
+            testChartSecrets
+            Map.empty
+        case result of
+          Left err -> expectationFailure err
+          Right plan -> do
+            let names snaps = map chartReleasePlanReleaseName (chartReleasesToDeploy snaps plan)
+                present ks = Map.fromList [(k, ()) | k <- ks]
+            -- Nothing installed yet: deploy the whole chart root in order.
+            names (Map.empty :: Map.Map String ()) `shouldBe` ["keycloak-postgres", "keycloak", "vscode"]
+            -- Fully installed: idempotent no-op.
+            names (present ["keycloak-postgres", "keycloak", "vscode"]) `shouldBe` []
+            -- Partial rollback (keycloak uninstalled, siblings remain): deploy ONLY
+            -- keycloak — the case the old all-or-nothing duplicates guard could
+            -- never heal.
+            names (present ["keycloak-postgres", "vscode"]) `shouldBe` ["keycloak"]
+
+    it
+      "kubernetesSecretDecodedDataField base64-decodes a present field and treats absent data/field as a benign no-op"
+      $ do
+        let secretJson =
+              object
+                [ "data"
+                    .= object
+                      [ "password" .= ("czNjcjN0LVB3IQ==" :: Text.Text)
+                      , "username" .= ("a2V5Y2xvYWs=" :: Text.Text)
+                      ]
+                ]
+        -- Present field: decoded to plain text (Percona's generated password is
+        -- read out of the operator Secret before being synced into Vault).
+        kubernetesSecretDecodedDataField "password" secretJson
+          `shouldBe` Right (Just "s3cr3t-Pw!")
+        kubernetesSecretDecodedDataField "username" secretJson
+          `shouldBe` Right (Just "keycloak")
+        -- Field absent from the data map: Nothing, not an error.
+        kubernetesSecretDecodedDataField "verifier" secretJson
+          `shouldBe` Right Nothing
+        -- No data map at all (Secret not yet populated): Nothing, not an error,
+        -- so the sync is a no-op on a not-yet-bootstrapped cluster.
+        kubernetesSecretDecodedDataField "password" (object ["metadata" .= object []])
+          `shouldBe` Right Nothing
+
     it "builds vscode deployment plans with dependency order and deterministic values" $ do
       result <-
         buildChartDeploymentPlan
@@ -5330,7 +6105,7 @@ main = mainWithSuite "prodbox-unit" $ do
 
     it "renders gateway config templates with dns_write_gate" $
       withSystemTempDirectory "prodbox-hs-unit" $ \tmpDir -> do
-        writeFile (tmpDir </> "prodbox-config.dhall") validConfig
+        writeFile (tmpDir </> "prodbox.dhall") (wrapTier0 validConfig)
 
         result <- validateAndLoadSettings tmpDir
 
@@ -5359,6 +6134,29 @@ main = mainWithSuite "prodbox-unit" $ do
                     dnsWriteGateZoneId gate `shouldBe` "Z1234567890ABC"
                     dnsWriteGateTtl gate `shouldBe` 60
                     dnsWriteGateAwsRegion gate `shouldBe` "us-east-1"
+
+    it
+      "treats present-but-empty aws_creds as no aws creds on the home substrate (daemonAwsCreds = Nothing)"
+      $ do
+        -- Resolver simulating the home substrate: the operational `aws.*` block is
+        -- unpopulated, so the gateway's `aws_creds` Vault refs (path contains
+        -- "aws") resolve EMPTY, while event_keys / minio_creds resolve fine. The
+        -- daemon must run WITHOUT aws creds rather than crash-loop on the empty
+        -- required field (`aws_creds.access_key_id resolved to an empty value`).
+        let homeResolver ref =
+              pure . Right $ case ref of
+                SecretRefVault vref | Text.isInfixOf "aws" (vaultSecretPath vref) -> ""
+                _ -> "resolved-secret"
+        decoded <-
+          GatewaySettings.decodeDaemonConfigDhallWith
+            homeResolver
+            (Text.pack (renderGatewayConfigTemplate (testValidatedSettings "/tmp/prodbox/.data") "node-a"))
+        case decoded of
+          Left err -> expectationFailure err
+          Right config ->
+            case daemonAwsCreds config of
+              Nothing -> pure ()
+              Just _ -> expectationFailure "expected daemonAwsCreds = Nothing for empty home-substrate aws creds"
 
   describe "Sprint 2.17 Haskell HTTP client" $ do
     it "renders HttpConnectionFailure as a single-line operator-facing string" $
@@ -6597,7 +7395,7 @@ main = mainWithSuite "prodbox-unit" $ do
       operationalAwsConfigResidueFromKey "AKIAOPERATIONAL"
         `shouldBe` Residue.ResiduePresent
           Residue.ResidueDetails
-            { Residue.residueEvidence = "aws.access_key_id set in prodbox-config.dhall"
+            { Residue.residueEvidence = "aws.access_key_id set in prodbox.dhall"
             , Residue.residueStackName = "operational-aws-config"
             }
 
@@ -6620,6 +7418,86 @@ main = mainWithSuite "prodbox-unit" $ do
     it "operationalManagedResources names match the ResourceClass SSoT Operational class" $
       map ResourceRegistry.resourceName (operationalManagedResources sampleCreds)
         `shouldBe` ResourceClass.resourceNamesOfClass ResourceClass.Operational
+
+  describe "Sprint 7.20 teardown-completeness guard (pure residueFromProbe)" $ do
+    let cleanIam = IamProbe {iamProbeUserPresent = False, iamProbeAccessKeyIds = []}
+
+    it "all-absent IAM + cleared Vault → complete (Right ())" $
+      residueFromProbe cleanIam VaultCredsCleared `shouldBe` Right ()
+
+    it "user-present → residue/fail naming the IAM user" $
+      residueFromProbe
+        IamProbe {iamProbeUserPresent = True, iamProbeAccessKeyIds = []}
+        VaultCredsCleared
+        `shouldBe` Left
+          ResidueError
+            { residueUserLeaked = True
+            , residueLeakedKeys = []
+            , residueVaultPopulated = False
+            }
+
+    it "keys-present → residue/fail naming the leaked keys" $
+      residueFromProbe
+        IamProbe {iamProbeUserPresent = True, iamProbeAccessKeyIds = ["AKIALEAK"]}
+        VaultCredsCleared
+        `shouldBe` Left
+          ResidueError
+            { residueUserLeaked = True
+            , residueLeakedKeys = ["AKIALEAK"]
+            , residueVaultPopulated = False
+            }
+
+    it "Vault-populated → residue/fail naming the Vault cred" $
+      residueFromProbe cleanIam VaultCredsPopulated
+        `shouldBe` Left
+          ResidueError
+            { residueUserLeaked = False
+            , residueLeakedKeys = []
+            , residueVaultPopulated = True
+            }
+
+    it "all three leaks at once → residue/fail carrying every leak" $
+      residueFromProbe
+        IamProbe {iamProbeUserPresent = True, iamProbeAccessKeyIds = ["AKIA1", "AKIA2"]}
+        VaultCredsPopulated
+        `shouldBe` Left
+          ResidueError
+            { residueUserLeaked = True
+            , residueLeakedKeys = ["AKIA1", "AKIA2"]
+            , residueVaultPopulated = True
+            }
+
+    it "renderResidueError names the leaked IAM user" $
+      let rendered =
+            renderResidueError
+              ResidueError
+                { residueUserLeaked = True
+                , residueLeakedKeys = []
+                , residueVaultPopulated = False
+                }
+       in (("`prodbox` IAM user still EXISTS" `isInfixOf` rendered) && ("FAILED" `isInfixOf` rendered))
+            `shouldBe` True
+
+    it "renderResidueError names the leaked access keys by id" $
+      let rendered =
+            renderResidueError
+              ResidueError
+                { residueUserLeaked = True
+                , residueLeakedKeys = ["AKIALEAK"]
+                , residueVaultPopulated = False
+                }
+       in (("access key" `isInfixOf` rendered) && ("AKIALEAK" `isInfixOf` rendered))
+            `shouldBe` True
+
+    it "renderResidueError names the populated Vault credential" $
+      let rendered =
+            renderResidueError
+              ResidueError
+                { residueUserLeaked = False
+                , residueLeakedKeys = []
+                , residueVaultPopulated = True
+                }
+       in ("secret/gateway/gateway/aws" `isInfixOf` rendered) `shouldBe` True
 
   describe "Sprint 4.17.a canonical cascade phase order" $ do
     it "narration lists drain before per-run destroys (doctrine §5b)" $
@@ -6958,6 +7836,137 @@ main = mainWithSuite "prodbox-unit" $ do
       LiveResidue.awsEksSubzoneStackName `shouldBe` "aws-eks-subzone"
       LiveResidue.awsTestStackName `shouldBe` "aws-test"
       LiveResidue.awsSesStackName `shouldBe` "aws-ses"
+
+  describe "Sprint 7.21 per-run checkpoint observability (corrupt/empty/absent robustness)" $ do
+    it "classifyCheckpointBytes: absent object (Nothing) is CheckpointAbsent" $
+      classifyCheckpointBytes Nothing `shouldBe` CheckpointAbsent
+
+    it "classifyCheckpointBytes: a zero-byte object is CheckpointEmpty" $
+      classifyCheckpointBytes (Just "") `shouldBe` CheckpointEmpty
+
+    it "classifyCheckpointBytes: an all-whitespace object is CheckpointEmpty" $
+      classifyCheckpointBytes (Just "  \n\t ") `shouldBe` CheckpointEmpty
+
+    it "classifyCheckpointBytes: a non-empty-unparseable blob is CheckpointCorrupt" $
+      case classifyCheckpointBytes (Just "{not valid json") of
+        CheckpointCorrupt _ -> pure ()
+        other -> expectationFailure ("expected CheckpointCorrupt, got " ++ show other)
+
+    it "classifyCheckpointBytes: a valid JSON checkpoint is CheckpointPresent" $
+      classifyCheckpointBytes (Just "{\"version\":3,\"checkpoint\":{}}")
+        `shouldBe` CheckpointPresent
+
+    it "residueStatusFromCheckpointObservability: absent → skip (ResidueAbsent)" $
+      LiveResidue.residueStatusFromCheckpointObservability "aws-eks-test" CheckpointAbsent
+        `shouldBe` Residue.ResidueAbsent
+
+    it "residueStatusFromCheckpointObservability: empty → skip (ResidueAbsent)" $
+      LiveResidue.residueStatusFromCheckpointObservability "aws-eks-test" CheckpointEmpty
+        `shouldBe` Residue.ResidueAbsent
+
+    it "residueStatusFromCheckpointObservability: present → destroy (ResiduePresent)" $
+      LiveResidue.residueStatusFromCheckpointObservability "aws-eks-test" CheckpointPresent
+        `shouldSatisfy` Residue.isResiduePresent
+
+    it "residueStatusFromCheckpointObservability: corrupt → refuse (ResidueUnreachable naming stack)" $ do
+      let status =
+            LiveResidue.residueStatusFromCheckpointObservability
+              "aws-eks-test"
+              (CheckpointCorrupt "unexpected end of JSON input")
+          rendered = Residue.renderResidueStatus status
+      status `shouldSatisfy` Residue.isResidueUnreachable
+      -- The refusal names the stack and the corruption, so the operator
+      -- knows which stack to resolve and that it is a corrupt checkpoint.
+      rendered `shouldContain` "corrupt"
+      rendered `shouldContain` "aws-eks-test"
+      rendered `shouldContain` "unexpected end of JSON input"
+
+    it "residueStatusFromCheckpointObservabilityResult: unreadable MinIO backend → refuse (fail-closed)" $
+      -- The `minio` root credential is absent / the port-forward died: a
+      -- backend read failure that is NOT a never-created bucket must
+      -- fail closed, never silently skip a possibly-live stack.
+      let err =
+            StackOutputs.StackOutputsCommandFailed
+              "kubectl get secret failed for rootUser: secrets \"minio\" not found"
+          status = LiveResidue.residueStatusFromCheckpointObservabilityResult "aws-eks-test" (Left err)
+       in status `shouldSatisfy` Residue.isResidueUnreachable
+
+    -- Sprint 7.22: the per-run destroy-INVOCATION gate. Pure mapping from a
+    -- freshly observed residue status to skip / proceed / refuse, consulted
+    -- BEFORE the destroy touches `pulumi stack output` / `pulumi destroy` or
+    -- the in-cluster `minio` secret.
+    it "perRunDestroyDecisionFromStatus: absent → skip (the home-substrate case)" $
+      case LiveResidue.perRunDestroyDecisionFromStatus
+        "aws-eks-test"
+        "prodbox aws stack eks prune-corrupt-checkpoint --yes"
+        Residue.ResidueAbsent of
+        LiveResidue.PerRunDestroySkip message -> message `shouldContain` "aws-eks-test"
+        other -> expectationFailure ("expected skip, got " ++ show other)
+
+    it "perRunDestroyDecisionFromStatus: present → proceed with the real destroy" $
+      LiveResidue.perRunDestroyDecisionFromStatus
+        "aws-eks-test"
+        "prodbox aws stack eks prune-corrupt-checkpoint --yes"
+        (Residue.ResiduePresent (Residue.ResidueDetails "checkpoint decodes" "aws-eks-test"))
+        `shouldBe` LiveResidue.PerRunDestroyProceed
+
+    it "perRunDestroyDecisionFromStatus: unreachable (corrupt) → refuse naming the prune recovery" $
+      case LiveResidue.perRunDestroyDecisionFromStatus
+        "aws-eks-test"
+        "prodbox aws stack eks prune-corrupt-checkpoint --yes"
+        ( Residue.ResidueUnreachable
+            (Residue.ResidueQueryFailed "corrupt (non-empty, unparseable) checkpoint")
+        ) of
+        LiveResidue.PerRunDestroyRefuse message -> do
+          message `shouldContain` "aws-eks-test"
+          message `shouldContain` "fail-closed"
+          message `shouldContain` "prodbox aws stack eks prune-corrupt-checkpoint --yes"
+        other -> expectationFailure ("expected refuse, got " ++ show other)
+
+    it
+      "residueStatusFromCheckpointObservabilityResult: never-created state bucket → skip (ResidueAbsent)"
+      $
+      -- A 404 NoSuchBucket means no per-run stacks were ever provisioned
+      -- (the home-substrate case): Absent, not Unreachable.
+      let err =
+            StackOutputs.StackOutputsCommandFailed
+              "error listing stacks: could not list bucket: blob (code=NotFound): NoSuchBucket: The specified bucket does not exist"
+          status = LiveResidue.residueStatusFromCheckpointObservabilityResult "aws-eks-test" (Left err)
+       in status `shouldBe` Residue.ResidueAbsent
+
+    it "renderCheckpointObservability names the corruption detail" $ do
+      renderCheckpointObservability CheckpointAbsent `shouldBe` "absent"
+      renderCheckpointObservability CheckpointEmpty `shouldContain` "zero-length"
+      renderCheckpointObservability (CheckpointCorrupt "boom") `shouldContain` "boom"
+      renderCheckpointObservability CheckpointPresent `shouldBe` "present"
+
+    it
+      "observeStackCheckpointWith: empty loaded bytes classify as CheckpointEmpty without hydrating scratch"
+      $ do
+        let stackRef = PulumiStackRef "prodbox-aws-eks-test" "aws-eks-test"
+            hooks = observabilityHooks (pure (Right (Just "")))
+        result <- observeStackCheckpointWith hooks stackRef
+        result `shouldBe` Right CheckpointEmpty
+
+    it "observeStackCheckpointWith: a non-empty-unparseable blob classifies as CheckpointCorrupt" $ do
+      let stackRef = PulumiStackRef "prodbox-aws-eks-test" "aws-eks-test"
+          hooks = observabilityHooks (pure (Right (Just "garbage{")))
+      result <- observeStackCheckpointWith hooks stackRef
+      case result of
+        Right (CheckpointCorrupt _) -> pure ()
+        other -> expectationFailure ("expected Right (CheckpointCorrupt _), got " ++ show other)
+
+    it "observeStackCheckpointWith: an absent object classifies as CheckpointAbsent" $ do
+      let stackRef = PulumiStackRef "prodbox-aws-eks-test" "aws-eks-test"
+          hooks = observabilityHooks (pure (Right Nothing))
+      result <- observeStackCheckpointWith hooks stackRef
+      result `shouldBe` Right CheckpointAbsent
+
+    it "observeStackCheckpointWith: a backend load failure surfaces as EncryptedBackendLoadFailed" $ do
+      let stackRef = PulumiStackRef "prodbox-aws-eks-test" "aws-eks-test"
+          hooks = observabilityHooks (pure (Left "connection refused"))
+      result <- observeStackCheckpointWith hooks stackRef
+      result `shouldBe` Left (EncryptedBackendLoadFailed "connection refused")
 
   describe "Sprint 4.18 live-output parsers for per-run AWS stacks" $ do
     it "parseAwsTestNodesFromOutputs decodes the three-node Pulumi outputs" $ do
@@ -7476,7 +8485,7 @@ main = mainWithSuite "prodbox-unit" $ do
                 Nothing -> unsetEnv key
 
         createDirectoryIfMissing True binDir
-        writeFile (tmpDir </> "prodbox-config.dhall") validConfig
+        writeFile (tmpDir </> "prodbox.dhall") (wrapTier0 validConfig)
         writeFile fakeAwsPath (unlines (fakeAwsCredentialPropagationScript stateDir))
         makeExecutable fakeAwsPath
 
@@ -9160,7 +10169,7 @@ main = mainWithSuite "prodbox-unit" $ do
       plan `shouldContain` "STEP=4 postflight tag sweep"
       plan `shouldContain` "STEP=5 destroy long-lived `pulumi_state_backend` S3 bucket"
       plan
-        `shouldContain` "ADMIN_CREDENTIAL_SOURCE=ephemeral admin AWS credential from the interactive prompt (harness-simulated from test-config.dhall::aws_admin_for_test_simulation.*); never read from prodbox-config.dhall or Vault"
+        `shouldContain` "ADMIN_CREDENTIAL_SOURCE=ephemeral admin AWS credential from the interactive prompt (harness-simulated from test-secrets.dhall::aws_admin_for_test_simulation.*); never read from prodbox.dhall or Vault"
       plan `shouldContain` "CONFIRMATION_LITERAL=NUKE EVERYTHING"
 
   describe "Sprint 7.7 residue lifecycle partition" $ do
@@ -9402,7 +10411,7 @@ main = mainWithSuite "prodbox-unit" $ do
             ( "config setup"
             , configSetupGuard
             , "prodbox config setup"
-            , "Edit prodbox-config.dhall directly"
+            , "Edit prodbox.dhall directly"
             )
           ,
             ( "charts delete confirmation"
@@ -9455,7 +10464,7 @@ main = mainWithSuite "prodbox-unit" $ do
   describe "settings" $ do
     it "validates Dhall config and renders masked output without materializing JSON" $
       withSystemTempDirectory "prodbox-hs-unit" $ \tmpDir -> do
-        writeFile (tmpDir </> "prodbox-config.dhall") validConfig
+        writeFile (tmpDir </> "prodbox.dhall") (wrapTier0 validConfig)
 
         result <- validateAndLoadSettings tmpDir
 
@@ -9518,7 +10527,7 @@ main = mainWithSuite "prodbox-unit" $ do
       -- local decode path ('validateAndLoadSettings') accepts it; only the
       -- AWS tier ('validateAwsBootstrapConfig') enforces it.
       withSystemTempDirectory "prodbox-hs-unit" $ \tmpDir -> do
-        writeFile (tmpDir </> "prodbox-config.dhall") invalidZeroSslConfig
+        writeFile (tmpDir </> "prodbox.dhall") (wrapTier0 invalidZeroSslConfig)
 
         localResult <- validateAndLoadSettings tmpDir
         case localResult of
@@ -9536,10 +10545,10 @@ main = mainWithSuite "prodbox-unit" $ do
     -- Sprint 7.15 leak guard: a plaintext (non-Vault) ACME EAB reference must
     -- be rejected at the AWS tier, mirroring the aws.* SecretRef.Vault
     -- discipline. The EAB key ID and HMAC key live in Vault (secret/acme/eab),
-    -- never inline in prodbox-config.dhall.
+    -- never inline in prodbox.dhall.
     it "rejects a plaintext ACME EAB reference at the AWS tier" $
       withSystemTempDirectory "prodbox-hs-unit" $ \tmpDir -> do
-        writeFile (tmpDir </> "prodbox-config.dhall") plaintextEabZeroSslConfig
+        writeFile (tmpDir </> "prodbox.dhall") (wrapTier0 plaintextEabZeroSslConfig)
 
         configResult <- loadConfigFile tmpDir
         case configResult of
@@ -9557,7 +10566,7 @@ main = mainWithSuite "prodbox-unit" $ do
         case result of
           Left err -> do
             err `shouldContain` "Missing required repository config"
-            err `shouldContain` (tmpDir </> "prodbox-config.dhall")
+            err `shouldContain` (tmpDir </> "prodbox.dhall")
             err `shouldContain` "./.build/prodbox config setup"
           Right _ -> expectationFailure "expected missing-config failure"
 

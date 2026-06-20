@@ -438,17 +438,17 @@ runValidation context validation =
           Left err -> pure (Failure err)
           Right () -> do
             -- Sprint 7.16: the IAM harness's admin credential is the EPHEMERAL
-            -- credential acquired from test-config.dhall's
+            -- credential acquired from test-secrets.dhall's
             -- aws_admin_for_test_simulation block (harness simulating the
             -- prompt) or an interactive TTY prompt; it is never read from
-            -- prodbox-config.dhall or Vault.
+            -- prodbox.dhall or Vault.
             credentialsResult <- acquireAdminAwsCredentials (interpreterRepoRoot context)
             pure $
               case credentialsResult of
                 Left err ->
                   Failure
                     ( "Native IAM validation requires an ephemeral admin AWS \
-                      \credential (from test-config.dhall's \
+                      \credential (from test-secrets.dhall's \
                       \aws_admin_for_test_simulation block, or the interactive \
                       \prompt): "
                         ++ err
@@ -694,7 +694,7 @@ runValidation context validation =
           then
             pure
               ( Failure
-                  "ses.sender_domain must be set in prodbox-config.dhall before checking the SES sending identity. Run `prodbox aws stack aws-ses reconcile` after populating the ses.* block."
+                  "ses.sender_domain must be set in prodbox.dhall before checking the SES sending identity. Run `prodbox aws stack aws-ses reconcile` after populating the ses.* block."
               )
           else do
             environment <- awsCommandEnvironment (interpreterRepoRoot context) settings
@@ -751,7 +751,7 @@ runValidation context validation =
           then
             pure
               ( Failure
-                  "ses.capture_bucket must be set in prodbox-config.dhall before checking SES capture-bucket reachability."
+                  "ses.capture_bucket must be set in prodbox.dhall before checking SES capture-bucket reachability."
               )
           else do
             environment <- awsCommandEnvironment (interpreterRepoRoot context) settings

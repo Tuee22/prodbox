@@ -24,6 +24,7 @@ module Prodbox.CLI.Command
   , Plan (..)
   , PolicyTier (..)
   , PulumiCommand (..)
+  , PerRunPruneTarget (..)
   , Rke2Command (..)
   , Rke2DeleteFlags (..)
   , PlanOptions (..)
@@ -175,6 +176,10 @@ data ConfigCommand
   = ConfigSetup PlanOptions
   | ConfigShow Bool
   | ConfigValidate
+  | -- | Sprint 7.17: regenerate the committed Dhall schema files
+    -- (@prodbox-config-types.dhall@ + @test-secrets-types.dhall@) from the
+    -- Haskell source of truth.
+    ConfigSchema
   deriving (Eq, Show)
 
 data PolicyTier
@@ -260,10 +265,24 @@ data PulumiCommand
   | -- | Sprint 4.10 operator-interactive command: migrate the
     -- @aws-ses@ stack's Pulumi state from the in-cluster MinIO backend
     -- onto the dedicated long-lived S3 bucket named by
-    -- @pulumi_state_backend@ in @prodbox-config.dhall@. Idempotent;
+    -- @pulumi_state_backend@ in @prodbox.dhall@. Idempotent;
     -- no-op if the stack already lives in the long-lived backend.
     -- TTY-only; refuses non-interactive contexts.
     PulumiAwsSesMigrateBackend PlanOptions
+  | -- | Sprint 7.22: recovery command that clears a genuinely-corrupt (or
+    -- empty) per-run encrypted Pulumi checkpoint from the Model-B object
+    -- store so a cluster carrying stale corrupt checkpoints can converge.
+    -- Observes the checkpoint first and refuses to prune a valid (present)
+    -- one. The 'Bool' is the @--yes@ confirmation. Per-run stacks only;
+    -- a corrupt long-lived @aws-ses@ checkpoint always refuses.
+    PulumiPruneCorruptCheckpoint PerRunPruneTarget Bool
+  deriving (Eq, Show)
+
+-- | Sprint 7.22: which per-run stack's corrupt checkpoint to prune.
+data PerRunPruneTarget
+  = PrunePerRunEks
+  | PrunePerRunSubzone
+  | PrunePerRunTest
   deriving (Eq, Show)
 
 data Rke2DeleteFlags = Rke2DeleteFlags

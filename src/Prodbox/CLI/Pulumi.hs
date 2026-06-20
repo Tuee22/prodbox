@@ -25,16 +25,24 @@ import Data.Map.Strict (Map)
 import Data.Map.Strict qualified as Map
 import Data.Text qualified as Text
 import Prodbox.CLI.Command
-  ( Plan
+  ( PerRunPruneTarget (..)
+  , Plan
   , PulumiCommand (..)
   , buildPlan
   , runPlanWithOptions
   )
-import Prodbox.CLI.Output (writeDiagnosticLine)
+import Prodbox.CLI.Output (writeDiagnosticLine, writeOutputLine)
 import Prodbox.Infra.AwsEksSubzoneStack qualified as SubzoneStack
 import Prodbox.Infra.AwsEksTestStack qualified as EksStack
 import Prodbox.Infra.AwsSesStack qualified as SesStack
 import Prodbox.Infra.AwsTestStack qualified as TestStack
+import Prodbox.Infra.StackOutputs (StackName (..))
+import Prodbox.Lifecycle.LiveResidue
+  ( awsEksSubzoneStackName
+  , awsEksTestStackName
+  , awsTestStackName
+  , pruneCorruptPerRunCheckpoint
+  )
 import Prodbox.Vault.Client
   ( VaultAddress (..)
   , vaultSealStatus
@@ -119,6 +127,39 @@ runPulumiCommandWithGate gate repoRoot command =
         planOptions
         (buildPulumiExecutionPlan "aws-ses-migrate-backend" False)
         (\_ -> runGatedPulumiApply gate (SesStack.migrateAwsSesStackBackend repoRoot))
+    PulumiPruneCorruptCheckpoint target confirmed ->
+      runGatedPulumiApply gate (runPruneCorruptCheckpoint repoRoot target confirmed)
+
+-- | Sprint 7.22: clear a genuinely-corrupt per-run encrypted Pulumi
+-- checkpoint via 'pruneCorruptPerRunCheckpoint' (which observes first and
+-- refuses to prune a valid checkpoint). Requires @--yes@.
+runPruneCorruptCheckpoint :: FilePath -> PerRunPruneTarget -> Bool -> IO ExitCode
+runPruneCorruptCheckpoint repoRoot target confirmed
+  | not confirmed = do
+      writeDiagnosticLine
+        ( "Refusing to prune the "
+            ++ pruneTargetStackName target
+            ++ " per-run checkpoint without confirmation. Re-run with --yes."
+        )
+      pure (ExitFailure 1)
+  | otherwise = do
+      result <-
+        pruneCorruptPerRunCheckpoint
+          repoRoot
+          (StackName (Text.pack (pruneTargetStackName target)))
+      case result of
+        Right message -> do
+          writeOutputLine (pruneTargetStackName target ++ ": " ++ message)
+          pure ExitSuccess
+        Left err -> do
+          writeDiagnosticLine err
+          pure (ExitFailure 1)
+
+pruneTargetStackName :: PerRunPruneTarget -> String
+pruneTargetStackName target = case target of
+  PrunePerRunEks -> awsEksTestStackName
+  PrunePerRunSubzone -> awsEksSubzoneStackName
+  PrunePerRunTest -> awsTestStackName
 
 runGatedPulumiApply :: IO VaultGateOutcome -> IO ExitCode -> IO ExitCode
 runGatedPulumiApply gate action = do

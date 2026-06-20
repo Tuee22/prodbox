@@ -103,12 +103,12 @@ class.
 | Class | Credential class | How the credential is obtained |
 |---|---|---|
 | Per-run stacks | Generated operational `prodbox` IAM credential | The least-privilege `aws.*` identity, minted into Vault KV (`secret/gateway/gateway/aws`); `prodbox-config.dhall` carries only a `SecretRef.Vault` reference, never the plaintext key. Materialized for the run by `prodbox aws setup`, cleared by `prodbox aws teardown`. |
-| Long-lived stacks + retained-bucket compatibility | Ephemeral elevated/admin credential | Supplied at runtime through the one interactive `SecretRef.Prompt` arm — held in memory for one command, used once, then discarded. It is never written to `prodbox-config.dhall`, never stored in Vault. In tests the harness simulates that prompt by feeding `aws_admin_for_test_simulation.*` from `test-config.dhall` (a `TestPlaintext` fixture, not a production-config section). |
+| Long-lived stacks + retained-bucket compatibility | Ephemeral elevated/admin credential | Supplied at runtime through the one interactive `SecretRef.Prompt` arm — held in memory for one command, used once, then discarded. It is never written to `prodbox-config.dhall`, never stored in Vault. In tests the harness simulates that prompt by feeding `aws_admin_for_test_simulation.*` from `test-secrets.dhall` (a `TestPlaintext` fixture, not a production-config section). |
 
 Long-lived stack management uses the elevated/admin credential because that level of power
 outlives any single cluster cycle, matching the resource lifetime; there is no stored admin
 block in `prodbox-config.dhall` — real ops prompt for the ephemeral elevated credential and the
-harness simulates that prompt from `test-config.dhall`. The generated operational `prodbox` IAM
+harness simulates that prompt from `test-secrets.dhall`. The generated operational `prodbox` IAM
 user does not need `s3:GetObject`/`PutObject` permission on the retained S3 bucket. Migrating any
 code path off the stored-admin model is scheduled as Sprint `7.16`.
 
@@ -377,7 +377,53 @@ The scheduling of this doctrine into code is owned by
 [DEVELOPMENT_PLAN/phase-4-lifecycle-canonical-paths.md](../../DEVELOPMENT_PLAN/phase-4-lifecycle-canonical-paths.md)
 Sprints 4.20–4.22 and
 [phase-7-aws-substrate-foundations.md](../../DEVELOPMENT_PLAN/phase-7-aws-substrate-foundations.md)
-Sprint 7.8.
+Sprints 7.8, 7.21, and 7.22.
+
+### 3.2 The destroy-invocation gate and corrupt-checkpoint prune
+
+§3.1's soundness rule classifies a per-run stack's *residue* by observing its
+encrypted checkpoint read-only (`observeStackCheckpoint` →
+`classifyCheckpointBytes` → `Prodbox.Lifecycle.LiveResidue.queryOne`, Sprint
+7.21). That funnel guards the *observation* — the cascade's `reconcileAbsent`,
+the teardown gates, and the per-stack residue helpers. It does **not**, by
+itself, guard the direct per-run **destroy-invocation** path (`prodbox aws
+stack <stack> destroy --yes`, which the harness preflight/postflight also
+issues): that path runs `destroy<Stack>Status`, which historically fetched
+stack outputs (`pulumi stack output`) and read MinIO credentials before any
+residue check, so a corrupt checkpoint crashed it with `unexpected end of JSON
+input`, and a substrate without the in-cluster `minio` k8s secret crashed it
+with `secrets "minio" not found`.
+
+Sprint 7.22 closes that gap: each `destroy<Stack>Status` consults the same
+read-only observation **first**, through the pure
+`Prodbox.Lifecycle.LiveResidue.perRunDestroyDecisionFromStatus`:
+
+- **Absent / empty** → skip (`PerRunDestroySkip`): nothing to destroy. This is
+  the home-substrate steady state — the per-run AWS stacks were never
+  provisioned — so the destroy returns success without touching `pulumi` or
+  the in-cluster `minio` secret.
+- **Present** → proceed (`PerRunDestroyProceed`) with the real destroy body.
+- **Corrupt / unreadable** → refuse (`PerRunDestroyRefuse`), the §3.1
+  soundness rule: a corrupt or unobservable checkpoint may hide live AWS
+  resources, so it is fail-closed, never a silent skip. The refusal names the
+  prune recovery.
+
+The residue observation (and therefore this gate) resolves MinIO credentials
+from Vault `secret/minio/root`, not the in-cluster `minio` k8s secret, so the
+gate is reachable on any substrate whose Vault is unsealed — eliminating the
+`secrets "minio" not found` failure mode on substrates that never provisioned
+the per-run stacks.
+
+**Corrupt-checkpoint prune.** A genuinely-corrupt (or empty) per-run checkpoint
+— e.g. a truncated Model-B object left by an interrupted run — would otherwise
+refuse forever. `prodbox aws stack <stack> prune-corrupt-checkpoint --yes`
+(`Prodbox.Lifecycle.LiveResidue.pruneCorruptPerRunCheckpoint`) is the
+doctrine-clean recovery: it observes the checkpoint and deletes the opaque
+Model-B object **only** when it is corrupt or empty (idempotent no-op when
+already absent), and **refuses** to prune a `Present` checkpoint (which may map
+to live AWS resources — use `destroy` for that) or an unobservable backend
+(fail-closed). Per-run stacks only; a corrupt long-lived `aws-ses` checkpoint
+always refuses.
 
 ## 4. Predicate Library Inventory
 
@@ -498,7 +544,7 @@ to trip on.
 |---|---|---|---|
 | 1 | Confirm encrypted checkpoint reachability | `<stack>ResidueStatus` queries the encrypted checkpoint object for each per-run stack. If MinIO and Vault are reachable, the result is `ResidueAbsent` or `ResiduePresent`; if unreachable, the result is `ResidueUnreachable` and the cascade treats per-run residue as absent (the per-run state died with the cluster, per the per-run lifetime class). | Misclassification is impossible because `ResidueUnreachable` for a per-run stack is by definition the same outcome as "the state is gone". |
 | 2 | K8s drain | Delete LoadBalancer Services, ALB Ingresses, and Delete-reclaim PVCs so the in-cluster controllers unwind their AWS-side state (Sprint 4.12). On the AWS substrate the drain MUST target the EKS API server, not the local RKE2 cluster — see "Substrate-aware drain" below. If the K8s API is unreachable, this phase emits `DrainSkipped` and the cascade proceeds to phase 3 only on the home substrate (where the absent cluster cannot have created new AWS resources). On the AWS substrate, `DrainSkipped` is a hard failure because the EKS cluster is the source of the resources Pulumi is about to fail to delete. | `DrainFailed` is the only failure path on the home substrate; `DrainSkipped` is success-with-reason there. On the AWS substrate, both `DrainSkipped` and `DrainFailed` are hard-failure paths. |
-| 3 | Per-run Pulumi destroys | For each per-run stack reporting `ResiduePresent`, run `pulumi destroy` against MinIO inside `withMaterializedOperationalCreds` (Sprint 4.17). The bracket materializes operational creds for the run (in tests, via the harness-simulated admin prompt sourced from `test-config.dhall`) when `aws.*` is empty and restores-to-empty on exit (success or exception). Because phase 2 already drained the controller-owned resources, every per-run subnet / VPC / cluster delete now has no live ENI / ALB / EBS dependency. | Empty `aws.*` no longer refuses the destroy; the bracket materializes it transparently. `DependencyViolation` from AWS indicates phase 2 did not in fact drain (most often: drain ran against the wrong kubeconfig). |
+| 3 | Per-run Pulumi destroys | For each per-run stack reporting `ResiduePresent`, run `pulumi destroy` against MinIO inside `withMaterializedOperationalCreds` (Sprint 4.17). The bracket materializes operational creds for the run (in tests, via the harness-simulated admin prompt sourced from `test-secrets.dhall`) when `aws.*` is empty and restores-to-empty on exit (success or exception). Because phase 2 already drained the controller-owned resources, every per-run subnet / VPC / cluster delete now has no live ENI / ALB / EBS dependency. | Empty `aws.*` no longer refuses the destroy; the bracket materializes it transparently. `DependencyViolation` from AWS indicates phase 2 did not in fact drain (most often: drain ran against the wrong kubeconfig). |
 | 4 | RKE2 uninstall | `/usr/local/bin/rke2-uninstall.sh` under the lifecycle-local quiet path. Removes substrate + managed kubeconfig. `.data/` is preserved. | Non-zero uninstall exit is reported through `summarizeRke2DeleteFailure`. |
 | 5 | Postflight cluster-tag sweep | `discoverClusterTaggedAwsResources` against the AWS Resource Tagging API. Any surviving cluster-tagged resource fails the command with a structured leak list and the per-class remedy command. | Non-empty leak list is the hard-failure case. |
 

@@ -30,12 +30,12 @@ cross-substrate shared infrastructure (see
 | Document | Purpose |
 |----------|---------|
 | [aws_account_setup_guide.md](./aws_account_setup_guide.md) | AWS account creation, hosted-zone preparation, and prompt-driven temporary admin-key workflow for `prodbox config setup` |
-| [aws_admin_credentials.md](./aws_admin_credentials.md) | `aws_admin_for_test_simulation` test-config.dhall test-harness fixture and the prompt-based admin-credential lifecycle |
+| [aws_admin_credentials.md](./aws_admin_credentials.md) | `aws_admin_for_test_simulation` test-secrets.dhall test-harness fixture and the prompt-based admin-credential lifecycle |
 | [aws_test_environment.md](./aws_test_environment.md) | Shared AWS member-account, DNS, isolation, lifecycle, and auth doctrine for ephemeral multi-project testing |
 | [acme_provider_guide.md](./acme_provider_guide.md) | ZeroSSL ACME guidance for the interactive onboarding flow |
 | [dependency_management.md](./dependency_management.md) | Cabal- and toolchain-level dependency doctrine |
 | [cli_command_surface.md](./cli_command_surface.md) | Canonical operator command matrix |
-| [config_doctrine.md](./config_doctrine.md) | Pure-Dhall config sourcing, mount contract, file-watch reload, and forbidden surfaces for every `prodbox` binary instance |
+| [config_doctrine.md](./config_doctrine.md) | The canonical three-tier config model (§0: Tier 0 the self-contained, generated, non-secret `prodbox.dhall` that is itself the sealed-Vault bootstrap floor — no separate JSON floor; Tier 1 password-gated bootstrap secret; Tier 2 Vault-gated operational secrets), the rule that all Dhall is generated or locally-authored and none is version-controlled, the seeded in-force MinIO SSoT and retired `prodbox-config.dhall` seed, pure-Dhall config sourcing, mount contract, file-watch reload, and forbidden surfaces for every `prodbox` binary instance |
 | [aws_integration_environment_doctrine.md](./aws_integration_environment_doctrine.md) | Real AWS integration environment creation, tagging, and cleanup doctrine |
 | [distributed_gateway_architecture.md](./distributed_gateway_architecture.md) | Multi-node gateway leadership and failover design |
 | [envoy_gateway_edge_doctrine.md](./envoy_gateway_edge_doctrine.md) | Canonical MetalLB + Envoy Gateway + Keycloak public-edge doctrine, including JWT, Redis, and WebSocket boundaries |
@@ -57,7 +57,7 @@ cross-substrate shared infrastructure (see
 | [refactoring_patterns.md](./refactoring_patterns.md) | Imperative to pure FP migration patterns |
 | [helm_chart_platform_doctrine.md](./helm_chart_platform_doctrine.md) | Singleton chart identity, namespace isolation, storage lifecycle, and delete semantics for `prodbox charts` |
 | [secret_derivation_doctrine.md](./secret_derivation_doctrine.md) | Master-seed derivation, host↔cluster secret boundary, and the gateway-as-secret-service contract |
-| [vault_doctrine.md](./vault_doctrine.md) | Vault as the fail-closed secrets / KMS / PKI backend: the SecretRef config contract, the host-side unlock bundle, Vault Transit envelope encryption of MinIO and Pulumi state, the sealed-state invariant, and in-cluster Vault Kubernetes auth |
+| [vault_doctrine.md](./vault_doctrine.md) | Vault as the fail-closed secrets / KMS / PKI backend: the SecretRef config contract, the MinIO-resident password-AEAD unlock bundle and bootstrap MinIO credential (Tier 1), Vault Transit envelope encryption of MinIO and Pulumi state, the sealed-state invariant, and in-cluster Vault Kubernetes auth |
 | [cluster_federation_doctrine.md](./cluster_federation_doctrine.md) | Cluster federation: the root/child Vault transit-seal trust tree, parent custody of child init keys, downstream-cluster metadata as secret, the config SSoT inversion and root-token config authority, and the fail-closed unseal cascade |
 
 ## Quick Navigation
@@ -151,12 +151,14 @@ cross-substrate shared infrastructure (see
 
 - [Vault Secret-Management Doctrine](./vault_doctrine.md)
 - [SecretRef model](./vault_doctrine.md#3-the-secretref-model)
-- [Unlock bundle](./vault_doctrine.md#6-the-unlock-bundle)
+- [Unlock bundle (root cluster, MinIO-resident, password-AEAD)](./vault_doctrine.md#6-the-unlock-bundle-root-cluster)
+- [Bootstrap MinIO credential](./vault_doctrine.md#61-bootstrap-minio-credential)
 - [Envelope encryption with Vault Transit](./vault_doctrine.md#8-envelope-encryption-with-vault-transit)
 - [Sealed-state behavior matrix](./vault_doctrine.md#15-sealed-state-behavior-matrix)
 - [Cluster Federation Doctrine](./cluster_federation_doctrine.md)
 - [Transit-seal trust tree](./cluster_federation_doctrine.md#2-the-transit-seal-trust-tree)
 - [Fail-closed unseal cascade](./cluster_federation_doctrine.md#7-the-fail-closed-unseal-cascade)
+- [Three-Tier Config Model](./config_doctrine.md#0-three-tier-config-model)
 - [Config Doctrine (SecretRef contract)](./config_doctrine.md)
 - [Secret Derivation Doctrine](./secret_derivation_doctrine.md)
 - [Storage Lifecycle (Vault PV preservation)](./storage_lifecycle_doctrine.md)

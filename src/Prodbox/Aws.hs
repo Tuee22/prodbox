@@ -6,10 +6,15 @@ module Prodbox.Aws
   , AwsTeardownInput (..)
   , AwsTeardownLongLivedPreflight
   , ConfigSetupInput (..)
+  , IamProbe (..)
   , PulumiResiduePolicy (..)
+  , ResidueError (..)
   , SessionTokenPromptShape (..)
+  , VaultProbe (..)
   , adminAwsEnvironment
   , applyAwsTeardown
+  , assertOperationalTeardownComplete
+  , awsErrorCodeIsTransient
   , buildIamPolicyDocument
   , buildIamPolicyJson
   , checkPulumiResidueBeforeTeardown
@@ -22,6 +27,8 @@ module Prodbox.Aws
   , operationalManagedResources
   , partitionResidueByLifecycle
   , perRunStackNames
+  , renderResidueError
+  , residueFromProbe
   , promptAdminCredentialsWithRegionChoice
   , prodboxIamUserName
   , pulumiDestroyPlanForResidue
@@ -84,7 +91,6 @@ import Prodbox.Aws.AdminCredentials
   , acquireAdminAwsCredentials
   , promptAdminCredentials
   , sessionTokenPromptShape
-  , validateAdminCredentials
   , validateAdminCredentialsInput
   )
 import Prodbox.AwsEnvironment
@@ -115,7 +121,10 @@ import Prodbox.CLI.Output
   , writeOutput
   , writeOutputLine
   )
+import Prodbox.Config.Tier0 qualified as Tier0
 import Prodbox.Error (fatalError)
+import Prodbox.Gateway.Client qualified as GatewayClient
+import Prodbox.Host (defaultGatewayNodePort)
 import Prodbox.Infra.StackDescriptor
   ( perRunStackDescriptorNames
   )
@@ -150,7 +159,6 @@ import Prodbox.Settings
   , StorageSection (..)
   , defaultConfigFile
   , loadConfigFile
-  , renderConfigDhall
   , resolveAwsCredentialsRefFromHostVault
   , supportedPublicHostname
   , validateAndLoadSettings
@@ -164,10 +172,14 @@ import Prodbox.Subprocess
   , runSubprocessStreaming
   )
 import Prodbox.Vault.Host
-  ( writeHostVaultKvObject
+  ( seedAcmeEabFromTestSecrets
+  , writeHostVaultKvObject
   )
 import System.Directory
   ( doesFileExist
+  )
+import System.Environment
+  ( lookupEnv
   )
 import System.Exit
   ( ExitCode (ExitFailure, ExitSuccess)
@@ -243,6 +255,54 @@ data IamUserCleanupResult = IamUserCleanupResult
   { iamUserCleanupUserName :: Text
   , iamUserCleanupDeletedAccessKeys :: [Text]
   , iamUserCleanupUserDeleted :: Bool
+  }
+  deriving (Eq, Show)
+
+-- | Sprint 7.20: the observed AWS-side state of the operational @prodbox@
+-- IAM user AFTER teardown, fed to the pure teardown-completeness
+-- classifier 'residueFromProbe'. Both facts are carried independently so
+-- the classifier can name precisely what leaked: a present user, leftover
+-- access keys, or both. Populated by the effectful wrapper
+-- 'assertOperationalTeardownComplete' from the existing
+-- 'operationalIamUserExists' (user) and 'listOperationalAccessKeyIds'
+-- (keys) probes. No IO; pure value.
+data IamProbe = IamProbe
+  { iamProbeUserPresent :: Bool
+  -- ^ Whether @iam:get-user prodbox@ still resolves.
+  , iamProbeAccessKeyIds :: [Text]
+  -- ^ Access-key IDs still attached to the operational user (empty when
+  -- the user is gone or has no remaining keys).
+  }
+  deriving (Eq, Show)
+
+-- | Sprint 7.20: the observed Vault-side state of the operational
+-- @secret/gateway/gateway/aws@ credential AFTER teardown. "Cleared" means
+-- the credential block reads back empty — NOT that the KV path was hard
+-- deleted; the harness clears by writing empty values
+-- ('writeOperationalAwsVaultCredentials' over empties), and the guard
+-- asserts CLEARED, not DELETED. A true KV delete is an optional future
+-- refinement (see 'assertOperationalTeardownComplete'). Populated by the
+-- effectful wrapper from the existing 'operationalCredentialsCleared'
+-- probe. No IO; pure value.
+data VaultProbe
+  = VaultCredsCleared
+  | VaultCredsPopulated
+  deriving (Eq, Show)
+
+-- | Sprint 7.20: structured teardown-completeness verdict. An empty
+-- residue (all three flags clear / no leaked keys) is the PASS state;
+-- 'residueFromProbe' returns @Right ()@ for it and 'Left' a populated
+-- 'ResidueError' otherwise. The fields name exactly what the harness left
+-- behind so the loud abort message points the operator at the specific
+-- leak (user / keys / Vault cred). Pure value, unit-testable.
+data ResidueError = ResidueError
+  { residueUserLeaked :: Bool
+  -- ^ The operational IAM user still exists in AWS.
+  , residueLeakedKeys :: [Text]
+  -- ^ Access-key IDs still attached to the operational IAM user.
+  , residueVaultPopulated :: Bool
+  -- ^ The Vault operational credential at @secret/gateway/gateway/aws@
+  -- still reads back populated.
   }
   deriving (Eq, Show)
 
@@ -718,7 +778,7 @@ throwAws = throwIO . AwsError
 interactiveConfigSetupInput :: FilePath -> IO ConfigSetupInput
 interactiveConfigSetupInput repoRoot = do
   requireInteractiveTty configSetupGuard
-  writeOutputLine "Config setup writes `prodbox-config.dhall`, creates the operational IAM user,"
+  writeOutputLine "Config setup writes `prodbox.dhall`, creates the operational IAM user,"
   writeOutputLine
     "and validates the result. The temporary admin credential entered below is not persisted."
   writeOutputLine ""
@@ -862,7 +922,7 @@ interactiveAwsTeardownInputAfterLongLived repoRoot policy = do
             ( Left
                 ( "AWS teardown --destroy-pulumi-residue requires populated "
                     ++ "operational `aws.*` (the destroy subprocesses inherit "
-                    ++ "them from prodbox-config.dhall). Run `prodbox aws "
+                    ++ "them from prodbox.dhall). Run `prodbox aws "
                     ++ "setup` first to populate, or run each `prodbox aws stack "
                     ++ "<stack> destroy --yes` manually with credentials you "
                     ++ "provide."
@@ -1034,7 +1094,7 @@ runAwsIamHarnessSetup repoRoot policyTier = do
   unless
     preflightConfigCleared
     ( throwAws
-        "AWS IAM harness preflight cleanup did not clear operational aws.* credentials from prodbox-config.dhall."
+        "AWS IAM harness preflight cleanup did not clear operational aws.* credentials from prodbox.dhall."
     )
   result <-
     applyAwsSetupWithFederatedFallback
@@ -1043,6 +1103,21 @@ runAwsIamHarnessSetup repoRoot policyTier = do
         { awsSetupAdminCredentials = credentials
         , awsSetupPolicyTierInput = policyTier
         }
+  -- Sprint 7.18: after operational @aws.*@ is materialized, seed the ZeroSSL
+  -- ACME external-account-binding into Vault (@secret/acme/eab@) from the
+  -- optional @acme_eab@ block of @test-secrets.dhall@, mirroring the @aws.*@
+  -- materialization above. This is the non-interactive analog of the
+  -- interactive @prodbox config setup@ EAB prompt, so the canonical suite's
+  -- public edge (real ZeroSSL certs -> cert-manager DNS01) can come up without
+  -- a TTY. The harness preflight runs on the home @test all@ path too — the
+  -- canonical validation set includes @aws-iam@ and @keycloak-invite@, which
+  -- always engage the harness regardless of substrate
+  -- ('Prodbox.TestPlan.derivedTier'). Absent or empty fixture EAB is a no-op.
+  -- 'seedAcmeEabFromTestSecrets' (Prodbox.Vault.Host) is also invoked from the
+  -- edge/ACME reconcile immediately before the in-cluster EAB materializer Job
+  -- is applied (the load-bearing call); this harness-preflight invocation is
+  -- belt-and-suspenders for the non-substrate harness path.
+  seedAcmeEabFromTestSecrets repoRoot
   pure
     ( renderAwsIamHarnessSetupReport
         existingIdentity
@@ -1153,15 +1228,30 @@ runAwsIamHarnessTeardown repoRoot = do
   unless
     configCleared
     ( throwAws
-        "AWS IAM harness teardown did not clear operational aws.* credentials from prodbox-config.dhall."
+        "AWS IAM harness teardown did not clear operational aws.* credentials from prodbox.dhall."
     )
+  -- Sprint 7.20: teardown-completeness guard. After 'applyAwsTeardown'
+  -- destroys the operational IAM user + keys (and clears the Vault
+  -- credential, re-checked just above), this asserts the harness left NO
+  -- residue behind: the operational `prodbox` IAM user + its access keys
+  -- are GONE from AWS (queried via the admin credentials through the same
+  -- 'operationalIamUserExists' / 'listOperationalAccessKeyIds' probes the
+  -- destroy used), AND the Vault credential at `secret/gateway/gateway/aws`
+  -- reads back CLEARED (via 'operationalCredentialsCleared'). The decision
+  -- core is the pure 'residueFromProbe' classifier; a residual user, a
+  -- residual key, or a still-populated Vault cred aborts LOUD with
+  -- 'renderResidueError' naming exactly what leaked. This EXTENDS (does not
+  -- weaken) the Vault-clear refusal above. The live exercise of this guard
+  -- is the 🧪 Live-proof axis (Standard O) — unit tests cover the pure
+  -- classifier without live AWS.
+  assertOperationalTeardownComplete repoRoot credentials
   pure (renderAwsTeardownResult result ++ "POST_RUN_OPERATIONAL_CONFIG_CLEARED=true\n")
 
 -- | Sprint 7.16: acquire the EPHEMERAL admin AWS credential for the IAM
 -- harness setup/teardown flows. The Route 53 / ACME bootstrap fields are still
--- validated from @prodbox-config.dhall@ (they belong to the production config),
+-- validated from @prodbox.dhall@ (they belong to the production config),
 -- but the admin credential itself comes from the unified acquisition cascade:
--- a populated @aws_admin_for_test_simulation@ in @test-config.dhall@ (the
+-- a populated @aws_admin_for_test_simulation@ in @test-secrets.dhall@ (the
 -- harness simulating the prompt) → an interactive TTY prompt → fail loud.
 loadHarnessAdminCredentials :: FilePath -> IO Credentials
 loadHarnessAdminCredentials repoRoot = do
@@ -1177,7 +1267,7 @@ loadHarnessAdminCredentials repoRoot = do
             Left err ->
               throwAws
                 ( "Native IAM validation requires an ephemeral admin AWS \
-                  \credential (from test-config.dhall's \
+                  \credential (from test-secrets.dhall's \
                   \aws_admin_for_test_simulation block, or the interactive \
                   \prompt): "
                     ++ err
@@ -1459,7 +1549,7 @@ applyAwsSetupWithFallbackMode allowFederatedFallback repoRoot input = do
                 }
           }
       paths = canonicalConfigPaths repoRoot
-  writeConfigFile (configDhallPath paths) updatedConfig
+  writeProjectConfigParameters repoRoot updatedConfig
   validationResult <- validateAndLoadSettings repoRoot
   case validationResult of
     Left err ->
@@ -1606,7 +1696,7 @@ operationalAwsConfigResidueFromKey accessKeyId
   | otherwise =
       ResidueStatus.ResiduePresent
         ResidueStatus.ResidueDetails
-          { ResidueStatus.residueEvidence = "aws.access_key_id set in prodbox-config.dhall"
+          { ResidueStatus.residueEvidence = "aws.access_key_id set in prodbox.dhall"
           , ResidueStatus.residueStackName = "operational-aws-config"
           }
 
@@ -1622,7 +1712,7 @@ operationalAwsConfigResidueFromKey accessKeyId
 -- * @operational-iam-user@: delete every operational access key, delete
 --   the inline user policy if present, then delete the user if present.
 -- * @operational-aws-config@: clear the operational @aws.*@ block in
---   @prodbox-config.dhall@ (region preserved, falling back to the admin
+--   @prodbox.dhall@ (region preserved, falling back to the admin
 --   region).
 operationalManagedResources :: Credentials -> [ManagedResource]
 operationalManagedResources adminCreds =
@@ -1673,9 +1763,8 @@ clearOperationalAwsConfig repoRoot adminCreds = do
                 { awsCredentialRegion = currentRegion
                 }
           }
-      paths = canonicalConfigPaths repoRoot
   writeOperationalAwsVaultCredentials repoRoot emptyOperationalCredentials
-  writeConfigFile (configDhallPath paths) updatedConfig
+  writeProjectConfigParameters repoRoot updatedConfig
   pure ExitSuccess
 
 -- | Sprint 7.8: discover the live 'ResidueStatus' of each of the two
@@ -1709,8 +1798,13 @@ discoverOperationalResidue repoRoot adminCreds = do
 -- user does not exist.
 listOperationalAccessKeyIds :: FilePath -> Credentials -> IO [Text]
 listOperationalAccessKeyIds repoRoot adminCredentials = do
+  -- Sprint 7.20 (P4): this probe runs inside the teardown-completeness guard;
+  -- a transient throttle / service-unavailable must not be misread as residue
+  -- or as a hard failure. Retry transient API errors with backoff; permanent
+  -- errors (including the `NoSuchEntity` that means "gone") fall through to the
+  -- classification below unchanged.
   listKeysOutput <-
-    runAwsCliCompleted
+    runAwsCliCompletedRetryingTransient
       repoRoot
       adminCredentials
       [ "iam"
@@ -1731,6 +1825,133 @@ listOperationalAccessKeyIds repoRoot adminCredentials = do
     else case awsErrorCode (errorDetail listKeysOutput) of
       Just "NoSuchEntity" -> pure []
       _ -> throwAws ("aws iam list-access-keys failed: " ++ errorDetail listKeysOutput)
+
+-- | Sprint 7.20: the PURE teardown-completeness classifier. Given the
+-- post-teardown AWS-side ('IamProbe') and Vault-side ('VaultProbe')
+-- observations, decide whether the harness teardown was complete.
+--
+-- A run is COMPLETE (@Right ()@) only when ALL of:
+--
+-- * the operational IAM user is gone from AWS,
+-- * no access keys remain attached to it, AND
+-- * the Vault operational credential reads back CLEARED.
+--
+-- Any residue — user present OR keys present OR Vault cred populated —
+-- yields a 'Left' 'ResidueError' naming exactly what leaked, so the
+-- effectful wrapper can abort LOUD. This is the unit-testable decision
+-- core of the guard; the live AWS/Vault queries live in
+-- 'assertOperationalTeardownComplete' around it (the 🧪 Live-proof axis).
+residueFromProbe :: IamProbe -> VaultProbe -> Either ResidueError ()
+residueFromProbe iamProbe vaultProbe =
+  let residue =
+        ResidueError
+          { residueUserLeaked = iamProbeUserPresent iamProbe
+          , residueLeakedKeys = iamProbeAccessKeyIds iamProbe
+          , residueVaultPopulated = vaultProbe == VaultCredsPopulated
+          }
+   in if residueErrorIsEmpty residue
+        then Right ()
+        else Left residue
+
+-- | Sprint 7.20: pure PASS predicate for a 'ResidueError' — no user, no
+-- leaked keys, Vault cleared. Factored so 'residueFromProbe' and any
+-- future caller share one definition of "complete".
+residueErrorIsEmpty :: ResidueError -> Bool
+residueErrorIsEmpty residue =
+  not (residueUserLeaked residue)
+    && null (residueLeakedKeys residue)
+    && not (residueVaultPopulated residue)
+
+-- | Sprint 7.20: render a 'ResidueError' into the loud, operator-actionable
+-- abort narrative. Names each leaked surface explicitly (IAM user, access
+-- keys with their IDs, Vault credential) so the operator knows precisely
+-- what the harness teardown failed to remove. Pure; unit-testable.
+renderResidueError :: ResidueError -> String
+renderResidueError residue =
+  intercalate
+    "\n"
+    ( "AWS IAM harness teardown-completeness guard FAILED: the postflight teardown left residue behind."
+        : map ("  - " ++) leaks
+        ++ [ "Re-run `prodbox aws teardown` (its destroy paths are idempotent) to clear the leaked"
+           , "operational state, then confirm the guard passes."
+           ]
+    )
+ where
+  leaks =
+    concat
+      [ [ "the operational `"
+            ++ Text.unpack prodboxIamUserName
+            ++ "` IAM user still EXISTS in AWS (expected: deleted)"
+        | residueUserLeaked residue
+        ]
+      , [ "the operational `"
+            ++ Text.unpack prodboxIamUserName
+            ++ "` IAM user still has "
+            ++ show (length (residueLeakedKeys residue))
+            ++ " access key(s) attached: "
+            ++ intercalate ", " (map Text.unpack (residueLeakedKeys residue))
+            ++ " (expected: all deleted)"
+        | not (null (residueLeakedKeys residue))
+        ]
+      , [ "the operational Vault credential at `secret/gateway/gateway/aws` "
+            ++ "still reads back POPULATED (expected: cleared)"
+        | residueVaultPopulated residue
+        ]
+      ]
+
+-- | Sprint 7.20: the EFFECTFUL wrapper of the teardown-completeness guard.
+-- Runs AFTER 'applyAwsTeardown' destroys the operational IAM user + keys
+-- and clears the Vault credential, then asserts the harness left NO
+-- residue:
+--
+--   (a) the operational @prodbox@ IAM user + its access keys are gone
+--       from AWS — queried with the admin credentials through the same
+--       'operationalIamUserExists' / 'listOperationalAccessKeyIds' probes
+--       the destroy path used; and
+--   (b) the Vault operational credential at @secret/gateway/gateway/aws@
+--       is cleared, reusing 'operationalCredentialsCleared'.
+--
+-- The two observations are unified into one 'IamProbe' / 'VaultProbe'
+-- pair and handed to the pure 'residueFromProbe' classifier; a 'Left'
+-- aborts LOUD via 'throwAws' with 'renderResidueError'. The IAM existence
+-- probe is fail-closed — if AWS IAM cannot be observed, the underlying
+-- 'throwAws' surfaces the error rather than presuming the user is gone.
+--
+-- Note (Vault clear semantics): "cleared" means the credential block
+-- reads back empty, NOT a true KV delete. The harness clears by writing
+-- empty values, so the guard checks CLEARED rather than DELETED. A true
+-- KV delete of @secret/gateway/gateway/aws@ is an optional future
+-- refinement and is intentionally NOT performed here.
+assertOperationalTeardownComplete :: FilePath -> Credentials -> IO ()
+assertOperationalTeardownComplete repoRoot adminCreds = do
+  iamProbe <- probeOperationalIamResidue repoRoot adminCreds
+  configCleared <- operationalCredentialsCleared repoRoot
+  let vaultProbe = if configCleared then VaultCredsCleared else VaultCredsPopulated
+  case residueFromProbe iamProbe vaultProbe of
+    Right () -> pure ()
+    Left residue -> throwAws (renderResidueError residue)
+
+-- | Sprint 7.20: effectful adapter that turns the existing live IAM
+-- probes into a pure 'IamProbe'. Reuses 'operationalIamUserExists' for
+-- the user fact (failing loud — fail-closed — on any non-@NoSuchEntity@
+-- error so "cannot observe" is never silently read as "gone") and
+-- 'listOperationalAccessKeyIds' for the remaining-keys fact. When the user
+-- is absent, no key listing is attempted (the probe returns @[]@ for a
+-- @NoSuchEntity@ user anyway, but skipping the call avoids a redundant
+-- AWS round trip).
+probeOperationalIamResidue :: FilePath -> Credentials -> IO IamProbe
+probeOperationalIamResidue repoRoot adminCreds = do
+  userExistsResult <- operationalIamUserExists repoRoot adminCreds
+  userPresent <- either throwAws pure userExistsResult
+  remainingKeys <-
+    if userPresent
+      then listOperationalAccessKeyIds repoRoot adminCreds
+      else pure []
+  pure
+    IamProbe
+      { iamProbeUserPresent = userPresent
+      , iamProbeAccessKeyIds = remainingKeys
+      }
 
 -- | Sprint 7.7 — destroy-first dispatch helper. Invokes
 -- @prodbox pulumi \<stack>-destroy --yes@ for each stack in the plan,
@@ -1923,7 +2144,7 @@ applyConfigSetup repoRoot input = do
   -- Sprint 7.15: the prompted ZeroSSL EAB key ID + HMAC key are written to
   -- Vault (@secret/acme/eab@, fields @key_id@ / @hmac_key@), mirroring the
   -- operational AWS credentials above. They are never persisted into
-  -- @prodbox-config.dhall@; the config keeps the @SecretRef.Vault@ references.
+  -- @prodbox.dhall@; the config keeps the @SecretRef.Vault@ references.
   writeAcmeEabVaultCredentials
     repoRoot
     (configSetupAcmeEabKeyIdInput input)
@@ -1960,7 +2181,7 @@ applyConfigSetup repoRoot input = do
           , storage = StorageSection {manual_pv_host_root = configSetupManualPvHostRootInput input}
           }
       paths = canonicalConfigPaths repoRoot
-  writeConfigFile (configDhallPath paths) updatedConfig
+  writeProjectConfigParameters repoRoot updatedConfig
   validationResult <- validateAndLoadSettings repoRoot
   case validationResult of
     Left err -> throwAws err
@@ -2442,8 +2663,11 @@ deleteOperationalUserIfPresent repoRoot adminCredentials =
 -- when it does not; 'Left' on any other AWS error. Idempotent.
 operationalIamUserExists :: FilePath -> Credentials -> IO (Either String Bool)
 operationalIamUserExists repoRoot adminCredentials = do
+  -- Sprint 7.20 (P4): same as 'listOperationalAccessKeyIds' — retry transient
+  -- API errors so a throttle does not surface as a spurious teardown-guard
+  -- failure; `NoSuchEntity` (gone) and other permanent errors are unchanged.
   result <-
-    runAwsCliCompleted
+    runAwsCliCompletedRetryingTransient
       repoRoot
       adminCredentials
       [ "iam"
@@ -2615,14 +2839,103 @@ operationalCredentialsAbsentError err =
 writeOperationalAwsVaultCredentials :: FilePath -> Credentials -> IO ()
 writeOperationalAwsVaultCredentials repoRoot credentials = do
   result <-
-    writeHostVaultKvObject
+    writeOperatorSecretViaDaemonOrHost
       repoRoot
-      "secret"
       "gateway/gateway/aws"
       (operationalAwsVaultFields credentials)
   case result of
     Left err -> throwAws err
     Right () -> pure ()
+
+-- | Sprint 1.44: persist an operator-minted secret, preferring the in-cluster
+-- gateway daemon over a host root-token direct Vault write.
+--
+-- The canonical path is @POST /v1/secret/<logical>@ on the daemon's
+-- loopback-restricted NodePort, authenticated by an operator-injected
+-- Kubernetes JWT that the daemon exchanges for a Vault token under the narrow
+-- @prodbox-operator-write@ role (operator decision 2026-06-19). The host falls
+-- back to its own root-token Vault write only when the daemon path is
+-- unavailable — no live cluster, no operator service-account token, or the
+-- unit/integration host-vault seam is active — so non-daemon contexts never
+-- regress. Scope is exactly the two host-minted operator secrets: the ACME EAB
+-- (@secret/acme/eab@) and the minted operational @aws.*@
+-- (@secret/gateway/gateway/aws@).
+writeOperatorSecretViaDaemonOrHost
+  :: FilePath -> Text -> Map.Map Text Text -> IO (Either String ())
+writeOperatorSecretViaDaemonOrHost repoRoot logical fields = do
+  daemonAttempt <- attemptOperatorDaemonWrite repoRoot logical fields
+  case daemonAttempt of
+    Just result -> pure result
+    Nothing -> writeHostVaultKvObject repoRoot "secret" logical fields
+
+-- | Try the daemon-mediated operator write. Returns @Nothing@ to signal "fall
+-- back to the host write" (test seam active, no operator JWT mintable, or the
+-- daemon was unreachable); @Just@ when the daemon definitively accepted or
+-- rejected the write.
+attemptOperatorDaemonWrite
+  :: FilePath -> Text -> Map.Map Text Text -> IO (Maybe (Either String ()))
+attemptOperatorDaemonWrite repoRoot logical fields = do
+  testSeamDir <- lookupEnv "PRODBOX_TEST_HOST_VAULT_KV_DIR"
+  testSeam <- lookupEnv "PRODBOX_TEST_HOST_VAULT_KV"
+  if any seamActive [testSeamDir, testSeam]
+    then pure Nothing
+    else do
+      jwtResult <- mintOperatorWriteJwt repoRoot
+      case jwtResult of
+        Nothing -> pure Nothing
+        Just jwt -> do
+          let endpoint = GatewayClient.hostLoopbackGatewayEndpoint defaultGatewayNodePort
+          writeResult <-
+            GatewayClient.writeOperatorSecret endpoint jwt (Text.unpack logical) fields
+          case writeResult of
+            Right () -> do
+              writeDiagnosticLine
+                ( "operator secret secret/"
+                    ++ Text.unpack logical
+                    ++ " written via the gateway daemon (prodbox-operator-write role)."
+                )
+              pure (Just (Right ()))
+            Left err -> do
+              writeDiagnosticLine
+                ( "gateway-daemon operator write for secret/"
+                    ++ Text.unpack logical
+                    ++ " unavailable ("
+                    ++ GatewayClient.renderGatewayError err
+                    ++ "); falling back to the host Vault write."
+                )
+              pure Nothing
+ where
+  seamActive = maybe False (not . null)
+
+-- | Mint a short-lived Kubernetes service-account token for the
+-- @prodbox-operator-write@ SA in the @gateway@ namespace (the operator-injected
+-- JWT the daemon exchanges for a Vault write token). Returns @Nothing@ when
+-- @kubectl@ or the SA is unavailable, so the caller falls back to the host
+-- write.
+mintOperatorWriteJwt :: FilePath -> IO (Maybe Text)
+mintOperatorWriteJwt repoRoot = do
+  outputResult <-
+    captureSubprocessResult
+      Subprocess
+        { subprocessPath = "kubectl"
+        , subprocessArguments =
+            [ "create"
+            , "token"
+            , "prodbox-operator-write"
+            , "--namespace"
+            , "gateway"
+            , "--duration"
+            , "5m"
+            ]
+        , subprocessEnvironment = Nothing
+        , subprocessWorkingDirectory = Just repoRoot
+        }
+  pure $ case outputResult of
+    Success output
+      | processExitCode output == ExitSuccess ->
+          let token = Text.strip (Text.pack (processStdout output))
+           in if Text.null token then Nothing else Just token
+    _ -> Nothing
 
 operationalAwsVaultFields :: Credentials -> Map.Map Text Text
 operationalAwsVaultFields credentials =
@@ -2643,9 +2956,8 @@ writeAcmeEabVaultCredentials repoRoot maybeKeyId maybeHmacKey =
     (Nothing, Nothing) -> pure ()
     _ -> do
       result <-
-        writeHostVaultKvObject
+        writeOperatorSecretViaDaemonOrHost
           repoRoot
-          "secret"
           "acme/eab"
           ( Map.fromList
               [ ("key_id", maybe "" id maybeKeyId)
@@ -2832,8 +3144,8 @@ currentRegionDefault repoRoot = do
 loadConfigForWrite :: FilePath -> IO ConfigFile
 loadConfigForWrite repoRoot = do
   let paths = canonicalConfigPaths repoRoot
-  dhallExists <- doesFileExist (configDhallPath paths)
-  if dhallExists
+  tier0Exists <- doesFileExist (configTier0Path paths)
+  if tier0Exists
     then do
       configResult <- loadConfigFile repoRoot
       case configResult of
@@ -2841,8 +3153,13 @@ loadConfigForWrite repoRoot = do
         Right config -> pure config
     else pure defaultConfigFile
 
-writeConfigFile :: FilePath -> ConfigFile -> IO ()
-writeConfigFile path config = writeFile path (renderConfigDhall config)
+-- | Sprint 1.42 Part B: author the operator's non-secret config into the Tier-0
+-- @prodbox.dhall@'s @parameters@ block (preserving the established
+-- @context@/@witness@), replacing the retired @prodbox-config.dhall@ writer.
+writeProjectConfigParameters :: FilePath -> ConfigFile -> IO ()
+writeProjectConfigParameters repoRoot config = do
+  result <- Tier0.writeOperatorParametersToTier0 repoRoot config
+  either throwAws pure result
 
 -- | Admin/operational AWS CLI subprocess environment. Delegates to the
 -- single canonical PATH/HOME/LANG-preserving builder
@@ -3014,3 +3331,68 @@ awsErrorCode message = do
     search prefixRemaining remaining@(character : rest)
       | needle `isPrefixOf` remaining = Just (reverse prefixRemaining, remaining)
       | otherwise = search (character : prefixRemaining) rest
+
+-- | Sprint 7.20 (P4): pure classifier — is an AWS error code a TRANSIENT
+-- API failure worth retrying with backoff (throttling / service-unavailable),
+-- as opposed to a permanent failure (e.g. @NoSuchEntity@, @AccessDenied@) that
+-- must be rethrown immediately? Conservative on purpose: only the well-known
+-- AWS transient codes match, so a genuine permanent error (including the
+-- @NoSuchEntity@ that means "gone") is never spuriously retried.
+--
+-- This handles GENUINE transient API errors only. Per the adversarial review,
+-- the IAM eventual-consistency concern was REFUTED — there is deliberately NO
+-- post-delete consistency wait here.
+awsErrorCodeIsTransient :: Maybe String -> Bool
+awsErrorCodeIsTransient = maybe False (`elem` transientCodes)
+ where
+  transientCodes =
+    [ "Throttling"
+    , "ThrottlingException"
+    , "ThrottledException"
+    , "RequestLimitExceeded"
+    , "TooManyRequestsException"
+    , "RequestThrottled"
+    , "ServiceUnavailable"
+    , "ServiceUnavailableException"
+    , "ServiceFailure"
+    , "InternalError"
+    , "InternalFailure"
+    , "RequestTimeout"
+    ]
+
+-- | Sprint 7.20 (P4): run an AWS CLI command, retrying with exponential backoff
+-- on a TRANSIENT-coded failure. A success or a PERMANENT-coded failure returns
+-- immediately (so the caller's existing @NoSuchEntity@ / @Left@ handling is
+-- unchanged); only a transient throttle / service-unavailable triggers a retry,
+-- and the LAST output is returned once the attempt budget is exhausted (so a
+-- persistently throttling endpoint still surfaces its real error to the caller
+-- rather than being silently swallowed).
+runAwsCliCompletedRetryingTransient :: FilePath -> Credentials -> [String] -> IO ProcessOutput
+runAwsCliCompletedRetryingTransient repoRoot adminCredentials arguments =
+  go iamProbeMaxAttempts 0
+ where
+  go attemptsRemaining attemptIndex = do
+    output <- runAwsCliCompleted repoRoot adminCredentials arguments
+    case processExitCode output of
+      ExitSuccess -> pure output
+      ExitFailure _
+        | attemptsRemaining > 1
+        , awsErrorCodeIsTransient (awsErrorCode (errorDetail output)) -> do
+            threadDelay (iamProbeBackoffMicros attemptIndex)
+            go (attemptsRemaining - 1) (attemptIndex + 1)
+        | otherwise -> pure output
+
+-- | Attempt budget for the transient-retry IAM probes. Five attempts (one
+-- initial + four retries) absorbs a brief throttle window without masking a
+-- persistent failure.
+iamProbeMaxAttempts :: Int
+iamProbeMaxAttempts = 5
+
+-- | Exponential backoff schedule for the transient-retry IAM probes: 500ms,
+-- 1s, 2s, 4s, capped at 8s.
+iamProbeBackoffMicros :: Int -> Int
+iamProbeBackoffMicros attemptIndex =
+  min (8 * second) (500 * milli * (2 ^ max 0 attemptIndex))
+ where
+  second = 1000000
+  milli = 1000

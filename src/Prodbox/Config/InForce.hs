@@ -2,7 +2,7 @@
 
 -- | Sprint 1.38: the in-force cluster configuration as a Vault-Transit-enveloped
 -- MinIO object — the configuration source of truth (config_doctrine.md §1a).
--- The filesystem @prodbox-config.dhall@ is a seed/propose input only; the
+-- The filesystem @prodbox.dhall@ is a seed/propose input only; the
 -- authoritative in-force config lives encrypted in MinIO and is opaque when
 -- Vault is sealed.
 module Prodbox.Config.InForce

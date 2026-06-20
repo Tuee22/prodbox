@@ -14,6 +14,19 @@
 
 ## Phase Status
 
+🔄 **Reopened 2026-06-16** (Tier 0 binary-context config surface) — Phase `1` is reopened to expand
+its own config-SSoT surface with two 📋 Planned sprints that fold the non-secret config tier into a
+single binary-owned `prodbox.dhall` shaped to `hostbootstrap`'s binary-context contract. Sprint
+`1.39` folds `.data/prodbox/unencrypted-basics.json` and the non-secret sections of the seed/propose
+`prodbox-config.dhall` into one binary-owned `prodbox.dhall` (`{parameters, context, witness}`, never
+secrets), with a derived dependency-free `prodbox-basics.json` retained as the sealed-Vault bootstrap
+floor; Sprint `1.40` ships the in-cluster half — a container-default `prodbox.dhall` overwritten by
+the cluster daemon from a ConfigMap (the context-init pattern). Both are forward-only and build on the
+closed Sprint `1.38` Tier 2 / SSoT-inversion surface; they adopt
+[config_doctrine.md §0 (Three-Tier Config Model)](../documents/engineering/config_doctrine.md#0-three-tier-config-model)
+and leave Tiers 1–2 unchanged. The `1.1`–`1.38` sprints remain `Done` on their owned surfaces (see
+[README.md](README.md) Closure Status and rule A).
+
 ✅ **Reclosed 2026-06-16** (Vault-root + cluster federation foundations) — the Phase `1` Vault model is
 finalized to the Vault-root end state: Vault is the sole secrets/KMS/PKI root, the master-seed
 derivation model is retired (not extended), and `SecretRef` has no `FileSecret` arm. Sprint `1.38`
@@ -2376,6 +2389,424 @@ the root config governs every downstream cluster
 None for Sprint `1.38`. Sprint `4.32` wires the lifecycle bootstrap/in-force-settings split for
 federated child reconcile; replacing the interim meaningful MinIO key with the Model-B opaque
 object store is Sprint `4.30`.
+
+## Sprint 1.39: Tier 0: Binary-Owned prodbox.dhall in hostbootstrap Binary-Context Shape ✅
+
+**Status**: ✅ Done (code-owned surface, validated 2026-06-17); 🧪 Live-proof pending (live `vault init` floor-write + read-on-rebuild on a real cluster)
+**Implementation**: `src/Prodbox/Config/Tier0.hs` (new), `src/Prodbox/Settings.hs`, `src/Prodbox/Repo.hs`, `src/Prodbox/CLI/Vault.hs`, `prodbox.cabal`, `test/unit/Main.hs`
+**Docs to update**: `documents/engineering/config_doctrine.md`, `documents/engineering/distributed_gateway_architecture.md`
+**Blocked by**: Sprint `1.38` (closed)
+
+### Objective
+
+Collapse the non-secret config surface into one binary-owned **Tier 0** artifact — a project-local
+`prodbox.dhall` carrying `{parameters, context, witness}` and **never** secrets — shaped to align
+with `hostbootstrap`'s binary-context contract so the eventual refactor onto `hostbootstrap` is a
+clean extension rather than a rewrite. This folds the former `.data/prodbox/unencrypted-basics.json`
+**and** the non-secret sections of the seed/propose `prodbox-config.dhall` into the single Tier 0
+file, while a small **derived** `prodbox-basics.json` remains the dependency-free sealed-Vault
+bootstrap floor read before Vault is reachable. Tiers 1–2 are untouched: secrecy stays prodbox's
+additive layer over the shared non-secret base
+([config_doctrine.md §0 (Three-Tier Config Model)](../documents/engineering/config_doctrine.md#0-three-tier-config-model),
+[config_doctrine.md §1a (in-force config in MinIO)](../documents/engineering/config_doctrine.md#1a-the-in-force-config-lives-encrypted-in-minio),
+[config_doctrine.md §3 (Canonical paths)](../documents/engineering/config_doctrine.md#3-canonical-paths)).
+
+### Deliverables
+
+- A binary-owned, project-local `prodbox.dhall` with a `{parameters, context, witness}` shape carrying
+  only non-secret config (cluster id, this cluster's Vault address, seal mode, optional parent
+  reference, public-edge inputs, and the rest of the former non-secret `prodbox-config.dhall`
+  sections) and **no** secret fields — only `SecretRef.Vault` pointers, never secret values
+  ([config_doctrine.md §0](../documents/engineering/config_doctrine.md#0-three-tier-config-model)).
+- The Tier 0 schema is generated from the Haskell record (one typed source of truth) and emitted into
+  `prodbox-config-types.dhall`; `decode . encode == id` round-trips for the Tier 0 record
+  (composing with the Sprint `1.11` round-trip property invariant).
+- `.data/prodbox/unencrypted-basics.json` is **folded into** `prodbox.dhall`: the `UnencryptedBasics`
+  fields (Sprint `1.38`) become the `context`/`parameters` of the Tier 0 record rather than a
+  separate JSON surface, and the standalone basics file is queued for removal in
+  [legacy-tracking-for-deletion.md](legacy-tracking-for-deletion.md).
+- A small **derived** `prodbox-basics.json` is **projected** from `prodbox.dhall` as the
+  dependency-free sealed-Vault bootstrap floor — read before Vault is reachable, sufficient only to
+  reach and unseal Vault, revealing nothing about workloads, downstream clusters, or credentials
+  ([config_doctrine.md §3](../documents/engineering/config_doctrine.md#3-canonical-paths)).
+- The Tier 0 record maps onto `hostbootstrap`'s `BinaryContext` shape (`parameters`, `context`,
+  `witness`) so a later refactor onto `hostbootstrap` is an extension; this alignment is recorded in
+  [config_doctrine.md §0 (the balance principle)](../documents/engineering/config_doctrine.md#0-three-tier-config-model).
+- `validateAndLoadSettings` (Sprint `1.38`) reads Tier 0 from `prodbox.dhall` (projecting
+  `prodbox-basics.json` for the sealed-Vault floor), then fetches/decrypts the Tier 2 in-force config
+  through Vault as before; the seed/propose decision over a supplied filesystem file is unchanged.
+
+### Validation
+
+- `decode . encode == id` for the Tier 0 record, and `prodbox-basics.json` is byte-deterministically
+  projected from `prodbox.dhall` (the derivation is a pure function of Tier 0).
+- With Vault sealed, the projected `prodbox-basics.json` is sufficient to reach and unseal Vault and
+  reveals nothing beyond the bootstrap floor; the Tier 2 in-force config stays opaque ciphertext.
+- The Tier 0 `prodbox.dhall` carries no secret values — only `SecretRef.Vault` pointers — asserted by
+  a unit test over the decoded record.
+- `prodbox dev check`, `prodbox test unit`, and `prodbox test integration cli` pass on the folded
+  Tier 0 surface.
+
+### Remaining Work
+
+Code-owned surface landed and validated 2026-06-17: `src/Prodbox/Config/Tier0.hs` defines the
+`ProdboxProjectConfig { parameters, context, witness }` record (hostbootstrap `BinaryContext`-aligned —
+`context_kind`, `cluster_id`, `vault_address`, MinIO coordinates, `topology { seal_mode, parent_ref }`,
+`capabilities` incl. `DurableStore`); `parameters` carries the non-secret config sections with `aws.*` /
+`acme.eab_*` as `SecretRef.Vault` pointers only. `renderProjectConfigDhall` renders `prodbox.dhall` from the
+Haskell record (schema = one typed SoT; `decode . encode == id` round-trip test), `projectBasics` /
+`projectBasicsJson` deterministically derive the dependency-free `prodbox-basics.json` floor (reusing Sprint
+`1.38` `basicsToJson`), `tier0CarriesNoSecretValues` is the secret-free guard, and `writeTier0` writes
+`prodbox.dhall` + derives the floor (wired into `initFreshVault`). `loadUnencryptedBasics` /
+`loadConfigForSettingsWith` now resolve the floor via `resolveBasicsFloorPath` (prefer `prodbox-basics.json`,
+fall back to the legacy `.data/prodbox/unencrypted-basics.json` — backward-compat shim; legacy file queued in
+[legacy-tracking-for-deletion.md](legacy-tracking-for-deletion.md)). Gate: `dev check` 0, `test unit` 0
+(972, incl. 6 new Tier-0 tests), `test integration cli` 0 (39), `test integration env` 0 (39). The
+in-cluster container-default `prodbox.dhall` + cluster-daemon ConfigMap overwrite are owned by Sprint `1.40`;
+the live floor-write/read-on-rebuild proof is the 🧪 Live-proof-pending axis.
+
+## Sprint 1.40: Tier 0 In-Cluster: Container Default prodbox.dhall + Cluster-Daemon ConfigMap Overwrite ✅
+
+**Status**: ✅ Done (code-owned surface, validated 2026-06-18); 🧪 Live-proof pending (in-cluster ConfigMap-overwrite reload on a deployed daemon)
+**Implementation**: `src/Prodbox/Config/Tier0.hs`, `docker/default-prodbox.dhall` (new, `TrackedGeneratedPath`), `docker/gateway.Dockerfile`, `docker/prodbox.Dockerfile`, `src/Prodbox/Gateway/Daemon.hs`, `src/Prodbox/CheckCode.hs`, `test/unit/Main.hs`
+**Docs to update**: `documents/engineering/config_doctrine.md`, `documents/engineering/distributed_gateway_architecture.md`
+**Blocked by**: Sprint `1.39`, Sprint `1.38` (closed)
+
+### Objective
+
+Carry the **Tier 0** binary-context surface into the cluster: the built prodbox **container** ships a
+default `prodbox.dhall`, and the cluster daemon **overwrites** it from a ConfigMap on startup —
+`hostbootstrap`'s per-frame context-init pattern. The ConfigMap-overwrite path already exists today
+(`gateway-config-<nodeId>` mounted at `/etc/gateway/config` as a directory mount, so kubelet's atomic
+`..data` swap fires the fsnotify reload); the gap this sprint closes is the **in-container default**
+`prodbox.dhall` plus the binary-context shape and rename. Secrets remain `SecretRef.Vault` pointers
+resolved at daemon startup via the daemon's Vault Kubernetes-auth identity — no Secret-mounted Dhall
+credential fragments
+([config_doctrine.md §0 (Three-Tier Config Model)](../documents/engineering/config_doctrine.md#0-three-tier-config-model),
+[config_doctrine.md §3 (Canonical paths)](../documents/engineering/config_doctrine.md#3-canonical-paths),
+[config_doctrine.md §6 (Cluster mount contract)](../documents/engineering/config_doctrine.md#6-cluster-mount-contract);
+mount contract owned by
+[distributed_gateway_architecture.md](../documents/engineering/distributed_gateway_architecture.md)).
+
+### Deliverables
+
+- The built prodbox container (`docker/prodbox.Dockerfile`) ships a baked-in **default**
+  `prodbox.dhall` Tier 0 file so a freshly started container has a valid binary context before any
+  ConfigMap is mounted ([config_doctrine.md §0](../documents/engineering/config_doctrine.md#0-three-tier-config-model)).
+- The cluster daemon **overwrites** the in-container default from the existing
+  `gateway-config-<nodeId>` ConfigMap mounted at `/etc/gateway/config` (directory mount; kubelet's
+  atomic `..data` symlink swap fires the fsnotify reload), consuming the Tier 0 record shape from
+  Sprint `1.39` ([config_doctrine.md §6](../documents/engineering/config_doctrine.md#6-cluster-mount-contract)).
+- The Tier 0 in-container default and the ConfigMap payload share one schema (the Sprint `1.39`
+  Haskell-generated Tier 0 record); the daemon's loader (`src/Prodbox/Gateway/Settings.hs`) decodes
+  the same `{parameters, context, witness}` shape the host CLI reads.
+- Secrets are never carried in the ConfigMap or the container default — only `SecretRef.Vault`
+  pointers, resolved at daemon startup through Vault Kubernetes auth
+  ([config_doctrine.md §0](../documents/engineering/config_doctrine.md#0-three-tier-config-model)).
+- The rename from the prior `config.dhall`/`unencrypted-basics.json` surfaces to the Tier 0
+  `prodbox.dhall` binary-context name is queued in
+  [legacy-tracking-for-deletion.md](legacy-tracking-for-deletion.md).
+
+### Validation
+
+- A container started with no ConfigMap mount decodes its baked-in default `prodbox.dhall` to a valid
+  Tier 0 binary context.
+- Mounting/updating the `gateway-config-<nodeId>` ConfigMap overwrites the in-container default and
+  fires the existing fsnotify reload via kubelet's atomic `..data` swap; the daemon reloads the new
+  Tier 0 context without restart.
+- The ConfigMap and container default carry no secret values (only `SecretRef.Vault` pointers),
+  asserted by a unit test over the decoded daemon context.
+- `prodbox dev check`, `prodbox test unit`, and the daemon-lifecycle suite pass on the in-cluster
+  Tier 0 surface.
+
+### Remaining Work
+
+Code-owned surface landed and validated 2026-06-18. `Prodbox.Config.Tier0` gained the `Daemon`-frame
+binary context (`defaultDaemonContext` / `defaultDaemonProjectConfig` — `binary = "gateway"`,
+`context_kind = Daemon`, reusing the shared `defaultProdboxParameters` so host CLI and daemon decode the
+identical `{parameters, context, witness}` schema and the secret-free guard holds), `renderDaemonContainerDefaultDhall`,
+a `Tier0Source` provenance ADT, and `loadDaemonBinaryContext` — the per-frame context-init loader: prefer the
+ConfigMap-mounted `prodbox.dhall` (overwrite), else the baked-in container default at `/etc/prodbox/prodbox.dhall`,
+else the compiled-in default. `docker/default-prodbox.dhall` is the byte-for-byte render of the Haskell default,
+registered as a `TrackedGeneratedPath` (drift-guarded by `dev check`) and `COPY`-ed into both
+`docker/gateway.Dockerfile` and `docker/prodbox.Dockerfile`. `runGatewayDaemon` logs the resolved Tier-0 context
++ provenance at startup (additive; a decode failure is a warning, never fatal — the operational `DaemonConfig`
+runtime is untouched). Gate: `dev check` 0, `test unit` 0 (979, incl. 7 new Sprint 1.40 tests), `test integration
+cli` 0 (39), `test integration env` 0 (39), `dev docs check` 0, `dev lint docs` 0.
+
+**Deferred (pragmatic scope):** the daemon's existing operational runtime config
+(`DaemonConfigDhall { schemaVersion, vault, boot, live }` at `/etc/gateway/config/config.dhall`) is **not** folded
+into the Tier-0 record — a deep, high-risk merge (boot/live split, the `daemonBootFieldsChanged` fsnotify
+classifier, `reloadLiveConfig`, the SecretRef-resolution path, the gateway chart ConfigMap/Deployment). The
+Tier-0 binary-context path is added **alongside** it without destabilizing the daemon; full unification is a
+follow-on. **Pre-existing breakage discovered (not caused by this sprint):** the standalone `prodbox-daemon-lifecycle`
+cabal suite is 8/11 red because its `test/daemon-lifecycle/Main.hs::renderConfig` fixture still emits the old
+plaintext `event_keys`/`aws_creds`/`minio_creds` shape instead of the current `SecretRef` union (schema drift
+predating the Vault-root migration; reproduced on pristine HEAD). It is not part of the `prodbox test` frontend
+gate; queued as a fixture-repair follow-up. Tier 1 / Tier 2 are unchanged by this sprint.
+
+## Sprint 1.41: Config-Topology Consolidation: Drop the JSON Floor + All Dhall Generated/Not-Version-Controlled ✅
+
+**Status**: ✅ Done (code-owned surface, validated 2026-06-18; live home `cluster reconcile` RC=0 reads the floor from `prodbox.dhall` with `prodbox-basics.json` gone + not regenerated, and schemas materialized before decode)
+**Implementation**: `src/Prodbox/Config/FloorDhall.hs` (new — cycle-free floor reader: decodes `prodbox.dhall` `context` → `UnencryptedBasics`), `src/Prodbox/Config/Tier0.hs` (`writeTier0` writes only `prodbox.dhall`; dropped `projectBasicsJson`), `src/Prodbox/Settings.hs` (`loadUnencryptedBasics` re-exported from `FloorDhall`; dropped the JSON reader / `resolveBasicsFloorPath` / `writeUnencryptedBasics`), `src/Prodbox/Repo.hs` (dropped `configBasicsDerivedPath` + `configBasicsPath`), `src/Prodbox/Vault/Host.hs` (`resolveBootstrapClusterId` via `FloorDhall`), `src/Prodbox/CheckCode.hs` (dropped the `docker/default-prodbox.dhall` `TrackedGeneratedPath`), `src/Prodbox/CLI/Rke2.hs` (`ensureDaemonContainerDefaultDhall` regenerates `docker/default-prodbox.dhall` into the build context inside `buildCustomImageOnce` before every `docker build`, both substrates), `src/Prodbox/App.hs` (`materializeSchemaFilesIfStale` before `runNativeCommand` so a schema-less checkout decodes), `docker/{gateway,prodbox}.Dockerfile`, `.gitignore`, `.dockerignore`, `test/unit/Main.hs`
+**Docs to update**: `documents/engineering/config_doctrine.md`, `DEVELOPMENT_PLAN/legacy-tracking-for-deletion.md`
+**Blocked by**: Sprint `1.39`, Sprint `1.40` (closed)
+
+### Objective
+
+Collapse the Tier-0 surface to a single self-contained artifact and finish the "no version-controlled
+Dhall" posture. The sealed-Vault bootstrap floor is read **directly** from the self-contained Tier-0
+`prodbox.dhall` via `projectBasics` — there is **no** separate JSON floor: `prodbox-basics.json` (the
+derived bootstrap floor) and the legacy `.data/prodbox/unencrypted-basics.json` fallback are both
+eliminated. Concurrently, every `.dhall` becomes either generated or locally-authored and **none** is
+version-controlled, so the repository carries zero tracked Dhall
+([config_doctrine.md §0 (Three-Tier Config Model)](../documents/engineering/config_doctrine.md#0-three-tier-config-model),
+[config_doctrine.md §1a (in-force config in MinIO)](../documents/engineering/config_doctrine.md#1a-the-in-force-config-lives-encrypted-in-minio),
+[config_doctrine.md §3 (Canonical paths)](../documents/engineering/config_doctrine.md#3-canonical-paths)).
+
+### Deliverables
+
+- The sealed-Vault bootstrap floor is read directly from the self-contained Tier-0 `prodbox.dhall`
+  via `projectBasics` (the binary decodes the no-imports Tier-0 file and projects the basics);
+  `configBasicsDerivedPath` and the legacy unencrypted-basics.json fallback in
+  `resolveBasicsFloorPath` are dropped, and the derived `prodbox-basics.json` write
+  (`projectBasicsJson` / `writeTier0`'s floor-derive step) is removed
+  ([config_doctrine.md §3](../documents/engineering/config_doctrine.md#3-canonical-paths)).
+- `prodbox-basics.json` (the derived JSON bootstrap floor) is **eliminated** — the floor lives only in
+  `prodbox.dhall` — and both it and the legacy `.data/prodbox/unencrypted-basics.json` are recorded as
+  removed in [legacy-tracking-for-deletion.md](legacy-tracking-for-deletion.md).
+- `docker/default-prodbox.dhall` becomes **generated at image-build time**: it is rendered from
+  `renderDaemonContainerDefaultDhall` into the build context immediately before `docker build` (rather
+  than living as a committed `TrackedGeneratedPath`), is git-ignored, and its `CheckCode`
+  `TrackedGeneratedPath` registration is removed
+  ([config_doctrine.md §0](../documents/engineering/config_doctrine.md#0-three-tier-config-model)).
+- The generated schemas `prodbox-config-types.dhall` and `test-config-types.dhall` stay
+  Haskell-generated and become git-ignored (a one-time operator
+  `git rm --cached prodbox-config-types.dhall test-config-types.dhall` untracks them); combined with
+  the generated `prodbox.dhall` / `docker/default-prodbox.dhall` and the locally-authored
+  `prodbox-config.dhall` / `test-config.dhall` seeds, the net result is **zero version-controlled
+  `.dhall`** ([config_doctrine.md §0](../documents/engineering/config_doctrine.md#0-three-tier-config-model)).
+- Tiers 1–2 are untouched: this sprint only consolidates the Tier-0 non-secret surface and the
+  generated-artifact posture.
+
+### Validation
+
+- The sealed-Vault floor is projected from `prodbox.dhall` alone (no `prodbox-basics.json`,
+  no `.data/prodbox/unencrypted-basics.json`); a unit test asserts `projectBasics` over the decoded
+  self-contained Tier-0 record yields the bootstrap floor and that the JSON-floor code paths are gone.
+- `docker/default-prodbox.dhall` is byte-deterministically rendered from
+  `renderDaemonContainerDefaultDhall` at build time and is absent from version control; `dev check`
+  no longer drift-guards a committed copy.
+- `git ls-files '*.dhall'` returns empty after the operator untracks the generated schemas.
+- `prodbox dev check`, `prodbox test unit`, `prodbox test integration cli`, and
+  `prodbox test integration env` pass on the consolidated surface, and a live cluster reconcile reads
+  the sealed-Vault floor from `prodbox.dhall`.
+
+### Remaining Work
+
+In progress. The Tier-0 self-contained floor-read, the JSON-floor elimination, the build-time render of
+`docker/default-prodbox.dhall`, and the `.gitignore` untracking of the generated schemas land together;
+the live cluster-reconcile floor-read is the 🧪 Live-proof axis. The in-force MinIO SSoT seed and the
+retirement of the `prodbox-config.dhall` seed are owned by Sprint `1.42`.
+
+## Sprint 1.42: Seed the In-Force MinIO SSoT + Retire the prodbox-config.dhall Seed ✅
+
+**Status**: ✅ Done (Part A 2026-06-18, Part B 2026-06-19). **Part A (seed the in-force SSoT)**: the unwired
+`storeInForceConfigWith` is wired via `seedInForceConfigFromFileWithToken` (`src/Prodbox/Settings.hs`,
+the PUT-twin of the read path) into the post-MinIO/post-Vault-unseal reconcile step
+(`loadPostMinioLifecycleSettings` / `seedInForceConfigStep`, `src/Prodbox/CLI/Rke2.hs`, root + child arms),
+gated by `seedProposeDecision` (only `SeedInForce` writes). Live home `cluster reconcile` proved it
+end-to-end (1st run RC=0 seeds; 2nd run RC=0 `UseInForceAsIs`, idempotent). **Part B (retire
+`prodbox-config.dhall`)**: the standalone seed file is RETIRED. The operator's non-secret config now lives
+in the binary-generated, git-ignored Tier-0 `prodbox.dhall` (operator decision 2026-06-19 — there is no
+hand-authored seed file; `config setup` generates `prodbox.dhall`). Implemented:
+`Settings.loadConfigFile` now decodes `( <prodbox.dhall> ).parameters` (the `parameters` sub-record is
+structurally a `ConfigFile`; Dhall field-projection keeps `Settings` free of the `Tier0`↔`Settings` import
+cycle); the in-force SSoT payload decoder is split out as `Settings.decodeConfigFileAtPath` (still
+materialises a temp `prodbox-config.dhall` + `prodbox-config-types.dhall` schema — that internal SSoT shape
+is unchanged); `config setup` / `aws setup` author into `prodbox.dhall`'s `parameters` via
+`Tier0.writeOperatorParametersToTier0` (merge-write preserving `context`/`witness`); `vault init` preserves
+operator `parameters` via `Tier0.writeTier0FloorPreservingParameters`; ~35 test fixtures author a Tier-0
+`prodbox.dhall` via the new `TestSupport.wrapTier0` helper; all `src` user-facing messages/help/errors
+referencing `prodbox-config.dhall` repointed to `prodbox.dhall`.
+**Establishment signal + no fallback (operator decision 2026-06-19)**: `loadConfigForSettingsWith` reads the
+in-force SSoT when the cluster is *established* — signalled by the Vault unlock bundle's presence — and the
+operator-authored `prodbox.dhall` `parameters` before establishment (first bring-up + every host test with
+no cluster). A sealed or unreachable Vault on an established cluster is **NOT** a fail-closed brick that
+falls back to `parameters`: the cluster keeps running and simply cannot read its config (no fallback).
+🧪 Live-proof: pending — a from-scratch home bring-up reads config from `prodbox.dhall`/the seeded SSoT with
+no `prodbox-config.dhall` present (non-blocking, Standard O). **Hermeticity caveat**: the three
+`cluster reconcile` CLI integration tests exercise the reconcile seed step against the host Vault via the
+existing `PRODBOX_TEST_HOST_VAULT_TOKEN` seam (green on the canonical Bathurst host); a future seam for a
+fully Vault-less host is tracked as a follow-up, non-blocking.
+**Implementation**: `src/Prodbox/Settings.hs` (`loadConfigFile`, `decodeConfigFileAtPath`,
+`loadConfigForSettingsWith`), `src/Prodbox/Config/Tier0.hs` (`configFileToTier0Parameters`,
+`writeOperatorParametersToTier0`, `writeTier0FloorPreservingParameters`), `src/Prodbox/Aws.hs`
+(`writeProjectConfigParameters`, `loadConfigForWrite`), `src/Prodbox/CLI/Vault.hs` (`writeTier0BasicsFloor`),
+`test/support/TestSupport.hs` (`wrapTier0`), `test/{unit/Main.hs,integration/CliSuite.hs,integration/EnvSuite.hs}`.
+**Docs to update**: `documents/engineering/config_doctrine.md`, `DEVELOPMENT_PLAN/legacy-tracking-for-deletion.md`
+**Independent Validation**: validated on the host CLI's code-owned surface — `dev check`, `test unit`,
+`test integration cli`/`env` all green — with no dependency on a later phase; the SSoT/Vault path is exercised
+against the home substrate and host test seams.
+**Blocked by**: Sprint `1.38`, Sprint `1.39`, Sprint `1.41` (all closed)
+
+### Objective
+
+Wire `storeInForceConfigWith` — which has **zero production callers today** (the twin of the
+`writeUnencryptedBasics` / `ensureBasicsFloor` floor-write gap) — so first-ever bring-up **seeds** the
+encrypted in-force MinIO SSoT (Vault-Transit envelope, opaque object name) from the operator config,
+and thereafter the cluster reads its config from the SSoT rather than the seed-fallback. Once seeded,
+**retire** the legacy `prodbox-config.dhall` seed/propose input: its non-secret operator config
+(route53 zone, SES domains, ACME email, Pulumi bucket) now lives in the SSoT
+([config_doctrine.md §0 (Three-Tier Config Model)](../documents/engineering/config_doctrine.md#0-three-tier-config-model),
+[config_doctrine.md §1a (in-force config in MinIO)](../documents/engineering/config_doctrine.md#1a-the-in-force-config-lives-encrypted-in-minio),
+[config_doctrine.md §3 (Canonical paths)](../documents/engineering/config_doctrine.md#3-canonical-paths)).
+
+### Deliverables
+
+- `storeInForceConfigWith` is wired into the first-bring-up path so the operator config is enveloped
+  into the encrypted MinIO SSoT (Vault-Transit, opaque `objects/<id>.enc` name) on first-ever
+  bring-up; the Sprint `1.39` `inForceConfigObjectAbsent` seed-fallback remains the interim only until
+  the SSoT is seeded ([config_doctrine.md §1a](../documents/engineering/config_doctrine.md#1a-the-in-force-config-lives-encrypted-in-minio)).
+- After seeding, `validateAndLoadSettings` reads the in-force config from the seeded SSoT (decrypted
+  through Vault) rather than the filesystem seed-fallback
+  ([config_doctrine.md §1a](../documents/engineering/config_doctrine.md#1a-the-in-force-config-lives-encrypted-in-minio)).
+- The legacy `prodbox-config.dhall` seed/propose input is retired: it carries **no plaintext secrets**
+  (verified — only `SecretRef.Vault` pointers: `aws.*` → `secret/gateway/gateway/aws`,
+  `acme.eab_*` → `secret/acme/eab`; the test secrets already live in `test-config.dhall`), and its
+  non-secret operator config now lives in the SSoT, so its deletion is queued in
+  [legacy-tracking-for-deletion.md](legacy-tracking-for-deletion.md). Retirement is **gated** on the
+  SSoT being seeded — until then the operator non-secret config lives only in `prodbox-config.dhall`
+  (`prodbox.dhall` carries empty defaults).
+
+### Validation
+
+- First-ever bring-up seeds the encrypted in-force SSoT (one opaque Vault-Transit MinIO object) from
+  the operator config; a unit/integration test asserts `storeInForceConfigWith` is invoked on the
+  no-SSoT-yet path.
+- 🧪 Live-proof: a rebuild reads the in-force config from the seeded SSoT with `prodbox-config.dhall`
+  **absent** (the seed-fallback is no longer consulted once the SSoT exists).
+- `prodbox dev check`, `prodbox test unit`, `prodbox test integration cli`, and
+  `prodbox test integration env` pass with the seed wired.
+
+### Remaining Work
+
+None (code-owned surface). The standalone `prodbox-config.dhall` seed file is retired; the operator's
+non-secret config is the binary-generated, git-ignored Tier-0 `prodbox.dhall`. The only outstanding axis is
+the non-blocking 🧪 Live-proof above (a from-scratch home bring-up reading config with no
+`prodbox-config.dhall` present). The operator's expanded config/secrets target — splitting the test secrets
+into a dedicated `test-secrets.dhall` and routing the Vault-written secrets through the gateway daemon — is
+scheduled as the new Sprints `1.43` and `1.44` below.
+
+## Sprint 1.43: Split test-secrets.dhall (the sole durable-secret fixture) ✅
+
+**Status**: ✅ Done (2026-06-20). `TestConfig` → `TestSecrets` (the harness secrets fixture), the
+former `test-config.dhall` renamed to `test-secrets.dhall`, and — because the fixture carried no
+non-secret toggles — the now-empty `test-config.dhall` / `test-config-types.dhall` were removed
+outright (the sprint's "removed if empty" branch). `test-secrets.dhall` is the sole durable-secret
+fixture file (operator decision 2026-06-19).
+**Implementation**: `src/Prodbox/Vault/Host.hs` (`TestConfig`→`TestSecrets`,
+`TestConfigAdminCredentials`→`TestSecretsAdminCredentials`, `loadTestSecrets`, `testSecretsPath`,
+`obtainOperatorPassword`/`obtainNewOperatorPassword`, `seedAcmeEabFromTestSecrets`),
+`src/Prodbox/Config/SchemaDhall.hs` (generates `test-secrets-types.dhall` via `prodbox config schema`),
+`src/Prodbox/Aws/AdminCredentials.hs` (`acquireAdminAwsCredentials`), `src/Prodbox/Native.hs`,
+`src/Prodbox/Aws.hs` / `src/Prodbox/CLI/Rke2.hs` (seeder callers), the golden CLI/destructive outputs,
+`test/unit/Main.hs` + `test/integration/CliSuite.hs`, and `.gitignore`.
+**Docs to update**: `documents/engineering/config_doctrine.md`, `documents/engineering/vault_doctrine.md`,
+and the rest of the governed docs that named the fixture (all renamed to `test-secrets.dhall`),
+`DEVELOPMENT_PLAN/legacy-tracking-for-deletion.md`
+**Blocked by**: Sprint `1.42` (closed)
+**Independent Validation**: `test unit` 1046/1046 (incl. the schema-drift round-trip), `test integration
+cli`/`env` pass on the host CLI surface; no later-phase dependency.
+
+### Objective
+
+Move the only durable secrets the test harness carries — `vault_operator_password`,
+`aws_admin_for_test_simulation.*` (durable elevated AWS credentials), and `acme_eab` (the ZeroSSL EAB
+key) — into a dedicated, git-ignored `test-secrets.dhall` (operator decision 2026-06-19:
+`test-secrets.dhall` is the only place durable elevated AWS credentials and the ACME key live).
+
+### Deliverables
+
+- The `TestSecrets` Haskell record (source of truth) split out of the former `TestConfig`, with a
+  generated `test-secrets-types.dhall` schema emitted by `prodbox config schema`. Because the fixture
+  held no non-secret toggles, the now-empty `test-config.dhall` and its `test-config-types.dhall`
+  schema were removed rather than kept as a dead empty record (the sprint's "removed if empty" clause).
+- `obtainOperatorPassword`, `acquireAdminAwsCredentials`, and `seedAcmeEabFromTestSecrets` read from
+  `test-secrets.dhall`.
+- The schema-drift round-trip guard and all fixtures are updated; `.gitignore` covers
+  `test-secrets.dhall` and the generated `test-secrets-types.dhall`.
+
+### Validation
+
+`test unit` (incl. the schema-drift round-trip) 1046/1046, `test integration cli`/`env` pass; a grep
+confirms no `test-config*.dhall` reference remains in `src/`, `test/`, `documents/`, or the goldens.
+
+### Remaining Work
+
+None (code-owned surface). The live home reconcile/rebuild that reads the relocated fixture is the
+non-blocking 🧪 Live-proof axis shared with the broader config-SSoT live proof.
+
+## Sprint 1.44: Route Vault-written secrets through the gateway daemon (simulated CLI → NodePort) ✅
+
+**Status**: ✅ Done on the code-owned surface (2026-06-20); 🧪 Live-proof pending. The write-capable
+gateway-daemon endpoint, the dedicated operator-write Vault policy/role, the host CLI client write
+method, and the harness rewiring all land and are unit-tested; the live home run that actually routes
+the EAB + operational `aws.*` through the daemon NodePort is the non-blocking 🧪 axis (Standard O).
+**Implementation**: `src/Prodbox/Gateway/Daemon.hs` (`POST /v1/secret/<logical>` with the
+`allowedOperatorSecretPaths` allowlist, `X-Prodbox-Operator-Jwt` auth, `operatorWriteRoleName` Vault
+login, `writeOperatorSecret`; the read dispatch split into `handleReadRequest`),
+`src/Prodbox/Gateway/Client.hs` (`operatorSecretUrl` + `writeOperatorSecret`),
+`src/Prodbox/Vault/Reconcile.hs` (the `prodbox-operator-write` policy + Kubernetes auth role, distinct
+from the read-only `prodbox-gateway-daemon`), `src/Prodbox/Aws.hs`
+(`writeOperatorSecretViaDaemonOrHost` / `attemptOperatorDaemonWrite` / `mintOperatorWriteJwt`, wiring
+`writeOperationalAwsVaultCredentials` + `writeAcmeEabVaultCredentials` through the daemon with a
+host-write fallback).
+**Docs to update**: `documents/engineering/distributed_gateway_architecture.md` (§11 operator-write
+endpoint), `documents/engineering/vault_doctrine.md` (§12 operator-write role/policy)
+**Blocked by**: Sprint `1.43` (closed)
+**Live-proof**: pending
+**Independent Validation**: `test unit` 1046/1046 (+9 endpoint/policy/client unit tests), `test
+integration cli`/`env` pass; the daemon write endpoint, allowlist, JWT header parsing, body decode,
+Vault policy document, and client URL are unit-tested with no later-phase dependency.
+
+### Objective
+
+Load the Vault-written secrets into Vault by SIMULATING operator CLI interactions against the prodbox
+NodePort → in-cluster gateway daemon, authenticated by a Vault-Kubernetes-operator-injected JWT (operator
+decision 2026-06-19), replacing the host root-token direct Vault write for these objects.
+
+### Deliverables
+
+- A write-capable gateway-daemon REST endpoint (`POST /v1/secret/<logical>`) + a dedicated
+  `prodbox-operator-write` Vault policy/role (the daemon's own `prodbox-gateway-daemon` policy stays
+  read-only; the operator-write policy grants `create`/`update` on exactly the host-written
+  `secret/data/gateway/gateway/aws` + `secret/data/acme/eab`). The endpoint exchanges the request's
+  `X-Prodbox-Operator-Jwt` for a Vault token under that role; a non-`POST` method is `405`, a
+  non-allowlisted path is `404`, a missing JWT is `401`, a failed login is `403`, a write failure is
+  `502`, and unconfigured gateway Vault auth is `503`.
+- A host CLI client write method (`Prodbox.Gateway.Client.writeOperatorSecret`) and the harness
+  invoking it as simulated operator CLI calls (`writeOperatorSecretViaDaemonOrHost`, minting the JWT via
+  `kubectl create token prodbox-operator-write -n gateway`, falling back to the host root-token write
+  when the daemon path is unavailable so non-daemon contexts never regress).
+- Scope: only the secrets actually written to Vault flow through the daemon — the ACME EAB
+  (`secret/acme/eab`) and the **minted** operational `aws.*` (`secret/gateway/gateway/aws`). The
+  `vault_operator_password` (the unlock-bundle decryption password, needed BEFORE Vault is unsealed) and the
+  ephemeral `aws_admin_for_test_simulation` credential (used host-side to mint the IAM user, deliberately
+  never stored in Vault) stay host-side — a daemon needing an already-unsealed Vault cannot bootstrap them.
+
+### Validation
+
+`test unit` (daemon endpoint + allowlist + JWT header + body decode + Vault policy + client URL)
+1046/1046, `test integration cli`/`env` pass; 🧪 Live-proof (non-blocking): a home run loads the EAB +
+operational `aws.*` into Vault via the daemon NodePort path under the `prodbox-operator-write` role.
+
+### Remaining Work
+
+- 🧪 Live-proof (non-blocking, Standard O): a live home run that confirms the daemon path is taken
+  (no host-write fallback diagnostic) for the EAB + operational `aws.*`. The
+  `prodbox-operator-write` Kubernetes ServiceAccount must exist in the `gateway` namespace for the
+  JWT mint to succeed; until then the harness falls back to the host root-token write.
 
 ## Related Documents
 

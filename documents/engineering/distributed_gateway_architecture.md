@@ -667,7 +667,7 @@ Containerization is first-class for integration/runtime image publishing:
   materialized
 - the publish path runs an ordinary host-native `docker build`, then pushes the resulting Harbor
   tags from the repo-owned single-stage `ubuntu:24.04` Dockerfile with in-image `ghcup` and
-  pinned GHC `9.14.1`
+  pinned GHC `9.12.4`
 - Harbor is the supported source for the gateway workload image, and the host-arch variant is
   pulled back into local Docker before import into the RKE2 containerd cache
 - Kubernetes pod integration tests run against that Harbor-published image by default

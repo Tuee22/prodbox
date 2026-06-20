@@ -97,7 +97,7 @@ Orders-backed interval validation, the runtime-to-model correspondence notes, th
 gossip surface, runtime claim/yield emission under the `CanWriteDns` gate, operator-verifiable
 bounded-clock-skew enforcement, and atomic Orders-promotion coordination across the mesh. The
 gateway container doctrine is implemented on `ubuntu:24.04` with in-image `ghcup`, pinned GHC
-`9.14.1`, no symlinked Haskell tool shims, and the retained in-image AWS CLI bundle. Sprints
+`9.12.4`, no symlinked Haskell tool shims, and the retained in-image AWS CLI bundle. Sprints
 `2.1` through `2.7` now remain closed on the gateway-daemon, native partition validation split,
 single-record Route 53 doctrine, peer-transport runtime closure, claim/yield emission under
 `CanWriteDns`, time-base discipline, and Orders-promotion coordination. Sprint `2.8` is now
@@ -125,7 +125,7 @@ deployed-cluster proof never gates this phase's closure or reopens it.
   `src/Prodbox/Gateway/Daemon.hs` and `src/Prodbox/Gateway/Types.hs`. All Python gateway code has
   been removed.
 - The gateway container build lives in `docker/gateway.Dockerfile`, is single-stage
-  `ubuntu:24.04`, installs `ghcup` in-image, pins GHC `9.14.1`, retains the official AWS CLI
+  `ubuntu:24.04`, installs `ghcup` in-image, pins GHC `9.12.4`, retains the official AWS CLI
   bundle per native Debian host architecture, and does not depend on the old mounted
   `haskell:9.6.7-slim` toolchain context or symlinked GHC tool shims.
 - The in-cluster gateway steady state is repo-rootless: `app/prodbox/Main.hs` now permits
@@ -185,7 +185,7 @@ while preserving the implemented runtime contract and container doctrine.
 
 - `prodbox gateway start|status|config-gen` and `prodbox dns check` are implemented in Haskell.
 - The in-cluster gateway container runs the Haskell binary from a single-stage `ubuntu:24.04`
-  image built from `docker/gateway.Dockerfile`, with in-image `ghcup` pinned to GHC `9.14.1`,
+  image built from `docker/gateway.Dockerfile`, with in-image `ghcup` pinned to GHC `9.12.4`,
   no symlinked Haskell tool shims, and the official AWS CLI bundle per native Debian host
   architecture.
 - Gateway image delivery uses Harbor as the only supported cluster image source.
@@ -205,7 +205,7 @@ while preserving the implemented runtime contract and container doctrine.
 4. `prodbox test integration gateway-daemon`
 5. `prodbox test integration gateway-pods`
 6. Gateway image proof: `docker/gateway.Dockerfile` is single-stage `ubuntu:24.04`, installs
-   `ghcup`, pins GHC `9.14.1`, and does not create symlinked Haskell tool shims
+   `ghcup`, pins GHC `9.12.4`, and does not create symlinked Haskell tool shims
 7. Harbor proof: the gateway image is available from Harbor for the native architecture of the
    supported host and cluster
 8. Aggregate reruns: `prodbox test integration all` and `prodbox test all`
@@ -244,7 +244,7 @@ while preserving the implemented runtime contract and container doctrine.
   `prodbox test integration gateway-pods`) run executable native Haskell validation flows via
   `src/Prodbox/TestValidation.hs`.
 - `docker/gateway.Dockerfile` is single-stage `ubuntu:24.04`, installs `ghcup`, pins GHC
-  `9.14.1`, and no longer uses the mounted `haskell:9.6.7-slim` BuildKit context or symlinked
+  `9.12.4`, and no longer uses the mounted `haskell:9.6.7-slim` BuildKit context or symlinked
   GHC tool shims.
 - `docker/gateway.Dockerfile` installs the official AWS CLI bundle from the native Debian host
   architecture detected at build time.

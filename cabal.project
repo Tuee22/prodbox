@@ -1,5 +1,5 @@
 packages: .
-with-compiler: ghc-9.14.1
+with-compiler: ghc-9.12.4
 allow-newer: *:base, *:template-haskell
 
 package prodbox

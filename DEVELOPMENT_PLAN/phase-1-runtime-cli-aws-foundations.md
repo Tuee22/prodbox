@@ -136,7 +136,7 @@ closes on the single-host public-edge config doctrine: one canonical public host
 `test.resolvefintech.com`, settings-backed MetalLB L2 or BGP rendering, explicit public-edge
 scaling inputs, and Route 53 hosted-zone alignment enforced during supported config authoring. The
 implemented frontend container doctrine uses
-`ubuntu:24.04` with in-image `ghcup`, pinned GHC `9.14.1`, no symlinked Haskell tool shims, and
+`ubuntu:24.04` with in-image `ghcup`, pinned GHC `9.12.4`, no symlinked Haskell tool shims, and
 explicit repo package-bound updates.
 
 Sprints `1.6` through `1.23` adopt the CLI doctrine from
@@ -148,7 +148,7 @@ contract to the prerequisite registry, align the lint stack on a pinned `fourmol
 migrate the test stanzas from `hspec` to `tasty`, introduce capability classes and first-class
 retry policies, encode the `Recoverable | Fatal` error axis, centralize naming helpers and
 smart-constructor patterns, re-encode multi-state workflows as GADT-indexed state machines,
-reaffirm the GHC `9.14.1` / Cabal `3.16.1.0` toolchain pin, and schedule the residual doctrine
+reaffirm the GHC `9.12.4` / Cabal `3.16.1.0` toolchain pin, and schedule the residual doctrine
 cleanup in Sprint `1.23` (parser `--foreground` default plus self-daemonization-forbidden
 rule, and the explicit cross-language-types generation deferral). Sprints `1.24` through `1.26` schedule the residual doctrine gaps surfaced
 by the May 2026 doctrine-vs-plan audit: Sprint `1.24` schedules the durable CLI documentation
@@ -193,9 +193,9 @@ closed on the cabal-manifest toolchain declarations plus library-first entrypoin
   path enforcement behind `prodbox docs check|generate` and `prodbox lint files`.
 - The canonical frontend container build now lives at `docker/prodbox.Dockerfile`.
 - `docker/prodbox.Dockerfile` now preserves the `/opt/build` artifact contract through in-image
-  `ghcup` with pinned GHC `9.14.1` and Cabal `3.16.1.0`; no mounted `haskell:9.6.7-slim`
+  `ghcup` with pinned GHC `9.12.4` and Cabal `3.16.1.0`; no mounted `haskell:9.6.7-slim`
   BuildKit toolchain context or symlinked Haskell tool shims remain on the supported path.
-- `cabal.project` now carries the repo-level `with-compiler: ghc-9.14.1` pin and the temporary
+- `cabal.project` now carries the repo-level `with-compiler: ghc-9.12.4` pin and the temporary
   `allow-newer: *:base, *:template-haskell` allowance required by the current package set, while
   `prodbox.cabal` carries the package-bound updates required by that toolchain.
 - `test/integration/EnvSuite.hs` proves built-frontend config masking and validation directly
@@ -242,9 +242,9 @@ topology on the implemented rewrite path.
   command surface.
 - The only supported home for repository-owned Dockerfiles is `docker/`.
 - The custom Haskell frontend image is single-stage from `ubuntu:24.04`, still emits artifacts
-  under `/opt/build`, installs `ghcup` in-image, pins GHC `9.14.1`, and does not create
+  under `/opt/build`, installs `ghcup` in-image, pins GHC `9.12.4`, and does not create
   symlinked Haskell tool shims.
-- `prodbox.cabal` and `cabal.project` are explicitly upgraded for the pinned GHC `9.14.1`
+- `prodbox.cabal` and `cabal.project` are explicitly upgraded for the pinned GHC `9.12.4`
   toolchain, including any required cabal-bound changes.
 - The public command surface remains `prodbox` and preserves the full supported command matrix from
   [../documents/engineering/cli_command_surface.md](../documents/engineering/cli_command_surface.md).
@@ -258,7 +258,7 @@ topology on the implemented rewrite path.
 5. Host build proof: the canonical `cabal build --builddir=.build exe:prodbox` invocation plus
    the `.build/prodbox` copy step yields the runnable operator-facing binary artifact
 6. Container build proof: the canonical frontend Dockerfile under `docker/` emits artifacts under
-   `/opt/build` through in-image `ghcup`-managed GHC `9.14.1` with no symlinked Haskell tool
+   `/opt/build` through in-image `ghcup`-managed GHC `9.12.4` with no symlinked Haskell tool
    shims
 7. Repository path proof: no supported root-level `Dockerfile` remains
 8. Aggregate reruns: `prodbox test integration all` and `prodbox test all`
@@ -272,13 +272,13 @@ topology on the implemented rewrite path.
   the `.build/prodbox` copy step in `src/Prodbox/BuildSupport.hs`.
 - `docker/prodbox.Dockerfile` is the canonical frontend image definition, lives under `docker/`,
   is single-stage `ubuntu:24.04`, preserves `/opt/build`, installs `ghcup` in-image, pins GHC
-  `9.14.1`, and does not create symlinked Haskell tool shims.
+  `9.12.4`, and does not create symlinked Haskell tool shims.
 - `prodbox.cabal` and `cabal.project` now implement the explicit repo upgrade required by the
   revised doctrine.
 - `test/unit/Main.hs` and `test/integration/CliSuite.hs` now assert the `docker/prodbox.Dockerfile`
   location and the updated container-build doctrine.
 - Root guidance docs and the governed docs listed in `Docs to update` are aligned in this change
-  with the canonical Dockerfile location and the implemented `ghcup` plus `ghc-9.14.1` doctrine.
+  with the canonical Dockerfile location and the implemented `ghcup` plus `ghc-9.12.4` doctrine.
 
 ### Remaining Work
 
@@ -1577,15 +1577,15 @@ A13 (library-first layout) per
 
 ### Deliverables
 
-- `prodbox.cabal` declares `tested-with: ghc ==9.14.1` at the package-stanza level
+- `prodbox.cabal` declares `tested-with: ghc ==9.12.4` at the package-stanza level
   per [dependency_management.md#toolchain-pinning](../documents/engineering/dependency_management.md#toolchain-pinning).
-- `cabal.project` declares `with-compiler: ghc-9.14.1` per
+- `cabal.project` declares `with-compiler: ghc-9.12.4` per
   [dependency_management.md#toolchain-pinning](../documents/engineering/dependency_management.md#toolchain-pinning).
 - The plan and [00-overview.md](00-overview.md) name the authoritative Cabal
   version `Cabal 3.16.1.0` per
   [dependency_management.md#toolchain-pinning](../documents/engineering/dependency_management.md#toolchain-pinning); the
   doctrine pins both the GHC and Cabal versions, and this sprint binds the Cabal
-  pin in cabal-manifest terms alongside the existing GHC `9.14.1` references.
+  pin in cabal-manifest terms alongside the existing GHC `9.12.4` references.
 - `src/Prodbox/CheckCode.hs` gains a check that refuses any module-local
   definition in `app/prodbox/Main.hs` beyond a thin
   `main = Prodbox.App.main` (or equivalent library re-export) per
@@ -1696,7 +1696,7 @@ None.
 
 **Status**: Done (May 24, 2026 — existing `cabal.project allow-newer: *:base,
 *:template-haskell` clause continues to satisfy the `dhall ^>=1.42` transitive
-deps under GHC 9.14.1; `src/Prodbox/CheckCode.hs::checkEnvVarConfigReads` lint
+deps under GHC 9.12.4; `src/Prodbox/CheckCode.hs::checkEnvVarConfigReads` lint
 rule landed and is wired into `runDoctrineAlignmentCheck`; the `PRODBOX_LOG_LEVEL` /
 `PRODBOX_CONFIG_PATH` / `PRODBOX_PORT` env-var reads in `src/Prodbox/Gateway.hs`
 are gone; daemon-lifecycle stanza tests updated to the new contract; 533/533
@@ -1710,7 +1710,7 @@ changes expected), `src/Prodbox/CheckCode.hs` (new `forbidEnvVarConfigReads` lin
 
 ### Objective
 
-Make the `dhall ^>=1.42` library bound build cleanly under GHC `9.14.1` by extending the
+Make the `dhall ^>=1.42` library bound build cleanly under GHC `9.12.4` by extending the
 existing `cabal.project` `allow-newer` clause set with whatever transitive deps `cabal
 build` reports as version-bound-incompatible, and add the lint rule that enforces the
 no-env-var-reads contract from
@@ -1720,7 +1720,7 @@ on supported config-loading paths.
 ### Deliverables
 
 - Extend `cabal.project` `allow-newer` clause to cover whatever `dhall` transitive
-  dependencies cabal complains about on GHC `9.14.1` (current clause is `allow-newer:
+  dependencies cabal complains about on GHC `9.12.4` (current clause is `allow-newer:
   *:base, *:template-haskell`; the implementing sprint will add named entries only after
   observing the specific cabal errors).
 - New `src/Prodbox/CheckCode.hs::forbidEnvVarConfigReads` lint rule: refuses uses of
@@ -1731,7 +1731,7 @@ on supported config-loading paths.
   don't false-positive.
 - Migration note in `documents/engineering/dependency_management.md` listing the named
   `allow-newer` clauses and the conditions under which they may be removed (when an
-  upstream `dhall` release bumps the bounds to match GHC `9.14.1`).
+  upstream `dhall` release bumps the bounds to match GHC `9.12.4`).
 - Removal of the `PRODBOX_LOG_LEVEL` / `PRODBOX_CONFIG_PATH` / `PRODBOX_PORT` env-var
   reads in `src/Prodbox/Gateway.hs` (the matching ledger row sits in
   `legacy-tracking-for-deletion.md` and is owned by this sprint).
@@ -1741,7 +1741,7 @@ on supported config-loading paths.
 1. `prodbox check-code` exit 0 (proves the new lint rule fires only on intentional
    violations, not on legitimate non-config env-var reads in test helpers).
 2. `prodbox test unit` exit 0 (no test text changes expected).
-3. `prodbox build` succeeds cleanly under GHC `9.14.1` with the extended `allow-newer`
+3. `prodbox build` succeeds cleanly under GHC `9.12.4` with the extended `allow-newer`
    set (currently it already does; this sprint is preemptive).
 
 ### Remaining Work

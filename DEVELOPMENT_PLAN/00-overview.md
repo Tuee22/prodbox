@@ -45,7 +45,7 @@ Build a clean-room Haskell `prodbox` repository with:
    that places the binary at the root of `.build/`.
 7. One container build root `/opt/build`, owned only by Dockerfiles under `docker/`.
 8. One repository-owned custom-image doctrine: every custom Dockerfile needing Haskell builds is
-   single-stage from `ubuntu:24.04`, installs `ghcup` in-image, pins GHC `9.14.1`, and does not
+   single-stage from `ubuntu:24.04`, installs `ghcup` in-image, pins GHC `9.12.4`, and does not
    create symlinked Haskell tool shims; the supported public edge does not depend on a
    repository-owned nginx auth-proxy image.
 9. One Harbor-first steady-state registry doctrine: direct public-registry pulls are permitted
@@ -651,8 +651,8 @@ The reopened ranges close on the following sprint sets:
   §815–831. Sprint 0.3 also extends Sprint 1.6 with per-leaf-command `CommandSpec` `Example`
   entries (§299–303) and Sprint 1.10 with the `cabal format` temp-file round-trip
   byte-equality compare (§1834–1837). Sprint 1.27 (added by Sprint 0.4) binds the
-  cabal-manifest toolchain pin declarations `tested-with: ghc ==9.14.1` and
-  `with-compiler: ghc-9.14.1`, the literal `Cabal 3.16.1.0` reference, and the
+  cabal-manifest toolchain pin declarations `tested-with: ghc ==9.12.4` and
+  `with-compiler: ghc-9.12.4`, the literal `Cabal 3.16.1.0` reference, and the
   library-first / thin-`Main.hs` layout check in `src/Prodbox/CheckCode.hs` per
   [the engineering doctrine docs](../documents/engineering/README.md)and §86–115. Sprint 0.4 also
   extends Sprint 1.6 with the `CommandSpec` / `OptionSpec` record-field bindings
@@ -793,7 +793,7 @@ lifecycle, style-tool, and retained Pulumi harness work.
 The authoritative lifecycle target remains Harbor-first and native-architecture only: Harbor plus
 its storage backend bootstrap from public registries, every later Helm deployment pulls through
 Harbor, and `amd64` or `arm64` hosts build and publish only their own architecture. The stack
-closes on in-image `ghcup` with pinned GHC `9.14.1` in the frontend and gateway Dockerfiles, the
+closes on in-image `ghcup` with pinned GHC `9.12.4` in the frontend and gateway Dockerfiles, the
 Percona operator-backed Patroni PostgreSQL doctrine, and config-selected MetalLB L2 or BGP
 advertisement. The cleanup ledger preserves completed history and, after the May 23, 2026
 reopen of Phases `2`, `3`, and `4`, carries the cluster-as-source-of-truth and
@@ -852,7 +852,7 @@ than restated here as a fresh rerun log.
   auth and profile state before projecting repository-root credentials into the supported command
   paths.
 - The target container topology lives entirely under `docker/`. Every Haskell-build Dockerfile is
-  single-stage `ubuntu:24.04`, installs `ghcup` in-image, pins GHC `9.14.1`, and avoids
+  single-stage `ubuntu:24.04`, installs `ghcup` in-image, pins GHC `9.12.4`, and avoids
   symlinked Haskell tool shims.
 - `src/Prodbox/CLI/Rke2.hs` owns the Harbor-first lifecycle, readiness gates, Harbor population,
   post-bootstrap Harbor-backed workload reconcile, native-host-architecture custom-image
@@ -863,7 +863,7 @@ than restated here as a fresh rerun log.
 - The Helm-driven lifecycle restore now retries transient upstream chart-fetch failures before
   failing the supported path.
 - `docker/prodbox.Dockerfile`, `docker/gateway.Dockerfile`, and `src/Prodbox/CLI/Rke2.hs` now
-  close on the `ghcup` plus `ghc-9.14.1` toolchain path with no symlinked GHC shims and no
+  close on the `ghcup` plus `ghc-9.12.4` toolchain path with no symlinked GHC shims and no
   mounted `haskell:9.6.7-slim` BuildKit context.
 - `src/Prodbox/PostgresPlatform.hs`, `src/Prodbox/Lib/ChartPlatform.hs`, and
   `charts/keycloak-postgres/` now close on namespace-local Patroni PostgreSQL HA through the
@@ -1027,7 +1027,7 @@ Sprints `8.7`/`8.8` (and the live `8.5`/`8.6` proofs).
   `prodbox-unit` stanza (Sprint 1.25), and the `renderError` error-rendering boundary
   discipline plus hlint rules refusing `print`, `exitFailure`, and direct terminal
   formatting outside the dedicated output layer (Sprint 1.26). Sprint 0.4 adds Sprint 1.27
-  (cabal-manifest `tested-with: ghc ==9.14.1`, `with-compiler: ghc-9.14.1`, the literal
+  (cabal-manifest `tested-with: ghc ==9.12.4`, `with-compiler: ghc-9.12.4`, the literal
   `Cabal 3.16.1.0` reference, and the library-first / thin-`Main.hs` audit) and threads
   round-3 extensions through Sprints 1.6, 1.8, 1.10, 1.11, 1.12, 1.14, 1.15, and 1.21
   binding the `CommandSpec` / `OptionSpec` record shape, daemon-as-typed-`Command`
@@ -1131,7 +1131,7 @@ Sprints `8.7`/`8.8` (and the live `8.5`/`8.6` proofs).
 - `prodbox check-code` must fail on governed doctrine-alignment violations, not only on
   formatter, linter, build, or operator-binary sync failures.
 - Every custom Dockerfile needing Haskell builds is single-stage from `ubuntu:24.04`, installs
-  `ghcup` in-image, pins GHC `9.14.1`, and does not create symlinked Haskell tool shims. No
+  `ghcup` in-image, pins GHC `9.12.4`, and does not create symlinked Haskell tool shims. No
   supported browser-facing auth path depends on a repository-owned nginx auth-proxy image.
 - When the pinned Haskell toolchain changes, `prodbox.cabal`, `cabal.project`, and the canonical
   build/test surfaces must be explicitly upgraded in the same change, including any required

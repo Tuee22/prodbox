@@ -182,7 +182,7 @@ Container build requirements:
 
 1. use single-stage `ubuntu:24.04` for repository-owned Haskell images
 2. build the Haskell gateway binary under `/opt/build`
-3. install `ghcup` in-image, pin GHC `9.14.1`, and do not create symlinked Haskell tool shims
+3. install `ghcup` in-image, pin GHC `9.12.4`, and do not create symlinked Haskell tool shims
 4. build once through ordinary host-native `docker build`
 5. push the resulting Harbor tags through ordinary `docker push`
 6. keep `.dockerignore` synchronized with the intended build inputs

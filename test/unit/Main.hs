@@ -3516,7 +3516,7 @@ main = mainWithSuite "prodbox-unit" $ do
       cabalProject <- readFile (repoRoot </> "cabal.project")
 
       cabalProject `shouldContain` "packages: ."
-      cabalProject `shouldContain` "with-compiler: ghc-9.14.1"
+      cabalProject `shouldContain` "with-compiler: ghc-9.12.4"
       cabalProject `shouldContain` "allow-newer: *:base, *:template-haskell"
       cabalProject `shouldNotContain` "builddir:"
 
@@ -3526,7 +3526,7 @@ main = mainWithSuite "prodbox-unit" $ do
 
       dockerfile `shouldContain` "# syntax=docker/dockerfile:1.7"
       dockerfile `shouldContain` "FROM ubuntu:24.04"
-      dockerfile `shouldContain` "ARG GHC_VERSION=9.14.1"
+      dockerfile `shouldContain` "ARG GHC_VERSION=9.12.4"
       dockerfile `shouldContain` "ARG CABAL_VERSION=3.16.1.0"
       dockerfile `shouldContain` "WORKDIR /opt/build"
       dockerfile `shouldContain` "BOOTSTRAP_HASKELL_MINIMAL=1"
@@ -3875,7 +3875,7 @@ main = mainWithSuite "prodbox-unit" $ do
 
       dockerfile `shouldContain` "# syntax=docker/dockerfile:1.7"
       dockerfile `shouldContain` "FROM ubuntu:24.04"
-      dockerfile `shouldContain` "ARG GHC_VERSION=9.14.1"
+      dockerfile `shouldContain` "ARG GHC_VERSION=9.12.4"
       dockerfile `shouldContain` "ARG CABAL_VERSION=3.16.1.0"
       dockerfile `shouldContain` "awscli.amazonaws.com"
       dockerfile `shouldContain` "dpkg --print-architecture"

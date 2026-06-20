@@ -1,7 +1,7 @@
 # syntax=docker/dockerfile:1.7
 FROM ubuntu:24.04
 
-ARG GHC_VERSION=9.14.1
+ARG GHC_VERSION=9.12.4
 ARG CABAL_VERSION=3.16.1.0
 ENV DEBIAN_FRONTEND=noninteractive
 ENV PATH=/root/.ghcup/bin:/root/.cabal/bin:$PATH

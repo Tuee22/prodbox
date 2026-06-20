@@ -212,7 +212,7 @@ contract without reintroducing Python, duplicate runtime paths, or cross-arch co
 - `prodbox` idempotently ensures required public images and all custom images are present in
   Harbor after Harbor bootstrap and before later Helm deployments run.
 - Lifecycle-managed Haskell-build custom images stay single-stage `ubuntu:24.04`, install
-  `ghcup` in-image, pin GHC `9.14.1`, and do not depend on mounted `haskell:9.6.7-slim`
+  `ghcup` in-image, pin GHC `9.12.4`, and do not depend on mounted `haskell:9.6.7-slim`
   BuildKit contexts or symlinked Haskell tool shims.
 - Supported custom-image publication uses ordinary host-native Docker builds and pushes rather
   than `docker buildx`.
@@ -225,7 +225,7 @@ contract without reintroducing Python, duplicate runtime paths, or cross-arch co
 - Harbor mirror publication retries transient Harbor availability failures on the same candidate
   and then retries alternate configured upstreams when a preferred source still fails after
   manifest inspection.
-- The explicit repo upgrade to GHC `9.14.1`, including required cabal-bound changes, closes with
+- The explicit repo upgrade to GHC `9.12.4`, including required cabal-bound changes, closes with
   full canonical validation reruns on the upgraded toolchain path.
 
 ### Validation

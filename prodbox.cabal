@@ -3,7 +3,7 @@ name:            prodbox
 version:         0.1.0
 license:         MIT
 license-file:    LICENSE
-tested-with:     ghc ==9.14.1
+tested-with:     ghc ==9.12.4
 build-type:      Simple
 extra-doc-files: README.md
 
@@ -130,7 +130,7 @@ library
         aeson ^>=2.2.3.0,
         aeson-pretty ^>=0.8.10,
         async ^>=2.2.5,
-        base ^>=4.22.0.0 || ^>=4.18.2.1,
+        base ^>=4.21.2.0,
         base64-bytestring ^>=1.2,
         bytestring ^>=0.11.5.3,
         case-insensitive ^>=1.2.1.0,
@@ -173,7 +173,7 @@ executable prodbox
     default-language: GHC2021
     ghc-options:      -Wall
     build-depends:
-        base ^>=4.22.0.0 || ^>=4.18.2.1,
+        base ^>=4.21.2.0,
         optparse-applicative ^>=0.18.1.0,
         prodbox
 
@@ -189,7 +189,7 @@ test-suite prodbox-unit
     ghc-options:      -Wall
     build-depends:
         aeson ^>=2.2.3.0,
-        base ^>=4.22.0.0 || ^>=4.18.2.1,
+        base ^>=4.21.2.0,
         bytestring ^>=0.11.5.3,
         containers ^>=0.6.7,
         dhall ^>=1.42,
@@ -221,7 +221,7 @@ test-suite prodbox-integration
     default-language: GHC2021
     ghc-options:      -Wall
     build-depends:
-        base ^>=4.22.0.0 || ^>=4.18.2.1,
+        base ^>=4.21.2.0,
         bytestring ^>=0.11.5.3,
         directory ^>=1.3.8.5,
         filepath ^>=1.4.2.2,
@@ -243,7 +243,7 @@ test-suite prodbox-haskell-style
     default-language: GHC2021
     ghc-options:      -Wall
     build-depends:
-        base ^>=4.22.0.0 || ^>=4.18.2.1,
+        base ^>=4.21.2.0,
         bytestring ^>=0.11.5.3,
         containers ^>=0.6.7,
         directory ^>=1.3.8.5,
@@ -264,7 +264,7 @@ test-suite prodbox-daemon-lifecycle
     ghc-options:      -Wall
     build-depends:
         aeson ^>=2.2.3.0,
-        base ^>=4.22.0.0 || ^>=4.18.2.1,
+        base ^>=4.21.2.0,
         bytestring ^>=0.11.5.3,
         containers ^>=0.6.7,
         directory ^>=1.3.8.5,
@@ -287,7 +287,7 @@ test-suite prodbox-pulumi
     default-language: GHC2021
     ghc-options:      -Wall
     build-depends:
-        base ^>=4.22.0.0 || ^>=4.18.2.1,
+        base ^>=4.21.2.0,
         bytestring ^>=0.11.5.3,
         containers ^>=0.6.7,
         directory ^>=1.3.8.5,

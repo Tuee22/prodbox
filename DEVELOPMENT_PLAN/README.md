@@ -2143,7 +2143,7 @@ resources persisted. The residue is recorded here as a known follow-up for Sprin
 decoded in-process via the native Haskell `dhall` library. The reopen affects:
 Phase 0 (Sprints 0.3, 0.4 revised in place + new Sprint 0.8 adopting the doctrine and
 updating governed docs); Phase 1 (Sprint 1.2 revision note + new Sprint 1.28 covering
-the `allow-newer` clauses for `dhall`'s transitive deps under GHC 9.14.1 plus the
+the `allow-newer` clauses for `dhall`'s transitive deps under GHC 9.12.4 plus the
 env-var-read lint rule); Phase 2 (Sprints 2.9, 2.11, 2.12, 2.13, 2.15, 2.19 revised in
 place + new Sprints 2.20/2.21/2.22 covering the daemon Dhall settings module,
 file-watch reload trigger with drain-and-exit on boot-field changes, and chart-side
@@ -2339,7 +2339,7 @@ Reopened sprints by phase:
   `LiveConfig` subscribers, the prescribed on-disk Dhall file shape, and the daemon
   log-level refresh from `LiveConfig` on every hot reload. Sprint 0.4 schedules the
   residual doctrine items surfaced by the May 12, 2026 round-3 audit: cabal-manifest
-  toolchain pin declarations (`tested-with: ghc ==9.14.1`, `with-compiler: ghc-9.14.1`,
+  toolchain pin declarations (`tested-with: ghc ==9.12.4`, `with-compiler: ghc-9.12.4`,
   the `Cabal 3.16.1.0` reference), library-first / thin-`Main.hs` layout, the
   `CommandSpec` / `OptionSpec` record-field bindings plus daemon-as-typed-`Command`
   dispatch, forbidden subprocess primitives (`callProcess`, `readCreateProcess`,
@@ -2372,7 +2372,7 @@ Reopened sprints by phase:
   `hspec` → `tasty` test-stanza migration; capability classes plus `AsServiceError`;
   `RetryPolicy` as first-class values; `Recoverable` / `Fatal` `ErrorKind`; naming helpers
   and smart-constructor module; GADT-indexed state machines for multi-state workflows;
-  toolchain pin reaffirmation on GHC `9.14.1` / Cabal `3.16.1.0`; one-shot CLI output
+  toolchain pin reaffirmation on GHC `9.12.4` / Cabal `3.16.1.0`; one-shot CLI output
   discipline with `--format` / `--color` / `--no-color` and stdout/stderr split; one-shot
   `Env` record and `ReaderT App` adoption; pinned style-tools sandbox under
   `.build/prodbox-style-tools/` plus custom nesting warnings and negative-space
@@ -2387,7 +2387,7 @@ Reopened sprints by phase:
   parser-test category in the `prodbox-unit` stanza; and the `renderError` error-rendering
   boundary discipline with hlint rules refusing `print`, `exitFailure`, and direct terminal
   formatting outside the dedicated output layer. Sprint 0.4 adds Sprint 1.27 (cabal-manifest
-  `tested-with: ghc ==9.14.1` and `with-compiler: ghc-9.14.1` declarations, the literal
+  `tested-with: ghc ==9.12.4` and `with-compiler: ghc-9.12.4` declarations, the literal
   `Cabal 3.16.1.0` reference, and the library-first / thin-`Main.hs` audit through
   `src/Prodbox/CheckCode.hs`) and threads the round-3 extensions through Sprint 1.6
   (`CommandSpec` / `OptionSpec` record-field bindings plus daemon-as-typed-`Command`
@@ -2918,7 +2918,7 @@ implemented baseline surfaces remain current on the supported path:
   to host AWS auth state.
 - The supported container topology lives entirely under `docker/`. Every repository-owned
   Haskell-build Dockerfile stays single-stage `ubuntu:24.04`, installs `ghcup` in-image, pins GHC
-  `9.14.1`, and does not create symlinked Haskell tool shims.
+  `9.12.4`, and does not create symlinked Haskell tool shims.
 - The authoritative local lifecycle target remains Haskell-owned and Harbor-first: Harbor plus
   Harbor's storage backend bootstrap from public registries, after which required public images
   and custom images are present in Harbor before later Helm deployments proceed.
@@ -3081,10 +3081,10 @@ This plan is complete only when all of the following are true:
 8. Container-side build artifacts live under `/opt/build`, and every repository-owned Dockerfile
    lives under `docker/`.
 9. Every repository-owned Haskell-build Dockerfile is single-stage from `ubuntu:24.04`, installs
-   `ghcup` in-image, pins GHC `9.14.1`, and does not create symlinked Haskell tool shims; no
+   `ghcup` in-image, pins GHC `9.12.4`, and does not create symlinked Haskell tool shims; no
    supported browser-facing auth path depends on a repository-owned nginx auth-proxy image.
 10. `prodbox.cabal`, `cabal.project`, and the canonical build-and-test surfaces are explicitly
-    upgraded for GHC `9.14.1`, including any required cabal-bound changes and full canonical
+    upgraded for GHC `9.12.4`, including any required cabal-bound changes and full canonical
     validation reruns on that toolchain.
 11. `prodbox check-code` enforces the governed doctrine-alignment contract described by
     `documents/engineering/code_quality.md`, not only formatter, linter, build, and binary-sync

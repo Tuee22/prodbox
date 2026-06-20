@@ -209,7 +209,7 @@ Closure, validation ownership, and phase history are tracked in
 
 ### Prerequisites
 
-- GHC `9.14.1`
+- GHC `9.12.4`
 - `cabal-install` `3.16.1.0`
 - A linkable GMP development package such as `libgmp-dev`
 - Ubuntu `24.04 LTS` with systemd for the supported host runtime

@@ -333,7 +333,7 @@ There is no intermediate JSON projection on the supported path. `dhall-to-json` 
 of the supported toolchain. The on-disk artifact is the typed, operator-authored Dhall
 expression; the in-memory value is a Haskell record type produced by `Dhall.inputFile auto`.
 
-Under GHC 9.14.1, `cabal.project` carries `allow-newer` clauses for the `dhall` library's
+Under GHC 9.12.4, `cabal.project` carries `allow-newer` clauses for the `dhall` library's
 transitive dependencies so the pinned `dhall ^>=1.42` bound continues to build cleanly on
 the newer GHC. The specific `allow-newer` set is owned by
 [dependency_management.md](./dependency_management.md).
@@ -658,7 +658,7 @@ so the prohibition is the intended end state rather than a present-tense fact:
 - [distributed_gateway_architecture.md](./distributed_gateway_architecture.md) — daemon
   lifecycle; defers config-source and reload-trigger rules to this doctrine.
 - [dependency_management.md](./dependency_management.md) — `dhall` library pin and
-  `allow-newer` clauses under GHC 9.14.1.
+  `allow-newer` clauses under GHC 9.12.4.
 - [haskell_code_guide.md](./haskell_code_guide.md) — forbidden subprocess and env-var-read
   primitives.
 - [helm_chart_platform_doctrine.md](./helm_chart_platform_doctrine.md) — ConfigMap and

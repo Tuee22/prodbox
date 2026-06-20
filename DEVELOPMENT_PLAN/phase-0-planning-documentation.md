@@ -355,7 +355,7 @@ thirteen deliverable extensions to existing sprints.
 
 - New **Sprint 1.27: Toolchain Pin Declarations and Library-First Layout** in
   `phase-1-runtime-cli-aws-foundations.md` owns the cabal-manifest declarations
-  `tested-with: ghc ==9.14.1` and `with-compiler: ghc-9.14.1`, the literal
+  `tested-with: ghc ==9.12.4` and `with-compiler: ghc-9.12.4`, the literal
   `Cabal 3.16.1.0` version pin, and the library-first / thin-`Main.hs` layout audit per
   [dependency_management.md#toolchain-pinning](../documents/engineering/dependency_management.md#toolchain-pinning)and
   `Project Structure` §86–115.

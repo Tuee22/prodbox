@@ -19,17 +19,17 @@ Clean-room sequencing, completion status, remaining work, and cleanup ownership 
 - `prodbox.cabal` defines the Haskell library, the `prodbox` executable, and the Haskell test
   suites under `test/`.
 - `cabal.project` defines the repository Cabal package set.
-- `cabal.project` pins `with-compiler: ghc-9.14.1` and carries the temporary
+- `cabal.project` pins `with-compiler: ghc-9.12.4` and carries the temporary
   `allow-newer: *:base, *:template-haskell` escape hatch required by the current package set.
   This clause set is what currently lets the `dhall ^>=1.42` bound build cleanly under GHC
-  `9.14.1`; the clauses may be tightened when an upstream `dhall` release ships bounds that
-  natively match GHC `9.14.1` and `template-haskell` 2.24.
+  `9.12.4`; the clauses may be tightened when an upstream `dhall` release ships bounds that
+  natively match GHC `9.12.4` and `template-haskell` 2.23.
 - Host build doctrine uses `cabal build --builddir=.build exe:prodbox`; the `.build/` contract is
   intentionally command-line owned.
 - Repository-owned container builds live under `docker/`. `docker/prodbox.Dockerfile` builds the
   Haskell frontend under `/opt/build`, `docker/gateway.Dockerfile` builds the gateway image under
   the same root, and both custom Haskell images follow the single-stage `ubuntu:24.04` doctrine
-  with in-image `ghcup`, pinned GHC `9.14.1`, and no symlinked Haskell tool shims.
+  with in-image `ghcup`, pinned GHC `9.12.4`, and no symlinked Haskell tool shims.
   `docker/gateway.Dockerfile` also installs the official AWS CLI bundle from the image's native
   Debian architecture because the in-cluster gateway daemon shells out to `aws route53 ...` for
   DNS writes. The supported custom-image publish path uses ordinary host-native `docker build`
@@ -86,7 +86,7 @@ prodbox dev check
   (per [config_doctrine.md](./config_doctrine.md)) in the gateway daemon's
   `src/Prodbox/Gateway/Settings.hs`. The decoder produces typed Haskell settings values
   directly; `prodbox-config.json` and any other JSON projection of the Dhall are never
-  materialized on the supported path. Under GHC `9.14.1`, `cabal.project` carries
+  materialized on the supported path. Under GHC `9.12.4`, `cabal.project` carries
   `allow-newer` clauses for `dhall`'s transitive dependencies so the pinned `dhall ^>=1.42`
   bound continues to build cleanly.
 - Gateway runtime: network, TLS, concurrency, hashing, and JSON support required by
@@ -131,16 +131,17 @@ Checklist:
 The exact GHC and Cabal versions every project under this doctrine builds with:
 
 ```text
-GHC 9.14.1
+GHC 9.12.4
 Cabal 3.16.1.0
 ```
 
 These are not floors or recommendations. The `.cabal` file declares
-`tested-with: ghc ==9.14.1`. A `cabal.project` (or equivalent) pins
-`with-compiler: ghc-9.14.1`. CI uses the same versions. The pinned
+`tested-with: ghc ==9.12.4`. A `cabal.project` (or equivalent) pins
+`with-compiler: ghc-9.12.4`. CI uses the same versions. The
 formatter-tools GHC under `.build/<project>-style-tools/` is a separate
-isolated install and is managed by the lint stack; the project's main
-compiler is the version named here.
+sandboxed install managed by the lint stack, but it is pinned to the
+*same* GHC `9.12.4` named here: the project runs one GHC version for
+everything, including code checking. There is no second compiler version.
 
 ## Cross-References
 

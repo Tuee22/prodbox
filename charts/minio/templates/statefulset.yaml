@@ -29,32 +29,12 @@ spec:
         runAsUser: 1000
         runAsGroup: 1000
         fsGroup: 1000
-      initContainers:
-        - name: vault-secrets
-          image: "{{ .Values.vault.image.repository }}:{{ .Values.vault.image.tag }}"
-          imagePullPolicy: {{ .Values.vault.image.pullPolicy }}
-          env:
-            - name: VAULT_ADDR
-              value: {{ .Values.vault.address | quote }}
-            - name: VAULT_AUTH_PATH
-              value: {{ .Values.vault.authPath | quote }}
-            - name: VAULT_ROLE
-              value: {{ .Values.vault.role | quote }}
-            - name: VAULT_SA_TOKEN_FILE
-              value: {{ .Values.vault.serviceAccountTokenFile | quote }}
-          command:
-            - /bin/sh
-            - -ec
-            - |
-              set -eu
-              jwt="$(cat "${VAULT_SA_TOKEN_FILE}")"
-              export VAULT_TOKEN="$(vault write -field=token "auth/${VAULT_AUTH_PATH}/login" role="${VAULT_ROLE}" jwt="${jwt}")"
-              umask 077
-              vault kv get -field=rootUser secret/{{ .Values.vault.paths.root }} > /vault-materialized/rootUser
-              vault kv get -field=rootPassword secret/{{ .Values.vault.paths.root }} > /vault-materialized/rootPassword
-          volumeMounts:
-            - name: vault-materialized
-              mountPath: /vault-materialized
+      # Sprint 7.25: MinIO depends ONLY on the cluster — no Vault init container.
+      # The root credential is the static, non-secret `Prodbox.Minio.RootCredential`
+      # constant, injected directly by `renderMinioChartArgs` (--set rootUser /
+      # rootPassword), so MinIO can come up BEFORE Vault (it serves the unlock
+      # bundle pre-unseal). `secret/minio/root` still exists in Vault for the
+      # post-startup gateway/Harbor bootstrap Jobs, which run after unseal.
       containers:
         - name: minio
           image: "{{ .Values.image.repository }}:{{ .Values.image.tag }}"
@@ -66,10 +46,10 @@ spec:
             - --console-address
             - ":{{ .Values.ports.console }}"
           env:
-            - name: MINIO_ROOT_USER_FILE
-              value: /vault-materialized/rootUser
-            - name: MINIO_ROOT_PASSWORD_FILE
-              value: /vault-materialized/rootPassword
+            - name: MINIO_ROOT_USER
+              value: {{ .Values.rootUser | quote }}
+            - name: MINIO_ROOT_PASSWORD
+              value: {{ .Values.rootPassword | quote }}
           ports:
             - name: api
               containerPort: {{ .Values.ports.api }}
@@ -92,16 +72,8 @@ spec:
           resources:
             {{- toYaml .Values.resources | nindent 12 }}
           volumeMounts:
-            - name: vault-materialized
-              mountPath: /vault-materialized
-              readOnly: true
             - name: data
               mountPath: /export
-      volumes:
-        - name: vault-materialized
-          emptyDir:
-            medium: Memory
-            sizeLimit: 1Mi
   volumeClaimTemplates:
     - metadata:
         name: data

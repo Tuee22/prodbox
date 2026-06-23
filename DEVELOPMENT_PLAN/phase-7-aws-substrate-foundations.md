@@ -41,6 +41,13 @@ canonicalization + a teardown-completeness guard (📋). Both adopt the three-ti
 in [config_doctrine.md §0](../documents/engineering/config_doctrine.md) by name rather than
 restating it. All earlier Phase 7 sprints (`7.1`–`7.18`) stay `Done` on their owned scope.
 
+🔄 **Further reopened 2026-06-22 for the disk-free Vault unseal cutover** — Sprint `7.25` (📋 Planned)
+takes the unlock bundle fully into MinIO (host disk holds no unseal material): MinIO becomes
+cluster-only (its chart's Vault init container removed, static root cred injected directly), is
+reordered ahead of Vault, and the host-disk bundle write + fallback are dropped. This **closes Sprint
+`7.19`'s deferred 🧪 disk-free axis**, unblocked by the 2026-06-22 static MinIO credential. See the
+Sprint `7.25` block below + [README.md → Closure Status](README.md).
+
 ✅ **Sprint `7.14` Done (code-owned surface) 2026-06-16** — Sprint `7.14` has landed the
 decrypt-to-scratch Pulumi
 interposition over the Sprint `4.30` Model-B object-store. `Prodbox.Pulumi.EncryptedBackend`
@@ -3817,12 +3824,18 @@ classified deliberately (absent → skip; cannot-observe → refuse) through the
 
 ### Remaining Work
 
-- 📋 The corrupt/empty-checkpoint and absent-MinIO-secret classification on the per-run destroy path,
-  routed through the managed-resource registry's `reconcileAbsent` reconciler.
-- 🧪 Live-proof (Standard O): the home `prodbox test all` postflight exercise that reproduced the
-  `unexpected end of JSON input` hard-failure now converging cleanly. The Sprint `7.19` disk-free
-  MinIO-root-decouple reorder remains its own independent 🧪 live-proof axis and is not gated by this
-  sprint.
+- ✅ Landed. The corrupt/empty-checkpoint + absent-MinIO-secret classification on the per-run destroy
+  path is applied by `LiveResidue.queryOne` → `observeEncryptedStackCheckpoint`
+  (ABSENT/EMPTY → `ResidueAbsent` skip; CORRUPT/unreadable → `ResidueUnreachable` refuse) and by the
+  destroy-INVOCATION gate `perRunDestroyDecisionFromStatus` (`PerRunDestroySkip`/`Proceed`/`Refuse`,
+  consulted by each `destroy<Stack>Status` before any `pulumi`/MinIO-secret access), routed through the
+  managed-resource registry's `reconcileAbsent` (`runNativeDeleteCascade`, Sprint `4.21`). **Closed by
+  Sprint `7.22`** (which gated the destroy-invocation path + unified the MinIO-creds source — see its
+  "closes Sprint `7.21`'s outstanding … proof" note).
+- ✅ Live-proven 2026-06-18 (via Sprint `7.22`): the home `prodbox test all` postflight that reproduced
+  the `unexpected end of JSON input` hard-failure now converges cleanly (the `aws stack <stack> destroy
+  --yes` commands skip cleanly on the home cluster). The former Sprint `7.19` disk-free reorder landed as
+  Sprint `7.25` (live-proven 2026-06-23), independently of this sprint.
 
 ## Sprint 7.22: Gate the Per-Run Destroy-Invocation Path + Unify Its MinIO-Creds Source ✅
 
@@ -4039,6 +4052,98 @@ purely the Vault-at-preflight catch-22.
 ### Remaining Work
 
 - 🧪 Live-proof (non-blocking, Standard O): the resumed `prodbox test all` clears preflight and proceeds.
+
+## Sprint 7.25: Disk-free Vault unseal — unlock bundle MinIO-only ✅
+
+**Status**: ✅ Done + **live-proven 2026-06-23**. A fresh `.data/`-wiped `cluster reconcile` brought MinIO
+up FIRST (cluster-only, static cred), then Vault init **wrote the unlock bundle to the durable MinIO
+bucket** ("verified by decrypting the read-back") and unseal **read it FROM MinIO** — with **no
+`.data/prodbox/vault-unlock-bundle.age` on host disk** and the `.cluster-established` marker stamped; no
+`MinIO unreachable`, no `InvalidAccessKeyId`, no test-seam (production used real MinIO). `cluster
+reconcile` RC=0. The disk-free init/unseal/rotate LOGIC is additionally pinned by the `Sprint 1.36 vault
+lifecycle` integration test (real `vault init`/`unseal`/`reconcile`/`rotate` against the bundle store).
+**Implementation (landed)**: `charts/minio/templates/statefulset.yaml` + `charts/minio/values.yaml`,
+`src/Prodbox/CLI/Rke2.hs` (`renderMinioChartArgs`, `applyNativeInstallPlan` reorder, removed the
+restart-on-change + `VaultLifecycleResult.vaultLifecycleMinioRootChanged`), `src/Prodbox/CLI/Vault.hs`
+(`initFreshVault`, `writeBootstrapBundleToMinio`, rotate), `src/Prodbox/Vault/Host.hs`
+(`loadAndDecryptBundle` MinIO-only + `fetchBootstrapBundleEnvelope`), `src/Prodbox/Vault/Orchestration.hs`
+(`vaultUnlockBundlePath` → non-secret `clusterEstablishedMarkerPath`), `src/Prodbox/Settings.hs`,
+`test/unit/Main.hs`; docs in `vault_doctrine.md` §6/§6.1 + `config_doctrine.md` §0 Tier 1.
+**Blocked by**: none (refines Phase 7's own Tier-1 unlock-bundle surface). **Closes Sprint `7.19`'s
+deferred 🧪 disk-free-cutover axis** — unblocked by the 2026-06-22 static MinIO credential (the
+unlock-bundle write/read now uses a credential MinIO accepts, and MinIO no longer needs Vault for its
+root credential).
+**Independent Validation**: unit-testable (chart-args inject the static root cred; MinIO-only read has
+no disk-fallback branch) + a live home wipe-and-rebuild; no dependency on a later phase.
+**Docs to update**: `vault_doctrine.md` §6/§6.1, `config_doctrine.md` §0 Tier 1, `system-components.md`.
+
+### Objective
+
+Make the host's local disk hold NO material that can unseal Vault: the Tier-1 unlock bundle lives ONLY
+in the durable MinIO bucket. The previously-cited risk (MinIO unreachable at unseal → no disk fallback
+→ brick) is removed by the precondition that **MinIO depends on nothing but the cluster** — so MinIO is
+down only when the cluster is down, in which case there is nothing to unseal anyway. The host-disk copy
+guarded against "MinIO fails independently," which can no longer happen.
+
+### Deliverables (landed)
+
+- ✅ **A — cluster-only MinIO.** Deleted the `charts/minio` `vault-secrets` init container + the
+  `vault-materialized` tmpfs volume + the `vault.*` values (its sole Vault dependency at startup). The
+  MinIO container takes `MINIO_ROOT_USER`/`MINIO_ROOT_PASSWORD` directly from `.Values.rootUser`/
+  `rootPassword`, injected by `renderMinioChartArgs` `--set` from `Prodbox.Minio.RootCredential` (single
+  source of truth; non-secret constant, like Harbor). MinIO then depends only on the cluster + retained
+  PV. `secret/minio/root` stays in Vault for the post-startup gateway/Harbor bootstrap Jobs.
+- ✅ **B — reorder.** `applyNativeInstallPlan` brings `ensureMinioRuntime` (`MinioBootstrapPublic`) up
+  after `ensureRetainedLocalStorage` and BEFORE `ensureVaultRuntime`/the Vault lifecycle, so Vault init
+  writes the bundle to a live MinIO. Removed `restartMinioIfVaultRootChanged` + the now-dead
+  `vaultLifecycleMinioRootChanged`/`reconcileStepsMinioRootChanged` (the static cred never changes).
+- ✅ **C — disk-free bundle.** `initFreshVault` drops the host-disk write and makes the MinIO write
+  REQUIRED (init fails loudly if it fails — no disk fallback); `loadAndDecryptBundle` reads MinIO-only
+  (dropped `loadAndDecryptDiskBundle` + the `BootstrapFallBackToDisk`/`classifyBootstrapMinioSource`
+  classifier); `rotate-unlock-bundle` writes to MinIO. The bundle stays password-AEAD-sealed; Vault
+  Transit unchanged.
+- ✅ **Establishment probe + test seam.** The config loader's "established" signal moved off the former
+  on-disk bundle to a NON-SECRET `clusterEstablishedMarkerPath` (`.data/prodbox/.cluster-established`,
+  stamped at init) so the seed-vs-in-force decision stays port-forward-free
+  (`Prodbox.Settings.loadConfigForSettingsWith`). A `PRODBOX_TEST_BOOTSTRAP_BUNDLE_DIR` test seam
+  (mirroring the existing `PRODBOX_TEST_*` Vault seams) backs the bundle with a local file so the
+  host-only `vault lifecycle` integration test exercises init/unseal/rotate without a cluster MinIO;
+  production never sets it.
+- ✅ **No-fallback Tier-0 + `config generate` (operator-directed 2026-06-23).** Removed the
+  `defaultProjectConfig` synthesis from `writeTier0FloorPreservingParameters` (the `vault init` floor
+  stamp): it now **fails fast** when `prodbox.dhall` is absent rather than inventing a default
+  (`config_doctrine.md §0`). The binary-generated, non-secret Tier-0 file is instead produced by the new
+  **`prodbox config generate`** command (`Native.runConfigCommand`) — non-interactive, idempotent, renders
+  `prodbox.dhall` from `defaultConfigFile` when absent — which the test harness and headless bring-up use
+  in place of the removed fallback (and which authored the `prodbox.dhall` for the live proof below).
+
+### Accepted edge
+
+Wiping the MinIO PV while RETAINING Vault loses the only unseal source (the disk copy previously covered
+it). This is out of the durability model — MinIO's PV holds the in-force config + Pulumi backends too, so
+you wipe both together (→ fresh init re-writes the bundle to MinIO) or neither. Recorded in
+[vault_doctrine.md §6.1](../documents/engineering/vault_doctrine.md#61-bootstrap-minio-credential).
+
+### Validation
+
+- ✅ `prodbox dev check` 0 (policy + fourmolu + hlint "No hints" + warning-clean build).
+- ✅ `prodbox test unit` — 1053/1053 (incl. the rewritten chart-structure test asserting NO
+  `vault-secrets` init container + the static `MINIO_ROOT_USER`/`PASSWORD`, and the `renderMinioChartArgs`
+  static-cred injection; the `clusterEstablishedMarkerRelPath` + established-probe tests).
+- ✅ `prodbox test integration cli` — the `Sprint 1.36 vault lifecycle` test (real `vault init` →
+  `unseal` → `reconcile` → `rotate` → `pki` → `seal` against a fake Vault + the disk-free bundle store)
+  PASSES, proving the MinIO-only init/unseal/rotate round-trip.
+- ✅ **Live wipe-rebuild proof (2026-06-23).** `config generate` authored `prodbox.dhall`; a `.data/`-wiped
+  `cluster reconcile` came up RC=0 with MinIO FIRST, the bundle **written to + read from the durable MinIO
+  bucket** (verified by read-back), **no `.data/prodbox/vault-unlock-bundle.age` on disk** (`absent`), the
+  `.cluster-established` marker present, and no `MinIO unreachable`/`InvalidAccessKeyId`/test-seam — the
+  real-MinIO disk-free path end to end.
+
+### Remaining Work
+
+- None — code-owned + live-proven. The
+  [legacy-tracking-for-deletion.md → Completed](legacy-tracking-for-deletion.md) rows (host-disk bundle,
+  MinIO chart Vault init container, restart-on-change) landed under this sprint.
 
 ## Related Documents
 

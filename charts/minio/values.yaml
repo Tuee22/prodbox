@@ -31,14 +31,10 @@ resources:
   limits:
     memory: 2Gi
 
-vault:
-  address: http://vault.vault.svc.cluster.local:8200
-  authPath: kubernetes
-  role: minio
-  serviceAccountTokenFile: /var/run/secrets/kubernetes.io/serviceaccount/token
-  image:
-    repository: hashicorp/vault
-    tag: "1.18.3"
-    pullPolicy: IfNotPresent
-  paths:
-    root: minio/root
+# Sprint 7.25: the STATIC MinIO root credential, injected by `renderMinioChartArgs`
+# (--set rootUser / rootPassword) from `Prodbox.Minio.RootCredential` (the single
+# source of truth). Non-secret, like Harbor's hardcoded creds; these defaults are
+# only a fallback. MinIO no longer reads its credential from Vault at startup, so
+# it depends only on the cluster + its retained PV.
+rootUser: prodbox-minio-root
+rootPassword: prodboxMinioRootStaticCredentialV1

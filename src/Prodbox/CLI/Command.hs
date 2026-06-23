@@ -180,6 +180,13 @@ data ConfigCommand
     -- (@prodbox-config-types.dhall@ + @test-secrets-types.dhall@) from the
     -- Haskell source of truth.
     ConfigSchema
+  | -- | Sprint 7.25: NON-INTERACTIVELY generate the repo-root @prodbox.dhall@
+    -- from the Haskell-default non-secret config ('defaultConfigFile') when it
+    -- is absent. The binary-generated, non-secret Tier-0 file the test harness
+    -- (and operators bringing a cluster up headlessly) use instead of relying on
+    -- any fail-fast-removed default fallback. Idempotent: leaves an existing
+    -- file unchanged.
+    ConfigGenerate
   deriving (Eq, Show)
 
 data PolicyTier

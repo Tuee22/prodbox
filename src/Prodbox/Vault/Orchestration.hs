@@ -11,8 +11,8 @@ module Prodbox.Vault.Orchestration
   , UnsealOutcome (..)
   , planUnseal
   , interpretUnsealProgress
-  , vaultUnlockBundleRelPath
-  , vaultUnlockBundlePath
+  , clusterEstablishedMarkerRelPath
+  , clusterEstablishedMarkerPath
   )
 where
 
@@ -37,15 +37,19 @@ data UnsealOutcome
   | UnsealStalled
   deriving (Eq, Show)
 
--- | The repo-relative path of the encrypted host-side unlock bundle. The
--- on-disk artifact is always the ciphertext envelope; the plaintext bundle
--- lives only in memory after a successful decrypt.
-vaultUnlockBundleRelPath :: FilePath
-vaultUnlockBundleRelPath = ".data/prodbox/vault-unlock-bundle.age"
+-- | Sprint 7.25 (disk-free): the repo-relative path of the NON-SECRET
+-- cluster-established marker. The unlock bundle itself now lives only in the
+-- durable MinIO bucket (host disk holds no unseal material); this empty marker
+-- file is written at first-ever @vault init@ purely so the config loader can
+-- cheaply tell "this cluster has been brought up" (read the in-force SSoT) from
+-- "pre-establishment" (read the operator-authored seed) WITHOUT a MinIO
+-- port-forward. It carries no secret and unseals nothing.
+clusterEstablishedMarkerRelPath :: FilePath
+clusterEstablishedMarkerRelPath = ".data/prodbox/.cluster-established"
 
--- | The unlock bundle path under a repository root.
-vaultUnlockBundlePath :: FilePath -> FilePath
-vaultUnlockBundlePath repoRoot = repoRoot </> vaultUnlockBundleRelPath
+-- | The cluster-established marker path under a repository root.
+clusterEstablishedMarkerPath :: FilePath -> FilePath
+clusterEstablishedMarkerPath repoRoot = repoRoot </> clusterEstablishedMarkerRelPath
 
 -- | Plan the unseal key submissions needed to bring a sealed Vault to
 -- unsealed. An already-unsealed Vault needs no submissions ('Right' @[]@); a

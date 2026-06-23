@@ -279,6 +279,14 @@ moving the bundle into MinIO does not change the Vault PV's durability contract.
 
 ## 6. The unlock bundle (root cluster)
 
+> **Disk-free (in force, Sprint `7.25`).** The bundle lives ONLY in the durable MinIO bucket — host
+> disk holds no Vault recovery material. `vault init` writes it to MinIO (REQUIRED — init fails if the
+> write fails); `vault unseal` reads it from MinIO with no disk fallback; `rotate-unlock-bundle` rewrites
+> it in MinIO. A non-secret `.data/prodbox/.cluster-established` marker (not the bundle) is the only
+> on-disk artifact, used solely so the config loader can tell an established cluster from a
+> pre-establishment one without a MinIO port-forward. The live wipe-rebuild proof of this path is a
+> non-blocking 🧪 axis ([DEVELOPMENT_PLAN](../../DEVELOPMENT_PLAN/README.md) Sprint `7.25`).
+
 The root cluster's Vault uses **Shamir** seal mode: the operator is the only one who can unseal
 it. Initialization happens once and produces unseal/recovery keys plus the initial root token.
 prodbox captures that material exactly once and immediately writes it to a password-AEAD-sealed
@@ -357,6 +365,14 @@ else. The consequences:
   to simulate the operator at the unseal prompt (§4); no production path stores or logs it.
 
 ### 6.1 Bootstrap MinIO credential
+
+> **Disk-free (in force, Sprint `7.25`).** The bundle lives ENTIRELY in MinIO — no host-disk copy and
+> no disk fallback. MinIO is **cluster-only** (its chart `vault-secrets` init container removed, the
+> static root cred injected directly by `renderMinioChartArgs`) so it comes up BEFORE Vault and serves
+> the bundle pre-unseal. This is safe precisely because MinIO depends only on the cluster — it is
+> unreachable only when the cluster is, when there is nothing to unseal. **Accepted edge:** wiping the
+> MinIO PV while retaining Vault loses the only unseal source (wipe both or neither — MinIO's PV holds
+> the in-force config + Pulumi backends too).
 
 Because the unlock bundle lives in MinIO rather than on host disk (§6), prodbox must reach a MinIO
 object *before* Vault is unsealed. The credential it uses is the **static MinIO root credential**

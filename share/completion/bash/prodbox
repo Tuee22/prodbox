@@ -40,7 +40,7 @@ _prodbox()
         words="register"
         ;;
       "config")
-        words="setup show validate schema"
+        words="setup show validate schema generate"
         ;;
       "dev")
         words="check lint docs tla-check"

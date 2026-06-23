@@ -279,6 +279,7 @@ parserForPath path =
           )
     ["config", "validate"] -> Just (pure (RunNative (NativeConfig ConfigValidate)))
     ["config", "schema"] -> Just (pure (RunNative (NativeConfig ConfigSchema)))
+    ["config", "generate"] -> Just (pure (RunNative (NativeConfig ConfigGenerate)))
     ["vault", "status"] -> Just (pure (RunNative (NativeVault VaultStatus)))
     ["vault", "init"] -> Just (pure (RunNative (NativeVault VaultInit)))
     ["vault", "unseal"] -> Just (pure (RunNative (NativeVault VaultUnseal)))
@@ -1011,6 +1012,12 @@ configGroup =
         "Regenerate prodbox-config-types.dhall + test-secrets-types.dhall from the Haskell source of truth."
         []
         [example ["config", "schema"] "Regenerate the committed Dhall schema files."]
+    , leaf
+        "generate"
+        "Generate the default non-secret config"
+        "Non-interactively write a default, non-secret prodbox.dhall from the Haskell source of truth when it is absent; leaves an existing file unchanged (idempotent)."
+        []
+        [example ["config", "generate"] "Generate prodbox.dhall from defaults for a headless bring-up."]
     ]
     []
     [example ["config", "validate"] "Validate the config before running lifecycle commands."]
@@ -1641,7 +1648,7 @@ vaultGroup =
   group
     "vault"
     "Vault secret-management lifecycle"
-    "The in-cluster Vault lifecycle: seal-status, init, unseal, reconcile, key rotation, and PKI inspection. The host-side encrypted unlock bundle (.data/prodbox/vault-unlock-bundle.age) recovers a torn-down cluster's Vault."
+    "The in-cluster Vault lifecycle: seal-status, init, unseal, reconcile, key rotation, and PKI inspection. The encrypted unlock bundle lives in the durable MinIO bucket (host disk holds no unseal material) and recovers a torn-down cluster's Vault."
     [ leaf
         "status"
         "Report Vault seal state"

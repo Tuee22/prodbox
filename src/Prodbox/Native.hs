@@ -38,6 +38,7 @@ import Prodbox.Config.SchemaDhall
   , testSecretsTypesSchemaPath
   , writeSchemaFiles
   )
+import Prodbox.Config.Tier0 (writeOperatorParametersToTier0)
 import Prodbox.Dns (runDnsCommand)
 import Prodbox.Error (fatalError)
 import Prodbox.Gateway (runGatewayCommand)
@@ -45,13 +46,16 @@ import Prodbox.Host (runHostCommand)
 import Prodbox.K8s (runK8sCommand)
 import Prodbox.Lifecycle.Preconditions (noLiveLongLivedPulumiStacksPreflight)
 import Prodbox.PrerequisiteId (PrerequisiteId (..))
+import Prodbox.Repo (canonicalConfigPaths, configTier0Path)
 import Prodbox.Settings
-  ( renderSettingsDisplay
+  ( defaultConfigFile
+  , renderSettingsDisplay
   , validateAndLoadSettings
   )
 import Prodbox.TestRunner (runTests)
 import Prodbox.Tla (runTlaCheck)
 import Prodbox.Workload (runWorkloadCommand)
+import System.Directory (doesFileExist)
 import System.Exit
   ( ExitCode (ExitFailure, ExitSuccess)
   )
@@ -188,6 +192,33 @@ runConfigCommand repoRoot configCommand =
             ]
         )
       pure ExitSuccess
+    ConfigGenerate -> do
+      -- Sprint 7.25: non-interactively generate the repo-root prodbox.dhall from
+      -- the Haskell-default non-secret config when absent. Idempotent — an
+      -- existing file is left untouched. This is the binary-owned, non-secret
+      -- generation the test harness (and headless bring-up) use; it is NOT a
+      -- runtime fallback (the consuming paths still fail fast when the file is
+      -- missing — `writeTier0FloorPreservingParameters`).
+      materializeSchemaFilesIfStale repoRoot
+      let tier0Path = configTier0Path (canonicalConfigPaths repoRoot)
+      exists <- doesFileExist tier0Path
+      if exists
+        then do
+          writeOutput ("prodbox.dhall already present at " ++ tier0Path ++ "; leaving it unchanged.")
+          pure ExitSuccess
+        else do
+          result <- writeOperatorParametersToTier0 repoRoot defaultConfigFile
+          case result of
+            Left err -> failWith err
+            Right () -> do
+              writeOutput
+                ( "Generated a default non-secret Tier-0 prodbox.dhall from the Haskell source of "
+                    ++ "truth at "
+                    ++ tier0Path
+                    ++ ". It carries only non-secret parameters/context/witness — secrets stay "
+                    ++ "SecretRef.Vault. Edit it directly or re-author with `prodbox config setup`."
+                )
+              pure ExitSuccess
 
 failWith :: String -> IO ExitCode
 failWith message = do

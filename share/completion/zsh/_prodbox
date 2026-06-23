@@ -90,7 +90,7 @@ _prodbox() {
     3)
       case "$words[2,2]" in
         "config")
-          words=("setup" "show" "validate" "schema")
+          words=("setup" "show" "validate" "schema" "generate")
           _describe 'subcommand' words
           ;;
       esac

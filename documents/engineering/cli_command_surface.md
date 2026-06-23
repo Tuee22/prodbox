@@ -217,6 +217,7 @@ The per-group command matrix (generated; do not edit by hand):
 | `prodbox config show` | none | `--show-secrets` |
 | `prodbox config validate` | none | none |
 | `prodbox config schema` | none | none |
+| `prodbox config generate` | none | none |
 
 ### `prodbox dev`
 

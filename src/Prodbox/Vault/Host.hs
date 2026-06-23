@@ -20,9 +20,7 @@ module Prodbox.Vault.Host
 
     -- * Sprint 7.19 P3: pure bootstrap-bundle unseal-source classification
   , BootstrapMinioRead (..)
-  , BootstrapSourceDecision (..)
-  , classifyBootstrapMinioSource
-  , renderBootstrapSourceWarning
+  , bootstrapBundleTestFileName
 
     -- * Sprint 1.43: the test-harness secrets fixture (@test-secrets.dhall@)
   , TestSecrets (..)
@@ -60,7 +58,6 @@ import Prodbox.Vault.Client
   , vaultKvWriteV2
   , vaultSealStatus
   )
-import Prodbox.Vault.Orchestration (vaultUnlockBundlePath)
 import Prodbox.Vault.UnlockBundle
   ( UnlockBundle (..)
   , UnlockBundleError (..)
@@ -247,23 +244,15 @@ testHostVaultFields =
     , ("hmac_key", "test-eab-hmac-key")
     ]
 
--- | Read the encrypted unlock bundle and decrypt it with the operator password.
--- Shared by host-side Vault commands and admin/helper flows. Errors are
--- secret-free.
+-- | Read the encrypted unlock bundle from the durable MinIO bucket and decrypt
+-- it with the operator password. Shared by host-side Vault commands and
+-- admin/helper flows. Errors are secret-free.
 --
--- Sprint 7.19 (staged): the bundle source is now PREFER-MinIO, FALL-BACK-disk.
--- The operator password (obtained once) decrypts whichever source supplies the
--- ciphertext envelope: first the Tier-1 fixed-key object in the durable MinIO
--- bucket, fetched via the password-derived bootstrap credential (§6.1); if MinIO
--- is unreachable, the object is absent, or the credential cannot be derived, it
--- falls back to the host-disk bundle, which remains the load-bearing source this
--- stage. The bundle bytes are identical in both places (the @vault init@
--- dual-write), so the password decrypts either one the same way.
---
--- Sprint 7.19 (live-proof): the MinIO-root-decouple has landed (root password
--- now password-derived); once the remaining MinIO-before-Vault-unseal reorder
--- lands, the disk fallback is removed and MinIO becomes the sole source. NOT
--- done this stage.
+-- Sprint 7.25 (disk-free): the bundle lives ONLY in MinIO — there is no
+-- host-disk copy and no fallback. MinIO is reachable here because it comes up
+-- BEFORE Vault (it depends only on the cluster + its retained PV), so "MinIO
+-- unreachable" means the cluster itself is down, when there is nothing to
+-- unseal. A wrong password still fails closed (the envelope fails to decrypt).
 loadAndDecryptBundle :: FilePath -> IO (Either String UnlockBundle)
 loadAndDecryptBundle repoRoot = do
   passwordResult <- obtainOperatorPassword repoRoot
@@ -271,110 +260,57 @@ loadAndDecryptBundle repoRoot = do
     Left err -> pure (Left err)
     Right password -> do
       minioRead <- fetchBootstrapBundleEnvelope
-      case classifyBootstrapMinioSource password minioRead of
-        BootstrapUseMinio bundle -> do
-          writeOutputLine
-            ( "Tier-1 unlock bundle read from the durable MinIO bucket at "
-                ++ Text.unpack bootstrapUnlockBundleKey
-                ++ "."
+      case minioRead of
+        BootstrapMinioPresent envelopeBytes ->
+          case decryptUnlockBundle password envelopeBytes of
+            Right bundle -> do
+              writeOutputLine
+                ( "Tier-1 unlock bundle read from the durable MinIO bucket at "
+                    ++ Text.unpack bootstrapUnlockBundleKey
+                    ++ "."
+                )
+              pure (Right bundle)
+            Left err ->
+              pure
+                ( Left
+                    ( "the Tier-1 unlock bundle at "
+                        ++ Text.unpack bootstrapUnlockBundleKey
+                        ++ " is present but did not decrypt ("
+                        ++ renderUnlockBundleError err
+                        ++ "); if this is not a wrong-password run, the MinIO object is corrupt"
+                    )
+                )
+        BootstrapMinioAbsent ->
+          pure
+            ( Left
+                ( "no Tier-1 unlock bundle at "
+                    ++ Text.unpack bootstrapUnlockBundleKey
+                    ++ " in the durable MinIO bucket; run `prodbox vault init` first"
+                )
             )
-          pure (Right bundle)
-        BootstrapFallBackToDisk warning -> do
-          -- Sprint 7.19 (P3): never SILENTLY mask a present-but-undecryptable
-          -- MinIO bootstrap object or a MinIO read/credential failure. Surface
-          -- the reason as a WARNING (secret-free) before falling back to the
-          -- host-disk bundle, which remains the recovery source this stage. The
-          -- overall path still fails CLOSED when the password is wrong, because
-          -- the byte-identical disk envelope fails to decrypt too.
-          case warning of
-            Just message -> writeOutputLine ("WARNING: " ++ message)
-            Nothing -> pure ()
-          loadAndDecryptDiskBundle repoRoot password
+        BootstrapMinioUnavailable reason ->
+          pure
+            ( Left
+                ( "could not read the Tier-1 unlock bundle from the durable MinIO bucket at "
+                    ++ Text.unpack bootstrapUnlockBundleKey
+                    ++ " ("
+                    ++ reason
+                    ++ ")"
+                )
+            )
 
--- | The classified MinIO read outcome handed to the pure
--- 'classifyBootstrapMinioSource' decision. Keeps the IO (port-forward, MinIO
--- read) separate from the policy so the fall-back / warn decision is unit
--- testable without a cluster.
+-- | The classified MinIO read outcome from 'fetchBootstrapBundleEnvelope', kept
+-- as a small ADT so the read is decomposable. A failure to observe
+-- ('BootstrapMinioUnavailable') is NOT collapsed to "absent".
 data BootstrapMinioRead
   = -- | The fixed bootstrap object was present; carries its ciphertext envelope.
     BootstrapMinioPresent BS.ByteString
   | -- | The object was cleanly absent (no object at the bootstrap key).
     BootstrapMinioAbsent
-  | -- | The MinIO read or bootstrap-credential derivation failed; carries a
-    -- secret-free reason. This is NOT "absent" — it is a failure to observe.
+  | -- | The MinIO read failed; carries a secret-free reason. This is NOT
+    -- "absent" — it is a failure to observe.
     BootstrapMinioUnavailable String
   deriving (Eq, Show)
-
--- | The pure unseal-source decision: whether to use the MinIO-sourced bundle or
--- fall back to the host disk, and (when falling back) an optional secret-free
--- WARNING to surface so the failure is never silently masked.
-data BootstrapSourceDecision
-  = -- | The MinIO object decrypted cleanly; use it.
-    BootstrapUseMinio UnlockBundle
-  | -- | Fall back to the host-disk bundle. @Just@ a warning when the fall-back
-    -- is due to an integrity/availability problem worth surfacing; @Nothing@
-    -- when MinIO was cleanly absent (the ordinary pre-dual-write case).
-    BootstrapFallBackToDisk (Maybe String)
-  deriving (Eq, Show)
-
--- | Decide the unseal source from a classified MinIO read and the operator
--- password. Pure, so the warn / fall-back policy is testable:
---
---   * a present object that DECRYPTS cleanly is used directly;
---   * a present object that does NOT decrypt is treated as corruption — fall
---     back to disk WITH a warning naming the integrity failure (the disk copy
---     is byte-identical, so a wrong password still fails closed there);
---   * a clean absence falls back to disk SILENTLY (the ordinary case before the
---     dual-write has run);
---   * a MinIO read / credential-derivation failure falls back to disk WITH a
---     warning naming the reason (a failure to OBSERVE is never silently treated
---     as absent).
-classifyBootstrapMinioSource :: Text -> BootstrapMinioRead -> BootstrapSourceDecision
-classifyBootstrapMinioSource password minioRead = case minioRead of
-  BootstrapMinioPresent envelopeBytes ->
-    case decryptUnlockBundle password envelopeBytes of
-      Right bundle -> BootstrapUseMinio bundle
-      Left err -> BootstrapFallBackToDisk (Just (renderBootstrapSourceWarning err))
-  BootstrapMinioAbsent -> BootstrapFallBackToDisk Nothing
-  BootstrapMinioUnavailable reason ->
-    BootstrapFallBackToDisk
-      ( Just
-          ( "could not read the Tier-1 unlock bundle from the durable MinIO bucket at "
-              ++ Text.unpack bootstrapUnlockBundleKey
-              ++ " ("
-              ++ reason
-              ++ "); falling back to the host-disk bundle."
-          )
-      )
-
--- | Render the secret-free warning for a MinIO bootstrap object that was present
--- but did not decrypt. 'UnlockBundleMalformed' / 'UnlockBundleDecodeFailed' are
--- unambiguous corruption; 'UnlockBundleAuthFailed' is wrong-password-or-tamper
--- (kept indistinguishable). Either way it is surfaced, never masked.
-renderBootstrapSourceWarning :: UnlockBundleError -> String
-renderBootstrapSourceWarning err =
-  "the Tier-1 unlock bundle in the durable MinIO bucket at "
-    ++ Text.unpack bootstrapUnlockBundleKey
-    ++ " is present but UNDECRYPTABLE ("
-    ++ renderUnlockBundleError err
-    ++ "); falling back to the host-disk bundle. If this is not a wrong-password "
-    ++ "run, the MinIO object is corrupt and should be re-written from the host "
-    ++ "disk via `prodbox vault rotate-unlock-bundle`."
-
--- | The host-disk fallback half of 'loadAndDecryptBundle': read the on-disk
--- ciphertext envelope and decrypt it. Used when the preferred MinIO source is
--- unreachable, absent, or corrupt.
-loadAndDecryptDiskBundle :: FilePath -> Text -> IO (Either String UnlockBundle)
-loadAndDecryptDiskBundle repoRoot password = do
-  let bundlePath = vaultUnlockBundlePath repoRoot
-  bundleExists <- doesFileExist bundlePath
-  if not bundleExists
-    then pure (Left ("no unlock bundle at " ++ bundlePath ++ "; run `prodbox vault init` first"))
-    else do
-      envelopeBytes <- BS.readFile bundlePath
-      pure $ case decryptUnlockBundle password envelopeBytes of
-        Left err -> Left (renderUnlockBundleError err)
-        Right bundle -> Right bundle
 
 -- | Best-effort read of the Tier-1 unlock-bundle ciphertext envelope from the
 -- durable MinIO bucket (§6.1), using the STATIC MinIO root credential
@@ -386,14 +322,37 @@ loadAndDecryptDiskBundle repoRoot password = do
 -- collapsed to "absent".
 fetchBootstrapBundleEnvelope :: IO BootstrapMinioRead
 fetchBootstrapBundleEnvelope = do
-  result <-
-    withMinioPortForward $ \localPort ->
-      getBundleObject (bootstrapObjectStoreConfig localPort)
-  pure $ case result of
-    Right (Right (Just envelopeBytes)) -> BootstrapMinioPresent envelopeBytes
-    Right (Right Nothing) -> BootstrapMinioAbsent
-    Right (Left readErr) -> BootstrapMinioUnavailable ("MinIO read failed: " ++ readErr)
-    Left portErr -> BootstrapMinioUnavailable ("MinIO unreachable: " ++ portErr)
+  -- Sprint 7.25 test seam: when PRODBOX_TEST_BOOTSTRAP_BUNDLE_DIR is set, the
+  -- bundle is read from a local file instead of MinIO, so the host-only
+  -- vault-lifecycle integration test can exercise unseal/rotate without a real
+  -- cluster MinIO (and never touches it). Production never sets this var.
+  testDir <- lookupEnv "PRODBOX_TEST_BOOTSTRAP_BUNDLE_DIR"
+  case testDir of
+    Just dir -> do
+      let path = dir </> bootstrapBundleTestFileName
+      present <- doesFileExist path
+      if not present
+        then pure BootstrapMinioAbsent
+        else do
+          readResult <- try (BS.readFile path) :: IO (Either SomeException BS.ByteString)
+          pure $ case readResult of
+            Right bytes -> BootstrapMinioPresent bytes
+            Left err -> BootstrapMinioUnavailable ("test bootstrap-bundle read failed: " ++ show err)
+    Nothing -> do
+      result <-
+        withMinioPortForward $ \localPort ->
+          getBundleObject (bootstrapObjectStoreConfig localPort)
+      pure $ case result of
+        Right (Right (Just envelopeBytes)) -> BootstrapMinioPresent envelopeBytes
+        Right (Right Nothing) -> BootstrapMinioAbsent
+        Right (Left readErr) -> BootstrapMinioUnavailable ("MinIO read failed: " ++ readErr)
+        Left portErr -> BootstrapMinioUnavailable ("MinIO unreachable: " ++ portErr)
+
+-- | Sprint 7.25 test seam: the local filename used for the bootstrap unlock
+-- bundle under @PRODBOX_TEST_BOOTSTRAP_BUNDLE_DIR@. Shared by the read path here
+-- and the write path in "Prodbox.CLI.Vault".
+bootstrapBundleTestFileName :: FilePath
+bootstrapBundleTestFileName = "bootstrap-bundle.enc"
 
 requireReadyVault :: VaultAddress -> IO (Either String ())
 requireReadyVault address = do

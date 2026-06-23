@@ -180,6 +180,7 @@ commandPathOfRequest request =
               ConfigShow _ -> ["show"]
               ConfigValidate -> ["validate"]
               ConfigSchema -> ["schema"]
+              ConfigGenerate -> ["generate"]
         NativeDns dnsCommand ->
           "dns"
             : case dnsCommand of

@@ -104,7 +104,7 @@ import Prodbox.Vault.Host
   ( loadReadyVaultRootToken
   , readHostVaultKvField
   )
-import Prodbox.Vault.Orchestration (vaultUnlockBundlePath)
+import Prodbox.Vault.Orchestration (clusterEstablishedMarkerPath)
 import Prodbox.Vault.TransitCipher (vaultTransitDekCipher)
 import System.Directory
   ( copyFile
@@ -333,15 +333,17 @@ loadConfigForSettingsWith loadInForce repoRoot = do
     -- 'loadConfigFile' surfaces the actionable "run config setup" message.
     Left _ -> loadConfigFile repoRoot
     Right basics -> do
-      -- Sprint 1.42 Part B: the "established" signal is the presence of the
-      -- Vault unlock bundle. Before establishment — first-ever bring-up, and
-      -- every host integration test with no real cluster — there is no bundle,
-      -- so the in-force SSoT cannot exist yet: read the operator-authored Tier-0
-      -- @prodbox.dhall@ @parameters@ directly (the seed/pre-establishment
-      -- source). This is NOT a fallback for a sealed Vault. (The bundle lives on
-      -- host disk today; Sprint 7.19 relocates it to durable MinIO and must
-      -- update this establishment probe accordingly.)
-      established <- doesFileExist (vaultUnlockBundlePath repoRoot)
+      -- Sprint 1.42 Part B / Sprint 7.25: the "established" signal is the
+      -- presence of the NON-SECRET cluster-established marker, stamped on host
+      -- disk at first-ever @vault init@. Before establishment — first-ever
+      -- bring-up, and every host integration test with no real cluster — there
+      -- is no marker, so the in-force SSoT cannot exist yet: read the
+      -- operator-authored Tier-0 @prodbox.dhall@ @parameters@ directly (the
+      -- seed/pre-establishment source). This is NOT a fallback for a sealed
+      -- Vault. (Sprint 7.25 made the unlock bundle MinIO-only; this cheap,
+      -- port-forward-free probe uses the marker instead of the former on-disk
+      -- bundle file.)
+      established <- doesFileExist (clusterEstablishedMarkerPath repoRoot)
       if not established
         then loadConfigFile repoRoot
         else do

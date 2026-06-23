@@ -312,27 +312,41 @@ writeOperatorParametersToTier0 repoRoot config = do
       merged = base {parameters = configFileToTier0Parameters config}
   writeTier0 repoRoot merged
 
--- | Sprint 1.42 Part B: establish the Tier-0 floor at first-ever bring-up
--- (@vault init@) while PRESERVING any operator-authored @parameters@/@witness@
--- an earlier @config setup@ wrote to @prodbox.dhall@. Reads the existing record
--- when present (falling back to 'defaultProjectConfig'), stamps the cluster
--- identity into its @context@, and writes it back. Without this, the first
--- @vault init@ would clobber operator config authored before bring-up with
--- 'defaultProjectConfig' defaults.
+-- | Sprint 1.42 Part B / Sprint 7.25: establish the Tier-0 floor at first-ever
+-- bring-up (@vault init@) by stamping the cluster identity (cluster id + Vault
+-- address) into the @context@ of the EXISTING @prodbox.dhall@, PRESERVING its
+-- operator-authored @parameters@/@witness@. There is **no fallback default**:
+-- if @prodbox.dhall@ is absent or unreadable this FAILS fast rather than
+-- synthesizing a default config — the file must already exist, authored by
+-- @prodbox config setup@ (operator) or the test harness. The reconcile preflight
+-- ([Settings.loadConfigFile]) already gates on it, so by @vault init@ it is
+-- present; a standalone @vault init@ with no config now errors clearly instead of
+-- silently inventing one.
 writeTier0FloorPreservingParameters :: FilePath -> Text -> Text -> IO (Either String ())
 writeTier0FloorPreservingParameters repoRoot clusterId vaultAddress = do
   let tier0Path = configTier0Path (canonicalConfigPaths repoRoot)
   existing <- decodeProjectConfigDhall tier0Path
-  let base = either (const defaultProjectConfig) id existing
-      projectConfig =
-        base
-          { context =
-              (context base)
-                { cluster_id = clusterId
-                , vault_address = vaultAddress
-                }
-          }
-  writeTier0 repoRoot projectConfig
+  case existing of
+    Left err ->
+      pure
+        ( Left
+            ( "cannot stamp the Tier-0 cluster identity: `prodbox.dhall` is required but absent or "
+                ++ "unreadable ("
+                ++ err
+                ++ "). Generate it with `prodbox config setup` (or the test harness) first — the "
+                ++ "binary does not synthesize a default config."
+            )
+        )
+    Right base -> do
+      let projectConfig =
+            base
+              { context =
+                  (context base)
+                    { cluster_id = clusterId
+                    , vault_address = vaultAddress
+                    }
+              }
+      writeTier0 repoRoot projectConfig
 
 -- | The in-cluster gateway daemon's default binary context — the 'Daemon'-frame
 -- variant of 'defaultProdboxContext'. This is the context a freshly started

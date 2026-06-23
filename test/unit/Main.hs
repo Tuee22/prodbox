@@ -171,7 +171,6 @@ import Prodbox.CLI.Rke2
   , inferCascadeSubstrate
   , isMinioSecretKeyArgumentSafe
   , operationalAwsCredentialGateFromResult
-  , reconcileStepsMinioRootChanged
   , renderInotifySysctlDropIn
   , renderMinioChartArgs
   , renderNativeDeletePlan
@@ -675,19 +674,16 @@ import Prodbox.Vault.Gate
   )
 import Prodbox.Vault.Host
   ( AcmeEabFixture (..)
-  , BootstrapMinioRead (..)
-  , BootstrapSourceDecision (..)
   , TestSecrets (acme_eab)
-  , classifyBootstrapMinioSource
   , defaultTestSecrets
   , seedAcmeEabFromTestSecrets
   )
 import Prodbox.Vault.Orchestration
   ( UnsealOutcome (..)
   , UnsealStep (..)
+  , clusterEstablishedMarkerRelPath
   , interpretUnsealProgress
   , planUnseal
-  , vaultUnlockBundleRelPath
   )
 import Prodbox.Vault.Reconcile
   ( VaultAuthSpec (..)
@@ -1143,8 +1139,8 @@ main = mainWithSuite "prodbox-unit" $ do
     it "reads an unseal stall when progress did not advance" $ do
       interpretUnsealProgress (SealStatus True True 3 5 1) (UnsealStep 2 "k2")
         `shouldBe` UnsealStalled
-    it "resolves the canonical unlock-bundle path" $ do
-      vaultUnlockBundleRelPath `shouldBe` ".data/prodbox/vault-unlock-bundle.age"
+    it "resolves the cluster-established marker path (Sprint 7.25: bundle is MinIO-only)" $ do
+      clusterEstablishedMarkerRelPath `shouldBe` ".data/prodbox/.cluster-established"
   describe "federated Vault lifecycle (Sprint 4.32)" $ do
     it "classifies root and child basics into the expected lifecycle modes" $ do
       vaultLifecycleFromBasics sampleRootBasics
@@ -1667,19 +1663,6 @@ main = mainWithSuite "prodbox-unit" $ do
                          , "role:prodbox-gateway-daemon"
                          , "secret:secret/keycloak/admin"
                          ]
-    it "detects MinIO root credential writes in Vault reconcile steps" $ do
-      reconcileStepsMinioRootChanged
-        [VaultReconcileStep VaultReconcileSecretObject "secret/minio/root" VaultReconcileCreated]
-        `shouldBe` True
-      reconcileStepsMinioRootChanged
-        [VaultReconcileStep VaultReconcileSecretObject "secret/minio/root" VaultReconcileWritten]
-        `shouldBe` True
-      reconcileStepsMinioRootChanged
-        [VaultReconcileStep VaultReconcileSecretObject "secret/minio/root" VaultReconcilePresent]
-        `shouldBe` False
-      reconcileStepsMinioRootChanged
-        [VaultReconcileStep VaultReconcileSecretObject "secret/gateway/gateway/minio" VaultReconcileWritten]
-        `shouldBe` False
     it "fails loud when an existing mount has the wrong type" $ do
       let plan =
             VaultReconcilePlan
@@ -2095,36 +2078,6 @@ main = mainWithSuite "prodbox-unit" $ do
         createDirectoryIfMissing True (tmpDir </> "prodbox.dhall")
         result <- ensureBasicsFloor tmpDir "http://127.0.0.1:31820"
         result `shouldSatisfy` isLeft
-  describe "Bootstrap-bundle unseal source classification (Sprint 7.19 P3)" $ do
-    it "uses the MinIO object when it decrypts cleanly" $ do
-      encrypted <- encryptUnlockBundle sampleUnlockBundlePassword sampleUnlockBundle
-      case encrypted of
-        Left err -> expectationFailure ("expected encrypt to succeed, got: " ++ show err)
-        Right envelope ->
-          classifyBootstrapMinioSource sampleUnlockBundlePassword (BootstrapMinioPresent envelope)
-            `shouldBe` BootstrapUseMinio sampleUnlockBundle
-    it "present-but-undecryptable MinIO object falls back to disk WITH a warning (never silent)" $ do
-      encrypted <- encryptUnlockBundle sampleUnlockBundlePassword sampleUnlockBundle
-      case encrypted of
-        Left err -> expectationFailure ("expected encrypt to succeed, got: " ++ show err)
-        Right envelope -> do
-          -- A tampered (corrupt) ciphertext is present but does not decrypt: the
-          -- classifier must choose disk fallback AND carry a surfaced warning,
-          -- so the integrity failure is never silently masked.
-          let corrupt = BS.snoc envelope 0x21
-          case classifyBootstrapMinioSource sampleUnlockBundlePassword (BootstrapMinioPresent corrupt) of
-            BootstrapFallBackToDisk (Just _warning) -> pure ()
-            other -> expectationFailure ("expected disk fallback with a warning, got: " ++ show other)
-    it "a clean absence falls back to disk SILENTLY (no warning)" $
-      classifyBootstrapMinioSource sampleUnlockBundlePassword BootstrapMinioAbsent
-        `shouldBe` BootstrapFallBackToDisk Nothing
-    it
-      "a MinIO read / credential failure falls back to disk WITH a warning (failure to observe is not absence)"
-      $ case classifyBootstrapMinioSource
-        sampleUnlockBundlePassword
-        (BootstrapMinioUnavailable "MinIO unreachable: port-forward failed") of
-        BootstrapFallBackToDisk (Just _warning) -> pure ()
-        other -> expectationFailure ("expected disk fallback with a warning, got: " ++ show other)
   describe "AWS transient-error classifier (Sprint 7.20 P4)" $ do
     it "classifies well-known throttle / service-unavailable codes as transient" $ do
       awsErrorCodeIsTransient (Just "Throttling") `shouldBe` True
@@ -2695,13 +2648,14 @@ main = mainWithSuite "prodbox-unit" $ do
     it "uses the in-force config loader once the cluster is established" $
       withSystemTempDirectory "prodbox-config-loader" $ \tmpDir -> do
         -- The default Tier-0 record projects to the root floor (prodbox-home,
-        -- shamir, no parent) == sampleRootBasics. Sprint 1.42 Part B: the
-        -- "established" signal is the presence of the Vault unlock bundle, which
+        -- shamir, no parent) == sampleRootBasics. Sprint 1.42 Part B / Sprint
+        -- 7.25: the "established" signal is the presence of the non-secret
+        -- cluster-established marker (the bundle itself is now MinIO-only), which
         -- flips the loader from the seed/propose Tier-0 `parameters` read to the
         -- encrypted in-force SSoT.
         writeTier0 tmpDir defaultProjectConfig `shouldReturn` Right ()
-        createDirectoryIfMissing True (takeDirectory (tmpDir </> vaultUnlockBundleRelPath))
-        writeFile (tmpDir </> vaultUnlockBundleRelPath) "unlock-bundle-present"
+        createDirectoryIfMissing True (takeDirectory (tmpDir </> clusterEstablishedMarkerRelPath))
+        writeFile (tmpDir </> clusterEstablishedMarkerRelPath) "established"
         result <-
           loadConfigForSettingsWith
             (\basics -> basics `shouldBe` sampleRootBasics >> pure (Right roundTripConfigFile))
@@ -3805,19 +3759,29 @@ main = mainWithSuite "prodbox-unit" $ do
       keycloakBootstrap `shouldNotContain` "/v1/secret/ensure-namespace"
       keycloakSecret `shouldNotContain` "kind: Secret"
 
-    it "materializes MinIO root credentials from Vault files (Sprint 3.18)" $ do
-      repoRoot <- getCurrentDirectory
-      minioStatefulSet <-
-        readFile (repoRoot </> "charts" </> "minio" </> "templates" </> "statefulset.yaml")
-      minioSecret <- readFile (repoRoot </> "charts" </> "minio" </> "templates" </> "secret.yaml")
+    it
+      "injects the static MinIO root credential directly (Sprint 7.25: cluster-only, no Vault init container)"
+      $ do
+        repoRoot <- getCurrentDirectory
+        minioStatefulSet <-
+          readFile (repoRoot </> "charts" </> "minio" </> "templates" </> "statefulset.yaml")
+        minioSecret <- readFile (repoRoot </> "charts" </> "minio" </> "templates" </> "secret.yaml")
 
-      minioStatefulSet `shouldContain` "name: vault-secrets"
-      minioStatefulSet `shouldContain` "vault kv get -field=rootUser"
-      minioStatefulSet `shouldContain` "MINIO_ROOT_USER_FILE"
-      minioStatefulSet `shouldContain` "MINIO_ROOT_PASSWORD_FILE"
-      minioStatefulSet `shouldNotContain` "secretKeyRef:"
-      minioSecret `shouldNotContain` "randAlphaNum"
-      minioSecret `shouldNotContain` "kind: Secret"
+        -- Sprint 7.25: MinIO depends ONLY on the cluster — no Vault init container.
+        -- The static root cred is set directly on the container (injected by
+        -- renderMinioChartArgs --set rootUser / rootPassword), so MinIO can come up
+        -- before Vault to serve the unlock bundle.
+        minioStatefulSet `shouldNotContain` "name: vault-secrets"
+        minioStatefulSet `shouldNotContain` "vault kv get"
+        minioStatefulSet `shouldNotContain` "MINIO_ROOT_USER_FILE"
+        minioStatefulSet `shouldNotContain` "MINIO_ROOT_PASSWORD_FILE"
+        minioStatefulSet `shouldContain` "name: MINIO_ROOT_USER"
+        minioStatefulSet `shouldContain` "name: MINIO_ROOT_PASSWORD"
+        minioStatefulSet `shouldContain` ".Values.rootUser"
+        minioStatefulSet `shouldContain` ".Values.rootPassword"
+        minioStatefulSet `shouldNotContain` "secretKeyRef:"
+        minioSecret `shouldNotContain` "randAlphaNum"
+        minioSecret `shouldNotContain` "kind: Secret"
 
     it "pins Vault materializers to fail closed when Vault is sealed (Sprint 3.18)" $ do
       repoRoot <- getCurrentDirectory
@@ -3829,8 +3793,8 @@ main = mainWithSuite "prodbox-unit" $ do
       vscodeMaterializerJob <-
         readFile
           (repoRoot </> "charts" </> "vscode" </> "templates" </> "securitypolicy-client-secret-job.yaml")
-      minioStatefulSet <-
-        readFile (repoRoot </> "charts" </> "minio" </> "templates" </> "statefulset.yaml")
+      -- Sprint 7.25: the MinIO chart no longer has a Vault init container (it uses
+      -- the static root cred), so it is excluded from this fail-closed sweep.
       let sectionBetween :: Text.Text -> Text.Text -> String -> String
           sectionBetween start end source =
             let sourceText = Text.pack source
@@ -3846,7 +3810,6 @@ main = mainWithSuite "prodbox-unit" $ do
             [ vaultInitSection keycloakDeployment
             , vaultInitSection keycloakPostgresJob
             , vaultInitSection vscodeMaterializerJob
-            , vaultInitSection minioStatefulSet
             ]
 
       forM_ workloads $ \vaultInit -> do
@@ -9108,6 +9071,10 @@ main = mainWithSuite "prodbox-unit" $ do
       consecutivePair bootstrapArgs "storage.size=200Gi" `shouldBe` True
       consecutivePair bootstrapArgs "storage.className=gp2" `shouldBe` False
       any ("image.repository=" `isPrefixOf`) bootstrapArgs `shouldBe` True
+      -- Sprint 7.25: the STATIC MinIO root credential is injected directly so
+      -- the chart needs no Vault init container (MinIO is cluster-only).
+      consecutivePair bootstrapArgs ("rootUser=" ++ minioRootUser) `shouldBe` True
+      consecutivePair bootstrapArgs ("rootPassword=" ++ minioRootPassword) `shouldBe` True
       -- The image source is ignored: steady-state renders identically to
       -- bootstrap, and never the Harbor-mirrored registry.
       steadyArgs `shouldBe` bootstrapArgs

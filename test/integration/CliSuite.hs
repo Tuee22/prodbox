@@ -710,7 +710,9 @@ integrationCliSuite = do
         -- Sprint 4.31: MinIO + Vault are prodbox-owned StatefulSet charts. MinIO
         -- always uses the PUBLIC image (it backs Harbor — never the Harbor
         -- mirror), so there is no bitnami `minio` helm repo and the chart sets no
-        -- `mcImage`. Vault installs from `charts/vault`, spliced into reconcile.
+        -- `mcImage`. Vault installs from `charts/vault`. Sprint 7.25: MinIO is
+        -- now brought up BEFORE Vault (it is cluster-only and serves the unlock
+        -- bundle pre-unseal), so its helm install precedes Vault's.
         helmRecord `shouldNotContain` "repo|add|minio|https://charts.min.io/"
         helmRecord `shouldNotContain` "upgrade|--install|minio|minio/minio"
         helmRecord `shouldContain` "/charts/minio|--namespace|prodbox|--create-namespace"
@@ -738,9 +740,11 @@ integrationCliSuite = do
         helmRecord `shouldContain` "upgrade|--install|postgres-operator|percona/pg-operator"
         helmRecord `shouldNotContain` "uninstall|traefik|--namespace|traefik-system|--wait"
         helmRecord `shouldNotContain` "uninstall|postgres-operator|--namespace|postgres-operator|--wait"
-        findRecordLineIndex "/charts/vault|--namespace|vault" helmRecord
-          `shouldSatisfy` (< findRecordLineIndex "/charts/minio|--namespace|prodbox" helmRecord)
+        -- Sprint 7.25: MinIO is installed BEFORE Vault (cluster-only, serves the
+        -- unlock bundle before Vault unseal), and both precede Harbor.
         findRecordLineIndex "/charts/minio|--namespace|prodbox" helmRecord
+          `shouldSatisfy` (< findRecordLineIndex "/charts/vault|--namespace|vault" helmRecord)
+        findRecordLineIndex "/charts/vault|--namespace|vault" helmRecord
           `shouldSatisfy` (< findRecordLineIndex "upgrade|--install|harbor|harbor/harbor" helmRecord)
 
         dockerRecord <- readFile (tmpDir </> "fake-rke2-state" </> "docker.txt")
@@ -1066,8 +1070,15 @@ integrationCliSuite = do
         writeFile (tmpDir </> "prodbox.dhall") (wrapTier0 validConfig)
         writeFile (tmpDir </> "test-secrets.dhall") testSecretsDhall
         withFakeVaultLifecycleServer $ \vaultPort stateRef -> do
-          envVars <- fakeVaultLifecycleEnvironment vaultPort
-          let runVault args =
+          -- Sprint 7.25 (disk-free): the unlock bundle is MinIO-only, so init /
+          -- unseal / rotate write and read it through the durable object store.
+          -- This host-only test has no cluster MinIO, so point the bootstrap
+          -- bundle at a local file via the PRODBOX_TEST_BOOTSTRAP_BUNDLE_DIR test
+          -- seam (mirrors the existing PRODBOX_TEST_* Vault seams).
+          let bootstrapBundleDir = tmpDir </> ".bootstrap-bundle-store"
+          baseEnvVars <- fakeVaultLifecycleEnvironment vaultPort
+          let envVars = ("PRODBOX_TEST_BOOTSTRAP_BUNDLE_DIR", bootstrapBundleDir) : baseEnvVars
+              runVault args =
                 readCreateProcessWithExitCode
                   (proc binary ("vault" : args)) {cwd = Just tmpDir, env = Just envVars}
                   ""
@@ -1081,8 +1092,12 @@ integrationCliSuite = do
           initExit `shouldBe` ExitSuccess
           initStderr `shouldBe` ""
           initStdout `shouldContain` "Vault initialized; encrypted unlock bundle written"
-          bundleExists <- doesFileExist (tmpDir </> ".data/prodbox/vault-unlock-bundle.age")
+          -- Sprint 7.25: the bundle is written to the (test-seam) durable bundle
+          -- store, NOT host disk; the cluster-established marker is stamped on disk.
+          bundleExists <- doesFileExist (bootstrapBundleDir </> "bootstrap-bundle.enc")
           bundleExists `shouldBe` True
+          markerExists <- doesFileExist (tmpDir </> ".data/prodbox/.cluster-established")
+          markerExists `shouldBe` True
 
           (initAgainExit, initAgainStdout, initAgainStderr) <- runVault ["init"]
           initAgainExit `shouldBe` ExitSuccess

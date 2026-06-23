@@ -47,6 +47,7 @@ prodbox
     show
     validate
     schema
+    generate
   dev
     check
     lint

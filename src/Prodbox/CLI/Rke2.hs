@@ -28,7 +28,6 @@ module Prodbox.CLI.Rke2
   , renderInotifySysctlDropIn
   , renderMinioChartArgs
   , operationalAwsCredentialGateFromResult
-  , reconcileStepsMinioRootChanged
   , runEdgeCommand
   , runNativeDeleteCascade
   , runRke2Command
@@ -187,6 +186,7 @@ import Prodbox.Lifecycle.LiveResidue
 import Prodbox.Lifecycle.ResidueStatus qualified as ResidueStatus
 import Prodbox.Lifecycle.ResourceRegistry qualified as ResourceRegistry
 import Prodbox.Lifecycle.TagSweep qualified as TagSweep
+import Prodbox.Minio.RootCredential (minioRootPassword, minioRootUser)
 import Prodbox.PostgresPlatform
   ( patroniOperatorDeploymentName
   , patroniOperatorNamespace
@@ -278,10 +278,7 @@ import Prodbox.Vault.Host
   , seedAcmeEabFromTestSecrets
   )
 import Prodbox.Vault.Reconcile
-  ( VaultReconcileAction (..)
-  , VaultReconcileStep (..)
-  , VaultReconcileTarget (..)
-  , defaultVaultReconcilePlan
+  ( defaultVaultReconcilePlan
   , renderVaultReconcileError
   , renderVaultReconcileStep
   , runVaultReconcile
@@ -1230,6 +1227,11 @@ applyNativeInstallPlan repoRoot bootstrapSettings withEdge (machineId, prodboxId
       , ensureProdboxIdentityConfigMap repoRoot machineId prodboxId labelValue
       , ensureHostControlDataDirectory repoRoot bootstrapSettings
       , ensureRetainedLocalStorage repoRoot bootstrapSettings prodboxId labelValue
+      , -- Sprint 7.25: MinIO comes up BEFORE Vault (it depends only on the cluster
+        -- + its retained PV — static root cred, no Vault init container), so Vault
+        -- init writes the unlock bundle to a live MinIO and unseal reads it FROM
+        -- MinIO (disk-free).
+        ensureMinioRuntime repoRoot SubstrateHomeLocal MinioBootstrapPublic
       , ensureVaultRuntime repoRoot
       ]
   case bootstrapExit of
@@ -1239,40 +1241,32 @@ applyNativeInstallPlan repoRoot bootstrapSettings withEdge (machineId, prodboxId
       case vaultLifecycleExitCode vaultLifecycleResult of
         ExitFailure _ -> pure (vaultLifecycleExitCode vaultLifecycleResult)
         ExitSuccess -> do
-          minioBootstrapExit <- ensureMinioRuntime repoRoot SubstrateHomeLocal MinioBootstrapPublic
-          case minioBootstrapExit of
-            ExitFailure _ -> pure minioBootstrapExit
-            ExitSuccess -> do
-              minioRestartExit <-
-                restartMinioIfVaultRootChanged
-                  repoRoot
-                  (vaultLifecycleMinioRootChanged vaultLifecycleResult)
-              case minioRestartExit of
-                ExitFailure _ -> pure minioRestartExit
-                ExitSuccess -> do
-                  settingsResult <- loadPostMinioLifecycleSettings repoRoot bootstrapSettings
-                  case settingsResult of
-                    Left err -> failWith err
-                    Right settings ->
-                      runSequentially
-                        ( [ ensureHarborRegistryStorageBackend repoRoot
-                          , ensureHarborRegistryRuntime repoRoot SubstrateHomeLocal
-                          , mirrorClusterImagesOnce repoRoot
-                          , ensureRuntimeImage repoRoot prodboxId
-                          , ensureRke2RegistriesConfig repoRoot
-                          , ensureClusterPlatformRuntime repoRoot settings prodboxId labelValue
-                          , ensureMinioRuntime repoRoot SubstrateHomeLocal MinioSteadyStateHarbor
-                          , ensureGatewayMinioBootstrap repoRoot
-                          , ensureGatewayChartReady repoRoot settings SubstrateHomeLocal
-                          , ensureAdminPublicEdgeRoutes repoRoot settings SubstrateHomeLocal prodboxId labelValue
-                          , reconcileManagedAnnotations repoRoot prodboxId labelValue
-                          ]
-                            -- The public edge (Route 53 DNS + ZeroSSL DNS-01 TLS) is the only
-                            -- part of reconcile that needs operational AWS credentials. It runs
-                            -- only with @--with-edge@; bare @cluster reconcile@ stands up a fully
-                            -- working local cluster with an empty @aws.*@ block.
-                            ++ [applyPublicEdgeReconcile repoRoot settings prodboxId labelValue | withEdge]
-                        )
+          -- Sprint 7.25: MinIO (MinioBootstrapPublic) is already up from Phase 1
+          -- above and the static root cred never changes, so no post-Vault MinIO
+          -- bootstrap or restart-on-root-change step is needed here.
+          settingsResult <- loadPostMinioLifecycleSettings repoRoot bootstrapSettings
+          case settingsResult of
+            Left err -> failWith err
+            Right settings ->
+              runSequentially
+                ( [ ensureHarborRegistryStorageBackend repoRoot
+                  , ensureHarborRegistryRuntime repoRoot SubstrateHomeLocal
+                  , mirrorClusterImagesOnce repoRoot
+                  , ensureRuntimeImage repoRoot prodboxId
+                  , ensureRke2RegistriesConfig repoRoot
+                  , ensureClusterPlatformRuntime repoRoot settings prodboxId labelValue
+                  , ensureMinioRuntime repoRoot SubstrateHomeLocal MinioSteadyStateHarbor
+                  , ensureGatewayMinioBootstrap repoRoot
+                  , ensureGatewayChartReady repoRoot settings SubstrateHomeLocal
+                  , ensureAdminPublicEdgeRoutes repoRoot settings SubstrateHomeLocal prodboxId labelValue
+                  , reconcileManagedAnnotations repoRoot prodboxId labelValue
+                  ]
+                    -- The public edge (Route 53 DNS + ZeroSSL DNS-01 TLS) is the only
+                    -- part of reconcile that needs operational AWS credentials. It runs
+                    -- only with @--with-edge@; bare @cluster reconcile@ stands up a fully
+                    -- working local cluster with an empty @aws.*@ block.
+                    ++ [applyPublicEdgeReconcile repoRoot settings prodboxId labelValue | withEdge]
+                )
 
 loadPostMinioLifecycleSettings
   :: FilePath -> ValidatedSettings -> IO (Either String ValidatedSettings)
@@ -2205,7 +2199,6 @@ childTransitSealTokenPresent repoRoot = do
 
 data VaultLifecycleResult = VaultLifecycleResult
   { vaultLifecycleExitCode :: ExitCode
-  , vaultLifecycleMinioRootChanged :: Bool
   }
   deriving (Eq, Show)
 
@@ -2231,7 +2224,7 @@ ensureRootVaultLifecycleDetailed repoRoot = do
   case testLifecycle of
     Just "ready" -> do
       writeOutputLine "Vault lifecycle: test-ready"
-      pure (VaultLifecycleResult ExitSuccess False)
+      pure (VaultLifecycleResult ExitSuccess)
     Just other ->
       lifecycleFailure <$> failWith ("invalid PRODBOX_TEST_ROOT_VAULT_LIFECYCLE=" ++ other)
     Nothing -> do
@@ -2257,8 +2250,6 @@ ensureRootVaultLifecycleDetailed repoRoot = do
                   pure
                     VaultLifecycleResult
                       { vaultLifecycleExitCode = vaultReconcileCommandExitCode reconcileResult
-                      , vaultLifecycleMinioRootChanged =
-                          reconcileStepsMinioRootChanged (vaultReconcileCommandSteps reconcileResult)
                       }
 
 ensureFederatedVaultLifecycleDetailed :: FilePath -> IO VaultLifecycleResult
@@ -2392,7 +2383,7 @@ reconcileChildVaultBody _childId childRootToken = do
   case reconcileResult of
     Left err -> do
       writeOutput ("Child Vault reconcile failed: " ++ renderVaultReconcileError err)
-      pure (VaultLifecycleResult (ExitFailure 1) False)
+      pure (VaultLifecycleResult (ExitFailure 1))
     Right steps -> do
       writeOutput
         ( unlines
@@ -2403,59 +2394,13 @@ reconcileChildVaultBody _childId childRootToken = do
       pure
         VaultLifecycleResult
           { vaultLifecycleExitCode = ExitSuccess
-          , vaultLifecycleMinioRootChanged = reconcileStepsMinioRootChanged steps
           }
 
 lifecycleFailure :: ExitCode -> VaultLifecycleResult
 lifecycleFailure exitCode =
   VaultLifecycleResult
     { vaultLifecycleExitCode = exitCode
-    , vaultLifecycleMinioRootChanged = False
     }
-
-reconcileStepsMinioRootChanged :: [VaultReconcileStep] -> Bool
-reconcileStepsMinioRootChanged =
-  any isChangedMinioRootStep
- where
-  isChangedMinioRootStep step =
-    vaultReconcileStepTarget step == VaultReconcileSecretObject
-      && vaultReconcileStepName step == "secret/minio/root"
-      && vaultReconcileStepAction step `elem` [VaultReconcileCreated, VaultReconcileWritten]
-
-restartMinioIfVaultRootChanged :: FilePath -> Bool -> IO ExitCode
-restartMinioIfVaultRootChanged _repoRoot False = pure ExitSuccess
-restartMinioIfVaultRootChanged repoRoot True = do
-  writeOutputLine
-    "Vault secret/minio/root changed; restarting statefulset/minio before MinIO bucket bootstrap."
-  runSequentially
-    [ runCommand
-        Subprocess
-          { subprocessPath = "kubectl"
-          , subprocessArguments =
-              [ "rollout"
-              , "restart"
-              , "statefulset/" ++ minioReleaseName
-              , "-n"
-              , minioNamespace
-              ]
-          , subprocessEnvironment = Nothing
-          , subprocessWorkingDirectory = Just repoRoot
-          }
-    , runCommand
-        Subprocess
-          { subprocessPath = "kubectl"
-          , subprocessArguments =
-              [ "rollout"
-              , "status"
-              , "statefulset/" ++ minioReleaseName
-              , "-n"
-              , minioNamespace
-              , "--timeout=300s"
-              ]
-          , subprocessEnvironment = Nothing
-          , subprocessWorkingDirectory = Just repoRoot
-          }
-    ]
 
 resolveVaultLifecycle :: FilePath -> IO (Either String FederatedVaultLifecycle)
 resolveVaultLifecycle repoRoot = do
@@ -2557,6 +2502,13 @@ renderMinioChartArgs substrate _imageSource =
       , "image.repository=" ++ renderImageRefWithoutTag minioImage
       , "--set"
       , "image.tag=" ++ ContainerImage.imageTag minioImage
+      , -- Sprint 7.25: inject the STATIC MinIO root credential directly, so the
+        -- chart no longer reads it from Vault and MinIO depends only on the
+        -- cluster (can come up before Vault to serve the unlock bundle).
+        "--set"
+      , "rootUser=" ++ minioRootUser
+      , "--set"
+      , "rootPassword=" ++ minioRootPassword
       ]
         ++ minioSubstratePersistenceArgs substrate
 

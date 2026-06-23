@@ -20,6 +20,7 @@ module Prodbox.CLI.Vault
   )
 where
 
+import Control.Exception (SomeException, try)
 import Data.ByteString qualified as BS
 import Data.Map.Strict qualified as Map
 import Data.Text (Text)
@@ -61,7 +62,8 @@ import Prodbox.Vault.Client
   , vaultSubmitUnseal
   )
 import Prodbox.Vault.Host
-  ( loadAndDecryptBundle
+  ( bootstrapBundleTestFileName
+  , loadAndDecryptBundle
   , loadReadyVaultRootToken
   , obtainNewOperatorPassword
   , obtainOperatorPassword
@@ -70,9 +72,9 @@ import Prodbox.Vault.Host
 import Prodbox.Vault.Orchestration
   ( UnsealOutcome (..)
   , UnsealStep (..)
+  , clusterEstablishedMarkerPath
   , interpretUnsealProgress
   , planUnseal
-  , vaultUnlockBundlePath
   )
 import Prodbox.Vault.Reconcile
   ( VaultReconcileStep
@@ -96,9 +98,10 @@ import Prodbox.Vault.UnlockBundle
   , encryptUnlockBundle
   , renderUnlockBundleError
   )
-import System.Directory (createDirectoryIfMissing, doesFileExist)
+import System.Directory (createDirectoryIfMissing)
+import System.Environment (lookupEnv)
 import System.Exit (ExitCode (ExitFailure, ExitSuccess))
-import System.FilePath (takeDirectory)
+import System.FilePath (takeDirectory, (</>))
 
 -- | The cluster id stamped into the unlock bundle. A wired cluster-id source is
 -- a follow-up (Sprint 1.38 in-force config / cluster federation).
@@ -147,50 +150,54 @@ runVaultInit repoRoot address = do
 
 initFreshVault :: FilePath -> VaultAddress -> IO ExitCode
 initFreshVault repoRoot address = do
-  let bundlePath = vaultUnlockBundlePath repoRoot
-  bundleExists <- doesFileExist bundlePath
-  if bundleExists
-    then do
-      writeOutput
-        ( "unlock bundle already exists at "
-            ++ bundlePath
-            ++ " but Vault is uninitialized — manual reconciliation required"
-        )
+  -- 'runVaultInit' only calls this when Vault is uninitialized, so any unlock
+  -- bundle already in MinIO is for a now-gone Vault (a wiped Vault PV) and is
+  -- safe to overwrite — there is no separate host-disk bundle to reconcile.
+  passwordResult <- obtainOperatorPassword repoRoot
+  case passwordResult of
+    Left err -> do
+      writeOutput err
       pure (ExitFailure 1)
-    else do
-      passwordResult <- obtainOperatorPassword repoRoot
-      case passwordResult of
+    Right password -> do
+      initResult <-
+        vaultInit
+          address
+          (initRequestForSealMode (VaultSealRootShamir defaultRootShamirSealConfig))
+      case initResult of
         Left err -> do
-          writeOutput err
+          writeOutput ("Vault init failed: " ++ renderHttpError err)
           pure (ExitFailure 1)
-        Right password -> do
-          initResult <-
-            vaultInit
-              address
-              (initRequestForSealMode (VaultSealRootShamir defaultRootShamirSealConfig))
-          case initResult of
+        Right initResponse -> do
+          createdAt <- iso8601Now
+          let bundle =
+                initResponseToUnlockBundle defaultClusterId address createdAt initResponse
+          encryptResult <- encryptUnlockBundle password bundle
+          case encryptResult of
             Left err -> do
-              writeOutput ("Vault init failed: " ++ renderHttpError err)
+              writeOutput ("unlock bundle encryption failed: " ++ renderUnlockBundleError err)
               pure (ExitFailure 1)
-            Right initResponse -> do
-              createdAt <- iso8601Now
-              let bundle =
-                    initResponseToUnlockBundle defaultClusterId address createdAt initResponse
-              encryptResult <- encryptUnlockBundle password bundle
-              case encryptResult of
-                Left err -> do
-                  writeOutput ("unlock bundle encryption failed: " ++ renderUnlockBundleError err)
+            Right envelopeBytes -> do
+              -- Sprint 7.25 (disk-free): the unlock bundle lives ONLY in the
+              -- durable MinIO bucket — there is no host-disk copy. The MinIO
+              -- write is REQUIRED: if it fails, init fails LOUDLY, because the
+              -- unseal material exists nowhere else (the cluster cannot be
+              -- unsealed). MinIO is reachable here because it is brought up
+              -- BEFORE the Vault lifecycle (it depends only on the cluster).
+              minioWriteResult <- writeBootstrapBundleToMinio password envelopeBytes
+              case minioWriteResult of
+                Left writeErr -> do
+                  writeOutput
+                    ( "Vault initialized but the REQUIRED Tier-1 unlock-bundle write to the durable "
+                        ++ "MinIO bucket at "
+                        ++ Text.unpack bootstrapUnlockBundleKey
+                        ++ " FAILED: "
+                        ++ writeErr
+                        ++ ". The cluster is initialized but has NO unlock bundle, so it cannot be "
+                        ++ "unsealed. RECOVERY: ensure MinIO is running, then wipe the Vault PV "
+                        ++ "(`.data/vault`) and re-run `prodbox cluster reconcile` to re-initialize."
+                    )
                   pure (ExitFailure 1)
-                Right envelopeBytes -> do
-                  createDirectoryIfMissing True (takeDirectory bundlePath)
-                  BS.writeFile bundlePath envelopeBytes
-                  -- Sprint 7.19 (staged): DUAL-WRITE the same password-AEAD
-                  -- envelope to the durable MinIO bucket at the fixed bootstrap
-                  -- key, in addition to the host-disk write above (which stays
-                  -- PRIMARY this stage). Best-effort-but-verified (write then
-                  -- read-back); a MinIO failure logs and continues — it must not
-                  -- brick init, because disk is still the load-bearing source.
-                  dualWriteBootstrapBundle password envelopeBytes
+                Right () -> do
                   -- Sprint 1.39 (P2): the Tier-0 basics floor write is a
                   -- REQUIRED part of init success. Vault is now stamped
                   -- initialized; if the floor write fails we must fail LOUDLY
@@ -204,9 +211,8 @@ initFreshVault repoRoot address = do
                   case basicsResult of
                     Left err -> do
                       writeOutput
-                        ( "Vault initialized and unlock bundle written to "
-                            ++ bundlePath
-                            ++ ", but the REQUIRED Tier-0 basics floor write FAILED: "
+                        ( "Vault initialized and the unlock bundle written to the durable MinIO "
+                            ++ "bucket, but the REQUIRED Tier-0 basics floor write FAILED: "
                             ++ err
                             ++ ". The cluster is initialized but has no sealed-Vault basics floor; "
                             ++ "every `loadUnencryptedBasics` consumer (per-run Pulumi destroy, AWS "
@@ -217,9 +223,21 @@ initFreshVault repoRoot address = do
                         )
                       pure (ExitFailure 1)
                     Right () -> do
+                      -- Sprint 7.25: stamp the NON-SECRET cluster-established
+                      -- marker on host disk so the config loader can tell an
+                      -- established cluster (read the in-force SSoT) from a
+                      -- pre-establishment one (read the seed) without a MinIO
+                      -- port-forward. The unlock material itself is NOT here — it
+                      -- lives only in MinIO. This empty marker unseals nothing.
+                      let markerPath = clusterEstablishedMarkerPath repoRoot
+                      createDirectoryIfMissing True (takeDirectory markerPath)
+                      writeFile
+                        markerPath
+                        "prodbox cluster-established marker (Sprint 7.25; non-secret; unseals nothing)\n"
                       writeOutput
-                        ( "Vault initialized; encrypted unlock bundle written to "
-                            ++ bundlePath
+                        ( "Vault initialized; encrypted unlock bundle written to the durable MinIO "
+                            ++ "bucket at "
+                            ++ Text.unpack bootstrapUnlockBundleKey
                             ++ ". Keep the unlock password safe — it is the only way to unseal this cluster."
                         )
                       pure ExitSuccess
@@ -234,95 +252,79 @@ initFreshVault repoRoot address = do
 -- address stamped here match the ones written into the unlock bundle.
 writeTier0BasicsFloor :: FilePath -> VaultAddress -> IO (Either String ())
 writeTier0BasicsFloor repoRoot address =
-  -- Sprint 1.42 Part B: preserve any operator-authored `parameters`/`witness`
-  -- an earlier `config setup` wrote to prodbox.dhall; only stamp the cluster
-  -- identity into the `context`. Falls back to defaultProjectConfig when no
-  -- prodbox.dhall exists yet.
+  -- Sprint 1.42 Part B / Sprint 7.25: preserve any operator-authored
+  -- `parameters`/`witness` an earlier `config setup` (or the test harness) wrote
+  -- to prodbox.dhall; only stamp the cluster identity into the `context`. There
+  -- is NO default fallback — if prodbox.dhall is absent this fails fast.
   writeTier0FloorPreservingParameters repoRoot defaultClusterId (unVaultAddress address)
 
--- | DUAL-WRITE the password-AEAD unlock-bundle envelope to the durable MinIO
--- bucket at the fixed bootstrap key, alongside the host-disk write that remains
--- PRIMARY this stage. The bundle is Tier-1 and root-cluster-only; @vault init@
--- always initializes the root with Shamir seal ('VaultSealRootShamir'), so this
--- path is reached only for the root cluster (child clusters use transit-seal and
--- never call 'initFreshVault'), satisfying the "no bundle object for a child"
--- constraint without a per-cluster branch.
+-- | Sprint 7.25 (disk-free): write the password-AEAD unlock-bundle envelope to
+-- the durable MinIO bucket at the fixed bootstrap key — the SOLE home for the
+-- bundle (no host-disk copy). The bundle is Tier-1 and root-cluster-only;
+-- @vault init@ always initializes the root with Shamir seal
+-- ('VaultSealRootShamir'), so this path is reached only for the root cluster
+-- (child clusters use transit-seal and never call 'initFreshVault').
 --
 -- The write uses the STATIC MinIO root credential ('bootstrapObjectStoreConfig')
--- — a credential MinIO actually accepts — and is BEST-EFFORT-BUT-VERIFIED: open
--- the local port-forward, write, then read back and DECRYPT with the operator
--- password (proving the object is usable at unseal). ANY failure (MinIO
--- unreachable, mismatch) is logged and swallowed — it must not brick init,
--- because the host-disk bundle written just above is still the load-bearing
--- unseal source this stage. Dropping the host-disk write (the disk-free cutover)
--- is a separate later decision.
-dualWriteBootstrapBundle :: Text -> BS.ByteString -> IO ()
-dualWriteBootstrapBundle password envelopeBytes = do
+-- and is REQUIRED-AND-VERIFIED: open the local port-forward, write, then read
+-- back and DECRYPT with the operator password (proving the object is usable at
+-- unseal). ANY failure (MinIO unreachable, write error, undecryptable read-back)
+-- is returned as @Left@ so the caller fails LOUDLY — there is no disk fallback,
+-- so a silent failure would brick the cluster (no way to unseal).
+writeBootstrapBundleToMinio :: Text -> BS.ByteString -> IO (Either String ())
+writeBootstrapBundleToMinio password envelopeBytes = do
+  -- Sprint 7.25 test seam: when PRODBOX_TEST_BOOTSTRAP_BUNDLE_DIR is set, write
+  -- the bundle to a local file instead of MinIO (mirrors the read seam in
+  -- 'fetchBootstrapBundleEnvelope'), so the host-only vault-lifecycle integration
+  -- test can exercise init/rotate without a real cluster MinIO. Production never
+  -- sets this var, so the bundle always lives in the durable MinIO bucket.
+  testDir <- lookupEnv "PRODBOX_TEST_BOOTSTRAP_BUNDLE_DIR"
+  case testDir of
+    Just dir -> do
+      let path = dir </> bootstrapBundleTestFileName
+      createDirectoryIfMissing True dir
+      writeResult <- try (BS.writeFile path envelopeBytes) :: IO (Either SomeException ())
+      case writeResult of
+        Left err -> pure (Left ("test bootstrap-bundle write failed: " ++ show err))
+        Right () -> do
+          writeOutputLine
+            ("Tier-1 unlock bundle written to the test bootstrap-bundle file at " ++ path ++ ".")
+          pure (Right ())
+    Nothing -> writeBootstrapBundleToMinioReal password envelopeBytes
+
+-- | The real MinIO-backed bootstrap-bundle write (Sprint 7.25). See
+-- 'writeBootstrapBundleToMinio' for the doctrine; this is the production path.
+writeBootstrapBundleToMinioReal :: Text -> BS.ByteString -> IO (Either String ())
+writeBootstrapBundleToMinioReal password envelopeBytes = do
   result <-
     withMinioPortForward $ \localPort -> do
       let config = bootstrapObjectStoreConfig localPort
       putResult <- putBundleObject config envelopeBytes
       case putResult of
-        Left err -> pure (Left (ReadBackFailed err))
+        Left err -> pure (Left ("write failed: " ++ err))
         Right () -> do
           readBack <- getBundleObject config
           -- Verify the read-back by DECRYPTING it with the operator password —
           -- proves the object is actually usable at unseal, not merely byte-equal.
-          -- A present-but-undecryptable read-back is a corruption
-          -- ('ReadBackUndecryptable') so the caller can log CRITICAL.
           pure $ case readBack of
-            Left err -> Left (ReadBackFailed ("read-back failed: " ++ err))
+            Left err -> Left ("read-back failed: " ++ err)
             Right Nothing ->
-              Left
-                ( ReadBackFailed
-                    ("read-back returned no object at " ++ Text.unpack bootstrapUnlockBundleKey)
-                )
+              Left ("read-back returned no object at " ++ Text.unpack bootstrapUnlockBundleKey)
             Right (Just bytes) ->
               case decryptUnlockBundle password bytes of
                 Right _ -> Right ()
-                Left decErr -> Left (ReadBackUndecryptable (renderUnlockBundleError decErr))
+                Left decErr ->
+                  Left ("read-back is PRESENT but UNDECRYPTABLE (" ++ renderUnlockBundleError decErr ++ ")")
   case result of
-    Right (Right ()) ->
+    Left portErr -> pure (Left ("MinIO unreachable: " ++ portErr))
+    Right (Left err) -> pure (Left err)
+    Right (Right ()) -> do
       writeOutputLine
-        ( "Tier-1 unlock bundle also written to the durable MinIO bucket at "
+        ( "Tier-1 unlock bundle written to the durable MinIO bucket at "
             ++ Text.unpack bootstrapUnlockBundleKey
             ++ " (verified by decrypting the read-back)."
         )
-    Right (Left (ReadBackUndecryptable detail)) ->
-      -- Present-but-undecryptable read-back: the object exists but cannot be
-      -- opened with the operator password. Loud CRITICAL — the write stays
-      -- best-effort (must not brick init) but this is never a routine note.
-      writeOutputLine
-        ( "CRITICAL: Tier-1 unlock-bundle MinIO dual-write read-back is PRESENT "
-            ++ "but UNDECRYPTABLE at "
-            ++ Text.unpack bootstrapUnlockBundleKey
-            ++ " ("
-            ++ detail
-            ++ "). The durable MinIO copy is corrupt; the host-disk bundle "
-            ++ "remains the load-bearing unseal source. Re-run "
-            ++ "`prodbox vault rotate-unlock-bundle` to repair the MinIO copy."
-        )
-    Right (Left (ReadBackFailed writeErr)) ->
-      writeOutputLine
-        ( "note: Tier-1 unlock-bundle MinIO dual-write did not complete ("
-            ++ writeErr
-            ++ "); the host-disk bundle remains the unseal source."
-        )
-    Left portErr ->
-      writeOutputLine
-        ( "note: Tier-1 unlock-bundle MinIO dual-write skipped (MinIO unreachable: "
-            ++ portErr
-            ++ "); the host-disk bundle remains the unseal source."
-        )
-
--- | The classified failure of the Sprint 7.19 dual-write read-back verification.
--- A present-but-undecryptable read-back ('ReadBackUndecryptable') is a corruption
--- that warrants a CRITICAL log; a plain 'ReadBackFailed' (write error, absent
--- object, read error) is a routine best-effort note.
-data DualWriteReadBackError
-  = ReadBackFailed String
-  | ReadBackUndecryptable String
-  deriving (Eq, Show)
+      pure (Right ())
 
 -- | @prodbox vault unseal@: read and decrypt the unlock bundle, then submit its
 -- unseal key shares until the Vault reports unsealed.
@@ -520,10 +522,25 @@ runVaultRotateUnlockBundle repoRoot = do
               writeOutput ("unlock bundle encryption failed: " ++ renderUnlockBundleError err)
               pure (ExitFailure 1)
             Right envelopeBytes -> do
-              let bundlePath = vaultUnlockBundlePath repoRoot
-              BS.writeFile bundlePath envelopeBytes
-              writeOutput ("Vault unlock bundle re-encrypted at " ++ bundlePath ++ ".")
-              pure ExitSuccess
+              -- Sprint 7.25 (disk-free): the re-encrypted bundle is written back
+              -- to the durable MinIO bucket (its sole home), not host disk.
+              minioWriteResult <- writeBootstrapBundleToMinio newPassword envelopeBytes
+              case minioWriteResult of
+                Left writeErr -> do
+                  writeOutput
+                    ( "Vault unlock bundle re-encrypted but the write to the durable MinIO bucket "
+                        ++ "FAILED: "
+                        ++ writeErr
+                        ++ ". The previous bundle is unchanged; retry once MinIO is reachable."
+                    )
+                  pure (ExitFailure 1)
+                Right () -> do
+                  writeOutput
+                    ( "Vault unlock bundle re-encrypted in the durable MinIO bucket at "
+                        ++ Text.unpack bootstrapUnlockBundleKey
+                        ++ "."
+                    )
+                  pure ExitSuccess
 
 -- | @prodbox vault rotate-transit-key KEY@: rotate a named Transit key after
 -- verifying Vault is initialized and unsealed.

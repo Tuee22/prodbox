@@ -39,6 +39,7 @@ complete -c prodbox -f -n '__fish_seen_subcommand_from config' -a 'setup' -d 'In
 complete -c prodbox -f -n '__fish_seen_subcommand_from config' -a 'show' -d 'Display current config'
 complete -c prodbox -f -n '__fish_seen_subcommand_from config' -a 'validate' -d 'Validate current config'
 complete -c prodbox -f -n '__fish_seen_subcommand_from config' -a 'schema' -d 'Regenerate Dhall schema files'
+complete -c prodbox -f -n '__fish_seen_subcommand_from config' -a 'generate' -d 'Generate the default non-secret config'
 complete -c prodbox -f -n '__fish_seen_subcommand_from dev' -a 'check' -d 'Run policy, lint, and type checks'
 complete -c prodbox -f -n '__fish_seen_subcommand_from dev' -a 'lint' -d 'Doctrine lint surfaces'
 complete -c prodbox -f -n '__fish_seen_subcommand_from dev' -a 'docs' -d 'Generated-documentation maintenance'

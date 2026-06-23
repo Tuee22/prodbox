@@ -47,6 +47,7 @@
 | `prodbox config show` | Display current config |
 | `prodbox config validate` | Validate current config |
 | `prodbox config schema` | Regenerate Dhall schema files |
+| `prodbox config generate` | Generate the default non-secret config |
 | `prodbox dev check` | Run policy, lint, and type checks |
 | `prodbox dev lint all` | Run every lint surface |
 | `prodbox dev lint files` | Run repository-policy lint checks |
@@ -115,9 +116,9 @@ wired — it probes the in-cluster Vault and reports initialized / sealed / unse
 it is unreachable. The mutating subcommands (`init`, `unseal`, `seal`, `reconcile`,
 `rotate-unlock-bundle`, `rotate-transit-key`, `pki status`, `pki issue-test-cert`) are wired to the
 surface; their init/unseal orchestration and authenticated (token-bearing) flows are still being
-built and report so until they land. The host-side
-[unlock bundle](../engineering/vault_doctrine.md#6-the-unlock-bundle) at
-`.data/prodbox/vault-unlock-bundle.age` recovers a torn-down cluster's Vault, and a sealed Vault
-fails closed; the model these commands operate against is owned by
+built and report so until they land. The
+[unlock bundle](../engineering/vault_doctrine.md#6-the-unlock-bundle) lives in the durable MinIO
+bucket (host disk holds no unseal material) and recovers a torn-down cluster's Vault,
+and a sealed Vault fails closed; the model these commands operate against is owned by
 [`vault_doctrine.md`](../engineering/vault_doctrine.md) (see
 [§7 Vault lifecycle commands](../engineering/vault_doctrine.md#7-vault-lifecycle-commands)).

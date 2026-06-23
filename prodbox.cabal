@@ -39,6 +39,7 @@ library
         Prodbox.Daemon.Events
         Prodbox.Crypto.Envelope
         Prodbox.Dns
+        Prodbox.DockerConfig
         Prodbox.Error
         Prodbox.Effect
         Prodbox.EffectDAG
@@ -88,6 +89,7 @@ library
         Prodbox.Lint
         Prodbox.Minio.EncryptedObject
         Prodbox.Minio.ObjectStore
+        Prodbox.Minio.RootCredential
         Prodbox.Naming
         Prodbox.Native
         Prodbox.PostgresPlatform

@@ -45,15 +45,11 @@ import Data.Text qualified as Text
 import Dhall (FromDhall, ToDhall, auto, inputFile)
 import GHC.Generics (Generic)
 import Prodbox.CLI.Output (writeDiagnostic, writeDiagnosticLine, writeOutputLine)
-import Prodbox.Config.Basics (UnencryptedBasics (..))
-import Prodbox.Config.FloorDhall qualified as FloorDhall
 import Prodbox.Http.Client (HttpError (..), renderHttpError)
 import Prodbox.Infra.MinioBackend (withMinioPortForward)
 import Prodbox.Vault.BootstrapBundle
   ( bootstrapObjectStoreConfig
-  , bootstrapSaltForClusterId
   , bootstrapUnlockBundleKey
-  , deriveBootstrapMinioCredential
   , getBundleObject
   )
 import Prodbox.Vault.Client
@@ -264,16 +260,17 @@ testHostVaultFields =
 -- stage. The bundle bytes are identical in both places (the @vault init@
 -- dual-write), so the password decrypts either one the same way.
 --
--- Sprint 7.19 (live-proof): once the MinIO-before-Vault-unseal +
--- MinIO-root-decouple reorder lands, the disk fallback is removed and MinIO
--- becomes the sole source. NOT done this stage.
+-- Sprint 7.19 (live-proof): the MinIO-root-decouple has landed (root password
+-- now password-derived); once the remaining MinIO-before-Vault-unseal reorder
+-- lands, the disk fallback is removed and MinIO becomes the sole source. NOT
+-- done this stage.
 loadAndDecryptBundle :: FilePath -> IO (Either String UnlockBundle)
 loadAndDecryptBundle repoRoot = do
   passwordResult <- obtainOperatorPassword repoRoot
   case passwordResult of
     Left err -> pure (Left err)
     Right password -> do
-      minioRead <- fetchBootstrapBundleEnvelope repoRoot password
+      minioRead <- fetchBootstrapBundleEnvelope
       case classifyBootstrapMinioSource password minioRead of
         BootstrapUseMinio bundle -> do
           writeOutputLine
@@ -380,50 +377,23 @@ loadAndDecryptDiskBundle repoRoot password = do
         Right bundle -> Right bundle
 
 -- | Best-effort read of the Tier-1 unlock-bundle ciphertext envelope from the
--- durable MinIO bucket (§6.1). Derives the password-derived bootstrap MinIO
--- credential from the operator password + the public per-cluster salt, opens the
--- local MinIO port-forward, and reads the fixed bootstrap key. Returns a
--- classified 'BootstrapMinioRead' so the caller can DISTINGUISH a clean absence
--- (fall back silently) from a failure to observe or a present-but-corrupt object
--- (fall back WITH a warning). Sprint 7.19 (P3): a read/credential failure is no
--- longer collapsed to "absent" — it is surfaced as 'BootstrapMinioUnavailable'.
-fetchBootstrapBundleEnvelope :: FilePath -> Text -> IO BootstrapMinioRead
-fetchBootstrapBundleEnvelope repoRoot password = do
-  clusterId <- resolveBootstrapClusterId repoRoot
-  case deriveBootstrapMinioCredential password (bootstrapSaltForClusterId clusterId) of
-    Left credErr ->
-      pure
-        ( BootstrapMinioUnavailable
-            ("bootstrap credential derivation failed: " ++ renderUnlockBundleError credErr)
-        )
-    Right credential -> do
-      result <-
-        withMinioPortForward $ \localPort ->
-          getBundleObject (bootstrapObjectStoreConfig localPort credential)
-      pure $ case result of
-        Right (Right (Just envelopeBytes)) -> BootstrapMinioPresent envelopeBytes
-        Right (Right Nothing) -> BootstrapMinioAbsent
-        Right (Left readErr) -> BootstrapMinioUnavailable ("MinIO read failed: " ++ readErr)
-        Left portErr -> BootstrapMinioUnavailable ("MinIO unreachable: " ++ portErr)
-
--- | The public per-cluster cluster id used to derive the bootstrap MinIO salt.
--- Read best-effort from the Tier-0 @prodbox.dhall@ sealed-Vault bootstrap floor
--- (the non-secret bootstrap surface, projected via
--- 'Prodbox.Config.FloorDhall.loadUnencryptedBasics'); on any absence/decode
--- failure it falls back to the documented default cluster id, which matches what
--- @vault init@ stamps.
-resolveBootstrapClusterId :: FilePath -> IO Text
-resolveBootstrapClusterId repoRoot = do
-  floorResult <- FloorDhall.loadUnencryptedBasics repoRoot
-  pure $ case floorResult of
-    Left _ -> defaultBootstrapClusterId
-    Right basics -> basicsClusterId basics
-
--- | The documented default cluster id (mirrors @Prodbox.Config.Tier0@'s
--- @defaultProdboxContext@ and @Prodbox.CLI.Vault.defaultClusterId@). Kept local
--- to avoid an import cycle through the CLI layer.
-defaultBootstrapClusterId :: Text
-defaultBootstrapClusterId = "prodbox-home"
+-- durable MinIO bucket (§6.1), using the STATIC MinIO root credential
+-- ('bootstrapObjectStoreConfig'). Opens the local MinIO port-forward and reads
+-- the fixed bootstrap key. Returns a classified 'BootstrapMinioRead' so the
+-- caller can DISTINGUISH a clean absence (fall back silently) from a failure to
+-- observe or a present-but-corrupt object (fall back WITH a warning); a
+-- read/connection failure is surfaced as 'BootstrapMinioUnavailable', never
+-- collapsed to "absent".
+fetchBootstrapBundleEnvelope :: IO BootstrapMinioRead
+fetchBootstrapBundleEnvelope = do
+  result <-
+    withMinioPortForward $ \localPort ->
+      getBundleObject (bootstrapObjectStoreConfig localPort)
+  pure $ case result of
+    Right (Right (Just envelopeBytes)) -> BootstrapMinioPresent envelopeBytes
+    Right (Right Nothing) -> BootstrapMinioAbsent
+    Right (Left readErr) -> BootstrapMinioUnavailable ("MinIO read failed: " ++ readErr)
+    Left portErr -> BootstrapMinioUnavailable ("MinIO unreachable: " ++ portErr)
 
 requireReadyVault :: VaultAddress -> IO (Either String ())
 requireReadyVault address = do

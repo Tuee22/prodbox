@@ -438,21 +438,16 @@ buildChartDeploymentPlanForSubstrate substrate repoRoot settings chartName chart
   case dependencyOrderResult of
     Left err -> pure (Left err)
     Right releaseOrder -> do
-      gatewayImageResult <-
-        if "gateway" `elem` releaseOrder
-          then resolveGatewayChartImageForSubstrate substrate
-          else pure (Right Nothing)
-      publicEdgeWorkloadImageResult <-
-        if "api" `elem` releaseOrder || "websocket" `elem` releaseOrder
-          then resolvePublicEdgeWorkloadChartImageForSubstrate substrate
+      runtimeImageResult <-
+        if any (`elem` releaseOrder) ["gateway", "api", "websocket"]
+          then resolveRuntimeChartImageForSubstrate substrate
           else pure (Right Nothing)
       gatewayHostedZoneIdResult <-
         if "gateway" `elem` releaseOrder
           then resolveGatewayHostedZoneIdForSubstrate substrate repoRoot settings
           else pure (Right Nothing)
       pure $ do
-        maybeGatewayImage <- gatewayImageResult
-        maybePublicEdgeWorkloadImage <- publicEdgeWorkloadImageResult
+        maybeRuntimeImage <- runtimeImageResult
         maybeGatewayHostedZoneId <- gatewayHostedZoneIdResult
         buildChartDeploymentPlanPure
           substrate
@@ -461,8 +456,7 @@ buildChartDeploymentPlanForSubstrate substrate repoRoot settings chartName chart
           chartName
           chartSecrets
           gatewayEventKeys
-          maybeGatewayImage
-          maybePublicEdgeWorkloadImage
+          maybeRuntimeImage
           maybeGatewayHostedZoneId
 
 buildChartDeletePlan
@@ -1577,10 +1571,9 @@ buildChartDeploymentPlanPure
   -> Map String String
   -> Map String String
   -> Maybe ResolvedCustomImage
-  -> Maybe ResolvedCustomImage
   -> Maybe String
   -> Either String ChartDeploymentPlan
-buildChartDeploymentPlanPure substrate repoRoot settings chartName chartSecrets gatewayEventKeys maybeGatewayImage maybePublicEdgeWorkloadImage maybeGatewayHostedZoneId = do
+buildChartDeploymentPlanPure substrate repoRoot settings chartName chartSecrets gatewayEventKeys maybeRuntimeImage maybeGatewayHostedZoneId = do
   when
     (substrate == SubstrateHomeLocal && chartStorageClassName /= "manual")
     (Left "Chart platform requires StorageClass 'manual'; dynamic provisioners are not permitted")
@@ -1609,8 +1602,7 @@ buildChartDeploymentPlanPure substrate repoRoot settings chartName chartSecrets 
           storageClassName
           storageBindings
           maybePublicFqdn
-          maybeGatewayImage
-          maybePublicEdgeWorkloadImage
+          maybeRuntimeImage
           maybeGatewayHostedZoneId
       pure
         ChartReleasePlan
@@ -1701,10 +1693,9 @@ renderReleaseValuesJson
   -> [ChartStorageBinding]
   -> Maybe String
   -> Maybe ResolvedCustomImage
-  -> Maybe ResolvedCustomImage
   -> Maybe String
   -> Either String String
-renderReleaseValuesJson substrate definition namespace rootChart settings chartSecrets gatewayEventKeys storageClassName storageBindings maybePublicFqdn maybeGatewayImage maybePublicEdgeWorkloadImage maybeGatewayHostedZoneId = do
+renderReleaseValuesJson substrate definition namespace rootChart settings chartSecrets gatewayEventKeys storageClassName storageBindings maybePublicFqdn maybeRuntimeImage maybeGatewayHostedZoneId = do
   values <-
     case chartDefinitionName definition of
       "keycloak-postgres" ->
@@ -1734,12 +1725,12 @@ renderReleaseValuesJson substrate definition namespace rootChart settings chartS
       "api" ->
         case maybePublicFqdn of
           Just fqdn ->
-            valuesForApi namespace rootChart settings fqdn maybePublicEdgeWorkloadImage
+            valuesForApi namespace rootChart settings fqdn maybeRuntimeImage
           Nothing -> Left "api requires a public host"
       "websocket" ->
         case maybePublicFqdn of
           Just fqdn ->
-            valuesForWebsocket namespace rootChart settings chartSecrets fqdn maybePublicEdgeWorkloadImage
+            valuesForWebsocket namespace rootChart settings chartSecrets fqdn maybeRuntimeImage
           Nothing -> Left "websocket requires a public host"
       "gateway" ->
         case (maybePublicFqdn, maybeGatewayHostedZoneId) of
@@ -1751,7 +1742,7 @@ renderReleaseValuesJson substrate definition namespace rootChart settings chartS
               settings
               gatewayEventKeys
               fqdn
-              maybeGatewayImage
+              maybeRuntimeImage
               zoneId
           (Nothing, _) -> Left "gateway requires a public host"
           (_, Nothing) -> Left "gateway requires a Route 53 hosted zone id"
@@ -2023,7 +2014,7 @@ valuesForGateway
   -> Maybe ResolvedCustomImage
   -> String
   -> Either String Value
-valuesForGateway substrate namespace rootChart settings _gatewayEventKeys sharedHostFqdn maybeGatewayImage zoneId = do
+valuesForGateway substrate namespace rootChart settings _gatewayEventKeys sharedHostFqdn maybeRuntimeImage zoneId = do
   -- Sprint 3.18: the per-node event keys and gateway AWS/MinIO credentials
   -- are Vault KV objects rendered into config.dhall as SecretRef.Vault
   -- references. The legacy 'gatewayEventKeys' parameter is vestigial and
@@ -2037,7 +2028,7 @@ valuesForGateway substrate namespace rootChart settings _gatewayEventKeys shared
     (substrate == SubstrateHomeLocal && null zoneId)
     (Left "gateway chart requires route53_zone_id in settings")
   resolvedGatewayImage <-
-    case maybeGatewayImage of
+    case maybeRuntimeImage of
       Just imageInfo -> Right imageInfo
       Nothing -> Left "gateway chart requires a resolved image reference"
   let gatewayRepository = resolvedCustomImageRepository resolvedGatewayImage
@@ -2253,11 +2244,11 @@ valuesForApi
   -> String
   -> Maybe ResolvedCustomImage
   -> Either String Value
-valuesForApi namespace rootChart settings sharedHostFqdn maybePublicEdgeWorkloadImage = do
+valuesForApi namespace rootChart settings sharedHostFqdn maybeRuntimeImage = do
   resolvedWorkloadImage <-
-    case maybePublicEdgeWorkloadImage of
+    case maybeRuntimeImage of
       Just imageInfo -> Right imageInfo
-      Nothing -> Left "api chart requires a resolved public-edge workload image reference"
+      Nothing -> Left "api chart requires a resolved runtime image reference"
   let workloadRepository = resolvedCustomImageRepository resolvedWorkloadImage
       workloadTag = resolvedCustomImageTag resolvedWorkloadImage
       keycloakIssuer =
@@ -2321,11 +2312,11 @@ valuesForWebsocket
   -> String
   -> Maybe ResolvedCustomImage
   -> Either String Value
-valuesForWebsocket namespace rootChart settings _chartSecrets sharedHostFqdn maybePublicEdgeWorkloadImage = do
+valuesForWebsocket namespace rootChart settings _chartSecrets sharedHostFqdn maybeRuntimeImage = do
   resolvedWorkloadImage <-
-    case maybePublicEdgeWorkloadImage of
+    case maybeRuntimeImage of
       Just imageInfo -> Right imageInfo
-      Nothing -> Left "websocket chart requires a resolved public-edge workload image reference"
+      Nothing -> Left "websocket chart requires a resolved runtime image reference"
   -- Sprint 3.18: the websocket chart renders a SecretRef.Vault for the OIDC
   -- client secret. The workload binary authenticates to Vault through its
   -- Kubernetes service account and reads KV directly; Helm no longer looks up
@@ -2427,25 +2418,16 @@ customImagePodAnnotationsValue maybeRolloutToken =
   object
     (maybe [] (\rolloutToken -> ["prodbox.io/image-build-id" .= rolloutToken]) maybeRolloutToken)
 
-resolveGatewayChartImageForSubstrate :: Substrate -> IO (Either String (Maybe ResolvedCustomImage))
-resolveGatewayChartImageForSubstrate substrate =
+-- | Resolve the single union runtime image consumed by every in-cluster role
+-- (gateway daemon + api / websocket workloads).
+resolveRuntimeChartImageForSubstrate :: Substrate -> IO (Either String (Maybe ResolvedCustomImage))
+resolveRuntimeChartImageForSubstrate substrate =
   case substrate of
     SubstrateHomeLocal ->
-      resolveCustomImageTag ContainerImage.harborGatewayImageRepository
+      resolveCustomImageTag ContainerImage.harborRuntimeImageRepository
     SubstrateAws ->
       resolveCustomImageFixedTag
-        ContainerImage.harborGatewayImageRepository
-        awsSubstrateCustomImageTag
-
-resolvePublicEdgeWorkloadChartImageForSubstrate
-  :: Substrate -> IO (Either String (Maybe ResolvedCustomImage))
-resolvePublicEdgeWorkloadChartImageForSubstrate substrate =
-  case substrate of
-    SubstrateHomeLocal ->
-      resolveCustomImageTag ContainerImage.harborPublicEdgeWorkloadImageRepository
-    SubstrateAws ->
-      resolveCustomImageFixedTag
-        ContainerImage.harborPublicEdgeWorkloadImageRepository
+        ContainerImage.harborRuntimeImageRepository
         awsSubstrateCustomImageTag
 
 awsSubstrateCustomImageTag :: String

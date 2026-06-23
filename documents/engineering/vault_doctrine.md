@@ -359,33 +359,30 @@ else. The consequences:
 ### 6.1 Bootstrap MinIO credential
 
 Because the unlock bundle lives in MinIO rather than on host disk (§6), prodbox must reach a MinIO
-object *before* Vault is unsealed — yet MinIO's steady-state root credentials are themselves a
-Vault KV secret (§9, §13). The bootstrap path that resolves this is a **password-derived bootstrap
-credential**, scoped to exactly that one fetch:
+object *before* Vault is unsealed. The credential it uses is the **static MinIO root credential**
+(`Prodbox.Minio.RootCredential`), NOT a password-derived value (operator decision 2026-06-22):
 
-```text
-operator password
-  -> KDF (Argon2id; the same memorized password, distinct derivation context/salt from the
-     bundle-body AEAD key)
-  -> a scoped bootstrap MinIO READ credential
-  -> read-only GET of the fixed-key unlock-bundle object in the durable bucket (§9)
-```
+- The MinIO access credential is **not** the security boundary. The unlock-bundle body is
+  **password-AEAD-sealed** (Argon2id + ChaCha20-Poly1305), so reading its ciphertext is useless
+  without the operator password; and every Tier-2 operational object is a **Vault-Transit envelope**,
+  useless without an unsealed Vault. The access credential only gates ciphertext access over a
+  localhost-only NodePort — exactly the situation prodbox already treats as non-secret for Harbor.
+- A static credential is trivially **stable across rebuilds**, so a retained MinIO data PV always
+  matches Vault (no random/derived drift), and it is a credential MinIO actually **accepts** — so the
+  bundle round-trips through MinIO rather than failing `InvalidAccessKeyId`.
+- Deriving a key-value pair from a human-memorized password (Argon2id) to gate that ciphertext access
+  added machinery without adding real security, so it is removed.
 
-This bootstrap credential is **not** a Vault-Transit handle and resolves no Vault path — by
-construction it must work while Vault is sealed. It is read-only and scoped to the single
-fixed-key bootstrap object, so it cannot read the opaque-named, Vault-Transit-enveloped Tier-2
-operational objects (§9) even if leaked; those still require an unsealed Vault. The operator
-password remains the sole ephemeral secret (§6): one password derives both the bundle-body AEAD
-key and this bootstrap MinIO credential.
+The operator password remains the sole ephemeral secret (§6): it is the AEAD key for the bundle body
+(the thing that actually protects the unseal material), nothing more.
 
 **Bootstrap reorder.** Reaching the bundle before unseal means **MinIO must be reachable before
 Vault unseal**, which inverts the historical `cluster reconcile` ordering (Vault first, then
 MinIO; §7). The reconcile sequence therefore brings MinIO up to a bootstrap-readable state ahead
 of the unseal step, then proceeds with Vault deploy → init-if-empty → fetch+decrypt the unlock
-bundle → unseal. This bootstrap reorder is staged together with the **MinIO-root-decoupling
-reorder** — decoupling MinIO's own steady-state root credentials from the unseal path so MinIO can
-serve the bootstrap read before Vault is unsealed — which is sequenced **last** among the bootstrap
-reorders so the rest of the model lands against the current ordering first.
+bundle → unseal. The host-disk bundle remains the load-bearing fallback this stage (dual-write +
+prefer-MinIO read); dropping the host-disk write entirely (the disk-free cutover) is a separate
+later decision.
 
 **Child clusters take none of this.** A child Vault uses transit-seal and auto-unseals against its
 parent (§16); it has no unlock bundle, no bootstrap MinIO credential, and no password prompt — its
@@ -436,8 +433,9 @@ child init write, and post-MinIO settings reload through the child root token st
 KV.
 
 Because the root unseal step now fetches the unlock bundle from MinIO (§6, §6.1), MinIO must be
-bootstrap-readable **before** Vault unseal — the bootstrap reorder of §6.1, staged with the
-MinIO-root-decoupling reorder last:
+bootstrap-readable **before** Vault unseal — the bootstrap reorder of §6.1, using the static MinIO
+root credential (Sprint `7.19`, operator decision 2026-06-22). Only this disk-free reorder remains
+last:
 
 ```text
 prodbox cluster reconcile
@@ -998,8 +996,8 @@ Vault may not own:
 3. **Root cluster only:** the operator unseal-bundle password (the sole ephemeral secret, the key
    that unseals the root Vault). The password-AEAD-sealed unlock bundle it decrypts lives in the
    durable MinIO bucket, not on host disk (§6); it is not a Vault-owned object — it is what
-   *unseals* Vault — but it is reachable pre-unseal only via the password-derived bootstrap MinIO
-   credential (§6.1), so the password remains the genuine off-box floor.
+   *unseals* Vault. The bundle body is password-AEAD-sealed, so the password remains the genuine
+   off-box floor regardless of the (static) MinIO access credential that gates its ciphertext (§6.1).
 4. **Child cluster only:** the bootstrap reference + transit-seal credential the child uses to
    reach its parent's Vault to auto-unseal — itself provisioned and owned by the parent (§16).
 

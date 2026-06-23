@@ -6,7 +6,7 @@ module Prodbox.CLI.Rke2
   , acmeRuntimeManifestWithCredentials
   , acmeClusterIssuerSpec
   , resolveAcmeEabKeyId
-  , ensureGatewayImagesForSubstrate
+  , ensureRuntimeImageForSubstrate
   , ensureGatewayMinioBootstrap
   , ensureAdminPublicEdgeRoutes
   , ensureGatewayChartReady
@@ -17,7 +17,6 @@ module Prodbox.CLI.Rke2
   , ensurePostgresOperatorRuntime
   , ensureVaultRuntime
   , ensureRootVaultLifecycle
-  , ensurePublicEdgeWorkloadImageForSubstrate
   , MinioImageSource (..)
   , cascadeOrderNarration
   , inferCascadeSubstrate
@@ -140,6 +139,7 @@ import Prodbox.Config.Tier0
 import Prodbox.ContainerImage qualified as ContainerImage
 import Prodbox.Dns (fetchPublicIp)
 import Prodbox.Dns qualified as Dns
+import Prodbox.DockerConfig (withEphemeralDockerConfig)
 import Prodbox.Error (fatalError)
 import Prodbox.Host
   ( LanAddressing (..)
@@ -426,8 +426,8 @@ harborRegistryEndpoint = ContainerImage.harborRegistryEndpoint
 harborMirrorProject :: String
 harborMirrorProject = ContainerImage.harborMirrorProject
 
-harborGatewayRepository :: String
-harborGatewayRepository = ContainerImage.harborGatewayRepository
+harborRuntimeRepository :: String
+harborRuntimeRepository = ContainerImage.harborRuntimeRepository
 
 harborAdminUser :: String
 harborAdminUser = "admin"
@@ -1258,8 +1258,7 @@ applyNativeInstallPlan repoRoot bootstrapSettings withEdge (machineId, prodboxId
                         ( [ ensureHarborRegistryStorageBackend repoRoot
                           , ensureHarborRegistryRuntime repoRoot SubstrateHomeLocal
                           , mirrorClusterImagesOnce repoRoot
-                          , ensureGatewayImages repoRoot prodboxId
-                          , ensurePublicEdgeWorkloadImage repoRoot prodboxId
+                          , ensureRuntimeImage repoRoot prodboxId
                           , ensureRke2RegistriesConfig repoRoot
                           , ensureClusterPlatformRuntime repoRoot settings prodboxId labelValue
                           , ensureMinioRuntime repoRoot SubstrateHomeLocal MinioSteadyStateHarbor
@@ -3301,11 +3300,11 @@ ensureHarborRegistryRuntime repoRoot substrate = do
 ensureHarborProjectsForSubstrate :: Substrate -> FilePath -> IO ExitCode
 ensureHarborProjectsForSubstrate substrate repoRoot =
   case substrate of
-    SubstrateHomeLocal -> do
-      loginExit <- ensureHarborDockerLogin repoRoot
-      case loginExit of
-        ExitFailure _ -> pure loginExit
-        ExitSuccess -> createHarborProjectsHomeLocal repoRoot
+    -- Sprint 1.47: no docker login — project creation uses the Harbor REST API
+    -- with inline `curl -u admin:Harbor12345`; Harbor readiness is gated by the
+    -- preceding waitForHarbor* probes, and image pushes authenticate via the
+    -- per-flow ephemeral DOCKER_CONFIG.
+    SubstrateHomeLocal -> createHarborProjectsHomeLocal repoRoot
     SubstrateAws -> createHarborProjectsAws repoRoot
 
 createHarborProjectsHomeLocal :: FilePath -> IO ExitCode
@@ -3358,7 +3357,7 @@ createHarborProjectsAws repoRoot = do
 
 harborBootstrapProjects :: [String]
 harborBootstrapProjects =
-  [harborMirrorProject, harborProjectFromRepository harborGatewayRepository]
+  [harborMirrorProject, harborProjectFromRepository harborRuntimeRepository]
 
 waitForDeployment :: FilePath -> String -> String -> IO ExitCode
 waitForDeployment repoRoot namespace deploymentName =
@@ -5184,26 +5183,30 @@ nonEmptyTextValue rawValue =
         else Just trimmed
 
 mirrorClusterImagesOnce :: FilePath -> IO ExitCode
-mirrorClusterImagesOnce repoRoot = do
-  imagesResult <- collectClusterImages repoRoot
-  case imagesResult of
-    Left err -> failWith err
-    Right images ->
-      let requiredPairs = ContainerImage.requiredPublicImageCandidatePairs
-          discoveredPairs =
-            [ (sources, target)
-            | image <- images
-            , Just source <- [ContainerImage.normalizeImageRefText image]
-            , not (isHarborBootstrapImage source)
-            , not (isHarborHostedImage source)
-            , Just target <- [ContainerImage.harborMirrorTargetForSource source]
-            , Just sources <- [ContainerImage.harborMirrorSourceCandidates source]
-            ]
-          imagePairs = mergeMirrorCandidatePairs (discoveredPairs ++ requiredPairs)
-       in runSequentially
-            [ ensureMirroredClusterImage repoRoot sources target
-            | (sources, target) <- imagePairs
-            ]
+mirrorClusterImagesOnce repoRoot =
+  -- Sprint 1.47: run the mirror pulls + Harbor pushes inside an ephemeral
+  -- DOCKER_CONFIG (host docker.io auth read-only for public pulls + inline Harbor
+  -- auth for pushes), scrubbed on exit — no docker login, nothing persisted.
+  withEphemeralDockerConfig harborAdminUser harborAdminPassword $ do
+    imagesResult <- collectClusterImages repoRoot
+    case imagesResult of
+      Left err -> failWith err
+      Right images ->
+        let requiredPairs = ContainerImage.requiredPublicImageCandidatePairs
+            discoveredPairs =
+              [ (sources, target)
+              | image <- images
+              , Just source <- [ContainerImage.normalizeImageRefText image]
+              , not (isHarborBootstrapImage source)
+              , not (isHarborHostedImage source)
+              , Just target <- [ContainerImage.harborMirrorTargetForSource source]
+              , Just sources <- [ContainerImage.harborMirrorSourceCandidates source]
+              ]
+            imagePairs = mergeMirrorCandidatePairs (discoveredPairs ++ requiredPairs)
+         in runSequentially
+              [ ensureMirroredClusterImage repoRoot sources target
+              | (sources, target) <- imagePairs
+              ]
 
 collectClusterImages :: FilePath -> IO (Either String [String])
 collectClusterImages repoRoot = do
@@ -5234,42 +5237,26 @@ ensureMirroredClusterImage repoRoot sourceCandidates target = do
         Left err -> failWith err
         Right () -> pure ExitSuccess
 
-ensureGatewayImages :: FilePath -> String -> IO ExitCode
-ensureGatewayImages = ensureGatewayImagesForSubstrate SubstrateHomeLocal
+ensureRuntimeImage :: FilePath -> String -> IO ExitCode
+ensureRuntimeImage = ensureRuntimeImageForSubstrate SubstrateHomeLocal
 
-ensurePublicEdgeWorkloadImage :: FilePath -> String -> IO ExitCode
-ensurePublicEdgeWorkloadImage = ensurePublicEdgeWorkloadImageForSubstrate SubstrateHomeLocal
-
--- | Sprint 7.5.c.v.b — substrate-aware gateway image publication.
-ensureGatewayImagesForSubstrate :: Substrate -> FilePath -> String -> IO ExitCode
-ensureGatewayImagesForSubstrate substrate repoRoot prodboxId = do
-  let gatewayTag = prodboxIdToLabelValue prodboxId
-      gatewayImage = ContainerImage.harborGatewayImageRepository ++ ":" ++ gatewayTag
-      latestImage = ContainerImage.harborGatewayImageRepository ++ ":latest"
-  ensureCustomImageVariantsForSubstrate
-    substrate
-    repoRoot
-    CustomImageBuildPlan
-      { customImageDockerfile = "docker/gateway.Dockerfile"
-      }
-    [gatewayImage, latestImage]
-    gatewayImage
-
--- | Sprint 7.5.c.v.b — substrate-aware public-edge workload image
--- publication.
-ensurePublicEdgeWorkloadImageForSubstrate :: Substrate -> FilePath -> String -> IO ExitCode
-ensurePublicEdgeWorkloadImageForSubstrate substrate repoRoot prodboxId = do
-  let workloadTag = prodboxIdToLabelValue prodboxId
-      workloadImage = ContainerImage.harborPublicEdgeWorkloadImageRepository ++ ":" ++ workloadTag
-      latestImage = ContainerImage.harborPublicEdgeWorkloadImageRepository ++ ":latest"
+-- | Substrate-aware publication of the single union runtime image
+-- (@docker/prodbox.Dockerfile@). One image serves every in-cluster role
+-- (gateway daemon + api / websocket workloads); the role is selected by each
+-- chart's container @args:@, not by separate images.
+ensureRuntimeImageForSubstrate :: Substrate -> FilePath -> String -> IO ExitCode
+ensureRuntimeImageForSubstrate substrate repoRoot prodboxId = do
+  let runtimeTag = prodboxIdToLabelValue prodboxId
+      runtimeImage = ContainerImage.harborRuntimeImageRepository ++ ":" ++ runtimeTag
+      latestImage = ContainerImage.harborRuntimeImageRepository ++ ":latest"
   ensureCustomImageVariantsForSubstrate
     substrate
     repoRoot
     CustomImageBuildPlan
       { customImageDockerfile = "docker/prodbox.Dockerfile"
       }
-    [workloadImage, latestImage]
-    workloadImage
+    [runtimeImage, latestImage]
+    runtimeImage
 
 -- | Sprint 7.5.c.v.b — substrate-aware custom-image publication.
 --
@@ -5295,25 +5282,19 @@ ensureCustomImageVariantsForSubstrate substrate repoRoot imageBuildPlan taggedRe
 
 ensureCustomImageVariantsHomeLocal
   :: FilePath -> CustomImageBuildPlan -> [String] -> String -> IO ExitCode
-ensureCustomImageVariantsHomeLocal repoRoot imageBuildPlan taggedRefs importRef = do
-  loginExit <- ensureHarborDockerLogin repoRoot
-  case loginExit of
-    ExitFailure _ -> pure loginExit
-    ExitSuccess -> do
-      buildExit <- buildAndPushCustomImageVariants repoRoot imageBuildPlan taggedRefs
-      case buildExit of
-        ExitFailure _ -> pure buildExit
-        ExitSuccess ->
-          runSequentially
-            [ runCommand
-                Subprocess
-                  { subprocessPath = "docker"
-                  , subprocessArguments = ["pull", importRef]
-                  , subprocessEnvironment = Nothing
-                  , subprocessWorkingDirectory = Just repoRoot
-                  }
-            , importImageIntoRke2Containerd repoRoot importRef
-            ]
+ensureCustomImageVariantsHomeLocal repoRoot imageBuildPlan taggedRefs importRef =
+  -- Sprint 1.47: build + push + Harbor pull + ctr import inside an ephemeral
+  -- DOCKER_CONFIG (no docker login; the Harbor auth is inline, the base-image
+  -- build pull uses the host docker.io login), scrubbed on exit.
+  withEphemeralDockerConfig harborAdminUser harborAdminPassword $ do
+    buildExit <- buildAndPushCustomImageVariants repoRoot imageBuildPlan taggedRefs
+    case buildExit of
+      ExitFailure _ -> pure buildExit
+      ExitSuccess ->
+        runSequentially
+          [ runCommand =<< dockerSubprocessFor repoRoot ["pull", importRef]
+          , importImageIntoRke2Containerd repoRoot importRef
+          ]
 
 -- | AWS-substrate custom-image publication path. Builds the image on
 -- the operator host via @docker build@ (which is available locally),
@@ -5326,11 +5307,15 @@ ensureCustomImageVariantsAws
 ensureCustomImageVariantsAws repoRoot imageBuildPlan taggedRefs =
   case taggedRefs of
     [] -> pure ExitSuccess
-    (primaryRef : _) -> do
-      buildExit <- buildCustomImageHostArchitecture repoRoot imageBuildPlan taggedRefs
-      case buildExit of
-        ExitFailure _ -> pure buildExit
-        ExitSuccess -> pushCustomImageVariantsViaInClusterCrane repoRoot primaryRef taggedRefs
+    (primaryRef : _) ->
+      -- Sprint 1.47: the host `docker build` base-image pull authenticates to
+      -- Docker Hub via an ephemeral DOCKER_CONFIG; the Harbor push runs
+      -- in-cluster (crane pod) and the `docker save` is local.
+      withEphemeralDockerConfig harborAdminUser harborAdminPassword $ do
+        buildExit <- buildCustomImageHostArchitecture repoRoot imageBuildPlan taggedRefs
+        case buildExit of
+          ExitFailure _ -> pure buildExit
+          ExitSuccess -> pushCustomImageVariantsViaInClusterCrane repoRoot primaryRef taggedRefs
 
 buildCustomImageHostArchitecture
   :: FilePath -> CustomImageBuildPlan -> [String] -> IO ExitCode
@@ -5366,14 +5351,7 @@ pushCustomImageVariantsViaInClusterCrane repoRoot primaryRef taggedRefs = do
         ++ "): "
         ++ primaryRef
     )
-  saveExit <-
-    runCommand
-      Subprocess
-        { subprocessPath = "docker"
-        , subprocessArguments = ["save", "-o", tarPath, primaryRef]
-        , subprocessEnvironment = Nothing
-        , subprocessWorkingDirectory = Just repoRoot
-        }
+  saveExit <- runCommand =<< dockerSubprocessFor repoRoot ["save", "-o", tarPath, primaryRef]
   case saveExit of
     ExitFailure _ -> pure saveExit
     ExitSuccess -> do
@@ -5561,7 +5539,7 @@ buildCustomImageOnce repoRoot hostArchitecture imageBuildPlan taggedRefs = do
             ]
               ++ concat [["-t", tagRef] | tagRef <- taggedRefs]
               ++ ["."]
-      outputResult <- captureToolOutput repoRoot "docker" arguments
+      outputResult <- captureDockerToolOutput repoRoot arguments
       case outputResult of
         Left err -> failWith err
         Right output ->
@@ -5610,7 +5588,7 @@ pushDockerImageWithRetry :: FilePath -> String -> String -> IO ExitCode
 pushDockerImageWithRetry repoRoot imageRef description = go (retryPolicyMaxAttempts customImagePushRetryPolicy)
  where
   go attemptsRemaining = do
-    outputResult <- captureToolOutput repoRoot "docker" ["push", imageRef]
+    outputResult <- captureDockerToolOutput repoRoot ["push", imageRef]
     case outputResult of
       Left err -> failWith err
       Right output ->
@@ -5660,7 +5638,7 @@ isRetryableHarborPublicationFailure detail =
 
 harborTargetAvailableForHostArchitecture :: FilePath -> String -> IO (Either String Bool)
 harborTargetAvailableForHostArchitecture repoRoot imageRef = do
-  pullResult <- captureToolOutput repoRoot "docker" ["pull", imageRef]
+  pullResult <- captureDockerToolOutput repoRoot ["pull", imageRef]
   pure $
     case pullResult of
       Left err -> Left err
@@ -5767,7 +5745,7 @@ mirrorHostArchitectureTargetFromCandidates repoRoot sourceCandidates target = go
 
 mirrorHostArchitectureTarget :: FilePath -> String -> String -> IO (Either String ())
 mirrorHostArchitectureTarget repoRoot source target = do
-  pullResult <- captureToolOutput repoRoot "docker" ["pull", source]
+  pullResult <- captureDockerToolOutput repoRoot ["pull", source]
   case pullResult of
     Left err -> pure (Left err)
     Right pullOutput ->
@@ -5786,7 +5764,7 @@ mirrorHostArchitectureTarget repoRoot source target = do
                     )
                 )
             ExitSuccess -> do
-              tagResult <- captureToolOutput repoRoot "docker" ["tag", source, target]
+              tagResult <- captureDockerToolOutput repoRoot ["tag", source, target]
               case tagResult of
                 Left err -> pure (Left err)
                 Right tagOutput ->
@@ -5807,58 +5785,6 @@ mergeMirrorCandidatePairs = foldl mergePair []
     | target == existingTarget = (nub (existingSources ++ sources), target) : rest
     | otherwise = (existingSources, existingTarget) : mergePair rest (sources, target)
 
-ensureHarborDockerLogin :: FilePath -> IO ExitCode
-ensureHarborDockerLogin repoRoot = go (retryPolicyMaxAttempts harborLoginRetryPolicy)
- where
-  arguments =
-    ["login", harborRegistryEndpoint, "--username", harborAdminUser, "--password", harborAdminPassword]
-
-  go attemptsRemaining = do
-    outputResult <- captureToolOutput repoRoot "docker" arguments
-    case outputResult of
-      Left err -> failWith err
-      Right output ->
-        case processExitCode output of
-          ExitSuccess -> do
-            emitCapturedProcessOutput output
-            pure ExitSuccess
-          ExitFailure _
-            | attemptsRemaining > 1 && isRetryableHarborLoginFailure (outputDetail output) -> do
-                writeDiagnosticLine
-                  ( "Retrying Harbor docker login ("
-                      ++ show (retryPolicyMaxAttempts harborLoginRetryPolicy - attemptsRemaining + 1)
-                      ++ "/"
-                      ++ show (retryPolicyMaxAttempts harborLoginRetryPolicy)
-                      ++ "): "
-                      ++ outputDetail output
-                  )
-                threadDelay
-                  ( retryDelayMicros
-                      harborLoginRetryPolicy
-                      (retryPolicyMaxAttempts harborLoginRetryPolicy - attemptsRemaining)
-                  )
-                go (attemptsRemaining - 1)
-            | otherwise -> do
-                emitCapturedProcessOutput output
-                pure (ExitFailure 1)
-
-isRetryableHarborLoginFailure :: String -> Bool
-isRetryableHarborLoginFailure detail =
-  let lowered = map toLower detail
-   in any
-        (`isInfixOf` lowered)
-        [ "unauthorized"
-        , "502 bad gateway"
-        , "503 service unavailable"
-        , "504 gateway timeout"
-        , "connection reset by peer"
-        , "connection refused"
-        , "tls handshake timeout"
-        , "i/o timeout"
-        , "temporary failure"
-        , "unexpected eof"
-        ]
-
 isHarborHostedImage :: String -> Bool
 isHarborHostedImage imageRef =
   (harborRegistryEndpoint ++ "/") `isPrefixOf` imageRef
@@ -5874,13 +5800,7 @@ importImageIntoRke2Containerd repoRoot imageRef = do
     Right socketPath ->
       withTemporaryTextFile "prodbox-image" "" $ \archivePath ->
         runSequentially
-          [ runCommand
-              Subprocess
-                { subprocessPath = "docker"
-                , subprocessArguments = ["save", "-o", archivePath, imageRef]
-                , subprocessEnvironment = Nothing
-                , subprocessWorkingDirectory = Just repoRoot
-                }
+          [ runCommand =<< dockerSubprocessFor repoRoot ["save", "-o", archivePath, imageRef]
           , runCommand
               Subprocess
                 { subprocessPath = "sudo"
@@ -6578,6 +6498,32 @@ captureToolOutput repoRoot toolName arguments = do
       Failure err -> Left ("failed to start " ++ toolName ++ ": " ++ err)
       Success output -> Right output
 
+-- | Build a @docker@ 'Subprocess'. @DOCKER_CONFIG@ is NOT injected here — it is
+-- provided process-wide by the enclosing 'withEphemeralDockerConfig' bracket
+-- (Sprint 1.47), which points docker at a throwaway config (host @docker.io@
+-- auth + inline Harbor entry) and scrubs it on exit. So every docker call inside
+-- a wrapped flow authenticates without a persisted config or a @docker login@.
+dockerSubprocessFor :: FilePath -> [String] -> IO Subprocess
+dockerSubprocessFor repoRoot arguments =
+  pure
+    Subprocess
+      { subprocessPath = "docker"
+      , subprocessArguments = arguments
+      , subprocessEnvironment = Nothing
+      , subprocessWorkingDirectory = Just repoRoot
+      }
+
+-- | 'captureToolOutput' for @docker@. Inherits the @DOCKER_CONFIG@ set by the
+-- enclosing 'withEphemeralDockerConfig' bracket (Sprint 1.47).
+captureDockerToolOutput :: FilePath -> [String] -> IO (Either String ProcessOutput)
+captureDockerToolOutput repoRoot arguments = do
+  spec <- dockerSubprocessFor repoRoot arguments
+  result <- captureSubprocessResult spec
+  pure $
+    case result of
+      Failure err -> Left ("failed to start docker: " ++ err)
+      Success output -> Right output
+
 runTextCommand :: Subprocess -> IO (Either String String)
 runTextCommand spec = do
   result <- captureSubprocessResult spec
@@ -6900,15 +6846,6 @@ customImagePushRetryPolicy :: RetryPolicy
 customImagePushRetryPolicy =
   RetryPolicy
     { retryPolicyMaxAttempts = 3
-    , retryPolicyBaseDelayMicros = 5000000
-    , retryPolicyMultiplier = 1
-    , retryPolicyMaxDelayMicros = 5000000
-    }
-
-harborLoginRetryPolicy :: RetryPolicy
-harborLoginRetryPolicy =
-  RetryPolicy
-    { retryPolicyMaxAttempts = 6
     , retryPolicyBaseDelayMicros = 5000000
     , retryPolicyMultiplier = 1
     , retryPolicyMaxDelayMicros = 5000000

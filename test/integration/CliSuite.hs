@@ -744,13 +744,9 @@ integrationCliSuite = do
           `shouldSatisfy` (< findRecordLineIndex "upgrade|--install|harbor|harbor/harbor" helmRecord)
 
         dockerRecord <- readFile (tmpDir </> "fake-rke2-state" </> "docker.txt")
-        dockerRecord `shouldContain` "login|127.0.0.1:30080|--username|admin|--password|Harbor12345"
-        length
-          ( filter
-              (== "login|127.0.0.1:30080|--username|admin|--password|Harbor12345")
-              (lines dockerRecord)
-          )
-          `shouldSatisfy` (>= 2)
+        -- Sprint 1.47: NO `docker login` runs at all — Harbor auth is inline in the
+        -- ephemeral DOCKER_CONFIG, public pulls use the host docker.io login.
+        dockerRecord `shouldNotContain` "login|127.0.0.1:30080"
         dockerRecord `shouldNotContain` "buildx|"
         dockerRecord `shouldNotContain` "docker/bitnami-postgresql-repmgr.Dockerfile"
         dockerRecord `shouldNotContain` "docker/bitnami-pgpool.Dockerfile"
@@ -763,14 +759,23 @@ integrationCliSuite = do
           `shouldContain` "tag|ghcr.io/coder/code-server:4.98.2|127.0.0.1:30080/prodbox/code-server-mirror:4.98.2"
         dockerRecord
           `shouldContain` "tag|docker.io/codercom/code-server:4.98.2|127.0.0.1:30080/prodbox/code-server-mirror:4.98.2"
+        -- One union runtime image built from the single Dockerfile, consumed by
+        -- the gateway daemon + api/websocket workloads (role chosen by chart args).
         dockerRecord
-          `shouldContain` "build|-f|docker/gateway.Dockerfile|-t|127.0.0.1:30080/prodbox/prodbox-gateway:prodbox-"
-        dockerRecord `shouldContain` "-t|127.0.0.1:30080/prodbox/prodbox-gateway:latest|."
-        dockerRecord `shouldContain` "push|127.0.0.1:30080/prodbox/prodbox-gateway:latest"
-        dockerRecord
-          `shouldContain` "build|-f|docker/prodbox.Dockerfile|-t|127.0.0.1:30080/prodbox/prodbox-public-edge-workload:prodbox-"
+          `shouldContain` "build|-f|docker/prodbox.Dockerfile|-t|127.0.0.1:30080/prodbox/prodbox-runtime:prodbox-"
+        dockerRecord `shouldContain` "-t|127.0.0.1:30080/prodbox/prodbox-runtime:latest|."
+        dockerRecord `shouldContain` "push|127.0.0.1:30080/prodbox/prodbox-runtime:latest"
+        dockerRecord `shouldNotContain` "docker/gateway.Dockerfile"
+        dockerRecord `shouldNotContain` "prodbox-public-edge-workload"
         dockerRecord `shouldNotContain` "docker/nginx-oidc.Dockerfile"
         dockerRecord `shouldContain` "save|-o|"
+
+        -- Sprint 1.47: the build/push/mirror docker calls ran inside an
+        -- EPHEMERAL DOCKER_CONFIG (a scrubbed `prodbox-docker-config` temp dir),
+        -- never the operator's global ~/.docker, so prodbox cannot pollute the
+        -- system Docker Hub login state.
+        dockerConfigRecord <- readFile (tmpDir </> "fake-rke2-state" </> "docker-config.txt")
+        dockerConfigRecord `shouldContain` "prodbox-docker-config"
 
         curlRecord <- readFile (tmpDir </> "fake-rke2-state" </> "curl.txt")
         curlRecord `shouldContain` "https://get.rke2.io"
@@ -2966,6 +2971,10 @@ fakeRke2DockerScript =
     , "set -euo pipefail"
     , "record_dir=${PRODBOX_FAKE_RKE2_RECORD_DIR:?}"
     , "/bin/mkdir -p \"$record_dir\""
+    , -- Harbor login isolation: record the DOCKER_CONFIG every prodbox docker
+      -- call runs with, so the suite can prove it is the repo-local `.docker`
+      -- (never the operator's global ~/.docker).
+      "printf '%s\\n' \"${DOCKER_CONFIG:-UNSET}\" >> \"$record_dir/docker-config.txt\""
     , "target_key() {"
     , "  printf '%s' \"$1\" | tr '/:' '__'"
     , "}"

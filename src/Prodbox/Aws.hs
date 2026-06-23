@@ -22,9 +22,11 @@ module Prodbox.Aws
   , longLivedResourceNames
   , operationalAwsConfigResidueFromKey
   , operationalBootstrapDnsRecordExists
+  , operationalCredentialsClearedDecision
   , operationalIamUserExists
   , operationalIamUserResidueFromExists
   , operationalManagedResources
+  , refineAwsConfigResidueAgainstIamUser
   , partitionResidueByLifecycle
   , perRunStackNames
   , renderResidueError
@@ -1090,7 +1092,7 @@ runAwsIamHarnessSetup repoRoot policyTier = do
         | userName /= prodboxIamUserName ->
             Just <$> cleanupIamUserResidue repoRoot credentials userName
       _ -> pure Nothing
-  preflightConfigCleared <- operationalCredentialsCleared repoRoot
+  preflightConfigCleared <- operationalCredentialsClearedAtPreflight repoRoot credentials
   unless
     preflightConfigCleared
     ( throwAws
@@ -1780,14 +1782,26 @@ discoverOperationalResidue
   :: FilePath -> Credentials -> IO [(ManagedResource, ResidueStatus.ResidueStatus)]
 discoverOperationalResidue repoRoot adminCreds = do
   iamUserExists <- operationalIamUserExists repoRoot adminCreds
+  let iamUserStatus = operationalIamUserResidueFromExists iamUserExists
   configResult <- loadConfigFile repoRoot
-  awsConfigStatus <-
+  rawAwsConfigStatus <-
     case configResult of
       Left err -> pure (ResidueStatus.ResidueUnreachable (ResidueStatus.ResidueQueryFailed err))
       Right config -> do
         credentialsResult <- resolveAwsCredentialsRefFromHostVault repoRoot "aws" (aws config)
         pure (operationalAwsConfigResidueFromCredentialsResult credentialsResult)
-  let iamUserStatus = operationalIamUserResidueFromExists iamUserExists
+  -- Sprint 7.24: the operational @aws.*@ block is a @SecretRef.Vault@ (Sprint
+  -- 7.14), so observing it resolves the reference from host Vault. At harness
+  -- \*preflight* the cluster is not up yet, so Vault is unreachable and the
+  -- observation returns 'ResidueUnreachable'. The fail-closed gate
+  -- (lifecycle_reconciliation_doctrine.md §3.1) exists to avoid stranding the
+  -- operational IAM USER — and that user is observed authoritatively via the
+  -- admin credential ('operationalIamUserExists'), which is independent of
+  -- Vault. When the user is CONFIRMED ABSENT, the aws-config block is a
+  -- credential for a user that no longer exists, so a Vault-unreachable read of
+  -- it carries no stranding risk: refine it to Absent so a clean-machine
+  -- preflight is not deadlocked on a Vault that only comes up later in the run.
+  let awsConfigStatus = refineAwsConfigResidueAgainstIamUser iamUserStatus rawAwsConfigStatus
   pure (zip (operationalManagedResources adminCreds) [iamUserStatus, awsConfigStatus])
 
 -- | Sprint 7.8: read-only listing of the operational IAM user's
@@ -2808,6 +2822,41 @@ operationalCredentialsCleared repoRoot = do
       Left err -> operationalCredentialsAbsentError err
       Right credentials -> not (operationalCredentialsConfigured credentials)
 
+-- | Sprint 7.24: the preflight-resilient counterpart of
+-- 'operationalCredentialsCleared'. The harness setup runs its
+-- clear-before-mint cleanup at *preflight*, which on a clean machine is
+-- BEFORE the cluster (hence host Vault) is up — so resolving the operational
+-- @aws.*@ @SecretRef.Vault@ can fail with a Vault-connection error (not the
+-- "missing/empty" that means "configured-but-cleared"). That ONE case is
+-- deferred to the Vault-independent operational-IAM-user observation (admin
+-- credential): if the user is confirmed ABSENT, the operational credentials
+-- reference a user that no longer exists and are moot, so they are treated as
+-- cleared. Every Vault-reachable case is identical to
+-- 'operationalCredentialsCleared'; the postflight teardown guards keep the
+-- strict check, since they run after the cluster lifecycle (Vault up).
+operationalCredentialsClearedAtPreflight :: FilePath -> Credentials -> IO Bool
+operationalCredentialsClearedAtPreflight repoRoot adminCreds = do
+  config <- loadConfigForWrite repoRoot
+  credentialsResult <- resolveAwsCredentialsRefFromHostVault repoRoot "aws" (aws config)
+  iamUserExists <- operationalIamUserExists repoRoot adminCreds
+  pure (operationalCredentialsClearedDecision credentialsResult iamUserExists)
+
+-- | Sprint 7.24: the pure decision core of
+-- 'operationalCredentialsClearedAtPreflight'. Given the Vault-resolved
+-- operational @aws.*@ result and the operational-IAM-user existence probe,
+-- decide whether the operational credentials are cleared. @Right@ → cleared iff
+-- not configured. @Left "missing/empty"@ → cleared. @Left@ (any other error,
+-- e.g. host Vault unreachable) → cleared ONLY when the IAM user is confirmed
+-- absent (@Right False@); otherwise NOT cleared, preserving fail-closed.
+-- Unit-testable, no IO.
+operationalCredentialsClearedDecision :: Either String Credentials -> Either String Bool -> Bool
+operationalCredentialsClearedDecision credentialsResult iamUserExistsResult =
+  case credentialsResult of
+    Right credentials -> not (operationalCredentialsConfigured credentials)
+    Left err
+      | operationalCredentialsAbsentError err -> True
+      | otherwise -> iamUserExistsResult == Right False
+
 operationalCredentialsConfiguredFromVault :: FilePath -> ConfigFile -> IO (Either String Bool)
 operationalCredentialsConfiguredFromVault repoRoot config = do
   credentialsResult <- resolveAwsCredentialsRefFromHostVault repoRoot "aws" (aws config)
@@ -2829,6 +2878,33 @@ operationalAwsConfigResidueFromCredentialsResult credentialsResult =
       | operationalCredentialsAbsentError err -> ResidueStatus.ResidueAbsent
       | otherwise -> ResidueStatus.ResidueUnreachable (ResidueStatus.ResidueQueryFailed err)
     Right credentials -> operationalAwsConfigResidueFromKey (access_key_id credentials)
+
+-- | Sprint 7.24: refine the @operational-aws-config@ residue against the
+-- @operational-iam-user@ residue before the teardown fail-closed gate.
+--
+-- The aws-config block is the Vault-stored credential FOR the operational IAM
+-- user. The fail-closed gate (lifecycle_reconciliation_doctrine.md §3.1) exists
+-- so a resource that "cannot be observed" is never presumed gone — its purpose
+-- here is to avoid stranding the operational IAM USER. That user is observed
+-- authoritatively through the admin credential, which does not depend on Vault.
+--
+-- So: when the IAM user is CONFIRMED ABSENT and the aws-config could only be
+-- read as 'ResidueUnreachable' (host Vault down at preflight), downgrade the
+-- aws-config to 'ResidueAbsent' — there is no user to strand, hence no
+-- stranding risk. In EVERY other case (user Present, user itself Unreachable,
+-- or aws-config Present/Absent) the raw aws-config status is preserved, so the
+-- gate still fails closed exactly as before. Pure; unit-testable.
+refineAwsConfigResidueAgainstIamUser
+  :: ResidueStatus.ResidueStatus
+  -- ^ the operational IAM user residue (admin-credential observation)
+  -> ResidueStatus.ResidueStatus
+  -- ^ the raw operational aws-config residue (Vault-resolved reference)
+  -> ResidueStatus.ResidueStatus
+refineAwsConfigResidueAgainstIamUser iamUserStatus rawAwsConfigStatus =
+  case (iamUserStatus, rawAwsConfigStatus) of
+    (ResidueStatus.ResidueAbsent, ResidueStatus.ResidueUnreachable _) ->
+      ResidueStatus.ResidueAbsent
+    _ -> rawAwsConfigStatus
 
 operationalCredentialsAbsentError :: String -> Bool
 operationalCredentialsAbsentError err =

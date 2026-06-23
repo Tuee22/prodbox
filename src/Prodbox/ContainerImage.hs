@@ -21,8 +21,6 @@ module Prodbox.ContainerImage
   , harborEnvoyGatewayImage
   , harborEnvoyProxyImage
   , harborFrrImage
-  , harborGatewayImageRepository
-  , harborGatewayRepository
   , harborImageRefFromSource
   , harborKubeRbacProxyImage
   , harborKeycloakImage
@@ -39,8 +37,9 @@ module Prodbox.ContainerImage
   , harborPostgresDatabaseImage
   , harborPostgresPgbackrestImage
   , harborPostgresPgbouncerImage
-  , harborPublicEdgeWorkloadImageRepository
   , harborRedisImage
+  , harborRuntimeImageRepository
+  , harborRuntimeRepository
   , normalizeImageRefText
   , parseImageRef
   , publicCurlImage
@@ -68,17 +67,14 @@ harborRegistryEndpoint = "127.0.0.1:30080"
 harborMirrorProject :: String
 harborMirrorProject = "prodbox"
 
-harborGatewayRepository :: String
-harborGatewayRepository = harborMirrorProject ++ "/prodbox-gateway"
+-- | The single union runtime image repository. One image serves every
+-- in-cluster role (gateway daemon + api / websocket workloads); the role is
+-- selected by each chart's container @args:@, not by separate images.
+harborRuntimeRepository :: String
+harborRuntimeRepository = harborMirrorProject ++ "/prodbox-runtime"
 
-harborGatewayImageRepository :: String
-harborGatewayImageRepository = harborRegistryEndpoint ++ "/" ++ harborGatewayRepository
-
-harborPublicEdgeWorkloadRepository :: String
-harborPublicEdgeWorkloadRepository = harborMirrorProject ++ "/prodbox-public-edge-workload"
-
-harborPublicEdgeWorkloadImageRepository :: String
-harborPublicEdgeWorkloadImageRepository = harborRegistryEndpoint ++ "/" ++ harborPublicEdgeWorkloadRepository
+harborRuntimeImageRepository :: String
+harborRuntimeImageRepository = harborRegistryEndpoint ++ "/" ++ harborRuntimeRepository
 
 -- | Sprint 7.12: the single Envoy Gateway release SSoT. The Envoy Gateway
 -- Helm chart version, the control-plane (gateway controller) image, and the

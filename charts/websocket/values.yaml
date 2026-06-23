@@ -10,7 +10,7 @@ podAntiAffinity:
 podAnnotations: {}
 
 image:
-  repository: 127.0.0.1:30080/prodbox/prodbox-public-edge-workload
+  repository: 127.0.0.1:30080/prodbox/prodbox-runtime
   tag: latest
 
 vault:

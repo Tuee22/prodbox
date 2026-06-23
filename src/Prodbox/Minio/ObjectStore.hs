@@ -9,6 +9,7 @@ module Prodbox.Minio.ObjectStore
   , deleteObject
   , ensureObjectStoreBucket
   , getObject
+  , isNoSuchBucketOutput
   , listKeys
   , objectStoreCreateBucketArgs
   , objectStoreDeleteObjectArgs
@@ -76,7 +77,15 @@ getObject config key =
       Right output ->
         case processExitCode output of
           ExitFailure _ ->
-            if isNoSuchKeyOutput output
+            -- A missing key OR a missing bucket is definitive absence of the
+            -- object (Right Nothing). A missing bucket happens on first-ever
+            -- bring-up before the SSoT bucket is created, and the seed's
+            -- presence probe must read that as "absent → seed" (the seed write
+            -- then creates the bucket) rather than a hard failure that would
+            -- abort the seal and leave the bucket forever uncreated. A
+            -- connection/credential failure stays a Left, so it never reads as
+            -- absence (failure to observe is not absence).
+            if isNoSuchKeyOutput output || isNoSuchBucketOutput output
               then pure (Right Nothing)
               else pure (Left ("aws s3api get-object failed: " ++ trim (processStderr output)))
           ExitSuccess -> do
@@ -272,6 +281,17 @@ parseListObjectsKeys payload =
 isNoSuchKeyOutput :: ProcessOutput -> Bool
 isNoSuchKeyOutput output =
   any (`Text.isInfixOf` stderrText) ["NoSuchKey", "Not Found", "404"]
+ where
+  stderrText = Text.pack (processStderr output)
+
+-- | A @NoSuchBucket@ response is a DEFINITIVE statement that the object is
+-- absent (the storage location does not exist), unlike a connection/credential
+-- failure (e.g. @InvalidAccessKeyId@), which is indeterminate and must stay a
+-- @Left@. 'getObject' treats this as @Right Nothing@ so first-ever bring-up
+-- (before the @prodbox-state@ bucket exists) seeds the SSoT instead of aborting.
+isNoSuchBucketOutput :: ProcessOutput -> Bool
+isNoSuchBucketOutput output =
+  any (`Text.isInfixOf` stderrText) ["NoSuchBucket", "The specified bucket does not exist"]
  where
   stderrText = Text.pack (processStderr output)
 

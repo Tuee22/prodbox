@@ -50,8 +50,8 @@ The native Haskell lifecycle reconciles Harbor state in this order:
 6. Stable Harbor external-endpoint wait
 7. Harbor project reconcile for `prodbox`
 8. Docker login plus required public-image mirror into Harbor
-9. Host-native custom-image build, push, and import for the Haskell gateway image and the shared
-   public-edge workload image
+9. Host-native custom-image build, push, and import for the single Haskell union runtime image
+   (`prodbox-runtime`, shared by the gateway daemon and the `api`/`websocket` workloads)
 10. `registries.yaml` reconcile and conditional RKE2 restart
 11. Harbor-backed platform-runtime install for MetalLB, Envoy Gateway, cert-manager, and the
    Percona PostgreSQL operator
@@ -93,9 +93,8 @@ Policy:
 `prodbox cluster reconcile` derives Harbor image targets deterministically from machine identity:
 
 - `prodbox-id` source: `/etc/machine-id`
-- image ref form: `127.0.0.1:30080/prodbox/prodbox-gateway:<prodbox-id-label>`
-- shared public-edge workload ref form:
-  `127.0.0.1:30080/prodbox/prodbox-public-edge-workload:<prodbox-id-label>`
+- single union runtime image ref form (gateway daemon + `api`/`websocket` workloads):
+  `127.0.0.1:30080/prodbox/prodbox-runtime:<prodbox-id-label>`
 - supported mirrored public refs include Harbor-backed Percona operator, PostgreSQL, `pgBouncer`,
   and `pgBackRest` images, `code-server`, `keycloak`, `redis`, `minio`, `minio-mc`,
   `envoy-gateway-mirror`, `envoy-proxy-mirror`, `metallb`, `frr`, `kube-rbac-proxy`, and
@@ -109,11 +108,12 @@ The supported public-edge doctrine uses this image set:
 
 1. The supported edge image set includes the Envoy Gateway control-plane image plus the Envoy data
    plane images that back Gateway API listeners.
-2. The supported public API and WebSocket workloads run from the shared repository-owned image
-   `prodbox-public-edge-workload`.
+2. The supported public API and WebSocket workloads run from the single repository-owned union
+   runtime image `prodbox-runtime` (the same image as the gateway daemon; the role is chosen by
+   each chart's `args:`).
 3. No supported browser-facing auth path depends on a repository-owned nginx auth-proxy image.
-4. The Haskell distributed gateway image remains a separate repository-owned image and is not
-   replaced by Envoy Gateway.
+4. The Haskell distributed gateway runs from that same `prodbox-runtime` image (not replaced by
+   Envoy Gateway).
 
 ### 3.2 One Release Value Per Substrate-Shared Platform Image
 
@@ -174,22 +174,64 @@ The supported candidate sets include `mirror.gcr.io` fallbacks for the Docker Hu
 and Envoy images used by the current lifecycle, so clean-room reruns can survive unauthenticated
 Docker Hub rate limiting without widening the supported steady-state image sources.
 
-## 6. Gateway Container Build Doctrine
+## 6. Union Runtime Container Build Doctrine
 
-Gateway image builds use `docker/gateway.Dockerfile` with full-repository build context.
+All repository-owned Haskell image builds use the single `docker/prodbox.Dockerfile` with
+full-repository build context, producing one union runtime image (`prodbox-runtime`) for every
+in-cluster role.
 
 Container build requirements:
 
-1. use single-stage `ubuntu:24.04` for repository-owned Haskell images
-2. build the Haskell gateway binary under `/opt/build`
+1. use single-stage `ubuntu:24.04` for the repository-owned Haskell image
+2. build the Haskell `prodbox` binary under `/opt/build`
 3. install `ghcup` in-image, pin GHC `9.12.4`, and do not create symlinked Haskell tool shims
 4. build once through ordinary host-native `docker build`
 5. push the resulting Harbor tags through ordinary `docker push`
 6. keep `.dockerignore` synchronized with the intended build inputs
 7. use `tini` as PID 1 in the runtime image
-8. invoke the canonical CLI startup path through the Haskell gateway entrypoint
+8. keep the `ENTRYPOINT` a bare `tini -- prodbox`; each chart selects its role through the pod
+   `args:` (`gateway start` vs `workload start`)
 9. install the official AWS CLI bundle from the image's native Debian architecture so the in-pod
-   Route 53 subprocess path remains available inside the single-stage gateway image
+   Route 53 subprocess path remains available (the gateway role uses it)
+
+### 6.1 Host `docker` CLI auth isolation (Harbor login vs the operator's Docker Hub login)
+
+prodbox publishes the images it builds to the in-cluster Harbor NodePort (`127.0.0.1:30080`) and
+pulls public images using the operator's fixed-token Docker Hub login. Sprint `1.47` keeps those two
+concerns separate with the **ephemeral `DOCKER_CONFIG`** pattern from the operator's `hostbootstrap`
+project (`HostBootstrap.Registry`), implemented in `Prodbox.DockerConfig`. **No `docker login` runs
+anywhere**, and the operator's global `~/.docker/config.json` is only ever read.
+
+Each host-docker flow (`mirrorClusterImagesOnce`, `ensureCustomImageVariantsHomeLocal`, and the AWS
+host build) runs inside `withEphemeralDockerConfig`, which:
+
+- **Discovers the host `docker.io` auth read-only.** It reads
+  `${DOCKER_CONFIG:-$HOME/.docker}/config.json` and projects a **minimal `docker.io`-only** set
+  (`dockerHubAuthFromConfig` keeps only registry keys mentioning `docker.io`, excluding any local
+  Harbor / private-registry entries). No host login ⇒ `Nothing` ⇒ anonymous pulls (graceful degrade).
+- **Materialises a throwaway `DOCKER_CONFIG`.** `renderEphemeralDockerConfig` writes a `config.json`
+  into a `withSystemTempDirectory "prodbox-docker-config"` whose `auths` hold that `docker.io` entry
+  (if any) **plus an inline Harbor `127.0.0.1:30080` entry** (`base64 admin:Harbor12345`, no
+  `credsStore`) — so Harbor pushes authenticate **without** a `docker login`. `DOCKER_CONFIG` points
+  the process at it for the flow, then a `bracket` **scrubs the temp dir and restores the prior
+  `DOCKER_CONFIG`** on exit. Nothing persists in `~/prodbox`.
+
+Inside the bracket, plain `docker` subprocesses inherit `DOCKER_CONFIG`; pulls/builds use the host
+Docker Hub login (rate-limit headroom), pushes use the inline Harbor auth. Because prodbox **never
+writes** `~/.docker/config.json`, it cannot disturb the operator's carefully-managed (fixed-token)
+Docker Hub state. The home Harbor-project creation uses the Harbor REST API (`curl -u
+admin:Harbor12345`), not a docker login, and its readiness is gated by the `waitForHarbor*` probes.
+
+In-cluster pulls are unaffected: RKE2 `/etc/rancher/rke2/registries.yaml` and the EKS
+containerd-mirror DaemonSet reach Harbor's NodePort credential-free and never consult a Docker
+config. The local-only `docker image inspect` (`Prodbox.Lib.ChartPlatform`) and the dev-only
+`docker run` for the TLA+ image (`Prodbox.Tla`) neither write nor depend on the Harbor credential
+and are out of scope. The `docker.io` discovery/projection is the seam that later swaps onto
+`HostBootstrap.Registry` at the planned hostbootstrap refactor.
+
+**Operator note:** if `~/.docker/config.json` already carries a stale `127.0.0.1:30080` entry from a
+prior prodbox version, remove it once with `docker logout 127.0.0.1:30080` (leaves the
+`index.docker.io` login untouched). prodbox will not touch the global file — including to clean it.
 
 ## 7. Operator Runbook
 
@@ -204,8 +246,8 @@ prodbox test integration charts-websocket
 
 There is no `PRODBOX_*_IMAGE` (or any other `PRODBOX_*`) environment-variable override: no
 supported `prodbox` binary reads `PRODBOX_*` environment variables, per
-[config_doctrine.md](./config_doctrine.md). The gateway and shared public-edge workload image
-refs are derived deterministically from machine identity (§3) into the Harbor `prodbox` project;
+[config_doctrine.md](./config_doctrine.md). The single union runtime image ref is derived
+deterministically from machine identity (§3) into the Harbor `prodbox` project;
 there is no env-var seam to substitute an explicit ref. Tests run the canonical commands above
 against the Harbor-published image set produced by `prodbox cluster reconcile`.
 

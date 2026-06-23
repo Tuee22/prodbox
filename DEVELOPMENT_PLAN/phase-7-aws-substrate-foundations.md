@@ -1292,7 +1292,7 @@ each closes its own validation gate, and the parent flips to ✅ when
 | [`7.5.c.ii`](#sprint-75cii-eks-containerd-registry-mirror-config-injection-) | ✅ Done | EKS containerd registry-mirror config injection via privileged DaemonSet (no RKE2 `registries.yaml` equivalent on EKS) |
 | [`7.5.c.iii`](#sprint-75ciii-eks-side-harbor--minio--percona-installs-) | ✅ Done | EKS-side MinIO + Harbor install wired into `ensureAwsSubstratePlatformRuntime` + Sprint 7.5.c.ii DaemonSet applied. Percona operator deferred to 7.5.c.iv (needs the image-mirror loop). |
 | [`7.5.c.iv`](#sprint-75civ-in-cluster-image-mirror-job--percona-operator-) | ✅ Done | In-cluster image-mirror Job (crane-based) + Percona PostgreSQL operator install + steady-state MinIO reconcile wired into `ensureAwsSubstratePlatformRuntime` |
-| [`7.5.c.v.b`](#sprint-75cvb-in-cluster-custom-image-build-on-eks-) | ✅ Done | In-cluster custom-image push for `prodbox-gateway` + `prodbox-public-edge-workload` via crane pod (docker save + kubectl cp + crane push --insecure). Live validation deferred to Sprint 7.5.c.v re-run. |
+| [`7.5.c.v.b`](#sprint-75cvb-in-cluster-custom-image-build-on-eks-) | ✅ Done | In-cluster custom-image push for the single `prodbox-runtime` union image (consolidated by Sprint `1.45`; formerly `prodbox-gateway` + `prodbox-public-edge-workload`) via crane pod (docker save + kubectl cp + crane push --insecure). Live validation deferred to Sprint 7.5.c.v re-run. |
 | [`7.5.c.v.c`](#sprint-75cvc-harness-preflight-residue-policy-bypassallresidueforharnessrefresh-) | ✅ Done | New `PulumiResiduePolicy` constructor `BypassAllResidueForHarnessRefresh` unblocks `runAwsIamHarnessSetup` preflight when the long-lived `aws-ses` stack is alive (the Sprint 7.7 `BypassPerRunResidueOnly` policy refused on `aws-ses`, blocking every harness-driven test run). |
 | [`7.5.c.v.d`](#sprint-75cvd-operational-iam-policy-compaction--s3-grants-) | ✅ Done | Operational `prodbox` IAM inline policy compacted to fit under AWS's 2048-byte inline-user-policy cap: explicit `ec2:*` / `eks:*` action lists collapsed to service wildcards; new `SesCaptureBucketRead` / `SesCaptureObjectRead` (S3 grants on the SES capture bucket); policy submission switched to compact `Data.Aeson.encode`. |
 | [`7.5.c.v.e`](#sprint-75cve-read-only-ses-grants-for-sprint-84-prerequisites-) | ✅ Done | New `SesReadOnly` statement (`ses:Describe*` / `Get*` / `List*`) so the harness IAM user can run the Sprint 8.4 `ses_sending_identity_verified` + `ses_receive_rule_set_active` prereq checks. |
@@ -1794,7 +1794,7 @@ reconcile from Harbor-mirrored images.
 
 | Sub-sprint | Closure summary |
 |------------|-----------------|
-| `7.5.c.v.b` | In-cluster custom-image push for `prodbox-gateway` + `prodbox-public-edge-workload` via a crane pod (`docker save` + `kubectl cp` + `crane push --insecure`). Closes the home-substrate-only `ensureGatewayImages` / `ensurePublicEdgeWorkloadImage` gap on EKS. |
+| `7.5.c.v.b` | In-cluster custom-image push for the single `prodbox-runtime` union image (consolidated by Sprint `1.45`) via a crane pod (`docker save` + `kubectl cp` + `crane push --insecure`). Closes the home-substrate-only `ensureRuntimeImage` gap on EKS. |
 | `7.5.c.v.c` | New `PulumiResiduePolicy` constructor `BypassAllResidueForHarnessRefresh` lets the test-harness preflight refresh `aws.*` even when `aws-ses` is alive (the intended steady state). Closes the Sprint 7.7 over-tightening that blocked every harness-driven run on `aws-ses`. |
 | `7.5.c.v.d` | Operational IAM inline policy compacted under AWS's 2048-byte cap: `ec2:*` / `eks:*` service wildcards replace 24+8 explicit actions, new `SesCaptureBucketRead` / `SesCaptureObjectRead` S3 grants on the SES capture bucket, compact `Data.Aeson.encode` for inline-policy submission. |
 | `7.5.c.v.e` | New `SesReadOnly` (`ses:Describe*`/`Get*`/`List*`) statement grants the harness IAM user read-only SES access for the Sprint 8.4 `ses_sending_identity_verified` + `ses_receive_rule_set_active` prereqs. |
@@ -1863,8 +1863,9 @@ Job and Percona operator install.
 
 ### Objective
 
-Build and publish the two custom prodbox images
-(`prodbox-gateway`, `prodbox-public-edge-workload`) so they land in
+Build and publish the single custom prodbox union runtime image
+(`prodbox-runtime`; consolidated by Sprint `1.45` from the former
+`prodbox-gateway` + `prodbox-public-edge-workload`) so it lands in
 EKS-side Harbor and the gateway / public-edge chart pods can pull
 them via the Sprint `7.5.c.ii` containerd registry-mirror
 DaemonSet. The home substrate's `ensureGatewayImages` /
@@ -3597,9 +3598,13 @@ per-cluster salt — and `put/getBundleObject`), `initFreshVault` dual-writes th
 alongside the unchanged host-disk write (best-effort-but-verified; swallowed on failure so it never bricks
 init, disk stays PRIMARY), and `loadAndDecryptBundle` prefers the MinIO object then falls back to
 `loadAndDecryptDiskBundle`. Gate: `dev check` 0, `test unit` 0 (987, +8), `integration cli`/`env` 0 (39/39).
-🧪 Live-proof: pending — the **disk-free relocation** (the MinIO-before-Vault-unseal reorder + the
-MinIO-root-decouple, marked `-- Sprint 7.19 (live-proof)` in `CLI/Vault.hs` + `Vault/Host.hs`) needs a live
-home reconcile/unseal/rebuild to prove the bundle unseals Vault from MinIO with no host-disk unlock material.
+The MinIO access credential is ✅ a **single static constant** (`Prodbox.Minio.RootCredential`, 2026-06-22),
+superseding the brief 2026-06-21 password-derived approach (deleted as security theatre — the real
+security is Vault Transit + the bundle's password-AEAD seal). This fixes the retained-PV rebuild mismatch
+(static = stable) and makes the Tier-1 bundle round-trip through MinIO (resolving `InvalidAccessKeyId`).
+🧪 Live-proof: pending — only the **disk-free unseal cutover** (the MinIO-before-Vault-unseal reorder,
+marked `-- Sprint 7.19 (live-proof)` in `CLI/Vault.hs` + `Vault/Host.hs`) needs a live home
+reconcile/unseal/rebuild to prove the bundle unseals Vault from MinIO with no host-disk unlock material.
 **Blocked by**: Sprint `7.14` (the landed Vault-Transit decrypt-to-scratch object-store over the
 Model-B durable MinIO bucket). Forward-only (Standard N): this sprint sits in Phase 7 because it
 builds on Sprint `7.14`'s object-store envelope/naming layer in the same durable bucket; it adds the
@@ -3647,11 +3652,21 @@ keys live in the parent's KV), per
 - ✅ Landed (code-owned, validated 2026-06-18): the additive dual-write to the MinIO bootstrap object +
   the password-derived bootstrap MinIO read credential + the prefer-MinIO/fallback-disk unseal read.
   Disk remains PRIMARY this stage; the bundle is now written to **both** disk and MinIO.
-- 🧪 Remaining (Live-proof-pending, Standard O): the MinIO-before-Vault bootstrap reorder and the
-  MinIO-root-decoupling reorder (staged last) that make the MinIO object the disk-free unseal source, then
-  the host-disk write/fallback are dropped. The salt is currently derived from the public Tier-0 cluster id;
-  promoting it to an explicit `bootstrap_minio_salt` Tier-0 field lands with the reorder. The live
-  unseal/rebuild proof is the non-blocking axis.
+- ✅ Landed (code-owned, validated 2026-06-22): the MinIO access credential is now a **single static
+  constant** (`Prodbox.Minio.RootCredential`), superseding the 2026-06-21 password-derived approach
+  (`deriveMinioRootPassword`/`deriveBootstrapMinioCredential`, now deleted) per the operator decision that
+  deriving key/value pairs from a memorized password is security theatre — the real security is Vault
+  Transit + the bundle's password-AEAD seal, not the access credential (which only gates ciphertext over a
+  localhost NodePort). `secret/minio/root.{rootUser,rootPassword}` are `staticField`s; the unlock-bundle
+  dual-write/read use the static root via `bootstrapObjectStoreConfig`. This **fixes the rebuild mismatch**
+  (a static credential is trivially stable, so a retained MinIO PV always matches Vault) AND, because the
+  static root is a credential MinIO accepts, the Tier-1 bundle now **round-trips through MinIO** —
+  **resolving the previously-deferred `InvalidAccessKeyId` axis**. The disk stays the load-bearing
+  fallback. Gate: `dev check` 0, derivation tests removed + a static-field/static-config test added, full
+  `test unit` 1058/1058.
+- 🧪 Remaining (Live-proof-pending, Standard O): only the disk-free unseal CUTOVER — the
+  MinIO-before-Vault bootstrap reorder that makes the MinIO object the PRIMARY unseal source and drops the
+  host-disk write/fallback. The live unseal/rebuild proof is the non-blocking axis.
 
 ## Sprint 7.20: Test-Harness IAM Credential Lifecycle Doctrine + Teardown-Completeness Guard ✅
 
@@ -3696,15 +3711,15 @@ doctrine-canonicalization + guard as the new 📋 deliverable.
   from the `aws_admin_for_test_simulation.*` fixture into Vault KV (`secret/gateway/gateway/aws`),
   never into `prodbox-config.dhall`, and on every exit path (success / failure / Ctrl-C / preflight
   idempotency) deletes the IAM user + keys from AWS and clears the Vault creds.
-- 📋 Canonicalize the lifecycle as doctrine, citing
-  [aws_admin_credentials.md](../documents/engineering/aws_admin_credentials.md) and
-  [aws_integration_environment_doctrine.md](../documents/engineering/aws_integration_environment_doctrine.md),
+- ✅ Canonicalized the lifecycle as doctrine in
+  [aws_admin_credentials.md](../documents/engineering/aws_admin_credentials.md) (citing
+  [aws_integration_environment_doctrine.md](../documents/engineering/aws_integration_environment_doctrine.md)),
   so the mint-to-Vault + delete-from-AWS-and-Vault contract is the named SSoT for the harness IAM
   lifecycle rather than implementation lore.
-- 📋 A teardown-completeness guard that asserts, after a harness run, that the IAM user + keys are
-  gone from AWS and the Vault creds are cleared. Nuance to record: Vault is currently "cleared" by
-  writing empty values, not a true KV delete — note a true KV delete as an optional future refinement,
-  not a hard-delete claim.
+- ✅ The teardown-completeness guard landed: `Prodbox.Aws.assertOperationalTeardownComplete` (driven by
+  `awsTeardownGuard`) asserts, after a harness run, that the IAM user + keys are gone from AWS and the
+  Vault creds are cleared. Recorded nuance: Vault is currently "cleared" by writing empty values, not a
+  true KV delete — a true KV delete remains an optional future refinement, not a hard-delete claim.
 
 ### Validation
 
@@ -3962,6 +3977,68 @@ the `pulumi up` creates are idempotent (verified domain/DKIM, active rule set, r
 - ✅ All five fixes + the live `aws-ses` reconcile proof landed 2026-06-18.
 - 🧪 Home `prodbox test all` end-to-end pass (Live-proof-pending, Standard O). The one-time SMTP access-key
   rotation that any successful reconcile triggers is an expected, documented side effect.
+
+## Sprint 7.24: Preflight Fail-Closed Gate — IAM-User-Gated Refinement of the Vault-Backed aws-config Observation ✅
+
+**Status**: Done (code-owned surface) — live-surfaced 2026-06-20 by the first two `prodbox test all` runs
+**Implementation**: `src/Prodbox/Aws.hs` (`refineAwsConfigResidueAgainstIamUser` wired into `discoverOperationalResidue` — the teardown **gate**; `operationalCredentialsClearedAtPreflight` + the pure `operationalCredentialsClearedDecision` for the preflight cleared-**verification**), `src/Prodbox/TestRunner.hs` (the harness-lifecycle **reorder** — `harnessNeedsVaultBeforeSetup` + a bare pre-`cluster reconcile` for cluster-bootstrapping suites), `test/unit/Main.hs`
+**Blocked by**: none (refines Phase 7's own AWS IAM-harness teardown surface; forward-only)
+**Live-proof**: pending — a clean-machine `prodbox test all` whose AWS IAM harness preflight now clears and proceeds into cluster bring-up
+**Independent Validation**: the refinement is a pure function with a four-case truth-table unit test (downgrade only when the IAM user is confirmed absent; fail-closed preserved when the user is present or itself unreachable, and when the aws-config is present); validated on the code-owned surface with no dependency on a later phase.
+**Docs to update**: `documents/engineering/lifecycle_reconciliation_doctrine.md` (§3.1 invariant 2).
+
+### Objective
+
+The first live `prodbox test all` surfaced the exact gap Sprint `7.14`'s "🧪 Live-proof pending" note
+flagged: after `7.14` migrated the operational `aws.*` credential to a mandatory `SecretRef.Vault`,
+the AWS IAM-harness **preflight** teardown-refresh observes `operational-aws-config` by resolving that
+reference **from host Vault** (`discoverOperationalResidue` → `resolveAwsCredentialsRefFromHostVault`).
+At preflight the cluster — and therefore Vault at `127.0.0.1:31820` — is not up yet, so the resolve
+returns a connection error, classified `ResidueUnreachable`, and the fail-closed gate
+([lifecycle_reconciliation_doctrine.md §3.1](../documents/engineering/lifecycle_reconciliation_doctrine.md))
+refuses — aborting **every** `test all` on a clean machine. AWS is reachable, the admin credential
+authenticates with `AdministratorAccess`, and no operational IAM user is stranded; the refusal is
+purely the Vault-at-preflight catch-22.
+
+### Deliverables
+
+- `refineAwsConfigResidueAgainstIamUser :: ResidueStatus -> ResidueStatus -> ResidueStatus`: a pure
+  cross-resource refinement that downgrades a `ResidueUnreachable` `operational-aws-config` to
+  `ResidueAbsent` **only when** the `operational-iam-user` residue is `ResidueAbsent` (the user is
+  observed gone via the admin credential, which is independent of Vault). Every other case preserves
+  the raw status, so the gate still fails closed.
+- Wired into `discoverOperationalResidue` so the preflight teardown-refresh no longer deadlocks on a
+  Vault that only comes up later in the same run.
+- The SAME Vault-at-preflight flaw lived a second layer down in the harness setup's post-cleanup
+  **verification** (`operationalCredentialsCleared` also resolves the aws.* `SecretRef` from Vault).
+  `operationalCredentialsClearedAtPreflight` applies the identical IAM-user-gated principle for the
+  preflight call only; the two postflight teardown guards keep the strict check, since they run after
+  the cluster lifecycle when Vault is up (a justified asymmetry — preflight may precede Vault's
+  existence, postflight always follows it).
+- The doctrine §3.1 "Soundness" invariant gains a "Dependent-resource refinement" paragraph stating
+  this is keyed on the authoritative, Vault-independent observation of the safety-critical resource —
+  **not** a relaxation of `Unreachable → refuse`.
+- **The lifecycle reorder (part 3).** Once both observation layers cleared, the harness setup reached
+  its actual **mint + Vault-write** (`applyAwsSetupWithFederatedFallback` writes operational `aws.*`
+  into Vault; `seedAcmeEabFromTestSecrets` writes the ACME EAB) — which still failed because the
+  harness setup runs *before* the suite body's `cluster reconcile` brings Vault up. Root cause: Sprint
+  `7.14` moved that write from the local `prodbox.dhall` to Vault but never live-proved the ordering.
+  Fix: for cluster-bootstrapping suites (`harnessNeedsVaultBeforeSetup = nativeRequiresSupportedRuntimeBootstrap`),
+  `runNativeSuite` runs a **bare `cluster reconcile`** first — which brings Vault up and skips the
+  gateway/edge chart cleanly while `aws.*` is unmaterialized (`Rke2.hs` operational-credential-gate
+  skip) — *then* the harness setup materializes `aws.*` + EAB into Vault (host root-token write
+  fallback, since the gateway SA is not up after a bare reconcile), *then* the body's existing
+  `--with-edge` reconcile + gateway/api/websocket charts run with `aws.*` present. Pure harness-only
+  suites (`aws-iam`, `dns-aws`) do **not** bootstrap a cluster and get no pre-reconcile. The bare and
+  `--with-edge` reconciles are idempotent (both `applyNativeInstallPlan`).
+
+### Validation
+
+`prodbox dev check` 0; the four-case refine truth-table unit test green; full `test unit` green.
+
+### Remaining Work
+
+- 🧪 Live-proof (non-blocking, Standard O): the resumed `prodbox test all` clears preflight and proceeds.
 
 ## Related Documents
 

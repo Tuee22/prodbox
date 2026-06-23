@@ -19,10 +19,11 @@ podAntiAffinity:
 podAnnotations: {}
 
 image:
-  # Container image for the gateway daemon. The supported `prodbox charts`
-  # path overrides this with the machine-identity tag imported into local RKE2
-  # containerd by `prodbox rke2 ensure`.
-  repository: 127.0.0.1:30080/prodbox/prodbox-gateway
+  # The single union runtime image (also used by api/websocket). The supported
+  # `prodbox charts` path overrides this with the machine-identity tag imported
+  # into local RKE2 containerd by `prodbox rke2 ensure`. The gateway role is
+  # selected by this chart's container `args:` (`gateway start …`).
+  repository: 127.0.0.1:30080/prodbox/prodbox-runtime
   tag: latest
   pullPolicy: Always
 

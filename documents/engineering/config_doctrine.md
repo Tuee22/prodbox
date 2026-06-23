@@ -59,11 +59,15 @@ trust state required to read it.
 - **TIER 1 — BOOTSTRAP SECRET (PASSWORD-GATED).** The Vault unlock material (Shamir unseal keys,
   recovery keys, initial root token) is password-AEAD-sealed (Argon2id + ChaCha20-Poly1305) and
   lives in the DURABLE MinIO bucket — NOT on host disk, and NOT a Vault-Transit envelope (it is
-  what UNSEALS Vault, so it cannot depend on an unsealed Vault). It is read via a PASSWORD-DERIVED
-  (KDF) bootstrap MinIO credential. The operator password is the sole ephemeral secret. This
-  requires MinIO reachable BEFORE Vault unseal (a bootstrap reorder), staged with the
-  MinIO-root-decoupling reorder LAST (Sprint `7.19`). Child clusters use transit-seal (no bundle;
-  recovery keys in the parent's KV) — Tier 1 is root-cluster-only.
+  what UNSEALS Vault, so it cannot depend on an unsealed Vault). It is read via the **static** MinIO
+  root credential (`Prodbox.Minio.RootCredential`; operator decision 2026-06-22 — the access
+  credential is not the security boundary, so password-deriving it was theatre). The operator
+  password is the sole ephemeral secret (the bundle-body AEAD key). A static MinIO credential is
+  stable across rebuilds (a retained MinIO PV always matches Vault) and is one MinIO accepts (the
+  bundle round-trips through MinIO, no `InvalidAccessKeyId`); only the disk-free bootstrap reorder
+  (MinIO reachable BEFORE Vault unseal) remains. Child clusters use transit-seal (no bundle; recovery
+  keys in the parent's KV) —
+  Tier 1 is root-cluster-only.
 - **TIER 2 — OPERATIONAL SECRETS (VAULT-GATED).** All other secrets are opaque-named,
   Vault-Transit-enveloped LogicalObjects in the SAME durable MinIO bucket (in-force config, gateway
   state, Pulumi checkpoints, downstream-cluster orders), decryptable only with an UNSEALED Vault.

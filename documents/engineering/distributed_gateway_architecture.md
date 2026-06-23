@@ -474,8 +474,8 @@ The Haskell daemon wires DNS writes through native subprocess helpers:
 - `fetchPublicIp()` invokes `curl -s --max-time 10 https://api.ipify.org`
 - `writeDnsRecord()` invokes `aws route53 change-resource-record-sets` with an UPSERT batch
 - The helpers are auto-wired during daemon startup when gate config is present and no mock is injected
-- `docker/gateway.Dockerfile` installs the official AWS CLI bundle per target architecture so the
-  Route 53 subprocess path remains available inside the runtime image
+- the single union runtime image (`docker/prodbox.Dockerfile`) installs the official AWS CLI bundle
+  per target architecture so the Route 53 subprocess path remains available inside the runtime image
 - `charts/gateway/` renders Route 53 AWS credentials as `SecretRef.Vault` references, and the daemon
   resolves them through Vault Kubernetes auth before projecting them only into the `aws` subprocess
   environment
@@ -661,7 +661,8 @@ host-process invocation remains a development mode, not the supported steady sta
 
 Containerization is first-class for integration/runtime image publishing:
 
-- `prodbox cluster reconcile` builds the gateway image from `docker/gateway.Dockerfile`; it deploys
+- `prodbox cluster reconcile` builds the single union runtime image from `docker/prodbox.Dockerfile`
+  (the gateway runs it via `gateway start`); it deploys
   the gateway chart only after the Vault-backed operational `aws.*` credential gate resolves, and a
   bare local reconcile skips the chart cleanly when `secret/gateway/gateway/aws` has not yet been
   materialized

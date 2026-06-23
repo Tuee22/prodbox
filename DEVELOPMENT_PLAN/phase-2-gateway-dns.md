@@ -124,10 +124,12 @@ deployed-cluster proof never gates this phase's closure or reopens it.
   surfaces. `gateway start` runs through the native Haskell daemon runtime in
   `src/Prodbox/Gateway/Daemon.hs` and `src/Prodbox/Gateway/Types.hs`. All Python gateway code has
   been removed.
-- The gateway container build lives in `docker/gateway.Dockerfile`, is single-stage
-  `ubuntu:24.04`, installs `ghcup` in-image, pins GHC `9.12.4`, retains the official AWS CLI
-  bundle per native Debian host architecture, and does not depend on the old mounted
-  `haskell:9.6.7-slim` toolchain context or symlinked GHC tool shims.
+- The gateway image is built from the single union runtime Dockerfile `docker/prodbox.Dockerfile`
+  (consolidated from the former `docker/gateway.Dockerfile` by Sprint `1.45`; the gateway role is
+  selected by the chart's `gateway start` `args:`). It is single-stage `ubuntu:24.04`, installs
+  `ghcup` in-image, pins GHC `9.12.4`, retains `tini` as PID 1 and the official AWS CLI bundle per
+  native Debian host architecture, and does not depend on the old mounted `haskell:9.6.7-slim`
+  toolchain context or symlinked GHC tool shims.
 - The in-cluster gateway steady state is repo-rootless: `app/prodbox/Main.hs` now permits
   repo-rootless `gateway start|status`, and `charts/gateway/` injects AWS credentials through the
   `gateway-aws-credentials` secret while probing `/v1/state` over HTTP on the in-pod REST port.
@@ -173,7 +175,7 @@ deployed-cluster proof never gates this phase's closure or reopens it.
 ## Sprint 2.1: Haskell Gateway Runtime and Command Surface ✅
 
 **Status**: Done
-**Implementation**: `src/Prodbox/Dns.hs`, `src/Prodbox/Gateway.hs`, `src/Prodbox/Gateway/Daemon.hs`, `src/Prodbox/Gateway/Types.hs`, `charts/gateway/`, `docker/gateway.Dockerfile`, `test/unit/Main.hs`, `test/integration/CliSuite.hs`
+**Implementation**: `src/Prodbox/Dns.hs`, `src/Prodbox/Gateway.hs`, `src/Prodbox/Gateway/Daemon.hs`, `src/Prodbox/Gateway/Types.hs`, `charts/gateway/`, `docker/prodbox.Dockerfile`, `test/unit/Main.hs`, `test/integration/CliSuite.hs`
 **Docs to update**: `documents/engineering/cli_command_surface.md`, `documents/engineering/dependency_management.md`, `documents/engineering/distributed_gateway_architecture.md`, `documents/engineering/local_registry_pipeline.md`, `documents/engineering/unit_testing_policy.md`
 
 ### Objective
@@ -185,7 +187,7 @@ while preserving the implemented runtime contract and container doctrine.
 
 - `prodbox gateway start|status|config-gen` and `prodbox dns check` are implemented in Haskell.
 - The in-cluster gateway container runs the Haskell binary from a single-stage `ubuntu:24.04`
-  image built from `docker/gateway.Dockerfile`, with in-image `ghcup` pinned to GHC `9.12.4`,
+  image built from the union runtime `docker/prodbox.Dockerfile`, with in-image `ghcup` pinned to GHC `9.12.4`,
   no symlinked Haskell tool shims, and the official AWS CLI bundle per native Debian host
   architecture.
 - Gateway image delivery uses Harbor as the only supported cluster image source.
@@ -204,7 +206,7 @@ while preserving the implemented runtime contract and container doctrine.
 3. `prodbox dns check`
 4. `prodbox test integration gateway-daemon`
 5. `prodbox test integration gateway-pods`
-6. Gateway image proof: `docker/gateway.Dockerfile` is single-stage `ubuntu:24.04`, installs
+6. Gateway image proof: the union runtime `docker/prodbox.Dockerfile` is single-stage `ubuntu:24.04`, installs
    `ghcup`, pins GHC `9.12.4`, and does not create symlinked Haskell tool shims
 7. Harbor proof: the gateway image is available from Harbor for the native architecture of the
    supported host and cluster
@@ -243,10 +245,10 @@ while preserving the implemented runtime contract and container doctrine.
 - The named validation commands in this sprint (`prodbox test integration gateway-daemon` and
   `prodbox test integration gateway-pods`) run executable native Haskell validation flows via
   `src/Prodbox/TestValidation.hs`.
-- `docker/gateway.Dockerfile` is single-stage `ubuntu:24.04`, installs `ghcup`, pins GHC
+- the union runtime `docker/prodbox.Dockerfile` is single-stage `ubuntu:24.04`, installs `ghcup`, pins GHC
   `9.12.4`, and no longer uses the mounted `haskell:9.6.7-slim` BuildKit context or symlinked
   GHC tool shims.
-- `docker/gateway.Dockerfile` installs the official AWS CLI bundle from the native Debian host
+- the union runtime `docker/prodbox.Dockerfile` installs the official AWS CLI bundle from the native Debian host
   architecture detected at build time.
 - `src/Prodbox/CLI/Rke2.hs` publishes the gateway image through Harbor-backed native-host-
   architecture Docker build and push flows with no mounted `haskell-toolchain` context.

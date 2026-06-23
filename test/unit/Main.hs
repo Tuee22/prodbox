@@ -16,7 +16,6 @@ import Data.Aeson
   )
 import Data.Aeson.Key qualified as Key
 import Data.Aeson.KeyMap qualified as KeyMap
-import Data.ByteArray qualified as ByteArray
 import Data.ByteString qualified as BS
 import Data.ByteString.Char8 qualified as BS8
 import Data.ByteString.Lazy qualified as BL
@@ -67,11 +66,13 @@ import Prodbox.Aws
   , harnessPostflightResiduePolicy
   , longLivedResourceNames
   , operationalAwsConfigResidueFromKey
+  , operationalCredentialsClearedDecision
   , operationalIamUserResidueFromExists
   , operationalManagedResources
   , partitionResidueByLifecycle
   , perRunStackNames
   , pulumiDestroyPlanForResidue
+  , refineAwsConfigResidueAgainstIamUser
   , renderAwsSetupPlan
   , renderAwsTeardownPlan
   , renderConfigSetupPlan
@@ -311,6 +312,7 @@ import Prodbox.Crypto.Envelope
   , sealEnvelope
   )
 import Prodbox.Daemon.Events qualified as DaemonEvents
+import Prodbox.DockerConfig qualified as DockerConfig
 import Prodbox.Effect
   ( Effect (..)
   , Validation (..)
@@ -497,9 +499,11 @@ import Prodbox.Minio.EncryptedObject
 import Prodbox.Minio.ObjectStore
   ( ObjectStoreConfig (..)
   , defaultObjectStoreBucket
+  , isNoSuchBucketOutput
   , objectStoreCreateBucketArgs
   , objectStoreHeadBucketArgs
   )
+import Prodbox.Minio.RootCredential (minioRootPassword, minioRootUser)
 import Prodbox.Naming
   ( boundedResourceName
   , hashSuffix
@@ -592,7 +596,8 @@ import Prodbox.Settings.SecretRef
   , validateProductionSecretRef
   )
 import Prodbox.Subprocess
-  ( renderSubprocess
+  ( ProcessOutput (..)
+  , renderSubprocess
   , pattern Subprocess
   )
 import Prodbox.Substrate (Substrate (..))
@@ -627,11 +632,8 @@ import Prodbox.TestValidation
   )
 import Prodbox.UsersAdmin qualified
 import Prodbox.Vault.BootstrapBundle
-  ( BootstrapMinioCredential (..)
-  , bootstrapObjectStoreConfig
-  , bootstrapSaltForClusterId
+  ( bootstrapObjectStoreConfig
   , bootstrapUnlockBundleKey
-  , deriveBootstrapMinioCredential
   )
 import Prodbox.Vault.Client
   ( BootstrapAction (..)
@@ -725,9 +727,7 @@ import Prodbox.Vault.TransitCipher
 import Prodbox.Vault.UnlockBundle
   ( UnlockBundle (..)
   , UnlockBundleError (..)
-  , bootstrapKdfOptions
   , decryptUnlockBundle
-  , deriveKey
   , encryptUnlockBundle
   )
 import Prodbox.Workload
@@ -942,72 +942,15 @@ main = mainWithSuite "prodbox-unit" $ do
       bootstrapUnlockBundleKey `shouldBe` "bootstrap/vault-unlock-bundle.v1"
       Text.isPrefixOf "objects/" bootstrapUnlockBundleKey `shouldBe` False
       Text.isSuffixOf ".enc" bootstrapUnlockBundleKey `shouldBe` False
-    it "derives a deterministic bootstrap MinIO credential from (password, salt)" $ do
-      let salt = bootstrapSaltForClusterId "cluster-xyz"
-      deriveBootstrapMinioCredential sampleUnlockBundlePassword salt
-        `shouldBe` deriveBootstrapMinioCredential sampleUnlockBundlePassword salt
-    it "derives printable credential halves of non-trivial length" $ do
-      let salt = bootstrapSaltForClusterId "cluster-xyz"
-      case deriveBootstrapMinioCredential sampleUnlockBundlePassword salt of
-        Left err -> expectationFailure ("derive failed: " ++ show err)
-        Right credential -> do
-          not (null (bootstrapMinioAccessKey credential)) `shouldBe` True
-          not (null (bootstrapMinioSecretKey credential)) `shouldBe` True
-          -- URL-safe base64 with no padding: no '+', '/', or '=' that would
-          -- corrupt the AWS_* env-var transport.
-          any (`elem` ("+/=" :: String)) (bootstrapMinioAccessKey credential) `shouldBe` False
-          any (`elem` ("+/=" :: String)) (bootstrapMinioSecretKey credential) `shouldBe` False
-          -- The two halves are independent, not a duplicated key.
-          (bootstrapMinioAccessKey credential /= bootstrapMinioSecretKey credential)
-            `shouldBe` True
-    it "differs from the bundle-body AEAD key (distinct context + salt)" $ do
-      -- The bundle body uses the bare password + a fresh random salt; the
-      -- bootstrap credential prefixes a distinct context and uses the
-      -- per-cluster salt. Re-deriving the bundle-body key with deriveKey under
-      -- the bare password and the SAME per-cluster salt must NOT equal either
-      -- credential half — proving the §6.1 independence is real, not nominal.
-      let salt = bootstrapSaltForClusterId "cluster-xyz"
-      case ( deriveKey bootstrapKdfOptions sampleUnlockBundlePassword salt
-           , deriveBootstrapMinioCredential sampleUnlockBundlePassword salt
-           ) of
-        (Right bundleBodyKey, Right credential) -> do
-          let bodyBytes = ByteArray.convert bundleBodyKey :: BS.ByteString
-              credHalves =
-                BS.append
-                  (TextEncoding.encodeUtf8 (Text.pack (bootstrapMinioAccessKey credential)))
-                  (TextEncoding.encodeUtf8 (Text.pack (bootstrapMinioSecretKey credential)))
-          -- Distinct context means the same (password, salt) yields a different
-          -- 32-byte key, so neither base64-encoded credential half can equal the
-          -- raw bundle-body key bytes.
-          BS.isInfixOf bodyBytes credHalves `shouldBe` False
-        _ -> expectationFailure "key derivation failed"
-    it "yields a different bootstrap credential for the wrong password (fails closed)" $ do
-      let salt = bootstrapSaltForClusterId "cluster-xyz"
-      case ( deriveBootstrapMinioCredential sampleUnlockBundlePassword salt
-           , deriveBootstrapMinioCredential "wrong-password" salt
-           ) of
-        (Right right, Right wrong) -> (right /= wrong) `shouldBe` True
-        _ -> expectationFailure "key derivation failed"
-    it "yields a different bootstrap credential per cluster (salt domain-separates)" $ do
-      case ( deriveBootstrapMinioCredential
-               sampleUnlockBundlePassword
-               (bootstrapSaltForClusterId "cluster-a")
-           , deriveBootstrapMinioCredential
-               sampleUnlockBundlePassword
-               (bootstrapSaltForClusterId "cluster-b")
-           ) of
-        (Right a, Right b) -> (a /= b) `shouldBe` True
-        _ -> expectationFailure "key derivation failed"
-    it "builds an object-store config carrying the durable bucket + derived creds" $ do
-      let salt = bootstrapSaltForClusterId "cluster-xyz"
-      case deriveBootstrapMinioCredential sampleUnlockBundlePassword salt of
-        Left err -> expectationFailure ("derive failed: " ++ show err)
-        Right credential -> do
-          let config = bootstrapObjectStoreConfig 39000 credential
-          objectStoreBucket config `shouldBe` defaultObjectStoreBucket
-          objectStoreEndpoint config `shouldBe` "http://127.0.0.1:39000"
-          objectStoreAccessKey config `shouldBe` bootstrapMinioAccessKey credential
-          objectStoreSecretKey config `shouldBe` bootstrapMinioSecretKey credential
+    it "builds an object-store config carrying the durable bucket + STATIC root credential" $ do
+      -- The MinIO access credential is a static constant (operator decision
+      -- 2026-06-22); security comes from the bundle's password AEAD seal + Vault
+      -- Transit, not from a derived access credential.
+      let config = bootstrapObjectStoreConfig 39000
+      objectStoreBucket config `shouldBe` defaultObjectStoreBucket
+      objectStoreEndpoint config `shouldBe` "http://127.0.0.1:39000"
+      objectStoreAccessKey config `shouldBe` minioRootUser
+      objectStoreSecretKey config `shouldBe` minioRootPassword
     it "round-trips the bundle bytes through an in-memory store at the fixed key" $ do
       -- A pure stand-in for the MinIO put/get path: store the password-AEAD
       -- envelope at the fixed bootstrap key, read it back, and require byte
@@ -1392,7 +1335,8 @@ main = mainWithSuite "prodbox-unit" $ do
               , VaultInventory.vaultSecretBootstrapGenerate =
                   \field -> pure ("generated-" <> VaultInventory.vaultSecretFieldName field)
               }
-      result <- VaultInventory.runVaultSecretBootstrapWith ops [spec]
+      result <-
+        VaultInventory.runVaultSecretBootstrapWith ops [spec]
       result
         `shouldBe` Right
           [ VaultInventory.VaultSecretBootstrapStep
@@ -1444,7 +1388,8 @@ main = mainWithSuite "prodbox-unit" $ do
               , VaultInventory.vaultSecretBootstrapGenerate =
                   \field -> pure ("SafeGenerated" <> VaultInventory.vaultSecretFieldName field)
               }
-      result <- VaultInventory.runVaultSecretBootstrapWith ops [spec]
+      result <-
+        VaultInventory.runVaultSecretBootstrapWith ops [spec]
       result
         `shouldBe` Right
           [ VaultInventory.VaultSecretBootstrapStep
@@ -1461,6 +1406,24 @@ main = mainWithSuite "prodbox-unit" $ do
                              ]
                          )
                        ]
+    it "declares secret/minio/root.rootPassword as a STATIC field (not generated/derived)" $ do
+      -- Operator decision 2026-06-22: the MinIO access credential is STATIC, not
+      -- password-derived. The rootPassword field must be the static constant so a
+      -- retained MinIO disk always matches Vault across rebuilds, and so the
+      -- credential is one MinIO actually accepts.
+      let isMinioRoot obj =
+            VaultInventory.vaultSecretObjectPath obj
+              == VaultInventory.VaultSecretPath "secret" "minio/root"
+          rootPasswordSources obj =
+            [ VaultInventory.vaultSecretFieldSource f
+            | f <- VaultInventory.vaultSecretObjectFields obj
+            , VaultInventory.vaultSecretFieldName f == "rootPassword"
+            ]
+      case filter isMinioRoot VaultInventory.chartVaultManagedSecretObjects of
+        [obj] ->
+          rootPasswordSources obj
+            `shouldBe` [VaultInventory.VaultSecretStatic (Text.pack minioRootPassword)]
+        _ -> expectationFailure "expected exactly one secret/minio/root managed object"
     it "preserves existing Vault KV fields and writes only missing generated fields" $ do
       writesRef <- newIORef []
       let path = VaultInventory.VaultSecretPath "secret" "keycloak/keycloak-postgres/patroni/app"
@@ -1484,7 +1447,8 @@ main = mainWithSuite "prodbox-unit" $ do
               , VaultInventory.vaultSecretBootstrapGenerate =
                   \field -> pure ("generated-" <> VaultInventory.vaultSecretFieldName field)
               }
-      result <- VaultInventory.runVaultSecretBootstrapWith ops [spec]
+      result <-
+        VaultInventory.runVaultSecretBootstrapWith ops [spec]
       result
         `shouldBe` Right
           [ VaultInventory.VaultSecretBootstrapStep
@@ -2414,6 +2378,27 @@ main = mainWithSuite "prodbox-unit" $ do
       seedProposeDecision
         ConfigSource {configSourceFilePresent = False, configSourceInForcePresent = False}
         `shouldBe` NoConfigAvailable
+    -- Sprint 1.42 fix: on first-ever bring-up the `prodbox-state` bucket does not
+    -- exist yet, so the seed's presence probe (getObject) must read NoSuchBucket
+    -- as ABSENT (-> Right Nothing -> SeedInForce -> the write creates the bucket),
+    -- NOT as a hard observe failure that would abort the seal and leave the bucket
+    -- forever uncreated. A credential/connection failure must NOT read as absence.
+    it "classifies a NoSuchBucket response as object-absent (not a fail-closed error)" $ do
+      let withStderr s = ProcessOutput (ExitFailure 1) "" s
+      isNoSuchBucketOutput
+        ( withStderr
+            "An error occurred (NoSuchBucket) when calling the GetObject operation: The specified bucket does not exist"
+        )
+        `shouldBe` True
+      -- A credential failure is indeterminate, NOT absence — stays fail-closed.
+      isNoSuchBucketOutput
+        ( withStderr
+            "An error occurred (InvalidAccessKeyId) when calling the GetObject operation: The Access Key Id you provided does not exist"
+        )
+        `shouldBe` False
+      isNoSuchBucketOutput
+        (withStderr "An error occurred (NoSuchKey) when calling the GetObject operation")
+        `shouldBe` False
   describe "Dhall schema generated from the Haskell source of truth (Sprint 7.17)" $ do
     it "round-trips: a default config against the GENERATED schema decodes to defaultConfigFile" $
       withSystemTempDirectory "prodbox-schema-roundtrip" $ \tmpDir -> do
@@ -3520,11 +3505,10 @@ main = mainWithSuite "prodbox-unit" $ do
       cabalProject `shouldContain` "allow-newer: *:base, *:template-haskell"
       cabalProject `shouldNotContain` "builddir:"
 
-    it "builds the container frontend under /opt/build" $ do
+    it "builds the single union runtime image under /opt/build" $ do
       repoRoot <- getCurrentDirectory
       dockerfile <- readFile (repoRoot </> "docker" </> "prodbox.Dockerfile")
 
-      dockerfile `shouldContain` "# syntax=docker/dockerfile:1.7"
       dockerfile `shouldContain` "FROM ubuntu:24.04"
       dockerfile `shouldContain` "ARG GHC_VERSION=9.12.4"
       dockerfile `shouldContain` "ARG CABAL_VERSION=3.16.1.0"
@@ -3532,9 +3516,23 @@ main = mainWithSuite "prodbox-unit" $ do
       dockerfile `shouldContain` "BOOTSTRAP_HASKELL_MINIMAL=1"
       dockerfile `shouldContain` "ghcup install ghc \"${GHC_VERSION}\""
       dockerfile `shouldContain` "ghcup install cabal \"${CABAL_VERSION}\""
-      dockerfile `shouldNotContain` "--mount=type=bind,from=haskell-toolchain"
       dockerfile `shouldContain` "cabal build --builddir=.build exe:prodbox"
       dockerfile `shouldContain` "cabal list-bin --builddir=.build exe:prodbox"
+      -- Union image: bundles the AWS CLI (gateway shells out to `aws route53`)
+      -- and tini (PID 1 for the long-running daemon), keyed by native arch.
+      dockerfile `shouldContain` "awscli.amazonaws.com"
+      dockerfile `shouldContain` "dpkg --print-architecture"
+      dockerfile `shouldContain` "tini"
+      -- Bare `prodbox` under tini; each chart supplies its own subcommand via
+      -- the pod `args:` (`gateway start` vs `workload start`).
+      dockerfile
+        `shouldContain` "ENTRYPOINT [\"/usr/bin/tini\", \"--\", \"/usr/local/bin/prodbox\"]"
+      -- Basic `docker build` only: no BuildKit frontend pin and no cache/bind
+      -- mounts, so the image builds with the daemon's default builder. (No-buildx
+      -- on the invocation itself is enforced in test/integration/CliSuite.hs.)
+      dockerfile `shouldNotContain` "# syntax="
+      dockerfile `shouldNotContain` "--mount="
+      dockerfile `shouldNotContain` "type=cache"
 
     it "keeps the Haskell quality gate on repo-owned formatter and lint inputs" $ do
       repoRoot <- getCurrentDirectory
@@ -3868,23 +3866,6 @@ main = mainWithSuite "prodbox-unit" $ do
           `shouldNotContain` "secretKeyRef:"
         vaultInit
           `shouldNotContain` "TestPlaintext"
-
-    it "keeps the gateway image on the single-stage ubuntu doctrine" $ do
-      repoRoot <- getCurrentDirectory
-      dockerfile <- readFile (repoRoot </> "docker" </> "gateway.Dockerfile")
-
-      dockerfile `shouldContain` "# syntax=docker/dockerfile:1.7"
-      dockerfile `shouldContain` "FROM ubuntu:24.04"
-      dockerfile `shouldContain` "ARG GHC_VERSION=9.12.4"
-      dockerfile `shouldContain` "ARG CABAL_VERSION=3.16.1.0"
-      dockerfile `shouldContain` "awscli.amazonaws.com"
-      dockerfile `shouldContain` "dpkg --print-architecture"
-      dockerfile `shouldContain` "BOOTSTRAP_HASKELL_MINIMAL=1"
-      dockerfile `shouldContain` "ghcup install ghc \"${GHC_VERSION}\""
-      dockerfile `shouldContain` "ghcup install cabal \"${CABAL_VERSION}\""
-      dockerfile `shouldNotContain` "--mount=type=bind,from=haskell-toolchain"
-      dockerfile
-        `shouldContain` "ENTRYPOINT [\"/usr/bin/tini\", \"--\", \"/usr/local/bin/prodbox\", \"gateway\", \"start\"]"
 
     it "keeps the vscode chart on the supported code-server path-prefix flag" $ do
       repoRoot <- getCurrentDirectory
@@ -5498,7 +5479,7 @@ main = mainWithSuite "prodbox-unit" $ do
                   case KeyMap.lookup (Key.fromString "image") payload of
                     Just (Object imagePayload) -> do
                       KeyMap.lookup (Key.fromString "repository") imagePayload
-                        `shouldBe` Just (String "127.0.0.1:30080/prodbox/prodbox-gateway")
+                        `shouldBe` Just (String "127.0.0.1:30080/prodbox/prodbox-runtime")
                       KeyMap.lookup (Key.fromString "tag") imagePayload
                         `shouldBe` Just (String "prodbox-aws-substrate")
                     _ -> expectationFailure "expected gateway image payload"
@@ -5534,7 +5515,7 @@ main = mainWithSuite "prodbox-unit" $ do
                   case KeyMap.lookup (Key.fromString "image") payload of
                     Just (Object imagePayload) -> do
                       KeyMap.lookup (Key.fromString "repository") imagePayload
-                        `shouldBe` Just (String "127.0.0.1:30080/prodbox/prodbox-public-edge-workload")
+                        `shouldBe` Just (String "127.0.0.1:30080/prodbox/prodbox-runtime")
                       KeyMap.lookup (Key.fromString "tag") imagePayload
                         `shouldBe` Just (String "prodbox-aws-substrate")
                       case KeyMap.lookup (Key.fromString "jwt") payload of
@@ -7367,6 +7348,58 @@ main = mainWithSuite "prodbox-unit" $ do
       Preconditions.preconditionLabel (Preconditions.noLiveLongLivedPulumiStacks "/repo")
         `shouldBe` "noLiveLongLivedPulumiStacks"
 
+  describe "DockerConfig: ephemeral Harbor + Docker Hub auth (Sprint 1.47, hostbootstrap Registry)" $ do
+    let systemConfig =
+          BL8.pack
+            "{\"credsStore\":\"desktop\",\"auths\":{\"127.0.0.1:30080\":{\"auth\":\"aGFyYm9y\"},\"https://index.docker.io/v1/\":{\"auth\":\"ZG9ja2Vy\"}}}"
+        asObj (Object o) = Just o
+        asObj _ = Nothing
+        authsOf bytes =
+          either (const Nothing) Just (eitherDecode bytes :: Either String Value)
+            >>= asObj
+            >>= KeyMap.lookup "auths"
+            >>= asObj
+
+    it "dockerHubAuthFromConfig keeps ONLY the docker.io entry" $
+      fmap KeyMap.keys (DockerConfig.dockerHubAuthFromConfig systemConfig)
+        `shouldBe` Just [Key.fromString "https://index.docker.io/v1/"]
+
+    it "dockerHubAuthFromConfig is Nothing when there is no docker.io entry" $
+      DockerConfig.dockerHubAuthFromConfig
+        (BL8.pack "{\"auths\":{\"127.0.0.1:30080\":{\"auth\":\"aGFyYm9y\"}}}")
+        `shouldBe` Nothing
+
+    it "dockerHubAuthFromConfig is Nothing on empty/unparseable input" $ do
+      DockerConfig.dockerHubAuthFromConfig "{}" `shouldBe` Nothing
+      DockerConfig.dockerHubAuthFromConfig "not json" `shouldBe` Nothing
+
+    it "renderEphemeralDockerConfig combines the docker.io auth + an inline Harbor entry, no credsStore" $ do
+      let rendered =
+            DockerConfig.renderEphemeralDockerConfig
+              "admin"
+              "Harbor12345"
+              (DockerConfig.dockerHubAuthFromConfig systemConfig)
+      case eitherDecode rendered :: Either String Value of
+        Right (Object top) -> KeyMap.member "credsStore" top `shouldBe` False
+        _ -> expectationFailure "expected a top-level object"
+      case authsOf rendered of
+        Just auths -> do
+          KeyMap.member (Key.fromString "127.0.0.1:30080") auths `shouldBe` True
+          KeyMap.member (Key.fromString "https://index.docker.io/v1/") auths `shouldBe` True
+        Nothing -> expectationFailure "expected an auths object"
+
+    it "renderEphemeralDockerConfig with no host login has only the Harbor entry" $
+      fmap KeyMap.keys (authsOf (DockerConfig.renderEphemeralDockerConfig "admin" "Harbor12345" Nothing))
+        `shouldBe` Just [Key.fromString "127.0.0.1:30080"]
+
+    it "renderEphemeralDockerConfig encodes the Harbor auth as base64 user:password" $
+      case authsOf (DockerConfig.renderEphemeralDockerConfig "admin" "Harbor12345" Nothing)
+        >>= KeyMap.lookup (Key.fromString "127.0.0.1:30080")
+        >>= asObj
+        >>= KeyMap.lookup "auth" of
+        Just (String b64) -> b64 `shouldBe` "YWRtaW46SGFyYm9yMTIzNDU="
+        _ -> expectationFailure "expected the Harbor auth string"
+
   describe "Sprint 7.8 operational-resource registry" $ do
     let sampleCreds =
           Credentials
@@ -7408,6 +7441,72 @@ main = mainWithSuite "prodbox-unit" $ do
     it "operationalManagedResources registers exactly the two operational resources" $
       map ResourceRegistry.resourceName (operationalManagedResources sampleCreds)
         `shouldBe` ["operational-iam-user", "operational-aws-config"]
+
+    -- Sprint 7.24: the preflight fail-closed-gate refinement.
+    it "refine downgrades unreachable aws-config to absent when IAM user is absent" $
+      refineAwsConfigResidueAgainstIamUser
+        Residue.ResidueAbsent
+        (Residue.ResidueUnreachable (Residue.ResidueQueryFailed "vault unreachable"))
+        `shouldBe` Residue.ResidueAbsent
+
+    it "refine keeps unreachable aws-config when IAM user is present (fail-closed)" $
+      refineAwsConfigResidueAgainstIamUser
+        ( Residue.ResiduePresent
+            Residue.ResidueDetails
+              { Residue.residueEvidence = "iam:get-user prodbox"
+              , Residue.residueStackName = "operational-iam-user"
+              }
+        )
+        (Residue.ResidueUnreachable (Residue.ResidueQueryFailed "vault unreachable"))
+        `shouldBe` Residue.ResidueUnreachable (Residue.ResidueQueryFailed "vault unreachable")
+
+    it "refine keeps unreachable aws-config when IAM user is unreachable (fail-closed)" $
+      refineAwsConfigResidueAgainstIamUser
+        (Residue.ResidueUnreachable (Residue.ResidueQueryFailed "iam unreachable"))
+        (Residue.ResidueUnreachable (Residue.ResidueQueryFailed "vault unreachable"))
+        `shouldBe` Residue.ResidueUnreachable (Residue.ResidueQueryFailed "vault unreachable")
+
+    it "refine leaves a PRESENT aws-config untouched even when the IAM user is absent" $
+      refineAwsConfigResidueAgainstIamUser
+        Residue.ResidueAbsent
+        ( Residue.ResiduePresent
+            Residue.ResidueDetails
+              { Residue.residueEvidence = "aws.access_key_id set in prodbox.dhall"
+              , Residue.residueStackName = "operational-aws-config"
+              }
+        )
+        `shouldBe` Residue.ResiduePresent
+          Residue.ResidueDetails
+            { Residue.residueEvidence = "aws.access_key_id set in prodbox.dhall"
+            , Residue.residueStackName = "operational-aws-config"
+            }
+
+    -- Sprint 7.24: the preflight cleared-verification decision core.
+    it "clearedDecision: configured creds (Vault reachable) are NOT cleared" $
+      operationalCredentialsClearedDecision (Right sampleCreds) (Right False)
+        `shouldBe` False
+
+    it "clearedDecision: empty creds (Vault reachable) ARE cleared" $
+      operationalCredentialsClearedDecision
+        (Right sampleCreds {access_key_id = "", secret_access_key = "", region = ""})
+        (Right True)
+        `shouldBe` True
+
+    it "clearedDecision: a missing/empty SecretRef error is cleared" $
+      operationalCredentialsClearedDecision (Left "operational aws.* is missing") (Right True)
+        `shouldBe` True
+
+    it "clearedDecision: Vault down + IAM user absent is cleared (preflight unblock)" $
+      operationalCredentialsClearedDecision (Left "vault connection refused") (Right False)
+        `shouldBe` True
+
+    it "clearedDecision: Vault down + IAM user present is NOT cleared (fail-closed)" $
+      operationalCredentialsClearedDecision (Left "vault connection refused") (Right True)
+        `shouldBe` False
+
+    it "clearedDecision: Vault down + IAM user unobservable is NOT cleared (fail-closed)" $
+      operationalCredentialsClearedDecision (Left "vault connection refused") (Left "iam unreachable")
+        `shouldBe` False
 
     it "operationalManagedResources entries are all the Operational lifecycle class" $
       all
@@ -8743,8 +8842,8 @@ main = mainWithSuite "prodbox-unit" $ do
     it "rewriteChartRefForInClusterPush swaps the host:port for the in-cluster DNS endpoint" $ do
       Prodbox.Lib.EksCustomImagePush.rewriteChartRefForInClusterPush
         cfg
-        "127.0.0.1:30080/prodbox-gateway/foo:tag"
-        `shouldBe` "harbor.harbor.svc.cluster.local/prodbox-gateway/foo:tag"
+        "127.0.0.1:30080/prodbox/prodbox-runtime:tag"
+        `shouldBe` "harbor.harbor.svc.cluster.local/prodbox/prodbox-runtime:tag"
     it "rewriteChartRefForInClusterPush leaves unrecognized refs unchanged (defensive)" $ do
       Prodbox.Lib.EksCustomImagePush.rewriteChartRefForInClusterPush cfg "docker.io/library/foo:tag"
         `shouldBe` "docker.io/library/foo:tag"
@@ -8877,8 +8976,7 @@ main = mainWithSuite "prodbox-unit" $ do
                      , "ensureHarborRegistryStorageBackend"
                      , "ensureHarborRegistryRuntime SubstrateAws"
                      , "applyEksImageMirrorJob"
-                     , "ensureGatewayImagesForSubstrate SubstrateAws"
-                     , "ensurePublicEdgeWorkloadImageForSubstrate SubstrateAws"
+                     , "ensureRuntimeImageForSubstrate SubstrateAws"
                      , "ensurePostgresOperatorRuntime"
                      , "ensureMinioRuntime SubstrateAws MinioSteadyStateHarbor"
                      , "ensureGatewayMinioBootstrap"
@@ -8947,15 +9045,13 @@ main = mainWithSuite "prodbox-unit" $ do
         rendered
           `shouldNotContain` "\"hostnames\":[\"test.resolvefintech.com\"]"
       it
-        "places custom-image build steps after image-mirror (Harbor populated) and before Percona (Percona pulls from Harbor)"
+        "places the union runtime-image build after image-mirror (Harbor populated) and before Percona (Percona pulls from Harbor)"
         $ do
           let mirrorIndex = elemIndex "applyEksImageMirrorJob" steps
-              gatewayIndex = elemIndex "ensureGatewayImagesForSubstrate SubstrateAws" steps
-              workloadIndex = elemIndex "ensurePublicEdgeWorkloadImageForSubstrate SubstrateAws" steps
+              runtimeIndex = elemIndex "ensureRuntimeImageForSubstrate SubstrateAws" steps
               perconaIndex = elemIndex "ensurePostgresOperatorRuntime" steps
-          mirrorIndex `shouldSatisfy` (`indexPrecedes` gatewayIndex)
-          gatewayIndex `shouldSatisfy` (`indexPrecedes` workloadIndex)
-          workloadIndex `shouldSatisfy` (`indexPrecedes` perconaIndex)
+          mirrorIndex `shouldSatisfy` (`indexPrecedes` runtimeIndex)
+          runtimeIndex `shouldSatisfy` (`indexPrecedes` perconaIndex)
 
   describe "Sprint 7.5.c.ii EKS containerd registry-mirror DaemonSet" $ do
     let cfg = Prodbox.Lib.EksContainerdMirror.defaultProdboxMirrorConfig

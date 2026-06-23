@@ -72,13 +72,12 @@ import Prodbox.CLI.Rke2
   , acmeRuntimeManifestWithCredentials
   , ensureAdminPublicEdgeRoutes
   , ensureGatewayChartReady
-  , ensureGatewayImagesForSubstrate
   , ensureGatewayMinioBootstrap
   , ensureHarborRegistryRuntime
   , ensureHarborRegistryStorageBackend
   , ensureMinioRuntime
   , ensurePostgresOperatorRuntime
-  , ensurePublicEdgeWorkloadImageForSubstrate
+  , ensureRuntimeImageForSubstrate
   , ensureVaultRuntime
   , resolveAcmeEabKeyId
   )
@@ -767,8 +766,7 @@ ensureAwsSubstratePlatformRuntime repoRoot settings prodboxId labelValue = do
     , ensureHarborRegistryStorageBackend repoRoot
     , ensureHarborRegistryRuntime repoRoot SubstrateAws
     , applyEksImageMirrorJob repoRoot
-    , ensureGatewayImagesForSubstrate SubstrateAws repoRoot prodboxId
-    , ensurePublicEdgeWorkloadImageForSubstrate SubstrateAws repoRoot prodboxId
+    , ensureRuntimeImageForSubstrate SubstrateAws repoRoot prodboxId
     , ensurePostgresOperatorRuntime repoRoot prodboxId labelValue
     , ensureMinioRuntime repoRoot SubstrateAws MinioSteadyStateHarbor
     , ensureGatewayMinioBootstrap repoRoot
@@ -793,8 +791,7 @@ awsSubstratePlatformRuntimeStepDescriptions =
   , "ensureHarborRegistryStorageBackend"
   , "ensureHarborRegistryRuntime SubstrateAws"
   , "applyEksImageMirrorJob"
-  , "ensureGatewayImagesForSubstrate SubstrateAws"
-  , "ensurePublicEdgeWorkloadImageForSubstrate SubstrateAws"
+  , "ensureRuntimeImageForSubstrate SubstrateAws"
   , "ensurePostgresOperatorRuntime"
   , "ensureMinioRuntime SubstrateAws MinioSteadyStateHarbor"
   , "ensureGatewayMinioBootstrap"

@@ -541,8 +541,8 @@ architecture under the one-host doctrine rather than the earlier dedicated-host 
   `prodbox-config.dhall` now close on one canonical public hostname, `test.resolvefintech.com`,
   with no dedicated public-FQDN config fields on the supported path.
 - `src/Prodbox/CLI/Rke2.hs` now renders config-selected MetalLB L2 or BGP resources, lifts the
-  public-edge replica counts into validated settings, and builds or imports both the gateway image
-  and the shared public-edge workload image during `prodbox rke2 reconcile`. The lifecycle-derived
+  public-edge replica counts into validated settings, and builds or imports the single union
+  runtime image (`prodbox-runtime`) during `prodbox rke2 reconcile`. The lifecycle-derived
   MetalLB `IPAddressPool` is sized to a single LAN IP, matching the one Envoy Gateway
   `LoadBalancer` Service the supported edge needs (`src/Prodbox/Host.hs` `selectMetallbRange`,
   `poolSize = 1`).
@@ -2528,8 +2528,8 @@ identical `{parameters, context, witness}` schema and the secret-free guard hold
 a `Tier0Source` provenance ADT, and `loadDaemonBinaryContext` — the per-frame context-init loader: prefer the
 ConfigMap-mounted `prodbox.dhall` (overwrite), else the baked-in container default at `/etc/prodbox/prodbox.dhall`,
 else the compiled-in default. `docker/default-prodbox.dhall` is the byte-for-byte render of the Haskell default,
-registered as a `TrackedGeneratedPath` (drift-guarded by `dev check`) and `COPY`-ed into both
-`docker/gateway.Dockerfile` and `docker/prodbox.Dockerfile`. `runGatewayDaemon` logs the resolved Tier-0 context
+registered as a `TrackedGeneratedPath` (drift-guarded by `dev check`) and `COPY`-ed into the single
+union runtime `docker/prodbox.Dockerfile`. `runGatewayDaemon` logs the resolved Tier-0 context
 + provenance at startup (additive; a decode failure is a warning, never fatal — the operational `DaemonConfig`
 runtime is untouched). Gate: `dev check` 0, `test unit` 0 (979, incl. 7 new Sprint 1.40 tests), `test integration
 cli` 0 (39), `test integration env` 0 (39), `dev docs check` 0, `dev lint docs` 0.
@@ -2634,8 +2634,20 @@ in-force SSoT when the cluster is *established* — signalled by the Vault unloc
 operator-authored `prodbox.dhall` `parameters` before establishment (first bring-up + every host test with
 no cluster). A sealed or unreachable Vault on an established cluster is **NOT** a fail-closed brick that
 falls back to `parameters`: the cluster keeps running and simply cannot read its config (no fallback).
-🧪 Live-proof: pending — a from-scratch home bring-up reads config from `prodbox.dhall`/the seeded SSoT with
-no `prodbox-config.dhall` present (non-blocking, Standard O). **Hermeticity caveat**: the three
+🧪 Live-proof (advanced 2026-06-22): a from-scratch home bring-up now **seeds the in-force SSoT into MinIO
+on the first reconcile** — live-confirmed by "Seeded the in-force config SSoT in MinIO from the filesystem
+operator config." and the `prodbox-state` bucket materializing on the MinIO PV. This required a fix to
+`Prodbox.Minio.ObjectStore.getObject`: the seed's presence probe was treating `NoSuchBucket` (the bucket
+does not exist yet on first-ever bring-up) as a hard observe failure, so the seal aborted and the bucket was
+never created — it fell back to the filesystem seed forever. `getObject` now classifies `NoSuchBucket` as
+definitive object-absence (`Right Nothing`), so the probe reads "absent → seed" and the write creates the
+bucket; a credential/connection failure still stays `Left` (failure to observe is not absence). My Sprint
+`7.19` MinIO-root-decouple exposed this: with the root credential now valid, the probe reached `NoSuchBucket`
+rather than `InvalidAccessKeyId`. Gate: `dev check` 0, +1 unit test, `test unit` 1069/1069; **live reconcile RC=0**
+(full platform, 28 pods Running) with the seed materialising both the `prodbox-state` bucket AND the
+opaque Vault-Transit envelope (`prodbox-state/objects/<hmac>.enc`). (The remaining `bootstrap/vault-unlock-bundle.v1`
+fallback is the separate, still-deferred Sprint `7.19` bootstrap-read-credential axis, not this seed path.)
+**Hermeticity caveat**: the three
 `cluster reconcile` CLI integration tests exercise the reconcile seed step against the host Vault via the
 existing `PRODBOX_TEST_HOST_VAULT_TOKEN` seam (green on the canonical Bathurst host); a future seam for a
 fully Vault-less host is tracked as a follow-up, non-blocking.
@@ -2807,6 +2819,174 @@ operational `aws.*` into Vault via the daemon NodePort path under the `prodbox-o
   (no host-write fallback diagnostic) for the EAB + operational `aws.*`. The
   `prodbox-operator-write` Kubernetes ServiceAccount must exist in the `gateway` namespace for the
   JWT mint to succeed; until then the harness falls back to the host root-token write.
+
+## Sprint 1.45: Consolidate the gateway + workload images into one union runtime image ✅
+
+**Status**: Done (code-owned surface) — operator-directed 2026-06-20
+**Implementation**: `docker/prodbox.Dockerfile` (union image; `docker/gateway.Dockerfile` deleted),
+`src/Prodbox/ContainerImage.hs`, `src/Prodbox/CLI/Rke2.hs`, `src/Prodbox/Lib/AwsSubstratePlatform.hs`,
+`src/Prodbox/Lib/ChartPlatform.hs`, `src/Prodbox/Lib/EksCustomImagePush.hs`,
+`charts/{gateway,api,websocket}/`, `test/unit/Main.hs`, `test/integration/CliSuite.hs`
+**Blocked by**: none (expands Phase 1's own container-packaging surface; the former gateway
+Dockerfile was Phase 2's — that build is consolidated here and Phase 2 cross-references this sprint,
+Standards A/N)
+**Live-proof**: pending — a home/AWS `cluster reconcile` that builds + publishes the single image and
+runs the gateway via `gateway start` and api/websocket via `workload start`
+**Independent Validation**: the single-Dockerfile invariants, the one-image build/publish path, the
+one-image chart resolution, and the chart `args:` role selection are validated on the code-owned
+surface (`test unit` 1045/1045, `test integration cli`/`env`, the `docker/prodbox.Dockerfile`
+invariants + the CliSuite docker-record proof) against the home/local substrate, with no dependency
+on a later phase.
+**Docs to update**: `documents/engineering/dependency_management.md`,
+`documents/engineering/local_registry_pipeline.md`,
+`documents/engineering/helm_chart_platform_doctrine.md`,
+`documents/engineering/distributed_gateway_architecture.md`,
+`DEVELOPMENT_PLAN/system-components.md`, `DEVELOPMENT_PLAN/legacy-tracking-for-deletion.md`.
+
+### Objective
+
+The gateway image (`prodbox-gateway`) and the public-edge workload image
+(`prodbox-public-edge-workload`) compiled the **same** `prodbox` binary and differed only by the
+AWS CLI bundle, `tini`, and the entrypoint subcommand. Collapse them into one union runtime image
+(`prodbox/prodbox-runtime`) built from the single `docker/prodbox.Dockerfile`, eliminating a
+parallel build/publish/resolve path.
+
+### Deliverables
+
+- One Dockerfile (`docker/prodbox.Dockerfile`) with `tini` + the official AWS CLI bundle and a bare
+  `ENTRYPOINT ["/usr/bin/tini", "--", "/usr/local/bin/prodbox"]`; `docker/gateway.Dockerfile`
+  deleted.
+- One image repo constant (`harborRuntimeImageRepository`) and one build/publish function
+  (`ensureRuntimeImageForSubstrate`) replacing the gateway/workload pair on both substrates.
+- One chart image resolver (`resolveRuntimeChartImageForSubstrate`) threading a single
+  `maybeRuntimeImage` to the gateway/api/websocket values renderers.
+- Each chart selects its role via the pod `args:` — `charts/gateway` now passes `gateway start …`;
+  `api`/`websocket` keep `workload start …`. All three `values.yaml` point at `prodbox-runtime`.
+- The gateway daemon's Vault identity (`prodbox-gateway-state`, `prodbox-gateway-daemon`, Vault
+  policy `prodbox-gateway`) is unchanged — only the **image** repository was renamed.
+
+### Validation
+
+`prodbox dev check` 0, `test unit` 1045/1045, `test integration cli`/`env` pass, the union-image
+Dockerfile invariants (AWS CLI + `tini` present; no `# syntax=` / `--mount=` / `type=cache`), and
+the CliSuite docker-record proof (one `docker build -f docker/prodbox.Dockerfile … prodbox-runtime`,
+no `docker/gateway.Dockerfile`, no `prodbox-public-edge-workload`).
+
+### Remaining Work
+
+- 🧪 Live-proof (non-blocking, Standard O): a home/AWS `cluster reconcile` that builds + publishes
+  the single image and confirms the gateway pods run `gateway start` and api/websocket run
+  `workload start` from it.
+
+## Sprint 1.46: Isolate the host `docker` CLI's Harbor login from the operator's Docker Hub login ✅
+
+**Status**: Done (code-owned surface) — operator-directed 2026-06-20
+**Implementation**: `src/Prodbox/DockerConfig.hs` (new), `src/Prodbox/CLI/Rke2.hs`
+(`captureDockerToolOutput` / `dockerSubprocessFor`; all docker calls + `ensureProdboxDockerConfig`
+seeding), `.gitignore` + `.dockerignore` (`.docker/`), `test/unit/Main.hs`,
+`test/integration/CliSuite.hs`, `documents/engineering/local_registry_pipeline.md`
+**Blocked by**: none (expands Phase 1's own container-packaging / host-`docker`-CLI surface)
+**Live-proof**: pending — a home `cluster reconcile` that confirms `~/.docker/config.json` is
+unchanged while `<repoRoot>/.docker/config.json` carries the Harbor + seeded Docker Hub auth
+**Independent Validation**: the pure `seedProdboxDockerConfig` transform (drop Harbor entry + keep
+Docker Hub + strip `credsStore`), `prodboxDockerConfigDir`, and the `DOCKER_CONFIG` env builder are
+unit-tested; the CliSuite reconcile asserts every docker call ran with the repo-local `DOCKER_CONFIG`
+(not the global `~/.docker`). No dependency on a later phase.
+**Docs to update**: `documents/engineering/local_registry_pipeline.md` (§6.1).
+
+### Objective
+
+prodbox logged in to the in-cluster Harbor NodePort (`127.0.0.1:30080`) with no `DOCKER_CONFIG`
+set, writing the Harbor credential into the operator's global `~/.docker/config.json` — the same
+file holding the operator's fixed-token Docker Hub login (used across 5 machines; OAuth churn was
+the reason for the fixed token). That both leaked Harbor creds outside `~/prodbox` and risked
+disturbing the Docker Hub login state. Public pulls (the mirror step) must still use that Docker Hub
+login to avoid anonymous rate limits.
+
+### Deliverables
+
+- `Prodbox.DockerConfig`: `prodboxDockerConfigDir` (`<repoRoot>/.docker`),
+  `dockerSubprocessEnvironment` (inherited env + `DOCKER_CONFIG` override), `ensureProdboxDockerConfig`
+  (re-seed the prodbox config read-only from `${DOCKER_CONFIG:-$HOME/.docker}/config.json`), and the
+  pure `seedProdboxDockerConfig` (keep public `auths`, drop the `127.0.0.1:30080` entry, strip
+  `credsStore`/`credHelpers`).
+- Every host `docker` subprocess (login, build, push, pull, tag, save) routed through the
+  prodbox-local `DOCKER_CONFIG` via `captureDockerToolOutput` / `dockerSubprocessFor`; the seeder
+  runs at the start of `mirrorClusterImagesOnce` and `ensureCustomImageVariantsHomeLocal`.
+- `.docker/` added to `.gitignore` + `.dockerignore`.
+- Out of scope (unaffected): in-cluster containerd pulls (RKE2 `registries.yaml`, EKS mirror) are
+  credential-free; the local `docker image inspect` and dev-only `docker run` (TLA+) neither write
+  nor depend on the Harbor credential.
+
+### Validation
+
+`prodbox dev check` 0; the five `DockerConfig` unit tests; the CliSuite reconcile docker-record +
+`DOCKER_CONFIG`-isolation assertions; full `test unit` green.
+
+### Remaining Work
+
+- 🧪 Live-proof (non-blocking, Standard O): a home `cluster reconcile` confirming the global
+  `~/.docker/config.json` is byte-for-byte unchanged across a reconcile while
+  `<repoRoot>/.docker/config.json` gains the Harbor + seeded Docker Hub auth, and a public pull
+  succeeds via the seeded login.
+- **Superseded by Sprint `1.47`** (landed 2026-06-20): the persistent `<repoRoot>/.docker` dir + the
+  `docker login` were replaced by the ephemeral hostbootstrap-`Registry` pattern. The 1.46 mechanism
+  (`ensureHarborDockerLogin`, the persistent dir, the `.docker/` ignore entries) is removed — see
+  [legacy-tracking-for-deletion.md → Completed](legacy-tracking-for-deletion.md#completed). 1.46
+  stays `Done` (it was really implemented and worked); 1.47 is its replacement.
+
+## Sprint 1.47: Ephemeral `DOCKER_CONFIG` (hostbootstrap `Registry` pattern), no `docker login` ✅
+
+**Status**: Done (code-owned surface) — operator-directed 2026-06-20
+**Implementation**: `src/Prodbox/DockerConfig.hs` (rewritten — `dockerHubAuthFromConfig`,
+`renderEphemeralDockerConfig`, `withEphemeralDockerConfig`), `src/Prodbox/CLI/Rke2.hs`
+(`ensureHarborDockerLogin` + `harborLoginRetryPolicy` deleted; flows wrapped in
+`withEphemeralDockerConfig`), `.gitignore` + `.dockerignore` (reverted `.docker/`),
+`test/unit/Main.hs`, `test/integration/CliSuite.hs`,
+`documents/engineering/local_registry_pipeline.md`
+**Blocked by**: none (refines Phase 1's own container-packaging / host-`docker`-CLI surface; supersedes
+the Sprint `1.46` persistent mechanism)
+**Independent Validation**: pure `docker.io`-only projection + ephemeral-config render are
+unit-testable; the CliSuite reconcile asserts NO `docker login` runs and every docker call carries an
+ephemeral `DOCKER_CONFIG` (a scrubbed temp dir, never `~/.docker`). No dependency on a later phase.
+**Docs to update**: `documents/engineering/local_registry_pipeline.md` (§6.1).
+
+### Objective
+
+Sprint `1.46` isolated the Harbor login into a **persistent** `<repoRoot>/.docker` dir via a real
+`docker login`. The operator's [`~/hostbootstrap`](#) project already solves this more cleanly with
+an **ephemeral, scrubbed** `DOCKER_CONFIG` (`HostBootstrap.Registry`), and prodbox is being shaped to
+[eventually refactor onto hostbootstrap](#) — so adopt that pattern. This also retires the
+in-cluster-crane-for-home idea: the home push stays a simple host `docker push`, just inside the
+ephemeral config.
+
+### Deliverables
+
+- Mirror `HostBootstrap.Registry`: discover the host `docker.io` auth **read-only** from
+  `${DOCKER_CONFIG:-$HOME/.docker}/config.json`, project to a minimal **`docker.io`-only** config
+  (`dockerHubAuthFromConfig`), and forward it via a throwaway `mkdtemp` `DOCKER_CONFIG` that is
+  **scrubbed on exit** (`bracket`); `Nothing` ⇒ anonymous pulls (graceful degrade).
+- The ephemeral config's `auths` = the host `docker.io` auth **plus an inline Harbor
+  `127.0.0.1:30080` entry** (`base64 admin:Harbor12345`) — so **no `docker login` runs at all**.
+- Wrap the host-docker flows (`mirrorClusterImagesOnce`, `ensureCustomImageVariantsHomeLocal`, the
+  AWS host build/save) in `withEphemeralDockerConfig`; inside, plain `docker` subprocesses inherit
+  `DOCKER_CONFIG`. Remove `ensureHarborDockerLogin` + the per-call `captureDockerToolOutput` wiring +
+  the persistent dir + the `.docker/` ignore entries (the 1.46 mechanism).
+- Mirror-not-depend rationale: the planned hostbootstrap refactor is future (no cabal dep today);
+  `Registry` is `docker.io`-only while prodbox also needs the Harbor entry; the discovery/projection
+  functions are the seam to swap onto `HostBootstrap.Registry` at the eventual migration.
+
+### Validation
+
+`prodbox dev check` 0; six `DockerConfig` unit tests (the `docker.io` projection + the
+ephemeral-config render incl. the exact `base64 admin:Harbor12345`); the CliSuite reconcile asserts
+**no `docker login`** runs and the build/push/mirror docker calls carry an ephemeral
+`prodbox-docker-config` `DOCKER_CONFIG`; full `test unit` 1061/1061.
+
+### Remaining Work
+
+- 🧪 Live-proof (non-blocking, Standard O): a home `cluster reconcile` builds + pushes through the
+  ephemeral config and leaves the host `~/.docker` byte-unchanged with no `~/prodbox/.docker`.
 
 ## Related Documents
 

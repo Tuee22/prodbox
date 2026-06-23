@@ -322,6 +322,21 @@ Three invariants make the topology leak-proof and idempotent:
    gate decision with `Unreachable → refuse` (the Sprint 4.19 rule,
    generalized to every gate). The cascade keeps its documented
    graceful-degradation exception (`perRunCascadeInventory`, §5b).
+
+   **Dependent-resource refinement (Sprint 7.24).** The `operational-aws-config`
+   resource is the Vault-stored credential *for* the `operational-iam-user`. Its
+   `discover` resolves a `SecretRef.Vault`, so at harness *preflight* — before the
+   cluster (hence Vault) is up — it can only return `Unreachable`. The fail-closed
+   rule exists to avoid stranding the IAM **user**, and that user is observed
+   authoritatively through the admin credential (`operationalIamUserExists`), which
+   does not depend on Vault. So `refineAwsConfigResidueAgainstIamUser` downgrades a
+   `Unreachable` aws-config to `Absent` **only when the IAM user is confirmed
+   `Absent`** — a credential for a user that no longer exists cannot strand
+   anything. This is **not** a relaxation of `Unreachable → refuse`: when the user
+   is `Present` or itself `Unreachable`, the aws-config status is preserved and the
+   gate still refuses. The refinement is keyed on the authoritative, Vault-independent
+   observation of the safety-critical resource, never on presuming an unobservable
+   resource is gone.
 3. **Idempotent reconciliation.** Teardown is one reconciler,
    `reconcileAbsent`, over a class subset of the registry: for each
    resource `Present → destroy → re-observe`, `Absent → skip`,

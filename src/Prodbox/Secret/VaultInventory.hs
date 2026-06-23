@@ -42,6 +42,7 @@ import Data.Text (Text)
 import Data.Text qualified as Text
 import Data.Text.Encoding qualified as TextEncoding
 import Prodbox.Http.Client (HttpError (..))
+import Prodbox.Minio.RootCredential (minioRootPassword, minioRootUser)
 
 data VaultSecretPath = VaultSecretPath
   { vaultSecretPathMount :: Text
@@ -278,8 +279,8 @@ chartVaultSecretObjects =
       , kvObject
           "secret"
           "minio/root"
-          [ staticField "rootUser" "prodbox-minio-root"
-          , generatedField "rootPassword" "minio-root-password"
+          [ staticField "rootUser" (Text.pack minioRootUser)
+          , staticField "rootPassword" (Text.pack minioRootPassword)
           ]
       , kvObject
           "secret"
@@ -476,7 +477,11 @@ ensureFields
   -> IO (Either VaultSecretBootstrapError VaultSecretBootstrapStep)
 ensureFields ops wasAbsent existing spec = do
   materialized <-
-    materializeMissingFields ops (vaultSecretObjectPath spec) existing (vaultSecretObjectFields spec)
+    materializeMissingFields
+      ops
+      (vaultSecretObjectPath spec)
+      existing
+      (vaultSecretObjectFields spec)
   case materialized of
     Left err -> pure (Left err)
     Right missingValues

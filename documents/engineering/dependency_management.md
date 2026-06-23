@@ -26,14 +26,23 @@ Clean-room sequencing, completion status, remaining work, and cleanup ownership 
   natively match GHC `9.12.4` and `template-haskell` 2.23.
 - Host build doctrine uses `cabal build --builddir=.build exe:prodbox`; the `.build/` contract is
   intentionally command-line owned.
-- Repository-owned container builds live under `docker/`. `docker/prodbox.Dockerfile` builds the
-  Haskell frontend under `/opt/build`, `docker/gateway.Dockerfile` builds the gateway image under
-  the same root, and both custom Haskell images follow the single-stage `ubuntu:24.04` doctrine
-  with in-image `ghcup`, pinned GHC `9.12.4`, and no symlinked Haskell tool shims.
-  `docker/gateway.Dockerfile` also installs the official AWS CLI bundle from the image's native
-  Debian architecture because the in-cluster gateway daemon shells out to `aws route53 ...` for
-  DNS writes. The supported custom-image publish path uses ordinary host-native `docker build`
-  plus `docker push` to the canonical Harbor endpoint `127.0.0.1:30080`.
+- Repository-owned container builds live under `docker/`. There is a **single** custom Haskell
+  Dockerfile, `docker/prodbox.Dockerfile`, which builds one **union runtime image**
+  (`prodbox/prodbox-runtime`) under `/opt/build`. It is the same compiled `prodbox` binary for
+  every in-cluster role — the gateway daemon and the `api`/`websocket` workloads — and each chart
+  selects its role through the pod `args:` (`gateway start` vs `workload start`); the image's
+  `ENTRYPOINT` is bare `tini -- prodbox`. The image follows the single-stage `ubuntu:24.04`
+  doctrine with in-image `ghcup`, pinned GHC `9.12.4`, no symlinked Haskell tool shims, `tini` as
+  PID 1, and the official AWS CLI bundle from the image's native Debian architecture (the gateway
+  daemon shells out to `aws route53 ...` for DNS writes). The supported custom-image publish path
+  uses ordinary host-native `docker build` plus `docker push` to the canonical Harbor endpoint
+  `127.0.0.1:30080`.
+- The build uses **basic `docker` commands only** with the daemon's default builder. There is no
+  supported `docker buildx`, no `docker-container`-driver builder, and no multi-arch publication
+  (native-host-architecture only). The Dockerfiles carry **no BuildKit-only features**: no
+  `# syntax=` frontend pin and no `RUN --mount` cache/bind mounts, so they build with any basic
+  builder. The unit suite enforces this (the `docker/prodbox.Dockerfile` invariants forbid
+  `# syntax=`, `--mount=`, and `type=cache`).
 - Pulumi programs are YAML-based under `pulumi/aws-eks/`, `pulumi/aws-eks-subzone/`,
   `pulumi/aws-test/`, and `pulumi/aws-ses/` only and do not introduce a Python runtime
   dependency.

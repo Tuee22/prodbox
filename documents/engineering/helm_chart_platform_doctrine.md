@@ -47,12 +47,12 @@ The supported chart doctrine is:
 5. `vscode` depends on `keycloak`, does not talk directly to PostgreSQL, targets an
    Envoy-authenticated public browser path rather than a permanent app-local nginx auth proxy,
    and keeps Envoy's OIDC provider token exchange on the namespace-local `keycloak` Service.
-6. `api` runs from the shared `prodbox-public-edge-workload` image, keeps its workload resources
+6. `api` runs from the shared `prodbox-runtime` union image (`workload start` via the pod `args:`), keeps its workload resources
    namespace-local in `api`, and targets the shared-host JWT-protected `/api` route by attaching
    to the shared `public-edge` `Gateway` published from the `vscode` namespace. Envoy validates
    JWTs against the public issuer but fetches JWKS through an in-cluster backchannel to
    `keycloak.vscode.svc.cluster.local`.
-7. `websocket` runs from the shared `prodbox-public-edge-workload` image, keeps its workload and
+7. `websocket` runs from the shared `prodbox-runtime` union image (`workload start` via the pod `args:`), keeps its workload and
    `redis` resources namespace-local in `websocket`, owns workload-managed OIDC bootstrap on
    `/ws/oidc`, targets the shared-host JWT-protected `/ws` route by attaching to the shared
    `public-edge` `Gateway` in `vscode`, and currently exchanges tokens through a private in-cluster

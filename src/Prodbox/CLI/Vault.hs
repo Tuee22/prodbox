@@ -40,9 +40,7 @@ import Prodbox.Settings.SecretRef
   )
 import Prodbox.Vault.BootstrapBundle
   ( bootstrapObjectStoreConfig
-  , bootstrapSaltForClusterId
   , bootstrapUnlockBundleKey
-  , deriveBootstrapMinioCredential
   , getBundleObject
   , putBundleObject
   )
@@ -192,7 +190,7 @@ initFreshVault repoRoot address = do
                   -- PRIMARY this stage). Best-effort-but-verified (write then
                   -- read-back); a MinIO failure logs and continues — it must not
                   -- brick init, because disk is still the load-bearing source.
-                  dualWriteBootstrapBundle defaultClusterId password envelopeBytes
+                  dualWriteBootstrapBundle password envelopeBytes
                   -- Sprint 1.39 (P2): the Tier-0 basics floor write is a
                   -- REQUIRED part of init success. Vault is now stamped
                   -- initialized; if the floor write fails we must fail LOUDLY
@@ -242,93 +240,80 @@ writeTier0BasicsFloor repoRoot address =
   -- prodbox.dhall exists yet.
   writeTier0FloorPreservingParameters repoRoot defaultClusterId (unVaultAddress address)
 
--- | Sprint 7.19 (staged): DUAL-WRITE the password-AEAD unlock-bundle envelope
--- to the durable MinIO bucket at the fixed bootstrap key, alongside the
--- host-disk write that remains PRIMARY this stage. The bundle is Tier-1 and
--- root-cluster-only; @vault init@ always initializes the root with Shamir seal
--- ('VaultSealRootShamir'), so this path is reached only for the root cluster
--- (child clusters use transit-seal and never call 'initFreshVault'), satisfying
--- the "no bundle object for a child" constraint without a per-cluster branch.
+-- | DUAL-WRITE the password-AEAD unlock-bundle envelope to the durable MinIO
+-- bucket at the fixed bootstrap key, alongside the host-disk write that remains
+-- PRIMARY this stage. The bundle is Tier-1 and root-cluster-only; @vault init@
+-- always initializes the root with Shamir seal ('VaultSealRootShamir'), so this
+-- path is reached only for the root cluster (child clusters use transit-seal and
+-- never call 'initFreshVault'), satisfying the "no bundle object for a child"
+-- constraint without a per-cluster branch.
 --
--- The write is BEST-EFFORT-BUT-VERIFIED: derive the password-derived bootstrap
--- MinIO credential, open the local port-forward, write, then read back and
--- compare. ANY failure (no cluster, MinIO unreachable, mismatch) is logged and
--- swallowed — it must not brick init, because the host-disk bundle written just
--- above is still the load-bearing unseal source this stage.
---
--- Sprint 7.19 (live-proof): the reorder that makes this MinIO object the
--- PRIMARY, host-disk-free unseal source (MinIO-reachable-before-Vault-unseal +
--- MinIO-root-decoupled-from-Vault) lands here — promote this best-effort write
--- to a verified-required write and drop the disk write. NOT attempted this
--- stage.
-dualWriteBootstrapBundle :: Text -> Text -> BS.ByteString -> IO ()
-dualWriteBootstrapBundle clusterId password envelopeBytes =
-  case deriveBootstrapMinioCredential password (bootstrapSaltForClusterId clusterId) of
-    Left credErr ->
+-- The write uses the STATIC MinIO root credential ('bootstrapObjectStoreConfig')
+-- — a credential MinIO actually accepts — and is BEST-EFFORT-BUT-VERIFIED: open
+-- the local port-forward, write, then read back and DECRYPT with the operator
+-- password (proving the object is usable at unseal). ANY failure (MinIO
+-- unreachable, mismatch) is logged and swallowed — it must not brick init,
+-- because the host-disk bundle written just above is still the load-bearing
+-- unseal source this stage. Dropping the host-disk write (the disk-free cutover)
+-- is a separate later decision.
+dualWriteBootstrapBundle :: Text -> BS.ByteString -> IO ()
+dualWriteBootstrapBundle password envelopeBytes = do
+  result <-
+    withMinioPortForward $ \localPort -> do
+      let config = bootstrapObjectStoreConfig localPort
+      putResult <- putBundleObject config envelopeBytes
+      case putResult of
+        Left err -> pure (Left (ReadBackFailed err))
+        Right () -> do
+          readBack <- getBundleObject config
+          -- Verify the read-back by DECRYPTING it with the operator password —
+          -- proves the object is actually usable at unseal, not merely byte-equal.
+          -- A present-but-undecryptable read-back is a corruption
+          -- ('ReadBackUndecryptable') so the caller can log CRITICAL.
+          pure $ case readBack of
+            Left err -> Left (ReadBackFailed ("read-back failed: " ++ err))
+            Right Nothing ->
+              Left
+                ( ReadBackFailed
+                    ("read-back returned no object at " ++ Text.unpack bootstrapUnlockBundleKey)
+                )
+            Right (Just bytes) ->
+              case decryptUnlockBundle password bytes of
+                Right _ -> Right ()
+                Left decErr -> Left (ReadBackUndecryptable (renderUnlockBundleError decErr))
+  case result of
+    Right (Right ()) ->
       writeOutputLine
-        ( "note: skipped Tier-1 unlock-bundle MinIO dual-write (bootstrap credential derivation failed: "
-            ++ renderUnlockBundleError credErr
+        ( "Tier-1 unlock bundle also written to the durable MinIO bucket at "
+            ++ Text.unpack bootstrapUnlockBundleKey
+            ++ " (verified by decrypting the read-back)."
+        )
+    Right (Left (ReadBackUndecryptable detail)) ->
+      -- Present-but-undecryptable read-back: the object exists but cannot be
+      -- opened with the operator password. Loud CRITICAL — the write stays
+      -- best-effort (must not brick init) but this is never a routine note.
+      writeOutputLine
+        ( "CRITICAL: Tier-1 unlock-bundle MinIO dual-write read-back is PRESENT "
+            ++ "but UNDECRYPTABLE at "
+            ++ Text.unpack bootstrapUnlockBundleKey
+            ++ " ("
+            ++ detail
+            ++ "). The durable MinIO copy is corrupt; the host-disk bundle "
+            ++ "remains the load-bearing unseal source. Re-run "
+            ++ "`prodbox vault rotate-unlock-bundle` to repair the MinIO copy."
+        )
+    Right (Left (ReadBackFailed writeErr)) ->
+      writeOutputLine
+        ( "note: Tier-1 unlock-bundle MinIO dual-write did not complete ("
+            ++ writeErr
             ++ "); the host-disk bundle remains the unseal source."
         )
-    Right credential -> do
-      result <-
-        withMinioPortForward $ \localPort -> do
-          let config = bootstrapObjectStoreConfig localPort credential
-          putResult <- putBundleObject config envelopeBytes
-          case putResult of
-            Left err -> pure (Left (ReadBackFailed err))
-            Right () -> do
-              readBack <- getBundleObject config
-              -- Sprint 7.19 (P3): verify the read-back by attempting to DECRYPT
-              -- it with the operator password — more robust than a byte-compare,
-              -- because it proves the object is actually usable at unseal, not
-              -- merely byte-equal. A present-but-undecryptable read-back is a
-              -- corruption (encoded as `ReadBackUndecryptable`) so the caller can
-              -- log CRITICAL rather than a routine note.
-              pure $ case readBack of
-                Left err -> Left (ReadBackFailed ("read-back failed: " ++ err))
-                Right Nothing ->
-                  Left
-                    ( ReadBackFailed
-                        ("read-back returned no object at " ++ Text.unpack bootstrapUnlockBundleKey)
-                    )
-                Right (Just bytes) ->
-                  case decryptUnlockBundle password bytes of
-                    Right _ -> Right ()
-                    Left decErr -> Left (ReadBackUndecryptable (renderUnlockBundleError decErr))
-      case result of
-        Right (Right ()) ->
-          writeOutputLine
-            ( "Tier-1 unlock bundle also written to the durable MinIO bucket at "
-                ++ Text.unpack bootstrapUnlockBundleKey
-                ++ " (verified by decrypting the read-back)."
-            )
-        Right (Left (ReadBackUndecryptable detail)) ->
-          -- Present-but-undecryptable read-back: the object exists but cannot be
-          -- opened with the operator password. Loud CRITICAL — the write stays
-          -- best-effort (must not brick init) but this is never a routine note.
-          writeOutputLine
-            ( "CRITICAL: Tier-1 unlock-bundle MinIO dual-write read-back is PRESENT "
-                ++ "but UNDECRYPTABLE at "
-                ++ Text.unpack bootstrapUnlockBundleKey
-                ++ " ("
-                ++ detail
-                ++ "). The durable MinIO copy is corrupt; the host-disk bundle "
-                ++ "remains the load-bearing unseal source. Re-run "
-                ++ "`prodbox vault rotate-unlock-bundle` to repair the MinIO copy."
-            )
-        Right (Left (ReadBackFailed writeErr)) ->
-          writeOutputLine
-            ( "note: Tier-1 unlock-bundle MinIO dual-write did not complete ("
-                ++ writeErr
-                ++ "); the host-disk bundle remains the unseal source."
-            )
-        Left portErr ->
-          writeOutputLine
-            ( "note: Tier-1 unlock-bundle MinIO dual-write skipped (MinIO unreachable: "
-                ++ portErr
-                ++ "); the host-disk bundle remains the unseal source."
-            )
+    Left portErr ->
+      writeOutputLine
+        ( "note: Tier-1 unlock-bundle MinIO dual-write skipped (MinIO unreachable: "
+            ++ portErr
+            ++ "); the host-disk bundle remains the unseal source."
+        )
 
 -- | The classified failure of the Sprint 7.19 dual-write read-back verification.
 -- A present-but-undecryptable read-back ('ReadBackUndecryptable') is a corruption

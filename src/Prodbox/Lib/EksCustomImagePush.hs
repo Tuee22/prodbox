@@ -4,8 +4,8 @@
 -- Harbor via an in-cluster crane pod.
 --
 -- The home substrate's 'Prodbox.CLI.Rke2.ensureCustomImageVariants'
--- builds the @prodbox-gateway@ and @prodbox-public-edge-workload@
--- images via host Docker, then @docker push@'s to the home RKE2's
+-- builds the single union @prodbox-runtime@ image via host Docker,
+-- then @docker push@'s to the home RKE2's
 -- in-cluster Harbor via the @127.0.0.1:30080@ NodePort. On the AWS
 -- substrate the operator host has no network path into the EKS Harbor
 -- NodePort, so the @docker push@ flow does not apply.
@@ -14,7 +14,7 @@
 -- the docker-saved image tarball via @kubectl cp@ and pushes it to
 -- Harbor's in-cluster DNS endpoint
 -- @harbor.harbor.svc.cluster.local@. The pushed manifest path matches
--- the chart-rendered @127.0.0.1:30080\/prodbox-gateway\/...@ refs that
+-- the chart-rendered @127.0.0.1:30080\/prodbox\/prodbox-runtime:...@ refs that
 -- downstream Helm releases consume; the Sprint @7.5.c.ii@ containerd
 -- registry-mirror DaemonSet routes those refs through Harbor on each
 -- EKS node so chart pods can pull.
@@ -52,7 +52,7 @@ data EksCustomImagePushConfig = EksCustomImagePushConfig
   , customPushChartRegistryEndpoint :: String
   -- ^ The chart-image-ref endpoint that downstream Helm releases
   -- consume, e.g. @127.0.0.1:30080@. Chart-image refs of the form
-  -- @<endpoint>\/prodbox-gateway\/...@ get rewritten to the
+  -- @<endpoint>\/prodbox\/prodbox-runtime:...@ get rewritten to the
   -- in-cluster endpoint for the @crane push@ destination URL
   -- because crane resolves the host:port to a network target.
   , customPushHarborAdminUser :: String
@@ -77,7 +77,7 @@ defaultEksCustomImagePushConfig =
     }
 
 -- | Rewrite a chart-image reference (e.g.
--- @127.0.0.1:30080\/prodbox-gateway\/foo:tag@) to use the in-cluster
+-- @127.0.0.1:30080\/prodbox\/prodbox-runtime:tag@) to use the in-cluster
 -- Harbor DNS endpoint for the in-pod @crane push@ destination.
 -- Falls through unchanged when the prefix does not match — defensive
 -- against image-ref shape changes.

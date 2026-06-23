@@ -30,6 +30,110 @@ govern this plan suite.
 
 ## Closure Status
 
+**2026-06-22 — Sprint `7.19` MinIO credential simplified to STATIC ✅ (the password-derivation was
+security theatre).** Operator decision: the MinIO access credential is not prodbox's security
+boundary — confidentiality comes from Vault Transit (every stored object is an envelope) and the
+password-AEAD seal on the unlock bundle; the access credential only gates ciphertext over a
+localhost NodePort (the same posture as Harbor's hardcoded creds). So BOTH password-derived MinIO
+credentials — the 2026-06-21 `deriveMinioRootPassword` (root) and `deriveBootstrapMinioCredential`
+(bootstrap read) — are replaced by a single **static** constant (`Prodbox.Minio.RootCredential`).
+A static credential is stable across rebuilds (a retained MinIO PV always matches Vault, fixing the
+original mismatch just as the derivation did, but simpler) AND is a credential MinIO actually accepts,
+so the Tier-1 unlock-bundle dual-write/read round-trips through MinIO — **resolving the
+`InvalidAccessKeyId` axis** that was previously deferred. `secret/minio/root.rootPassword` is now a
+`staticField`; the bundle I/O uses the static root via `bootstrapObjectStoreConfig`; all the
+derivation + `vaultReconcileSuppliedSecretValues` override machinery (across `BootstrapBundle`,
+`VaultInventory`, `Reconcile`, `CLI/Vault`, `Host`) is deleted — see
+[legacy-tracking → Completed](legacy-tracking-for-deletion.md#completed). The unlock bundle stays
+password-AEAD-sealed and Vault Transit is unchanged (the real security is untouched). Gates: `dev
+check` 0, `test unit` 1058/1058 (derivation tests removed, +1 static-field test), docs check 0.
+🧪 Live-proof pending: a wipe-and-rebuild confirming MinIO on the static cred + the bundle round-trip
++ no `InvalidAccessKeyId`. The 2026-06-21 derivation entries below are the prior point-in-time record.
+
+**2026-06-22 — Sprint `1.42` follow-up ✅: in-force SSoT seed now materialises on first bring-up
+(`NoSuchBucket`-as-absent fix).** Live-running the Sprint `7.19` migration surfaced that the in-force
+config SSoT seed never created the `prodbox-state` bucket: `Prodbox.Minio.ObjectStore.getObject`
+classified `NoSuchBucket` (the bucket doesn't exist yet on first-ever bring-up) as a hard observe
+failure, so the seed's presence probe aborted the seal and the bucket was never created — the cluster
+fell back to the filesystem seed *forever*. (Sprint `7.19` exposed it: with the MinIO root credential
+now valid, the probe reached `NoSuchBucket` instead of `InvalidAccessKeyId`.) Fix: `getObject` now
+treats `NoSuchBucket` as definitive object-absence (`Right Nothing`) — distinct from a
+credential/connection failure, which stays `Left` (failure to observe is not absence) — so the probe
+reads "absent → seed" and the write creates the bucket. **Live-proven**: a fresh reconcile logged
+"Seeded the in-force config SSoT in MinIO from the filesystem operator config." and materialised both
+the `prodbox-state` bucket and the opaque Vault-Transit envelope `prodbox-state/objects/<hmac>.enc`.
+Gates: `dev check` 0, +1 regression unit test (`NoSuchBucket`=absent vs `InvalidAccessKeyId`=not), full
+`test unit` 1069/1069. The separate `bootstrap/vault-unlock-bundle.v1` `InvalidAccessKeyId` fallback
+remains the deferred Sprint `7.19` disk-free-cutover axis (out of scope here).
+
+**2026-06-21 — Sprint `7.19` MinIO-root-decouple ✅: deterministic, password-derived MinIO root
+credential (fixes the cluster-rebuild mismatch).** `secret/minio/root.rootPassword` was a *random*
+Vault secret that had to coincidentally match a retained MinIO data PV across rebuilds — a
+fresh/re-initialized Vault paired with a retained MinIO disk presented a different password and MinIO
+crash-looped (this blocked the live `test all`). It is now **deterministically derived** from the
+operator password + per-cluster salt (`Prodbox.Vault.BootstrapBundle.deriveMinioRootPassword`, a
+sibling Argon2id derivation to the bootstrap read credential), so the value is identical on every init
+and a retained disk always matches Vault. `CLI/Vault.runVaultReconcileCommandDetailed` derives it
+host-side (`obtainOperatorPassword` + `resolveBootstrapClusterId`) and supplies it into the root
+reconcile through a new `VaultReconcilePlan` `vaultReconcileSuppliedSecretValues` override
+(derive-on-absent; present values are never rewritten, so no churn; graceful random fallback if the
+password is unavailable). Scope is root-only and the MinIO root password specifically — the gateway
+MinIO user stays random (idempotently re-added). This also lands Sprint `7.19`'s "MinIO-root-decouple"
+half; only the disk-free unseal cutover remains on the live-proof axis. Per the verified posture, the
+root password is **access** (no MinIO SSE/KMS; prodbox objects are app-layer Vault-Transit envelopes),
+so the prior mismatch was an access/startup failure, not data loss. Gates: `dev check` 0, +7 unit tests
+(derivation determinism/charset/fail-closed + supplied-override write + idempotency), full `test unit`
+1068/1068. 🧪 Live-proof pending (non-blocking): a `cluster delete --cascade` + reconcile, then a
+Vault-wipe-only rebuild, both bringing MinIO up clean. See
+[phase-7 Sprint `7.19`](phase-7-aws-substrate-foundations.md) +
+[legacy-tracking → Completed](legacy-tracking-for-deletion.md#completed).
+
+**2026-06-20 — Sprint `1.47` ✅: Harbor-login isolation moved to hostbootstrap's ephemeral
+`DOCKER_CONFIG` pattern.** The Sprint `1.46` *persistent* `<repoRoot>/.docker` dir + `docker login`
+is replaced by `HostBootstrap.Registry`'s **ephemeral** model (`Prodbox.DockerConfig` rewritten):
+`withEphemeralDockerConfig` discovers the host `docker.io` auth read-only, projects a minimal
+`docker.io`-only config (`dockerHubAuthFromConfig`), and writes a throwaway
+`withSystemTempDirectory "prodbox-docker-config"` `DOCKER_CONFIG` (that auth + an inline Harbor
+`127.0.0.1:30080` entry, `base64 admin:Harbor12345`) `bracket`-scrubbed on exit — so **no
+`docker login` runs anywhere**. `mirrorClusterImagesOnce`, `ensureCustomImageVariantsHomeLocal`, and
+the AWS host build wrap their docker calls in it; `ensureHarborDockerLogin` + `harborLoginRetryPolicy`
+are deleted; the home Harbor-project creation keeps its `curl -u` REST path (readiness on the
+`waitForHarbor*` probes). Nothing persists in `~/prodbox`; `~/.docker` is only read. Gates: `dev
+check` 0, six new `DockerConfig` unit tests (incl. exact base64), the CliSuite reconcile asserting no
+`docker login` + an ephemeral `prodbox-docker-config` `DOCKER_CONFIG`, full `test unit` 1061/1061. The
+1.46 mechanism is in [legacy-tracking → Completed](legacy-tracking-for-deletion.md#completed). This
+also retires the in-cluster-crane-for-home idea (the home push stays a host `docker push` inside the
+ephemeral config). The `docker.io` discovery/projection is the seam to swap onto
+`HostBootstrap.Registry` at the planned hostbootstrap refactor. 🧪 Live-proof pending (non-blocking):
+a home reconcile leaving `~/.docker` byte-unchanged with no `~/prodbox/.docker`.
+
+**2026-06-20 — Sprint `1.46`: host `docker` CLI Harbor-login isolation.** Every prodbox `docker`
+call now runs with a prodbox-local `DOCKER_CONFIG` (`<repoRoot>/.docker`, git-ignored, new
+`Prodbox.DockerConfig` via `captureDockerToolOutput`): Harbor `docker login` lands inside `~/prodbox`
+instead of the operator's global `~/.docker/config.json`, while public pulls keep the operator's
+fixed-token Docker Hub login (seeded read-only from `~/.docker`, Harbor entry + `credsStore`
+dropped). prodbox **never writes** `~/.docker/config.json`, so it cannot disturb the operator's
+Docker Hub state. In-cluster containerd pulls (credential-free) are unaffected. Gates: `dev check` 0,
+five `DockerConfig` unit tests + the CliSuite `DOCKER_CONFIG`-isolation assertion, full `test unit`
+1060/1060. 🧪 Live-proof pending: a home reconcile confirming `~/.docker` is byte-unchanged.
+
+**2026-06-20 — Operator-directed: GHC 9.12.4 downgrade, basic-`docker` build, container-image
+consolidation (Sprint `1.45`), and the preflight fail-closed-gate fix (Sprint `7.24`).** The whole
+project moved to a single GHC `9.12.4` (build + code-checking); the image build uses basic
+`docker build`/`docker push` on the daemon's default builder (no `docker buildx` — the orphaned
+`prodbox-multiarch-hostnet` builder was swept — and no BuildKit-only Dockerfile features). **Sprint
+`1.45`** consolidated the former `prodbox-gateway` + `prodbox-public-edge-workload` images into ONE
+union runtime image `prodbox/prodbox-runtime` from a single `docker/prodbox.Dockerfile`; each chart
+selects its role via the pod `args:` (`gateway start` vs `workload start`). Then the first live
+`prodbox test all` surfaced the Sprint `7.14` live-proof gap: **Sprint `7.24`** — the AWS IAM-harness
+preflight observed `operational-aws-config` by resolving its `SecretRef.Vault` from a Vault that is not
+up yet at preflight, so the fail-closed gate aborted every clean-machine run;
+`refineAwsConfigResidueAgainstIamUser` now downgrades that `Unreachable` aws-config to `Absent` only
+when the operational IAM user is confirmed absent via the admin credential (Vault-independent),
+preserving fail-closed in every other case. Gates: `dev check` 0, `test unit` green (incl. the
+four-case refine truth-table + the union-image Dockerfile invariants), real `docker build` of the
+union image 0. 🧪 The resumed live `test all` is the non-blocking live-proof axis.
+
 **2026-06-20 — Phase 1 Sprints `1.43` + `1.44` closed on the code-owned surface (config/secrets-SSoT
 surface complete).** **Sprint `1.43`** moved the harness's only durable secrets into a dedicated,
 git-ignored `test-secrets.dhall` (`TestConfig`→`TestSecrets`; generated `test-secrets-types.dhall` via
@@ -357,8 +461,11 @@ reorder 🧪) — open-work pass code-complete.** Continuing the numerical-order
 MinIO credential via `deriveBootstrapMinioCredential` with a distinct KDF context + per-cluster salt);
 `initFreshVault` dual-writes the password-AEAD bundle to MinIO alongside the unchanged host-disk write
 (best-effort + read-back-verified, swallowed on failure so it never bricks init — disk stays PRIMARY); and
-`loadAndDecryptBundle` prefers the MinIO object then falls back to `loadAndDecryptDiskBundle`. The disk-free
-relocation (MinIO-before-unseal reorder + MinIO-root-decouple, marked `-- Sprint 7.19 (live-proof)`) is the
+`loadAndDecryptBundle` prefers the MinIO object then falls back to `loadAndDecryptDiskBundle`. The
+**MinIO-root-decouple** half then landed ✅ (2026-06-21): the MinIO root password is now password-derived
+(`deriveMinioRootPassword`), supplied into the root reconcile via `vaultReconcileSuppliedSecretValues`,
+fixing the retained-PV cluster-rebuild mismatch (+7 unit tests, `dev check` 0, `test unit` 1068/1068). Only
+the disk-free unseal cutover (MinIO-before-unseal reorder, marked `-- Sprint 7.19 (live-proof)`) remains the
 🧪 axis. **Sprint `7.20`** ✅ Done: the IAM mint-to-Vault + delete-from-AWS-and-Vault lifecycle (already
 shipped) was canonicalized as doctrine (earlier docs pass) and gained a teardown-completeness guard
 (`residueFromProbe` pure classifier + `assertOperationalTeardownComplete` wired into
@@ -375,8 +482,8 @@ MinIO-root-decouple/reorder + live unseal-from-MinIO (`7.19`), and the live exer
 closed.** The in-cluster Tier-0 binary context landed: `Prodbox.Config.Tier0` gained the `Daemon`-frame
 context (`defaultDaemonProjectConfig`; `loadDaemonBinaryContext` = ConfigMap-`prodbox.dhall` overwrite →
 baked-in container default at `/etc/prodbox/prodbox.dhall` → compiled fallback); `docker/default-prodbox.dhall`
-is the drift-guarded `TrackedGeneratedPath` render of the Haskell default, `COPY`-ed into both
-`gateway.Dockerfile` and `prodbox.Dockerfile`; `runGatewayDaemon` logs the resolved context + provenance
+is the drift-guarded `TrackedGeneratedPath` render of the Haskell default, `COPY`-ed into the single
+union runtime `prodbox.Dockerfile`; `runGatewayDaemon` logs the resolved context + provenance
 (additive — the operational `DaemonConfig` runtime is untouched; a decode failure is a warning, never fatal).
 **Deferred (pragmatic):** the full `DaemonConfigDhall`↔Tier-0 unification (high-risk boot/live/SecretRef merge)
 is a follow-on; the Tier-0 path is added alongside without destabilizing the daemon. Gate green: `dev check` 0,
@@ -2609,7 +2716,7 @@ or a higher-numbered sprint — and an incomplete later phase never reopens or b
 | Phase | Name | Status | Document |
 |-------|------|--------|----------|
 | 0 | Planning and Documentation Topology for Haskell Rewrite | ✅ **Done on owned surfaces** — **finalized 2026-06-14** (Vault-root + cluster federation): the secrets model is now the finalized Vault-root model — Vault is the sole secrets/KMS/PKI root, the master-seed derivation model is retired (not extended), and cluster federation adds a Vault transit-seal trust tree; Sprint `0.13` (Vault-Root Finalization and Cluster-Federation Doctrine Harmony — docs-only) owns the doc/plan rearchitecture and the new `cluster_federation_doctrine.md` (✅ Done 2026-06-14 — `VAULT_REFACTOR.md` deleted and `cluster_federation_doctrine.md` present; see the 2026-06-14 Closure Status). Reopened 2026-06-11 for the Vault refactor's Sprint `0.12` (the `vault_doctrine.md` SSoT + documentation harmony), which **closed 2026-06-11** with gates green (`dev lint docs` 0, `dev docs check` 0, `dev check` 0, `test unit` 823). Prior closure preserved: ✅ Done — reopened 2026-06-09 for Sprints `0.9`–`0.10` (design-intention review; see Closure Status), both landed. ✅ `0.9` (header↔markers↔registry reconciler + governed-doc relative-link check in `runGeneratedArtifactLint`; sha256-freeze over-claim struck). ✅ `0.10` (the §2/§3 command matrix from `commandRegistry` (1.29) and the registry-name↔CLI table from `StackDescriptor` (4.27) are generated sections; the chart→edge ownership table left editorial per the design guardrail — no typed owning-chart source). Documentation Harmony is now machine-enforced; gates `check-code` 0, `test unit` 802, `lint docs`/`docs check` 0. Prior closure preserved: ✅ Done (Sprints 0.1–0.8). Sprint 0.8 (May 24, 2026 — pure-Dhall config doctrine adoption) closed on its owned doc-revision surface: `documents/engineering/config_doctrine.md` SSoT created, governed engineering and root docs revised to defer to it, plan suite updated, and the four validation gates exit 0 (`prodbox lint docs`, `prodbox docs check`, `prodbox check-code`, `prodbox test unit` 533/533). The code-implementation work lands in Phase 1 Sprint 1.28, Phase 2 Sprints 2.20/2.21/2.22, and Phase 3 Sprint 3.14. **Independent Validation**: a docs-only phase validated by the documentation gates (`prodbox dev docs check`, `prodbox dev lint docs`, `prodbox dev check`) plus the header↔markers↔registry reconciler, with no dependency on a later phase; Sprint `0.15` adopts the phase-independence doctrine here. | [phase-0-planning-documentation.md](phase-0-planning-documentation.md) |
-| 1 | Haskell Runtime, CLI, Config, and Pulumi Foundations | 🔄 **Reopened 2026-06-17/18** to expand its own config-SSoT surface with the three-tier config model: Sprint `1.39` (✅ Done code-owned 2026-06-17; 🧪 Live-proof pending — Tier 0 binary-owned `prodbox.dhall` in hostbootstrap binary-context shape, folding the unencrypted basics + non-secret `prodbox-config.dhall` sections, with a derived `prodbox-basics.json` bootstrap floor) and Sprint `1.40` (✅ Done code-owned 2026-06-18; 🧪 Live-proof pending — Tier 0 in-cluster: container-default `prodbox.dhall` overwritten by the daemon from the `gateway-config-<nodeId>` ConfigMap; full `DaemonConfigDhall`↔Tier-0 unification deferred), both forward-only-blocked on the closed Sprint `1.38` (`1.40` also on `1.39`); cites [config_doctrine.md §0/§1a/§3/§6](../documents/engineering/config_doctrine.md#0-three-tier-config-model). Sprint `1.41` (✅ Done code-owned 2026-06-18; live `cluster reconcile` RC=0 — Config-Topology Consolidation: drop the JSON floor (read the sealed-Vault floor directly from the self-contained Tier-0 `prodbox.dhall` via `projectBasics`; `prodbox-basics.json` + the legacy `.data/prodbox/unencrypted-basics.json` eliminated), `docker/default-prodbox.dhall` becomes generated at image-build time + git-ignored, the `*-types.dhall` schemas stay generated + git-ignored — net zero version-controlled `.dhall`; forward-only-blocked on the closed `1.39`/`1.40`) and Sprint `1.42` (Part A ✅ Done 2026-06-18 / Part B ✅ Done 2026-06-19 — `prodbox-config.dhall` RETIRED: the operator non-secret config now lives in the binary-generated, git-ignored Tier-0 `prodbox.dhall` `parameters` read via `loadConfigFile`'s Dhall field-projection; `config setup`/`aws setup`/`vault init` author it merge-preserving; ~35 fixtures converted via `TestSupport.wrapTier0`; sealed/unreachable Vault on an established cluster has NO config fallback per operator decision; 🧪 live-proof pending; forward-only-blocked on the closed `1.38`/`1.39`/`1.41`). Phase `1` further reopened with Sprint `1.43` (✅ Done 2026-06-20 — moved the durable test secrets into the dedicated, git-ignored `test-secrets.dhall` as the SOLE secret fixture; `TestConfig`→`TestSecrets`, generated `test-secrets-types.dhall`, the now-empty `test-config.dhall`/`test-config-types.dhall` removed) and Sprint `1.44` (✅ Done code-owned 2026-06-20; 🧪 Live-proof pending — routes the Vault-written secrets, ACME EAB + minted operational `aws.*`, through the gateway daemon's `POST /v1/secret/<logical>` endpoint under a dedicated `prodbox-operator-write` Vault policy/role, authenticated by an operator-injected k8s JWT, with a host-write fallback; the unlock password + ephemeral admin cred stay host-side), both expanding Phase 1's own config/secrets surface per the operator's 2026-06-19 target (see the Closure Status). `test unit` 1046/1046, `integration cli`/`env` pass. ✅ **Reclosed 2026-06-16** on Phase-owned Vault-root + cluster-federation foundations. Sprints `1.35`–`1.38` are Done: FileSecret-free `SecretRef` type/decoder/production validator/Vault resolver seam; encrypted unlock bundle and native `prodbox vault` lifecycle command group; sealed-Vault gate decision/outcome fold plus production Vault-Transit `DekCipher`; and the in-force-config source-of-truth inversion with `loadConfigForSettingsWith` switching host settings loads from repo-root Dhall-as-live-config to basics → Vault → MinIO envelope once unencrypted basics exist. Runtime AWS provider credential migration is landed under Sprint `7.14`; ACME EAB/TLS key material remains Sprint `7.15`; the direct live child registration and federated unseal cascade are now closed by Sprint `4.32`, and the gateway-mediated federation bootstrap is now closed by Sprint `2.26`. Prior closure preserved: ✅ Done — reopened 2026-06-09 for Sprints `1.29`–`1.32` (design-intention review; see Closure Status), all four landed 2026-06-09. Prior closure preserved: ✅ Done (Sprints 1.1–1.28). **Independent Validation**: the `SecretRef` contract, unlock bundle, `prodbox vault` command group, sealed-Vault gate, and in-force-config loader are validated on the code-owned surface (unit + CLI/env integration) and against the home/local substrate, with no dependency on a later phase. | [phase-1-runtime-cli-aws-foundations.md](phase-1-runtime-cli-aws-foundations.md) |
+| 1 | Haskell Runtime, CLI, Config, and Pulumi Foundations | 🔄 **Reopened 2026-06-17/18** to expand its own config-SSoT surface with the three-tier config model: Sprint `1.39` (✅ Done code-owned 2026-06-17; 🧪 Live-proof pending — Tier 0 binary-owned `prodbox.dhall` in hostbootstrap binary-context shape, folding the unencrypted basics + non-secret `prodbox-config.dhall` sections, with a derived `prodbox-basics.json` bootstrap floor) and Sprint `1.40` (✅ Done code-owned 2026-06-18; 🧪 Live-proof pending — Tier 0 in-cluster: container-default `prodbox.dhall` overwritten by the daemon from the `gateway-config-<nodeId>` ConfigMap; full `DaemonConfigDhall`↔Tier-0 unification deferred), both forward-only-blocked on the closed Sprint `1.38` (`1.40` also on `1.39`); cites [config_doctrine.md §0/§1a/§3/§6](../documents/engineering/config_doctrine.md#0-three-tier-config-model). Sprint `1.41` (✅ Done code-owned 2026-06-18; live `cluster reconcile` RC=0 — Config-Topology Consolidation: drop the JSON floor (read the sealed-Vault floor directly from the self-contained Tier-0 `prodbox.dhall` via `projectBasics`; `prodbox-basics.json` + the legacy `.data/prodbox/unencrypted-basics.json` eliminated), `docker/default-prodbox.dhall` becomes generated at image-build time + git-ignored, the `*-types.dhall` schemas stay generated + git-ignored — net zero version-controlled `.dhall`; forward-only-blocked on the closed `1.39`/`1.40`) and Sprint `1.42` (Part A ✅ Done 2026-06-18 / Part B ✅ Done 2026-06-19 — `prodbox-config.dhall` RETIRED: the operator non-secret config now lives in the binary-generated, git-ignored Tier-0 `prodbox.dhall` `parameters` read via `loadConfigFile`'s Dhall field-projection; `config setup`/`aws setup`/`vault init` author it merge-preserving; ~35 fixtures converted via `TestSupport.wrapTier0`; sealed/unreachable Vault on an established cluster has NO config fallback per operator decision; 🧪 live-proof pending; forward-only-blocked on the closed `1.38`/`1.39`/`1.41`). Phase `1` further reopened with Sprint `1.43` (✅ Done 2026-06-20 — moved the durable test secrets into the dedicated, git-ignored `test-secrets.dhall` as the SOLE secret fixture; `TestConfig`→`TestSecrets`, generated `test-secrets-types.dhall`, the now-empty `test-config.dhall`/`test-config-types.dhall` removed) and Sprint `1.44` (✅ Done code-owned 2026-06-20; 🧪 Live-proof pending — routes the Vault-written secrets, ACME EAB + minted operational `aws.*`, through the gateway daemon's `POST /v1/secret/<logical>` endpoint under a dedicated `prodbox-operator-write` Vault policy/role, authenticated by an operator-injected k8s JWT, with a host-write fallback; the unlock password + ephemeral admin cred stay host-side), both expanding Phase 1's own config/secrets surface per the operator's 2026-06-19 target (see the Closure Status). Phase `1` further reopened with Sprint `1.45` (✅ Done code-owned 2026-06-20; 🧪 Live-proof pending — consolidated the former `prodbox-gateway` + `prodbox-public-edge-workload` images into ONE union runtime image `prodbox/prodbox-runtime` from a single `docker/prodbox.Dockerfile` (tini + AWS CLI, bare `tini -- prodbox` entrypoint); each chart selects its role via the pod `args:` (`gateway start` vs `workload start`); the former `docker/gateway.Dockerfile` is deleted; the gateway's Vault identity `prodbox-gateway-*` is unchanged; expands Phase 1's own container-packaging surface and consolidates Phase 2's former gateway-image build, which now cross-references this sprint, Standards A/N). Phase `1` further reopened with Sprint `1.46` (✅ Done code-owned 2026-06-20; 🧪 Live-proof pending — host `docker` CLI Harbor-login isolation via a persistent `<repoRoot>/.docker` `DOCKER_CONFIG` so the Harbor login never pollutes the operator's global `~/.docker`) and Sprint `1.47` (✅ Done code-owned 2026-06-20; 🧪 Live-proof pending — supersedes the 1.46 *persistent* mechanism with hostbootstrap `Registry`'s **ephemeral** scrubbed `prodbox-docker-config` `DOCKER_CONFIG` + inline Harbor entry, **no `docker login` anywhere**; `Prodbox.DockerConfig` rewritten, `ensureHarborDockerLogin` deleted, `dev check` 0 + 6 new unit tests + CliSuite no-login assertion + `test unit` 1061/1061; the 1.46 mechanism is in [legacy-tracking → Completed](legacy-tracking-for-deletion.md#completed)). `test unit` 1045/1045, `integration cli`/`env` pass. ✅ **Reclosed 2026-06-16** on Phase-owned Vault-root + cluster-federation foundations. Sprints `1.35`–`1.38` are Done: FileSecret-free `SecretRef` type/decoder/production validator/Vault resolver seam; encrypted unlock bundle and native `prodbox vault` lifecycle command group; sealed-Vault gate decision/outcome fold plus production Vault-Transit `DekCipher`; and the in-force-config source-of-truth inversion with `loadConfigForSettingsWith` switching host settings loads from repo-root Dhall-as-live-config to basics → Vault → MinIO envelope once unencrypted basics exist. Runtime AWS provider credential migration is landed under Sprint `7.14`; ACME EAB/TLS key material remains Sprint `7.15`; the direct live child registration and federated unseal cascade are now closed by Sprint `4.32`, and the gateway-mediated federation bootstrap is now closed by Sprint `2.26`. Prior closure preserved: ✅ Done — reopened 2026-06-09 for Sprints `1.29`–`1.32` (design-intention review; see Closure Status), all four landed 2026-06-09. Prior closure preserved: ✅ Done (Sprints 1.1–1.28). **Independent Validation**: the `SecretRef` contract, unlock bundle, `prodbox vault` command group, sealed-Vault gate, and in-force-config loader are validated on the code-owned surface (unit + CLI/env integration) and against the home/local substrate, with no dependency on a later phase. | [phase-1-runtime-cli-aws-foundations.md](phase-1-runtime-cli-aws-foundations.md) |
 | 2 | Haskell Gateway Runtime and DNS Ownership | ✅ **Reclosed 2026-06-16** for cluster-federation custody. Sprint `2.26` is Done: `Prodbox.Cluster.Federation` owns parent-owned child metadata/init/bootstrap/index Vault KV JSON framing, opaque child namespace/Transit-key derivation, root-token write gating, and the native `prodbox cluster federation register <child>` plan/apply surface; registration records full downstream inventory; and the gateway daemon exposes Vault-backed child-listing and child-bootstrap endpoints through its configured Kubernetes-auth Vault login. Prior closure preserved: ✅ Done on owned gateway-runtime, DNS-ownership, peer-transport, daemon-lifecycle, and CLI-doctrine surfaces through Sprint `2.25`. **Independent Validation**: federation custody framing, opaque derivation, root-token gating, and the gateway daemon's child-listing/bootstrap endpoints are validated on the code-owned surface (unit + built-frontend integration) against the home/local substrate and Vault-backed fixtures, with no dependency on a later phase. | [phase-2-gateway-dns.md](phase-2-gateway-dns.md) |
 | 3 | Haskell Chart Platform and Public Workload Delivery | ✅ **Reclosed 2026-06-16** on Vault-root chart-platform surfaces. The Vault model is finalized to Vault-root + federation: Sprint `3.17` is ✅ Done on the code-owned Vault platform/envelope foundation; Sprint `3.18` is ✅ Done with the typed `Prodbox.Secret.VaultInventory`, chart-secret policies/roles generated by `defaultVaultReconcilePlan`, explicit service accounts for the straightforward chart workloads, Kubernetes-auth backend config plus Vault TokenReview RBAC, read-before-write Vault KV seed-object bootstrap in `vault reconcile`, direct app/chart/gateway/host Vault consumers, Patroni role Secret materialization, AWS SES SMTP Vault sync, and the structural sealed-startup proof for migrated materializers. Sprint `3.19` is ✅ Done (2026-06-16): the retired `Prodbox.Secret.{Derive,MasterSeed,Inventory,EnsureNamespace,Wire}` modules and gateway-derive seam are deleted, the daemon `/v1/secret/*` RPCs, daemon-only-seed lint, and `selfBootstrapOwnSecrets` are gone. Sprint `3.20` is ✅ Done (2026-06-16): `Prodbox.Vault.Seal` defines root Shamir vs child Transit seal modes, root init emits Shamir unseal-key shares, child init emits recovery-key shares, the Vault chart renders `seal "transit"` only for child mode with the parent token sourced from `VAULT_TOKEN`, and child init material maps to parent-owned Vault KV. The master-seed derivation model is **retired, not extended**. Prior closures for Sprints `3.1`–`3.16` are preserved. Remaining sealed-Vault whole-system validation is Sprint `5.8`, not Phase `3`. **Independent Validation**: the Vault platform/envelope foundation, chart-secret Vault inventory, seal-mode rendering, and the structural sealed-startup proof are validated on the code-owned surface and against the home/local substrate, with no dependency on a later phase. | [phase-3-chart-platform-vscode.md](phase-3-chart-platform-vscode.md) |
 | 4 | Lifecycle Hardening, Pulumi Decoupling, and Python Removal | ✅ **Reclosed 2026-06-16** on Vault-root lifecycle, Model-B object-store work, retained-storage topology, federated lifecycle, and Haskell-side sealed-state scrub. Sprints `4.29`–`4.33` are ✅ Done: `cluster reconcile` deploys/rebinds/unseals/reconciles Vault before MinIO while preserving the durable Vault PV; the Model-B object-store foundation is implemented with `Prodbox.Minio.ObjectStore`, `Prodbox.Minio.EncryptedObject`, `prodbox-envelope-v2` hashed stored AAD, the `prodbox-state` generic bucket, Vault-owned object-store HMAC key material, and the in-force-config read through an opaque object key; retained PVs now use the unified `.data/<namespace>/<StatefulSet>/<ordinal>` topology; federated lifecycle registers direct children from the parent and lets child `cluster reconcile` fail closed against a sealed/unreachable parent; and the Haskell residue/listing translators plus retained-object `NoSuchKey` classifier fail closed behind Vault readiness with token-bearing `Show` redaction. Sprint `7.14` owns the remaining Pulumi live first-touch deletion proof and live sealed-state proof; live cross-surface sealed-Vault red-team validation remains Sprint `5.8`. Latest Phase 4 gates after the Sprint `7.14` nuke-order refresh: full unit suite 950/950, CLI integration 38/38, env integration 38/38, docs check/lint 0, `git diff --check` 0, and canonical dev check 0. **Independent Validation**: the Vault-before-MinIO lifecycle, Model-B object-store, unified retained-storage topology, federated lifecycle fail-closed cascade, and sealed-state residue scrub are validated on the code-owned surface and against the home/local substrate (the live home `cluster reconcile`), with no dependency on a later phase; the Pulumi live first-touch deletion proof is a non-blocking 🧪 live-infra axis. | [phase-4-lifecycle-canonical-paths.md](phase-4-lifecycle-canonical-paths.md) |
@@ -2977,8 +3084,9 @@ implemented baseline surfaces remain current on the supported path:
 - The self-managed public edge now installs Envoy Gateway, renders Gateway API resources, and
   protects shared-host browser, API, WebSocket, and admin routes through Envoy auth policy.
 - `src/Prodbox/CLI/Rke2.hs` now renders config-selected MetalLB L2 or BGP resources, lifts the
-  Envoy Gateway controller and data-plane replica counts into settings, and builds or imports both
-  the gateway image and the shared public-edge workload image during `rke2 reconcile`.
+  Envoy Gateway controller and data-plane replica counts into settings, and builds or imports the
+  single union runtime image (`prodbox-runtime`, shared by the gateway daemon and the api/websocket
+  workloads) during `rke2 reconcile`.
 - The supported public-edge auth doctrine now makes the carrier and key-discovery boundary
   explicit: JWT-only API routes validate request-carried bearer tokens locally at Envoy from
   Keycloak issuer metadata plus JWKS-backed signing keys, Envoy-managed browser auth returns

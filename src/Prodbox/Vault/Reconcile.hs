@@ -344,7 +344,10 @@ runVaultReconcileWith ops plan = do
                               case roleResult of
                                 Left err -> pure (Left err)
                                 Right roleSteps -> do
-                                  secretResult <- reconcileSecretObjects ops (vaultReconcileSecretObjects plan)
+                                  secretResult <-
+                                    reconcileSecretObjects
+                                      ops
+                                      (vaultReconcileSecretObjects plan)
                                   pure $ case secretResult of
                                     Left err -> Left err
                                     Right secretSteps ->

@@ -224,15 +224,30 @@ runNativeSuite repoRoot environment haskellSuites suitePlan = do
       case nativeManagedAwsHarnessPolicyTier suitePlan of
         Nothing -> runNativeSuiteBody repoRoot environment haskellSuites suitePlan
         Just policyTier -> do
-          setupExit <- runManagedAwsHarnessSetup repoRoot policyTier
-          case setupExit of
+          -- Sprint 7.24 (ordering): the harness setup materializes operational
+          -- `aws.*` + the ACME EAB INTO Vault, which only exists once a cluster
+          -- reconcile has brought it up. For cluster-bootstrapping suites, run a
+          -- bare `cluster reconcile` FIRST (Vault up; the gateway/edge chart is
+          -- skipped cleanly while `aws.*` is unmaterialized) so the harness Vault
+          -- write succeeds; the body's later `--with-edge` reconcile then has a
+          -- materialized `aws.*`. Pure harness-only suites (e.g. `aws-iam`) do
+          -- not bootstrap a cluster and are excluded — no extra pre-reconcile.
+          preReconcileExit <-
+            if harnessNeedsVaultBeforeSetup suitePlan
+              then runNativeCliCommandForExitCode repoRoot environment ["cluster", "reconcile"]
+              else pure ExitSuccess
+          case preReconcileExit of
             failure@(ExitFailure _) -> pure failure
-            ExitSuccess ->
-              runWithAwsHarnessCleanup
-                repoRoot
-                environment
-                suitePlan
-                (runNativeSuiteBody repoRoot environment haskellSuites suitePlan)
+            ExitSuccess -> do
+              setupExit <- runManagedAwsHarnessSetup repoRoot policyTier
+              case setupExit of
+                failure@(ExitFailure _) -> pure failure
+                ExitSuccess ->
+                  runWithAwsHarnessCleanup
+                    repoRoot
+                    environment
+                    suitePlan
+                    (runNativeSuiteBody repoRoot environment haskellSuites suitePlan)
 
 -- | Sprint 7.6 orphan-safety: run the suite body, then destroy every
 -- per-run Pulumi stack the suite may have provisioned before clearing
@@ -480,6 +495,16 @@ supportedRuntimeBootstrapNeedsReconcile :: NativeSuitePlan -> Bool
 supportedRuntimeBootstrapNeedsReconcile suitePlan =
   nativeRequiresSupportedRuntimeBootstrap suitePlan
     && not (nativeRequiresIntegrationRunbook suitePlan)
+
+-- | Sprint 7.24 (ordering): a cluster-bootstrapping harness suite needs Vault
+-- up BEFORE the harness setup runs, because the setup materializes operational
+-- `aws.*` + the ACME EAB into Vault. A bare `cluster reconcile` brings Vault up
+-- (and skips the gateway/edge chart cleanly while `aws.*` is unmaterialized), so
+-- the harness write succeeds. Pure harness-only suites (e.g. `aws-iam`) do not
+-- bootstrap a cluster and are excluded, so no extra pre-reconcile is added to
+-- them.
+harnessNeedsVaultBeforeSetup :: NativeSuitePlan -> Bool
+harnessNeedsVaultBeforeSetup = nativeRequiresSupportedRuntimeBootstrap
 
 supportedRuntimeBootstrapNeedsKeycloakSmtpSync :: NativeSuitePlan -> Bool
 supportedRuntimeBootstrapNeedsKeycloakSmtpSync suitePlan =

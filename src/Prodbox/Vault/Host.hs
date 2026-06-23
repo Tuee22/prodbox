@@ -60,7 +60,6 @@ import Prodbox.Vault.Client
   )
 import Prodbox.Vault.UnlockBundle
   ( UnlockBundle (..)
-  , UnlockBundleError (..)
   , decryptUnlockBundle
   , renderUnlockBundleError
   )
@@ -525,6 +524,12 @@ loadTestSecrets repoRoot = do
 -- required but unset. A decode failure here is already surfaced by the
 -- admin-credential acquisition path (which decodes the same file and fails
 -- loud), so we avoid a second redundant failure path for the EAB seam.
+--
+-- The best-effort tolerance covers only the "nothing to seed" inputs listed
+-- above. A *write* failure is different: valid EAB data was present and the
+-- Vault KV write itself was rejected (e.g. Vault unreachable), which signals a
+-- real environment fault rather than a missing fixture, so it is surfaced loudly
+-- ('ioError' below) instead of being swallowed.
 seedAcmeEabFromTestSecrets :: FilePath -> IO ()
 seedAcmeEabFromTestSecrets repoRoot = do
   testSecretsResult <- loadTestSecrets repoRoot

@@ -43,7 +43,7 @@ import Control.Exception
   , displayException
   , try
   )
-import Control.Monad (foldM)
+import Control.Monad (foldM, unless)
 import Data.Aeson
   ( Value
   , encode
@@ -1770,16 +1770,34 @@ runCascadePostflightTagSweep repoRoot = do
         Left err ->
           writeOutputLine
             ("Postflight tag sweep: query failed (continuing): " ++ err)
-        Right [] ->
-          writeOutputLine
-            "Postflight tag sweep: clean (no cluster-tagged or prodbox-owned AWS residue)."
         Right resources -> do
-          writeOutputLine
-            ( "Postflight tag sweep: "
-                ++ show (length resources)
-                ++ " resource(s) still tagged — operator action required:"
-            )
-          writeOutputLine (TagSweep.renderTagSweepRefusal resources)
+          -- Sprint 7.26: carve out intentionally-RETAINED long-lived shared
+          -- infrastructure (the `pulumi_state_backend` bucket + `aws-ses`) —
+          -- `cluster delete --cascade` keeps these by design (only `prodbox nuke`
+          -- destroys them), so they are NOT escaped residue. Refuse only on the
+          -- genuine per-run/cluster escapees.
+          let (retained, escaped) = TagSweep.partitionRetainedLongLived resources
+              retainedArns = nub (map TagSweep.taggedResourceArn retained)
+          unless (null retainedArns) $
+            writeOutputLine
+              ( "Postflight tag sweep: "
+                  ++ show (length retainedArns)
+                  ++ " intentionally-retained long-lived resource(s) left in place by design "
+                  ++ "(destroyed only by `prodbox nuke`): "
+                  ++ intercalate ", " retainedArns
+                  ++ "."
+              )
+          if null escaped
+            then
+              writeOutputLine
+                "Postflight tag sweep: clean (no per-run or cluster-tagged AWS residue escaped)."
+            else do
+              writeOutputLine
+                ( "Postflight tag sweep: "
+                    ++ show (length escaped)
+                    ++ " resource(s) still tagged — operator action required:"
+                )
+              writeOutputLine (TagSweep.renderTagSweepRefusal escaped)
 
 resolveRetainedManualPvRoot :: FilePath -> IO FilePath
 resolveRetainedManualPvRoot repoRoot = do

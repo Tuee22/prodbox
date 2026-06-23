@@ -122,8 +122,14 @@ resources the harness no longer needs are destroyed by the harness.
 The supported entrypoints are:
 
 - `prodbox aws stack <stack> reconcile` / `prodbox aws stack <stack> destroy --yes` for
-  every Pulumi-managed substrate stack (`aws-eks`, `aws-eks-subzone`, `aws-test`,
-  `aws-ses`, and any future AWS substrate stacks).
+  every Pulumi-managed substrate stack. The names `aws-eks`, `aws-eks-subzone`,
+  `aws-test`, `aws-ses` (and any future AWS substrate stacks) are the *registry*
+  identities; the CLI verb in the `<stack>` slot differs for three of them — it is
+  `eks`, `aws-subzone`, `test`, and `aws-ses` respectively (e.g.
+  `prodbox aws stack eks reconcile`, not `prodbox aws stack aws-eks reconcile`). The
+  authoritative registry-name↔CLI-verb mapping is the generated table in
+  [DEVELOPMENT_PLAN/substrates.md](DEVELOPMENT_PLAN/substrates.md) (§ stack command
+  surface).
 - `prodbox aws setup` / `prodbox aws teardown` for the IAM user provisioning loop.
 - `prodbox test integration ... --substrate aws` and `prodbox test all` for the
   end-to-end substrate-aware validation runs.

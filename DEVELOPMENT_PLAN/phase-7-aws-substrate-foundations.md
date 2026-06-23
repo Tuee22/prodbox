@@ -48,6 +48,12 @@ reordered ahead of Vault, and the host-disk bundle write + fallback are dropped.
 `7.19`'s deferred 🧪 disk-free axis**, unblocked by the 2026-06-22 static MinIO credential. See the
 Sprint `7.25` block below + [README.md → Closure Status](README.md).
 
+🔄 **Further reopened 2026-06-23 for an operator-reported teardown-UX bug** — Sprint `7.26` (✅ Done)
+fixes the `cluster delete --cascade` postflight tag sweep falsely flagging the intentionally-retained
+long-lived `pulumi_state_backend` bucket (and `aws-ses`) as "manual-cleanup-required" residue; the sweep
+now carves out the retained long-lived shared-infra classes and refuses only on genuine
+per-run/cluster escapees. See the Sprint `7.26` block below.
+
 ✅ **Sprint `7.14` Done (code-owned surface) 2026-06-16** — Sprint `7.14` has landed the
 decrypt-to-scratch Pulumi
 interposition over the Sprint `4.30` Model-B object-store. `Prodbox.Pulumi.EncryptedBackend`
@@ -4144,6 +4150,48 @@ you wipe both together (→ fresh init re-writes the bundle to MinIO) or neither
 - None — code-owned + live-proven. The
   [legacy-tracking-for-deletion.md → Completed](legacy-tracking-for-deletion.md) rows (host-disk bundle,
   MinIO chart Vault init container, restart-on-change) landed under this sprint.
+
+## Sprint 7.26: Cascade Postflight Tag Sweep — Carve Out Retained Long-Lived Shared Infra ✅
+
+**Status**: ✅ Done (code-owned + unit-validated 2026-06-23). Operator-reported: `cluster delete
+--cascade --yes` printed a postflight tag-sweep "operator action required / manual cleanup required"
+refusal naming `arn:aws:s3:::prodbox-pulumi-state-long-lived` — the long-lived `pulumi_state_backend`
+bucket, which `cluster delete` (even `--cascade`) **retains by design** (destroyed only by `prodbox
+nuke`). The bucket surviving was correct; the sweep flagging it was a false positive.
+**Implementation**: `src/Prodbox/Lifecycle/TagSweep.hs`, `src/Prodbox/CLI/Rke2.hs`, `test/unit/Main.hs`.
+**Blocked by**: none (refines the Sprint `4.11`/`4.17` postflight tag-sweep doctrine, see
+[lifecycle_reconciliation_doctrine.md](../documents/engineering/lifecycle_reconciliation_doctrine.md) §6
++ the Resource Lifecycle Classes in [substrates.md](substrates.md)).
+**Independent Validation**: pure `partitionRetainedLongLived` is unit-tested; no later-phase dependency.
+
+### Root cause
+
+`runCascadePostflightTagSweep` queried every `prodbox.io/managed-by=prodbox`-tagged resource and refused
+on ANY hit, with **no carve-out** for the intentionally-retained long-lived classes — even though the
+lifecycle doctrine has the harness carve those same resources out of postflight auto-destroy. (It was a
+best-effort step, so the command still exited 0; the teardown succeeded — it was a misleading message,
+not a failed teardown.)
+
+### Deliverables
+
+- ✅ `TaggedResource` now carries the matched tag **value** (`taggedResourceMatchedTagValue`), captured
+  by `parseTagSweepPayload`.
+- ✅ Pure `partitionRetainedLongLived :: [TaggedResource] -> ([retained], [escaped])` keyed on
+  `longLivedRetentionMarkers` — `prodbox.io/role=long-lived-pulumi-state` (the `pulumi_state_backend`
+  bucket) and `prodbox.io/substrate=shared` (`aws-ses`). A resource (by ARN) is retained when ANY of its
+  tag rows is a marker; an escapee that merely shares a common tag (`prodbox.io/managed-by`) with a
+  retained resource is still classified escaped.
+- ✅ `runCascadePostflightTagSweep` refuses ONLY on `escaped`, reports `retained` as
+  "intentionally-retained long-lived resource(s) left in place by design (destroyed only by `prodbox
+  nuke`)", and is clean when only retained resources remain. `prodbox nuke`'s own step-4 sweep does NOT
+  use the carve-out (it exists to destroy these resources) — unchanged.
+
+### Validation
+
+- ✅ `prodbox dev check` 0; `prodbox test unit` (added: state-bucket carve-out, `aws-ses` carve-out,
+  genuine-escapee still-refused, mixed → refuse-only-the-stray-and-not-the-bucket).
+- 🧪 Live (non-blocking, Standard O): a `cluster delete --cascade --yes` with the long-lived bucket
+  present now reports it as retained-by-design and exits clean instead of demanding manual cleanup.
 
 ## Related Documents
 

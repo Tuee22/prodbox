@@ -746,7 +746,6 @@ import System.Directory
   , getCurrentDirectory
   , getPermissions
   , getTemporaryDirectory
-  , removeFile
   , setPermissions
   )
 import System.Environment
@@ -8138,6 +8137,7 @@ main = mainWithSuite "prodbox-unit" $ do
             [ TagSweep.TaggedResource
                 { TagSweep.taggedResourceArn = "arn:aws:ec2:us-east-1:123:vpc/vpc-abc"
                 , TagSweep.taggedResourceMatchedTagKey = "kubernetes.io/cluster/aws-eks-test-cluster"
+                , TagSweep.taggedResourceMatchedTagValue = "owned"
                 }
             ]
           rendered = TagSweep.renderTagSweepRefusal resources
@@ -8152,15 +8152,69 @@ main = mainWithSuite "prodbox-unit" $ do
             [ TagSweep.TaggedResource
                 { TagSweep.taggedResourceArn = "arn:aws:s3:::prodbox-leftover"
                 , TagSweep.taggedResourceMatchedTagKey = "prodbox.io/managed-by"
+                , TagSweep.taggedResourceMatchedTagValue = "prodbox"
                 }
             , TagSweep.TaggedResource
                 { TagSweep.taggedResourceArn = "arn:aws:iam::123:role/prodbox-residual"
                 , TagSweep.taggedResourceMatchedTagKey = "prodbox.io/managed-by"
+                , TagSweep.taggedResourceMatchedTagValue = "prodbox"
                 }
             ]
           rendered = TagSweep.renderTagSweepRefusal resources
           bulletLines = filter (\line -> take 4 line == "  - ") (lines rendered)
       length bulletLines `shouldBe` 2
+
+  describe "Sprint 7.26 cascade tag sweep carves out retained long-lived shared infra" $ do
+    it "carves out the long-lived pulumi_state_backend bucket (role=long-lived-pulumi-state)" $ do
+      let stateBucket =
+            [ TagSweep.TaggedResource
+                "arn:aws:s3:::prodbox-pulumi-state-long-lived"
+                "prodbox.io/managed-by"
+                "prodbox"
+            , TagSweep.TaggedResource
+                "arn:aws:s3:::prodbox-pulumi-state-long-lived"
+                "prodbox.io/role"
+                "long-lived-pulumi-state"
+            ]
+          (retained, escaped) = TagSweep.partitionRetainedLongLived stateBucket
+      escaped `shouldBe` []
+      length retained `shouldBe` 2
+
+    it "carves out aws-ses cross-substrate shared resources (substrate=shared)" $ do
+      let sesCapture =
+            [ TagSweep.TaggedResource "arn:aws:s3:::prodbox-ses-capture" "prodbox.io/managed-by" "prodbox"
+            , TagSweep.TaggedResource "arn:aws:s3:::prodbox-ses-capture" "prodbox.io/substrate" "shared"
+            ]
+      snd (TagSweep.partitionRetainedLongLived sesCapture) `shouldBe` []
+
+    it "still treats a genuine per-run/cluster resource (no long-lived marker) as escaped" $ do
+      let escapee =
+            [ TagSweep.TaggedResource
+                "arn:aws:ec2:us-east-1:123:vpc/vpc-xyz"
+                "kubernetes.io/cluster/aws-eks-test-cluster"
+                "owned"
+            ]
+          (retained, escaped) = TagSweep.partitionRetainedLongLived escapee
+      retained `shouldBe` []
+      escaped `shouldBe` escapee
+
+    it "refuses ONLY on the escapee in a mixed result (retained bucket + stray sharing managed-by)" $ do
+      let mixed =
+            [ TagSweep.TaggedResource
+                "arn:aws:s3:::prodbox-pulumi-state-long-lived"
+                "prodbox.io/role"
+                "long-lived-pulumi-state"
+            , TagSweep.TaggedResource
+                "arn:aws:s3:::prodbox-pulumi-state-long-lived"
+                "prodbox.io/managed-by"
+                "prodbox"
+            , TagSweep.TaggedResource "arn:aws:iam::123:role/prodbox-stray" "prodbox.io/managed-by" "prodbox"
+            ]
+          (_, escaped) = TagSweep.partitionRetainedLongLived mixed
+          rendered = TagSweep.renderTagSweepRefusal escaped
+      map TagSweep.taggedResourceArn escaped `shouldBe` ["arn:aws:iam::123:role/prodbox-stray"]
+      rendered `shouldContain` "prodbox-stray"
+      rendered `shouldNotContain` "pulumi-state-long-lived"
 
     it "renderTagSweepRefusal still emits the header when the list is empty" $ do
       let rendered = TagSweep.renderTagSweepRefusal []

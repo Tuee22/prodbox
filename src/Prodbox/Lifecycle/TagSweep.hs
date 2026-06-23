@@ -17,6 +17,9 @@ module Prodbox.Lifecycle.TagSweep
   , TagSweepInput (..)
   , discoverClusterTaggedAwsResources
   , renderTagSweepRefusal
+  , longLivedRetentionMarkers
+  , isRetainedLongLived
+  , partitionRetainedLongLived
   )
 where
 
@@ -57,6 +60,7 @@ data TagSweepInput = TagSweepInput
 data TaggedResource = TaggedResource
   { taggedResourceArn :: String
   , taggedResourceMatchedTagKey :: String
+  , taggedResourceMatchedTagValue :: String
   }
   deriving (Eq, Show)
 
@@ -128,12 +132,15 @@ parseTagSweepPayload payload = do
               tagList = case KeyMap.lookup "Tags" obj of
                 Just (Array tags) -> Vector.toList tags
                 _ -> []
-           in [ TaggedResource arn (Text.unpack key)
+           in [ TaggedResource arn (Text.unpack key) (tagValueOf tagObj)
               | Object tagObj <- tagList
               , Just (String key) <- [KeyMap.lookup "Key" tagObj]
               ]
         _ -> []
     _ -> []
+  tagValueOf tagObj = case KeyMap.lookup "Value" tagObj of
+    Just (String v) -> Text.unpack v
+    _ -> ""
 
 renderTagSweepRefusal :: [TaggedResource] -> String
 renderTagSweepRefusal resources =
@@ -155,3 +162,36 @@ renderTagSweepRefusal resources =
       ++ " (matched tag: "
       ++ taggedResourceMatchedTagKey resource
       ++ ")"
+
+-- | The @(tag key, tag value)@ pairs that mark a resource as
+-- intentionally-RETAINED long-lived shared infrastructure — the
+-- @pulumi_state_backend@ S3 bucket and the @aws-ses@ cross-substrate stack.
+-- These survive @cluster delete@ (even @--cascade@) by design and are destroyed
+-- only by @prodbox nuke@; the cascade postflight tag sweep must NOT flag them as
+-- escaped residue (Standard: lifecycle_reconciliation_doctrine.md — Resource
+-- Lifecycle Classes). @nuke@'s own sweep does NOT use this carve-out, since it
+-- exists to destroy these resources.
+longLivedRetentionMarkers :: [(String, String)]
+longLivedRetentionMarkers =
+  [ ("prodbox.io/role", "long-lived-pulumi-state")
+  , ("prodbox.io/substrate", "shared")
+  ]
+
+-- | True when a tag row marks its resource as intentionally-retained long-lived
+-- shared infrastructure (one of 'longLivedRetentionMarkers').
+isRetainedLongLived :: TaggedResource -> Bool
+isRetainedLongLived resource =
+  (taggedResourceMatchedTagKey resource, taggedResourceMatchedTagValue resource)
+    `elem` longLivedRetentionMarkers
+
+-- | Split a tag-sweep result into @(retained, escaped)@. A resource (keyed by
+-- ARN) is RETAINED when ANY of its tag rows is a long-lived-retention marker;
+-- every tag row of a retained ARN goes to the retained list, so a genuine
+-- escapee that merely shares one common tag (e.g. @prodbox.io/managed-by@) with
+-- a retained resource is still classified as escaped. Pure, so the cascade
+-- postflight refuses on @escaped@ only and reports @retained@ as expected.
+partitionRetainedLongLived :: [TaggedResource] -> ([TaggedResource], [TaggedResource])
+partitionRetainedLongLived resources =
+  let retainedArns = [taggedResourceArn r | r <- resources, isRetainedLongLived r]
+      isRetainedArn r = taggedResourceArn r `elem` retainedArns
+   in (filter isRetainedArn resources, filter (not . isRetainedArn) resources)

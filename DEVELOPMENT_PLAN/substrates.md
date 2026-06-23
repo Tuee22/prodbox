@@ -16,7 +16,8 @@
 [phase-8-email-invite-auth.md](phase-8-email-invite-auth.md),
 [the engineering doctrine docs](../documents/engineering/README.md),
 [../documents/engineering/acme_provider_guide.md](../documents/engineering/acme_provider_guide.md),
-[../documents/engineering/vault_doctrine.md](../documents/engineering/vault_doctrine.md)
+[../documents/engineering/vault_doctrine.md](../documents/engineering/vault_doctrine.md),
+[../documents/engineering/lifecycle_reconciliation_doctrine.md](../documents/engineering/lifecycle_reconciliation_doctrine.md)
 **Generated sections**: resource-lifecycle-classes, stack-command-surface
 
 > **Purpose**: Inventory the substrates against which the canonical test suite runs, the

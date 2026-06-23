@@ -176,10 +176,14 @@ no shared in-memory state.
      fail-closed rule is moot there.)
    - **The cascade degrades gracefully.** `prodbox cluster delete
      --cascade`'s own `perRunCascadeInventory` treats per-run
-     `Unreachable` as absent — the cascade is tearing the cluster down
-     regardless, and the postflight tag sweep (§6) is its backstop for
-     any AWS-side residue. The cascade does not route through the gate
-     preconditions.
+     `Unreachable` as absent. This is a *documented exception* to the
+     "`Unreachable` ('cannot observe') is never silently a passing
+     decision" invariant above, scoped to per-run stacks only: the
+     cascade is tearing the cluster down regardless, a per-run stack's
+     `Unreachable` is by definition the same outcome as "the state died
+     with the cluster" (§5b step 1), and the postflight tag sweep (§6)
+     is the hard-fail backstop for any AWS-side residue. The cascade
+     does not route through the gate preconditions.
 
    Other discoverers added by Sprints
    4.11–4.12: `discoverClusterTaggedAwsResources` (AWS Resource
@@ -497,7 +501,7 @@ backend / credentials are still up at the point of refusal).
 | `prodbox cluster delete --cascade` | §5a no-install short-circuit, then none at entry — the command **is** the orchestration | Confirm-MinIO → drain → per-run destroys → uninstall → sweep (see §5b) |
 | `prodbox aws teardown` | `noLiveLongLivedPulumiStacks` (Sprint 7.6) | Refuse with list and per-stack destroy command |
 | `prodbox aws stack <stack> destroy` | (none beyond Pulumi's own dependency check) | n/a |
-| `prodbox nuke` | TTY refusal; typed-confirmation literal `NUKE EVERYTHING`; otherwise no residue refusal — the command **is** the total-teardown orchestration | Drain + destroy all stacks + IAM teardown + uninstall + step-4 fail-closed tag sweep (§6) |
+| `prodbox nuke` | TTY refusal; typed-confirmation literal `NUKE EVERYTHING`; otherwise no residue refusal — the command **is** the total-teardown orchestration | Drain + destroy all stacks (per-run **and** long-lived `aws-ses` + state bucket, per §7) + IAM teardown + uninstall + step-4 fail-closed tag sweep (§6) |
 
 ### 5a. No-Install Short-Circuit (Sprint 4.25)
 
@@ -561,7 +565,7 @@ to trip on.
 | 2 | K8s drain | Delete LoadBalancer Services, ALB Ingresses, and Delete-reclaim PVCs so the in-cluster controllers unwind their AWS-side state (Sprint 4.12). On the AWS substrate the drain MUST target the EKS API server, not the local RKE2 cluster — see "Substrate-aware drain" below. If the K8s API is unreachable, this phase emits `DrainSkipped` and the cascade proceeds to phase 3 only on the home substrate (where the absent cluster cannot have created new AWS resources). On the AWS substrate, `DrainSkipped` is a hard failure because the EKS cluster is the source of the resources Pulumi is about to fail to delete. | `DrainFailed` is the only failure path on the home substrate; `DrainSkipped` is success-with-reason there. On the AWS substrate, both `DrainSkipped` and `DrainFailed` are hard-failure paths. |
 | 3 | Per-run Pulumi destroys | For each per-run stack reporting `ResiduePresent`, run `pulumi destroy` against MinIO inside `withMaterializedOperationalCreds` (Sprint 4.17). The bracket materializes operational creds for the run (in tests, via the harness-simulated admin prompt sourced from `test-secrets.dhall`) when `aws.*` is empty and restores-to-empty on exit (success or exception). Because phase 2 already drained the controller-owned resources, every per-run subnet / VPC / cluster delete now has no live ENI / ALB / EBS dependency. | Empty `aws.*` no longer refuses the destroy; the bracket materializes it transparently. `DependencyViolation` from AWS indicates phase 2 did not in fact drain (most often: drain ran against the wrong kubeconfig). |
 | 4 | RKE2 uninstall | `/usr/local/bin/rke2-uninstall.sh` under the lifecycle-local quiet path. Removes substrate + managed kubeconfig. `.data/` is preserved. | Non-zero uninstall exit is reported through `summarizeRke2DeleteFailure`. |
-| 5 | Postflight cluster-tag sweep | `discoverClusterTaggedAwsResources` against the AWS Resource Tagging API. Any surviving cluster-tagged resource fails the command with a structured leak list and the per-class remedy command. | Non-empty leak list is the hard-failure case. |
+| 5 | Postflight cluster-tag sweep | `discoverClusterTaggedAwsResources` against the AWS Resource Tagging API, then `partitionRetainedLongLived` carves out the intentionally-retained long-lived shared-infra classes (`prodbox.io/role=long-lived-pulumi-state` + `prodbox.io/substrate=shared` — the `pulumi_state_backend` bucket + `aws-ses`, which `cluster delete --cascade` keeps by design and only `prodbox nuke` destroys). The structured leak list + per-class remedy is emitted only for the genuine per-run/cluster **escapees** (Sprint `7.26`); `prodbox nuke`'s own step-4 sweep does NOT carve out, since it exists to destroy those resources. | A non-empty **escapee** list is the leak case (best-effort on `--cascade`: reported, does not change the exit code; fail-closed on `nuke`). |
 
 **Substrate-aware drain.** The drain phase (#2) MUST use the substrate's own
 kubeconfig — `KUBECONFIG=/etc/rancher/rke2/rke2.yaml` for `SubstrateHomeLocal`,

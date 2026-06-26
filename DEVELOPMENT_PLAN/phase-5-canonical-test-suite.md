@@ -15,6 +15,18 @@
 
 ## Phase Status
 
+✅ **Live-proven 2026-06-26 — the canonical suite runs fully green on the home substrate.** A full home
+`prodbox test all` (2026-06-26) passes 18/18 named validations end-to-end — including `sealed-vault`
+(Sprint `5.8`) and the destructive `lifecycle` ordering — with `prodbox-unit` 1062/1062 and
+`prodbox-integration` 39/39 (see [00-overview.md](00-overview.md) Alignment Status). Sprint `5.10`
+(harness-generated run config from `test-secrets.dhall`) is exercised by the run: the harness
+regenerates the binary-sibling `prodbox.dhall` through the shared `configFromSetupInput` builder,
+populating `route53.zone_id` / `ses.*` / `pulumi_state_backend.*` from `test-secrets.dhall` and
+force-syncing the in-force SSoT, so the suite reaches every downstream validation non-interactively.
+The suite's home-substrate content is thereby live-proven (Standard O); the `--substrate aws` per-run
+half of the canonical suite remains the distinct, non-blocking axis tracked in
+[substrates.md](substrates.md).
+
 ✅ **Closed on its code-owned surface 2026-06-16** — reopened 2026-06-11, finalized 2026-06-14,
 refined 2026-06-15 (Vault-root + cluster
 federation; Model-B whole-system zero-child-info refinement), reopened 2026-06-16 to adopt the
@@ -773,6 +785,66 @@ config decode.
 **Cross-references to add:**
 
 - Keep public-host closure linked back to [README.md](README.md).
+
+## Sprint 5.10: Harness-generated run config from `test-secrets.dhall` ✅
+
+**Status**: Done (code-owned surface) — 2026-06-23
+**Implementation**: `src/Prodbox/Vault/Host.hs` (`TestSecrets` + `defaultTestSecrets` gained
+`route53_zone_id :: Text`), `test-secrets-types.dhall` (REGENERATED via `prodbox config schema` —
+`route53_zone_id : Text`, default `""`), `src/Prodbox/Aws.hs` (`harnessConfigSetupInput` — the
+no-prompt collector sourcing `route53.zone_id`/EAB from `test-secrets.dhall`, `acme.email` from the
+baked `harnessAcmeEmail`, the rest carried from the current skeleton; `regenerateConfigFromTestSecrets`
+preflight reusing the Sprint `1.50` `configFromSetupInput` builder, "fill only when empty"),
+`src/Prodbox/TestRunner.hs` (`runConfigRegenFromTestSecrets` wired into `runNativeSuite` before the
+pre-reconcile + `runManagedAwsHarnessSetup`), `test-secrets.dhall` (fixture gained the real
+`route53_zone_id` for `resolvefintech.com`).
+**Blocked by**: Sprint `1.48` + Sprint `1.50` (both now Done)
+**Live-proof**: pending
+**Independent Validation**: the `TestSecrets` round-trip drift guard now decodes `route53_zone_id`
+against the generated schema; the shared builder's field-fill is covered by the Phase 1 Sprint `1.50`
+test. The harness IO wiring (`loadTestSecrets` → `harnessConfigSetupInput` → `configFromSetupInput` →
+`writeProjectConfigParameters`) is exercised live by `prodbox test all`. Phase 5's own surface; no
+dependency on a later phase.
+**Docs to update**: `documents/engineering/config_doctrine.md` (§0, "The test harness generates its
+run config"), `documents/engineering/unit_testing_policy.md`.
+
+### Objective
+
+Let the test harness **generate** its run `prodbox.dhall` instead of requiring a hand-authored one,
+mirroring hostbootstrap's `demoTestConfig`-reuses-`demoInit` idiom: the harness assembles a
+`ConfigSetupInput` non-interactively and writes the binary-sibling config through the **same**
+`configFromSetupInput` builder production's `config setup` uses (Sprint `1.50`). This unblocks
+`prodbox test all` from a freshly-generated skeleton — today it fails the managed AWS IAM harness
+preflight with `route53.zone_id must not be empty`. Implements [config_doctrine.md §0 ("The test
+harness generates its run
+config")](../documents/engineering/config_doctrine.md#0-three-tier-config-model); covered per
+[unit_testing_policy.md](../documents/engineering/unit_testing_policy.md).
+
+### Deliverables
+
+- `route53_zone_id :: Text` added to the `TestSecrets` Haskell type; `test-secrets-types.dhall`
+  regenerated via `prodbox config schema` (the one file where cleartext operator ids the harness
+  injects are allowed).
+- `harnessConfigSetupInput`: sources `route53.zone_id` from `test-secrets.dhall`, `acme.email` from
+  a baked operator-email default, the EAB from `test-secrets.dhall`'s `acme_eab`, and the remaining
+  knobs from the same defaults the generated skeleton already carries.
+- `regenerateConfigFromTestSecrets` preflight wired into `runNativeSuite` before
+  `runManagedAwsHarnessSetup`, regenerating the binary-sibling `prodbox.dhall` only when its operator
+  fields are empty (never clobbering a populated real config).
+- `aws_substrate.*` / `ses.*` / `pulumi_state_backend.*` remain deferred — extend the same way when a
+  run requires them.
+
+### Validation
+
+`prodbox dev check` 0; `prodbox test unit` 1060/1060 (the `TestSecrets` GENERATED-schema round-trip
+now decodes `route53_zone_id`; the `configFromSetupInput` field-fill is covered by Sprint `1.50`);
+`prodbox config schema` regenerates `test-secrets-types.dhall` cleanly with the new field.
+
+### Remaining Work
+
+- 🧪 Live-proof (non-blocking, Standard O): `prodbox test all` (home-local) regenerates the
+  binary-sibling config from `test-secrets.dhall` and proceeds **past** the `route53.zone_id`
+  preflight (the original failure). The real `resolvefintech.com` zone id is now in the fixture.
 
 ## Related Documents
 

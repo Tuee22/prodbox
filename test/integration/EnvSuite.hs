@@ -29,7 +29,7 @@ integrationEnvSuite = do
   describe "native Haskell env integration suite" $ do
     it "shows masked settings without materializing JSON from the operator-facing binary" $
       withSystemTempDirectory "prodbox-hs-env" $ \tmpDir -> do
-        binary <- resolveBinaryPath
+        binary <- resolveBinaryPath >>= \b -> installOperatorBinaryInDir b tmpDir
         writeRepoMarkers tmpDir
         writeFile (tmpDir </> "prodbox.dhall") (wrapTier0 validConfig)
 
@@ -44,9 +44,9 @@ integrationEnvSuite = do
         stdoutText `shouldContain` "acme.email=****.com"
         doesFileExist (tmpDir </> "prodbox-config.json") `shouldReturn` False
 
-    it "fails fast on invalid config authored at the repo root" $
+    it "fails fast on invalid config authored beside the binary" $
       withSystemTempDirectory "prodbox-hs-env" $ \tmpDir -> do
-        binary <- resolveBinaryPath
+        binary <- resolveBinaryPath >>= \b -> installOperatorBinaryInDir b tmpDir
         writeRepoMarkers tmpDir
         writeFile (tmpDir </> "prodbox.dhall") (wrapTier0 invalidConfig)
 
@@ -60,7 +60,7 @@ integrationEnvSuite = do
 
     it "requires repo-root commands to run from the repository root instead of searching upward" $
       withSystemTempDirectory "prodbox-hs-env" $ \tmpDir -> do
-        binary <- resolveBinaryPath
+        binary <- resolveBinaryPath >>= \b -> installOperatorBinaryInDir b tmpDir
         let nestedDir = tmpDir </> "nested"
         writeRepoMarkers tmpDir
         writeFile (tmpDir </> "prodbox.dhall") (wrapTier0 validConfig)

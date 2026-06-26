@@ -13,6 +13,17 @@
 
 ## Phase Status
 
+✅ **Live-proven 2026-06-26 — the gateway integration validations now pass under the green home
+`test all`.** The `gateway-daemon`, `gateway-pods`, and `gateway-partition` named validations —
+previously the operator-driven `🧪 Live-proof: pending` axis (a running cluster is required, see below)
+— all pass `ExitSuccess` in the green home `prodbox test all` (2026-06-26, 18/18; see
+[00-overview.md](00-overview.md) Alignment Status). Phase 2's gateway-runtime + DNS-ownership surfaces
+are thereby home-substrate live-proven (this run also corrected the `gateway-daemon` validation's
+`config.dhall` renderer — empty `event_keys`, `vault = None`, `SecretRef`-typed creds — so the host
+`gateway status` decodes and queries the live daemon; recorded in [README.md](README.md) Closure
+Status). The `--substrate aws` partition-tolerance axis stays a distinct, non-blocking live-infra note
+([substrates.md](substrates.md)).
+
 ✅ **Reclosed 2026-06-16** — the Vault-root finalization (see [README.md](README.md) Closure Status
 2026-06-14, [vault_doctrine.md](../documents/engineering/vault_doctrine.md), and
 [cluster_federation_doctrine.md](../documents/engineering/cluster_federation_doctrine.md)) makes

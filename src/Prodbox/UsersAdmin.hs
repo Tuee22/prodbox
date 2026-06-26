@@ -16,6 +16,7 @@ module Prodbox.UsersAdmin
   , listUsers
   , revokeUser
   , revokeUserAtPublicHost
+  , reconcileRealmOidcSecretsAtPublicHost
   , loadKeycloakAdminPassword
   , loadKeycloakSmtpSettings
   , smtpSettingsFromVaultFields
@@ -281,3 +282,46 @@ withAdminClientAtPublicHost repoRoot publicHost action = do
         case tokenResult of
           Failure err -> pure (Left ("Keycloak admin token acquisition failed: " <> err))
           Success token -> action client token
+
+-- | Sprint 5.10 follow-up (durable fix for the charts-vscode OIDC 401): reconcile
+-- the realm's OIDC client secrets (@prodbox-api@, @prodbox-websocket@, @vscode@)
+-- and the @demo-user@ password with Vault via the admin API.
+--
+-- @--import-realm@ is @IGNORE_EXISTING@ and never updates an existing realm, and
+-- the OIDC secrets in Vault are write-if-absent (stable). So when a preserved
+-- Keycloak database and Vault drift, the realm keeps the secrets from its first
+-- import and the password grant fails with @invalid_client_credentials@. This
+-- patches the live realm to match Vault on every reconcile — idempotent, and the
+-- admin-API analog of the realm-SMTP reconcile that already exists for the same
+-- import-skip reason.
+reconcileRealmOidcSecretsAtPublicHost :: FilePath -> Text -> IO (Either String ())
+reconcileRealmOidcSecretsAtPublicHost repoRoot publicHost = do
+  let clientSpecs =
+        [ ("prodbox-api", "vscode/oidc/prodbox-api")
+        , ("prodbox-websocket", "vscode/oidc/prodbox-websocket")
+        , ("vscode", "vscode/oidc/vscode")
+        ]
+  secretReads <-
+    mapM
+      (\(_, path) -> readHostVaultKvField repoRoot "secret" path "client_secret")
+      clientSpecs
+  demoPasswordResult <-
+    readHostVaultKvField repoRoot "secret" "vscode/oidc/demo-user" "password"
+  case (sequence secretReads, demoPasswordResult) of
+    (Left err, _) -> pure (Left ("realm OIDC reconcile: " <> err))
+    (_, Left err) -> pure (Left ("realm OIDC reconcile: " <> err))
+    (Right clientSecrets, Right demoPassword) ->
+      withAdminClientAtPublicHost repoRoot publicHost $ \client token ->
+        runReconcileSteps
+          ( [ KCAdmin.setClientSecret client token clientId secretValue
+            | (clientId, secretValue) <- zip (map fst clientSpecs) clientSecrets
+            ]
+              ++ [KCAdmin.resetUserPassword client token "demo-user" demoPassword]
+          )
+ where
+  runReconcileSteps [] = pure (Right ())
+  runReconcileSteps (step : rest) = do
+    result <- step
+    case result of
+      Success () -> runReconcileSteps rest
+      Failure err -> pure (Left ("realm OIDC reconcile: " <> err))

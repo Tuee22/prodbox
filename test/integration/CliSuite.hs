@@ -77,7 +77,7 @@ integrationCliSuite = do
   describe "native Haskell config CLI" $ do
     it "shows masked settings from a repo-root Dhall config" $
       withSystemTempDirectory "prodbox-hs-cli" $ \tmpDir -> do
-        binary <- resolveBinaryPath
+        binary <- resolveBinaryPath >>= \b -> installOperatorBinaryInDir b tmpDir
         writeRepoMarkers tmpDir
         writeFile (tmpDir </> "prodbox.dhall") (wrapTier0 validConfig)
 
@@ -93,7 +93,7 @@ integrationCliSuite = do
 
     it "validates config without requiring any Python backend" $
       withSystemTempDirectory "prodbox-hs-cli" $ \tmpDir -> do
-        binary <- resolveBinaryPath
+        binary <- resolveBinaryPath >>= \b -> installOperatorBinaryInDir b tmpDir
         writeRepoMarkers tmpDir
         writeFile (tmpDir </> "prodbox.dhall") (wrapTier0 validConfig)
 
@@ -107,7 +107,7 @@ integrationCliSuite = do
 
     it "fails fast with setup guidance when the repo Dhall config is missing" $
       withSystemTempDirectory "prodbox-hs-cli" $ \tmpDir -> do
-        binary <- resolveBinaryPath
+        binary <- resolveBinaryPath >>= \b -> installOperatorBinaryInDir b tmpDir
         writeRepoMarkers tmpDir
 
         (exitCode, _, stderrText) <-
@@ -152,7 +152,7 @@ integrationCliSuite = do
 
     it "runs native gateway config-gen through the built frontend" $
       withSystemTempDirectory "prodbox-hs-cli" $ \tmpDir -> do
-        binary <- resolveBinaryPath
+        binary <- resolveBinaryPath >>= \b -> installOperatorBinaryInDir b tmpDir
         writeRepoMarkers tmpDir
         writeFile (tmpDir </> "prodbox.dhall") (wrapTier0 validConfig)
         let outputPath = tmpDir </> "gateway.dhall"
@@ -174,7 +174,7 @@ integrationCliSuite = do
       withSystemTempDirectory "prodbox-hs-cli" $ \tmpDir ->
         withFakeVaultServer $ \vaultPort ->
           withGatewayStateServer gatewayStateResponseJson $ \port requestRef -> do
-            binary <- resolveBinaryPath
+            binary <- resolveBinaryPath >>= \b -> installOperatorBinaryInDir b tmpDir
             writeRepoMarkers tmpDir
             let configPath = tmpDir </> "gateway.dhall"
                 tokenPath = tmpDir </> "vault-token.jwt"
@@ -198,7 +198,7 @@ integrationCliSuite = do
     it "Sprint 2.26: gateway federation endpoints read parent-custodied child inventory" $
       withSystemTempDirectory "prodbox-hs-cli" $ \tmpDir ->
         withFakeVaultServer $ \vaultPort -> do
-          binary <- resolveBinaryPath
+          binary <- resolveBinaryPath >>= \b -> installOperatorBinaryInDir b tmpDir
           writeRepoMarkers tmpDir
           writeFile (tmpDir </> "prodbox.dhall") (wrapTier0 validConfig)
           (restPort, socketPort) <- allocateTwoLoopbackTcpPorts
@@ -255,7 +255,7 @@ integrationCliSuite = do
     it "fails fast when gateway start is missing required trust material" $
       withSystemTempDirectory "prodbox-hs-cli" $ \tmpDir ->
         withFakeVaultServer $ \vaultPort -> do
-          binary <- resolveBinaryPath
+          binary <- resolveBinaryPath >>= \b -> installOperatorBinaryInDir b tmpDir
           writeRepoMarkers tmpDir
           let ordersPath = tmpDir </> "orders.dhall"
               configPath = tmpDir </> "gateway-start.dhall"
@@ -306,7 +306,7 @@ integrationCliSuite = do
       "runs native charts list, status, deploy, and delete through the built frontend with fake helm and kubectl"
       $ withSystemTempDirectory "prodbox-hs-cli"
       $ \tmpDir -> do
-        binary <- resolveBinaryPath
+        binary <- resolveBinaryPath >>= \b -> installOperatorBinaryInDir b tmpDir
         writeRepoMarkers tmpDir
         writeFile (tmpDir </> "prodbox.dhall") (wrapTier0 validConfig)
         envVars <- fakeChartEnvironment tmpDir
@@ -455,7 +455,7 @@ integrationCliSuite = do
 
     it "stages retained Patroni restore from ordinal-0 host data when no live primary exists" $
       withSystemTempDirectory "prodbox-hs-cli" $ \tmpDir -> do
-        binary <- resolveBinaryPath
+        binary <- resolveBinaryPath >>= \b -> installOperatorBinaryInDir b tmpDir
         writeRepoMarkers tmpDir
         writeFile (tmpDir </> "prodbox.dhall") (wrapTier0 validConfig)
         -- Sprint 4.31: the retained ordinal-0 host data lives at the unified
@@ -486,7 +486,7 @@ integrationCliSuite = do
 
     it "rejects internal dependency charts on the public charts surface" $
       withSystemTempDirectory "prodbox-hs-cli" $ \tmpDir -> do
-        binary <- resolveBinaryPath
+        binary <- resolveBinaryPath >>= \b -> installOperatorBinaryInDir b tmpDir
         writeRepoMarkers tmpDir
         writeFile (tmpDir </> "prodbox.dhall") (wrapTier0 validConfig)
         envVars <- fakeChartEnvironment tmpDir
@@ -515,7 +515,7 @@ integrationCliSuite = do
       "runs native rke2 status, start, and logs through the built frontend with fake systemctl and journalctl"
       $ withSystemTempDirectory "prodbox-hs-cli"
       $ \tmpDir -> do
-        binary <- resolveBinaryPath
+        binary <- resolveBinaryPath >>= \b -> installOperatorBinaryInDir b tmpDir
         writeRepoMarkers tmpDir
         envVars <- fakeRke2Environment tmpDir
 
@@ -561,7 +561,7 @@ integrationCliSuite = do
       "runs native rke2 reconcile and delete through the built frontend with fake host, kubectl, helm, docker, and native AWS destroy helpers"
       $ withSystemTempDirectory "prodbox-hs-cli"
       $ \tmpDir -> do
-        binary <- resolveBinaryPath
+        binary <- resolveBinaryPath >>= \b -> installOperatorBinaryInDir b tmpDir
         writeRepoMarkers tmpDir
         writeFile (tmpDir </> "prodbox.dhall") (wrapTier0 validConfig)
         -- Sprint 1.42 Part B: with the Tier-0 prodbox.dhall floor present, the
@@ -792,7 +792,7 @@ integrationCliSuite = do
 
     it "falls back to mirror.gcr when Docker Hub rate-limits a supported Percona image" $
       withSystemTempDirectory "prodbox-hs-cli" $ \tmpDir -> do
-        binary <- resolveBinaryPath
+        binary <- resolveBinaryPath >>= \b -> installOperatorBinaryInDir b tmpDir
         writeRepoMarkers tmpDir
         writeFile (tmpDir </> "prodbox.dhall") (wrapTier0 validConfig)
         baseEnvVars <- fakeRke2Environment tmpDir
@@ -829,7 +829,7 @@ integrationCliSuite = do
 
     it "summarizes noisy uninstall-script cleanup instead of streaming raw delete traces" $
       withSystemTempDirectory "prodbox-hs-cli" $ \tmpDir -> do
-        binary <- resolveBinaryPath
+        binary <- resolveBinaryPath >>= \b -> installOperatorBinaryInDir b tmpDir
         writeRepoMarkers tmpDir
         writeFile (tmpDir </> "prodbox.dhall") (wrapTier0 validConfig)
         baseEnvVars <- fakeRke2Environment tmpDir
@@ -879,7 +879,7 @@ integrationCliSuite = do
 
     it "summarizes actionable uninstall failures while suppressing benign chatter" $
       withSystemTempDirectory "prodbox-hs-cli" $ \tmpDir -> do
-        binary <- resolveBinaryPath
+        binary <- resolveBinaryPath >>= \b -> installOperatorBinaryInDir b tmpDir
         writeRepoMarkers tmpDir
         writeFile (tmpDir </> "prodbox.dhall") (wrapTier0 validConfig)
         baseEnvVars <- fakeRke2Environment tmpDir
@@ -908,7 +908,7 @@ integrationCliSuite = do
 
     it "runs native rke2 delete after the IAM harness has cleared operational aws credentials" $
       withSystemTempDirectory "prodbox-hs-cli" $ \tmpDir -> do
-        binary <- resolveBinaryPath
+        binary <- resolveBinaryPath >>= \b -> installOperatorBinaryInDir b tmpDir
         writeRepoMarkers tmpDir
         writeFile
           (tmpDir </> "prodbox.dhall")
@@ -944,7 +944,7 @@ integrationCliSuite = do
 
     it "cluster delete --yes is a pure local uninstall that never refuses on per-run residue" $
       withSystemTempDirectory "prodbox-hs-cli" $ \tmpDir -> do
-        binary <- resolveBinaryPath
+        binary <- resolveBinaryPath >>= \b -> installOperatorBinaryInDir b tmpDir
         writeRepoMarkers tmpDir
         writeFile
           (tmpDir </> "prodbox.dhall")
@@ -975,7 +975,7 @@ integrationCliSuite = do
 
     it "Sprint 4.25: rke2 delete --yes is a no-op success with no RKE2 install" $
       withSystemTempDirectory "prodbox-hs-cli" $ \tmpDir -> do
-        binary <- resolveBinaryPath
+        binary <- resolveBinaryPath >>= \b -> installOperatorBinaryInDir b tmpDir
         writeRepoMarkers tmpDir
         writeFile
           (tmpDir </> "prodbox.dhall")
@@ -1000,7 +1000,7 @@ integrationCliSuite = do
 
     it "Sprint 4.25: rke2 delete --cascade is a no-op success with no RKE2 install" $
       withSystemTempDirectory "prodbox-hs-cli" $ \tmpDir -> do
-        binary <- resolveBinaryPath
+        binary <- resolveBinaryPath >>= \b -> installOperatorBinaryInDir b tmpDir
         writeRepoMarkers tmpDir
         writeFile
           (tmpDir </> "prodbox.dhall")
@@ -1028,7 +1028,7 @@ integrationCliSuite = do
       "Sprint 8.8: nuke --dry-run plans to destroy the long-lived state bucket holding the retained cert"
       $ withSystemTempDirectory "prodbox-hs-cli"
       $ \tmpDir -> do
-        binary <- resolveBinaryPath
+        binary <- resolveBinaryPath >>= \b -> installOperatorBinaryInDir b tmpDir
         writeRepoMarkers tmpDir
         writeFile (tmpDir </> "prodbox.dhall") (wrapTier0 validConfigForNuke)
 
@@ -1044,7 +1044,7 @@ integrationCliSuite = do
 
     it "Sprint 8.8: nuke refuses the total teardown when the typed confirmation is wrong" $
       withSystemTempDirectory "prodbox-hs-cli" $ \tmpDir -> do
-        binary <- resolveBinaryPath
+        binary <- resolveBinaryPath >>= \b -> installOperatorBinaryInDir b tmpDir
         writeRepoMarkers tmpDir
         writeFile (tmpDir </> "prodbox.dhall") (wrapTier0 validConfigForNuke)
         envVars <- fakeRke2Environment tmpDir
@@ -1065,7 +1065,7 @@ integrationCliSuite = do
       "Sprint 1.36: vault lifecycle commands initialize, unseal, reconcile, rotate, issue PKI, and seal"
       $ withSystemTempDirectory "prodbox-hs-cli"
       $ \tmpDir -> do
-        binary <- resolveBinaryPath
+        binary <- resolveBinaryPath >>= \b -> installOperatorBinaryInDir b tmpDir
         writeRepoMarkers tmpDir
         writeFile (tmpDir </> "prodbox.dhall") (wrapTier0 validConfig)
         writeFile (tmpDir </> "test-secrets.dhall") testSecretsDhall
@@ -1151,7 +1151,7 @@ integrationCliSuite = do
 
     it "Sprint 1.37: aws stack reconcile refuses before Pulumi when Vault is sealed" $
       withSystemTempDirectory "prodbox-hs-cli" $ \tmpDir -> do
-        binary <- resolveBinaryPath
+        binary <- resolveBinaryPath >>= \b -> installOperatorBinaryInDir b tmpDir
         writeRepoMarkers tmpDir
         writeFile
           (tmpDir </> "prodbox.dhall")
@@ -1177,7 +1177,7 @@ integrationCliSuite = do
 
     it "Sprint 4.32: cluster federation register provisions the parent-side child bootstrap surface" $
       withSystemTempDirectory "prodbox-hs-cli" $ \tmpDir -> do
-        binary <- resolveBinaryPath
+        binary <- resolveBinaryPath >>= \b -> installOperatorBinaryInDir b tmpDir
         writeRepoMarkers tmpDir
         withFakeVaultLifecycleServer $ \vaultPort stateRef -> do
           modifyMVar stateRef $ \_ -> pure (FakeVaultLifecycleState True False 3, ())
@@ -1242,7 +1242,7 @@ integrationCliSuite = do
       $ withSystemTempDirectory "prodbox-hs-cli"
       $ \tmpDir ->
         withFakeVaultServer $ \vaultPort -> do
-          binary <- resolveBinaryPath
+          binary <- resolveBinaryPath >>= \b -> installOperatorBinaryInDir b tmpDir
           repoRoot <- getCurrentDirectory
           writeRepoMarkers tmpDir
           writeFile
@@ -1288,7 +1288,7 @@ integrationCliSuite = do
 
     it "projects ZeroSSL external account binding into the supported ClusterIssuer reconcile" $
       withSystemTempDirectory "prodbox-hs-cli" $ \tmpDir -> do
-        binary <- resolveBinaryPath
+        binary <- resolveBinaryPath >>= \b -> installOperatorBinaryInDir b tmpDir
         writeRepoMarkers tmpDir
         writeFile (tmpDir </> "prodbox.dhall") (wrapTier0 zeroSslConfig)
         envVars <- (("PRODBOX_TEST_HOST_VAULT_TOKEN", "fake-root-token") :) <$> fakeRke2Environment tmpDir
@@ -1339,7 +1339,7 @@ integrationCliSuite = do
 
     it "runs native gateway start and fails gracefully with a missing config" $
       withSystemTempDirectory "prodbox-hs-cli" $ \tmpDir -> do
-        binary <- resolveBinaryPath
+        binary <- resolveBinaryPath >>= \b -> installOperatorBinaryInDir b tmpDir
         writeRepoMarkers tmpDir
         let configPath = tmpDir </> "nonexistent-gateway.dhall"
 
@@ -1353,7 +1353,7 @@ integrationCliSuite = do
 
     it "runs native gateway start without requiring repo markers" $
       withSystemTempDirectory "prodbox-hs-cli" $ \tmpDir -> do
-        binary <- resolveBinaryPath
+        binary <- resolveBinaryPath >>= \b -> installOperatorBinaryInDir b tmpDir
         let configPath = tmpDir </> "nonexistent-gateway.dhall"
 
         (exitCode, _, stderrText) <-
@@ -1368,7 +1368,7 @@ integrationCliSuite = do
     it "runs native config setup through the built frontend with a fake AWS CLI" $
       withSystemTempDirectory "prodbox-hs-cli" $ \tmpDir -> do
         repoRoot <- getCurrentDirectory
-        binary <- resolveBinaryPath
+        binary <- resolveBinaryPath >>= \b -> installOperatorBinaryInDir b tmpDir
         writeRepoMarkers tmpDir
         copySchema repoRoot tmpDir
         envVars <- fakeAwsEnvironment tmpDir
@@ -1446,7 +1446,7 @@ integrationCliSuite = do
     it "runs native aws setup and teardown through the built frontend with a fake AWS CLI" $
       withSystemTempDirectory "prodbox-hs-cli" $ \tmpDir -> do
         repoRoot <- getCurrentDirectory
-        binary <- resolveBinaryPath
+        binary <- resolveBinaryPath >>= \b -> installOperatorBinaryInDir b tmpDir
         writeRepoMarkers tmpDir
         copySchema repoRoot tmpDir
         writeFile
@@ -1514,7 +1514,7 @@ integrationCliSuite = do
       $ withSystemTempDirectory "prodbox-hs-cli"
       $ \tmpDir -> do
         repoRoot <- getCurrentDirectory
-        binary <- resolveBinaryPath
+        binary <- resolveBinaryPath >>= \b -> installOperatorBinaryInDir b tmpDir
         writeRepoMarkers tmpDir
         copySchema repoRoot tmpDir
         writeFile
@@ -1570,7 +1570,7 @@ integrationCliSuite = do
       $ withSystemTempDirectory "prodbox-hs-cli"
       $ \tmpDir -> do
         repoRoot <- getCurrentDirectory
-        binary <- resolveBinaryPath
+        binary <- resolveBinaryPath >>= \b -> installOperatorBinaryInDir b tmpDir
         writeRepoMarkers tmpDir
         copySchema repoRoot tmpDir
         writeFile
@@ -1615,7 +1615,7 @@ integrationCliSuite = do
       "runs native aws quota inspection and request flows through the built frontend with a fake AWS CLI"
       $ withSystemTempDirectory "prodbox-hs-cli"
       $ \tmpDir -> do
-        binary <- resolveBinaryPath
+        binary <- resolveBinaryPath >>= \b -> installOperatorBinaryInDir b tmpDir
         writeRepoMarkers tmpDir
         envVars <- fakeAwsEnvironment tmpDir
         let commandInput = unlines ["ADMINKEY", "admin-secret", "", "", "1"]
@@ -2085,27 +2085,43 @@ writeRootBasics repoRoot vaultAddress configParameters =
 testSecretsDhall :: String
 testSecretsDhall = testSecretsDhallWithAdmin "" "" "" Nothing
 
+-- | Sprint 5.10 follow-up: the deferred operator-id fields the harness injects
+-- from @test-secrets.dhall@ (the Route 53 zone, the SES sending/receive/capture
+-- identifiers, and the long-lived Pulumi state backend). A bare Dhall record
+-- literal must carry every field the Haskell @TestSecrets@ decoder expects;
+-- these CLI flows don't exercise those substrates, so the values are empty.
+testSecretsOperatorIdFields :: [String]
+testSecretsOperatorIdFields =
+  [ ", route53_zone_id = \"\""
+  , ", ses_sender_domain = \"\""
+  , ", ses_receive_subdomain = \"\""
+  , ", ses_capture_bucket = \"\""
+  , ", pulumi_state_backend_bucket_name = \"\""
+  , ", pulumi_state_backend_region = \"\""
+  ]
+
 -- | A @test-secrets.dhall@ with a populated @aws_admin_for_test_simulation@
 -- block, so the suite-level IAM harness acquires the ephemeral admin credential
 -- non-interactively (the harness simulating the prompt).
 testSecretsDhallWithAdmin :: String -> String -> String -> Maybe String -> String
 testSecretsDhallWithAdmin accessKeyId secretAccessKey regionValue sessionTokenValue =
-  unlines
-    [ "{ vault_operator_password = \"test-vault-unlock-password\""
-    , ", aws_admin_for_test_simulation ="
-    , "    { access_key_id = " ++ show accessKeyId
-    , "    , secret_access_key = " ++ show secretAccessKey
-    , "    , session_token = "
-        ++ maybe "None Text" (\token -> "Some " ++ show token) sessionTokenValue
-    , "    , region = " ++ show regionValue
-    , "    }"
-    , -- Sprint 7.18: the optional ACME EAB block. A bare Dhall record literal
-      -- must still carry every field the Haskell decoder expects, so the
-      -- Optional `acme_eab` is rendered explicitly as `None`. Tests that
-      -- exercise EAB seeding use `testSecretsDhallWithAdminAndAcmeEab`.
-      ", acme_eab = None { key_id : Text, hmac_key : Text }"
-    , "}"
-    ]
+  unlines $
+    ["{ vault_operator_password = \"test-vault-unlock-password\""]
+      ++ testSecretsOperatorIdFields
+      ++ [ ", aws_admin_for_test_simulation ="
+         , "    { access_key_id = " ++ show accessKeyId
+         , "    , secret_access_key = " ++ show secretAccessKey
+         , "    , session_token = "
+             ++ maybe "None Text" (\token -> "Some " ++ show token) sessionTokenValue
+         , "    , region = " ++ show regionValue
+         , "    }"
+         , -- Sprint 7.18: the optional ACME EAB block. A bare Dhall record literal
+           -- must still carry every field the Haskell decoder expects, so the
+           -- Optional `acme_eab` is rendered explicitly as `None`. Tests that
+           -- exercise EAB seeding use `testSecretsDhallWithAdminAndAcmeEab`.
+           ", acme_eab = None { key_id : Text, hmac_key : Text }"
+         , "}"
+         ]
 
 -- | Sprint 7.18: a @test-secrets.dhall@ that also populates the optional
 -- @acme_eab@ block, so the suite-level IAM harness seeds @secret/acme/eab@
@@ -2114,18 +2130,19 @@ testSecretsDhallWithAdmin accessKeyId secretAccessKey regionValue sessionTokenVa
 testSecretsDhallWithAdminAndAcmeEab
   :: String -> String -> String -> Maybe String -> String -> String -> String
 testSecretsDhallWithAdminAndAcmeEab accessKeyId secretAccessKey regionValue sessionTokenValue eabKeyId eabHmacKey =
-  unlines
-    [ "{ vault_operator_password = \"test-vault-unlock-password\""
-    , ", aws_admin_for_test_simulation ="
-    , "    { access_key_id = " ++ show accessKeyId
-    , "    , secret_access_key = " ++ show secretAccessKey
-    , "    , session_token = "
-        ++ maybe "None Text" (\token -> "Some " ++ show token) sessionTokenValue
-    , "    , region = " ++ show regionValue
-    , "    }"
-    , ", acme_eab = Some { key_id = " ++ show eabKeyId ++ ", hmac_key = " ++ show eabHmacKey ++ " }"
-    , "}"
-    ]
+  unlines $
+    ["{ vault_operator_password = \"test-vault-unlock-password\""]
+      ++ testSecretsOperatorIdFields
+      ++ [ ", aws_admin_for_test_simulation ="
+         , "    { access_key_id = " ++ show accessKeyId
+         , "    , secret_access_key = " ++ show secretAccessKey
+         , "    , session_token = "
+             ++ maybe "None Text" (\token -> "Some " ++ show token) sessionTokenValue
+         , "    , region = " ++ show regionValue
+         , "    }"
+         , ", acme_eab = Some { key_id = " ++ show eabKeyId ++ ", hmac_key = " ++ show eabHmacKey ++ " }"
+         , "}"
+         ]
 
 secretRefTypeDhall :: String
 secretRefTypeDhall =

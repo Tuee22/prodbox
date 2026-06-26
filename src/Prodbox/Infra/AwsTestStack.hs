@@ -521,7 +521,12 @@ pulumiStackSelect projectDir environment createIfMissing =
   let arguments =
         ["stack", "select", awsTestStackName]
           ++ ["--create" | createIfMissing]
-          ++ if createIfMissing then ["--secrets-provider", "plaintext"] else []
+          -- Sprint 7.23 follow-up: `plaintext` is not a valid pulumi
+          -- secrets-provider URL on current pulumi (`open secrets.Keeper: no
+          -- scheme in URL "plaintext"`); use the empty-passphrase provider like
+          -- aws-ses. The scratch env sets `PULUMI_CONFIG_PASSPHRASE = ""`;
+          -- at-rest secrecy is the Model-B Vault-Transit envelope.
+          ++ if createIfMissing then ["--secrets-provider", "passphrase"] else []
    in if createIfMissing
         then do
           exitCode <- runPulumiCommand projectDir environment arguments

@@ -362,8 +362,8 @@ select, inspect, or create the canonical AWS test stack using settings-defined A
 
 The supported path synchronizes only non-secret validation inputs such as operator-CIDR and
 SSH-public-key into the stack with `pulumi config set`. AWS provider credentials must remain in
-repository-root `prodbox-config.dhall` and be projected into Pulumi through the Haskell-owned
-subprocess environment, not copied into stack-local config files.
+the binary-sibling `prodbox.dhall` (as `SecretRef.Vault` pointers) and be projected into Pulumi
+through the Haskell-owned subprocess environment, not copied into stack-local config files.
 
 The prerequisite proof for that backend is a bounded `pulumi login ... --non-interactive` against
 the repo-backed MinIO backend after the Haskell helper confirms bucket existence and listability.

@@ -33,6 +33,7 @@
 -- decoder against the Tier-0 projection so the two cannot drift.
 module Prodbox.Config.FloorDhall
   ( loadUnencryptedBasics
+  , loadUnencryptedBasicsAtPath
   , projectFloorContext
   )
 where
@@ -56,8 +57,7 @@ import Prodbox.Config.Basics
   , validateBasics
   )
 import Prodbox.Repo
-  ( ConfigPaths (..)
-  , canonicalConfigPaths
+  ( resolveTier0ConfigPath
   )
 import System.Directory (doesFileExist)
 
@@ -156,8 +156,15 @@ toBasicsParentRef ref =
 -- the floor-relevant @context@ projection is read, so this is safe while Vault
 -- is sealed.
 loadUnencryptedBasics :: FilePath -> IO (Either String UnencryptedBasics)
-loadUnencryptedBasics repoRoot = do
-  let tier0Path = configTier0Path (canonicalConfigPaths repoRoot)
+loadUnencryptedBasics repoRoot =
+  resolveTier0ConfigPath repoRoot >>= loadUnencryptedBasicsAtPath
+
+-- | Project the sealed-Vault bootstrap floor from a Tier-0 prodbox.dhall at an
+-- EXPLICIT path. 'loadUnencryptedBasics' resolves the binary-sibling path and
+-- delegates here; this is the path-injection seam in-process unit tests
+-- exercise directly. Sprint 1.48.
+loadUnencryptedBasicsAtPath :: FilePath -> IO (Either String UnencryptedBasics)
+loadUnencryptedBasicsAtPath tier0Path = do
   present <- doesFileExist tier0Path
   if not present
     then

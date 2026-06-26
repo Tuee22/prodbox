@@ -22,16 +22,20 @@ module Prodbox.Settings
   , decodeConfigDhallBytes
   , inForceConfigObjectAbsent
   , loadConfigFile
+  , loadConfigFileAtPath
   , loadConfigForSettingsWith
   , loadUnencryptedBasics
+  , loadUnencryptedBasicsAtPath
   , renderConfigDhall
   , renderSeedInForceOutcome
   , renderSettingsDisplay
   , resolveAwsCredentialsRefFromHostVault
   , seedInForceConfigFromFileWithToken
+  , forceSyncInForceConfigFromFile
   , supportedPublicHostname
   , validateAwsBootstrapConfig
   , validateAndLoadSettings
+  , validateAndLoadSettingsAtPath
   , validateAndLoadBootstrapSettings
   , validateAndLoadSettingsWithVaultToken
   , validateOperationalAwsCredentials
@@ -64,7 +68,7 @@ import Numeric.Natural (Natural)
 import Prodbox.Config.Basics
   ( UnencryptedBasics (..)
   )
-import Prodbox.Config.FloorDhall (loadUnencryptedBasics)
+import Prodbox.Config.FloorDhall (loadUnencryptedBasics, loadUnencryptedBasicsAtPath)
 import Prodbox.Config.InForce.Core
   ( ConfigSource (..)
   , SeedProposeDecision (..)
@@ -89,6 +93,7 @@ import Prodbox.Minio.ObjectStore
 import Prodbox.Repo
   ( ConfigPaths (..)
   , canonicalConfigPaths
+  , resolveTier0ConfigPath
   )
 import Prodbox.Settings.SecretRef
   ( PromptSpec (..)
@@ -288,6 +293,19 @@ supportedPublicHostname = "test.resolvefintech.com"
 validateAndLoadSettings :: FilePath -> IO (Either String ValidatedSettings)
 validateAndLoadSettings repoRoot = do
   configResult <- loadConfigForSettingsWith (loadRuntimeInForceConfig repoRoot) repoRoot
+  case configResult of
+    Left err -> pure (Left err)
+    Right config -> validateConfig repoRoot config
+
+-- | Validate + load settings from a Tier-0 config at an EXPLICIT prodbox.dhall
+-- path, resolving repo-relative fields (the manual PV root) against @repoRoot@.
+-- This is the path-injection seam in-process unit tests exercise directly;
+-- production 'validateAndLoadSettings' resolves the binary-sibling config and
+-- consults the established-marker / in-force SSoT. Sprint 1.48.
+validateAndLoadSettingsAtPath
+  :: FilePath -> FilePath -> IO (Either String ValidatedSettings)
+validateAndLoadSettingsAtPath configPath repoRoot = do
+  configResult <- loadConfigFileAtPath configPath
   case configResult of
     Left err -> pure (Left err)
     Right config -> validateConfig repoRoot config
@@ -554,6 +572,70 @@ seedInForceConfigFromFileWithToken repoRoot token basics = do
             Left err -> Left ("failed to reach in-force config MinIO backend: " ++ err)
             Right result -> result
 
+-- | Sprint 5.10 follow-up: FORCE-apply the binary-sibling operator config to the
+-- in-force MinIO SSoT. The test harness OWNS the test cluster's config, so —
+-- unlike 'seedInForceConfigFromFileWithToken', which never auto-applies a
+-- proposed update on an established cluster (@ProposeUpdate@ is a no-op) — this
+-- UNCONDITIONALLY re-seals the binary-sibling config into the in-force SSoT,
+-- keeping the edge reconcile (which reads the in-force SSoT, not the
+-- binary-sibling file) in sync with the config the harness regenerated and the
+-- preflight validated. Best-effort + graceful: a no-op @Right ()@ when the
+-- cluster is not established (no Tier-0 floor), when Vault is sealed/unreachable
+-- (a fresh cluster seeds from the file on first reconcile instead), or when no
+-- binary-sibling config exists; @Left@ only on a genuine MinIO write failure.
+forceSyncInForceConfigFromFile :: FilePath -> IO (Either String ())
+forceSyncInForceConfigFromFile repoRoot = do
+  basicsResult <- loadUnencryptedBasics repoRoot
+  case basicsResult of
+    Left _ -> pure (Right ())
+    Right basics -> do
+      let address = VaultAddress (basicsVaultAddress basics)
+      tokenResult <- loadReadyVaultRootToken repoRoot address
+      case tokenResult of
+        Left _ -> pure (Right ())
+        Right token -> do
+          configResult <- loadConfigFile repoRoot
+          case configResult of
+            Left _ -> pure (Right ())
+            Right config -> forceStoreInForceConfigWithToken token basics config
+
+-- | The unconditional in-force seal+write — the force analog of the
+-- @SeedInForce@ branch of 'seedInForceConfigFromFileWithToken' (same
+-- Vault-derived MinIO credentials, HMAC key, Transit DEK cipher, opaque object
+-- key, and payload shape), but with no presence/decision gate. Sprint 5.10.
+forceStoreInForceConfigWithToken
+  :: VaultToken -> UnencryptedBasics -> ConfigFile -> IO (Either String ())
+forceStoreInForceConfigWithToken token basics config = do
+  let address = VaultAddress (basicsVaultAddress basics)
+  credentialsResult <- readMinioRootCredentials address token
+  case credentialsResult of
+    Left err -> pure (Left err)
+    Right (accessKey, secretKey) -> do
+      hmacKeyResult <- readObjectStoreHmacKey address token
+      case hmacKeyResult of
+        Left err -> pure (Left err)
+        Right hmacKey -> do
+          let cipher = vaultTransitDekCipher address token "prodbox-active-config"
+              key = objectKeyForOpaqueId (opaqueObjectId hmacKey LogicalInForceConfig)
+          portForwardResult <-
+            withMinioPortForward $ \localPort -> do
+              let storeConfig =
+                    ObjectStoreConfig
+                      { objectStoreEndpoint = "http://127.0.0.1:" ++ show localPort
+                      , objectStoreBucket = defaultObjectStoreBucket
+                      , objectStoreAccessKey = Text.unpack accessKey
+                      , objectStoreSecretKey = Text.unpack secretKey
+                      }
+              storeInForcePayloadWith
+                (putObject storeConfig key)
+                cipher
+                (basicsClusterId basics)
+                (renderInForceSeedPayload config)
+          pure $ case portForwardResult of
+            Left err -> Left ("failed to reach in-force config MinIO backend: " ++ err)
+            Right (Left err) -> Left (renderInForceConfigError err)
+            Right (Right ()) -> Right ()
+
 -- | Serialize a 'ConfigFile' to its in-force payload bytes (the same Dhall text
 -- the read path decodes via 'decodeConfigDhallBytes'). Mirrors
 -- 'Prodbox.Config.InForce.renderInForcePayload' without importing it (that
@@ -720,8 +802,15 @@ decodeConfigFileAtPath configPath = do
 -- 'loadConfigForSettingsWith', the direct config readers, and the authoring
 -- read in 'loadConfigForWrite') therefore now read the Tier-0 file.
 loadConfigFile :: FilePath -> IO (Either String ConfigFile)
-loadConfigFile repoRoot = do
-  let tier0Path = configTier0Path (canonicalConfigPaths repoRoot)
+loadConfigFile repoRoot = resolveTier0ConfigPath repoRoot >>= loadConfigFileAtPath
+
+-- | Decode the operator config from the @parameters@ of a Tier-0 prodbox.dhall
+-- at an EXPLICIT path. 'loadConfigFile' resolves the binary-sibling path
+-- ('resolveTier0ConfigPath') and delegates here; this is the path-injection
+-- seam in-process unit tests exercise directly (the binary-sibling resolution
+-- itself is proven by the integration suites). Sprint 1.48.
+loadConfigFileAtPath :: FilePath -> IO (Either String ConfigFile)
+loadConfigFileAtPath tier0Path = do
   tier0Exists <- doesFileExist tier0Path
   if not tier0Exists
     then pure (Left (missingConfigMessage tier0Path))

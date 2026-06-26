@@ -18,6 +18,21 @@
 
 ## Phase Status
 
+✅ **Live-proven 2026-06-26 (the AWS per-run resource cycles the home suite exercises) — partial; the
+`--substrate aws` aggregate stays open.** The green home `prodbox test all` (2026-06-26, 18/18; see
+[00-overview.md](00-overview.md) Alignment Status) provisions **and cleanly destroys** real AWS per-run
+resources through Phase 7's owned surface, live-proving these previously `🧪 Live-proof: pending` axes
+on real infrastructure: the `aws-eks` stack (a real EKS cluster + NAT/EBS, provisioned then destroyed,
+`destroyed and residue check passed`) and `aws-test` stack; the decrypt-to-scratch Pulumi interposition
+and first-touch checkpoint hooks (Sprint `7.14`); the read-only per-run-destroy observation gates
+(Sprints `7.21`/`7.22`); the `aws-ses` encrypted Model-B reconcile (Sprint `7.23`, exercised by the
+`keycloak-invite` SMTP path); the IAM mint→Vault / delete-from-AWS-and-Vault harness (`7.20`, via
+`aws-iam`); and Route 53 writes (`dns-aws`). This run also fixed the `plaintext`→`passphrase`
+secrets-provider on the three per-run stacks (see [README.md](README.md) Closure Status). Note the run
+was a **home-substrate aggregate** that provisions these AWS *stacks* as suite content; the full
+**`--substrate aws` aggregate parity** (Sprint `7.5`) remains a distinct, non-blocking live-infra axis
+tracked only in [substrates.md](substrates.md) — it is not closed by this home run (Standards N/O).
+
 **Independent Validation**: Phase 7 is validatable on its owned surface — the AWS substrate
 foundations, the standalone `prodbox aws ...` command surface, the substrate-provisioning code,
 and the decrypt-to-scratch Pulumi interposition — independently of any later phase, per

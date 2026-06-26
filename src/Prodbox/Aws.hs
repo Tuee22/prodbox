@@ -6,6 +6,9 @@ module Prodbox.Aws
   , AwsTeardownInput (..)
   , AwsTeardownLongLivedPreflight
   , ConfigSetupInput (..)
+  , configFromSetupInput
+  , harnessConfigSetupInput
+  , regenerateConfigFromTestSecrets
   , IamProbe (..)
   , PulumiResiduePolicy (..)
   , ResidueError (..)
@@ -147,6 +150,7 @@ import Prodbox.Lifecycle.ResourceRegistry
 import Prodbox.Repo
   ( ConfigPaths (..)
   , canonicalConfigPaths
+  , resolveTier0ConfigPath
   )
 import Prodbox.Result (Result (..))
 import Prodbox.Settings
@@ -157,7 +161,9 @@ import Prodbox.Settings
   , DeploymentSection (..)
   , DomainSection (..)
   , MetallbBgpPeer (..)
+  , PulumiStateBackendSection (..)
   , Route53Section (..)
+  , SesSection (..)
   , StorageSection (..)
   , defaultConfigFile
   , loadConfigFile
@@ -174,7 +180,18 @@ import Prodbox.Subprocess
   , runSubprocessStreaming
   )
 import Prodbox.Vault.Host
-  ( seedAcmeEabFromTestSecrets
+  ( AcmeEabFixture (hmac_key, key_id)
+  , TestSecrets
+    ( acme_eab
+    , pulumi_state_backend_bucket_name
+    , pulumi_state_backend_region
+    , route53_zone_id
+    , ses_capture_bucket
+    , ses_receive_subdomain
+    , ses_sender_domain
+    )
+  , loadTestSecrets
+  , seedAcmeEabFromTestSecrets
   , writeHostVaultKvObject
   )
 import System.Directory
@@ -2135,6 +2152,176 @@ applyAwsRequestQuotas repoRoot input =
     (\spec -> ensureServiceQuota repoRoot (awsRequestQuotasAdminCredentials input) spec True)
     (quotaSpecsForTier (awsRequestQuotasPolicyTierInput input))
 
+-- | The single pure builder that interprets a 'ConfigSetupInput' into the
+-- updated non-secret 'ConfigFile' — the @demoInit@ analog (Sprint 1.50). Both
+-- production @config setup@ ('applyConfigSetup') and the test harness
+-- ('Prodbox.TestRunner', Sprint 5.10) construct config through this ONE
+-- function, so the harness drives the same reconcile / IAM flows against a
+-- config it generated, not a fixture it carries (config_doctrine.md §0, "The
+-- test harness generates its run config"). Sensitive fields are never written
+-- here — they remain @SecretRef.Vault@ pointers in @currentConfig@; the region
+-- comes from the input's admin credential.
+configFromSetupInput :: ConfigFile -> ConfigSetupInput -> ConfigFile
+configFromSetupInput currentConfig input =
+  currentConfig
+    { aws =
+        (aws currentConfig)
+          { awsCredentialRegion = region (configSetupAdminCredentialsInput input)
+          }
+    , route53 = Route53Section {zone_id = configSetupRoute53ZoneIdInput input}
+    , domain =
+        DomainSection
+          { demo_fqdn = configSetupDemoFqdnInput input
+          , demo_ttl = configSetupDemoTtlInput input
+          }
+    , acme =
+        (acme currentConfig)
+          { email = configSetupAcmeEmailInput input
+          , server = configSetupAcmeServerInput input
+          }
+    , deployment =
+        DeploymentSection
+          { dev_mode = configSetupDevModeInput input
+          , bootstrap_public_ip_override = configSetupBootstrapPublicIpOverrideInput input
+          , pulumi_enable_dns_bootstrap = configSetupPulumiEnableDnsBootstrapInput input
+          , public_edge_advertisement_mode = configSetupPublicEdgeAdvertisementModeInput input
+          , public_edge_bgp_peers = configSetupPublicEdgeBgpPeersInput input
+          , envoy_gateway_controller_replicas = configSetupEnvoyGatewayControllerReplicasInput input
+          , envoy_gateway_data_plane_replicas = configSetupEnvoyGatewayDataPlaneReplicasInput input
+          , api_replicas = configSetupApiReplicasInput input
+          , websocket_replicas = configSetupWebsocketReplicasInput input
+          }
+    , storage = StorageSection {manual_pv_host_root = configSetupManualPvHostRootInput input}
+    }
+
+-- | The ACME registration email the harness bakes into the generated config
+-- (Sprint 5.10) — the operator's contact, used non-interactively in place of
+-- the @prodbox config setup@ ACME-email prompt. Not a secret.
+harnessAcmeEmail :: Text
+harnessAcmeEmail = "matthewnowak@gmail.com"
+
+-- | Assemble a 'ConfigSetupInput' non-interactively for the test harness — the
+-- no-prompt analog of 'interactiveConfigSetupInput' (Sprint 5.10, the
+-- @demoTestConfig@ idiom). The cleartext @route53.zone_id@ and the ACME EAB come
+-- from @test-secrets.dhall@ (the one file where cleartext operator ids are
+-- allowed); @acme.email@ is the baked operator default; every other knob is
+-- carried over from the current (generated-skeleton) config, whose defaults
+-- already match @config setup@.
+harnessConfigSetupInput
+  :: FilePath -> ConfigFile -> PolicyTier -> IO (Either String ConfigSetupInput)
+harnessConfigSetupInput repoRoot currentConfig policyTier = do
+  secretsResult <- loadTestSecrets repoRoot
+  case secretsResult of
+    Nothing ->
+      pure (Left "harness config regeneration requires test-secrets.dhall (absent).")
+    Just (Left err) ->
+      pure (Left ("harness config regeneration failed to decode test-secrets.dhall: " ++ err))
+    Just (Right secrets) -> do
+      credentialsResult <- acquireAdminAwsCredentials repoRoot
+      pure $ case credentialsResult of
+        Left err -> Left err
+        Right credentials ->
+          Right
+            ConfigSetupInput
+              { configSetupAdminCredentialsInput = credentials
+              , configSetupRoute53ZoneIdInput =
+                  harnessPreferNonEmpty (route53_zone_id secrets) (zone_id (route53 currentConfig))
+              , configSetupDemoFqdnInput = demo_fqdn (domain currentConfig)
+              , configSetupDemoTtlInput = demo_ttl (domain currentConfig)
+              , configSetupAcmeEmailInput = harnessAcmeEmail
+              , configSetupAcmeServerInput = zeroSslAcmeServer
+              , configSetupAcmeEabKeyIdInput = key_id <$> acme_eab secrets
+              , configSetupAcmeEabHmacKeyInput = hmac_key <$> acme_eab secrets
+              , configSetupDevModeInput = dev_mode (deployment currentConfig)
+              , configSetupBootstrapPublicIpOverrideInput =
+                  bootstrap_public_ip_override (deployment currentConfig)
+              , configSetupPulumiEnableDnsBootstrapInput =
+                  pulumi_enable_dns_bootstrap (deployment currentConfig)
+              , configSetupPublicEdgeAdvertisementModeInput =
+                  public_edge_advertisement_mode (deployment currentConfig)
+              , configSetupPublicEdgeBgpPeersInput =
+                  public_edge_bgp_peers (deployment currentConfig)
+              , configSetupEnvoyGatewayControllerReplicasInput =
+                  envoy_gateway_controller_replicas (deployment currentConfig)
+              , configSetupEnvoyGatewayDataPlaneReplicasInput =
+                  envoy_gateway_data_plane_replicas (deployment currentConfig)
+              , configSetupApiReplicasInput = api_replicas (deployment currentConfig)
+              , configSetupWebsocketReplicasInput = websocket_replicas (deployment currentConfig)
+              , configSetupManualPvHostRootInput = manual_pv_host_root (storage currentConfig)
+              , configSetupPolicyTierInput = policyTier
+              }
+
+-- | Test-harness preflight (Sprint 5.10): regenerate the binary-sibling
+-- @prodbox.dhall@ from @test-secrets.dhall@ + baked defaults through the shared
+-- 'configFromSetupInput' builder, so @prodbox test all@ runs from a freshly
+-- generated skeleton without an interactive @config setup@. Only regenerates
+-- when the operator fields are empty — it refuses to clobber a populated real
+-- config (the @demoTestConfig@ "generate only your own run config" rule). Runs
+-- before the managed AWS IAM harness validates the bootstrap config.
+-- | Sprint 5.10 follow-up: prefer the @test-secrets.dhall@-supplied operator id,
+-- but fall back to the value already in the config when test-secrets leaves it
+-- empty — so the harness regen fills empty operator fields without clobbering a
+-- populated one with a blank. (A real @test-secrets.dhall@ supplies non-empty
+-- values, so this is identity for `test all`; it matters for the in-process CLI
+-- tests, whose fixture config carries a `route53.zone_id` the fake test-secrets
+-- leaves empty.)
+harnessPreferNonEmpty :: Text.Text -> Text.Text -> Text.Text
+harnessPreferNonEmpty fromSecrets fromConfig =
+  if Text.null (Text.strip fromSecrets) then fromConfig else fromSecrets
+
+regenerateConfigFromTestSecrets :: FilePath -> PolicyTier -> IO (Either String ())
+regenerateConfigFromTestSecrets repoRoot policyTier = do
+  currentConfig <- loadConfigForWrite repoRoot
+  let zoneSet = not (Text.null (Text.strip (zone_id (route53 currentConfig))))
+      emailSet = not (Text.null (Text.strip (email (acme currentConfig))))
+      sesSet = not (Text.null (Text.strip (sender_domain (ses currentConfig))))
+      backendSet =
+        not (Text.null (Text.strip (psbBucketName (pulumi_state_backend currentConfig))))
+  if zoneSet && emailSet && sesSet && backendSet
+    then pure (Right ())
+    else do
+      secretsResult <- loadTestSecrets repoRoot
+      case secretsResult of
+        Nothing ->
+          pure (Left "harness config regeneration requires test-secrets.dhall (absent).")
+        Just (Left err) ->
+          pure (Left ("harness config regeneration failed to decode test-secrets.dhall: " ++ err))
+        Just (Right secrets) -> do
+          inputResult <- harnessConfigSetupInput repoRoot currentConfig policyTier
+          case inputResult of
+            Left err -> pure (Left err)
+            Right input -> do
+              -- `config setup` does not author the `ses.*` block, so the shared
+              -- `configFromSetupInput` builder leaves it untouched; the harness
+              -- injects it directly from `test-secrets.dhall` (Sprint 5.10
+              -- follow-up) so the keycloak-invite SES stack provisions.
+              let built = configFromSetupInput currentConfig input
+                  withSes =
+                    built
+                      { ses =
+                          SesSection
+                            { sender_domain =
+                                harnessPreferNonEmpty (ses_sender_domain secrets) (sender_domain (ses built))
+                            , receive_subdomain =
+                                harnessPreferNonEmpty (ses_receive_subdomain secrets) (receive_subdomain (ses built))
+                            , capture_bucket =
+                                harnessPreferNonEmpty (ses_capture_bucket secrets) (capture_bucket (ses built))
+                            }
+                      , pulumi_state_backend =
+                          (pulumi_state_backend built)
+                            { psbBucketName =
+                                harnessPreferNonEmpty
+                                  (pulumi_state_backend_bucket_name secrets)
+                                  (psbBucketName (pulumi_state_backend built))
+                            , psbRegion =
+                                harnessPreferNonEmpty
+                                  (pulumi_state_backend_region secrets)
+                                  (psbRegion (pulumi_state_backend built))
+                            }
+                      }
+              writeProjectConfigParameters repoRoot withSes
+              pure (Right ())
+
 applyConfigSetup :: FilePath -> ConfigSetupInput -> IO ConfigSetupResult
 applyConfigSetup repoRoot input = do
   let adminCredentials = configSetupAdminCredentialsInput input
@@ -2163,37 +2350,7 @@ applyConfigSetup repoRoot input = do
     repoRoot
     (configSetupAcmeEabKeyIdInput input)
     (configSetupAcmeEabHmacKeyInput input)
-  let updatedConfig =
-        currentConfig
-          { aws =
-              (aws currentConfig)
-                { awsCredentialRegion = region adminCredentials
-                }
-          , route53 = Route53Section {zone_id = configSetupRoute53ZoneIdInput input}
-          , domain =
-              DomainSection
-                { demo_fqdn = configSetupDemoFqdnInput input
-                , demo_ttl = configSetupDemoTtlInput input
-                }
-          , acme =
-              (acme currentConfig)
-                { email = configSetupAcmeEmailInput input
-                , server = configSetupAcmeServerInput input
-                }
-          , deployment =
-              DeploymentSection
-                { dev_mode = configSetupDevModeInput input
-                , bootstrap_public_ip_override = configSetupBootstrapPublicIpOverrideInput input
-                , pulumi_enable_dns_bootstrap = configSetupPulumiEnableDnsBootstrapInput input
-                , public_edge_advertisement_mode = configSetupPublicEdgeAdvertisementModeInput input
-                , public_edge_bgp_peers = configSetupPublicEdgeBgpPeersInput input
-                , envoy_gateway_controller_replicas = configSetupEnvoyGatewayControllerReplicasInput input
-                , envoy_gateway_data_plane_replicas = configSetupEnvoyGatewayDataPlaneReplicasInput input
-                , api_replicas = configSetupApiReplicasInput input
-                , websocket_replicas = configSetupWebsocketReplicasInput input
-                }
-          , storage = StorageSection {manual_pv_host_root = configSetupManualPvHostRootInput input}
-          }
+  let updatedConfig = configFromSetupInput currentConfig input
       paths = canonicalConfigPaths repoRoot
   writeProjectConfigParameters repoRoot updatedConfig
   validationResult <- validateAndLoadSettings repoRoot
@@ -3219,8 +3376,8 @@ currentRegionDefault repoRoot = do
 
 loadConfigForWrite :: FilePath -> IO ConfigFile
 loadConfigForWrite repoRoot = do
-  let paths = canonicalConfigPaths repoRoot
-  tier0Exists <- doesFileExist (configTier0Path paths)
+  tier0Path <- resolveTier0ConfigPath repoRoot
+  tier0Exists <- doesFileExist tier0Path
   if tier0Exists
     then do
       configResult <- loadConfigFile repoRoot

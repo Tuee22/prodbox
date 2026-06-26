@@ -8,6 +8,7 @@ module Prodbox.TestValidation
   , sealedVaultForbiddenPatterns
   , verifyAwsTestSshReachability
   , assertInviteOidcClaims
+  , renderGatewayValidationConfigDhall
   )
 where
 
@@ -429,6 +430,14 @@ runNativeValidation substrate repoRoot environment validation = do
               -- residue-acknowledged teardown is now just `cluster delete --yes`.
               ["cluster", "delete", "--yes"]
           , runNativeCliCommandForExitCode repoRoot environment ["cluster", "reconcile"]
+          , -- Reconcile brings up a fresh Vault that auto-unseals from the durable
+            -- unlock bundle, but under host memory pressure that unseal can lose
+            -- the race (Vault pod not ready yet), leaving Vault sealed for the
+            -- `cluster health` check below and the suite's postflight per-run AWS
+            -- destroy. `vault unseal` is idempotent (no-op when already unsealed),
+            -- so this is a safe retry that closes the delete→reconcile→destroy
+            -- teardown race without depending on the reconcile's unseal timing.
+            runNativeCliCommandForExitCode repoRoot environment ["vault", "unseal"]
           , runNativeCliCommandForExitCode repoRoot environment ["cluster", "health"]
           ]
       ValidationKeycloakInvite -> runKeycloakInviteValidation repoRoot substrate environment
@@ -755,6 +764,7 @@ runChartsVscodeValidation repoRoot substrate = do
         ExitSuccess ->
           runSequentially
             [ assertPublicHttpRedirect repoRoot settings substrate PublicRouteVscode
+            , reconcileKeycloakRealmSecrets repoRoot settings substrate
             , waitForKeycloakTokenEndpointReady repoRoot settings substrate
             , waitForCommandOutputContainsAll
                 Subprocess
@@ -935,6 +945,21 @@ waitForKeycloakTokenEndpointReady repoRoot settings substrate = do
   case tokenResult of
     Left err -> failWith err
     Right _ -> pure ExitSuccess
+
+-- | Sprint 5.10 follow-up: reconcile the Keycloak realm's OIDC client secrets +
+-- demo-user password with Vault via the admin API before exercising the password
+-- grant. @--import-realm@ is @IGNORE_EXISTING@, so a preserved Keycloak database
+-- can hold stale secrets that diverged from Vault — yielding a persistent
+-- @invalid_client_credentials@ 401. This patches the live realm to match Vault.
+reconcileKeycloakRealmSecrets :: FilePath -> ValidatedSettings -> Substrate -> IO ExitCode
+reconcileKeycloakRealmSecrets repoRoot settings substrate = do
+  reconcileResult <-
+    Prodbox.UsersAdmin.reconcileRealmOidcSecretsAtPublicHost
+      repoRoot
+      (Text.pack (substratePublicFqdn settings substrate))
+  case reconcileResult of
+    Left err -> failWith err
+    Right () -> pure ExitSuccess
 
 runDirectOidcSessionValidation :: FilePath -> ValidatedSettings -> Substrate -> IO ExitCode
 runDirectOidcSessionValidation repoRoot settings substrate = do
@@ -2119,17 +2144,22 @@ renderGatewayValidationConfigDhall :: ValidatedSettings -> String -> FilePath ->
 renderGatewayValidationConfigDhall settings nodeId ordersPath =
   unlines
     [ "{ schemaVersion = 1"
+    , -- The daemon decoder carries a top-level optional Vault Kubernetes-auth
+      -- block; the validation daemon needs no Vault auth, but the `None` must
+      -- still annotate the decoder's record type for the in-process decode.
+      ", vault = None { address : Text, auth_path : Text, role : Text, service_account_token_file : Optional Text }"
     , ", boot ="
     , "    { node_id = " ++ dhallText nodeId
     , "    , cert_file = " ++ dhallText "unused.crt"
     , "    , key_file = " ++ dhallText "unused.key"
     , "    , ca_file = " ++ dhallText "unused-ca.crt"
     , "    , orders_file = " ++ dhallText ordersPath
-    , "    , event_keys = [ { name = "
-        ++ dhallText nodeId
-        ++ ", value = "
-        ++ dhallText "validation-key"
-        ++ " } ]"
+    , -- `gateway status` never uses event_keys (it queries the running daemon by
+      -- endpoint), but `loadDaemonConfig` eagerly resolves every SecretRef during
+      -- decode — and the host CLI cannot resolve a Vault ref (no in-cluster
+      -- Kubernetes-auth token) nor a TestPlaintext one (production mode). An empty
+      -- list has nothing to resolve, so the host status check decodes cleanly.
+      "    , event_keys = [] : List { name : Text, value : " ++ secretRefType ++ " }"
     , "    , dns_write_gate = Some"
     , "        { zone_id = " ++ dhallText (Text.unpack (zone_id (route53 (validatedConfig settings))))
     , "        , fqdn = " ++ dhallText (publicFqdn settings)
@@ -2137,8 +2167,23 @@ renderGatewayValidationConfigDhall settings nodeId ordersPath =
     , "        , aws_region = "
         ++ dhallText (Text.unpack (awsCredentialRegion (aws (validatedConfig settings))))
     , "        }"
-    , "    , aws_creds = None { access_key_id : Text, secret_access_key : Text, session_token : Optional Text, region : Text }"
-    , "    , minio_creds = None { minio_access_key : Text, minio_secret_key : Text }"
+    , -- Sprint 3.18: the gateway daemon decoder types these credential fields as
+      -- Vault-backed SecretRefs, not Text. The validation config carries no real
+      -- creds (None), but the None type annotation must still match the decoder's
+      -- SecretRef union or the in-process decode fails ("Expression doesn't match
+      -- annotation"). region stays Text.
+      "    , aws_creds = None { access_key_id : "
+        ++ secretRefType
+        ++ ", secret_access_key : "
+        ++ secretRefType
+        ++ ", session_token : Optional "
+        ++ secretRefType
+        ++ ", region : Text }"
+    , "    , minio_creds = None { minio_access_key : "
+        ++ secretRefType
+        ++ ", minio_secret_key : "
+        ++ secretRefType
+        ++ " }"
     , "    , minio_endpoint_url = None Text"
     , "    }"
     , ", live ="
@@ -2151,6 +2196,12 @@ renderGatewayValidationConfigDhall settings nodeId ordersPath =
     , "    }"
     , "}"
     ]
+ where
+  secretRefType =
+    "< Vault : { mount : Text, path : Text, field : Text }"
+      ++ " | TransitKey : Text"
+      ++ " | Prompt : { name : Text, purpose : Text }"
+      ++ " | TestPlaintext : Text >"
 
 -- | Render a Haskell 'String' as a Dhall double-quoted text literal, escaping
 -- the two characters Dhall's quoted-text grammar treats specially (backslash and

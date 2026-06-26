@@ -2,6 +2,8 @@ module Prodbox.Repo
   ( ConfigPaths (..)
   , canonicalConfigPaths
   , findRepoRoot
+  , resolveTier0ConfigPath
+  , tier0ConfigFileName
   )
 where
 
@@ -9,22 +11,20 @@ import System.Directory
   ( doesFileExist
   , getCurrentDirectory
   )
+import System.Environment (getExecutablePath)
 import System.FilePath
-  ( (</>)
+  ( takeDirectory
+  , (</>)
   )
 
+-- | Repo-root-relative Dhall paths the binary still resolves against the
+-- repository root: the GENERATED schema and the RETIRED legacy seed. The
+-- Tier-0 @prodbox.dhall@ is NOT here — it is binary-sibling
+-- ('resolveTier0ConfigPath'), not repo-root (Sprint 1.48; config_doctrine.md
+-- §2/§3).
 data ConfigPaths = ConfigPaths
   { configDhallPath :: FilePath
   , configSchemaPath :: FilePath
-  , configTier0Path :: FilePath
-  -- ^ Sprint 1.39: the Tier-0 binary-owned, project-local non-secret config
-  -- (@prodbox.dhall@ at the repository root). Carries
-  -- @{ parameters, context, witness }@ and never a secret value. Sprint 7.18:
-  -- this is also the SOLE source of the sealed-Vault bootstrap floor — the
-  -- floor is projected straight off @prodbox.dhall@'s @context@
-  -- ('Prodbox.Config.FloorDhall.loadUnencryptedBasics'); there is no longer a
-  -- separate derived @prodbox-basics.json@ or legacy
-  -- @.data\/prodbox\/unencrypted-basics.json@ artifact.
   }
   deriving (Eq, Show)
 
@@ -48,5 +48,21 @@ canonicalConfigPaths repoRoot =
   ConfigPaths
     { configDhallPath = repoRoot </> "prodbox-config.dhall"
     , configSchemaPath = repoRoot </> "prodbox-config-types.dhall"
-    , configTier0Path = repoRoot </> "prodbox.dhall"
     }
+
+-- | The Tier-0 config filename, identical in every context (host, container,
+-- test harness) per config_doctrine.md §2/§3. The binary owns this file and
+-- resolves it beside its own executable.
+tier0ConfigFileName :: FilePath
+tier0ConfigFileName = "prodbox.dhall"
+
+-- | Resolve the Tier-0 @prodbox.dhall@ at the BINARY-SIBLING path — the file
+-- beside the running executable (e.g. @.build\/prodbox.dhall@), the same
+-- filename in every context, never the repository root and never a @--config@
+-- flag (config_doctrine.md §2 "Single Dhall surface per binary instance", §3
+-- "Canonical paths"). @repoRoot@ is the fallback anchor, used only when the
+-- executable directory cannot be determined. Sprint 1.48.
+resolveTier0ConfigPath :: FilePath -> IO FilePath
+resolveTier0ConfigPath repoRoot = do
+  exeDir <- takeDirectory <$> getExecutablePath
+  pure ((if null exeDir then repoRoot else exeDir) </> tier0ConfigFileName)

@@ -14,8 +14,22 @@
 
 ## Phase Status
 
+✅ **Reclosed 2026-06-26 (Tier-0 binary-sibling config + harness-generated run config + secrets
+routing) — live-proven.** The whole config/secrets reopen arc, Sprints `1.39`–`1.50`, is `Done` on its
+code-owned surface and now **live-proven** by the green home `prodbox test all` (2026-06-26, 18/18; see
+[00-overview.md](00-overview.md) Alignment Status). The run exercises end-to-end: every `prodbox` binary
+resolving its binary-sibling `prodbox.dhall` (`1.48`), the container generating it post-build (`1.49`),
+the harness regenerating the run config from `test-secrets.dhall` through the shared
+`configFromSetupInput` builder (`1.50`/`5.10`) and force-syncing the in-force MinIO SSoT, the union
+runtime image (`1.45`), and the Vault-routed operational secrets through the gateway daemon (`1.44`).
+The prior `🧪 Live-proof: pending` notes on `1.39`–`1.50` are satisfied on the home substrate per
+[Standard O](development_plan_standards.md#o-code-local-completion-vs-live-infra-proof); the
+`--substrate aws` aggregate coverage remains a distinct, non-blocking axis tracked only in
+[substrates.md](substrates.md). The `1.1`–`1.38` sprints remain `Done` on their owned surfaces.
+
 🔄 **Reopened 2026-06-16** (Tier 0 binary-context config surface) — Phase `1` is reopened to expand
-its own config-SSoT surface with two 📋 Planned sprints that fold the non-secret config tier into a
+its own config-SSoT surface with two sprints (`1.39`/`1.40`, both now ✅ Done — see the reclose note
+above) that fold the non-secret config tier into a
 single binary-owned `prodbox.dhall` shaped to `hostbootstrap`'s binary-context contract. Sprint
 `1.39` folds `.data/prodbox/unencrypted-basics.json` and the non-secret sections of the seed/propose
 `prodbox-config.dhall` into one binary-owned `prodbox.dhall` (`{parameters, context, witness}`, never
@@ -2987,6 +3001,155 @@ ephemeral-config render incl. the exact `base64 admin:Harbor12345`); the CliSuit
 
 - 🧪 Live-proof (non-blocking, Standard O): a home `cluster reconcile` builds + pushes through the
   ephemeral config and leaves the host `~/.docker` byte-unchanged with no `~/prodbox/.docker`.
+
+## Sprint 1.48: Binary-sibling `prodbox.dhall` resolution ✅
+
+**Status**: Done (code-owned surface) — 2026-06-23
+**Implementation**: `src/Prodbox/Repo.hs` (new `resolveTier0ConfigPath` /
+`tier0ConfigFileName` — `takeDirectory getExecutablePath`, `repoRoot` fallback; `configTier0Path`
+field dropped from `ConfigPaths`), the path-injection seam in `src/Prodbox/Settings.hs`
+(`loadConfigFileAtPath`, `validateAndLoadSettingsAtPath`), `src/Prodbox/Config/FloorDhall.hs`
+(`loadUnencryptedBasicsAtPath`), `src/Prodbox/Config/Tier0.hs` (`writeTier0AtPath`,
+`ensureBasicsFloorAtPath`, `ensureChildBasicsFloorAtPath`) — the `repoRoot` entrypoints delegate to
+these; `src/Prodbox/Native.hs` + `src/Prodbox/Aws.hs` (consumers routed to `resolveTier0ConfigPath`).
+Tests: `test/support/TestSupport.hs` (`installOperatorBinaryInDir`), `test/integration/CliSuite.hs`
++ `test/integration/EnvSuite.hs` (run a tmpDir-local binary so the sibling config is the fixture),
+`test/unit/Main.hs` (the 12 in-process config tests retargeted onto the `…AtPath` seam).
+**Blocked by**: none (expands Phase 1's own Tier-0 config-resolution surface)
+**Independent Validation**: the `…AtPath` seam is unit-testable in-process (decode/validate/project a
+fixture at an explicit path); the binary-sibling resolution itself is proven by the integration
+suites, which run a real `.build/prodbox`-style binary in a temp dir. No dependency on a later phase.
+**Docs to update**: `documents/engineering/config_doctrine.md` (§2, §3), `README.md`, `CLAUDE.md` —
+all landed in the 2026-06-23 docs pass.
+
+### Objective
+
+Adopt hostbootstrap's binary-owns-its-config contract: every `prodbox` binary resolves its Tier-0
+`prodbox.dhall` at the **binary-sibling path** (the file beside the executable, `.build/prodbox.dhall`
+on host), not the repository root and not a `--config` flag — the same `prodbox.dhall` filename in
+every context. Implements [config_doctrine.md §2 (Single Dhall surface per binary
+instance)](../documents/engineering/config_doctrine.md#2-single-dhall-surface-per-binary-instance)
+and [§3 (Canonical paths)](../documents/engineering/config_doctrine.md#3-canonical-paths).
+
+### Deliverables
+
+- `canonicalConfigPaths` resolves the Tier-0 path as `takeDirectory getExecutablePath </>
+  "prodbox.dhall"`; the `findRepoRoot`-anchored repo-root lookup for the config file is removed.
+- `config generate` / `config setup` write the binary-sibling file; `config show` / `config
+  validate` and every settings consumer read it.
+- Fail-fast: a command that needs `prodbox.dhall` errors with a remedy ("run `prodbox config
+  generate`") when the sibling file is absent, never synthesizing a default.
+
+### Validation
+
+`prodbox dev check` 0; `prodbox test unit` 1059/1059 (the retargeted floor / seed / round-trip /
+validate / masked-output / missing-config tests pass on the `…AtPath` seam). Integration suites
+(`test integration cli`/`env`) compile and run a tmpDir-local binary against a sibling fixture.
+
+### Remaining Work
+
+- 🧪 Live-proof (non-blocking, Standard O): a built `.build/prodbox` reads/writes
+  `.build/prodbox.dhall` on a real host run; the in-container ephemeral-CLI case is generated by
+  Sprint `1.49`.
+
+## Sprint 1.49: Remove `docker/default-prodbox.dhall`; generate the in-container config by running the binary ✅
+
+**Status**: Done (code-owned surface) — 2026-06-23
+**Implementation**: `docker/prodbox.Dockerfile` (dropped the `COPY … /etc/prodbox/prodbox.dhall`;
+added a post-install `RUN /usr/local/bin/prodbox config generate` at the binary-sibling path),
+`src/Prodbox/CLI/Rke2.hs` (deleted `ensureDaemonContainerDefaultDhall` + its `buildCustomImageOnce`
+pre-build call), `src/Prodbox/Config/Tier0.hs` (deleted `renderDaemonContainerDefaultDhall` +
+`daemonContainerDefaultPath`; `defaultDaemonProjectConfig` retained as `loadDaemonBinaryContext`'s
+compiled last-resort), `src/Prodbox/Gateway/Daemon.hs` (the daemon's non-ConfigMap fallback repointed
+to the binary-sibling path via `resolveTier0ConfigPath`), `.dockerignore` (carve-out note removed),
+`src/Prodbox/App.hs` (`config generate` added to `canRunWithoutRepoRoot` — the in-container
+`RUN prodbox config generate` runs with no repository present, and it writes the binary-sibling path,
+not a repo-relative one; surfaced by the live `test all` image build),
+`test/unit/Main.hs` (the Tier-0 daemon-context tests use `renderProjectConfigDhall
+defaultDaemonProjectConfig`; the removed-constant path assertion dropped; a regression test pins
+`canRunWithoutRepoRoot (NativeConfig ConfigGenerate) == True`).
+**Blocked by**: Sprint `1.48` (now Done — the container generates the config at the binary-sibling
+path the resolver expects)
+**Independent Validation**: a `docker build` of `docker/prodbox.Dockerfile` produces an image whose
+binary-sibling `prodbox.dhall` exists and was generated by the binary; no `default-prodbox.dhall`
+appears in the build context or image. The cluster daemon's `gateway-config-<nodeId>` ConfigMap
+override is unchanged. No dependency on a later phase.
+**Docs to update**: `documents/engineering/config_doctrine.md` (§0, §3),
+`documents/engineering/distributed_gateway_architecture.md`,
+`DEVELOPMENT_PLAN/legacy-tracking-for-deletion.md`.
+
+### Objective
+
+Remove the committed/copied container default entirely. Mirroring hostbootstrap's
+`demo/docker/Dockerfile` (`RUN … project init --output <bindir>/<project>.dhall`), the image build
+**runs the binary** after installing it to generate a binary-sibling `prodbox.dhall` for ephemeral
+in-container CLI commands. The long-running cluster daemon keeps its existing
+`gateway-config-<nodeId>` ConfigMap override (Phase 2; unchanged). Implements [config_doctrine.md §0
+(Tier 0)](../documents/engineering/config_doctrine.md#0-three-tier-config-model) and
+[§3](../documents/engineering/config_doctrine.md#3-canonical-paths).
+
+### Deliverables
+
+- Delete `docker/default-prodbox.dhall` generation (`ensureDaemonContainerDefaultDhall`,
+  `renderDaemonContainerDefaultDhall`, `daemonContainerDefaultPath = /etc/prodbox/prodbox.dhall`) and
+  the Dockerfile `COPY`.
+- Add a Dockerfile `RUN prodbox config generate` step after the binary is installed, writing the
+  binary-sibling `prodbox.dhall`.
+- The daemon ConfigMap override mechanism is untouched.
+- Record the removals in `legacy-tracking-for-deletion.md` (superseding the Sprint `1.41`
+  build-time-generation row).
+
+### Validation
+
+`prodbox dev check` 0 (no committed `docker/default-prodbox.dhall`, no `TrackedGeneratedPath` for it,
+warning-clean build); `prodbox test unit` 1060/1060 (the daemon Tier-0-context provenance tests now
+render the compiled default directly).
+
+### Remaining Work
+
+- 🧪 Live-proof (non-blocking, Standard O): a `docker build` produces an image whose binary-sibling
+  `prodbox.dhall` was generated by the binary (no `default-prodbox.dhall`); an in-container ephemeral
+  `prodbox` command reads it; the cluster daemon still loads from the ConfigMap override.
+
+## Sprint 1.50: Factor out the shared config builder (`configFromSetupInput`) ✅
+
+**Status**: Done (code-owned surface) — 2026-06-23
+**Implementation**: `src/Prodbox/Aws.hs` (extract the `applyConfigSetup` `updatedConfig`
+construction into a pure `configFromSetupInput :: ConfigFile -> ConfigSetupInput -> ConfigFile`),
+`test/unit/Main.hs`
+**Blocked by**: none (expands Phase 1's own config-generation surface)
+**Independent Validation**: the extracted builder is a pure function, unit-testable in isolation
+(fills `route53.zone_id` / `acme.email` from the input, leaves untouched fields intact);
+`applyConfigSetup` behavior is unchanged. No dependency on a later phase.
+**Docs to update**: `documents/engineering/config_doctrine.md` (§0, "The test harness generates its
+run config").
+
+### Objective
+
+Extract the single `ConfigSetupInput` → `ConfigFile` construction into one pure builder (the
+`demoInit` analog) so production `config setup` and the test harness generate config through the
+**same** function — the seam the Phase 5 harness preflight reuses. Implements [config_doctrine.md §0
+("The test harness generates its run
+config")](../documents/engineering/config_doctrine.md#0-three-tier-config-model); keeps the build
+pure per [pure_fp_standards.md](../documents/engineering/pure_fp_standards.md).
+
+### Deliverables
+
+- `configFromSetupInput` lifted out of `applyConfigSetup` (pure, no I/O); `applyConfigSetup` calls
+  it with no behavior change.
+- Unit coverage for the builder (round-trip + field-fill assertions).
+
+### Validation
+
+`prodbox dev check` 0; `prodbox test unit` 1060/1060 including the new
+`configFromSetupInput fills the operator fields from the input` test (the `config setup` plan golden
+is unchanged, confirming behavior parity). The region is derived from
+`configSetupAdminCredentialsInput`, keeping the signature `ConfigFile -> ConfigSetupInput ->
+ConfigFile`.
+
+### Remaining Work
+
+- Consumed by the Phase 5 Sprint `5.10` harness-generated-config preflight (now unblocked).
 
 ## Related Documents
 

@@ -587,7 +587,7 @@ Project-specific documents may add stricter rules for their own harnesses, CLI t
 
 For `prodbox`:
 
-1. host-side AWS CLI credential-source restrictions, repository-root `prodbox-config.dhall`
+1. host-side AWS CLI credential-source restrictions, binary-sibling `prodbox.dhall`
    credential ownership, and AWS suite ownership are defined in
    [AWS Integration Environment Doctrine](./aws_integration_environment_doctrine.md)
 2. bootstrap and steady-state `aws.*` credential handoff for `prodbox config setup` is defined in

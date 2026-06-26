@@ -38,7 +38,12 @@ data:
         None
           { issuer : Text
           , client_id : Text
-          , client_secret : Text
+          , client_secret :
+              < Vault : { mount : Text, path : Text, field : Text }
+              | TransitKey : Text
+              | Prompt : { name : Text, purpose : Text }
+              | TestPlaintext : Text
+              >
           , public_base_url : Text
           , token_endpoint : Text
           }

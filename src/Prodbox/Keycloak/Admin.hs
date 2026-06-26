@@ -30,6 +30,8 @@ module Prodbox.Keycloak.Admin
   , createUser
   , newUserCreationPayload
   , listUsers
+  , setClientSecret
+  , resetUserPassword
   , disableUser
   , deleteUser
   , ensureRealmSmtpSettings
@@ -47,6 +49,7 @@ import Data.Aeson.Types (parseEither, parseJSON, withObject)
 import Data.ByteString.Lazy (ByteString)
 import Data.ByteString.Lazy qualified as BL
 import Data.ByteString.Lazy.Char8 qualified as BL8
+import Data.Foldable (toList)
 import Data.Maybe (fromMaybe)
 import Data.Text (Text)
 import Data.Text qualified as Text
@@ -393,6 +396,117 @@ deleteUser client token userId = do
               [(hAuthorization, "Bearer " <> Text.encodeUtf8 token)]
           }
   performRawRequest "Keycloak user delete" client req (expect204 "user delete")
+
+-- | Set a confidential client's secret to @secretValue@ (idempotent). Looks the
+-- client up by @clientId@, then PUTs back its representation with @secret@ set.
+-- Reconciles an existing realm's client secret with Vault: @--import-realm@ is
+-- @IGNORE_EXISTING@ and never updates an existing client, so a preserved Keycloak
+-- database keeps the secret from its first import until this patches it.
+setClientSecret :: KeycloakClient -> Text -> Text -> Text -> IO (Result ())
+setClientSecret client token clientId secretValue = do
+  let lookupUrl =
+        realmAdminUrl client <> "/clients?clientId=" <> Text.unpack clientId
+  lookupReqInit <- parseRequest lookupUrl
+  let lookupReq =
+        lookupReqInit
+          { requestHeaders = [(hAuthorization, "Bearer " <> Text.encodeUtf8 token)]
+          }
+  lookupResult <-
+    performJsonRequest
+      ("Keycloak client lookup " <> Text.unpack clientId)
+      client
+      lookupReq
+      (firstRepresentationWithId ("client " <> clientId))
+  case lookupResult of
+    Failure err -> pure (Failure err)
+    Success (internalId, representation) -> do
+      let updated = insertObjectField "secret" (String secretValue) representation
+          updateUrl = realmAdminUrl client <> "/clients/" <> Text.unpack internalId
+      updateReqInit <- parseRequest updateUrl
+      let updateReq =
+            updateReqInit
+              { method = "PUT"
+              , requestHeaders =
+                  [ (hContentType, "application/json")
+                  , (hAuthorization, "Bearer " <> Text.encodeUtf8 token)
+                  ]
+              , requestBody = RequestBodyLBS (encode updated)
+              }
+      performRawRequest
+        ("Keycloak client secret update " <> Text.unpack clientId)
+        client
+        updateReq
+        (expect204 "client secret update")
+
+-- | Reset a realm user's password to @newPassword@ (non-temporary). Mirrors
+-- 'setClientSecret' for the demo-user credential the password grant uses.
+resetUserPassword :: KeycloakClient -> Text -> Text -> Text -> IO (Result ())
+resetUserPassword client token username newPassword = do
+  let lookupUrl =
+        realmAdminUrl client
+          <> "/users?exact=true&username="
+          <> Text.unpack username
+  lookupReqInit <- parseRequest lookupUrl
+  let lookupReq =
+        lookupReqInit
+          { requestHeaders = [(hAuthorization, "Bearer " <> Text.encodeUtf8 token)]
+          }
+  lookupResult <-
+    performJsonRequest
+      ("Keycloak user lookup " <> Text.unpack username)
+      client
+      lookupReq
+      (fmap fst . firstRepresentationWithId ("user " <> username))
+  case lookupResult of
+    Failure err -> pure (Failure err)
+    Success userId -> do
+      let payload =
+            object
+              [ "type" .= ("password" :: Text)
+              , "value" .= newPassword
+              , "temporary" .= False
+              ]
+          resetUrl =
+            realmAdminUrl client
+              <> "/users/"
+              <> Text.unpack userId
+              <> "/reset-password"
+      resetReqInit <- parseRequest resetUrl
+      let resetReq =
+            resetReqInit
+              { method = "PUT"
+              , requestHeaders =
+                  [ (hContentType, "application/json")
+                  , (hAuthorization, "Bearer " <> Text.encodeUtf8 token)
+                  ]
+              , requestBody = RequestBodyLBS (encode payload)
+              }
+      performRawRequest
+        ("Keycloak user password reset " <> Text.unpack username)
+        client
+        resetReq
+        (expect204 "user password reset")
+
+-- | Parse a Keycloak admin search response (a JSON array of representations) and
+-- return the first entry's internal @id@ together with the full representation.
+firstRepresentationWithId :: Text -> Value -> Result (Text, Value)
+firstRepresentationWithId label value =
+  case value of
+    Array entries ->
+      case toList entries of
+        (first@(Object obj) : _) ->
+          case KeyMap.lookup (Key.fromString "id") obj of
+            Just (String internalId) -> Success (internalId, first)
+            _ -> Failure (Text.unpack label <> " representation is missing a string id")
+        (_ : _) -> Failure (Text.unpack label <> " representation was not a JSON object")
+        [] -> Failure ("not found in realm: " <> Text.unpack label)
+    _ -> Failure ("unexpected admin search payload for: " <> Text.unpack label)
+
+insertObjectField :: Text -> Value -> Value -> Value
+insertObjectField key newValue value =
+  case value of
+    Object obj -> Object (KeyMap.insert (Key.fromText key) newValue obj)
+    _ -> value
 
 -- | Trigger the invite email by asking Keycloak to send the listed required actions to
 -- the user. The `prodbox users invite` flow uses `["VERIFY_EMAIL", "UPDATE_PASSWORD"]`

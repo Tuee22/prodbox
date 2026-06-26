@@ -29,7 +29,8 @@ import Data.Text qualified as Text
 import Data.Time.Clock (getCurrentTime)
 import Data.Time.Format (defaultTimeLocale, formatTime)
 import Prodbox.Aws
-  ( runAwsIamHarnessSetup
+  ( regenerateConfigFromTestSecrets
+  , runAwsIamHarnessSetup
   , runAwsIamHarnessTeardown
   )
 import Prodbox.AwsEnvironment (overlayAwsCredentials)
@@ -77,6 +78,7 @@ import Prodbox.Settings
   ( ConfigFile (..)
   , ValidatedSettings (..)
   , aws
+  , forceSyncInForceConfigFromFile
   , resolveAwsCredentialsRefFromHostVault
   , validateAndLoadSettings
   )
@@ -224,30 +226,50 @@ runNativeSuite repoRoot environment haskellSuites suitePlan = do
       case nativeManagedAwsHarnessPolicyTier suitePlan of
         Nothing -> runNativeSuiteBody repoRoot environment haskellSuites suitePlan
         Just policyTier -> do
-          -- Sprint 7.24 (ordering): the harness setup materializes operational
-          -- `aws.*` + the ACME EAB INTO Vault, which only exists once a cluster
-          -- reconcile has brought it up. For cluster-bootstrapping suites, run a
-          -- bare `cluster reconcile` FIRST (Vault up; the gateway/edge chart is
-          -- skipped cleanly while `aws.*` is unmaterialized) so the harness Vault
-          -- write succeeds; the body's later `--with-edge` reconcile then has a
-          -- materialized `aws.*`. Pure harness-only suites (e.g. `aws-iam`) do
-          -- not bootstrap a cluster and are excluded — no extra pre-reconcile.
-          preReconcileExit <-
-            if harnessNeedsVaultBeforeSetup suitePlan
-              then runNativeCliCommandForExitCode repoRoot environment ["cluster", "reconcile"]
-              else pure ExitSuccess
-          case preReconcileExit of
+          -- Sprint 5.10: regenerate the binary-sibling `prodbox.dhall` from
+          -- `test-secrets.dhall` + baked defaults (through the shared
+          -- `configFromSetupInput` builder) BEFORE anything reads or validates
+          -- the bootstrap config, so a freshly-generated skeleton runs `test all`
+          -- without an interactive `config setup`. Idempotent / refuses to
+          -- clobber a populated real config.
+          regenExit <- runConfigRegenFromTestSecrets repoRoot policyTier
+          case regenExit of
             failure@(ExitFailure _) -> pure failure
             ExitSuccess -> do
-              setupExit <- runManagedAwsHarnessSetup repoRoot policyTier
-              case setupExit of
+              -- Sprint 7.24 (ordering): the harness setup materializes operational
+              -- `aws.*` + the ACME EAB INTO Vault, which only exists once a cluster
+              -- reconcile has brought it up. For cluster-bootstrapping suites, run a
+              -- bare `cluster reconcile` FIRST (Vault up; the gateway/edge chart is
+              -- skipped cleanly while `aws.*` is unmaterialized) so the harness Vault
+              -- write succeeds; the body's later `--with-edge` reconcile then has a
+              -- materialized `aws.*`. Pure harness-only suites (e.g. `aws-iam`) do
+              -- not bootstrap a cluster and are excluded — no extra pre-reconcile.
+              preReconcileExit <-
+                if harnessNeedsVaultBeforeSetup suitePlan
+                  then runNativeCliCommandForExitCode repoRoot environment ["cluster", "reconcile"]
+                  else pure ExitSuccess
+              case preReconcileExit of
                 failure@(ExitFailure _) -> pure failure
-                ExitSuccess ->
-                  runWithAwsHarnessCleanup
-                    repoRoot
-                    environment
-                    suitePlan
-                    (runNativeSuiteBody repoRoot environment haskellSuites suitePlan)
+                ExitSuccess -> do
+                  -- Sprint 5.10 follow-up: with Vault now unsealed by the
+                  -- pre-reconcile, force the in-force config SSoT to match the
+                  -- regenerated binary-sibling config so the body's `--with-edge`
+                  -- reconcile (which reads the in-force SSoT) sees the populated
+                  -- `route53.zone_id`. Fixes a cluster established before the
+                  -- operator fields were populated (stale SSoT).
+                  syncExit <- runForceSyncInForceConfig repoRoot
+                  case syncExit of
+                    failure@(ExitFailure _) -> pure failure
+                    ExitSuccess -> do
+                      setupExit <- runManagedAwsHarnessSetup repoRoot policyTier
+                      case setupExit of
+                        failure@(ExitFailure _) -> pure failure
+                        ExitSuccess ->
+                          runWithAwsHarnessCleanup
+                            repoRoot
+                            environment
+                            suitePlan
+                            (runNativeSuiteBody repoRoot environment haskellSuites suitePlan)
 
 -- | Sprint 7.6 orphan-safety: run the suite body, then destroy every
 -- per-run Pulumi stack the suite may have provisioned before clearing
@@ -366,6 +388,15 @@ awsPostflightDestroyActions repoRoot environment suitePlan =
             ++ "aws-eks-subzone, aws-test). aws-ses is retained per the "
             ++ "long-lived cross-substrate shared-infrastructure class."
         )
+        -- The `lifecycle` validation tears the cluster down and reconciles it,
+        -- which brings up a fresh Vault that auto-unseals from the durable unlock
+        -- bundle — but under host memory pressure that unseal can lose the race,
+        -- leaving Vault sealed. Every per-run destroy needs Vault (Pulumi backend
+        -- in MinIO + AWS deployment credentials), so an idempotent `vault unseal`
+        -- here (no-op when already unsealed) closes the teardown→destroy race; if
+        -- the cluster is genuinely down it fails and the destroys are skipped,
+        -- preserving the operational credentials for manual recovery as before.
+        : runNativeCliCommandForExitCode repoRoot environment ["vault", "unseal"]
         : map (runNativeCliCommandForExitCode repoRoot environment) commands
 
 awsPostflightDestroyCommandArgs :: NativeSuitePlan -> [[String]]
@@ -743,6 +774,46 @@ phaseOneMessage suitePlan =
     && null (nativeDeferredIntegrationGatePrerequisites suitePlan)
     then phaseOneNoPrereqMessage
     else phaseOneGateMessage
+
+-- | Sprint 5.10: regenerate the binary-sibling @prodbox.dhall@ from
+-- @test-secrets.dhall@ + baked defaults through the shared
+-- 'Prodbox.Aws.configFromSetupInput' builder, so @prodbox test all@ runs from a
+-- freshly-generated skeleton without an interactive @config setup@. Idempotent
+-- and refuses to clobber a populated real config. Failures are surfaced as a
+-- loud 'ExitFailure', mirroring 'runManagedAwsHarnessSetup'.
+runConfigRegenFromTestSecrets :: FilePath -> PolicyTier -> IO ExitCode
+runConfigRegenFromTestSecrets repoRoot policyTier = do
+  result <-
+    try (regenerateConfigFromTestSecrets repoRoot policyTier)
+      :: IO (Either SomeException (Either String ()))
+  case result of
+    Left err ->
+      failWith
+        ("Harness config regeneration from test-secrets.dhall failed: " ++ displayException err)
+    Right (Left err) ->
+      failWith ("Harness config regeneration from test-secrets.dhall failed: " ++ err)
+    Right (Right ()) -> pure ExitSuccess
+
+-- | Sprint 5.10 follow-up: after the pre-reconcile has unsealed Vault, force the
+-- in-force config SSoT to match the regenerated binary-sibling config, so the
+-- edge reconcile (which reads the in-force SSoT) sees the harness-populated
+-- @route53.zone_id@ etc. On a freshly-established cluster the in-force SSoT seeds
+-- from the file automatically; this fixes the case where the cluster was
+-- established BEFORE the operator fields were populated, leaving a stale SSoT
+-- that fails the gateway-chart deploy. Best-effort: a graceful no-op when not
+-- established / Vault sealed; loud 'ExitFailure' only on a real MinIO write
+-- failure.
+runForceSyncInForceConfig :: FilePath -> IO ExitCode
+runForceSyncInForceConfig repoRoot = do
+  result <-
+    try (forceSyncInForceConfigFromFile repoRoot)
+      :: IO (Either SomeException (Either String ()))
+  case result of
+    Left err ->
+      failWith ("Harness in-force config sync failed: " ++ displayException err)
+    Right (Left err) ->
+      failWith ("Harness in-force config sync failed: " ++ err)
+    Right (Right ()) -> pure ExitSuccess
 
 runManagedAwsHarnessSetup :: FilePath -> PolicyTier -> IO ExitCode
 runManagedAwsHarnessSetup repoRoot policyTier = do

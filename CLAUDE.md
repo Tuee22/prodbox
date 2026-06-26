@@ -38,7 +38,12 @@ Prodbox manages a home Kubernetes cluster with a Haskell command surface.
 - `src/Prodbox/` owns the command parser, runtime modules, infra orchestration, gateway runtime,
   chart platform, AWS administration flows, and test harness.
 - `test/` contains the Haskell unit and integration suites.
-- `prodbox-config.dhall` is decoded into Haskell types by the native `dhall` library;
+- The Tier-0 config is the **binary-sibling** `prodbox.dhall` — the file beside the
+  executable (`.build/prodbox.dhall`), the same filename in every context (host, container,
+  test harness), resolved via the executable path (not the repo root, not a `--config`
+  flag). It is binary-owned and GENERATED (`prodbox config generate` / `config setup`, or
+  the test harness); a command that needs it **fails fast** when the sibling file is absent.
+  It is decoded into Haskell types by the native `dhall` library;
   `prodbox-config.json` is not part of the supported interface. The in-force cluster
   configuration is the source of truth, stored as a prodbox application-level
   Vault-Transit envelope (Model B) in the shared object-store — an opaque
@@ -48,9 +53,9 @@ Prodbox manages a home Kubernetes cluster with a Haskell command surface.
   Vault-keyed-HMAC names; the host CLI and the in-cluster gateway daemon read and write it
   through one shared envelope/naming/index layer, each binding its own Vault-auth cipher
   (the host CLI via the root Vault token, the daemon via Vault Kubernetes auth over the
-  in-cluster MinIO Service DNS). The filesystem `prodbox-config.dhall` is a seed/propose
-  input only — it seeds the encrypted MinIO SSoT on first-ever bring-up, and thereafter
-  supplying a file is a proposed update, not the live config. Each binary reads the small
+  in-cluster MinIO Service DNS). The binary-sibling `prodbox.dhall` `parameters` is a
+  seed/propose input only — it seeds the encrypted MinIO SSoT on first-ever bring-up, and
+  thereafter supplying a file is a proposed update, not the live config. Each binary reads the small
   unencrypted basics locally (cluster id, this cluster's Vault address, seal mode, and for
   a child the parent reference it contacts to auto-unseal), then fetches and decrypts the
   in-force config from MinIO through Vault. In-cluster consumers authenticate to Vault
@@ -297,6 +302,9 @@ cabal build --builddir=.build exe:prodbox
 mkdir -p .build
 cp "$(cabal list-bin --builddir=.build exe:prodbox)" .build/prodbox
 chmod +x .build/prodbox
+# Generate the binary-sibling Tier-0 config (./.build/prodbox.dhall) — the binary owns
+# its config and resolves it beside the executable; it fails fast if absent.
+./.build/prodbox config generate
 ./.build/prodbox --help
 ./.build/prodbox dev check
 ./.build/prodbox test unit

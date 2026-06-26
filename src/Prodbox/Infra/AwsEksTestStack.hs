@@ -20,6 +20,7 @@ module Prodbox.Infra.AwsEksTestStack
   )
 where
 
+import Control.Concurrent (threadDelay)
 import Control.Exception (IOException, SomeException, bracket, catch, try)
 import Control.Monad (foldM, forM, when)
 import Data.Aeson
@@ -629,7 +630,12 @@ pulumiStackSelect projectDir environment createIfMissing =
   let arguments =
         ["stack", "select", awsEksTestStackName]
           ++ ["--create" | createIfMissing]
-          ++ if createIfMissing then ["--secrets-provider", "plaintext"] else []
+          -- Sprint 7.23 follow-up: `plaintext` is not a valid pulumi
+          -- secrets-provider URL on current pulumi (`open secrets.Keeper: no
+          -- scheme in URL "plaintext"`); use the empty-passphrase provider like
+          -- aws-ses. The scratch env sets `PULUMI_CONFIG_PASSPHRASE = ""`;
+          -- at-rest secrecy is the Model-B Vault-Transit envelope.
+          ++ if createIfMissing then ["--secrets-provider", "passphrase"] else []
    in if createIfMissing
         then do
           exitCode <- runPulumiCommand projectDir environment arguments
@@ -1109,6 +1115,67 @@ purgeDetachedSubnetNetworkInterfacesBeforeDestroy repoRoot maybeSnapshot =
             )
         Right () -> pure ()
 
+-- | Poll until the cluster security group has no dependent ENIs, or the wait
+-- budget elapses. The EKS drain deletes the LoadBalancer Services / ALB Ingresses,
+-- but AWS detaches and deletes their ENIs asynchronously (minutes); the cluster
+-- security group cannot be deleted while they are attached
+-- (@DeleteSecurityGroup … DependencyViolation@), so both the pre-destroy SG
+-- cleanup and @pulumi destroy@ race them. Waiting here lets AWS release the ENIs
+-- first, which is what makes a delayed destroy retry succeed. Best-effort: an
+-- unobservable backend or an exhausted budget proceeds anyway (the destroy still
+-- retries), so this only ever delays teardown, never blocks it.
+eniDetachPollAttempts :: Int
+eniDetachPollAttempts = 30
+
+eniDetachPollIntervalSeconds :: Int
+eniDetachPollIntervalSeconds = 10
+
+waitForClusterSecurityGroupEnisDetached
+  :: FilePath -> Maybe AwsEksTestStackSnapshot -> IO ()
+waitForClusterSecurityGroupEnisDetached repoRoot maybeSnapshot =
+  case maybeSnapshot of
+    Nothing -> pure ()
+    Just snapshot -> go eniDetachPollAttempts
+     where
+      sgId = eksSnapshotClusterSecurityGroupId snapshot
+      go remaining
+        | remaining <= 0 =
+            writeDiagnosticLine
+              ( "Per-run EKS ENI-detach wait: cluster security group "
+                  ++ sgId
+                  ++ " still has dependent ENIs after the wait budget; proceeding to destroy anyway."
+              )
+        | otherwise = do
+            eniResult <-
+              runAwsTextCommandMaybeMissing
+                repoRoot
+                [ "ec2"
+                , "describe-network-interfaces"
+                , "--filters"
+                , "Name=group-id,Values=" ++ sgId
+                , "--query"
+                , "NetworkInterfaces[].NetworkInterfaceId"
+                , "--output"
+                , "text"
+                ]
+            case eniResult of
+              Left _ -> pure ()
+              Right Nothing -> pure ()
+              Right (Just eniText)
+                | null (trim eniText) -> pure ()
+                | otherwise -> do
+                    writeDiagnosticLine
+                      ( "Per-run EKS ENI-detach wait: cluster security group "
+                          ++ sgId
+                          ++ " still has dependent ENIs; waiting "
+                          ++ show eniDetachPollIntervalSeconds
+                          ++ "s ("
+                          ++ show remaining
+                          ++ " attempts left)."
+                      )
+                    threadDelay (eniDetachPollIntervalSeconds * 1000000)
+                    go (remaining - 1)
+
 purgeClusterSecurityGroupBeforeDestroy
   :: FilePath -> Maybe AwsEksTestStackSnapshot -> IO ()
 purgeClusterSecurityGroupBeforeDestroy repoRoot maybeSnapshot =
@@ -1456,12 +1523,14 @@ runDestroyAwsEksPulumiCycle repoRoot projectDir currentSnapshot summary environm
                       drainAwsEksClusterBeforeDestroy
                         repoRoot
                         operationalCredentials
+                      waitForClusterSecurityGroupEnisDetached repoRoot currentSnapshot
                       purgeDetachedSubnetNetworkInterfacesBeforeDestroy repoRoot currentSnapshot
                       purgeClusterSecurityGroupBeforeDestroy repoRoot currentSnapshot
                       destroyResult <- pulumiDestroyEither projectDir environment summary
                       case destroyResult of
                         Left _ -> do
                           _ <- pulumiRefreshEither projectDir environment summary
+                          waitForClusterSecurityGroupEnisDetached repoRoot currentSnapshot
                           purgeDetachedSubnetNetworkInterfacesBeforeDestroy repoRoot currentSnapshot
                           purgeClusterSecurityGroupBeforeDestroy repoRoot currentSnapshot
                           retryResult <- pulumiDestroyEither projectDir environment summary

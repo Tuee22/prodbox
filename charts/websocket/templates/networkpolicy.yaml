@@ -38,6 +38,20 @@ spec:
       ports:
         - protocol: TCP
           port: 8080
+    # The websocket workload resolves its OIDC client_secret SecretRef.Vault
+    # via Vault Kubernetes auth at startup (role websocket-oidc); without this
+    # egress the auth login times out and the pod crash-loops. Mirrors the
+    # vscode chart's vault egress rule.
+    - to:
+        - namespaceSelector:
+            matchLabels:
+              kubernetes.io/metadata.name: vault
+          podSelector:
+            matchLabels:
+              app.kubernetes.io/name: prodbox-vault
+      ports:
+        - protocol: TCP
+          port: 8200
     - to:
         - namespaceSelector:
             matchLabels:

@@ -14,6 +14,14 @@
 
 ## Phase Status
 
+✅ **Live-proven 2026-06-26 (home substrate) — the destructive rerun contract holds under the green
+`test all`.** The green home `prodbox test all` (2026-06-26, 18/18; see [00-overview.md](00-overview.md)
+Alignment Status) exercises the destructive `lifecycle` validation (`cluster delete` →
+`cluster reconcile` → `cluster health`) and the suite's per-run AWS-stack provision+teardown to clean
+exit with no leaked AWS spend, home-substrate-proving Phase 6's destructive-rerun + zero-Python handoff
+contract. The `--substrate aws` rerun coverage remains the orthogonal, non-blocking axis
+([substrates.md](substrates.md)).
+
 ✅ **Done on owned surfaces** — Sprints `6.1`–`6.3` remain closed on the destructive rerun
 contract and zero-Python handoff surfaces. Per
 [development_plan_standards.md](development_plan_standards.md) standards rules E and N, Phase 6

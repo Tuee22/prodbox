@@ -14,6 +14,17 @@
 
 ## Phase Status
 
+✅ **Live-proven 2026-06-26 — the destructive `lifecycle` validation passes under the green home
+`test all`.** The `lifecycle` named validation (`cluster delete` → `cluster reconcile` → `cluster
+health`, with the suite's postflight per-run AWS destroy) passes `ExitSuccess` in the green home
+`prodbox test all` (2026-06-26, 18/18; see [00-overview.md](00-overview.md) Alignment Status), so Phase
+4's Vault-before-MinIO reconcile, Model-B object-store, retained-storage topology, and idempotent
+teardown surfaces are home-substrate live-proven. The teardown was also hardened this run to close a
+non-functional race at the cluster-teardown boundary — an EKS-ENI-detachment wait plus idempotent
+`vault unseal` retries so the reconcile→destroy path never strands a freshly-sealed Vault under host
+memory pressure (see [README.md](README.md) Closure Status). The `--substrate aws` lifecycle axis stays
+orthogonal ([substrates.md](substrates.md)).
+
 ✅ **Reclosed 2026-06-09** — Phase 4 was reopened for Sprints `4.26`–`4.27` (design-intention
 review: the destructive-command Plan/Apply gaps + the registry-name SSoT consolidation surfaced
 against the lifecycle reconciliation surface); both have now landed. Sprint `4.26` ✅ routed

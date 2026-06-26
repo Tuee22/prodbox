@@ -51,6 +51,7 @@ import Parser (parserSuite)
 import Prodbox.App
   ( Env (..)
   , askEnv
+  , canRunWithoutRepoRoot
   , runApp
   )
 import Prodbox.Aws
@@ -63,6 +64,7 @@ import Prodbox.Aws
   , VaultProbe (..)
   , awsErrorCodeIsTransient
   , buildIamPolicyDocument
+  , configFromSetupInput
   , harnessPostflightResiduePolicy
   , longLivedResourceNames
   , operationalAwsConfigResidueFromKey
@@ -288,18 +290,16 @@ import Prodbox.Config.Tier0
   , Tier0SealMode (..)
   , Tier0Source (..)
   , daemonConfigMapTier0Path
-  , daemonContainerDefaultPath
   , defaultDaemonContext
   , defaultDaemonProjectConfig
   , defaultProjectConfig
-  , ensureBasicsFloor
-  , ensureChildBasicsFloor
+  , ensureBasicsFloorAtPath
+  , ensureChildBasicsFloorAtPath
   , loadDaemonBinaryContext
   , projectBasics
-  , renderDaemonContainerDefaultDhall
   , renderProjectConfigDhall
   , tier0CarriesNoSecretValues
-  , writeTier0
+  , writeTier0AtPath
   )
 import Prodbox.Config.Tier0 qualified as Tier0
 import Prodbox.ContainerImage qualified as ContainerImage
@@ -575,12 +575,12 @@ import Prodbox.Settings
   , decodeConfigDhallBytes
   , defaultConfigFile
   , inForceConfigObjectAbsent
-  , loadConfigFile
+  , loadConfigFileAtPath
   , loadConfigForSettingsWith
-  , loadUnencryptedBasics
+  , loadUnencryptedBasicsAtPath
   , renderConfigDhall
   , renderSettingsDisplay
-  , validateAndLoadSettings
+  , validateAndLoadSettingsAtPath
   , validateAwsBootstrapConfig
   , validatePublicEdgeDeployment
   )
@@ -625,6 +625,7 @@ import Prodbox.TestValidation
   ( SealedVaultAuditInput (..)
   , assertInviteOidcClaims
   , defaultSealedVaultAuditInput
+  , renderGatewayValidationConfigDhall
   , sealedVaultAuditReport
   , sealedVaultForbiddenPatterns
   , verifyAwsTestSshReachability
@@ -1958,13 +1959,13 @@ main = mainWithSuite "prodbox-unit" $ do
       -- straight off the Tier-0 prodbox.dhall's context; writing the default
       -- root record (prodbox-home, shamir, no parent) yields the root floor.
       withSystemTempDirectory "prodbox-basics" $ \tmpDir -> do
-        writeTier0 tmpDir defaultProjectConfig `shouldReturn` Right ()
-        loadUnencryptedBasics tmpDir `shouldReturn` Right sampleRootBasics
+        writeTier0AtPath (tmpDir </> "prodbox.dhall") defaultProjectConfig `shouldReturn` Right ()
+        loadUnencryptedBasicsAtPath (tmpDir </> "prodbox.dhall") `shouldReturn` Right sampleRootBasics
     it "fails the floor read when no prodbox.dhall is present" $
       -- A repo with no Tier-0 prodbox.dhall has no floor source, so the read
       -- fails (the seed/propose fallback then takes over upstream).
       withSystemTempDirectory "prodbox-basics" $ \tmpDir -> do
-        result <- loadUnencryptedBasics tmpDir
+        result <- loadUnencryptedBasicsAtPath (tmpDir </> "prodbox.dhall")
         result `shouldSatisfy` isLeft
   describe "Tier 0 binary-owned prodbox.dhall (Sprint 1.39)" $ do
     it "round-trips: decode . encode == id for the Tier-0 record" $
@@ -1997,8 +1998,9 @@ main = mainWithSuite "prodbox-unit" $ do
           }
     it "writeTier0 derives a floor that loadUnencryptedBasics reads back" $
       withSystemTempDirectory "prodbox-tier0-write" $ \tmpDir -> do
-        writeTier0 tmpDir sampleTier0Child `shouldReturn` Right ()
-        loadUnencryptedBasics tmpDir `shouldReturn` Right (projectBasics sampleTier0Child)
+        writeTier0AtPath (tmpDir </> "prodbox.dhall") sampleTier0Child `shouldReturn` Right ()
+        loadUnencryptedBasicsAtPath (tmpDir </> "prodbox.dhall")
+          `shouldReturn` Right (projectBasics sampleTier0Child)
   describe "Tier 0 basics-floor self-heal on reconcile (Sprint 1.39 P1)" $ do
     it "missing floor + no prodbox.dhall reconstructs a valid root floor from the known local identity" $
       -- A cluster initialized before 1.39 (or rebuilt against a durable Vault
@@ -2006,10 +2008,11 @@ main = mainWithSuite "prodbox-unit" $ do
       -- The self-heal must write a coherent root (shamir, no parent) floor from
       -- the default identity, with the caller-supplied Vault address.
       withSystemTempDirectory "prodbox-floor-selfheal-default" $ \tmpDir -> do
-        before <- loadUnencryptedBasics tmpDir
+        before <- loadUnencryptedBasicsAtPath (tmpDir </> "prodbox.dhall")
         before `shouldSatisfy` isLeft
-        ensureBasicsFloor tmpDir "http://127.0.0.1:31820" `shouldReturn` Right ()
-        loaded <- loadUnencryptedBasics tmpDir
+        ensureBasicsFloorAtPath (tmpDir </> "prodbox.dhall") "http://127.0.0.1:31820"
+          `shouldReturn` Right ()
+        loaded <- loadUnencryptedBasicsAtPath (tmpDir </> "prodbox.dhall")
         loaded
           `shouldBe` Right
             UnencryptedBasics
@@ -2027,22 +2030,23 @@ main = mainWithSuite "prodbox-unit" $ do
       -- address is ignored because the existing floor is already valid.
       withSystemTempDirectory "prodbox-floor-selfheal-tier0" $ \tmpDir -> do
         writeFile (tmpDir </> "prodbox.dhall") (Text.unpack (renderProjectConfigDhall sampleTier0Child))
-        before <- loadUnencryptedBasics tmpDir
+        before <- loadUnencryptedBasicsAtPath (tmpDir </> "prodbox.dhall")
         before `shouldBe` Right (projectBasics sampleTier0Child)
         let tier0Path = tmpDir </> "prodbox.dhall"
         beforeBytes <- BS.readFile tier0Path
-        ensureBasicsFloor tmpDir "http://10.0.0.99:8200" `shouldReturn` Right ()
+        ensureBasicsFloorAtPath (tmpDir </> "prodbox.dhall") "http://10.0.0.99:8200" `shouldReturn` Right ()
         afterBytes <- BS.readFile tier0Path
         afterBytes `shouldBe` beforeBytes
-        loadUnencryptedBasics tmpDir `shouldReturn` Right (projectBasics sampleTier0Child)
+        loadUnencryptedBasicsAtPath (tmpDir </> "prodbox.dhall")
+          `shouldReturn` Right (projectBasics sampleTier0Child)
     it "is a no-op when a valid floor already exists" $
       -- Idempotent: a present, valid prodbox.dhall floor is left byte-for-byte
       -- untouched.
       withSystemTempDirectory "prodbox-floor-selfheal-noop" $ \tmpDir -> do
-        writeTier0 tmpDir sampleTier0Child `shouldReturn` Right ()
+        writeTier0AtPath (tmpDir </> "prodbox.dhall") sampleTier0Child `shouldReturn` Right ()
         let tier0Path = tmpDir </> "prodbox.dhall"
         before <- BS.readFile tier0Path
-        ensureBasicsFloor tmpDir "http://10.0.0.99:8200" `shouldReturn` Right ()
+        ensureBasicsFloorAtPath (tmpDir </> "prodbox.dhall") "http://10.0.0.99:8200" `shouldReturn` Right ()
         after <- BS.readFile tier0Path
         -- The supplied address (different from the record's) is ignored because
         -- the existing floor is valid: no-op, bytes unchanged.
@@ -2057,9 +2061,13 @@ main = mainWithSuite "prodbox-unit" $ do
                 , parent_vault_address = "http://10.0.0.1:8200"
                 , parent_transit_key = "transit/prodbox-child-seal"
                 }
-        ensureChildBasicsFloor tmpDir "prodbox-child" "http://127.0.0.1:31820" parentRef
+        ensureChildBasicsFloorAtPath
+          (tmpDir </> "prodbox.dhall")
+          "prodbox-child"
+          "http://127.0.0.1:31820"
+          parentRef
           `shouldReturn` Right ()
-        loaded <- loadUnencryptedBasics tmpDir
+        loaded <- loadUnencryptedBasicsAtPath (tmpDir </> "prodbox.dhall")
         loaded
           `shouldBe` Right
             UnencryptedBasics
@@ -2075,7 +2083,7 @@ main = mainWithSuite "prodbox-unit" $ do
       -- the prodbox.dhall path with a DIRECTORY so the file write errors.
       withSystemTempDirectory "prodbox-floor-selfheal-fail" $ \tmpDir -> do
         createDirectoryIfMissing True (tmpDir </> "prodbox.dhall")
-        result <- ensureBasicsFloor tmpDir "http://127.0.0.1:31820"
+        result <- ensureBasicsFloorAtPath (tmpDir </> "prodbox.dhall") "http://127.0.0.1:31820"
         result `shouldSatisfy` isLeft
   describe "AWS transient-error classifier (Sprint 7.20 P4)" $ do
     it "classifies well-known throttle / service-unavailable codes as transient" $ do
@@ -2141,7 +2149,7 @@ main = mainWithSuite "prodbox-unit" $ do
             configMapDir = tmpDir </> "etc-gateway-config"
         createDirectoryIfMissing True (takeDirectory containerDefault)
         createDirectoryIfMissing True configMapDir
-        writeFile containerDefault (Text.unpack renderDaemonContainerDefaultDhall)
+        writeFile containerDefault (Text.unpack (renderProjectConfigDhall defaultDaemonProjectConfig))
         result <- loadDaemonBinaryContext configMapDir containerDefault
         case result of
           Left err -> expectationFailure ("expected container default to decode, got: " ++ err)
@@ -2153,7 +2161,7 @@ main = mainWithSuite "prodbox-unit" $ do
       withSystemTempDirectory "prodbox-tier0-daemon-secretfree" $ \tmpDir -> do
         let containerDefault = tmpDir </> "prodbox.dhall"
             configMapDir = tmpDir </> "no-configmap"
-        writeFile containerDefault (Text.unpack renderDaemonContainerDefaultDhall)
+        writeFile containerDefault (Text.unpack (renderProjectConfigDhall defaultDaemonProjectConfig))
         result <- loadDaemonBinaryContext configMapDir containerDefault
         case result of
           Left err -> expectationFailure ("expected decode, got: " ++ err)
@@ -2176,7 +2184,7 @@ main = mainWithSuite "prodbox-unit" $ do
                 }
         createDirectoryIfMissing True (takeDirectory containerDefault)
         createDirectoryIfMissing True configMapDir
-        writeFile containerDefault (Text.unpack renderDaemonContainerDefaultDhall)
+        writeFile containerDefault (Text.unpack (renderProjectConfigDhall defaultDaemonProjectConfig))
         writeFile
           (daemonConfigMapTier0Path configMapDir)
           (Text.unpack (renderProjectConfigDhall overwritten))
@@ -2193,8 +2201,11 @@ main = mainWithSuite "prodbox-unit" $ do
             containerDefault = tmpDir </> "absent-prodbox.dhall"
         result <- loadDaemonBinaryContext configMapDir containerDefault
         result `shouldBe` Right (Tier0FromCompiledDefault, defaultDaemonProjectConfig)
-    it "exposes the canonical in-cluster Tier-0 paths" $ do
-      daemonContainerDefaultPath `shouldBe` "/etc/prodbox/prodbox.dhall"
+    it "exposes the canonical in-cluster ConfigMap Tier-0 path" $
+      -- Sprint 1.49: the baked `/etc/prodbox/prodbox.dhall` container default is
+      -- gone (the image generates a binary-sibling default by running the
+      -- binary); only the `gateway-config-<nodeId>` ConfigMap override path
+      -- remains canonical.
       daemonConfigMapTier0Path "/etc/gateway/config" `shouldBe` "/etc/gateway/config/prodbox.dhall"
   describe "in-force config envelope (Sprint 1.38)" $ do
     it "round-trips the in-force config payload through the envelope" $ do
@@ -2361,7 +2372,7 @@ main = mainWithSuite "prodbox-unit" $ do
         writeFile
           (tmpDir </> "prodbox.dhall")
           (wrapTier0 (unlines ["let Config = ./prodbox-config-types.dhall", "in  Config.default"]))
-        result <- loadConfigFile tmpDir
+        result <- loadConfigFileAtPath (tmpDir </> "prodbox.dhall")
         result `shouldBe` Right defaultConfigFile
     it "round-trips: a config that overrides via Config::{ ... } + SecretRef.Vault decodes" $
       withSystemTempDirectory "prodbox-schema-roundtrip" $ \tmpDir -> do
@@ -2385,7 +2396,7 @@ main = mainWithSuite "prodbox-unit" $ do
                   ]
               )
           )
-        result <- loadConfigFile tmpDir
+        result <- loadConfigFileAtPath (tmpDir </> "prodbox.dhall")
         case result of
           Left err -> expectationFailure ("decode failed: " ++ err)
           Right config -> zone_id (route53 config) `shouldBe` "Z1234567890ABC"
@@ -2642,7 +2653,12 @@ main = mainWithSuite "prodbox-unit" $ do
           (repoRoot </> "prodbox-config-types.dhall")
           (tmpDir </> "prodbox-config-types.dhall")
         writeFile (tmpDir </> "prodbox.dhall") (wrapTier0 (renderConfigDhall roundTripConfigFile))
-        result <- loadConfigForSettingsWith (\_ -> pure (Left "in-force should not be loaded")) tmpDir
+        -- Pure seed-decode layer (Sprint 1.48): the not-established branch reads
+        -- the Tier-0 `parameters` seed via `loadConfigFile`, exercised here
+        -- through its path seam (`loadConfigFileAtPath`). The not-established
+        -- branch selection itself is covered by the `seedProposeDecision` tests
+        -- above; the binary-sibling resolution is proven by the integration suite.
+        result <- loadConfigFileAtPath (tmpDir </> "prodbox.dhall")
         result `shouldBe` Right roundTripConfigFile
     it "uses the in-force config loader once the cluster is established" $
       withSystemTempDirectory "prodbox-config-loader" $ \tmpDir -> do
@@ -2652,7 +2668,7 @@ main = mainWithSuite "prodbox-unit" $ do
         -- cluster-established marker (the bundle itself is now MinIO-only), which
         -- flips the loader from the seed/propose Tier-0 `parameters` read to the
         -- encrypted in-force SSoT.
-        writeTier0 tmpDir defaultProjectConfig `shouldReturn` Right ()
+        writeTier0AtPath (tmpDir </> "prodbox.dhall") defaultProjectConfig `shouldReturn` Right ()
         createDirectoryIfMissing True (takeDirectory (tmpDir </> clusterEstablishedMarkerRelPath))
         writeFile (tmpDir </> clusterEstablishedMarkerRelPath) "established"
         result <-
@@ -3321,6 +3337,22 @@ main = mainWithSuite "prodbox-unit" $ do
       "test/golden/plans/config-setup.txt"
       (pure (BL8.pack (renderConfigSetupPlan "/tmp/prodbox" sampleConfigSetupInput)))
 
+    it "config generate runs without a repo root; config validate still requires one (Sprint 1.49)" $ do
+      -- The in-container image build runs `RUN prodbox config generate` with no
+      -- repository present; it must be exempt from the `findRepoRoot` gate
+      -- because it writes the binary-sibling config (not a repo-relative path).
+      canRunWithoutRepoRoot (NativeConfig ConfigGenerate) `shouldBe` True
+      canRunWithoutRepoRoot (NativeConfig ConfigValidate) `shouldBe` False
+    it
+      "configFromSetupInput fills the operator fields from the input over the base config (Sprint 1.50)"
+      $ do
+        let built = configFromSetupInput defaultConfigFile sampleConfigSetupInput
+        zone_id (route53 built) `shouldBe` "Z1234567890ABC"
+        email (acme built) `shouldBe` "ops@resolvefintech.com"
+        demo_fqdn (domain built) `shouldBe` "test.resolvefintech.com"
+        awsCredentialRegion (aws built)
+          `shouldBe` region (configSetupAdminCredentialsInput sampleConfigSetupInput)
+
     goldenTest
       "renders the gateway start plan deterministically"
       "test/golden/plans/gateway-start.txt"
@@ -3334,6 +3366,24 @@ main = mainWithSuite "prodbox-unit" $ do
           Left err -> fail err
           Right config ->
             pure (BL8.pack (renderGatewayStartPlan "/tmp/prodbox/gateway.dhall" config))
+
+    it "decodes the gateway-daemon validation config (SecretRef-typed cred fields)" $ do
+      -- Sprint 3.18 regression: the gateway-daemon validation config must type
+      -- its aws_creds / minio_creds / event_keys credential fields as the
+      -- SecretRef union the daemon decoder expects, not Text — otherwise the
+      -- in-process decode fails with "Expression doesn't match annotation".
+      let configText =
+            renderGatewayValidationConfigDhall
+              (testValidatedSettings "/tmp/prodbox/.data")
+              "node-a"
+              "/tmp/prodbox/orders.dhall"
+      decodeResult <-
+        GatewaySettings.decodeDaemonConfigDhallWith
+          (const (pure (Right "resolved-secret")))
+          (Text.pack configText)
+      case decodeResult of
+        Left err -> expectationFailure err
+        Right _ -> pure ()
 
     goldenTest
       "renders the local (no-edge) rke2 reconcile plan deterministically"
@@ -5088,7 +5138,7 @@ main = mainWithSuite "prodbox-unit" $ do
           (tmpDir </> "prodbox-config-types.dhall")
         writeFile (tmpDir </> "prodbox.dhall") (wrapTier0 (renderConfigDhall roundTripConfigFile))
 
-        loadConfigFile tmpDir `shouldReturn` Right roundTripConfigFile
+        loadConfigFileAtPath (tmpDir </> "prodbox.dhall") `shouldReturn` Right roundTripConfigFile
 
     -- Sprint 2.20: the JSON `parseDaemonConfig` round-trip tests are
     -- superseded by the Dhall `decodeDaemonConfigDhall` coverage in the
@@ -6050,7 +6100,7 @@ main = mainWithSuite "prodbox-unit" $ do
       withSystemTempDirectory "prodbox-hs-unit" $ \tmpDir -> do
         writeFile (tmpDir </> "prodbox.dhall") (wrapTier0 validConfig)
 
-        result <- validateAndLoadSettings tmpDir
+        result <- validateAndLoadSettingsAtPath (tmpDir </> "prodbox.dhall") tmpDir
 
         case result of
           Left err -> expectationFailure err
@@ -10583,7 +10633,7 @@ main = mainWithSuite "prodbox-unit" $ do
       withSystemTempDirectory "prodbox-hs-unit" $ \tmpDir -> do
         writeFile (tmpDir </> "prodbox.dhall") (wrapTier0 validConfig)
 
-        result <- validateAndLoadSettings tmpDir
+        result <- validateAndLoadSettingsAtPath (tmpDir </> "prodbox.dhall") tmpDir
 
         case result of
           Left err -> expectationFailure err
@@ -10646,12 +10696,12 @@ main = mainWithSuite "prodbox-unit" $ do
       withSystemTempDirectory "prodbox-hs-unit" $ \tmpDir -> do
         writeFile (tmpDir </> "prodbox.dhall") (wrapTier0 invalidZeroSslConfig)
 
-        localResult <- validateAndLoadSettings tmpDir
+        localResult <- validateAndLoadSettingsAtPath (tmpDir </> "prodbox.dhall") tmpDir
         case localResult of
           Left err -> expectationFailure ("local validation must accept it: " ++ err)
           Right _ -> pure ()
 
-        configResult <- loadConfigFile tmpDir
+        configResult <- loadConfigFileAtPath (tmpDir </> "prodbox.dhall")
         case configResult of
           Left err -> expectationFailure err
           Right config ->
@@ -10667,7 +10717,7 @@ main = mainWithSuite "prodbox-unit" $ do
       withSystemTempDirectory "prodbox-hs-unit" $ \tmpDir -> do
         writeFile (tmpDir </> "prodbox.dhall") (wrapTier0 plaintextEabZeroSslConfig)
 
-        configResult <- loadConfigFile tmpDir
+        configResult <- loadConfigFileAtPath (tmpDir </> "prodbox.dhall")
         case configResult of
           Left err -> expectationFailure err
           Right config ->
@@ -10678,7 +10728,7 @@ main = mainWithSuite "prodbox-unit" $ do
 
     it "fails fast with setup guidance when the repo Dhall config is missing" $
       withSystemTempDirectory "prodbox-hs-unit" $ \tmpDir -> do
-        result <- validateAndLoadSettings tmpDir
+        result <- validateAndLoadSettingsAtPath (tmpDir </> "prodbox.dhall") tmpDir
 
         case result of
           Left err -> do

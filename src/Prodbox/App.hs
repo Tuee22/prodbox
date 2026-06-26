@@ -2,6 +2,7 @@ module Prodbox.App
   ( App (..)
   , Env (..)
   , askEnv
+  , canRunWithoutRepoRoot
   , liftAppIO
   , main
   , runApp
@@ -24,6 +25,7 @@ import Options.Applicative
 import Prodbox.CLI.Command
   ( CommandListingFormat (..)
   , CommandRequest (..)
+  , ConfigCommand (..)
   , GatewayCommand (..)
   , NativeCommand (..)
   , WorkloadCommand (..)
@@ -131,6 +133,11 @@ canRunWithoutRepoRoot :: NativeCommand -> Bool
 canRunWithoutRepoRoot (NativeGateway (GatewayDaemonCommand _)) = True
 canRunWithoutRepoRoot (NativeGateway (GatewayStatusCommand _)) = True
 canRunWithoutRepoRoot (NativeWorkload (WorkloadStart _)) = True
+-- Sprint 1.49: `config generate` is binary-owned — it writes the
+-- binary-sibling `prodbox.dhall` (`resolveTier0ConfigPath`, which ignores the
+-- repo root), so it must run in a non-repo context such as the in-container
+-- image build (`RUN prodbox config generate`).
+canRunWithoutRepoRoot (NativeConfig ConfigGenerate) = True
 canRunWithoutRepoRoot _ = False
 
 failWith :: String -> IO ()

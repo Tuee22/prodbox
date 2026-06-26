@@ -46,7 +46,7 @@ import Prodbox.Host (runHostCommand)
 import Prodbox.K8s (runK8sCommand)
 import Prodbox.Lifecycle.Preconditions (noLiveLongLivedPulumiStacksPreflight)
 import Prodbox.PrerequisiteId (PrerequisiteId (..))
-import Prodbox.Repo (canonicalConfigPaths, configTier0Path)
+import Prodbox.Repo (resolveTier0ConfigPath)
 import Prodbox.Settings
   ( defaultConfigFile
   , renderSettingsDisplay
@@ -200,7 +200,7 @@ runConfigCommand repoRoot configCommand =
       -- runtime fallback (the consuming paths still fail fast when the file is
       -- missing — `writeTier0FloorPreservingParameters`).
       materializeSchemaFilesIfStale repoRoot
-      let tier0Path = configTier0Path (canonicalConfigPaths repoRoot)
+      tier0Path <- resolveTier0ConfigPath repoRoot
       exists <- doesFileExist tier0Path
       if exists
         then do

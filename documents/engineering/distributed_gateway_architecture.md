@@ -444,13 +444,15 @@ update fires the daemon's fsnotify watcher and drives the file-watch reload path
 boot-field restart contract; the live-field swap is governed by
 [config_doctrine.md §7](./config_doctrine.md#7-file-watch-reload-trigger)).
 
-This realizes hostbootstrap's container-default + ConfigMap-overwrite (context-init) pattern: the
-built container is expected to ship a default Tier-0 `prodbox.dhall`, which the cluster daemon then
-overwrites from the per-node ConfigMap at frame init. **Current gap**: the built gateway container
-ships **no** default `prodbox.dhall` yet — the rendered `gateway-config-<nodeId>` ConfigMap is the
-only config source, so an in-container default plus the binary-context shape and rename are
-outstanding. See [config_doctrine.md §0](./config_doctrine.md#0-three-tier-config-model) for the
-canonical tier model; it is not duplicated here.
+This realizes hostbootstrap's binary-owns-its-config + ConfigMap-overwrite (context-init) pattern.
+The built container ships **no** committed or `COPY`-ed default `prodbox.dhall`: the image build,
+after installing the binary, **runs the binary** (`prodbox config generate`) to write a
+binary-sibling `prodbox.dhall` that serves ephemeral in-container CLI commands (Sprint `1.49`). The
+long-running cluster daemon is configured by the rendered `gateway-config-<nodeId>` ConfigMap mount
+(unchanged) — independent of that build-time binary-sibling default. See
+[config_doctrine.md §0](./config_doctrine.md#0-three-tier-config-model) and
+[§3](./config_doctrine.md#3-canonical-paths) for the canonical tier model and the binary-sibling
+resolution; it is not duplicated here.
 
 Secrets are never carried in the Tier-0 mount. The daemon resolves every credential through
 `SecretRef.Vault` pointers (Tier-2 operational secrets) using its own Vault Kubernetes-auth

@@ -113,7 +113,6 @@ import Prodbox.Config.Tier0
   , ProdboxContext (..)
   , ProdboxProjectConfig (..)
   , Tier0Source (..)
-  , daemonContainerDefaultPath
   , loadDaemonBinaryContext
   )
 import Prodbox.Error
@@ -167,6 +166,7 @@ import Prodbox.Http.Client
   , httpGetText
   , renderHttpError
   )
+import Prodbox.Repo (resolveTier0ConfigPath)
 import Prodbox.Result (Result (..))
 import Prodbox.Retry
   ( RetryPolicy (..)
@@ -424,7 +424,12 @@ runGatewayDaemon maybeConfigPath config = withSocketsDo $ do
 logDaemonBinaryContext :: String -> Maybe FilePath -> IO ()
 logDaemonBinaryContext logLevel maybeConfigPath = do
   let configMapDir = maybe "/etc/gateway/config" takeDirectory maybeConfigPath
-  result <- loadDaemonBinaryContext configMapDir daemonContainerDefaultPath
+  -- Sprint 1.49: the non-ConfigMap fallback default is the binary-sibling
+  -- prodbox.dhall the image generates at build (`prodbox config generate`),
+  -- resolved beside this executable. The "/" argument is the unused fallback
+  -- anchor — the in-container executable directory always resolves.
+  containerDefaultPath <- resolveTier0ConfigPath "/"
+  result <- loadDaemonBinaryContext configMapDir containerDefaultPath
   case result of
     Left err ->
       logAtLevel logLevel Warn "tier0_binary_context_decode_failed" [field "detail" err]

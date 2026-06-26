@@ -55,9 +55,7 @@ module Prodbox.Config.Tier0
     -- * In-cluster daemon binary context (Sprint 1.40)
   , defaultDaemonProjectConfig
   , defaultDaemonContext
-  , renderDaemonContainerDefaultDhall
   , Tier0Source (..)
-  , daemonContainerDefaultPath
   , daemonConfigMapTier0Path
   , decodeProjectConfigDhall
   , loadDaemonBinaryContext
@@ -73,10 +71,13 @@ module Prodbox.Config.Tier0
 
     -- * Write side (IO)
   , writeTier0
+  , writeTier0AtPath
 
     -- * Idempotent host-level basics floor (Sprint 1.39 self-heal)
   , ensureBasicsFloor
+  , ensureBasicsFloorAtPath
   , ensureChildBasicsFloor
+  , ensureChildBasicsFloorAtPath
   )
 where
 
@@ -101,10 +102,9 @@ import Prodbox.Config.Basics
   , SealMode (..)
   , UnencryptedBasics (..)
   )
-import Prodbox.Config.FloorDhall (loadUnencryptedBasics)
+import Prodbox.Config.FloorDhall (loadUnencryptedBasics, loadUnencryptedBasicsAtPath)
 import Prodbox.Repo
-  ( ConfigPaths (..)
-  , canonicalConfigPaths
+  ( resolveTier0ConfigPath
   )
 import Prodbox.Settings
   ( AcmeSection
@@ -306,7 +306,7 @@ defaultProjectConfig =
 -- @prodbox-config.dhall@ writer.
 writeOperatorParametersToTier0 :: FilePath -> Settings.ConfigFile -> IO (Either String ())
 writeOperatorParametersToTier0 repoRoot config = do
-  let tier0Path = configTier0Path (canonicalConfigPaths repoRoot)
+  tier0Path <- resolveTier0ConfigPath repoRoot
   existing <- decodeProjectConfigDhall tier0Path
   let base = either (const defaultProjectConfig) id existing
       merged = base {parameters = configFileToTier0Parameters config}
@@ -324,7 +324,7 @@ writeOperatorParametersToTier0 repoRoot config = do
 -- silently inventing one.
 writeTier0FloorPreservingParameters :: FilePath -> Text -> Text -> IO (Either String ())
 writeTier0FloorPreservingParameters repoRoot clusterId vaultAddress = do
-  let tier0Path = configTier0Path (canonicalConfigPaths repoRoot)
+  tier0Path <- resolveTier0ConfigPath repoRoot
   existing <- decodeProjectConfigDhall tier0Path
   case existing of
     Left err ->
@@ -375,15 +375,6 @@ defaultDaemonProjectConfig =
     { context = defaultDaemonContext
     }
 
--- | The container-default @prodbox.dhall@ source text, rendered from the
--- Haskell source of truth ('defaultDaemonProjectConfig'). This is the exact
--- byte content baked into the prodbox\/gateway image; it is registered as a
--- tracked generated artifact (@docker\/default-prodbox.dhall@) so @dev check@
--- fails the build if the committed file drifts from this renderer.
-renderDaemonContainerDefaultDhall :: Text
-renderDaemonContainerDefaultDhall =
-  renderProjectConfigDhall defaultDaemonProjectConfig
-
 -- | Where the daemon's Tier-0 binary context comes from on a given start — the
 -- provenance the daemon logs. The ConfigMap mount OVERWRITES the container
 -- default (config_doctrine.md §0); the compiled-in default is the last-resort
@@ -398,12 +389,6 @@ data Tier0Source
     -- 'defaultDaemonProjectConfig'.
     Tier0FromCompiledDefault
   deriving (Eq, Show)
-
--- | The path the prodbox\/gateway container ships its baked-in default Tier-0
--- @prodbox.dhall@ at. The Dockerfiles @COPY@ @docker\/default-prodbox.dhall@
--- here (config_doctrine.md §3).
-daemonContainerDefaultPath :: FilePath
-daemonContainerDefaultPath = "/etc/prodbox/prodbox.dhall"
 
 -- | The Tier-0 @prodbox.dhall@ path inside the existing @gateway-config-<nodeId>@
 -- ConfigMap directory mount (@/etc/gateway/config@). When present this OVERWRITES
@@ -451,8 +436,9 @@ loadDaemonBinaryContext
   -- ^ The @gateway-config-<nodeId>@ ConfigMap directory mount
   -- (e.g. @/etc/gateway/config@).
   -> FilePath
-  -- ^ The baked-in container-default @prodbox.dhall@ path
-  -- (e.g. 'daemonContainerDefaultPath').
+  -- ^ The non-ConfigMap container-default @prodbox.dhall@ path — the
+  -- binary-sibling config the image generates at build (`prodbox config
+  -- generate`), resolved via 'Prodbox.Repo.resolveTier0ConfigPath' (Sprint 1.49).
   -> IO (Either String (Tier0Source, ProdboxProjectConfig))
 loadDaemonBinaryContext configMapDir containerDefaultPath = do
   let configMapPath = daemonConfigMapTier0Path configMapDir
@@ -583,8 +569,14 @@ tier0Header =
 -- version-controlled) is the whole non-secret surface.
 writeTier0 :: FilePath -> ProdboxProjectConfig -> IO (Either String ())
 writeTier0 repoRoot config = do
-  let paths = canonicalConfigPaths repoRoot
-      tier0Path = configTier0Path paths
+  tier0Path <- resolveTier0ConfigPath repoRoot
+  writeTier0AtPath tier0Path config
+
+-- | Write a Tier-0 prodbox.dhall to an EXPLICIT path. 'writeTier0' resolves the
+-- binary-sibling path ('resolveTier0ConfigPath') and delegates here; this is
+-- the path-injection seam in-process unit tests exercise directly. Sprint 1.48.
+writeTier0AtPath :: FilePath -> ProdboxProjectConfig -> IO (Either String ())
+writeTier0AtPath tier0Path config = do
   writeResult <-
     try
       ( do
@@ -596,7 +588,7 @@ writeTier0 repoRoot config = do
     Left err ->
       Left
         ( "Failed to write Tier-0 prodbox.dhall at `"
-            ++ repoRoot
+            ++ tier0Path
             ++ "`: "
             ++ displayException err
         )
@@ -634,11 +626,18 @@ writeTier0 repoRoot config = do
 -- 'loadUnencryptedBasics' is exactly the projection of the written record.
 ensureBasicsFloor :: FilePath -> Text -> IO (Either String ())
 ensureBasicsFloor repoRoot vaultAddress = do
-  existing <- loadUnencryptedBasics repoRoot
+  tier0Path <- resolveTier0ConfigPath repoRoot
+  ensureBasicsFloorAtPath tier0Path vaultAddress
+
+-- | Self-heal the Tier-0 floor at an EXPLICIT prodbox.dhall path.
+-- 'ensureBasicsFloor' resolves the binary-sibling path and delegates here; the
+-- path-injection seam in-process unit tests exercise directly. Sprint 1.48.
+ensureBasicsFloorAtPath :: FilePath -> Text -> IO (Either String ())
+ensureBasicsFloorAtPath tier0Path vaultAddress = do
+  existing <- loadUnencryptedBasicsAtPath tier0Path
   case existing of
     Right _ -> pure (Right ())
     Left _ -> do
-      let tier0Path = configTier0Path (canonicalConfigPaths repoRoot)
       tier0Present <- doesFileExist tier0Path
       reconstructed <-
         if tier0Present
@@ -646,7 +645,7 @@ ensureBasicsFloor repoRoot vaultAddress = do
             decoded <- decodeProjectConfigDhall tier0Path
             pure (either (const fallbackConfig) id decoded)
           else pure fallbackConfig
-      writeResult <- writeTier0 repoRoot reconstructed
+      writeResult <- writeTier0AtPath tier0Path reconstructed
       case writeResult of
         Left err ->
           pure
@@ -686,11 +685,19 @@ ensureChildBasicsFloor
   -- ^ The parent reference this child auto-unseals against.
   -> IO (Either String ())
 ensureChildBasicsFloor repoRoot childId vaultAddress parentRef = do
-  existing <- loadUnencryptedBasics repoRoot
+  tier0Path <- resolveTier0ConfigPath repoRoot
+  ensureChildBasicsFloorAtPath tier0Path childId vaultAddress parentRef
+
+-- | Self-heal the child Tier-0 floor at an EXPLICIT prodbox.dhall path.
+-- 'ensureChildBasicsFloor' resolves the binary-sibling path and delegates here;
+-- the path-injection seam in-process unit tests exercise directly. Sprint 1.48.
+ensureChildBasicsFloorAtPath
+  :: FilePath -> Text -> Text -> Tier0ParentRef -> IO (Either String ())
+ensureChildBasicsFloorAtPath tier0Path childId vaultAddress parentRef = do
+  existing <- loadUnencryptedBasicsAtPath tier0Path
   case existing of
     Right _ -> pure (Right ())
     Left _ -> do
-      let tier0Path = configTier0Path (canonicalConfigPaths repoRoot)
       tier0Present <- doesFileExist tier0Path
       reconstructed <-
         if tier0Present
@@ -698,7 +705,7 @@ ensureChildBasicsFloor repoRoot childId vaultAddress parentRef = do
             decoded <- decodeProjectConfigDhall tier0Path
             pure (either (const childFallbackConfig) id decoded)
           else pure childFallbackConfig
-      writeResult <- writeTier0 repoRoot reconstructed
+      writeResult <- writeTier0AtPath tier0Path reconstructed
       case writeResult of
         Left err ->
           pure

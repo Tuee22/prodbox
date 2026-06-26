@@ -423,6 +423,28 @@ testSecretsPath repoRoot = repoRoot </> "test-secrets.dhall"
 -- there is no non-secret @test-config.dhall@ (it would carry no fields).
 data TestSecrets = TestSecrets
   { vault_operator_password :: Text
+  , -- Sprint 5.10: the cleartext Route 53 hosted-zone id the harness injects into
+    -- the generated @prodbox.dhall@'s @route53.zone_id@ (the @demoTestConfig@
+    -- idiom). @test-secrets.dhall@ is the one file where cleartext operator ids
+    -- are allowed; the harness copies this through 'configFromSetupInput' so
+    -- @validateAwsBootstrapConfig@ passes without an interactive prompt. The
+    -- deferred operator ids (@aws_substrate.*@ / @ses.*@ / @pulumi_state_backend.*@)
+    -- extend the same way when a run needs them.
+    route53_zone_id :: Text
+  , -- Sprint 5.10 follow-up: the cleartext SES operator naming the harness injects
+    -- into the generated @prodbox.dhall@'s @ses.*@ block (the AWS SES stack the
+    -- keycloak-invite email flow provisions needs them). These are operator naming
+    -- decisions (sourced from @pulumi/aws-ses/Pulumi.aws-ses.yaml@), not
+    -- discoverable, so they live in @test-secrets.dhall@ like @route53_zone_id@.
+    ses_sender_domain :: Text
+  , ses_receive_subdomain :: Text
+  , ses_capture_bucket :: Text
+  , -- Sprint 5.10 follow-up: the long-lived @pulumi_state_backend@ S3 backend the
+    -- retained @aws-ses@ (and other long-lived) stacks live in. Operator infra ids
+    -- (from @pulumi/aws-ses/Pulumi.yaml@), injected like @route53_zone_id@. The
+    -- key prefix is the fixed @pulumi/@ skeleton default.
+    pulumi_state_backend_bucket_name :: Text
+  , pulumi_state_backend_region :: Text
   , aws_admin_for_test_simulation :: TestSecretsAdminCredentials
   , -- Sprint 7.18: optional so existing @test-secrets.dhall@ fixtures (and the
     -- @TestSecrets.default@ used by the round-trip drift guard) without the EAB
@@ -479,6 +501,12 @@ defaultTestSecrets :: TestSecrets
 defaultTestSecrets =
   TestSecrets
     { vault_operator_password = ""
+    , route53_zone_id = ""
+    , ses_sender_domain = ""
+    , ses_receive_subdomain = ""
+    , ses_capture_bucket = ""
+    , pulumi_state_backend_bucket_name = ""
+    , pulumi_state_backend_region = ""
     , aws_admin_for_test_simulation =
         TestSecretsAdminCredentials
           { access_key_id = ""

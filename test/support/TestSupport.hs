@@ -4,6 +4,7 @@ module TestSupport
   , describe
   , expectationFailure
   , goldenTest
+  , installOperatorBinaryInDir
   , it
   , mainWithSuite
   , propertyTest
@@ -20,6 +21,13 @@ where
 import Data.ByteString.Lazy (ByteString)
 import Data.List (isInfixOf)
 import GHC.Stack (HasCallStack)
+import System.Directory
+  ( copyFile
+  , getPermissions
+  , setOwnerExecutable
+  , setPermissions
+  )
+import System.FilePath ((</>))
 import Test.Tasty (TestName, TestTree, defaultMain, testGroup)
 import Test.Tasty.Golden (goldenVsString)
 import Test.Tasty.HUnit
@@ -60,6 +68,20 @@ wrapTier0 configRecord =
     , ", witness = [] : List Text"
     , "}"
     ]
+
+-- | Install the built operator binary into @dir@ and return the installed
+-- path. The host CLI resolves its Tier-0 @prodbox.dhall@ at the BINARY-SIBLING
+-- path (config_doctrine.md §3), so an integration test that authors a fixture
+-- @dir\/prodbox.dhall@ must run a binary whose sibling is that fixture — i.e. a
+-- binary living in @dir@. Copies (not symlinks) because @getExecutablePath@
+-- resolves symlinks back to the real build output. Sprint 1.48.
+installOperatorBinaryInDir :: FilePath -> FilePath -> IO FilePath
+installOperatorBinaryInDir binary dir = do
+  let installedPath = dir </> "prodbox"
+  copyFile binary installedPath
+  perms <- getPermissions installedPath
+  setPermissions installedPath (setOwnerExecutable True perms)
+  pure installedPath
 
 type Expectation = Assertion
 

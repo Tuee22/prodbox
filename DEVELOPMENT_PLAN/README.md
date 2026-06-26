@@ -30,6 +30,229 @@ govern this plan suite.
 
 ## Closure Status
 
+**2026-06-26 — `test all` reaches 17/18 validations; only `lifecycle` (#18) fails on an AWS ENI
+teardown race.** With the gateway-daemon fix, the chain cleared validations 1–17 (charts-vscode →
+sealed-vault, incl. gateway-pods/partition, charts-platform, keycloak-invite, charts-storage). The
+final `lifecycle` validation failed on the per-run EKS destroy: `delete-security-group … (DependencyViolation)`.
+Root cause (`Prodbox.Infra.AwsEksTestStack` destroy flow): it drains (LBs/PVCs) → purges *detached*
+ENIs (`status=available`) → deletes the cluster SG → `pulumi destroy`, with one *immediate* retry — but
+never **waits** for AWS to detach the LB-created ENIs (async, minutes). So the SG-delete and both
+destroy attempts race the still-attached ENIs. Confirmed by retrying the destroy manually after a delay:
+`AWS EKS test stack: destroyed and residue check passed`. All per-run stacks were then cleaned up
+(`aws-eks` + `aws-test` destroyed, `aws-eks-subzone` absent) — **no leaked AWS spend**. This is the
+first *non-functional* failure (AWS eventual-consistency teardown timing, not a prodbox logic bug); the
+durable fix is an ENI-detachment poll-wait before the SG-delete/destroy. Gates for the 17 functional
+fixes: `dev check` 0, `test unit` 1062/1062.
+
+**2026-06-26 — `lifecycle` is flaky/multi-modal at the teardown boundary (partly environmental); ENI-wait
+landed.** Implemented `waitForClusterSecurityGroupEnisDetached` in the `AwsEksTestStack` harness destroy
+flow (poll the cluster SG's dependent ENIs, 30×10 s budget, before SG-delete/`pulumi destroy`; best-effort
+— never blocks teardown). Two `test all` re-runs after it BOTH still failed `lifecycle`, but on **two
+different modes**: (ta13) the ENI `DependencyViolation` the fix targets; (ta14) `Blocked: Vault is sealed`
+— the `lifecycle` validation does cluster delete→reconcile, bringing up a **fresh sealed Vault** that the
+per-run destroy then races before auto-unseal completes, with the host under memory pressure (`swap free:
+0 MiB`). So the ENI-wait is correct for mode (ta13) but never fired in (ta14). All orphaned per-run stacks
+were cleaned up after each run — **no leaked AWS spend**. Conclusion: the remaining `lifecycle` failure is
+non-functional teardown-orchestration flakiness (ENI timing + Vault-unseal-after-reconcile race +
+host-memory pressure), expensive and flaky to chase via repeated EKS runs. The functional chain is
+complete at 17/18. `dev check` 0, `test unit` 1062/1062.
+
+**2026-06-26 — `lifecycle` teardown-ordering hardening landed (Vault-unseal race).** Implemented the
+two Vault-unseal fixes for the ta14 mode (validated at build/`dev check`/`test unit` level, not via a
+fresh EKS run, by request): (1) the `lifecycle` validation now runs `cluster delete → cluster reconcile
+→ vault unseal → cluster health` — the idempotent `vault unseal` (no-op when unsealed) closes the race
+where reconcile's auto-unseal loses to host memory pressure, leaving Vault sealed for the health check;
+(2) `awsPostflightDestroyActions` (`Prodbox.TestRunner`) prepends an idempotent `vault unseal` before
+the per-run `aws stack … destroy` commands, so the postflight destroy never races a sealed Vault (and
+if the cluster is genuinely down, the unseal fails and the destroys are skipped, preserving operational
+creds for manual recovery as before). Combined with the already-landed `waitForClusterSecurityGroupEnisDetached`
+ENI-wait, both observed `lifecycle` teardown modes are now addressed. `dev check` 0, `test unit`
+1062/1062.
+
+**2026-06-26 — ✅ `prodbox test all` FULLY GREEN (exit 0).** End-to-end confirmation after resetting host
+swap (the memory pressure that caused the flake): **18/18 validations pass** (18 `body exit=ExitSuccess`,
+0 failures, including `lifecycle`), `prodbox-unit` PASS (1062), `prodbox-integration` PASS (39), a real
+EKS cluster provisioned and **cleanly destroyed** (`destroyed and residue check passed`; final residue
+check `absent`) — **no leaked AWS spend**. The hardening worked: 2 transient `Vault is sealed` moments
+occurred but the idempotent `vault unseal` retries recovered them, so the `lifecycle` teardown and the
+postflight per-run destroy both succeeded. This closes the full `test all` chain that began the session
+failing at config preflight.
+
+**2026-06-25 — `gateway-daemon` validation fixed: stale config renderer (Text creds + missing `vault`).**
+After the `aws-eks` fix, `test all` cleared 10 validations and failed at `gateway-daemon` with
+`failed to decode gateway daemon Dhall config … Expression doesn't match annotation`. Root cause:
+`renderGatewayValidationConfigDhall` (`Prodbox.TestValidation`) rendered `aws_creds`/`minio_creds`/
+`event_keys.value` as `Text` and omitted the top-level `vault` field, but the daemon decoder
+(`Prodbox.Gateway.Settings.DaemonConfigDhall`) types those creds as the `SecretRef` union and carries a
+`vault :: Maybe VaultKubernetesAuthDhall` (both added later; the validation renderer was never updated,
+unlike the production `renderGatewayConfigTemplate`). Fix: render the creds as the `SecretRef` union
+(`event_keys.value` as a `TestPlaintext` SecretRef; `aws_creds`/`minio_creds` `None`-annotations as the
+union, `region` stays `Text`) and add `vault = None {…}`. Added a unit regression test that renders the
+validation config and decodes it through `decodeDaemonConfigDhallWith` (catches the mismatch without an
+EKS run). Further passes peeled back two more layers: `loadDaemonConfig` *eagerly* resolves every SecretRef during
+decode, and the **host** `gateway status` can resolve neither a `TestPlaintext` ref (production mode
+forbids it) nor a `Vault` ref (no in-cluster Kubernetes-auth token on the host). But `runGatewayStatus`
+never *uses* `event_keys` — it queries the running daemon by endpoint (`queryGatewayState` ignores the
+config path). So the final fix renders `event_keys = [] : List {…}` (empty — nothing to resolve), which
+decodes cleanly and lets the host status check query the live daemon. Gates: `dev check` 0,
+`test unit` 1062/1062. The full validation list (`TestPlan.hs`) is 18; `gateway-daemon` is #11.
+
+**2026-06-25 — `aws-eks` validation fixed: invalid `plaintext` Pulumi secrets-provider.** With the
+realm reconciler in place, `test all` advanced through 7 validations and failed at `aws-eks` with
+`could not create secrets manager for new stack: open secrets.Keeper: no scheme in URL "plaintext"`.
+`AwsSesStack` was already fixed for this (Sprint 7.23 — `plaintext` is not a valid pulumi
+secrets-provider URL on current pulumi; it uses the empty-passphrase provider), but
+`AwsTestStack` / `AwsEksTestStack` / `AwsEksSubzoneStack` still passed `--secrets-provider plaintext`.
+Fix: switch those three to `--secrets-provider passphrase` (each already sets
+`PULUMI_CONFIG_PASSPHRASE = ""`; at-rest secrecy is the Model-B Vault-Transit envelope). Gates:
+`dev check` 0, `test unit` 1061/1061. Not yet validated end-to-end (the `aws-eks` validation provisions
+a real EKS cluster).
+
+**2026-06-25 — charts-vscode OIDC 401 fixed durably: realm-secret reconciler.** The `charts-vscode`
+validation got a persistent Keycloak 401 (`invalid_client_credentials`). Root cause: Keycloak boots
+with `--import-realm` (`IGNORE_EXISTING` — never overwrites an existing realm), the `prodbox` realm
+lives in the durable keycloak-postgres, and the Vault OIDC secrets are `VaultSecretGenerated`
+(write-if-absent) — so **nothing reconciled an existing realm's client secrets** when postgres and
+Vault drifted, leaving a stale `prodbox-api` secret. Proven by re-syncing via the admin API (token →
+HTTP 200). Durable fix: added `setClientSecret`/`resetUserPassword` to `Prodbox.Keycloak.Admin` and
+`reconcileRealmOidcSecretsAtPublicHost` to `Prodbox.UsersAdmin` (reads the three OIDC client secrets +
+demo-user password from Vault, patches the live realm via the admin API — idempotent, mirroring the
+existing realm-SMTP reconcile that exists for the same import-skip reason), wired as a
+`reconcileKeycloakRealmSecrets` preflight step in `runChartsVscodeValidation` before the password
+grant. Validated by **injecting deliberate drift** (wrong `prodbox-api` secret → token 401) and
+confirming the reconciler heals it on the next `test all`. Gates: `dev check` 0, `test unit` 1061/1061.
+
+**2026-06-24 — 4 Phase-2/2 integration-test regressions fixed (two distinct causes, both from this
+session's `ses.*`/`pulumi_state_backend` work).** With the whole lifecycle green, `test all` reached
+Phase 2/2 and 4 of 39 integration tests failed. (1) **Decode** — the bare-record `test-secrets.dhall`
+generators in `test/integration/CliSuite.hs` (`testSecretsDhallWithAdmin*`) didn't carry the new
+`TestSecrets` fields, so the binary's decoder saw missing fields; added a shared
+`testSecretsOperatorIdFields` spliced into both generators (fixed `vault lifecycle` + `nuke`).
+(2) **Clobber** — `regenerateConfigFromTestSecrets` overwrote the fixture config's populated
+`route53.zone_id` with the fake test-secrets' empty value (the guard now also requires `ses`/`backend`,
+so the regen ran), failing the IAM harness with `route53.zone_id must not be empty`; added
+`harnessPreferNonEmpty` so the regen fills empty operator fields from test-secrets without clobbering a
+populated one (identity for real `test all`, which supplies non-empty values) — fixed `aws-iam` +
+`acme`. All 4 now pass; gates: `dev check` 0, `test unit` 1061/1061.
+
+**2026-06-24 — `pulumi_logged_in` prerequisite fixed: `readMinioCredentials` read a removed k8s
+Secret.** After the workload fixes, `test all` reached the Pulumi MinIO-backend login check, which
+failed with `kubectl get secret failed for rootUser: secrets "minio" not found`. Root cause:
+`Prodbox.Infra.MinioBackend.readMinioCredentials` (used by the login check + the per-run substrate
+stacks `aws-test`/`aws-eks-subzone`) read the `minio` Kubernetes Secret, but Sprint 7.25 removed it —
+the MinIO root credential is now the static constant `Prodbox.Minio.RootCredential`
+(`minioRootUser`/`minioRootPassword`), `--set`-injected by `renderMinioChartArgs`. Verified the running
+`minio-0` has `MINIO_ROOT_USER=prodbox-minio-root` (= the constant). Fix: `readMinioCredentials` returns
+the static constant directly (removed the stale `readSecretField` Secret read). Gates: `dev check` 0,
+`test unit` 1061/1061. Distinct subsystem; unrelated to the binary-sibling/config doctrine.
+
+**2026-06-24 — websocket workload CrashLoopBackOff fixed: missing Vault egress in the
+`websocket-isolation` NetworkPolicy.** After the api fix, `test all` reached the websocket workload,
+which crash-looped with `Vault Kubernetes auth login failed: HttpTimeout "connection timeout"`. Root
+cause: unlike the api (`oidc = None`), the websocket resolves its `oidc.client_secret`
+`SecretRef.Vault` at startup via Vault k8s auth (role `websocket-oidc`), but
+`charts/websocket/templates/networkpolicy.yaml` allowed egress only to redis (6379), keycloak (8080),
+and DNS (53) — **no Vault (8200 / `vault` ns) rule** — so the auth timed out. (vscode/gateway run
+because their NetworkPolicies allow Vault.) Fix: add the Vault egress rule to the websocket
+NetworkPolicy, mirroring the vscode chart. LIVE-VERIFIED: after `charts delete websocket --yes` +
+`charts reconcile websocket`, the websocket pod is **Ready (restarts=0)**. `dev lint chart` 0.
+Unrelated to the binary-sibling/config-generation doctrine.
+
+**2026-06-24 — api workload CrashLoopBackOff fixed: stale `api` chart `config.dhall` template.** With
+all config/SES/backend blockers cleared, `test all` reached the workload stage and the `api` pod
+crash-looped. Root cause: `charts/api/templates/configmap-config.yaml` rendered
+`oidc.client_secret : Text`, but the workload decoder (`Prodbox.Workload.Settings.OidcConfigDhall`,
+`client_secret :: SecretRef`) expects the `< Vault | TransitKey | Prompt | TestPlaintext >` union —
+the api chart was never updated when `oidc.client_secret` became a `SecretRef` (the websocket chart
+was). The Dhall type mismatch failed the in-process decode of `/etc/workload/config.dhall`. Fix:
+align the api chart's `oidc.client_secret` type annotation to the `SecretRef` union. LIVE-VERIFIED:
+after `charts delete api --yes` + `charts reconcile api`, the api pod is **Ready (restarts=0)**. Gates:
+`dev check` 0, `dev lint chart` 0, `test unit` 1061/1061 (the `assertGeneratedSecretRefArtifact`
+api-template check still green). Unrelated to the binary-sibling/config-generation doctrine.
+
+**2026-06-24 — Sprint `5.10` follow-up: harness force-syncs the in-force SSoT (fixes the stale-config
+edge-reconcile failure).** Root-caused a live `test all` failure: on an ESTABLISHED cluster the edge
+reconcile's gateway-chart deploy reads the **in-force config SSoT** (MinIO), not the binary-sibling
+file, and failed `gateway chart requires route53_zone_id in settings` because the SSoT was seeded
+empty before the operator fields were populated (the harness only regenerated the binary-sibling
+file, which the preflight validated — a config-source mismatch). Fix: `forceSyncInForceConfigFromFile`
+(`src/Prodbox/Settings.hs`) unconditionally re-seals the binary-sibling config into the in-force SSoT
+(root-Vault-token write; best-effort/no-op when not established or Vault sealed), wired into the
+harness after the pre-reconcile unseals Vault (`src/Prodbox/TestRunner.hs`). LIVE-VERIFIED: in-force
+`route53.zone_id` now populated (`config show`), the gateway error is gone, and `test all` advanced
+past it to the next deferred operator field (`ses.sender_domain`). Gates: `dev check` 0, `test unit`
+1061/1061. **Follow-up landed same day:** the `ses.*` block (`ses_sender_domain` /
+`ses_receive_subdomain` / `ses_capture_bucket`) was wired the same way as `route53_zone_id` — added to
+`TestSecrets` + the harness regen (`configFromSetupInput` doesn't author `ses.*`, so the harness
+injects it directly from `test-secrets.dhall`), schema regenerated, and the fixture populated from the
+operator's own `pulumi/aws-ses/Pulumi.aws-ses.yaml` (`test.resolvefintech.com` /
+`inbox.test.resolvefintech.com` / the existing `prodbox-ses-capture` bucket). The
+`pulumi_state_backend` block (`prodbox-pulumi-state-long-lived` / `us-west-2` / `pulumi/`, from
+`pulumi/aws-ses/Pulumi.yaml`) was wired the same way (needed for the long-lived `aws-ses` backend),
+and the long-lived **`aws-ses` stack was provisioned** (`prodbox aws stack aws-ses reconcile`, exit 0:
+SES sending identity `test.resolvefintech.com` VERIFIED + DKIM SUCCESS, receive rule set
+`prodbox-receive-rule-set`, `prodbox-ses-capture` imported, SMTP IAM user `prodbox-ses-smtp`). `aws
+stack aws-ses reconcile` reads the binary-sibling config (`loadConfigFile`) + the `test-secrets.dhall`
+admin credential — no operational `aws.*` needed. Remaining: only the AWS-substrate-only
+`aws_substrate.*` fields (not exercised on home-local).
+
+**2026-06-24 — Binary-sibling + harness-generated-config doctrine LIVE-PROVEN; one follow-up fix
+(Sprint `1.49`) surfaced + fixed.** A live home `prodbox test all` confirmed the doctrine end-to-end:
+the harness regenerated the binary-sibling `prodbox.dhall` from `test-secrets.dhall` (`route53.zone_id`
+populated), the **original `route53.zone_id must not be empty` failure is gone**, the managed AWS IAM
+harness setup PASSED (operational IAM user minted, `POLICY_TIER=full`), the in-container image build's
+`RUN prodbox config generate` PASSED, and the cluster came fully up (control plane, all platform
+charts). The live run surfaced one bug in Sprint `1.49`: `config generate` was gated by `findRepoRoot`
+and failed in the container's non-repo cwd — fixed by adding `NativeConfig ConfigGenerate` to
+`canRunWithoutRepoRoot` (`src/Prodbox/App.hs`) with a regression test; gates re-green (`dev check` 0,
+`test unit` 1061/1061). The run's remaining failure is deeper, in `cluster reconcile --with-edge`
+(public-edge / real-ZeroSSL-ACME bring-up) — pre-existing live-infrastructure territory unrelated to
+this doctrine, tracked as a non-blocking live-proof.
+
+**2026-06-23 — Binary-sibling `prodbox.dhall` doctrine LANDED end-to-end (Phase `1` Sprints
+`1.48`–`1.50` ✅; Phase `5` Sprint `5.10` ✅).** Sprint `5.10` closed the loop the doctrine was
+motivated by: the test harness now regenerates the binary-sibling `prodbox.dhall` from
+`test-secrets.dhall` (`route53_zone_id` added to `TestSecrets`; the real `resolvefintech.com` zone in
+the fixture) + baked defaults through the shared `configFromSetupInput` builder, so `prodbox test all`
+runs from a freshly-generated skeleton without an interactive `config setup`. Gates: `dev check` 0,
+`test unit` 1060/1060. The `route53.zone_id must not be empty` preflight failure that started this
+work is now code-resolved (live-proof: a real `test all` run, non-blocking). The reopened Phase `1` config-surface work is code-complete and
+validated: `1.48` (binary-sibling resolution via `resolveTier0ConfigPath` + the `…AtPath`
+path-injection seam for in-process tests), `1.49` (removed `docker/default-prodbox.dhall`; the image
+RUNs the binary to generate its binary-sibling config; daemon fallback repointed; ConfigMap override
+unchanged), `1.50` (the shared pure `configFromSetupInput` builder). Gates: `prodbox dev check` 0,
+`prodbox test unit` 1060/1060. Integration suites run a tmpDir-local binary against a sibling fixture.
+Phase `5` Sprint `5.10` (harness generates its run config from `test-secrets.dhall` through the
+`1.50` builder) is now unblocked.
+
+**2026-06-23 — Binary-sibling `prodbox.dhall` doctrine: Phase `1` reopened (Sprints `1.48`–`1.50`
+📋/⏸️) and Phase `5` reopened (Sprint `5.10` ⏸️).** Adopting hostbootstrap's binary-owns-its-config
+contract: every `prodbox` binary resolves its Tier-0 `prodbox.dhall` at the **binary-sibling path**
+(`.build/prodbox.dhall`, beside the executable), the same filename in every context — never the repo
+root and never a `--config` flag; the committed/copied container default
+(`docker/default-prodbox.dhall`) is **removed**, with the in-container config generated by **running
+the binary** post-build; and the **test harness generates its run config** through the same builder
+production uses, sourcing cleartext operator ids (`route53.zone_id`) from `test-secrets.dhall`.
+Motivation: `prodbox test all` from a freshly-generated skeleton failed the managed AWS IAM harness
+preflight (`route53.zone_id must not be empty`) because nothing populated the operator fields
+non-interactively. Doctrine bodies changed this pass:
+[config_doctrine.md](../documents/engineering/config_doctrine.md) §0 (Tier 0 + new "The test harness
+generates its run config") / §2 / §3 / §9 / §10,
+[distributed_gateway_architecture.md](../documents/engineering/distributed_gateway_architecture.md),
+plus `../README.md` and `../CLAUDE.md`. The plan-side reopenings:
+
+- **Phase `1` reopened** to expand its own Tier-0 config surface with three sprints in
+  [phase-1-runtime-cli-aws-foundations.md](phase-1-runtime-cli-aws-foundations.md): Sprint `1.48`
+  (binary-sibling resolution, 📋 Planned), Sprint `1.49` (remove `docker/default-prodbox.dhall`;
+  container generates config by running the binary, ⏸️ Blocked by `1.48`), Sprint `1.50` (factor out
+  the shared `configFromSetupInput` builder, 📋 Planned). Forward-only `Blocked by`
+  ([Standard N](development_plan_standards.md#n-phase-independence-no-backward-blocking)).
+- **Phase `5` reopened** to expand its own test-harness surface with Sprint `5.10`
+  (harness-generated run config from `test-secrets.dhall`, ⏸️ Blocked by earlier-phase Sprints
+  `1.48`/`1.50`) in [phase-5-canonical-test-suite.md](phase-5-canonical-test-suite.md). Removals
+  recorded in [legacy-tracking-for-deletion.md](legacy-tracking-for-deletion.md) (the
+  `docker/default-prodbox.dhall` row superseded; repo-root resolution + baked-default seeding added).
+
 **2026-06-23 — Sprint `7.26` ✅: cascade tag sweep carves out retained long-lived shared infra.**
 Operator-reported: `cluster delete --cascade --yes` printed a postflight tag-sweep "manual cleanup
 required" refusal naming the long-lived `pulumi_state_backend` bucket
@@ -2746,6 +2969,16 @@ entry may name only an earlier-or-same-phase sprint or an external prerequisite 
 or a higher-numbered sprint — and an incomplete later phase never reopens or blocks an earlier phase.
 
 ## Phase Overview
+
+> **2026-06-26 live-proof update:** the home-substrate aggregate `prodbox test all` is **green**
+> (18/18 validations + both cabal suites; see the Closure Status above and
+> [00-overview.md](00-overview.md) Alignment Status). That run is the live-infra proof that satisfies
+> the **home-substrate** `🧪 Live-proof: pending` axes referenced in the rows below across Phases
+> 1–8 (config/secrets, gateway/DNS, charts, lifecycle, the canonical suite incl. `sealed-vault`, the
+> AWS per-run resource cycles the home suite exercises, and `keycloak-invite`). Per
+> [Standard O](development_plan_standards.md#o-code-local-completion-vs-live-infra-proof) these were
+> already non-blocking; they are now proven. The `--substrate aws` aggregate stays a distinct axis
+> ([substrates.md](substrates.md)).
 
 | Phase | Name | Status | Document |
 |-------|------|--------|----------|

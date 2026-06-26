@@ -19,6 +19,20 @@
 
 ## Phase Status
 
+✅ **Live-proven 2026-06-26 (home substrate) — `keycloak-invite` passes under the green `test all`,
+satisfying Sprint `8.9`'s home live-proof.** The `keycloak-invite` named validation passes
+`ExitSuccess` in the green home `prodbox test all` (2026-06-26, 18/18; see
+[00-overview.md](00-overview.md) Alignment Status), exercising the operator-invited, email-verified
+flow end-to-end — a real SES invite send + S3 capture + link-follow — over the Vault-routed invite
+secrets (the `keycloak-smtp` credential and the OIDC client secrets as `SecretRef.Vault`, consumed by
+Keycloak via Vault Kubernetes auth). The same run hardened that path: the durable Keycloak realm-secret
+reconciler (`reconcileRealmOidcSecretsAtPublicHost`) now re-syncs the realm's OIDC client secrets +
+demo-user password from Vault before the OIDC grants, fixing a persistent `invalid_client_credentials`
+401 where `--import-realm` never updated a preserved realm (see [README.md](README.md) Closure Status).
+So Sprint `8.9`'s previously-`📋`/`Live-proof: pending` invite-secret end state is home-substrate
+live-proven (Standard O). The **both-substrate** live `keycloak-invite` exercise keeps its `--substrate
+aws` half as a distinct, non-blocking axis ([substrates.md](substrates.md)).
+
 **Independent Validation** (development_plan_standards.md Standard N): Phase `8`'s owned surface —
 the operator-invited, email-verified Keycloak flow, the `prodbox users invite|list|revoke`
 command family, the SES SMTP/IAM-to-SMTP derivation, and `ValidationKeycloakInvite` — is
@@ -44,9 +58,12 @@ model is **retired** (not extended), the chart-generated `lookup`+`randAlphaNum`
 OIDC client secrets are **removed** (not bridged), and a sealed Vault **bricks** Keycloak bootstrap
 and the invite-send / secret-dependent startup paths — no SMTP or OIDC material is reconstructed
 from any non-Vault source. The invite-auth flow itself is unchanged; only its secret delivery moves
-under Vault. Sprint `8.9` is blocked on the cross-phase Vault platform and derivation-retirement
-sprints (`3.18`, `3.19`, `7.14`). Honest status: 📋 Planned — the Vault-root invite-secret
-implementation is not yet validated. Sprints `8.1`–`8.8` stay ✅ Done on their owned surfaces. See
+under Vault. Sprint `8.9` built on the earlier-phase Vault platform and derivation-retirement
+sprints (`3.18`, `3.19`, `7.14`), all of which have since landed. Honest status: ✅ **Done** on its
+code-owned surface (2026-06-17) and **home-substrate live-proven 2026-06-26** by the green
+`keycloak-invite` validation (see the Live-proven note at the top of this Phase Status); the
+`--substrate aws` invite exercise remains the orthogonal, non-blocking axis. Sprints `8.1`–`8.8` stay
+✅ Done on their owned surfaces. See
 [vault_doctrine.md](../documents/engineering/vault_doctrine.md),
 [cluster_federation_doctrine.md](../documents/engineering/cluster_federation_doctrine.md), and the
 [legacy ledger](legacy-tracking-for-deletion.md).

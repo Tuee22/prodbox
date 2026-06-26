@@ -74,15 +74,15 @@ RUN cabal update \
     && cabal build --builddir=.build exe:prodbox \
     && cp "$(cabal list-bin --builddir=.build exe:prodbox)" /usr/local/bin/prodbox
 
-# Sprint 1.40: bake in the default Tier-0 `prodbox.dhall` binary context so a
-# freshly started container has a valid non-secret binary context BEFORE any
-# ConfigMap is mounted (config_doctrine.md §0, §3). The in-cluster daemon
-# OVERWRITES this from the `gateway-config-<nodeId>` ConfigMap mount at startup.
-# The file is the Haskell-rendered source of truth
-# (`Prodbox.Config.Tier0.defaultDaemonProjectConfig`), kept in sync with the
-# renderer by `prodbox dev check` (a tracked generated artifact). It carries no
-# secret values — only `SecretRef.Vault` pointers.
-COPY docker/default-prodbox.dhall /etc/prodbox/prodbox.dhall
+# Sprint 1.49: the binary owns its config — there is NO committed/COPY-ed
+# `docker/default-prodbox.dhall`. After the binary is installed, RUN it to
+# generate the binary-sibling Tier-0 `prodbox.dhall` (beside the executable at
+# `/usr/local/bin/prodbox.dhall`), the same filename/resolution the host CLI
+# uses (config_doctrine.md §0, §3). This serves ephemeral in-container CLI
+# commands; the long-running cluster daemon is configured by the
+# `gateway-config-<nodeId>` ConfigMap override (unchanged). It carries no secret
+# values — only `SecretRef.Vault` pointers.
+RUN /usr/local/bin/prodbox config generate
 
 # Bare `prodbox` under tini. Each chart supplies its own subcommand via the pod
 # `args:` — the gateway chart passes `gateway start …`, the api/websocket charts

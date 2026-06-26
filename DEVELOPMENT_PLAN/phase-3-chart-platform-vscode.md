@@ -13,6 +13,15 @@
 
 ## Phase Status
 
+✅ **Live-proven 2026-06-26 — the full chart stack passes end-to-end under the green home `test all`.**
+The `charts-vscode`, `charts-api`, `charts-websocket`, `charts-platform`, and `charts-storage` named
+validations all pass `ExitSuccess` in the green home `prodbox test all` (2026-06-26, 18/18; see
+[00-overview.md](00-overview.md) Alignment Status), so Phase 3's chart-orchestration / retained-storage
+/ Keycloak-OIDC / Redis / Patroni-PostgreSQL surfaces are home-substrate live-proven. This run also
+fixed two chart defects en route — the `api` chart `config.dhall` `oidc.client_secret` type and the
+`websocket-isolation` NetworkPolicy Vault egress (see [README.md](README.md) Closure Status). The
+`--substrate aws` chart coverage stays orthogonal ([substrates.md](substrates.md)).
+
 ✅ **Reclosed 2026-06-16** — the Vault secrets model is finalized to the Vault-root architecture
 (narrated in the [README.md](README.md) Closure Status and harmonized across the plan suite per
 [development_plan_standards.md](development_plan_standards.md) rule J). Vault is the sole

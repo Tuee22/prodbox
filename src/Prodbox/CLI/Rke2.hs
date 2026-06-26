@@ -133,7 +133,6 @@ import Prodbox.Config.Tier0
   ( Tier0ParentRef (..)
   , ensureBasicsFloor
   , ensureChildBasicsFloor
-  , renderDaemonContainerDefaultDhall
   )
 import Prodbox.ContainerImage qualified as ContainerImage
 import Prodbox.Dns (fetchPublicIp)
@@ -5492,67 +5491,35 @@ buildAndPushCustomImageVariants repoRoot imageBuildPlan taggedRefs =
 buildCustomImageOnce
   :: FilePath -> HostArchitecture -> CustomImageBuildPlan -> [String] -> IO ExitCode
 buildCustomImageOnce repoRoot hostArchitecture imageBuildPlan taggedRefs = do
-  -- The prodbox/gateway images COPY `docker/default-prodbox.dhall` (the baked-in
-  -- Tier-0 binary context). It is NOT version-controlled — it is regenerated
-  -- from the Haskell source of truth into the build context immediately before
-  -- every `docker build`, so the in-container default can never drift from the
-  -- renderer. This covers both Dockerfiles and both substrates (this is the
-  -- single `docker build` chokepoint).
-  defaultDhallResult <- ensureDaemonContainerDefaultDhall repoRoot
-  case defaultDhallResult of
+  -- Sprint 1.49: the prodbox/gateway image no longer COPYs a baked
+  -- `docker/default-prodbox.dhall`. The image RUNs the binary
+  -- (`prodbox config generate`) to write its binary-sibling Tier-0 config at
+  -- build time, so there is nothing to regenerate into the build context before
+  -- `docker build` (config_doctrine.md §0, §3).
+  let arguments =
+        [ "build"
+        , "-f"
+        , customImageDockerfile imageBuildPlan
+        ]
+          ++ concat [["-t", tagRef] | tagRef <- taggedRefs]
+          ++ ["."]
+  outputResult <- captureDockerToolOutput repoRoot arguments
+  case outputResult of
     Left err -> failWith err
-    Right () -> do
-      let arguments =
-            [ "build"
-            , "-f"
-            , customImageDockerfile imageBuildPlan
-            ]
-              ++ concat [["-t", tagRef] | tagRef <- taggedRefs]
-              ++ ["."]
-      outputResult <- captureDockerToolOutput repoRoot arguments
-      case outputResult of
-        Left err -> failWith err
-        Right output ->
-          case processExitCode output of
-            ExitSuccess -> do
-              emitCapturedProcessOutput output
-              pure ExitSuccess
-            ExitFailure _ ->
-              failWith
-                ( "Failed to build "
-                    ++ customImageDockerfile imageBuildPlan
-                    ++ " for "
-                    ++ renderHostArchitecture hostArchitecture
-                    ++ ": "
-                    ++ outputDetail output
-                )
-
--- | Sprint 7.18: regenerate the prodbox/gateway container's baked-in default
--- Tier-0 @docker\/default-prodbox.dhall@ into the build context from the
--- Haskell source of truth ('renderDaemonContainerDefaultDhall') immediately
--- before a @docker build@. The file is NOT version-controlled (ALL Dhall is
--- generated or locally authored, NONE committed); regenerating it on every
--- build means the in-container default can never drift from the renderer, so it
--- no longer needs a committed-artifact drift check.
-ensureDaemonContainerDefaultDhall :: FilePath -> IO (Either String ())
-ensureDaemonContainerDefaultDhall repoRoot = do
-  let defaultDhallPath = repoRoot </> "docker" </> "default-prodbox.dhall"
-  writeResult <-
-    try
-      ( do
-          createDirectoryIfMissing True (takeDirectory defaultDhallPath)
-          BS.writeFile defaultDhallPath (TextEncoding.encodeUtf8 renderDaemonContainerDefaultDhall)
-      )
-      :: IO (Either SomeException ())
-  pure $ case writeResult of
-    Left err ->
-      Left
-        ( "Failed to regenerate the container-default Tier-0 config `"
-            ++ defaultDhallPath
-            ++ "`: "
-            ++ displayException err
-        )
-    Right () -> Right ()
+    Right output ->
+      case processExitCode output of
+        ExitSuccess -> do
+          emitCapturedProcessOutput output
+          pure ExitSuccess
+        ExitFailure _ ->
+          failWith
+            ( "Failed to build "
+                ++ customImageDockerfile imageBuildPlan
+                ++ " for "
+                ++ renderHostArchitecture hostArchitecture
+                ++ ": "
+                ++ outputDetail output
+            )
 
 pushDockerImageWithRetry :: FilePath -> String -> String -> IO ExitCode
 pushDockerImageWithRetry repoRoot imageRef description = go (retryPolicyMaxAttempts customImagePushRetryPolicy)

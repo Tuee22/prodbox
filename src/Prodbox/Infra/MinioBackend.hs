@@ -43,6 +43,7 @@ import Data.Maybe (maybeToList)
 import Data.Text qualified as Text
 import Prodbox.CLI.Output (writeOutputLine)
 import Prodbox.Error (AppError)
+import Prodbox.Minio.RootCredential (minioRootPassword, minioRootUser)
 import Prodbox.Result (Result (..))
 import Prodbox.Service
   ( MinIOError
@@ -445,48 +446,16 @@ isPortOpen port = do
       Failure _ -> False
       Success output -> processExitCode output == ExitSuccess
 
+-- | Sprint 7.25: the in-cluster MinIO root credential is a STATIC constant
+-- ('Prodbox.Minio.RootCredential'), injected into the chart via
+-- @renderMinioChartArgs --set rootUser/rootPassword@ — the former @minio@
+-- Kubernetes Secret (and the @vault-secrets@ init container that materialized
+-- it) were removed. So return the constant directly rather than reading a
+-- Secret that no longer exists; every caller (the Pulumi MinIO-backend login
+-- check, the per-run substrate stacks) then authenticates with exactly the
+-- credential the running MinIO was deployed with.
 readMinioCredentials :: IO (Either String (String, String))
-readMinioCredentials = do
-  envResult <- kubectlEnv
-  case envResult of
-    Left err -> pure (Left err)
-    Right environment -> do
-      userResult <- readSecretField environment "rootUser"
-      passResult <- readSecretField environment "rootPassword"
-      case (userResult, passResult) of
-        (Right user, Right pass) -> pure (Right (user, pass))
-        (Left err, _) -> pure (Left err)
-        (_, Left err) -> pure (Left err)
-
-readSecretField :: [(String, String)] -> String -> IO (Either String String)
-readSecretField environment fieldName = do
-  result <-
-    captureSubprocessResult
-      Subprocess
-        { subprocessPath = "kubectl"
-        , subprocessArguments =
-            [ "get"
-            , "secret"
-            , minioSecretName
-            , "-n"
-            , minioNamespace
-            , "-o"
-            , "go-template={{index .data \"" ++ fieldName ++ "\" | base64decode}}"
-            ]
-        , subprocessEnvironment = Just environment
-        , subprocessWorkingDirectory = Nothing
-        }
-  case result of
-    Failure err -> pure (Left ("failed to read MinIO secret field " ++ fieldName ++ ": " ++ err))
-    Success output ->
-      case processExitCode output of
-        ExitFailure _ ->
-          pure (Left ("kubectl get secret failed for " ++ fieldName ++ ": " ++ trim (processStderr output)))
-        ExitSuccess ->
-          let value = trim (processStdout output)
-           in if null value
-                then pure (Left ("MinIO secret field " ++ fieldName ++ " is empty"))
-                else pure (Right value)
+readMinioCredentials = pure (Right (minioRootUser, minioRootPassword))
 
 ensureMinioBackendBucket :: Int -> String -> String -> IO (Either String ())
 ensureMinioBackendBucket localPort accessKey secretKey = do

@@ -104,7 +104,6 @@ data HostCommand
   = HostEnsureTools
   | HostCheckPorts
   | HostInfo
-  | HostFirewall
   | HostFirewallGatewayRestrict Int
   | HostFirewallGatewayUnrestrict Int
   | HostPublicEdge Substrate

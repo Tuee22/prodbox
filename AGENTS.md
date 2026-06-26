@@ -104,9 +104,10 @@ development.
   owner of AWS resources; no "operator runs `aws` CLI on the side", no ad-hoc `eksctl`
   or `terraform` or `pulumi up`. Resources the harness needs are created by the harness;
   resources the harness no longer needs are destroyed by the harness.
-- Supported entrypoints: `prodbox aws stack <stack> reconcile` /
-  `prodbox aws stack <stack> destroy --yes` for every Pulumi-managed substrate stack
-  (`aws-eks`, `aws-eks-subzone`, `aws-test`, `aws-ses`); `prodbox aws setup` /
+- Supported entrypoints: `prodbox aws stack <cli-verb> reconcile` /
+  `prodbox aws stack <cli-verb> destroy --yes` for every Pulumi-managed substrate stack:
+  `eks` for registry stack `aws-eks`, `aws-subzone` for `aws-eks-subzone`, `test` for
+  `aws-test`, and `aws-ses` for `aws-ses`; `prodbox aws setup` /
   `prodbox aws teardown` for the IAM user provisioning loop; `prodbox test integration
   ... --substrate aws` and `prodbox test all` for end-to-end substrate-aware runs.
 - Do not run `pulumi up`, `pulumi destroy`, `aws` CLI mutations, `eksctl`, or any other
@@ -183,9 +184,12 @@ for the authoritative inventory:
 
 ## Security
 
-- Store AWS auth only in the repository Dhall config (`prodbox-config.dhall`).
-- AWS auth must come only from Dhall config; ambient AWS auth env vars, shared-profile discovery,
-  and system `aws` CLI host auth state are not valid auth sources for supported `prodbox` flows.
+- Elevated/admin AWS auth enters `prodbox` only through the interactive `SecretRef.Prompt`.
+  Automation may simulate that prompt only through the `aws_admin_for_test_simulation.*`
+  fixture in `test-secrets.dhall`; production config never contains that credential.
+- Generated operational `aws.*` credentials are written to Vault KV and referenced by typed
+  `SecretRef.Vault` values. Ambient AWS auth env vars, shared-profile discovery, and system
+  `aws` CLI host auth state are not valid auth sources for supported `prodbox` flows.
 - Daemon bootstrap config comes only from a mounted Dhall file at `--config <path>`;
   env-var fallbacks (`PRODBOX_*`, `MINIO_*`, `AWS_*` on the daemon Pod) are forbidden on
   supported paths. See [documents/engineering/config_doctrine.md](./documents/engineering/config_doctrine.md).
@@ -206,14 +210,14 @@ prompts, you have picked the wrong command, not hit a blocker.
 | Run one AWS-substrate validation | `prodbox test integration <name> --substrate aws` | (manual after `aws setup`) |
 | Initialize operational `aws.*` from `aws_admin_for_test_simulation.*` | exercised automatically by `prodbox test ...` preflight | `prodbox aws setup` |
 | Tear down operational `aws.*` + per-run stacks | exercised automatically by `prodbox test ...` postflight | `prodbox aws teardown` |
-| Provision a Pulumi stack | exercised by the harness; no standalone automation alias | `prodbox aws stack <stack> reconcile` |
-| Destroy a Pulumi stack | `prodbox aws stack <stack> destroy --yes` (already non-interactive) | same |
-| Author repo config | edit `prodbox-config.dhall` against `prodbox-config-types.dhall` | `prodbox config setup` |
+| Provision a Pulumi stack | exercised by the harness; no standalone automation alias | `prodbox aws stack <cli-verb> reconcile` |
+| Destroy a Pulumi stack | `prodbox aws stack <cli-verb> destroy --yes` (already non-interactive) | same |
+| Author repo config | edit the binary-sibling `prodbox.dhall` against `prodbox-config-types.dhall` | `prodbox config setup` |
 | Inspect AWS state | `aws sts get-caller-identity`, `prodbox aws quotas check` (after `aws.*` populated) | same |
 
-The automation path materializes operational `aws.*` from
-`aws_admin_for_test_simulation.*` in `prodbox-config.dhall` via the
-suite-level IAM harness, runs validations, then clears `aws.*` and
+The automation path simulates the operator admin-credential prompt from
+`aws_admin_for_test_simulation.*` in `test-secrets.dhall` via the
+suite-level IAM harness, mints the operational `aws.*` credential into Vault KV, runs validations, then clears `aws.*` and
 auto-destroys per-run stacks on suite exit (success, failure, or Ctrl-C).
 The retained `aws-ses` long-lived stack is intentionally **not**
 auto-destroyed (cross-substrate shared infrastructure). Live AWS spend is

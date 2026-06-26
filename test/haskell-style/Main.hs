@@ -1,7 +1,7 @@
 module Main (main) where
 
 import Data.ByteString.Lazy.Char8 qualified as BL8
-import Data.List (isPrefixOf)
+import Data.List (isPrefixOf, isSuffixOf, sort)
 import Prodbox.BuildSupport (addBuildSupportEnvironment)
 import Prodbox.CLI.Docs
   ( renderBashCompletion
@@ -11,7 +11,7 @@ import Prodbox.CLI.Docs
 import Prodbox.CLI.Spec (CommandSpec (..), commandRegistry)
 import Prodbox.CheckCode
   ( GeneratedSectionRule
-  , TrackedGeneratedPath
+  , TrackedGeneratedPath (..)
   , generatedSectionRules
   , haskellStyleViolations
   , renderGeneratedSection
@@ -22,8 +22,8 @@ import Prodbox.CheckCode
   )
 import Prodbox.Lint (ensureSandboxedStyleTools, formatterToolGhcVersion, styleToolsBinDir)
 import Prodbox.PublicEdge (renderHelmRouteInventory)
-import System.Directory (doesFileExist, getCurrentDirectory)
-import System.FilePath ((</>))
+import System.Directory (doesFileExist, getCurrentDirectory, listDirectory)
+import System.FilePath (normalise, (</>))
 import TestSupport
 
 main :: IO ()
@@ -159,6 +159,24 @@ main = mainWithSuite "prodbox-haskell-style" $ do
       "keeps the generated charts manpage byte-stable"
       "share/man/man1/prodbox-charts.1"
       (pure (BL8.pack (renderGroupManpage chartsSpec)))
+
+    it "keeps generated command-group manpages limited to registered groups" $ do
+      repoRoot <- getCurrentDirectory
+      manpageEntries <- listDirectory (repoRoot </> "share" </> "man" </> "man1")
+      let actualGroupManpages =
+            sort
+              [ normalise ("share/man/man1" </> entry)
+              | entry <- manpageEntries
+              , "prodbox-" `isPrefixOf` entry
+              , ".1" `isSuffixOf` entry
+              ]
+          expectedGroupManpages =
+            sort
+              [ normalise (trackedGeneratedPathPath path)
+              | path <- trackingGeneratedPaths
+              , "share/man/man1/prodbox-" `isPrefixOf` normalise (trackedGeneratedPathPath path)
+              ]
+      actualGroupManpages `shouldBe` expectedGroupManpages
 
     goldenTest
       "keeps the generated bash completion byte-stable"

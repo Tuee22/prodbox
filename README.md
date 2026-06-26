@@ -47,7 +47,7 @@ validation environments.
   the in-force cluster configuration is the source of truth, stored as a
   prodbox application-level Vault-Transit envelope in the shared object-store — an
   opaque `objects/<id>.enc` entry in the one generically-named MinIO bucket, not a
-  literal `in-force-config` key. A filesystem `prodbox-config.dhall` is a
+  literal `in-force-config` key. The binary-sibling `prodbox.dhall` is a
   seed/propose input only — on first-ever bring-up it seeds the encrypted MinIO SSoT, and
   thereafter supplying a file is a proposed update, not the live config. Each `prodbox`
   binary instance reads the small unencrypted basics locally (cluster id, this cluster's
@@ -83,7 +83,7 @@ validation environments.
 - The current shipped edge workloads share the single public hostname
   `test.resolvefintech.com`, with Keycloak on `/auth`, `vscode` on `/vscode`, the API on `/api`,
   the WebSocket workload on `/ws`, Harbor on `/harbor`, and MinIO console on `/minio`.
-- The Haskell `prodbox gateway ...` command group and `charts deploy gateway` manage the separate
+- The Haskell `prodbox gateway ...` command group and `charts reconcile gateway` manage the separate
   distributed gateway daemon; they are not the Envoy Gateway public edge controller.
 - Vault is the sole, finalized fail-closed secrets / KMS / PKI root of every prodbox-managed
   cluster. Every secret, credential, key, and certificate the stack uses is a Vault object
@@ -110,9 +110,7 @@ validation environments.
   init keys. The doctrine single source of truth is
   [documents/engineering/vault_doctrine.md](./documents/engineering/vault_doctrine.md), with the
   federation trust tree governed by
-  [documents/engineering/cluster_federation_doctrine.md](./documents/engineering/cluster_federation_doctrine.md);
-  the per-surface adoption is scheduled (not yet shipped) and tracked in the 2026-06-14 Closure
-  Status entry of [DEVELOPMENT_PLAN/README.md](./DEVELOPMENT_PLAN/README.md).
+  [documents/engineering/cluster_federation_doctrine.md](./documents/engineering/cluster_federation_doctrine.md).
 
 The development-plan target architecture centers the local public edge on:
 
@@ -184,7 +182,7 @@ Router port forwarding:
 
 The current worktree closes on the supported edge architecture. Today:
 
-- local `rke2 reconcile` reconciles Harbor, MinIO, MetalLB, Envoy Gateway, cert-manager, and the
+- local `cluster reconcile` reconciles Harbor, MinIO, MetalLB, Envoy Gateway, cert-manager, and the
   Percona PostgreSQL operator
 - the public `vscode` path uses Gateway API `HTTPRoute` plus Envoy Gateway `SecurityPolicy`
 - the public `api` route uses Gateway API `HTTPRoute` plus Envoy-local JWT validation and
@@ -193,14 +191,14 @@ The current worktree closes on the supported edge architecture. Today:
   Redis-backed shared-state workload
 - Keycloak uses the shared public hostname on the `/auth` path
 - MetalLB supports config-selected L2 or BGP advertisement through repo-owned settings
-- `host public-edge`, `charts-api`, `charts-websocket`, and `admin-routes` extend the external
+- `edge status`, `charts-api`, `charts-websocket`, and `admin-routes` extend the external
   proof surface across the shared-host application and admin paths
 - resource lifecycle is reconciled over a typed **managed-resource registry** — every AWS or
   cluster resource prodbox can create is registered with a `discover` + `destroy`, teardown is
   one idempotent reconciler with "cannot observe" never silently treated as "absent", and
-  `check-code` makes a creatable-but-undiscoverable resource unrepresentable (doctrine:
+  `dev check` makes a creatable-but-undiscoverable resource unrepresentable (doctrine:
   [lifecycle_reconciliation_doctrine.md § 3.1](./documents/engineering/lifecycle_reconciliation_doctrine.md);
-  scheduled in Phase 4 Sprints 4.20–4.22 and Phase 7 Sprint 7.8)
+  Phase 4 Sprints 4.20–4.22 and Phase 7 Sprint 7.8)
 
 Closure, validation ownership, and phase history are tracked in
 [DEVELOPMENT_PLAN/README.md](./DEVELOPMENT_PLAN/README.md).
@@ -265,7 +263,7 @@ cabal install exe:prodbox --builddir=.build --installdir=.build --install-method
 
 ./.build/prodbox host ensure-tools
 ./.build/prodbox host check-ports
-./.build/prodbox host firewall
+./.build/prodbox host firewall gateway-restrict
 
 ./.build/prodbox cluster reconcile
 ./.build/prodbox cluster status
@@ -284,19 +282,19 @@ What this does:
 
 - `config setup` writes the supported Dhall config file.
 - `host ...` verifies the host toolchain, port availability, and firewall assumptions.
-- `rke2 reconcile` reconciles the local substrate, including Harbor, MinIO, MetalLB, Envoy Gateway,
+- `cluster reconcile` reconciles the local substrate, including Harbor, MinIO, MetalLB, Envoy Gateway,
   cert-manager, and the Percona PostgreSQL operator.
-- `charts deploy vscode` deploys the `vscode` stack plus its supported dependencies:
+- `charts reconcile vscode` deploys the `vscode` stack plus its supported dependencies:
   `keycloak` and the internal `keycloak-postgres` Patroni release, with the browser path protected
   by Envoy Gateway and Keycloak on the shared `/auth` path.
-- `charts deploy api` deploys the shared-host API workload on `/api`.
-- `charts deploy websocket` deploys the shared-host WebSocket workload plus its internal Redis
+- `charts reconcile api` deploys the shared-host API workload on `/api`.
+- `charts reconcile websocket` deploys the shared-host WebSocket workload plus its internal Redis
   dependency on `/ws`.
-- `host public-edge` confirms Route 53, Envoy Gateway, Gateway API, and certificate readiness for
+- `edge status` confirms Route 53, Envoy Gateway, Gateway API, and certificate readiness for
   the shared browser, API, WebSocket, Harbor, and MinIO edge paths (the public edge uses the
   single ZeroSSL ACME issuer with retained-and-restored certificate material; see
   [acme_provider_guide.md](./documents/engineering/acme_provider_guide.md)).
-- `charts deploy gateway` is optional for the separate Haskell distributed gateway daemon and is
+- `charts reconcile gateway` is optional for the separate Haskell distributed gateway daemon and is
   not required to bring up the Envoy Gateway public edge.
 
 ## Configuration
@@ -344,9 +342,9 @@ version-controlled (Sprint 1.41): the binary-sibling `prodbox.dhall` and the
 `test-secrets.dhall` is the git-ignored harness fixture. There is **no committed container
 default** — the in-container `prodbox.dhall` is generated at image-build time by running the
 binary (`prodbox config generate`) at the binary-sibling path, never a `COPY`-ed
-`default-prodbox.dhall` (Sprint 1.49). `prodbox-config.dhall` is the legacy seed/propose input,
-retired once the in-force MinIO SSoT is seeded (Sprint 1.42); it carries no plaintext secrets, only
-`SecretRef.Vault` pointers. See
+`default-prodbox.dhall` (Sprint 1.49). The binary-sibling `prodbox.dhall` is the seed/propose
+input for the in-force MinIO SSoT; it carries no plaintext secrets, only typed `SecretRef`
+references. See
 [config_doctrine.md §0](./documents/engineering/config_doctrine.md#0-three-tier-config-model).
 
 - `prodbox config setup` writes and validates Dhall directly.
@@ -364,9 +362,9 @@ Sensitive configuration fields carry typed `SecretRef` values — a Dhall union 
 `TransitKey` are the production targets; there is no `FileSecret` arm and no Secret-mounted Dhall
 fragment path. `prodbox config validate` rejects plaintext secrets in production config; all
 test-only plaintext — including the `aws_admin_for_test_simulation.*` simulation fixture that
-feeds the operator prompts non-interactively — lives only in `test-config.dhall`, which is never
-imported by `prodbox-config.dhall` and is never stored in Vault. The seed/propose
-`prodbox-config.dhall` holds references in place of raw secret material; the in-force config it
+feeds the operator prompts non-interactively — lives only in `test-secrets.dhall`, which is never
+imported by production config and is never stored in Vault. The seed/propose
+`prodbox.dhall` holds references in place of raw secret material; the in-force config it
 seeds is the Vault-encrypted MinIO object. The authoritative model is
 [documents/engineering/vault_doctrine.md](./documents/engineering/vault_doctrine.md) (see
 [§3 The SecretRef model](./documents/engineering/vault_doctrine.md#3-the-secretref-model) and
@@ -375,7 +373,7 @@ seeds is the Vault-encrypted MinIO object. The authoritative model is
 > **Note**: the `aws.access_key_id`, `aws.secret_access_key`, and `acme.eab_*` fields listed below
 > are `SecretRef.Vault` references, not inline plaintext (Sprints 1.35 / 7.15). The generated
 > operational `prodbox` `aws.*` credential is minted into Vault KV after Vault is unsealed, and
-> `prodbox-config.dhall` carries only the typed Vault reference to it. The Validation-Required-Fields
+> production config carries only the typed Vault reference to it. The Validation-Required-Fields
 > table stays valid as the field inventory; only the value form is a typed Vault reference.
 
 ### Supported Onboarding
@@ -389,9 +387,9 @@ bootstrap, and binary-sibling Dhall authoring (`./.build/prodbox.dhall`). On the
 temporary, ephemeral admin AWS credential set when needed (historically called "elevated
 credential") — the operator types it at the interactive `SecretRef.Prompt`; it is used once to
 mint the dedicated least-privilege `prodbox` IAM identity and then discarded, never written to
-`prodbox-config.dhall` or stored in Vault. The `aws_admin_for_test_simulation.*` block is not a
-reserved `prodbox-config.dhall` section; it is a test-harness fixture living only in
-`test-config.dhall` that simulates that prompt so the suite can drive admin-credentialed flows
+production config or stored in Vault. The `aws_admin_for_test_simulation.*` block is not a
+reserved production config section; it is a test-harness fixture living only in
+`test-secrets.dhall` that simulates that prompt so the suite can drive admin-credentialed flows
 non-interactively.
 
 ### Validation-Required Fields
@@ -429,8 +427,8 @@ These fields are not all parser-required, but they matter for normal operation:
 | `deployment.pulumi_enable_dns_bootstrap` | Bootstrap toggle for DNS reconciliation during the supported flow |
 | `deployment.public_edge_bgp_peers` | Optional BGP peer list when `deployment.public_edge_advertisement_mode = Some "bgp"` |
 
-`aws_admin_for_test_simulation.*` is **not** a `prodbox-config.dhall` field — it is a
-`TestPlaintext`-class test-harness fixture in `test-config.dhall` (see
+`aws_admin_for_test_simulation.*` is **not** a production config field — it is a
+`TestPlaintext`-class test-harness fixture in `test-secrets.dhall` (see
 [aws_admin_credentials.md](./documents/engineering/aws_admin_credentials.md)) that simulates the
 operator's interactive admin-credential prompt; it is never read by any production binary and never
 stored in Vault.
@@ -445,17 +443,17 @@ Validate the repository config:
 
 | Area | Commands | Use When |
 |------|----------|----------|
-| Config | `config setup`, `config show`, `config validate` | You need to create, inspect, or validate `prodbox-config.dhall` |
-| Host checks | `host ensure-tools`, `host check-ports`, `host firewall`, `host info`, `host public-edge` | You need to verify the host runtime or diagnose the public edge and certificate state |
-| Local cluster lifecycle | `rke2 reconcile`, `rke2 status`, `rke2 start`, `rke2 stop`, `rke2 restart`, `rke2 logs`, `rke2 delete --yes`, `rke2 delete --cascade`, `nuke` | You need to create, reconcile, inspect, or remove the local RKE2 environment. `--cascade` is the leak-safe "wipe and rebuild" path that also destroys per-run Pulumi stacks and drains K8s-controller-created AWS resources; `prodbox nuke` is the operator-only total-teardown path that also destroys long-lived shared infrastructure. |
-| Chart lifecycle | `charts list`, `charts status`, `charts deploy`, `charts delete --yes` | You need to manage the supported `gateway`, `keycloak`, `vscode`, `api`, or `websocket` chart stacks |
-| Kubernetes helpers | `k8s health`, `k8s wait`, `k8s logs` | You need cluster or workload diagnostics without dropping into raw `kubectl` |
+| Config | `config setup`, `config show`, `config validate`, `config schema`, `config generate` | You need to create, inspect, validate, or regenerate the supported `prodbox.dhall` / schema artifacts |
+| Host checks | `host ensure-tools`, `host check-ports`, `host info`, `host firewall gateway-restrict`, `host firewall gateway-unrestrict` | You need to verify the host runtime or manage the gateway NodePort firewall rule |
+| Public edge | `edge status`, `edge reconcile` | You need to diagnose or reconcile public DNS, Gateway API, and certificate readiness |
+| Local cluster lifecycle | `cluster reconcile`, `cluster status`, `cluster health`, `cluster start`, `cluster stop`, `cluster restart`, `cluster logs`, `cluster wait`, `cluster workload-logs`, `cluster delete --yes`, `cluster delete --cascade`, `nuke` | You need to create, reconcile, inspect, or remove the local RKE2 environment. `cluster delete --yes` is a local uninstall that preserves retained roots and leaves per-run AWS stacks untouched. `--cascade` is the leak-safe "wipe and rebuild" path that also destroys per-run AWS stacks and drains K8s-controller-created AWS resources; `prodbox nuke` is the operator-only total-teardown path that also destroys long-lived shared infrastructure. |
+| Chart lifecycle | `charts list`, `charts status`, `charts reconcile`, `charts delete --yes` | You need to manage the supported `gateway`, `keycloak`, `vscode`, `api`, or `websocket` chart stacks |
 | Gateway operations | `gateway config-gen`, `gateway start --config <path>`, `gateway status --config <path>` | You need to generate a gateway config, run a daemon manually, or inspect daemon state |
 | DNS | `dns check` | You need Route 53 inspection for the configured public host |
-| AWS IAM and quotas | `aws policy`, `aws setup`, `aws teardown`, `aws check-quotas`, `aws request-quotas` | You need IAM bootstrap, cleanup, or supported quota inspection/request flows |
-| AWS validation stacks | `pulumi eks reconcile`, `pulumi eks destroy --yes`, `pulumi aws-subzone reconcile`, `pulumi aws-subzone destroy --yes`, `pulumi test reconcile`, `pulumi test destroy --yes`, `pulumi aws-ses reconcile`, `pulumi aws-ses destroy --yes` | You need to create, inspect, or destroy the AWS EKS, Route 53 subzone, HA-RKE2, or SES validation stacks (see [DEVELOPMENT_PLAN/substrates.md → Resource Lifecycle Classes](./DEVELOPMENT_PLAN/substrates.md#resource-lifecycle-classes) for which stacks the test harness auto-destroys vs retains) |
-| Vault (scheduled, Sprint 1.36) | `vault status`, `vault init`, `vault unseal`, `vault reconcile`, `vault pki ...` | You need to initialize, unseal, or reconcile the in-cluster Vault that backs cluster secrets (intended structure; see [vault_doctrine.md](./documents/engineering/vault_doctrine.md#7-vault-lifecycle-commands)) |
-| Validation | `check-code`, `lint ...`, `docs ...`, `test lint`, `test ...`, `tla-check` | You need quality gates, generated-doc maintenance, Haskell tests, native integration validation, or TLA+ checks |
+| AWS IAM and quotas | `aws policy`, `aws setup`, `aws teardown`, `aws quotas check`, `aws quotas request` | You need IAM bootstrap, cleanup, or supported quota inspection/request flows |
+| AWS validation stacks | `aws stack eks reconcile`, `aws stack eks destroy --yes`, `aws stack aws-subzone reconcile`, `aws stack aws-subzone destroy --yes`, `aws stack test reconcile`, `aws stack test destroy --yes`, `aws stack aws-ses reconcile`, `aws stack aws-ses destroy --yes` | You need to create, inspect, or destroy the AWS EKS, Route 53 subzone, HA-RKE2, or SES validation stacks (see [DEVELOPMENT_PLAN/substrates.md → Resource Lifecycle Classes](./DEVELOPMENT_PLAN/substrates.md#resource-lifecycle-classes) for which stacks the test harness auto-destroys vs retains) |
+| Vault | `vault status`, `vault init`, `vault unseal`, `vault seal`, `vault reconcile`, `vault rotate-unlock-bundle`, `vault rotate-transit-key`, `vault pki ...` | You need to initialize, unseal, seal, or reconcile the in-cluster Vault that backs cluster secrets (see [vault_doctrine.md](./documents/engineering/vault_doctrine.md#7-vault-lifecycle-commands)) |
+| Validation | `dev check`, `dev lint ...`, `dev docs ...`, `test lint`, `test ...`, `dev tla-check` | You need quality gates, generated-doc maintenance, Haskell tests, native integration validation, or TLA+ checks |
 
 ## Common Workflows
 
@@ -476,15 +474,17 @@ Inspect local platform logs:
 ./.build/prodbox cluster workload-logs --tail 200
 ```
 
-Remove the local runtime and destroy AWS validation residue:
+Remove the local runtime while preserving retained local roots and leaving AWS validation stacks alone:
 
 ```bash
 ./.build/prodbox cluster delete --yes
 ```
 
-`rke2 delete --yes` is destructive. It removes the local cluster, destroys the AWS validation
-stacks if they still exist, removes the managed kubeconfig, and preserves `.data/` as the sole
-retained operator-host directory. The per-run Pulumi state lives on MinIO's PV under
+`cluster delete --yes` is destructive to the local runtime only. It removes the local cluster,
+removes the managed kubeconfig, preserves `.data/` as the sole retained operator-host directory,
+and does **not** destroy per-run AWS validation stacks. Use `cluster delete --cascade` when the
+intended cleanup also includes per-run AWS stacks and Kubernetes-controller-created AWS resources.
+The per-run Pulumi state lives on MinIO's PV under
 `.data/prodbox/minio/0` and Vault's durable storage lives on its own retained PV under
 `.data/vault/vault/0`, so both survive cluster wipes whenever `.data/` is preserved. `prodbox`
 never deletes `.data/`; removing it is an operator-only action. A cluster rebuild is therefore not
@@ -529,7 +529,7 @@ Check the external Route 53 record and public edge state:
 ./.build/prodbox edge status
 ```
 
-`host public-edge` is the main supported readiness diagnostic for the public host. The successful
+`edge status` is the main supported readiness diagnostic for the public host. The successful
 state is `CLASSIFICATION=ready-for-external-proof`. That classification derives from Route 53,
 Envoy Gateway, Gateway API, `SecurityPolicy`, certificate readiness, and the shared-host path
 contract.
@@ -565,7 +565,7 @@ The supported public `aws ...` flow prompts for an ephemeral temporary admin cre
 needed — including the long-lived `aws-ses` stack operations and `prodbox nuke`. There is exactly
 one runtime path by which elevated admin power enters prodbox: the interactive `SecretRef.Prompt`.
 The test harness automates that prompt by reading `aws_admin_for_test_simulation.*` from
-`test-config.dhall` (a test fixture, never a `prodbox-config.dhall` section and never a Vault
+`test-secrets.dhall` (a test fixture, never a production config section and never a Vault
 object); there is no production config-backed admin path.
 
 ### AWS Validation Stacks
@@ -601,7 +601,7 @@ Use these commands for quick feedback that stays local:
 ./.build/prodbox test integration env
 ```
 
-`check-code` is the canonical local quality gate. It runs the repository-owned policy scan,
+`dev check` is the canonical local quality gate. It runs the repository-owned policy scan,
 Fourmolu, HLint, a warning-clean Cabal build, and syncs the built executable to `./.build/prodbox`.
 
 ### Named Infrastructure-Backed Validation
@@ -625,8 +625,7 @@ These commands run real native Haskell validation flows against the named enviro
 ./.build/prodbox test integration sealed-vault
 ```
 
-`./.build/prodbox test integration sealed-vault` is scheduled under Sprint 5.8 (intended structure,
-not yet shipped): it asserts the fail-closed invariant — that a sealed Vault leaves PVs and MinIO
+`./.build/prodbox test integration sealed-vault` asserts the fail-closed invariant: a sealed Vault leaves PVs and MinIO
 objects intact while revealing no secrets, no active Dhall, no Pulumi state, and no downstream
 inventory until Vault is unsealed (see
 [vault_doctrine.md §2 The fail-closed invariant](./documents/engineering/vault_doctrine.md#2-the-fail-closed-invariant)

@@ -2278,7 +2278,33 @@ processGeneratedArtifacts :: FilePath -> Bool -> IO [Either String (FilePath, St
 processGeneratedArtifacts repoRoot writeEnabled = do
   sectionResults <- forM generatedSectionRules (processGeneratedSection repoRoot writeEnabled)
   fileResults <- forM trackingGeneratedPaths (processTrackedGeneratedPath repoRoot writeEnabled)
-  pure (sectionResults ++ fileResults)
+  untrackedManpageViolations <- checkUntrackedGeneratedManpages repoRoot
+  pure (sectionResults ++ fileResults ++ map Left untrackedManpageViolations)
+
+checkUntrackedGeneratedManpages :: FilePath -> IO [String]
+checkUntrackedGeneratedManpages repoRoot = do
+  let manpageDirectory = "share/man/man1"
+      absoluteManpageDirectory = repoRoot </> manpageDirectory
+      expectedPaths = map (normalise . trackedGeneratedPathPath) trackingGeneratedPaths
+  directoryExists <- doesDirectoryExist absoluteManpageDirectory
+  if not directoryExists
+    then pure []
+    else do
+      entries <- sort <$> listDirectory absoluteManpageDirectory
+      let staleManpages =
+            [ normalise (manpageDirectory </> entry)
+            | entry <- entries
+            , "prodbox-" `isPrefixOf` entry
+            , ".1" `isSuffixOf` entry
+            , normalise (manpageDirectory </> entry) `notElem` expectedPaths
+            ]
+      pure (map untrackedGeneratedManpageMessage staleManpages)
+
+untrackedGeneratedManpageMessage :: FilePath -> String
+untrackedGeneratedManpageMessage path =
+  "Untracked generated manpage `"
+    ++ path
+    ++ "` is not present in the command registry. Remove the file or add the command to `src/Prodbox/CLI/Spec.hs`."
 
 processGeneratedSection
   :: FilePath -> Bool -> GeneratedSectionRule -> IO (Either String (FilePath, String, Bool))

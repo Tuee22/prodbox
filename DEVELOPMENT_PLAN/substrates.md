@@ -100,7 +100,7 @@ Sprint `7.12` this is a *structural* invariant, not prose, enforced by three mec
    construction — there is no second place to set an Envoy Gateway version. cert-manager, MinIO,
    and the Percona operator chart versions are likewise pinned once in `Prodbox.ContainerImage`.
 2. **A per-substrate re-pin lint.** `checkSubstrateImagePinning` (in `Prodbox.CheckCode`, wired
-   into `prodbox check-code`) fails closed on any shared-component chart-version / image
+   into `prodbox dev check`) fails closed on any shared-component chart-version / image
    re-pinned with a literal on a per-substrate branch; the single `Prodbox.ContainerImage` value
    is the only sanctioned source. The genuinely substrate-specific LOWER layer (the AWS Load
    Balancer Controller on AWS, MetalLB + FRR on home, the EKS node-local registry proxy) is
@@ -121,7 +121,7 @@ piece the home cluster has, the fix is to extend the shared inventory and the AW
 never to render different image refs or re-pin versions per substrate.
 
 Both substrates also stand up an in-cluster Vault on a durable PV from the shared
-`[PlatformComponent]` inventory (scheduled, Sprint `3.17`), **installed identically on both as the
+`[PlatformComponent]` inventory, **installed identically on both as the
 sole, finalized secrets / key-management / encryption-as-a-service / PKI root**. Vault is **not** a
 substrate — that word is reserved for the home-local and AWS substrates — it is a platform component
 that **both** substrates run identically, exactly like Harbor, MinIO, and the Percona operator.
@@ -146,10 +146,10 @@ and [§5 Vault deployment model](../documents/engineering/vault_doctrine.md#5-va
 
 | Field | Value |
 |-------|-------|
-| Provision | `prodbox rke2 reconcile` followed by `prodbox charts deploy <chart>` for the canonical chart set |
-| Teardown | `prodbox rke2 delete --yes` (preserves retained host roots per the lifecycle doctrine) |
+| Provision | `prodbox cluster reconcile` followed by `prodbox charts reconcile <chart>` for the canonical chart set |
+| Teardown | `prodbox cluster delete --yes` (local uninstall that preserves retained host roots and leaves per-run AWS stacks untouched); `prodbox cluster delete --cascade` also destroys per-run AWS stacks before uninstall |
 | Inventory | Local RKE2 cluster on the operator host, MetalLB L2/BGP, Envoy Gateway, cert-manager (real ZeroSSL), Keycloak, Patroni-backed Postgres via the Percona operator, the supported `gateway`, `keycloak`, `vscode`, `api`, and `websocket` charts |
-| Required Config | `route53.zone_id`, `domain.demo_fqdn`, `acme.*` (ZeroSSL `server`, account email, ZeroSSL EAB key id + hmac key), `deployment.*`, `ses.*` (sender_domain, receive_subdomain, capture_bucket — required for `keycloak-invite` validation). Elevated/admin AWS power enters prodbox only through the interactive `SecretRef.Prompt`; under the harness the test-only `aws_admin_for_test_simulation.*` fixture in `test-secrets.dhall` (TestPlaintext, never imported by `prodbox-config.dhall`, never in Vault) simulates that prompt for the shared IAM harness and long-lived teardown/provisioning flows. Missing any required field fails fast; the home substrate does not fall back to AWS-substrate values. |
+| Required Config | `route53.zone_id`, `domain.demo_fqdn`, `acme.*` (ZeroSSL `server`, account email, ZeroSSL EAB key id + hmac key), `deployment.*`, `ses.*` (sender_domain, receive_subdomain, capture_bucket — required for `keycloak-invite` validation). Elevated/admin AWS power enters prodbox only through the interactive `SecretRef.Prompt`; under the harness the test-only `aws_admin_for_test_simulation.*` fixture in `test-secrets.dhall` (TestPlaintext, never imported by production config, never in Vault) simulates that prompt for the shared IAM harness and long-lived teardown/provisioning flows. Missing any required field fails fast; the home substrate does not fall back to AWS-substrate values. |
 | Prerequisites satisfied | `platform_linux`, `systemd_available`, `supported_ubuntu_2404`, `machine_identity`, `tool_*`, `settings_*`, `aws_iam_harness_ready`, `kubeconfig_*`, `rke2_*`, `k8s_*`, `pulumi_logged_in`, `infra_ready`, `gateway_daemon_acquire`, `aws_credentials_valid`, `route53_*` |
 | Phase ownership (provision/teardown) | [phase-4-lifecycle-canonical-paths.md](phase-4-lifecycle-canonical-paths.md) |
 | Suite parity | ✅ Full canonical suite, including the public-edge proofs that exercise real ZeroSSL certs, real OIDC redirects through Keycloak, real WebSocket fan-out, and the configured public Route 53 record on `test.resolvefintech.com` |
@@ -159,8 +159,8 @@ and [§5 Vault deployment model](../documents/engineering/vault_doctrine.md#5-va
 
 | Field | Value |
 |-------|-------|
-| Provision | `prodbox pulumi eks-resources` (EKS test cluster), `prodbox pulumi aws-subzone-resources` (per-substrate Route 53 subzone), and `prodbox pulumi test-resources` (three Ubuntu 24.04 EC2 instances for HA-RKE2) |
-| Teardown | `prodbox pulumi eks-destroy --yes`, `prodbox pulumi aws-subzone-destroy --yes`, and `prodbox pulumi test-destroy --yes` |
+| Provision | `prodbox aws stack eks reconcile` (EKS test cluster), `prodbox aws stack aws-subzone reconcile` (per-substrate Route 53 subzone), and `prodbox aws stack test reconcile` (three Ubuntu 24.04 EC2 instances for HA-RKE2) |
+| Teardown | `prodbox aws stack eks destroy --yes`, `prodbox aws stack aws-subzone destroy --yes`, and `prodbox aws stack test destroy --yes` |
 | Inventory today | Two disposable Pulumi stacks: `aws-eks-test` (VPC, subnets, EKS cluster, node group, IAM, security group) and `aws-test` (VPC, subnets, three EC2 instances, security group, key pair). State stored in the MinIO-backed Pulumi backend on the local cluster under `prodbox-state`; Sprint `7.14` replaces raw Pulumi checkpoint keys with the Model-B decrypt-to-scratch interposition. |
 | Target inventory | Same canonical service set as the home substrate (Sprint 7.12 substrate equivalence): cert-manager + real ZeroSSL, Envoy Gateway, Harbor + MinIO + the Percona PostgreSQL operator, Keycloak, Patroni Postgres, `gateway`, `keycloak-postgres`, `vscode`, `api`, `redis`, `websocket`. Harbor + MinIO + Percona are installed on **both** substrates — the AWS Harbor is the EKS-side Harbor reached through the node-local registry proxy (the EKS containerd registry-mirror DaemonSet that makes `127.0.0.1:30080/prodbox/...` resolve on EKS, mirroring the home NodePort-on-`127.0.0.1` pattern). The two substrates differ only in their LOWER layer: ingress load-balancer (MetalLB on home, the AWS Load Balancer Controller / NLB on EKS) and Route 53 hosting (parent zone on home, the per-substrate subzone provisioned by `pulumi/aws-eks-subzone/` on AWS). |
 | Required Config | `aws_substrate.subzone_name` (the AWS-substrate public FQDN, e.g. `aws.test.resolvefintech.com`), optional `aws_substrate.hosted_zone_id` when an operator wants to pin the already-provisioned subzone ID in config, `ses.*` (sender_domain, receive_subdomain, capture_bucket — shared cross-substrate; same values as home substrate), AWS operator credentials, plus the same `acme.*` settings the home substrate uses. During harness-driven AWS runs, the suite reads the live `aws-eks-subzone` Pulumi output after provisioning and passes the hosted-zone ID to child commands. Missing AWS-substrate values fail fast; the AWS substrate does not fall back to `route53.zone_id` or `domain.demo_fqdn` from the home substrate. |
@@ -181,7 +181,7 @@ table below). Pulumi state lifetime must also match resource lifetime per class;
 > volume is **local retained state** under `.data/vault/vault/0`, governed by the storage lifecycle
 > doctrine, not by the AWS resource lifecycle classes — so it does **not** appear in the per-run,
 > long-lived, or operational AWS tables below. It is preserved across cluster teardown exactly
-> like the MinIO PV (scheduled, Sprint `4.29`), so a wipe-and-rebuild keeps Vault's sealed
+> like the MinIO PV, so a wipe-and-rebuild keeps Vault's sealed
 > ciphertext stores intact. See
 > [../documents/engineering/vault_doctrine.md → §5 Vault deployment model](../documents/engineering/vault_doctrine.md#5-vault-deployment-model).
 
@@ -194,8 +194,8 @@ and `Prodbox.Aws.longLivedStackNames` (Sprint `7.7`), which the
 
 The registry SSoT is `Prodbox.Lifecycle.ResourceClass.resourceLifecycleClasses` (Sprint
 `4.20`); `perRunStackNames` / `longLivedStackNames` are derived from it. The table below is
-**generated** from that registry by `prodbox docs generate` (Sprint `4.22`) — do not hand-edit
-between the markers; `prodbox docs check` fails the build if it drifts from the code, so a new
+**generated** from that registry by `prodbox dev docs generate` (Sprint `4.22`) — do not hand-edit
+between the markers; `prodbox dev docs check` fails the build if it drifts from the code, so a new
 resource cannot be added to the registry without this inventory updating in lockstep:
 
 <!-- prodbox:resource-lifecycle-classes:start -->
@@ -216,8 +216,8 @@ subdir under `pulumi/`, CLI verb stem, and lifecycle class. The per-run name lis
 (`Prodbox.Aws.perRunStackNames`), the CLI verbs, and the project dirs are **derived** from it
 rather than hand-maintained, removing the drift the documentation-harmony audit flagged between
 the registry names, the CLI verbs, and the project directories. The registry-name↔CLI-command
-table below is **generated** from `stackDescriptors` by `prodbox docs generate` — do not hand-edit
-between the markers; `prodbox docs check` fails the build if it drifts. This is the typed source
+table below is **generated** from `stackDescriptors` by `prodbox dev docs generate` — do not hand-edit
+between the markers; `prodbox dev docs check` fails the build if it drifts. This is the typed source
 Sprint `0.10` consumes for the registry-name↔CLI-verb list and Sprint `5.6` consumes for
 registry-generated golden coverage:
 
@@ -234,9 +234,9 @@ registry-generated golden coverage:
 
 | Stack | Provisioned by | Destroyed by | Pulumi state backend |
 |-------|----------------|--------------|----------------------|
-| `aws-eks` | `prodbox pulumi eks-resources` (and implicitly by `prodbox test all` / `prodbox test integration … --substrate aws` when needed) | `prodbox pulumi eks-destroy --yes`; auto-destroyed by the test-harness postflight on success, failure, **and** Ctrl-C (Sprint `7.6`); also destroyed by `prodbox rke2 delete --cascade` (Sprint `4.11`) | MinIO in-cluster (`s3://prodbox-state?endpoint=127.0.0.1:39000`) |
-| `aws-eks-subzone` | `prodbox pulumi aws-subzone-resources` | `prodbox pulumi aws-subzone-destroy --yes`; auto-destroyed by the test-harness postflight (Sprint `7.6`); also destroyed by `prodbox rke2 delete --cascade` (Sprint `4.11`); destroy deletes non-NS/SOA records first so a failed run's A record cannot keep the hosted zone non-empty | MinIO in-cluster |
-| `aws-test` (HA-RKE2 EC2) | `prodbox pulumi test-resources` | `prodbox pulumi test-destroy --yes`; auto-destroyed by the test-harness postflight (Sprint `7.6`); also destroyed by `prodbox rke2 delete --cascade` (Sprint `4.11`) | MinIO in-cluster |
+| `aws-eks` | `prodbox aws stack eks reconcile` (and implicitly by `prodbox test all` / `prodbox test integration … --substrate aws` when needed) | `prodbox aws stack eks destroy --yes`; auto-destroyed by the test-harness postflight on success, failure, **and** Ctrl-C (Sprint `7.6`); also destroyed by `prodbox cluster delete --cascade` (Sprint `4.11`) | MinIO in-cluster (`s3://prodbox-state?endpoint=127.0.0.1:39000`) |
+| `aws-eks-subzone` | `prodbox aws stack aws-subzone reconcile` | `prodbox aws stack aws-subzone destroy --yes`; auto-destroyed by the test-harness postflight (Sprint `7.6`); also destroyed by `prodbox cluster delete --cascade` (Sprint `4.11`); destroy deletes non-NS/SOA records first so a failed run's A record cannot keep the hosted zone non-empty | MinIO in-cluster |
+| `aws-test` (HA-RKE2 EC2) | `prodbox aws stack test reconcile` | `prodbox aws stack test destroy --yes`; auto-destroyed by the test-harness postflight (Sprint `7.6`); also destroyed by `prodbox cluster delete --cascade` (Sprint `4.11`) | MinIO in-cluster |
 
 Per-run stacks exist only for the lifetime of a suite run that needs them. The harness owns
 the full create/destroy lifecycle; operators do not normally invoke the destroy commands by
@@ -248,10 +248,10 @@ with the cluster).
 
 | Resource | Provisioned by | Destroyed by | Pulumi state backend |
 |----------|----------------|--------------|----------------------|
-| `aws-ses` stack (sending identity, DKIM, MX, receive rule set, S3 capture bucket, SMTP IAM user) | `prodbox pulumi aws-ses-resources` | `prodbox pulumi aws-ses-destroy --yes` — **only on explicit invocation**; never auto-destroyed by the test-harness postflight, never destroyed by `prodbox rke2 delete` (any flag); destroyed transitively by `prodbox nuke` (Sprint `4.13`) | Dedicated AWS S3 bucket per `prodbox-config.dhall` `pulumi_state_backend` block (Sprint `4.10`) |
-| Long-lived `pulumi_state_backend` S3 bucket (Sprint `4.10`) | `ensureLongLivedPulumiStateBucket` precondition in `src/Prodbox/Infra/LongLivedPulumiBackend.hs` (idempotent, admin-credentialed) | `prodbox nuke` (Sprint `4.13`) — final pass after all long-lived stacks are gone; never destroyed by `aws teardown` or `rke2 delete` | n/a (the bucket *is* the backend) |
-| Operator-owned Route 53 parent zone for the configured public FQDN | Operator-managed in Route 53 (no `prodbox pulumi` flow) | Operator action against Route 53 — outside the harness surface | n/a |
-| Public-edge TLS certificate material (Sprints `4.24`/`7.11`/`8.7`) | cert-manager via the ZeroSSL ACME `ClusterIssuer` (`zerossl-dns01`); retained material written to a substrate-scoped key (`public-edge-tls/<substrate>/<fqdn>`) in the long-lived `pulumi_state_backend` S3 bucket and restored before every issuance | `prodbox nuke` only; never destroyed by `aws teardown` or `rke2 delete`; registered as a `LongLived` managed resource (Sprint `4.24`) | Long-lived `pulumi_state_backend` S3 bucket |
+| `aws-ses` stack (sending identity, DKIM, MX, receive rule set, S3 capture bucket, SMTP IAM user) | `prodbox aws stack aws-ses reconcile` | `prodbox aws stack aws-ses destroy --yes` — **only on explicit invocation**; never auto-destroyed by the test-harness postflight, never destroyed by `prodbox cluster delete` (any flag); destroyed transitively by `prodbox nuke` (Sprint `4.13`) | Dedicated AWS S3 bucket per the configured `pulumi_state_backend` block (Sprint `4.10`) |
+| Long-lived `pulumi_state_backend` S3 bucket (Sprint `4.10`) | `ensureLongLivedPulumiStateBucket` precondition in `src/Prodbox/Infra/LongLivedPulumiBackend.hs` (idempotent, admin-credentialed) | `prodbox nuke` (Sprint `4.13`) — final pass after all long-lived stacks are gone; never destroyed by `aws teardown` or `cluster delete` | n/a (the bucket *is* the backend) |
+| Operator-owned Route 53 parent zone for the configured public FQDN | Operator-managed in Route 53 (no `prodbox aws stack` flow) | Operator action against Route 53 — outside the harness surface | n/a |
+| Public-edge TLS certificate material (Sprints `4.24`/`7.11`/`8.7`) | cert-manager via the ZeroSSL ACME `ClusterIssuer` (`zerossl-dns01`); retained material written to a substrate-scoped key (`public-edge-tls/<substrate>/<fqdn>`) in the long-lived `pulumi_state_backend` S3 bucket and restored before every issuance | `prodbox nuke` only; never destroyed by `aws teardown` or `cluster delete`; registered as a `LongLived` managed resource (Sprint `4.24`) | Long-lived `pulumi_state_backend` S3 bucket |
 
 Retained by design — not orphaned. SES domain identity + DKIM verification requires 5–30 min
 of DNS propagation per provision; only one receive rule set may be active per AWS account; S3
@@ -264,7 +264,7 @@ operators can run the suite at a sane cadence without rebuilding shared infrastr
 time. Pulumi state for the `aws-ses` stack lives in the dedicated long-lived S3 bucket
 (Sprint `4.10`) rather than in MinIO, so cluster wipes and rebuilds preserve the ability to
 reconcile the stack. If that state bucket is removed while retained fixed-name resources still
-exist, `prodbox pulumi aws-ses-resources` repairs the supported state by recreating the backend
+exist, `prodbox aws stack aws-ses reconcile` repairs the supported state by recreating the backend
 stack, importing the retained capture bucket / SMTP IAM user / SES receipt resources, rotating
 stale SMTP access keys, and reconciling overwrite-tolerant Route 53 records.
 
@@ -316,10 +316,10 @@ see [README.md → Closure Status](README.md).
 | Resource | Created by | Discover | Destroyed by |
 |----------|------------|----------|--------------|
 | Operational `prodbox` IAM user (+ access key + `prodbox-inline` policy) | `prodbox aws setup` / the test-harness IAM bootstrap | `aws iam get-user` | `prodbox aws teardown` (`reconcileAbsent`) |
-| Generated operational `prodbox` `aws.*` credential in Vault KV (`secret/gateway/gateway/aws`) | `prodbox aws setup` minting the dedicated least-privilege identity, after Vault is unsealed, using the ephemeral elevated credential supplied at the interactive `SecretRef.Prompt` (the harness simulates that prompt from `aws_admin_for_test_simulation.*` in `test-secrets.dhall`); `prodbox-config.dhall` carries only the `SecretRef.Vault` reference, never the plaintext key | vault-kv-present | `prodbox aws teardown` (`reconcileAbsent`) |
+| Generated operational `prodbox` `aws.*` credential in Vault KV (`secret/gateway/gateway/aws`) | `prodbox aws setup` minting the dedicated least-privilege identity, after Vault is unsealed, using the ephemeral elevated credential supplied at the interactive `SecretRef.Prompt` (the harness simulates that prompt from `aws_admin_for_test_simulation.*` in `test-secrets.dhall`); production config carries only the `SecretRef.Vault` reference, never the plaintext key | vault-kv-present | `prodbox aws teardown` (`reconcileAbsent`) |
 
 These are **registered `Operational`-class resources** in the managed-resource registry
-(scheduled in Phase `4` Sprint `4.20` and Phase `7` Sprint `7.8`). Before the registry they
+(Phase `4` Sprint `4.20` and Phase `7` Sprint `7.8`). Before the registry they
 were created by `aws setup` with no registered discover/destroy, which is why an interrupted
 run leaked both undetected. The registry gives each a `discover` + `destroy` so `aws teardown`'s
 `reconcileAbsent` pass reconciles them like any other resource.
@@ -329,15 +329,13 @@ run leaked both undetected. The registry gives each a `discover` + `destroy` so 
 No new AWS or cluster resource type may be added by any `prodbox` code path without a
 corresponding **managed-resource registry** entry (typed `discover` + `destroy`, with a
 `LifecycleClass` of `PerRun` / `LongLived` / `Operational`). The registry
-(`Prodbox.Lifecycle.ResourceRegistry`, scheduled in Phase `4` Sprint `4.20`) is the
+(`Prodbox.Lifecycle.ResourceRegistry`, Phase `4` Sprint `4.20`) is the
 machine-enforced single source of truth: `Prodbox.Aws.perRunStackNames` /
-`longLivedStackNames` are **derived from** it, and `prodbox check-code` (Sprint `4.22`)
+`longLivedStackNames` are **derived from** it, and `prodbox dev check` (Sprint `4.22`)
 fails the build if this Resource Lifecycle Classes section drifts from the registry or if
 any `aws`/`pulumi` create call site has no registered counterpart. The doctrine SSoT is
 [../documents/engineering/lifecycle_reconciliation_doctrine.md § 3.1](../documents/engineering/lifecycle_reconciliation_doctrine.md).
-This Resource Lifecycle Classes table becomes a registry-sourced **generated section** when
-Sprint `4.22` lands its renderer; until then it is maintained by hand and checked against the
-registry by review.
+This Resource Lifecycle Classes table is a registry-sourced generated section.
 
 ## Cross-Substrate Shared Resources
 
@@ -350,10 +348,10 @@ and one-time/on-demand for the resources below.
 
 | Resource | Owner | Phase ownership | Provisioning surface | Used by |
 |----------|-------|-----------------|----------------------|---------|
-| Route 53 hosted zone for the configured public FQDN | Operator AWS account | [phase-7-aws-substrate-foundations.md](phase-7-aws-substrate-foundations.md) | Operator-managed in Route 53 (no `prodbox pulumi` flow) | Both substrates (home substrate for the live public record; AWS substrate when its parity sprint adds public-edge proofs) |
-| AWS SES sending identity (domain) | Operator AWS account | [phase-8-email-invite-auth.md](phase-8-email-invite-auth.md) | `prodbox pulumi aws-ses-resources` / `aws-ses-destroy` — `pulumi/aws-ses/` | Both substrates running `ValidationKeycloakInvite` |
-| AWS SES receive subdomain + MX records + receive rule set + S3 capture bucket | Operator AWS account | [phase-8-email-invite-auth.md](phase-8-email-invite-auth.md) | `prodbox pulumi aws-ses-resources` / `aws-ses-destroy` — `pulumi/aws-ses/` | Both substrates running `ValidationKeycloakInvite` |
-| SMTP IAM user + access key for Keycloak SES SMTP | Operator AWS account | [phase-8-email-invite-auth.md](phase-8-email-invite-auth.md) | `prodbox pulumi aws-ses-resources` / `aws-ses-destroy` — `pulumi/aws-ses/` (`ses:SendRawEmail` + capture-bucket read/delete); invite-aware per-cluster sync writes `secret/keycloak/smtp` in Vault before Keycloak chart render, and `prodbox users invite` patches existing realms from that Vault object before send | Keycloak chart `smtpServer` block (Sprint `8.2`); native validation harness for `ValidationKeycloakInvite` (Sprint `8.5`) |
+| Route 53 hosted zone for the configured public FQDN | Operator AWS account | [phase-7-aws-substrate-foundations.md](phase-7-aws-substrate-foundations.md) | Operator-managed in Route 53 (no `prodbox aws stack` flow) | Both substrates (home substrate for the live public record; AWS substrate when its parity sprint adds public-edge proofs) |
+| AWS SES sending identity (domain) | Operator AWS account | [phase-8-email-invite-auth.md](phase-8-email-invite-auth.md) | `prodbox aws stack aws-ses reconcile` / `prodbox aws stack aws-ses destroy --yes` — `pulumi/aws-ses/` | Both substrates running `ValidationKeycloakInvite` |
+| AWS SES receive subdomain + MX records + receive rule set + S3 capture bucket | Operator AWS account | [phase-8-email-invite-auth.md](phase-8-email-invite-auth.md) | `prodbox aws stack aws-ses reconcile` / `prodbox aws stack aws-ses destroy --yes` — `pulumi/aws-ses/` | Both substrates running `ValidationKeycloakInvite` |
+| SMTP IAM user + access key for Keycloak SES SMTP | Operator AWS account | [phase-8-email-invite-auth.md](phase-8-email-invite-auth.md) | `prodbox aws stack aws-ses reconcile` / `prodbox aws stack aws-ses destroy --yes` — `pulumi/aws-ses/` (`ses:SendRawEmail` + capture-bucket read/delete); invite-aware per-cluster sync writes `secret/keycloak/smtp` in Vault before Keycloak chart render, and `prodbox users invite` patches existing realms from that Vault object before send | Keycloak chart `smtpServer` block (Sprint `8.2`); native validation harness for `ValidationKeycloakInvite` (Sprint `8.5`) |
 
 ## Per-Validation Substrate Coverage Notes
 

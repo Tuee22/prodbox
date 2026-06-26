@@ -6,7 +6,7 @@
 module Main (main) where
 
 import Control.Exception (finally)
-import Control.Monad (forM_)
+import Control.Monad (forM_, when)
 import Data.Aeson
   ( Value (..)
   , eitherDecode
@@ -29,6 +29,7 @@ import Data.IORef
   )
 import Data.List
   ( elemIndex
+  , find
   , isInfixOf
   , isPrefixOf
   , sort
@@ -747,10 +748,12 @@ import System.Directory
   , getCurrentDirectory
   , getPermissions
   , getTemporaryDirectory
+  , removeFile
   , setPermissions
   )
 import System.Environment
-  ( lookupEnv
+  ( getExecutablePath
+  , lookupEnv
   , setEnv
   , unsetEnv
   )
@@ -758,6 +761,32 @@ import System.Exit (ExitCode (..))
 import System.FilePath (takeDirectory, (</>))
 import System.IO.Temp (withSystemTempDirectory)
 import TestSupport
+
+withBinarySiblingTier0 :: String -> IO a -> IO a
+withBinarySiblingTier0 contents action = do
+  exePath <- getExecutablePath
+  let tier0Path = takeDirectory exePath </> "prodbox.dhall"
+  previousExists <- doesFileExist tier0Path
+  previousContents <-
+    case previousExists of
+      True -> Just <$> readFile tier0Path
+      False -> pure Nothing
+  writeFile tier0Path contents
+  action `finally` restoreBinarySiblingTier0 tier0Path previousContents
+
+restoreBinarySiblingTier0 :: FilePath -> Maybe String -> IO ()
+restoreBinarySiblingTier0 tier0Path previousContents =
+  case previousContents of
+    Just contents -> writeFile tier0Path contents
+    Nothing -> do
+      currentExists <- doesFileExist tier0Path
+      when currentExists (removeFile tier0Path)
+
+assertExactlyOne :: (Show a) => [a] -> (a -> Expectation) -> Expectation
+assertExactlyOne values assertion =
+  case values of
+    [value] -> assertion value
+    _ -> expectationFailure ("expected exactly one value, got " ++ show values)
 
 -- | Predicate helper for `Either String a` test assertions: passes
 -- when the result is `Left msg` and `msg` contains the supplied
@@ -2668,14 +2697,14 @@ main = mainWithSuite "prodbox-unit" $ do
         -- cluster-established marker (the bundle itself is now MinIO-only), which
         -- flips the loader from the seed/propose Tier-0 `parameters` read to the
         -- encrypted in-force SSoT.
-        writeTier0AtPath (tmpDir </> "prodbox.dhall") defaultProjectConfig `shouldReturn` Right ()
-        createDirectoryIfMissing True (takeDirectory (tmpDir </> clusterEstablishedMarkerRelPath))
-        writeFile (tmpDir </> clusterEstablishedMarkerRelPath) "established"
-        result <-
-          loadConfigForSettingsWith
-            (\basics -> basics `shouldBe` sampleRootBasics >> pure (Right roundTripConfigFile))
-            tmpDir
-        result `shouldBe` Right roundTripConfigFile
+        withBinarySiblingTier0 (Text.unpack (renderProjectConfigDhall defaultProjectConfig)) $ do
+          createDirectoryIfMissing True (takeDirectory (tmpDir </> clusterEstablishedMarkerRelPath))
+          writeFile (tmpDir </> clusterEstablishedMarkerRelPath) "established"
+          result <-
+            loadConfigForSettingsWith
+              (\basics -> basics `shouldBe` sampleRootBasics >> pure (Right roundTripConfigFile))
+              tmpDir
+          result `shouldBe` Right roundTripConfigFile
   describe "root-config write authority (Sprint 1.38)" $ do
     it "blocks a root-cluster config write with no root token" $ do
       rootConfigWriteDecision (RootWriteAuthority True False)
@@ -8651,27 +8680,27 @@ main = mainWithSuite "prodbox-unit" $ do
                 Nothing -> unsetEnv key
 
         createDirectoryIfMissing True binDir
-        writeFile (tmpDir </> "prodbox.dhall") (wrapTier0 validConfig)
         writeFile fakeAwsPath (unlines (fakeAwsCredentialPropagationScript stateDir))
         makeExecutable fakeAwsPath
 
-        originalPath <- lookupEnv "PATH"
-        originalHostVaultKv <- lookupEnv "PRODBOX_TEST_HOST_VAULT_KV"
-        let configuredPath =
-              case originalPath of
-                Just currentPath -> binDir ++ ":" ++ currentPath
-                Nothing -> binDir
+        withBinarySiblingTier0 (wrapTier0 validConfig) $ do
+          originalPath <- lookupEnv "PATH"
+          originalHostVaultKv <- lookupEnv "PRODBOX_TEST_HOST_VAULT_KV"
+          let configuredPath =
+                case originalPath of
+                  Just currentPath -> binDir ++ ":" ++ currentPath
+                  Nothing -> binDir
 
-        setEnv "PATH" configuredPath
-        setEnv "PRODBOX_TEST_HOST_VAULT_KV" "allow"
-        validationResult <-
-          runEffect (InterpreterContext tmpDir) (Validate RequireAwsCredentials)
-            `finally` do
-              restoreEnv "PATH" originalPath
-              restoreEnv "PRODBOX_TEST_HOST_VAULT_KV" originalHostVaultKv
+          setEnv "PATH" configuredPath
+          setEnv "PRODBOX_TEST_HOST_VAULT_KV" "allow"
+          validationResult <-
+            runEffect (InterpreterContext tmpDir) (Validate RequireAwsCredentials)
+              `finally` do
+                restoreEnv "PATH" originalPath
+                restoreEnv "PRODBOX_TEST_HOST_VAULT_KV" originalHostVaultKv
 
-        validationResult `shouldBe` Result.Success ()
-        readFile countPath `shouldReturn` "3"
+          validationResult `shouldBe` Result.Success ()
+          readFile countPath `shouldReturn` "3"
 
   describe "native validation helpers" $ do
     it "retries AWS test-stack SSH validation until a node accepts connections" $
@@ -9509,9 +9538,9 @@ main = mainWithSuite "prodbox-unit" $ do
           \cachePath :: String\n\
           \cachePath = \".prodbox-state/charts/keycloak/whatever.json\"\n"
         violations <- Prodbox.CheckCode.checkForbidDotProdboxState tempRoot
-        length violations `shouldBe` 1
-        head violations `shouldContain` "src/Prodbox/Probe/Hit.hs"
-        head violations `shouldContain` ".prodbox-state/"
+        assertExactlyOne violations $ \violation -> do
+          violation `shouldContain` "src/Prodbox/Probe/Hit.hs"
+          violation `shouldContain` ".prodbox-state/"
 
     it "fires on the broader `.prodbox-state/` prefix (any subpath, not just .secrets.json)" $
       withSystemTempDirectory "prodbox-forbid-dot-state-broader" $ \tempRoot -> do
@@ -9524,8 +9553,8 @@ main = mainWithSuite "prodbox-unit" $ do
           \eventKeysCache :: String\n\
           \eventKeysCache = \".prodbox-state/gateway/.gateway-event-keys.json\"\n"
         violations <- Prodbox.CheckCode.checkForbidDotProdboxState tempRoot
-        length violations `shouldBe` 1
-        head violations `shouldContain` ".prodbox-state/"
+        assertExactlyOne violations $ \violation ->
+          violation `shouldContain` ".prodbox-state/"
 
     it "leaves comments / docstrings that mention `.prodbox-state/` alone" $
       withSystemTempDirectory "prodbox-forbid-dot-state-comments" $ \tempRoot -> do
@@ -9581,15 +9610,15 @@ main = mainWithSuite "prodbox-unit" $ do
     it "a bogus PulumiFooResources constructor yields exactly one violation naming it" $ do
       let violations =
             pulumiCreateSiteViolations registeredNames commandWithBogusConstructor
-      length violations `shouldBe` 1
-      head violations `shouldContain` "PulumiFooResources"
+      assertExactlyOne violations $ \violation ->
+        violation `shouldContain` "PulumiFooResources"
 
     it "a mapped stack absent from the registered names yields a violation naming that stack" $ do
       let registeredWithoutSes = filter (/= "aws-ses") registeredNames
           violations =
             pulumiCreateSiteViolations registeredWithoutSes commandWithKnownConstructors
-      length violations `shouldBe` 1
-      head violations `shouldContain` "aws-ses"
+      assertExactlyOne violations $ \violation ->
+        violation `shouldContain` "aws-ses"
 
     it "awsCreateSiteViolations allows the owner module src/Prodbox/Aws.hs" $
       awsCreateSiteViolations "src/Prodbox/Aws.hs" contentsWithCreateUser `shouldBe` []
@@ -9597,9 +9626,9 @@ main = mainWithSuite "prodbox-unit" $ do
     it "awsCreateSiteViolations flags an IAM create verb outside the owner module" $ do
       let violations =
             awsCreateSiteViolations "src/Prodbox/Other.hs" contentsWithCreateUser
-      length violations `shouldBe` 1
-      head violations `shouldContain` "create-user"
-      head violations `shouldContain` "src/Prodbox/Aws.hs"
+      assertExactlyOne violations $ \violation -> do
+        violation `shouldContain` "create-user"
+        violation `shouldContain` "src/Prodbox/Aws.hs"
 
     it "awsCreateSiteViolations ignores a non-owner module with no AWS create verbs" $
       awsCreateSiteViolations "src/Prodbox/Other.hs" contentsWithoutVerbs `shouldBe` []
@@ -9618,8 +9647,8 @@ main = mainWithSuite "prodbox-unit" $ do
               ]
           violations =
             awsCreateSiteViolations "src/Prodbox/Other.hs" contentsWithCreateBucket
-      length violations `shouldBe` 1
-      head violations `shouldContain` "create-bucket"
+      assertExactlyOne violations $ \violation ->
+        violation `shouldContain` "create-bucket"
 
     it "Sprint 4.27 awsCreateSiteViolations allows create-bucket in its owner modules" $ do
       let contentsWithCreateBucket =
@@ -9681,9 +9710,9 @@ main = mainWithSuite "prodbox-unit" $ do
         `shouldBe` ["aws-eks", "aws-eks-subzone", "aws-test", "aws-ses"]
 
     it "the EKS registry name and Pulumi stack id differ as recorded" $ do
-      let eks = head StackDescriptor.stackDescriptors
-      StackDescriptor.stackRegistryName eks `shouldBe` "aws-eks"
-      StackDescriptor.stackPulumiStackId eks `shouldBe` "aws-eks-test"
+      case find ((== "aws-eks") . StackDescriptor.stackRegistryName) StackDescriptor.stackDescriptors of
+        Nothing -> expectationFailure "expected aws-eks stack descriptor"
+        Just eks -> StackDescriptor.stackPulumiStackId eks `shouldBe` "aws-eks-test"
 
     it "renderStackCommandSurfaceMarkdown renders a header and every descriptor row" $ do
       let rendered =
@@ -9826,8 +9855,8 @@ main = mainWithSuite "prodbox-unit" $ do
                 []
                 ["command-registry.markdown"]
                 ["command-registry.markdown"]
-        length violations `shouldBe` 1
-        head violations `shouldContain` "are not present in the file"
+        assertExactlyOne violations $ \violation ->
+          violation `shouldContain` "are not present in the file"
 
       it "flags a declared key that no GeneratedSectionRule registers" $ do
         let violations =
@@ -9837,8 +9866,8 @@ main = mainWithSuite "prodbox-unit" $ do
                 []
                 []
                 ["command-registry.markdown"]
-        length violations `shouldBe` 1
-        head violations `shouldContain` "no `GeneratedSectionRule` registers it"
+        assertExactlyOne violations $ \violation ->
+          violation `shouldContain` "no `GeneratedSectionRule` registers it"
 
       it "flags a marker present in the file but absent from metadata" $ do
         let violations =
@@ -9848,8 +9877,8 @@ main = mainWithSuite "prodbox-unit" $ do
                 ["route-registry"]
                 []
                 ["route-registry"]
-        length violations `shouldBe` 1
-        head violations `shouldContain` "but does not declare"
+        assertExactlyOne violations $ \violation ->
+          violation `shouldContain` "but does not declare"
 
     describe "extractMarkdownLinkTargets" $ do
       it "extracts a relative link target" $
@@ -11369,35 +11398,6 @@ sampleOrders =
           }
     }
 
-sampleDaemonConfig :: DaemonConfig
-sampleDaemonConfig =
-  DaemonConfig
-    { daemonNodeId = "node-a"
-    , daemonCertFile = "/tmp/node-a.crt"
-    , daemonKeyFile = "/tmp/node-a.key"
-    , daemonCaFile = "/tmp/ca.crt"
-    , daemonOrdersFile = "/tmp/orders.json"
-    , daemonEventKeys = [("node-a", "fake-key")]
-    , daemonHeartbeatInterval = 1.0
-    , daemonReconnectInterval = 1.0
-    , daemonSyncInterval = 1.0
-    , daemonMaxClockSkewSeconds = defaultMaxClockSkewSeconds
-    , daemonDrainDeadlineSeconds = Just 30
-    , daemonConfigLogLevel = Just "info"
-    , daemonVaultAuth = Nothing
-    , daemonDnsWriteGate =
-        Just
-          DnsWriteGate
-            { dnsWriteGateZoneId = "Z1234567890ABC"
-            , dnsWriteGateFqdn = "test.resolvefintech.com"
-            , dnsWriteGateTtl = 60
-            , dnsWriteGateAwsRegion = "us-east-1"
-            }
-    , daemonAwsCreds = Nothing
-    , daemonMinioCreds = Nothing
-    , daemonMinioEndpointUrl = Nothing
-    }
-
 sampleSignedEvent :: SignedEvent
 sampleSignedEvent =
   signedEventStub "node-a" eventTypeHeartbeat "2026-04-06T10:00:00Z"
@@ -11554,33 +11554,6 @@ gatewayMinioCredsNoneLines =
       ++ gatewaySecretRefType
       ++ " }"
   ]
-
-daemonConfigJsonValue :: DaemonConfig -> Value
-daemonConfigJsonValue config =
-  object
-    [ "node_id" .= daemonNodeId config
-    , "cert_file" .= daemonCertFile config
-    , "key_file" .= daemonKeyFile config
-    , "ca_file" .= daemonCaFile config
-    , "orders_file" .= daemonOrdersFile config
-    , "event_keys" .= object [Key.fromString nodeId .= key | (nodeId, key) <- daemonEventKeys config]
-    , "heartbeat_interval_seconds" .= daemonHeartbeatInterval config
-    , "reconnect_interval_seconds" .= daemonReconnectInterval config
-    , "sync_interval_seconds" .= daemonSyncInterval config
-    , "max_clock_skew_seconds" .= daemonMaxClockSkewSeconds config
-    , "drain_deadline_seconds" .= daemonDrainDeadlineSeconds config
-    , "log_level" .= daemonConfigLogLevel config
-    , "dns_write_gate" .= fmap dnsWriteGateJsonValue (daemonDnsWriteGate config)
-    ]
-
-dnsWriteGateJsonValue :: DnsWriteGate -> Value
-dnsWriteGateJsonValue gate =
-  object
-    [ "zone_id" .= dnsWriteGateZoneId gate
-    , "fqdn" .= dnsWriteGateFqdn gate
-    , "ttl" .= dnsWriteGateTtl gate
-    , "aws_region" .= dnsWriteGateAwsRegion gate
-    ]
 
 ordersJsonValue :: Orders -> Value
 ordersJsonValue orders =

@@ -114,9 +114,8 @@
 The `prodbox vault` leaf commands are now in the generated registry above. `vault status` is fully
 wired — it probes the in-cluster Vault and reports initialized / sealed / unseal-progress, or that
 it is unreachable. The mutating subcommands (`init`, `unseal`, `seal`, `reconcile`,
-`rotate-unlock-bundle`, `rotate-transit-key`, `pki status`, `pki issue-test-cert`) are wired to the
-surface; their init/unseal orchestration and authenticated (token-bearing) flows are still being
-built and report so until they land. The
+`rotate-unlock-bundle`, `rotate-transit-key`, `pki status`, `pki issue-test-cert`) are implemented
+through the Vault CLI handlers and authenticated Vault client/orchestration modules. The
 [unlock bundle](../engineering/vault_doctrine.md#6-the-unlock-bundle) lives in the durable MinIO
 bucket (host disk holds no unseal material) and recovers a torn-down cluster's Vault,
 and a sealed Vault fails closed; the model these commands operate against is owned by

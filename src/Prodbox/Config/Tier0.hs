@@ -102,7 +102,7 @@ import Prodbox.Config.Basics
   , SealMode (..)
   , UnencryptedBasics (..)
   )
-import Prodbox.Config.FloorDhall (loadUnencryptedBasics, loadUnencryptedBasicsAtPath)
+import Prodbox.Config.FloorDhall (loadUnencryptedBasicsAtPath)
 import Prodbox.Repo
   ( resolveTier0ConfigPath
   )

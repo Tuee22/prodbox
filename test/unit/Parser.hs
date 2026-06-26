@@ -201,7 +201,6 @@ commandPathOfRequest request =
             HostEnsureTools -> ["host", "ensure-tools"]
             HostCheckPorts -> ["host", "check-ports"]
             HostInfo -> ["host", "info"]
-            HostFirewall -> ["host", "firewall"]
             HostFirewallGatewayRestrict _ -> ["host", "firewall", "gateway-restrict"]
             HostFirewallGatewayUnrestrict _ -> ["host", "firewall", "gateway-unrestrict"]
             -- Regrouped under `edge status` (Phase 5); the handler still

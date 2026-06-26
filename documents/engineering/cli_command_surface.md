@@ -390,7 +390,7 @@ command contract.
 supported public `config setup` path prompts for one ephemeral elevated/admin AWS credential
 set (the interactive `SecretRef.Prompt` arm) when needed — held in memory for the one command,
 used once, then discarded. The `aws_admin_for_test_simulation.*` block is not a
-`prodbox-config.dhall` section: it is a test-harness-only fixture in `test-secrets.dhall` that
+production config section: it is a test-harness-only fixture in `test-secrets.dhall` that
 simulates the operator at this prompt so the suite can drive admin-credentialed flows
 non-interactively. See [vault_doctrine.md § 4](./vault_doctrine.md#4-config-split) and
 [aws_admin_credentials.md](./aws_admin_credentials.md).
@@ -400,7 +400,7 @@ non-interactively. See [vault_doctrine.md § 4](./vault_doctrine.md#4-config-spl
 `src/Prodbox/Aws.hs` owns the full public `prodbox aws ...` surface. The supported public contract
 is prompt-driven for the ephemeral elevated/admin AWS credential (the interactive
 `SecretRef.Prompt` arm). The `aws_admin_for_test_simulation.*` block is not part of the public
-`aws setup` flow and is not a `prodbox-config.dhall` section: it is a test-harness-only fixture
+`aws setup` flow and is not a production config section: it is a test-harness-only fixture
 in `test-secrets.dhall` that simulates the operator at that prompt.
 
 `prodbox aws teardown` carries the Sprint `7.6` orphan-safety refuse-path: it refuses to delete
@@ -533,7 +533,7 @@ runtime path — the interactive `SecretRef.Prompt` arm: after the typed confirm
 operator supplies the ephemeral elevated credential at the prompt (held in memory for the one
 command, used once, discarded). The test harness automates that prompt by feeding the
 `aws_admin_for_test_simulation.*` fixture from `test-secrets.dhall`. There is no stored admin
-section in `prodbox-config.dhall` and no `SecretRef.Vault` admin ref — the simulation fixture
+section in production config and no `SecretRef.Vault` admin ref — the simulation fixture
 is `TestPlaintext` in `test-secrets.dhall`, never a Vault object.
 
 Discipline (mirrors `aws teardown`):
@@ -740,7 +740,7 @@ Named suite commands:
 - applies the canonical aggregate ordering
 - uses the `aws_admin_for_test_simulation.*` fixture from `test-secrets.dhall` only to simulate
   the operator's elevated-credential prompt for suite-driven destructive validation and
-  long-lived stack flows; the fixture never reaches `prodbox-config.dhall`, Vault, or generated
+  long-lived stack flows; the fixture never reaches production config, Vault, or generated
   cluster config
 - performs supported-runtime bootstrap and postflight when required
 - waits for `prodbox edge status` to report `CLASSIFICATION=ready-for-external-proof` before
@@ -752,7 +752,7 @@ Named suite commands:
 
 ### `prodbox dev check` notes
 
-`src/Prodbox/CheckCode.hs` owns the public `check-code` entrypoint.
+`src/Prodbox/CheckCode.hs` owns the public `prodbox dev check` entrypoint.
 
 The supported command runs the repository-owned workflow or hook policy scan, Fourmolu, HLint,
 warning-clean `cabal build`, and the final operator binary sync. Detailed Haskell quality doctrine
@@ -781,14 +781,14 @@ simulates the operator at the `SecretRef.Prompt` arm by feeding the
 `aws_admin_for_test_simulation.*` fixture from `test-secrets.dhall`, materializes
 operational `aws.*` (minted into Vault), and clears it on suite exit. There is no
 production "config-backed admin path" that reads stored admin credentials from
-`prodbox-config.dhall`.
+production config.
 
 `prodbox nuke` is TTY-confirmed because of the typed `NUKE EVERYTHING` guard, and
 after that gate it acquires elevated AWS power through the same unified prompt path
 as the long-lived `aws-ses` and state-bucket operations: the operator supplies the
 ephemeral elevated credential at the interactive prompt (the harness simulates this
 from the `test-secrets.dhall` fixture). It does not read a stored admin section from
-`prodbox-config.dhall`.
+production config.
 
 The interactive surface **refuses to run when stdin is not a TTY**. Each
 interactive entry point calls `Prodbox.CLI.Interactive.requireInteractiveTty`

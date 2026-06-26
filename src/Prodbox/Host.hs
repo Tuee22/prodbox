@@ -54,9 +54,8 @@ import Prodbox.Dns
   , fetchPublicIp
   , queryRoute53ARecordValuesInZone
   )
-import Prodbox.Effect (Effect (..))
 import Prodbox.EffectDAG (fromRootIds)
-import Prodbox.EffectInterpreter (InterpreterContext (..), runEffect, runEffectDAG)
+import Prodbox.EffectInterpreter (InterpreterContext (..), runEffectDAG)
 import Prodbox.Error (fatalError)
 import Prodbox.Infra.SubstrateKubectl (withSubstrateKubectlEnvironment)
 import Prodbox.Prerequisite (prerequisiteRegistry)
@@ -170,7 +169,6 @@ runHostCommand repoRoot command =
           pure ExitSuccess
     HostCheckPorts -> runHostCheckPorts
     HostInfo -> runHostInfo repoRoot
-    HostFirewall -> runSingleEffect repoRoot "Check firewall status" (commandEffect "ufw" ["status"] repoRoot)
     HostFirewallGatewayRestrict port -> runHostFirewallGatewayRestrict port
     HostFirewallGatewayUnrestrict port -> runHostFirewallGatewayUnrestrict port
     HostPublicEdge substrate -> runHostPublicEdge repoRoot substrate
@@ -658,13 +656,6 @@ parseHexPort path localAddress =
         _ -> Left ("Could not parse listening port in " ++ path ++ ": " ++ localAddress)
     _ -> Left ("Could not find port separator in " ++ path ++ ": " ++ localAddress)
 
-runSingleEffect :: FilePath -> String -> Effect -> IO ExitCode
-runSingleEffect repoRoot failureContext effect = do
-  effectResult <- runEffect (InterpreterContext repoRoot) effect
-  case effectResult of
-    Failure err -> failWith (failureContext ++ ": " ++ err)
-    Success () -> pure ExitSuccess
-
 -- | Print host system information including NTP synchronization
 -- disposition.  Fails fast when the host is reachable via @timedatectl@
 -- but reports unsynchronized clocks, since every freshness judgement and
@@ -767,16 +758,6 @@ runPrerequisites repoRoot rootIds =
   case fromRootIds rootIds prerequisiteRegistry of
     Left err -> pure (Failure err)
     Right dag -> runEffectDAG (InterpreterContext repoRoot) dag
-
-commandEffect :: FilePath -> [String] -> FilePath -> Effect
-commandEffect subprocessPath subprocessArguments repoRoot =
-  RunCommand
-    Subprocess
-      { subprocessPath = subprocessPath
-      , subprocessArguments = subprocessArguments
-      , subprocessEnvironment = Nothing
-      , subprocessWorkingDirectory = Just repoRoot
-      }
 
 optionalKubectlJson :: FilePath -> Maybe String -> [String] -> IO (Either String (Maybe Value))
 optionalKubectlJson repoRoot maybeNamespace args = do

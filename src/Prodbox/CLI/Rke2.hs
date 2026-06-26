@@ -292,8 +292,7 @@ import Prodbox.Vault.Seal
   )
 import Prodbox.Vault.Status (probeVaultStatusLine)
 import System.Directory
-  ( createDirectoryIfMissing
-  , doesDirectoryExist
+  ( doesDirectoryExist
   , doesFileExist
   , getHomeDirectory
   , getTemporaryDirectory

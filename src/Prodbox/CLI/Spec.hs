@@ -315,7 +315,6 @@ parserForPath path =
     ["host", "ensure-tools"] -> Just (pure (RunNative (NativeHost HostEnsureTools)))
     ["host", "check-ports"] -> Just (pure (RunNative (NativeHost HostCheckPorts)))
     ["host", "info"] -> Just (pure (RunNative (NativeHost HostInfo)))
-    ["host", "firewall"] -> Just (pure (RunNative (NativeHost HostFirewall)))
     ["host", "firewall", "gateway-restrict"] ->
       Just (RunNative . NativeHost . HostFirewallGatewayRestrict <$> gatewayNodePortParser)
     ["host", "firewall", "gateway-unrestrict"] ->
@@ -1117,8 +1116,8 @@ hostGroup =
         [example ["host", "info"] "Render host diagnostics."]
     , group
         "firewall"
-        "Inspect or install host firewall rules"
-        "Inspect required firewall rules; subcommands install gateway-NodePort restrictions."
+        "Manage host firewall rules"
+        "Subcommands install or remove gateway-NodePort restrictions."
         [ leaf
             "gateway-restrict"
             "Restrict the gateway NodePort to 127.0.0.1"
@@ -1147,7 +1146,7 @@ hostGroup =
             ]
         ]
         []
-        [example ["host", "firewall"] "Inspect firewall expectations."]
+        []
     ]
     []
     [example ["host", "info"] "Render host information."]

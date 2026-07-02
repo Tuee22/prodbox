@@ -151,6 +151,17 @@ Build a clean-room Haskell `prodbox` repository with:
 > unrepresentable and specifies prodbox as the proven single-node specialization the `~/amoebius`
 > umbrella generalizes.
 
+> **Unified block storage across substrates (2026-07-02 — documentation + plan only, not yet
+> implemented).** EKS moves off dynamic `gp2` to **pre-created EBS volumes lifted in as static
+> `Retain` PVs** (CSI `volumeHandle`, AZ-pinned), mirroring the home `manual`/no-provisioner model —
+> no dynamic provisioning on either substrate
+> ([storage_lifecycle_doctrine.md § 1](../documents/engineering/storage_lifecycle_doctrine.md),
+> [cluster_topology_doctrine.md § 4](../documents/engineering/cluster_topology_doctrine.md)).
+> Production retains EBS (the analog of `.data/`); the test harness deletes only test-scoped EBS at
+> suite postflight, closing the EBS-leak class an abnormal AWS bill surfaced. Scheduled by reopening
+> Phase 7 (Sprints `7.28`/`7.29`), Phase 4 (Sprints `4.39`/`4.40`), and Phase 5 (Sprint `5.12`) to
+> expand each phase's own owned surface (no new phase, Standards A/E/N preserved).
+
 Vault is the **sole, finalized** secrets / KMS / encryption-as-a-service / PKI root of every
 prodbox-managed cluster — there is no transitional or bridge pattern. Every secret, credential, key,
 and certificate the stack uses is a Vault object (a KV v2 secret, a Transit key, or a PKI-issued

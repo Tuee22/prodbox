@@ -122,7 +122,12 @@ subnet, EIP, security-group, hosted-zone limits) before the substrate is provisi
 storage-capacity reading of that gate is simple: the region quota is the *real* ceiling on
 the "unlimited" cloud sink — an autoscaled MinIO on EBS scales only until the region's EBS /
 EC2 quota is reached, so `Autoscaled` on AWS means "finite at the region quota," not
-"infinite." The per-deploy quota-gate **mechanism** (when it runs, how a shortfall refuses
+"infinite." EBS-backed durable claims are pre-created static `Retain` PVs (AZ-pinned, CSI
+`volumeHandle`; no dynamic provisioning), and both retained production EBS and the test-scoped
+EBS the harness deletes at suite postflight count against that finite EBS quota while they
+exist (Sprint `7.28`; see
+[storage_lifecycle_doctrine.md § 1](./storage_lifecycle_doctrine.md#1-canonical-doctrine-statements)).
+The per-deploy quota-gate **mechanism** (when it runs, how a shortfall refuses
 or requests) is owned by [resource_scaling_doctrine.md](./resource_scaling_doctrine.md);
 this doctrine records only that the gate is what makes the cloud sink honestly finite.
 

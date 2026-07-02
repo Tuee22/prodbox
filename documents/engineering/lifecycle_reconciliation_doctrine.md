@@ -38,22 +38,30 @@ exactly one of these classes. Cleanup ownership is defined per class.
 | Class | Examples | Tracked by | Cluster-tag signature | Cleanup owner |
 |---|---|---|---|---|
 | 1. Pulumi-tracked stack resources | `aws-eks` VPC, EKS cluster, node group; `aws-test` EC2 nodes; `aws-eks-subzone` Route 53 records; `aws-ses` SES identity, DKIM, S3 capture bucket, SMTP IAM user | The encrypted Pulumi checkpoint object (Sprint `7.14`; see §2) | Stack-name tag and `pulumi:project` tag | `prodbox aws stack <stack> destroy --yes` (canonical per stack) |
-| 2. CSI-driver-created EBS volumes | The MinIO PVC EBS volume in EKS; any future StatefulSet PVC | None — created via the Kubernetes API by `ebs.csi.aws.com` | `kubernetes.io/cluster/<cluster-name>: owned`, `ebs.csi.aws.com/cluster-name: <cluster-name>` | K8s drain phase (Sprint 4.12); fallback postflight tag sweep |
+| 2. Pre-created retained EBS volumes (static `Retain` PVs) | The durable EBS volumes lifted in as static `Retain` PVs on EKS (MinIO, Vault, `keycloak-postgres`/Patroni, `vscode`); **no dynamic provisioning** | Registered managed-resource with typed `discover`/`destroy` (Sprint `4.39`); the retained set is the EBS analog of `.data/` | `prodbox.io/managed-by: prodbox` plus a retain-vs-test-scoped role marker; test volumes additionally carry `kubernetes.io/cluster/<cluster-name>: owned` | Retained by **all** cluster/stack teardown (they are `Retain` and not Pulumi-owned); test-scoped volumes deleted only by the suite postflight reaper (Sprint `4.40`). See [storage_lifecycle_doctrine.md](storage_lifecycle_doctrine.md) § 1, § 5 |
 | 3. AWS Load Balancer Controller resources | ALBs, NLBs, target groups, and security groups created in response to `Service type=LoadBalancer` and `Ingress` resources | None — created via the AWS API by the LBC pod | `kubernetes.io/cluster/<cluster-name>: owned`, `elbv2.k8s.aws/cluster`, `ingress.k8s.aws/stack` | K8s drain phase (Sprint 4.12); fallback postflight tag sweep |
 | 4. cert-manager DNS01 records | `_acme-challenge.<host>` TXT records in Route 53 during ACME issuance | None — created via the Route 53 API by the cert-manager solver | Record name pattern `_acme-challenge.*` | K8s drain phase (Sprint 4.12) handles graceful clean-up by deleting `Certificate` resources first; fallback is the postflight tag sweep |
 | 5. Direct `aws` CLI shell-out records | DNS bootstrap A records created by `src/Prodbox/CLI/Rke2.hs:2484` and `src/Prodbox/TestValidation.hs:1547` | None — written directly via `aws route53` subprocess | None reliably; identified by content (configured public FQDN) | Best-effort cleanup paths in the same modules; fallback is the postflight tag sweep |
 
 The K8s drain phase plus the postflight tag sweep together make
-classes 2–5 leak-safe. The drain runs **before** any Pulumi destroy so
-the controllers are still alive to unwind their AWS-side state (see
-§5b for the canonical cascade order); the sweep runs **after** the
-destroys and fails the command with the leak list when anything
-cluster-tagged survives. On the AWS substrate the drain must target
-the EKS API server, not the local RKE2 cluster — see §5b
-"Substrate-aware drain". A drain that runs against the wrong cluster
-silently skips the in-cluster controller cleanup, and the subsequent
-Pulumi destroy fails with `DependencyViolation` on subnet deletion as
-ENIs / ALBs / EBS volumes block the underlying network teardown.
+classes 3–5 leak-safe; class 2 is made leak-safe instead by the
+retained-EBS managed-resource contract. The drain runs **before** any
+Pulumi destroy so the controllers are still alive to unwind their
+AWS-side state (see §5b for the canonical cascade order); the sweep
+runs **after** the destroys and fails the command with the leak list
+when anything cluster-tagged survives. Class 2 EBS volumes are
+deliberately **not** unwound by the drain: they are static `Retain`
+PVs, preserved across teardown exactly like `.data/`, and are deleted
+only by the test-suite postflight reaper for test-scoped volumes
+(Sprints `4.39`, `4.40`; the legacy dynamic `gp2` path that this
+supersedes is tracked in
+[../../DEVELOPMENT_PLAN/legacy-tracking-for-deletion.md](../../DEVELOPMENT_PLAN/legacy-tracking-for-deletion.md)).
+On the AWS substrate the drain must target the EKS API server, not the
+local RKE2 cluster — see §5b "Substrate-aware drain". A drain that runs
+against the wrong cluster silently skips the in-cluster controller
+cleanup, and the subsequent Pulumi destroy fails with
+`DependencyViolation` on subnet deletion as ENIs / ALBs block the
+underlying network teardown.
 
 ## 2. State-Lifetime Rule
 
@@ -567,17 +575,18 @@ ahead of a possible residue refusal is harmless.
 
 `prodbox cluster delete --cascade --yes` orchestrates these phases in order. The order is
 deliberate and matches §1: the K8s drain runs **before** any per-run Pulumi destroy so
-the in-cluster controllers (AWS Load Balancer Controller, EBS CSI driver,
-cert-manager) are still alive to unwind their AWS-side state. Only then does Pulumi
-delete the substrate (VPC, subnets, EKS cluster), at which point the controller-owned
-ENIs / ALBs / EBS volumes are already gone and Pulumi's deletes have no dependencies
-to trip on.
+the in-cluster controllers (AWS Load Balancer Controller, cert-manager) are still
+alive to unwind their AWS-side state. Only then does Pulumi delete the substrate (VPC,
+subnets, EKS cluster), at which point the controller-owned ENIs / ALBs are already gone
+and Pulumi's deletes have no dependencies to trip on. The pre-created retained EBS
+volumes are `Retain` and are deliberately preserved (not drained); a detached `Retain`
+volume is not a subnet dependency, so it never blocks teardown.
 
 | # | Phase | What it does | Failure mode |
 |---|---|---|---|
 | 1 | Confirm encrypted checkpoint reachability | `<stack>ResidueStatus` queries the encrypted checkpoint object for each per-run stack. If MinIO and Vault are reachable, the result is `ResidueAbsent` or `ResiduePresent`; if unreachable, the result is `ResidueUnreachable` and the cascade treats per-run residue as absent (the per-run state died with the cluster, per the per-run lifetime class). | Misclassification is impossible because `ResidueUnreachable` for a per-run stack is by definition the same outcome as "the state is gone". |
-| 2 | K8s drain | Delete LoadBalancer Services, ALB Ingresses, and Delete-reclaim PVCs so the in-cluster controllers unwind their AWS-side state (Sprint 4.12). On the AWS substrate the drain MUST target the EKS API server, not the local RKE2 cluster — see "Substrate-aware drain" below. If the K8s API is unreachable, this phase emits `DrainSkipped` and the cascade proceeds to phase 3 only on the home substrate (where the absent cluster cannot have created new AWS resources). On the AWS substrate, `DrainSkipped` is a hard failure because the EKS cluster is the source of the resources Pulumi is about to fail to delete. | `DrainFailed` is the only failure path on the home substrate; `DrainSkipped` is success-with-reason there. On the AWS substrate, both `DrainSkipped` and `DrainFailed` are hard-failure paths. |
-| 3 | Per-run Pulumi destroys | For each per-run stack reporting `ResiduePresent`, run `pulumi destroy` against MinIO inside `withMaterializedOperationalCreds` (Sprint 4.17). The bracket materializes operational creds for the run (in tests, via the harness-simulated admin prompt sourced from `test-secrets.dhall`) when `aws.*` is empty and restores-to-empty on exit (success or exception). Because phase 2 already drained the controller-owned resources, every per-run subnet / VPC / cluster delete now has no live ENI / ALB / EBS dependency. | Empty `aws.*` no longer refuses the destroy; the bracket materializes it transparently. `DependencyViolation` from AWS indicates phase 2 did not in fact drain (most often: drain ran against the wrong kubeconfig). |
+| 2 | K8s drain | Delete LoadBalancer Services, ALB Ingresses, and any `Delete`-reclaim PVCs so the in-cluster controllers unwind their AWS-side state (Sprint 4.12). The pre-created retained EBS PVs are `Retain` and are intentionally **not** deleted here — deleting a PVC bound to a `Retain` PV never deletes the EBS volume, and the `Delete`-reclaim step is only a generic safety net for any stray dynamic claim. On the AWS substrate the drain MUST target the EKS API server, not the local RKE2 cluster — see "Substrate-aware drain" below. If the K8s API is unreachable, this phase emits `DrainSkipped` and the cascade proceeds to phase 3 only on the home substrate (where the absent cluster cannot have created new AWS resources). On the AWS substrate, `DrainSkipped` is a hard failure because the EKS cluster is the source of the resources Pulumi is about to fail to delete. | `DrainFailed` is the only failure path on the home substrate; `DrainSkipped` is success-with-reason there. On the AWS substrate, both `DrainSkipped` and `DrainFailed` are hard-failure paths. |
+| 3 | Per-run Pulumi destroys | For each per-run stack reporting `ResiduePresent`, run `pulumi destroy` against MinIO inside `withMaterializedOperationalCreds` (Sprint 4.17). The bracket materializes operational creds for the run (in tests, via the harness-simulated admin prompt sourced from `test-secrets.dhall`) when `aws.*` is empty and restores-to-empty on exit (success or exception). Because phase 2 already drained the controller-owned resources, every per-run subnet / VPC / cluster delete now has no live ENI / ALB dependency (the retained EBS volumes are `Retain`, detach cleanly, and are not subnet dependencies). | Empty `aws.*` no longer refuses the destroy; the bracket materializes it transparently. `DependencyViolation` from AWS indicates phase 2 did not in fact drain (most often: drain ran against the wrong kubeconfig). |
 | 4 | RKE2 uninstall | `/usr/local/bin/rke2-uninstall.sh` under the lifecycle-local quiet path. Removes substrate + managed kubeconfig. `.data/` is preserved. | Non-zero uninstall exit is reported through `summarizeRke2DeleteFailure`. |
 | 5 | Postflight cluster-tag sweep | `discoverClusterTaggedAwsResources` against the AWS Resource Tagging API, then `partitionRetainedLongLived` carves out the intentionally-retained long-lived shared-infra classes (`prodbox.io/role=long-lived-pulumi-state` + `prodbox.io/substrate=shared` — the `pulumi_state_backend` bucket + `aws-ses`, which `cluster delete --cascade` keeps by design and only `prodbox nuke` destroys). The structured leak list + per-class remedy is emitted only for the genuine per-run/cluster **escapees** (Sprint `7.26`); `prodbox nuke`'s own step-4 sweep does NOT carve out, since it exists to destroy those resources. | A non-empty **escapee** list is the leak case (best-effort on `--cascade`: reported, does not change the exit code; fail-closed on `nuke`). |
 
@@ -594,8 +603,9 @@ and lets phase 3 fail with `DependencyViolation` on subnet deletion.
 This is the doctrine-canonical order. The pre-Sprint-4.17.a sequence
 (destroys → drain) inverted phases 2 and 3 and was harmless on the home substrate
 (no in-cluster controllers create AWS resources) but fatal on the AWS substrate
-(LBC / EBS CSI controllers create ENIs / ALBs / EBS volumes; destroying the EKS
-cluster before draining them produces orphan resources that block subnet deletion).
+(the LBC creates ENIs / ALBs; destroying the EKS cluster before draining them produces
+orphan resources that block subnet deletion — the pre-created EBS volumes are `Retain`
+and are preserved by design, not orphans).
 The postflight tag sweep (phase 5) is the backstop for any controller-created AWS
 resources that escape the drain, not a substitute for running the drain first.
 

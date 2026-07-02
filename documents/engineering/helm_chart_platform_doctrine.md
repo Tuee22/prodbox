@@ -132,8 +132,13 @@ dependency beyond that shared-edge model is the lifecycle-owned Percona PostgreS
 
 The home local substrate and the AWS substrate stand up the same platform components; the only
 deliberate differences are the lower-layer load balancer (MetalLB on home, AWS Load Balancer
-Controller on EKS) and Route 53 hosting. Substrate equivalence is enforced as a structural
-invariant, not maintained by parallel hand-edited installers (Sprint 7.12):
+Controller on EKS), Route 53 hosting, and the block-storage volume source (a `hostPath` under
+`.data/` on home, a pre-created EBS volume on EKS). The storage *discipline* is identical on
+both substrates — the static `manual` no-provisioner `Retain` PV model with deterministic
+rebinding, no dynamic provisioning (Sprint `7.28`;
+[storage_lifecycle_doctrine.md § 1](./storage_lifecycle_doctrine.md)). Substrate equivalence is
+enforced as a structural invariant, not maintained by parallel hand-edited installers
+(Sprint 7.12):
 
 1. **One release value per platform component image.** The Envoy Gateway control-plane image, the
    Envoy data-plane image, and the cert-manager image set are each pinned to exactly one
@@ -257,7 +262,11 @@ Rules:
 1. The CLI creates host directories before storage manifests are applied.
 2. `.data/` is reserved for PV contents only.
 3. PV names are deterministic and flow through `src/Prodbox/Naming.hs`.
-4. `manual` is the only supported `StorageClass`.
+4. `manual` is the only supported `StorageClass` on both substrates. On home its PVs use a
+   `hostPath` volume source; on EKS the same `manual` class binds pre-created EBS volumes
+   lifted in as static `Retain` PVs (CSI `volumeHandle`, AZ affinity) — no dynamic
+   provisioning. See [storage_lifecycle_doctrine.md § 1](./storage_lifecycle_doctrine.md)
+   (Sprint `7.28`).
 5. Every retained workload — `minio`, the Patroni PostgreSQL cluster, `vscode`, and
    `vault` — is a StatefulSet; `minio`, `vscode`, and `vault` are single-replica and the
    Patroni cluster is three-replica, so each contributes one PV per ordinal.

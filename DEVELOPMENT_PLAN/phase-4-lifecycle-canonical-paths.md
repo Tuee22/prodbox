@@ -121,6 +121,20 @@ actionable upstream context. (The inotify warning `Failed to allocate directory 
 open files` is emitted out-of-band by systemd/journald to the console and is not capturable by the
 quiet path, so it may still appear on a successful run; it is benign — see streaming_doctrine.md §6.)
 
+🔄 **Reopened 2026-07-02 for the AWS EBS block-storage lifecycle** — two new sprints expand
+Phase 4's own lifecycle/teardown surface (narrated in [README.md → Closure Status](README.md) per
+rule A). Sprint `4.39` (📋 Planned) makes the **pre-created EBS volume a registered managed
+resource** (typed `discover`/`destroy`, extending the Sprint `4.20`/`4.22` registry) with
+retain-vs-test-scoped tag markers, so production EBS is retained on teardown exactly like `.data/`
+and only test-scoped EBS is deletable. Sprint `4.40` (📋 Planned) adds the **suite postflight
+test-EBS reaper** and the retain-safe drain so `Retain` EBS PVs survive teardown while test-scoped
+volumes are reaped at suite exit — closing the EBS-leak class that motivated this work. Both extend,
+and do not reverse, the Sprint `4.12` K8s-drain and the Sprint `4.20`/`4.24`
+resource-lifecycle-class model; the AWS-side static-EBS PV renderer is Phase 7 (Sprint `7.28`) and
+the identical-rebinding validation is Phase 5 (Sprint `5.12`). All earlier Phase 4 sprints remain
+`Done`/as-tracked on their owned surfaces. The superseded dynamic-`gp2` path is recorded in
+[legacy-tracking-for-deletion.md](legacy-tracking-for-deletion.md).
+
 ## Phase Summary
 
 This phase closes the hard migration gap between parity and replacement. It owns the Harbor-first
@@ -3121,6 +3135,106 @@ anti-affinity with `maxSurge: 0`, and mixed-substrate placement admissible only 
 
 - Live multi-machine anti-affinity proof on a multi-node deployed cluster is a non-blocking
   `Live-proof: pending` note.
+
+## Sprint 4.39: Pre-Created EBS Volumes as a Registered Managed Resource [📋 Planned]
+
+**Status**: 📋 Planned
+**Implementation**: `src/Prodbox/Lifecycle/ResourceClass.hs` (register the EBS-volume class in
+`resourceLifecycleClasses`), a new EBS discover/destroy module (typed `discover` + `destroy`
+mirroring the existing registry entries), `src/Prodbox/Lifecycle/TagSweep.hs` (retain-vs-test-scoped
+markers), `src/Prodbox/CLI/Rke2.hs` (retained-inventory parity for AWS), `test/unit/Main.hs`.
+**Blocked by**: none — extends the Sprint `4.20`/`4.22` managed-resource registry and the Sprint
+`4.24` `LongLived`/`PerRun` classification.
+**Live-proof**: pending
+**Independent Validation**: pure unit tests over the EBS discover/destroy decision matrix and the
+retain-vs-test-scoped tag partitioning; the generated `resource-lifecycle-classes` table
+(`substrates.md`) regenerates from the new registry entry via `prodbox dev docs generate`. No
+later-phase dependency.
+**Docs to update**: `lifecycle_reconciliation_doctrine.md`, `storage_lifecycle_doctrine.md`,
+`substrates.md`, `system-components.md`.
+
+### Objective
+
+Make the pre-created EBS volumes that back the EKS static `Retain` PVs (Sprint `7.28`) a
+first-class managed resource with a typed `discover`/`destroy` pair and a lifecycle class, per
+[lifecycle_reconciliation_doctrine.md § 1](../documents/engineering/lifecycle_reconciliation_doctrine.md)
+and the "no new AWS resource type without a registry entry" rule in
+[substrates.md](substrates.md). Encode the production-retain vs test-delete policy in the tag
+markers.
+
+### Deliverables
+
+- An EBS-volume entry in `Prodbox.Lifecycle.ResourceClass.resourceLifecycleClasses` with typed
+  `discover` (`ec2 describe-volumes` filtered by ownership tag) and `destroy` (`ec2 delete-volume`),
+  through the harness AWS subprocess layer (never ad-hoc `aws`).
+- Tag markers distinguishing retained production EBS (a long-lived retention marker recognized by
+  `isRetainedLongLived`/`partitionRetainedLongLived`) from test-scoped EBS
+  (`prodbox.io/lifecycle=per-run-test` plus `kubernetes.io/cluster/<name>: owned`).
+- Retained-inventory parity: the same deterministic PV/claim names reconciled on AWS as on home,
+  extending `retainedLocalStorageEntries` to the AWS substrate.
+- The generated `resource-lifecycle-classes` table in `substrates.md` regenerated via
+  `prodbox dev docs generate`.
+
+### Validation
+
+1. `prodbox dev check`
+2. `prodbox test unit` (EBS discover/destroy decision matrix; retain-vs-test-scoped partitioning)
+3. `prodbox dev docs check` (generated `resource-lifecycle-classes` table matches the registry)
+4. `prodbox test integration cli`
+5. `prodbox test integration env`
+
+### Remaining Work
+
+- Pending — the registry entry, discover/destroy module, and tag markers are scheduled.
+
+## Sprint 4.40: Suite Postflight Test-EBS Reaper + Retain-Safe Drain [📋 Planned]
+
+**Status**: 📋 Planned
+**Implementation**: `src/Prodbox/TestRunner.hs` (`awsPostflightDestroyActions` — a test-EBS reaper
+step after the stack destroys), `src/Prodbox/CLI/Rke2.hs` (`--cascade` reaper hook + standalone
+entrypoint), `src/Prodbox/Lifecycle/K8sDrain.hs` (confirm `Retain` EBS PVs survive the drain),
+`test/unit/Main.hs`.
+**Blocked by**: Sprint `4.39` (the EBS managed-resource class + tag markers the reaper deletes
+through) — an earlier-or-same-phase dependency (Standard N).
+**Live-proof**: pending
+**Independent Validation**: pure unit tests over the reaper's test-scoped-only selection (a
+retained-tagged volume is never selected; a test-scoped volume is) and the idempotent no-op when
+nothing matches. Live-EKS proof that a suite postflight leaves zero `available` EBS volumes rides
+Sprint `5.12` on the AWS substrate (Standards N/O).
+**Docs to update**: `lifecycle_reconciliation_doctrine.md`, `storage_lifecycle_doctrine.md`,
+`substrates.md`.
+
+### Objective
+
+Close the EBS-leak class that motivated this work: cluster/stack teardown RETAINS EBS (production
+semantics), while the test harness deletes only test-scoped EBS at suite postflight. The `Retain`
+EBS PVs survive the K8s drain (which deletes only `Delete`-reclaim PVCs), and the reaper runs on
+every suite exit path (success/failure/Ctrl-C).
+
+### Deliverables
+
+- A test-EBS reaper step in `awsPostflightDestroyActions` that, after the per-run stack destroys,
+  deletes only volumes tagged test-scoped (via the Sprint `4.39` discover/destroy), under the
+  existing `runWithAwsHarnessCleanup` wrapper so it fires on success, failure, and Ctrl-C.
+- A `cluster delete --cascade` reaper hook and a standalone entrypoint so already-leaked test
+  volumes can be swept on demand; production teardown never invokes the reaper.
+- Confirmation (and a guard) that `Retain` EBS PVs are not deleted by the drain; the drain's
+  `Delete`-reclaim PVC step is a generic safety net only.
+
+### Validation
+
+1. `prodbox dev check`
+2. `prodbox test unit` (reaper test-scoped-only selection; idempotent no-op)
+3. `prodbox test integration cli`
+4. `prodbox test integration env`
+5. Leak check (Standard O, live): after a suite postflight, `aws ec2 describe-volumes --filters
+   Name=status,Values=available` returns zero test-scoped volumes; a production-mode teardown
+   retains durable EBS.
+
+### Remaining Work
+
+- Pending — the postflight reaper, cascade hook, and drain guard are scheduled; blocked on the
+  Sprint `4.39` EBS managed-resource class.
 
 ## Documentation Requirements
 

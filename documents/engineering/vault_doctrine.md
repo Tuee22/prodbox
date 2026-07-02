@@ -244,7 +244,12 @@ Requirements:
 - A durable PV backed by `.data/` (`.data/vault/vault/0`, `manual` StorageClass, `Retain`,
   single-node affinity), preserved across cluster teardown exactly like MinIO's PV. Cluster
   teardown must not destroy Vault state (see
-  [storage_lifecycle_doctrine.md](./storage_lifecycle_doctrine.md)).
+  [storage_lifecycle_doctrine.md](./storage_lifecycle_doctrine.md)). On the AWS/EKS substrate
+  the same static `Retain` model applies, only backed by a pre-created EBS volume lifted in as a
+  static PV (CSI `volumeHandle`, AZ-pinned) instead of a hostPath; the EBS volume is retained
+  across teardown exactly like `.data/`, so the same "a cluster rebuild is not a fresh Vault;
+  rebuild only unseals" guarantee holds (Sprint `7.28`; see
+  [storage_lifecycle_doctrine.md § 1](./storage_lifecycle_doctrine.md#1-canonical-doctrine-statements)).
 - The Vault chart defaults to root Shamir mode. Child clusters set `seal.mode = transit`, render a
   `seal "transit"` stanza pointing at the parent Vault, and source the parent Transit token from
   `VAULT_TOKEN` rather than from the ConfigMap.

@@ -46,7 +46,7 @@ cross-substrate shared infrastructure (see
 | [integration_fixture_doctrine.md](./integration_fixture_doctrine.md) | Cluster-backed integration setup and teardown doctrine |
 | [lifecycle_reconciliation_doctrine.md](./lifecycle_reconciliation_doctrine.md) | Reconciler-with-predicates pattern that every destructive lifecycle command composes; the typed managed-resource registry (§3.1) that makes the topology leak-proof and idempotent; AWS-resource leak classes and the state-lifetime rule (per-run MinIO backend vs long-lived S3 backend) |
 | [local_registry_pipeline.md](./local_registry_pipeline.md) | Harbor-first workload sourcing, public-image reconcile, and native-host-architecture image publication |
-| [storage_lifecycle_doctrine.md](./storage_lifecycle_doctrine.md) | Retained storage and deterministic PVC/PV rebinding doctrine |
+| [storage_lifecycle_doctrine.md](./storage_lifecycle_doctrine.md) | Unified block-storage doctrine: static `Retain` no-provisioner PVs on both substrates (home `hostPath`, EKS pre-created EBS) and deterministic PVC/PV rebinding |
 | [prerequisite_doctrine.md](./prerequisite_doctrine.md) | Fail-fast prerequisite philosophy and registry doctrine |
 | [prerequisite_dag_system.md](./prerequisite_dag_system.md) | Prerequisite DAG construction and reduction reference |
 | [streaming_doctrine.md](./streaming_doctrine.md) | Streaming and terminal-record serialization invariants |

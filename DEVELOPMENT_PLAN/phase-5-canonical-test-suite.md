@@ -94,6 +94,16 @@ clean-room handoff) stays ✅ Done on its owned surface, while the overall hando
 the separately reopened implementation phases `3`–`5`, `7`, and `8`. Phases `1` and `2` have
 reclosed their finalized Vault-root + cluster-federation foundations.
 
+🔄 **Reopened 2026-07-02 for the unified block-storage rebinding validation** — one new sprint
+expands Phase 5's own canonical-suite content (narrated in [README.md → Closure Status](README.md)
+per rule A). Sprint `5.12` (📋 Planned) adds the `eks-volume-rebind` validation proving **identical
+block-storage rebinding across a teardown/spinup cycle** — the suite-content half of the unified
+block-storage doctrine whose AWS static-EBS PV renderer is Phase 7 (Sprint `7.28`) and whose EBS
+lifecycle is Phase 4 (Sprints `4.39`/`4.40`). Per Standard M the validation is substrate-agnostic
+suite content; its home run is suite-closed here while the `--substrate aws` run is a non-blocking
+parity axis tracked in [substrates.md](substrates.md) (Standards M/N/O). All earlier Phase 5 sprints
+remain `Done`/as-tracked.
+
 ## Phase Summary
 
 This phase owns the canonical test suite as substrate-agnostic content. Each validation in
@@ -132,6 +142,7 @@ The full inventory of canonical-suite validations owned by this phase lives in
 | `ha-rke2-aws` | `aws_credentials_valid`, `pulumi_logged_in`, `tool_ssh` | SSH reachability to all three EC2 instances; destroy-and-recreate repair on stale instances |
 | `charts-platform` | `k8s_ready`, chart-platform prereqs | `charts list`, `charts status` produce expected output for the supported chart set |
 | `charts-storage` | `k8s_ready`, chart-platform prereqs | Retained-storage reconciler, PV/PVC pairing, secret rendering |
+| `eks-volume-rebind` | `k8s_ready`, chart-platform prereqs (AWS: `pulumi_logged_in`) | Identical block-storage rebinding across a teardown/spinup cycle: write sentinel → teardown → spinup → the same PV rebinds (home hostPath / EKS EBS `volumeHandle`) and the data persists |
 | `charts-vscode` | `public_edge_ready`, `tool_curl` | Real HTTPS curl to `https://<publicFqdn>/vscode`; redirect to OIDC callback with expected fragments |
 | `charts-api` | `public_edge_ready`, `tool_curl` | Real HTTPS curl to `https://<publicFqdn>/api`; bearer-token validation; 401/403 contract |
 | `charts-websocket` | `public_edge_ready`, `tool_curl` | Real WebSocket upgrade against `/ws`; cross-pod broadcast; revocation-driven reconnect; readiness-based drain |
@@ -918,6 +929,59 @@ path**, isolating run state under `.test-data/` and always tearing down its per-
 
 - Pending — `test init` / `test run`, `.test-data/` isolation, and the finally-guaranteed teardown
   are scheduled; blocked on the Sprint `1.54` `prodbox.test.dhall` schema.
+
+## Sprint 5.12: `eks-volume-rebind` — Identical Block-Storage Rebinding Validation [📋 Planned]
+
+**Status**: 📋 Planned
+**Implementation**: `src/Prodbox/TestPlan.hs` (`NativeValidation` variant + `nativeValidationId` +
+prerequisites via `pulumiSubstratePrerequisites`), `src/Prodbox/CLI/Command.hs` (`IntegrationSuite`
+enum) + `testExecutionPlan` (`nativeNamedSuite`), `src/Prodbox/CLI/Spec.hs` (parser line + doc
+leaf), `src/Prodbox/TestValidation.hs` (`runNativeValidation` body), `src/Prodbox/TestRunner.hs`
+(`validationMayProvisionPerRunAwsStacks`).
+**Blocked by**: none on the code-owned surface — the validation compiles and runs on the home
+substrate independently. The AWS run exercises the Phase 7 Sprint `7.28` static-EBS renderer and the
+Phase 4 Sprint `4.39`/`4.40` lifecycle, but per Standards M/N the AWS coverage is a non-blocking
+parity axis, not a backward block.
+**Live-proof**: pending
+**Independent Validation**: the validation body is substrate-agnostic and validatable on the home
+substrate (hostPath PV rebind) with no later-phase dependency; the `--substrate aws` run (EBS
+`volumeHandle` rebind) is a parity row in [substrates.md](substrates.md), never a phase blocker
+(Standards M/N/O).
+**Docs to update**: `storage_lifecycle_doctrine.md` (§ 6 test expectations),
+`substrates.md` (parity table), `unit_testing_policy.md`.
+
+### Objective
+
+Prove the unified-storage rebinding guarantee of
+[storage_lifecycle_doctrine.md § 4](../documents/engineering/storage_lifecycle_doctrine.md)
+end-to-end on both substrates: write a sentinel value to a retained workload's PV, tear the cluster
+down, spin it back up, and assert the **same** PV rebinds to the same PVC and the sentinel data
+persists — hostPath on home, the same EBS `volumeHandle` on EKS.
+
+### Deliverables
+
+- A new `eks-volume-rebind` `NativeValidation` wired through the canonical sites (`TestPlan.hs`,
+  `Command.hs`, `Spec.hs`, `TestValidation.hs`), modeled on `lifecycle` (in-test
+  delete/reconcile), `aws-eks` (EKS reconcile), and `charts-storage` (storage assertions).
+- The body writes a sentinel, drives `aws stack eks destroy`/`reconcile` (AWS) or `cluster
+  delete`/`reconcile` (home), and asserts identical rebinding + data persistence; it is registered
+  in `validationMayProvisionPerRunAwsStacks`.
+- A row in the Canonical Suite Inventory (added) and the `substrates.md` parity table for the AWS
+  run.
+
+### Validation
+
+1. `prodbox dev check`
+2. `prodbox test unit`
+3. `prodbox test integration cli`
+4. `prodbox test integration env`
+5. `prodbox test integration eks-volume-rebind` (home substrate; the `--substrate aws` run is the
+   non-blocking parity axis)
+
+### Remaining Work
+
+- Pending — the validation wiring and body are scheduled; the AWS parity run rides Sprints `7.28` +
+  `4.39`/`4.40`.
 
 ## Related Documents
 

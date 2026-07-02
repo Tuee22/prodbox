@@ -18,6 +18,17 @@
 - Retained storage is reconciled via the static `manual` no-provisioner `StorageClass`
   plus deterministic PV resources to guarantee stable PVC-to-PV rebinding across cluster
   delete/reinstall.
+- **Substrate parity (unified block storage).** Both supported substrates use the same
+  static, no-provisioner, `Retain`, `claimRef`-bound PV model; only the PV volume *source*
+  differs. On the home/RKE2 substrate the source is a `hostPath` under `.data/` with
+  single-node affinity. On the AWS/EKS substrate the source is a **pre-created EBS volume
+  lifted in as a static PV** via the EBS CSI `volumeHandle`, `Retain`, `claimRef`-bound, and
+  pinned to the volume's availability zone (`topology.ebs.csi.aws.com/zone`) exactly as the
+  home PV is pinned to its node. There is **no dynamic provisioning on either substrate**,
+  satisfying [cluster_topology_doctrine.md § 4](./cluster_topology_doctrine.md); the legacy
+  dynamic `gp2` EKS path (Sprint `7.5.c.i`) is superseded by Sprint `7.28` and tracked for
+  removal in
+  [legacy-tracking-for-deletion.md](../../DEVELOPMENT_PLAN/legacy-tracking-for-deletion.md).
 - Every retained PersistentVolume follows one deterministic host-path scheme —
   `.data/<namespace>/<StatefulSet>/<replica-index>` — provisioned by a single reconciler.
   There is no per-host machine-id directory prefix. Every stateful workload is a
@@ -70,6 +81,13 @@
   HMAC-derivation model and the `lookup`-guarded chart-generated secret idiom are retired.
 - `prodbox cluster delete --yes` and `prodbox cluster delete --cascade --yes` both preserve
   `.data/`. No `prodbox` command removes `.data/` on its own; deletion is operator-only.
+- The same retain-on-teardown policy governs the AWS/EKS pre-created EBS volumes: they are the
+  EBS analog of `.data/`. `prodbox cluster delete`, `prodbox aws stack eks destroy`, and per-run
+  Pulumi destroy never delete the retained EBS volumes (they are `Retain` and are not owned by
+  the per-run `aws-eks` Pulumi stack). The **only** path that deletes EBS volumes is the test
+  harness suite postflight reaper, which deletes only volumes tagged as test-scoped — so
+  production workflows never lose block storage and test runs never leak it (Sprints `4.39`,
+  `4.40`).
 - When the MinIO-backed Pulumi backend is still running but kubelet reports its `/export`
   mount as deleted, the Haskell backend helper recreates the declared retained host path,
   reapplies the `1000:1000` plus `0770` contract, and restarts `statefulset/minio` before
@@ -98,6 +116,13 @@ This doctrine governs:
    delete/reinstall — persistence is in scope here; the Vault model itself (seal/unseal,
    Transit, KV, PKI, Kubernetes auth) is owned by
    [vault_doctrine.md](./vault_doctrine.md) (implemented by Sprints 3.17 / 4.29)
+9. retained EBS-backed storage on the AWS/EKS substrate: pre-created EBS volumes lifted in as
+   static `Retain` PVs (CSI `volumeHandle`, AZ affinity) and their deterministic rebinding
+   across `prodbox aws stack eks destroy` plus `prodbox aws stack eks reconcile` (Sprint `7.28`)
+10. the production-retain / test-delete EBS lifecycle — EBS volumes are `Retain` and never
+    deleted by cluster/stack teardown; only the test harness deletes test-scoped EBS at suite
+    postflight (Sprints `4.39`, `4.40`). The managed-resource registry entry, tag markers, and
+    reaper are owned by [lifecycle_reconciliation_doctrine.md](./lifecycle_reconciliation_doctrine.md) § 1
 
 Harbor registry details remain in
 [Local Registry Pipeline](./local_registry_pipeline.md).
@@ -113,8 +138,11 @@ that establishes the local backend may pull its images from public registries fi
 The retained-storage effect must reconcile:
 
 1. `StorageClass` `manual` with `kubernetes.io/no-provisioner`, `Retain`, and
-   `WaitForFirstConsumer`
-2. deterministic `PersistentVolume` objects with `claimRef` and single-node affinity
+   `WaitForFirstConsumer` — shared by both substrates; the PV volume source differs per
+   substrate (`hostPath` on home, a pre-created EBS volume via CSI `volumeHandle` on EKS)
+2. deterministic `PersistentVolume` objects with `claimRef` and placement affinity —
+   single-node (`kubernetes.io/hostname`) on home, availability-zone
+   (`topology.ebs.csi.aws.com/zone`) on EKS
 3. StatefulSet `volumeClaimTemplate` PVCs (`data-<statefulset>-<ordinal>`) on the `manual`
    StorageClass, which the deterministic PVs in (2) `claimRef`-bind on first pod schedule
 4. post-install Percona PostgreSQL PVC discovery plus staged retained-cluster restore so
@@ -144,8 +172,12 @@ Deterministic rebinding is guaranteed only when all of these hold:
 3. direct-workload PVCs set `spec.volumeName` to the canonical PV name, or the Percona
    operator recreates the same PVC names that the Haskell runtime later binds through
    deterministic PVs
-4. the configured manual PV host path remains present on disk
-5. the workload remains scheduled to the same single node
+4. the configured manual PV host path remains present on disk (home substrate); or, on the
+   AWS/EKS substrate, the pre-created EBS volume still exists in its availability zone and is
+   retained across teardown (Sprint `7.28`)
+5. the workload remains scheduled to the same single node (home substrate) or to a node in the
+   EBS volume's availability zone (AWS/EKS substrate, via the PV's
+   `topology.ebs.csi.aws.com/zone` affinity)
 6. the Vault KV holding each secret (Patroni roles, Keycloak admin, OIDC client secrets)
    re-attaches to the same material that was active when the preserved data was written.
    Those secrets survive cluster wipes via the Vault PV under `.data/vault/vault/0`; a
@@ -193,6 +225,18 @@ the Vault PV (`.data/vault/vault/0`) just as they preserve `.data/` and the MinI
 teardown never destroys Vault state. Because Vault state survives teardown, the rebuild path
 after a delete never re-inits Vault — the next `prodbox cluster reconcile` redeploys the chart
 against the preserved data and only unseals it.
+
+On the AWS/EKS substrate the retained EBS volumes are preserved by teardown exactly as
+`.data/`, the MinIO PV, and the Vault PV are on home. Neither `prodbox cluster delete`,
+`prodbox aws stack eks destroy`, nor the per-run Pulumi destroy deletes them: they are
+`Retain`, and they are not owned by the per-run `aws-eks` Pulumi stack, so `pulumi destroy`
+cannot remove them. The K8s drain deletes only `Delete`-reclaim PVCs, so the `Retain` EBS PVs
+survive the drain untouched. The **only** path that deletes EBS volumes is the test harness
+suite postflight reaper, which deletes only volumes tagged as test-scoped — production
+workflows never lose block storage, and test runs never leak it. The EBS managed-resource
+class (typed `discover`/`destroy`), the retain/test-scoped tag markers, and the reaper are
+owned by Sprints `4.39` and `4.40`; see
+[lifecycle_reconciliation_doctrine.md](./lifecycle_reconciliation_doctrine.md) § 1.
 
 Both delete shapes preserve `.data/` and remove nothing else on the operator host. The
 host iptables rule installed by reconcile (per
@@ -301,6 +345,12 @@ Rules:
     how much durable data each store may hold is superseded by the finite-budget capacity DSL in
     [tiered_storage_capacity_doctrine.md](./tiered_storage_capacity_doctrine.md), where a sizeless
     durable claim or an over-quota topology is a Dhall typecheck failure.
+15. On the AWS/EKS substrate there is no operator-host retained root; the durable block storage
+    is the set of pre-created EBS volumes, which play the role `.data/` plays on home. They are
+    `Retain`, AZ-pinned, and preserved across cluster/stack teardown. A production operator
+    deletes them only deliberately (the EBS analog of wiping `.data/`), while the test harness
+    deletes only test-scoped-tagged volumes at suite postflight — the EBS analog of the
+    `.test-data/` isolation in rule 13 (Sprints `7.28`, `4.39`, `4.40`).
 
 ## Cross-References
 
@@ -313,4 +363,7 @@ Rules:
 - [Effectful DAG Architecture](./effectful_dag_architecture.md)
 - [Local Registry Pipeline](./local_registry_pipeline.md)
 - [Helm Chart Platform Doctrine](./helm_chart_platform_doctrine.md)
+- [Cluster Topology Doctrine](./cluster_topology_doctrine.md) — owns the "no dynamic
+  provisioning anywhere" invariant and the EKS AZ/placement topology this doctrine's EBS
+  PVs pin to
 - [Documentation Standards](../documentation_standards.md)

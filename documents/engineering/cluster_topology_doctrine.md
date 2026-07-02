@@ -192,8 +192,14 @@ workers.
 
 ## 4. Storage discipline and the per-worker JIT budget
 
-Storage stays **no-provisioner**: every PV is a manually-defined `manual`-StorageClass volume, no
-dynamic provisioning anywhere. This doctrine does not restate the rules; it is owned by
+Storage stays **no-provisioner** on every substrate: every PV is a manually-defined
+`manual`-StorageClass volume, no dynamic provisioning anywhere. On the home substrate the PV
+volume source is a `hostPath` under `.data/`; on the AWS/EKS substrate it is a pre-created EBS
+volume lifted in as a static `Retain` PV (CSI `volumeHandle`), pinned to its availability zone
+(Sprint `7.28`). AZ placement of an EBS-backed PV is a topology concern owned here — a static
+EBS volume is AZ-bound, so its PV carries `topology.ebs.csi.aws.com/zone` affinity and its
+workload schedules to a node in that zone. This doctrine does not restate the storage rules
+themselves; they are owned by
 [storage_lifecycle_doctrine.md § 1](./storage_lifecycle_doctrine.md#1-canonical-doctrine-statements).
 Every substrate-typed compute worker additionally carries an **explicit** ML JIT-artifact + model-cache
 storage budget on both host and cluster, per

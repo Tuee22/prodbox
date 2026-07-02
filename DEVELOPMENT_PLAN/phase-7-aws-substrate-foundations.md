@@ -70,6 +70,22 @@ long-lived `pulumi_state_backend` bucket (and `aws-ses`) as "manual-cleanup-requ
 now carves out the retained long-lived shared-infra classes and refuses only on genuine
 per-run/cluster escapees. See the Sprint `7.26` block below.
 
+🔄 **Further reopened 2026-07-02 for unified block storage on the AWS substrate** — three new
+sprints expand Phase 7's own AWS-substrate storage + networking surface (narrated in
+[README.md → Closure Status](README.md) per rule A). Sprint `7.28` (📋 Planned) replaces the
+dynamic `gp2` EKS storage path (Sprint `7.5.c.i`) with **pre-created EBS volumes lifted in as
+static `Retain` PVs** (CSI `volumeHandle`, AZ-pinned), mirroring the home `manual`/no-provisioner
+model per [storage_lifecycle_doctrine.md § 1](../documents/engineering/storage_lifecycle_doctrine.md)
+and satisfying the "no dynamic provisioning anywhere" invariant of
+[cluster_topology_doctrine.md § 4](../documents/engineering/cluster_topology_doctrine.md). Sprint
+`7.29` (📋 Planned) hardens EKS VPC ownership (prodbox owns its own VPC; the test harness always
+provisions a fresh test VPC; `prodbox.io/managed-by` tags on the VPC/IGW/route-table/subnets so an
+escaped VPC is caught by the postflight tag sweep). The retain-vs-test-delete EBS lifecycle and its
+managed-resource class are owned by Phase 4 (Sprints `4.39`/`4.40`), and the identical-rebinding
+validation is Phase 5 suite content (Sprint `5.12`). All earlier Phase 7 sprints (`7.1`–`7.27`)
+stay `Done`/as-tracked on their owned scope. The legacy dynamic-`gp2` path is recorded in
+[legacy-tracking-for-deletion.md](legacy-tracking-for-deletion.md).
+
 ✅ **Sprint `7.14` Done (code-owned surface) 2026-06-16** — Sprint `7.14` has landed the
 decrypt-to-scratch Pulumi
 interposition over the Sprint `4.30` Model-B object-store. `Prodbox.Pulumi.EncryptedBackend`
@@ -3566,6 +3582,24 @@ as SSoT; the doctrine-adoption sprint and the relocated reopen narrative are rec
   for Sprint `7.27`, the managed-cloud-only spot-price gate (§ 4): the per-workload
   `SpotPriceThreshold`, the three-valued `SpotObservation` → `admitSpotDeploy` decision, and the
   `Unreachable → refuse` rule that never deploys on an unobservable price.
+- [documents/engineering/storage_lifecycle_doctrine.md](../documents/engineering/storage_lifecycle_doctrine.md) -
+  Sprint `7.28` unified block-storage doctrine: the AWS/EKS static pre-created-EBS-as-`Retain`-PV
+  model (§ 1, § 3, § 4), the retain-on-teardown / test-delete delete contract (§ 5), and the EBS
+  durable-storage parallel to `.data/` (§ 7).
+- [documents/engineering/cluster_topology_doctrine.md](../documents/engineering/cluster_topology_doctrine.md) -
+  Sprint `7.28` § 4: EKS honors "no dynamic provisioning anywhere" via pre-created EBS lifted as
+  static `Retain` PVs, and the EBS PV's `topology.ebs.csi.aws.com/zone` AZ affinity is a
+  topology-owned placement concern.
+- [documents/engineering/helm_chart_platform_doctrine.md](../documents/engineering/helm_chart_platform_doctrine.md) -
+  Sprint `7.28` § 3A/§ 6: the block-storage volume source is a deliberate per-substrate difference
+  (hostPath on home, pre-created EBS on EKS) while the static `Retain` no-provisioner discipline is
+  identical across both.
+- [substrates.md](substrates.md) - Sprints `7.28`/`7.29` AWS Substrate inventory rows and the
+  Substrate Equivalence structural invariant (block storage now equivalent); the EBS
+  managed-resource class enters the generated `resource-lifecycle-classes` table via Sprint `4.39`.
+- `DEVELOPMENT_PLAN/legacy-tracking-for-deletion.md` - Sprint `7.28` Pending-Removal entries: the
+  dynamic `gp2` EKS storage path, `awsChartStorageClassName`, and `chartDynamicStorageManifest`
+  (AWS usage).
 
 **Product docs to create/update:**
 
@@ -4259,6 +4293,111 @@ the `Unreachable → refuse` soundness rule applied to placement economics.
 
 - Pending — the live spot-market observer and the placement-economics gate are scheduled; blocked on
   the Sprint `4.34` autoscaler + multi-cluster placement reconciler.
+
+## Sprint 7.28: Static Pre-Created EBS as Retain PVs on EKS [📋 Planned]
+
+**Status**: 📋 Planned
+**Implementation**: `src/Prodbox/Lib/Storage.hs` (CSI PV volume-source renderer + AZ
+`nodeAffinity`), `src/Prodbox/Lib/ChartPlatform.hs` (static storage dispatch on `SubstrateAws`;
+two-substrate no-provisioner guard in `buildChartDeploymentPlanPure`), `pulumi/aws-eks/Main.yaml`
+(node placement in the chosen AZ); the durable EBS volumes are provisioned out-of-band through the
+Phase 4 managed-resource registry (Sprint `4.39`).
+**Blocked by**: none — extends the home static-`Retain` model of Sprints `3.1`/`4.31` onto EKS; the
+EBS managed-resource class it provisions through (Sprint `4.39`) is scheduled forward, not a
+backward block (Standard N).
+**Live-proof**: pending
+**Independent Validation**: pure unit tests over the CSI PV renderer (`claimRef`, `Retain`, CSI
+`volumeHandle`, `topology.ebs.csi.aws.com/zone` affinity) and the substrate storage-class
+selection; no later-phase dependency. Live-EKS rebinding proof is Phase 5 Sprint `5.12` suite
+content on the AWS substrate, tracked as a non-blocking parity axis in
+[substrates.md](substrates.md) (Standards N/O).
+**Docs to update**: `storage_lifecycle_doctrine.md`, `cluster_topology_doctrine.md`,
+`helm_chart_platform_doctrine.md`, `substrates.md`, `system-components.md`.
+
+### Objective
+
+Unify block storage across substrates: EKS uses the same static, no-provisioner, `Retain`,
+`claimRef`-bound PV model as the home substrate, differing only in the PV volume source — a
+**pre-created EBS volume lifted in as a static PV** via the EBS CSI `volumeHandle`, AZ-pinned —
+replacing the dynamic `gp2` provisioning of Sprint `7.5.c.i`. Satisfies the "no dynamic
+provisioning anywhere" invariant of
+[cluster_topology_doctrine.md § 4](../documents/engineering/cluster_topology_doctrine.md) and the
+unified-storage doctrine of
+[storage_lifecycle_doctrine.md § 1](../documents/engineering/storage_lifecycle_doctrine.md).
+
+### Deliverables
+
+- A CSI PV volume-source variant in `src/Prodbox/Lib/Storage.hs`
+  (`spec.csi.driver=ebs.csi.aws.com`, `volumeHandle=<vol-id>`, `Retain`, `claimRef` to the
+  deterministic PVC, `topology.ebs.csi.aws.com/zone` `nodeAffinity`), reusing the existing
+  deterministic PV/PVC naming (`prodbox-retained-<namespace>-<statefulset>-<ordinal>`).
+- `ensureChartStorage` renders a static PV + static PVC (`spec.volumeName` set) on `SubstrateAws`,
+  and the no-dynamic-provisioner guard applies to both substrates rather than home-only.
+- Durable EBS volumes (MinIO 20Gi, Vault 1Gi, keycloak-postgres/Patroni 20Gi, vscode 50Gi)
+  provisioned out-of-band through the Phase 4 registry (Sprint `4.39`) in a single AZ (`AZ[0]`),
+  with `{volumeHandle, availabilityZone}` resolved into the PV renderer; the EKS nodegroup keeps a
+  node in that AZ.
+- The dynamic `gp2` path (`awsChartStorageClassName`, `chartDynamicStorageManifest` AWS usage) is
+  recorded in [legacy-tracking-for-deletion.md](legacy-tracking-for-deletion.md) Pending Removal.
+
+### Validation
+
+1. `prodbox dev check`
+2. `prodbox test unit` (CSI PV renderer + substrate storage-class selection)
+3. `prodbox test integration cli`
+4. `prodbox test integration env`
+5. `prodbox dev docs check` (the generated `resource-lifecycle-classes` table reflects the new EBS
+   class once Sprint `4.39` lands)
+
+### Remaining Work
+
+- Pending — the CSI PV renderer, static dispatch, and out-of-band EBS provisioning are scheduled;
+  live-EKS proof rides the Sprint `5.12` rebinding validation on the AWS substrate.
+
+## Sprint 7.29: EKS VPC Ownership Hardening + Always-Fresh Test VPC [📋 Planned]
+
+**Status**: 📋 Planned
+**Implementation**: `pulumi/aws-eks/Main.yaml` (`prodbox.io/managed-by=prodbox` tags on the
+VPC/IGW/route-table/subnets), `src/Prodbox/Infra/AwsEksTestStack.hs` (fresh-VPC guarantee via the
+existing destroy-before-ensure residue purge), `src/Prodbox/Lifecycle/TagSweep.hs` (VPC-scoped
+escapee classification).
+**Blocked by**: none.
+**Live-proof**: pending
+**Independent Validation**: unit/`dev check` over the tag set and the tag-sweep classification of a
+VPC-scoped escapee; the always-fresh-VPC guarantee is exercised by the existing per-run
+destroy-before-ensure path. No later-phase dependency.
+**Docs to update**: `substrates.md`, `system-components.md`, `README.md` (root),
+`storage_lifecycle_doctrine.md` (cross-reference only).
+
+### Objective
+
+Make EKS VPC ownership explicit and leak-safe. prodbox already creates its own self-contained VPC
+(`10.91.0.0/16`, never the account default); this sprint (a) tags the VPC/IGW/route-table/subnets
+`prodbox.io/managed-by=prodbox` so an escaped VPC is caught by the postflight tag sweep (today the
+VPC/IGW/RT are untagged and invisible to it), and (b) guarantees the test harness always provisions
+a fresh test VPC irrespective of any pre-existing one, via the existing destroy-before-ensure
+residue purge.
+
+### Deliverables
+
+- `prodbox.io/managed-by=prodbox` tags on the `aws-eks` VPC, IGW, route table, and subnets in
+  `pulumi/aws-eks/Main.yaml` (subnets keep their existing `kubernetes.io/cluster/<name>` +
+  `kubernetes.io/role/elb` tags).
+- The postflight tag sweep (`src/Prodbox/Lifecycle/TagSweep.hs`) surfaces an escaped VPC/IGW/RT as a
+  per-run escapee.
+- The always-fresh test VPC is documented as a guarantee of the destroy-before-ensure residue purge
+  (`purgeCanonicalAwsEksResidueIfPresent` → `deleteVpcScopedResidue`), not a new mechanism.
+
+### Validation
+
+1. `prodbox dev check`
+2. `prodbox test unit` (tag-sweep classification of a VPC-scoped escapee)
+3. `prodbox test integration cli`
+4. `prodbox test integration env`
+
+### Remaining Work
+
+- Pending — the VPC tag additions and the sweep classification are scheduled.
 
 ## Related Documents
 

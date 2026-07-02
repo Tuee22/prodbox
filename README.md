@@ -28,7 +28,9 @@ validation environments.
   application environment in `haskell_code_guide.md`; generated artifacts and lint stack
   in `code_quality.md`; output rules and at-least-once event processing in
   `streaming_doctrine.md`; prerequisites as typed effects in `prerequisite_doctrine.md`;
-  daemon lifecycle in `distributed_gateway_architecture.md`; testing doctrine in
+  daemon lifecycle in `distributed_gateway_architecture.md`; unified block storage —
+  static `Retain` no-provisioner PVs on both substrates (home `hostPath`, EKS pre-created
+  EBS) and deterministic rebinding — in `storage_lifecycle_doctrine.md`; testing doctrine in
   `unit_testing_policy.md`; toolchain pinning in `dependency_management.md`. Phase
   documents in `DEVELOPMENT_PLAN/` cite doctrine sections by name when scheduling
   adoption work.
@@ -64,6 +66,14 @@ validation environments.
   per-resource lifecycle class (auto-managed per-run stacks vs long-lived cross-substrate shared
   infrastructure vs K8s-controller-created cluster-tagged AWS) live in
   [DEVELOPMENT_PLAN/substrates.md → Resource Lifecycle Classes](./DEVELOPMENT_PLAN/substrates.md#resource-lifecycle-classes).
+- Block storage is unified across substrates: every PV is a static, no-provisioner, `Retain`,
+  deterministically-rebinding volume — a `hostPath` under `.data/` on the home substrate, a
+  **pre-created EBS volume lifted in as a static `Retain` PV** (CSI `volumeHandle`, AZ-pinned) on the
+  AWS/EKS substrate. There is no dynamic provisioning on either substrate. Production retains the EBS
+  volumes exactly as it retains `.data/`; the test harness deletes only test-scoped EBS at suite
+  postflight, so test runs never leak block storage. prodbox creates its own dedicated EKS VPC (never
+  the account default), and the test harness always provisions a fresh test VPC. See
+  [documents/engineering/storage_lifecycle_doctrine.md](./documents/engineering/storage_lifecycle_doctrine.md).
 - Lifecycle commands enforce leak-safety by refusing to proceed when residue is detected and by
   sweeping for cluster-tagged AWS resources after every destructive run; the consolidated doctrine
   lives in
@@ -91,8 +101,9 @@ validation environments.
   The master-seed HMAC derivation model is retired (not extended): there is no master seed, no
   HMAC derivation, and no Secret-mounted Dhall credential fragments — every previously-derived
   secret is a Vault KV object fetched via Vault Kubernetes auth. Vault runs in-cluster on a
-  durable `.data/`-backed PV (preserved across cluster wipes exactly like the MinIO PV) and is
-  initialized exactly once, then only unsealed on each rebuild. Every prodbox-owned secret-bearing
+  durable `.data/`-backed PV (preserved across cluster wipes exactly like the MinIO PV; on the AWS
+  substrate the same durable Vault PV is backed by a pre-created EBS volume retained across teardown
+  identically) and is initialized exactly once, then only unsealed on each rebuild. Every prodbox-owned secret-bearing
   object — the in-force config, gateway state, and the Pulumi backend checkpoints — is a
   prodbox application-level Vault-Transit envelope (Model B), written under opaque
   Vault-keyed-HMAC names into one generically-named MinIO bucket that the host CLI and the
@@ -586,7 +597,14 @@ Destroy them explicitly:
 ./.build/prodbox aws stack test destroy --yes
 ```
 
-These stacks are for repository validation, not for the local application runtime.
+These stacks are for repository validation, not for the local application runtime. `aws stack eks
+reconcile` provisions a dedicated VPC (never the account default) and attaches the platform's
+durable block storage as pre-created EBS volumes lifted in as static `Retain` PVs (CSI
+`volumeHandle`, AZ-pinned) — the AWS analog of the home `.data/` hostPath PVs. `aws stack eks
+destroy --yes` retains those EBS volumes in production workflows exactly as `cluster delete`
+preserves `.data/`; only the test harness deletes test-scoped EBS, and only at suite postflight, so
+test runs never leak block storage. See
+[documents/engineering/storage_lifecycle_doctrine.md](./documents/engineering/storage_lifecycle_doctrine.md).
 
 ## Validation
 
@@ -659,7 +677,10 @@ runs to land independently against their own real infrastructure (DNS, TLS via c
 ingress, charts, public-edge proofs). Each per-substrate run is substrate-locked: it targets
 exactly one substrate, consumes only that substrate's operator-supplied config, and fails fast
 if any required substrate config is missing. There is no silent fallback from the AWS substrate
-to home values or vice versa. Select the substrate with
+to home values or vice versa. The two substrates stand up the same service set and the same
+block-storage discipline (static `Retain` no-provisioner PVs, deterministic rebinding), differing
+only in their lower layer — ingress load-balancer, Route 53 hosting, and the PV volume source
+(`hostPath` under `.data/` on home, pre-created EBS on EKS). Select the substrate with
 `--substrate {home-local|aws}` on `prodbox test integration ...` and `prodbox test all`; the
 default is `home-local`. The authoritative doctrine lives in
 [DEVELOPMENT_PLAN/development_plan_standards.md → M. Substrate coverage and independence (no fallback)](DEVELOPMENT_PLAN/development_plan_standards.md#substrate-coverage-and-independence-no-fallback)
@@ -688,5 +709,6 @@ prodbox/
 - [CLI Command Surface](./documents/engineering/cli_command_surface.md)
 - [Code Quality Doctrine](./documents/engineering/code_quality.md)
 - [Lifecycle Reconciliation Doctrine](./documents/engineering/lifecycle_reconciliation_doctrine.md)
+- [Storage Lifecycle Doctrine](./documents/engineering/storage_lifecycle_doctrine.md)
 - [Vault Secret-Management Doctrine](./documents/engineering/vault_doctrine.md)
 - [Unit Testing Policy](./documents/engineering/unit_testing_policy.md)

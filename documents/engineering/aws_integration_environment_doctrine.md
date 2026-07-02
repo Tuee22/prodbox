@@ -62,7 +62,10 @@
   registry-mirror DaemonSet that makes `127.0.0.1:30080/prodbox/...` resolve on EKS, mirroring
   the home NodePort-on-`127.0.0.1` pattern), so the canonical chart image refs are identical
   across substrates. The two installers differ only in their LOWER layer (MetalLB on home, the
-  AWS Load Balancer Controller on EKS; parent zone on home, the delegated subzone on AWS). The
+  AWS Load Balancer Controller on EKS; parent zone on home, the delegated subzone on AWS; and
+  the block-storage volume source — hostPath on home, pre-created EBS on EKS — though the static
+  `Retain` storage discipline is identical across both, see
+  [storage_lifecycle_doctrine.md § 1](./storage_lifecycle_doctrine.md#1-canonical-doctrine-statements)). The
   shared platform-component pins (Envoy Gateway, cert-manager, Harbor, MinIO, Percona) come from
   the single `Prodbox.ContainerImage` SSoT and are enforced by the `checkSubstrateImagePinning`
   lint plus the `[PlatformComponent]` coverage test. See
@@ -570,9 +573,13 @@ local cluster's namespaces (which do not contain the EKS-side LoadBalancer
 Services, ALB Ingresses, or Delete-reclaim PVCs), reports nothing to drain,
 and lets the next cascade phase (per-run Pulumi destroys) fail with
 `DependencyViolation: The subnet '<id>' has dependencies and cannot be deleted`
-because the EKS-side controllers (AWS Load Balancer Controller, EBS CSI
-driver) still have orphan ENIs / ALBs / EBS volumes attached to the subnets
-Pulumi is trying to delete.
+because the EKS-side controllers (AWS Load Balancer Controller) still have
+orphan ENIs / ALBs attached to the subnets Pulumi is trying to delete. EBS
+volumes are **not** in that orphan class: durable EKS storage is pre-created
+static `Retain` PVs (CSI `volumeHandle`, AZ-pinned) that teardown **retains**
+rather than drains — only the test harness deletes test-scoped-tagged EBS at
+suite postflight (Sprints `4.39`, `4.40`; see
+[storage_lifecycle_doctrine.md § 1](./storage_lifecycle_doctrine.md#1-canonical-doctrine-statements)).
 
 The canonical bracket is
 `Prodbox.PublicEdge.withSubstrateKubectlEnvironment` (exported from

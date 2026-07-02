@@ -28,7 +28,8 @@
 [../../DEVELOPMENT_PLAN/phase-4-lifecycle-canonical-paths.md](../../DEVELOPMENT_PLAN/phase-4-lifecycle-canonical-paths.md),
 [../../DEVELOPMENT_PLAN/phase-5-canonical-test-suite.md](../../DEVELOPMENT_PLAN/phase-5-canonical-test-suite.md),
 [../../DEVELOPMENT_PLAN/phase-7-aws-substrate-foundations.md](../../DEVELOPMENT_PLAN/phase-7-aws-substrate-foundations.md),
-[../../DEVELOPMENT_PLAN/phase-8-email-invite-auth.md](../../DEVELOPMENT_PLAN/phase-8-email-invite-auth.md)
+[../../DEVELOPMENT_PLAN/phase-8-email-invite-auth.md](../../DEVELOPMENT_PLAN/phase-8-email-invite-auth.md),
+[test_topology_doctrine.md](./test_topology_doctrine.md)
 **Generated sections**: none
 
 > **Purpose**: Single source of truth for Vault as the sole, fail-closed secrets,
@@ -222,6 +223,11 @@ only cleartext home of the root operator's memorized unseal password (§6, §16)
 the `aws_admin_for_test_simulation.*` test fixture (a test-harness fixture, not a production-config
 section or a Vault object; see [aws_admin_credentials.md](./aws_admin_credentials.md) for the block
 specifics).
+
+Generated **test** Dhall surfaces (the executable-sibling `prodbox.test.dhall` and its per-variant
+run config) likewise carry secrets only by `SecretRef` name; `test-secrets.dhall` remains the sole
+cleartext-secret-at-rest file, accepted only through the `TestPlaintext` arm, per
+[test_topology_doctrine.md](./test_topology_doctrine.md).
 
 ## 5. Vault deployment model and durability
 

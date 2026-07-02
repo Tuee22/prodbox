@@ -2,7 +2,7 @@
 
 **Status**: Reference only
 **Supersedes**: N/A
-**Referenced by**: DEVELOPMENT_PLAN/README.md, documents/engineering/distributed_gateway_architecture.md, documents/engineering/README.md
+**Referenced by**: DEVELOPMENT_PLAN/README.md, documents/engineering/distributed_gateway_architecture.md, documents/engineering/README.md, documents/engineering/chaos_hardening_doctrine.md
 **Generated sections**: none
 
 > **Purpose**: Index TLA+ models for prodbox correctness properties.

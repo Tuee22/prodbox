@@ -4,7 +4,8 @@
 **Supersedes**: N/A
 **Referenced by**: [README.md](README.md), [00-overview.md](00-overview.md),
 [system-components.md](system-components.md), [the engineering doctrine docs](../documents/engineering/README.md),
-[vault_doctrine.md](../documents/engineering/vault_doctrine.md)
+[vault_doctrine.md](../documents/engineering/vault_doctrine.md),
+[pulsar_messaging_doctrine.md](../documents/engineering/pulsar_messaging_doctrine.md)
 **Generated sections**: none
 
 > **Purpose**: Capture the Haskell chart platform, deterministic retained storage model, the
@@ -1467,6 +1468,9 @@ owned by Sprint `8.5`.
   not extended (Sprint `3.19`).
 - `documents/engineering/cluster_federation_doctrine.md` - the root/child transit-seal trust tree and
   per-cluster seal custody (Sprint `3.20`).
+- `documents/engineering/pulsar_messaging_doctrine.md` - the Pulsar platform chart plus the
+  self-maintained native-protocol Haskell Pulsar client whose payload codec is canonical-CBOR-only,
+  with the derived topic algebra (`topicFor`) and the `Work*` envelope family (Sprint `3.21`).
 - `documents/engineering/config_doctrine.md` - chart/Keycloak secrets from Vault KV via Vault
   Kubernetes auth, with no Secret-mounted plaintext Dhall fragment (Sprints `3.18`–`3.19`).
 - `documents/engineering/local_registry_pipeline.md` - Harbor-loading implications for the chart
@@ -2129,6 +2133,47 @@ None for Sprint `3.20`. Child `cluster reconcile` auto-unseal-from-parent wiring
 init-once/unseal-on-rebuild lifecycle, and the fail-closed unseal cascade closed under Sprint
 `4.32`; the cluster-federation trust topology and downstream-cluster custody gateway surface
 closed under Sprint `2.26`.
+
+## Sprint 3.21: Pulsar Workload Chart + Self-Maintained CBOR Pulsar Client [⏸️ Blocked]
+
+**Status**: ⏸️ Blocked
+**Blocked by**: 2.27
+**Implementation**: `src/Prodbox/Pulsar/Client.hs`, `src/Prodbox/Pulsar/Codec.hs`, `src/Prodbox/Pulsar/Topic.hs`, `src/Prodbox/Pulsar/Envelope.hs`, `charts/pulsar`
+**Live-proof**: pending
+**Independent Validation**: unit + CLI/env integration on the home/local substrate — the codec round-trip, `topicFor` topic-algebra, and `Work*` envelope suites plus `prodbox test integration cli`/`env` prove the client and chart-render surface on the phase's owned code with no dependency on any later phase.
+**Docs to update**: `documents/engineering/pulsar_messaging_doctrine.md`
+
+### Objective
+
+Deliver the Pulsar platform chart and the self-maintained native-protocol Haskell Pulsar client
+whose payload codec is canonical-CBOR-only — no codec-selection field on the wire — per
+[pulsar_messaging_doctrine.md](../documents/engineering/pulsar_messaging_doctrine.md). The client
+carries the derived topic algebra (`topicFor`) and the `Work*` envelope family so every producer and
+consumer shares one typed topic-and-envelope surface.
+
+### Deliverables
+
+- `src/Prodbox/Pulsar/Client.hs` implements the self-maintained native Pulsar binary-protocol client
+  (connect, produce, consume, ack) reusing the Sprint 2.27 `cborg` / `serialise` codec.
+- `src/Prodbox/Pulsar/Codec.hs` encodes and decodes message payloads as canonical CBOR only, with no
+  runtime codec-selection field.
+- `src/Prodbox/Pulsar/Topic.hs` provides the derived topic algebra `topicFor`, and
+  `src/Prodbox/Pulsar/Envelope.hs` defines the `Work*` envelope family.
+- `charts/pulsar` renders the Pulsar platform chart against the canonical in-cluster image reference
+  and retained-storage conventions the other platform charts already follow.
+
+### Validation
+
+1. `prodbox check-code` exit 0.
+2. `prodbox test unit` exit 0, including the CBOR codec round-trip, `topicFor` topic-algebra, and
+   `Work*` envelope coverage.
+3. `prodbox test integration cli` and `prodbox test integration env` exit 0 on the home/local
+   substrate.
+4. `prodbox lint chart` exit 0 over `charts/pulsar`.
+
+### Remaining Work
+
+The full deliverable set above; starts once Sprint 2.27 lands the shared CBOR codec.
 
 ## Related Documents
 

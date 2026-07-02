@@ -27,7 +27,11 @@
 Build a clean-room Haskell `prodbox` repository with:
 
 1. One explicit `prodbox` CLI surface implemented in Haskell.
-2. One supported local lifecycle operator environment: `Ubuntu 24.04 LTS` with systemd.
+2. One supported local lifecycle operator environment: `Ubuntu 24.04 LTS` with systemd. This
+   Ubuntu-only host gate is generalized to a multi-OS host-provider model (Linux-native, macOS via a
+   Lima VM, Windows via a WSL2 distro) per
+   [host_platform_doctrine.md](../documents/engineering/host_platform_doctrine.md) — scheduled
+   Sprints `1.52`/`4.37`, not yet implemented; everything Docker-inward stays OS-agnostic Linux.
 3. One host-owned `prodbox rke2 reconcile|delete [--yes|--cascade [--yes]|--allow-pulumi-residue [--yes]]|status|start|stop|restart|logs` surface for
    the local RKE2 cluster, plus the operator-only `prodbox nuke` total-teardown command that
    refuses non-TTY contexts and requires the typed-confirmation literal `NUKE EVERYTHING`.
@@ -57,7 +61,10 @@ Build a clean-room Haskell `prodbox` repository with:
 11. One native-architecture container-build doctrine: `amd64` hosts build `amd64` images, and
     `arm64` hosts build `arm64` images.
 12. Native `arm64` container builds work on native `arm64` Docker daemons, while cross-arch
-    builds, `docker buildx`, and mixed-arch clusters are unsupported.
+    builds, `docker buildx`, and mixed-arch clusters are unsupported. Native-host-architecture
+    publication extends across the macOS (Lima) and Windows (WSL2) host providers — the build runs
+    inside the OS-appropriate Linux frame — per
+    [host_platform_doctrine.md](../documents/engineering/host_platform_doctrine.md) (scheduled).
 13. One local-cluster-first Pulumi backend model: the local RKE2 cluster runs MinIO and stores AWS
     test-stack state in the generic `prodbox-state` bucket; Sprint `7.14` now routes main Pulumi
     stack cycles and production residue/output reads through the decrypt-to-scratch Model-B
@@ -95,6 +102,9 @@ Build a clean-room Haskell `prodbox` repository with:
     [Vault Doctrine](../documents/engineering/vault_doctrine.md),
     [Secret Management Doctrine](../documents/engineering/secret_derivation_doctrine.md),
     and [Retained Storage Lifecycle Doctrine](../documents/engineering/storage_lifecycle_doctrine.md).
+    Test runs use a separate `.test-data/` retained root and are mechanically forbidden from touching
+    `.data/` per [test_topology_doctrine.md](../documents/engineering/test_topology_doctrine.md)
+    (scheduled Sprints `1.54`/`5.11`).
 18. One PostgreSQL doctrine for Helm-managed application data: every supported PostgreSQL
     deployment is external, Percona-operator-backed Patroni HA with exactly three PostgreSQL
     replicas, synchronous replication, and no embedded chart-local PostgreSQL subchart.
@@ -122,6 +132,24 @@ Build a clean-room Haskell `prodbox` repository with:
     closes with zero pending supported-path residue.
 26. Pulumi retained for true IaC surfaces such as AWS substrate resources, with no supported
     Python Pulumi program and no supported local-cluster public operator flow.
+
+> **Scheduled doctrine generalizations (2026-07-01 batch — documentation + plan only, not yet
+> implemented).** Structured payloads unify on canonical **CBOR** project-wide (the unimplemented
+> gateway "protobuf" language is superseded; `cborg`/`serialise` scheduled) —
+> [pulsar_messaging_doctrine.md](../documents/engineering/pulsar_messaging_doctrine.md). A
+> self-maintained native-protocol **Pulsar** client + platform chart, prodbox-as-its-own
+> **autoscaler** capacity/scaling with a per-deploy AWS region service-quota gate and mandatory ML
+> JIT/model-cache storage budgets
+> ([resource_scaling_doctrine.md](../documents/engineering/resource_scaling_doctrine.md),
+> [tiered_storage_capacity_doctrine.md](../documents/engineering/tiered_storage_capacity_doctrine.md)),
+> typed **cluster topology** (`kind`/`rke2`/`eks`, one compute worker per machine —
+> [cluster_topology_doctrine.md](../documents/engineering/cluster_topology_doctrine.md)), the multi-OS
+> **host-provider** model, and the **test-topology** `prodbox.test.dhall` SSoT
+> ([test_topology_doctrine.md](../documents/engineering/test_topology_doctrine.md)) are scheduled
+> across Phases 1–7 (Sprints `2.27`–`2.28`, `3.21`, `1.51`–`1.54`, `4.34`–`4.38`, `5.11`, `7.27`; no
+> new phase, Standard E preserved). Each makes the illegal states catalogued in its doctrine doc
+> unrepresentable and specifies prodbox as the proven single-node specialization the `~/amoebius`
+> umbrella generalizes.
 
 Vault is the **sole, finalized** secrets / KMS / encryption-as-a-service / PKI root of every
 prodbox-managed cluster — there is no transitional or bridge pattern. Every secret, credential, key,

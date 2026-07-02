@@ -29,7 +29,13 @@
 [../../DEVELOPMENT_PLAN/phase-2-gateway-dns.md](../../DEVELOPMENT_PLAN/phase-2-gateway-dns.md),
 [../../DEVELOPMENT_PLAN/phase-3-chart-platform-vscode.md](../../DEVELOPMENT_PLAN/phase-3-chart-platform-vscode.md),
 [../../DEVELOPMENT_PLAN/phase-4-lifecycle-canonical-paths.md](../../DEVELOPMENT_PLAN/phase-4-lifecycle-canonical-paths.md),
-[../../DEVELOPMENT_PLAN/phase-7-aws-substrate-foundations.md](../../DEVELOPMENT_PLAN/phase-7-aws-substrate-foundations.md)
+[../../DEVELOPMENT_PLAN/phase-7-aws-substrate-foundations.md](../../DEVELOPMENT_PLAN/phase-7-aws-substrate-foundations.md),
+[pulsar_messaging_doctrine.md](./pulsar_messaging_doctrine.md),
+[host_platform_doctrine.md](./host_platform_doctrine.md),
+[cluster_topology_doctrine.md](./cluster_topology_doctrine.md),
+[resource_scaling_doctrine.md](./resource_scaling_doctrine.md),
+[tiered_storage_capacity_doctrine.md](./tiered_storage_capacity_doctrine.md),
+[test_topology_doctrine.md](./test_topology_doctrine.md)
 **Generated sections**: none
 
 > **Purpose**: Single source of truth for how every `prodbox` binary instance — host CLI and
@@ -164,6 +170,22 @@ hostbootstrap is a clean EXTENSION, not a rewrite. Tiers 1-2 (the obfuscated Min
 the sealed-Vault fail-closed posture) are prodbox's ADDITIVE L1 layer that hostbootstrap deliberately
 does NOT own. Neither goal is compromised: non-secret config follows the shared base; secrecy is
 prodbox's additive layer.
+
+### Typed topology / capacity fields, the test-run inversion, and serialization
+
+The Tier-0 `prodbox.dhall` `parameters` gain typed cluster-type, host-provider, substrate,
+capacity, scaling, spot-economics, and ML-storage-budget fields, each owned by its own doctrine and
+not restated here: [cluster_topology_doctrine.md](./cluster_topology_doctrine.md) (cluster-type /
+substrate), [host_platform_doctrine.md](./host_platform_doctrine.md) (host-provider),
+[resource_scaling_doctrine.md](./resource_scaling_doctrine.md) (scaling + spot), and
+[tiered_storage_capacity_doctrine.md](./tiered_storage_capacity_doctrine.md) (ML-storage / capacity
+budget). A **test** run inverts §3's resolution contract: it **fails fast when a binary-sibling
+`prodbox.dhall` is PRESENT** (the exact inverse of production's fail-if-absent) per
+[test_topology_doctrine.md](./test_topology_doctrine.md). Dhall stays the human-authoring language
+for all of these fields while CBOR is the at-rest / wire serialization per
+[pulsar_messaging_doctrine.md](./pulsar_messaging_doctrine.md). None of the new fields carries a
+secret — secrets stay `SecretRef`-by-name (§6.2), with no literal secret at rest except the flagged
+`test-secrets.dhall`.
 
 ## 1. Why this doctrine exists
 

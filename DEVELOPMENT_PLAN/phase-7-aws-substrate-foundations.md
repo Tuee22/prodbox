@@ -8,7 +8,8 @@
 [phase-8-email-invite-auth.md](phase-8-email-invite-auth.md),
 [legacy-tracking-for-deletion.md](legacy-tracking-for-deletion.md),
 [the engineering doctrine docs](../documents/engineering/README.md),
-[vault_doctrine.md](../documents/engineering/vault_doctrine.md)
+[vault_doctrine.md](../documents/engineering/vault_doctrine.md),
+[resource_scaling_doctrine.md](../documents/engineering/resource_scaling_doctrine.md)
 **Generated sections**: none
 
 > **Purpose**: Own the AWS substrate's foundations — the interactive onboarding wizard, the
@@ -3561,6 +3562,10 @@ as SSoT; the doctrine-adoption sprint and the relocated reopen narrative are rec
   `prodbox-config-types.dhall`, the config-backed admin path for `aws-ses` / `nuke`
   (`loadAdminAwsCredentials` / `pulumiSesProviderBaseEnv` / `pulumiSesAdminBaseEnv` reading the
   stored block), and the historical test-fixture filename (renamed to `test-config.dhall`).
+- [documents/engineering/resource_scaling_doctrine.md](../documents/engineering/resource_scaling_doctrine.md) -
+  for Sprint `7.27`, the managed-cloud-only spot-price gate (§ 4): the per-workload
+  `SpotPriceThreshold`, the three-valued `SpotObservation` → `admitSpotDeploy` decision, and the
+  `Unreachable → refuse` rule that never deploys on an unobservable price.
 
 **Product docs to create/update:**
 
@@ -4207,6 +4212,53 @@ not a failed teardown.)
   genuine-escapee still-refused, mixed → refuse-only-the-stray-and-not-the-bucket).
 - 🧪 Live (non-blocking, Standard O): a `cluster delete --cascade --yes` with the long-lived bucket
   present now reports it as retained-by-design and exits clean instead of demanding manual cleanup.
+
+## Sprint 7.27: Spot-Price Economics on the AWS Substrate [⏸️ Blocked]
+
+**Status**: ⏸️ Blocked
+**Implementation**: `src/Prodbox/Aws.hs` (the live spot-market price observer over the
+credential-region projection), `src/Prodbox/Scaling/*` (the `SpotPriceThreshold` gate and the
+three-valued `SpotObservation` → `SpotDecision` admit/defer/refuse decision), `test/unit/Main.hs`
+**Blocked by**: Sprint `4.34` (the autoscaler + multi-cluster placement reconciler the spot-economics
+gate plugs into)
+**Live-proof**: pending
+**Independent Validation**: unit tests over the pure `admitSpotDeploy` decision — `SpotObserved`
+below/above threshold → admit/defer, `SpotUnobservable` → refuse — plus `prodbox test integration
+cli`/`env` on the home/local substrate, where the gate is a no-op because a `ScalingPolicy
+'MetalFixed` has no `SpotPriceThreshold`; no later-phase dependency.
+
+### Objective
+
+Add spot-price observation and threshold gating on the managed-cloud (EKS) substrate per
+[resource_scaling_doctrine.md § 4](../documents/engineering/resource_scaling_doctrine.md#4-the-spot-price-gate-managed-cloud-only):
+a spot-elastic workload deploys or moves onto spot capacity **only when the observed price is below
+its per-workload threshold**, and "cannot observe the price" refuses rather than deploying anyway —
+the `Unreachable → refuse` soundness rule applied to placement economics.
+
+### Deliverables
+
+- A live spot-market price observer keyed on the credential region (the region projected by
+  `src/Prodbox/AwsEnvironment.hs`, never a separate flag), meaningful only on `SubstrateAws`.
+- The `SpotObservation` type is three-valued (`SpotObserved UsdPerHour` / `SpotUnobservable
+  UnobservableReason`), mirroring `src/Prodbox/Lifecycle/ResidueStatus.hs`'s
+  `ResidueAbsent | ResiduePresent | ResidueUnreachable` discipline.
+- `admitSpotDeploy :: SpotPriceThreshold -> SpotObservation -> SpotDecision` admits below-threshold,
+  defers above-threshold, and **refuses** on `SpotUnobservable` — never a silent "deploy anyway".
+- The `SpotPriceThreshold` field is representable only on `ScalingPolicy 'CloudElastic`, so the home
+  substrate carries no spot gate and the gate is a structural no-op there.
+
+### Validation
+
+1. `prodbox dev check`
+2. `prodbox test unit` (the pure `admitSpotDeploy` admit/defer/refuse decision table)
+3. `prodbox test integration cli`
+4. `prodbox test integration env`
+5. Fail-closed proof: `SpotUnobservable` yields `SpotRefuse`, never `SpotAdmit`.
+
+### Remaining Work
+
+- Pending — the live spot-market observer and the placement-economics gate are scheduled; blocked on
+  the Sprint `4.34` autoscaler + multi-cluster placement reconciler.
 
 ## Related Documents
 

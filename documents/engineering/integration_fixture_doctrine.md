@@ -2,7 +2,7 @@
 
 **Status**: Authoritative source
 **Supersedes**: N/A
-**Referenced by**: documents/engineering/README.md, documents/engineering/unit_testing_policy.md, documents/engineering/aws_test_environment.md, documents/engineering/aws_admin_credentials.md
+**Referenced by**: documents/engineering/README.md, documents/engineering/unit_testing_policy.md, documents/engineering/aws_test_environment.md, documents/engineering/aws_admin_credentials.md, documents/engineering/test_topology_doctrine.md
 **Generated sections**: none
 
 > **Purpose**: Define integration setup, teardown, and cleanup ownership for real-system
@@ -45,6 +45,10 @@ Ownership rules:
    credential-free validation (e.g. `gateway-partition`) no longer acquires the IAM harness
    merely because the active substrate is AWS.
 5. Cleanup failures must be surfaced explicitly to the operator.
+
+The per-run-vs-long-lived teardown split for test runs and the never-touch-`.data/` guard are
+governed by [test_topology_doctrine.md](./test_topology_doctrine.md), which reuses the same
+`LifecycleClass` split these fixture-ownership rules rely on.
 
 The destructive `--dry-run` golden fixtures under `test/golden/destructive/` (Sprint `5.6`:
 `rke2-delete.txt`, `rke2-delete-cascade.txt`, `nuke.txt`) are **registry-generated** — their

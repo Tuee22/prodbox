@@ -24,7 +24,7 @@ documents/engineering/integration_fixture_doctrine.md,
 documents/engineering/lifecycle_reconciliation_doctrine.md,
 documents/engineering/prerequisite_dag_system.md, documents/engineering/prerequisite_doctrine.md,
 documents/engineering/pure_fp_standards.md, documents/engineering/refactoring_patterns.md,
-documents/engineering/streaming_doctrine.md
+documents/engineering/streaming_doctrine.md, documents/engineering/test_topology_doctrine.md
 **Generated sections**: none
 
 > **Purpose**: Define the interpreter-only mocking doctrine and public test-runner contract for
@@ -41,7 +41,9 @@ The public `prodbox test` surface uses a two-stage model:
 - Phase `2/2`: Haskell test suites and named validation payloads
 
 This document defines testing doctrine only. Sequencing, completion status, and cleanup ownership
-are owned by [DEVELOPMENT_PLAN/README.md](../../DEVELOPMENT_PLAN/README.md).
+are owned by [DEVELOPMENT_PLAN/README.md](../../DEVELOPMENT_PLAN/README.md). The test-run topology,
+the executable-sibling `prodbox.test.dhall` SSoT, `.test-data/` isolation, and the two fail-fast
+preconditions are owned by [test_topology_doctrine.md](./test_topology_doctrine.md).
 
 ## 1. The Interpreter-Only Mocking Doctrine
 

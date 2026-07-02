@@ -2,7 +2,7 @@
 
 **Status**: Authoritative source
 **Supersedes**: N/A
-**Referenced by**: README.md, DEVELOPMENT_PLAN/README.md, DEVELOPMENT_PLAN/system-components.md, documents/engineering/README.md, documents/engineering/cluster_federation_doctrine.md, documents/engineering/effectful_dag_architecture.md, documents/engineering/integration_fixture_doctrine.md, documents/engineering/local_registry_pipeline.md, documents/engineering/prerequisite_dag_system.md, documents/engineering/prerequisite_doctrine.md, documents/engineering/helm_chart_platform_doctrine.md, documents/engineering/secret_derivation_doctrine.md, documents/engineering/lifecycle_reconciliation_doctrine.md, documents/engineering/vault_doctrine.md
+**Referenced by**: README.md, DEVELOPMENT_PLAN/README.md, DEVELOPMENT_PLAN/system-components.md, documents/engineering/README.md, documents/engineering/cluster_federation_doctrine.md, documents/engineering/effectful_dag_architecture.md, documents/engineering/integration_fixture_doctrine.md, documents/engineering/local_registry_pipeline.md, documents/engineering/prerequisite_dag_system.md, documents/engineering/prerequisite_doctrine.md, documents/engineering/helm_chart_platform_doctrine.md, documents/engineering/secret_derivation_doctrine.md, documents/engineering/lifecycle_reconciliation_doctrine.md, documents/engineering/vault_doctrine.md, documents/engineering/tiered_storage_capacity_doctrine.md, documents/engineering/pulsar_topic_lifecycle_doctrine.md, documents/engineering/cluster_topology_doctrine.md, documents/engineering/test_topology_doctrine.md
 **Generated sections**: none
 
 > **Purpose**: Define deterministic retained-storage behavior for `prodbox` install/delete
@@ -292,6 +292,15 @@ Rules:
     `.data/prodbox/vault-unlock-bundle.age` (Argon2id/age authenticated encryption); see
     [vault_doctrine.md §6](./vault_doctrine.md#6-the-unlock-bundle) (scheduled under
     Sprint 1.36).
+13. Test runs use a **separate `.test-data/` retained root**, never `.data/`. A `prodbox test`
+    run overrides `storage.manual_pv_host_root` to `.test-data/` (isolating each case under
+    `.test-data/<case>/`), and test commands are mechanically forbidden from touching the
+    production `.data/`; see
+    [test_topology_doctrine.md § 4](./test_topology_doctrine.md#4-fail-fast-preconditions-and-test-data-isolation).
+14. The hardcoded chart storage sizes (e.g. the 200Gi MinIO PV hint) are a transitional default:
+    how much durable data each store may hold is superseded by the finite-budget capacity DSL in
+    [tiered_storage_capacity_doctrine.md](./tiered_storage_capacity_doctrine.md), where a sizeless
+    durable claim or an over-quota topology is a Dhall typecheck failure.
 
 ## Cross-References
 

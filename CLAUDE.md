@@ -19,7 +19,9 @@
   `haskell_code_guide.md`; generated artifacts and lint stack in `code_quality.md`; output
   rules and at-least-once event processing in `streaming_doctrine.md`; prerequisites as
   typed effects in `prerequisite_doctrine.md`; daemon lifecycle in
-  `distributed_gateway_architecture.md`; the Vault transit-seal trust tree and
+  `distributed_gateway_architecture.md`; the concurrency-hardening methodology
+  (decision/protocol/runtime correctness layers, the Extract → Model → Inject moves, and the
+  proven/tested/assumed ledger) in `chaos_hardening_doctrine.md`; the Vault transit-seal trust tree and
   downstream-cluster custody in `cluster_federation_doctrine.md`; testing doctrine in
   `unit_testing_policy.md`; toolchain pinning in `dependency_management.md`. Phase documents
   in `DEVELOPMENT_PLAN/` cite doctrine sections by name when scheduling adoption work.

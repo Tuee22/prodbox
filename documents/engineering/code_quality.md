@@ -2,7 +2,7 @@
 
 **Status**: Authoritative source
 **Supersedes**: N/A
-**Referenced by**: README.md, AGENTS.md, CLAUDE.md, documents/engineering/README.md, documents/engineering/cli_command_surface.md, documents/engineering/haskell_code_guide.md, documents/engineering/prerequisite_doctrine.md, documents/engineering/pure_fp_standards.md, documents/engineering/unit_testing_policy.md
+**Referenced by**: README.md, AGENTS.md, CLAUDE.md, documents/engineering/README.md, documents/engineering/cli_command_surface.md, documents/engineering/haskell_code_guide.md, documents/engineering/prerequisite_doctrine.md, documents/engineering/pure_fp_standards.md, documents/engineering/unit_testing_policy.md, documents/engineering/pulsar_messaging_doctrine.md
 **Generated sections**: none
 
 > **Purpose**: Define policy guardrails and enforcement flow for `prodbox dev check`.
@@ -244,7 +244,7 @@ the loop.
    needed; the file is listed in a separate "tracked-generated paths"
    registry that the `lint files` pass refuses to allow hand edits to.
    Examples: cross-language type bridges (PureScript / TypeScript
-   contracts), proto-derived Haskell modules.
+   contracts), CBOR-schema-derived Haskell modules.
 
 A third, complementary registry — the `forbiddenPathRegistry` — names paths
 that must *not* exist. It uses the same data shape and the same
@@ -326,7 +326,7 @@ enforcement are structured.
 | `cabal format` | Cabal manifest formatter — single canonical layout for `.cabal` |
 | `<project>.Lint.Files` | Trailing whitespace, final newline, blocked tracked-generated paths |
 | `<project>.Lint.Docs` | Governed-document metadata, relative links, generated-section drift |
-| `<project>.Lint.Proto` (if applicable) | Wire-format schema invariants |
+| `<project>.Lint.Cbor` (if applicable) | CBOR wire-format schema invariants |
 | `<project>.Lint.Chart` (if applicable) | Helm chart structural invariants |
 
 `fourmolu` is the formatter. The readability subsection below leans on its
@@ -375,7 +375,7 @@ The lint stack is exposed as per-artifact subcommands plus an aggregate:
 ```text
 tool lint files       — whitespace / newline / tracked-generated / forbidden paths
 tool lint docs        — governed docs, generated sections
-tool lint proto       — wire-format schemas       (when proto present)
+tool lint cbor        — CBOR wire-format schemas   (when applicable)
 tool lint chart       — Helm chart invariants     (when chart present)
 tool lint haskell     — fourmolu --mode check + hlint + cabal format roundtrip
 tool lint all         — runs every lint above (lint-only; the warning-clean build runs under `tool check-code` / `tool test lint`, not here)

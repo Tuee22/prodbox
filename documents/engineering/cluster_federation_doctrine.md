@@ -6,7 +6,9 @@
 [config_doctrine.md](./config_doctrine.md),
 [distributed_gateway_architecture.md](./distributed_gateway_architecture.md),
 [storage_lifecycle_doctrine.md](./storage_lifecycle_doctrine.md),
-[../../DEVELOPMENT_PLAN/phase-7-aws-substrate-foundations.md](../../DEVELOPMENT_PLAN/phase-7-aws-substrate-foundations.md)
+[../../DEVELOPMENT_PLAN/phase-7-aws-substrate-foundations.md](../../DEVELOPMENT_PLAN/phase-7-aws-substrate-foundations.md),
+[resource_scaling_doctrine.md](./resource_scaling_doctrine.md),
+[cluster_topology_doctrine.md](./cluster_topology_doctrine.md)
 **Generated sections**: none
 
 > **Purpose**: Single source of truth for prodbox cluster federation — the root/child Vault
@@ -76,6 +78,11 @@ root cluster Vault (Shamir)
 The tree may be deeper than one level: a child cluster may itself be the parent of further
 downstream clusters, in which case it custodies their init keys and serves their transit-seal
 unseal authority exactly as the root does for its direct children.
+
+Cross-cluster **workload placement** rides on this same trust tree: a placing cluster may target
+only clusters within its own subtree — a child spec cannot reach beyond it, and a sealed or
+unreachable target is never an eligible placement destination — per
+[resource_scaling_doctrine.md § 6 (rule t)](./resource_scaling_doctrine.md#6-federation-scoped-placement-rule-t-and-untouched-gateway-leadership).
 
 ## 3. Parent custody of child init keys
 

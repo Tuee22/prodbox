@@ -3,7 +3,8 @@
 **Status**: Authoritative source
 **Supersedes**: N/A
 **Referenced by**: [README.md](README.md), [00-overview.md](00-overview.md),
-[system-components.md](system-components.md), [the engineering doctrine docs](../documents/engineering/README.md)
+[system-components.md](system-components.md), [the engineering doctrine docs](../documents/engineering/README.md),
+[pulsar_messaging_doctrine.md](../documents/engineering/pulsar_messaging_doctrine.md)
 **Generated sections**: none
 
 > **Purpose**: Capture the Haskell gateway runtime, its formal verification path, the canonical
@@ -2322,6 +2323,85 @@ parent's unsealed Vault KV.
   all exit 0 after the plan/docs closure update.
 - `./.build/prodbox dev check` exits 0 as the canonical local quality gate.
 
+## Sprint 2.27: Gateway Gossip + Orders to Canonical CBOR [📋 Planned]
+
+**Status**: 📋 Planned
+**Implementation**: `src/Prodbox/Gateway/Peer.hs`, `src/Prodbox/Gateway/Types.hs`, `prodbox.cabal`
+**Live-proof**: pending
+**Independent Validation**: unit + CLI/env integration on the home/local substrate — the peer-batch and `Orders` round-trip suites plus `prodbox test integration cli`/`env` prove the CBOR wire codec on the gateway's owned surface with no dependency on any later phase.
+**Docs to update**: `documents/engineering/pulsar_messaging_doctrine.md`, `documents/engineering/distributed_gateway_architecture.md`, `documents/engineering/code_quality.md`
+
+### Objective
+
+Migrate the gateway anti-entropy gossip (`POST /v1/peer/events`) and the `Orders` serialized
+envelope from JSON to canonical CBOR so the mesh transport shares the one canonical binary codec
+that [pulsar_messaging_doctrine.md](../documents/engineering/pulsar_messaging_doctrine.md) makes
+project-wide. This supersedes the residual protobuf wire language in
+[distributed_gateway_architecture.md](../documents/engineering/distributed_gateway_architecture.md)
+and renames the `Lint.Proto` stanza to `Lint.Cbor` per
+[code_quality.md](../documents/engineering/code_quality.md).
+
+### Deliverables
+
+- The peer event batch and the `Orders` document encode and decode through canonical CBOR
+  (`cborg` / `serialise`) instead of aeson JSON, with a `decode . encode == id` round-trip proof.
+- `prodbox.cabal` gains the `cborg` / `serialise` dependencies on the library component.
+- `distributed_gateway_architecture.md` drops the superseded protobuf wire language in favor of the
+  canonical-CBOR contract.
+- The lint stack's `Lint.Proto` stanza is renamed to `Lint.Cbor` (name only; the enforced rule set
+  is unchanged) and is referenced by that name from `code_quality.md`.
+
+### Validation
+
+1. `prodbox check-code` exit 0.
+2. `prodbox test unit` exit 0, including the peer-batch and `Orders` CBOR round-trip coverage.
+3. `prodbox test integration cli` and `prodbox test integration env` exit 0 on the home/local
+   substrate.
+4. Text-search proof shows no protobuf wire language remains on the supported gateway path and the
+   lint stanza reports as `Lint.Cbor`.
+
+### Remaining Work
+
+The full deliverable set above; ready to start with no unmet dependency.
+
+## Sprint 2.28: At-Least-Once Event Store to CBOR [⏸️ Blocked]
+
+**Status**: ⏸️ Blocked
+**Blocked by**: 2.27
+**Implementation**: `src/Prodbox/Daemon/Events.hs`
+**Live-proof**: pending
+**Independent Validation**: unit + CLI/env integration on the home/local substrate — the event-store round-trip and `markEventProcessed` idempotency suites plus `prodbox test integration cli`/`env` prove the CBOR payload encoding on the event-store's owned surface with no dependency on any later phase.
+**Docs to update**: `documents/engineering/streaming_doctrine.md`, `documents/engineering/pulsar_messaging_doctrine.md`
+
+### Objective
+
+Migrate the durable Postgres at-least-once event payloads in `src/Prodbox/Daemon/Events.hs` from an
+aeson `Value` column to canonical CBOR so the persisted event store uses the same canonical binary
+codec as the peer transport (Sprint 2.27) and as
+[pulsar_messaging_doctrine.md](../documents/engineering/pulsar_messaging_doctrine.md). The
+at-least-once delivery and `markEventProcessed` IS-NULL guard contract from
+[streaming_doctrine.md](../documents/engineering/streaming_doctrine.md) is preserved unchanged.
+
+### Deliverables
+
+- The at-least-once event payload persists as canonical CBOR bytes rather than an aeson `Value`,
+  reusing the `cborg` / `serialise` codec landed in Sprint 2.27.
+- Encode and decode round-trips and the idempotent `markEventProcessed` IS-NULL guard hold over the
+  CBOR-encoded payloads.
+- `streaming_doctrine.md` names canonical CBOR as the persisted at-least-once payload encoding.
+
+### Validation
+
+1. `prodbox check-code` exit 0.
+2. `prodbox test unit` exit 0, including the event-store CBOR round-trip and at-least-once
+   idempotency coverage.
+3. `prodbox test integration cli` and `prodbox test integration env` exit 0 on the home/local
+   substrate.
+
+### Remaining Work
+
+The full deliverable set above; starts once Sprint 2.27 lands the shared CBOR codec.
+
 ## Documentation Requirements
 
 **Engineering docs to create/update:**
@@ -2350,6 +2430,11 @@ parent's unsealed Vault KV.
   capability) landing with Sprint 2.25 (doctrine D4).
 - `documents/engineering/local_registry_pipeline.md` - gateway-container build, Harbor loading, and
   native-host-architecture delivery doctrine.
+- `documents/engineering/pulsar_messaging_doctrine.md` - the canonical-CBOR wire codec that
+  Sprint 2.27 adopts for peer gossip and the `Orders` envelope and that Sprint 2.28 adopts for the
+  persisted at-least-once event payloads.
+- `documents/engineering/code_quality.md` - the lint stack whose `Lint.Proto` stanza Sprint 2.27
+  renames to `Lint.Cbor` alongside the added `cborg` / `serialise` dependencies.
 - `documents/engineering/secret_derivation_doctrine.md` - the canonical event-key / derive-context
   encoding consumed by the single-encoding consolidation and the encode/decode round-trip in
   Sprint 2.25.

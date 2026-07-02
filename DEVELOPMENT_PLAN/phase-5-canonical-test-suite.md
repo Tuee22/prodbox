@@ -5,7 +5,8 @@
 **Referenced by**: [README.md](README.md), [00-overview.md](00-overview.md),
 [substrates.md](substrates.md),
 [the engineering doctrine docs](../documents/engineering/README.md),
-[vault_doctrine.md](../documents/engineering/vault_doctrine.md)
+[vault_doctrine.md](../documents/engineering/vault_doctrine.md),
+[test_topology_doctrine.md](../documents/engineering/test_topology_doctrine.md)
 **Generated sections**: none
 
 > **Purpose**: Own the substrate-agnostic canonical test suite — the named-validation set in
@@ -777,6 +778,16 @@ config decode.
 - [documents/engineering/cluster_federation_doctrine.md](../documents/engineering/cluster_federation_doctrine.md) -
   for Sprint `5.8`, the Vault transit-seal trust tree and the fail-closed unseal cascade the
   `sealed-vault` validation proves when a parent Vault is sealed or unreachable.
+- [documents/engineering/test_topology_doctrine.md](../documents/engineering/test_topology_doctrine.md) -
+  for Sprint `5.11`, the `test init` / `test run` command surface, `.test-data/` isolation with the
+  never-touch-`.data/` `guardTestDelete` guard, the two fail-fast preconditions, and the
+  finally-guaranteed teardown that reuses `LifecycleClass` / `partitionResidueByLifecycle` to delete
+  the per-run half while retaining the authored test Dhall and long-lived SES/S3 resources.
+- `documents/engineering/unit_testing_policy.md` - for Sprint `5.11`, the `test run` per-variant
+  deploy-path reuse and the finally-guaranteed teardown that runs on every exit (success, failure,
+  Ctrl-C).
+- `documents/engineering/integration_fixture_doctrine.md` - for Sprint `5.11`, the per-run vs
+  long-lived teardown ownership across the `.test-data/` isolation boundary.
 
 **Product docs to create/update:**
 
@@ -845,6 +856,68 @@ now decodes `route53_zone_id`; the `configFromSetupInput` field-fill is covered 
 - 🧪 Live-proof (non-blocking, Standard O): `prodbox test all` (home-local) regenerates the
   binary-sibling config from `test-secrets.dhall` and proceeds **past** the `route53.zone_id`
   preflight (the original failure). The real `resolvefintech.com` zone id is now in the fixture.
+
+## Sprint 5.11: Test-Topology Command Surface (`test init` / `test run`) [⏸️ Blocked]
+
+**Status**: ⏸️ Blocked
+**Implementation**: `src/Prodbox/CLI/Command.hs` (the `test init` / `test run` surface extending
+`TestCommand` / `TestScope`), `src/Prodbox/TestRunner.hs` (per-variant generate → reconcile →
+assert → `finally` teardown), `src/Prodbox/TestValidation.hs` (`.test-data/` repointing of the
+sealed-Vault audit path), `src/Prodbox/Lib/Storage.hs` (the `.test-data/` `manual_pv_host_root`
+override), `test/unit/Main.hs`
+**Blocked by**: Sprint `1.54` (the `prodbox.test.dhall` schema and the sibling-config fail-fast
+inversion this command surface drives)
+**Live-proof**: pending
+**Independent Validation**: unit tests over the pure `guardTestDelete` never-touch-`.data/`
+`TestDeleteTarget` ADT, the two fail-fast preconditions, and the `partitionResidueByLifecycle`
+per-run/long-lived teardown partition, plus `prodbox test integration cli`/`env` on the home/local
+substrate; no later-phase dependency.
+**Docs to update**: `documents/engineering/test_topology_doctrine.md`,
+`documents/engineering/unit_testing_policy.md`,
+`documents/engineering/integration_fixture_doctrine.md`
+
+### Objective
+
+Land the `test init` / `test run` command surface per
+[test_topology_doctrine.md](../documents/engineering/test_topology_doctrine.md): `prodbox test init`
+generates the differently-shaped executable-sibling `prodbox.test.dhall` (the HA/failover variant
+matrix), and `prodbox test run <suite>|all` drives each declared variant through the **real deploy
+path**, isolating run state under `.test-data/` and always tearing down its per-run half.
+
+### Deliverables
+
+- `prodbox test init` writes `prodbox.test.dhall` at the executable-sibling path and refuses to
+  overwrite an existing one without `--force`.
+- `prodbox test run <suite>` runs one named suite; `prodbox test run all` runs every declared
+  variant through the same reconcile/assert deploy path the canonical suite content already uses.
+- `.test-data/` isolation: the run's `manual_pv_host_root` points at `.test-data/<case>/` instead of
+  the production `.data/`, and `src/Prodbox/TestValidation.hs`'s hard-coded `.data/prodbox/minio/0`
+  audit root is repointed under that override.
+- A mechanical never-touch-`.data/` delete guard: the `guardTestDelete` closed `TestDeleteTarget`
+  ADT can name only this-run generated config, `.test-data/`, and `LifecycleClass PerRun` residue —
+  naming `.data/`, the authored `prodbox.test.dhall`, or a `LongLived` resource is unconstructible.
+- Finally-guaranteed teardown reusing the managed-resource registry: `partitionResidueByLifecycle`
+  (`src/Prodbox/Aws.hs`) reconciles the `PerRun` slice plus this run's `.test-data/` to absent and
+  gates the `LongLived` slice (authored test Dhall, `aws-ses`, and the `pulumi_state_backend` bucket
+  retained by design).
+- The two hard fail-fast preconditions run before any work: refuse when a production `prodbox.dhall`
+  exists beside the binary (the inverse of production's fail-if-absent rule) and refuse when a
+  production cluster is running.
+
+### Validation
+
+1. `prodbox dev check`
+2. `prodbox test unit` (the `guardTestDelete` guard, the two preconditions, and the
+   `partitionResidueByLifecycle` teardown partition)
+3. `prodbox test integration cli`
+4. `prodbox test integration env`
+5. Isolation proof: a `test run` writes and deletes only under `.test-data/` and never resolves or
+   mutates `.data/`.
+
+### Remaining Work
+
+- Pending — `test init` / `test run`, `.test-data/` isolation, and the finally-guaranteed teardown
+  are scheduled; blocked on the Sprint `1.54` `prodbox.test.dhall` schema.
 
 ## Related Documents
 

@@ -2,7 +2,7 @@
 
 **Status**: Authoritative source
 **Supersedes**: N/A
-**Referenced by**: documents/engineering/README.md, documents/engineering/cli_command_surface.md, documents/engineering/code_quality.md, documents/engineering/effectful_dag_architecture.md, documents/engineering/prerequisite_dag_system.md, documents/engineering/unit_testing_policy.md
+**Referenced by**: documents/engineering/README.md, documents/engineering/cli_command_surface.md, documents/engineering/code_quality.md, documents/engineering/effectful_dag_architecture.md, documents/engineering/prerequisite_dag_system.md, documents/engineering/unit_testing_policy.md, documents/engineering/host_platform_doctrine.md
 **Generated sections**: none
 
 > **Purpose**: Define the fail-fast prerequisite doctrine for supported `prodbox` command flows.
@@ -45,6 +45,10 @@ Typical prerequisite categories include:
   the native `dhall` Haskell library
 - cluster-backed runtime readiness
 - AWS- and Route-53-backed readiness
+
+The Ubuntu-only host gate (`platform_linux` / `supported_ubuntu_2404`) is generalized to a
+multi-OS host-provider gate per
+[host_platform_doctrine.md](./host_platform_doctrine.md).
 
 ## 3. Registry
 

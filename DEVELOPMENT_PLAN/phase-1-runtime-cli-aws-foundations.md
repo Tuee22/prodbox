@@ -4,7 +4,12 @@
 **Supersedes**: N/A
 **Referenced by**: [README.md](README.md), [00-overview.md](00-overview.md),
 [system-components.md](system-components.md), [the engineering doctrine docs](../documents/engineering/README.md),
-[vault_doctrine.md](../documents/engineering/vault_doctrine.md)
+[vault_doctrine.md](../documents/engineering/vault_doctrine.md),
+[resource_scaling_doctrine.md](../documents/engineering/resource_scaling_doctrine.md),
+[tiered_storage_capacity_doctrine.md](../documents/engineering/tiered_storage_capacity_doctrine.md),
+[host_platform_doctrine.md](../documents/engineering/host_platform_doctrine.md),
+[cluster_topology_doctrine.md](../documents/engineering/cluster_topology_doctrine.md),
+[test_topology_doctrine.md](../documents/engineering/test_topology_doctrine.md)
 **Generated sections**: none
 
 > **Purpose**: Capture the Haskell runtime, CLI, configuration, build, and Pulumi foundations that
@@ -1695,6 +1700,22 @@ None.
 - `documents/engineering/streaming_doctrine.md` - terminal streaming invariants.
 - `documents/engineering/unit_testing_policy.md` - Haskell unit and integration harness
   doctrine, deferring to the doctrine for the tasty stack and stanza layout.
+- `documents/engineering/resource_scaling_doctrine.md` - the typed capacity `Budget`/`fitsWithin`
+  model, the substrate-indexed `ScalingPolicy`, and prodbox-as-its-own-autoscaler; Sprint 1.51 lands
+  the capacity/scaling Dhall schema and the config surface that replaces `DeploymentSection`'s
+  unbounded `Maybe Natural` replicas.
+- `documents/engineering/tiered_storage_capacity_doctrine.md` - the finite-budget storage-capacity
+  DSL (`storageFitsWithin`, no `Infinite` arm, mandatory per-claim sizes); Sprint 1.51 lands the
+  shared `Budget` schema it co-owns with `resource_scaling_doctrine.md`.
+- `documents/engineering/host_platform_doctrine.md` - the multi-OS host-provider model
+  (`HostSubstrate`, the closed `HostTool` enum, the `LiftLayer` fold, rules a/b/j); Sprint 1.52
+  lands the DSL and relaxes the Ubuntu-only host gate.
+- `documents/engineering/cluster_topology_doctrine.md` - the explicit `kind | rke2 | eks` cluster
+  types and the substrate-indexed one-worker-per-machine rule; Sprint 1.53 lands the cluster-topology
+  Dhall schema encoding rules c/d/e/f/i as unconstructible states.
+- `documents/engineering/test_topology_doctrine.md` - the executable-sibling `prodbox.test.dhall`
+  SSoT and the sibling-config fail-fast inversion; Sprint 1.54 lands the schema plus the test-mode
+  preflight that fails fast when a production `prodbox.dhall` sits beside the binary.
 
 **Product docs to create/update:**
 
@@ -3150,6 +3171,178 @@ ConfigFile`.
 ### Remaining Work
 
 - Consumed by the Phase 5 Sprint `5.10` harness-generated-config preflight (now unblocked).
+
+## Sprint 1.51: Capacity & Scaling Dhall Schema and Config Surface [📋 Planned]
+
+**Status**: 📋 Planned
+**Implementation**: the `dhall/capacity/` capacity schema (`Budget{cpu,memory,storage}`,
+`fitsWithin`, `storageFitsWithin`, `assert`-carried budget lemmas), `src/Prodbox/Settings.hs`
+(decode the typed budgets and the substrate-indexed `ScalingPolicy`), `src/Prodbox/Substrate.hs`
+(the `ScalingPolicy` = `Fixed | Elastic{min,max}` replacement for `DeploymentSection`'s unbounded
+`Maybe Natural` replicas), `test/unit/Main.hs`
+**Blocked by**: none (expands Phase 1's own config/schema surface)
+**Live-proof**: pending
+**Independent Validation**: unit tests over the pure schema decode plus `prodbox test integration
+cli`/`env` on the home/local substrate — the `fitsWithin` lemmas and the `ScalingPolicy` decode are
+pure and need no cluster, live AWS, or later-phase dependency.
+**Docs to update**: `documents/engineering/resource_scaling_doctrine.md`,
+`documents/engineering/tiered_storage_capacity_doctrine.md`
+
+### Objective
+
+Land the shared typed capacity Dhall schema and the config surface that replaces
+`DeploymentSection`'s unbounded `Maybe Natural` replicas with a substrate-indexed `ScalingPolicy`,
+per [resource_scaling_doctrine.md](../documents/engineering/resource_scaling_doctrine.md) and
+[tiered_storage_capacity_doctrine.md](../documents/engineering/tiered_storage_capacity_doctrine.md).
+The `Budget{cpu,memory,storage}` triple plus the `fitsWithin` / `storageFitsWithin` relations make
+over-committed nodes and over-quota stores unrepresentable at Dhall typecheck time.
+
+### Deliverables
+
+- The `dhall/capacity/` schema: the monotone `Budget{cpu,memory,storage}` triple, the `fitsWithin`
+  and `storageFitsWithin` componentwise-`≤` relations, and `assert`-carried budget lemmas.
+- `src/Prodbox/Substrate.hs` introduces `ScalingPolicy = Fixed Natural | Elastic {min, max}` and
+  retires `DeploymentSection`'s unbounded `Maybe Natural` replica field.
+- `src/Prodbox/Settings.hs` decodes the typed budgets and the substrate-indexed `ScalingPolicy`.
+- Unit coverage for `fitsWithin`/`storageFitsWithin` and `Elastic{min,max}` well-formedness.
+
+### Validation
+
+- `prodbox dev check`, `prodbox test unit` (new capacity/scaling decode + lemma tests), and
+  `prodbox test integration cli`/`env` on the home/local substrate.
+
+### Remaining Work
+
+- The autoscaler + multi-cluster placement reconciler is Phase 4 Sprint `4.34`; the spot-economics
+  region gate is Phase 7 Sprint `7.27` (both out of Phase 1 scope).
+
+## Sprint 1.52: Multi-OS Host-Provider DSL [📋 Planned]
+
+**Status**: 📋 Planned
+**Implementation**: `src/Prodbox/Host/Substrate.hs` (the `HostSubstrate` detector),
+`src/Prodbox/Host/Tool.hs` (the closed `HostTool` enum, Windows tools CPP-gated),
+`src/Prodbox/Host/Lift.hs` (the `LiftLayer` provider fold: Lima / WSL2 / Incus / native),
+`src/Prodbox/Host/Lima.hs`, `src/Prodbox/Host/Wsl2.hs`, `src/Prodbox/Host/Ensure.hs`,
+`src/Prodbox/DockerConfig.hs`, `test/unit/Main.hs`
+**Blocked by**: none (expands Phase 1's own host-detection surface)
+**Live-proof**: pending
+**Independent Validation**: unit tests over the pure `HostSubstrate` detector, the closed `HostTool`
+enum, and the `LiftLayer` fold, plus `prodbox test integration cli`/`env` on the home/local
+(native-Linux) substrate; no cluster or later-phase dependency.
+**Docs to update**: `documents/engineering/host_platform_doctrine.md`,
+`documents/engineering/prerequisite_doctrine.md`
+
+### Objective
+
+Adopt [host_platform_doctrine.md](../documents/engineering/host_platform_doctrine.md): classify the
+host `prodbox` runs on and reach a Linux frame on every OS, mirroring `hostbootstrap`'s
+`Substrate` / `HostTool` / `Lift` / `Ensure` in kind. This relaxes the Ubuntu-only host gate and
+encodes rules a/b/j so "run a Linux cluster tool on a non-Linux host without a VM" is
+unrepresentable.
+
+### Deliverables
+
+- The `HostSubstrate` detector and the closed `HostTool` enum with Windows-only tools CPP-gated.
+- The `LiftLayer` provider fold over Lima / WSL2 / Incus / native, wired through
+  `src/Prodbox/Host/Ensure.hs` and `src/Prodbox/DockerConfig.hs`.
+- The relaxed host gate: non-Ubuntu Linux and lifted non-Linux hosts are admissible per rules a/b/j.
+- Prerequisite-registry remedy hints extended for the per-provider lift tools
+  ([prerequisite_doctrine.md](../documents/engineering/prerequisite_doctrine.md)).
+
+### Validation
+
+- `prodbox dev check`, `prodbox test unit` (host-substrate / tool / lift-fold coverage), and
+  `prodbox test integration cli`/`env` on the home/local substrate.
+
+### Remaining Work
+
+- VM-provisioning and the ensure reconcilers land in Phase 4 Sprint `4.37` (out of Phase 1 scope).
+
+## Sprint 1.53: Cluster-Topology & Worker Dhall Schema [⏸️ Blocked]
+
+**Status**: ⏸️ Blocked
+**Implementation**: `src/Prodbox/Cluster/Topology.hs` (the `kind | rke2 | eks` cluster ADT),
+`src/Prodbox/Cluster/Substrate.hs` (the substrate-typed one-compute-worker-per-machine rule),
+`src/Prodbox/Cluster/Placement.hs` (placement types), the `dhall/cluster/` cluster-topology schema,
+`test/unit/Main.hs`
+**Blocked by**: Sprint `1.52` (the `HostSubstrate` axis the worker-substrate placement types build
+on)
+**Live-proof**: pending
+**Independent Validation**: unit tests over the pure cluster ADT, the one-worker-per-machine rule,
+and the placement types encoding rules c/d/e/f/i as unconstructible states, plus
+`prodbox test integration cli`/`env` on the home/local (`rke2`) substrate; no later-phase
+dependency.
+**Docs to update**: `documents/engineering/cluster_topology_doctrine.md`
+
+### Objective
+
+Land the cluster-topology schema per
+[cluster_topology_doctrine.md](../documents/engineering/cluster_topology_doctrine.md): the explicit
+three-type `kind | rke2 | eks` cluster ADT, the substrate-indexed one-compute-worker-per-machine
+rule, and the placement types that encode rules c/d/e/f/i as unconstructible states rather than
+runtime-rejected ones.
+
+### Deliverables
+
+- `src/Prodbox/Cluster/Topology.hs` names the cluster type from a closed set of exactly three
+  (`kind`, `rke2`, `eks`); it is a declared config field, never host-detected or defaulted.
+- `src/Prodbox/Cluster/Substrate.hs` encodes the substrate-typed one-compute-worker-per-machine
+  rule.
+- `src/Prodbox/Cluster/Placement.hs` plus the `dhall/cluster/` schema make rules c/d/e/f/i
+  unrepresentable (an ill-formed topology is a typecheck failure, not a runtime rejection).
+- Unit coverage asserting the illegal states cannot be constructed.
+
+### Validation
+
+- `prodbox dev check`, `prodbox test unit` (cluster-ADT + placement typecheck coverage), and
+  `prodbox test integration cli`/`env` on the home/local substrate.
+
+### Remaining Work
+
+- Substrate-typed placement, one-per-machine anti-affinity, and mixed-substrate-only-`rke2`
+  enforcement land in Phase 4 Sprint `4.38` (out of Phase 1 scope).
+
+## Sprint 1.54: prodbox.test.dhall Schema & Sibling-Config Fail-Fast Inversion [⏸️ Blocked]
+
+**Status**: ⏸️ Blocked
+**Implementation**: the `dhall/TestTopologySchema.dhall` test-topology schema (the HA/failover
+variant matrix), `src/Prodbox/Repo.hs` (`resolveTier0ConfigPath` test-mode branch),
+`src/Prodbox/Settings.hs` (decode the executable-sibling `prodbox.test.dhall`),
+`src/Prodbox/TestRunner.hs` (the test-mode preflight), `test/unit/Main.hs`
+**Blocked by**: Sprint `1.53` (the cluster-topology schema the HA/failover variant matrix composes)
+**Live-proof**: pending
+**Independent Validation**: unit tests over the pure `prodbox.test.dhall` decode and the fail-fast
+preflight (a production `prodbox.dhall` beside the binary aborts a test run), plus
+`prodbox test integration cli`/`env` on the home/local substrate; no later-phase dependency.
+**Docs to update**: `documents/engineering/test_topology_doctrine.md`
+
+### Objective
+
+Land the executable-sibling `prodbox.test.dhall` schema and the test-mode preflight per
+[test_topology_doctrine.md](../documents/engineering/test_topology_doctrine.md). The schema is a
+separate, differently-shaped Dhall surface (the HA/failover variant matrix); the preflight **fails
+fast** when a production `prodbox.dhall` exists beside the binary — the inverse of production's
+fail-if-absent resolution.
+
+### Deliverables
+
+- `dhall/TestTopologySchema.dhall`: the HA/failover cluster-variant matrix, per-suite budgets, and
+  the fixtures each suite needs, resolved at the executable-sibling path.
+- `src/Prodbox/Repo.hs` `resolveTier0ConfigPath` gains a test-mode branch and
+  `src/Prodbox/Settings.hs` decodes the test Dhall.
+- `src/Prodbox/TestRunner.hs` preflight aborts a test run when a production binary-sibling
+  `prodbox.dhall` is present (inverse of the production fail-if-absent rule).
+- Unit coverage for the decode and both preflight directions.
+
+### Validation
+
+- `prodbox dev check`, `prodbox test unit` (test-topology decode + fail-fast preflight), and
+  `prodbox test integration cli`/`env` on the home/local substrate.
+
+### Remaining Work
+
+- The `test init` / `test run` topology, `.test-data/` isolation, finally-guaranteed teardown, and
+  the never-touch-`.data/` guard land in Phase 5 Sprint `5.11` (out of Phase 1 scope).
 
 ## Related Documents
 

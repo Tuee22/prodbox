@@ -30,6 +30,38 @@ govern this plan suite.
 
 ## Closure Status
 
+**2026-07-01 — Five new doctrine areas scheduled (documentation + plan only): CBOR-everywhere,
+resource-scaling, topic-lifecycle + tiered-storage, multi-OS host/topology, and test-topology.**
+Seven new authoritative engineering docs land —
+[pulsar_messaging_doctrine.md](../documents/engineering/pulsar_messaging_doctrine.md),
+[resource_scaling_doctrine.md](../documents/engineering/resource_scaling_doctrine.md),
+[pulsar_topic_lifecycle_doctrine.md](../documents/engineering/pulsar_topic_lifecycle_doctrine.md),
+[tiered_storage_capacity_doctrine.md](../documents/engineering/tiered_storage_capacity_doctrine.md),
+[host_platform_doctrine.md](../documents/engineering/host_platform_doctrine.md),
+[cluster_topology_doctrine.md](../documents/engineering/cluster_topology_doctrine.md), and
+[test_topology_doctrine.md](../documents/engineering/test_topology_doctrine.md) — specifying prodbox
+as the proven single-node "root control-plane" specialization that the `~/amoebius` umbrella
+generalizes. Structured payloads are unified on canonical **CBOR project-wide** (the unimplemented
+"protobuf" gateway language in
+[distributed_gateway_architecture.md](../documents/engineering/distributed_gateway_architecture.md)
+is superseded; `cborg`/`serialise` scheduled). **No new phase** (Standard E preserved): adoption is
+scheduled as 📋 Planned / ⏸️ Blocked sprints across existing phases — `2.27`/`2.28` (CBOR gateway
+gossip + Orders + at-least-once store), `3.21` (Pulsar chart + self-maintained CBOR client),
+`1.51`–`1.54` (capacity/scaling schema; multi-OS host-provider DSL; cluster-topology schema;
+`prodbox.test.dhall` + the sibling-config fail-fast inversion), `4.34`–`4.38` (autoscaler +
+federation-scoped placement; topics-as-managed-resources; tiered-storage budget + per-deploy region
+service-quota gate + mandatory ML JIT/model-cache budget; Lima/WSL2/Incus provisioning;
+substrate-typed one-worker-per-machine placement), `5.11` (`test init`/`test run` topology +
+`.test-data/` isolation), and `7.27` (spot-price economics). Every `Blocked by` edge is
+earlier-or-same-phase (Standard N). This batch is **docs + plan only** — the Haskell DSLs, the
+Pulsar client, the multi-OS providers, and the CBOR migration are scheduled, not yet implemented. The
+illegal-states the DSLs make unrepresentable (rke2-without-a-VM on Apple/Windows, multi-node-rke2 on
+one machine, >1 compute worker/machine, over-committed node/cluster/region, unbounded MinIO without an
+autoscaling witness, a test touching `.data/`, a literal secret at rest) are catalogued in the new
+docs, aligned with amoebius's `illegal_state_catalog.md`. See
+[substrates.md](substrates.md) for the host-provider dimension and
+[system-components.md](system-components.md) for the new inventory rows.
+
 **2026-06-26 — `test all` reaches 17/18 validations; only `lifecycle` (#18) fails on an AWS ENI
 teardown race.** With the gateway-daemon fix, the chain cleared validations 1–17 (charts-vscode →
 sealed-vault, incl. gateway-pods/partition, charts-platform, keycloak-invite, charts-storage). The

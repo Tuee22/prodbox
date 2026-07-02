@@ -16,7 +16,12 @@
 [secret_derivation_doctrine.md](secret_derivation_doctrine.md),
 [storage_lifecycle_doctrine.md](storage_lifecycle_doctrine.md),
 [unit_testing_policy.md](unit_testing_policy.md),
-[vault_doctrine.md](vault_doctrine.md)
+[vault_doctrine.md](vault_doctrine.md),
+[resource_scaling_doctrine.md](resource_scaling_doctrine.md),
+[pulsar_topic_lifecycle_doctrine.md](pulsar_topic_lifecycle_doctrine.md),
+[host_platform_doctrine.md](host_platform_doctrine.md),
+[cluster_topology_doctrine.md](cluster_topology_doctrine.md),
+[test_topology_doctrine.md](test_topology_doctrine.md)
 **Generated sections**: none
 
 > **Purpose**: Single Source of Truth for how prodbox lifecycle commands
@@ -373,6 +378,15 @@ This is the data-oriented "make illegal states unrepresentable"
 answer, not a global state machine: the registry is pure data, every
 `discover` queries the appropriate external authority at the moment of
 use, and crash recovery is just "re-run the reconciler."
+
+This registry substrate is reused, not re-derived, by later doctrines:
+[resource_scaling_doctrine.md § 7](./resource_scaling_doctrine.md#7-scaling-is-a-reconciled-managed-resource)
+models a desired scaled shape as a reconciled managed resource with a three-valued `discover`,
+[pulsar_topic_lifecycle_doctrine.md § 1](./pulsar_topic_lifecycle_doctrine.md#1-a-topic-is-a-managed-resource)
+registers each Pulsar topic as a managed resource with a typed `discover`/`destroy` and a
+`LifecycleClass`, and
+[test_topology_doctrine.md § 5](./test_topology_doctrine.md#5-teardown-is-finally-guaranteed-and-reuses-the-lifecycle-classes)
+reuses the `PerRun` / `LongLived` partition for finally-guaranteed test teardown.
 
 The public-edge **production** certificate is a worked example of this
 registration (Sprint 4.24). Its S3-retained material — written to the

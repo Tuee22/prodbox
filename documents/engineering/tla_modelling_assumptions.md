@@ -2,7 +2,7 @@
 
 **Status**: Authoritative source
 **Supersedes**: N/A
-**Referenced by**: DEVELOPMENT_PLAN/README.md, documents/engineering/README.md, documents/engineering/distributed_gateway_architecture.md
+**Referenced by**: DEVELOPMENT_PLAN/README.md, documents/engineering/README.md, documents/engineering/distributed_gateway_architecture.md, documents/engineering/chaos_hardening_doctrine.md
 **Generated sections**: none
 
 > **Purpose**: Document the formal modelling decisions, correspondence mapping, known divergences, and verification boundaries for the gateway TLA+ specification.
@@ -296,9 +296,17 @@ In a fully asynchronous system with partitions, the system cannot guarantee both
 
 The TLA+ model proves safety invariants under the modelled assumptions (bounded timestamps, crash-recovery, message delay). These invariants hold for all reachable states in the bounded state space.
 
-Under severe partition, the implementation chooses safety-first: nodes self-elect as failsafe
-(satisfying `SingletonSelfElection`), accepting temporary split-brain that heals on reconvergence.
-This is documented in [Distributed Gateway Architecture Section 5](./distributed_gateway_architecture.md#5-safety-boundary-important).
+Under severe partition, the implementation chooses **availability-first** (best-effort): nodes
+self-elect as failsafe (satisfying `SingletonSelfElection`) and keep serving, accepting a *bounded,
+self-healing* split-brain that heals on reconvergence rather than failing closed. This is documented in
+[Distributed Gateway Architecture Section 5](./distributed_gateway_architecture.md#5-safety-boundary-important).
+
+(The general methodology behind this correctness argument — the decision/protocol/runtime layers and the
+R7 "impossibility-bounded invariant" framing, under which this availability-first choice is the
+*act-and-heal* branch as distinct from the safety-first / fail-closed / refuse-to-write branch — is set
+out project-neutrally in [chaos_hardening_doctrine.md](./chaos_hardening_doctrine.md); Appendix B there
+instantiates this gateway as its worked example. This doc remains the SSoT for the gateway's model,
+invariant catalog, and posture.)
 
 The design contract:
 1. `NoTugOfWar` and `NoSimultaneousDNSWriters` are proven for the fully-stable state (converged views, current ownerView, non-empty UpSet).

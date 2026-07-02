@@ -2,7 +2,7 @@
 
 **Status**: Authoritative source
 **Supersedes**: N/A
-**Referenced by**: README.md, AGENTS.md, CLAUDE.md, DEVELOPMENT_PLAN/README.md, DEVELOPMENT_PLAN/system-components.md, DEVELOPMENT_PLAN/legacy-tracking-for-deletion.md, DEVELOPMENT_PLAN/phase-0-planning-documentation.md, DEVELOPMENT_PLAN/phase-1-runtime-cli-aws-foundations.md, DEVELOPMENT_PLAN/phase-2-gateway-dns.md, DEVELOPMENT_PLAN/phase-3-chart-platform-vscode.md, documents/documentation_standards.md, documents/engineering/README.md, documents/engineering/cluster_federation_doctrine.md, documents/engineering/envoy_gateway_edge_doctrine.md, documents/engineering/haskell_code_guide.md, documents/engineering/local_registry_pipeline.md, documents/engineering/prerequisite_doctrine.md, documents/engineering/pure_fp_standards.md, documents/engineering/secret_derivation_doctrine.md, documents/engineering/storage_lifecycle_doctrine.md, documents/engineering/streaming_doctrine.md, documents/engineering/tla/README.md, documents/engineering/tla_modelling_assumptions.md, documents/engineering/unit_testing_policy.md
+**Referenced by**: README.md, AGENTS.md, CLAUDE.md, DEVELOPMENT_PLAN/README.md, DEVELOPMENT_PLAN/system-components.md, DEVELOPMENT_PLAN/legacy-tracking-for-deletion.md, DEVELOPMENT_PLAN/phase-0-planning-documentation.md, DEVELOPMENT_PLAN/phase-1-runtime-cli-aws-foundations.md, DEVELOPMENT_PLAN/phase-2-gateway-dns.md, DEVELOPMENT_PLAN/phase-3-chart-platform-vscode.md, documents/documentation_standards.md, documents/engineering/README.md, documents/engineering/cluster_federation_doctrine.md, documents/engineering/envoy_gateway_edge_doctrine.md, documents/engineering/haskell_code_guide.md, documents/engineering/local_registry_pipeline.md, documents/engineering/prerequisite_doctrine.md, documents/engineering/pure_fp_standards.md, documents/engineering/secret_derivation_doctrine.md, documents/engineering/storage_lifecycle_doctrine.md, documents/engineering/streaming_doctrine.md, documents/engineering/tla/README.md, documents/engineering/tla_modelling_assumptions.md, documents/engineering/unit_testing_policy.md, documents/engineering/chaos_hardening_doctrine.md, documents/engineering/pulsar_messaging_doctrine.md, documents/engineering/resource_scaling_doctrine.md
 **Generated sections**: none
 
 > **Purpose**: Define the fully peer-to-peer prodbox architecture using shared Orders + append-only commit log with formally constrained gateway leadership rules.
@@ -30,7 +30,9 @@ This design assumes:
 1. No centralized coordinator (no DynamoDB, etc.).
 2. All nodes are fully trusted mesh peers identified by Orders membership and per-node event
    keys; peer trust material remains part of the gateway config and chart contract.
-3. A typed global Orders document exists (protobuf), with monotonic UTC version timestamp.
+3. A typed global Orders document exists (Dhall-authored, CBOR-serialized on the wire — see
+   [pulsar_messaging_doctrine.md](./pulsar_messaging_doctrine.md)), with monotonic UTC version
+   timestamp.
 4. Nodes promote newer validated Orders promptly, via the restart-based boot-field
    reload path (§7.5), not by mutating Orders version in process.
 5. Every node has a stable peer endpoint in Orders for mesh communication.
@@ -65,7 +67,8 @@ Canonical repository facts referenced by this doctrine:
 
 ## 3.1 Orders Plane (Control Intent)
 
-`Orders` protobuf is the declarative configuration object:
+`Orders` is the declarative configuration object (authored in Dhall, CBOR-serialized on the wire —
+see [pulsar_messaging_doctrine.md](./pulsar_messaging_doctrine.md)):
 
 - `orders_version_utc` (int64, strictly increasing)
 - `orders_hash`
@@ -81,7 +84,8 @@ Global append-only commit log events:
 
 - Hash chained (`prev_hash`, `event_hash`)
 - Signed by emitter
-- Includes `emitter_node_id`, `event_ts_utc`, payload protobuf
+- Includes `emitter_node_id`, `event_ts_utc`, and a CBOR payload (see
+  [pulsar_messaging_doctrine.md](./pulsar_messaging_doctrine.md))
 
 Event classes:
 
@@ -146,9 +150,11 @@ This is a fundamental distributed systems limit.
 Therefore the design contract is:
 
 1. `NoTugOfWar` is proven for the modeled assumptions (bounded skew/delay or equivalent failure-detector assumptions in TLA+).
-2. Under severe partition uncertainty, implementation must choose explicit mode:
-   - safety-first fail-closed, or
-   - availability-first best effort.
+2. Under severe partition uncertainty, the implementation makes the explicit choice
+   **availability-first (best-effort)**: an isolated node self-elects as a failsafe and keeps serving,
+   accepting a *bounded, self-healing* split-brain rather than failing closed. The rejected alternative is
+   safety-first / fail-closed (refuse to act until sole ownership is proven) — not chosen, because the
+   gateway's purpose is to keep traffic reaching a live owner.
 
 The schema can forbid ambiguous rule forms, but cannot bypass impossibility results.
 
@@ -242,7 +248,7 @@ never classified as a `Fatal` worker error (including during `Draining`).
 
 - Each daemon periodically pushes its append-only commit log to every
   other peer over the events port.  The protocol is a simple
-  `POST /v1/peer/events` carrying a JSON batch plus the sender's monotonic
+  `POST /v1/peer/events` carrying a CBOR batch plus the sender's monotonic
   `orders_version_utc`.
 - Acceptance is idempotent: the receiver merges through `appendIfNew`, so
   repeated pushes never create duplicates.

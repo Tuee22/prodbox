@@ -19,7 +19,8 @@
 [helm_chart_platform_doctrine.md](./helm_chart_platform_doctrine.md),
 [local_registry_pipeline.md](./local_registry_pipeline.md),
 [unit_testing_policy.md](./unit_testing_policy.md),
-[vault_doctrine.md](./vault_doctrine.md)
+[vault_doctrine.md](./vault_doctrine.md),
+[resource_scaling_doctrine.md](./resource_scaling_doctrine.md)
 **Generated sections**: none
 
 > **Purpose**: Define the canonical MetalLB + Envoy Gateway + Keycloak public-edge doctrine for
@@ -566,6 +567,10 @@ The current repository ships a Redis-backed WebSocket application stack and vali
 and post-restart state continuity.
 
 ## 8. Scaling and Availability Doctrine
+
+The typed capacity, scaling-policy, and placement model is now owned by
+[resource_scaling_doctrine.md](./resource_scaling_doctrine.md); this section retains only the
+per-component availability notes below.
 
 The doctrine is horizontally scalable, but the implementation boundary matters.
 

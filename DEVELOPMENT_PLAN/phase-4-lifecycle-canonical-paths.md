@@ -2923,6 +2923,205 @@ yields only `objects/<hmac>.enc` at a constant count and no exists-vs-absent ora
   red-team is exercised alongside the sealed-Vault canonical validation (Sprint `5.8`), gated on
   the deployed Vault. Raw Pulumi checkpoint decrypt-to-scratch interposition remains Sprint `7.14`.
 
+## Sprint 4.34: Autoscaler Runtime & Federation-Scoped Multi-Cluster Placement ⏸️ Blocked
+
+**Status**: Blocked
+**Implementation**: `src/Prodbox/Lifecycle/ResourceRegistry.hs`, `src/Prodbox/Scaling/`
+**Blocked by**: Sprint `1.51`
+**Live-proof**: pending
+**Independent Validation**: Validated on its owned code surface — `prodbox test unit` over the pure
+autoscaler reconciler and the trust-tree placement-constraint solver, plus `prodbox test integration
+cli`/`env` on the home/local substrate with placement targets stubbed to the local cluster — no
+later-phase dependency.
+**Docs to update**: `documents/engineering/resource_scaling_doctrine.md`,
+`documents/engineering/cluster_federation_doctrine.md`
+
+### Objective
+
+Run prodbox itself as the autoscaler reconciler over the capacity type per
+[resource_scaling_doctrine.md](../documents/engineering/resource_scaling_doctrine.md), constraining
+multi-cluster placement to the federation trust tree
+([cluster_federation_doctrine.md](../documents/engineering/cluster_federation_doctrine.md)) so scaling
+never perturbs gateway leadership.
+
+### Deliverables
+
+- `src/Prodbox/Scaling/` hosts the prodbox-as-autoscaler reconciler over the typed capacity value on
+  the doctrine's check-before-mutate shape.
+- Multi-cluster placement candidates are constrained to the federation trust tree; a target outside the
+  trust subtree is rejected as inadmissible.
+- Scaling actions are ordered so they never disturb the current gateway leader — leadership is preserved
+  across scale-up and scale-down.
+- `src/Prodbox/Lifecycle/ResourceRegistry.hs` exposes the capacity-scaled resources through the
+  managed-resource registry.
+
+### Validation
+
+1. `prodbox check-code`
+2. `prodbox test unit` covers the autoscaler reconciler and the trust-tree placement constraint (pure).
+3. `prodbox test integration cli` proves the scaling plan renders and is idempotent on the home
+   substrate.
+
+### Remaining Work
+
+- Live multi-cluster placement across a deployed federation trust tree is a non-blocking
+  `Live-proof: pending` note.
+
+## Sprint 4.35: Pulsar Topics as Managed Resources ⏸️ Blocked
+
+**Status**: Blocked
+**Implementation**: `src/Prodbox/Pulsar/Topic.hs`, `src/Prodbox/Lifecycle/ResourceRegistry.hs`
+**Blocked by**: Sprint `3.21`
+**Live-proof**: pending
+**Independent Validation**: Validated on its owned code surface — `prodbox test unit` over the typed
+three-valued broker discover, the typed destroy, and the LifecycleClass assignment, plus `prodbox test
+integration cli` on the home/local substrate with the broker stubbed — no later-phase dependency.
+**Docs to update**: `documents/engineering/pulsar_topic_lifecycle_doctrine.md`
+
+### Objective
+
+Register Pulsar topics in the managed-resource registry as first-class typed resources per
+[pulsar_topic_lifecycle_doctrine.md](../documents/engineering/pulsar_topic_lifecycle_doctrine.md), so a
+topic reconciles present/absent through the same § 3.1 registry totality + soundness pattern as every
+other managed resource.
+
+### Deliverables
+
+- `src/Prodbox/Pulsar/Topic.hs` provides a typed three-valued broker `discover` (present / absent /
+  cannot-observe) so "cannot observe" is never silently treated as "absent".
+- A typed `destroy` and an explicit `LifecycleClass` assignment place Pulsar topics in the registry.
+- `src/Prodbox/Lifecycle/ResourceRegistry.hs` registers the topic entry; `reconcilePresent` /
+  `reconcileAbsent` drive create and delete.
+
+### Validation
+
+1. `prodbox check-code`
+2. `prodbox test unit` covers the three-valued discover and the registry entry (pure).
+3. `prodbox test integration cli` proves the topic reconcile plan renders idempotently against a stubbed
+   broker.
+
+### Remaining Work
+
+- Live broker present/absent reconcile against a deployed Pulsar broker is a non-blocking
+  `Live-proof: pending` note.
+
+## Sprint 4.36: Tiered-Storage Budget DSL + Region-Quota Gate + ML Storage Budget ⏸️ Blocked
+
+**Status**: Blocked
+**Implementation**: `src/Prodbox/Capacity/`, `src/Prodbox/Aws.hs`
+**Blocked by**: Sprint `1.51`
+**Live-proof**: pending
+**Independent Validation**: Validated on its owned code surface — `prodbox test unit` over the
+finite-budget capacity reconciler, the region service-quota preflight, and the ML storage-budget totals,
+plus `prodbox test integration cli` on the home/local substrate with AWS quota calls stubbed — no
+later-phase dependency.
+**Docs to update**: `documents/engineering/tiered_storage_capacity_doctrine.md`
+
+### Objective
+
+Implement the finite-budget capacity reconciler, the per-deploy AWS region service-quota preflight, and
+the mandatory ML-engine storage budget per
+[tiered_storage_capacity_doctrine.md](../documents/engineering/tiered_storage_capacity_doctrine.md).
+
+### Deliverables
+
+- `src/Prodbox/Capacity/` carries a finite-budget capacity DSL with no `Infinite` constructor; MinIO
+  unbounded is admissible only when accompanied by an autoscaling-policy witness.
+- The per-deploy AWS region service-quota preflight reuses `Prodbox.Aws`'s `applyAwsCheckQuotas` /
+  `ensureServiceQuota` so a deploy fails fast when a region quota is insufficient.
+- The mandatory ML-engine JIT + model-cache storage budget (host + cluster) is a required input to the
+  capacity reconciler.
+
+### Validation
+
+1. `prodbox check-code`
+2. `prodbox test unit` covers the finite-budget type (no `Infinite`), the MinIO-unbounded witness rule,
+   and the ML storage-budget totals (pure).
+3. `prodbox test integration cli` proves the region-quota preflight renders and refuses on an
+   insufficient stubbed quota.
+
+### Remaining Work
+
+- Live AWS region service-quota checks against live AWS credentials are a non-blocking
+  `Live-proof: pending` note.
+
+## Sprint 4.37: Lima/WSL2/Incus Provisioning + Native-Arch Build Extension ⏸️ Blocked
+
+**Status**: Blocked
+**Implementation**: `src/Prodbox/Host/`, `src/Prodbox/DockerConfig.hs`
+**Blocked by**: Sprint `1.52`
+**Live-proof**: pending
+**Independent Validation**: Validated on its owned code surface — `prodbox test unit` over the
+host-provider selection, the VM ensure reconcilers, and the Windows docker CPP-gating rule, plus
+`prodbox test integration cli`/`env` on the home/local (Linux/Incus) substrate with foreign-OS providers
+stubbed — no later-phase dependency.
+**Docs to update**: `documents/engineering/host_platform_doctrine.md`,
+`documents/engineering/local_registry_pipeline.md`
+
+### Objective
+
+Provision the host-provider VM per OS — Lima on macOS, WSL2 on Windows, Incus/native on Linux — and run
+the native-host-arch image build inside the OS-appropriate Linux frame per
+[host_platform_doctrine.md](../documents/engineering/host_platform_doctrine.md).
+
+### Deliverables
+
+- `src/Prodbox/Host/` selects the host provider by OS and provides idempotent VM `ensure` reconcilers
+  (Lima / WSL2 / Incus/native).
+- `src/Prodbox/DockerConfig.hs` gates the Windows docker path on the CPP rule (rule j) so a Windows host
+  builds through its WSL2 Linux frame.
+- Native-host-arch image build runs inside the OS-appropriate Linux frame, extending the native-arch,
+  no-cross-arch-emulation publication contract from Sprint `4.1`.
+
+### Validation
+
+1. `prodbox check-code`
+2. `prodbox test unit` covers the host-provider selection and the Windows CPP-gating rule (pure).
+3. `prodbox test integration cli`/`env` proves the Linux/Incus ensure reconciler is idempotent on the
+   home substrate.
+
+### Remaining Work
+
+- Live macOS-Lima and Windows-WSL2 provisioning proofs on those hosts are non-blocking
+  `Live-proof: pending` notes.
+
+## Sprint 4.38: Substrate-Typed Worker Placement & One-Per-Machine Anti-Affinity ⏸️ Blocked
+
+**Status**: Blocked
+**Implementation**: `src/Prodbox/Cluster/Placement.hs`
+**Blocked by**: Sprint `1.53`
+**Live-proof**: pending
+**Independent Validation**: Validated on its owned code surface — `prodbox test unit` over the
+anti-affinity placement solver and the mixed-substrate admissibility rule, plus `prodbox test
+integration cli` on the home/local (rke2) substrate — no later-phase dependency.
+**Docs to update**: `documents/engineering/cluster_topology_doctrine.md`
+
+### Objective
+
+Place exactly one substrate-typed compute worker per machine per
+[cluster_topology_doctrine.md](../documents/engineering/cluster_topology_doctrine.md): node
+anti-affinity with `maxSurge: 0`, and mixed-substrate placement admissible only on `rke2`.
+
+### Deliverables
+
+- `src/Prodbox/Cluster/Placement.hs` derives one substrate-typed compute worker per machine using node
+  anti-affinity and a `maxSurge: 0` rollout so no two workers co-locate.
+- A worker carries its substrate type in the placement so a mismatched-substrate worker is rejected.
+- Mixed-substrate placement is admissible only on the `rke2` substrate; every other substrate rejects a
+  mixed placement.
+
+### Validation
+
+1. `prodbox check-code`
+2. `prodbox test unit` covers the one-per-machine anti-affinity solver and the mixed-substrate
+   `rke2`-only rule (pure).
+3. `prodbox test integration cli` proves the placement plan renders on the home/local `rke2` substrate.
+
+### Remaining Work
+
+- Live multi-machine anti-affinity proof on a multi-node deployed cluster is a non-blocking
+  `Live-proof: pending` note.
+
 ## Documentation Requirements
 
 **Engineering docs to create/update:**
@@ -2969,6 +3168,21 @@ yields only `objects/<hmac>.enc` at a constant count and no exists-vs-absent ora
   registry-name↔CLI-command section.
 - `documents/engineering/unit_testing_policy.md` - native lifecycle and aggregate validation
   ownership.
+- `documents/engineering/resource_scaling_doctrine.md` - for Sprint `4.34` the prodbox-as-autoscaler
+  reconciler over the capacity type and the federation-scoped multi-cluster placement that never
+  perturbs gateway leadership.
+- `documents/engineering/pulsar_topic_lifecycle_doctrine.md` - for Sprint `4.35` Pulsar topics as
+  managed resources — typed three-valued broker discover, typed destroy, and LifecycleClass assignment,
+  reconciled present/absent under the § 3.1 registry pattern.
+- `documents/engineering/tiered_storage_capacity_doctrine.md` - for Sprint `4.36` the finite-budget
+  capacity DSL (no `Infinite`; MinIO unbounded only with an autoscaling-policy witness), the per-deploy
+  AWS region service-quota gate, and the mandatory ML JIT + model-cache storage budget.
+- `documents/engineering/host_platform_doctrine.md` - for Sprint `4.37` the host-provider VM
+  provisioning (Lima on macOS, WSL2 on Windows, Incus/native on Linux), the Windows docker CPP-gating
+  rule, and the native-host-arch build inside the OS-appropriate Linux frame.
+- `documents/engineering/cluster_topology_doctrine.md` - for Sprint `4.38` one substrate-typed compute
+  worker per machine (anti-affinity, `maxSurge: 0`), with mixed-substrate placement admissible only on
+  `rke2`.
 - [`DEVELOPMENT_PLAN/development_plan_standards.md`](development_plan_standards.md) - SSoT for the
   phase-independence doctrine (Standard N: Phase Independence — the phase-level Independent
   Validation line above; Standard O: Code-Local vs Live-Infra Proof — the non-blocking

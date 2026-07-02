@@ -2,7 +2,7 @@
 
 **Status**: Authoritative source
 **Supersedes**: N/A
-**Referenced by**: README.md, documents/engineering/README.md, documents/engineering/distributed_gateway_architecture.md, documents/engineering/effectful_dag_architecture.md, documents/engineering/envoy_gateway_edge_doctrine.md, documents/engineering/helm_chart_platform_doctrine.md, documents/engineering/prerequisite_doctrine.md, documents/engineering/storage_lifecycle_doctrine.md
+**Referenced by**: README.md, documents/engineering/README.md, documents/engineering/distributed_gateway_architecture.md, documents/engineering/effectful_dag_architecture.md, documents/engineering/envoy_gateway_edge_doctrine.md, documents/engineering/helm_chart_platform_doctrine.md, documents/engineering/prerequisite_doctrine.md, documents/engineering/storage_lifecycle_doctrine.md, documents/engineering/host_platform_doctrine.md
 **Generated sections**: none
 
 > **Purpose**: Define how `prodbox` provisions Harbor, bootstraps Harbor storage-backend
@@ -179,6 +179,10 @@ Docker Hub rate limiting without widening the supported steady-state image sourc
 All repository-owned Haskell image builds use the single `docker/prodbox.Dockerfile` with
 full-repository build context, producing one union runtime image (`prodbox-runtime`) for every
 in-cluster role.
+
+This native-host-architecture image publication extends across the macOS (Lima) and Windows
+(WSL2) host providers per [host_platform_doctrine.md](./host_platform_doctrine.md): the build runs
+inside the OS-appropriate Linux frame, so everything Docker-inward stays OS-agnostic Linux.
 
 Container build requirements:
 

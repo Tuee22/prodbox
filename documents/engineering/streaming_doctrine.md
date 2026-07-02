@@ -2,7 +2,7 @@
 
 **Status**: Authoritative source
 **Supersedes**: N/A
-**Referenced by**: documents/engineering/README.md, documents/engineering/effect_interpreter.md, documents/engineering/unit_testing_policy.md
+**Referenced by**: documents/engineering/README.md, documents/engineering/effect_interpreter.md, documents/engineering/unit_testing_policy.md, documents/engineering/pulsar_messaging_doctrine.md
 **Generated sections**: none
 
 > **Purpose**: Define streaming and terminal-record invariants for supported `prodbox` command
@@ -196,6 +196,12 @@ ownership claims; it is not the durable at-least-once store and does not
 carry the `processed_at` delivery guarantee. Do not conflate the two — the
 durable processing contract below applies to the `Daemon.Events` port, not
 to the anti-entropy gossip transport.
+
+The durable event **payload** is canonical CBOR project-wide per
+[pulsar_messaging_doctrine.md](./pulsar_messaging_doctrine.md), superseding the
+at-rest JSON / `aeson` `Value` form shown in the code fences below; the
+idempotent-handler and first-write-wins delivery semantics this section owns are
+unchanged.
 
 ### Event storage
 

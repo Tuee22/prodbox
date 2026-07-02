@@ -17,7 +17,11 @@
 [the engineering doctrine docs](../documents/engineering/README.md),
 [../documents/engineering/acme_provider_guide.md](../documents/engineering/acme_provider_guide.md),
 [../documents/engineering/vault_doctrine.md](../documents/engineering/vault_doctrine.md),
-[../documents/engineering/lifecycle_reconciliation_doctrine.md](../documents/engineering/lifecycle_reconciliation_doctrine.md)
+[../documents/engineering/lifecycle_reconciliation_doctrine.md](../documents/engineering/lifecycle_reconciliation_doctrine.md),
+[../documents/engineering/resource_scaling_doctrine.md](../documents/engineering/resource_scaling_doctrine.md),
+[../documents/engineering/cluster_topology_doctrine.md](../documents/engineering/cluster_topology_doctrine.md),
+[../documents/engineering/host_platform_doctrine.md](../documents/engineering/host_platform_doctrine.md),
+[../documents/engineering/test_topology_doctrine.md](../documents/engineering/test_topology_doctrine.md)
 **Generated sections**: resource-lifecycle-classes, stack-command-surface
 
 > **Purpose**: Inventory the substrates against which the canonical test suite runs, the
@@ -140,6 +144,21 @@ substrate-equivalence invariant above (both substrates still stand up the identi
 See [../documents/engineering/vault_doctrine.md → §2 The fail-closed invariant](../documents/engineering/vault_doctrine.md#2-the-fail-closed-invariant)
 and [§5 Vault deployment model](../documents/engineering/vault_doctrine.md#5-vault-deployment-model).
 
+## Substrate Vocabulary and Orthogonal Axes
+
+**Cluster type is explicit.** Every prodbox cluster declares its type — one of `kind`, `rke2`,
+or `eks` — never inferred; the topology types make an ill-formed cluster shape unrepresentable per
+[../documents/engineering/cluster_topology_doctrine.md](../documents/engineering/cluster_topology_doctrine.md).
+
+**Three orthogonal Dhall axes.** "Substrate" stays the canonical, unoverloaded word for the
+deployment substrate. The full model factors into three independent axes —
+`clusterType {kind, rke2, eks}` × `hostSubstrate {apple-silicon, linux-cpu, linux-cuda,
+windows-cpu, windows-cuda}` × `deploymentSubstrate {home-local, aws}` — where cluster type is
+*what kind of Kubernetes* stands up, host substrate is *what the operator's machine is* (per
+[../documents/engineering/host_platform_doctrine.md](../documents/engineering/host_platform_doctrine.md)),
+and deployment substrate is the home-local vs AWS axis this document inventories. Each is set
+independently and none overloads the others.
+
 ## Substrate Inventory
 
 ### Home Local Substrate
@@ -154,6 +173,14 @@ and [§5 Vault deployment model](../documents/engineering/vault_doctrine.md#5-va
 | Phase ownership (provision/teardown) | [phase-4-lifecycle-canonical-paths.md](phase-4-lifecycle-canonical-paths.md) |
 | Suite parity | ✅ Full canonical suite, including the public-edge proofs that exercise real ZeroSSL certs, real OIDC redirects through Keycloak, real WebSocket fan-out, and the configured public Route 53 record on `test.resolvefintech.com` |
 | Notes | The home cluster is both the production runtime for the Haskell gateway daemon and a substrate for the canonical test suite. The same chart deploys serve both roles. |
+
+**Host provider dimension.** The home local substrate is host-native on Linux, but the same
+cluster and the identical platform component set also stand up inside a Lima VM on macOS and a
+WSL2 distro on Windows — the `prodbox` binary classifies the host OS and descends into a Linux
+execution frame per
+[../documents/engineering/host_platform_doctrine.md](../documents/engineering/host_platform_doctrine.md).
+The host provider is an axis orthogonal to the substrate: it changes only *how* a Linux frame is
+reached, never *which* services are stood up, so substrate equivalence is preserved.
 
 ### AWS Substrate
 

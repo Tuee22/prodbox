@@ -102,6 +102,7 @@ prodbox
       eks-volume-rebind
       charts-storage
       charts-platform
+      pulsar-broker
       charts-vscode
       charts-api
       charts-websocket

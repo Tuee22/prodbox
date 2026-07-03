@@ -400,6 +400,7 @@ data IntegrationSuite
   | IntegrationEksVolumeRebind
   | IntegrationChartsStorage
   | IntegrationChartsPlatform
+  | IntegrationPulsarBroker
   | IntegrationChartsVscode
   | IntegrationChartsApi
   | IntegrationChartsWebsocket

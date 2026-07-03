@@ -17,6 +17,7 @@ module Prodbox.Lifecycle.ResourceRegistry
   , perRunManagedResources
   , longLivedManagedResources
   , awsSesPulumiResource
+  , pulsarTopicManagedResource
   , pairPerRunResidue
   , pairAwsSesResidue
   , resourcesToDestroy
@@ -42,6 +43,13 @@ import Prodbox.Lifecycle.ResidueStatus
   , residueBlocksTeardownGate
   )
 import Prodbox.Lifecycle.ResourceClass (LifecycleClass (..))
+import Prodbox.Pulsar.TopicResidue
+  ( ManagedTopic (..)
+  , PulsarTopicBroker
+  , deleteTopic
+  , managedTopicResourceName
+  , renderTopicUnobservableReason
+  )
 import Prodbox.Scaling.Autoscaler qualified as Autoscaler
 import System.Exit (ExitCode (..))
 
@@ -129,6 +137,33 @@ awsSesPulumiResource =
     , resourceClass = LongLived
     , resourceDestroyCommand = "prodbox aws stack aws-ses destroy --yes"
     , resourceDestroy = \repoRoot -> runPulumiCommand repoRoot (PulumiAwsSesDestroy True (PlanOptions False Nothing))
+    }
+
+-- | Sprint 4.35: adapt a typed Pulsar topic into the managed-resource
+-- registry. Topics are dynamic broker resources, so the static
+-- 'resourceLifecycleClasses' table registers the per-run / long-lived
+-- topic families while this adapter carries the concrete algebra-derived
+-- topic name and broker delete action.
+pulsarTopicManagedResource :: PulsarTopicBroker -> ManagedTopic -> ManagedResource
+pulsarTopicManagedResource broker topic =
+  ManagedResource
+    { resourceName = managedTopicResourceName topic
+    , resourceClass = managedTopicClass topic
+    , resourceDestroyCommand =
+        case managedTopicClass topic of
+          PerRun -> "prodbox cluster delete --cascade"
+          LongLived -> "prodbox nuke"
+          Operational -> "prodbox nuke"
+    , resourceDestroy = \_repoRoot -> do
+        result <- deleteTopic broker topic
+        case result of
+          Right () -> pure ExitSuccess
+          Left reason -> do
+            writeDiagnosticLine
+              ( "Pulsar topic destroy failed: "
+                  ++ renderTopicUnobservableReason reason
+              )
+            pure (ExitFailure 1)
     }
 
 -- | Adapt 'destroyRetainedPublicEdgeTls' (which reports a structured

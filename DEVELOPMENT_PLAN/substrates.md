@@ -241,9 +241,11 @@ resource cannot be added to the registry without this inventory updating in lock
 | `aws-eks` | PerRun |
 | `aws-eks-subzone` | PerRun |
 | `aws-test` | PerRun |
+| `pulsar-topics-per-run` | PerRun |
 | `aws-ses` | LongLived |
 | `aws-ebs-volumes` | LongLived |
 | `public-edge-tls` | LongLived |
+| `pulsar-topics-long-lived` | LongLived |
 | `operational-iam-user` | Operational |
 | `operational-aws-config` | Operational |
 <!-- prodbox:resource-lifecycle-classes:end -->

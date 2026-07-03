@@ -2986,15 +2986,17 @@ never perturbs gateway leadership.
 - None on the Sprint `4.34` code-owned planner surface. Live multi-cluster placement across a
   deployed federation trust tree is a non-blocking `Live-proof: pending` note.
 
-## Sprint 4.35: Pulsar Topics as Managed Resources ⏸️ Blocked
+## Sprint 4.35: Pulsar Topics as Managed Resources ✅
 
-**Status**: Blocked
-**Implementation**: `src/Prodbox/Pulsar/Topic.hs`, `src/Prodbox/Lifecycle/ResourceRegistry.hs`
-**Blocked by**: Sprint `3.21`
-**Live-proof**: pending
+**Status**: ✅ Done on code-owned surface 2026-07-03
+**Implementation**: `src/Prodbox/Pulsar/Topic.hs`, `src/Prodbox/Pulsar/TopicResidue.hs`, `src/Prodbox/Lifecycle/ResourceClass.hs`, `src/Prodbox/Lifecycle/ResourceRegistry.hs`
+**Blocked by**: none — Sprint `3.21` has landed the repo-owned Haskell broker transport/framing.
+**Live-proof**: proven 2026-07-03 via `./.build/prodbox test integration pulsar-broker`
 **Independent Validation**: Validated on its owned code surface — `prodbox test unit` over the typed
-three-valued broker discover, the typed destroy, and the LifecycleClass assignment, plus `prodbox test
-integration cli` on the home/local substrate with the broker stubbed — no later-phase dependency.
+three-valued broker discover, typed ensure/delete adapters, `ResidueStatus` projection, dynamic
+topic-family `LifecycleClass` assignment, and managed-resource destroy adapter, plus `prodbox test
+integration cli`/`env` on the home/local substrate with the broker stubbed, plus the live
+`pulsar-broker` validation proving broker-backed ensure/discover/delete — no later-phase dependency.
 **Docs to update**: `documents/engineering/pulsar_topic_lifecycle_doctrine.md`
 
 ### Objective
@@ -3006,23 +3008,32 @@ other managed resource.
 
 ### Deliverables
 
-- `src/Prodbox/Pulsar/Topic.hs` provides a typed three-valued broker `discover` (present / absent /
-  cannot-observe) so "cannot observe" is never silently treated as "absent".
-- A typed `destroy` and an explicit `LifecycleClass` assignment place Pulsar topics in the registry.
-- `src/Prodbox/Lifecycle/ResourceRegistry.hs` registers the topic entry; `reconcilePresent` /
-  `reconcileAbsent` drive create and delete.
+- ✅ `src/Prodbox/Pulsar/TopicResidue.hs` provides a typed three-valued broker `discover`
+  (present / absent / cannot-observe) so "cannot observe" is never silently treated as "absent",
+  plus the total projection onto `ResidueStatus`.
+- ✅ Typed `ensureTopic` and `deleteTopic` adapters make present/absent reconciliation explicit and
+  idempotent at the broker boundary.
+- ✅ `src/Prodbox/Lifecycle.ResourceClass` registers dynamic topic-family rows:
+  `pulsar-topics-per-run` and `pulsar-topics-long-lived`.
+- ✅ `src/Prodbox/Lifecycle/ResourceRegistry.hs` exposes `pulsarTopicManagedResource`, which adapts
+  a concrete algebra-derived `ManagedTopic` into the shared managed-resource destroy surface.
 
 ### Validation
 
-1. `prodbox check-code`
-2. `prodbox test unit` covers the three-valued discover and the registry entry (pure).
-3. `prodbox test integration cli` proves the topic reconcile plan renders idempotently against a stubbed
-   broker.
+1. `cabal build --builddir=.build all --ghc-options=-Werror` exit 0.
+2. `cabal test --builddir=.build test:prodbox-unit` exit 0 (1157/1157), covering the three-valued
+   discover, `ResidueStatus` projection, typed ensure/delete adapters, and registry entry.
+3. `./.build/prodbox dev docs generate` exit 0, regenerating the Resource Lifecycle Classes table.
+4. `./.build/prodbox test integration cli` exit 0 (39/39).
+5. `./.build/prodbox test integration env` exit 0 (39/39).
+6. `./.build/prodbox test integration pulsar-broker` exit 0 (2026-07-03): the validation deployed
+   the internal Pulsar chart, created and discovered a `persistent://public/default/` validation
+   topic through the admin-backed `PulsarTopicBroker`, produced/consumed/acked a CBOR message, then
+   deleted the topic and verified broker-backed absence.
 
 ### Remaining Work
 
-- Live broker present/absent reconcile against a deployed Pulsar broker is a non-blocking
-  `Live-proof: pending` note.
+None.
 
 ## Sprint 4.36: Tiered-Storage Budget DSL + Region-Quota Gate + ML Storage Budget ✅
 

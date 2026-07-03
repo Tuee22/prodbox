@@ -46,31 +46,30 @@ non-blocking `Live-proof: pending` note per
 [development_plan_standards.md → O. Code-Local vs Live-Infra Proof](development_plan_standards.md#o-code-local-completion-vs-live-infra-proof);
 it never gates this phase or an earlier one.
 
-🔄 **Reopened 2026-06-17 to expand Phase 7's own owned surface** — two new sprints expand the
+✅ **Reclosed after the 2026-06-17 Phase 7 owned-surface expansion** — two new sprints expanded the
 AWS/Vault credential + substrate surface this phase owns (narrated in
-[README.md → Closure Status](README.md) per rule A). Sprint `7.19` (📋 Planned) owns Tier 1 — the
-password-gated Vault unlock bundle relocated off host disk into the durable MinIO bucket, building
-forward on Sprint `7.14`'s landed Vault-Transit object-store (Standard N, forward-only). Sprint
-`7.20` marks the already-shipped test-harness IAM credential lifecycle (mint-to-Vault +
-delete-from-AWS-and-Vault) ✅ Done on its code-owned surface and schedules the new doctrine
-canonicalization + a teardown-completeness guard (📋). Both adopt the three-tier config model defined
+[README.md → Closure Status](README.md) per rule A). Sprint `7.19` staged Tier 1 — the
+password-gated Vault unlock bundle relocated off host disk into the durable MinIO bucket — and was
+closed by Sprint `7.25`'s disk-free MinIO unseal cutover. Sprint `7.20` closed the test-harness IAM
+credential lifecycle doctrine and teardown-completeness guard on its code-owned surface. Both adopt
+the three-tier config model defined
 in [config_doctrine.md §0](../documents/engineering/config_doctrine.md) by name rather than
 restating it. All earlier Phase 7 sprints (`7.1`–`7.18`) stay `Done` on their owned scope.
 
-🔄 **Further reopened 2026-06-22 for the disk-free Vault unseal cutover** — Sprint `7.25` (📋 Planned)
-takes the unlock bundle fully into MinIO (host disk holds no unseal material): MinIO becomes
+✅ **Reclosed 2026-06-23 for the disk-free Vault unseal cutover** — Sprint `7.25`
+took the unlock bundle fully into MinIO (host disk holds no unseal material): MinIO becomes
 cluster-only (its chart's Vault init container removed, static root cred injected directly), is
 reordered ahead of Vault, and the host-disk bundle write + fallback are dropped. This **closes Sprint
 `7.19`'s deferred 🧪 disk-free axis**, unblocked by the 2026-06-22 static MinIO credential. See the
 Sprint `7.25` block below + [README.md → Closure Status](README.md).
 
-🔄 **Further reopened 2026-06-23 for an operator-reported teardown-UX bug** — Sprint `7.26` (✅ Done)
+✅ **Reclosed 2026-06-23 for an operator-reported teardown-UX bug** — Sprint `7.26` (✅ Done)
 fixes the `cluster delete --cascade` postflight tag sweep falsely flagging the intentionally-retained
 long-lived `pulumi_state_backend` bucket (and `aws-ses`) as "manual-cleanup-required" residue; the sweep
 now carves out the retained long-lived shared-infra classes and refuses only on genuine
 per-run/cluster escapees. See the Sprint `7.26` block below.
 
-🔄 **Further reopened 2026-07-02 for unified block storage on the AWS substrate** — Phase 7's own
+✅ **Reclosed 2026-07-03 for unified block storage on the AWS substrate** — Phase 7's own
 AWS-substrate storage + networking surface is expanded here (narrated in
 [README.md → Closure Status](README.md) per rule A). Sprint `7.28` is ✅ Done on its code-owned
 surface: it replaces and removes the dynamic `gp2` EKS storage path (Sprint `7.5.c.i`) with
@@ -121,7 +120,7 @@ removed after live proof. See
 [vault_doctrine.md §9/§10](../documents/engineering/vault_doctrine.md) and
 [legacy ledger](legacy-tracking-for-deletion.md).
 
-🔄 **Reopened 2026-06-14 to expand Phase 7's own owned surface** — the Vault-root finalization
+✅ **Reclosed after the 2026-06-14 Vault-root Phase 7 owned-surface expansion** — the Vault-root finalization
 (narrated in
 [README.md → Closure Status](README.md) per rule A) makes Vault the sole, finalized
 secrets / KMS / PKI root for the AWS substrate. Sprints `7.14` and `7.15` are reframed to own
@@ -133,7 +132,8 @@ code-owned surface) owns
 Vault-Transit-enveloped Pulumi backend objects and prodbox-created AWS identities as Vault KV
 `SecretRef.Vault` references; its decrypt-to-scratch wrapper/read path has landed, first-touch raw
 migration is code-owned, and the AWS credential schema migration is landed. Sprint `7.15`
-(📋 Planned) owns ACME EAB and TLS private-key material as the Vault-protected sole authority. Both
+is ✅ Done on its code-owned surface for ACME EAB as a Vault-protected authority; native Vault-PKI
+material remains a non-blocking live-proof axis. Both
 compose the cross-phase Vault platform and transit
 seal surfaces (forward build order, not a validation gate): the `1.35`–`1.37`, `3.17`, `3.18`,
 `3.20`, `4.29`, and `4.32` foundations have
@@ -196,7 +196,7 @@ sequential, separately validatable sessions:
   per-substrate Route 53 zone field, and substrate-aware `publicFqdn` are deferred to
   Sprint `7.5.b` per the scoping review. Validated with `prodbox check-code`,
   `prodbox test unit` (296 tests pass).
-- **Sprint `7.5.b`** (🔄 Active, split into `7.5.b.i` and `7.5.b.ii` per the May 17, 2026
+- **Sprint `7.5.b`** (✅ Done, split into `7.5.b.i` and `7.5.b.ii` per the May 17, 2026
   scoping check-in):
   - **`7.5.b.i`** (✅ Done, May 17, 2026) — code-side substrate foundations: EKS kubeconfig
     extraction (`materializeAwsEksKubeconfig` in `src/Prodbox/Infra/AwsEksTestStack.hs`),
@@ -206,7 +206,7 @@ sequential, separately validatable sessions:
     `prodbox-config-types.dhall`, `prodbox-config.dhall`, and
     `src/Prodbox/Settings.hs::AwsSubstrateSection`. Code-only; validated with
     `prodbox check-code` and `prodbox test unit` (296/296 pass).
-  - **`7.5.b.ii`** (📋 Planned) — AWS Load Balancer Controller IAM policy + IRSA setup in
+  - **`7.5.b.ii`** (✅ Done) — AWS Load Balancer Controller IAM policy + IRSA setup in
     `pulumi/aws-eks/Main.yaml`, subnet tags for ALB discovery, a new Pulumi program for the
     per-substrate Route 53 hosted subzone with NS delegation, cert-manager DNS01
     `ClusterIssuer` rendering substrate-aware in `src/Prodbox/CLI/Rke2.hs`,
@@ -816,7 +816,7 @@ AWS LB Controller + Envoy Gateway install) is too large for one session.
   parses past resource synthesis (failing only at the expected AWS credential validation
   with fake creds), `prodbox check-code` (exit 0), `prodbox lint files` (exit 0), and
   `prodbox test unit` (296/296 pass).
-- **`7.5.b.ii.c`** (🔄 Active, split into `7.5.b.ii.c.I` ✅ done May 17, 2026, and
+- **`7.5.b.ii.c`** (✅ Done, split into `7.5.b.ii.c.I` ✅ done May 17, 2026, and
   `7.5.b.ii.c.II` 📋):
   - **`7.5.b.ii.c.I`** (✅ Done, May 17, 2026) — Pulumi YAML for the per-substrate Route 53
     hosted subzone. New `pulumi/aws-eks-subzone/Pulumi.yaml` plus
@@ -851,7 +851,7 @@ AWS LB Controller + Envoy Gateway install) is too large for one session.
     `prodbox docs generate` regeneration, and `prodbox test unit` (300/300 pass; up
     from 296 because the two new pulumi subcommands each add a happy-case + an
     unhappy-case parser test).
-- **`7.5.b.ii.d`** (🔄 Active, split into `7.5.b.ii.d.I` ✅ done May 17, 2026 and
+- **`7.5.b.ii.d`** (✅ Done, split into `7.5.b.ii.d.I` ✅ done May 17, 2026 and
   `7.5.b.ii.d.II` 📋):
   - **`7.5.b.ii.d.I`** (✅ Done, May 17, 2026) — `prodbox charts deploy` and
     `prodbox charts delete` now accept `--substrate {home-local|aws}` (default
@@ -865,7 +865,7 @@ AWS LB Controller + Envoy Gateway install) is too large for one session.
     the operator selects `--substrate aws`. Validated with `prodbox check-code`
     (exit 0), `prodbox docs generate` regeneration, and `prodbox test unit`
     (300/300 pass).
-  - **`7.5.b.ii.d.II`** (🔄 Active; the May 17, 2026 scoping pass split this into
+  - **`7.5.b.ii.d.II`** (✅ Done; the May 17, 2026 scoping pass split this into
     four session-sized sub-sub-sub-sprints `α`/`β`/`γ`/`δ` because of the depth
     that emerged once the Harbor-mirrored image references in the home-substrate
     chart-platform install became visible — the AWS substrate needs an entirely
@@ -3214,8 +3214,8 @@ This sprint is Done on its code-owned surface; everything below is the non-block
 - Live-verify first-touch migration/deletion for old empty-passphrase / raw MinIO checkpoints and
   the former `aws-ses` long-lived S3 backend across both substrates, including a host-disk proof
   that no plaintext raw checkpoint survives after the encrypted migration.
-- Live-proof forward ordering with Sprint `7.16`: `7.16`'s only dependency is this sprint's landed
-  code, so `7.16` is ready (📋 Planned) now; once `7.16` lands the
+- Live-proof forward ordering with Sprint `7.16`: `7.16`'s only dependency was this sprint's landed
+  code, and `7.16` has landed the
   `aws_admin_for_test_simulation.*` TestPlaintext fixture in `test-config.dhall` (the fixture is
   never stored in Vault), this sprint's live first-touch/deletion and sealed-opacity proofs consume
   that fixture to reach actual AWS stack operations. This is a one-directional live-proof

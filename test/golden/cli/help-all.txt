@@ -831,6 +831,18 @@ Options:
 Examples:
 - prodbox test integration charts-platform  # Run the `charts-platform` integration suite.
 
+## prodbox test integration pulsar-broker
+prodbox test integration pulsar-broker - Run Pulsar broker transport integration tests
+
+Run Pulsar broker transport integration tests
+Options:
+- --coverage - Enable coverage reporting for the selected test scope
+- --cov-fail-under <INTEGER> - Require a minimum coverage percentage
+- --substrate <SUBSTRATE> - Target substrate (home-local, aws); default home-local
+
+Examples:
+- prodbox test integration pulsar-broker  # Run the `pulsar-broker` integration suite.
+
 ## prodbox test integration charts-vscode
 prodbox test integration charts-vscode - Run vscode stack integration tests
 

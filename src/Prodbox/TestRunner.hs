@@ -539,6 +539,7 @@ testScopeForTopologySuite suiteName =
     "eks-volume-rebind" -> Right (TestIntegration IntegrationEksVolumeRebind)
     "charts-storage" -> Right (TestIntegration IntegrationChartsStorage)
     "charts-platform" -> Right (TestIntegration IntegrationChartsPlatform)
+    "pulsar-broker" -> Right (TestIntegration IntegrationPulsarBroker)
     "charts-vscode" -> Right (TestIntegration IntegrationChartsVscode)
     "charts-api" -> Right (TestIntegration IntegrationChartsApi)
     "charts-websocket" -> Right (TestIntegration IntegrationChartsWebsocket)
@@ -954,6 +955,7 @@ integrationRunbookCommandArgs :: NativeSuitePlan -> [[String]]
 integrationRunbookCommandArgs suitePlan
   | not (nativeRequiresIntegrationRunbook suitePlan) = []
   | nativeValidations suitePlan == [ValidationSealedVault] = [["cluster", "reconcile"]]
+  | nativeValidations suitePlan == [ValidationPulsarBroker] = [["cluster", "reconcile"]]
   | otherwise = [["cluster", "reconcile", "--with-edge"]]
 
 supportedRuntimeBootstrapActions

@@ -81,6 +81,9 @@ import Prodbox.CLI.Rke2
   ( RetainedStorageInventoryEntry (..)
   , retainedStorageInventoryEntries
   )
+import Prodbox.Cbor
+  ( CborPayload (..)
+  )
 import Prodbox.Dns
   ( configuredPublicHostFqdns
   , fetchPublicIp
@@ -113,6 +116,10 @@ import Prodbox.Infra.AwsTestStack qualified as AwsTest
 import Prodbox.Infra.StackOutputs (StackName (..))
 import Prodbox.Keycloak.CredentialSetupForm qualified as CredentialSetupForm
 import Prodbox.Keycloak.Email qualified
+import Prodbox.Lib.ChartPlatform
+  ( buildChartDeploymentPlanForSubstrate
+  , deployChartPlan
+  )
 import Prodbox.Lib.Storage
   ( defaultChartDataRootRelative
   , testManualPvHostRootEnv
@@ -122,6 +129,9 @@ import Prodbox.Lifecycle.LiveResidue
   , awsTestStackName
   , fetchPerRunStackOutputs
   )
+import Prodbox.Lifecycle.ResourceClass
+  ( LifecycleClass (..)
+  )
 import Prodbox.PublicEdge
   ( PublicEdgeRoute (..)
   , publicFqdn
@@ -129,6 +139,48 @@ import Prodbox.PublicEdge
   , substrateIdentityIssuerUrl
   , substratePublicFqdn
   , substratePublicRouteUrl
+  )
+import Prodbox.Pulsar.Admin
+  ( PulsarAdminConfig (..)
+  , pulsarAdminTopicBroker
+  )
+import Prodbox.Pulsar.Client
+  ( AckRequest (..)
+  , ConsumeRequest (..)
+  , ConsumedMessage (..)
+  , ProduceReceipt (..)
+  , ProduceRequest (..)
+  , PulsarClientConfig (..)
+  , PulsarClientError
+  , PulsarLookupStrategy (..)
+  , SubscriptionName (..)
+  , ack
+  , connect
+  , consumeMessage
+  , produce
+  , renderPulsarClientError
+  )
+import Prodbox.Pulsar.Topic
+  ( Phase (..)
+  , TopicError
+  , Workflow (..)
+  , mkLane
+  , mkNamespace
+  , mkTenant
+  , renderTopicError
+  , renderTopicName
+  , topicFor
+  )
+import Prodbox.Pulsar.TopicResidue
+  ( ManagedTopic (..)
+  , PulsarTopicBroker
+  , RetentionPolicy (..)
+  , TopicResidueStatus (..)
+  , TopicUnobservableReason (..)
+  , deleteTopic
+  , ensureTopic
+  , renderTopicUnobservableReason
+  , topicDiscover
   )
 import Prodbox.Result (Result (..))
 import Prodbox.Ses.Capture qualified
@@ -322,6 +374,9 @@ websocketReceiveRetryDelayMicroseconds = 1000000
 gatewayValidationNamespace :: String
 gatewayValidationNamespace = "gateway"
 
+pulsarValidationNamespace :: String
+pulsarValidationNamespace = "pulsar"
+
 gatewayStatusRetryAttempts :: Int
 gatewayStatusRetryAttempts = 12
 
@@ -410,6 +465,8 @@ runNativeValidation substrate repoRoot environment validation = do
               ["charts", "status", "vscode"]
               ["CHART_STATUS", "NAME=vscode"]
           ]
+      ValidationPulsarBroker ->
+        runPulsarBrokerValidation repoRoot environment substrate
       ValidationChartsStorage ->
         runSequentially
           [ assertNativeCommandOutputContainsAll
@@ -504,6 +561,282 @@ withSubstrateKubeconfigEnv repoRoot substrate action =
   restoreOne :: ((String, String), Maybe String) -> IO ()
   restoreOne ((name, _), Nothing) = unsetEnv name
   restoreOne ((name, _), Just value) = setEnv name value
+
+runPulsarBrokerValidation :: FilePath -> [(String, String)] -> Substrate -> IO ExitCode
+runPulsarBrokerValidation repoRoot environment substrate =
+  runSequentially
+    [ runNativeCliCommandForExitCode repoRoot environment ["cluster", "health"]
+    , runPulsarChartReconcile repoRoot substrate
+    , runPulsarRolloutWait repoRoot
+    , runPulsarBrokerProof repoRoot
+    ]
+
+runPulsarChartReconcile :: FilePath -> Substrate -> IO ExitCode
+runPulsarChartReconcile repoRoot substrate = do
+  settingsResult <- validateAndLoadSettings repoRoot
+  case settingsResult of
+    Left err -> failWith ("load settings for Pulsar chart reconcile: " ++ err)
+    Right settings -> do
+      planResult <-
+        buildChartDeploymentPlanForSubstrate
+          substrate
+          repoRoot
+          settings
+          "pulsar"
+          Map.empty
+          Map.empty
+      case planResult of
+        Left err -> failWith ("build Pulsar chart deployment plan: " ++ err)
+        Right plan -> do
+          deployResult <- deployChartPlan plan
+          case deployResult of
+            Left err -> failWith ("deploy Pulsar chart: " ++ err)
+            Right report -> do
+              writeOutput report
+              pure ExitSuccess
+
+runPulsarRolloutWait :: FilePath -> IO ExitCode
+runPulsarRolloutWait repoRoot =
+  runCommandForExitCode
+    Subprocess
+      { subprocessPath = "kubectl"
+      , subprocessArguments =
+          [ "--namespace"
+          , pulsarValidationNamespace
+          , "rollout"
+          , "status"
+          , "statefulset/pulsar"
+          , "--timeout=240s"
+          ]
+      , subprocessEnvironment = Nothing
+      , subprocessWorkingDirectory = Just repoRoot
+      }
+
+runPulsarBrokerProof :: FilePath -> IO ExitCode
+runPulsarBrokerProof repoRoot = do
+  nonce <- validationNonce
+  portPair <- reserveDistinctLocalTcpPorts
+  case pulsarValidationTopic nonce of
+    Left err -> failWith ("failed to build Pulsar validation topic: " ++ renderTopicError err)
+    Right managedTopic ->
+      let (brokerPort, adminPort) = portPair
+          topicBroker =
+            pulsarAdminTopicBroker
+              PulsarAdminConfig
+                { pulsarAdminHost = "127.0.0.1"
+                , pulsarAdminPort = adminPort
+                }
+          cleanup =
+            do
+              _ <- deleteTopic topicBroker managedTopic
+              pure ()
+       in withPulsarPortForward repoRoot brokerPort adminPort $
+            finally
+              (runPulsarBrokerRoundTrip nonce brokerPort topicBroker managedTopic)
+              cleanup
+
+pulsarValidationTopic :: String -> Either TopicError ManagedTopic
+pulsarValidationTopic nonce = do
+  tenant <- mkTenant "public"
+  namespaceName <- mkNamespace "default"
+  lane <- mkLane (Text.pack ("validation-" ++ nonce))
+  pure
+    ManagedTopic
+      { managedTopicName = topicFor tenant namespaceName Reconcile Command lane
+      , managedTopicRetention =
+          RetentionPolicy
+            { retentionBacklogBytes = 0
+            , retentionOffloadBytes = 0
+            }
+      , managedTopicClass = PerRun
+      }
+
+runPulsarBrokerRoundTrip
+  :: String
+  -> Int
+  -> PulsarTopicBroker
+  -> ManagedTopic
+  -> IO ExitCode
+runPulsarBrokerRoundTrip nonce brokerPort topicBroker managedTopic = do
+  threadDelay 1500000
+  _ <- deleteTopic topicBroker managedTopic
+  ensureResult <- retryEither 12 1000000 (ensureTopic topicBroker managedTopic)
+  case ensureResult of
+    Left reason -> failWith ("Pulsar topic ensure failed: " ++ renderTopicUnobservableReason reason)
+    Right () -> do
+      presentResult <- waitForPulsarTopicPresent topicBroker managedTopic
+      case presentResult of
+        Left reason ->
+          failWith ("Pulsar topic was not observable after ensure: " ++ renderTopicUnobservableReason reason)
+        Right () -> do
+          connectionResult <-
+            retryEither
+              12
+              1000000
+              ( connect
+                  PulsarClientConfig
+                    { pulsarClientHost = "127.0.0.1"
+                    , pulsarClientPort = brokerPort
+                    , pulsarClientName = Text.pack ("prodbox-validation-" ++ nonce)
+                    , pulsarClientLookupStrategy = StayOnConnectedBroker
+                    }
+              )
+          case connectionResult of
+            Left err -> failPulsarClient "Pulsar broker connect failed" err
+            Right connection -> do
+              let topic = managedTopicName managedTopic
+                  subscription = SubscriptionName (Text.pack ("prodbox-validation-" ++ nonce))
+                  payload = CborPayload (BS8.pack ("prodbox-pulsar-validation:" ++ nonce))
+              produceResult <-
+                produce
+                  connection
+                  ProduceRequest
+                    { produceTopic = topic
+                    , producePayload = payload
+                    }
+              case produceResult of
+                Left err -> failPulsarClient "Pulsar produce failed" err
+                Right receipt -> do
+                  consumeResult <-
+                    consumeMessage
+                      connection
+                      ConsumeRequest
+                        { consumeTopic = topic
+                        , consumeSubscription = subscription
+                        }
+                  case consumeResult of
+                    Left err -> failPulsarClient "Pulsar consume failed" err
+                    Right Nothing -> failWith "Pulsar consume returned no message."
+                    Right (Just consumed)
+                      | consumedPayload consumed /= payload ->
+                          failWith "Pulsar consumed payload did not match produced payload."
+                      | otherwise -> do
+                          ackResult <-
+                            ack
+                              connection
+                              AckRequest
+                                { ackTopic = topic
+                                , ackSubscription = subscription
+                                , ackMessageId = consumedMessageId consumed
+                                }
+                          case ackResult of
+                            Left err -> failPulsarClient "Pulsar ack failed" err
+                            Right () -> do
+                              deleteResult <- retryEither 6 1000000 (deleteTopic topicBroker managedTopic)
+                              case deleteResult of
+                                Left reason ->
+                                  failWith ("Pulsar topic delete failed: " ++ renderTopicUnobservableReason reason)
+                                Right () -> do
+                                  absentResult <- waitForPulsarTopicAbsent topicBroker managedTopic
+                                  case absentResult of
+                                    Left reason ->
+                                      failWith
+                                        ( "Pulsar topic remained observable after delete: "
+                                            ++ renderTopicUnobservableReason reason
+                                        )
+                                    Right () -> do
+                                      writeOutputLine "PULSAR_BROKER_VALIDATION=pass"
+                                      writeOutputLine
+                                        ( "TOPIC="
+                                            ++ Text.unpack (renderTopicName (managedTopicName managedTopic))
+                                        )
+                                      writeOutputLine ("PRODUCED_MESSAGE_ID=" ++ show (produceReceiptMessageId receipt))
+                                      writeOutputLine ("ACKED_MESSAGE_ID=" ++ show (consumedMessageId consumed))
+                                      pure ExitSuccess
+
+waitForPulsarTopicPresent
+  :: PulsarTopicBroker
+  -> ManagedTopic
+  -> IO (Either TopicUnobservableReason ())
+waitForPulsarTopicPresent topicBroker managedTopic =
+  retryTopicStatus 12 1000000 isPresent (TopicBrokerError "topic did not become present")
+ where
+  isPresent status =
+    case status of
+      TopicPresent _ -> Right (Just ())
+      TopicAbsent -> Right Nothing
+      TopicUnobservable reason -> Left reason
+
+  retryTopicStatus = retryPulsarTopicStatus topicBroker managedTopic
+
+waitForPulsarTopicAbsent
+  :: PulsarTopicBroker
+  -> ManagedTopic
+  -> IO (Either TopicUnobservableReason ())
+waitForPulsarTopicAbsent topicBroker managedTopic =
+  retryTopicStatus 12 1000000 isAbsent (TopicBrokerError "topic did not become absent")
+ where
+  isAbsent status =
+    case status of
+      TopicAbsent -> Right (Just ())
+      TopicPresent _ -> Right Nothing
+      TopicUnobservable reason -> Left reason
+
+  retryTopicStatus = retryPulsarTopicStatus topicBroker managedTopic
+
+retryPulsarTopicStatus
+  :: PulsarTopicBroker
+  -> ManagedTopic
+  -> Int
+  -> Int
+  -> (TopicResidueStatus -> Either TopicUnobservableReason (Maybe ()))
+  -> TopicUnobservableReason
+  -> IO (Either TopicUnobservableReason ())
+retryPulsarTopicStatus topicBroker managedTopic attempts delayMicros classify missingReason =
+  go attempts
+ where
+  go attemptsLeft = do
+    status <- topicDiscover topicBroker managedTopic
+    case classify status of
+      Left reason -> pure (Left reason)
+      Right (Just ()) -> pure (Right ())
+      Right Nothing
+        | attemptsLeft <= 1 -> pure (Left missingReason)
+        | otherwise -> threadDelay delayMicros >> go (attemptsLeft - 1)
+
+withPulsarPortForward :: FilePath -> Int -> Int -> IO ExitCode -> IO ExitCode
+withPulsarPortForward repoRoot brokerPort adminPort action = do
+  processResult <-
+    startBackgroundProcess
+      Subprocess
+        { subprocessPath = "kubectl"
+        , subprocessArguments =
+            [ "--namespace"
+            , pulsarValidationNamespace
+            , "port-forward"
+            , "service/pulsar"
+            , show brokerPort ++ ":6650"
+            , show adminPort ++ ":8080"
+            ]
+        , subprocessEnvironment = Nothing
+        , subprocessWorkingDirectory = Just repoRoot
+        }
+  case processResult of
+    Left err -> failWith ("failed to start Pulsar port-forward: " ++ show err)
+    Right process -> action `finally` stopBackgroundProcess process
+
+reserveDistinctLocalTcpPorts :: IO (Int, Int)
+reserveDistinctLocalTcpPorts = do
+  first <- reserveLocalTcpPort
+  second <- reserveLocalTcpPort
+  if first == second
+    then reserveDistinctLocalTcpPorts
+    else pure (first, second)
+
+retryEither :: Int -> Int -> IO (Either err value) -> IO (Either err value)
+retryEither attempts delayMicros action = go attempts
+ where
+  go attemptsLeft = do
+    result <- action
+    case result of
+      Right _ -> pure result
+      Left _
+        | attemptsLeft <= 1 -> pure result
+        | otherwise -> threadDelay delayMicros >> go (attemptsLeft - 1)
+
+failPulsarClient :: String -> PulsarClientError -> IO ExitCode
+failPulsarClient context err =
+  failWith (context ++ ": " ++ renderPulsarClientError err)
 
 runSealedVaultValidation :: FilePath -> [(String, String)] -> IO ExitCode
 runSealedVaultValidation repoRoot environment = do

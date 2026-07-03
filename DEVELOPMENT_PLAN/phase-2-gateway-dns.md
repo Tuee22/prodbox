@@ -2336,7 +2336,7 @@ parent's unsealed Vault KV.
 Migrate the gateway anti-entropy gossip (`POST /v1/peer/events`) and the `Orders` serialized
 envelope from JSON to canonical CBOR so the mesh transport shares the one canonical binary codec
 that [pulsar_messaging_doctrine.md](../documents/engineering/pulsar_messaging_doctrine.md) makes
-project-wide. This supersedes the residual protobuf wire language in
+project-wide. This supersedes the residual non-CBOR wire language in
 [distributed_gateway_architecture.md](../documents/engineering/distributed_gateway_architecture.md)
 and renames the `Lint.Proto` stanza to `Lint.Cbor` per
 [code_quality.md](../documents/engineering/code_quality.md).
@@ -2346,7 +2346,7 @@ and renames the `Lint.Proto` stanza to `Lint.Cbor` per
 - The peer event batch and the `Orders` document encode and decode through canonical CBOR
   (`cborg` / `serialise`) instead of aeson JSON, with a `decode . encode == id` round-trip proof.
 - `prodbox.cabal` gains the `cborg` / `serialise` dependencies on the library component.
-- `distributed_gateway_architecture.md` drops the superseded protobuf wire language in favor of the
+- `distributed_gateway_architecture.md` drops the superseded non-CBOR wire language in favor of the
   canonical-CBOR contract.
 - The lint stack's `Lint.Proto` stanza is renamed to `Lint.Cbor` (name only; the enforced rule set
   is unchanged) and is referenced by that name from `code_quality.md`.
@@ -2357,7 +2357,7 @@ and renames the `Lint.Proto` stanza to `Lint.Cbor` per
 2. `prodbox test unit` exit 0, including the peer-batch and `Orders` CBOR round-trip coverage.
 3. `prodbox test integration cli` and `prodbox test integration env` exit 0 on the home/local
    substrate.
-4. Text-search proof shows no protobuf wire language remains on the supported gateway path and the
+4. Text-search proof shows no legacy non-CBOR wire language remains on the supported gateway path and the
    lint stanza reports as `Lint.Cbor`.
 
 ### Implementation Notes
@@ -2380,7 +2380,7 @@ and renames the `Lint.Proto` stanza to `Lint.Cbor` per
   peer-batch CBOR round-trip coverage.
 - `./.build/prodbox test integration cli` passes 39/39.
 - `./.build/prodbox test integration env` passes 39/39.
-- Supported-gateway-path text search for `protobuf`, `Lint.Proto`, `payloadJson`, and `payload_json`
+- Supported-gateway-path text search for legacy non-CBOR payload terms plus `payloadJson` and `payload_json`
   returns no matches.
 - `./.build/prodbox dev check` exits 0 as the canonical local quality gate.
 

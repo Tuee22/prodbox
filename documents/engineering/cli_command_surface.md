@@ -301,6 +301,7 @@ The per-group command matrix (generated; do not edit by hand):
 | `prodbox test integration eks-volume-rebind` | none | `--coverage`, `--cov-fail-under`, `--substrate` |
 | `prodbox test integration charts-storage` | none | `--coverage`, `--cov-fail-under`, `--substrate` |
 | `prodbox test integration charts-platform` | none | `--coverage`, `--cov-fail-under`, `--substrate` |
+| `prodbox test integration pulsar-broker` | none | `--coverage`, `--cov-fail-under`, `--substrate` |
 | `prodbox test integration charts-vscode` | none | `--coverage`, `--cov-fail-under`, `--substrate` |
 | `prodbox test integration charts-api` | none | `--coverage`, `--cov-fail-under`, `--substrate` |
 | `prodbox test integration charts-websocket` | none | `--coverage`, `--cov-fail-under`, `--substrate` |

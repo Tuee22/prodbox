@@ -279,6 +279,7 @@ commandPathOfRequest request =
                     IntegrationEksVolumeRebind -> ["eks-volume-rebind"]
                     IntegrationChartsStorage -> ["charts-storage"]
                     IntegrationChartsPlatform -> ["charts-platform"]
+                    IntegrationPulsarBroker -> ["pulsar-broker"]
                     IntegrationChartsVscode -> ["charts-vscode"]
                     IntegrationChartsApi -> ["charts-api"]
                     IntegrationChartsWebsocket -> ["charts-websocket"]

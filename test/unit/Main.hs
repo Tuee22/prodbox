@@ -581,7 +581,9 @@ import Prodbox.PublicEdge
 import Prodbox.Pulsar.Client qualified as PulsarClient
 import Prodbox.Pulsar.Codec qualified as PulsarCodec
 import Prodbox.Pulsar.Envelope qualified as PulsarEnvelope
+import Prodbox.Pulsar.Protocol qualified as PulsarProtocol
 import Prodbox.Pulsar.Topic qualified as PulsarTopic
+import Prodbox.Pulsar.TopicResidue qualified as PulsarTopicResidue
 import Prodbox.Pulumi.EncryptedBackend
   ( CheckpointObservability (..)
   , EncryptedBackendError (..)
@@ -3317,6 +3319,20 @@ main = mainWithSuite "prodbox-unit" $ do
                   )
               )
           )
+      parseArgs ["test", "integration", "pulsar-broker"]
+        `shouldBe` Right
+          ( Options
+              False
+              ( RunNative
+                  ( NativeTest
+                      ( TestCommand
+                          (TestIntegration IntegrationPulsarBroker)
+                          (CoverageFlags False Nothing)
+                          SubstrateHomeLocal
+                      )
+                  )
+              )
+          )
 
     it "renders the full AWS policy with EKS lifecycle statements" $ do
       case buildIamPolicyDocument PolicyFull of
@@ -4117,6 +4133,7 @@ main = mainWithSuite "prodbox-unit" $ do
                            , "gateway-pods"
                            , "gateway-partition"
                            , "charts-platform"
+                           , "pulsar-broker"
                            , "keycloak-invite"
                            , "charts-storage"
                            , "eks-volume-rebind"
@@ -4162,8 +4179,9 @@ main = mainWithSuite "prodbox-unit" $ do
               nativeRequiresSupportedRuntimePostflight suitePlan `shouldBe` True
               take 4 (map nativeValidationId (nativeValidations suitePlan))
                 `shouldBe` ["charts-vscode", "charts-api", "charts-websocket", "admin-routes"]
-              take 5 (dropWhile (/= ValidationChartsPlatform) (nativeValidations suitePlan))
+              take 6 (dropWhile (/= ValidationChartsPlatform) (nativeValidations suitePlan))
                 `shouldBe` [ ValidationChartsPlatform
+                           , ValidationPulsarBroker
                            , ValidationKeycloakInvite
                            , ValidationChartsStorage
                            , ValidationEksVolumeRebind
@@ -4325,6 +4343,28 @@ main = mainWithSuite "prodbox-unit" $ do
               nativeRequiresIntegrationRunbook suitePlan `shouldBe` True
               integrationRunbookCommandArgs suitePlan `shouldBe` [["cluster", "reconcile"]]
             DelegatedSuite _ -> expectationFailure "expected native sealed-vault plan"
+
+      case testExecutionPlan SubstrateHomeLocal (TestIntegration IntegrationPulsarBroker) of
+        testPlan ->
+          case testPlanExecutionMode testPlan of
+            NativeSuite suitePlan -> do
+              nativeSuiteId suitePlan `shouldBe` "integration-pulsar-broker"
+              nativeValidations suitePlan `shouldBe` [ValidationPulsarBroker]
+              map prerequisiteIdText (nativeInitialIntegrationGatePrerequisites suitePlan)
+                `shouldBe` [ "host_substrate_supported"
+                           , "tool_docker"
+                           , "tool_ctr"
+                           , "tool_helm"
+                           , "tool_kubectl"
+                           , "tool_sudo"
+                           , "tool_systemctl"
+                           , "settings_object"
+                           ]
+              nativeDeferredIntegrationGatePrerequisites suitePlan `shouldBe` []
+              nativeManagedAwsHarnessPolicyTier suitePlan `shouldBe` Nothing
+              nativeRequiresIntegrationRunbook suitePlan `shouldBe` False
+              integrationRunbookCommandArgs suitePlan `shouldBe` []
+            DelegatedSuite _ -> expectationFailure "expected native pulsar-broker plan"
 
       case testExecutionPlan SubstrateHomeLocal (TestIntegration IntegrationEksVolumeRebind) of
         testPlan ->
@@ -4501,6 +4541,14 @@ main = mainWithSuite "prodbox-unit" $ do
 
       validationSource `shouldContain` "ValidationSealedVault -> runSealedVaultValidation"
       nativeValidationId ValidationSealedVault `shouldBe` "sealed-vault"
+
+    it "routes pulsar-broker through a native live broker validation path" $ do
+      repoRoot <- getCurrentDirectory
+      validationSource <- readFile (repoRoot </> "src" </> "Prodbox" </> "TestValidation.hs")
+
+      validationSource `shouldContain` "ValidationPulsarBroker ->"
+      validationSource `shouldContain` "runPulsarBrokerValidation"
+      nativeValidationId ValidationPulsarBroker `shouldBe` "pulsar-broker"
 
     it "Sprint 5.12 routes eks-volume-rebind through a native validation path" $ do
       repoRoot <- getCurrentDirectory
@@ -5724,32 +5772,188 @@ main = mainWithSuite "prodbox-unit" $ do
           Cbor.cborPayloadBytes (PulsarEnvelope.encodeWorkCommand command)
             `shouldSatisfy` (not . BS.null)
 
-    it "exposes broker IO as an explicit unsupported native-protocol layer until BaseCommand lands" $ do
-      connected <-
+    it "validates client endpoints before opening a broker socket" $ do
+      emptyHost <-
+        PulsarClient.connect
+          PulsarClient.PulsarClientConfig
+            { PulsarClient.pulsarClientHost = ""
+            , PulsarClient.pulsarClientPort = 6650
+            , PulsarClient.pulsarClientName = "unit-test"
+            , PulsarClient.pulsarClientLookupStrategy = PulsarClient.FollowBrokerLookupUrl
+            }
+      case emptyHost of
+        Left (PulsarClient.PulsarInvalidEndpoint message) ->
+          message `shouldContain` "host"
+        Left err -> expectationFailure (PulsarClient.renderPulsarClientError err)
+        Right _ -> expectationFailure "expected endpoint validation to fail"
+
+      badPort <-
         PulsarClient.connect
           PulsarClient.PulsarClientConfig
             { PulsarClient.pulsarClientHost = "pulsar.gateway.svc.cluster.local"
-            , PulsarClient.pulsarClientPort = 6650
+            , PulsarClient.pulsarClientPort = 0
             , PulsarClient.pulsarClientName = "unit-test"
+            , PulsarClient.pulsarClientLookupStrategy = PulsarClient.FollowBrokerLookupUrl
             }
-      case connected of
+      case badPort of
+        Left (PulsarClient.PulsarInvalidEndpoint message) ->
+          message `shouldContain` "port"
         Left err -> expectationFailure (PulsarClient.renderPulsarClientError err)
-        Right connection -> do
-          case (PulsarTopic.mkTenant "prodbox", PulsarTopic.mkNamespace "gateway", PulsarTopic.mkLane "home") of
-            (Right tenant, Right namespace, Right lane) -> do
-              let request =
-                    PulsarClient.ProduceRequest
-                      { PulsarClient.produceTopic =
-                          PulsarTopic.topicFor tenant namespace PulsarTopic.Gossip PulsarTopic.Command lane
-                      , PulsarClient.producePayload = Cbor.cborPayloadFromJsonValue (object [])
-                      }
-              produceResult <- PulsarClient.produce connection request
-              case produceResult of
-                Left (PulsarClient.PulsarBrokerProtocolUnavailable message) ->
-                  message `shouldContain` "BaseCommand"
-                Left err -> expectationFailure (PulsarClient.renderPulsarClientError err)
-                Right _ -> expectationFailure "expected broker protocol layer to be explicit"
-            _ -> expectationFailure "expected valid Pulsar topic"
+        Right _ -> expectationFailure "expected endpoint validation to fail"
+
+    it "owns Pulsar native payload framing with metadata and CRC32C validation" $ do
+      let payload = Cbor.cborPayloadFromJsonValue (object ["kind" .= ("command" :: Text.Text)])
+          metadata =
+            PulsarProtocol.MessageMetadata
+              { PulsarProtocol.messageMetadataProducerName = "unit-producer"
+              , PulsarProtocol.messageMetadataSequenceId = 17
+              , PulsarProtocol.messageMetadataPublishTimeMillis = 123456
+              }
+          frame =
+            PulsarProtocol.buildPayloadFrame
+              (PulsarProtocol.buildSendCommand 4 17)
+              (PulsarProtocol.encodeMessageMetadata metadata)
+              payload
+          parsed = PulsarProtocol.parseFrameBody (BS.drop 4 frame)
+      case parsed of
+        Left err -> expectationFailure err
+        Right brokerFrame -> do
+          PulsarProtocol.brokerFrameCommand brokerFrame
+            `shouldBe` PulsarProtocol.BrokerUnsupported 6
+          PulsarProtocol.brokerFrameMetadata brokerFrame `shouldBe` Just metadata
+          PulsarProtocol.brokerFramePayload brokerFrame `shouldBe` Just payload
+
+      let corrupted = BS.take (BS.length frame - 1) frame <> BS.singleton 0
+      PulsarProtocol.parseFrameBody (BS.drop 4 corrupted)
+        `shouldBe` Left "Pulsar payload frame CRC32C checksum mismatch."
+
+    it "renders and parses Pulsar broker message identifiers" $ do
+      let messageId =
+            PulsarProtocol.MessageIdData
+              { PulsarProtocol.messageIdLedgerId = 123
+              , PulsarProtocol.messageIdEntryId = 456
+              , PulsarProtocol.messageIdPartition = Just 0
+              , PulsarProtocol.messageIdBatchIndex = Just 2
+              }
+          rendered = PulsarProtocol.encodeMessageIdText messageId
+      rendered `shouldBe` "123:456:0:2"
+      PulsarProtocol.decodeMessageIdText rendered `shouldBe` Right messageId
+      PulsarProtocol.decodeMessageIdText "123:456:-1"
+        `shouldBe` Right
+          messageId
+            { PulsarProtocol.messageIdPartition = Just (-1)
+            , PulsarProtocol.messageIdBatchIndex = Nothing
+            }
+      PulsarProtocol.decodeMessageIdText "123:abc"
+        `shouldBe` Left "Pulsar message id segment is not numeric: abc"
+
+    it "models Pulsar topic discovery as present / absent / unobservable residue" $ do
+      case (PulsarTopic.mkTenant "prodbox", PulsarTopic.mkNamespace "gateway", PulsarTopic.mkLane "home") of
+        (Right tenant, Right namespace, Right lane) -> do
+          let topic =
+                PulsarTopic.topicFor tenant namespace PulsarTopic.Gossip PulsarTopic.Event lane
+              managed =
+                PulsarTopicResidue.ManagedTopic
+                  { PulsarTopicResidue.managedTopicName = topic
+                  , PulsarTopicResidue.managedTopicRetention =
+                      PulsarTopicResidue.RetentionPolicy
+                        { PulsarTopicResidue.retentionBacklogBytes = 1024
+                        , PulsarTopicResidue.retentionOffloadBytes = 2048
+                        }
+                  , PulsarTopicResidue.managedTopicClass = ResourceClass.LongLived
+                  }
+              brokerWith discovery =
+                PulsarTopicResidue.PulsarTopicBroker
+                  { PulsarTopicResidue.pulsarTopicExists = \_ -> pure discovery
+                  , PulsarTopicResidue.pulsarTopicEnsure = \_ -> pure (Right ())
+                  , PulsarTopicResidue.pulsarTopicDelete = \_ -> pure (Right ())
+                  }
+
+          present <- PulsarTopicResidue.topicDiscover (brokerWith (Right True)) managed
+          PulsarTopicResidue.topicResidueStatus present
+            `shouldBe` Residue.ResiduePresent
+              Residue.ResidueDetails
+                { Residue.residueEvidence =
+                    "pulsar-topic: persistent://prodbox/gateway/gossip.event.home"
+                , Residue.residueStackName = "pulsar-topics-long-lived"
+                }
+
+          absent <- PulsarTopicResidue.topicDiscover (brokerWith (Right False)) managed
+          PulsarTopicResidue.topicResidueStatus absent `shouldBe` Residue.ResidueAbsent
+
+          unobservable <-
+            PulsarTopicResidue.topicDiscover
+              (brokerWith (Left (PulsarClient.PulsarBrokerUnreachable "connection refused")))
+              managed
+          PulsarTopicResidue.topicResidueStatus unobservable
+            `shouldBe` Residue.ResidueUnreachable
+              ( Residue.ResidueQueryFailed
+                  "Pulsar topic broker unobservable: broker unreachable: connection refused"
+              )
+        _ -> expectationFailure "expected valid Pulsar topic"
+
+    it "registers Pulsar topics as managed resources with typed idempotent destroy" $ do
+      case (PulsarTopic.mkTenant "prodbox", PulsarTopic.mkNamespace "gateway", PulsarTopic.mkLane "home") of
+        (Right tenant, Right namespace, Right lane) -> do
+          deleted <- newIORef ([] :: [Text.Text])
+          let topic =
+                PulsarTopic.topicFor tenant namespace PulsarTopic.Reconcile PulsarTopic.Command lane
+              managed =
+                PulsarTopicResidue.ManagedTopic
+                  { PulsarTopicResidue.managedTopicName = topic
+                  , PulsarTopicResidue.managedTopicRetention =
+                      PulsarTopicResidue.RetentionPolicy
+                        { PulsarTopicResidue.retentionBacklogBytes = 4096
+                        , PulsarTopicResidue.retentionOffloadBytes = 8192
+                        }
+                  , PulsarTopicResidue.managedTopicClass = ResourceClass.PerRun
+                  }
+              broker =
+                PulsarTopicResidue.PulsarTopicBroker
+                  { PulsarTopicResidue.pulsarTopicExists = \_ -> pure (Right True)
+                  , PulsarTopicResidue.pulsarTopicEnsure = \_ -> pure (Right ())
+                  , PulsarTopicResidue.pulsarTopicDelete = \name -> do
+                      modifyIORef' deleted (++ [PulsarTopic.renderTopicName name])
+                      pure (Right ())
+                  }
+              resource = ResourceRegistry.pulsarTopicManagedResource broker managed
+
+          ResourceRegistry.resourceName resource `shouldBe` "pulsar-topics-per-run"
+          ResourceRegistry.resourceClass resource `shouldBe` ResourceClass.PerRun
+          ResourceRegistry.resourceDestroyCommand resource `shouldBe` "prodbox cluster delete --cascade"
+          ResourceRegistry.resourceDestroy resource "/repo" `shouldReturn` ExitSuccess
+          readIORef deleted
+            `shouldReturn` ["persistent://prodbox/gateway/reconcile.command.home"]
+        _ -> expectationFailure "expected valid Pulsar topic"
+
+    it "ensures absent Pulsar topics through the typed broker adapter" $ do
+      case (PulsarTopic.mkTenant "prodbox", PulsarTopic.mkNamespace "gateway", PulsarTopic.mkLane "home") of
+        (Right tenant, Right namespace, Right lane) -> do
+          ensured <- newIORef ([] :: [Text.Text])
+          let topic =
+                PulsarTopic.topicFor tenant namespace PulsarTopic.Reconcile PulsarTopic.Result lane
+              managed =
+                PulsarTopicResidue.ManagedTopic
+                  { PulsarTopicResidue.managedTopicName = topic
+                  , PulsarTopicResidue.managedTopicRetention =
+                      PulsarTopicResidue.RetentionPolicy
+                        { PulsarTopicResidue.retentionBacklogBytes = 128
+                        , PulsarTopicResidue.retentionOffloadBytes = 256
+                        }
+                  , PulsarTopicResidue.managedTopicClass = ResourceClass.LongLived
+                  }
+              broker =
+                PulsarTopicResidue.PulsarTopicBroker
+                  { PulsarTopicResidue.pulsarTopicExists = \_ -> pure (Right False)
+                  , PulsarTopicResidue.pulsarTopicEnsure = \name -> do
+                      modifyIORef' ensured (++ [PulsarTopic.renderTopicName name])
+                      pure (Right ())
+                  , PulsarTopicResidue.pulsarTopicDelete = \_ -> pure (Right ())
+                  }
+          PulsarTopicResidue.ensureTopic broker managed `shouldReturn` Right ()
+          readIORef ensured
+            `shouldReturn` ["persistent://prodbox/gateway/reconcile.result.home"]
+        _ -> expectationFailure "expected valid Pulsar topic"
 
   describe "native chart platform helpers" $ do
     it "extracts deleted MinIO export host paths from mountinfo" $ do
@@ -7572,7 +7776,7 @@ main = mainWithSuite "prodbox-unit" $ do
       (drainIdx < destroyIdx) `shouldBe` True
       drainIdx `shouldSatisfy` (/= Nothing)
 
-    it "the cascade per-run sweep lists exactly the PerRun registry resources in order" $ do
+    it "the cascade per-run sweep lists exactly the per-run Pulumi stack resources in order" $ do
       let registryNames =
             map ResourceRegistry.resourceName ResourceRegistry.perRunManagedResources
           planSteps =
@@ -7581,7 +7785,7 @@ main = mainWithSuite "prodbox-unit" $ do
             , "STEP=per_run_destroy " `isPrefixOf` line
             ]
       planSteps `shouldBe` registryNames
-      registryNames `shouldBe` ResourceClass.resourceNamesOfClass ResourceClass.PerRun
+      registryNames `shouldBe` StackDescriptor.perRunStackDescriptorNames
 
     it "rke2 delete --dry-run renders the plan and performs NO mutation (the core 4.26 fix)" $ do
       -- The audit's #1 bug: `rke2 delete --yes --dry-run` SILENTLY MUTATED.
@@ -8199,6 +8403,8 @@ main = mainWithSuite "prodbox-unit" $ do
         `shouldBe` Right (TestIntegration IntegrationHaRke2Aws)
       testScopeForTopologySuite "eks-volume-rebind"
         `shouldBe` Right (TestIntegration IntegrationEksVolumeRebind)
+      testScopeForTopologySuite "pulsar-broker"
+        `shouldBe` Right (TestIntegration IntegrationPulsarBroker)
       testScopeForTopologySuite "unknown"
         `shouldBe` Left "test topology suite `unknown` is not mapped to a supported test scope"
 
@@ -10405,13 +10611,14 @@ main = mainWithSuite "prodbox-unit" $ do
       residue `shouldBe` [("aws-ses", "prodbox aws stack aws-ses destroy --yes")]
 
   describe "Sprint 4.20 managed-resource registry facts" $ do
-    it "every per-run stack the lifecycle classes declares is a Pulumi stack" $
+    it "the per-run class includes Pulumi stacks and dynamic Pulsar topics" $
       ResourceClass.resourceNamesOfClass ResourceClass.PerRun
-        `shouldBe` ["aws-eks", "aws-eks-subzone", "aws-test"]
+        `shouldBe` ["aws-eks", "aws-eks-subzone", "aws-test", "pulsar-topics-per-run"]
 
-    it "the long-lived class includes aws-ses, retained EBS volumes, and the public-edge cert" $
-      ResourceClass.resourceNamesOfClass ResourceClass.LongLived
-        `shouldBe` ["aws-ses", "aws-ebs-volumes", "public-edge-tls"]
+    it
+      "the long-lived class includes aws-ses, retained EBS volumes, public-edge cert, and dynamic Pulsar topics"
+      $ ResourceClass.resourceNamesOfClass ResourceClass.LongLived
+        `shouldBe` ["aws-ses", "aws-ebs-volumes", "public-edge-tls", "pulsar-topics-long-lived"]
 
     it "the operational class registers the IAM user and the aws.* config block" $
       ResourceClass.resourceNamesOfClass ResourceClass.Operational
@@ -10421,10 +10628,11 @@ main = mainWithSuite "prodbox-unit" $ do
       perRunStackNames `shouldBe` ["aws-eks", "aws-eks-subzone", "aws-test"]
 
     it "longLivedResourceNames is derived from the registry" $
-      longLivedResourceNames `shouldBe` ["aws-ses", "aws-ebs-volumes", "public-edge-tls"]
+      longLivedResourceNames
+        `shouldBe` ["aws-ses", "aws-ebs-volumes", "public-edge-tls", "pulsar-topics-long-lived"]
 
-    it "derived stack-name lists equal the PerRun/LongLived registry classes" $ do
-      perRunStackNames `shouldBe` ResourceClass.resourceNamesOfClass ResourceClass.PerRun
+    it "derived stack/resource-name lists match their owning SSoTs" $ do
+      perRunStackNames `shouldBe` StackDescriptor.perRunStackDescriptorNames
       longLivedResourceNames `shouldBe` ResourceClass.resourceNamesOfClass ResourceClass.LongLived
 
     it "Sprint 4.22 renderRegisteredResourcesMarkdown renders every registered resource + class" $ do
@@ -10435,6 +10643,8 @@ main = mainWithSuite "prodbox-unit" $ do
       rendered `shouldContain` "| `aws-ses` | LongLived |"
       rendered `shouldContain` "| `aws-ebs-volumes` | LongLived |"
       rendered `shouldContain` "| `public-edge-tls` | LongLived |"
+      rendered `shouldContain` "| `pulsar-topics-per-run` | PerRun |"
+      rendered `shouldContain` "| `pulsar-topics-long-lived` | LongLived |"
       rendered `shouldContain` "| `operational-iam-user` | Operational |"
       rendered `shouldContain` "| `operational-aws-config` | Operational |"
 
@@ -10799,10 +11009,12 @@ main = mainWithSuite "prodbox-unit" $ do
       violations `shouldBe` []
 
   describe "Sprint 4.27 StackDescriptor SSoT" $ do
-    it "per-run descriptor names equal the prior literal and the PerRun registry slice" $ do
-      StackDescriptor.perRunStackDescriptorNames `shouldBe` ["aws-eks", "aws-eks-subzone", "aws-test"]
-      StackDescriptor.perRunStackDescriptorNames
-        `shouldBe` ResourceClass.resourceNamesOfClass ResourceClass.PerRun
+    it
+      "per-run descriptor names equal the prior Pulumi-stack literal and are registered PerRun resources"
+      $ do
+        StackDescriptor.perRunStackDescriptorNames `shouldBe` ["aws-eks", "aws-eks-subzone", "aws-test"]
+        forM_ StackDescriptor.perRunStackDescriptorNames $ \name ->
+          ResourceClass.resourceLifecycleClasses `shouldContain` [(name, ResourceClass.PerRun)]
 
     it "perRunStackNames is derived from the StackDescriptor SSoT" $
       perRunStackNames `shouldBe` StackDescriptor.perRunStackDescriptorNames
@@ -11497,10 +11709,11 @@ main = mainWithSuite "prodbox-unit" $ do
       plan `shouldContain` "CONFIRMATION_LITERAL=NUKE EVERYTHING"
 
   describe "Sprint 7.7 residue lifecycle partition" $ do
-    it "perRunStackNames matches substrates-doctrine Resource Lifecycle Classes verbatim" $
+    it "perRunStackNames matches the Pulumi stack descriptor SSoT" $
       perRunStackNames `shouldBe` ["aws-eks", "aws-eks-subzone", "aws-test"]
     it "longLivedResourceNames lists every long-lived managed resource" $
-      longLivedResourceNames `shouldBe` ["aws-ses", "aws-ebs-volumes", "public-edge-tls"]
+      longLivedResourceNames
+        `shouldBe` ["aws-ses", "aws-ebs-volumes", "public-edge-tls", "pulsar-topics-long-lived"]
     it "partitionResidueByLifecycle splits residue correctly with all four stacks live" $ do
       let allFour =
             [ ("aws-eks", "prodbox aws stack eks destroy --yes")

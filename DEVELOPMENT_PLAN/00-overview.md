@@ -137,8 +137,8 @@ Build a clean-room Haskell `prodbox` repository with:
     Python Pulumi program and no supported local-cluster public operator flow.
 
 > **Scheduled doctrine generalizations (2026-07-01 batch — partly implemented).** Structured
-> payloads unify on canonical **CBOR** project-wide (the former
-> gateway "protobuf" language is superseded; `cborg`/`serialise` landed for Sprints `2.27`–`2.28`) —
+> payloads unify on canonical **CBOR** project-wide (the older
+> non-CBOR gateway wording is superseded; `cborg`/`serialise` landed for Sprints `2.27`–`2.28`) —
 > [pulsar_messaging_doctrine.md](../documents/engineering/pulsar_messaging_doctrine.md). A
 > self-maintained native-protocol **Pulsar** client boundary + platform chart, prodbox-as-its-own
 > **autoscaler** capacity/scaling with a per-deploy AWS region service-quota gate and mandatory ML
@@ -154,9 +154,11 @@ Build a clean-room Haskell `prodbox` repository with:
 > schema, multi-OS host-provider config/detection surface, cluster-topology config/schema surface,
 > and test-topology schema/topology-mode preflight, and Sprints `2.27`–`2.28` have landed the
 > gateway gossip + Orders CBOR codec and durable at-least-once CBOR store. Sprint `3.21` has landed
-> the Pulsar CBOR/topic/envelope/chart boundary while broker I/O remains blocked on generated
-> Apache Pulsar `BaseCommand`; Sprint `4.34` has landed the pure autoscaler planner and
-> federation-scoped placement guard; Sprint `4.36` has landed the tiered-storage finite-budget
+> the Pulsar CBOR/topic/envelope/chart boundary plus repo-owned Haskell broker
+> transport/framing and live broker produce/consume/ack proof; Sprint `4.34` has landed the pure autoscaler planner and
+> federation-scoped placement guard; Sprint `4.35` has landed Pulsar topics as managed resources
+> with live broker-backed topic reconciliation proof;
+> Sprint `4.36` has landed the tiered-storage finite-budget
 > planner, autoscaling witness, ML storage totals, and AWS quota preflight adapter; Sprint `4.37`
 > has landed host-provider ensure decisions and Docker Linux-frame dispatch; Sprint `4.38` has
 > landed substrate-typed one-worker-per-machine placement and anti-affinity; Sprint `5.11` has

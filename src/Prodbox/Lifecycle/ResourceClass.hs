@@ -54,6 +54,12 @@ resourceLifecycleClasses =
   [ ("aws-eks", PerRun)
   , ("aws-eks-subzone", PerRun)
   , ("aws-test", PerRun)
+  , -- Sprint 4.35: dynamic Pulsar topics whose backlog dies with a
+    -- single validation/workflow run. Individual topic names are
+    -- produced by the typed topic algebra; this family row keeps their
+    -- lifecycle class registered without pretending every topic is a
+    -- Pulumi stack.
+    ("pulsar-topics-per-run", PerRun)
   , ("aws-ses", LongLived)
   , -- Sprint 4.39: pre-created EBS volumes that back EKS static
     -- @Retain@ PersistentVolumes. Production-retained volumes carry
@@ -75,6 +81,11 @@ resourceLifecycleClasses =
     -- Pulumi stack; @prodbox nuke@ removes it transitively when it
     -- destroys the long-lived bucket.
     ("public-edge-tls", LongLived)
+  , -- Sprint 4.35: dynamic retained Pulsar topics whose offloaded
+    -- backlog draws from the finite durable-store budget and survives
+    -- a single run. Destroyed only through explicit long-lived
+    -- teardown.
+    ("pulsar-topics-long-lived", LongLived)
   , ("operational-iam-user", Operational)
   , ("operational-aws-config", Operational)
   ]

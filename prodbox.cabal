@@ -109,10 +109,13 @@ library
         Prodbox.Prerequisite
         Prodbox.PrerequisiteId
         Prodbox.PublicEdge
+        Prodbox.Pulsar.Admin
         Prodbox.Pulsar.Client
         Prodbox.Pulsar.Codec
         Prodbox.Pulsar.Envelope
+        Prodbox.Pulsar.Protocol
         Prodbox.Pulsar.Topic
+        Prodbox.Pulsar.TopicResidue
         Prodbox.Pulumi.EncryptedBackend
         Prodbox.Repo
         Prodbox.Retry

@@ -1,12 +1,10 @@
 # Pulsar Messaging Doctrine
 
 **Status**: Authoritative source
-**Supersedes**: the "protobuf" wire-format language in
-[distributed_gateway_architecture.md](./distributed_gateway_architecture.md) — §1 item 3
-(line 33, "a typed global Orders document exists (protobuf)"), §3.1 (line 68, "`Orders`
-protobuf is the declarative configuration object"), and §3.2 (line 84, "payload protobuf").
-Protobuf is removed as a sanctioned prodbox wire format; those envelopes are CBOR.
-**Referenced by**: documents/engineering/README.md, DEVELOPMENT_PLAN/phase-2-gateway-dns.md, DEVELOPMENT_PLAN/phase-3-chart-platform-vscode.md, documents/engineering/pulsar_topic_lifecycle_doctrine.md, documents/engineering/tiered_storage_capacity_doctrine.md
+**Supersedes**: the older non-CBOR wire-format language in
+[distributed_gateway_architecture.md](./distributed_gateway_architecture.md). CBOR is the only
+sanctioned prodbox payload and envelope format.
+**Referenced by**: [../../README.md](../../README.md), documents/engineering/README.md, DEVELOPMENT_PLAN/phase-2-gateway-dns.md, DEVELOPMENT_PLAN/phase-3-chart-platform-vscode.md, documents/engineering/pulsar_topic_lifecycle_doctrine.md, documents/engineering/tiered_storage_capacity_doctrine.md
 **Generated sections**: none
 
 > **Purpose**: SSoT for prodbox's self-maintained native-protocol Pulsar client, its
@@ -17,9 +15,10 @@ Protobuf is removed as a sanctioned prodbox wire format; those envelopes are CBO
 > **Implementation status.** The gateway peer-gossip batch, `Orders` serialized envelope, and
 > `SignedEvent` payload field moved to canonical CBOR in Phase 2 Sprint `2.27`. The durable
 > at-least-once event store moved to CBOR in Sprint `2.28`. Phase 3 Sprint `3.21` has landed the
-> shared Pulsar CBOR codec, derived topic algebra, `Work*` envelopes, chart, and native-client
-> boundary; broker I/O remains explicitly blocked until a compatible generated Apache Pulsar
-> `BaseCommand` / `PulsarApi.proto` protocol layer is imported. Per
+> shared Pulsar CBOR codec, derived topic algebra, `Work*` envelopes, chart, native-client
+> boundary, and repo-maintained native broker transport/framing layer. The live home-local
+> `pulsar-broker` validation proves CBOR produce/consume/ack against a real broker; there is no
+> generated external schema dependency and no second-runtime transport. Per
 > [development_plan_standards §D](../../DEVELOPMENT_PLAN/development_plan_standards.md) this doc
 > states the target shape in present-tense doctrine; delivery sequencing and status are owned only
 > by [DEVELOPMENT_PLAN/README.md](../../DEVELOPMENT_PLAN/README.md).
@@ -55,21 +54,21 @@ invariant rather than a runtime convention.
 ### 2.1 The codec-selection field does not exist
 
 The illegal-state technique here is *absence*: the message payload type admits no alternative
-constructor and no codec tag, so "protobuf payload" or "JSON payload" is **unconstructible** — a
-compile error, not a validated-away runtime case. (This is the same "make the illegal state
+constructor and no codec tag, so any non-CBOR payload is **unconstructible** — a compile error,
+not a validated-away runtime case. (This is the same "make the illegal state
 unrepresentable" discipline as [pure_fp_standards.md § GADT-Indexed State
 Machines](./pure_fp_standards.md#gadt-indexed-state-machines); here the state is eliminated by a
 closed newtype with no variants rather than by a GADT index.)
 
 ```haskell
--- Example: the sole wire-payload type — there is no `data Payload = Cbor … | Proto … | Json …`
+-- Example: the sole wire-payload type; there is no alternative payload constructor.
 newtype CborPayload = CborPayload {cborPayloadBytes :: ByteString}
   deriving stock (Eq, Show)
 ```
 
-There is no `data PayloadCodec = Cbor | Protobuf | Json`, no `payloadContentType :: Text` field
-on any envelope, and no `WorkCommand { wcCodec :: … }`. Because the only way to hold a payload is a
-`CborPayload`, a non-CBOR payload cannot be represented, transmitted, or persisted.
+There is no `PayloadCodec` sum type, no `payloadContentType :: Text` field on any envelope, and no
+`WorkCommand { wcCodec :: … }`. Because the only way to hold a payload is a `CborPayload`, a
+non-CBOR payload cannot be represented, transmitted, or persisted.
 
 ### 2.2 Canonical, deterministic encoding
 
@@ -169,13 +168,12 @@ Parse, don't validate, at the wire boundary: a malformed frame is always possibl
 consumer decodes it into a total `WorkCommand`/`WorkEvent`/`WorkResult` or emits a typed
 `WorkRejected` — never a silent bad state.
 
-### 4.1 Deliberate divergence from jitML
+### 4.1 Deliberate specialization from jitML
 
-prodbox mirrors jitML's **format-agnostic** envelope and topic structure. It diverges in exactly
-one axis, on purpose: jitML serializes its `Work*` payloads as **protobuf** on Pulsar; prodbox
-serializes them as **CBOR**. Nothing else in the shape changes — the three-envelope family, the
-`callId` correlation, and the derived topic algebra are identical in kind. "Mirror the structure,
-swap the codec to CBOR" is the whole of the specialization; a later refactor onto a shared
+prodbox mirrors jitML's **format-agnostic** envelope and topic structure while specializing the
+payload representation to CBOR. The three-envelope family, the `callId` correlation, and the
+derived topic algebra are identical in kind; the codec is not inherited or negotiated. "Mirror the
+structure, fix the codec to CBOR" is the whole specialization, and a later refactor onto a shared
 `hostbootstrap` core keeps this same seam.
 
 ## 5. Application to the current gateway envelopes
@@ -207,8 +205,8 @@ same canonical unsigned CBOR payload bytes. Sprint `2.28` moved the durable at-l
 store (`src/Prodbox/Daemon/Events.hs`) to the shared `CborPayload`, with `StoredEvent` CBOR
 round-trip helpers and the first-write-wins `processed_at` marker unchanged. The hash-chain and
 dedup guarantees are preserved precisely because the encoding is canonical (§2.2). This is the
-concrete removal of the superseded "protobuf" language: neither JSON nor protobuf is a sanctioned
-prodbox wire format for these envelopes — CBOR is.
+concrete removal of older non-CBOR language: CBOR is the only sanctioned prodbox wire format for
+these envelopes.
 
 ## 6. Dhall-authoring vs CBOR-at-rest boundary
 
@@ -224,16 +222,23 @@ envelopes.
 ## 7. The self-maintained native client
 
 prodbox owns a single native-protocol Haskell Pulsar client boundary — no WebSocket gateway, no
-second language runtime — the single-node realization of the amoebius umbrella
+second language runtime, no generated external schema dependency — the single-node realization of
+the amoebius umbrella
 `amoebius/documents/engineering/pulsar_client_doctrine.md`, which cites this doc for the CBOR-always
 payload rule. The client's capability surface (lookup / produce / consume / subscribe / seek) and
 its broker-side dedup contract are the umbrella doc's concern; what this doctrine fixes for the
 client is unconditional: every payload it produces or consumes is a `CborPayload` (§2). Sprint
-`3.21` has landed `Prodbox.Pulsar.Codec`, `Prodbox.Pulsar.Topic`, `Prodbox.Pulsar.Envelope`, the
-`charts/pulsar` retained-storage chart, and `Prodbox.Pulsar.Client`'s typed `connect` / `produce` /
-`consume` / `ack` boundary. Until the Apache Pulsar `BaseCommand` layer is generated for this
-toolchain, broker I/O fails closed with `PulsarBrokerProtocolUnavailable`; that explicit guard is
-the only supported interim state, not a fallback transport.
+`3.21` has landed `Prodbox.Pulsar.Codec`, `Prodbox.Pulsar.Topic`, `Prodbox.Pulsar.Envelope`,
+`Prodbox.Pulsar.Protocol`, the `charts/pulsar` retained-storage chart, and
+`Prodbox.Pulsar.Client`'s typed `connect` / `produce` / `consume` / `ack` boundary. The client owns
+repo-maintained Haskell broker transport/framing: persistent TCP session management,
+request/response correlation, lookup, producer/consumer flows, acknowledgement, message metadata,
+CRC32C payload-frame checks, typed broker-error classification, and reconnect/backoff behavior. No
+FOSS client code is imported. The named `./.build/prodbox test integration pulsar-broker`
+validation deploys the internal retained-storage Pulsar chart on the home substrate, produces a
+`CborPayload`, consumes it back through the native broker protocol, acknowledges the consumed
+message id, and treats any broker/admin unobservability as a typed failure rather than a fallback
+transport.
 
 ## Intent Ownership
 
@@ -247,8 +252,10 @@ This SSoT owns the prodbox message-codec and message-shape doctrine.
   `src/Prodbox/Gateway/Peer.hs` (anti-entropy gossip transport → CBOR, landed in Sprint `2.27`),
   `src/Prodbox/Daemon/Events.hs` (durable at-least-once store → CBOR, landed in Sprint `2.28`),
   `src/Prodbox/Pulsar/Codec.hs`, `src/Prodbox/Pulsar/Topic.hs`,
-  `src/Prodbox/Pulsar/Envelope.hs`, and `src/Prodbox/Pulsar/Client.hs` (CBOR/topic/`Work*` client
-  boundary landed in Sprint `3.21`; broker `BaseCommand` I/O still blocked).
+  `src/Prodbox/Pulsar/Envelope.hs`, `src/Prodbox/Pulsar/Protocol.hs`, and
+  `src/Prodbox/Pulsar/Client.hs` (CBOR/topic/`Work*` client boundary and broker
+  transport/framing landed in Sprint `3.21`), plus `src/Prodbox/TestValidation.hs`
+  (`pulsar-broker` live produce/consume/ack validation).
 
 ## Cross-References
 

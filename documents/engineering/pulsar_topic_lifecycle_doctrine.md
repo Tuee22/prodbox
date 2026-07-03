@@ -12,13 +12,15 @@
 > can produce — reconciled to present/absent idempotently through the same registry every other
 > resource uses.
 
-Implementation is **scheduled**, not present in the current worktree: this doctrine is authored
-present-tense per
-[development_plan_standards §D](../../DEVELOPMENT_PLAN/development_plan_standards.md), and its landing
-sprint is named in [§7](#7-scheduling). The canonical Dhall schema for the topic family is itself a
-scheduled code artifact (`dhall/PulsarTopicSchema.dhall`, mirroring jitML's
-`dhall/project/Schema.dhall`); this document describes facets and shows teaching-example fragments —
-it is **not** the schema SSoT.
+The code-owned surface landed in Sprint `4.35`: `Prodbox.Pulsar.TopicResidue` owns
+`ManagedTopic`, `TopicResidueStatus`, `topicDiscover`, `ensureTopic`, `deleteTopic`, and the total
+projection onto `ResidueStatus`; `Prodbox.Lifecycle.ResourceClass` registers the topic-family rows;
+`Prodbox.Lifecycle.ResourceRegistry` adapts concrete managed topics into the shared destroy surface;
+and `Prodbox.Pulsar.Admin` provides the broker-backed admin implementation. The live home-local
+`pulsar-broker` validation proves admin-backed ensure/discover/delete against a real broker and
+verifies absence after deletion. The canonical Dhall schema for the topic family remains a later
+code artifact (`dhall/PulsarTopicSchema.dhall`, mirroring jitML's `dhall/project/Schema.dhall`);
+this document describes facets and shows teaching-example fragments — it is **not** the schema SSoT.
 
 ## 1. A Topic Is a Managed Resource
 
@@ -80,7 +82,7 @@ data TopicResidueStatus
   | TopicPresent !TopicResidueDetails          -- broker reachable; topic exists (+ backlog/offload evidence)
   | TopicUnobservable !TopicUnobservableReason  -- broker/admin API unreachable — NOT "absent"
 
-topicDiscover :: PulsarClient -> ManagedTopic -> IO TopicResidueStatus
+topicDiscover :: PulsarTopicBroker -> ManagedTopic -> IO TopicResidueStatus
 ```
 
 To plug into the registry unchanged, a **total projection** maps this domain status onto the
@@ -111,12 +113,12 @@ Each topic decorates its pure facts (name + class, from
 
 ```haskell
 -- Example: a topic as one ManagedResource row (registry shape from §3.1)
-managedTopicResource :: PulsarClient -> ManagedTopic -> ManagedResource
-managedTopicResource client t = ManagedResource
+managedTopicResource :: PulsarTopicBroker -> ManagedTopic -> ManagedResource
+managedTopicResource broker t = ManagedResource
   { resourceName     = renderTopicName (managedTopicName t)
   , resourceClass    = managedTopicClass t
-  , resourceDiscover = topicResidueStatus <$> topicDiscover client t
-  , resourceDestroy  = deleteTopic client t     -- idempotent: Absent → skip
+  , resourceDiscover = topicResidueStatus <$> topicDiscover broker t
+  , resourceDestroy  = deleteTopic broker t     -- idempotent: Absent → skip
   }
 ```
 
@@ -165,20 +167,15 @@ arithmetic; see the capacity doctrine's `storageFitsWithin`.
 
 ## 7. Scheduling
 
-Landing this doctrine into code is
+This doctrine landed in
 [Phase 4 Sprint 4.35](../../DEVELOPMENT_PLAN/phase-4-lifecycle-canonical-paths.md) — *Pulsar topics as
-managed resources*: the `ManagedTopic` registry rows, the `TopicResidueStatus` discover, the total
-projection onto `ResidueStatus`, and the `reconcilePresent` / `reconcileAbsent` wiring.
-
-Sprint 4.35 has a **forward-only dependency** on
-[Phase 3 Sprint 3.21](../../DEVELOPMENT_PLAN/README.md) — the Pulsar client boundary
-(`Prodbox.Pulsar.Client`) that `topicDiscover` / `deleteTopic` call. Sprint `3.21` has landed the
-typed boundary but broker I/O still fails closed until the Apache Pulsar `BaseCommand` layer is
-generated, so Sprint `4.35` cannot consume live broker discovery until that blocker clears. A Phase
-4 sprint depending on an
-**earlier** phase's sprint is permitted under
-[development_plan_standards Standard N](../../DEVELOPMENT_PLAN/development_plan_standards.md); the
-dependency never runs the other way.
+managed resources*: the `ManagedTopic` topic-family rows, the `TopicResidueStatus` discover, the
+total projection onto `ResidueStatus`, typed `ensureTopic` / `deleteTopic`, and the
+`pulsarTopicManagedResource` adapter. The same closure added `Prodbox.Pulsar.Admin` as the live
+admin REST broker adapter and proved broker-backed ensure/discover/delete in
+`./.build/prodbox test integration pulsar-broker`. Sprint `4.35` consumed the
+[Phase 3 Sprint 3.21](../../DEVELOPMENT_PLAN/README.md) Pulsar client boundary after its
+repo-owned broker transport/framing closed.
 
 ## Intent Ownership
 
@@ -189,13 +186,12 @@ This doctrine owns "a Pulsar topic is a managed resource" intention.
   `LifecycleClass`, and a name only the topic algebra can produce — reconciled to present/absent
   through the [§3.1](lifecycle_reconciliation_doctrine.md#31-the-managed-resource-registry-the-reconciler-substrate)
   registry, with retention drawn from the finite storage budget.
-- Linked dependents (scheduled unless noted): `src/Prodbox/Pulsar/Topic.hs` (topic-algebra mirror
-  landed in Sprint `3.21`; the `ManagedTopic` type is scheduled for Sprint `4.35`),
-  `src/Prodbox/Pulsar/TopicResidue.hs` (`TopicResidueStatus` + `topicDiscover` + the
-  projection), `src/Prodbox/Pulsar/Client.hs` (Sprint `3.21` typed boundary landed; broker I/O
-  still blocked on generated `BaseCommand`),
-  `src/Prodbox/Lifecycle/ResourceClass.hs` (topic class facts),
-  `src/Prodbox/Lifecycle/ResourceRegistry.hs` (topic rows in the IO registry / `reconcileAbsent`).
+- Linked dependents: `src/Prodbox/Pulsar/Topic.hs` (topic-algebra mirror landed in Sprint `3.21`),
+  `src/Prodbox/Pulsar/TopicResidue.hs` (`ManagedTopic`, `TopicResidueStatus`, `topicDiscover`,
+  `ensureTopic`, `deleteTopic`, and the projection), `src/Prodbox/Pulsar/Admin.hs` (broker-backed
+  admin adapter), `src/Prodbox/Pulsar/Client.hs` (Sprint `3.21` broker boundary),
+  `src/Prodbox/Lifecycle/ResourceClass.hs` (topic-family class facts), and
+  `src/Prodbox/Lifecycle/ResourceRegistry.hs` (topic managed-resource adapter).
 
 ## Cross-References
 

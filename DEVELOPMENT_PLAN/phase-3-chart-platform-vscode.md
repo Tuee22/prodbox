@@ -2134,13 +2134,13 @@ init-once/unseal-on-rebuild lifecycle, and the fail-closed unseal cascade closed
 `4.32`; the cluster-federation trust topology and downstream-cluster custody gateway surface
 closed under Sprint `2.26`.
 
-## Sprint 3.21: Pulsar Workload Chart + Self-Maintained CBOR Pulsar Client [⏸️ Blocked]
+## Sprint 3.21: Pulsar Workload Chart + Self-Maintained CBOR Pulsar Client [✅ Done]
 
-**Status**: ⏸️ Blocked
-**Blocked by**: external Apache Pulsar `BaseCommand` / `PulsarApi.proto` generated protocol layer for broker I/O
-**Implementation**: `src/Prodbox/Pulsar/Client.hs`, `src/Prodbox/Pulsar/Codec.hs`, `src/Prodbox/Pulsar/Topic.hs`, `src/Prodbox/Pulsar/Envelope.hs`, `charts/pulsar`
-**Live-proof**: pending
-**Independent Validation**: unit + CLI/env integration on the home/local substrate — the codec round-trip, `topicFor` topic-algebra, `Work*` envelope suites, explicit broker-I/O unsupported guard, and Pulsar chart-render surface plus `prodbox test integration cli`/`env` prove the locally owned code with no dependency on any later phase.
+**Status**: ✅ Done 2026-07-03.
+**Blocked by**: none — the broker client is prodbox-owned Haskell work.
+**Implementation**: `src/Prodbox/Pulsar/Client.hs`, `src/Prodbox/Pulsar/Protocol.hs`, `src/Prodbox/Pulsar/Codec.hs`, `src/Prodbox/Pulsar/Topic.hs`, `src/Prodbox/Pulsar/Envelope.hs`, `charts/pulsar`
+**Live-proof**: proven 2026-07-03 via `./.build/prodbox test integration pulsar-broker`
+**Independent Validation**: unit + CLI/env integration on the home/local substrate — the codec round-trip, `topicFor` topic-algebra, `Work*` envelope suites, native frame/metadata/CRC32C/message-id parser tests, client endpoint validation, Pulsar chart-render surface, `prodbox test integration cli`/`env`, and live `pulsar-broker` produce/consume/ack prove the locally owned code with no dependency on any later phase.
 **Docs to update**: `documents/engineering/pulsar_messaging_doctrine.md`
 
 ### Objective
@@ -2153,10 +2153,15 @@ consumer shares one typed topic-and-envelope surface.
 
 ### Deliverables
 
-- `src/Prodbox/Pulsar/Client.hs` exposes the native-client boundary (`connect`, `produce`,
-  `consume`, `ack`) and typed request/error values. `connect` validates the endpoint locally;
-  broker I/O returns the structured `PulsarBrokerProtocolUnavailable` error until the generated
-  Apache Pulsar `BaseCommand` layer exists. There is no WebSocket fallback.
+- ✅ `src/Prodbox/Pulsar/Client.hs` exposes the native-client boundary (`connect`, `produce`,
+  `consume`, `ack`) and typed request/error values over the repo-owned Haskell transport/framing
+  layer. It validates endpoints, opens a TCP broker session, performs lookup / producer / consumer /
+  ack flows, correlates requests, reconnects with bounded backoff on retryable transport failures,
+  validates metadata + CRC32C payload frames, and classifies broker failures into typed errors.
+  There is no WebSocket fallback and no second runtime.
+- ✅ `src/Prodbox/Pulsar/Protocol.hs` owns the minimal Pulsar protobuf/framing surface required by
+  the client: command encoders, response decoders, payload-frame parser, message metadata,
+  message-id rendering/parsing, broker service URL parsing, and server-error classification.
 - ✅ `src/Prodbox/Pulsar/Codec.hs` encodes and decodes message payloads as canonical CBOR only,
   with no runtime codec-selection field.
 - ✅ `src/Prodbox/Pulsar/Topic.hs` provides the derived topic algebra `topicFor`, and
@@ -2166,25 +2171,25 @@ consumer shares one typed topic-and-envelope surface.
 
 ### Validation
 
-Local partial-surface validation on 2026-07-02:
+Code-owned validation on 2026-07-03:
 
 1. `cabal build --builddir=.build exe:prodbox` exit 0.
 2. `cabal build --builddir=.build all --ghc-options=-Werror` exit 0.
-3. `./.build/prodbox test unit` exit 0 (1085/1085), including the CBOR codec round-trip,
-   `topicFor` topic-algebra, `Work*` envelope coverage, explicit broker-I/O unsupported guard, and
-   Pulsar chart plan coverage.
+3. `cabal test --builddir=.build test:prodbox-unit` exit 0 (1155/1155 after Sprint `3.21`),
+   including the CBOR codec round-trip, `topicFor` topic-algebra, `Work*` envelope coverage,
+   native frame/metadata/CRC32C/message-id parser coverage, endpoint validation, and Pulsar chart
+   plan coverage.
 4. `./.build/prodbox test integration cli` exit 0 (39/39).
 5. `./.build/prodbox test integration env` exit 0 (39/39).
 6. `./.build/prodbox dev lint chart` exit 0 over `charts/pulsar`.
+7. `./.build/prodbox test integration pulsar-broker` exit 0 (2026-07-03): deployed the internal
+   Pulsar chart on the home-local substrate, created a validation topic under
+   `persistent://public/default/`, produced and consumed a CBOR payload over the native broker
+   protocol, and acknowledged message id `8:0:-1`.
 
 ### Remaining Work
 
-Replace the explicit broker-I/O unsupported guard in `src/Prodbox/Pulsar/Client.hs` with the real
-Apache Pulsar native-protocol command layer generated from `PulsarApi.proto` (`BaseCommand` /
-message metadata, CRC32C payload frames, persistent TCP session). The published `supernova`
-package is not usable as a direct dependency on this repo's GHC 9.12.4 toolchain (`base < 4.14`),
-so this remains blocked on importing or generating a compatible protocol layer rather than on any
-later prodbox phase.
+None.
 
 ## Related Documents
 

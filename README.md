@@ -38,6 +38,11 @@ validation environments.
   orchestration, gateway runtime, chart platform, onboarding flow, AWS administration commands,
   and test harness all live under `app/`, `src/Prodbox/`, `test/`, `prodbox.cabal`,
   `cabal.project`, and `docker/`.
+- Messaging payloads are CBOR-only. The gateway `Orders`/event surfaces, durable event store, and
+  Pulsar `Work*` envelopes use canonical CBOR through the self-maintained Haskell client boundary;
+  any Pulsar client implementation lives in this repository (or in a maintained fork vendored into
+  it), not in a second runtime or generated external schema layer. See
+  [documents/engineering/pulsar_messaging_doctrine.md](./documents/engineering/pulsar_messaging_doctrine.md).
 - The target self-managed public edge is documented in
   [documents/engineering/envoy_gateway_edge_doctrine.md](./documents/engineering/envoy_gateway_edge_doctrine.md):
   MetalLB exposes an Envoy Gateway `LoadBalancer`, Gateway API owns Layer 7 routing, Keycloak

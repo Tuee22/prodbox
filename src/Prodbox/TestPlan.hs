@@ -40,6 +40,7 @@ data NativeValidation
   | ValidationGatewayPods
   | ValidationGatewayPartition
   | ValidationChartsPlatform
+  | ValidationPulsarBroker
   | ValidationChartsStorage
   | ValidationEksVolumeRebind
   | ValidationLifecycle
@@ -247,6 +248,12 @@ testExecutionPlan substrate scope =
             "integration-charts-platform"
             [ValidationChartsPlatform]
             True
+        IntegrationPulsarBroker ->
+          nativeNamedSuite
+            "integration pulsar-broker"
+            "integration-pulsar-broker"
+            [ValidationPulsarBroker]
+            False
         IntegrationChartsVscode ->
           nativeExecutionPlan
             "integration charts-vscode"
@@ -368,6 +375,7 @@ canonicalNativeValidations =
   , ValidationGatewayPods
   , ValidationGatewayPartition
   , ValidationChartsPlatform
+  , ValidationPulsarBroker
   , ValidationKeycloakInvite
   , ValidationChartsStorage
   , ValidationEksVolumeRebind
@@ -413,6 +421,7 @@ validationInitialPrerequisites validation =
     -- The chart-platform / storage / lifecycle validations operate on the
     -- local cluster: cluster only, no AWS credentials.
     ValidationChartsPlatform -> clusterPrerequisites
+    ValidationPulsarBroker -> clusterPrerequisites
     ValidationChartsStorage -> clusterPrerequisites
     ValidationEksVolumeRebind -> clusterPrerequisites
     ValidationLifecycle -> clusterPrerequisites
@@ -442,6 +451,7 @@ validationDeferredPrerequisites validation =
     ValidationGatewayPods -> []
     ValidationGatewayPartition -> []
     ValidationChartsPlatform -> []
+    ValidationPulsarBroker -> []
     ValidationChartsStorage -> []
     ValidationEksVolumeRebind -> []
     ValidationLifecycle -> []
@@ -554,6 +564,7 @@ nativeValidationId validation =
     ValidationGatewayPods -> "gateway-pods"
     ValidationGatewayPartition -> "gateway-partition"
     ValidationChartsPlatform -> "charts-platform"
+    ValidationPulsarBroker -> "pulsar-broker"
     ValidationChartsStorage -> "charts-storage"
     ValidationEksVolumeRebind -> "eks-volume-rebind"
     ValidationLifecycle -> "lifecycle"

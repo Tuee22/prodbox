@@ -28,15 +28,14 @@ generalizes: "the substrate is a fact about the host, not a knob." prodbox mirro
 refactor-onto-`hostbootstrap`-later posture already established for the registry-credential seam in
 [local_registry_pipeline.md § 6.1](./local_registry_pipeline.md#61-host-docker-cli-auth-isolation-harbor-login-vs-the-operators-docker-hub-login).
 
-**Implementation is scheduled, not present.** This is present-tense doctrine per
-[development_plan_standards § D](../../DEVELOPMENT_PLAN/development_plan_standards.md); the multi-OS
-host-provider surface lands in
-[Phase 1 Sprint 1.52](../../DEVELOPMENT_PLAN/phase-1-runtime-cli-aws-foundations.md) (the
-`HostSubstrate` DSL, the relaxed host gate, rules a/b/j) and the VM-provisioning and ensure
-reconcilers in
-[Phase 4 Sprint 4.37](../../DEVELOPMENT_PLAN/phase-4-lifecycle-canonical-paths.md). Status lives
-only in [DEVELOPMENT_PLAN/README.md](../../DEVELOPMENT_PLAN/README.md); this doc states the target
-shape.
+Sprint `1.52` landed the multi-OS host-provider config/detection surface: the `HostSubstrate`
+detector, the closed `HostTool` / `AbsExe` surface, the `LiftLayer` fold, pure host-gated
+reconciler plans, the rule-j Docker host-frame gate, and the `host_substrate_supported`
+prerequisite root. Sprint `4.37` landed the provider reconciler selection, idempotent
+ready/missing/reboot decisions, wrong-provider fail-fast refusal, and Docker Linux-frame dispatch
+for native-arch build work. Live macOS-Lima and Windows-WSL2 provisioning on those hosts remains a
+non-blocking proof axis. Status lives only in
+[DEVELOPMENT_PLAN/README.md](../../DEVELOPMENT_PLAN/README.md); this doc states the target shape.
 
 ## 2. The Host Substrate Is Detected, Never Configured
 
@@ -152,68 +151,66 @@ lifecycle registry uses for creatable-but-undiscoverable resources
 ### Rule j — host-frame `docker run` is OS-gated
 
 The host binary running `docker run --rm` directly is valid only where the host frame *is* Linux. On
-Windows the host binary has no Linux Docker; `docker`-on-host is a compile-time fail-stub, and a real
-`docker run` happens only *inside* the WSL2 frame. This mirrors
-`HostBootstrap.Registry.withEphemeralDockerConfig`'s Windows fail-stub — the seam prodbox already
-mirrors as `Prodbox.DockerConfig.withEphemeralDockerConfig`
+macOS or Windows the host binary has no Linux Docker frame; host-frame Docker fails fast, and a real
+`docker run` happens only *inside* the Lima or WSL2 frame. This mirrors the fail-stub shape of
+`HostBootstrap.Registry.withEphemeralDockerConfig` — the seam prodbox mirrors as
+`Prodbox.DockerConfig.withEphemeralDockerConfig`
 ([local_registry_pipeline.md § 6.1](./local_registry_pipeline.md#61-host-docker-cli-auth-isolation-harbor-login-vs-the-operators-docker-hub-login)).
 
 ```haskell
-{-# LANGUAGE CPP #-}
--- Example: host-frame docker is OS-gated. On Windows it is a fail-stub, valid
--- only INSIDE the WSL2 frame; mirrors HostBootstrap.Registry's Windows arm of
--- withEphemeralDockerConfig, which fails rather than materialize a host DOCKER_CONFIG.
+-- Example: host-frame docker is OS-gated. On non-Linux hosts it fails rather
+-- than materialize a host DOCKER_CONFIG outside the Linux lift frame.
 withHostDocker :: (AbsExe -> IO a) -> IO a
-#ifdef mingw32_HOST_OS
-withHostDocker _ =
-  fail "host-frame `docker` is unavailable on Windows; descend into the WSL2 frame first"
-#else
-withHostDocker act = resolveHostTool Docker >>= act
-#endif
+withHostDocker act = do
+  substrate <- detectHostSubstrate
+  case substrate of
+    Right LinuxCpu -> resolveHostTool Docker >>= act
+    Right LinuxGpu -> resolveHostTool Docker >>= act
+    Right other -> fail ("host-frame docker is unavailable on " ++ renderHostSubstrate other)
+    Left err -> fail err
 ```
 
 ## 6. Ensure Reconcilers Are Host-Gated and Fail Fast
 
 A host-dependency reconciler is an idempotent value carrying its own applicability predicate over the
-`HostSubstrate`, plus an install-and-verify action (mirroring `HostBootstrap.Ensure.Reconciler`).
+`HostSubstrate`, plus an install-and-verify plan (mirroring `HostBootstrap.Ensure.Reconciler`).
+Sprint `1.52` represents these as pure host-gated reconciler plans; Sprint `4.37` adds the decision
+fold that turns observed provider state into a no-op, an apply-plan, or a reboot-required outcome.
 Running a reconciler on a host its predicate rejects fails fast — a one-line diagnostic and a
-non-zero exit — **before any side effect**. The applicability decision is pure so it is tested
-without exiting the process; only the runner is `IO`.
+non-zero exit — **before any side effect**. The applicability and decision folds are pure so they are
+tested without exiting the process; the live package-manager / VM-provider runner is the remaining
+host-specific proof axis.
 
 ```haskell
 -- Example: ensureLima applies only on Apple; ensureWsl2 only on Windows.
 data HostReconciler = HostReconciler
   { reconcilerName :: String
   , appliesTo      :: HostSubstrate -> Bool
-  , reconcile      :: HostConfig -> IO ()   -- probe-first install-and-verify
+  , steps          :: [HostReconcileStep]   -- probe-first install-and-verify plan
   }
 
-ensureLima :: HostReconciler
-ensureLima = HostReconciler
-  { reconcilerName = "lima"
-  , appliesTo      = (== AppleSilicon)
-  , reconcile      = installAndVerify "lima" limaPresent limaInstallPlan
-  }
+data HostProviderState = HostProviderReady | HostProviderMissing | HostProviderRequiresReboot String
+data HostReconcileDecision = HostReconcileNoop | HostReconcileApply [HostReconcileStep] | HostReconcileRebootRequired String
 ```
 
-`installAndVerify` is probe-first and idempotent: a satisfied dependency is a verified no-op;
-otherwise it runs the substrate-branched install plan (a pure, unit-tested `[InstallStep]`) and
-re-verifies, dying with an actionable message if still unmet. The WSL2 reconciler additionally
-treats a required host reboot as a first-class fail-fast outcome, not a silent hang. This is the
-[prerequisite_doctrine.md](./prerequisite_doctrine.md) fail-fast contract projected onto host
-provisioning, composed with `Plan` / `Apply`
+The decision fold is probe-first and idempotent: a satisfied dependency is a verified no-op;
+otherwise it returns the substrate-branched install plan and lets the effectful interpreter re-verify
+after apply. The WSL2 reconciler additionally treats a required host reboot as a first-class
+fail-fast outcome, not a silent hang. This is the [prerequisite_doctrine.md](./prerequisite_doctrine.md)
+fail-fast contract projected onto host provisioning, composed with `Plan` / `Apply`
 ([pure_fp_standards.md § Plan / Apply](./pure_fp_standards.md#plan--apply)) so `--dry-run` renders
 the install plan without touching a package manager.
 
 ## 7. Relationship to the Existing Host Gate and Sibling Models
 
 **This relaxes the Ubuntu-only host gate.** [prerequisite_doctrine.md § 2](./prerequisite_doctrine.md#2-prerequisite-categories)
-lists `supported_ubuntu_2404` as a supported host property, and the current registry gates on it. The
-`HostSubstrate` classification supersedes that host-level gate with a five-member closed set:
-"Ubuntu 24.04" becomes a property of the *synthesized Linux frame* (the Lima/WSL2 guest, §4), not a
-requirement on the operator's physical host. The Linux-native host still resolves to `LinuxCpu` /
-`LinuxGpu`; the Apple and Windows hosts become first-class by construction rather than rejected by a
-`platform_linux` prerequisite.
+now treats `host_substrate_supported` as the cluster prerequisite root. The
+`supported_ubuntu_2404` node remains available as an explicit compatibility property, but the cluster
+bundle no longer gates on it. The `HostSubstrate` classification supersedes that host-level gate with
+a five-member closed set: "Ubuntu 24.04" becomes a property of the *synthesized Linux frame* (the
+Lima/WSL2 guest, §4), not a requirement on the operator's physical host. The Linux-native host still
+resolves to `LinuxCpu` / `LinuxGpu`; the Apple and Windows hosts become first-class by construction
+rather than rejected by a `platform_linux` prerequisite.
 
 **This is `hostbootstrap`'s VM model, not jitML's Metal bridge.** prodbox manages Kubernetes, so the
 non-Linux host must synthesize a Linux frame via a VM (Lima on Apple, WSL2 on Windows) — the
@@ -236,13 +233,14 @@ This SSoT owns the host-platform doctrine intention.
   knob; every OS reaches a Linux frame through a closed per-OS provider lift; and "a Linux cluster
   tool on a non-Linux host without a VM" (rules a/b) and "host-frame `docker` on Windows" (rule j)
   are unrepresentable, not runtime-checked.
-- **Linked dependents** (scheduled — Sprint 1.52 / Sprint 4.37):
+- **Linked dependents** (Sprints `1.52` and `4.37` landed):
   `src/Prodbox/Host/Substrate.hs` (the `HostSubstrate` detector),
   `src/Prodbox/Host/Tool.hs` (the closed `HostTool` enum + `AbsExe`),
   `src/Prodbox/Host/Lift.hs` (`LiftLayer` / `foldHostLift` / `clusterFrame`),
   `src/Prodbox/Host/Lima.hs` and `src/Prodbox/Host/Wsl2.hs` (provider argv builders),
-  `src/Prodbox/Host/Ensure.hs` (the host-gated `HostReconciler`), and
-  `src/Prodbox/DockerConfig.hs` (the rule-j Windows `CPP` fail-stub of the registry seam).
+  `src/Prodbox/Host/Ensure.hs` (the host-gated reconciler plans and provider-state decisions),
+  `src/Prodbox/DockerConfig.hs` (the rule-j Docker host-frame gate and Linux-frame dispatch), and
+  `src/Prodbox/Prerequisite.hs` / `src/Prodbox/TestPlan.hs` (the `host_substrate_supported` root).
 
 ## Cross-References
 

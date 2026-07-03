@@ -44,6 +44,9 @@ import Prodbox.EffectDAG
   ( EffectDAG (..)
   , EffectNode (..)
   )
+import Prodbox.Host.Substrate
+  ( detectHostSubstrate
+  )
 import Prodbox.Infra.MinioBackend
   ( ensureMinioBackendBucket
   , minioBackendRegion
@@ -265,6 +268,7 @@ runValidation context validation =
             then Success ()
             else Failure "This suite requires Linux."
         )
+    RequireHostSubstrateSupported -> requireHostSubstrateSupported
     RequireSettings -> requireSettings
     RequireSystemd -> do
       hasSystemdDirectory <- doesDirectoryExist "/run/systemd/system"
@@ -294,6 +298,11 @@ runValidation context validation =
   requireSettings = do
     settingsResult <- validateAndLoadSettings (interpreterRepoRoot context)
     pure (either Failure (const (Success ())) settingsResult)
+
+  requireHostSubstrateSupported :: IO (Result ())
+  requireHostSubstrateSupported = do
+    substrateResult <- detectHostSubstrate
+    pure (either Failure (const (Success ())) substrateResult)
 
   requireTool :: FilePath -> [String] -> IO (Result ())
   requireTool toolName versionArgs = do

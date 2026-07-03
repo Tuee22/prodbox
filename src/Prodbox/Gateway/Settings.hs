@@ -516,12 +516,10 @@ readServiceAccountToken path = do
 
 -- | Dhall-friendly DTO for the gateway Orders file (Sprint 2.22).
 --
--- The schema mirrors the existing JSON Orders shape used by
--- @charts/gateway/templates/configmap-orders.yaml@ and decoded today by
--- @Prodbox.Gateway.Types.parseOrders@. The Dhall path is the new sole-source
--- on the supported chart surface; the JSON path is retained as a
--- backwards-compatible fallback in 'loadOrders' until the chart-rewrite
--- transition completes.
+-- The schema mirrors the Orders fields rendered by
+-- @charts/gateway/templates/configmap-orders.yaml@. The Dhall path is the
+-- sole supported chart surface; the old JSON Orders parser was removed with
+-- the Sprint 2.27 CBOR wire-codec closure.
 data OrdersDhall = OrdersDhall
   { version_utc :: Natural
   , nodes :: [PeerEndpointDhall]
@@ -545,10 +543,9 @@ data GatewayRuleDhall = GatewayRuleDhall
   }
   deriving (Eq, Show, Generic, FromDhall)
 
--- | Convert an 'OrdersDhall' DTO to the runtime 'Orders' value. Mirrors the
--- invariants enforced by 'Prodbox.Gateway.Types.parseOrders': @version_utc@
--- non-negative, unique node_id values, and @ranked_nodes@ being a subset of
--- @nodes.node_id@.
+-- | Convert an 'OrdersDhall' DTO to the runtime 'Orders' value. Enforces
+-- @version_utc@ non-negative, unique @node_id@ values, and @ranked_nodes@
+-- being a subset of @nodes.node_id@.
 toOrders :: OrdersDhall -> Either String Orders
 toOrders dto = do
   let nodeList = map toPeer (nodes dto)

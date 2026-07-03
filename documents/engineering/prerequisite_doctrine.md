@@ -38,7 +38,9 @@ The supported doctrine is:
 
 Typical prerequisite categories include:
 
-- supported host properties such as `Ubuntu 24.04 LTS`
+- supported host properties such as the detected `host_substrate_supported` multi-OS host gate;
+  `supported_ubuntu_2404` remains as an explicit compatibility node, not the cluster prerequisite
+  root
 - required host tools such as `aws`, `curl`, `dig`, `docker`, `helm`, `kubectl`, `pulumi`, and
   `ssh`
 - repository configuration readiness through in-process decoding of `prodbox-config.dhall` by
@@ -46,9 +48,10 @@ Typical prerequisite categories include:
 - cluster-backed runtime readiness
 - AWS- and Route-53-backed readiness
 
-The Ubuntu-only host gate (`platform_linux` / `supported_ubuntu_2404`) is generalized to a
-multi-OS host-provider gate per
-[host_platform_doctrine.md](./host_platform_doctrine.md).
+The Ubuntu-only host gate (`platform_linux` / `supported_ubuntu_2404`) is generalized to the
+multi-OS `host_substrate_supported` host-provider gate per
+[host_platform_doctrine.md](./host_platform_doctrine.md). The Ubuntu node remains available for
+direct compatibility checks, but cluster prerequisite expansion starts from the host-substrate gate.
 
 ## 3. Registry
 
@@ -67,6 +70,7 @@ per-validation prerequisite sets kept minimal and precise (Sprint 5.6).
 
 Examples of supported prerequisite IDs in the current repository include:
 
+- `host_substrate_supported`
 - `supported_ubuntu_2404`
 - `settings_object`
 - `tool_aws`
@@ -121,8 +125,10 @@ This SSoT co-owns prerequisite doctrine intention.
 
 - Owned statement: prerequisite checks fail fast, are registry-backed, and emit actionable
   root-cause messages.
-- Linked dependents: `src/Prodbox/Prerequisite.hs`, `src/Prodbox/EffectDAG.hs`,
-  `src/Prodbox/EffectInterpreter.hs`, `src/Prodbox/TestPlan.hs`, `src/Prodbox/TestRunner.hs`.
+- Linked dependents: `src/Prodbox/Prerequisite.hs`, `src/Prodbox/PrerequisiteId.hs`,
+  `src/Prodbox/EffectDAG.hs`, `src/Prodbox/EffectInterpreter.hs`, `src/Prodbox/TestPlan.hs`,
+  `src/Prodbox/TestRunner.hs`, `src/Prodbox/Host/Substrate.hs`, and
+  `src/Prodbox/Host/Ensure.hs`.
 
 ## Prerequisites as Typed Effects
 

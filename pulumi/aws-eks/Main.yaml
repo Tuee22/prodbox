@@ -47,6 +47,7 @@ resources:
       enableDnsSupport: true
       tags:
         Name: ${stackName}-vpc
+        prodbox.io/managed-by: prodbox
 
   igw:
     type: aws:ec2:InternetGateway
@@ -54,6 +55,7 @@ resources:
       vpcId: ${vpc.id}
       tags:
         Name: ${stackName}-igw
+        prodbox.io/managed-by: prodbox
 
   publicRouteTable:
     type: aws:ec2:RouteTable
@@ -64,6 +66,7 @@ resources:
           gatewayId: ${igw.id}
       tags:
         Name: ${stackName}-public-rt
+        prodbox.io/managed-by: prodbox
 
   publicSubnet0:
     type: aws:ec2:Subnet
@@ -74,6 +77,7 @@ resources:
       mapPublicIpOnLaunch: true
       tags:
         Name: ${stackName}-public-subnet-0
+        prodbox.io/managed-by: prodbox
         kubernetes.io/cluster/${clusterName}: shared
         kubernetes.io/role/elb: "1"
 
@@ -86,6 +90,7 @@ resources:
       mapPublicIpOnLaunch: true
       tags:
         Name: ${stackName}-public-subnet-1
+        prodbox.io/managed-by: prodbox
         kubernetes.io/cluster/${clusterName}: shared
         kubernetes.io/role/elb: "1"
 
@@ -183,7 +188,6 @@ resources:
       nodeRoleArn: ${nodeRole.arn}
       subnetIds:
         - ${publicSubnet0.id}
-        - ${publicSubnet1.id}
       instanceTypes:
         - t3.large
       diskSize: 50
@@ -259,14 +263,11 @@ resources:
       role: ${awsLbControllerRole.name}
       policyArn: ${awsLbControllerPolicy.arn}
 
-  # EBS CSI driver IRSA role + managed-addon installation. The default EKS
-  # cluster ships only the legacy in-tree `gp2` StorageClass without a
-  # backing provisioner; PVCs against it sit Pending forever. The
-  # aws-ebs-csi-driver EKS managed addon installs the modern
-  # `ebs.csi.aws.com` provisioner that backs `gp2` (and `gp3`) dynamic
-  # EBS volumes. The Sprint 7.5.c.i MinIO chart values use
-  # `persistence.storageClass=gp2` on the AWS substrate, so the driver
-  # must be available for MinIO's PVC binding to succeed.
+  # EBS CSI driver IRSA role + managed-addon installation. Sprint 7.28 uses
+  # pre-created retained EBS volumes lifted in as static `Retain` PVs via
+  # `spec.csi.volumeHandle` (no dynamic StorageClass provisioning). The CSI
+  # driver is still required so kubelet can attach and mount those volume
+  # handles when the static PVs bind.
   ebsCsiDriverRole:
     type: aws:iam:Role
     properties:
@@ -323,5 +324,6 @@ outputs:
   aws_lb_controller_policy_arn: ${awsLbControllerPolicy.arn}
   aws_lb_controller_role_arn: ${awsLbControllerRole.arn}
   aws_lb_controller_role_name: ${awsLbControllerRole.name}
+  retained_ebs_availability_zone: ${availabilityZones[0]}
   ebs_csi_driver_role_arn: ${ebsCsiDriverRole.arn}
   ebs_csi_driver_addon_arn: ${ebsCsiDriverAddon.arn}

@@ -172,7 +172,10 @@ projection onto `ResidueStatus`, and the `reconcilePresent` / `reconcileAbsent` 
 
 Sprint 4.35 has a **forward-only dependency** on
 [Phase 3 Sprint 3.21](../../DEVELOPMENT_PLAN/README.md) — the Pulsar client boundary
-(`Prodbox.Pulsar.Client`) that `topicDiscover` / `deleteTopic` call. A Phase 4 sprint depending on an
+(`Prodbox.Pulsar.Client`) that `topicDiscover` / `deleteTopic` call. Sprint `3.21` has landed the
+typed boundary but broker I/O still fails closed until the Apache Pulsar `BaseCommand` layer is
+generated, so Sprint `4.35` cannot consume live broker discovery until that blocker clears. A Phase
+4 sprint depending on an
 **earlier** phase's sprint is permitted under
 [development_plan_standards Standard N](../../DEVELOPMENT_PLAN/development_plan_standards.md); the
 dependency never runs the other way.
@@ -186,9 +189,11 @@ This doctrine owns "a Pulsar topic is a managed resource" intention.
   `LifecycleClass`, and a name only the topic algebra can produce — reconciled to present/absent
   through the [§3.1](lifecycle_reconciliation_doctrine.md#31-the-managed-resource-registry-the-reconciler-substrate)
   registry, with retention drawn from the finite storage budget.
-- Linked dependents (scheduled): `src/Prodbox/Pulsar/Topic.hs` (the `ManagedTopic` type + topic-algebra
-  mirror), `src/Prodbox/Pulsar/TopicResidue.hs` (`TopicResidueStatus` + `topicDiscover` + the
-  projection), `src/Prodbox/Pulsar/Client.hs` (the Sprint 3.21 broker boundary),
+- Linked dependents (scheduled unless noted): `src/Prodbox/Pulsar/Topic.hs` (topic-algebra mirror
+  landed in Sprint `3.21`; the `ManagedTopic` type is scheduled for Sprint `4.35`),
+  `src/Prodbox/Pulsar/TopicResidue.hs` (`TopicResidueStatus` + `topicDiscover` + the
+  projection), `src/Prodbox/Pulsar/Client.hs` (Sprint `3.21` typed boundary landed; broker I/O
+  still blocked on generated `BaseCommand`),
   `src/Prodbox/Lifecycle/ResourceClass.hs` (topic class facts),
   `src/Prodbox/Lifecycle/ResourceRegistry.hs` (topic rows in the IO registry / `reconcileAbsent`).
 

@@ -355,15 +355,25 @@ bootstrapBundleTestFileName = "bootstrap-bundle.enc"
 
 requireReadyVault :: VaultAddress -> IO (Either String ())
 requireReadyVault address = do
-  statusResult <- vaultSealStatus address
-  pure $ case statusResult of
-    Left err -> Left (unreachableMessageAt address err)
-    Right status
-      | not (sealStatusInitialized status) ->
-          Left "Vault is not initialized; run `prodbox vault init` first."
-      | sealStatusSealed status ->
-          Left "Vault is sealed; run `prodbox vault unseal` first."
-      | otherwise -> Right ()
+  testStatus <- lookupEnv "PRODBOX_TEST_CLUSTER_VAULT_STATUS"
+  case testStatus of
+    Just "ready" -> pure (Right ())
+    Just "sealed" -> pure (Left "Vault is sealed; run `prodbox vault unseal` first.")
+    Just "uninitialized" -> pure (Left "Vault is not initialized; run `prodbox vault init` first.")
+    Just "unreachable" ->
+      pure (Left ("Vault is unreachable at " ++ Text.unpack (unVaultAddress address) ++ " (test seam)"))
+    Just other ->
+      pure (Left ("invalid PRODBOX_TEST_CLUSTER_VAULT_STATUS=" ++ other))
+    _ -> do
+      statusResult <- vaultSealStatus address
+      pure $ case statusResult of
+        Left err -> Left (unreachableMessageAt address err)
+        Right status
+          | not (sealStatusInitialized status) ->
+              Left "Vault is not initialized; run `prodbox vault init` first."
+          | sealStatusSealed status ->
+              Left "Vault is sealed; run `prodbox vault unseal` first."
+          | otherwise -> Right ()
 
 -- | The operator unlock-bundle password seam. The doctrine-blessed cleartext
 -- home is @test-secrets.dhall@ (test harness only); a host operator is prompted

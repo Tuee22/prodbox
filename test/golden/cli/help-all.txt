@@ -51,6 +51,16 @@ Options:
 Examples:
 - prodbox aws quotas request --tier core  # Request core-tier quota increases.
 
+## prodbox aws ebs reap-test
+prodbox aws ebs reap-test - Delete test-scoped EBS volumes
+
+Delete only EBS volumes tagged as per-run test volumes for the canonical AWS EKS test cluster. Retained-production EBS volumes are never selected.
+Options:
+- --yes - Confirm deletion of test-scoped EBS volumes
+
+Examples:
+- prodbox aws ebs reap-test --yes  # Delete leaked test-scoped EBS volumes.
+
 ## prodbox aws stack eks reconcile
 prodbox aws stack eks reconcile - Provision or inspect the eks stack
 
@@ -588,6 +598,28 @@ Options:
 Examples:
 - prodbox nuke --dry-run  # Render the total-teardown plan.
 
+## prodbox test init
+prodbox test init - Create prodbox.test.dhall
+
+Create the executable-sibling prodbox.test.dhall test-topology document.
+Options:
+- --force - Overwrite an existing prodbox.test.dhall
+
+Examples:
+- prodbox test init  # Create the test-topology document.
+
+## prodbox test run
+prodbox test run - Run a topology-declared suite
+
+Run one topology-declared suite, or every suite with `all`, using .test-data isolation.
+Options:
+- --coverage - Enable coverage reporting for the selected test scope
+- --cov-fail-under <INTEGER> - Require a minimum coverage percentage
+- --substrate <SUBSTRATE> - Target substrate (home-local, aws); default home-local
+
+Examples:
+- prodbox test run unit  # Run the topology-declared unit suite.
+
 ## prodbox test all
 prodbox test all - Run the full test suite
 
@@ -762,6 +794,18 @@ Options:
 
 Examples:
 - prodbox test integration pulumi  # Run the `pulumi` integration suite.
+
+## prodbox test integration eks-volume-rebind
+prodbox test integration eks-volume-rebind - Run retained-volume rebinding integration tests
+
+Run retained-volume rebinding integration tests
+Options:
+- --coverage - Enable coverage reporting for the selected test scope
+- --cov-fail-under <INTEGER> - Require a minimum coverage percentage
+- --substrate <SUBSTRATE> - Target substrate (home-local, aws); default home-local
+
+Examples:
+- prodbox test integration eks-volume-rebind  # Run the `eks-volume-rebind` integration suite.
 
 ## prodbox test integration charts-storage
 prodbox test integration charts-storage - Run chart-storage integration tests

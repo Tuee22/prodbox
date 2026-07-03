@@ -17,9 +17,17 @@ module Prodbox.Lifecycle.TagSweep
   , TagSweepInput (..)
   , discoverClusterTaggedAwsResources
   , renderTagSweepRefusal
+  , prodboxManagedByTagKey
+  , prodboxManagedByTagValue
+  , ebsLifecycleTagKey
+  , ebsRetainedLifecycleValue
+  , ebsTestScopedLifecycleValue
+  , ebsClusterOwnedTagKey
+  , EbsTagPartition (..)
   , longLivedRetentionMarkers
   , isRetainedLongLived
   , partitionRetainedLongLived
+  , partitionEbsTagRows
   )
 where
 
@@ -109,7 +117,7 @@ tagFilterArgs input =
           ]
       prodboxFilter =
         [ "--tag-filters"
-        , "Key=prodbox.io/managed-by,Values=prodbox"
+        , "Key=" ++ prodboxManagedByTagKey ++ ",Values=" ++ prodboxManagedByTagValue
         ]
    in clusterFilter ++ prodboxFilter
 
@@ -163,18 +171,39 @@ renderTagSweepRefusal resources =
       ++ taggedResourceMatchedTagKey resource
       ++ ")"
 
+prodboxManagedByTagKey :: String
+prodboxManagedByTagKey = "prodbox.io/managed-by"
+
+prodboxManagedByTagValue :: String
+prodboxManagedByTagValue = "prodbox"
+
+ebsLifecycleTagKey :: String
+ebsLifecycleTagKey = "prodbox.io/lifecycle"
+
+ebsRetainedLifecycleValue :: String
+ebsRetainedLifecycleValue = "retained-ebs"
+
+ebsTestScopedLifecycleValue :: String
+ebsTestScopedLifecycleValue = "per-run-test"
+
+ebsClusterOwnedTagKey :: String -> String
+ebsClusterOwnedTagKey clusterName = "kubernetes.io/cluster/" ++ clusterName
+
 -- | The @(tag key, tag value)@ pairs that mark a resource as
 -- intentionally-RETAINED long-lived shared infrastructure — the
--- @pulumi_state_backend@ S3 bucket and the @aws-ses@ cross-substrate stack.
--- These survive @cluster delete@ (even @--cascade@) by design and are destroyed
--- only by @prodbox nuke@; the cascade postflight tag sweep must NOT flag them as
--- escaped residue (Standard: lifecycle_reconciliation_doctrine.md — Resource
--- Lifecycle Classes). @nuke@'s own sweep does NOT use this carve-out, since it
--- exists to destroy these resources.
+-- @pulumi_state_backend@ S3 bucket, the @aws-ses@ cross-substrate stack, and
+-- production-retained EBS volumes backing static Retain PVs. These survive
+-- @cluster delete@ (even @--cascade@) by design and are destroyed only by their
+-- explicit long-lived lifecycle surface; the cascade postflight tag sweep must
+-- NOT flag them as escaped residue (Standard:
+-- lifecycle_reconciliation_doctrine.md — Resource Lifecycle Classes). @nuke@'s
+-- own sweep does NOT use this carve-out, since it exists to destroy these
+-- resources.
 longLivedRetentionMarkers :: [(String, String)]
 longLivedRetentionMarkers =
   [ ("prodbox.io/role", "long-lived-pulumi-state")
   , ("prodbox.io/substrate", "shared")
+  , (ebsLifecycleTagKey, ebsRetainedLifecycleValue)
   ]
 
 -- | True when a tag row marks its resource as intentionally-retained long-lived
@@ -195,3 +224,53 @@ partitionRetainedLongLived resources =
   let retainedArns = [taggedResourceArn r | r <- resources, isRetainedLongLived r]
       isRetainedArn r = taggedResourceArn r `elem` retainedArns
    in (filter isRetainedArn resources, filter (not . isRetainedArn) resources)
+
+data EbsTagPartition = EbsTagPartition
+  { retainedEbsTagRows :: [TaggedResource]
+  , testScopedEbsTagRows :: [TaggedResource]
+  , otherEbsTagRows :: [TaggedResource]
+  }
+  deriving (Eq, Show)
+
+-- | Partition tag rows for EBS lifecycle handling. Retained-production markers
+-- win over test-scoped markers for the same ARN; test-scoped EBS requires both
+-- @prodbox.io/lifecycle=per-run-test@ and the EKS ownership tag
+-- @kubernetes.io/cluster/<name>=owned@ on the same resource.
+partitionEbsTagRows :: String -> [TaggedResource] -> EbsTagPartition
+partitionEbsTagRows clusterName resources =
+  EbsTagPartition
+    { retainedEbsTagRows = filter isRetainedArn resources
+    , testScopedEbsTagRows = filter isTestScopedArn resources
+    , otherEbsTagRows =
+        filter
+          (\resource -> not (isRetainedArn resource) && not (isTestScopedArn resource))
+          resources
+    }
+ where
+  retainedArns =
+    [ taggedResourceArn resource
+    | resource <- resources
+    , isRetainedEbsTag resource
+    ]
+  testScopedArns =
+    [ arn
+    | arn <- map taggedResourceArn resources
+    , arn `notElem` retainedArns
+    , hasTag arn ebsLifecycleTagKey ebsTestScopedLifecycleValue
+    , hasTag arn (ebsClusterOwnedTagKey clusterName) "owned"
+    ]
+  isRetainedArn resource = taggedResourceArn resource `elem` retainedArns
+  isTestScopedArn resource = taggedResourceArn resource `elem` testScopedArns
+  hasTag arn key value =
+    any
+      ( \resource ->
+          taggedResourceArn resource == arn
+            && taggedResourceMatchedTagKey resource == key
+            && taggedResourceMatchedTagValue resource == value
+      )
+      resources
+
+isRetainedEbsTag :: TaggedResource -> Bool
+isRetainedEbsTag resource =
+  taggedResourceMatchedTagKey resource == ebsLifecycleTagKey
+    && taggedResourceMatchedTagValue resource == ebsRetainedLifecycleValue

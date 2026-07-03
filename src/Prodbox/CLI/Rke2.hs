@@ -18,6 +18,7 @@ module Prodbox.CLI.Rke2
   , ensureVaultRuntime
   , ensureRootVaultLifecycle
   , MinioImageSource (..)
+  , RetainedStorageInventoryEntry (..)
   , cascadeOrderNarration
   , inferCascadeSubstrate
   , isMinioSecretKeyArgumentSafe
@@ -27,6 +28,8 @@ module Prodbox.CLI.Rke2
   , renderNativeInstallPlan
   , renderInotifySysctlDropIn
   , renderMinioChartArgs
+  , retainedStorageInventoryEntries
+  , rke2InstallPresent
   , operationalAwsCredentialGateFromResult
   , runEdgeCommand
   , runNativeDeleteCascade
@@ -169,6 +172,7 @@ import Prodbox.Lib.Storage
   ( retainedStatefulSetPersistentVolumeClaimName
   , retainedStatefulSetPersistentVolumeName
   )
+import Prodbox.Lifecycle.EbsVolume qualified as EbsVolume
 import Prodbox.Lifecycle.FederatedVault
   ( FederatedVaultLifecycle (..)
   , ParentVaultReadiness (..)
@@ -255,7 +259,7 @@ import Prodbox.Subprocess
   , captureSubprocessResult
   , runSubprocessStreaming
   )
-import Prodbox.Substrate (Substrate (..), substrateId)
+import Prodbox.Substrate (Substrate (..), replicasForSubstrate, substrateId)
 import Prodbox.Vault.Client
   ( BootstrapAction (..)
   , VaultAddress (..)
@@ -1361,8 +1365,8 @@ buildNativeDeletePlan repoRoot =
 
 -- | Sprint 4.26: render the destructive @rke2 delete@ plan. The cascade
 -- variant renders the canonical phase order (confirm-MinIO → drain →
--- per-run destroys → uninstall → sweep); the default variant renders the
--- refuse-gate + per-run sweep + cluster-substrate removal. Both list the
+-- per-run destroys → test-EBS reaper → uninstall → sweep); the default variant
+-- renders the refuse-gate + per-run sweep + cluster-substrate removal. Both list the
 -- per-run stacks from the managed-resource registry SSoT
 -- ('ResourceRegistry.perRunManagedResources'), so the rendered plan can
 -- never omit a per-run stack (closing the historical @aws-eks-subzone@
@@ -1382,7 +1386,8 @@ renderNativeDeletePlan repoRoot flags
             ++ [ "STEP=per_run_destroy " ++ ResourceRegistry.resourceName resource
                | resource <- ResourceRegistry.perRunManagedResources
                ]
-            ++ [ "STEP=delete_rke2_cluster_substrate"
+            ++ [ "STEP=test_ebs_reaper"
+               , "STEP=delete_rke2_cluster_substrate"
                , "STEP=remove_calico_endpoint_status_residue"
                , "STEP=remove_managed_kubeconfig"
                , "STEP=host_firewall_gateway_unrestrict"
@@ -1458,8 +1463,8 @@ runNativeLocalUninstall repoRoot = do
     , renderRetainedStateNotice repoRoot retainedManualPvRoot
     ]
 
--- | Sprint 4.17.a canonical cascade order:
--- confirm-MinIO → drain → per-run destroys → uninstall → sweep.
+-- | Sprint 4.17.a + 4.40 canonical cascade order:
+-- confirm-MinIO → drain → per-run destroys → test-EBS reaper → uninstall → sweep.
 -- Per @documents/engineering/lifecycle_reconciliation_doctrine.md §5b@
 -- the K8s drain runs **before** any per-run Pulumi destroy so the
 -- in-cluster controllers (AWS Load Balancer Controller, EBS CSI driver,
@@ -1492,14 +1497,14 @@ runNativeLocalUninstall repoRoot = do
 --   API is reported as a diagnostic but does not fail the cascade —
 --   the operator-named cascade phrase only promises that the cascade
 --   *ran* the sweep; resolving residue is operator work.
--- | Sprint 4.17.a: the operator-facing narration string for the canonical
+-- | Sprint 4.17.a + 4.40: the operator-facing narration string for the canonical
 -- cascade phase order. Exposed as a top-level constant so unit tests can pin
--- the drain-before-destroys order without re-implementing it. The order text
--- must match the doctrine table at
+-- the drain-before-destroys and test-EBS-reaper order without re-implementing
+-- it. The order text must match the doctrine table at
 -- @documents/engineering/lifecycle_reconciliation_doctrine.md §5b@.
 cascadeOrderNarration :: String
 cascadeOrderNarration =
-  "rke2 delete --cascade: confirm-MinIO → drain → per-run destroys → uninstall → sweep"
+  "rke2 delete --cascade: confirm-MinIO → drain → per-run destroys → test-EBS reaper → uninstall → sweep"
 
 runNativeDeleteCascade :: FilePath -> IO ExitCode
 runNativeDeleteCascade repoRoot = do
@@ -1545,7 +1550,12 @@ runNativeDeleteCascade repoRoot = do
       case destroyExit of
         ExitFailure _ -> pure destroyExit
         ExitSuccess -> do
-          -- Step 4: RKE2 uninstall + cluster-substrate cleanup.
+          -- Step 4: Sprint 4.40 test-scoped EBS reaper. After per-run
+          -- stack destroys, sweep only
+          -- test-scoped EBS volumes. Retained-production EBS survives by
+          -- tag policy and by the reaper's test-scoped discover filter.
+          runCascadeTestEbsReaper repoRoot
+          -- Step 5: RKE2 uninstall + cluster-substrate cleanup.
           retainedManualPvRoot <- resolveRetainedManualPvRoot repoRoot
           uninstallExit <-
             runSequentially
@@ -1558,7 +1568,7 @@ runNativeDeleteCascade repoRoot = do
           case uninstallExit of
             ExitFailure _ -> pure uninstallExit
             ExitSuccess -> do
-              -- Step 5: postflight cluster-tag sweep (best effort).
+              -- Step 6: postflight cluster-tag sweep (best effort).
               runCascadePostflightTagSweep repoRoot
               pure ExitSuccess
 
@@ -1720,6 +1730,29 @@ buildDrainEnvironment repoRoot substrate maybeAwsKubeconfig = do
                 overlayAwsCredentials
                   (("KUBECONFIG", kubeconfigPath) : parentEnv)
                   credentials
+
+runCascadeTestEbsReaper :: FilePath -> IO ()
+runCascadeTestEbsReaper repoRoot = do
+  adminResult <- loadAdminAwsCredentials repoRoot
+  case adminResult of
+    Left _ ->
+      writeOutputLine
+        "Test-scoped EBS reaper: skipped (no ephemeral admin AWS credential available)."
+    Right adminCredentials -> do
+      environment <- adminAwsEnvironment adminCredentials
+      result <-
+        EbsVolume.runTestScopedEbsReaper
+          EbsVolume.TestEbsReaperInput
+            { EbsVolume.testEbsReaperEnvironment = environment
+            , EbsVolume.testEbsReaperWorkingDirectory = Just repoRoot
+            , EbsVolume.testEbsReaperClusterName = awsEksCanonicalClusterName
+            }
+      case result of
+        Left err ->
+          writeOutputLine
+            ("Test-scoped EBS reaper: query/delete failed (continuing): " ++ err)
+        Right report ->
+          writeOutputLine (EbsVolume.renderTestScopedEbsReaperReport report)
 
 -- | Sprint 4.17 helper: the postflight cluster-tag sweep extracted from
 -- the canonical cascade. Best-effort: a non-zero sweep exit is reported
@@ -1984,7 +2017,7 @@ ensureRetainedLocalStorage repoRoot settings prodboxId labelValue = do
       let bindings =
             map
               (retainedLocalStorageBinding (resolvedManualPvHostRoot settings))
-              retainedLocalStorageEntries
+              (retainedLocalStorageEntriesForSubstrate SubstrateHomeLocal)
       runSequentially
         ( map
             ( \binding ->
@@ -2054,6 +2087,16 @@ data RetainedLocalStorageBinding = RetainedLocalStorageBinding
   , retainedLocalStorageBindingOwner :: String
   }
 
+data RetainedStorageInventoryEntry = RetainedStorageInventoryEntry
+  { retainedStorageInventoryNamespace :: String
+  , retainedStorageInventoryStatefulSet :: String
+  , retainedStorageInventoryOrdinal :: Int
+  , retainedStorageInventoryPersistentVolume :: String
+  , retainedStorageInventoryPersistentClaim :: String
+  , retainedStorageInventoryStorageSize :: String
+  }
+  deriving (Eq, Show)
+
 retainedLocalStorageEntries :: [RetainedLocalStorageEntry]
 retainedLocalStorageEntries =
   [ RetainedLocalStorageEntry
@@ -2071,6 +2114,49 @@ retainedLocalStorageEntries =
       , retainedLocalStorageEntryOwner = "100:100"
       }
   ]
+
+retainedLocalStorageEntriesForSubstrate :: Substrate -> [RetainedLocalStorageEntry]
+retainedLocalStorageEntriesForSubstrate substrate =
+  case substrate of
+    SubstrateHomeLocal -> retainedLocalStorageEntries
+    SubstrateAws -> retainedAwsLocalStorageEntries
+
+retainedAwsLocalStorageEntries :: [RetainedLocalStorageEntry]
+retainedAwsLocalStorageEntries =
+  [ entry
+      { retainedLocalStorageEntryStorageSize =
+          if retainedLocalStorageEntryNamespace entry == minioNamespace
+            && retainedLocalStorageEntryStatefulSet entry == "minio"
+            then "20Gi"
+            else retainedLocalStorageEntryStorageSize entry
+      }
+  | entry <- retainedLocalStorageEntries
+  ]
+
+-- | Sprint 4.39: substrate-aware retained-storage inventory. Home and AWS use
+-- the same deterministic namespace/PV/PVC identities; the volume source differs
+-- later at materialization time (hostPath on home, pre-created EBS
+-- @volumeHandle@ on AWS).
+retainedStorageInventoryEntries :: Substrate -> [RetainedStorageInventoryEntry]
+retainedStorageInventoryEntries substrate =
+  map inventoryEntry (retainedLocalStorageEntriesForSubstrate substrate)
+ where
+  inventoryEntry entry =
+    RetainedStorageInventoryEntry
+      { retainedStorageInventoryNamespace = retainedLocalStorageEntryNamespace entry
+      , retainedStorageInventoryStatefulSet = retainedLocalStorageEntryStatefulSet entry
+      , retainedStorageInventoryOrdinal = retainedLocalStorageEntryOrdinal entry
+      , retainedStorageInventoryPersistentVolume =
+          retainedStatefulSetPersistentVolumeName
+            (retainedLocalStorageEntryNamespace entry)
+            (retainedLocalStorageEntryStatefulSet entry)
+            (retainedLocalStorageEntryOrdinal entry)
+      , retainedStorageInventoryPersistentClaim =
+          retainedStatefulSetPersistentVolumeClaimName
+            (retainedLocalStorageEntryStatefulSet entry)
+            (retainedLocalStorageEntryOrdinal entry)
+      , retainedStorageInventoryStorageSize = retainedLocalStorageEntryStorageSize entry
+      }
 
 retainedLocalStorageBinding :: FilePath -> RetainedLocalStorageEntry -> RetainedLocalStorageBinding
 retainedLocalStorageBinding root entry =
@@ -2529,16 +2615,17 @@ renderMinioChartArgs substrate _imageSource =
         ++ minioSubstratePersistenceArgs substrate
 
 -- | Substrate-specific MinIO storage args for the @data@ volumeClaimTemplate:
--- the retained @manual@ StorageClass on home (the prebound PV at
--- @.data/prodbox/minio/0@), or the dynamic EKS @gp2@ class on AWS (bounded at
--- 20 GiB to keep test-substrate EBS cost predictable).
+-- both substrates use the retained @manual@ StorageClass. Home binds to the
+-- hostPath PV at @.data/prodbox/minio/0@; AWS binds to the pre-created EBS
+-- volume lifted in as a static CSI PV (bounded at 20 GiB to keep test-substrate
+-- EBS cost predictable).
 minioSubstratePersistenceArgs :: Substrate -> [String]
 minioSubstratePersistenceArgs substrate =
   case substrate of
     SubstrateHomeLocal ->
       ["--set", "storage.className=manual", "--set", "storage.size=200Gi"]
     SubstrateAws ->
-      ["--set", "storage.className=gp2", "--set", "storage.size=20Gi"]
+      ["--set", "storage.className=manual", "--set", "storage.size=20Gi"]
 
 minioChartImages :: MinioImageSource -> (ContainerImage.ImageRef, ContainerImage.ImageRef)
 minioChartImages imageSource =
@@ -4270,11 +4357,19 @@ configuredPublicEdgeBgpPeers settings =
 
 configuredEnvoyGatewayControllerReplicas :: ValidatedSettings -> Int
 configuredEnvoyGatewayControllerReplicas settings =
-  maybe 1 fromIntegral (envoy_gateway_controller_replicas (deployment (validatedConfig settings)))
+  fromIntegral
+    ( replicasForSubstrate
+        SubstrateHomeLocal
+        (envoy_gateway_controller_scaling (deployment (validatedConfig settings)))
+    )
 
 configuredEnvoyGatewayDataPlaneReplicas :: ValidatedSettings -> Int
 configuredEnvoyGatewayDataPlaneReplicas settings =
-  maybe 1 fromIntegral (envoy_gateway_data_plane_replicas (deployment (validatedConfig settings)))
+  fromIntegral
+    ( replicasForSubstrate
+        SubstrateHomeLocal
+        (envoy_gateway_data_plane_scaling (deployment (validatedConfig settings)))
+    )
 
 ensureCertManagerRuntime :: FilePath -> String -> String -> IO ExitCode
 ensureCertManagerRuntime repoRoot prodboxId labelValue = do

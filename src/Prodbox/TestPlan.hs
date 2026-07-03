@@ -41,6 +41,7 @@ data NativeValidation
   | ValidationGatewayPartition
   | ValidationChartsPlatform
   | ValidationChartsStorage
+  | ValidationEksVolumeRebind
   | ValidationLifecycle
   | ValidationKeycloakInvite
   | ValidationSealedVault
@@ -74,6 +75,36 @@ data TestExecutionPlan = TestExecutionPlan
 testExecutionPlan :: Substrate -> TestScope -> TestExecutionPlan
 testExecutionPlan substrate scope =
   case scope of
+    TestInit _ ->
+      nativeExecutionPlan
+        "init"
+        []
+        NativeSuitePlan
+          { nativeSuiteId = "init"
+          , nativeValidations = []
+          , nativeInitialIntegrationGatePrerequisites = []
+          , nativeDeferredIntegrationGatePrerequisites = []
+          , nativeManagedAwsHarnessPolicyTier = Nothing
+          , nativeRequiresIntegrationRunbook = False
+          , nativeRequiresSupportedRuntimeBootstrap = False
+          , nativeRequiresSupportedRuntimePostflight = False
+          , nativeSubstrate = substrate
+          }
+    TestRun suiteName ->
+      nativeExecutionPlan
+        ("run " ++ suiteName)
+        []
+        NativeSuitePlan
+          { nativeSuiteId = "run-" ++ suiteName
+          , nativeValidations = []
+          , nativeInitialIntegrationGatePrerequisites = []
+          , nativeDeferredIntegrationGatePrerequisites = []
+          , nativeManagedAwsHarnessPolicyTier = Nothing
+          , nativeRequiresIntegrationRunbook = False
+          , nativeRequiresSupportedRuntimeBootstrap = False
+          , nativeRequiresSupportedRuntimePostflight = False
+          , nativeSubstrate = substrate
+          }
     TestAll ->
       nativeExecutionPlan
         "all"
@@ -197,6 +228,12 @@ testExecutionPlan substrate scope =
             "integration pulumi"
             "integration-pulumi"
             [ValidationPulumi]
+            True
+        IntegrationEksVolumeRebind ->
+          nativeNamedSuite
+            "integration eks-volume-rebind"
+            "integration-eks-volume-rebind"
+            [ValidationEksVolumeRebind]
             True
         IntegrationChartsStorage ->
           nativeNamedSuite
@@ -333,6 +370,7 @@ canonicalNativeValidations =
   , ValidationChartsPlatform
   , ValidationKeycloakInvite
   , ValidationChartsStorage
+  , ValidationEksVolumeRebind
   , ValidationSealedVault
   , ValidationLifecycle
   ]
@@ -376,6 +414,7 @@ validationInitialPrerequisites validation =
     -- local cluster: cluster only, no AWS credentials.
     ValidationChartsPlatform -> clusterPrerequisites
     ValidationChartsStorage -> clusterPrerequisites
+    ValidationEksVolumeRebind -> clusterPrerequisites
     ValidationLifecycle -> clusterPrerequisites
     ValidationSealedVault -> clusterPrerequisites
     -- keycloak-invite drives the full invite flow end-to-end: the
@@ -404,6 +443,7 @@ validationDeferredPrerequisites validation =
     ValidationGatewayPartition -> []
     ValidationChartsPlatform -> []
     ValidationChartsStorage -> []
+    ValidationEksVolumeRebind -> []
     ValidationLifecycle -> []
     ValidationSealedVault -> []
     ValidationKeycloakInvite ->
@@ -429,6 +469,7 @@ derivedManagedAwsHarnessPolicyTier = derivedTier
 derivedTier :: Substrate -> [NativeValidation] -> Maybe PolicyTier
 derivedTier substrate validations
   | any alwaysEngagesHarness validations = Just PolicyFull
+  | substrate == SubstrateAws && any requiresAwsSubstrateHarness validations = Just PolicyFull
   | substrate == SubstrateAws && any engagesViaCredentials validations = Just PolicyFull
   | otherwise = Nothing
  where
@@ -438,6 +479,14 @@ derivedTier substrate validations
     case validation of
       ValidationAwsIam -> True
       ValidationKeycloakInvite -> True
+      _ -> False
+
+  -- The EKS volume-rebind validation mutates the AWS per-run EKS stack
+  -- directly on the AWS substrate, but the same validation remains
+  -- AWS-credential-free on the home substrate.
+  requiresAwsSubstrateHarness validation =
+    case validation of
+      ValidationEksVolumeRebind -> True
       _ -> False
 
   -- Validations that consume live AWS credentials via a declared
@@ -463,7 +512,7 @@ aggregateDeferredPrerequisites =
 -- AWS-credential-free.
 clusterPrerequisites :: [PrerequisiteId]
 clusterPrerequisites =
-  [ SupportedUbuntu2404
+  [ HostSubstrateSupported
   , ToolDocker
   , ToolCtr
   , ToolHelm
@@ -506,6 +555,7 @@ nativeValidationId validation =
     ValidationGatewayPartition -> "gateway-partition"
     ValidationChartsPlatform -> "charts-platform"
     ValidationChartsStorage -> "charts-storage"
+    ValidationEksVolumeRebind -> "eks-volume-rebind"
     ValidationLifecycle -> "lifecycle"
     ValidationKeycloakInvite -> "keycloak-invite"
     ValidationSealedVault -> "sealed-vault"

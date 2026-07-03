@@ -17,15 +17,16 @@ and that file **is** the run: the HA/failover cluster shape, the suite vocabular
 budgets, and the fixtures each suite needs. Nothing about a run is implicit in ambient machine
 state — the test Dhall is the audit trail of what will be stood up.
 
-This inverts today's transitional shape. Today the harness **regenerates the production
+This inverts today's transitional shape. Today the legacy harness still **regenerates the production
 binary-sibling `prodbox.dhall` in place** from `test-secrets.dhall` before validations run
-(`regenerateConfigFromTestSecrets`, `src/Prodbox/TestRunner.hs`; `src/Prodbox/Aws.hs`) — there is
-no test Dhall and no authored test SSoT. The doctrine below replaces that in-place regeneration
-with a distinct authored `prodbox.test.dhall` plus a per-variant **generated** run config. It is
-**scheduled**, not implemented: the schema and the sibling-Dhall fail-fast inversion land in
-[Phase 1 Sprint 1.54](../../DEVELOPMENT_PLAN/phase-1-runtime-cli-aws-foundations.md); the
-`test init` / `test run` topology, `.test-data/` isolation, finally-guaranteed teardown, and the
-never-touch-`.data/` guard land in
+(`regenerateConfigFromTestSecrets`, `src/Prodbox/TestRunner.hs`; `src/Prodbox/Aws.hs`). Sprint
+`1.54` landed the distinct authored test-topology schema, Haskell mirror, executable-sibling
+decoder, and topology-mode sibling-Dhall fail-fast inversion in
+`dhall/TestTopologySchema.dhall`, `src/Prodbox/TestTopology.hs`, `src/Prodbox/Repo.hs`,
+`src/Prodbox/Settings.hs`, and `src/Prodbox/TestRunner.hs`. Sprint `5.11` landed the command
+surface: `test init` authors the topology file; `test run` generates a disposable per-variant
+Tier-0 `prodbox.dhall`, points storage at `.test-data/<case>/`, runs the existing deploy/assert
+path, and deletes the generated config plus this run's `.test-data` root in `finally` per
 [Phase 5 Sprint 5.11](../../DEVELOPMENT_PLAN/phase-5-canonical-test-suite.md).
 
 `prodbox.test.dhall` is the **authored** half of the per-run-vs-authored split. The **per-run**
@@ -37,13 +38,13 @@ Dhall is retained. Like jitML's `project init` (in the sibling project
 
 ## 2. The test Dhall makes an illegal test topology a typecheck failure
 
-The canonical schema is a scheduled code artifact — `dhall/TestTopologySchema.dhall`, mirroring in
-kind the sibling project's `jitML/dhall/project/Schema.dhall` (doctrine
-`jitML/documents/engineering/durable_state_dsl.md`; no code dependency).
-This doc describes facets and teaching fragments; it is **not** the schema SSoT. The generated
-`prodbox.test.dhall` inlines the schema, a **closed `FixtureId` union** with an exhaustive `merge`
-selector, the declared data, and a terminal `assert`, so typechecking the file *is* its
-validation:
+The canonical schema artifact is `dhall/TestTopologySchema.dhall`, mirrored by
+`Prodbox.TestTopology` and decoded through `Prodbox.Settings`. It mirrors in kind the sibling
+project's `jitML/dhall/project/Schema.dhall` (doctrine
+`jitML/documents/engineering/durable_state_dsl.md`; no code dependency). This doc describes facets
+and teaching fragments; the schema and Haskell modules are the code-owned surface. The generated
+`prodbox.test.dhall` imports the schema, a **closed `FixtureId` union** with an exhaustive `merge`
+selector, the declared data, and a terminal `assert`, so typechecking the file is its validation:
 
 ```dhall
 -- Example: the authored prodbox.test.dhall (teaching fragment; schema lives in code)
@@ -57,11 +58,11 @@ let self =
                 [ RunVariant::{ replicas = 3, failover = Some LeaderKill }
                 , RunVariant::{ replicas = 3, failover = Some NetworkPartition }
                 ]
-            , budget = Budget::{ maxNodes = 3, wallClockSeconds = 5400 }
+            , budget = { max_nodes = 3, wall_clock_seconds = 5400 }
             }
           ]
       -- secrets are named, never inlined (§6)
-      , fixtures = [ FixtureRef.NamedSecret "aws_admin_for_test_simulation" ]
+      , fixtures = [ FixtureId.AwsAdminForTestSimulation ]
       }
 in  assert : testContractOK self === True
 ```
@@ -93,8 +94,8 @@ same builder production uses (`configFromSetupInput`,
 [config_doctrine.md § "The test harness generates its run config"](./config_doctrine.md#the-test-harness-generates-its-run-config))
 — never by shelling the CLI — then reconciles, runs the variant's assertions, and destroys before
 moving on. The existing `TestScope` / `IntegrationSuite` ADT (`src/Prodbox/CLI/Command.hs`) is the
-current-surface seed for the suite vocabulary; `test init` is the scheduled addition that authors
-the test Dhall those suites read.
+current-surface seed for the suite vocabulary, and `test init` authors the test Dhall those suites
+read.
 
 ## 4. Fail-fast preconditions and `.test-data/` isolation
 
@@ -118,9 +119,11 @@ data TestRefusal
 1. **Refuse if a `prodbox.dhall` exists beside the binary in `.build/`.** This is the exact
    **inversion** of production's contract: production resolves the executable-sibling
    `prodbox.dhall` (`resolveTier0ConfigPath`, `src/Prodbox/Repo.hs`) and **fails fast when it is
-   absent** (`src/Prodbox/Settings.hs`); the test surface **fails fast when it is present**, so a
-   run can never clobber a real operator config. The per-variant generated `prodbox.dhall` (§3) is
-   written only after this gate clears and is deleted on teardown (§5).
+   absent** (`src/Prodbox/Settings.hs`); the topology-mode test surface **fails fast when it is
+   present**, so a run can never clobber a real operator config. Sprint `1.54` landed this
+   topology-mode gate for authored `prodbox.test.dhall` runs. Sprint `5.11` added the
+   topology-run command surface: the per-variant generated `prodbox.dhall` (§3) is written only
+   after this gate clears and is deleted on teardown (§5).
 2. **Refuse if a production cluster is running.** A test never mutates production cluster state.
 
 Durable test storage is the **`.test-data/` retained root** — a `storage.manual_pv_host_root`
@@ -143,9 +146,9 @@ data TestDeleteTarget
 guardTestDelete :: FilePath -> Either TestRefusal TestDeleteTarget  -- refuses any path outside .test-data/
 ```
 
-`src/Prodbox/TestValidation.hs` hard-codes the production `.data/prodbox/minio/0` root today
-(the sealed-Vault audit path); repointing it at `.test-data/` under this override is part of the
-Sprint 5.11 isolation work.
+`src/Prodbox/TestValidation.hs` resolves the sealed-Vault host-disk audit root from the topology
+run's `PRODBOX_TEST_MANUAL_PV_HOST_ROOT` override when present, falling back to the production
+`.data/prodbox/minio/0` root for legacy named-validation commands.
 
 ## 5. Teardown is finally-guaranteed and reuses the lifecycle classes
 
@@ -194,14 +197,16 @@ guard; and finally-guaranteed teardown that retains long-lived resources by life
 - Owned statement: a test run is fully described by its authored `prodbox.test.dhall`, drives the
   real deploy path across every declared variant, and always tears down its per-run artifacts
   without touching production config, production `.data/`, or a long-lived resource.
-- Linked dependents (scheduled implementation): `src/Prodbox/CLI/Command.hs` (the `test init` /
-  `test run` surface extending `TestCommand` / `TestScope`), `src/Prodbox/TestRunner.hs` (per-variant
-  generate → reconcile → assert → `finally` teardown), `src/Prodbox/TestValidation.hs`
-  (`.test-data/` repointing), `src/Prodbox/Repo.hs` (test-Dhall sibling resolution),
-  `src/Prodbox/Settings.hs` (the fail-if-present inversion), `src/Prodbox/Lib/Storage.hs` (the
-  `.test-data/` `manual_pv_host_root` override), `src/Prodbox/Lifecycle/ResourceClass.hs` +
-  `src/Prodbox/Aws.hs` + `src/Prodbox/Lifecycle/Preconditions.hs` (the lifecycle-class teardown
-  reuse), and the scheduled `dhall/TestTopologySchema.dhall` + its Haskell mirror.
+- Linked dependents (Sprint `1.54` landed): `dhall/TestTopologySchema.dhall`,
+  `src/Prodbox/TestTopology.hs`, `src/Prodbox/Repo.hs` (test-Dhall sibling resolution),
+  `src/Prodbox/Settings.hs` (test-Dhall decode/validation), and `src/Prodbox/TestRunner.hs`
+  (topology-mode sibling-config preflight).
+- Linked dependents (Sprint `5.11` landed): `src/Prodbox/CLI/Command.hs` (the `test init` /
+  `test run` surface extending `TestCommand` / `TestScope`), `src/Prodbox/TestRunner.hs`
+  (per-variant generate → reconcile → assert → `finally` teardown), `src/Prodbox/TestValidation.hs`
+  (`.test-data/` repointing), `src/Prodbox/Lib/Storage.hs` (the `.test-data/`
+  `manual_pv_host_root` override), `src/Prodbox/Lifecycle/ResourceClass.hs` + `src/Prodbox/Aws.hs` +
+  `src/Prodbox/Lifecycle/Preconditions.hs` (the lifecycle-class teardown reuse).
 
 ## Cross-References
 

@@ -27,6 +27,8 @@
 -- swaps onto @HostBootstrap.Registry@ at the planned hostbootstrap refactor.
 module Prodbox.DockerConfig
   ( dockerHubAuthFromConfig
+  , dockerLinuxFrameDispatch
+  , hostFrameDockerSupported
   , renderEphemeralDockerConfig
   , withEphemeralDockerConfig
   )
@@ -43,6 +45,17 @@ import Data.List (isInfixOf)
 import Data.Maybe (fromMaybe)
 import Data.Text.Encoding qualified as TextEncoding
 import Prodbox.ContainerImage (harborRegistryEndpoint)
+import Prodbox.Host.Lift
+  ( HostDispatch
+  , SelfRef
+  , clusterFrame
+  , foldHostLift
+  )
+import Prodbox.Host.Substrate
+  ( HostSubstrate (..)
+  , detectHostSubstrate
+  , renderHostSubstrate
+  )
 import System.Directory (doesFileExist, getHomeDirectory)
 import System.Environment (lookupEnv, setEnv, unsetEnv)
 import System.FilePath ((</>))
@@ -84,6 +97,10 @@ renderEphemeralDockerConfig harborUser harborPassword hubAuth =
   harborAuthBase64 =
     TextEncoding.decodeUtf8 (Base64.encode (BS8.pack (harborUser ++ ":" ++ harborPassword)))
 
+dockerLinuxFrameDispatch :: SelfRef -> HostSubstrate -> [String] -> HostDispatch
+dockerLinuxFrameDispatch self substrate =
+  foldHostLift self (clusterFrame substrate)
+
 -- | Discover the host's @docker.io@ auth read-only from
 -- @${DOCKER_CONFIG:-$HOME\/.docker}\/config.json@. Any failure (no file, no
 -- @docker.io@ entry, unreadable) yields 'Nothing' and callers degrade to
@@ -115,6 +132,25 @@ hostDockerConfigPath = do
 -- @HostBootstrap.Registry.withEphemeralDockerConfig@.
 withEphemeralDockerConfig :: String -> String -> IO a -> IO a
 withEphemeralDockerConfig harborUser harborPassword action = do
+  substrateResult <- detectHostSubstrate
+  case substrateResult >>= hostFrameDockerSupported of
+    Left err -> ioError (userError err)
+    Right () -> withEphemeralDockerConfigUnchecked harborUser harborPassword action
+
+hostFrameDockerSupported :: HostSubstrate -> Either String ()
+hostFrameDockerSupported substrate =
+  case substrate of
+    LinuxCpu -> Right ()
+    LinuxGpu -> Right ()
+    _ ->
+      Left
+        ( "host-frame docker is unavailable on "
+            ++ renderHostSubstrate substrate
+            ++ "; descend into the Linux lift frame first"
+        )
+
+withEphemeralDockerConfigUnchecked :: String -> String -> IO a -> IO a
+withEphemeralDockerConfigUnchecked harborUser harborPassword action = do
   hubAuth <- discoverHostDockerHubAuth
   withSystemTempDirectory "prodbox-docker-config" $ \dir -> do
     BL.writeFile

@@ -114,6 +114,7 @@ commandPrerequisites command =
         AwsTeardown _ _ -> [AwsIamHarnessReady]
         AwsCheckQuotas -> [AwsCredentialsValid]
         AwsRequestQuotas _ -> [AwsCredentialsValid]
+        AwsReapTestEbs _ -> [AwsCredentialsValid]
     -- Chart reconcile/delete apply against the active cluster.
     NativeCharts _ -> [K8sClusterReachable]
     NativeCheckCode -> []

@@ -165,6 +165,7 @@ The per-group command matrix (generated; do not edit by hand):
 | `prodbox aws teardown` | none | `--dry-run`, `--plan-file`, `--destroy-pulumi-residue`, `--allow-pulumi-residue` |
 | `prodbox aws quotas check` | none | none |
 | `prodbox aws quotas request` | none | `--tier` |
+| `prodbox aws ebs reap-test` | none | `--yes` |
 | `prodbox aws stack eks reconcile` | none | `--dry-run`, `--plan-file` |
 | `prodbox aws stack eks destroy` | none | `--yes`, `--dry-run`, `--plan-file` |
 | `prodbox aws stack eks prune-corrupt-checkpoint` | none | `--yes` |
@@ -280,6 +281,8 @@ The per-group command matrix (generated; do not edit by hand):
 
 | Command | Arguments | Options |
 |---------|-----------|---------|
+| `prodbox test init` | none | `--force` |
+| `prodbox test run` | none | `--coverage`, `--cov-fail-under`, `--substrate` |
 | `prodbox test all` | none | `--coverage`, `--cov-fail-under`, `--substrate` |
 | `prodbox test lint` | none | none |
 | `prodbox test unit` | none | `--coverage`, `--cov-fail-under`, `--substrate` |
@@ -295,6 +298,7 @@ The per-group command matrix (generated; do not edit by hand):
 | `prodbox test integration ha-rke2-aws` | none | `--coverage`, `--cov-fail-under`, `--substrate` |
 | `prodbox test integration lifecycle` | none | `--coverage`, `--cov-fail-under`, `--substrate` |
 | `prodbox test integration pulumi` | none | `--coverage`, `--cov-fail-under`, `--substrate` |
+| `prodbox test integration eks-volume-rebind` | none | `--coverage`, `--cov-fail-under`, `--substrate` |
 | `prodbox test integration charts-storage` | none | `--coverage`, `--cov-fail-under`, `--substrate` |
 | `prodbox test integration charts-platform` | none | `--coverage`, `--cov-fail-under`, `--substrate` |
 | `prodbox test integration charts-vscode` | none | `--coverage`, `--cov-fail-under`, `--substrate` |

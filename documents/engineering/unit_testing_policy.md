@@ -44,6 +44,9 @@ This document defines testing doctrine only. Sequencing, completion status, and 
 are owned by [DEVELOPMENT_PLAN/README.md](../../DEVELOPMENT_PLAN/README.md). The test-run topology,
 the executable-sibling `prodbox.test.dhall` SSoT, `.test-data/` isolation, and the two fail-fast
 preconditions are owned by [test_topology_doctrine.md](./test_topology_doctrine.md).
+The `prodbox test init` / `prodbox test run <suite>|all` topology surface now uses that SSoT:
+each variant gets a generated binary-sibling `prodbox.dhall`, a `.test-data/<case>/`
+`storage.manual_pv_host_root`, and finally-guaranteed cleanup of only the per-run half.
 
 ## 1. The Interpreter-Only Mocking Doctrine
 
@@ -121,6 +124,12 @@ When a Phase `1/2` prerequisite owns a deterministic local backend proof, it may
 visible, bounded repair of repository-managed state before re-running the same readiness check. The
 canonical current example is the MinIO-backed Pulumi prerequisite recreating a deleted retained
 export host path and restarting `statefulset/minio` before retrying backend login.
+
+The retained-volume rebinding validation keeps its live cluster mutation thin around a pure
+oracle: `VolumeRebindSnapshot` parses Kubernetes PV JSON, and `volumeRebindReport` checks same
+PV/PVC, `Bound` before and after, same EBS `volumeHandle` when present, and sentinel preservation.
+Unit coverage must pin those invariants separately from the destructive live
+`eks-volume-rebind` run.
 
 If Phase 1 fails, Phase 2 is not started. This is an all-or-nothing gate, not a skip.
 

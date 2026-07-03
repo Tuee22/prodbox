@@ -94,15 +94,26 @@ clean-room handoff) stays ✅ Done on its owned surface, while the overall hando
 the separately reopened implementation phases `3`–`5`, `7`, and `8`. Phases `1` and `2` have
 reclosed their finalized Vault-root + cluster-federation foundations.
 
-🔄 **Reopened 2026-07-02 for the unified block-storage rebinding validation** — one new sprint
-expands Phase 5's own canonical-suite content (narrated in [README.md → Closure Status](README.md)
-per rule A). Sprint `5.12` (📋 Planned) adds the `eks-volume-rebind` validation proving **identical
-block-storage rebinding across a teardown/spinup cycle** — the suite-content half of the unified
-block-storage doctrine whose AWS static-EBS PV renderer is Phase 7 (Sprint `7.28`) and whose EBS
-lifecycle is Phase 4 (Sprints `4.39`/`4.40`). Per Standard M the validation is substrate-agnostic
-suite content; its home run is suite-closed here while the `--substrate aws` run is a non-blocking
-parity axis tracked in [substrates.md](substrates.md) (Standards M/N/O). All earlier Phase 5 sprints
-remain `Done`/as-tracked.
+✅ **Sprint `5.12` closed on its code-owned surface 2026-07-03** — the unified block-storage
+rebinding validation is now canonical-suite content. `prodbox test integration eks-volume-rebind`
+maps to `IntegrationEksVolumeRebind` / `ValidationEksVolumeRebind`, writes a sentinel through the
+retained MinIO workload PV, drives a teardown/spinup cycle, and compares Kubernetes PV snapshots so
+the same PV/PVC stays `Bound`, the sentinel survives, and any EBS `volumeHandle` remains identical
+when present. The home-substrate run is cluster-only; the AWS-substrate run explicitly engages the
+IAM harness and remains the non-blocking parity proof for the Sprint `7.28` static retained-EBS PV
+path, tracked in [substrates.md](substrates.md). Earlier Phase 5 sprints remain `Done`/as-tracked.
+
+✅ **Sprint `5.11` closed on its code-owned surface 2026-07-03** — the test-topology command
+surface is now implemented: `prodbox test init` writes the executable-sibling
+`prodbox.test.dhall` and refuses overwrite without `--force`; `prodbox test run <suite>|all`
+loads that authored topology, writes one disposable binary-sibling `prodbox.dhall` per variant
+through the shared Tier-0/config builder path, points `storage.manual_pv_host_root` at
+`.test-data/<case>/`, passes that root to the native validation environment, runs the existing
+deploy/assert path, and removes the generated config plus this run's `.test-data` root in
+`finally`. `guardTestDelete` now admits only the generated config under `.build`, paths proven
+under `.test-data`, and `LifecycleClass PerRun` residue; long-lived resources and production data
+refuse. The sealed-Vault host-disk audit resolves the same test root through the topology-run
+environment. Live multi-variant cluster proof remains a non-blocking live-infra axis.
 
 ## Phase Summary
 
@@ -142,7 +153,7 @@ The full inventory of canonical-suite validations owned by this phase lives in
 | `ha-rke2-aws` | `aws_credentials_valid`, `pulumi_logged_in`, `tool_ssh` | SSH reachability to all three EC2 instances; destroy-and-recreate repair on stale instances |
 | `charts-platform` | `k8s_ready`, chart-platform prereqs | `charts list`, `charts status` produce expected output for the supported chart set |
 | `charts-storage` | `k8s_ready`, chart-platform prereqs | Retained-storage reconciler, PV/PVC pairing, secret rendering |
-| `eks-volume-rebind` | `k8s_ready`, chart-platform prereqs (AWS: `pulumi_logged_in`) | Identical block-storage rebinding across a teardown/spinup cycle: write sentinel → teardown → spinup → the same PV rebinds (home hostPath / EKS EBS `volumeHandle`) and the data persists |
+| `eks-volume-rebind` | `k8s_ready`, chart-platform prereqs (AWS parity: operational AWS/Pulumi stack access) | Identical block-storage rebinding across a teardown/spinup cycle: write sentinel → teardown → spinup → the same PV rebinds (home hostPath / EKS EBS `volumeHandle`) and the data persists |
 | `charts-vscode` | `public_edge_ready`, `tool_curl` | Real HTTPS curl to `https://<publicFqdn>/vscode`; redirect to OIDC callback with expected fragments |
 | `charts-api` | `public_edge_ready`, `tool_curl` | Real HTTPS curl to `https://<publicFqdn>/api`; bearer-token validation; 401/403 contract |
 | `charts-websocket` | `public_edge_ready`, `tool_curl` | Real WebSocket upgrade against `/ws`; cross-pod broadcast; revocation-driven reconnect; readiness-based drain |
@@ -868,21 +879,19 @@ now decodes `route53_zone_id`; the `configFromSetupInput` field-fill is covered 
   binary-sibling config from `test-secrets.dhall` and proceeds **past** the `route53.zone_id`
   preflight (the original failure). The real `resolvefintech.com` zone id is now in the fixture.
 
-## Sprint 5.11: Test-Topology Command Surface (`test init` / `test run`) [⏸️ Blocked]
+## Sprint 5.11: Test-Topology Command Surface (`test init` / `test run`) ✅
 
-**Status**: ⏸️ Blocked
+**Status**: Done (code-owned surface) — 2026-07-03
 **Implementation**: `src/Prodbox/CLI/Command.hs` (the `test init` / `test run` surface extending
 `TestCommand` / `TestScope`), `src/Prodbox/TestRunner.hs` (per-variant generate → reconcile →
 assert → `finally` teardown), `src/Prodbox/TestValidation.hs` (`.test-data/` repointing of the
 sealed-Vault audit path), `src/Prodbox/Lib/Storage.hs` (the `.test-data/` `manual_pv_host_root`
 override), `test/unit/Main.hs`
-**Blocked by**: Sprint `1.54` (the `prodbox.test.dhall` schema and the sibling-config fail-fast
-inversion this command surface drives)
 **Live-proof**: pending
 **Independent Validation**: unit tests over the pure `guardTestDelete` never-touch-`.data/`
-`TestDeleteTarget` ADT, the two fail-fast preconditions, and the `partitionResidueByLifecycle`
-per-run/long-lived teardown partition, plus `prodbox test integration cli`/`env` on the home/local
-substrate; no later-phase dependency.
+`TestDeleteTarget` ADT, generated per-variant run config storage-root override, the sealed-Vault
+audit-root override, topology suite mapping, and the two fail-fast preconditions; warning-clean
+build; `prodbox test integration cli`/`env` on the home/local substrate; no later-phase dependency.
 **Docs to update**: `documents/engineering/test_topology_doctrine.md`,
 `documents/engineering/unit_testing_policy.md`,
 `documents/engineering/integration_fixture_doctrine.md`
@@ -917,27 +926,30 @@ path**, isolating run state under `.test-data/` and always tearing down its per-
 
 ### Validation
 
-1. `prodbox dev check`
-2. `prodbox test unit` (the `guardTestDelete` guard, the two preconditions, and the
-   `partitionResidueByLifecycle` teardown partition)
+1. `cabal build --builddir=.build all --ghc-options=-Werror`
+2. `prodbox test unit` (1134/1134: `guardTestDelete`, generated per-variant run config,
+   topology env propagation, sealed-Vault audit-root override, suite mapping, and preconditions)
 3. `prodbox test integration cli`
 4. `prodbox test integration env`
-5. Isolation proof: a `test run` writes and deletes only under `.test-data/` and never resolves or
-   mutates `.data/`.
+5. `prodbox dev docs check`
+6. `git diff --check`
+7. `prodbox dev check`
 
 ### Remaining Work
 
-- Pending — `test init` / `test run`, `.test-data/` isolation, and the finally-guaranteed teardown
-  are scheduled; blocked on the Sprint `1.54` `prodbox.test.dhall` schema.
+- 🧪 Live-proof (non-blocking, Standard O): a real topology-run over deployed cluster variants
+  proves the end-to-end stand-up/assert/teardown loop against live infrastructure. The code-owned
+  command surface, `.test-data` isolation, and finally-guaranteed cleanup are complete.
 
-## Sprint 5.12: `eks-volume-rebind` — Identical Block-Storage Rebinding Validation [📋 Planned]
+## Sprint 5.12: `eks-volume-rebind` — Identical Block-Storage Rebinding Validation [✅ Done]
 
-**Status**: 📋 Planned
-**Implementation**: `src/Prodbox/TestPlan.hs` (`NativeValidation` variant + `nativeValidationId` +
-prerequisites via `pulumiSubstratePrerequisites`), `src/Prodbox/CLI/Command.hs` (`IntegrationSuite`
-enum) + `testExecutionPlan` (`nativeNamedSuite`), `src/Prodbox/CLI/Spec.hs` (parser line + doc
-leaf), `src/Prodbox/TestValidation.hs` (`runNativeValidation` body), `src/Prodbox/TestRunner.hs`
-(`validationMayProvisionPerRunAwsStacks`).
+**Status**: ✅ Done (code-owned surface) — 2026-07-03
+**Implementation**: `src/Prodbox/TestPlan.hs` (`ValidationEksVolumeRebind`, `nativeValidationId`,
+home cluster prerequisites, and AWS harness derivation), `src/Prodbox/CLI/Command.hs`
+(`IntegrationEksVolumeRebind`), `src/Prodbox/CLI/Spec.hs` (parser + command-registry leaf),
+`src/Prodbox/TestValidation.hs` (`runEksVolumeRebindValidation`, snapshot parser, and report
+oracle), `src/Prodbox/TestRunner.hs` (`validationMayProvisionPerRunAwsStacks` + topology suite
+mapping), `test/unit/Main.hs`, `test/unit/Parser.hs`.
 **Blocked by**: none on the code-owned surface — the validation compiles and runs on the home
 substrate independently. The AWS run exercises the Phase 7 Sprint `7.28` static-EBS renderer and the
 Phase 4 Sprint `4.39`/`4.40` lifecycle, but per Standards M/N the AWS coverage is a non-blocking
@@ -960,28 +972,41 @@ persists — hostPath on home, the same EBS `volumeHandle` on EKS.
 
 ### Deliverables
 
-- A new `eks-volume-rebind` `NativeValidation` wired through the canonical sites (`TestPlan.hs`,
-  `Command.hs`, `Spec.hs`, `TestValidation.hs`), modeled on `lifecycle` (in-test
-  delete/reconcile), `aws-eks` (EKS reconcile), and `charts-storage` (storage assertions).
-- The body writes a sentinel, drives `aws stack eks destroy`/`reconcile` (AWS) or `cluster
-  delete`/`reconcile` (home), and asserts identical rebinding + data persistence; it is registered
-  in `validationMayProvisionPerRunAwsStacks`.
-- A row in the Canonical Suite Inventory (added) and the `substrates.md` parity table for the AWS
-  run.
+- `eks-volume-rebind` is a `NativeValidation` wired through the canonical command surface and
+  aggregate suite ordering after `charts-storage` and before `sealed-vault`.
+- The validation selects the retained MinIO PV/PVC inventory row, writes a sentinel under the
+  workload's `/export` mount, drives `cluster delete`/`reconcile --with-edge` on home or
+  `aws stack eks destroy`/`reconcile` on AWS, then re-reads the sentinel and PV JSON.
+- The pure report oracle asserts same PV name, same claim namespace/name, `Bound` before and after,
+  identical `volumeHandle` when present, and sentinel preservation; unit tests cover success,
+  sentinel mismatch, handle mismatch, JSON parsing, planner wiring, topology mapping, and parser
+  coverage.
+- The Canonical Suite Inventory and `substrates.md` parity table call out the AWS `--substrate aws`
+  run as live-proof pending for the Sprint `7.28` static retained-EBS PV path.
 
 ### Validation
 
-1. `prodbox dev check`
-2. `prodbox test unit`
+1. `cabal build --builddir=.build all --ghc-options=-Werror`
+2. `prodbox test unit` (1139/1139: parser, planner, topology mapping, harness derivation,
+   `VolumeRebindSnapshot` JSON parser, report oracle, and generated CLI goldens)
 3. `prodbox test integration cli`
 4. `prodbox test integration env`
-5. `prodbox test integration eks-volume-rebind` (home substrate; the `--substrate aws` run is the
-   non-blocking parity axis)
+5. `prodbox dev docs generate`
+6. `prodbox dev docs check`
+7. `git diff --check`
+8. `prodbox dev check`
+9. `prodbox test integration eks-volume-rebind` (home substrate; destructive live proof) — attempted
+   2026-07-03 and failed fast before mutation because the binary-sibling
+   `.build/prodbox.dhall` runtime config was absent (`settings_object` prerequisite); this remains
+   the non-blocking live-proof axis per Standard O. The `--substrate aws` run remains the separate
+   parity axis.
 
 ### Remaining Work
 
-- Pending — the validation wiring and body are scheduled; the AWS parity run rides Sprints `7.28` +
-  `4.39`/`4.40`.
+- 🧪 Live-proof (non-blocking, Standard O): provide a valid binary-sibling runtime config and run
+  the destructive home `prodbox test integration eks-volume-rebind` against a disposable local
+  substrate, then the AWS `--substrate aws` parity row against the Sprint `7.28` static retained-EBS
+  PV path. The code-owned command/planner/parser/body/oracle surface is complete.
 
 ## Related Documents
 

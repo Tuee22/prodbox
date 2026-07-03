@@ -26,6 +26,7 @@ where
 data PrerequisiteId
   = -- Platform / host
     PlatformLinux
+  | HostSubstrateSupported
   | SystemdAvailable
   | SupportedUbuntu2404
   | MachineIdentity
@@ -79,6 +80,7 @@ prerequisiteIdText :: PrerequisiteId -> String
 prerequisiteIdText prerequisiteId =
   case prerequisiteId of
     PlatformLinux -> "platform_linux"
+    HostSubstrateSupported -> "host_substrate_supported"
     SystemdAvailable -> "systemd_available"
     SupportedUbuntu2404 -> "supported_ubuntu_2404"
     MachineIdentity -> "machine_identity"
@@ -143,6 +145,7 @@ prerequisiteIdEngagesIamHarness prerequisiteId =
     -- Pulumi login (login is a backend session, not an AWS-credential
     -- materialization), and the ad-hoc lifecycle nodes.
     PlatformLinux -> False
+    HostSubstrateSupported -> False
     SystemdAvailable -> False
     SupportedUbuntu2404 -> False
     MachineIdentity -> False

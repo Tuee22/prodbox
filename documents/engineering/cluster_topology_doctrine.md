@@ -9,11 +9,11 @@
 > types (`kind` / `rke2` / `eks`), the substrate-indexed one-compute-worker-per-machine rule, and
 > the type shapes that make an ill-formed topology unrepresentable rather than merely rejected.
 
-> **Scheduling honesty.** This is present-tense declarative doctrine; the Dhall schema and Haskell
-> types are **scheduled**, not built. The schema lands in
-> [Phase 1 Sprint 1.53](../../DEVELOPMENT_PLAN/phase-1-runtime-cli-aws-foundations.md) (cluster-type /
-> topology / worker Dhall schema — rules c/d/e/f/i); substrate-typed placement, one-per-machine
-> anti-affinity, and mixed-substrate-only-rke2 enforcement land in
+> **Scheduling honesty.** Sprint `1.53` landed the Dhall schema and Haskell config mirror in
+> `dhall/cluster/Schema.dhall` and `src/Prodbox/Cluster/`: the cluster-type/topology/worker schema,
+> `cluster_topology` config field, worker-substrate contract, and pure placement outcome ADT.
+> Substrate-typed runtime placement, one-per-machine anti-affinity, and mixed-substrate-only-rke2
+> enforcement landed in
 > [Phase 4 Sprint 4.38](../../DEVELOPMENT_PLAN/phase-4-lifecycle-canonical-paths.md). Status is owned
 > only by [DEVELOPMENT_PLAN/README.md](../../DEVELOPMENT_PLAN/README.md).
 
@@ -40,7 +40,7 @@ is a single-node `rke2` cluster, `aws` is an `eks` cluster. The **worker substra
 orthogonal to it.
 
 ```dhall
--- Example: cluster-type and worker-substrate closed unions (scheduled dhall/ClusterTopologySchema.dhall)
+-- Example: cluster-type and worker-substrate closed unions (dhall/cluster/Schema.dhall)
 let ClusterType = < Kind | Rke2 | Eks >
 
 let WorkerSubstrate =
@@ -63,10 +63,10 @@ let residencyOf =
           s
 ```
 
-The canonical schema is the **scheduled code artifact** `dhall/ClusterTopologySchema.dhall` (a
-rendered-constant anti-drift mirror of a Haskell module, as jitML pairs `dhall/project/Schema.dhall`
-with `JitML.Project.Config`). This doc describes facets and shows teaching fragments; it is **not**
-the schema SSoT.
+The canonical schema artifact is `dhall/cluster/Schema.dhall`, mirrored by
+`Prodbox.Cluster.Substrate`, `Prodbox.Cluster.Topology`, and `Prodbox.Cluster.Placement`. This doc
+describes facets and shows teaching fragments; the schema and Haskell modules are the code-owned
+surface.
 
 **The worker substrate axis (imported from jitML).** Each machine that carries compute runs exactly
 **one** substrate-indexed worker. Two substrates are in-cluster (`LinuxCpu`, `LinuxCuda`); two are
@@ -86,7 +86,7 @@ impossible by *shape* where possible, and by *assert* only where shape cannot re
 
 | Rule | Illegal state | Made impossible by |
 |---|---|---|
-| **c** | multi-node `rke2` on a single machine | `Rke2` carries `NonEmpty Machine`; an rke2 node *is* a machine — there is no separate node count to inflate, so N nodes require N machines |
+| **c** | multi-node `rke2` on a single machine | `mkRke2Topology` consumes `NonEmpty Machine`, and decoded Dhall lists are validated non-empty before command execution; an rke2 node *is* a machine — there is no separate node count to inflate, so N nodes require N machines |
 | **d** | multi-node `kind` across machines | `Kind` carries a single `Machine`; kind nodes are containers *inside* it — there is no machine list to spread across |
 | **e** | more than one compute worker per machine | `Machine.computeWorker` is one field, not a list — a second worker is unconstructible |
 | **f** | a worker for the wrong substrate | `mkMachine` / `contractOK` require `workerSubstrate == machineSubstrate` |
@@ -112,17 +112,20 @@ data Machine = Machine
   deriving (Eq, Show)
 
 -- Example: cluster indexed by bring-up type (rules c, d, i are structural)
-data Cluster
-  = ClusterKind Machine KindNodeCount               -- exactly ONE host machine (rule d)
-  | ClusterRke2 (NonEmpty Machine)                  -- one rke2 node per machine (rule c)
-  | ClusterEks  EksNodeGroupSize WorkerSubstrate    -- cloud EC2, no host machine; single-substrate (rule i)
+data ClusterTopology
+  = Kind KindTopology
+  | Rke2 Rke2Topology
+  | Eks EksTopology
   deriving (Eq, Show)
+
+mkRke2Topology :: NonEmpty Machine -> ClusterTopology -- one rke2 node per machine (rule c)
 ```
 
 `ClusterKind` names one `Machine`, so a cross-machine kind cluster (rule d) has nowhere to put a
-second machine. `ClusterRke2` names `NonEmpty Machine` and nothing else — an rke2 node *is* a
-machine, so a single-node cluster is `length 1` (the home reality) and a multi-node cluster is a list
-of distinct machines (rule c); there is no scalar node count to inflate past the machine set.
+second machine. `mkRke2Topology` consumes `NonEmpty Machine`, and decoded Dhall topology lists are
+validated non-empty before command execution — an rke2 node *is* a machine, so a single-node cluster
+is `length 1` (the home reality) and a multi-node cluster is a list of distinct machines (rule c);
+there is no scalar node count to inflate past the machine set.
 **MixedSubstrate is admissible only for `rke2`**: only the `Rke2` arm is substrate-plural, so a
 mixed-substrate kind or eks cluster (rule i) is unconstructible.
 
@@ -163,13 +166,14 @@ honesty as `ResidueStatus` (`src/Prodbox/Lifecycle/ResidueStatus.hs`) and the ga
 (`src/Prodbox/Gateway/Types.hs`) — never a silent "it fit":
 
 ```haskell
--- Example: substrate-and-capacity-typed placement (rule i); models "cannot admit" explicitly
-data Placement
-  = PlacementAdmitted MachineId                                -- substrate matches AND capacity fits
-  | PlacementSubstrateMismatch WorkerSubstrate WorkerSubstrate  -- wanted vs node substrate (rule f/i)
-  | PlacementInsufficientCapacity MachineId                    -- the capacity half is deferred, below
-  deriving (Eq, Show)
+-- Example: substrate-typed worker placement (rule i); models "cannot admit" explicitly
+workerPlacementPlan :: ClusterTopology -> Either WorkerPlacementRefusal WorkerPlacementPlan
 ```
+
+The Sprint `4.38` planner derives exactly one `WorkerPlacement` per topology machine, attaches the
+required anti-affinity witness (`topologyKey: kubernetes.io/hostname`, `maxSurge = 0`,
+`maxUnavailable = 1`), refuses duplicate machines, refuses a worker whose substrate differs from
+its machine, and admits mixed-substrate placement only for `rke2`.
 
 The **substrate** half of rule i lives here. The **capacity** half (the `⊆` check that a workload's
 requests fit the node's headroom) is owned by
@@ -226,11 +230,13 @@ unrepresentable rather than merely validated.
   compute worker are declared, never inferred, and every ill-formed topology (multi-node rke2 on one
   machine, cross-machine kind, >1 worker per machine, a wrong-substrate worker, a mixed-substrate
   kind/eks cluster) is made unconstructible by type.
-- Linked dependents (scheduled): `src/Prodbox/Cluster/Topology.hs` (the `Cluster` / `Machine` /
+- Linked dependents (Sprints `1.53` and `4.38` landed):
+  `src/Prodbox/Cluster/Topology.hs` (the `ClusterTopology` / `Machine` /
   `ComputeWorker` ADT + `mkMachine` smart constructor), `src/Prodbox/Cluster/Substrate.hs` (the
   `WorkerSubstrate` closed union + `residencyOf` projection), `src/Prodbox/Cluster/Placement.hs` (the
-  `Placement` projection + `computeWorkerPlacement`), and the anti-drift-mirrored
-  `dhall/ClusterTopologySchema.dhall`.
+  `Placement` projection, `computeWorkerPlacement`, and `workerPlacementPlan`),
+  `dhall/cluster/Schema.dhall`,
+  `src/Prodbox/Settings.hs`, and `src/Prodbox/Config/Tier0.hs`.
 
 ## Cross-References
 

@@ -3,7 +3,9 @@
 module Prodbox.Lib.Storage
   ( ChartStorageBinding (..)
   , ChartStorageSpec (..)
-  , chartDynamicStorageManifest
+  , StaticEbsVolumeBinding (..)
+  , chartEbsPersistentVolumeManifest
+  , chartEbsStorageManifest
   , chartStorageClassName
   , chartPersistentVolumeManifest
   , chartStorageManifest
@@ -12,6 +14,9 @@ module Prodbox.Lib.Storage
   , retainedStatefulSetPersistentVolumeClaimName
   , retainedStatefulSetPersistentVolumeName
   , storageBinding
+  , testCaseDataRoot
+  , testDataRootRelative
+  , testManualPvHostRootEnv
   )
 where
 
@@ -32,6 +37,15 @@ chartStorageClassName = "manual"
 defaultChartDataRootRelative :: FilePath
 defaultChartDataRootRelative = ".data"
 
+testDataRootRelative :: FilePath
+testDataRootRelative = ".test-data"
+
+testManualPvHostRootEnv :: String
+testManualPvHostRootEnv = "PRODBOX_TEST_MANUAL_PV_HOST_ROOT"
+
+testCaseDataRoot :: FilePath -> FilePath
+testCaseDataRoot caseId = testDataRootRelative </> caseId
+
 data ChartStorageSpec = ChartStorageSpec
   { chartStorageSpecStatefulSetName :: String
   , chartStorageSpecPersistentVolumeClaimName :: String
@@ -50,6 +64,13 @@ data ChartStorageBinding = ChartStorageBinding
   , chartStorageBindingHostPath :: FilePath
   , chartStorageBindingOrdinal :: Int
   , chartStorageBindingClaimSuffix :: String
+  }
+  deriving (Eq, Show)
+
+data StaticEbsVolumeBinding = StaticEbsVolumeBinding
+  { staticEbsVolumeBindingPersistentVolumeName :: String
+  , staticEbsVolumeBindingVolumeHandle :: String
+  , staticEbsVolumeBindingAvailabilityZone :: String
   }
   deriving (Eq, Show)
 
@@ -156,43 +177,6 @@ chartStorageManifest namespace rootChart bindings nodeHostname =
         ]
     ]
 
-chartDynamicStorageManifest :: String -> String -> String -> [ChartStorageBinding] -> Value
-chartDynamicStorageManifest namespace rootChart storageClassName bindings =
-  object
-    [ "apiVersion" .= ("v1" :: String)
-    , "kind" .= ("List" :: String)
-    , "items" .= (namespaceManifestItem namespace rootChart : map bindingItem bindings)
-    ]
- where
-  bindingItem binding =
-    object
-      [ "apiVersion" .= ("v1" :: String)
-      , "kind" .= ("PersistentVolumeClaim" :: String)
-      , "metadata"
-          .= object
-            [ "name" .= chartStorageBindingPersistentVolumeClaimName binding
-            , "namespace" .= namespace
-            , "labels"
-                .= object
-                  [ "prodbox.io/chart-root" .= rootChart
-                  , "prodbox.io/statefulset" .= chartStorageBindingStatefulSetName binding
-                  ]
-            ]
-      , "spec"
-          .= object
-            [ "accessModes" .= ["ReadWriteOnce" :: String]
-            , "volumeMode" .= ("Filesystem" :: String)
-            , "storageClassName" .= storageClassName
-            , "resources"
-                .= object
-                  [ "requests"
-                      .= object
-                        [ "storage" .= chartStorageBindingStorageSize binding
-                        ]
-                  ]
-            ]
-      ]
-
 chartPersistentVolumeManifest :: String -> String -> [ChartStorageBinding] -> String -> Value
 chartPersistentVolumeManifest namespace rootChart bindings nodeHostname =
   object
@@ -204,6 +188,91 @@ chartPersistentVolumeManifest namespace rootChart bindings nodeHostname =
                : map (persistentVolumeManifestItem namespace rootChart nodeHostname) bindings
            )
     ]
+
+chartEbsStorageManifest
+  :: String -> String -> [ChartStorageBinding] -> [StaticEbsVolumeBinding] -> Either String Value
+chartEbsStorageManifest namespace rootChart bindings ebsVolumes = do
+  pairs <- staticEbsVolumeBindingsFor bindings ebsVolumes
+  pure
+    ( object
+        [ "apiVersion" .= ("v1" :: String)
+        , "kind" .= ("List" :: String)
+        , "items" .= (namespaceItem : storageClassItem : concatMap bindingItems pairs)
+        ]
+    )
+ where
+  namespaceItem =
+    namespaceManifestItem namespace rootChart
+
+  storageClassItem =
+    storageClassManifestItem
+
+  bindingItems (binding, ebsVolume) =
+    [ persistentEbsVolumeManifestItem namespace rootChart binding ebsVolume
+    , object
+        [ "apiVersion" .= ("v1" :: String)
+        , "kind" .= ("PersistentVolumeClaim" :: String)
+        , "metadata"
+            .= object
+              [ "name" .= chartStorageBindingPersistentVolumeClaimName binding
+              , "namespace" .= namespace
+              , "labels"
+                  .= object
+                    [ "prodbox.io/chart-root" .= rootChart
+                    , "prodbox.io/statefulset" .= chartStorageBindingStatefulSetName binding
+                    ]
+              ]
+        , "spec"
+            .= object
+              [ "accessModes" .= ["ReadWriteOnce" :: String]
+              , "volumeMode" .= ("Filesystem" :: String)
+              , "storageClassName" .= chartStorageClassName
+              , "volumeName" .= chartStorageBindingPersistentVolumeName binding
+              , "resources"
+                  .= object
+                    [ "requests"
+                        .= object
+                          [ "storage" .= chartStorageBindingStorageSize binding
+                          ]
+                    ]
+              ]
+        ]
+    ]
+
+chartEbsPersistentVolumeManifest
+  :: String -> String -> [ChartStorageBinding] -> [StaticEbsVolumeBinding] -> Either String Value
+chartEbsPersistentVolumeManifest namespace rootChart bindings ebsVolumes = do
+  pairs <- staticEbsVolumeBindingsFor bindings ebsVolumes
+  pure
+    ( object
+        [ "apiVersion" .= ("v1" :: String)
+        , "kind" .= ("List" :: String)
+        , "items"
+            .= ( namespaceManifestItem namespace rootChart
+                   : storageClassManifestItem
+                   : map (uncurry (persistentEbsVolumeManifestItem namespace rootChart)) pairs
+               )
+        ]
+    )
+
+staticEbsVolumeBindingsFor
+  :: [ChartStorageBinding]
+  -> [StaticEbsVolumeBinding]
+  -> Either String [(ChartStorageBinding, StaticEbsVolumeBinding)]
+staticEbsVolumeBindingsFor bindings ebsVolumes =
+  mapM matchVolume bindings
+ where
+  matchVolume binding =
+    let pvName = chartStorageBindingPersistentVolumeName binding
+        matches =
+          [ ebsVolume
+          | ebsVolume <- ebsVolumes
+          , staticEbsVolumeBindingPersistentVolumeName ebsVolume == pvName
+          ]
+     in case matches of
+          [ebsVolume] -> Right (binding, ebsVolume)
+          [] -> Left ("missing retained EBS volume for persistent volume " ++ pvName)
+          _ -> Left ("multiple retained EBS volumes matched persistent volume " ++ pvName)
 
 namespaceManifestItem :: String -> String -> Value
 namespaceManifestItem namespace rootChart =
@@ -285,6 +354,63 @@ persistentVolumeManifestItem namespace rootChart nodeHostname binding =
                                             [ "key" .= ("kubernetes.io/hostname" :: String)
                                             , "operator" .= ("In" :: String)
                                             , "values" .= [nodeHostname]
+                                            ]
+                                        ]
+                                 ]
+                             ]
+                      ]
+                ]
+          ]
+    ]
+
+persistentEbsVolumeManifestItem
+  :: String -> String -> ChartStorageBinding -> StaticEbsVolumeBinding -> Value
+persistentEbsVolumeManifestItem namespace rootChart binding ebsVolume =
+  object
+    [ "apiVersion" .= ("v1" :: String)
+    , "kind" .= ("PersistentVolume" :: String)
+    , "metadata"
+        .= object
+          [ "name" .= chartStorageBindingPersistentVolumeName binding
+          , "labels"
+              .= object
+                [ "prodbox.io/chart-root" .= rootChart
+                , "prodbox.io/chart-namespace" .= namespace
+                , "prodbox.io/statefulset" .= chartStorageBindingStatefulSetName binding
+                ]
+          ]
+    , "spec"
+        .= object
+          [ "capacity"
+              .= object
+                [ "storage" .= chartStorageBindingStorageSize binding
+                ]
+          , "volumeMode" .= ("Filesystem" :: String)
+          , "accessModes" .= ["ReadWriteOnce" :: String]
+          , "persistentVolumeReclaimPolicy" .= ("Retain" :: String)
+          , "storageClassName" .= chartStorageClassName
+          , "claimRef"
+              .= object
+                [ "namespace" .= namespace
+                , "name" .= chartStorageBindingPersistentVolumeClaimName binding
+                ]
+          , "csi"
+              .= object
+                [ "driver" .= ("ebs.csi.aws.com" :: String)
+                , "volumeHandle" .= staticEbsVolumeBindingVolumeHandle ebsVolume
+                , "fsType" .= ("ext4" :: String)
+                ]
+          , "nodeAffinity"
+              .= object
+                [ "required"
+                    .= object
+                      [ "nodeSelectorTerms"
+                          .= [ object
+                                 [ "matchExpressions"
+                                     .= [ object
+                                            [ "key" .= ("topology.ebs.csi.aws.com/zone" :: String)
+                                            , "operator" .= ("In" :: String)
+                                            , "values" .= [staticEbsVolumeBindingAvailabilityZone ebsVolume]
                                             ]
                                         ]
                                  ]

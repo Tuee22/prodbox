@@ -18,8 +18,8 @@
 --     parent reference) become the 'ProdboxContext' (topology + capabilities);
 --   * the non-secret sections of the seed\/propose @prodbox-config.dhall@
 --     (route53, aws_substrate, ses, domain, acme.{email,server}, deployment,
---     storage, pulumi_state_backend, plus the operational @aws.*@ /
---     @acme.eab_*@ 'SecretRef.Vault' __pointers__) become the
+--     capacity, cluster_topology, storage, pulumi_state_backend, plus the
+--     operational @aws.*@ / @acme.eab_*@ 'SecretRef.Vault' __pointers__) become the
 --     'ProdboxParameters'.
 --
 -- It carries __only non-secret data__. Secrets are 'SecretRef.Vault' pointers
@@ -110,6 +110,8 @@ import Prodbox.Settings
   ( AcmeSection
   , AwsCredentialsRef (..)
   , AwsSubstrateSection
+  , CapacitySection
+  , ClusterTopology
   , DeploymentSection
   , DomainSection
   , PulumiStateBackendSection
@@ -202,6 +204,8 @@ data ProdboxParameters = ProdboxParameters
   , domain :: DomainSection
   , acme :: AcmeSection
   , deployment :: DeploymentSection
+  , capacity :: CapacitySection
+  , cluster_topology :: ClusterTopology
   , storage :: StorageSection
   , pulumi_state_backend :: PulumiStateBackendSection
   }
@@ -260,6 +264,8 @@ defaultProdboxParameters =
     , domain = Settings.domain base
     , acme = Settings.acme base
     , deployment = Settings.deployment base
+    , capacity = Settings.capacity base
+    , cluster_topology = Settings.cluster_topology base
     , storage = Settings.storage base
     , pulumi_state_backend = Settings.pulumi_state_backend base
     }
@@ -268,7 +274,7 @@ defaultProdboxParameters =
 
 -- | Sprint 1.42 Part B: project a 'Settings.ConfigFile' (the legacy
 -- @prodbox-config.dhall@ payload) onto the Tier-0 'ProdboxParameters'. The two
--- records are field-for-field identical (same nine non-secret sections, same
+-- records are field-for-field identical (same ten non-secret sections, same
 -- 'SecretRef.Vault'-pointer shape), so this is a total rename. Used by the
 -- authoring surface (@config setup@ / @aws setup@) to write the operator's
 -- non-secret config into @prodbox.dhall@'s @parameters@ block instead of the
@@ -283,6 +289,8 @@ configFileToTier0Parameters cf =
     , domain = Settings.domain cf
     , acme = Settings.acme cf
     , deployment = Settings.deployment cf
+    , capacity = Settings.capacity cf
+    , cluster_topology = Settings.cluster_topology cf
     , storage = Settings.storage cf
     , pulumi_state_backend = Settings.pulumi_state_backend cf
     }

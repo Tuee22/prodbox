@@ -1,0 +1,68 @@
+apiVersion: apps/v1
+kind: StatefulSet
+metadata:
+  name: pulsar
+  labels:
+    {{- include "pulsar.labels" . | nindent 4 }}
+spec:
+  serviceName: pulsar-headless
+  replicas: 1
+  selector:
+    matchLabels:
+      {{- include "pulsar.selectorLabels" . | nindent 6 }}
+  template:
+    metadata:
+      labels:
+        {{- include "pulsar.labels" . | nindent 8 }}
+    spec:
+      serviceAccountName: pulsar
+      securityContext:
+        runAsUser: 10000
+        runAsGroup: 10000
+        fsGroup: 10000
+      containers:
+        - name: pulsar
+          image: "{{ .Values.image.repository }}:{{ .Values.image.tag }}"
+          imagePullPolicy: {{ .Values.image.pullPolicy }}
+          command:
+            - bin/pulsar
+            - standalone
+            - --no-functions-worker
+            - --no-stream-storage
+          env:
+            - name: PULSAR_PREFIX_clusterName
+              value: {{ .Values.pulsar.clusterName | quote }}
+            - name: PULSAR_PREFIX_advertisedAddress
+              value: pulsar
+          ports:
+            - name: broker
+              containerPort: {{ .Values.pulsar.brokerPort }}
+            - name: http
+              containerPort: {{ .Values.pulsar.httpPort }}
+          readinessProbe:
+            httpGet:
+              path: /admin/v2/brokers/health
+              port: http
+            initialDelaySeconds: 20
+            periodSeconds: 10
+          livenessProbe:
+            httpGet:
+              path: /admin/v2/brokers/health
+              port: http
+            initialDelaySeconds: 60
+            periodSeconds: 20
+          volumeMounts:
+            - name: data
+              mountPath: /pulsar/data
+  volumeClaimTemplates:
+    - metadata:
+        name: data
+        labels:
+          {{- include "pulsar.labels" . | nindent 10 }}
+      spec:
+        accessModes:
+          - ReadWriteOnce
+        storageClassName: {{ .Values.storage.className }}
+        resources:
+          requests:
+            storage: {{ .Values.storage.size }}

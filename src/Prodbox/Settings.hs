@@ -2,27 +2,41 @@
 {-# LANGUAGE DeriveGeneric #-}
 {-# LANGUAGE OverloadedStrings #-}
 {-# LANGUAGE ScopedTypeVariables #-}
+{-# LANGUAGE TypeApplications #-}
 
 module Prodbox.Settings
   ( AcmeSection (..)
   , AwsCredentialsRef (..)
   , AwsSubstrateSection (..)
+  , CapacityBudget (..)
+  , CapacitySection (..)
+  , ClusterTopology
   , ConfigFile (..)
   , Credentials (..)
   , DeploymentSection (..)
   , DomainSection (..)
+  , FailoverScenario (..)
+  , FixtureId (..)
   , MetallbBgpPeer (..)
   , PulumiStateBackendSection (..)
   , Route53Section (..)
+  , RunVariant (..)
   , SesSection (..)
   , StorageSection (..)
+  , TestBudget (..)
+  , TestSuite (..)
+  , TestTopology (..)
+  , TestTopologyError (..)
   , ValidatedSettings (..)
   , SeedInForceOutcome (..)
   , defaultConfigFile
+  , defaultTestTopology
   , decodeConfigDhallBytes
   , inForceConfigObjectAbsent
   , loadConfigFile
   , loadConfigFileAtPath
+  , loadTestTopology
+  , loadTestTopologyAtPath
   , loadConfigForSettingsWith
   , loadUnencryptedBasics
   , loadUnencryptedBasicsAtPath
@@ -33,6 +47,7 @@ module Prodbox.Settings
   , seedInForceConfigFromFileWithToken
   , forceSyncInForceConfigFromFile
   , supportedPublicHostname
+  , renderTestTopologyError
   , validateAwsBootstrapConfig
   , validateAndLoadSettings
   , validateAndLoadSettingsAtPath
@@ -40,6 +55,7 @@ module Prodbox.Settings
   , validateAndLoadSettingsWithVaultToken
   , validateOperationalAwsCredentials
   , validatePublicEdgeDeployment
+  , validateTestTopology
   )
 where
 
@@ -52,6 +68,7 @@ import Data.Map.Strict qualified as Map
 import Data.Text (Text)
 import Data.Text qualified as Text
 import Data.Text.Encoding qualified as TextEncoding
+import Data.Void (Void)
 import Dhall
   ( FromDhall (..)
   , InterpretOptions (..)
@@ -63,8 +80,25 @@ import Dhall
   , input
   , inputFile
   )
+import Dhall qualified
+import Dhall.Core qualified as Core
+import Dhall.Src (Src)
 import GHC.Generics (Generic)
 import Numeric.Natural (Natural)
+import Prodbox.Capacity.Config
+  ( CapacityBudget (..)
+  , CapacitySection (..)
+  , defaultCapacitySection
+  , validateCapacitySection
+  )
+import Prodbox.Cluster.Topology
+  ( ClusterTopology
+  , clusterType
+  , defaultClusterTopology
+  , renderClusterType
+  , renderTopologyError
+  , validateClusterTopology
+  )
 import Prodbox.Config.Basics
   ( UnencryptedBasics (..)
   )
@@ -93,12 +127,32 @@ import Prodbox.Minio.ObjectStore
 import Prodbox.Repo
   ( ConfigPaths (..)
   , canonicalConfigPaths
+  , resolveTestTopologyConfigPath
   , resolveTier0ConfigPath
   )
 import Prodbox.Settings.SecretRef
   ( PromptSpec (..)
   , SecretRef (..)
   , VaultSecretRef (..)
+  )
+import Prodbox.Substrate
+  ( ElasticScalingBounds (..)
+  , ScalingPolicy (..)
+  , ScalingPolicyBySubstrate (..)
+  , fixedScalingPolicyBySubstrate
+  , validateScalingPolicyBySubstrate
+  )
+import Prodbox.TestTopology
+  ( FailoverScenario (..)
+  , FixtureId (..)
+  , RunVariant (..)
+  , TestBudget (..)
+  , TestSuite (..)
+  , TestTopology (..)
+  , TestTopologyError (..)
+  , defaultTestTopology
+  , renderTestTopologyError
+  , validateTestTopology
   )
 import Prodbox.Vault.Client
   ( VaultAddress (..)
@@ -206,10 +260,10 @@ data DeploymentSection = DeploymentSection
   , pulumi_enable_dns_bootstrap :: Bool
   , public_edge_advertisement_mode :: Maybe Text
   , public_edge_bgp_peers :: Maybe [MetallbBgpPeer]
-  , envoy_gateway_controller_replicas :: Maybe Natural
-  , envoy_gateway_data_plane_replicas :: Maybe Natural
-  , api_replicas :: Maybe Natural
-  , websocket_replicas :: Maybe Natural
+  , envoy_gateway_controller_scaling :: ScalingPolicyBySubstrate
+  , envoy_gateway_data_plane_scaling :: ScalingPolicyBySubstrate
+  , api_scaling :: ScalingPolicyBySubstrate
+  , websocket_scaling :: ScalingPolicyBySubstrate
   }
   deriving (Eq, Show, Generic, FromDhall, ToDhall)
 
@@ -276,6 +330,8 @@ data ConfigFile = ConfigFile
   , domain :: DomainSection
   , acme :: AcmeSection
   , deployment :: DeploymentSection
+  , capacity :: CapacitySection
+  , cluster_topology :: ClusterTopology
   , storage :: StorageSection
   , pulumi_state_backend :: PulumiStateBackendSection
   }
@@ -753,12 +809,17 @@ renderSettingsDisplay showSecrets settings =
     , "deployment.public_edge_advertisement_mode="
         ++ renderMaybeText (public_edge_advertisement_mode (deployment config))
     , "deployment.public_edge_bgp_peers=" ++ renderBgpPeers (public_edge_bgp_peers (deployment config))
-    , "deployment.envoy_gateway_controller_replicas="
-        ++ renderMaybeNatural (envoy_gateway_controller_replicas (deployment config))
-    , "deployment.envoy_gateway_data_plane_replicas="
-        ++ renderMaybeNatural (envoy_gateway_data_plane_replicas (deployment config))
-    , "deployment.api_replicas=" ++ renderMaybeNatural (api_replicas (deployment config))
-    , "deployment.websocket_replicas=" ++ renderMaybeNatural (websocket_replicas (deployment config))
+    , "deployment.envoy_gateway_controller_scaling="
+        ++ renderScalingPolicyBySubstrate (envoy_gateway_controller_scaling (deployment config))
+    , "deployment.envoy_gateway_data_plane_scaling="
+        ++ renderScalingPolicyBySubstrate (envoy_gateway_data_plane_scaling (deployment config))
+    , "deployment.api_scaling=" ++ renderScalingPolicyBySubstrate (api_scaling (deployment config))
+    , "deployment.websocket_scaling="
+        ++ renderScalingPolicyBySubstrate (websocket_scaling (deployment config))
+    , "capacity.node_budget=" ++ renderCapacityBudget (node_budget (capacity config))
+    , "capacity.workload_budget=" ++ renderCapacityBudget (workload_budget (capacity config))
+    , "capacity.region_quota=" ++ renderCapacityBudget (region_quota (capacity config))
+    , "cluster_topology.type=" ++ renderClusterType (clusterType (cluster_topology config))
     , "storage.manual_pv_host_root=" ++ resolvedManualPvHostRoot settings
     , "pulumi_state_backend.bucket_name="
         ++ renderText (psbBucketName (pulumi_state_backend config))
@@ -803,6 +864,40 @@ decodeConfigFileAtPath configPath = do
 -- read in 'loadConfigForWrite') therefore now read the Tier-0 file.
 loadConfigFile :: FilePath -> IO (Either String ConfigFile)
 loadConfigFile repoRoot = resolveTier0ConfigPath repoRoot >>= loadConfigFileAtPath
+
+-- | Decode and validate the executable-sibling @prodbox.test.dhall@. This is
+-- the authored test-run SSoT from test_topology_doctrine.md. It is deliberately
+-- separate from 'loadConfigFile': production fails when @prodbox.dhall@ is
+-- absent, while the test runner preflight refuses when that production sibling
+-- is present.
+loadTestTopology :: FilePath -> IO (Either String TestTopology)
+loadTestTopology repoRoot = resolveTestTopologyConfigPath repoRoot >>= loadTestTopologyAtPath
+
+loadTestTopologyAtPath :: FilePath -> IO (Either String TestTopology)
+loadTestTopologyAtPath testTopologyPath = do
+  testTopologyExists <- doesFileExist testTopologyPath
+  if not testTopologyExists
+    then pure (Left (missingTestTopologyMessage testTopologyPath))
+    else do
+      result <- try (inputFile auto testTopologyPath)
+      pure $ case result of
+        Left (e :: SomeException) ->
+          Left
+            ( "Failed to decode test topology `"
+                ++ testTopologyPath
+                ++ "`: "
+                ++ displayException e
+            )
+        Right topology ->
+          case validateTestTopology topology of
+            Left err ->
+              Left
+                ( "Invalid test topology `"
+                    ++ testTopologyPath
+                    ++ "`: "
+                    ++ renderTestTopologyError err
+                )
+            Right () -> Right topology
 
 -- | Decode the operator config from the @parameters@ of a Tier-0 prodbox.dhall
 -- at an EXPLICIT path. 'loadConfigFile' resolves the binary-sibling path
@@ -891,6 +986,8 @@ validateLocalConfig config = do
   validateDemoTtl (demo_ttl (domain config))
   validateAwsCredentialsRef "aws" (aws config)
   validatePublicEdgeDeployment (deployment config)
+  validateCapacitySection (capacity config)
+  mapLeft renderTopologyError (validateClusterTopology (cluster_topology config))
 
 mapLeft :: (left -> left') -> Either left right -> Either left' right
 mapLeft f value = case value of
@@ -923,14 +1020,16 @@ validatePublicEdgeDeployment :: DeploymentSection -> Either String ()
 validatePublicEdgeDeployment deploymentSection = do
   validateBootstrapOverride
   validateAdvertisementMode
-  validateReplicas
-    "deployment.envoy_gateway_controller_replicas"
-    (envoy_gateway_controller_replicas deploymentSection)
-  validateReplicas
-    "deployment.envoy_gateway_data_plane_replicas"
-    (envoy_gateway_data_plane_replicas deploymentSection)
-  validateReplicas "deployment.api_replicas" (api_replicas deploymentSection)
-  validateReplicas "deployment.websocket_replicas" (websocket_replicas deploymentSection)
+  validateScalingPolicyBySubstrate
+    "deployment.envoy_gateway_controller_scaling"
+    (envoy_gateway_controller_scaling deploymentSection)
+  validateScalingPolicyBySubstrate
+    "deployment.envoy_gateway_data_plane_scaling"
+    (envoy_gateway_data_plane_scaling deploymentSection)
+  validateScalingPolicyBySubstrate "deployment.api_scaling" (api_scaling deploymentSection)
+  validateScalingPolicyBySubstrate
+    "deployment.websocket_scaling"
+    (websocket_scaling deploymentSection)
  where
   normalizedMode =
     fmap (Text.toLower . Text.strip) (public_edge_advertisement_mode deploymentSection)
@@ -951,12 +1050,6 @@ validatePublicEdgeDeployment deploymentSection = do
             Left
               "deployment.public_edge_bgp_peers must contain at least one non-empty peer when deployment.public_edge_advertisement_mode is bgp"
       _ -> Left "deployment.public_edge_advertisement_mode must be l2 or bgp when set"
-
-validateReplicas :: String -> Maybe Natural -> Either String ()
-validateReplicas _ Nothing = Right ()
-validateReplicas fieldName (Just value)
-  | value >= 1 = Right ()
-  | otherwise = Left (fieldName ++ " must be at least 1 when set")
 
 requireNonEmpty :: String -> Text -> Either String ()
 requireNonEmpty fieldName value =
@@ -1143,9 +1236,28 @@ renderBool :: Bool -> String
 renderBool value =
   map toLower (show value)
 
-renderMaybeNatural :: Maybe Natural -> String
-renderMaybeNatural maybeValue =
-  maybe "" show maybeValue
+renderScalingPolicyBySubstrate :: ScalingPolicyBySubstrate -> String
+renderScalingPolicyBySubstrate policies =
+  "home_local="
+    ++ renderScalingPolicy (scalingHomeLocal policies)
+    ++ ";aws="
+    ++ renderScalingPolicy (scalingAws policies)
+
+renderScalingPolicy :: ScalingPolicy -> String
+renderScalingPolicy policy =
+  case policy of
+    ScalingPolicyFixed count -> "Fixed " ++ show count
+    ScalingPolicyElastic bounds ->
+      "Elastic{min=" ++ show (elasticMin bounds) ++ ",max=" ++ show (elasticMax bounds) ++ "}"
+
+renderCapacityBudget :: CapacityBudget -> String
+renderCapacityBudget budget =
+  "cpu="
+    ++ show (budgetCpu budget)
+    ++ ";memory="
+    ++ show (budgetMemory budget)
+    ++ ";storage="
+    ++ show (budgetStorage budget)
 
 renderBgpPeers :: Maybe [MetallbBgpPeer] -> String
 renderBgpPeers maybePeers =
@@ -1225,11 +1337,13 @@ defaultConfigFile =
           , pulumi_enable_dns_bootstrap = True
           , public_edge_advertisement_mode = Just "l2"
           , public_edge_bgp_peers = Nothing
-          , envoy_gateway_controller_replicas = Just 1
-          , envoy_gateway_data_plane_replicas = Just 1
-          , api_replicas = Just 2
-          , websocket_replicas = Just 2
+          , envoy_gateway_controller_scaling = fixedScalingPolicyBySubstrate 1
+          , envoy_gateway_data_plane_scaling = fixedScalingPolicyBySubstrate 1
+          , api_scaling = fixedScalingPolicyBySubstrate 2
+          , websocket_scaling = fixedScalingPolicyBySubstrate 2
           }
+    , capacity = defaultCapacitySection
+    , cluster_topology = defaultClusterTopology
     , storage = StorageSection {manual_pv_host_root = ".data"}
     , pulumi_state_backend =
         PulumiStateBackendSection
@@ -1281,13 +1395,20 @@ renderConfigDhall config =
         ++ dhallOptionalText (public_edge_advertisement_mode (deployment config))
     , "        , public_edge_bgp_peers = "
         ++ dhallOptionalBgpPeers (public_edge_bgp_peers (deployment config))
-    , "        , envoy_gateway_controller_replicas = "
-        ++ dhallOptionalNatural (envoy_gateway_controller_replicas (deployment config))
-    , "        , envoy_gateway_data_plane_replicas = "
-        ++ dhallOptionalNatural (envoy_gateway_data_plane_replicas (deployment config))
-    , "        , api_replicas = " ++ dhallOptionalNatural (api_replicas (deployment config))
-    , "        , websocket_replicas = " ++ dhallOptionalNatural (websocket_replicas (deployment config))
+    , "        , envoy_gateway_controller_scaling = "
+        ++ dhallScalingPolicyBySubstrate (envoy_gateway_controller_scaling (deployment config))
+    , "        , envoy_gateway_data_plane_scaling = "
+        ++ dhallScalingPolicyBySubstrate (envoy_gateway_data_plane_scaling (deployment config))
+    , "        , api_scaling = " ++ dhallScalingPolicyBySubstrate (api_scaling (deployment config))
+    , "        , websocket_scaling = "
+        ++ dhallScalingPolicyBySubstrate (websocket_scaling (deployment config))
     , "        }"
+    , "    , capacity = Config.default.capacity // {"
+    , "        , node_budget = " ++ dhallCapacityBudget (node_budget (capacity config))
+    , "        , workload_budget = " ++ dhallCapacityBudget (workload_budget (capacity config))
+    , "        , region_quota = " ++ dhallCapacityBudget (region_quota (capacity config))
+    , "        }"
+    , "    , cluster_topology = " ++ dhallClusterTopology (cluster_topology config)
     , "    , storage = Config.default.storage // {"
     , "        , manual_pv_host_root = " ++ dhallText (manual_pv_host_root (storage config))
     , "        }"
@@ -1337,11 +1458,49 @@ dhallOptionalSecretRef maybeValue =
     Nothing -> "None Config.SecretRef"
     Just value -> "Some (" ++ dhallSecretRef value ++ ")"
 
-dhallOptionalNatural :: Maybe Natural -> String
-dhallOptionalNatural maybeValue =
-  case maybeValue of
-    Nothing -> "None Natural"
-    Just value -> "Some " ++ show value
+dhallScalingPolicyBySubstrate :: ScalingPolicyBySubstrate -> String
+dhallScalingPolicyBySubstrate policies =
+  "{ home_local = "
+    ++ dhallScalingPolicy (scalingHomeLocal policies)
+    ++ ", aws = "
+    ++ dhallScalingPolicy (scalingAws policies)
+    ++ " }"
+
+dhallScalingPolicy :: ScalingPolicy -> String
+dhallScalingPolicy policy =
+  case policy of
+    ScalingPolicyFixed count ->
+      scalingPolicyDhallType ++ ".Fixed " ++ show count
+    ScalingPolicyElastic bounds ->
+      scalingPolicyDhallType
+        ++ ".Elastic { min = "
+        ++ show (elasticMin bounds)
+        ++ ", max = "
+        ++ show (elasticMax bounds)
+        ++ " }"
+
+scalingPolicyDhallType :: String
+scalingPolicyDhallType =
+  "< Fixed : Natural | Elastic : { min : Natural, max : Natural } >"
+
+dhallCapacityBudget :: CapacityBudget -> String
+dhallCapacityBudget budget =
+  "{ cpu = "
+    ++ show (budgetCpu budget)
+    ++ ", memory = "
+    ++ show (budgetMemory budget)
+    ++ ", storage = "
+    ++ show (budgetStorage budget)
+    ++ " }"
+
+type DhallExpr = Core.Expr Src Void
+
+dhallClusterTopology :: ClusterTopology -> String
+dhallClusterTopology topology =
+  Text.unpack (Core.pretty (injectedValue (Dhall.inject @ClusterTopology) topology))
+
+injectedValue :: Dhall.Encoder a -> a -> DhallExpr
+injectedValue encoder value = Core.denote (Dhall.embed encoder value)
 
 dhallOptionalBgpPeers :: Maybe [MetallbBgpPeer] -> String
 dhallOptionalBgpPeers maybePeers =
@@ -1385,4 +1544,11 @@ missingConfigMessage configPath =
   unlines
     [ "Missing required repository config `" ++ configPath ++ "`."
     , "Run `./.build/prodbox config setup` from the repository root to create it, then rerun the command."
+    ]
+
+missingTestTopologyMessage :: FilePath -> String
+missingTestTopologyMessage testTopologyPath =
+  unlines
+    [ "Missing required test topology `" ++ testTopologyPath ++ "`."
+    , "Create `prodbox.test.dhall` beside the prodbox binary before running topology-driven tests; the `test init` authoring command lands in Sprint 5.11."
     ]

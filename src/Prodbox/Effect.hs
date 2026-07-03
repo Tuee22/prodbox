@@ -10,6 +10,7 @@ import Prodbox.Subprocess
 
 data Validation
   = RequireLinux
+  | RequireHostSubstrateSupported
   | RequireSettings
   | RequireSystemd
   | RequireTool FilePath [String]

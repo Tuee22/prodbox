@@ -2454,7 +2454,7 @@ fakeKubectlScript =
     , "      if [[ \"${PRODBOX_FAKE_PATRONI_STAGED_RESTORE:-}\" == 'true' ]]; then"
     , "        claim_list_count=$(next_counter \"$record_dir/patroni-claim-list.count\")"
     , "        if [[ \"$claim_list_count\" -eq 1 ]]; then"
-    , "          cat <<'JSON'"
+    , "          /bin/cat <<'JSON'"
     , "{\"items\":[{\"metadata\":{\"name\":\"prodbox-vscode-pg-instance1-0-pgdata\"}}]}"
     , "JSON"
     , "          exit 0"
@@ -2841,7 +2841,11 @@ fakeRke2KubectlScript =
     , "  get)"
     , "    case \"${2:-}\" in"
     , "      nodes)"
-    , "        if [[ \"$*\" == *'-o|name'* || \"$*\" == *'-o name'* ]]; then"
+    , "        if [[ \"$*\" == *'-o|json'* || \"$*\" == *'-o json'* ]]; then"
+    , "          /bin/cat <<'JSON'"
+    , "{\"items\":[{\"metadata\":{\"name\":\"bathurst\"}}]}"
+    , "JSON"
+    , "        elif [[ \"$*\" == *'-o|name'* || \"$*\" == *'-o name'* ]]; then"
     , "          printf 'node/bathurst\\n'"
     , "        else"
     , "          printf 'bathurst'"
@@ -2851,6 +2855,13 @@ fakeRke2KubectlScript =
     , "        printf 'storageclass.storage.k8s.io/manual\\nstorageclass.storage.k8s.io/local-path\\n'"
     , "        ;;"
     , "      pv)"
+    , "        if [[ \"${3:-}\" == '-o' && \"$*\" == *'jsonpath={range .items'* ]]; then"
+    , "          # Empty success for the drain-time Delete-reclaim PV listing."
+    , "          exit 0"
+    , "        else"
+    , "          printf 'Error from server (NotFound): persistentvolumes \"%s\" not found\\n' \"${3:-pv}\" >&2"
+    , "          exit 1"
+    , "        fi"
     , "        ;;"
     , "      pvc)"
     , "        printf 'Error from server (NotFound): persistentvolumeclaims \"%s\" not found\\n' \"${3:-pvc}\" >&2"
@@ -2876,6 +2887,11 @@ fakeRke2KubectlScript =
     , "          # credentials get generated)."
     , "          printf 'Error from server (NotFound): secrets \"gateway-minio-creds\" not found\\n' >&2"
     , "          exit 1"
+    , "        elif [[ \"${3:-}\" == *'-pguser-keycloak' && \"$*\" == *'--ignore-not-found=true'* ]]; then"
+    , "          # The chart platform treats the Percona operator pguser Secret as"
+    , "          # optional during a fresh reconcile; absent means the post-readiness"
+    , "          # sync is a no-op and will be retried later."
+    , "          exit 0"
     , "        else"
     , "          printf 'unsupported fake secret lookup: %s\\n' \"$*\" >&2"
     , "          exit 1"
@@ -3244,6 +3260,13 @@ fakeRke2AwsScript =
     , "    exit 0"
     , "    ;;"
     , "  # Sprint 8.8: prodbox nuke step 4 (postflight tag sweep) — clean."
+    , "  *'ec2 describe-volumes'*)"
+    , "    printf '{\"Volumes\":[]}\\n'"
+    , "    exit 0"
+    , "    ;;"
+    , "  *'ec2 delete-volume'*)"
+    , "    exit 0"
+    , "    ;;"
     , "  *'resourcegroupstaggingapi get-resources'*)"
     , "    printf '{\"ResourceTagMappingList\":[]}\\n'"
     , "    exit 0"
@@ -3446,6 +3469,13 @@ fakeAwsScript stateDir =
     , "    cat <<'JSON'"
     , "{\"Credentials\":{\"AccessKeyId\":\"ASIAFAKEFED\",\"SecretAccessKey\":\"fake-federated-secret\",\"SessionToken\":\"fake-federated-session\"}}"
     , "JSON"
+    , "    ;;"
+    , "  \"ec2 describe-volumes\")"
+    , "    cat <<'JSON'"
+    , "{\"Volumes\":[]}"
+    , "JSON"
+    , "    ;;"
+    , "  \"ec2 delete-volume\")"
     , "    ;;"
     , "  *)"
     , "    printf 'unsupported fake aws command: %s %s\\n' \"$service\" \"$action\" >&2"
@@ -3670,6 +3700,8 @@ validConfigWithBlankOperationalAwsAndConfiguredAdmin =
         ++ eabVaultRefDhall "hmac_key"
         ++ " }"
     , ", deployment = " ++ deploymentDhallFragment
+    , ", capacity = " ++ capacityDhallFragment
+    , ", cluster_topology = " ++ clusterTopologyDhallFragment
     , ", storage = { manual_pv_host_root = \".data\" }"
     , ", pulumi_state_backend = { bucket_name = \"\", region = \"\", key_prefix = \"\" }"
     , "}"
@@ -3693,6 +3725,8 @@ validConfigForNuke =
         ++ eabVaultRefDhall "hmac_key"
         ++ " }"
     , ", deployment = " ++ deploymentDhallFragment
+    , ", capacity = " ++ capacityDhallFragment
+    , ", cluster_topology = " ++ clusterTopologyDhallFragment
     , ", storage = { manual_pv_host_root = \".data\" }"
     , ", pulumi_state_backend = { bucket_name = \"prodbox-test-pulumi-long-lived\", region = \"us-west-2\", key_prefix = \"pulumi/\" }"
     , "}"
@@ -3712,6 +3746,8 @@ validConfigWithLeakedOperationalAwsAndConfiguredAdmin =
         ++ eabVaultRefDhall "hmac_key"
         ++ " }"
     , ", deployment = " ++ deploymentDhallFragment
+    , ", capacity = " ++ capacityDhallFragment
+    , ", cluster_topology = " ++ clusterTopologyDhallFragment
     , ", storage = { manual_pv_host_root = \".data\" }"
     , ", pulumi_state_backend = { bucket_name = \"\", region = \"\", key_prefix = \"\" }"
     , "}"
@@ -3736,12 +3772,71 @@ deploymentDhallFragment =
     , ", public_edge_advertisement_mode = None Text"
     , ", public_edge_bgp_peers ="
     , "    None (List { peer_name : Text, peer_address : Text, peer_asn : Natural, my_asn : Natural, ebgp_multi_hop : Optional Bool })"
-    , ", envoy_gateway_controller_replicas = None Natural"
-    , ", envoy_gateway_data_plane_replicas = None Natural"
-    , ", api_replicas = None Natural"
-    , ", websocket_replicas = None Natural"
+    , ", envoy_gateway_controller_scaling = " ++ fixedScalingDhall 1
+    , ", envoy_gateway_data_plane_scaling = " ++ fixedScalingDhall 1
+    , ", api_scaling = " ++ fixedScalingDhall 2
+    , ", websocket_scaling = " ++ fixedScalingDhall 2
     , " }"
     ]
+
+scalingPolicyTypeDhall :: String
+scalingPolicyTypeDhall =
+  "< Fixed : Natural | Elastic : { min : Natural, max : Natural } >"
+
+fixedScalingDhall :: Int -> String
+fixedScalingDhall count =
+  "{ home_local = "
+    ++ scalingPolicyTypeDhall
+    ++ ".Fixed "
+    ++ show count
+    ++ ", aws = "
+    ++ scalingPolicyTypeDhall
+    ++ ".Fixed "
+    ++ show count
+    ++ " }"
+
+capacityDhallFragment :: String
+capacityDhallFragment =
+  "{ node_budget = { cpu = 8, memory = 16, storage = 100 }, workload_budget = { cpu = 4, memory = 8, storage = 40 }, region_quota = { cpu = 32, memory = 64, storage = 500 } }"
+
+clusterTopologyDhallFragment :: String
+clusterTopologyDhallFragment =
+  clusterTopologyDhallType
+    ++ ".Rke2 { machines = [ "
+    ++ clusterTopologyMachineDhall
+    ++ " ] : List "
+    ++ clusterTopologyMachineTypeDhall
+    ++ " }"
+
+clusterTopologyDhallType :: String
+clusterTopologyDhallType =
+  "< Kind : { machine : "
+    ++ clusterTopologyMachineTypeDhall
+    ++ ", node_count : Natural } | Rke2 : { machines : List "
+    ++ clusterTopologyMachineTypeDhall
+    ++ " } | Eks : { node_group_size : Natural, eks_substrate : "
+    ++ workerSubstrateDhallType
+    ++ " } >"
+
+clusterTopologyMachineTypeDhall :: String
+clusterTopologyMachineTypeDhall =
+  "{ machine_id : Text, machine_substrate : "
+    ++ workerSubstrateDhallType
+    ++ ", compute_worker : { worker_substrate : "
+    ++ workerSubstrateDhallType
+    ++ ", manages_all_local_devices : Bool } }"
+
+clusterTopologyMachineDhall :: String
+clusterTopologyMachineDhall =
+  "{ machine_id = \"prodbox-home\", machine_substrate = "
+    ++ workerSubstrateDhallType
+    ++ ".LinuxCpu, compute_worker = { worker_substrate = "
+    ++ workerSubstrateDhallType
+    ++ ".LinuxCpu, manages_all_local_devices = True } }"
+
+workerSubstrateDhallType :: String
+workerSubstrateDhallType =
+  "< LinuxCpu | LinuxCuda | AppleMetal | CudaWindows >"
 
 configWithAwsAndAcme :: String -> String -> Bool -> String -> String -> String -> String
 configWithAwsAndAcme awsVaultPath regionValue includeSessionToken acmeServer eabKeyIdValue eabHmacKeyValue =
@@ -3759,6 +3854,8 @@ configWithAwsAndAcme awsVaultPath regionValue includeSessionToken acmeServer eab
         ++ eabHmacKeyValue
         ++ " }"
     , ", deployment = " ++ deploymentDhallFragment
+    , ", capacity = " ++ capacityDhallFragment
+    , ", cluster_topology = " ++ clusterTopologyDhallFragment
     , ", storage = { manual_pv_host_root = \".data\" }"
     , ", pulumi_state_backend = { bucket_name = \"\", region = \"\", key_prefix = \"\" }"
     , "}"

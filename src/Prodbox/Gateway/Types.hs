@@ -1,9 +1,11 @@
+{-# LANGUAGE DeriveGeneric #-}
 {-# LANGUAGE OverloadedStrings #-}
 
 module Prodbox.Gateway.Types
   ( PeerEndpoint (..)
   , GatewayRule (..)
   , Orders (..)
+  , CborPayload (..)
   , SignedEvent (..)
   , CommitLog (..)
   , DaemonConfig (..)
@@ -25,9 +27,12 @@ module Prodbox.Gateway.Types
   , appendIfNew
   , sortedEvents
   , latestTimestamp
-  , parseOrders
-  , parseEvent
-  , encodeEvent
+  , cborPayloadFromJsonValue
+  , encodeOrdersCbor
+  , decodeOrdersCbor
+  , encodeSignedEventCbor
+  , decodeSignedEventCbor
+  , eventSignaturePayloadBytes
   , peerDialRestHost
   , peerRestUrl
   , peerDialSocketHost
@@ -43,21 +48,16 @@ module Prodbox.Gateway.Types
   )
 where
 
-import Data.Aeson
-  ( Value (..)
-  , eitherDecode
-  , object
-  , (.=)
-  )
-import Data.Aeson.Key qualified as Key
-import Data.Aeson.KeyMap qualified as KeyMap
-import Data.ByteString.Lazy.Char8 qualified as BL8
-import Data.List (nub, sortBy)
+import Codec.Serialise (Serialise, deserialiseOrFail, serialise)
+import Data.Bifunctor (first)
+import Data.ByteString qualified as BS
+import Data.ByteString.Lazy qualified as BL
+import Data.List (sortBy)
 import Data.Ord (comparing)
-import Data.Text qualified as Text
 import Data.Time.Clock (UTCTime, diffUTCTime)
 import Data.Time.Format.ISO8601 (formatShow, iso8601Format, iso8601ParseM)
-import Data.Vector qualified as Vector
+import GHC.Generics (Generic)
+import Prodbox.Cbor (CborPayload (..), cborPayloadFromJsonValue)
 
 data ChannelName = MeshChannel | GatewayChannel
   deriving (Eq, Ord, Show)
@@ -70,7 +70,9 @@ data PeerEndpoint = PeerEndpoint
   , peerSocketHost :: String
   , peerSocketPort :: Int
   }
-  deriving (Eq, Show)
+  deriving (Eq, Show, Generic)
+
+instance Serialise PeerEndpoint
 
 peerDialRestHost :: PeerEndpoint -> String
 peerDialRestHost peer =
@@ -99,29 +101,45 @@ data GatewayRule = GatewayRule
   { rankedNodes :: [String]
   , heartbeatTimeoutSeconds :: Int
   }
-  deriving (Eq, Show)
+  deriving (Eq, Show, Generic)
+
+instance Serialise GatewayRule
 
 data Orders = Orders
   { ordersVersionUtc :: Int
   , ordersNodes :: [PeerEndpoint]
   , ordersGatewayRule :: GatewayRule
   }
-  deriving (Eq, Show)
+  deriving (Eq, Show, Generic)
+
+instance Serialise Orders
 
 data SignedEvent = SignedEvent
   { eventHash :: String
   , emitterNodeId :: String
   , timestampUtc :: String
   , eventType :: String
-  , payloadJson :: String
+  , payloadCbor :: CborPayload
   , signatureHex :: String
   }
-  deriving (Eq, Show)
+  deriving (Eq, Show, Generic)
+
+instance Serialise SignedEvent
 
 data CommitLog = CommitLog
   { commitLogEvents :: [SignedEvent]
   }
   deriving (Eq, Show)
+
+data UnsignedEventPayload = UnsignedEventPayload
+  { unsignedEmitterNodeId :: String
+  , unsignedTimestampUtc :: String
+  , unsignedEventType :: String
+  , unsignedPayloadCbor :: CborPayload
+  }
+  deriving (Eq, Show, Generic)
+
+instance Serialise UnsignedEventPayload
 
 emptyCommitLog :: CommitLog
 emptyCommitLog = CommitLog []
@@ -141,6 +159,32 @@ latestTimestamp commitLog =
   case commitLogEvents commitLog of
     [] -> Nothing
     events -> Just (maximum (map timestampUtc events))
+
+encodeOrdersCbor :: Orders -> BL.ByteString
+encodeOrdersCbor = serialise
+
+decodeOrdersCbor :: BL.ByteString -> Either String Orders
+decodeOrdersCbor =
+  first (("failed to decode Orders CBOR: " ++) . show) . deserialiseOrFail
+
+encodeSignedEventCbor :: SignedEvent -> BL.ByteString
+encodeSignedEventCbor = serialise
+
+decodeSignedEventCbor :: BL.ByteString -> Either String SignedEvent
+decodeSignedEventCbor =
+  first (("failed to decode SignedEvent CBOR: " ++) . show) . deserialiseOrFail
+
+eventSignaturePayloadBytes :: String -> String -> String -> CborPayload -> BS.ByteString
+eventSignaturePayloadBytes nodeId evType ts payload =
+  BL.toStrict
+    ( serialise
+        UnsignedEventPayload
+          { unsignedEmitterNodeId = nodeId
+          , unsignedTimestampUtc = ts
+          , unsignedEventType = evType
+          , unsignedPayloadCbor = payload
+          }
+    )
 
 data DnsWriteGate = DnsWriteGate
   { dnsWriteGateZoneId :: String
@@ -258,64 +302,6 @@ supportedDaemonConfigSchemaVersion = 1
 -- `Dhall.inputFile auto` per
 -- [config_doctrine.md §4](../../documents/engineering/config_doctrine.md#4-decoding).
 
-parseOrders :: String -> Either String Orders
-parseOrders jsonText =
-  case eitherDecode (BL8.pack jsonText) of
-    Left err -> Left ("failed to parse orders: " ++ err)
-    Right (Object obj) -> do
-      versionUtc <- requireInt obj "version_utc"
-      if versionUtc < 0
-        then Left "version_utc must be non-negative"
-        else pure ()
-      nodes <- parseNodeList obj
-      rule <- parseGatewayRule obj
-      let nodeIds = map peerNodeId nodes
-      if length (nub nodeIds) /= length nodeIds
-        then Left "orders.nodes node_id values must be unique"
-        else
-          if all (`elem` nodeIds) (rankedNodes rule)
-            then
-              Right
-                Orders
-                  { ordersVersionUtc = versionUtc
-                  , ordersNodes = nodes
-                  , ordersGatewayRule = rule
-                  }
-            else Left "gateway_rule.ranked_nodes must be a subset of orders.nodes.node_id"
-    Right _ -> Left "orders must be a JSON object"
-
-parseEvent :: Value -> Either String SignedEvent
-parseEvent value =
-  case value of
-    Object obj -> do
-      evHash <- requireStr obj "event_hash"
-      emitter <- requireStr obj "emitter_node_id"
-      ts <- requireStr obj "timestamp_utc"
-      evType <- requireStr obj "event_type"
-      payload <- requireStr obj "payload_json"
-      sig <- requireStr obj "signature_hex"
-      Right
-        SignedEvent
-          { eventHash = evHash
-          , emitterNodeId = emitter
-          , timestampUtc = ts
-          , eventType = evType
-          , payloadJson = payload
-          , signatureHex = sig
-          }
-    _ -> Left "event entries must be JSON objects"
-
-encodeEvent :: SignedEvent -> Value
-encodeEvent ev =
-  object
-    [ "event_hash" .= eventHash ev
-    , "emitter_node_id" .= emitterNodeId ev
-    , "timestamp_utc" .= timestampUtc ev
-    , "event_type" .= eventType ev
-    , "payload_json" .= payloadJson ev
-    , "signature_hex" .= signatureHex ev
-    ]
-
 eventTimestampUtc :: SignedEvent -> Maybe UTCTime
 eventTimestampUtc ev = parseIso8601Utc (timestampUtc ev)
 
@@ -324,88 +310,6 @@ parseIso8601Utc = iso8601ParseM
 
 formatUtcIso :: UTCTime -> String
 formatUtcIso = formatShow iso8601Format
-
-requireStr :: KeyMap.KeyMap Value -> String -> Either String String
-requireStr obj key =
-  case KeyMap.lookup (Key.fromString key) obj of
-    Just (String text) ->
-      let str = Text.unpack text
-       in if null str then Left (key ++ " is required") else Right str
-    _ -> Left (key ++ " is required")
-
-requireInt :: KeyMap.KeyMap Value -> String -> Either String Int
-requireInt obj key =
-  case KeyMap.lookup (Key.fromString key) obj of
-    Just (Number n) -> Right (round n)
-    _ -> Left (key ++ " must be an integer")
-
--- Sprint 2.20 closure: `requireObject`, `readOptionalInt`,
--- `readOptionalString`, `parseEventKeys`, `parseDnsWriteGate`,
--- `rejectForbiddenCredKeys`, and `readOptionalFloat` were JSON-parser
--- helpers for the legacy `parseDaemonConfig` path. The pure-Dhall
--- decoder owns those fields via 'DaemonBootDhall', so the JSON
--- helpers are removed. The surviving JSON helpers (`requireStr`,
--- `requireInt`) remain because 'parseOrders' (still used by tests for
--- the JSON Orders fixture) calls them transitively.
-
-parseNodeList :: KeyMap.KeyMap Value -> Either String [PeerEndpoint]
-parseNodeList obj =
-  case KeyMap.lookup (Key.fromString "nodes") obj of
-    Just (Array arr) -> mapM parseNode (Vector.toList arr)
-    _ -> Left "orders.nodes must be a list"
-
-parseNode :: Value -> Either String PeerEndpoint
-parseNode (Object obj) = do
-  nodeId <- requireStr obj "node_id"
-  stableDnsName <- requireStr obj "stable_dns_name"
-  restHost <- requireStr obj "rest_host"
-  restPort <- requireInt obj "rest_port"
-  socketHost <- requireStr obj "socket_host"
-  socketPort <- requireInt obj "socket_port"
-  Right
-    PeerEndpoint
-      { peerNodeId = nodeId
-      , peerStableDnsName = stableDnsName
-      , peerRestHost = restHost
-      , peerRestPort = restPort
-      , peerSocketHost = socketHost
-      , peerSocketPort = socketPort
-      }
-parseNode _ = Left "orders.nodes entries must be objects"
-
-parseGatewayRule :: KeyMap.KeyMap Value -> Either String GatewayRule
-parseGatewayRule obj =
-  case KeyMap.lookup (Key.fromString "gateway_rule") obj of
-    Just (Object ruleObj) -> do
-      rankedNodesList <- case KeyMap.lookup (Key.fromString "ranked_nodes") ruleObj of
-        Just (Array arr) ->
-          mapM parseRankedNode (Vector.toList arr)
-        _ -> Left "gateway_rule.ranked_nodes must be a list"
-      if null rankedNodesList
-        then Left "gateway_rule.ranked_nodes must be non-empty"
-        else pure ()
-      timeoutValue <- requireInt ruleObj "heartbeat_timeout_seconds"
-      if timeoutValue < 3
-        then Left "gateway_rule.heartbeat_timeout_seconds must be >= 3"
-        else
-          if timeoutValue > 60
-            then Left "gateway_rule.heartbeat_timeout_seconds must be <= 60"
-            else
-              if length (nub rankedNodesList) /= length rankedNodesList
-                then Left "gateway_rule.ranked_nodes must be unique"
-                else
-                  Right
-                    GatewayRule
-                      { rankedNodes = rankedNodesList
-                      , heartbeatTimeoutSeconds = timeoutValue
-                      }
-    _ -> Left "orders.gateway_rule must be an object"
-
-parseRankedNode :: Value -> Either String String
-parseRankedNode value =
-  case value of
-    String text -> Right (Text.unpack text)
-    _ -> Left "ranked_nodes must contain strings"
 
 -- Sprint 2.20 closure: `validateIntervals`, `validateMaxSkew`, and
 -- `validateDrainDeadline` were JSON-parser helpers for the legacy

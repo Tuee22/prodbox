@@ -78,6 +78,7 @@ import Data.Map.Strict qualified as Map
 import Data.Text qualified as Text
 import Data.Text.Encoding qualified as TextEncoding
 import Prodbox.ContainerImage qualified as ContainerImage
+import Prodbox.Infra.AwsEksTestStack qualified as AwsEks
 import Prodbox.Infra.LongLivedPulumiBackend
   ( getLongLivedObject
   , putLongLivedObject
@@ -86,7 +87,9 @@ import Prodbox.Infra.LongLivedPulumiBackend
 import Prodbox.Lib.Storage
   ( ChartStorageBinding (..)
   , ChartStorageSpec (..)
-  , chartDynamicStorageManifest
+  , StaticEbsVolumeBinding
+  , chartEbsPersistentVolumeManifest
+  , chartEbsStorageManifest
   , chartPersistentVolumeManifest
   , chartStorageClassName
   , chartStorageManifest
@@ -94,6 +97,7 @@ import Prodbox.Lib.Storage
   , renderStorageReport
   , storageBinding
   )
+import Prodbox.Lifecycle.EbsVolume qualified as EbsVolume
 import Prodbox.PostgresPlatform
   ( patroniClusterName
   , patroniCredentialsSecretName
@@ -153,7 +157,7 @@ import Prodbox.Subprocess
   , Subprocess (..)
   , captureSubprocessResult
   )
-import Prodbox.Substrate (Substrate (..), substrateId)
+import Prodbox.Substrate (Substrate (..), replicasForSubstrate, substrateId)
 import Prodbox.Vault.Host (readHostVaultKvField, writeHostVaultKvObject)
 import System.Directory
   ( createDirectoryIfMissing
@@ -162,6 +166,7 @@ import System.Directory
   , getTemporaryDirectory
   , removeFile
   )
+import System.Environment (getEnvironment)
 import System.Exit
   ( ExitCode (ExitFailure, ExitSuccess)
   )
@@ -377,6 +382,24 @@ resolveChart repoRoot chartName =
           , chartDefinitionRequiresPublicHost = False
           , chartDefinitionExternalRequirements = []
           }
+    "pulsar" ->
+      Right
+        ChartDefinition
+          { chartDefinitionName = "pulsar"
+          , chartDefinitionChartDir = repoRoot </> "charts" </> "pulsar"
+          , chartDefinitionDependencies = []
+          , chartDefinitionStorage =
+              [ ChartStorageSpec
+                  { chartStorageSpecStatefulSetName = "pulsar"
+                  , chartStorageSpecPersistentVolumeClaimName = "data-pulsar-0"
+                  , chartStorageSpecStorageSize = "20Gi"
+                  , chartStorageSpecOrdinal = 0
+                  , chartStorageSpecClaimSuffix = "data"
+                  }
+              ]
+          , chartDefinitionRequiresPublicHost = False
+          , chartDefinitionExternalRequirements = []
+          }
     "api" ->
       Right
         ChartDefinition
@@ -402,7 +425,7 @@ resolveChart repoRoot chartName =
         ChartDefinition
           { chartDefinitionName = "gateway"
           , chartDefinitionChartDir = repoRoot </> "charts" </> "gateway"
-          , chartDefinitionDependencies = []
+          , chartDefinitionDependencies = ["pulsar"]
           , chartDefinitionStorage = []
           , chartDefinitionRequiresPublicHost = True
           , chartDefinitionExternalRequirements = []
@@ -1575,7 +1598,7 @@ buildChartDeploymentPlanPure
   -> Either String ChartDeploymentPlan
 buildChartDeploymentPlanPure substrate repoRoot settings chartName chartSecrets gatewayEventKeys maybeRuntimeImage maybeGatewayHostedZoneId = do
   when
-    (substrate == SubstrateHomeLocal && chartStorageClassName /= "manual")
+    (chartStorageClassName /= "manual")
     (Left "Chart platform requires StorageClass 'manual'; dynamic provisioners are not permitted")
   let storageClassName = chartStorageClassNameForSubstrate substrate
   releaseOrder <- resolveDependencyOrder repoRoot chartName
@@ -1629,10 +1652,7 @@ chartStorageClassNameForSubstrate :: Substrate -> String
 chartStorageClassNameForSubstrate substrate =
   case substrate of
     SubstrateHomeLocal -> chartStorageClassName
-    SubstrateAws -> awsChartStorageClassName
-
-awsChartStorageClassName :: String
-awsChartStorageClassName = "gp2"
+    SubstrateAws -> chartStorageClassName
 
 resolveDependencyOrder :: FilePath -> String -> Either String [String]
 resolveDependencyOrder repoRoot chartName = do
@@ -1722,15 +1742,19 @@ renderReleaseValuesJson substrate definition namespace rootChart settings chartS
           _ -> Left "vscode requires exactly one storage binding"
       "redis" ->
         valuesForRedis namespace rootChart
+      "pulsar" ->
+        case storageBindings of
+          [binding] -> valuesForPulsar namespace rootChart storageClassName binding
+          _ -> Left "pulsar requires exactly one storage binding"
       "api" ->
         case maybePublicFqdn of
           Just fqdn ->
-            valuesForApi namespace rootChart settings fqdn maybeRuntimeImage
+            valuesForApi substrate namespace rootChart settings fqdn maybeRuntimeImage
           Nothing -> Left "api requires a public host"
       "websocket" ->
         case maybePublicFqdn of
           Just fqdn ->
-            valuesForWebsocket namespace rootChart settings chartSecrets fqdn maybeRuntimeImage
+            valuesForWebsocket substrate namespace rootChart settings chartSecrets fqdn maybeRuntimeImage
           Nothing -> Left "websocket requires a public host"
       "gateway" ->
         case (maybePublicFqdn, maybeGatewayHostedZoneId) of
@@ -2237,14 +2261,48 @@ valuesForRedis namespace rootChart =
         ]
     )
 
+valuesForPulsar :: String -> String -> String -> ChartStorageBinding -> Either String Value
+valuesForPulsar namespace rootChart storageClassName binding =
+  pure
+    ( object
+        [ "global"
+            .= object
+              [ "namespace" .= namespace
+              , "rootChart" .= rootChart
+              ]
+        , "image"
+            .= object
+              [ "repository"
+                  .= ( ContainerImage.imageRegistry ContainerImage.harborPulsarImage
+                         ++ "/"
+                         ++ ContainerImage.imageRepository ContainerImage.harborPulsarImage
+                     )
+              , "tag" .= ContainerImage.imageTag ContainerImage.harborPulsarImage
+              , "pullPolicy" .= ("IfNotPresent" :: String)
+              ]
+        , "pulsar"
+            .= object
+              [ "brokerPort" .= (6650 :: Int)
+              , "httpPort" .= (8080 :: Int)
+              , "clusterName" .= ("prodbox" :: String)
+              ]
+        , "storage"
+            .= object
+              [ "className" .= storageClassName
+              , "size" .= chartStorageBindingStorageSize binding
+              ]
+        ]
+    )
+
 valuesForApi
-  :: String
+  :: Substrate
+  -> String
   -> String
   -> ValidatedSettings
   -> String
   -> Maybe ResolvedCustomImage
   -> Either String Value
-valuesForApi namespace rootChart settings sharedHostFqdn maybeRuntimeImage = do
+valuesForApi substrate namespace rootChart settings sharedHostFqdn maybeRuntimeImage = do
   resolvedWorkloadImage <-
     case maybeRuntimeImage of
       Just imageInfo -> Right imageInfo
@@ -2258,7 +2316,10 @@ valuesForApi namespace rootChart settings sharedHostFqdn maybeRuntimeImage = do
   pure
     ( object
         [ "replicaCount"
-            .= (maybe 2 fromIntegral (api_replicas (deployment (validatedConfig settings))) :: Int)
+            .= ( fromIntegral
+                   (replicasForSubstrate substrate (api_scaling (deployment (validatedConfig settings))))
+                   :: Int
+               )
         , "podAntiAffinity" .= podAntiAffinityValue settings
         , "podAnnotations"
             .= customImagePodAnnotationsValue (resolvedCustomImageRolloutToken resolvedWorkloadImage)
@@ -2305,14 +2366,15 @@ valuesForApi namespace rootChart settings sharedHostFqdn maybeRuntimeImage = do
     )
 
 valuesForWebsocket
-  :: String
+  :: Substrate
+  -> String
   -> String
   -> ValidatedSettings
   -> Map String String
   -> String
   -> Maybe ResolvedCustomImage
   -> Either String Value
-valuesForWebsocket namespace rootChart settings _chartSecrets sharedHostFqdn maybeRuntimeImage = do
+valuesForWebsocket substrate namespace rootChart settings _chartSecrets sharedHostFqdn maybeRuntimeImage = do
   resolvedWorkloadImage <-
     case maybeRuntimeImage of
       Just imageInfo -> Right imageInfo
@@ -2330,7 +2392,10 @@ valuesForWebsocket namespace rootChart settings _chartSecrets sharedHostFqdn may
   pure
     ( object
         [ "replicaCount"
-            .= (maybe 2 fromIntegral (websocket_replicas (deployment (validatedConfig settings))) :: Int)
+            .= ( fromIntegral
+                   (replicasForSubstrate substrate (websocket_scaling (deployment (validatedConfig settings))))
+                   :: Int
+               )
         , "podAntiAffinity" .= podAntiAffinityValue settings
         , "podAnnotations"
             .= customImagePodAnnotationsValue (resolvedCustomImageRolloutToken resolvedWorkloadImage)
@@ -2629,6 +2694,12 @@ renderPatroniResetDecision decision =
 ensureChartStorage :: ChartDeploymentPlan -> IO (Either String ())
 ensureChartStorage plan = do
   let bindings = concatMap chartReleasePlanStorageBindings (chartDeploymentPlanReleases plan)
+      patroniBindings =
+        [ binding
+        | release <- chartDeploymentPlanReleases plan
+        , chartReleasePlanReleaseName release == "keycloak-postgres"
+        , binding <- chartReleasePlanStorageBindings release
+        ]
       eagerBindings =
         [ binding
         | release <- chartDeploymentPlanReleases plan
@@ -2637,18 +2708,16 @@ ensureChartStorage plan = do
         ]
   case chartDeploymentPlanSubstrate plan of
     SubstrateAws ->
-      if null eagerBindings
+      if null bindings
         then
           applyManifest
             (namespaceManifest (chartDeploymentPlanNamespace plan) (chartDeploymentPlanRootChart plan))
-        else
-          applyManifest
-            ( chartDynamicStorageManifest
-                (chartDeploymentPlanNamespace plan)
-                (chartDeploymentPlanRootChart plan)
-                awsChartStorageClassName
-                eagerBindings
-            )
+        else do
+          ebsBindingsResult <- ensureAwsEbsVolumeBindings bindings
+          case ebsBindingsResult of
+            Left err -> pure (Left err)
+            Right ebsBindings ->
+              applyAwsEbsStorageManifests ebsBindings patroniBindings eagerBindings
     SubstrateHomeLocal ->
       if null bindings
         then
@@ -2688,6 +2757,60 @@ ensureChartStorage plan = do
                                     nodeHostname
                                 )
  where
+  ensureAwsEbsVolumeBindings :: [ChartStorageBinding] -> IO (Either String [StaticEbsVolumeBinding])
+  ensureAwsEbsVolumeBindings awsBindings = do
+    snapshotMaybe <- AwsEks.fetchAwsEksTestSnapshotFromBackend (chartDeploymentPlanRepoRoot plan)
+    case snapshotMaybe of
+      Nothing ->
+        pure
+          ( Left
+              "AWS retained EBS storage requires a live aws-eks-test stack snapshot with retained_ebs_availability_zone; run `prodbox aws stack eks reconcile` first."
+          )
+      Just snapshot -> do
+        let availabilityZone = AwsEks.eksSnapshotRetainedEbsAvailabilityZone snapshot
+            requiredResult =
+              mapM
+                (EbsVolume.ebsRequiredVolumeFromChartStorageBinding availabilityZone)
+                awsBindings
+        case requiredResult of
+          Left err -> pure (Left err)
+          Right required -> do
+            environment <- getEnvironment
+            EbsVolume.ensureRetainedEbsVolumes
+              EbsVolume.EbsEnsureInput
+                { EbsVolume.ebsEnsureEnvironment = environment
+                , EbsVolume.ebsEnsureWorkingDirectory = Just (chartDeploymentPlanRepoRoot plan)
+                }
+              required
+
+  applyAwsEbsStorageManifests
+    :: [StaticEbsVolumeBinding] -> [ChartStorageBinding] -> [ChartStorageBinding] -> IO (Either String ())
+  applyAwsEbsStorageManifests ebsBindings patroniStorageBindings eagerStorageBindings = do
+    let renderedManifestsResult =
+          sequence
+            ( [ chartEbsPersistentVolumeManifest
+                  (chartDeploymentPlanNamespace plan)
+                  (chartDeploymentPlanRootChart plan)
+                  patroniStorageBindings
+                  ebsBindings
+              | not (null patroniStorageBindings)
+              ]
+                ++ [ chartEbsStorageManifest
+                       (chartDeploymentPlanNamespace plan)
+                       (chartDeploymentPlanRootChart plan)
+                       eagerStorageBindings
+                       ebsBindings
+                   | not (null eagerStorageBindings)
+                   ]
+            )
+    case renderedManifestsResult of
+      Left err -> pure (Left err)
+      Right manifests -> foldM applyOne (Right ()) manifests
+
+  applyOne :: Either String () -> Value -> IO (Either String ())
+  applyOne (Left err) _ = pure (Left err)
+  applyOne (Right ()) manifest = applyManifest manifest
+
   -- Sprint 3.13 chunks 12 + 13 + 14: with the host-side `.prodbox-state`
   -- chart-secret cache gone, no code path writes the `.patroni-reset-required`
   -- marker any more, so the legacy "rm -rf host paths if marker present"

@@ -55,6 +55,14 @@ resourceLifecycleClasses =
   , ("aws-eks-subzone", PerRun)
   , ("aws-test", PerRun)
   , ("aws-ses", LongLived)
+  , -- Sprint 4.39: pre-created EBS volumes that back EKS static
+    -- @Retain@ PersistentVolumes. Production-retained volumes carry
+    -- @prodbox.io/lifecycle=retained-ebs@ and survive cluster teardown;
+    -- test-scoped volumes carry @prodbox.io/lifecycle=per-run-test@
+    -- plus the EKS @kubernetes.io/cluster/<name>=owned@ tag and are
+    -- destroyed by the typed EC2 discover/destroy path instead of a
+    -- Pulumi stack destroy.
+    ("aws-ebs-volumes", LongLived)
   , -- Sprint 4.24: the retained public-edge TLS certificate
     -- material, written to a substrate-scoped key
     -- (@public-edge-tls/\<substrate\>/\<fqdn\>@) in the long-lived

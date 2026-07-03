@@ -9,9 +9,11 @@
 
 > **Scheduling honesty.** Everything here is written as present-tense doctrine per
 > [development_plan_standards § D](../../DEVELOPMENT_PLAN/README.md), but the capability is
-> **scheduled, not built**: the capacity/scaling Dhall schema and config land in **Sprint 1.51**
-> (Phase 1), the autoscaler + multi-cluster placement reconciler in **Sprint 4.34** (Phase 4), and
-> the spot-economics gate in **Sprint 7.27** (Phase 7). Status is owned only by
+> split across sprints: the capacity/scaling Dhall schema and config surface landed in **Sprint
+> 1.51** (Phase 1), the pure autoscaler + federation-scoped placement planner landed in
+> **Sprint 4.34** (Phase 4), the storage/region-quota preflight adapter landed in **Sprint 4.36**
+> (Phase 4), and the spot-economics gate plus AWS observer surface landed in **Sprint 7.27**
+> (Phase 7). Status is owned only by
 > [DEVELOPMENT_PLAN/README.md](../../DEVELOPMENT_PLAN/README.md); this doc never restates it.
 
 ## 1. Prodbox Is Its Own Autoscaler
@@ -41,12 +43,12 @@ A `Budget` is a monotone `{cpu, memory, storage}` triple. One relation — `fits
 | **h** | `cluster.workload ⊆ Σ nodes.machine` | A **workload** needing more than the cluster's summed node capacity. |
 | **o** | `Σ nodes.machine ⊆ region.quota` | An **AWS deploy** whose provisioned footprint exceeds the region service quota (§5). |
 
-The canonical schema is the scheduled `dhall/CapacitySchema.dhall` (Sprint 1.51, mirroring
-`jitML dhall/project/Schema.dhall`); this fragment teaches the shape and is **not** the SSoT:
+The canonical schema is `dhall/capacity/Schema.dhall` (Sprint 1.51, mirroring `jitML
+dhall/project/Schema.dhall`); this fragment teaches the shape and is **not** the SSoT:
 
 ```dhall
 -- Example: the capacity-budget facet — mirrors jitML dhall/project/Schema.dhall IN KIND.
--- Canonical schema: the scheduled dhall/CapacitySchema.dhall (Sprint 1.51). NOT the SSoT.
+-- Canonical schema: dhall/capacity/Schema.dhall. NOT the SSoT.
 let Budget = { cpu : Natural, memory : Natural, storage : Natural }
 let lessOrEq = \(a : Natural) -> \(b : Natural) -> Natural/isZero (Natural/subtract b a)
 let fitsWithin
@@ -89,61 +91,45 @@ only as the third axis of the shared `fitsWithin` relation.
 
 ## 3. `ScalingPolicy` Indexed by Substrate Elasticity
 
-The current `src/Prodbox/Settings.hs` `DeploymentSection` carries **unbounded** replica knobs —
-`envoy_gateway_controller_replicas`, `envoy_gateway_data_plane_replicas`, `api_replicas`,
-`websocket_replicas`, each a `Maybe Natural`. A `Maybe Natural` cannot express "this fleet is fixed
-metal and may not elastically scale out," so it admits the illegal request structurally. Sprint 1.51
-replaces those fields with a `ScalingPolicy` indexed by the substrate's **elasticity**, so
-"scale out on a fixed metal fleet" has **no constructible value** (the type-index facet of
-[pure_fp_standards § GADT-Indexed State Machines](./pure_fp_standards.md#gadt-indexed-state-machines) —
-here used to forbid an illegal arm, not to encode an in-process command sequence):
+`src/Prodbox/Settings.hs` no longer carries unbounded replica knobs. The former
+`envoy_gateway_controller_replicas`, `envoy_gateway_data_plane_replicas`, `api_replicas`, and
+`websocket_replicas` fields are replaced by substrate-indexed policy fields:
+`envoy_gateway_controller_scaling`, `envoy_gateway_data_plane_scaling`, `api_scaling`, and
+`websocket_scaling`.
+
+The landed Sprint 1.51 shape is a Dhall/Haskell union plus an explicit substrate map. `Fixed` is legal
+on every substrate. `Elastic { min, max }` is legal only in the `aws` slot; `home_local` must remain
+`Fixed`. The config validator rejects `min = 0`, `min > max`, and `home_local = Elastic ...` at the
+decode boundary, so there is no admitted validated config value for "scale out on fixed metal."
 
 ```haskell
--- Example: scaling policy indexed by substrate elasticity. The illegal state
--- "Elastic on metal" is unconstructible, not runtime-rejected.
-{-# LANGUAGE DataKinds #-}
-{-# LANGUAGE GADTs #-}
-{-# LANGUAGE KindSignatures #-}
+-- File: src/Prodbox/Substrate.hs
+data ElasticScalingBounds = ElasticScalingBounds
+  { elasticMin :: Natural
+  , elasticMax :: Natural
+  }
 
-data Elasticity = MetalFixed | CloudElastic
+data ScalingPolicy
+  = ScalingPolicyFixed Natural
+  | ScalingPolicyElastic ElasticScalingBounds
 
--- | Singleton recovered from the runtime 'Prodbox.Substrate.Substrate'.
-data SElasticity (e :: Elasticity) where
-  SMetalFixed   :: SElasticity 'MetalFixed     -- SubstrateHomeLocal: MetalLB, no node market
-  SCloudElastic :: SElasticity 'CloudElastic   -- SubstrateAws: managed node groups
-
-data ScalingPolicy (e :: Elasticity) where
-  Fixed   :: NodeCount            -> ScalingPolicy e              -- admissible on EVERY substrate
-  Elastic :: MinNodes -> MaxNodes -> ScalingPolicy 'CloudElastic  -- representable ONLY on cloud
+data ScalingPolicyBySubstrate = ScalingPolicyBySubstrate
+  { scalingHomeLocal :: ScalingPolicy
+  , scalingAws :: ScalingPolicy
+  }
 ```
 
-`Fixed` is polymorphic in `e`, so a fixed size is legal everywhere. `Elastic` fixes the index to
-`'CloudElastic`, so `Elastic lo hi :: ScalingPolicy 'MetalFixed` is a **type error**: home-local /
-metal is `Fixed`-only, managed-cloud additionally admits `Elastic`. Bounds are typed newtypes with
-total smart constructors — never bare `Natural` — so `min = 0` or `min > max` is rejected once, at
-the decode boundary:
-
-```haskell
--- Example: typed bounds + total smart constructor
-newtype NodeCount = NodeCount Natural
-newtype MinNodes  = MinNodes  Natural
-newtype MaxNodes  = MaxNodes  Natural
-
-data ScalingError = ScalingMinZero | ScalingMinExceedsMax Natural Natural
-
-mkElastic :: MinNodes -> MaxNodes -> Either ScalingError (ScalingPolicy 'CloudElastic)
-mkElastic lo@(MinNodes a) hi@(MaxNodes b)
-  | a == 0    = Left ScalingMinZero
-  | a > b     = Left (ScalingMinExceedsMax a b)
-  | otherwise = Right (Elastic lo hi)
-```
+Until the live interpreter consumes the Sprint 4.34 autoscaler planner, renderers use
+`replicasForSubstrate`: fixed policies render their count, and elastic AWS policies render their lower
+bound as a stable replica count. `Prodbox.Scaling.Autoscaler` owns the pure check-before-mutate plan
+shape that turns scaling intents into trusted, capacity-checked, leader-preserving actions.
 
 ## 4. The Spot-Price Gate (Managed-Cloud Only)
 
 A `SpotPriceThreshold` is a per-workload USD/hour ceiling that is **meaningful only on
-`SubstrateAws`** — the home-local substrate has no node market, so the field is not part of a
-`ScalingPolicy 'MetalFixed`. On the cloud substrate a spot-elastic workload deploys or moves onto
-spot capacity **only when the observed price is below its threshold**. Price observation is
+`SubstrateAws`** — the home-local substrate has no node market, so `spotGateForScalingPolicy` makes
+that substrate a structural no-op. On the cloud substrate a spot-elastic workload deploys or moves
+onto spot capacity **only when the observed price is below its threshold**. Price observation is
 three-valued and fail-closed, exactly mirroring
 [`src/Prodbox/Lifecycle/ResidueStatus.hs`](../../src/Prodbox/Lifecycle/ResidueStatus.hs)'s
 `ResidueAbsent | ResiduePresent | ResidueUnreachable` discipline: "I could not read the price" is
@@ -158,16 +144,17 @@ data SpotObservation
 data SpotDecision = SpotAdmit | SpotDefer DeferReason | SpotRefuse UnobservableReason
 
 admitSpotDeploy :: SpotPriceThreshold -> SpotObservation -> SpotDecision
-admitSpotDeploy (SpotPriceThreshold ceiling) obs = case obs of
+admitSpotDeploy (SpotPriceThreshold priceCeiling) obs = case obs of
   SpotObserved price
-    | price < ceiling -> SpotAdmit
-    | otherwise       -> SpotDefer PriceAboveThreshold
+    | price < priceCeiling -> SpotAdmit
+    | otherwise            -> SpotDefer PriceAboveThreshold
   SpotUnobservable r  -> SpotRefuse r                  -- fail closed, never "deploy anyway"
 ```
 
 `SpotRefuse` is the `Unreachable → refuse` soundness rule of
 [lifecycle_reconciliation_doctrine § 3.1 invariant 2](./lifecycle_reconciliation_doctrine.md#31-the-managed-resource-registry-the-reconciler-substrate)
-applied to placement economics. Sprint 7.27 owns the live spot-market observer and this gate.
+applied to placement economics. `src/Prodbox/Scaling/Spot.hs` owns the pure gate and
+`src/Prodbox/Aws.hs` owns the live credential-region `ec2 describe-spot-price-history` observer.
 
 ## 5. The Region Service-Quota Preflight (Rule o)
 
@@ -177,12 +164,13 @@ per-tier `quotaSpecsForTier` / `fullQuotaSpecs` spec sets, `ensureServiceQuota` 
 `applyAwsCheckQuotas` (line 2143); the region is the **credential region** projected by
 `src/Prodbox/AwsEnvironment.hs` (`AWS_REGION` / `AWS_DEFAULT_REGION` overlay), never a separate flag.
 
-Today this runs only when an operator invokes `prodbox aws quotas check`. Sprint 4.34 promotes it to
-a **mandatory preflight on every `Substrate == SubstrateAws` scaling deploy**: before any node group
-is grown, the desired `Σ nodes.machine` footprint is checked against the live `QuotaStatus` for the
-credential region, and a shortfall refuses the deploy with the structured per-quota remedy (the same
-`ensureServiceQuota` output an operator would see) **before** any AWS mutation. The storage axis of
-the region budget is cross-owned by
+Sprint 4.36 exposes this as a quota preflight adapter over the existing `QuotaStatus` values: before
+any AWS scaling deploy grows a node group, the desired `Σ nodes.machine` footprint is checked against
+the credential region's observed quota statuses, and a shortfall refuses the deploy with the
+structured per-quota remedy (the same `ensureServiceQuota` output an operator would see) **before**
+any AWS mutation. The live observer remains the canonical `applyAwsCheckQuotas` /
+`ensureServiceQuota` boundary; local validation stubs `QuotaStatus` so the refusal fold is pure. The
+storage axis of the region budget is cross-owned by
 [tiered_storage_capacity_doctrine.md](./tiered_storage_capacity_doctrine.md); cpu/network quotas are
 this doc's `fitsWithin` obligation. A quota query that cannot reach the Service Quotas API is
 `Unreachable → refuse`, identical to §4 and to the lifecycle tag-sweep soundness rule.
@@ -242,15 +230,21 @@ This SSoT co-owns prodbox resource-scaling and capacity-placement doctrine.
 - **Owned statement**: prodbox is its own autoscaler; over-committed nodes/clusters/regions are made
   unrepresentable by the `fitsWithin` budget lemmas, illegal elasticity is unrepresentable by the
   substrate-indexed `ScalingPolicy`, and every scaling gate is `Unreachable → refuse`.
-- **Linked dependents** (the modules Sprints 1.51 / 4.34 / 7.27 implement this in):
-  `src/Prodbox/Settings.hs` (`DeploymentSection` replica fields → `ScalingPolicy`),
-  `src/Prodbox/Substrate.hs` (`SubstrateHomeLocal` / `SubstrateAws` → elasticity index),
+- **Linked dependents** (the modules Sprints 1.51 / 4.34 / 4.36 / 7.27 implement this in):
+  `dhall/capacity/Schema.dhall` and `src/Prodbox/Capacity/Config.hs` (the shared `Budget` /
+  `fitsWithin` / `storageFitsWithin` algebra), `src/Prodbox/Settings.hs` (`DeploymentSection`
+  scaling fields plus the binary-sibling `capacity` block), `src/Prodbox/Substrate.hs`
+  (`ScalingPolicy`, `ScalingPolicyBySubstrate`, and substrate validation),
+  `src/Prodbox/Capacity/Storage.hs` (storage-capacity drawdown, ML storage totals, and
+  region-quota preflight refusal fold),
+  `src/Prodbox/Scaling/Autoscaler.hs` (pure trusted-placement, capacity-check, and
+  gateway-leader-preserving action planner),
   `src/Prodbox/Aws.hs` (`QuotaSpec` / `ensureServiceQuota` / `applyAwsCheckQuotas` region-quota
   preflight), `src/Prodbox/AwsEnvironment.hs` (credential-region projection),
   `src/Prodbox/Lifecycle/ResidueStatus.hs` (the three-valued observation pattern the spot/quota gates
   mirror), `src/Prodbox/Lifecycle/ResourceRegistry.hs` (the `reconcileAbsent` substrate scaling
   reuses), and `src/Prodbox/Gateway/Types.hs` (`Disposition` — leadership the scaler must not
-  perturb). The scheduled Dhall schema is `dhall/CapacitySchema.dhall`.
+  perturb).
 
 ## Cross-References
 

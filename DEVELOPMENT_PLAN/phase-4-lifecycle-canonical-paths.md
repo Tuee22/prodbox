@@ -123,10 +123,10 @@ quiet path, so it may still appear on a successful run; it is benign — see str
 
 🔄 **Reopened 2026-07-02 for the AWS EBS block-storage lifecycle** — two new sprints expand
 Phase 4's own lifecycle/teardown surface (narrated in [README.md → Closure Status](README.md) per
-rule A). Sprint `4.39` (📋 Planned) makes the **pre-created EBS volume a registered managed
+rule A). Sprint `4.39` is ✅ Done: the **pre-created EBS volume is a registered managed
 resource** (typed `discover`/`destroy`, extending the Sprint `4.20`/`4.22` registry) with
 retain-vs-test-scoped tag markers, so production EBS is retained on teardown exactly like `.data/`
-and only test-scoped EBS is deletable. Sprint `4.40` (📋 Planned) adds the **suite postflight
+and only test-scoped EBS is deletable. Sprint `4.40` is ✅ Done: the **suite postflight
 test-EBS reaper** and the retain-safe drain so `Retain` EBS PVs survive teardown while test-scoped
 volumes are reaped at suite exit — closing the EBS-leak class that motivated this work. Both extend,
 and do not reverse, the Sprint `4.12` K8s-drain and the Sprint `4.20`/`4.24`
@@ -1386,8 +1386,9 @@ the doctrine-violating piece that enables stale-state refusals. See
 ## Sprint 4.17: Cascade Canonical Order and Self-Materialize Operational Creds ✅
 
 **Status**: Done. Live closure 2026-06-01 via `prodbox test all` retry 21:
-the cascade narration printed the canonical phase order
-(`confirm-MinIO → drain → per-run destroys → uninstall → sweep`); the
+the cascade narration printed the then-canonical phase order
+(`confirm-MinIO → drain → per-run destroys → uninstall → sweep`; Sprint
+`4.40` later inserts the test-EBS reaper before uninstall); the
 `lifecycle` validation completed a full `rke2 delete --cascade --yes` on
 the home substrate; the per-run AWS substrate validations exercised the
 cascade with live `aws-eks-test` + `aws-test` per-run stacks present
@@ -1395,9 +1396,9 @@ cascade with live `aws-eks-test` + `aws-test` per-run stacks present
 the live EKS cluster's LoadBalancer / ALB / Delete-reclaim PVCs, and
 completed without `DependencyViolation` on subnet deletion (Sprint 4.17.b
 substrate-aware drain validated live). Every code-owned half landed
-May 23, 2026. (a) Credential-fallback half (May 23, 2026 a.m.) — each per-run `loadOperationalAwsCredentials` (in `AwsEksTestStack`, `AwsTestStack`, and transitively `AwsEksSubzoneStack` via re-import) falls back to the harness-simulated elevated/admin prompt (sourced from `test-config.dhall`'s `aws_admin_for_test_simulation.*` fixture; reframed per [Sprint 7.16](phase-7-aws-substrate-foundations.md)) when the operational `aws.*` `SecretRef.Vault` reference resolves empty. (b) Cascade-order rewrite (May 23, 2026 p.m.) reorders `runNativeDeleteCascade` to the canonical sequence (confirm-MinIO via per-stack `<stack>ResidueStatus` → per-run Pulumi destroys for any `ResiduePresent` stack → K8s drain → RKE2 uninstall + cluster-substrate cleanup → postflight cluster-tag sweep) per [lifecycle_reconciliation_doctrine.md §5b](../documents/engineering/lifecycle_reconciliation_doctrine.md). (c) **Postflight tag sweep wiring (May 23, 2026 later session)** — `runCascadePostflightTagSweep` now loads admin credentials via `Prodbox.Infra.LongLivedPulumiBackend.loadAdminAwsCredentials`, builds the AWS env via `Prodbox.Aws.adminAwsEnvironment`, and calls `Prodbox.Lifecycle.TagSweep.discoverClusterTaggedAwsResources` with `tagSweepClusterName = Just awsEksCanonicalClusterName`; an empty result is reported as "clean (no cluster-tagged or prodbox-owned AWS residue)" and a non-empty result is reported with the full `renderTagSweepRefusal` block, while the cascade still returns `ExitSuccess` (best-effort per doctrine §6). When no elevated/admin credential is supplied (home-only operator with no AWS substrate, and no harness-simulated `test-config.dhall` `aws_admin_for_test_simulation.*` fixture), the sweep emits a single-line skip diagnostic explaining that no AWS resources could exist. 4 new unit tests in `test/unit/Main.hs::"Sprint 4.17 postflight tag sweep wiring"` cover the refusal-block ARN/tag rendering, the multi-resource bullet output, the empty-list path, and the `TagSweepInput` record shape. The remaining live operator validation closes the sprint: a real cascade run on this host (or a substrate-equivalent) that exercises the new order end-to-end against a live cluster with at least one per-run Pulumi stack alive.
+May 23, 2026. (a) Credential-fallback half (May 23, 2026 a.m.) — each per-run `loadOperationalAwsCredentials` (in `AwsEksTestStack`, `AwsTestStack`, and transitively `AwsEksSubzoneStack` via re-import) falls back to the harness-simulated elevated/admin prompt (sourced from `test-config.dhall`'s `aws_admin_for_test_simulation.*` fixture; reframed per [Sprint 7.16](phase-7-aws-substrate-foundations.md)) when the operational `aws.*` `SecretRef.Vault` reference resolves empty. (b) Cascade-order rewrite (May 23, 2026 p.m.) reorders `runNativeDeleteCascade` to the canonical sequence (confirm-MinIO via per-stack `<stack>ResidueStatus` → K8s drain → per-run Pulumi destroys for any `ResiduePresent` stack → RKE2 uninstall + cluster-substrate cleanup → postflight cluster-tag sweep) per [lifecycle_reconciliation_doctrine.md §5b](../documents/engineering/lifecycle_reconciliation_doctrine.md); Sprint `4.40` later inserts the test-EBS reaper between per-run destroys and uninstall. (c) **Postflight tag sweep wiring (May 23, 2026 later session)** — `runCascadePostflightTagSweep` now loads admin credentials via `Prodbox.Infra.LongLivedPulumiBackend.loadAdminAwsCredentials`, builds the AWS env via `Prodbox.Aws.adminAwsEnvironment`, and calls `Prodbox.Lifecycle.TagSweep.discoverClusterTaggedAwsResources` with `tagSweepClusterName = Just awsEksCanonicalClusterName`; an empty result is reported as "clean (no cluster-tagged or prodbox-owned AWS residue)" and a non-empty result is reported with the full `renderTagSweepRefusal` block, while the cascade still returns `ExitSuccess` (best-effort per doctrine §6). When no elevated/admin credential is supplied (home-only operator with no AWS substrate, and no harness-simulated `test-config.dhall` `aws_admin_for_test_simulation.*` fixture), the sweep emits a single-line skip diagnostic explaining that no AWS resources could exist. 4 new unit tests in `test/unit/Main.hs::"Sprint 4.17 postflight tag sweep wiring"` cover the refusal-block ARN/tag rendering, the multi-resource bullet output, the empty-list path, and the `TagSweepInput` record shape. The remaining live operator validation closes the sprint: a real cascade run on this host (or a substrate-equivalent) that exercises the new order end-to-end against a live cluster with at least one per-run Pulumi stack alive.
 **Blocked by**: none — every code-owned deliverable is shipped and locally validated. **Live-proof: closed** (development_plan_standards.md Standard O): the real-cascade-against-a-host-with-a-live-`aws-eks`-stack proof is a live-infrastructure axis that never gated this sprint's code-owned closure; it was exercised live on 2026-06-01 via `prodbox test all` retry 21.
-**Implementation**: `src/Prodbox/Infra/AwsEksTestStack.hs::loadOperationalAwsCredentials` and `src/Prodbox/Infra/AwsTestStack.hs::loadOperationalAwsCredentials` (May 23, 2026 a.m., in-memory operational→admin fallback). `src/Prodbox/CLI/Rke2.hs::runNativeDeleteCascade` (May 23, 2026 p.m., reordered to confirm-MinIO → per-run destroys → drain → uninstall → postflight sweep); new helpers `perRunCascadeInventory` (pure, exported, drives test coverage), `runCascadeDrainPhase`, `runCascadePostflightTagSweep`; cascade now consumes the typed `<stack>ResidueStatus` adapter from Sprint 4.16 and skips per-run destroys whose stack reports `ResidueAbsent` (or `ResidueUnreachable` per the per-run lifecycle class). 7 new unit tests in `test/unit/Main.hs::"Sprint 4.17 cascade per-run inventory"` cover all-absent / all-present / individual-stack-present / `ResidueUnreachable`-treated-as-absent permutations. **Tag sweep wiring (May 23, 2026 later session)**: `runCascadePostflightTagSweep` rewritten in `src/Prodbox/CLI/Rke2.hs` to invoke `Prodbox.Lifecycle.TagSweep.discoverClusterTaggedAwsResources` against the admin AWS environment when an elevated/admin credential is supplied (the harness simulating the prompt from `test-config.dhall`'s `aws_admin_for_test_simulation.*` fixture; reframed per [Sprint 7.16](phase-7-aws-substrate-foundations.md)); new exports `awsEksCanonicalClusterName` on `Prodbox.Infra.AwsEksTestStack` so the cascade can build the canonical `kubernetes.io/cluster/<name>` filter; 4 new unit tests in `"Sprint 4.17 postflight tag sweep wiring"` lift `renderTagSweepRefusal` + `TagSweepInput` invariants out of the live-only path (test count 519/519, up from 515).
+**Implementation**: `src/Prodbox/Infra/AwsEksTestStack.hs::loadOperationalAwsCredentials` and `src/Prodbox/Infra/AwsTestStack.hs::loadOperationalAwsCredentials` (May 23, 2026 a.m., in-memory operational→admin fallback). `src/Prodbox/CLI/Rke2.hs::runNativeDeleteCascade` (May 23, 2026 p.m., reordered to confirm-MinIO → drain → per-run destroys → uninstall → postflight sweep; Sprint `4.40` later inserts the test-EBS reaper before uninstall); new helpers `perRunCascadeInventory` (pure, exported, drives test coverage), `runCascadeDrainPhase`, `runCascadePostflightTagSweep`; cascade now consumes the typed `<stack>ResidueStatus` adapter from Sprint 4.16 and skips per-run destroys whose stack reports `ResidueAbsent` (or `ResidueUnreachable` per the per-run lifecycle class). 7 new unit tests in `test/unit/Main.hs::"Sprint 4.17 cascade per-run inventory"` cover all-absent / all-present / individual-stack-present / `ResidueUnreachable`-treated-as-absent permutations. **Tag sweep wiring (May 23, 2026 later session)**: `runCascadePostflightTagSweep` rewritten in `src/Prodbox/CLI/Rke2.hs` to invoke `Prodbox.Lifecycle.TagSweep.discoverClusterTaggedAwsResources` against the admin AWS environment when an elevated/admin credential is supplied (the harness simulating the prompt from `test-config.dhall`'s `aws_admin_for_test_simulation.*` fixture; reframed per [Sprint 7.16](phase-7-aws-substrate-foundations.md)); new exports `awsEksCanonicalClusterName` on `Prodbox.Infra.AwsEksTestStack` so the cascade can build the canonical `kubernetes.io/cluster/<name>` filter; 4 new unit tests in `"Sprint 4.17 postflight tag sweep wiring"` lift `renderTagSweepRefusal` + `TagSweepInput` invariants out of the live-only path (test count 519/519, up from 515).
 **Docs to update**: `documents/engineering/lifecycle_reconciliation_doctrine.md`, `documents/engineering/aws_integration_environment_doctrine.md`, `documents/engineering/cli_command_surface.md`
 
 ### Objective
@@ -1474,7 +1475,8 @@ for the authoritative cascade-order table.
    `prodbox test integration aws-iam --substrate aws`; manually clear
    `aws.*` in `prodbox-config.dhall`; run `prodbox rke2 delete --cascade
    --yes`; confirm it succeeds with output ordering
-   "confirm-MinIO → per-run destroys → drain → uninstall → sweep" and
+   "confirm-MinIO → drain → per-run destroys → uninstall → sweep" (Sprint
+   `4.40` later inserts the test-EBS reaper before uninstall) and
    without the May 22 error message ("operational AWS credentials are
    required to destroy the AWS EKS test stack once a Pulumi stack
    exists: aws.access_key_id must not be empty") because the load helper
@@ -1519,8 +1521,9 @@ substrate verification needs both)
 
 ### Objective
 
-Reorder cascade phases to match the doctrine-canonical sequence
-`confirm-MinIO → drain → per-run destroys → uninstall → sweep` so AWS-side
+Reorder cascade phases to match the then-doctrine-canonical sequence
+`confirm-MinIO → drain → per-run destroys → uninstall → sweep` (later extended
+by Sprint `4.40` with the test-EBS reaper before uninstall) so AWS-side
 controllers (AWS Load Balancer Controller, EBS CSI driver) unwind their
 ENIs / ALBs / EBS volumes before the per-run Pulumi destroy phase tries
 to delete the substrate. The pre-correction order
@@ -2937,11 +2940,11 @@ yields only `objects/<hmac>.enc` at a constant count and no exists-vs-absent ora
   red-team is exercised alongside the sealed-Vault canonical validation (Sprint `5.8`), gated on
   the deployed Vault. Raw Pulumi checkpoint decrypt-to-scratch interposition remains Sprint `7.14`.
 
-## Sprint 4.34: Autoscaler Runtime & Federation-Scoped Multi-Cluster Placement ⏸️ Blocked
+## Sprint 4.34: Autoscaler Runtime & Federation-Scoped Multi-Cluster Placement ✅
 
-**Status**: Blocked
-**Implementation**: `src/Prodbox/Lifecycle/ResourceRegistry.hs`, `src/Prodbox/Scaling/`
-**Blocked by**: Sprint `1.51`
+**Status**: ✅ Done
+**Implementation**: `src/Prodbox/Scaling/Autoscaler.hs`, `src/Prodbox/Lifecycle/ResourceRegistry.hs`,
+`test/unit/Main.hs`
 **Live-proof**: pending
 **Independent Validation**: Validated on its owned code surface — `prodbox test unit` over the pure
 autoscaler reconciler and the trust-tree placement-constraint solver, plus `prodbox test integration
@@ -2971,15 +2974,17 @@ never perturbs gateway leadership.
 
 ### Validation
 
-1. `prodbox check-code`
-2. `prodbox test unit` covers the autoscaler reconciler and the trust-tree placement constraint (pure).
-3. `prodbox test integration cli` proves the scaling plan renders and is idempotent on the home
-   substrate.
+1. `cabal build --builddir=.build exe:prodbox`
+2. `prodbox test unit` (1102/1102; autoscaler planner, trust-tree placement, capacity refusal,
+   leader-preserving scale-down, action ordering, and registry exposure)
+3. `prodbox test integration cli`
+4. `prodbox test integration env`
+5. `prodbox dev check`
 
 ### Remaining Work
 
-- Live multi-cluster placement across a deployed federation trust tree is a non-blocking
-  `Live-proof: pending` note.
+- None on the Sprint `4.34` code-owned planner surface. Live multi-cluster placement across a
+  deployed federation trust tree is a non-blocking `Live-proof: pending` note.
 
 ## Sprint 4.35: Pulsar Topics as Managed Resources ⏸️ Blocked
 
@@ -3019,11 +3024,10 @@ other managed resource.
 - Live broker present/absent reconcile against a deployed Pulsar broker is a non-blocking
   `Live-proof: pending` note.
 
-## Sprint 4.36: Tiered-Storage Budget DSL + Region-Quota Gate + ML Storage Budget ⏸️ Blocked
+## Sprint 4.36: Tiered-Storage Budget DSL + Region-Quota Gate + ML Storage Budget ✅
 
-**Status**: Blocked
-**Implementation**: `src/Prodbox/Capacity/`, `src/Prodbox/Aws.hs`
-**Blocked by**: Sprint `1.51`
+**Status**: ✅ Done
+**Implementation**: `src/Prodbox/Capacity/Storage.hs`, `src/Prodbox/Aws.hs`, `test/unit/Main.hs`
 **Live-proof**: pending
 **Independent Validation**: Validated on its owned code surface — `prodbox test unit` over the
 finite-budget capacity reconciler, the region service-quota preflight, and the ML storage-budget totals,
@@ -3048,25 +3052,31 @@ the mandatory ML-engine storage budget per
 
 ### Validation
 
-1. `prodbox check-code`
-2. `prodbox test unit` covers the finite-budget type (no `Infinite`), the MinIO-unbounded witness rule,
-   and the ML storage-budget totals (pure).
-3. `prodbox test integration cli` proves the region-quota preflight renders and refuses on an
-   insufficient stubbed quota.
+1. `cabal build --builddir=.build exe:prodbox`
+2. `cabal build --builddir=.build all --ghc-options=-Werror`
+3. `prodbox test unit` passed 1106/1106, covering the finite-budget type (no `Infinite`), the
+   MinIO-unbounded witness rule, ML storage-budget totals, and insufficient stubbed AWS quota
+   refusal.
+4. `prodbox test integration cli` passed 39/39.
+5. `prodbox test integration env` passed 39/39.
+6. `prodbox dev docs check` passed.
+7. `git diff --check` passed.
+8. `prodbox dev check` passed.
 
 ### Remaining Work
 
-- Live AWS region service-quota checks against live AWS credentials are a non-blocking
+- None on the Sprint `4.36` code-owned capacity surface. Live AWS region service-quota checks
+  against live AWS credentials are a non-blocking
   `Live-proof: pending` note.
 
-## Sprint 4.37: Lima/WSL2/Incus Provisioning + Native-Arch Build Extension ⏸️ Blocked
+## Sprint 4.37: Lima/WSL2/Incus Provisioning + Native-Arch Build Extension ✅
 
-**Status**: Blocked
-**Implementation**: `src/Prodbox/Host/`, `src/Prodbox/DockerConfig.hs`
-**Blocked by**: Sprint `1.52`
+**Status**: ✅ Done
+**Implementation**: `src/Prodbox/Host/Ensure.hs`, `src/Prodbox/DockerConfig.hs`,
+`test/unit/Main.hs`
 **Live-proof**: pending
 **Independent Validation**: Validated on its owned code surface — `prodbox test unit` over the
-host-provider selection, the VM ensure reconcilers, and the Windows docker CPP-gating rule, plus
+host-provider selection, the VM ensure reconcilers, and the Docker host-frame gate, plus
 `prodbox test integration cli`/`env` on the home/local (Linux/Incus) substrate with foreign-OS providers
 stubbed — no later-phase dependency.
 **Docs to update**: `documents/engineering/host_platform_doctrine.md`,
@@ -3082,28 +3092,32 @@ the native-host-arch image build inside the OS-appropriate Linux frame per
 
 - `src/Prodbox/Host/` selects the host provider by OS and provides idempotent VM `ensure` reconcilers
   (Lima / WSL2 / Incus/native).
-- `src/Prodbox/DockerConfig.hs` gates the Windows docker path on the CPP rule (rule j) so a Windows host
-  builds through its WSL2 Linux frame.
+- `src/Prodbox/DockerConfig.hs` extends the existing rule-j host-frame Docker gate so a Windows host
+  builds through its WSL2 Linux frame and a macOS host builds through its Lima Linux frame.
 - Native-host-arch image build runs inside the OS-appropriate Linux frame, extending the native-arch,
   no-cross-arch-emulation publication contract from Sprint `4.1`.
 
 ### Validation
 
-1. `prodbox check-code`
-2. `prodbox test unit` covers the host-provider selection and the Windows CPP-gating rule (pure).
-3. `prodbox test integration cli`/`env` proves the Linux/Incus ensure reconciler is idempotent on the
-   home substrate.
+1. `cabal build --builddir=.build exe:prodbox`
+2. `cabal build --builddir=.build all --ghc-options=-Werror`
+3. `prodbox test unit` passed 1110/1110, covering host-provider reconciler selection,
+   ready/missing/reboot decisions, wrong-provider fail-fast refusal, and Docker Linux-frame
+   dispatch through native Linux, Lima, and WSL2.
+4. `prodbox test integration cli` passed 39/39.
+5. `prodbox test integration env` passed 39/39.
 
 ### Remaining Work
 
-- Live macOS-Lima and Windows-WSL2 provisioning proofs on those hosts are non-blocking
+- None on the Sprint `4.37` code-owned host-provider surface. Live macOS-Lima and Windows-WSL2
+  provisioning proofs on those hosts are non-blocking
   `Live-proof: pending` notes.
 
-## Sprint 4.38: Substrate-Typed Worker Placement & One-Per-Machine Anti-Affinity ⏸️ Blocked
+## Sprint 4.38: Substrate-Typed Worker Placement & One-Per-Machine Anti-Affinity ✅
 
-**Status**: Blocked
-**Implementation**: `src/Prodbox/Cluster/Placement.hs`
-**Blocked by**: Sprint `1.53`
+**Status**: ✅ Done
+**Implementation**: `src/Prodbox/Cluster/Placement.hs`, `src/Prodbox/Cluster/Topology.hs`,
+`test/unit/Main.hs`
 **Live-proof**: pending
 **Independent Validation**: Validated on its owned code surface — `prodbox test unit` over the
 anti-affinity placement solver and the mixed-substrate admissibility rule, plus `prodbox test
@@ -3126,26 +3140,33 @@ anti-affinity with `maxSurge: 0`, and mixed-substrate placement admissible only 
 
 ### Validation
 
-1. `prodbox check-code`
-2. `prodbox test unit` covers the one-per-machine anti-affinity solver and the mixed-substrate
-   `rke2`-only rule (pure).
-3. `prodbox test integration cli` proves the placement plan renders on the home/local `rke2` substrate.
+1. `cabal build --builddir=.build exe:prodbox`
+2. `cabal build --builddir=.build all --ghc-options=-Werror`
+3. `prodbox test unit` passed 1114/1114, covering one-worker-per-machine placement, required
+   hostname anti-affinity, `maxSurge = 0`, duplicate-machine refusal, wrong-substrate worker
+   refusal, and the mixed-substrate-only-`rke2` rule.
+4. `prodbox test integration cli` passed 39/39.
+5. `prodbox test integration env` passed 39/39.
 
 ### Remaining Work
 
-- Live multi-machine anti-affinity proof on a multi-node deployed cluster is a non-blocking
+- None on the Sprint `4.38` code-owned placement surface. Live multi-machine anti-affinity proof on
+  a multi-node deployed cluster is a non-blocking
   `Live-proof: pending` note.
 
-## Sprint 4.39: Pre-Created EBS Volumes as a Registered Managed Resource [📋 Planned]
+## Sprint 4.39: Pre-Created EBS Volumes as a Registered Managed Resource ✅
 
-**Status**: 📋 Planned
-**Implementation**: `src/Prodbox/Lifecycle/ResourceClass.hs` (register the EBS-volume class in
-`resourceLifecycleClasses`), a new EBS discover/destroy module (typed `discover` + `destroy`
-mirroring the existing registry entries), `src/Prodbox/Lifecycle/TagSweep.hs` (retain-vs-test-scoped
-markers), `src/Prodbox/CLI/Rke2.hs` (retained-inventory parity for AWS), `test/unit/Main.hs`.
+**Status**: ✅ Done
+**Implementation**: `src/Prodbox/Lifecycle/ResourceClass.hs` (the `aws-ebs-volumes`
+`LongLived` registry entry), `src/Prodbox/Lifecycle/EbsVolume.hs` (typed EC2
+`discover`/`destroy` boundary plus pure JSON/residue adapters),
+`src/Prodbox/Lifecycle/TagSweep.hs` (retain-vs-test-scoped markers and EBS tag
+partitioning), `src/Prodbox/CLI/Rke2.hs` (substrate-aware retained-inventory projection),
+`test/unit/Main.hs`.
 **Blocked by**: none — extends the Sprint `4.20`/`4.22` managed-resource registry and the Sprint
 `4.24` `LongLived`/`PerRun` classification.
-**Live-proof**: pending
+**Live-proof**: pending (the live EKS static-PV materialization and suite postflight EBS reaper are
+owned by Sprints `7.28`, `4.40`, and `5.12`; non-blocking per Standard O)
 **Independent Validation**: pure unit tests over the EBS discover/destroy decision matrix and the
 retain-vs-test-scoped tag partitioning; the generated `resource-lifecycle-classes` table
 (`substrates.md`) regenerates from the new registry entry via `prodbox dev docs generate`. No
@@ -3171,36 +3192,45 @@ markers.
   `isRetainedLongLived`/`partitionRetainedLongLived`) from test-scoped EBS
   (`prodbox.io/lifecycle=per-run-test` plus `kubernetes.io/cluster/<name>: owned`).
 - Retained-inventory parity: the same deterministic PV/claim names reconciled on AWS as on home,
-  extending `retainedLocalStorageEntries` to the AWS substrate.
+  through `retainedStorageInventoryEntries SubstrateAws`, which projects the same retained
+  namespace/PV/PVC identities as `SubstrateHomeLocal`.
 - The generated `resource-lifecycle-classes` table in `substrates.md` regenerated via
   `prodbox dev docs generate`.
 
 ### Validation
 
-1. `prodbox dev check`
-2. `prodbox test unit` (EBS discover/destroy decision matrix; retain-vs-test-scoped partitioning)
-3. `prodbox dev docs check` (generated `resource-lifecycle-classes` table matches the registry)
-4. `prodbox test integration cli`
-5. `prodbox test integration env`
+1. `cabal build --builddir=.build exe:prodbox`
+2. `cabal build --builddir=.build all --ghc-options=-Werror`
+3. `prodbox test unit` (1095/1095; EBS discover/destroy decision matrix, retained-inventory parity,
+   and retain-vs-test-scoped partitioning)
+4. `prodbox dev docs generate` (regenerated the `resource-lifecycle-classes` table)
+5. `prodbox dev docs check` (generated `resource-lifecycle-classes` table matches the registry)
+6. `prodbox test integration cli` (39/39)
+7. `prodbox test integration env` (39/39)
+8. `prodbox dev check`
 
 ### Remaining Work
 
-- Pending — the registry entry, discover/destroy module, and tag markers are scheduled.
+- None on the Sprint `4.39` code-owned surface. Sprint `4.40` owns the suite postflight
+  test-scoped EBS reaper; Sprint `7.28` owns live static EBS PV materialization on EKS.
 
-## Sprint 4.40: Suite Postflight Test-EBS Reaper + Retain-Safe Drain [📋 Planned]
+## Sprint 4.40: Suite Postflight Test-EBS Reaper + Retain-Safe Drain ✅
 
-**Status**: 📋 Planned
+**Status**: ✅ Done
 **Implementation**: `src/Prodbox/TestRunner.hs` (`awsPostflightDestroyActions` — a test-EBS reaper
 step after the stack destroys), `src/Prodbox/CLI/Rke2.hs` (`--cascade` reaper hook + standalone
-entrypoint), `src/Prodbox/Lifecycle/K8sDrain.hs` (confirm `Retain` EBS PVs survive the drain),
-`test/unit/Main.hs`.
-**Blocked by**: Sprint `4.39` (the EBS managed-resource class + tag markers the reaper deletes
-through) — an earlier-or-same-phase dependency (Standard N).
+`aws ebs reap-test --yes` entrypoint), `src/Prodbox/Lifecycle/EbsVolume.hs` (typed reaper plan and
+runner), `src/Prodbox/Lifecycle/K8sDrain.hs` (confirm `Retain` EBS PVs survive the drain),
+`src/Prodbox/CLI/Command.hs`, `src/Prodbox/CLI/Spec.hs`, `src/Prodbox/Native.hs`,
+`test/unit/Main.hs`, `test/integration/CliSuite.hs`, `test/unit/Parser.hs`, and golden CLI/plan
+fixtures.
 **Live-proof**: pending
 **Independent Validation**: pure unit tests over the reaper's test-scoped-only selection (a
-retained-tagged volume is never selected; a test-scoped volume is) and the idempotent no-op when
-nothing matches. Live-EKS proof that a suite postflight leaves zero `available` EBS volumes rides
-Sprint `5.12` on the AWS substrate (Standards N/O).
+retained-tagged volume is never selected; a test-scoped volume is), the idempotent no-op when
+nothing matches, and the retain-safe `Delete`-reclaim drain selector; CLI/env integration runs
+exercise the native command surface and fake-tool postflight path. Live-EKS proof that a suite
+postflight leaves zero `available` test-scoped EBS volumes rides Sprint `5.12` on the AWS substrate
+(Standards N/O).
 **Docs to update**: `lifecycle_reconciliation_doctrine.md`, `storage_lifecycle_doctrine.md`,
 `substrates.md`.
 
@@ -3216,25 +3246,32 @@ every suite exit path (success/failure/Ctrl-C).
 - A test-EBS reaper step in `awsPostflightDestroyActions` that, after the per-run stack destroys,
   deletes only volumes tagged test-scoped (via the Sprint `4.39` discover/destroy), under the
   existing `runWithAwsHarnessCleanup` wrapper so it fires on success, failure, and Ctrl-C.
-- A `cluster delete --cascade` reaper hook and a standalone entrypoint so already-leaked test
-  volumes can be swept on demand; production teardown never invokes the reaper.
+- A `cluster delete --cascade` reaper hook and `prodbox aws ebs reap-test --yes` standalone
+  entrypoint so already-leaked test volumes can be swept on demand; production teardown never
+  invokes the reaper.
 - Confirmation (and a guard) that `Retain` EBS PVs are not deleted by the drain; the drain's
   `Delete`-reclaim PVC step is a generic safety net only.
 
 ### Validation
 
-1. `prodbox dev check`
-2. `prodbox test unit` (reaper test-scoped-only selection; idempotent no-op)
-3. `prodbox test integration cli`
-4. `prodbox test integration env`
-5. Leak check (Standard O, live): after a suite postflight, `aws ec2 describe-volumes --filters
+1. `cabal build --builddir=.build exe:prodbox`
+2. `cabal build --builddir=.build all --ghc-options=-Werror`
+3. `prodbox test unit` passed 1123/1123, covering reaper test-scoped-only selection,
+   retained-production exclusion, idempotent no-op, report rendering, parser/command-surface
+   coverage, and the `Delete`-only drain selector.
+4. `prodbox test integration cli` passed 39/39.
+5. `prodbox test integration env` passed 39/39.
+6. `prodbox dev docs check`
+7. `git diff --check`
+8. `prodbox dev check`
+9. Leak check (Standard O, live): after a suite postflight, `aws ec2 describe-volumes --filters
    Name=status,Values=available` returns zero test-scoped volumes; a production-mode teardown
    retains durable EBS.
 
 ### Remaining Work
 
-- Pending — the postflight reaper, cascade hook, and drain guard are scheduled; blocked on the
-  Sprint `4.39` EBS managed-resource class.
+- None on the Sprint `4.40` code-owned surface. The live EKS postflight leak check remains a
+  non-blocking `Live-proof: pending` axis owned by Sprint `5.12`/AWS substrate parity.
 
 ## Documentation Requirements
 
@@ -3292,8 +3329,8 @@ every suite exit path (success/failure/Ctrl-C).
   capacity DSL (no `Infinite`; MinIO unbounded only with an autoscaling-policy witness), the per-deploy
   AWS region service-quota gate, and the mandatory ML JIT + model-cache storage budget.
 - `documents/engineering/host_platform_doctrine.md` - for Sprint `4.37` the host-provider VM
-  provisioning (Lima on macOS, WSL2 on Windows, Incus/native on Linux), the Windows docker CPP-gating
-  rule, and the native-host-arch build inside the OS-appropriate Linux frame.
+  provisioning (Lima on macOS, WSL2 on Windows, Incus/native on Linux), the Docker host-frame gate,
+  and the native-host-arch build inside the OS-appropriate Linux frame.
 - `documents/engineering/cluster_topology_doctrine.md` - for Sprint `4.38` one substrate-typed compute
   worker per machine (anti-affinity, `maxSurge: 0`), with mixed-substrate placement admissible only on
   `rke2`.

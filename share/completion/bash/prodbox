@@ -10,10 +10,13 @@ _prodbox()
     key="${COMP_WORDS[@]:1:COMP_CWORD-1}"
     case "$key" in
       "aws")
-        words="policy setup teardown quotas stack"
+        words="policy setup teardown quotas ebs stack"
         ;;
       "aws quotas")
         words="check request"
+        ;;
+      "aws ebs")
+        words="reap-test"
         ;;
       "aws stack")
         words="eks test aws-subzone aws-ses"
@@ -67,10 +70,10 @@ _prodbox()
         words="gateway-restrict gateway-unrestrict"
         ;;
       "test")
-        words="all lint unit integration"
+        words="init run all lint unit integration"
         ;;
       "test integration")
-        words="all cli aws-iam dns-aws aws-eks env gateway-daemon gateway-pods gateway-partition ha-rke2-aws lifecycle pulumi charts-storage charts-platform charts-vscode charts-api charts-websocket admin-routes public-dns keycloak-invite sealed-vault"
+        words="all cli aws-iam dns-aws aws-eks env gateway-daemon gateway-pods gateway-partition ha-rke2-aws lifecycle pulumi eks-volume-rebind charts-storage charts-platform charts-vscode charts-api charts-websocket admin-routes public-dns keycloak-invite sealed-vault"
         ;;
       "users")
         words="invite list revoke"

@@ -2323,9 +2323,9 @@ parent's unsealed Vault KV.
   all exit 0 after the plan/docs closure update.
 - `./.build/prodbox dev check` exits 0 as the canonical local quality gate.
 
-## Sprint 2.27: Gateway Gossip + Orders to Canonical CBOR [📋 Planned]
+## Sprint 2.27: Gateway Gossip + Orders to Canonical CBOR [✅ Done]
 
-**Status**: 📋 Planned
+**Status**: ✅ Done 2026-07-02
 **Implementation**: `src/Prodbox/Gateway/Peer.hs`, `src/Prodbox/Gateway/Types.hs`, `prodbox.cabal`
 **Live-proof**: pending
 **Independent Validation**: unit + CLI/env integration on the home/local substrate — the peer-batch and `Orders` round-trip suites plus `prodbox test integration cli`/`env` prove the CBOR wire codec on the gateway's owned surface with no dependency on any later phase.
@@ -2360,14 +2360,34 @@ and renames the `Lint.Proto` stanza to `Lint.Cbor` per
 4. Text-search proof shows no protobuf wire language remains on the supported gateway path and the
    lint stanza reports as `Lint.Cbor`.
 
-### Remaining Work
+### Implementation Notes
 
-The full deliverable set above; ready to start with no unmet dependency.
+- `src/Prodbox/Gateway/Types.hs` imports the shared `CborPayload`, serializes `Orders`/`SignedEvent`
+  with `serialise`, and derives event hash/HMAC inputs from canonical CBOR unsigned payload bytes.
+- `src/Prodbox/Gateway/Peer.hs` serializes `PeerEventBatch`/peer responses through CBOR and parses
+  `POST /v1/peer/events` bodies as `application/cbor`.
+- `src/Prodbox/Gateway/Daemon.hs` now pushes peer batches as CBOR and signs the daemon's JSON-shaped
+  heartbeat/claim/yield values only after converting them to canonical CBOR payload bytes.
+- `prodbox.cabal` carries both `cborg` and `serialise` in the library component.
+- Unit coverage now includes `Orders`, `SignedEvent`, and `PeerEventBatch` `decode . encode == id`
+  proofs over the CBOR entrypoints.
 
-## Sprint 2.28: At-Least-Once Event Store to CBOR [⏸️ Blocked]
+### Validation
 
-**Status**: ⏸️ Blocked
-**Blocked by**: 2.27
+- `cabal build --builddir=.build exe:prodbox` exits 0.
+- `cabal build --builddir=.build all --ghc-options=-Werror` exits 0.
+- `./.build/prodbox test unit` passes 1080/1080, including the gateway `Orders`, `SignedEvent`, and
+  peer-batch CBOR round-trip coverage.
+- `./.build/prodbox test integration cli` passes 39/39.
+- `./.build/prodbox test integration env` passes 39/39.
+- Supported-gateway-path text search for `protobuf`, `Lint.Proto`, `payloadJson`, and `payload_json`
+  returns no matches.
+- `./.build/prodbox dev check` exits 0 as the canonical local quality gate.
+
+## Sprint 2.28: At-Least-Once Event Store to CBOR [✅ Done]
+
+**Status**: ✅ Done 2026-07-02
+**Blocked by**: None — Sprint 2.27 landed the shared gateway CBOR codec.
 **Implementation**: `src/Prodbox/Daemon/Events.hs`
 **Live-proof**: pending
 **Independent Validation**: unit + CLI/env integration on the home/local substrate — the event-store round-trip and `markEventProcessed` idempotency suites plus `prodbox test integration cli`/`env` prove the CBOR payload encoding on the event-store's owned surface with no dependency on any later phase.
@@ -2398,9 +2418,27 @@ at-least-once delivery and `markEventProcessed` IS-NULL guard contract from
 3. `prodbox test integration cli` and `prodbox test integration env` exit 0 on the home/local
    substrate.
 
-### Remaining Work
+### Implementation Notes
 
-The full deliverable set above; starts once Sprint 2.27 lands the shared CBOR codec.
+- `src/Prodbox/Cbor.hs` now owns the shared `CborPayload` and JSON-shaped value-to-CBOR conversion
+  helper used by both gateway signing and durable events.
+- `src/Prodbox/Daemon/Events.hs` stores `eventPayload :: CborPayload`, derives `Serialise` for the
+  durable event identifiers and `StoredEvent`, and exposes `encodeStoredEventCbor` /
+  `decodeStoredEventCbor`.
+- `src/Prodbox/Gateway/Types.hs` imports the shared `CborPayload`; Sprint 2.27's gateway wire codec
+  remains unchanged on the wire.
+- Unit coverage now includes a durable `StoredEvent` `decode . encode == id` CBOR proof while the
+  existing `markEventProcessed` first-write-wins test continues to pin the IS-NULL guard.
+
+### Validation
+
+- `cabal build --builddir=.build exe:prodbox` exits 0.
+- `cabal build --builddir=.build all --ghc-options=-Werror` exits 0.
+- `./.build/prodbox test unit` passes 1081/1081, including the event-store CBOR round-trip and
+  `markEventProcessed` first-write-wins coverage.
+- `./.build/prodbox test integration cli` passes 39/39.
+- `./.build/prodbox test integration env` passes 39/39.
+- `./.build/prodbox dev check` exits 0 as the canonical local quality gate.
 
 ## Documentation Requirements
 

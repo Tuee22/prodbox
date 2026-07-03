@@ -198,7 +198,7 @@ reached, never *which* services are stood up, so substrate equivalence is preser
 |-------|-------|
 | Provision | `prodbox aws stack eks reconcile` (EKS test cluster), `prodbox aws stack aws-subzone reconcile` (per-substrate Route 53 subzone), and `prodbox aws stack test reconcile` (three Ubuntu 24.04 EC2 instances for HA-RKE2) |
 | Teardown | `prodbox aws stack eks destroy --yes`, `prodbox aws stack aws-subzone destroy --yes`, and `prodbox aws stack test destroy --yes` |
-| Inventory today | Two disposable Pulumi stacks: `aws-eks-test` (VPC, subnets, EKS cluster, node group, IAM, security group) and `aws-test` (VPC, subnets, three EC2 instances, security group, key pair). State stored in the MinIO-backed Pulumi backend on the local cluster under `prodbox-state`; Sprint `7.14` replaces raw Pulumi checkpoint keys with the Model-B decrypt-to-scratch interposition. |
+| Inventory today | Two disposable Pulumi stacks: `aws-eks-test` (a dedicated, non-default VPC; `prodbox.io/managed-by=prodbox` tagged VPC/IGW/route-table/subnets; EKS cluster; node group; IAM; security group) and `aws-test` (VPC, subnets, three EC2 instances, security group, key pair). State stored in the MinIO-backed Pulumi backend on the local cluster under `prodbox-state`; Sprint `7.14` replaces raw Pulumi checkpoint keys with the Model-B decrypt-to-scratch interposition. Sprint `7.29` pins the fresh-EKS-VPC guarantee to the existing destroy-before-ensure residue purge. |
 | Target inventory | Same canonical service set as the home substrate (Sprint 7.12 substrate equivalence): cert-manager + real ZeroSSL, Envoy Gateway, Harbor + MinIO + the Percona PostgreSQL operator, Keycloak, Patroni Postgres, `gateway`, `keycloak-postgres`, `vscode`, `api`, `redis`, `websocket`. Harbor + MinIO + Percona are installed on **both** substrates — the AWS Harbor is the EKS-side Harbor reached through the node-local registry proxy (the EKS containerd registry-mirror DaemonSet that makes `127.0.0.1:30080/prodbox/...` resolve on EKS, mirroring the home NodePort-on-`127.0.0.1` pattern). The two substrates differ only in their LOWER layer: ingress load-balancer (MetalLB on home, the AWS Load Balancer Controller / NLB on EKS), Route 53 hosting (parent zone on home, the per-substrate subzone provisioned by `pulumi/aws-eks-subzone/` on AWS), and the block-storage volume source (`hostPath` under `.data/` on home, pre-created EBS lifted in as static `Retain` PVs on EKS — same static no-provisioner discipline, Sprint `7.28`). |
 | Required Config | `aws_substrate.subzone_name` (the AWS-substrate public FQDN, e.g. `aws.test.resolvefintech.com`), optional `aws_substrate.hosted_zone_id` when an operator wants to pin the already-provisioned subzone ID in config, `ses.*` (sender_domain, receive_subdomain, capture_bucket — shared cross-substrate; same values as home substrate), AWS operator credentials, plus the same `acme.*` settings the home substrate uses. During harness-driven AWS runs, the suite reads the live `aws-eks-subzone` Pulumi output after provisioning and passes the hosted-zone ID to child commands. Missing AWS-substrate values fail fast; the AWS substrate does not fall back to `route53.zone_id` or `domain.demo_fqdn` from the home substrate. |
 | Prerequisites satisfied today | `aws_credentials_valid`, `route53_accessible`, `route53_lifecycle_capable`, `pulumi_logged_in`, the AWS-stack snapshot prereqs |
@@ -223,14 +223,14 @@ table below). Pulumi state lifetime must also match resource lifetime per class;
 > [../documents/engineering/vault_doctrine.md → §5 Vault deployment model](../documents/engineering/vault_doctrine.md#5-vault-deployment-model).
 
 The per-run vs long-lived partition is mirrored in code by `Prodbox.Aws.perRunStackNames`
-and `Prodbox.Aws.longLivedStackNames` (Sprint `7.7`), which the
+and `Prodbox.Aws.longLivedResourceNames` (Sprint `7.7`), which the
 `Prodbox.Aws.partitionResidueByLifecycle` predicate and the `PulumiResiduePolicy`
 `BypassPerRunResidueOnly` arm consume. The `prodbox aws teardown` flag surface
 (`--destroy-pulumi-residue`, `--allow-pulumi-residue`) and the harness-internal
 `BypassPerRunResidueOnly` mode both depend on the partition being authoritative here.
 
 The registry SSoT is `Prodbox.Lifecycle.ResourceClass.resourceLifecycleClasses` (Sprint
-`4.20`); `perRunStackNames` / `longLivedStackNames` are derived from it. The table below is
+`4.20`); `perRunStackNames` / `longLivedResourceNames` are derived from it. The table below is
 **generated** from that registry by `prodbox dev docs generate` (Sprint `4.22`) — do not hand-edit
 between the markers; `prodbox dev docs check` fails the build if it drifts from the code, so a new
 resource cannot be added to the registry without this inventory updating in lockstep:
@@ -242,6 +242,7 @@ resource cannot be added to the registry without this inventory updating in lock
 | `aws-eks-subzone` | PerRun |
 | `aws-test` | PerRun |
 | `aws-ses` | LongLived |
+| `aws-ebs-volumes` | LongLived |
 | `public-edge-tls` | LongLived |
 | `operational-iam-user` | Operational |
 | `operational-aws-config` | Operational |
@@ -315,7 +316,7 @@ destroy on its own for this class.
 
 | Resource | Created by | Tag signature | Destroyed by |
 |----------|------------|---------------|--------------|
-| EBS volumes for PVCs (superseded → pre-created `Retain`) | **Historically** the EBS CSI driver dynamically responding to `PersistentVolumeClaim` resources. Sprint `7.28` replaces this with **pre-created EBS volumes lifted in as static `Retain` PVs** — a registered managed resource (typed `discover`/`destroy`, Sprint `4.39`), no longer controller-created. | `prodbox.io/managed-by: prodbox` + a retain-vs-test-scoped marker (test volumes also `kubernetes.io/cluster/<cluster-name>: owned`) | Retained on teardown (`Retain`, not Pulumi-owned); test-scoped volumes deleted by the suite postflight reaper (Sprint `4.40`) — **not** the drain. The dynamic path is in [legacy-tracking-for-deletion.md](legacy-tracking-for-deletion.md). |
+| EBS volumes for PVCs (superseded → pre-created `Retain`) | **Historically** the EBS CSI driver dynamically responded to `PersistentVolumeClaim` resources. Sprint `7.28` replaced this with **pre-created EBS volumes lifted in as static `Retain` PVs** — a registered managed resource (typed `discover`/`destroy`, Sprint `4.39`), no longer controller-created. | `prodbox.io/managed-by: prodbox` + a retain-vs-test-scoped marker (test volumes also `kubernetes.io/cluster/<cluster-name>: owned`) | Retained on teardown (`Retain`, not Pulumi-owned); test-scoped volumes deleted by the suite postflight reaper (Sprint `4.40`) — **not** the drain. The dynamic path is in [legacy-tracking-for-deletion.md](legacy-tracking-for-deletion.md) Completed. |
 | ALBs / NLBs / target groups / security groups | AWS Load Balancer Controller responding to `Service type=LoadBalancer` and `Ingress` resources | `kubernetes.io/cluster/<cluster-name>: owned`, `elbv2.k8s.aws/cluster`, `ingress.k8s.aws/stack` | K8s drain phase (Sprint `4.12`); fallback postflight tag sweep |
 | Route 53 TXT records (`_acme-challenge.*`) | cert-manager DNS01 solver | Record-name pattern `_acme-challenge.*.<configured public FQDN>` | K8s drain phase (Sprint `4.12`) by deleting `Certificate` resources first; fallback postflight tag sweep |
 | Route 53 A records for DNS bootstrap | Direct `aws` CLI subprocess in `src/Prodbox/CLI/Rke2.hs:2484` and `src/Prodbox/TestValidation.hs:1547` | None reliably; identified by content (configured public FQDN) | Best-effort cleanup paths in the same modules; fallback postflight tag sweep |
@@ -368,7 +369,7 @@ corresponding **managed-resource registry** entry (typed `discover` + `destroy`,
 `LifecycleClass` of `PerRun` / `LongLived` / `Operational`). The registry
 (`Prodbox.Lifecycle.ResourceRegistry`, Phase `4` Sprint `4.20`) is the
 machine-enforced single source of truth: `Prodbox.Aws.perRunStackNames` /
-`longLivedStackNames` are **derived from** it, and `prodbox dev check` (Sprint `4.22`)
+`longLivedResourceNames` are **derived from** it, and `prodbox dev check` (Sprint `4.22`)
 fails the build if this Resource Lifecycle Classes section drifts from the registry or if
 any `aws`/`pulumi` create call site has no registered counterpart. The doctrine SSoT is
 [../documents/engineering/lifecycle_reconciliation_doctrine.md § 3.1](../documents/engineering/lifecycle_reconciliation_doctrine.md).
@@ -400,7 +401,7 @@ above and [development_plan_standards.md → N / O](development_plan_standards.m
 | Validation | Home-substrate suite-content closure (owned surface) | AWS-substrate coverage (owned surface) |
 |------------|------------------------------------------------------|----------------------------------------|
 | Sealed-Vault validation (the fail-closed sealed/unreachable/uninitialized-Vault proof) | [phase-5-canonical-test-suite.md](phase-5-canonical-test-suite.md) Sprint `5.8` — Done on its code-owned surface once the validation exists and passes on the home substrate (`prodbox dev check`, `test unit`, `test integration cli/env`); phase-5 closure depends on this axis only | [phase-7-aws-substrate-foundations.md](phase-7-aws-substrate-foundations.md) provisioning — the AWS-substrate run of the same validation is a parity-coverage row owned by phase 7. **`Live-proof: pending`** while it needs a deployed EKS cluster + an unsealed in-cluster Vault; non-blocking per Standard O, and never marks Sprint `5.8` or phase 5 ⏸️ Blocked |
-| `eks-volume-rebind` (identical block-storage rebinding across a teardown/spinup cycle) | [phase-5-canonical-test-suite.md](phase-5-canonical-test-suite.md) Sprint `5.12` — Done on its code-owned surface once the validation exists and passes on the home substrate (hostPath PV rebind); phase-5 closure depends on this axis only | [phase-7-aws-substrate-foundations.md](phase-7-aws-substrate-foundations.md) provisioning — the AWS-substrate run (EBS `volumeHandle` rebind, exercising Sprints `7.28` + `4.39`/`4.40`) is a parity-coverage row. **`Live-proof: pending`** while it needs a deployed EKS cluster; non-blocking per Standard O, and never marks Sprint `5.12` or phase 5 ⏸️ Blocked |
+| `eks-volume-rebind` (identical block-storage rebinding across a teardown/spinup cycle) | [phase-5-canonical-test-suite.md](phase-5-canonical-test-suite.md) Sprint `5.12` — Done on its code-owned surface: the named validation, command parser/registry, planner, topology mapping, PV JSON parser, and rebinding/sentinel oracle are implemented and unit-validated; the destructive home live proof is tracked as a non-blocking live-infra axis | [phase-7-aws-substrate-foundations.md](phase-7-aws-substrate-foundations.md) provisioning — the AWS-substrate run (EBS `volumeHandle` rebind, exercising Sprints `7.28` + `4.39`/`4.40`) is a parity-coverage row. **`Live-proof: pending`** while it needs a deployed EKS cluster with static retained EBS PVs; non-blocking per Standard O, and never marks Sprint `5.12` or phase 5 ⏸️ Blocked |
 
 The sealed-Vault validation is **built and proven once** (no change to what is built or
 proven): the home-substrate run is the phase-5 Sprint `5.8` suite-content deliverable, and

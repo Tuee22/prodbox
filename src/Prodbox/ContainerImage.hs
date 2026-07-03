@@ -37,6 +37,7 @@ module Prodbox.ContainerImage
   , harborPostgresDatabaseImage
   , harborPostgresPgbackrestImage
   , harborPostgresPgbouncerImage
+  , harborPulsarImage
   , harborRedisImage
   , harborRuntimeImageRepository
   , harborRuntimeRepository
@@ -44,6 +45,7 @@ module Prodbox.ContainerImage
   , parseImageRef
   , publicCurlImage
   , publicRedisImage
+  , publicPulsarImage
   , publicVaultImage
   , renderImageRef
   , requiredPublicImageCandidatePairs
@@ -239,6 +241,12 @@ publicRedisImage = ImageRef "docker.io" "library/redis" "7.4.2"
 harborRedisImage :: ImageRef
 harborRedisImage = harborImageRefFromRepository "redis-mirror" "7.4.2"
 
+publicPulsarImage :: ImageRef
+publicPulsarImage = ImageRef "docker.io" "apachepulsar/pulsar" "4.0.2"
+
+harborPulsarImage :: ImageRef
+harborPulsarImage = harborImageRefFromRepository "pulsar-mirror" "4.0.2"
+
 publicMinioImage :: ImageRef
 publicMinioImage = ImageRef "quay.io" "minio/minio" "RELEASE.2024-12-18T13-15-44Z"
 
@@ -350,6 +358,10 @@ requiredPublicImageMirrors =
       publicRedisImage
       []
       harborRedisImage
+  , mirroredPublicImage
+      publicPulsarImage
+      []
+      harborPulsarImage
   , mirroredPublicImage
       (ImageRef "docker.io" "envoyproxy/gateway" envoyGatewayControlPlaneTag)
       [ImageRef "mirror.gcr.io" "envoyproxy/gateway" envoyGatewayControlPlaneTag]

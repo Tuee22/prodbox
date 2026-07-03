@@ -53,6 +53,7 @@ module Prodbox.Lib.AwsSubstratePlatform
   )
 where
 
+import Control.Monad (foldM)
 import Data.Aeson
   ( Value
   , encode
@@ -62,6 +63,7 @@ import Data.Aeson
 import Data.Aeson.Key qualified as Key
 import Data.ByteString.Lazy qualified as BL
 import Data.Char (isAsciiUpper)
+import Data.List (nub)
 import Data.Text qualified as Text
 import Prodbox.CLI.Output
   ( writeError
@@ -69,6 +71,7 @@ import Prodbox.CLI.Output
   )
 import Prodbox.CLI.Rke2
   ( MinioImageSource (..)
+  , RetainedStorageInventoryEntry (..)
   , acmeRuntimeManifestWithCredentials
   , ensureAdminPublicEdgeRoutes
   , ensureGatewayChartReady
@@ -80,6 +83,7 @@ import Prodbox.CLI.Rke2
   , ensureRuntimeImageForSubstrate
   , ensureVaultRuntime
   , resolveAcmeEabKeyId
+  , retainedStorageInventoryEntries
   )
 import Prodbox.ContainerImage qualified as ContainerImage
 import Prodbox.Error (fatalError)
@@ -98,6 +102,11 @@ import Prodbox.Lib.EksImageMirror
   , mirrorJobName
   , mirrorJobNamespace
   )
+import Prodbox.Lib.Storage
+  ( ChartStorageBinding (..)
+  , chartEbsPersistentVolumeManifest
+  )
+import Prodbox.Lifecycle.EbsVolume qualified as EbsVolume
 import Prodbox.Lifecycle.LiveResidue
   ( awsEksTestStackName
   , fetchPerRunStackOutputs
@@ -118,8 +127,9 @@ import Prodbox.Subprocess
   , captureSubprocessResult
   , runSubprocessStreaming
   )
-import Prodbox.Substrate (Substrate (..))
+import Prodbox.Substrate (Substrate (..), replicasForSubstrate)
 import System.Directory (getTemporaryDirectory, removeFile)
+import System.Environment (getEnvironment)
 import System.Exit (ExitCode (..))
 import System.IO (hClose, openTempFile)
 
@@ -525,7 +535,11 @@ awsSubstrateEnvoyGatewayRuntimeManifest settings prodboxId labelValue =
 
 configuredEnvoyGatewayDataPlaneReplicas :: ValidatedSettings -> Int
 configuredEnvoyGatewayDataPlaneReplicas settings =
-  maybe 1 fromIntegral (envoy_gateway_data_plane_replicas (deployment (validatedConfig settings)))
+  fromIntegral
+    ( replicasForSubstrate
+        SubstrateAws
+        (envoy_gateway_data_plane_scaling (deployment (validatedConfig settings)))
+    )
 
 -- cert-manager Helm chart. cert-manager is a SHARED platform component
 -- installed on BOTH substrates from the upstream Jetstack chart; its chart
@@ -762,6 +776,7 @@ ensureAwsSubstratePlatformRuntime repoRoot settings prodboxId labelValue = do
     , ensureAwsSubstrateAcmeRuntime repoRoot settings prodboxId labelValue
     , ensureAwsSubstrateVaultRuntime repoRoot
     , applyEksContainerdMirrorDaemonSet repoRoot
+    , ensureAwsSubstrateRetainedStorage repoRoot snapshot
     , ensureMinioRuntime repoRoot SubstrateAws MinioBootstrapPublic
     , ensureHarborRegistryStorageBackend repoRoot
     , ensureHarborRegistryRuntime repoRoot SubstrateAws
@@ -773,6 +788,76 @@ ensureAwsSubstratePlatformRuntime repoRoot settings prodboxId labelValue = do
     , ensureGatewayChartReady repoRoot settings SubstrateAws
     , ensureAdminPublicEdgeRoutes repoRoot settings SubstrateAws prodboxId labelValue
     ]
+
+ensureAwsSubstrateRetainedStorage :: FilePath -> AwsEksTestStackSnapshot -> IO ExitCode
+ensureAwsSubstrateRetainedStorage repoRoot snapshot = do
+  writeOutputLine
+    ( "Reconciling AWS retained EBS PVs in "
+        ++ eksSnapshotRetainedEbsAvailabilityZone snapshot
+    )
+  let inventory = retainedStorageInventoryEntries SubstrateAws
+      bindings = map inventoryStorageBinding inventory
+      requiredResult =
+        mapM
+          (EbsVolume.ebsRequiredVolumeFromChartStorageBinding (eksSnapshotRetainedEbsAvailabilityZone snapshot))
+          bindings
+  case requiredResult of
+    Left err -> failWith err
+    Right required -> do
+      environment <- getEnvironment
+      ebsBindingsResult <-
+        EbsVolume.ensureRetainedEbsVolumes
+          EbsVolume.EbsEnsureInput
+            { EbsVolume.ebsEnsureEnvironment = environment
+            , EbsVolume.ebsEnsureWorkingDirectory = Just repoRoot
+            }
+          required
+      case ebsBindingsResult of
+        Left err -> failWith ("AWS retained EBS storage reconcile failed: " ++ err)
+        Right ebsBindings ->
+          foldM
+            (applyNamespaceManifest ebsBindings inventory bindings)
+            ExitSuccess
+            (storageNamespaces inventory)
+ where
+  inventoryStorageBinding entry =
+    ChartStorageBinding
+      { chartStorageBindingStatefulSetName = retainedStorageInventoryStatefulSet entry
+      , chartStorageBindingReleaseName = retainedStorageInventoryStatefulSet entry
+      , chartStorageBindingPersistentVolumeName = retainedStorageInventoryPersistentVolume entry
+      , chartStorageBindingPersistentVolumeClaimName = retainedStorageInventoryPersistentClaim entry
+      , chartStorageBindingStorageSize = retainedStorageInventoryStorageSize entry
+      , chartStorageBindingHostPath = ""
+      , chartStorageBindingOrdinal = retainedStorageInventoryOrdinal entry
+      , chartStorageBindingClaimSuffix = "data"
+      }
+
+  storageNamespaces inventory =
+    nub (map retainedStorageInventoryNamespace inventory)
+
+  applyNamespaceManifest _ _ _ (ExitFailure code) _ = pure (ExitFailure code)
+  applyNamespaceManifest ebsBindings inventory bindings ExitSuccess namespace =
+    let namespaceBindings =
+          [ binding
+          | (entry, binding) <- zip inventory bindings
+          , retainedStorageInventoryNamespace entry == namespace
+          ]
+     in case chartEbsPersistentVolumeManifest namespace namespace namespaceBindings ebsBindings of
+          Left err -> failWith ("AWS retained EBS storage manifest failed: " ++ err)
+          Right manifest ->
+            withTempJsonFile
+              repoRoot
+              ("aws-retained-ebs-" ++ namespace)
+              (encode manifest)
+              ( \manifestPath ->
+                  runStreaming
+                    Subprocess
+                      { subprocessPath = "kubectl"
+                      , subprocessArguments = ["apply", "-f", manifestPath]
+                      , subprocessEnvironment = Nothing
+                      , subprocessWorkingDirectory = Just repoRoot
+                      }
+              )
 
 -- | Pure listing of the orchestration steps
 -- 'ensureAwsSubstratePlatformRuntime' sequences, in execution order.
@@ -787,6 +872,7 @@ awsSubstratePlatformRuntimeStepDescriptions =
   , "ensureAwsSubstrateAcmeRuntime"
   , "ensureAwsSubstrateVaultRuntime"
   , "applyEksContainerdMirrorDaemonSet"
+  , "ensureAwsSubstrateRetainedStorage"
   , "ensureMinioRuntime SubstrateAws MinioBootstrapPublic"
   , "ensureHarborRegistryStorageBackend"
   , "ensureHarborRegistryRuntime SubstrateAws"

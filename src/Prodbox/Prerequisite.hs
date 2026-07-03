@@ -34,6 +34,7 @@ prerequisiteRegistry =
 allPrerequisites :: [EffectNode]
 allPrerequisites =
   [ platformLinux
+  , hostSubstrateSupported
   , systemdAvailable
   , supportedUbuntu2404
   , machineIdentity
@@ -79,6 +80,17 @@ platformLinux =
     , effectNodeRemedyHint = "Run the supported command surface on a Linux host."
     , effectNodePrerequisites = []
     , effectNodeEffect = Validate RequireLinux
+    }
+
+hostSubstrateSupported :: EffectNode
+hostSubstrateSupported =
+  EffectNode
+    { effectNodeId = HostSubstrateSupported
+    , effectNodeDescription = "Detect a supported host substrate"
+    , effectNodeRemedyHint =
+        "Run prodbox on native Linux, Apple Silicon, or Windows with the corresponding Linux lift provider available."
+    , effectNodePrerequisites = []
+    , effectNodeEffect = Validate RequireHostSubstrateSupported
     }
 
 systemdAvailable :: EffectNode
@@ -254,7 +266,7 @@ rke2Installed =
     { effectNodeId = Rke2Installed
     , effectNodeDescription = "Check RKE2 binary is installed"
     , effectNodeRemedyHint = "Install RKE2 on the supported host or rerun `prodbox cluster reconcile`."
-    , effectNodePrerequisites = [SupportedUbuntu2404]
+    , effectNodePrerequisites = [HostSubstrateSupported]
     , effectNodeEffect = Validate (RequireFileExists "/usr/local/bin/rke2")
     }
 
@@ -265,7 +277,7 @@ rke2ServiceExists =
     , effectNodeDescription = "Check RKE2 service exists"
     , effectNodeRemedyHint =
         "Install the `rke2-server.service` unit through the supported lifecycle path."
-    , effectNodePrerequisites = [Rke2Installed, SystemdAvailable, SupportedUbuntu2404]
+    , effectNodePrerequisites = [Rke2Installed, SystemdAvailable, HostSubstrateSupported]
     , effectNodeEffect = Validate (RequireServiceExists "rke2-server.service")
     }
 

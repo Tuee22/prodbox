@@ -198,10 +198,8 @@ durable processing contract below applies to the `Daemon.Events` port, not
 to the anti-entropy gossip transport.
 
 The durable event **payload** is canonical CBOR project-wide per
-[pulsar_messaging_doctrine.md](./pulsar_messaging_doctrine.md), superseding the
-at-rest JSON / `aeson` `Value` form shown in the code fences below; the
-idempotent-handler and first-write-wins delivery semantics this section owns are
-unchanged.
+[pulsar_messaging_doctrine.md](./pulsar_messaging_doctrine.md). The
+idempotent-handler and first-write-wins delivery semantics this section owns are unchanged.
 
 ### Event storage
 
@@ -213,13 +211,13 @@ data EventType
     | OrderFulfilled
     | OrderCancelled
     deriving stock (Show, Eq, Generic)
-    deriving anyclass (ToJSON, FromJSON)
+    deriving anyclass (Serialise)
 
 data StoredEvent = StoredEvent
     { eventId :: UUID
     , eventAggregateId :: UUID
     , eventType :: EventType
-    , eventPayload :: Value
+    , eventPayload :: CborPayload
     , eventCreatedAt :: UTCTime
     , eventProcessedAt :: Maybe UTCTime
     }
@@ -229,13 +227,13 @@ data StoredEvent = StoredEvent
 ### Recording and marking events
 
 ```haskell
-recordEvent :: Connection -> UUID -> EventType -> Value -> IO ()
+recordEvent :: Connection -> UUID -> EventType -> CborPayload -> IO ()
 recordEvent conn aggregateId eventType payload = do
     _ <- execute conn
         "INSERT INTO domain_events \
         \(aggregate_id, event_type, payload, created_at) \
         \VALUES (?, ?, ?, clock_timestamp())"
-        (aggregateId, show eventType, encode payload)
+        (aggregateId, show eventType, cborPayloadBytes payload)
     pure ()
 
 markEventProcessed :: Connection -> UUID -> IO ()

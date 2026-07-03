@@ -1,0 +1,17 @@
+global:
+  namespace: default
+  rootChart: gateway
+
+image:
+  repository: 127.0.0.1:30080/prodbox/pulsar-mirror
+  tag: "4.0.2"
+  pullPolicy: IfNotPresent
+
+pulsar:
+  brokerPort: 6650
+  httpPort: 8080
+  clusterName: prodbox
+
+storage:
+  className: manual
+  size: 20Gi

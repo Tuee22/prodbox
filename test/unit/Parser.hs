@@ -165,6 +165,7 @@ commandPathOfRequest request =
               AwsTeardown _ _ -> ["teardown"]
               AwsCheckQuotas -> ["quotas", "check"]
               AwsRequestQuotas _ -> ["quotas", "request"]
+              AwsReapTestEbs _ -> ["ebs", "reap-test"]
         NativeCharts chartsCommand ->
           "charts"
             : case chartsCommand of
@@ -255,6 +256,8 @@ commandPathOfRequest request =
         NativeTest testCommand ->
           "test"
             : case testScope testCommand of
+              TestInit _ -> ["init"]
+              TestRun _ -> ["run"]
               TestAll -> ["all"]
               TestLint -> ["lint"]
               TestUnit -> ["unit"]
@@ -273,6 +276,7 @@ commandPathOfRequest request =
                     IntegrationHaRke2Aws -> ["ha-rke2-aws"]
                     IntegrationLifecycle -> ["lifecycle"]
                     IntegrationPulumi -> ["pulumi"]
+                    IntegrationEksVolumeRebind -> ["eks-volume-rebind"]
                     IntegrationChartsStorage -> ["charts-storage"]
                     IntegrationChartsPlatform -> ["charts-platform"]
                     IntegrationChartsVscode -> ["charts-vscode"]

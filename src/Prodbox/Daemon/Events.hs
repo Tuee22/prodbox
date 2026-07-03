@@ -1,3 +1,4 @@
+{-# LANGUAGE DeriveGeneric #-}
 {-# LANGUAGE OverloadedStrings #-}
 
 module Prodbox.Daemon.Events
@@ -7,6 +8,8 @@ module Prodbox.Daemon.Events
   , EventStore
   , EventType (..)
   , StoredEvent (..)
+  , decodeStoredEventCbor
+  , encodeStoredEventCbor
   , fetchUnprocessedEvents
   , lookupProcessedAt
   , markEventProcessed
@@ -16,6 +19,7 @@ module Prodbox.Daemon.Events
   )
 where
 
+import Codec.Serialise (Serialise, deserialiseOrFail, serialise)
 import Control.Concurrent.STM
   ( TVar
   , atomically
@@ -23,35 +27,53 @@ import Control.Concurrent.STM
   , newTVarIO
   , readTVar
   )
-import Data.Aeson (Value)
+import Data.Bifunctor (first)
+import Data.ByteString.Lazy qualified as BL
 import Data.List (sortOn)
 import Data.Maybe (isNothing)
 import Data.Time.Clock (UTCTime)
+import GHC.Generics (Generic)
+import Prodbox.Cbor (CborPayload)
 
 newtype EventId = EventId {unEventId :: String}
-  deriving (Eq, Ord, Show)
+  deriving (Eq, Ord, Show, Generic)
+
+instance Serialise EventId
 
 newtype AggregateId = AggregateId {unAggregateId :: String}
-  deriving (Eq, Ord, Show)
+  deriving (Eq, Ord, Show, Generic)
+
+instance Serialise AggregateId
 
 newtype EventType = EventType {unEventType :: String}
-  deriving (Eq, Ord, Show)
+  deriving (Eq, Ord, Show, Generic)
+
+instance Serialise EventType
 
 data StoredEvent = StoredEvent
   { eventId :: EventId
   , eventAggregateId :: AggregateId
   , eventType :: EventType
-  , eventPayload :: Value
+  , eventPayload :: CborPayload
   , eventCreatedAt :: UTCTime
   , eventProcessedAt :: Maybe UTCTime
   }
-  deriving (Eq, Show)
+  deriving (Eq, Show, Generic)
+
+instance Serialise StoredEvent
 
 newtype EventStore = EventStore (TVar [StoredEvent])
 
 -- | Handlers must be idempotent: replaying the same event after a crash must
 -- produce the same durable result as handling it once.
 newtype EventHandler = EventHandler {runEventHandler :: StoredEvent -> IO ()}
+
+encodeStoredEventCbor :: StoredEvent -> BL.ByteString
+encodeStoredEventCbor = serialise
+
+decodeStoredEventCbor :: BL.ByteString -> Either String StoredEvent
+decodeStoredEventCbor =
+  first (("failed to decode StoredEvent CBOR: " ++) . show) . deserialiseOrFail
 
 newEventStore :: [StoredEvent] -> IO EventStore
 newEventStore events =

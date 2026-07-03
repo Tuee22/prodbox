@@ -38,7 +38,7 @@ exactly one of these classes. Cleanup ownership is defined per class.
 | Class | Examples | Tracked by | Cluster-tag signature | Cleanup owner |
 |---|---|---|---|---|
 | 1. Pulumi-tracked stack resources | `aws-eks` VPC, EKS cluster, node group; `aws-test` EC2 nodes; `aws-eks-subzone` Route 53 records; `aws-ses` SES identity, DKIM, S3 capture bucket, SMTP IAM user | The encrypted Pulumi checkpoint object (Sprint `7.14`; see §2) | Stack-name tag and `pulumi:project` tag | `prodbox aws stack <stack> destroy --yes` (canonical per stack) |
-| 2. Pre-created retained EBS volumes (static `Retain` PVs) | The durable EBS volumes lifted in as static `Retain` PVs on EKS (MinIO, Vault, `keycloak-postgres`/Patroni, `vscode`); **no dynamic provisioning** | Registered managed-resource with typed `discover`/`destroy` (Sprint `4.39`); the retained set is the EBS analog of `.data/` | `prodbox.io/managed-by: prodbox` plus a retain-vs-test-scoped role marker; test volumes additionally carry `kubernetes.io/cluster/<cluster-name>: owned` | Retained by **all** cluster/stack teardown (they are `Retain` and not Pulumi-owned); test-scoped volumes deleted only by the suite postflight reaper (Sprint `4.40`). See [storage_lifecycle_doctrine.md](storage_lifecycle_doctrine.md) § 1, § 5 |
+| 2. Pre-created retained EBS volumes (static `Retain` PVs) | The durable EBS volumes lifted in as static `Retain` PVs on EKS (MinIO, Vault, `keycloak-postgres`/Patroni, `vscode`); **no dynamic provisioning** | Registered managed-resource with typed `discover`/`destroy` (Sprint `4.39`); the retained set is the EBS analog of `.data/` | `prodbox.io/managed-by: prodbox` plus a retain-vs-test-scoped role marker; test volumes additionally carry `kubernetes.io/cluster/<cluster-name>: owned` | Retained by **all** cluster/stack teardown (they are `Retain` and not Pulumi-owned); test-scoped volumes deleted only by the suite postflight reaper, `cluster delete --cascade` reaper hook, or `prodbox aws ebs reap-test --yes` (Sprint `4.40`). See [storage_lifecycle_doctrine.md](storage_lifecycle_doctrine.md) § 1, § 5 |
 | 3. AWS Load Balancer Controller resources | ALBs, NLBs, target groups, and security groups created in response to `Service type=LoadBalancer` and `Ingress` resources | None — created via the AWS API by the LBC pod | `kubernetes.io/cluster/<cluster-name>: owned`, `elbv2.k8s.aws/cluster`, `ingress.k8s.aws/stack` | K8s drain phase (Sprint 4.12); fallback postflight tag sweep |
 | 4. cert-manager DNS01 records | `_acme-challenge.<host>` TXT records in Route 53 during ACME issuance | None — created via the Route 53 API by the cert-manager solver | Record name pattern `_acme-challenge.*` | K8s drain phase (Sprint 4.12) handles graceful clean-up by deleting `Certificate` resources first; fallback is the postflight tag sweep |
 | 5. Direct `aws` CLI shell-out records | DNS bootstrap A records created by `src/Prodbox/CLI/Rke2.hs:2484` and `src/Prodbox/TestValidation.hs:1547` | None — written directly via `aws route53` subprocess | None reliably; identified by content (configured public FQDN) | Best-effort cleanup paths in the same modules; fallback is the postflight tag sweep |
@@ -52,7 +52,8 @@ runs **after** the destroys and fails the command with the leak list
 when anything cluster-tagged survives. Class 2 EBS volumes are
 deliberately **not** unwound by the drain: they are static `Retain`
 PVs, preserved across teardown exactly like `.data/`, and are deleted
-only by the test-suite postflight reaper for test-scoped volumes
+only by the test-suite postflight reaper, cascade reaper hook, or
+`prodbox aws ebs reap-test --yes` for test-scoped volumes
 (Sprints `4.39`, `4.40`; the legacy dynamic `gp2` path that this
 supersedes is tracked in
 [../../DEVELOPMENT_PLAN/legacy-tracking-for-deletion.md](../../DEVELOPMENT_PLAN/legacy-tracking-for-deletion.md)).
@@ -322,7 +323,8 @@ algebra (§3 layer 2), the `Plan`/`Apply` discipline, and the
 declare-and-interpret shape of the Effect DAG. The per-class name lists
 (`Prodbox.Aws.perRunStackNames`, derived from the `StackDescriptor` SSoT;
 `Prodbox.Aws.longLivedResourceNames`, derived from the registry by class so it can
-include the non-stack `public-edge-tls` cert, §2) cannot drift from their sources.
+include non-stack resources such as `aws-ebs-volumes` and the `public-edge-tls` cert)
+cannot drift from their sources.
 
 Three invariants make the topology leak-proof and idempotent:
 
@@ -520,7 +522,7 @@ backend / credentials are still up at the point of refusal).
 | Command | Preflight predicates | Default on residue |
 |---|---|---|
 | `prodbox cluster delete` | §5a no-install short-circuit, then a pure local uninstall (no per-run residue preflight) | n/a — uninstalls the cluster, preserves `.data/`, leaves per-run AWS stacks untouched |
-| `prodbox cluster delete --cascade` | §5a no-install short-circuit, then none at entry — the command **is** the orchestration | Confirm-MinIO → drain → per-run destroys → uninstall → sweep (see §5b) |
+| `prodbox cluster delete --cascade` | §5a no-install short-circuit, then none at entry — the command **is** the orchestration | Confirm-MinIO → drain → per-run destroys → test-EBS reaper → uninstall → sweep (see §5b) |
 | `prodbox aws teardown` | `noLiveLongLivedPulumiStacks` (Sprint 7.6) | Refuse with list and per-stack destroy command |
 | `prodbox aws stack <stack> destroy` | (none beyond Pulumi's own dependency check) | n/a |
 | `prodbox nuke` | TTY refusal; typed-confirmation literal `NUKE EVERYTHING`; otherwise no residue refusal — the command **is** the total-teardown orchestration | Drain + destroy all stacks (per-run **and** long-lived `aws-ses` + state bucket, per §7) + IAM teardown + uninstall + step-4 fail-closed tag sweep (§6) |

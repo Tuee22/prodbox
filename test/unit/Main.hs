@@ -34,6 +34,7 @@ import Data.List
   , isPrefixOf
   , sort
   )
+import Data.List.NonEmpty (NonEmpty (..))
 import Data.Map.Strict qualified as Map
 import Data.Set qualified as Set
 import Data.Text qualified as Text
@@ -60,10 +61,14 @@ import Prodbox.Aws
   , AwsTeardownInput (..)
   , ConfigSetupInput (..)
   , IamProbe (..)
+  , QuotaStatus (..)
   , ResidueError (..)
   , SessionTokenPromptShape (..)
+  , SpotPriceRequest (..)
   , VaultProbe (..)
   , awsErrorCodeIsTransient
+  , awsRegionQuotaPreflightFromStatuses
+  , awsSpotPriceHistoryArgs
   , buildIamPolicyDocument
   , configFromSetupInput
   , harnessPostflightResiduePolicy
@@ -75,6 +80,7 @@ import Prodbox.Aws
   , partitionResidueByLifecycle
   , perRunStackNames
   , pulumiDestroyPlanForResidue
+  , quotaStatusRegionObservation
   , refineAwsConfigResidueAgainstIamUser
   , renderAwsSetupPlan
   , renderAwsTeardownPlan
@@ -84,6 +90,8 @@ import Prodbox.Aws
   , renderResidueError
   , residueFromProbe
   , sessionTokenPromptShape
+  , spotObservationFromAwsSpotPriceHistory
+  , spotObservationFromAwsSpotPriceOutput
   )
 import Prodbox.AwsEnvironment
   ( awsCliSubprocessEnvironment
@@ -165,6 +173,7 @@ import Prodbox.CLI.Pulumi
 import Prodbox.CLI.Rke2
   ( MinioImageSource (..)
   , OperationalAwsCredentialGate (..)
+  , RetainedStorageInventoryEntry (..)
   , acmeClusterIssuerSpec
   , acmeRuntimeManifestWith
   , adminPublicEdgeManifestItems
@@ -178,6 +187,7 @@ import Prodbox.CLI.Rke2
   , renderMinioChartArgs
   , renderNativeDeletePlan
   , renderNativeInstallPlan
+  , retainedStorageInventoryEntries
   )
 import Prodbox.CLI.Spec
   ( ArgumentSpec (..)
@@ -189,6 +199,9 @@ import Prodbox.CLI.Spec
   )
 import Prodbox.CLI.Tree (renderCommandTree)
 import Prodbox.CLI.Vault (gatewayAwsVaultFields)
+import Prodbox.Capacity.Config qualified as Capacity
+import Prodbox.Capacity.Storage qualified as Storage
+import Prodbox.Cbor qualified as Cbor
 import Prodbox.CheckCode
   ( DoctrineViolation (..)
   , awsCreateProbeVerbs
@@ -254,6 +267,9 @@ import Prodbox.Cluster.Federation
   , renderFederationWriteBlock
   , upsertChildIndex
   )
+import Prodbox.Cluster.Placement qualified as ClusterPlacement
+import Prodbox.Cluster.Substrate qualified as ClusterSubstrate
+import Prodbox.Cluster.Topology qualified as ClusterTopology
 import Prodbox.Config.Basics
   ( ParentRef (..)
   , SealMode (..)
@@ -375,15 +391,17 @@ import Prodbox.Gateway.Types
   , SignedEvent (..)
   , appendIfNew
   , canWriteDns
+  , cborPayloadFromJsonValue
+  , decodeOrdersCbor
+  , decodeSignedEventCbor
   , defaultMaxClockSkewSeconds
   , emptyCommitLog
-  , encodeEvent
+  , encodeOrdersCbor
+  , encodeSignedEventCbor
   , eventTypeClaim
   , eventTypeHeartbeat
   , eventTypeYield
   , nodeDisposition
-  , parseEvent
-  , parseOrders
   , validateDaemonTimingAgainstOrders
   )
 import Prodbox.Host
@@ -396,6 +414,31 @@ import Prodbox.Host
   , renderFirewallRuleAction
   , renderHostInfoReport
   , renderPortAvailabilityReport
+  )
+import Prodbox.Host.Ensure qualified as HostEnsure
+import Prodbox.Host.Lift
+  ( HostDispatch (..)
+  , LiftLayer (..)
+  , SelfRef (..)
+  , clusterFrame
+  , foldHostLift
+  )
+import Prodbox.Host.Lima
+  ( defaultLimaVM
+  )
+import Prodbox.Host.Substrate
+  ( HostSubstrate (..)
+  , classifyHost
+  , hostSubstrateNeedsLift
+  )
+import Prodbox.Host.Tool
+  ( HostTool (..)
+  , absExePath
+  , hostToolCommandName
+  , mkAbsExe
+  )
+import Prodbox.Host.Wsl2
+  ( defaultWsl2VM
   )
 import Prodbox.Http.Client qualified
 import Prodbox.Infra.AwsEksTestStack qualified as AwsEks
@@ -459,11 +502,14 @@ import Prodbox.Lib.EksImageMirror qualified
 import Prodbox.Lib.Storage
   ( ChartStorageBinding (..)
   , ChartStorageSpec (..)
-  , chartDynamicStorageManifest
+  , StaticEbsVolumeBinding (..)
+  , chartEbsStorageManifest
   , retainedStatefulSetPersistentVolumeClaimName
   , retainedStatefulSetPersistentVolumeName
   , storageBinding
+  , testManualPvHostRootEnv
   )
+import Prodbox.Lifecycle.EbsVolume qualified as EbsVolume
 import Prodbox.Lifecycle.FederatedVault
   ( FederatedVaultLifecycle (..)
   , ParentVaultReadiness (..)
@@ -477,6 +523,8 @@ import Prodbox.Lifecycle.K8sDrain
   , DrainResult (..)
   , K8sDrainEnv (..)
   , cascadeDecisionFromDrainResult
+  , deleteReclaimPersistentVolumeJsonPath
+  , deleteReclaimPvcBindings
   )
 import Prodbox.Lifecycle.LiveResidue (PerRunResidueStatuses (..))
 import Prodbox.Lifecycle.LiveResidue qualified as LiveResidue
@@ -530,6 +578,10 @@ import Prodbox.PublicEdge
   ( publicEdgeClusterIssuerName
   , publicEdgeTlsRetentionKey
   )
+import Prodbox.Pulsar.Client qualified as PulsarClient
+import Prodbox.Pulsar.Codec qualified as PulsarCodec
+import Prodbox.Pulsar.Envelope qualified as PulsarEnvelope
+import Prodbox.Pulsar.Topic qualified as PulsarTopic
 import Prodbox.Pulumi.EncryptedBackend
   ( CheckpointObservability (..)
   , EncryptedBackendError (..)
@@ -550,6 +602,8 @@ import Prodbox.Retry
   , pollUntilReady
   , retryDelayMicros
   )
+import Prodbox.Scaling.Autoscaler qualified as Autoscaler
+import Prodbox.Scaling.Spot qualified as Spot
 import Prodbox.Secret.VaultInventory qualified as VaultInventory
 import Prodbox.Service
   ( RedisError (..)
@@ -568,22 +622,32 @@ import Prodbox.Settings
   , Credentials (..)
   , DeploymentSection (..)
   , DomainSection (..)
+  , FailoverScenario (..)
+  , FixtureId (..)
   , MetallbBgpPeer (..)
   , PulumiStateBackendSection (..)
   , Route53Section (..)
+  , RunVariant (..)
   , StorageSection (..)
+  , TestBudget (..)
+  , TestSuite (..)
+  , TestTopology (..)
+  , TestTopologyError (..)
   , ValidatedSettings (..)
   , decodeConfigDhallBytes
   , defaultConfigFile
+  , defaultTestTopology
   , inForceConfigObjectAbsent
   , loadConfigFileAtPath
   , loadConfigForSettingsWith
+  , loadTestTopologyAtPath
   , loadUnencryptedBasicsAtPath
   , renderConfigDhall
   , renderSettingsDisplay
   , validateAndLoadSettingsAtPath
   , validateAwsBootstrapConfig
   , validatePublicEdgeDeployment
+  , validateTestTopology
   )
 import Prodbox.Settings.SecretRef
   ( SecretRef (..)
@@ -600,7 +664,13 @@ import Prodbox.Subprocess
   , renderSubprocess
   , pattern Subprocess
   )
-import Prodbox.Substrate (Substrate (..))
+import Prodbox.Substrate
+  ( ElasticScalingBounds (..)
+  , ScalingPolicy (..)
+  , ScalingPolicyBySubstrate (..)
+  , Substrate (..)
+  , fixedScalingPolicyBySubstrate
+  )
 import Prodbox.TestPlan
   ( NativeSuitePlan (..)
   , NativeValidation (..)
@@ -613,23 +683,44 @@ import Prodbox.TestPlan
   , validationInitialPrerequisites
   )
 import Prodbox.TestRunner
-  ( PublicEdgeCertificateFailure (..)
+  ( ClusterEvidence (..)
+  , PublicEdgeCertificateFailure (..)
+  , TestDeleteTarget (..)
+  , TestGate (..)
+  , TestRefusal (..)
   , awsPostflightDestroyCommandArgs
   , awsSubstrateBootstrapCommandArgs
   , clearOperationalCredsAfterPostflight
+  , guardTestDelete
   , integrationRunbookCommandArgs
   , publicEdgeCertificateReissueStatusPatch
+  , renderTestRefusal
   , supportedRuntimeBootstrapNeedsKeycloakSmtpSync
   , supportedRuntimeBootstrapNeedsReconcile
+  , testModePreflightAtPath
+  , testModePreflightAtPaths
+  , testProductionClusterGate
+  , testProductionConfigGate
+  , testScopeForTopologySuite
+  , testTopologyModeGate
+  , topologyRunConfig
+  , topologyVariantEnvironment
+  )
+import Prodbox.TestTopology
+  ( renderTestTopologyDhall
   )
 import Prodbox.TestValidation
   ( SealedVaultAuditInput (..)
+  , VolumeRebindSnapshot (..)
   , assertInviteOidcClaims
   , defaultSealedVaultAuditInput
+  , parseVolumeRebindSnapshot
   , renderGatewayValidationConfigDhall
   , sealedVaultAuditReport
   , sealedVaultForbiddenPatterns
+  , sealedVaultHostDiskRoot
   , verifyAwsTestSshReachability
+  , volumeRebindReport
   )
 import Prodbox.UsersAdmin qualified
 import Prodbox.Vault.BootstrapBundle
@@ -2143,6 +2234,8 @@ main = mainWithSuite "prodbox-unit" $ do
               , Tier0.domain = Tier0.domain base
               , Tier0.acme = Tier0.acme base
               , Tier0.deployment = Tier0.deployment base
+              , Tier0.capacity = Tier0.capacity base
+              , Tier0.cluster_topology = Tier0.cluster_topology base
               , Tier0.storage = Tier0.storage base
               , Tier0.pulumi_state_backend = Tier0.pulumi_state_backend base
               }
@@ -3051,6 +3144,10 @@ main = mainWithSuite "prodbox-unit" $ do
     it "routes aws request-quotas to the native Haskell runtime" $ do
       parseArgs ["aws", "quotas", "request", "--tier", "core"]
         `shouldBe` Right (Options False (RunNative (NativeAws (AwsRequestQuotas PolicyCore))))
+
+    it "routes aws ebs reap-test to the native Haskell runtime" $ do
+      parseArgs ["aws", "ebs", "reap-test", "--yes"]
+        `shouldBe` Right (Options False (RunNative (NativeAws (AwsReapTestEbs True))))
 
     it "routes tla-check through the native Haskell runtime" $ do
       parseArgs ["dev", "tla-check"]
@@ -3982,7 +4079,7 @@ main = mainWithSuite "prodbox-unit" $ do
                            , "tool_dig"
                            , "aws_iam_harness_ready"
                            , "tool_aws"
-                           , "supported_ubuntu_2404"
+                           , "host_substrate_supported"
                            , "tool_docker"
                            , "tool_ctr"
                            , "tool_helm"
@@ -4022,6 +4119,7 @@ main = mainWithSuite "prodbox-unit" $ do
                            , "charts-platform"
                            , "keycloak-invite"
                            , "charts-storage"
+                           , "eks-volume-rebind"
                            , "sealed-vault"
                            , "lifecycle"
                            ]
@@ -4040,7 +4138,7 @@ main = mainWithSuite "prodbox-unit" $ do
                            , "tool_dig"
                            , "aws_iam_harness_ready"
                            , "tool_aws"
-                           , "supported_ubuntu_2404"
+                           , "host_substrate_supported"
                            , "tool_docker"
                            , "tool_ctr"
                            , "tool_helm"
@@ -4064,10 +4162,11 @@ main = mainWithSuite "prodbox-unit" $ do
               nativeRequiresSupportedRuntimePostflight suitePlan `shouldBe` True
               take 4 (map nativeValidationId (nativeValidations suitePlan))
                 `shouldBe` ["charts-vscode", "charts-api", "charts-websocket", "admin-routes"]
-              take 4 (dropWhile (/= ValidationChartsPlatform) (nativeValidations suitePlan))
+              take 5 (dropWhile (/= ValidationChartsPlatform) (nativeValidations suitePlan))
                 `shouldBe` [ ValidationChartsPlatform
                            , ValidationKeycloakInvite
                            , ValidationChartsStorage
+                           , ValidationEksVolumeRebind
                            , ValidationSealedVault
                            ]
               last (nativeValidations suitePlan) `shouldBe` ValidationLifecycle
@@ -4167,6 +4266,20 @@ main = mainWithSuite "prodbox-unit" $ do
                            ]
             DelegatedSuite _ -> expectationFailure "expected native aws-eks plan"
 
+      case testExecutionPlan SubstrateAws (TestIntegration IntegrationEksVolumeRebind) of
+        testPlan ->
+          case testPlanExecutionMode testPlan of
+            NativeSuite suitePlan -> do
+              nativeSuiteId suitePlan `shouldBe` "integration-eks-volume-rebind"
+              nativeManagedAwsHarnessPolicyTier suitePlan `shouldBe` Just PolicyFull
+              nativeValidations suitePlan `shouldBe` [ValidationEksVolumeRebind]
+              awsPostflightDestroyCommandArgs suitePlan
+                `shouldBe` [ ["aws", "stack", "aws-subzone", "destroy", "--yes"]
+                           , ["aws", "stack", "eks", "destroy", "--yes"]
+                           , ["aws", "stack", "test", "destroy", "--yes"]
+                           ]
+            DelegatedSuite _ -> expectationFailure "expected native eks-volume-rebind plan"
+
     it "maps cluster-backed named suites to native validations plus prerequisites" $ do
       case testExecutionPlan SubstrateHomeLocal (TestIntegration IntegrationAwsEks) of
         testPlan ->
@@ -4175,7 +4288,7 @@ main = mainWithSuite "prodbox-unit" $ do
               nativeSuiteId suitePlan `shouldBe` "integration-aws-eks"
               nativeValidations suitePlan `shouldBe` [ValidationAwsEks]
               map prerequisiteIdText (nativeInitialIntegrationGatePrerequisites suitePlan)
-                `shouldBe` [ "supported_ubuntu_2404"
+                `shouldBe` [ "host_substrate_supported"
                            , "tool_docker"
                            , "tool_ctr"
                            , "tool_helm"
@@ -4198,7 +4311,7 @@ main = mainWithSuite "prodbox-unit" $ do
               nativeSuiteId suitePlan `shouldBe` "integration-sealed-vault"
               nativeValidations suitePlan `shouldBe` [ValidationSealedVault]
               map prerequisiteIdText (nativeInitialIntegrationGatePrerequisites suitePlan)
-                `shouldBe` [ "supported_ubuntu_2404"
+                `shouldBe` [ "host_substrate_supported"
                            , "tool_docker"
                            , "tool_ctr"
                            , "tool_helm"
@@ -4212,6 +4325,28 @@ main = mainWithSuite "prodbox-unit" $ do
               nativeRequiresIntegrationRunbook suitePlan `shouldBe` True
               integrationRunbookCommandArgs suitePlan `shouldBe` [["cluster", "reconcile"]]
             DelegatedSuite _ -> expectationFailure "expected native sealed-vault plan"
+
+      case testExecutionPlan SubstrateHomeLocal (TestIntegration IntegrationEksVolumeRebind) of
+        testPlan ->
+          case testPlanExecutionMode testPlan of
+            NativeSuite suitePlan -> do
+              nativeSuiteId suitePlan `shouldBe` "integration-eks-volume-rebind"
+              nativeValidations suitePlan `shouldBe` [ValidationEksVolumeRebind]
+              map prerequisiteIdText (nativeInitialIntegrationGatePrerequisites suitePlan)
+                `shouldBe` [ "host_substrate_supported"
+                           , "tool_docker"
+                           , "tool_ctr"
+                           , "tool_helm"
+                           , "tool_kubectl"
+                           , "tool_sudo"
+                           , "tool_systemctl"
+                           , "settings_object"
+                           ]
+              nativeDeferredIntegrationGatePrerequisites suitePlan `shouldBe` []
+              nativeManagedAwsHarnessPolicyTier suitePlan `shouldBe` Nothing
+              nativeRequiresIntegrationRunbook suitePlan `shouldBe` True
+              integrationRunbookCommandArgs suitePlan `shouldBe` [["cluster", "reconcile", "--with-edge"]]
+            DelegatedSuite _ -> expectationFailure "expected native eks-volume-rebind plan"
 
     it "gates AWS-backed named suites on validated access before validation bodies run" $ do
       case testExecutionPlan SubstrateHomeLocal (TestIntegration IntegrationPublicDns) of
@@ -4248,7 +4383,7 @@ main = mainWithSuite "prodbox-unit" $ do
           case testPlanExecutionMode testPlan of
             NativeSuite suitePlan -> do
               map prerequisiteIdText (nativeInitialIntegrationGatePrerequisites suitePlan)
-                `shouldBe` [ "supported_ubuntu_2404"
+                `shouldBe` [ "host_substrate_supported"
                            , "tool_docker"
                            , "tool_ctr"
                            , "tool_helm"
@@ -4307,6 +4442,12 @@ main = mainWithSuite "prodbox-unit" $ do
         `shouldBe` Just PolicyFull
       derivedManagedAwsHarnessPolicyTier SubstrateHomeLocal [ValidationKeycloakInvite]
         `shouldBe` Just PolicyFull
+      -- eks-volume-rebind owns AWS per-run stack mutation only on the AWS
+      -- substrate; the home substrate run is cluster-only.
+      derivedManagedAwsHarnessPolicyTier SubstrateAws [ValidationEksVolumeRebind]
+        `shouldBe` Just PolicyFull
+      derivedManagedAwsHarnessPolicyTier SubstrateHomeLocal [ValidationEksVolumeRebind]
+        `shouldBe` Nothing
       -- The deleted blanket override no longer lives in TestPlan: neither
       -- its definition/dispatch nor its substrate=aws blanket match arm.
       -- (The name still appears in a doc comment narrating the deletion,
@@ -4360,6 +4501,74 @@ main = mainWithSuite "prodbox-unit" $ do
 
       validationSource `shouldContain` "ValidationSealedVault -> runSealedVaultValidation"
       nativeValidationId ValidationSealedVault `shouldBe` "sealed-vault"
+
+    it "Sprint 5.12 routes eks-volume-rebind through a native validation path" $ do
+      repoRoot <- getCurrentDirectory
+      validationSource <- readFile (repoRoot </> "src" </> "Prodbox" </> "TestValidation.hs")
+
+      validationSource `shouldContain` "ValidationEksVolumeRebind ->"
+      validationSource `shouldContain` "runEksVolumeRebindValidation"
+      nativeValidationId ValidationEksVolumeRebind `shouldBe` "eks-volume-rebind"
+
+    it "Sprint 5.12 parses retained PV snapshots from Kubernetes JSON" $ do
+      let pvJson =
+            object
+              [ "metadata"
+                  .= object
+                    ["name" .= ("pv-prodbox-minio-0" :: String)]
+              , "spec"
+                  .= object
+                    [ "claimRef"
+                        .= object
+                          [ "namespace" .= ("prodbox" :: String)
+                          , "name" .= ("data-minio-0" :: String)
+                          ]
+                    , "csi" .= object ["volumeHandle" .= ("vol-012345" :: String)]
+                    ]
+              , "status" .= object ["phase" .= ("Bound" :: String)]
+              ]
+
+      parseVolumeRebindSnapshot pvJson
+        `shouldBe` Right
+          VolumeRebindSnapshot
+            { volumeRebindSnapshotPersistentVolume = "pv-prodbox-minio-0"
+            , volumeRebindSnapshotClaimNamespace = "prodbox"
+            , volumeRebindSnapshotPersistentClaim = "data-minio-0"
+            , volumeRebindSnapshotPhase = "Bound"
+            , volumeRebindSnapshotVolumeHandle = Just "vol-012345"
+            }
+
+    it "Sprint 5.12 reports success only when the same PV/PVC/handle keeps the sentinel" $ do
+      let before =
+            VolumeRebindSnapshot
+              { volumeRebindSnapshotPersistentVolume = "pv-prodbox-minio-0"
+              , volumeRebindSnapshotClaimNamespace = "prodbox"
+              , volumeRebindSnapshotPersistentClaim = "data-minio-0"
+              , volumeRebindSnapshotPhase = "Bound"
+              , volumeRebindSnapshotVolumeHandle = Just "vol-012345"
+              }
+          after = before
+
+      volumeRebindReport before after "sentinel" "sentinel"
+        `shouldBe` Right
+          ( unlines
+              [ "VOLUME_REBIND_VALIDATION"
+              , "PV=pv-prodbox-minio-0"
+              , "PVC=prodbox/data-minio-0"
+              , "PHASE_BEFORE=Bound"
+              , "PHASE_AFTER=Bound"
+              , "VOLUME_HANDLE=vol-012345"
+              , "SENTINEL=preserved"
+              ]
+          )
+      volumeRebindReport before after "sentinel" "different"
+        `shouldBe` Left "sentinel mismatch: expected `sentinel`, observed `different`"
+      volumeRebindReport
+        before
+        after {volumeRebindSnapshotVolumeHandle = Just "vol-different"}
+        "sentinel"
+        "sentinel"
+        `shouldBe` Left "volume handle mismatch: expected `vol-012345`, observed `vol-different`"
 
     it "Sprint 5.8 sealed-Vault audit accepts only opaque sealed-state surfaces" $ do
       let audit =
@@ -4835,6 +5044,7 @@ main = mainWithSuite "prodbox-unit" $ do
       sort (map prerequisiteIdText (Map.keys prerequisiteRegistry))
         `shouldBe` sort
           [ "platform_linux"
+          , "host_substrate_supported"
           , "systemd_available"
           , "supported_ubuntu_2404"
           , "machine_identity"
@@ -4913,7 +5123,7 @@ main = mainWithSuite "prodbox-unit" $ do
       lookupPrereqTexts "route53_lifecycle_capable"
         `shouldBe` ["route53_accessible"]
       lookupPrereqTexts "rke2_service_exists"
-        `shouldBe` ["rke2_installed", "systemd_available", "supported_ubuntu_2404"]
+        `shouldBe` ["rke2_installed", "systemd_available", "host_substrate_supported"]
       lookupPrereqTexts "rke2_service_active"
         `shouldBe` ["rke2_service_exists"]
       lookupPrereqTexts "k8s_cluster_reachable"
@@ -4934,6 +5144,8 @@ main = mainWithSuite "prodbox-unit" $ do
 
     it "uses the expected validation and no-op effect shapes" $ do
       lookupPrerequisiteEffect "platform_linux" `shouldBe` Validate RequireLinux
+      lookupPrerequisiteEffect "host_substrate_supported"
+        `shouldBe` Validate RequireHostSubstrateSupported
       lookupPrerequisiteEffect "systemd_available" `shouldBe` Validate RequireSystemd
       lookupPrerequisiteEffect "supported_ubuntu_2404" `shouldBe` Validate RequireUbuntu2404
       lookupPrerequisiteEffect "machine_identity" `shouldBe` Validate RequireMachineIdentity
@@ -4971,11 +5183,11 @@ main = mainWithSuite "prodbox-unit" $ do
     it "expands shared prerequisite chains transitively" $ do
       transitiveClosureTexts ["rke2_service_active"]
         `shouldBe` Right
-          [ "platform_linux"
+          [ "host_substrate_supported"
+          , "platform_linux"
           , "rke2_installed"
           , "rke2_service_active"
           , "rke2_service_exists"
-          , "supported_ubuntu_2404"
           , "systemd_available"
           ]
       transitiveClosureTexts ["route53_accessible"]
@@ -4995,14 +5207,14 @@ main = mainWithSuite "prodbox-unit" $ do
           ]
       transitiveClosureTexts ["pulumi_logged_in"]
         `shouldBe` Right
-          [ "k8s_cluster_reachable"
+          [ "host_substrate_supported"
+          , "k8s_cluster_reachable"
           , "kubeconfig_exists"
           , "platform_linux"
           , "pulumi_logged_in"
           , "rke2_installed"
           , "rke2_service_active"
           , "rke2_service_exists"
-          , "supported_ubuntu_2404"
           , "systemd_available"
           , "tool_kubectl"
           , "tool_pulumi"
@@ -5010,6 +5222,7 @@ main = mainWithSuite "prodbox-unit" $ do
       transitiveClosureTexts ["infra_ready"]
         `shouldBe` Right
           [ "aws_credentials_valid"
+          , "host_substrate_supported"
           , "infra_ready"
           , "k8s_cluster_reachable"
           , "k8s_ready"
@@ -5019,7 +5232,6 @@ main = mainWithSuite "prodbox-unit" $ do
           , "rke2_service_active"
           , "rke2_service_exists"
           , "settings_object"
-          , "supported_ubuntu_2404"
           , "systemd_available"
           , "tool_aws"
           , "tool_kubectl"
@@ -5028,7 +5240,8 @@ main = mainWithSuite "prodbox-unit" $ do
       -- readiness WITHOUT pulling in any AWS-credential node.
       transitiveClosureTexts ["public_edge_ready"]
         `shouldBe` Right
-          [ "k8s_cluster_reachable"
+          [ "host_substrate_supported"
+          , "k8s_cluster_reachable"
           , "k8s_ready"
           , "kubeconfig_exists"
           , "platform_linux"
@@ -5036,7 +5249,6 @@ main = mainWithSuite "prodbox-unit" $ do
           , "rke2_installed"
           , "rke2_service_active"
           , "rke2_service_exists"
-          , "supported_ubuntu_2404"
           , "systemd_available"
           , "tool_kubectl"
           ]
@@ -5174,12 +5386,13 @@ main = mainWithSuite "prodbox-unit" $ do
     -- `Sprint 2.20 daemon Dhall settings` describe block above. The legacy
     -- JSON parser is removed from `Prodbox.Gateway.Types` as Phase 2 closure.
 
-    it "round-trips persisted gateway orders through JSON" $ do
-      parseOrders (BL8.unpack (encodeJsonValue (ordersJsonValue sampleOrders)))
+    it "round-trips persisted gateway orders through CBOR" $ do
+      decodeOrdersCbor (encodeOrdersCbor sampleOrders)
         `shouldBe` Right sampleOrders
 
-    it "round-trips persisted signed gateway events through JSON" $ do
-      parseEvent (encodeEvent sampleSignedEvent) `shouldBe` Right sampleSignedEvent
+    it "round-trips persisted signed gateway events through CBOR" $ do
+      decodeSignedEventCbor (encodeSignedEventCbor sampleSignedEvent)
+        `shouldBe` Right sampleSignedEvent
 
     -- Sprint 4.18: the on-disk snapshot cache is removed; the destroy,
     -- residue-assertion, and substrate-platform install paths now read
@@ -5410,6 +5623,11 @@ main = mainWithSuite "prodbox-unit" $ do
       map DaemonEvents.eventId remainingEvents
         `shouldBe` [DaemonEvents.EventId "event-a"]
 
+    it "round-trips durable daemon events through CBOR" $ do
+      let event = storedDaemonEvent "event-cbor" 15 Nothing
+      DaemonEvents.decodeStoredEventCbor (DaemonEvents.encodeStoredEventCbor event)
+        `shouldBe` Right event
+
     it "markEventProcessed is first-write-wins under the IS-NULL guard" $ do
       store <-
         DaemonEvents.newEventStore
@@ -5459,6 +5677,80 @@ main = mainWithSuite "prodbox-unit" $ do
             Subprocess "kubectl" ["get", "pods", "-A"] Nothing (Just "/tmp/prodbox")
       renderSubprocess subprocess `shouldBe` "kubectl get pods -A"
 
+  describe "Pulsar CBOR topic and envelope boundary" $ do
+    it "derives Pulsar topic names from validated segments only" $ do
+      case (PulsarTopic.mkTenant "prodbox", PulsarTopic.mkNamespace "gateway", PulsarTopic.mkLane "home") of
+        (Right tenant, Right namespace, Right lane) ->
+          PulsarTopic.renderTopicName
+            (PulsarTopic.topicFor tenant namespace PulsarTopic.Reconcile PulsarTopic.Command lane)
+            `shouldBe` "persistent://prodbox/gateway/reconcile.command.home"
+        _ -> expectationFailure "expected valid Pulsar topic segments"
+
+      PulsarTopic.mkLane "home/local"
+        `shouldBe` Left (PulsarTopic.InvalidTopicSegment "lane" "home/local")
+
+    it "round-trips Work envelopes through the CBOR-only Pulsar codec" $ do
+      case PulsarTopic.mkLane "home" of
+        Left err -> expectationFailure (PulsarTopic.renderTopicError err)
+        Right lane -> do
+          let payload = Cbor.cborPayloadFromJsonValue (object ["revision" .= (3 :: Int)])
+              command =
+                PulsarEnvelope.WorkCommand
+                  { PulsarEnvelope.wcCallId = PulsarEnvelope.CallId "call-3"
+                  , PulsarEnvelope.wcWorkflow = PulsarTopic.Gossip
+                  , PulsarEnvelope.wcLane = lane
+                  , PulsarEnvelope.wcPayload = payload
+                  }
+              event =
+                PulsarEnvelope.WorkEvent
+                  { PulsarEnvelope.weCallId = PulsarEnvelope.CallId "call-3"
+                  , PulsarEnvelope.wePayload = PulsarEnvelope.encodeWorkCommand command
+                  }
+              result =
+                PulsarEnvelope.WorkResult
+                  { PulsarEnvelope.wrCallId = PulsarEnvelope.CallId "call-3"
+                  , PulsarEnvelope.wrStatus = PulsarEnvelope.WorkSucceeded
+                  , PulsarEnvelope.wrPayload = payload
+                  }
+
+          PulsarEnvelope.decodeWorkCommand (PulsarEnvelope.encodeWorkCommand command)
+            `shouldBe` Right command
+          PulsarEnvelope.decodeWorkEvent (PulsarEnvelope.encodeWorkEvent event)
+            `shouldBe` Right event
+          PulsarEnvelope.decodeWorkResult (PulsarEnvelope.encodeWorkResult result)
+            `shouldBe` Right result
+          PulsarCodec.decodePayload (PulsarCodec.encodePayload event)
+            `shouldBe` Right event
+          Cbor.cborPayloadBytes (PulsarEnvelope.encodeWorkCommand command)
+            `shouldSatisfy` (not . BS.null)
+
+    it "exposes broker IO as an explicit unsupported native-protocol layer until BaseCommand lands" $ do
+      connected <-
+        PulsarClient.connect
+          PulsarClient.PulsarClientConfig
+            { PulsarClient.pulsarClientHost = "pulsar.gateway.svc.cluster.local"
+            , PulsarClient.pulsarClientPort = 6650
+            , PulsarClient.pulsarClientName = "unit-test"
+            }
+      case connected of
+        Left err -> expectationFailure (PulsarClient.renderPulsarClientError err)
+        Right connection -> do
+          case (PulsarTopic.mkTenant "prodbox", PulsarTopic.mkNamespace "gateway", PulsarTopic.mkLane "home") of
+            (Right tenant, Right namespace, Right lane) -> do
+              let request =
+                    PulsarClient.ProduceRequest
+                      { PulsarClient.produceTopic =
+                          PulsarTopic.topicFor tenant namespace PulsarTopic.Gossip PulsarTopic.Command lane
+                      , PulsarClient.producePayload = Cbor.cborPayloadFromJsonValue (object [])
+                      }
+              produceResult <- PulsarClient.produce connection request
+              case produceResult of
+                Left (PulsarClient.PulsarBrokerProtocolUnavailable message) ->
+                  message `shouldContain` "BaseCommand"
+                Left err -> expectationFailure (PulsarClient.renderPulsarClientError err)
+                Right _ -> expectationFailure "expected broker protocol layer to be explicit"
+            _ -> expectationFailure "expected valid Pulsar topic"
+
   describe "native chart platform helpers" $ do
     it "extracts deleted MinIO export host paths from mountinfo" $ do
       parseDeletedMinioExportHostPath
@@ -5491,6 +5783,45 @@ main = mainWithSuite "prodbox-unit" $ do
 
     it "lists supported charts in canonical order" $ do
       supportedChartNames `shouldBe` ["keycloak", "vscode", "api", "websocket", "gateway"]
+
+    it "renders the Pulsar workload chart as a retained gateway dependency" $ do
+      result <-
+        buildChartDeploymentPlanForSubstrate
+          SubstrateAws
+          "/tmp/prodbox"
+          (testValidatedSettings "/tmp/prodbox/.data")
+          "gateway"
+          testChartSecrets
+          Map.empty
+      case result of
+        Left err -> expectationFailure err
+        Right plan -> do
+          map chartReleasePlanReleaseName (chartDeploymentPlanReleases plan)
+            `shouldBe` ["pulsar", "gateway"]
+          case filter ((== "pulsar") . chartReleasePlanReleaseName) (chartDeploymentPlanReleases plan) of
+            [release] -> do
+              chartReleasePlanChartDir release `shouldBe` "/tmp/prodbox/charts/pulsar"
+              map chartStorageBindingPersistentVolumeClaimName (chartReleasePlanStorageBindings release)
+                `shouldBe` ["data-pulsar-0"]
+              case eitherDecode (BL8.pack (chartReleasePlanValuesJson release)) :: Either String Value of
+                Right (Object payload) -> do
+                  case KeyMap.lookup (Key.fromString "image") payload of
+                    Just (Object imagePayload) -> do
+                      KeyMap.lookup (Key.fromString "repository") imagePayload
+                        `shouldBe` Just (String "127.0.0.1:30080/prodbox/pulsar-mirror")
+                      KeyMap.lookup (Key.fromString "tag") imagePayload
+                        `shouldBe` Just (String "4.0.2")
+                    _ -> expectationFailure "expected pulsar image payload"
+                  case KeyMap.lookup (Key.fromString "storage") payload of
+                    Just (Object storagePayload) -> do
+                      KeyMap.lookup (Key.fromString "className") storagePayload
+                        `shouldBe` Just (String "manual")
+                      KeyMap.lookup (Key.fromString "size") storagePayload
+                        `shouldBe` Just (String "20Gi")
+                    _ -> expectationFailure "expected pulsar storage payload"
+                Right _ -> expectationFailure "expected pulsar values object"
+                Left err -> expectationFailure err
+            _ -> expectationFailure "expected one pulsar release"
 
     it "builds delete plans in reverse dependency order" $ do
       case buildChartDeletePlan "/tmp/prodbox" Nothing "vscode" of
@@ -5626,7 +5957,7 @@ main = mainWithSuite "prodbox-unit" $ do
                 Left err -> expectationFailure err
             _ -> expectationFailure "expected one websocket release"
 
-    it "renders AWS vscode plans with dynamic gp2 Patroni storage" $ do
+    it "renders AWS vscode plans with static manual Patroni storage" $ do
       result <-
         buildChartDeploymentPlanForSubstrate
           SubstrateAws
@@ -5646,13 +5977,13 @@ main = mainWithSuite "prodbox-unit" $ do
                   case KeyMap.lookup (Key.fromString "storage") payload of
                     Just (Object storagePayload) ->
                       KeyMap.lookup (Key.fromString "className") storagePayload
-                        `shouldBe` Just (String "gp2")
+                        `shouldBe` Just (String "manual")
                     _ -> expectationFailure "expected keycloak-postgres storage payload"
                 Right _ -> expectationFailure "expected keycloak-postgres values object"
                 Left err -> expectationFailure err
             _ -> expectationFailure "expected one keycloak-postgres release"
 
-    it "renders AWS dynamic storage as PVCs without manual PV hostPath artifacts" $ do
+    it "renders AWS static EBS storage as Retain PVs with CSI volume handles" $ do
       let spec =
             ChartStorageSpec
               { chartStorageSpecStatefulSetName = "vscode"
@@ -5663,16 +5994,30 @@ main = mainWithSuite "prodbox-unit" $ do
               , chartStorageSpecClaimSuffix = "data"
               }
           binding = storageBinding "/tmp/prodbox/.data" "vscode" "vscode" spec
-          manifestJson =
-            BL8.unpack
-              (encode (chartDynamicStorageManifest "vscode" "vscode" "gp2" [binding]))
-      manifestJson `shouldContain` "\"kind\":\"PersistentVolumeClaim\""
-      manifestJson `shouldContain` "\"storageClassName\":\"gp2\""
-      manifestJson `shouldContain` "\"name\":\"data-vscode-0\""
-      manifestJson `shouldNotContain` "\"kind\":\"PersistentVolume\""
-      manifestJson `shouldNotContain` "\"hostPath\""
-      manifestJson `shouldNotContain` "\"volumeName\""
-      manifestJson `shouldNotContain` "\"storageClassName\":\"manual\""
+          ebsBinding =
+            StaticEbsVolumeBinding
+              { staticEbsVolumeBindingPersistentVolumeName =
+                  chartStorageBindingPersistentVolumeName binding
+              , staticEbsVolumeBindingVolumeHandle = "vol-0123"
+              , staticEbsVolumeBindingAvailabilityZone = "us-east-1a"
+              }
+          manifestJsonResult =
+            BL8.unpack . encode <$> chartEbsStorageManifest "vscode" "vscode" [binding] [ebsBinding]
+      case manifestJsonResult of
+        Left err -> expectationFailure err
+        Right manifestJson -> do
+          manifestJson `shouldContain` "\"kind\":\"PersistentVolumeClaim\""
+          manifestJson `shouldContain` "\"kind\":\"PersistentVolume\""
+          manifestJson `shouldContain` "\"storageClassName\":\"manual\""
+          manifestJson `shouldContain` "\"name\":\"data-vscode-0\""
+          manifestJson `shouldContain` "\"persistentVolumeReclaimPolicy\":\"Retain\""
+          manifestJson `shouldContain` "\"driver\":\"ebs.csi.aws.com\""
+          manifestJson `shouldContain` "\"volumeHandle\":\"vol-0123\""
+          manifestJson `shouldContain` "\"key\":\"topology.ebs.csi.aws.com/zone\""
+          manifestJson `shouldContain` "\"values\":[\"us-east-1a\"]"
+          manifestJson `shouldContain` "\"volumeName\":\"prodbox-retained-vscode-vscode-0\""
+          manifestJson `shouldNotContain` "\"hostPath\""
+          manifestJson `shouldNotContain` "\"storageClassName\":\"gp2\""
 
     it
       "chartReleasesToDeploy deploys only the releases missing from helm list (heals a partial rollback)"
@@ -7441,6 +7786,448 @@ main = mainWithSuite "prodbox-unit" $ do
         Just (String b64) -> b64 `shouldBe` "YWRtaW46SGFyYm9yMTIzNDU="
         _ -> expectationFailure "expected the Harbor auth string"
 
+  describe "Sprint 1.52 host-platform DSL" $ do
+    it "classifies supported host substrates from OS, architecture, and GPU facts" $ do
+      classifyHost "darwin" "arm64" False `shouldBe` Right AppleSilicon
+      classifyHost "darwin" "x86_64" False
+        `shouldBe` Left "prodbox supports Apple Silicon (arm64) only on macOS"
+      classifyHost "linux" "x86_64" False `shouldBe` Right LinuxCpu
+      classifyHost "linux" "x86_64" True `shouldBe` Right LinuxGpu
+      classifyHost "mingw32" "x86_64" False `shouldBe` Right WindowsCpu
+      classifyHost "mingw32" "x86_64" True `shouldBe` Right WindowsGpu
+      classifyHost "freebsd" "x86_64" False
+        `shouldBe` Left "unsupported host platform: freebsd"
+
+    it "computes the mandatory Linux lift frame for non-Linux cluster tools" $ do
+      clusterFrame AppleSilicon `shouldBe` [ViaLimaVM defaultLimaVM]
+      clusterFrame WindowsCpu `shouldBe` [ViaWsl2VM defaultWsl2VM]
+      clusterFrame WindowsGpu `shouldBe` [ViaWsl2VM defaultWsl2VM]
+      clusterFrame LinuxCpu `shouldBe` []
+      hostSubstrateNeedsLift AppleSilicon `shouldBe` True
+      hostSubstrateNeedsLift LinuxGpu `shouldBe` False
+
+    it "folds lift layers into a concrete self re-invocation" $ do
+      foldHostLift (SelfRef "/opt/prodbox/prodbox") [ViaLimaVM defaultLimaVM] ["cluster", "reconcile"]
+        `shouldBe` HostDispatch
+          "limactl"
+          ["shell", "prodbox-ubuntu-2404", "--", "/opt/prodbox/prodbox", "cluster", "reconcile"]
+
+      foldHostLift (SelfRef "/opt/prodbox/prodbox") [ViaWsl2VM defaultWsl2VM] ["cluster", "status"]
+        `shouldBe` HostDispatch
+          "wsl"
+          ["-d", "prodbox-ubuntu-2404", "--", "/opt/prodbox/prodbox", "cluster", "status"]
+
+    it "keeps host tools closed and invocation targets absolute" $ do
+      hostToolCommandName Docker `shouldBe` "docker"
+      hostToolCommandName Limactl `shouldBe` "limactl"
+      fmap absExePath (mkAbsExe "/usr/bin/docker") `shouldBe` Right "/usr/bin/docker"
+      mkAbsExe "docker" `shouldBe` Left "not an absolute path: docker"
+
+    it "gates host-frame docker to native Linux substrates" $ do
+      DockerConfig.hostFrameDockerSupported LinuxCpu `shouldBe` Right ()
+      DockerConfig.hostFrameDockerSupported LinuxGpu `shouldBe` Right ()
+      DockerConfig.hostFrameDockerSupported AppleSilicon
+        `shouldBe` Left "host-frame docker is unavailable on apple-silicon; descend into the Linux lift frame first"
+      DockerConfig.hostFrameDockerSupported WindowsCpu
+        `shouldBe` Left "host-frame docker is unavailable on windows-cpu; descend into the Linux lift frame first"
+
+    it "keeps host reconcilers substrate-gated and probe-first" $ do
+      HostEnsure.reconcilerApplies HostEnsure.ensureLima AppleSilicon `shouldBe` True
+      HostEnsure.reconcilerApplies HostEnsure.ensureLima LinuxCpu `shouldBe` False
+      fmap
+        (map HostEnsure.hostReconcileStepLabel)
+        (HostEnsure.hostReconcilerPlan HostEnsure.ensureLima AppleSilicon)
+        `shouldBe` Right ["probe limactl", "install Lima", "verify limactl"]
+      HostEnsure.hostReconcilerPlan HostEnsure.ensureWsl2 AppleSilicon
+        `shouldBe` Left "wsl2 does not apply to AppleSilicon"
+
+  describe "Sprint 4.37 host-provider VM provisioning and Docker lift frame" $ do
+    it "selects the OS-appropriate provider reconciler" $ do
+      HostEnsure.hostReconcilerName (HostEnsure.hostProviderReconciler AppleSilicon) `shouldBe` "lima"
+      HostEnsure.hostReconcilerName (HostEnsure.hostProviderReconciler WindowsCpu) `shouldBe` "wsl2"
+      HostEnsure.hostReconcilerName (HostEnsure.hostProviderReconciler WindowsGpu) `shouldBe` "wsl2"
+      HostEnsure.hostReconcilerName (HostEnsure.hostProviderReconciler LinuxCpu) `shouldBe` "incus"
+      HostEnsure.hostReconcilerName (HostEnsure.hostProviderReconciler LinuxGpu) `shouldBe` "incus"
+
+    it "makes satisfied providers verified no-ops and missing providers install plans" $ do
+      HostEnsure.hostReconcilerDecision
+        HostEnsure.ensureLima
+        AppleSilicon
+        HostEnsure.HostProviderReady
+        `shouldBe` Right HostEnsure.HostReconcileNoop
+      fmap
+        (map HostEnsure.hostReconcileStepLabel)
+        ( case HostEnsure.hostReconcilerDecision
+            HostEnsure.ensureLima
+            AppleSilicon
+            HostEnsure.HostProviderMissing of
+            Right (HostEnsure.HostReconcileApply steps) -> Right steps
+            Right other -> Left ("unexpected decision: " ++ show other)
+            Left err -> Left err
+        )
+        `shouldBe` Right ["probe limactl", "install Lima", "verify limactl"]
+      HostEnsure.hostReconcilerDecision
+        HostEnsure.ensureWsl2
+        WindowsCpu
+        (HostEnsure.HostProviderRequiresReboot "restart Windows to finish WSL2")
+        `shouldBe` Right (HostEnsure.HostReconcileRebootRequired "restart Windows to finish WSL2")
+
+    it "refuses the wrong provider before any host-provisioning action" $
+      HostEnsure.hostReconcilerDecision
+        HostEnsure.ensureWsl2
+        AppleSilicon
+        HostEnsure.HostProviderMissing
+        `shouldBe` Left "wsl2 does not apply to AppleSilicon"
+
+    it "dispatches Docker-inward work through the Linux frame for every OS" $ do
+      let self = SelfRef "/opt/prodbox/prodbox"
+      DockerConfig.dockerLinuxFrameDispatch self LinuxCpu ["cluster", "reconcile"]
+        `shouldBe` HostDispatch "/opt/prodbox/prodbox" ["cluster", "reconcile"]
+      DockerConfig.dockerLinuxFrameDispatch self AppleSilicon ["cluster", "reconcile"]
+        `shouldBe` HostDispatch
+          "limactl"
+          ["shell", "prodbox-ubuntu-2404", "--", "/opt/prodbox/prodbox", "cluster", "reconcile"]
+      DockerConfig.dockerLinuxFrameDispatch self WindowsGpu ["cluster", "reconcile"]
+        `shouldBe` HostDispatch
+          "wsl"
+          ["-d", "prodbox-ubuntu-2404", "--", "/opt/prodbox/prodbox", "cluster", "reconcile"]
+
+  describe "Sprint 1.53 cluster-topology DSL" $ do
+    it "declares the default topology as a single-machine rke2 cluster" $ do
+      ClusterTopology.clusterType (cluster_topology defaultConfigFile)
+        `shouldBe` ClusterTopology.ClusterTypeRke2
+      ClusterTopology.validateClusterTopology (cluster_topology defaultConfigFile)
+        `shouldBe` Right ()
+      ClusterTopology.validateClusterTopology
+        (ClusterTopology.mkRke2Topology (ClusterTopology.defaultMachine :| []))
+        `shouldBe` Right ()
+
+    it "rejects a worker whose substrate does not match its machine" $
+      case ClusterTopology.mkMachineId "linux-a" of
+        Left err -> expectationFailure (ClusterTopology.renderTopologyError err)
+        Right mid ->
+          ClusterTopology.mkMachine
+            mid
+            ClusterSubstrate.LinuxCpu
+            ClusterTopology.ComputeWorker
+              { ClusterTopology.worker_substrate = ClusterSubstrate.AppleMetal
+              , ClusterTopology.manages_all_local_devices = True
+              }
+            `shouldBe` Left
+              ( ClusterTopology.WorkerSubstrateMismatch
+                  ClusterSubstrate.LinuxCpu
+                  ClusterSubstrate.AppleMetal
+              )
+
+    it "admits EKS only for in-cluster worker substrates" $ do
+      fmap ClusterTopology.clusterType (ClusterTopology.mkEksTopology 3 ClusterSubstrate.LinuxCuda)
+        `shouldBe` Right ClusterTopology.ClusterTypeEks
+      ClusterTopology.mkEksTopology 3 ClusterSubstrate.AppleMetal
+        `shouldBe` Left (ClusterTopology.EksHostResidentSubstrate ClusterSubstrate.AppleMetal)
+
+    it "projects placement outcomes by substrate" $ do
+      ClusterPlacement.computeWorkerPlacement ClusterSubstrate.LinuxCpu ClusterTopology.defaultMachine
+        `shouldBe` ClusterPlacement.PlacementAdmitted
+          (ClusterTopology.machine_id ClusterTopology.defaultMachine)
+      ClusterPlacement.computeWorkerPlacement ClusterSubstrate.LinuxCuda ClusterTopology.defaultMachine
+        `shouldBe` ClusterPlacement.PlacementSubstrateMismatch ClusterSubstrate.LinuxCuda ClusterSubstrate.LinuxCpu
+
+    it "exposes the Dhall cluster-topology contract helpers" $ do
+      let expr =
+            Text.pack
+              ( unlines
+                  [ "let Cluster = ./dhall/cluster/Schema.dhall"
+                  , ""
+                  , "let machine ="
+                  , "      { machine_id = \"prodbox-home\""
+                  , "      , machine_substrate = Cluster.WorkerSubstrate.LinuxCpu"
+                  , "      , compute_worker ="
+                  , "          { worker_substrate = Cluster.WorkerSubstrate.LinuxCpu"
+                  , "          , manages_all_local_devices = True"
+                  , "          }"
+                  , "      }"
+                  , ""
+                  , "in  Cluster.contractOK"
+                  , "      (Cluster.ClusterTopology.Rke2 { machines = [ machine ] : List Cluster.Machine })"
+                  ]
+              )
+      Dhall.input Dhall.auto expr `shouldReturn` True
+
+  describe "Sprint 4.38 substrate-typed worker placement and anti-affinity" $ do
+    let machine named substrate =
+          case ClusterTopology.mkMachineId named of
+            Left err -> error (ClusterTopology.renderTopologyError err)
+            Right mid ->
+              case ClusterTopology.mkMachine
+                mid
+                substrate
+                ClusterTopology.ComputeWorker
+                  { ClusterTopology.worker_substrate = substrate
+                  , ClusterTopology.manages_all_local_devices = True
+                  } of
+                Left err -> error (ClusterTopology.renderTopologyError err)
+                Right value -> value
+        linuxCpu = machine "linux-cpu-a" ClusterSubstrate.LinuxCpu
+        linuxCuda = machine "linux-cuda-a" ClusterSubstrate.LinuxCuda
+
+    it "derives one worker per machine with required hostname anti-affinity and maxSurge zero" $
+      ClusterPlacement.workerPlacementPlan (ClusterTopology.mkRke2Topology (linuxCpu :| [linuxCuda]))
+        `shouldBe` Right
+          ( ClusterPlacement.WorkerPlacementPlan
+              { ClusterPlacement.workerPlacementClusterType = ClusterTopology.ClusterTypeRke2
+              , ClusterPlacement.workerPlacementWorkers =
+                  [ ClusterPlacement.WorkerPlacement
+                      { ClusterPlacement.workerPlacementMachineId = ClusterTopology.machine_id linuxCpu
+                      , ClusterPlacement.workerPlacementSubstrate = ClusterSubstrate.LinuxCpu
+                      , ClusterPlacement.workerPlacementAntiAffinity =
+                          ClusterPlacement.ComputeWorkerAntiAffinity
+                            { ClusterPlacement.workerAntiAffinityTopologyKey = "kubernetes.io/hostname"
+                            , ClusterPlacement.workerAntiAffinityMaxWorkersPerMachine = 1
+                            , ClusterPlacement.workerRolloutMaxSurge = 0
+                            , ClusterPlacement.workerRolloutMaxUnavailable = 1
+                            }
+                      }
+                  , ClusterPlacement.WorkerPlacement
+                      { ClusterPlacement.workerPlacementMachineId = ClusterTopology.machine_id linuxCuda
+                      , ClusterPlacement.workerPlacementSubstrate = ClusterSubstrate.LinuxCuda
+                      , ClusterPlacement.workerPlacementAntiAffinity =
+                          ClusterPlacement.computeWorkerAntiAffinity
+                      }
+                  ]
+              }
+          )
+
+    it "admits mixed-substrate placement only for rke2" $ do
+      ClusterPlacement.ensureMixedSubstrateAdmissible
+        ClusterTopology.ClusterTypeRke2
+        [ClusterSubstrate.LinuxCpu, ClusterSubstrate.LinuxCuda]
+        `shouldBe` Right ()
+      ClusterPlacement.ensureMixedSubstrateAdmissible
+        ClusterTopology.ClusterTypeKind
+        [ClusterSubstrate.LinuxCpu, ClusterSubstrate.LinuxCuda]
+        `shouldBe` Left
+          ( ClusterPlacement.WorkerPlacementMixedSubstrateRejected
+              ClusterTopology.ClusterTypeKind
+              [ClusterSubstrate.LinuxCpu, ClusterSubstrate.LinuxCuda]
+          )
+      ClusterPlacement.ensureMixedSubstrateAdmissible
+        ClusterTopology.ClusterTypeEks
+        [ClusterSubstrate.LinuxCpu, ClusterSubstrate.LinuxCuda]
+        `shouldBe` Left
+          ( ClusterPlacement.WorkerPlacementMixedSubstrateRejected
+              ClusterTopology.ClusterTypeEks
+              [ClusterSubstrate.LinuxCpu, ClusterSubstrate.LinuxCuda]
+          )
+
+    it "refuses duplicate machines before rendering anti-affinity" $
+      ClusterPlacement.workerPlacementPlan (ClusterTopology.mkRke2Topology (linuxCpu :| [linuxCpu]))
+        `shouldBe` Left
+          (ClusterPlacement.WorkerPlacementDuplicateMachine (ClusterTopology.machine_id linuxCpu))
+
+    it "refuses a worker whose substrate does not match its machine" $
+      case ClusterTopology.mkMachineId "bad-worker" of
+        Left err -> expectationFailure (ClusterTopology.renderTopologyError err)
+        Right mid ->
+          let badMachine =
+                ClusterTopology.defaultMachine
+                  { ClusterTopology.machine_id = mid
+                  , ClusterTopology.machine_substrate = ClusterSubstrate.LinuxCpu
+                  , ClusterTopology.compute_worker =
+                      ClusterTopology.ComputeWorker
+                        { ClusterTopology.worker_substrate = ClusterSubstrate.LinuxCuda
+                        , ClusterTopology.manages_all_local_devices = True
+                        }
+                  }
+           in ClusterPlacement.workerPlacementPlan (ClusterTopology.mkRke2Topology (badMachine :| []))
+                `shouldBe` Left
+                  ( ClusterPlacement.WorkerPlacementWorkerSubstrateMismatch
+                      mid
+                      ClusterSubstrate.LinuxCuda
+                      ClusterSubstrate.LinuxCpu
+                  )
+
+  describe "Sprint 1.54 test-topology schema and preflight" $ do
+    it "decodes an executable-sibling prodbox.test.dhall through the Settings loader" $
+      withSystemTempDirectory "prodbox-test-topology" $ \tmpDir -> do
+        repoRoot <- getCurrentDirectory
+        let topologyPath = tmpDir </> "prodbox.test.dhall"
+        writeFile topologyPath (testTopologyDhallDocument repoRoot)
+        result <- loadTestTopologyAtPath topologyPath
+        case result of
+          Left err -> expectationFailure err
+          Right topology -> do
+            topologyFixtures topology `shouldBe` [FixtureAwsAdminForTestSimulation]
+            case topologySuites topology of
+              [suite] -> do
+                suiteName suite `shouldBe` "ha-rke2-aws"
+                suiteFixtures suite `shouldBe` [FixtureAwsAdminForTestSimulation]
+                case suiteVariants suite of
+                  [variant] -> variantFailover variant `shouldBe` Just FailoverLeaderKill
+                  _ -> expectationFailure "expected exactly one decoded test variant"
+              _ -> expectationFailure "expected exactly one decoded test suite"
+
+    it "rejects a variant whose replica count exceeds its suite budget" $ do
+      case topologySuites defaultTestTopology of
+        [suite] ->
+          case suiteVariants suite of
+            [variant] -> do
+              let invalid =
+                    defaultTestTopology
+                      { topologySuites =
+                          [ suite
+                              { suiteBudget = (suiteBudget suite) {budgetMaxNodes = 1}
+                              , suiteVariants = [variant {variantReplicas = 2}]
+                              }
+                          ]
+                      }
+              validateTestTopology invalid
+                `shouldBe` Left (TestVariantReplicasExceedBudget "unit" 2 1)
+            _ -> expectationFailure "defaultTestTopology should have exactly one variant"
+        _ -> expectationFailure "defaultTestTopology should have exactly one suite"
+
+    it "exposes the Dhall test-topology contract helpers" $ do
+      let expr =
+            Text.pack
+              ( unlines
+                  [ "let TestTopology = ./dhall/TestTopologySchema.dhall"
+                  , ""
+                  , "in  TestTopology.contractOK"
+                  , "      { suites ="
+                  , "          [ { name = \"unit\""
+                  , "            , variants ="
+                  , "                [ { cluster ="
+                  , "                      TestTopology.Cluster.ClusterTopology.Rke2"
+                  , "                        { machines ="
+                  , "                            [ { machine_id = \"prodbox-home\""
+                  , "                              , machine_substrate = TestTopology.Cluster.WorkerSubstrate.LinuxCpu"
+                  , "                              , compute_worker ="
+                  , "                                  { worker_substrate = TestTopology.Cluster.WorkerSubstrate.LinuxCpu"
+                  , "                                  , manages_all_local_devices = True"
+                  , "                                  }"
+                  , "                              }"
+                  , "                            ] : List TestTopology.Cluster.Machine"
+                  , "                        }"
+                  , "                  , replicas = 1"
+                  , "                  , failover = None TestTopology.FailoverScenario"
+                  , "                  }"
+                  , "                ] : List TestTopology.RunVariant"
+                  , "            , budget = { max_nodes = 1, wall_clock_seconds = 1800 }"
+                  , "            , fixtures = [] : List TestTopology.FixtureId"
+                  , "            }"
+                  , "          ] : List TestTopology.Suite"
+                  , "      , fixtures = [] : List TestTopology.FixtureId"
+                  , "      }"
+                  ]
+              )
+      Dhall.input Dhall.auto expr `shouldReturn` True
+
+    it "refuses the test preflight when production prodbox.dhall is present" $ do
+      let productionPath = "/tmp/prodbox.dhall"
+      testProductionConfigGate productionPath False `shouldBe` TestGateClear
+      testProductionConfigGate productionPath True
+        `shouldBe` TestGateRefuse (ProductionConfigPresent productionPath)
+      testTopologyModeGate productionPath False True `shouldBe` TestGateClear
+      testTopologyModeGate productionPath True False `shouldBe` TestGateClear
+      testTopologyModeGate productionPath True True
+        `shouldBe` TestGateRefuse (ProductionConfigPresent productionPath)
+      renderTestRefusal (ProductionConfigPresent productionPath)
+        `shouldContain` "production binary-sibling config exists"
+
+    it "checks the preflight through the path-injected filesystem seam" $
+      withSystemTempDirectory "prodbox-test-preflight" $ \tmpDir -> do
+        let productionPath = tmpDir </> "prodbox.dhall"
+            testTopologyPath = tmpDir </> "prodbox.test.dhall"
+        testModePreflightAtPath productionPath `shouldReturn` TestGateClear
+        testModePreflightAtPaths productionPath testTopologyPath `shouldReturn` TestGateClear
+        writeFile productionPath "production config placeholder"
+        testModePreflightAtPath productionPath
+          `shouldReturn` TestGateRefuse (ProductionConfigPresent productionPath)
+        testModePreflightAtPaths productionPath testTopologyPath `shouldReturn` TestGateClear
+        writeFile testTopologyPath "test topology placeholder"
+        testModePreflightAtPaths productionPath testTopologyPath
+          `shouldReturn` TestGateRefuse (ProductionConfigPresent productionPath)
+
+    it "Sprint 5.11 renders the default prodbox.test.dhall from the Haskell topology SSoT" $
+      withSystemTempDirectory "prodbox-test-init-render" $ \tmpDir -> do
+        repoRoot <- getCurrentDirectory
+        let topologyPath = tmpDir </> "prodbox.test.dhall"
+        writeFile
+          topologyPath
+          (renderTestTopologyDhall (repoRoot </> "dhall" </> "TestTopologySchema.dhall") defaultTestTopology)
+        loadTestTopologyAtPath topologyPath `shouldReturn` Right defaultTestTopology
+
+    it "Sprint 5.11 generates per-variant run config with a .test-data manual PV root" $
+      withSystemTempDirectory "prodbox-test-topology-config" $ \repoRoot -> do
+        let testDataRoot = repoRoot </> ".test-data" </> "unit" </> "variant-1"
+            generatedConfig = topologyRunConfig testDataRoot
+        manual_pv_host_root (storage generatedConfig) `shouldBe` Text.pack testDataRoot
+        renderConfigDhall generatedConfig `shouldContain` testDataRoot
+        renderConfigDhall generatedConfig `shouldNotContain` ".data/prodbox"
+
+    it "Sprint 5.11 passes the test data root and coverage flags through the variant environment" $ do
+      let environment =
+            topologyVariantEnvironment
+              "/repo/.test-data/unit/variant-1"
+              (CoverageFlags True (Just 80))
+              [("PATH", "/bin"), (testManualPvHostRootEnv, "old-root")]
+      lookup testManualPvHostRootEnv environment `shouldBe` Just "/repo/.test-data/unit/variant-1"
+      lookup "PRODBOX_TEST_COVERAGE" environment `shouldBe` Just "1"
+      lookup "PRODBOX_TEST_COVERAGE_FAIL_UNDER" environment `shouldBe` Just "80"
+      length (filter ((== testManualPvHostRootEnv) . fst) environment) `shouldBe` 1
+
+    it "Sprint 5.11 repoints the sealed-Vault host audit root under the test data override" $
+      withSystemTempDirectory "prodbox-sealed-vault-test-root" $ \repoRoot -> do
+        let testRoot = repoRoot </> ".test-data" </> "sealed-vault" </> "variant-1"
+            restoreEnv original =
+              case original of
+                Nothing -> unsetEnv testManualPvHostRootEnv
+                Just value -> setEnv testManualPvHostRootEnv value
+        original <- lookupEnv testManualPvHostRootEnv
+        ( do
+            unsetEnv testManualPvHostRootEnv
+            sealedVaultHostDiskRoot repoRoot
+              `shouldReturn` (repoRoot </> ".data" </> "prodbox" </> "minio" </> "0")
+            setEnv testManualPvHostRootEnv testRoot
+            sealedVaultHostDiskRoot repoRoot
+              `shouldReturn` (testRoot </> "prodbox" </> "minio" </> "0")
+          )
+          `finally` restoreEnv original
+
+    it "Sprint 5.11 maps authored suite names onto supported test scopes" $ do
+      testScopeForTopologySuite "unit" `shouldBe` Right TestUnit
+      testScopeForTopologySuite "ha-rke2-aws"
+        `shouldBe` Right (TestIntegration IntegrationHaRke2Aws)
+      testScopeForTopologySuite "eks-volume-rebind"
+        `shouldBe` Right (TestIntegration IntegrationEksVolumeRebind)
+      testScopeForTopologySuite "unknown"
+        `shouldBe` Left "test topology suite `unknown` is not mapped to a supported test scope"
+
+    it "Sprint 5.11 refuses topology commands when a production cluster is running" $
+      testProductionClusterGate True
+        `shouldBe` TestGateRefuse
+          ( ProductionClusterRunning
+              ClusterEvidence
+                { clusterEvidenceDescription = "RKE2 install marker present"
+                }
+          )
+
+    it "Sprint 5.11 guardTestDelete admits only generated config, .test-data, and PerRun residue" $
+      withSystemTempDirectory "prodbox-test-delete-guard" $ \repoRoot -> do
+        let generated = DeleteGeneratedRunConfig (repoRoot </> ".build" </> "prodbox.dhall")
+            escapedGenerated = DeleteGeneratedRunConfig (repoRoot </> ".data" </> "prodbox.dhall")
+            testData = DeleteThisRunTestData (repoRoot </> ".test-data" </> "unit" </> "variant-1")
+            escapedData = DeleteThisRunTestData (repoRoot </> ".test-data" </> ".." </> ".data")
+        guardTestDelete repoRoot generated `shouldBe` Right generated
+        guardTestDelete repoRoot escapedGenerated
+          `shouldBe` Left (TestDeleteOutsideTestData (repoRoot </> ".data" </> "prodbox.dhall"))
+        guardTestDelete repoRoot testData `shouldBe` Right testData
+        guardTestDelete repoRoot escapedData
+          `shouldBe` Left (TestDeleteOutsideTestData (repoRoot </> ".test-data" </> ".." </> ".data"))
+        guardTestDelete repoRoot (DeletePerRunResidue "aws-eks")
+          `shouldBe` Right (DeletePerRunResidue "aws-eks")
+        guardTestDelete repoRoot (DeletePerRunResidue "aws-ses")
+          `shouldBe` Left (TestDeleteLongLivedResource "aws-ses")
+
   describe "Sprint 7.8 operational-resource registry" $ do
     let sampleCreds =
           Credentials
@@ -7647,14 +8434,18 @@ main = mainWithSuite "prodbox-unit" $ do
       ("confirm-MinIO → drain" `isInfixOf` cascadeOrderNarration) `shouldBe` True
 
     it "narration places uninstall between per-run destroys and sweep" $
-      ("per-run destroys → uninstall → sweep" `isInfixOf` cascadeOrderNarration) `shouldBe` True
+      ("per-run destroys → test-EBS reaper → uninstall → sweep" `isInfixOf` cascadeOrderNarration)
+        `shouldBe` True
+
+    it "narration places the test-EBS reaper after per-run destroys" $
+      ("per-run destroys → test-EBS reaper" `isInfixOf` cascadeOrderNarration) `shouldBe` True
 
     it "narration does NOT list the pre-Sprint-4.17.a inverted order" $
       ("per-run destroys → drain" `isInfixOf` cascadeOrderNarration) `shouldBe` False
 
     it "narration is the full canonical cascade phrase" $
       cascadeOrderNarration
-        `shouldBe` "rke2 delete --cascade: confirm-MinIO → drain → per-run destroys → uninstall → sweep"
+        `shouldBe` "rke2 delete --cascade: confirm-MinIO → drain → per-run destroys → test-EBS reaper → uninstall → sweep"
 
   describe "Sprint 4.17.b cascade substrate inference" $ do
     it "all-absent residue → SubstrateHomeLocal (drain targets local cluster)" $
@@ -8172,6 +8963,7 @@ main = mainWithSuite "prodbox-unit" $ do
               , ("aws_lb_controller_policy_arn", "arn:aws:iam::123:policy/lbc")
               , ("aws_lb_controller_role_arn", "arn:aws:iam::123:role/lbc")
               , ("aws_lb_controller_role_name", "prodbox-lbc-role")
+              , ("retained_ebs_availability_zone", "us-east-1a")
               ]
       case AwsEks.parseAwsEksTestStackFromOutputs outputs of
         Left err -> expectationFailure ("expected Right, got Left: " ++ err)
@@ -8182,6 +8974,7 @@ main = mainWithSuite "prodbox-unit" $ do
           AwsEks.eksSnapshotSubnetIds snapshot `shouldBe` ["subnet-aaa", "subnet-bbb"]
           AwsEks.eksSnapshotAwsLbControllerRoleArn snapshot
             `shouldBe` "arn:aws:iam::123:role/lbc"
+          AwsEks.eksSnapshotRetainedEbsAvailabilityZone snapshot `shouldBe` "us-east-1a"
 
     it "parseAwsEksTestStackFromOutputs fails when a required scalar is missing" $ do
       let outputs = Map.fromList [("cluster_name", "x")]
@@ -8205,6 +8998,7 @@ main = mainWithSuite "prodbox-unit" $ do
               , ("aws_lb_controller_policy_arn", "policy")
               , ("aws_lb_controller_role_arn", "role-arn")
               , ("aws_lb_controller_role_name", "role-name")
+              , ("retained_ebs_availability_zone", "us-east-1a")
               ]
       case AwsEks.parseAwsEksTestStackFromOutputs outputs of
         Left err -> err `shouldContain` "subnet_ids"
@@ -8309,6 +9103,318 @@ main = mainWithSuite "prodbox-unit" $ do
       TagSweep.tagSweepClusterName input `shouldBe` Just "aws-eks-test-cluster"
       TagSweep.tagSweepWorkingDirectory input `shouldBe` Just "/tmp/work"
 
+  describe "Sprint 7.29 EKS VPC ownership hardening" $ do
+    it "tags every VPC-scoped aws-eks Pulumi resource with prodbox ownership" $ do
+      repoRoot <- getCurrentDirectory
+      eksProgram <- readFile (repoRoot </> "pulumi" </> "aws-eks" </> "Main.yaml")
+      mapM_
+        (eksProgram `shouldContain`)
+        [ unlines
+            [ "  vpc:"
+            , "    type: aws:ec2:Vpc"
+            , "    properties:"
+            , "      cidrBlock: \"10.91.0.0/16\""
+            , "      enableDnsHostnames: true"
+            , "      enableDnsSupport: true"
+            , "      tags:"
+            , "        Name: ${stackName}-vpc"
+            , "        prodbox.io/managed-by: prodbox"
+            ]
+        , unlines
+            [ "  igw:"
+            , "    type: aws:ec2:InternetGateway"
+            , "    properties:"
+            , "      vpcId: ${vpc.id}"
+            , "      tags:"
+            , "        Name: ${stackName}-igw"
+            , "        prodbox.io/managed-by: prodbox"
+            ]
+        , unlines
+            [ "  publicRouteTable:"
+            , "    type: aws:ec2:RouteTable"
+            , "    properties:"
+            , "      vpcId: ${vpc.id}"
+            , "      routes:"
+            , "        - cidrBlock: \"0.0.0.0/0\""
+            , "          gatewayId: ${igw.id}"
+            , "      tags:"
+            , "        Name: ${stackName}-public-rt"
+            , "        prodbox.io/managed-by: prodbox"
+            ]
+        , unlines
+            [ "  publicSubnet0:"
+            , "    type: aws:ec2:Subnet"
+            , "    properties:"
+            , "      vpcId: ${vpc.id}"
+            , "      cidrBlock: \"10.91.0.0/24\""
+            , "      availabilityZone: ${availabilityZones[0]}"
+            , "      mapPublicIpOnLaunch: true"
+            , "      tags:"
+            , "        Name: ${stackName}-public-subnet-0"
+            , "        prodbox.io/managed-by: prodbox"
+            , "        kubernetes.io/cluster/${clusterName}: shared"
+            , "        kubernetes.io/role/elb: \"1\""
+            ]
+        , unlines
+            [ "  publicSubnet1:"
+            , "    type: aws:ec2:Subnet"
+            , "    properties:"
+            , "      vpcId: ${vpc.id}"
+            , "      cidrBlock: \"10.91.1.0/24\""
+            , "      availabilityZone: ${availabilityZones[1]}"
+            , "      mapPublicIpOnLaunch: true"
+            , "      tags:"
+            , "        Name: ${stackName}-public-subnet-1"
+            , "        prodbox.io/managed-by: prodbox"
+            , "        kubernetes.io/cluster/${clusterName}: shared"
+            , "        kubernetes.io/role/elb: \"1\""
+            ]
+        ]
+
+    it "classifies escaped VPC-scoped tag rows as postflight residue" $ do
+      let rows =
+            [ TagSweep.TaggedResource
+                arn
+                TagSweep.prodboxManagedByTagKey
+                TagSweep.prodboxManagedByTagValue
+            | arn <-
+                [ "arn:aws:ec2:us-east-1:123:vpc/vpc-xyz"
+                , "arn:aws:ec2:us-east-1:123:internet-gateway/igw-xyz"
+                , "arn:aws:ec2:us-east-1:123:route-table/rtb-xyz"
+                , "arn:aws:ec2:us-east-1:123:subnet/subnet-xyz"
+                ]
+            ]
+          (retained, escaped) = TagSweep.partitionRetainedLongLived rows
+          rendered = TagSweep.renderTagSweepRefusal escaped
+      retained `shouldBe` []
+      escaped `shouldBe` rows
+      rendered `shouldContain` "vpc/vpc-xyz"
+      rendered `shouldContain` "internet-gateway/igw-xyz"
+      rendered `shouldContain` "route-table/rtb-xyz"
+      rendered `shouldContain` "subnet/subnet-xyz"
+
+  describe "Sprint 4.39 pre-created EBS volume lifecycle resource" $ do
+    it "registers EBS volumes as a LongLived managed resource class" $
+      ResourceClass.resourceNamesOfClass ResourceClass.LongLived
+        `shouldContain` [EbsVolume.ebsManagedResourceName]
+
+    it "projects deterministic retained PV/PVC inventory with substrate-specific MinIO capacity" $ do
+      let expectedMinioHome =
+            RetainedStorageInventoryEntry
+              { retainedStorageInventoryNamespace = "prodbox"
+              , retainedStorageInventoryStatefulSet = "minio"
+              , retainedStorageInventoryOrdinal = 0
+              , retainedStorageInventoryPersistentVolume =
+                  retainedStatefulSetPersistentVolumeName "prodbox" "minio" 0
+              , retainedStorageInventoryPersistentClaim =
+                  retainedStatefulSetPersistentVolumeClaimName "minio" 0
+              , retainedStorageInventoryStorageSize = "200Gi"
+              }
+          expectedVault =
+            RetainedStorageInventoryEntry
+              { retainedStorageInventoryNamespace = "vault"
+              , retainedStorageInventoryStatefulSet = "vault"
+              , retainedStorageInventoryOrdinal = 0
+              , retainedStorageInventoryPersistentVolume =
+                  retainedStatefulSetPersistentVolumeName "vault" "vault" 0
+              , retainedStorageInventoryPersistentClaim =
+                  retainedStatefulSetPersistentVolumeClaimName "vault" 0
+              , retainedStorageInventoryStorageSize = "1Gi"
+              }
+          expectedHome = [expectedMinioHome, expectedVault]
+          expectedAws =
+            [ expectedMinioHome {retainedStorageInventoryStorageSize = "20Gi"}
+            , expectedVault
+            ]
+      retainedStorageInventoryEntries SubstrateHomeLocal `shouldBe` expectedHome
+      retainedStorageInventoryEntries SubstrateAws `shouldBe` expectedAws
+
+    it "builds retained-production describe-volumes filters from the lifecycle tags" $
+      EbsVolume.ebsDescribeVolumesArgs EbsVolume.EbsRetainedProduction
+        `shouldBe` [ "ec2"
+                   , "describe-volumes"
+                   , "--output"
+                   , "json"
+                   , "--filters"
+                   , "Name=tag:prodbox.io/managed-by,Values=prodbox"
+                   , "Name=tag:prodbox.io/lifecycle,Values=retained-ebs"
+                   ]
+
+    it "builds test-scoped describe-volumes filters with the EKS ownership tag" $
+      EbsVolume.ebsDescribeVolumesArgs (EbsVolume.EbsPerRunTest "aws-eks-test-cluster")
+        `shouldBe` [ "ec2"
+                   , "describe-volumes"
+                   , "--output"
+                   , "json"
+                   , "--filters"
+                   , "Name=tag:prodbox.io/managed-by,Values=prodbox"
+                   , "Name=tag:prodbox.io/lifecycle,Values=per-run-test"
+                   , "--filters"
+                   , "Name=tag:kubernetes.io/cluster/aws-eks-test-cluster,Values=owned"
+                   ]
+
+    it "parses ec2 describe-volumes JSON into typed volume ids and states" $
+      EbsVolume.parseDescribeVolumesPayload
+        "{\"Volumes\":[{\"VolumeId\":\"vol-0123\",\"State\":\"available\",\"AvailabilityZone\":\"us-east-1a\",\"Tags\":[{\"Key\":\"prodbox.io/persistent-volume\",\"Value\":\"pv-a\"}]},{\"VolumeId\":\"vol-0456\",\"State\":\"in-use\"}]}"
+        `shouldBe` Right
+          [ EbsVolume.EbsVolume
+              { EbsVolume.ebsVolumeId = EbsVolume.EbsVolumeId "vol-0123"
+              , EbsVolume.ebsVolumeState = "available"
+              , EbsVolume.ebsVolumeAvailabilityZone = Just "us-east-1a"
+              , EbsVolume.ebsVolumeTags = [("prodbox.io/persistent-volume", "pv-a")]
+              }
+          , EbsVolume.EbsVolume
+              { EbsVolume.ebsVolumeId = EbsVolume.EbsVolumeId "vol-0456"
+              , EbsVolume.ebsVolumeState = "in-use"
+              , EbsVolume.ebsVolumeAvailabilityZone = Nothing
+              , EbsVolume.ebsVolumeTags = []
+              }
+          ]
+
+    it "fails clearly when describe-volumes entries omit the volume id" $
+      EbsVolume.parseDescribeVolumesPayload "{\"Volumes\":[{\"State\":\"available\"}]}"
+        `shouldBe` Left "ec2 describe-volumes entry missing `VolumeId`"
+
+    it "maps EBS discover results to the typed residue status gate" $ do
+      EbsVolume.ebsDiscoverResultToResidue (Right [])
+        `shouldBe` Residue.ResidueAbsent
+      EbsVolume.ebsDiscoverResultToResidue
+        ( Right
+            [ EbsVolume.EbsVolume
+                { EbsVolume.ebsVolumeId = EbsVolume.EbsVolumeId "vol-0123"
+                , EbsVolume.ebsVolumeState = "available"
+                , EbsVolume.ebsVolumeAvailabilityZone = Just "us-east-1a"
+                , EbsVolume.ebsVolumeTags = []
+                }
+            ]
+        )
+        `shouldBe` Residue.ResiduePresent
+          Residue.ResidueDetails
+            { Residue.residueEvidence = "ec2:describe-volumes matched EBS volume(s): vol-0123"
+            , Residue.residueStackName = EbsVolume.ebsManagedResourceName
+            }
+      EbsVolume.ebsDiscoverResultToResidue (Left "access denied")
+        `shouldBe` Residue.ResidueUnreachable (Residue.ResidueQueryFailed "access denied")
+
+    it "builds the typed delete-volume command for one EBS volume id" $
+      EbsVolume.ebsDeleteVolumeArgs (EbsVolume.EbsVolumeId "vol-0123")
+        `shouldBe` ["ec2", "delete-volume", "--volume-id", "vol-0123"]
+
+    it "builds tagged retained create-volume commands for static PV inventory" $ do
+      let required =
+            EbsVolume.EbsRequiredVolume
+              { EbsVolume.ebsRequiredPersistentVolumeName = "prodbox-retained-vscode-vscode-0"
+              , EbsVolume.ebsRequiredSizeGiB = 50
+              , EbsVolume.ebsRequiredAvailabilityZone = "us-east-1a"
+              }
+          args = EbsVolume.ebsCreateVolumeArgs required
+      args `shouldContain` ["--availability-zone", "us-east-1a"]
+      args `shouldContain` ["--size", "50"]
+      args `shouldContain` ["--volume-type", "gp3"]
+      unwords args `shouldContain` "Key=prodbox.io/lifecycle,Value=retained-ebs"
+      unwords args
+        `shouldContain` "Key=prodbox.io/persistent-volume,Value=prodbox-retained-vscode-vscode-0"
+
+    it "maps retained EBS volume tags to static CSI volume bindings" $ do
+      let required =
+            [ EbsVolume.EbsRequiredVolume
+                { EbsVolume.ebsRequiredPersistentVolumeName = "prodbox-retained-vscode-vscode-0"
+                , EbsVolume.ebsRequiredSizeGiB = 50
+                , EbsVolume.ebsRequiredAvailabilityZone = "us-east-1a"
+                }
+            ]
+          discovered =
+            [ EbsVolume.EbsVolume
+                { EbsVolume.ebsVolumeId = EbsVolume.EbsVolumeId "vol-0123"
+                , EbsVolume.ebsVolumeState = "available"
+                , EbsVolume.ebsVolumeAvailabilityZone = Just "us-east-1a"
+                , EbsVolume.ebsVolumeTags =
+                    [ (EbsVolume.ebsPersistentVolumeTagKey, "prodbox-retained-vscode-vscode-0")
+                    ]
+                }
+            ]
+      EbsVolume.retainedEbsVolumeBindingsFromDiscovered required discovered
+        `shouldBe` Right
+          [ StaticEbsVolumeBinding
+              { staticEbsVolumeBindingPersistentVolumeName = "prodbox-retained-vscode-vscode-0"
+              , staticEbsVolumeBindingVolumeHandle = "vol-0123"
+              , staticEbsVolumeBindingAvailabilityZone = "us-east-1a"
+              }
+          ]
+
+    it "parses Gi storage quantities for retained EBS create plans" $ do
+      EbsVolume.parseStorageSizeGiB "20Gi" `shouldBe` Right 20
+      EbsVolume.parseStorageSizeGiB "50GiB" `shouldBe` Right 50
+      EbsVolume.parseStorageSizeGiB "20Mi" `shouldSatisfy` isLeft
+
+    it "carves retained-production EBS volumes out of cascade tag-sweep failures" $ do
+      let rows =
+            [ TagSweep.TaggedResource
+                "arn:aws:ec2:us-east-1:123:volume/vol-0123"
+                "prodbox.io/managed-by"
+                "prodbox"
+            , TagSweep.TaggedResource
+                "arn:aws:ec2:us-east-1:123:volume/vol-0123"
+                "prodbox.io/lifecycle"
+                "retained-ebs"
+            ]
+          (retained, escaped) = TagSweep.partitionRetainedLongLived rows
+      escaped `shouldBe` []
+      retained `shouldBe` rows
+
+    it "partitions test-scoped EBS rows only when the cluster ownership tag is present" $ do
+      let ownedArn = "arn:aws:ec2:us-east-1:123:volume/vol-owned"
+          missingOwnerArn = "arn:aws:ec2:us-east-1:123:volume/vol-missing-owner"
+          rows =
+            [ TagSweep.TaggedResource ownedArn "prodbox.io/lifecycle" "per-run-test"
+            , TagSweep.TaggedResource ownedArn "kubernetes.io/cluster/aws-eks-test-cluster" "owned"
+            , TagSweep.TaggedResource missingOwnerArn "prodbox.io/lifecycle" "per-run-test"
+            ]
+          partition = TagSweep.partitionEbsTagRows "aws-eks-test-cluster" rows
+      map TagSweep.taggedResourceArn (TagSweep.retainedEbsTagRows partition) `shouldBe` []
+      map TagSweep.taggedResourceArn (TagSweep.testScopedEbsTagRows partition)
+        `shouldBe` [ownedArn, ownedArn]
+      map TagSweep.taggedResourceArn (TagSweep.otherEbsTagRows partition)
+        `shouldBe` [missingOwnerArn]
+
+  describe "Sprint 4.40 test-scoped EBS reaper" $ do
+    it "selects only test-scoped EBS volumes and never retained-production volumes" $ do
+      let retainedArn = "arn:aws:ec2:us-east-1:123:volume/vol-retained"
+          testArn = "arn:aws:ec2:us-east-1:123:volume/vol-test"
+          rows =
+            [ TagSweep.TaggedResource retainedArn "prodbox.io/lifecycle" "retained-ebs"
+            , TagSweep.TaggedResource retainedArn "prodbox.io/lifecycle" "per-run-test"
+            , TagSweep.TaggedResource retainedArn "kubernetes.io/cluster/aws-eks-test-cluster" "owned"
+            , TagSweep.TaggedResource testArn "prodbox.io/lifecycle" "per-run-test"
+            , TagSweep.TaggedResource testArn "kubernetes.io/cluster/aws-eks-test-cluster" "owned"
+            ]
+      EbsVolume.testScopedEbsVolumeIdsFromTagRows "aws-eks-test-cluster" rows
+        `shouldBe` [EbsVolume.EbsVolumeId "vol-test"]
+
+    it "builds an idempotent no-op plan when no test-scoped volumes are discovered" $ do
+      let plan = EbsVolume.testScopedEbsReaperPlan "aws-eks-test-cluster" []
+          report =
+            EbsVolume.TestEbsReaperReport
+              { EbsVolume.testEbsReaperMatchedVolumeIds = EbsVolume.testEbsReaperVolumeIds plan
+              , EbsVolume.testEbsReaperDeletedVolumeIds = []
+              }
+      EbsVolume.testEbsReaperScope plan
+        `shouldBe` EbsVolume.EbsPerRunTest "aws-eks-test-cluster"
+      EbsVolume.testEbsReaperVolumeIds plan `shouldBe` []
+      EbsVolume.renderTestScopedEbsReaperReport report
+        `shouldBe` "Test-scoped EBS reaper: clean (no test-scoped EBS volumes matched)."
+
+    it "renders deleted test-scoped volume ids in the reaper report" $ do
+      let report =
+            EbsVolume.TestEbsReaperReport
+              { EbsVolume.testEbsReaperMatchedVolumeIds =
+                  [EbsVolume.EbsVolumeId "vol-a", EbsVolume.EbsVolumeId "vol-b"]
+              , EbsVolume.testEbsReaperDeletedVolumeIds =
+                  [EbsVolume.EbsVolumeId "vol-a", EbsVolume.EbsVolumeId "vol-b"]
+              }
+      EbsVolume.renderTestScopedEbsReaperReport report
+        `shouldContain` "vol-a, vol-b"
+
   describe "Sprint 3.19 Patroni Vault/pg_authid mismatch loud-failure decision" $ do
     it "proceeds when the Vault-backed password authenticates against pg_authid" $
       patroniSeedMismatchDecision "vscode" "keycloak" PatroniAuthMatches
@@ -8378,7 +9484,7 @@ main = mainWithSuite "prodbox-unit" $ do
               "node-a"
               eventTypeHeartbeat
               "2026-04-06T10:00:00Z"
-              "{}"
+              (cborPayloadFromJsonValue (object []))
               "wrong-key"
           eventKeys = Map.fromList [("node-a", "fake-key")]
           batch = PeerEventBatch [badEvent] 1
@@ -8423,20 +9529,22 @@ main = mainWithSuite "prodbox-unit" $ do
     it "parses an inbound peer push request body" $ do
       let event = signedEventStub "node-a" eventTypeHeartbeat "2026-04-06T10:00:00Z"
           batch = PeerEventBatch [event] 7
-          bodyBytes = BL8.unpack (encodeJsonValue (encodePeerEventBatch batch))
+          bodyBytes = BL.toStrict (encodePeerEventBatch batch)
           request =
-            BL8.pack
-              ( "POST /v1/peer/events HTTP/1.1\r\n"
-                  ++ "Host: example.test:8444\r\n"
-                  ++ "Content-Type: application/json\r\n"
-                  ++ "Content-Length: "
-                  ++ show (length bodyBytes)
-                  ++ "\r\n"
-                  ++ "Connection: close\r\n"
-                  ++ "\r\n"
-                  ++ bodyBytes
-              )
-      case parsePeerHttpRequest (BL8.toStrict request) of
+            BS.concat
+              [ BS8.pack
+                  ( "POST /v1/peer/events HTTP/1.1\r\n"
+                      ++ "Host: example.test:8444\r\n"
+                      ++ "Content-Type: application/cbor\r\n"
+                      ++ "Content-Length: "
+                      ++ show (BS.length bodyBytes)
+                      ++ "\r\n"
+                      ++ "Connection: close\r\n"
+                      ++ "\r\n"
+                  )
+              , bodyBytes
+              ]
+      case parsePeerHttpRequest request of
         Left err -> expectationFailure err
         Right (PeerPushEvents parsed) -> do
           peerEventBatchSenderOrdersVersionUtc parsed `shouldBe` 7
@@ -9068,6 +10176,7 @@ main = mainWithSuite "prodbox-unit" $ do
                      , "ensureAwsSubstrateAcmeRuntime"
                      , "ensureAwsSubstrateVaultRuntime"
                      , "applyEksContainerdMirrorDaemonSet"
+                     , "ensureAwsSubstrateRetainedStorage"
                      , "ensureMinioRuntime SubstrateAws MinioBootstrapPublic"
                      , "ensureHarborRegistryStorageBackend"
                      , "ensureHarborRegistryRuntime SubstrateAws"
@@ -9081,18 +10190,26 @@ main = mainWithSuite "prodbox-unit" $ do
                      ]
       it "places Vault before the AWS storage and registry bootstrap layer" $ do
         let vaultIndex = elemIndex "ensureAwsSubstrateVaultRuntime" steps
+            retainedStorageIndex = elemIndex "ensureAwsSubstrateRetainedStorage" steps
             minioIndex = elemIndex "ensureMinioRuntime SubstrateAws MinioBootstrapPublic" steps
             harborIndex = elemIndex "ensureHarborRegistryRuntime SubstrateAws" steps
+        vaultIndex `shouldSatisfy` (`indexPrecedes` retainedStorageIndex)
         vaultIndex `shouldSatisfy` (`indexPrecedes` minioIndex)
         vaultIndex `shouldSatisfy` (`indexPrecedes` harborIndex)
       it
         "places the containerd mirror DaemonSet apply before any MinIO or Harbor install (so 127.0.0.1:30080 routes are live)"
         $ do
           let mirrorIndex = elemIndex "applyEksContainerdMirrorDaemonSet" steps
+              retainedStorageIndex = elemIndex "ensureAwsSubstrateRetainedStorage" steps
               minioIndex = elemIndex "ensureMinioRuntime SubstrateAws MinioBootstrapPublic" steps
               harborIndex = elemIndex "ensureHarborRegistryRuntime SubstrateAws" steps
+          mirrorIndex `shouldSatisfy` (`indexPrecedes` retainedStorageIndex)
           mirrorIndex `shouldSatisfy` (`indexPrecedes` minioIndex)
           mirrorIndex `shouldSatisfy` (`indexPrecedes` harborIndex)
+      it "places retained EBS PV reconciliation before AWS MinIO bootstrap" $ do
+        let retainedStorageIndex = elemIndex "ensureAwsSubstrateRetainedStorage" steps
+            minioIndex = elemIndex "ensureMinioRuntime SubstrateAws MinioBootstrapPublic" steps
+        retainedStorageIndex `shouldSatisfy` (`indexPrecedes` minioIndex)
       it "places MinIO bootstrap before Harbor storage backend (Harbor's S3 lives in MinIO)" $ do
         let minioIndex = elemIndex "ensureMinioRuntime SubstrateAws MinioBootstrapPublic" steps
             backendIndex = elemIndex "ensureHarborRegistryStorageBackend" steps
@@ -9212,12 +10329,12 @@ main = mainWithSuite "prodbox-unit" $ do
       -- bootstrap, and never the Harbor-mirrored registry.
       steadyArgs `shouldBe` bootstrapArgs
       any ("image.repository=127.0.0.1:30080" `isPrefixOf`) steadyArgs `shouldBe` False
-    it "AWS substrate: dynamic gp2 EBS class + 20Gi, always the public image (never Harbor)" $ do
+    it "AWS substrate: manual retained EBS class + 20Gi, always the public image (never Harbor)" $ do
       let bootstrapArgs = renderMinioChartArgs SubstrateAws MinioBootstrapPublic
           steadyArgs = renderMinioChartArgs SubstrateAws MinioSteadyStateHarbor
-      consecutivePair bootstrapArgs "storage.className=gp2" `shouldBe` True
+      consecutivePair bootstrapArgs "storage.className=manual" `shouldBe` True
       consecutivePair bootstrapArgs "storage.size=20Gi" `shouldBe` True
-      consecutivePair bootstrapArgs "storage.className=manual" `shouldBe` False
+      consecutivePair bootstrapArgs "storage.className=gp2" `shouldBe` False
       steadyArgs `shouldBe` bootstrapArgs
       any ("image.repository=127.0.0.1:30080" `isPrefixOf`) steadyArgs `shouldBe` False
 
@@ -9292,9 +10409,9 @@ main = mainWithSuite "prodbox-unit" $ do
       ResourceClass.resourceNamesOfClass ResourceClass.PerRun
         `shouldBe` ["aws-eks", "aws-eks-subzone", "aws-test"]
 
-    it "the long-lived class is aws-ses plus the retained public-edge cert (Sprint 4.24)" $
+    it "the long-lived class includes aws-ses, retained EBS volumes, and the public-edge cert" $
       ResourceClass.resourceNamesOfClass ResourceClass.LongLived
-        `shouldBe` ["aws-ses", "public-edge-tls"]
+        `shouldBe` ["aws-ses", "aws-ebs-volumes", "public-edge-tls"]
 
     it "the operational class registers the IAM user and the aws.* config block" $
       ResourceClass.resourceNamesOfClass ResourceClass.Operational
@@ -9303,8 +10420,8 @@ main = mainWithSuite "prodbox-unit" $ do
     it "perRunStackNames is derived from the registry (matches the prior literal)" $
       perRunStackNames `shouldBe` ["aws-eks", "aws-eks-subzone", "aws-test"]
 
-    it "longLivedResourceNames is derived from the registry (aws-ses + public-edge-tls)" $
-      longLivedResourceNames `shouldBe` ["aws-ses", "public-edge-tls"]
+    it "longLivedResourceNames is derived from the registry" $
+      longLivedResourceNames `shouldBe` ["aws-ses", "aws-ebs-volumes", "public-edge-tls"]
 
     it "derived stack-name lists equal the PerRun/LongLived registry classes" $ do
       perRunStackNames `shouldBe` ResourceClass.resourceNamesOfClass ResourceClass.PerRun
@@ -9316,6 +10433,7 @@ main = mainWithSuite "prodbox-unit" $ do
       rendered `shouldContain` "| Resource | Lifecycle class |"
       rendered `shouldContain` "| `aws-eks` | PerRun |"
       rendered `shouldContain` "| `aws-ses` | LongLived |"
+      rendered `shouldContain` "| `aws-ebs-volumes` | LongLived |"
       rendered `shouldContain` "| `public-edge-tls` | LongLived |"
       rendered `shouldContain` "| `operational-iam-user` | Operational |"
       rendered `shouldContain` "| `operational-aws-config` | Operational |"
@@ -9972,6 +11090,16 @@ main = mainWithSuite "prodbox-unit" $ do
         , ("DrainSkipped \"x\"", DrainSkipped "x")
         ]
 
+    it "Sprint 4.40 drain selector targets Delete-reclaim PVs, not Retain PVs" $ do
+      deleteReclaimPersistentVolumeJsonPath
+        `shouldContain` "persistentVolumeReclaimPolicy==\"Delete\""
+      deleteReclaimPersistentVolumeJsonPath `shouldNotContain` "Retain"
+
+    it "Sprint 4.40 parses only concrete Delete-reclaim PVC bindings" $
+      deleteReclaimPvcBindings
+        "prodbox|minio-0\nvault|vault-0\nmalformed\n|empty-namespace\nempty-name|\n"
+        `shouldBe` [("prodbox", "minio-0"), ("vault", "vault-0")]
+
   describe "Sprint 4.14 operator vocabulary scan" $ do
     it "matchesSprintToken returns True for an adjacent Sprint + digit pair" $ do
       matchesSprintToken "Sprint 4.11: orchestrate the full teardown" `shouldBe` True
@@ -10371,8 +11499,8 @@ main = mainWithSuite "prodbox-unit" $ do
   describe "Sprint 7.7 residue lifecycle partition" $ do
     it "perRunStackNames matches substrates-doctrine Resource Lifecycle Classes verbatim" $
       perRunStackNames `shouldBe` ["aws-eks", "aws-eks-subzone", "aws-test"]
-    it "longLivedResourceNames lists aws-ses and the retained public-edge cert (Sprint 4.24)" $
-      longLivedResourceNames `shouldBe` ["aws-ses", "public-edge-tls"]
+    it "longLivedResourceNames lists every long-lived managed resource" $
+      longLivedResourceNames `shouldBe` ["aws-ses", "aws-ebs-volumes", "public-edge-tls"]
     it "partitionResidueByLifecycle splits residue correctly with all four stacks live" $ do
       let allFour =
             [ ("aws-eks", "prodbox aws stack eks destroy --yes")
@@ -10638,6 +11766,7 @@ main = mainWithSuite "prodbox-unit" $ do
       let sampleCommands =
             [ NativeAws (AwsSetup PolicyFull (PlanOptions False Nothing))
             , NativeAws AwsCheckQuotas
+            , NativeAws (AwsReapTestEbs True)
             , NativeCharts ChartsList
             , NativeDns DnsCheck
             , NativeEdge (EdgeReconcile (PlanOptions False Nothing))
@@ -10657,6 +11786,263 @@ main = mainWithSuite "prodbox-unit" $ do
       commandPrerequisites (NativeRke2 (Rke2Reconcile (PlanOptions False Nothing) False))
         `shouldBe` []
 
+  describe "Sprint 4.34 autoscaler runtime and federation-scoped placement" $ do
+    let smallBudget = Capacity.CapacityBudget 1 1 1
+        largeBudget = Capacity.CapacityBudget 4 4 4
+        childMetadata childId parentId =
+          ChildMetadata
+            { childMetadataClusterId = childId
+            , childMetadataVaultAddress = "https://vault.example"
+            , childMetadataTransitKey = "transit-key"
+            , childMetadataVaultNamespace = "namespace"
+            , childMetadataParentClusterId = parentId
+            , childMetadataEndpoints = Map.empty
+            , childMetadataKubeconfigReference = Nothing
+            , childMetadataAccountId = Nothing
+            , childMetadataPulumiStacks = Map.empty
+            }
+        children =
+          [ childMetadata "child-a" "root"
+          , childMetadata "child-b" "root"
+          , childMetadata "grandchild-a" "child-a"
+          ]
+        capacityFor clusterId budget =
+          Autoscaler.ClusterCapacity
+            { Autoscaler.clusterCapacityClusterId = clusterId
+            , Autoscaler.clusterCapacityAvailable = budget
+            }
+        input intents =
+          Autoscaler.AutoscalerInput
+            { Autoscaler.autoscalerRootClusterId = "root"
+            , Autoscaler.autoscalerChildren = children
+            , Autoscaler.autoscalerClusterCapacities =
+                [ capacityFor "root" largeBudget
+                , capacityFor "child-a" largeBudget
+                , capacityFor "child-b" largeBudget
+                ]
+            , Autoscaler.autoscalerGatewayLeaderClusterId = "root"
+            , Autoscaler.autoscalerIntents = intents
+            }
+
+    it "admits only clusters in the parent-custodied federation trust tree" $ do
+      Autoscaler.clusterInTrustTree "root" children "root" `shouldBe` True
+      Autoscaler.clusterInTrustTree "root" children "grandchild-a" `shouldBe` True
+      Autoscaler.clusterInTrustTree "root" children "stray" `shouldBe` False
+
+    it "accepts scale-up when the target is trusted and the budget fits" $
+      Autoscaler.autoscalerPlan (input [Autoscaler.ScaleWorkloadUp "child-a" smallBudget])
+        `shouldBe` Autoscaler.ScalingPlanAccepted
+          (Autoscaler.ScalingPlan [Autoscaler.ScalingActionScaleUp "child-a" smallBudget])
+
+    it "refuses scale-up outside the federation trust tree" $
+      Autoscaler.autoscalerPlan (input [Autoscaler.ScaleWorkloadUp "stray" smallBudget])
+        `shouldBe` Autoscaler.ScalingPlanRefused (Autoscaler.ScalingTargetOutsideTrustTree "stray")
+
+    it "refuses scale-up before mutation when observed capacity is insufficient" $
+      Autoscaler.autoscalerPlan
+        ( (input [Autoscaler.ScaleWorkloadUp "child-a" largeBudget])
+            { Autoscaler.autoscalerClusterCapacities = [capacityFor "child-a" smallBudget]
+            }
+        )
+        `shouldBe` Autoscaler.ScalingPlanRefused
+          (Autoscaler.ScalingInsufficientCapacity "child-a" largeBudget smallBudget)
+
+    it "refuses to scale down the current gateway leader" $
+      Autoscaler.autoscalerPlan
+        ( (input [Autoscaler.ScaleWorkloadDown "child-a"])
+            { Autoscaler.autoscalerGatewayLeaderClusterId = "child-a"
+            }
+        )
+        `shouldBe` Autoscaler.ScalingPlanRefused (Autoscaler.ScalingWouldRemoveGatewayLeader "child-a")
+
+    it "orders scale-up before non-leader scale-down so leadership is preserved" $
+      Autoscaler.autoscalerPlan
+        (input [Autoscaler.ScaleWorkloadDown "child-b", Autoscaler.ScaleWorkloadUp "child-a" smallBudget])
+        `shouldBe` Autoscaler.ScalingPlanAccepted
+          ( Autoscaler.ScalingPlan
+              [ Autoscaler.ScalingActionScaleUp "child-a" smallBudget
+              , Autoscaler.ScalingActionScaleDown "child-b"
+              ]
+          )
+
+    it "exposes capacity-scaled resources through the lifecycle registry surface" $ do
+      ResourceRegistry.capacityScaledManagedResources `shouldBe` Autoscaler.capacityScaledResourceNames
+      mapM_
+        (\name -> ResourceRegistry.capacityScaledManagedResources `shouldContain` [name])
+        ["gateway", "api", "websocket"]
+
+  describe "Sprint 7.27 spot-price economics gate" $ do
+    let threshold = Spot.SpotPriceThreshold (Spot.UsdPerHour 0.05)
+        unobservable = Spot.UnobservableReason "ec2 pricing API unreachable"
+        linuxT3Large =
+          SpotPriceRequest
+            { spotPriceInstanceType = "t3.large"
+            , spotPriceProductDescription = "Linux/UNIX"
+            }
+        spotHistoryPayload price =
+          unlines
+            [ "{"
+            , "  \"SpotPriceHistory\": ["
+            , "    {"
+            , "      \"InstanceType\": \"t3.large\","
+            , "      \"ProductDescription\": \"Linux/UNIX\","
+            , "      \"SpotPrice\": \"" ++ price ++ "\","
+            , "      \"AvailabilityZone\": \"us-east-1a\""
+            , "    }"
+            , "  ]"
+            , "}"
+            ]
+
+    it "admits below-threshold spot observations" $
+      Spot.admitSpotDeploy threshold (Spot.SpotObserved (Spot.UsdPerHour 0.04))
+        `shouldBe` Spot.SpotAdmit
+
+    it "defers at or above the configured threshold" $ do
+      Spot.admitSpotDeploy threshold (Spot.SpotObserved (Spot.UsdPerHour 0.05))
+        `shouldBe` Spot.SpotDefer (Spot.SpotPriceAboveThreshold (Spot.UsdPerHour 0.05) threshold)
+      Spot.admitSpotDeploy threshold (Spot.SpotObserved (Spot.UsdPerHour 0.06))
+        `shouldBe` Spot.SpotDefer (Spot.SpotPriceAboveThreshold (Spot.UsdPerHour 0.06) threshold)
+
+    it "refuses unobservable spot prices rather than admitting fail-open" $
+      Spot.admitSpotDeploy threshold (Spot.SpotUnobservable unobservable)
+        `shouldBe` Spot.SpotRefuse unobservable
+
+    it "makes the home-local substrate a structural no-op for spot gates" $ do
+      Spot.spotGateForScalingPolicy
+        SubstrateHomeLocal
+        (ScalingPolicyFixed 1)
+        (Just threshold)
+        `shouldBe` Spot.SpotGateNotApplicable
+      Spot.spotGateForScalingPolicy
+        SubstrateAws
+        (ScalingPolicyElastic (ElasticScalingBounds 1 3))
+        (Just threshold)
+        `shouldBe` Spot.SpotGateRequired threshold
+      Spot.spotGateForScalingPolicy
+        SubstrateAws
+        (ScalingPolicyFixed 1)
+        (Just threshold)
+        `shouldBe` Spot.SpotGateNotApplicable
+
+    it "builds the EC2 spot-price query through the existing credential-region AWS CLI path" $
+      awsSpotPriceHistoryArgs linuxT3Large
+        `shouldBe` [ "ec2"
+                   , "describe-spot-price-history"
+                   , "--instance-types"
+                   , "t3.large"
+                   , "--product-descriptions"
+                   , "Linux/UNIX"
+                   , "--max-results"
+                   , "1"
+                   , "--output"
+                   , "json"
+                   ]
+
+    it "parses AWS spot-price history payloads into observations" $
+      spotObservationFromAwsSpotPriceHistory (spotHistoryPayload "0.010400")
+        `shouldBe` Spot.SpotObserved (Spot.UsdPerHour 0.0104)
+
+    it "marks empty or invalid spot-price history as unobservable" $ do
+      spotObservationFromAwsSpotPriceHistory "{\"SpotPriceHistory\": []}"
+        `shouldBe` Spot.SpotUnobservable
+          (Spot.UnobservableReason "aws ec2 describe-spot-price-history returned no spot price history")
+      spotObservationFromAwsSpotPriceHistory "{\"SpotPriceHistory\": [{\"SpotPrice\": \"not-a-number\"}]}"
+        `shouldBe` Spot.SpotUnobservable
+          (Spot.UnobservableReason "invalid USD/hour spot price: not-a-number")
+
+    it "turns failed AWS CLI output into an unobservable spot price" $
+      spotObservationFromAwsSpotPriceOutput (ProcessOutput (ExitFailure 2) "" "throttled")
+        `shouldBe` Spot.SpotUnobservable
+          (Spot.UnobservableReason "aws ec2 describe-spot-price-history failed: throttled")
+
+  describe "Sprint 4.36 tiered-storage capacity budget and quota gate" $ do
+    let storageBudget bytes = Capacity.CapacityBudget 0 0 bytes
+        store name bytes capacity =
+          Storage.DurableStoreClaim
+            { Storage.durableStoreName = name
+            , Storage.durableStoreBudget = storageBudget bytes
+            , Storage.durableStoreCapacity = capacity
+            }
+        cache jit model =
+          Storage.MlCacheBudget
+            { Storage.mlJitArtifactCacheBudget = storageBudget jit
+            , Storage.mlModelCacheBudget = storageBudget model
+            }
+        mlEngine =
+          Storage.MlEngineStorageBudget
+            { Storage.mlEngineName = "jit-model-worker"
+            , Storage.mlHostBudget = cache 1 2
+            , Storage.mlClusterBudget = cache 1 2
+            }
+        quotaStatus name current target meets =
+          QuotaStatus
+            { quotaStatusDisplayName = name
+            , quotaStatusServiceCode = "ec2"
+            , quotaStatusQuotaCode = "L-STORAGE"
+            , quotaStatusCurrentValue = current
+            , quotaStatusTargetValue = target
+            , quotaStatusSource = "stub"
+            , quotaStatusMeetsTarget = meets
+            , quotaStatusRequestStatus = Nothing
+            , quotaStatusNote = Nothing
+            }
+
+    it "keeps durable capacity finite and has no Infinite constructor" $ do
+      Storage.durableStoreCapacityConstructors `shouldBe` ["Bounded", "Autoscaled"]
+      ("Infinite" `elem` Storage.durableStoreCapacityConstructors) `shouldBe` False
+
+    it "admits autoscaled MinIO capacity only with a scaling-policy witness" $ do
+      Storage.validateDurableStoreCapacityRequest
+        "minio"
+        (Storage.DurableStoreCapacityRequestAutoscaled Nothing)
+        `shouldBe` Left (Storage.StorageAutoscaledSinkMissingWitness "minio")
+      let witnessResult = Storage.scalingPolicyWitness "aws-elastic-minio"
+      case witnessResult of
+        Left err -> expectationFailure ("expected valid scaling-policy witness: " ++ show err)
+        Right witness ->
+          Storage.validateDurableStoreCapacityRequest
+            "minio"
+            (Storage.DurableStoreCapacityRequestAutoscaled (Just witness))
+            `shouldBe` Right (Storage.DurableStoreAutoscaled witness)
+      Storage.scalingPolicyWitness " "
+        `shouldBe` Left (Storage.StorageInvalidScalingWitness " ")
+
+    it "adds durable store claims and mandatory ML host/cluster cache budgets into one finite budget" $ do
+      let boundedStore = store "pulsar-offload" 4 (Storage.DurableStoreBounded (storageBudget 4))
+          plan storageCeiling =
+            Storage.StorageCapacityPlan
+              { Storage.storageCapacityBudget = storageBudget storageCeiling
+              , Storage.storageCapacityStores = [boundedStore]
+              , Storage.storageCapacityMlEngines = [mlEngine]
+              }
+      Storage.mlEngineStorageTotal mlEngine `shouldBe` storageBudget 6
+      Storage.storageCapacityPlanDraw (plan 10) `shouldBe` storageBudget 10
+      Storage.validateStorageCapacityPlan (plan 10) `shouldBe` Right ()
+      Storage.validateStorageCapacityPlan (plan 9)
+        `shouldBe` Left (Storage.StorageCapacityBudgetExceeded (storageBudget 10) (storageBudget 9))
+
+    it "refuses an AWS region quota preflight when a stubbed quota is below target" $ do
+      let okStatus = quotaStatus "EBS storage quota" 100.0 80.0 True
+          lowStatus = quotaStatus "EBS storage quota" 20.0 80.0 False
+      quotaStatusRegionObservation okStatus
+        `shouldBe` Storage.AwsRegionQuotaObservation
+          { Storage.regionQuotaName = "EBS storage quota"
+          , Storage.regionQuotaCurrentValue = 100.0
+          , Storage.regionQuotaTargetValue = 80.0
+          , Storage.regionQuotaMeetsTarget = True
+          }
+      awsRegionQuotaPreflightFromStatuses [okStatus] `shouldBe` Right ()
+      awsRegionQuotaPreflightFromStatuses [lowStatus]
+        `shouldBe` Left
+          ( Storage.StorageRegionQuotaShortfall
+              [ Storage.RegionQuotaShortfall
+                  { Storage.regionQuotaShortfallName = "EBS storage quota"
+                  , Storage.regionQuotaShortfallCurrentValue = 20.0
+                  , Storage.regionQuotaShortfallTargetValue = 80.0
+                  }
+              ]
+          )
+
   describe "settings" $ do
     it "validates Dhall config and renders masked output without materializing JSON" $
       withSystemTempDirectory "prodbox-hs-unit" $ \tmpDir -> do
@@ -10674,6 +12060,8 @@ main = mainWithSuite "prodbox-unit" $ do
               `shouldContain` "aws.access_key_id=Vault:secret/gateway/gateway/aws#access_key_id"
             renderSettingsDisplay False settings
               `shouldContain` ("storage.manual_pv_host_root=" ++ (tmpDir </> ".data"))
+            renderSettingsDisplay False settings
+              `shouldContain` "cluster_topology.type=rke2"
             doesFileExist (tmpDir </> "prodbox-config.json") `shouldReturn` False
 
     it "fails fast on invalid bootstrap public IP overrides" $
@@ -10717,6 +12105,44 @@ main = mainWithSuite "prodbox-unit" $ do
                 ]
           }
         `shouldBe` Right ()
+
+    it "validates typed scaling policies for each substrate" $ do
+      validatePublicEdgeDeployment validDeploymentSection `shouldBe` Right ()
+      validatePublicEdgeDeployment
+        validDeploymentSection
+          { api_scaling =
+              ScalingPolicyBySubstrate
+                { scalingHomeLocal = ScalingPolicyElastic (ElasticScalingBounds 1 2)
+                , scalingAws = ScalingPolicyFixed 2
+                }
+          }
+        `shouldBe` Left "deployment.api_scaling.home_local must be Fixed; Elastic scaling is only valid for aws"
+      validatePublicEdgeDeployment
+        validDeploymentSection
+          { api_scaling =
+              ScalingPolicyBySubstrate
+                { scalingHomeLocal = ScalingPolicyFixed 2
+                , scalingAws = ScalingPolicyElastic (ElasticScalingBounds 3 2)
+                }
+          }
+        `shouldBe` Left "deployment.api_scaling.aws.Elastic.min must be less than or equal to max"
+
+    it "checks capacity budget containment with the pure Sprint 1.51 lemmas" $ do
+      let small = Capacity.CapacityBudget 1 2 3
+          large = Capacity.CapacityBudget 2 4 8
+          tooMuchStorage = Capacity.CapacityBudget 1 2 101
+      Capacity.fitsWithin small large `shouldBe` True
+      Capacity.storageFitsWithin tooMuchStorage large `shouldBe` False
+      Capacity.validateCapacitySection
+        Capacity.defaultCapacitySection
+        `shouldBe` Right ()
+      Capacity.validateCapacitySection
+        ( Capacity.CapacitySection
+            (Capacity.node_budget Capacity.defaultCapacitySection)
+            tooMuchStorage
+            (Capacity.region_quota Capacity.defaultCapacitySection)
+        )
+        `shouldBe` Left "capacity.workload_budget must fit within capacity.node_budget"
 
     it "decodes locally even when the ZeroSSL EAB binding is incomplete (AWS-tier check)" $
       -- The ACME / ZeroSSL binding is an AWS / public-edge concern, so the
@@ -10794,14 +12220,11 @@ parseArgs argv =
         CompletionInvoked _ -> Left "shell completion requested"
 
 -- | Build a 'SignedEvent' whose hash and HMAC signature match the
--- canonical unsigned-payload encoding the daemon uses.  Used by the
+-- canonical CBOR unsigned-payload encoding the daemon uses.  Used by the
 -- peer-transport tests to construct round-trippable batches.
 signedEventStub :: String -> String -> String -> SignedEvent
 signedEventStub nodeId evType ts =
-  Peer.signEvent nodeId evType ts "{}" "fake-key"
-
-encodeJsonValue :: Value -> BL8.ByteString
-encodeJsonValue = encode
+  Peer.signEvent nodeId evType ts (cborPayloadFromJsonValue (object [])) "fake-key"
 
 makeExecutable :: FilePath -> IO ()
 makeExecutable path = do
@@ -11047,6 +12470,8 @@ validConfig =
     , ", domain = { demo_fqdn = \"test.resolvefintech.com\", demo_ttl = 60 }"
     , ", acme = " ++ acmeSectionDhall (eabRefDhall "key_id") (eabRefDhall "hmac_key")
     , ", deployment = " ++ deploymentDhallFragment
+    , ", capacity = " ++ capacityDhallFragment
+    , ", cluster_topology = " ++ clusterTopologyDhallFragment
     , ", storage = { manual_pv_host_root = \".data\" }"
     , ", pulumi_state_backend = " ++ pulumiStateBackendDhallFragment
     , "}"
@@ -11064,6 +12489,8 @@ invalidZeroSslConfig =
           ("None (" ++ secretRefTypeDhall ++ ")")
           ("None (" ++ secretRefTypeDhall ++ ")")
     , ", deployment = " ++ deploymentDhallFragment
+    , ", capacity = " ++ capacityDhallFragment
+    , ", cluster_topology = " ++ clusterTopologyDhallFragment
     , ", storage = { manual_pv_host_root = \".data\" }"
     , ", pulumi_state_backend = " ++ pulumiStateBackendDhallFragment
     , "}"
@@ -11085,6 +12512,8 @@ plaintextEabZeroSslConfig =
           ("Some (" ++ secretRefTypeDhall ++ ".TestPlaintext \"test-eab-key-id\")")
           ("Some (" ++ secretRefTypeDhall ++ ".TestPlaintext \"test-eab-hmac-key\")")
     , ", deployment = " ++ deploymentDhallFragment
+    , ", capacity = " ++ capacityDhallFragment
+    , ", cluster_topology = " ++ clusterTopologyDhallFragment
     , ", storage = { manual_pv_host_root = \".data\" }"
     , ", pulumi_state_backend = " ++ pulumiStateBackendDhallFragment
     , "}"
@@ -11219,12 +12648,103 @@ deploymentDhallFragment =
     , ", public_edge_advertisement_mode = None Text"
     , ", public_edge_bgp_peers ="
     , "    None (List { peer_name : Text, peer_address : Text, peer_asn : Natural, my_asn : Natural, ebgp_multi_hop : Optional Bool })"
-    , ", envoy_gateway_controller_replicas = None Natural"
-    , ", envoy_gateway_data_plane_replicas = None Natural"
-    , ", api_replicas = None Natural"
-    , ", websocket_replicas = None Natural"
+    , ", envoy_gateway_controller_scaling = " ++ fixedScalingDhall 1
+    , ", envoy_gateway_data_plane_scaling = " ++ fixedScalingDhall 1
+    , ", api_scaling = " ++ fixedScalingDhall 2
+    , ", websocket_scaling = " ++ fixedScalingDhall 2
     , " }"
     ]
+
+scalingPolicyTypeDhall :: String
+scalingPolicyTypeDhall =
+  "< Fixed : Natural | Elastic : { min : Natural, max : Natural } >"
+
+fixedScalingDhall :: Int -> String
+fixedScalingDhall count =
+  "{ home_local = "
+    ++ scalingPolicyTypeDhall
+    ++ ".Fixed "
+    ++ show count
+    ++ ", aws = "
+    ++ scalingPolicyTypeDhall
+    ++ ".Fixed "
+    ++ show count
+    ++ " }"
+
+capacityDhallFragment :: String
+capacityDhallFragment =
+  "{ node_budget = { cpu = 8, memory = 16, storage = 100 }, workload_budget = { cpu = 4, memory = 8, storage = 40 }, region_quota = { cpu = 32, memory = 64, storage = 500 } }"
+
+clusterTopologyDhallFragment :: String
+clusterTopologyDhallFragment =
+  clusterTopologyDhallType
+    ++ ".Rke2 { machines = [ "
+    ++ clusterTopologyMachineDhall
+    ++ " ] : List "
+    ++ clusterTopologyMachineTypeDhall
+    ++ " }"
+
+testTopologyDhallDocument :: FilePath -> String
+testTopologyDhallDocument repoRoot =
+  unlines
+    [ "let TestTopology = " ++ (repoRoot </> "dhall" </> "TestTopologySchema.dhall")
+    , ""
+    , "in  { suites ="
+    , "        [ { name = \"ha-rke2-aws\""
+    , "          , variants ="
+    , "              [ { cluster ="
+    , "                    TestTopology.Cluster.ClusterTopology.Rke2"
+    , "                      { machines ="
+    , "                          [ { machine_id = \"prodbox-home\""
+    , "                            , machine_substrate = TestTopology.Cluster.WorkerSubstrate.LinuxCpu"
+    , "                            , compute_worker ="
+    , "                                { worker_substrate = TestTopology.Cluster.WorkerSubstrate.LinuxCpu"
+    , "                                , manages_all_local_devices = True"
+    , "                                }"
+    , "                            }"
+    , "                          ] : List TestTopology.Cluster.Machine"
+    , "                      }"
+    , "                , replicas = 1"
+    , "                , failover = Some TestTopology.FailoverScenario.LeaderKill"
+    , "                }"
+    , "              ] : List TestTopology.RunVariant"
+    , "          , budget = { max_nodes = 2, wall_clock_seconds = 5400 }"
+    , "          , fixtures = [ TestTopology.FixtureId.AwsAdminForTestSimulation ] : List TestTopology.FixtureId"
+    , "          }"
+    , "        ] : List TestTopology.Suite"
+    , "    , fixtures = [ TestTopology.FixtureId.AwsAdminForTestSimulation ] : List TestTopology.FixtureId"
+    , "    }"
+    ]
+
+clusterTopologyDhallType :: String
+clusterTopologyDhallType =
+  "< Kind : { machine : "
+    ++ clusterTopologyMachineTypeDhall
+    ++ ", node_count : Natural } | Rke2 : { machines : List "
+    ++ clusterTopologyMachineTypeDhall
+    ++ " } | Eks : { node_group_size : Natural, eks_substrate : "
+    ++ workerSubstrateDhallType
+    ++ " } >"
+
+clusterTopologyMachineTypeDhall :: String
+clusterTopologyMachineTypeDhall =
+  "{ machine_id : Text, machine_substrate : "
+    ++ workerSubstrateDhallType
+    ++ ", compute_worker : { worker_substrate : "
+    ++ workerSubstrateDhallType
+    ++ ", manages_all_local_devices : Bool } }"
+
+clusterTopologyMachineDhall :: String
+clusterTopologyMachineDhall =
+  "{ machine_id = \"prodbox-home\", machine_substrate = "
+    ++ workerSubstrateDhallType
+    ++ ".LinuxCpu, compute_worker = { worker_substrate = "
+    ++ workerSubstrateDhallType
+    ++ ".LinuxCpu, manages_all_local_devices = True } }"
+
+workerSubstrateDhallType :: String
+workerSubstrateDhallType =
+  "< LinuxCpu | LinuxCuda | AppleMetal | CudaWindows >"
 
 validDeploymentSection :: DeploymentSection
 validDeploymentSection =
@@ -11234,10 +12754,10 @@ validDeploymentSection =
     , pulumi_enable_dns_bootstrap = True
     , public_edge_advertisement_mode = Just "l2"
     , public_edge_bgp_peers = Nothing
-    , envoy_gateway_controller_replicas = Just 1
-    , envoy_gateway_data_plane_replicas = Just 1
-    , api_replicas = Just 2
-    , websocket_replicas = Just 2
+    , envoy_gateway_controller_scaling = fixedScalingPolicyBySubstrate 1
+    , envoy_gateway_data_plane_scaling = fixedScalingPolicyBySubstrate 1
+    , api_scaling = fixedScalingPolicyBySubstrate 2
+    , websocket_scaling = fixedScalingPolicyBySubstrate 2
     }
 
 -- | Extract the @metadata.name@ of every cert-manager @ClusterIssuer@
@@ -11330,10 +12850,10 @@ sampleConfigSetupInput =
               , ebgp_multi_hop = Just True
               }
           ]
-    , configSetupEnvoyGatewayControllerReplicasInput = Just 1
-    , configSetupEnvoyGatewayDataPlaneReplicasInput = Just 1
-    , configSetupApiReplicasInput = Just 2
-    , configSetupWebsocketReplicasInput = Just 2
+    , configSetupEnvoyGatewayControllerScalingInput = fixedScalingPolicyBySubstrate 1
+    , configSetupEnvoyGatewayDataPlaneScalingInput = fixedScalingPolicyBySubstrate 1
+    , configSetupApiScalingInput = fixedScalingPolicyBySubstrate 2
+    , configSetupWebsocketScalingInput = fixedScalingPolicyBySubstrate 2
     , configSetupManualPvHostRootInput = "/tmp/prodbox/.data"
     , configSetupPolicyTierInput = PolicyFull
     }
@@ -11408,7 +12928,7 @@ storedDaemonEvent eventName createdSecond processedAt =
     { DaemonEvents.eventId = DaemonEvents.EventId eventName
     , DaemonEvents.eventAggregateId = DaemonEvents.AggregateId "aggregate-a"
     , DaemonEvents.eventType = DaemonEvents.EventType "heartbeat"
-    , DaemonEvents.eventPayload = object ["event_name" .= eventName]
+    , DaemonEvents.eventPayload = cborPayloadFromJsonValue (object ["event_name" .= eventName])
     , DaemonEvents.eventCreatedAt = testUtc createdSecond
     , DaemonEvents.eventProcessedAt = processedAt
     }
@@ -11456,6 +12976,7 @@ sampleAwsEksTestStackSnapshot =
     , AwsEks.eksSnapshotAwsLbControllerRoleArn =
         "arn:aws:iam::123456789012:role/aws-eks-test-aws-lb-controller"
     , AwsEks.eksSnapshotAwsLbControllerRoleName = "aws-eks-test-aws-lb-controller"
+    , AwsEks.eksSnapshotRetainedEbsAvailabilityZone = "us-east-1a"
     }
 
 -- | Sprint 4.18: the flat @Map Text Text@ shape the Pulumi backend
@@ -11503,6 +13024,7 @@ sampleAwsEksTestStackOutputsMap =
     , ("aws_lb_controller_policy_arn", "arn:aws:iam::123456789012:policy/aws-eks-test-aws-lb-controller")
     , ("aws_lb_controller_role_arn", "arn:aws:iam::123456789012:role/aws-eks-test-aws-lb-controller")
     , ("aws_lb_controller_role_name", "aws-eks-test-aws-lb-controller")
+    , ("retained_ebs_availability_zone", "us-east-1a")
     ]
 
 gatewaySecretRefType :: String
@@ -11554,32 +13076,6 @@ gatewayMinioCredsNoneLines =
       ++ gatewaySecretRefType
       ++ " }"
   ]
-
-ordersJsonValue :: Orders -> Value
-ordersJsonValue orders =
-  object
-    [ "version_utc" .= ordersVersionUtc orders
-    , "nodes" .= map peerEndpointJsonValue (ordersNodes orders)
-    , "gateway_rule" .= gatewayRuleJsonValue (ordersGatewayRule orders)
-    ]
-
-peerEndpointJsonValue :: PeerEndpoint -> Value
-peerEndpointJsonValue peer =
-  object
-    [ "node_id" .= peerNodeId peer
-    , "stable_dns_name" .= peerStableDnsName peer
-    , "rest_host" .= peerRestHost peer
-    , "rest_port" .= peerRestPort peer
-    , "socket_host" .= peerSocketHost peer
-    , "socket_port" .= peerSocketPort peer
-    ]
-
-gatewayRuleJsonValue :: GatewayRule -> Value
-gatewayRuleJsonValue rule =
-  object
-    [ "ranked_nodes" .= rankedNodes rule
-    , "heartbeat_timeout_seconds" .= heartbeatTimeoutSeconds rule
-    ]
 
 testChartSecrets :: Map.Map String String
 testChartSecrets =

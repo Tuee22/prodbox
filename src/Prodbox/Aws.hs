@@ -3,9 +3,12 @@
 
 module Prodbox.Aws
   ( AwsSetupInput (..)
+  , AwsCheckQuotasInput (..)
   , AwsTeardownInput (..)
   , AwsTeardownLongLivedPreflight
   , ConfigSetupInput (..)
+  , QuotaSpec (..)
+  , QuotaStatus (..)
   , configFromSetupInput
   , harnessConfigSetupInput
   , regenerateConfigFromTestSecrets
@@ -13,11 +16,16 @@ module Prodbox.Aws
   , PulumiResiduePolicy (..)
   , ResidueError (..)
   , SessionTokenPromptShape (..)
+  , SpotPriceRequest (..)
   , VaultProbe (..)
   , adminAwsEnvironment
+  , applyAwsCheckQuotas
+  , applyAwsRegionQuotaPreflight
   , applyAwsTeardown
+  , awsRegionQuotaPreflightFromStatuses
   , assertOperationalTeardownComplete
   , awsErrorCodeIsTransient
+  , awsSpotPriceHistoryArgs
   , buildIamPolicyDocument
   , buildIamPolicyJson
   , checkPulumiResidueBeforeTeardown
@@ -29,14 +37,18 @@ module Prodbox.Aws
   , operationalIamUserExists
   , operationalIamUserResidueFromExists
   , operationalManagedResources
+  , observeAwsSpotPrice
   , refineAwsConfigResidueAgainstIamUser
   , partitionResidueByLifecycle
   , perRunStackNames
+  , spotObservationFromAwsSpotPriceHistory
+  , spotObservationFromAwsSpotPriceOutput
   , renderResidueError
   , residueFromProbe
   , promptAdminCredentialsWithRegionChoice
   , prodboxIamUserName
   , pulumiDestroyPlanForResidue
+  , quotaStatusRegionObservation
   , renderAwsSetupPlan
   , renderAwsTeardownPlan
   , renderConfigSetupPlan
@@ -126,13 +138,22 @@ import Prodbox.CLI.Output
   , writeOutput
   , writeOutputLine
   )
+import Prodbox.Capacity.Storage
+  ( AwsRegionQuotaObservation (..)
+  , StorageCapacityRefusal
+  , regionQuotaPreflight
+  )
 import Prodbox.Config.Tier0 qualified as Tier0
 import Prodbox.Error (fatalError)
 import Prodbox.Gateway.Client qualified as GatewayClient
 import Prodbox.Host (defaultGatewayNodePort)
+import Prodbox.Infra.AwsEksTestStack
+  ( awsEksCanonicalClusterName
+  )
 import Prodbox.Infra.StackDescriptor
   ( perRunStackDescriptorNames
   )
+import Prodbox.Lifecycle.EbsVolume qualified as EbsVolume
 import Prodbox.Lifecycle.LiveResidue
   ( PerRunResidueStatuses (..)
   , queryAwsSesResidueStatus
@@ -153,6 +174,12 @@ import Prodbox.Repo
   , resolveTier0ConfigPath
   )
 import Prodbox.Result (Result (..))
+import Prodbox.Scaling.Spot
+  ( SpotObservation (..)
+  , UnobservableReason (..)
+  , UsdPerHour
+  , parseUsdPerHour
+  )
 import Prodbox.Settings
   ( AcmeSection (..)
   , AwsCredentialsRef (..)
@@ -178,6 +205,10 @@ import Prodbox.Subprocess
   , Subprocess (..)
   , captureSubprocessResult
   , runSubprocessStreaming
+  )
+import Prodbox.Substrate
+  ( ScalingPolicyBySubstrate
+  , fixedScalingPolicyBySubstrate
   )
 import Prodbox.Vault.Host
   ( AcmeEabFixture (hmac_key, key_id)
@@ -212,6 +243,12 @@ import System.IO
   , stdout
   )
 import System.IO.Error (isEOFError)
+
+data SpotPriceRequest = SpotPriceRequest
+  { spotPriceInstanceType :: Text
+  , spotPriceProductDescription :: Text
+  }
+  deriving (Eq, Show)
 
 newtype AwsError = AwsError String
   deriving (Show)
@@ -373,15 +410,15 @@ perRunStackNames = perRunStackDescriptorNames
 
 -- | Long-lived cross-substrate shared resource names per
 -- @DEVELOPMENT_PLAN/substrates.md → Resource Lifecycle Classes@: the
--- @aws-ses@ Pulumi stack and (Sprint 4.24) the retained
--- @public-edge-tls@ production certificate material (an S3 object class,
--- not a Pulumi stack). These are retained by design; the harness must
--- NEVER bypass residue refusal for them. Sprint 4.27: renamed from
+-- @aws-ses@ Pulumi stack, the Sprint 4.39 @aws-ebs-volumes@ EC2 volume
+-- class, and the Sprint 4.24 retained @public-edge-tls@ production
+-- certificate material (an S3 object class, not a Pulumi stack). These
+-- are retained by design; the harness must NEVER bypass residue refusal
+-- for live long-lived Pulumi stacks. Sprint 4.27: renamed from
 -- @longLivedStackNames@ — the long-lived class spans more than Pulumi
--- stacks (it includes the non-stack @public-edge-tls@ certificate), so
--- it is derived from the @LongLived@-class managed-resource registry
--- facts rather than from the 'StackDescriptor' Pulumi-stack list (which
--- only knows about @aws-ses@).
+-- stacks, so it is derived from the @LongLived@-class managed-resource
+-- registry facts rather than from the 'StackDescriptor' Pulumi-stack list
+-- (which only knows about @aws-ses@).
 longLivedResourceNames :: [String]
 longLivedResourceNames = ResourceClass.resourceNamesOfClass ResourceClass.LongLived
 
@@ -446,10 +483,10 @@ data ConfigSetupInput = ConfigSetupInput
   , configSetupPulumiEnableDnsBootstrapInput :: Bool
   , configSetupPublicEdgeAdvertisementModeInput :: Maybe Text
   , configSetupPublicEdgeBgpPeersInput :: Maybe [MetallbBgpPeer]
-  , configSetupEnvoyGatewayControllerReplicasInput :: Maybe Natural
-  , configSetupEnvoyGatewayDataPlaneReplicasInput :: Maybe Natural
-  , configSetupApiReplicasInput :: Maybe Natural
-  , configSetupWebsocketReplicasInput :: Maybe Natural
+  , configSetupEnvoyGatewayControllerScalingInput :: ScalingPolicyBySubstrate
+  , configSetupEnvoyGatewayDataPlaneScalingInput :: ScalingPolicyBySubstrate
+  , configSetupApiScalingInput :: ScalingPolicyBySubstrate
+  , configSetupWebsocketScalingInput :: ScalingPolicyBySubstrate
   , configSetupManualPvHostRootInput :: Text
   , configSetupPolicyTierInput :: PolicyTier
   }
@@ -611,6 +648,50 @@ executeAwsCommand repoRoot longLivedPreflight command =
       statuses <- applyAwsRequestQuotas repoRoot input
       writeOutput (renderQuotaTable "Requested AWS Quotas" statuses)
       pure ExitSuccess
+    AwsReapTestEbs confirmed -> do
+      if confirmed
+        then runAwsReapTestEbs repoRoot
+        else do
+          writeError (fatalError "Refusing to delete test-scoped EBS volumes without --yes.")
+          pure (ExitFailure 1)
+
+runAwsReapTestEbs :: FilePath -> IO ExitCode
+runAwsReapTestEbs repoRoot = do
+  config <- loadConfigForWrite repoRoot
+  credentialsResult <- resolveAwsCredentialsRefFromHostVault repoRoot "aws" (aws config)
+  case credentialsResult of
+    Left err -> do
+      writeError
+        ( fatalError
+            ( Text.pack
+                ( "Test-scoped EBS reaper requires populated operational aws.* credentials in Vault: "
+                    ++ err
+                )
+            )
+        )
+      pure (ExitFailure 1)
+    Right credentials ->
+      if not (operationalCredentialsConfigured credentials)
+        then do
+          writeError
+            (fatalError "Test-scoped EBS reaper requires populated operational aws.* credentials.")
+          pure (ExitFailure 1)
+        else do
+          environment <- operationalAwsEnvironment credentials
+          result <-
+            EbsVolume.runTestScopedEbsReaper
+              EbsVolume.TestEbsReaperInput
+                { EbsVolume.testEbsReaperEnvironment = environment
+                , EbsVolume.testEbsReaperWorkingDirectory = Just repoRoot
+                , EbsVolume.testEbsReaperClusterName = awsEksCanonicalClusterName
+                }
+          case result of
+            Left err -> do
+              writeError (fatalError (Text.pack ("Test-scoped EBS reaper failed: " ++ err)))
+              pure (ExitFailure 1)
+            Right report -> do
+              writeOutputLine (EbsVolume.renderTestScopedEbsReaperReport report)
+              pure ExitSuccess
 
 executeConfigSetup :: FilePath -> PlanOptions -> IO ExitCode
 executeConfigSetup repoRoot planOptions = do
@@ -1491,10 +1572,12 @@ validateConfigSetupInput adminCredentials zoneId zoneName demoFqdnRaw demoTtl ac
           , pulumi_enable_dns_bootstrap = pulumiEnableDnsBootstrap
           , public_edge_advertisement_mode = normalizedAdvertisementMode
           , public_edge_bgp_peers = bgpPeersRaw
-          , envoy_gateway_controller_replicas = Just (fromIntegral envoyGatewayControllerReplicasRaw)
-          , envoy_gateway_data_plane_replicas = Just (fromIntegral envoyGatewayDataPlaneReplicasRaw)
-          , api_replicas = Just (fromIntegral apiReplicasRaw)
-          , websocket_replicas = Just (fromIntegral websocketReplicasRaw)
+          , envoy_gateway_controller_scaling =
+              fixedScalingPolicyBySubstrate (fromIntegral envoyGatewayControllerReplicasRaw)
+          , envoy_gateway_data_plane_scaling =
+              fixedScalingPolicyBySubstrate (fromIntegral envoyGatewayDataPlaneReplicasRaw)
+          , api_scaling = fixedScalingPolicyBySubstrate (fromIntegral apiReplicasRaw)
+          , websocket_scaling = fixedScalingPolicyBySubstrate (fromIntegral websocketReplicasRaw)
           }
   unless (isValidRoute53ZoneId normalizedZoneId) $
     throwAws "Route 53 zone ID must look like a hosted-zone ID (for example Z1234)"
@@ -1530,11 +1613,12 @@ validateConfigSetupInput adminCredentials zoneId zoneName demoFqdnRaw demoTtl ac
       , configSetupPulumiEnableDnsBootstrapInput = pulumiEnableDnsBootstrap
       , configSetupPublicEdgeAdvertisementModeInput = normalizedAdvertisementMode
       , configSetupPublicEdgeBgpPeersInput = bgpPeersRaw
-      , configSetupEnvoyGatewayControllerReplicasInput =
-          Just (fromIntegral envoyGatewayControllerReplicasRaw)
-      , configSetupEnvoyGatewayDataPlaneReplicasInput = Just (fromIntegral envoyGatewayDataPlaneReplicasRaw)
-      , configSetupApiReplicasInput = Just (fromIntegral apiReplicasRaw)
-      , configSetupWebsocketReplicasInput = Just (fromIntegral websocketReplicasRaw)
+      , configSetupEnvoyGatewayControllerScalingInput =
+          fixedScalingPolicyBySubstrate (fromIntegral envoyGatewayControllerReplicasRaw)
+      , configSetupEnvoyGatewayDataPlaneScalingInput =
+          fixedScalingPolicyBySubstrate (fromIntegral envoyGatewayDataPlaneReplicasRaw)
+      , configSetupApiScalingInput = fixedScalingPolicyBySubstrate (fromIntegral apiReplicasRaw)
+      , configSetupWebsocketScalingInput = fixedScalingPolicyBySubstrate (fromIntegral websocketReplicasRaw)
       , configSetupManualPvHostRootInput = normalizedManualPvHostRoot
       , configSetupPolicyTierInput = policyTier
       }
@@ -2146,6 +2230,98 @@ applyAwsCheckQuotas repoRoot input =
     (\spec -> ensureServiceQuota repoRoot (awsCheckQuotasAdminCredentials input) spec False)
     fullQuotaSpecs
 
+applyAwsRegionQuotaPreflight
+  :: FilePath -> AwsCheckQuotasInput -> IO (Either StorageCapacityRefusal ())
+applyAwsRegionQuotaPreflight repoRoot input =
+  awsRegionQuotaPreflightFromStatuses <$> applyAwsCheckQuotas repoRoot input
+
+observeAwsSpotPrice :: FilePath -> Credentials -> SpotPriceRequest -> IO SpotObservation
+observeAwsSpotPrice repoRoot credentials request = do
+  result <-
+    try
+      ( do
+          environment <- operationalAwsEnvironment credentials
+          captureSubprocessResult
+            Subprocess
+              { subprocessPath = "aws"
+              , subprocessArguments = awsSpotPriceHistoryArgs request
+              , subprocessEnvironment = Just environment
+              , subprocessWorkingDirectory = Just repoRoot
+              }
+      )
+      :: IO (Either SomeException (Result ProcessOutput))
+  pure $ case result of
+    Left err ->
+      SpotUnobservable
+        (UnobservableReason (Text.pack ("aws spot price observation failed: " ++ displayException err)))
+    Right (Failure err) ->
+      SpotUnobservable (UnobservableReason (Text.pack ("aws spot price observation failed: " ++ err)))
+    Right (Success output) ->
+      spotObservationFromAwsSpotPriceOutput output
+
+awsSpotPriceHistoryArgs :: SpotPriceRequest -> [String]
+awsSpotPriceHistoryArgs request =
+  [ "ec2"
+  , "describe-spot-price-history"
+  , "--instance-types"
+  , Text.unpack (spotPriceInstanceType request)
+  , "--product-descriptions"
+  , Text.unpack (spotPriceProductDescription request)
+  , "--max-results"
+  , "1"
+  , "--output"
+  , "json"
+  ]
+
+spotObservationFromAwsSpotPriceOutput :: ProcessOutput -> SpotObservation
+spotObservationFromAwsSpotPriceOutput output =
+  case requireCommandSuccess "aws ec2 describe-spot-price-history" output of
+    Left err -> SpotUnobservable (UnobservableReason (Text.pack err))
+    Right payload -> spotObservationFromAwsSpotPriceHistory payload
+
+spotObservationFromAwsSpotPriceHistory :: String -> SpotObservation
+spotObservationFromAwsSpotPriceHistory payload =
+  case decodeJsonPayload "aws ec2 describe-spot-price-history" payload >>= parseSpotPriceHistory of
+    Left err -> SpotUnobservable (UnobservableReason (Text.pack err))
+    Right observation -> observation
+
+parseSpotPriceHistory :: Value -> Either String SpotObservation
+parseSpotPriceHistory value = do
+  rootObject <- requireObject "aws ec2 describe-spot-price-history" value
+  history <- requireArrayField "aws ec2 describe-spot-price-history" "SpotPriceHistory" rootObject
+  case Vector.toList history of
+    [] -> Left "aws ec2 describe-spot-price-history returned no spot price history"
+    firstEntry : _ -> do
+      entryObject <- requireObject "SpotPriceHistory[0]" firstEntry
+      price <- requireSpotPriceField "SpotPriceHistory[0]" entryObject
+      pure (SpotObserved price)
+
+requireSpotPriceField :: String -> Object -> Either String UsdPerHour
+requireSpotPriceField context objectValue =
+  case KeyMap.lookup (Key.fromString "SpotPrice") objectValue of
+    Just (String priceText) ->
+      case parseUsdPerHour priceText of
+        Left (UnobservableReason reason) -> Left (Text.unpack reason)
+        Right price -> Right price
+    Just (Number priceNumber) ->
+      case parseUsdPerHour (Text.pack (show (realToFrac priceNumber :: Double))) of
+        Left (UnobservableReason reason) -> Left (Text.unpack reason)
+        Right price -> Right price
+    _ -> Left (context ++ " missing required SpotPrice field")
+
+awsRegionQuotaPreflightFromStatuses :: [QuotaStatus] -> Either StorageCapacityRefusal ()
+awsRegionQuotaPreflightFromStatuses statuses =
+  regionQuotaPreflight (map quotaStatusRegionObservation statuses)
+
+quotaStatusRegionObservation :: QuotaStatus -> AwsRegionQuotaObservation
+quotaStatusRegionObservation status =
+  AwsRegionQuotaObservation
+    { regionQuotaName = quotaStatusDisplayName status
+    , regionQuotaCurrentValue = quotaStatusCurrentValue status
+    , regionQuotaTargetValue = quotaStatusTargetValue status
+    , regionQuotaMeetsTarget = quotaStatusMeetsTarget status
+    }
+
 applyAwsRequestQuotas :: FilePath -> AwsRequestQuotasInput -> IO [QuotaStatus]
 applyAwsRequestQuotas repoRoot input =
   mapM
@@ -2186,10 +2362,10 @@ configFromSetupInput currentConfig input =
           , pulumi_enable_dns_bootstrap = configSetupPulumiEnableDnsBootstrapInput input
           , public_edge_advertisement_mode = configSetupPublicEdgeAdvertisementModeInput input
           , public_edge_bgp_peers = configSetupPublicEdgeBgpPeersInput input
-          , envoy_gateway_controller_replicas = configSetupEnvoyGatewayControllerReplicasInput input
-          , envoy_gateway_data_plane_replicas = configSetupEnvoyGatewayDataPlaneReplicasInput input
-          , api_replicas = configSetupApiReplicasInput input
-          , websocket_replicas = configSetupWebsocketReplicasInput input
+          , envoy_gateway_controller_scaling = configSetupEnvoyGatewayControllerScalingInput input
+          , envoy_gateway_data_plane_scaling = configSetupEnvoyGatewayDataPlaneScalingInput input
+          , api_scaling = configSetupApiScalingInput input
+          , websocket_scaling = configSetupWebsocketScalingInput input
           }
     , storage = StorageSection {manual_pv_host_root = configSetupManualPvHostRootInput input}
     }
@@ -2241,12 +2417,12 @@ harnessConfigSetupInput repoRoot currentConfig policyTier = do
                   public_edge_advertisement_mode (deployment currentConfig)
               , configSetupPublicEdgeBgpPeersInput =
                   public_edge_bgp_peers (deployment currentConfig)
-              , configSetupEnvoyGatewayControllerReplicasInput =
-                  envoy_gateway_controller_replicas (deployment currentConfig)
-              , configSetupEnvoyGatewayDataPlaneReplicasInput =
-                  envoy_gateway_data_plane_replicas (deployment currentConfig)
-              , configSetupApiReplicasInput = api_replicas (deployment currentConfig)
-              , configSetupWebsocketReplicasInput = websocket_replicas (deployment currentConfig)
+              , configSetupEnvoyGatewayControllerScalingInput =
+                  envoy_gateway_controller_scaling (deployment currentConfig)
+              , configSetupEnvoyGatewayDataPlaneScalingInput =
+                  envoy_gateway_data_plane_scaling (deployment currentConfig)
+              , configSetupApiScalingInput = api_scaling (deployment currentConfig)
+              , configSetupWebsocketScalingInput = websocket_scaling (deployment currentConfig)
               , configSetupManualPvHostRootInput = manual_pv_host_root (storage currentConfig)
               , configSetupPolicyTierInput = policyTier
               }

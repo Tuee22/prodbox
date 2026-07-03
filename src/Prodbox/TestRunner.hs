@@ -2,14 +2,28 @@
 
 module Prodbox.TestRunner
   ( runTests
+  , ClusterEvidence (..)
+  , TestGate (..)
+  , TestDeleteTarget (..)
+  , TestRefusal (..)
   , clearOperationalCredsAfterPostflight
+  , guardTestDelete
   , integrationRunbookCommandArgs
   , PublicEdgeCertificateFailure (..)
   , awsSubstrateBootstrapCommandArgs
   , awsPostflightDestroyCommandArgs
   , publicEdgeCertificateReissueStatusPatch
+  , renderTestRefusal
   , supportedRuntimeBootstrapNeedsReconcile
   , supportedRuntimeBootstrapNeedsKeycloakSmtpSync
+  , testModePreflightAtPaths
+  , testModePreflightAtPath
+  , testTopologyModeGate
+  , testProductionConfigGate
+  , testProductionClusterGate
+  , topologyRunConfig
+  , topologyVariantEnvironment
+  , testScopeForTopologySuite
   )
 where
 
@@ -18,18 +32,22 @@ import Control.Exception
   ( SomeException
   , bracket_
   , displayException
+  , finally
   , throwIO
   , try
   )
 import Control.Monad (foldM, unless)
 import Data.Aeson (encode, object, (.=))
 import Data.ByteString.Lazy.Char8 qualified as BL8
+import Data.Char qualified as Char
 import Data.List (dropWhileEnd, isInfixOf, isPrefixOf)
 import Data.Text qualified as Text
 import Data.Time.Clock (getCurrentTime)
 import Data.Time.Format (defaultTimeLocale, formatTime)
 import Prodbox.Aws
-  ( regenerateConfigFromTestSecrets
+  ( ConfigSetupInput (..)
+  , configFromSetupInput
+  , regenerateConfigFromTestSecrets
   , runAwsIamHarnessSetup
   , runAwsIamHarnessTeardown
   )
@@ -40,7 +58,9 @@ import Prodbox.BuildSupport
   , syncBuiltOperatorBinary
   )
 import Prodbox.CLI.Command
-  ( PolicyTier
+  ( CoverageFlags (..)
+  , IntegrationSuite (..)
+  , PolicyTier (..)
   , TestCommand (..)
   , TestScope (..)
   , validateCoverage
@@ -52,8 +72,12 @@ import Prodbox.CLI.Output
   , writeOutput
   , writeOutputLine
   )
-import Prodbox.CLI.Rke2 (ensureGatewayMinioBootstrap)
+import Prodbox.CLI.Rke2
+  ( ensureGatewayMinioBootstrap
+  , rke2InstallPresent
+  )
 import Prodbox.CheckCode (runCheckCode)
+import Prodbox.Config.Tier0 qualified as Tier0
 import Prodbox.EffectDAG
   ( fromRootIds
   )
@@ -62,24 +86,50 @@ import Prodbox.EffectInterpreter
   , runEffectDAG
   )
 import Prodbox.Error (fatalError)
-import Prodbox.Infra.AwsEksTestStack (withEksKubeconfig)
+import Prodbox.Infra.AwsEksTestStack
+  ( awsEksCanonicalClusterName
+  , withEksKubeconfig
+  )
 import Prodbox.Infra.AwsSesStack qualified as AwsSesStack
 import Prodbox.Lib.ChartPlatform
   ( renderPublicEdgePreserveOutcome
   , retainReadyPublicEdgeCertificate
   )
+import Prodbox.Lib.Storage
+  ( testCaseDataRoot
+  , testDataRootRelative
+  , testManualPvHostRootEnv
+  )
+import Prodbox.Lifecycle.EbsVolume qualified as EbsVolume
+import Prodbox.Lifecycle.ResourceClass qualified as ResourceClass
 import Prodbox.Prerequisite
   ( prerequisiteRegistry
+  )
+import Prodbox.Repo
+  ( resolveTestTopologyConfigPath
+  , resolveTier0ConfigPath
   )
 import Prodbox.Result
   ( Result (..)
   )
 import Prodbox.Settings
-  ( ConfigFile (..)
+  ( AcmeSection (..)
+  , AwsCredentialsRef (..)
+  , ConfigFile (..)
+  , Credentials (..)
+  , DeploymentSection (..)
+  , DomainSection (..)
+  , Route53Section (..)
   , ValidatedSettings (..)
+  , acme
   , aws
+  , defaultConfigFile
+  , deployment
+  , domain
   , forceSyncInForceConfigFromFile
+  , loadTestTopology
   , resolveAwsCredentialsRefFromHostVault
+  , route53
   , validateAndLoadSettings
   )
 import Prodbox.Subprocess
@@ -97,7 +147,19 @@ import Prodbox.TestPlan
   , TestExecutionPlan (..)
   , testExecutionPlan
   )
+import Prodbox.TestTopology
+  ( TestSuite (..)
+  , TestTopology (..)
+  , defaultTestTopology
+  , renderTestTopologyDhall
+  )
 import Prodbox.TestValidation (runNativeValidation)
+import System.Directory
+  ( createDirectoryIfMissing
+  , doesDirectoryExist
+  , doesFileExist
+  , removePathForcibly
+  )
 import System.Environment
   ( getEnvironment
   , lookupEnv
@@ -106,6 +168,14 @@ import System.Environment
   )
 import System.Exit
   ( ExitCode (..)
+  )
+import System.FilePath
+  ( isAbsolute
+  , normalise
+  , splitDirectories
+  , takeDirectory
+  , takeFileName
+  , (</>)
   )
 
 phaseOneGateMessage :: String
@@ -151,24 +221,410 @@ data PublicEdgeCertificateFailure = PublicEdgeCertificateFailure
   }
   deriving (Eq, Show)
 
+data TestGate
+  = TestGateClear
+  | TestGateRefuse TestRefusal
+  deriving (Eq, Show)
+
+data ClusterEvidence = ClusterEvidence
+  { clusterEvidenceDescription :: String
+  }
+  deriving (Eq, Show)
+
+data TestDeleteTarget
+  = DeleteGeneratedRunConfig FilePath
+  | DeleteThisRunTestData FilePath
+  | DeletePerRunResidue String
+  deriving (Eq, Show)
+
+data TestRefusal
+  = ProductionConfigPresent FilePath
+  | ProductionClusterRunning ClusterEvidence
+  | TestDeleteOutsideTestData FilePath
+  | TestDeleteLongLivedResource String
+  | UnknownTopologySuite String
+  deriving (Eq, Show)
+
 runTests :: FilePath -> TestCommand -> IO ExitCode
 runTests repoRoot command =
   case validateCoverage (testCoverage command) of
     Left err -> failWith err
-    Right () -> do
-      baseEnvironment <- getEnvironment
-      environment <- addBuildSupportEnvironment repoRoot baseEnvironment
-      let plan = testExecutionPlan (testSubstrate command) (testScope command)
-      writeOutputLine ("Running prodbox test " ++ testPlanLabel plan ++ " (Haskell entrypoint)")
+    Right () ->
       case testScope command of
-        TestLint -> runLintFirst repoRoot environment
-        TestAll -> do
-          lintExit <- runLintFirst repoRoot environment
-          case lintExit of
-            ExitSuccess ->
-              runPlannedTests repoRoot environment plan
+        TestInit force -> runTopologyTestInit repoRoot force
+        TestRun suiteName -> runTopologyTestRun repoRoot suiteName (testCoverage command) (testSubstrate command)
+        _ -> do
+          preflightExit <- runTestModePreflight repoRoot
+          case preflightExit of
             failure@(ExitFailure _) -> pure failure
-        _ -> runPlannedTests repoRoot environment plan
+            ExitSuccess -> runLegacyTestCommand repoRoot command
+
+runLegacyTestCommand :: FilePath -> TestCommand -> IO ExitCode
+runLegacyTestCommand repoRoot command = do
+  baseEnvironment <- getEnvironment
+  environment <- addBuildSupportEnvironment repoRoot baseEnvironment
+  let plan = testExecutionPlan (testSubstrate command) (testScope command)
+  writeOutputLine ("Running prodbox test " ++ testPlanLabel plan ++ " (Haskell entrypoint)")
+  case testScope command of
+    TestLint -> runLintFirst repoRoot environment
+    TestAll -> do
+      lintExit <- runLintFirst repoRoot environment
+      case lintExit of
+        ExitSuccess ->
+          runPlannedTests repoRoot environment plan
+        failure@(ExitFailure _) -> pure failure
+    _ -> runPlannedTests repoRoot environment plan
+
+runTestModePreflight :: FilePath -> IO ExitCode
+runTestModePreflight repoRoot = do
+  productionConfigPath <- resolveTier0ConfigPath repoRoot
+  testTopologyPath <- resolveTestTopologyConfigPath repoRoot
+  gate <- testModePreflightAtPaths productionConfigPath testTopologyPath
+  case gate of
+    TestGateClear -> pure ExitSuccess
+    TestGateRefuse refusal -> failWith (renderTestRefusal refusal)
+
+testModePreflightAtPath :: FilePath -> IO TestGate
+testModePreflightAtPath productionConfigPath =
+  testProductionConfigGate productionConfigPath <$> doesFileExist productionConfigPath
+
+testModePreflightAtPaths :: FilePath -> FilePath -> IO TestGate
+testModePreflightAtPaths productionConfigPath testTopologyPath =
+  testTopologyModeGate productionConfigPath
+    <$> doesFileExist testTopologyPath
+    <*> doesFileExist productionConfigPath
+
+testTopologyModeGate :: FilePath -> Bool -> Bool -> TestGate
+testTopologyModeGate productionConfigPath testTopologyPresent productionConfigPresent =
+  if testTopologyPresent
+    then testProductionConfigGate productionConfigPath productionConfigPresent
+    else TestGateClear
+
+testProductionConfigGate :: FilePath -> Bool -> TestGate
+testProductionConfigGate productionConfigPath productionConfigPresent =
+  if productionConfigPresent
+    then TestGateRefuse (ProductionConfigPresent productionConfigPath)
+    else TestGateClear
+
+renderTestRefusal :: TestRefusal -> String
+renderTestRefusal refusal =
+  case refusal of
+    ProductionConfigPresent path ->
+      "Refusing to run tests while production binary-sibling config exists at `"
+        ++ path
+        ++ "`. Remove or move that production `prodbox.dhall` before running the test harness; "
+        ++ "topology-driven tests may create a disposable per-run config only after this gate clears."
+    ProductionClusterRunning evidence ->
+      "Refusing to run topology-driven tests while a production cluster appears to be running ("
+        ++ clusterEvidenceDescription evidence
+        ++ "). Stop or delete the production cluster before running `prodbox test init` or `prodbox test run`."
+    TestDeleteOutsideTestData path ->
+      "Refusing test cleanup target outside `"
+        ++ testDataRootRelative
+        ++ "`: "
+        ++ path
+    TestDeleteLongLivedResource resourceName ->
+      "Refusing test cleanup of long-lived resource `" ++ resourceName ++ "`."
+    UnknownTopologySuite suiteName ->
+      "Unknown test topology suite `" ++ suiteName ++ "`."
+
+runTopologyTestInit :: FilePath -> Bool -> IO ExitCode
+runTopologyTestInit repoRoot force = do
+  preflightExit <- runTopologyCommandPreflight repoRoot
+  case preflightExit of
+    failure@(ExitFailure _) -> pure failure
+    ExitSuccess -> do
+      topologyPath <- resolveTestTopologyConfigPath repoRoot
+      exists <- doesFileExist topologyPath
+      if exists && not force
+        then
+          failWith
+            ( "Refusing to overwrite existing test topology `"
+                ++ topologyPath
+                ++ "`. Re-run with `--force` to replace it."
+            )
+        else do
+          createDirectoryIfMissing True (takeDirectory topologyPath)
+          writeFile
+            topologyPath
+            (renderTestTopologyDhall (repoRoot </> "dhall" </> "TestTopologySchema.dhall") defaultTestTopology)
+          writeOutputLine ("Wrote test topology: " ++ topologyPath)
+          pure ExitSuccess
+
+runTopologyTestRun :: FilePath -> String -> CoverageFlags -> Substrate -> IO ExitCode
+runTopologyTestRun repoRoot requestedSuite coverage substrate = do
+  preflightExit <- runTopologyCommandPreflight repoRoot
+  case preflightExit of
+    failure@(ExitFailure _) -> pure failure
+    ExitSuccess -> do
+      topologyResult <- loadTestTopology repoRoot
+      case topologyResult of
+        Left err -> failWith err
+        Right topology ->
+          case selectTopologySuites requestedSuite topology of
+            Left refusal -> failWith (renderTestRefusal refusal)
+            Right suites -> do
+              baseEnvironment <- getEnvironment
+              environment <- addBuildSupportEnvironment repoRoot baseEnvironment
+              foldM (runTopologySuite repoRoot environment coverage substrate) ExitSuccess suites
+
+runTopologyCommandPreflight :: FilePath -> IO ExitCode
+runTopologyCommandPreflight repoRoot = do
+  productionConfigPath <- resolveTier0ConfigPath repoRoot
+  configGate <- testModePreflightAtPath productionConfigPath
+  case configGate of
+    TestGateRefuse refusal -> failWith (renderTestRefusal refusal)
+    TestGateClear -> do
+      clusterPresent <- rke2InstallPresent
+      case testProductionClusterGate clusterPresent of
+        TestGateClear -> pure ExitSuccess
+        TestGateRefuse refusal -> failWith (renderTestRefusal refusal)
+
+testProductionClusterGate :: Bool -> TestGate
+testProductionClusterGate clusterPresent =
+  if clusterPresent
+    then
+      TestGateRefuse
+        ( ProductionClusterRunning
+            ClusterEvidence
+              { clusterEvidenceDescription = "RKE2 install marker present"
+              }
+        )
+    else TestGateClear
+
+selectTopologySuites :: String -> TestTopology -> Either TestRefusal [TestSuite]
+selectTopologySuites requestedSuite topology
+  | requestedSuite == "all" = Right (topologySuites topology)
+  | otherwise =
+      case filter ((== Text.pack requestedSuite) . suiteName) (topologySuites topology) of
+        [] -> Left (UnknownTopologySuite requestedSuite)
+        suites -> Right suites
+
+runTopologySuite
+  :: FilePath
+  -> [(String, String)]
+  -> CoverageFlags
+  -> Substrate
+  -> ExitCode
+  -> TestSuite
+  -> IO ExitCode
+runTopologySuite _ _ _ _ failure@(ExitFailure _) _ = pure failure
+runTopologySuite repoRoot environment coverage substrate ExitSuccess suite = do
+  case testScopeForTopologySuite (Text.unpack (suiteName suite)) of
+    Left err -> failWith err
+    Right scope -> do
+      let variants = zip [(1 :: Int) ..] (suiteVariants suite)
+      foldM (runTopologyVariant repoRoot environment coverage substrate scope suite) ExitSuccess variants
+
+runTopologyVariant
+  :: FilePath
+  -> [(String, String)]
+  -> CoverageFlags
+  -> Substrate
+  -> TestScope
+  -> TestSuite
+  -> ExitCode
+  -> (Int, a)
+  -> IO ExitCode
+runTopologyVariant _ _ _ _ _ _ failure@(ExitFailure _) _ = pure failure
+runTopologyVariant repoRoot environment coverage substrate scope suite ExitSuccess (variantIndex, _) = do
+  let caseId = topologyCaseId (Text.unpack (suiteName suite)) variantIndex
+      testDataPath = repoRoot </> testCaseDataRoot caseId
+      variantEnvironment = topologyVariantEnvironment testDataPath coverage environment
+  generatedConfigPath <- resolveTier0ConfigPath repoRoot
+  let cleanupTargets =
+        [ DeleteGeneratedRunConfig generatedConfigPath
+        , DeleteThisRunTestData testDataPath
+        ]
+  createDirectoryIfMissing True testDataPath
+  ( do
+      configWriteResult <- writeTopologyVariantConfig repoRoot testDataPath
+      case configWriteResult of
+        Left err -> failWith err
+        Right () -> do
+          writeOutputLine
+            ( "Running topology suite `"
+                ++ Text.unpack (suiteName suite)
+                ++ "` variant "
+                ++ show variantIndex
+                ++ " with test data root "
+                ++ testDataPath
+            )
+          runPlannedTests repoRoot variantEnvironment (testExecutionPlan substrate scope)
+    )
+    `finally` cleanupTestDeleteTargets repoRoot cleanupTargets
+
+topologyVariantEnvironment :: FilePath -> CoverageFlags -> [(String, String)] -> [(String, String)]
+topologyVariantEnvironment testDataPath coverage environment =
+  withCoverageThreshold (withCoverage (withRoot environment))
+ where
+  withRoot = upsertEnv testManualPvHostRootEnv testDataPath
+  withCoverage =
+    if coverageEnabled coverage
+      then upsertEnv "PRODBOX_TEST_COVERAGE" "1"
+      else id
+  withCoverageThreshold =
+    case coverageFailUnder coverage of
+      Nothing -> id
+      Just threshold -> upsertEnv "PRODBOX_TEST_COVERAGE_FAIL_UNDER" (show threshold)
+
+upsertEnv :: String -> String -> [(String, String)] -> [(String, String)]
+upsertEnv name value environment =
+  (name, value) : filter ((/= name) . fst) environment
+
+writeTopologyVariantConfig :: FilePath -> FilePath -> IO (Either String ())
+writeTopologyVariantConfig repoRoot testDataPath = do
+  result <- Tier0.writeOperatorParametersToTier0 repoRoot (topologyRunConfig testDataPath)
+  case result of
+    Left err -> pure (Left err)
+    Right () -> pure (Right ())
+
+topologyRunConfig :: FilePath -> ConfigFile
+topologyRunConfig testDataPath =
+  configFromSetupInput defaultConfigFile (topologyConfigSetupInput testDataPath)
+
+topologyConfigSetupInput :: FilePath -> ConfigSetupInput
+topologyConfigSetupInput testDataPath =
+  ConfigSetupInput
+    { configSetupAdminCredentialsInput =
+        Credentials
+          { access_key_id = ""
+          , secret_access_key = ""
+          , session_token = Nothing
+          , region = awsCredentialRegion (aws defaultConfigFile)
+          }
+    , configSetupRoute53ZoneIdInput = zone_id (route53 defaultConfigFile)
+    , configSetupDemoFqdnInput = demo_fqdn (domain defaultConfigFile)
+    , configSetupDemoTtlInput = demo_ttl (domain defaultConfigFile)
+    , configSetupAcmeEmailInput = email (acme defaultConfigFile)
+    , configSetupAcmeServerInput = server (acme defaultConfigFile)
+    , configSetupAcmeEabKeyIdInput = Nothing
+    , configSetupAcmeEabHmacKeyInput = Nothing
+    , configSetupDevModeInput = dev_mode (deployment defaultConfigFile)
+    , configSetupBootstrapPublicIpOverrideInput =
+        bootstrap_public_ip_override (deployment defaultConfigFile)
+    , configSetupPulumiEnableDnsBootstrapInput =
+        pulumi_enable_dns_bootstrap (deployment defaultConfigFile)
+    , configSetupPublicEdgeAdvertisementModeInput =
+        public_edge_advertisement_mode (deployment defaultConfigFile)
+    , configSetupPublicEdgeBgpPeersInput =
+        public_edge_bgp_peers (deployment defaultConfigFile)
+    , configSetupEnvoyGatewayControllerScalingInput =
+        envoy_gateway_controller_scaling (deployment defaultConfigFile)
+    , configSetupEnvoyGatewayDataPlaneScalingInput =
+        envoy_gateway_data_plane_scaling (deployment defaultConfigFile)
+    , configSetupApiScalingInput = api_scaling (deployment defaultConfigFile)
+    , configSetupWebsocketScalingInput = websocket_scaling (deployment defaultConfigFile)
+    , configSetupManualPvHostRootInput = Text.pack testDataPath
+    , configSetupPolicyTierInput = PolicyFull
+    }
+
+testScopeForTopologySuite :: String -> Either String TestScope
+testScopeForTopologySuite suiteName =
+  case suiteName of
+    "lint" -> Right TestLint
+    "unit" -> Right TestUnit
+    "integration-all" -> Right (TestIntegration IntegrationAll)
+    "cli" -> Right (TestIntegration IntegrationCli)
+    "aws-iam" -> Right (TestIntegration IntegrationAwsIam)
+    "dns-aws" -> Right (TestIntegration IntegrationDnsAws)
+    "aws-eks" -> Right (TestIntegration IntegrationAwsEks)
+    "env" -> Right (TestIntegration IntegrationEnv)
+    "gateway-daemon" -> Right (TestIntegration IntegrationGatewayDaemon)
+    "gateway-pods" -> Right (TestIntegration IntegrationGatewayPods)
+    "gateway-partition" -> Right (TestIntegration IntegrationGatewayPartition)
+    "ha-rke2-aws" -> Right (TestIntegration IntegrationHaRke2Aws)
+    "lifecycle" -> Right (TestIntegration IntegrationLifecycle)
+    "pulumi" -> Right (TestIntegration IntegrationPulumi)
+    "eks-volume-rebind" -> Right (TestIntegration IntegrationEksVolumeRebind)
+    "charts-storage" -> Right (TestIntegration IntegrationChartsStorage)
+    "charts-platform" -> Right (TestIntegration IntegrationChartsPlatform)
+    "charts-vscode" -> Right (TestIntegration IntegrationChartsVscode)
+    "charts-api" -> Right (TestIntegration IntegrationChartsApi)
+    "charts-websocket" -> Right (TestIntegration IntegrationChartsWebsocket)
+    "admin-routes" -> Right (TestIntegration IntegrationAdminRoutes)
+    "public-dns" -> Right (TestIntegration IntegrationPublicDns)
+    "keycloak-invite" -> Right (TestIntegration IntegrationKeycloakInvite)
+    "sealed-vault" -> Right (TestIntegration IntegrationSealedVault)
+    _ -> Left ("test topology suite `" ++ suiteName ++ "` is not mapped to a supported test scope")
+
+topologyCaseId :: String -> Int -> FilePath
+topologyCaseId suiteName variantIndex =
+  sanitizeSegment suiteName </> ("variant-" ++ show variantIndex)
+
+sanitizeSegment :: String -> String
+sanitizeSegment raw =
+  case map sanitizeChar raw of
+    "" -> "unnamed"
+    sanitized -> sanitized
+ where
+  sanitizeChar char
+    | Char.isAlphaNum char = char
+    | char == '-' = char
+    | otherwise = '-'
+
+cleanupTestDeleteTargets :: FilePath -> [TestDeleteTarget] -> IO ()
+cleanupTestDeleteTargets repoRoot targets =
+  mapM_ cleanup targets
+ where
+  cleanup target =
+    case guardTestDelete repoRoot target of
+      Left refusal -> writeDiagnosticLine (renderTestRefusal refusal)
+      Right allowed ->
+        case allowed of
+          DeleteGeneratedRunConfig path -> removeFileIfPresent path
+          DeleteThisRunTestData path -> removeDirectoryIfPresent path
+          DeletePerRunResidue _ -> pure ()
+
+removeFileIfPresent :: FilePath -> IO ()
+removeFileIfPresent path = do
+  exists <- doesFileExist path
+  if exists then removePathForcibly path else pure ()
+
+removeDirectoryIfPresent :: FilePath -> IO ()
+removeDirectoryIfPresent path = do
+  exists <- doesDirectoryExist path
+  if exists then removePathForcibly path else pure ()
+
+guardTestDelete :: FilePath -> TestDeleteTarget -> Either TestRefusal TestDeleteTarget
+guardTestDelete repoRoot target =
+  case target of
+    DeleteGeneratedRunConfig path ->
+      if pathWithinBuildRoot repoRoot path && takeFileName path == "prodbox.dhall"
+        then Right target
+        else Left (TestDeleteOutsideTestData path)
+    DeleteThisRunTestData path ->
+      if pathWithinTestDataRoot repoRoot path
+        then Right target
+        else Left (TestDeleteOutsideTestData path)
+    DeletePerRunResidue resourceName ->
+      if resourceName `elem` ResourceClass.resourceNamesOfClass ResourceClass.PerRun
+        then Right target
+        else Left (TestDeleteLongLivedResource resourceName)
+
+pathWithinTestDataRoot :: FilePath -> FilePath -> Bool
+pathWithinTestDataRoot repoRoot path =
+  ".." `notElem` splitDirectories path
+    && let normalized =
+             normalise
+               ( if isAbsolute path
+                   then path
+                   else repoRoot </> path
+               )
+           normalizedRoot = normalise (repoRoot </> testDataRootRelative)
+        in normalized == normalizedRoot || (normalizedRoot ++ "/") `isPrefixOf` normalized
+
+pathWithinBuildRoot :: FilePath -> FilePath -> Bool
+pathWithinBuildRoot repoRoot path =
+  ".." `notElem` splitDirectories path
+    && let normalized =
+             normalise
+               ( if isAbsolute path
+                   then path
+                   else repoRoot </> path
+               )
+           normalizedRoot = normalise (repoRoot </> ".build")
+        in normalized == normalizedRoot || (normalizedRoot ++ "/") `isPrefixOf` normalized
 
 runPlannedTests :: FilePath -> [(String, String)] -> TestExecutionPlan -> IO ExitCode
 runPlannedTests repoRoot environment plan =
@@ -398,6 +854,7 @@ awsPostflightDestroyActions repoRoot environment suitePlan =
         -- preserving the operational credentials for manual recovery as before.
         : runNativeCliCommandForExitCode repoRoot environment ["vault", "unseal"]
         : map (runNativeCliCommandForExitCode repoRoot environment) commands
+        ++ [runTestScopedEbsReaperAction repoRoot environment]
 
 awsPostflightDestroyCommandArgs :: NativeSuitePlan -> [[String]]
 awsPostflightDestroyCommandArgs suitePlan =
@@ -408,6 +865,23 @@ awsPostflightDestroyCommandArgs suitePlan =
       , ["aws", "stack", "test", "destroy", "--yes"]
       ]
     else []
+
+runTestScopedEbsReaperAction :: FilePath -> [(String, String)] -> IO ExitCode
+runTestScopedEbsReaperAction repoRoot environment = do
+  result <-
+    EbsVolume.runTestScopedEbsReaper
+      EbsVolume.TestEbsReaperInput
+        { EbsVolume.testEbsReaperEnvironment = environment
+        , EbsVolume.testEbsReaperWorkingDirectory = Just repoRoot
+        , EbsVolume.testEbsReaperClusterName = awsEksCanonicalClusterName
+        }
+  case result of
+    Left err -> do
+      writeDiagnosticLine ("Test-scoped EBS reaper failed: " ++ err)
+      pure (ExitFailure 1)
+    Right report -> do
+      writeOutputLine (EbsVolume.renderTestScopedEbsReaperReport report)
+      pure ExitSuccess
 
 nativeMayProvisionPerRunAwsStacks :: NativeSuitePlan -> Bool
 nativeMayProvisionPerRunAwsStacks suitePlan =
@@ -421,6 +895,7 @@ validationMayProvisionPerRunAwsStacks validation =
     ValidationAwsEks -> True
     ValidationPulumi -> True
     ValidationHaRke2Aws -> True
+    ValidationEksVolumeRebind -> True
     _ -> False
 
 runNativeSuiteBody :: FilePath -> [(String, String)] -> [String] -> NativeSuitePlan -> IO ExitCode

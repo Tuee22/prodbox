@@ -182,7 +182,9 @@ in-cluster role.
 
 This native-host-architecture image publication extends across the macOS (Lima) and Windows
 (WSL2) host providers per [host_platform_doctrine.md](./host_platform_doctrine.md): the build runs
-inside the OS-appropriate Linux frame, so everything Docker-inward stays OS-agnostic Linux.
+inside the OS-appropriate Linux frame, so everything Docker-inward stays OS-agnostic Linux. Sprint
+`4.37` lands the pure `Prodbox.DockerConfig.dockerLinuxFrameDispatch` helper that re-invokes
+prodbox directly on Linux and through the Lima/WSL2 frame on non-Linux hosts.
 
 Container build requirements:
 

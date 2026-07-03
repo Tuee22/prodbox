@@ -211,6 +211,7 @@ data AwsCommand
   | AwsTeardown PlanOptions AwsTeardownFlags
   | AwsCheckQuotas
   | AwsRequestQuotas PolicyTier
+  | AwsReapTestEbs Bool
   deriving (Eq, Show)
 
 -- | Operator-facing flags on @prodbox aws teardown@. Sprint 7.7
@@ -375,7 +376,9 @@ data TestCommand = TestCommand
   deriving (Eq, Show)
 
 data TestScope
-  = TestAll
+  = TestInit Bool
+  | TestRun String
+  | TestAll
   | TestLint
   | TestUnit
   | TestIntegration IntegrationSuite
@@ -394,6 +397,7 @@ data IntegrationSuite
   | IntegrationHaRke2Aws
   | IntegrationLifecycle
   | IntegrationPulumi
+  | IntegrationEksVolumeRebind
   | IntegrationChartsStorage
   | IntegrationChartsPlatform
   | IntegrationChartsVscode

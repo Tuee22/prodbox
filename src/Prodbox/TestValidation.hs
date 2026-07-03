@@ -3,9 +3,13 @@
 module Prodbox.TestValidation
   ( runNativeValidation
   , SealedVaultAuditInput (..)
+  , VolumeRebindSnapshot (..)
   , defaultSealedVaultAuditInput
+  , parseVolumeRebindSnapshot
+  , sealedVaultHostDiskRoot
   , sealedVaultAuditReport
   , sealedVaultForbiddenPatterns
+  , volumeRebindReport
   , verifyAwsTestSshReachability
   , assertInviteOidcClaims
   , renderGatewayValidationConfigDhall
@@ -26,6 +30,7 @@ import Control.Monad (foldM)
 import Data.Aeson
   ( Value (..)
   , eitherDecode
+  , object
   )
 import Data.Aeson.Key qualified as Key
 import Data.Aeson.KeyMap qualified as KeyMap
@@ -72,6 +77,10 @@ import Prodbox.CLI.Output
   , writeOutput
   , writeOutputLine
   )
+import Prodbox.CLI.Rke2
+  ( RetainedStorageInventoryEntry (..)
+  , retainedStorageInventoryEntries
+  )
 import Prodbox.Dns
   ( configuredPublicHostFqdns
   , fetchPublicIp
@@ -92,6 +101,7 @@ import Prodbox.Gateway.Types
   , PeerEndpoint (..)
   , appendIfNew
   , canWriteDns
+  , cborPayloadFromJsonValue
   , defaultMaxClockSkewSeconds
   , emptyCommitLog
   , eventTypeClaim
@@ -103,6 +113,10 @@ import Prodbox.Infra.AwsTestStack qualified as AwsTest
 import Prodbox.Infra.StackOutputs (StackName (..))
 import Prodbox.Keycloak.CredentialSetupForm qualified as CredentialSetupForm
 import Prodbox.Keycloak.Email qualified
+import Prodbox.Lib.Storage
+  ( defaultChartDataRootRelative
+  , testManualPvHostRootEnv
+  )
 import Prodbox.Lifecycle.LiveResidue
   ( awsEksTestStackName
   , awsTestStackName
@@ -157,6 +171,7 @@ import System.Environment
 import System.Exit
   ( ExitCode (..)
   )
+import System.FilePath ((</>))
 import System.IO
   ( hClose
   , openTempFile
@@ -408,6 +423,8 @@ runNativeValidation substrate repoRoot environment validation = do
               ["charts", "delete", "vscode", "--yes"]
               ["CHART_DELETION", "HOST_STORAGE_PRESERVED=true"]
           ]
+      ValidationEksVolumeRebind ->
+        runEksVolumeRebindValidation repoRoot environment substrate
       ValidationLifecycle ->
         -- The Sprint 4.11 `noLivePerRunPulumiStacks` predicate guards
         -- `rke2 delete --yes` against orphaning per-run AWS stacks.
@@ -541,7 +558,7 @@ runSealedVaultAssertions repoRoot environment =
 
 runSealedVaultHostAndK8sAudit :: FilePath -> IO ExitCode
 runSealedVaultHostAndK8sAudit repoRoot = do
-  let minioRoot = repoRoot ++ "/.data/prodbox/minio/0"
+  minioRoot <- sealedVaultHostDiskRoot repoRoot
   minioExists <- doesDirectoryExist minioRoot
   if not minioExists
     then failWith ("MinIO hostPath root missing for sealed-Vault audit: " ++ minioRoot)
@@ -574,6 +591,286 @@ runSealedVaultHostAndK8sAudit repoRoot = do
                   { sealedVaultHostDiskEntries = hostEntries
                   , sealedVaultKubernetesObjectNames = filter (/= "") (lines k8sOutput)
                   }
+
+sealedVaultHostDiskRoot :: FilePath -> IO FilePath
+sealedVaultHostDiskRoot repoRoot = do
+  maybeTestRoot <- lookupEnv testManualPvHostRootEnv
+  let manualPvRoot =
+        case maybeTestRoot of
+          Just testRoot | not (null testRoot) -> testRoot
+          _ -> repoRoot </> defaultChartDataRootRelative
+  pure (manualPvRoot </> "prodbox" </> "minio" </> "0")
+
+data VolumeRebindSnapshot = VolumeRebindSnapshot
+  { volumeRebindSnapshotPersistentVolume :: String
+  , volumeRebindSnapshotClaimNamespace :: String
+  , volumeRebindSnapshotPersistentClaim :: String
+  , volumeRebindSnapshotPhase :: String
+  , volumeRebindSnapshotVolumeHandle :: Maybe String
+  }
+  deriving (Eq, Show)
+
+runEksVolumeRebindValidation :: FilePath -> [(String, String)] -> Substrate -> IO ExitCode
+runEksVolumeRebindValidation repoRoot environment substrate = do
+  fixture <- lookupEnv "PRODBOX_TEST_VOLUME_REBIND"
+  case fixture of
+    Just "pass" -> emitVolumeRebindReport fixtureBefore fixtureAfter fixtureSentinel fixtureSentinel
+    Just other -> failWith ("unknown PRODBOX_TEST_VOLUME_REBIND fixture: " ++ other)
+    Nothing ->
+      case selectVolumeRebindEntry substrate of
+        Left err -> failWith err
+        Right entry -> do
+          let sentinel = volumeRebindSentinel substrate
+          beforeResult <- captureVolumeRebindSnapshot repoRoot entry
+          case beforeResult of
+            Left err -> failWith err
+            Right before -> do
+              writeExit <- writeVolumeRebindSentinel repoRoot entry sentinel
+              case writeExit of
+                failure@(ExitFailure _) -> pure failure
+                ExitSuccess -> do
+                  restartExit <- restartVolumeRebindSubstrate repoRoot environment substrate
+                  case restartExit of
+                    failure@(ExitFailure _) -> pure failure
+                    ExitSuccess ->
+                      withSubstrateKubeconfigEnv repoRoot substrate $ do
+                        afterResult <- captureVolumeRebindSnapshot repoRoot entry
+                        case afterResult of
+                          Left err -> failWith err
+                          Right after -> do
+                            observedResult <- readVolumeRebindSentinel repoRoot entry
+                            case observedResult of
+                              Left err -> failWith err
+                              Right observed -> emitVolumeRebindReport before after sentinel observed
+ where
+  fixtureSentinel = "prodbox-volume-rebind-fixture"
+  fixtureBefore =
+    VolumeRebindSnapshot
+      { volumeRebindSnapshotPersistentVolume = "pv-prodbox-minio-0"
+      , volumeRebindSnapshotClaimNamespace = "prodbox"
+      , volumeRebindSnapshotPersistentClaim = "data-minio-0"
+      , volumeRebindSnapshotPhase = "Bound"
+      , volumeRebindSnapshotVolumeHandle = Just "vol-fixture"
+      }
+  fixtureAfter = fixtureBefore
+
+selectVolumeRebindEntry :: Substrate -> Either String RetainedStorageInventoryEntry
+selectVolumeRebindEntry substrate =
+  case filter ((== "data-minio-0") . retainedStorageInventoryPersistentClaim) entries of
+    entry : _ -> Right entry
+    [] ->
+      Left
+        ( "retained storage inventory for substrate `"
+            ++ substrateId substrate
+            ++ "` does not include the MinIO claim data-minio-0"
+        )
+ where
+  entries = retainedStorageInventoryEntries substrate
+
+volumeRebindSentinel :: Substrate -> String
+volumeRebindSentinel substrate =
+  "prodbox-volume-rebind-" ++ substrateId substrate
+
+captureVolumeRebindSnapshot
+  :: FilePath -> RetainedStorageInventoryEntry -> IO (Either String VolumeRebindSnapshot)
+captureVolumeRebindSnapshot repoRoot entry = do
+  result <-
+    runJsonCommand
+      Subprocess
+        { subprocessPath = "kubectl"
+        , subprocessArguments =
+            [ "get"
+            , "pv"
+            , retainedStorageInventoryPersistentVolume entry
+            , "-o"
+            , "json"
+            ]
+        , subprocessEnvironment = Nothing
+        , subprocessWorkingDirectory = Just repoRoot
+        }
+  pure (result >>= parseVolumeRebindSnapshot)
+
+parseVolumeRebindSnapshot :: Value -> Either String VolumeRebindSnapshot
+parseVolumeRebindSnapshot value = do
+  pvName <- jsonStringAt ["metadata", "name"] value
+  claimNamespace <- jsonStringAt ["spec", "claimRef", "namespace"] value
+  claimName <- jsonStringAt ["spec", "claimRef", "name"] value
+  phase <- jsonStringAt ["status", "phase"] value
+  csiHandle <- jsonMaybeStringAt ["spec", "csi", "volumeHandle"] value
+  awsHandle <- jsonMaybeStringAt ["spec", "awsElasticBlockStore", "volumeID"] value
+  let volumeHandle =
+        case csiHandle of
+          Just _ -> csiHandle
+          Nothing -> awsHandle
+  pure
+    VolumeRebindSnapshot
+      { volumeRebindSnapshotPersistentVolume = pvName
+      , volumeRebindSnapshotClaimNamespace = claimNamespace
+      , volumeRebindSnapshotPersistentClaim = claimName
+      , volumeRebindSnapshotPhase = phase
+      , volumeRebindSnapshotVolumeHandle = volumeHandle
+      }
+
+writeVolumeRebindSentinel
+  :: FilePath -> RetainedStorageInventoryEntry -> String -> IO ExitCode
+writeVolumeRebindSentinel repoRoot entry sentinel =
+  runCommandForExitCode
+    Subprocess
+      { subprocessPath = "kubectl"
+      , subprocessArguments =
+          [ "-n"
+          , retainedStorageInventoryNamespace entry
+          , "exec"
+          , "statefulset/minio"
+          , "--"
+          , "sh"
+          , "-c"
+          , "mkdir -p /export/prodbox-volume-rebind && printf '%s' \"$1\" > /export/prodbox-volume-rebind/sentinel"
+          , "sh"
+          , sentinel
+          ]
+      , subprocessEnvironment = Nothing
+      , subprocessWorkingDirectory = Just repoRoot
+      }
+
+readVolumeRebindSentinel
+  :: FilePath -> RetainedStorageInventoryEntry -> IO (Either String String)
+readVolumeRebindSentinel repoRoot entry =
+  runTextCommand
+    Subprocess
+      { subprocessPath = "kubectl"
+      , subprocessArguments =
+          [ "-n"
+          , retainedStorageInventoryNamespace entry
+          , "exec"
+          , "statefulset/minio"
+          , "--"
+          , "cat"
+          , "/export/prodbox-volume-rebind/sentinel"
+          ]
+      , subprocessEnvironment = Nothing
+      , subprocessWorkingDirectory = Just repoRoot
+      }
+
+restartVolumeRebindSubstrate
+  :: FilePath -> [(String, String)] -> Substrate -> IO ExitCode
+restartVolumeRebindSubstrate repoRoot environment substrate =
+  case substrate of
+    SubstrateHomeLocal ->
+      runSequentially
+        [ runNativeCliCommandForExitCode repoRoot environment ["cluster", "delete", "--yes"]
+        , runNativeCliCommandForExitCode repoRoot environment ["cluster", "reconcile", "--with-edge"]
+        , runNativeCliCommandForExitCode repoRoot environment ["vault", "unseal"]
+        , runNativeCliCommandForExitCode repoRoot environment ["cluster", "health"]
+        ]
+    SubstrateAws ->
+      runSequentially
+        [ runNativeCliCommandForExitCode repoRoot environment ["aws", "stack", "eks", "destroy", "--yes"]
+        , runNativeCliCommandForExitCode repoRoot environment ["aws", "stack", "eks", "reconcile"]
+        ]
+
+emitVolumeRebindReport
+  :: VolumeRebindSnapshot -> VolumeRebindSnapshot -> String -> String -> IO ExitCode
+emitVolumeRebindReport before after expectedSentinel observedSentinel =
+  case volumeRebindReport before after expectedSentinel observedSentinel of
+    Left err -> failWith err
+    Right report -> do
+      writeOutput report
+      pure ExitSuccess
+
+volumeRebindReport
+  :: VolumeRebindSnapshot -> VolumeRebindSnapshot -> String -> String -> Either String String
+volumeRebindReport before after expectedSentinel observedSentinel = do
+  requireEqual
+    "persistent volume"
+    (volumeRebindSnapshotPersistentVolume before)
+    (volumeRebindSnapshotPersistentVolume after)
+  requireEqual
+    "claim namespace"
+    (volumeRebindSnapshotClaimNamespace before)
+    (volumeRebindSnapshotClaimNamespace after)
+  requireEqual
+    "persistent claim"
+    (volumeRebindSnapshotPersistentClaim before)
+    (volumeRebindSnapshotPersistentClaim after)
+  requireEqual "before binding phase" "Bound" (volumeRebindSnapshotPhase before)
+  requireEqual "after binding phase" "Bound" (volumeRebindSnapshotPhase after)
+  requireVolumeHandleRebound
+    (volumeRebindSnapshotVolumeHandle before)
+    (volumeRebindSnapshotVolumeHandle after)
+  requireEqual "sentinel" expectedSentinel observedSentinel
+  pure
+    ( unlines
+        [ "VOLUME_REBIND_VALIDATION"
+        , "PV=" ++ volumeRebindSnapshotPersistentVolume after
+        , "PVC="
+            ++ volumeRebindSnapshotClaimNamespace after
+            ++ "/"
+            ++ volumeRebindSnapshotPersistentClaim after
+        , "PHASE_BEFORE=" ++ volumeRebindSnapshotPhase before
+        , "PHASE_AFTER=" ++ volumeRebindSnapshotPhase after
+        , "VOLUME_HANDLE=" ++ maybe "none" id (volumeRebindSnapshotVolumeHandle after)
+        , "SENTINEL=preserved"
+        ]
+    )
+
+requireVolumeHandleRebound :: Maybe String -> Maybe String -> Either String ()
+requireVolumeHandleRebound before after =
+  case (before, after) of
+    (Nothing, Nothing) -> Right ()
+    (Just beforeHandle, Just afterHandle) ->
+      requireEqual "volume handle" beforeHandle afterHandle
+    (Just beforeHandle, Nothing) ->
+      Left ("volume handle disappeared after rebind: " ++ beforeHandle)
+    (Nothing, Just afterHandle) ->
+      Left ("volume handle appeared only after rebind: " ++ afterHandle)
+
+requireEqual :: String -> String -> String -> Either String ()
+requireEqual label expected actual =
+  if expected == actual
+    then Right ()
+    else Left (label ++ " mismatch: expected `" ++ expected ++ "`, observed `" ++ actual ++ "`")
+
+jsonStringAt :: [String] -> Value -> Either String String
+jsonStringAt path value = do
+  fieldValue <- jsonValueAt path value
+  case fieldValue of
+    String jsonText ->
+      let stripped = Text.strip jsonText
+       in if Text.null stripped
+            then Left ("JSON field `" ++ intercalate "." path ++ "` is empty")
+            else Right (Text.unpack stripped)
+    _ -> Left ("JSON field `" ++ intercalate "." path ++ "` is not a string")
+
+jsonMaybeStringAt :: [String] -> Value -> Either String (Maybe String)
+jsonMaybeStringAt path value =
+  case jsonValueAtMaybe path value of
+    Left err -> Left err
+    Right Nothing -> Right Nothing
+    Right (Just Null) -> Right Nothing
+    Right (Just (String jsonText)) ->
+      let stripped = Text.strip jsonText
+       in if Text.null stripped
+            then Right Nothing
+            else Right (Just (Text.unpack stripped))
+    Right (Just _) -> Left ("JSON field `" ++ intercalate "." path ++ "` is not a string")
+
+jsonValueAt :: [String] -> Value -> Either String Value
+jsonValueAt path value =
+  case jsonValueAtMaybe path value of
+    Left err -> Left err
+    Right (Just fieldValue) -> Right fieldValue
+    Right Nothing -> Left ("JSON field `" ++ intercalate "." path ++ "` is missing")
+
+jsonValueAtMaybe :: [String] -> Value -> Either String (Maybe Value)
+jsonValueAtMaybe [] value = Right (Just value)
+jsonValueAtMaybe (key : rest) value =
+  case value of
+    Object objectValue ->
+      case KeyMap.lookup (Key.fromString key) objectValue of
+        Nothing -> Right Nothing
+        Just child -> jsonValueAtMaybe rest child
+    _ -> Left ("JSON field parent `" ++ key ++ "` is not an object")
 
 emitSealedVaultAudit :: SealedVaultAuditInput -> IO ExitCode
 emitSealedVaultAudit input =
@@ -674,26 +971,27 @@ gatewayPartitionValidationReport = do
           , ("node-c", "partition-key-c")
           ]
       knownNodes = Map.keys eventKeys
+      emptyPayload = cborPayloadFromJsonValue (object [])
       claimA =
         signEvent
           "node-a"
           eventTypeClaim
           "2026-04-06T10:00:00Z"
-          "{}"
+          emptyPayload
           "partition-key-a"
       claimB =
         signEvent
           "node-b"
           eventTypeClaim
           "2026-04-06T10:00:05Z"
-          "{}"
+          emptyPayload
           "partition-key-b"
       yieldA =
         signEvent
           "node-a"
           eventTypeYield
           "2026-04-06T10:00:06Z"
-          "{}"
+          emptyPayload
           "partition-key-a"
       initialLog = appendIfNew emptyCommitLog claimA
       (acceptedTakeover, rejectedTakeover) =

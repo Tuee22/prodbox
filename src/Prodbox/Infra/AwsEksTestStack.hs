@@ -16,6 +16,7 @@ module Prodbox.Infra.AwsEksTestStack
   , pulumiProviderBaseEnv
   , settingsAwsEnv
   , renderAwsEksTestStackReport
+  , fetchAwsEksTestSnapshotFromBackend
   , parseAwsEksTestStackFromOutputs
   )
 where
@@ -139,6 +140,7 @@ data AwsEksTestStackSnapshot = AwsEksTestStackSnapshot
   , eksSnapshotAwsLbControllerPolicyArn :: String
   , eksSnapshotAwsLbControllerRoleArn :: String
   , eksSnapshotAwsLbControllerRoleName :: String
+  , eksSnapshotRetainedEbsAvailabilityZone :: String
   }
   deriving (Eq, Show)
 
@@ -188,6 +190,7 @@ snapshotFromOutputs (Object obj) = do
   awsLbControllerPolicyArn <- requireString obj "aws_lb_controller_policy_arn"
   awsLbControllerRoleArn <- requireString obj "aws_lb_controller_role_arn"
   awsLbControllerRoleName <- requireString obj "aws_lb_controller_role_name"
+  retainedEbsAvailabilityZone <- requireString obj "retained_ebs_availability_zone"
   Right
     AwsEksTestStackSnapshot
       { eksSnapshotStackName = awsEksTestStackName
@@ -204,6 +207,7 @@ snapshotFromOutputs (Object obj) = do
       , eksSnapshotAwsLbControllerPolicyArn = awsLbControllerPolicyArn
       , eksSnapshotAwsLbControllerRoleArn = awsLbControllerRoleArn
       , eksSnapshotAwsLbControllerRoleName = awsLbControllerRoleName
+      , eksSnapshotRetainedEbsAvailabilityZone = retainedEbsAvailabilityZone
       }
 snapshotFromOutputs _ = Left "pulumi output must be a JSON object"
 
@@ -230,6 +234,7 @@ parseAwsEksTestStackFromOutputs outputs = do
   awsLbControllerPolicyArn <- requireOutputString outputs "aws_lb_controller_policy_arn"
   awsLbControllerRoleArn <- requireOutputString outputs "aws_lb_controller_role_arn"
   awsLbControllerRoleName <- requireOutputString outputs "aws_lb_controller_role_name"
+  retainedEbsAvailabilityZone <- requireOutputString outputs "retained_ebs_availability_zone"
   Right
     AwsEksTestStackSnapshot
       { eksSnapshotStackName = awsEksTestStackName
@@ -246,6 +251,7 @@ parseAwsEksTestStackFromOutputs outputs = do
       , eksSnapshotAwsLbControllerPolicyArn = awsLbControllerPolicyArn
       , eksSnapshotAwsLbControllerRoleArn = awsLbControllerRoleArn
       , eksSnapshotAwsLbControllerRoleName = awsLbControllerRoleName
+      , eksSnapshotRetainedEbsAvailabilityZone = retainedEbsAvailabilityZone
       }
 
 requireOutputString
@@ -438,6 +444,7 @@ renderAwsEksTestStackReport snapshot objectCount =
     , "AWS_LB_CONTROLLER_POLICY_ARN=" ++ eksSnapshotAwsLbControllerPolicyArn snapshot
     , "AWS_LB_CONTROLLER_ROLE_ARN=" ++ eksSnapshotAwsLbControllerRoleArn snapshot
     , "AWS_LB_CONTROLLER_ROLE_NAME=" ++ eksSnapshotAwsLbControllerRoleName snapshot
+    , "RETAINED_EBS_AVAILABILITY_ZONE=" ++ eksSnapshotRetainedEbsAvailabilityZone snapshot
     ]
 
 settingsAwsEnv :: FilePath -> IO (Either String [(String, String)])

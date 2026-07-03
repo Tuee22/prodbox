@@ -22,11 +22,12 @@ umbrella storage-capacity question amoebius records as open in
 unbounded MinIO only possible if there are autoscaling"). It mirrors, **in kind and with no
 code dependency**, jitML's durable-state budget vocabulary
 (`jitML/dhall/project/Schema.dhall` `Budget` / `storageFitsWithin`) and hostbootstrap's
-per-substrate disk cordon (`hostbootstrap` `Core.dhall` `KindNode.storage`); the schema
-itself is a **scheduled** code artifact, `dhall/capacity/Schema.dhall` with the Haskell
-mirror `src/Prodbox/Capacity/Config.hs`, exactly as jitML pairs `Schema.dhall` with
-`JitML.Project.Config`. This document describes facets and shows teaching fragments; it is
-not the schema SSoT.
+per-substrate disk cordon (`hostbootstrap` `Core.dhall` `KindNode.storage`). Sprint 1.51 landed the
+shared budget facet as `dhall/capacity/Schema.dhall` with the Haskell mirror
+`src/Prodbox/Capacity/Config.hs`, exactly as jitML pairs `Schema.dhall` with
+`JitML.Project.Config`. Sprint 4.36 landed the storage-specific Haskell planner in
+`src/Prodbox/Capacity/Storage.hs` plus the AWS quota adapter in `src/Prodbox/Aws.hs`. This document
+describes facets and shows teaching fragments; it is not the schema SSoT.
 
 ## Rule r — a finite budget with no `Infinite` constructor
 
@@ -211,13 +212,18 @@ and the log-reconciled gateway `Disposition`, per
 
 ## Status
 
-This capacity DSL is **scheduled, not yet implemented**. The tiered-storage budget DSL, the
-MinIO autoscaling-sink witness, the per-deploy region-quota gate binding, and the ML
-JIT/model-cache budget land in **Phase 4 Sprint 4.36**
-([phase-4-lifecycle-canonical-paths.md](../../DEVELOPMENT_PLAN/phase-4-lifecycle-canonical-paths.md));
-the config surface (`prodbox config generate` emission of `dhall/capacity/Schema.dhall` and
-the binary-sibling capacity block) lands in **Phase 1 Sprint 1.51**
-([phase-1-runtime-cli-aws-foundations.md](../../DEVELOPMENT_PLAN/phase-1-runtime-cli-aws-foundations.md)).
+The shared Sprint 1.51 surface is implemented: `dhall/capacity/Schema.dhall` defines
+`Budget`, `fitsWithin`, `storageFitsWithin`, `plus`, `zero`, and self-checking assertions, while
+`src/Prodbox/Capacity/Config.hs` mirrors those budgets in Haskell and `src/Prodbox/Settings.hs`
+decodes the binary-sibling `capacity` block. The Sprint 4.36 storage-specific surface is also
+implemented: `src/Prodbox/Capacity/Storage.hs` provides durable store claims, finite
+`Bounded`/`Autoscaled` capacity constructors with no `Infinite` arm, an autoscaling-policy witness
+for unbounded-sink admission, mandatory ML host/cluster JIT and model-cache budget totals, and a
+finite storage-capacity plan validator. `src/Prodbox/Aws.hs` adapts the existing
+`applyAwsCheckQuotas` / `ensureServiceQuota` / `QuotaStatus` path into the storage region-quota
+preflight. Live AWS Service Quotas observation with real credentials remains a non-blocking
+live-infra proof axis tracked by
+[phase-4-lifecycle-canonical-paths.md](../../DEVELOPMENT_PLAN/phase-4-lifecycle-canonical-paths.md).
 Sprint status is authoritative only in
 [DEVELOPMENT_PLAN/README.md](../../DEVELOPMENT_PLAN/README.md); this document describes the
 target surface, not the schedule.
@@ -233,13 +239,14 @@ durable-destruction primitive.
 - **Owned statement**: storing more durable data than declared capacity — or declaring a
   sizeless claim, an unwitnessed unbounded sink, or a destruction of durable bytes — is
   unrepresentable in the prodbox capacity DSL.
-- **Linked dependents** (scheduled implementers):
-  `dhall/capacity/Schema.dhall` (the closed, self-validating capacity vocabulary),
-  `src/Prodbox/Capacity/Config.hs` (the `FromDhall` mirror + `storageFitsWithin` +
-  schema-parity constant), `src/Prodbox/Capacity/UnboundedSink.hs` (the `Capacity` /
-  `ScalingWitness` types), `src/Prodbox/Capacity/MlEngineBudget.hs` (the `MlEngineCapacity`
-  types), and `src/Prodbox/Aws.hs` (the reused `QuotaSpec` / `ensureServiceQuota` /
-  `applyAwsCheckQuotas` region-quota surface).
+- **Linked dependents**:
+  `dhall/capacity/Schema.dhall` (the closed, self-validating shared budget vocabulary),
+  `src/Prodbox/Capacity/Config.hs` (the `FromDhall` mirror plus `storageFitsWithin`),
+  `src/Prodbox/Settings.hs` (the binary-sibling `capacity` block), the scheduled
+  `src/Prodbox/Capacity/UnboundedSink.hs` (the `Capacity` / `ScalingWitness` types),
+  the scheduled `src/Prodbox/Capacity/MlEngineBudget.hs` (the `MlEngineCapacity` types), and
+  `src/Prodbox/Aws.hs` (the reused `QuotaSpec` / `ensureServiceQuota` / `applyAwsCheckQuotas`
+  region-quota surface).
 
 ## Cross-References
 

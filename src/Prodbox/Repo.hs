@@ -1,8 +1,12 @@
 module Prodbox.Repo
   ( ConfigPaths (..)
+  , SiblingConfigSurface (..)
   , canonicalConfigPaths
   , findRepoRoot
+  , resolveSiblingConfigPath
+  , resolveTestTopologyConfigPath
   , resolveTier0ConfigPath
+  , testTopologyConfigFileName
   , tier0ConfigFileName
   )
 where
@@ -26,6 +30,11 @@ data ConfigPaths = ConfigPaths
   { configDhallPath :: FilePath
   , configSchemaPath :: FilePath
   }
+  deriving (Eq, Show)
+
+data SiblingConfigSurface
+  = ProductionTier0
+  | TestTopology
   deriving (Eq, Show)
 
 findRepoRoot :: IO (Either String FilePath)
@@ -56,6 +65,9 @@ canonicalConfigPaths repoRoot =
 tier0ConfigFileName :: FilePath
 tier0ConfigFileName = "prodbox.dhall"
 
+testTopologyConfigFileName :: FilePath
+testTopologyConfigFileName = "prodbox.test.dhall"
+
 -- | Resolve the Tier-0 @prodbox.dhall@ at the BINARY-SIBLING path — the file
 -- beside the running executable (e.g. @.build\/prodbox.dhall@), the same
 -- filename in every context, never the repository root and never a @--config@
@@ -63,6 +75,18 @@ tier0ConfigFileName = "prodbox.dhall"
 -- "Canonical paths"). @repoRoot@ is the fallback anchor, used only when the
 -- executable directory cannot be determined. Sprint 1.48.
 resolveTier0ConfigPath :: FilePath -> IO FilePath
-resolveTier0ConfigPath repoRoot = do
+resolveTier0ConfigPath = resolveSiblingConfigPath ProductionTier0
+
+resolveTestTopologyConfigPath :: FilePath -> IO FilePath
+resolveTestTopologyConfigPath = resolveSiblingConfigPath TestTopology
+
+resolveSiblingConfigPath :: SiblingConfigSurface -> FilePath -> IO FilePath
+resolveSiblingConfigPath surface repoRoot = do
   exeDir <- takeDirectory <$> getExecutablePath
-  pure ((if null exeDir then repoRoot else exeDir) </> tier0ConfigFileName)
+  pure ((if null exeDir then repoRoot else exeDir) </> siblingConfigFileName surface)
+
+siblingConfigFileName :: SiblingConfigSurface -> FilePath
+siblingConfigFileName surface =
+  case surface of
+    ProductionTier0 -> tier0ConfigFileName
+    TestTopology -> testTopologyConfigFileName

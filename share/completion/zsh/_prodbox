@@ -10,7 +10,7 @@ _prodbox() {
     3)
       case "$words[2,2]" in
         "aws")
-          words=("policy" "setup" "teardown" "quotas" "stack")
+          words=("policy" "setup" "teardown" "quotas" "ebs" "stack")
           _describe 'subcommand' words
           ;;
       esac
@@ -19,6 +19,14 @@ _prodbox() {
       case "$words[2,3]" in
         "aws quotas")
           words=("check" "request")
+          _describe 'subcommand' words
+          ;;
+      esac
+      ;;
+    4)
+      case "$words[2,3]" in
+        "aws ebs")
+          words=("reap-test")
           _describe 'subcommand' words
           ;;
       esac
@@ -162,7 +170,7 @@ _prodbox() {
     3)
       case "$words[2,2]" in
         "test")
-          words=("all" "lint" "unit" "integration")
+          words=("init" "run" "all" "lint" "unit" "integration")
           _describe 'subcommand' words
           ;;
       esac
@@ -170,7 +178,7 @@ _prodbox() {
     4)
       case "$words[2,3]" in
         "test integration")
-          words=("all" "cli" "aws-iam" "dns-aws" "aws-eks" "env" "gateway-daemon" "gateway-pods" "gateway-partition" "ha-rke2-aws" "lifecycle" "pulumi" "charts-storage" "charts-platform" "charts-vscode" "charts-api" "charts-websocket" "admin-routes" "public-dns" "keycloak-invite" "sealed-vault")
+          words=("all" "cli" "aws-iam" "dns-aws" "aws-eks" "env" "gateway-daemon" "gateway-pods" "gateway-partition" "ha-rke2-aws" "lifecycle" "pulumi" "eks-volume-rebind" "charts-storage" "charts-platform" "charts-vscode" "charts-api" "charts-websocket" "admin-routes" "public-dns" "keycloak-invite" "sealed-vault")
           _describe 'subcommand' words
           ;;
       esac

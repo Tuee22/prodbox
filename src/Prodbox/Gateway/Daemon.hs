@@ -43,7 +43,6 @@ import Control.Exception
   , try
   )
 import Control.Monad (forever, void, when)
-import Crypto.Hash.SHA256 (hash, hmac)
 import Data.Aeson
   ( Value (..)
   , eitherDecodeStrict'
@@ -58,7 +57,7 @@ import Data.ByteString qualified as BS
 import Data.ByteString.Char8 qualified as BS8
 import Data.ByteString.Lazy qualified as BL
 import Data.ByteString.Lazy.Char8 qualified as BL8
-import Data.Char (intToDigit, isSpace, toLower)
+import Data.Char (isSpace, toLower)
 import Data.Foldable (for_)
 import Data.List (intercalate, isPrefixOf, isSuffixOf, stripPrefix)
 import Data.Map.Strict (Map)
@@ -68,7 +67,6 @@ import Data.Text qualified as Text
 import Data.Text.IO qualified as TextIO
 import Data.Time.Clock (UTCTime, diffUTCTime, getCurrentTime)
 import Data.Time.Format.ISO8601 (formatShow, iso8601Format)
-import Data.Word (Word8)
 import GHC.Conc (threadWaitRead)
 import Network.Socket
   ( AddrInfo (..)
@@ -134,6 +132,7 @@ import Prodbox.Gateway.Peer
   , handlePeerRequest
   , parsePeerHttpRequest
   , renderPeerHttpResponse
+  , signEvent
   )
 import Prodbox.Gateway.Settings qualified as GatewaySettings
 import Prodbox.Gateway.Types
@@ -150,6 +149,7 @@ import Prodbox.Gateway.Types
   , SignedEvent (..)
   , appendIfNew
   , canWriteDns
+  , cborPayloadFromJsonValue
   , defaultDrainDeadlineSeconds
   , emptyCommitLog
   , eventTimestampUtc
@@ -328,8 +328,8 @@ runGatewayDaemon maybeConfigPath config = withSocketsDo $ do
   logDaemonBinaryContext logLevel maybeConfigPath
   -- Sprint 2.22: dispatch by file extension via GatewaySettings.loadOrders
   -- so the chart-rendered Dhall Orders content decodes through the native
-  -- dhall library; legacy JSON Orders files continue to work during the
-  -- chart transition.
+  -- dhall library. The legacy JSON Orders parser was removed with the
+  -- Sprint 2.27 CBOR wire-codec closure.
   ordersResult <- GatewaySettings.loadOrders (daemonOrdersFile config)
   case ordersResult of
     Left err -> do
@@ -1695,7 +1695,7 @@ pushToPeer :: TVar DaemonState -> PeerEventBatch -> PeerEndpoint -> IO ()
 pushToPeer stateVar batch peer = do
   let host = peerDialSocketHost peer
       port = peerSocketPort peer
-      body = encode (encodePeerEventBatch batch)
+      body = encodePeerEventBatch batch
       request =
         BL.toStrict $
           BL.append
@@ -1707,7 +1707,7 @@ pushToPeer stateVar batch peer = do
                         ++ ":"
                         ++ show port
                         ++ "\r\n"
-                        ++ "Content-Type: application/json\r\n"
+                        ++ "Content-Type: application/cbor\r\n"
                         ++ "Content-Length: "
                         ++ show (BL.length body)
                         ++ "\r\n"
@@ -1966,37 +1966,10 @@ awsCredsToSubprocessEnv creds =
 
 createSignedEvent :: String -> String -> Value -> String -> UTCTime -> SignedEvent
 createSignedEvent nodeId evtType payload key now =
-  let payloadJsonStr = BL8.unpack (encode payload)
-      tsStr = formatUtcIso now
-      unsignedPayload =
-        object
-          [ "emitter_node_id" .= nodeId
-          , "event_type" .= evtType
-          , "payload_json" .= payloadJsonStr
-          , "timestamp_utc" .= tsStr
-          ]
-      unsignedStr = BL8.unpack (encode unsignedPayload)
-      eventHashBytes = hash (BS8.pack unsignedStr)
-      eventHashHex = bytesToHex eventHashBytes
-      signatureBytes = hmac (BS8.pack key) (BS8.pack eventHashHex)
-      signatureHexStr = bytesToHex signatureBytes
-   in SignedEvent
-        { eventHash = eventHashHex
-        , emitterNodeId = nodeId
-        , timestampUtc = tsStr
-        , eventType = evtType
-        , payloadJson = payloadJsonStr
-        , signatureHex = signatureHexStr
-        }
+  signEvent nodeId evtType (formatUtcIso now) (cborPayloadFromJsonValue payload) key
 
 formatUtcIso :: UTCTime -> String
 formatUtcIso = formatShow iso8601Format
-
-bytesToHex :: BS.ByteString -> String
-bytesToHex = concatMap byteToHex . BS.unpack
- where
-  byteToHex :: Word8 -> String
-  byteToHex b = [intToDigit (fromIntegral (b `div` 16)), intToDigit (fromIntegral (b `mod` 16))]
 
 trim :: String -> String
 trim = reverse . dropWhile (\c -> c == '\n' || c == '\r' || c == ' ') . reverse

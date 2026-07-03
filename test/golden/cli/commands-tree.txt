@@ -6,6 +6,8 @@ prodbox
     quotas
       check
       request
+    ebs
+      reap-test
     stack
       eks
         reconcile
@@ -79,6 +81,8 @@ prodbox
       gateway-unrestrict
   nuke
   test
+    init
+    run
     all
     lint
     unit
@@ -95,6 +99,7 @@ prodbox
       ha-rke2-aws
       lifecycle
       pulumi
+      eks-volume-rebind
       charts-storage
       charts-platform
       charts-vscode

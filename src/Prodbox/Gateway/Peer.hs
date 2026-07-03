@@ -1,3 +1,4 @@
+{-# LANGUAGE DeriveGeneric #-}
 {-# LANGUAGE OverloadedStrings #-}
 
 -- | Peer transport for the gateway daemon.
@@ -30,23 +31,21 @@ module Prodbox.Gateway.Peer
   )
 where
 
+import Codec.Serialise (Serialise, deserialiseOrFail, serialise)
 import Crypto.Hash.SHA256 (hash, hmac)
-import Data.Aeson (Value (..), eitherDecode, encode, object, (.=))
-import Data.Aeson.Key qualified as Key
-import Data.Aeson.KeyMap qualified as KeyMap
+import Data.Bifunctor (first)
 import Data.ByteString qualified as BS
 import Data.ByteString.Char8 qualified as BS8
 import Data.ByteString.Lazy qualified as BL
-import Data.ByteString.Lazy.Char8 qualified as BL8
 import Data.Char (intToDigit)
 import Data.List (isPrefixOf)
 import Data.Time.Clock (diffUTCTime)
-import Data.Vector qualified as Vector
 import Data.Word (Word8)
+import GHC.Generics (Generic)
 import Prodbox.Gateway.Types
-  ( SignedEvent (..)
-  , encodeEvent
-  , parseEvent
+  ( CborPayload (..)
+  , SignedEvent (..)
+  , eventSignaturePayloadBytes
   , parseIso8601Utc
   )
 
@@ -65,7 +64,9 @@ data PeerEventBatch = PeerEventBatch
   { peerEventBatchEvents :: [SignedEvent]
   , peerEventBatchSenderOrdersVersionUtc :: Int
   }
-  deriving (Eq, Show)
+  deriving (Eq, Show, Generic)
+
+instance Serialise PeerEventBatch
 
 -- | Lookup function for a peer's HMAC key by node id.  Used to verify
 -- signatures on incoming events.
@@ -84,60 +85,50 @@ data PeerTransportResponse
     PeerResponseStaleOrders Int Int
   | -- | Transport-level error (malformed request, unsupported route).
     PeerResponseError String
-  deriving (Eq, Show)
+  deriving (Eq, Show, Generic)
 
--- | Parse a peer event batch from a JSON value.
-parsePeerEventBatch :: Value -> Either String PeerEventBatch
-parsePeerEventBatch value =
-  case value of
-    Object obj -> do
-      eventArray <- case KeyMap.lookup (Key.fromString "events") obj of
-        Just (Array arr) -> pure arr
-        _ -> Left "peer event batch: events must be an array"
-      events <- mapM parseEvent (Vector.toList eventArray)
-      ordersVersion <- case KeyMap.lookup (Key.fromString "sender_orders_version_utc") obj of
-        Just (Number n) -> Right (round n)
-        Nothing -> Right 0
-        _ -> Left "peer event batch: sender_orders_version_utc must be a number"
-      Right (PeerEventBatch events ordersVersion)
-    _ -> Left "peer event batch must be a JSON object"
+instance Serialise PeerTransportResponse
 
-encodePeerEventBatch :: PeerEventBatch -> Value
-encodePeerEventBatch batch =
-  object
-    [ "events" .= map encodeEvent (peerEventBatchEvents batch)
-    , "sender_orders_version_utc" .= peerEventBatchSenderOrdersVersionUtc batch
-    ]
+parsePeerEventBatch :: BL.ByteString -> Either String PeerEventBatch
+parsePeerEventBatch =
+  first (("invalid peer event batch CBOR: " ++) . show) . deserialiseOrFail
+
+encodePeerEventBatch :: PeerEventBatch -> BL.ByteString
+encodePeerEventBatch = serialise
 
 -- | Parse a minimal HTTP request used by the peer transport. Only the verb
--- and the JSON body are interpreted; HTTP headers are otherwise ignored.
+-- and the CBOR body are interpreted; HTTP headers are otherwise ignored.
 parsePeerHttpRequest :: BS.ByteString -> Either String PeerTransportRequest
 parsePeerHttpRequest raw =
-  let text = BS8.unpack raw
-      (headerSection, body) = splitOnDoubleCrlf text
+  let (headerBytes, bodyBytes) = splitOnDoubleCrlf raw
+      headerSection = BS8.unpack headerBytes
       firstLine = takeWhile (/= '\r') (takeWhile (/= '\n') headerSection)
       parts = words firstLine
    in case parts of
         (method : path : _) ->
           if method == "POST" && pathMatches "/v1/peer/events" path
-            then case eitherDecode (BL8.pack body) of
-              Left err -> Left ("invalid peer push body: " ++ err)
-              Right value -> PeerPushEvents <$> parsePeerEventBatch value
+            then PeerPushEvents <$> parsePeerEventBatch (BL.fromStrict bodyBytes)
             else
               if method == "GET" && pathMatches "/v1/peer/events" path
                 then Right PeerPullEvents
                 else Left ("unsupported peer transport route: " ++ method ++ " " ++ path)
         _ -> Left "malformed peer transport request line"
 
-splitOnDoubleCrlf :: String -> (String, String)
-splitOnDoubleCrlf input = go [] input
+splitOnDoubleCrlf :: BS.ByteString -> (BS.ByteString, BS.ByteString)
+splitOnDoubleCrlf input =
+  case BS.breakSubstring crlfCrlf input of
+    (headers, rest)
+      | crlfCrlf `BS.isPrefixOf` rest ->
+          (headers, BS.drop (BS.length crlfCrlf) rest)
+    _ ->
+      case BS.breakSubstring lfLf input of
+        (headers, rest)
+          | lfLf `BS.isPrefixOf` rest ->
+              (headers, BS.drop (BS.length lfLf) rest)
+        _ -> (input, BS.empty)
  where
-  go acc rest =
-    case rest of
-      '\r' : '\n' : '\r' : '\n' : remainder -> (reverse acc, remainder)
-      '\n' : '\n' : remainder -> (reverse acc, remainder)
-      (c : remainder) -> go (c : acc) remainder
-      [] -> (reverse acc, "")
+  crlfCrlf = BS8.pack "\r\n\r\n"
+  lfLf = BS8.pack "\n\n"
 
 pathMatches :: String -> String -> Bool
 pathMatches expected actual =
@@ -148,35 +139,19 @@ pathMatches expected actual =
 renderPeerHttpResponse :: PeerTransportResponse -> BL.ByteString
 renderPeerHttpResponse response =
   let (status, body) = case response of
-        PeerResponseEventsAccepted applied rejected ->
-          let payload =
-                object
-                  [ "applied" .= applied
-                  , "rejected"
-                      .= [ object ["event_hash" .= h, "reason" .= reason]
-                         | (h, reason) <- rejected
-                         ]
-                  ]
-           in ("200 OK", encode payload)
-        PeerResponseEventBatch batch ->
-          ("200 OK", encode (encodePeerEventBatch batch))
+        PeerResponseEventsAccepted _applied _rejected ->
+          ("200 OK", serialise response)
+        PeerResponseEventBatch _batch ->
+          ("200 OK", serialise response)
         PeerResponseStaleOrders senderVersion receiverVersion ->
-          ( "409 Conflict"
-          , encode
-              ( object
-                  [ "error" .= ("stale orders" :: String)
-                  , "sender_orders_version_utc" .= senderVersion
-                  , "receiver_orders_version_utc" .= receiverVersion
-                  ]
-              )
-          )
-        PeerResponseError msg ->
-          ("400 Bad Request", encode (object ["error" .= msg]))
+          senderVersion `seq` receiverVersion `seq` ("409 Conflict", serialise response)
+        PeerResponseError _msg ->
+          ("400 Bad Request", serialise response)
       headers =
         "HTTP/1.1 "
           ++ status
           ++ "\r\n"
-          ++ "Content-Type: application/json\r\n"
+          ++ "Content-Type: application/cbor\r\n"
           ++ "Content-Length: "
           ++ show (BL.length body)
           ++ "\r\n"
@@ -194,28 +169,21 @@ signEvent
   -- ^ event type
   -> String
   -- ^ timestamp in ISO 8601 UTC
-  -> String
-  -- ^ encoded payload string (passed through verbatim)
+  -> CborPayload
+  -- ^ canonical CBOR payload bytes
   -> String
   -- ^ HMAC key shared with peers
   -> SignedEvent
 signEvent nodeId evType ts payload key =
-  let unsigned =
-        object
-          [ "emitter_node_id" .= nodeId
-          , "event_type" .= evType
-          , "payload_json" .= payload
-          , "timestamp_utc" .= ts
-          ]
-      unsignedStr = BL8.unpack (encode unsigned)
-      eventHashHex = bytesToHex (hash (BS8.pack unsignedStr))
+  let unsignedBytes = eventSignaturePayloadBytes nodeId evType ts payload
+      eventHashHex = bytesToHex (hash unsignedBytes)
       sigHex = bytesToHex (hmac (BS8.pack key) (BS8.pack eventHashHex))
    in SignedEvent
         { eventHash = eventHashHex
         , emitterNodeId = nodeId
         , timestampUtc = ts
         , eventType = evType
-        , payloadJson = payload
+        , payloadCbor = payload
         , signatureHex = sigHex
         }
 
@@ -227,15 +195,13 @@ verifyEventSignature lookupKey ev =
   case lookupKey (emitterNodeId ev) of
     Nothing -> Left ("no event key registered for " ++ emitterNodeId ev)
     Just key ->
-      let unsigned =
-            object
-              [ "emitter_node_id" .= emitterNodeId ev
-              , "event_type" .= eventType ev
-              , "payload_json" .= payloadJson ev
-              , "timestamp_utc" .= timestampUtc ev
-              ]
-          unsignedStr = BL8.unpack (encode unsigned)
-          expectedHash = hash (BS8.pack unsignedStr)
+      let unsignedBytes =
+            eventSignaturePayloadBytes
+              (emitterNodeId ev)
+              (eventType ev)
+              (timestampUtc ev)
+              (payloadCbor ev)
+          expectedHash = hash unsignedBytes
           expectedHashHex = bytesToHex expectedHash
           expectedSig = bytesToHex (hmac (BS8.pack key) (BS8.pack expectedHashHex))
        in if expectedHashHex /= eventHash ev

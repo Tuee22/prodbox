@@ -157,6 +157,8 @@ validConfig =
         ++ eabVaultRefDhall "hmac_key"
         ++ " }"
     , ", deployment = " ++ deploymentDhallFragment
+    , ", capacity = " ++ capacityDhallFragment
+    , ", cluster_topology = " ++ clusterTopologyDhallFragment
     , ", storage = { manual_pv_host_root = \".data\" }"
     , ", pulumi_state_backend = { bucket_name = \"\", region = \"\", key_prefix = \"\" }"
     , "}"
@@ -180,6 +182,8 @@ invalidConfig =
         ++ eabVaultRefDhall "hmac_key"
         ++ " }"
     , ", deployment = " ++ deploymentDhallFragment
+    , ", capacity = " ++ capacityDhallFragment
+    , ", cluster_topology = " ++ clusterTopologyDhallFragment
     , ", storage = { manual_pv_host_root = \".data\" }"
     , ", pulumi_state_backend = { bucket_name = \"\", region = \"\", key_prefix = \"\" }"
     , "}"
@@ -194,9 +198,68 @@ deploymentDhallFragment =
     , ", public_edge_advertisement_mode = None Text"
     , ", public_edge_bgp_peers ="
     , "    None (List { peer_name : Text, peer_address : Text, peer_asn : Natural, my_asn : Natural, ebgp_multi_hop : Optional Bool })"
-    , ", envoy_gateway_controller_replicas = None Natural"
-    , ", envoy_gateway_data_plane_replicas = None Natural"
-    , ", api_replicas = None Natural"
-    , ", websocket_replicas = None Natural"
+    , ", envoy_gateway_controller_scaling = " ++ fixedScalingDhall 1
+    , ", envoy_gateway_data_plane_scaling = " ++ fixedScalingDhall 1
+    , ", api_scaling = " ++ fixedScalingDhall 2
+    , ", websocket_scaling = " ++ fixedScalingDhall 2
     , " }"
     ]
+
+scalingPolicyTypeDhall :: String
+scalingPolicyTypeDhall =
+  "< Fixed : Natural | Elastic : { min : Natural, max : Natural } >"
+
+fixedScalingDhall :: Int -> String
+fixedScalingDhall count =
+  "{ home_local = "
+    ++ scalingPolicyTypeDhall
+    ++ ".Fixed "
+    ++ show count
+    ++ ", aws = "
+    ++ scalingPolicyTypeDhall
+    ++ ".Fixed "
+    ++ show count
+    ++ " }"
+
+capacityDhallFragment :: String
+capacityDhallFragment =
+  "{ node_budget = { cpu = 8, memory = 16, storage = 100 }, workload_budget = { cpu = 4, memory = 8, storage = 40 }, region_quota = { cpu = 32, memory = 64, storage = 500 } }"
+
+clusterTopologyDhallFragment :: String
+clusterTopologyDhallFragment =
+  clusterTopologyDhallType
+    ++ ".Rke2 { machines = [ "
+    ++ clusterTopologyMachineDhall
+    ++ " ] : List "
+    ++ clusterTopologyMachineTypeDhall
+    ++ " }"
+
+clusterTopologyDhallType :: String
+clusterTopologyDhallType =
+  "< Kind : { machine : "
+    ++ clusterTopologyMachineTypeDhall
+    ++ ", node_count : Natural } | Rke2 : { machines : List "
+    ++ clusterTopologyMachineTypeDhall
+    ++ " } | Eks : { node_group_size : Natural, eks_substrate : "
+    ++ workerSubstrateDhallType
+    ++ " } >"
+
+clusterTopologyMachineTypeDhall :: String
+clusterTopologyMachineTypeDhall =
+  "{ machine_id : Text, machine_substrate : "
+    ++ workerSubstrateDhallType
+    ++ ", compute_worker : { worker_substrate : "
+    ++ workerSubstrateDhallType
+    ++ ", manages_all_local_devices : Bool } }"
+
+clusterTopologyMachineDhall :: String
+clusterTopologyMachineDhall =
+  "{ machine_id = \"prodbox-home\", machine_substrate = "
+    ++ workerSubstrateDhallType
+    ++ ".LinuxCpu, compute_worker = { worker_substrate = "
+    ++ workerSubstrateDhallType
+    ++ ".LinuxCpu, manages_all_local_devices = True } }"
+
+workerSubstrateDhallType :: String
+workerSubstrateDhallType =
+  "< LinuxCpu | LinuxCuda | AppleMetal | CudaWindows >"

@@ -70,21 +70,23 @@ long-lived `pulumi_state_backend` bucket (and `aws-ses`) as "manual-cleanup-requ
 now carves out the retained long-lived shared-infra classes and refuses only on genuine
 per-run/cluster escapees. See the Sprint `7.26` block below.
 
-🔄 **Further reopened 2026-07-02 for unified block storage on the AWS substrate** — three new
-sprints expand Phase 7's own AWS-substrate storage + networking surface (narrated in
-[README.md → Closure Status](README.md) per rule A). Sprint `7.28` (📋 Planned) replaces the
-dynamic `gp2` EKS storage path (Sprint `7.5.c.i`) with **pre-created EBS volumes lifted in as
-static `Retain` PVs** (CSI `volumeHandle`, AZ-pinned), mirroring the home `manual`/no-provisioner
-model per [storage_lifecycle_doctrine.md § 1](../documents/engineering/storage_lifecycle_doctrine.md)
-and satisfying the "no dynamic provisioning anywhere" invariant of
+🔄 **Further reopened 2026-07-02 for unified block storage on the AWS substrate** — Phase 7's own
+AWS-substrate storage + networking surface is expanded here (narrated in
+[README.md → Closure Status](README.md) per rule A). Sprint `7.28` is ✅ Done on its code-owned
+surface: it replaces and removes the dynamic `gp2` EKS storage path (Sprint `7.5.c.i`) with
+**pre-created EBS volumes lifted in as static `Retain` PVs** (CSI `volumeHandle`, AZ-pinned),
+mirroring the home `manual`/no-provisioner model per
+[storage_lifecycle_doctrine.md § 1](../documents/engineering/storage_lifecycle_doctrine.md) and
+satisfying the "no dynamic provisioning anywhere" invariant of
 [cluster_topology_doctrine.md § 4](../documents/engineering/cluster_topology_doctrine.md). Sprint
-`7.29` (📋 Planned) hardens EKS VPC ownership (prodbox owns its own VPC; the test harness always
-provisions a fresh test VPC; `prodbox.io/managed-by` tags on the VPC/IGW/route-table/subnets so an
-escaped VPC is caught by the postflight tag sweep). The retain-vs-test-delete EBS lifecycle and its
+`7.29` is ✅ Done on its code-owned surface: it hardens EKS VPC ownership (prodbox owns its own VPC;
+the test harness always provisions a fresh test VPC; `prodbox.io/managed-by` tags on the
+VPC/IGW/route-table/subnets so an escaped VPC is caught by the postflight tag sweep). The
+retain-vs-test-delete EBS lifecycle and its
 managed-resource class are owned by Phase 4 (Sprints `4.39`/`4.40`), and the identical-rebinding
 validation is Phase 5 suite content (Sprint `5.12`). All earlier Phase 7 sprints (`7.1`–`7.27`)
-stay `Done`/as-tracked on their owned scope. The legacy dynamic-`gp2` path is recorded in
-[legacy-tracking-for-deletion.md](legacy-tracking-for-deletion.md).
+stay `Done`/as-tracked on their owned scope. The legacy dynamic-`gp2` cleanup is recorded in
+[legacy-tracking-for-deletion.md](legacy-tracking-for-deletion.md) Completed.
 
 ✅ **Sprint `7.14` Done (code-owned surface) 2026-06-16** — Sprint `7.14` has landed the
 decrypt-to-scratch Pulumi
@@ -544,12 +546,12 @@ output, fixtures, and validation assumptions.
 
 None.
 
-## Sprint 7.5: AWS Substrate Parity with the Canonical Suite 🔄
+## Sprint 7.5: AWS Substrate Parity with the Canonical Suite ✅
 
-**Status**: Active (`7.5.a` ✅ Done May 17, 2026; `7.5.b` ✅ Done May 17, 2026; `7.5.b.iii`
-✅ Done May 18, 2026; `7.5.c` 🔄 Active — child Sprint `7.5.c.v` carries the only remaining
-operator-driven live AWS-substrate canonical-suite re-run)
-**Blocked by**: Existing AWS substrate foundations (Sprints `7.1`–`7.4`)
+**Status**: ✅ Done on the Phase 7-owned AWS substrate surface (`7.5.a` ✅ Done May 17, 2026;
+`7.5.b` ✅ Done May 17, 2026; `7.5.b.iii` ✅ Done May 18, 2026; `7.5.c` ✅ Done after the June 5,
+2026 live AWS-substrate canonical-suite proof)
+**Blocked by**: none — the required AWS substrate foundations (`7.1`–`7.4`) are closed.
 
 This sprint's owned surface is the AWS substrate's provisioning side, validatable now against
 its own surface independently of any later phase (Standard N). New canonical-suite prerequisites
@@ -1094,14 +1096,13 @@ this doctrine.
 
 None. Code reconciliation is owned by Sprint `7.5.c`.
 
-## Sprint 7.5.c: Live AWS-Substrate Canonical-Suite Validation 🔄
+## Sprint 7.5.c: Live AWS-Substrate Canonical-Suite Validation ✅
 
-**Status**: Active (sub-sprints `7.5.c.i` ✅, `7.5.c.ii` ✅, `7.5.c.iii` ✅, `7.5.c.iv` ✅,
-`7.5.c.v.b` ✅ all Done May 19, 2026; child Sprint `7.5.c.v` 🔄 Active — the operator-driven
-live AWS-substrate canonical-suite re-run is the only remaining work, tracked as a non-blocking
-`Live-proof: pending` note on this phase's own substrate-provisioning surface per
-[development_plan_standards.md → O. Code-Local vs Live-Infra Proof](development_plan_standards.md#o-code-local-completion-vs-live-infra-proof);
-the code-owned surface is Done and this work never blocks an earlier phase)
+**Status**: ✅ Done on the Phase 7-owned AWS substrate surface. Sub-sprints `7.5.c.i`,
+`7.5.c.ii`, `7.5.c.iii`, `7.5.c.iv`, and `7.5.c.v.b` all landed on their code-owned surfaces by
+May 19, 2026; child Sprint `7.5.c.v` closed the operator-driven live AWS-substrate proof on June 5,
+2026. Later invite-auth aggregate failures are Phase 8 suite-content work, not Phase 7 substrate
+work.
 **Independent Validation**: The Phase 7-owned substrate-provisioning surface is validatable on its
 own surface now (`prodbox check-code`, `prodbox test unit`, the substrate-platform install unit
 ordering tests); the remaining proof needs live AWS spend and is a `Live-proof: pending` note
@@ -1316,20 +1317,13 @@ currently lays down the lower-layer ingress + TLS pieces on EKS:
 
 ### Remaining Work
 
-The substrate-platform install on EKS does not yet stand up the Harbor + MinIO +
-Percona operator layer that the home substrate uses. Per the substrate-equivalence
-doctrine in [`../CLAUDE.md`](../CLAUDE.md), [`../AGENTS.md`](../AGENTS.md), and
-[`substrates.md`](substrates.md), the AWS substrate runs the same canonical chart
-set as the home substrate, so chart pods on EKS must resolve
-`127.0.0.1:30080/prodbox/...` the same way they do on home nodes (NodePort Harbor
-service + node-local registry routing).
-
-The May 19 implementation survey confirmed the port is multi-day work — RKE2's
-`registries.yaml` mechanism, hostPath-backed MinIO PVC, host-Docker / `ctr`
-image push paths, and `systemctl restart rke2-server.service` all have no EKS
-equivalent. Sprint `7.5.c` is therefore broken into the sub-sprints below;
-each closes its own validation gate, and the parent flips to ✅ when
-7.5.c.v lands:
+The substrate-platform install on EKS stands up the Harbor + MinIO + Percona operator layer that
+the home substrate uses. Per the substrate-equivalence doctrine in [`../CLAUDE.md`](../CLAUDE.md),
+[`../AGENTS.md`](../AGENTS.md), and [`substrates.md`](substrates.md), the AWS substrate runs the
+same canonical chart set as the home substrate, so chart pods on EKS resolve
+`127.0.0.1:30080/prodbox/...` through the EKS-side Harbor and node-local registry routing. The
+May 19 implementation survey split this into the sub-sprints below; each closed its own validation
+gate, and child Sprint `7.5.c.v` closed the parent live proof:
 
 | Sub-sprint | Status | Scope |
 |------------|--------|-------|
@@ -1344,9 +1338,8 @@ each closes its own validation gate, and the parent flips to ✅ when
 | [`7.5.c.v.f`](#sprint-75cvf-silent-exit-failure-mode-in-substrate-aware-validation-bodies-) | ✅ Done on code-owned surface | Substrate-awareness threaded end-to-end through `prodbox host public-edge --substrate {home-local,aws}`, `runHostPublicEdge`, `queryRoute53RecordInZone`, `waitForPublicEdgeReady`, and the five sibling validation bodies. `runNativeValidation` now emits stderr breadcrumbs around every body so silent exit is structurally impossible at the runner level. Live `--substrate aws` re-run rolls up into Sprint `7.5.c.v`. |
 | [`7.5.c.v`](#sprint-75cv-live-aws-substrate-canonical-suite-proof-) | ✅ Done | June 5 live runs proved AWS NLB-target DNS reconciliation, home-only gateway `dns_write_gate`, delegated-subzone pre-destroy record cleanup, per-run postflight teardown, Harbor-login retry, Keycloak public-token-endpoint readiness, the fixed VS Code OIDC redirect, API/WebSocket in-cluster JWKS backchannels, substrate-aware Harbor/MinIO admin routes, public DNS, and destructive lifecycle on AWS. The aggregate suite's remaining failure is Phase `8` invite-auth closure: `ValidationKeycloakInvite` must run before destructive `ValidationChartsStorage` / `ValidationLifecycle`, target the selected substrate public FQDN, and reach the Keycloak `/auth/admin` route used by operator invites. |
 
-Sprint `7.5.c.v` landing flips the substrate parity row in
-[`substrates.md`](substrates.md) to ✅ for the Phase 7-owned substrate surface and closes
-Sprint `7.5.c`.
+Sprint `7.5.c.v` flipped the substrate parity row in [`substrates.md`](substrates.md) to ✅ for the
+Phase 7-owned substrate surface and closed Sprint `7.5.c`.
 
 ## Sprint 7.5.c.i: Substrate-Aware MinIO Chart Values ✅
 
@@ -3597,9 +3590,9 @@ as SSoT; the doctrine-adoption sprint and the relocated reopen narrative are rec
 - [substrates.md](substrates.md) - Sprints `7.28`/`7.29` AWS Substrate inventory rows and the
   Substrate Equivalence structural invariant (block storage now equivalent); the EBS
   managed-resource class enters the generated `resource-lifecycle-classes` table via Sprint `4.39`.
-- `DEVELOPMENT_PLAN/legacy-tracking-for-deletion.md` - Sprint `7.28` Pending-Removal entries: the
-  dynamic `gp2` EKS storage path, `awsChartStorageClassName`, and `chartDynamicStorageManifest`
-  (AWS usage).
+- `DEVELOPMENT_PLAN/legacy-tracking-for-deletion.md` - Sprint `7.28` Completed entry: the dynamic
+  `gp2` EKS storage path, `awsChartStorageClassName`, and `chartDynamicStorageManifest` (AWS usage)
+  removed by the static retained-EBS PV cutover.
 
 **Product docs to create/update:**
 
@@ -3656,22 +3649,14 @@ was submitted in the same reconcile.
 `chmod 0644` + empty-HMAC fail-loud guard), `src/Prodbox/Aws.hs` (harness-preflight call re-pointed
 to the shared seam), `test/unit/Main.hs` (EAB-seeding tests).
 
-## Sprint 7.19: Tier 1 — Vault Unlock Bundle Relocated to the Durable MinIO Bucket 🔄
+## Sprint 7.19: Tier 1 — Vault Unlock Bundle Relocated to the Durable MinIO Bucket ✅
 
-**Status**: 🔄 Active — the additive **dual-write / fallback-read** code-owned surface is ✅ Done (validated
-2026-06-18): `src/Prodbox/Vault/BootstrapBundle.hs` (fixed key `bootstrap/vault-unlock-bundle.v1`,
-password-derived bootstrap MinIO credential via `deriveBootstrapMinioCredential` — distinct KDF context +
-per-cluster salt — and `put/getBundleObject`), `initFreshVault` dual-writes the password-AEAD bundle to MinIO
-alongside the unchanged host-disk write (best-effort-but-verified; swallowed on failure so it never bricks
-init, disk stays PRIMARY), and `loadAndDecryptBundle` prefers the MinIO object then falls back to
-`loadAndDecryptDiskBundle`. Gate: `dev check` 0, `test unit` 0 (987, +8), `integration cli`/`env` 0 (39/39).
-The MinIO access credential is ✅ a **single static constant** (`Prodbox.Minio.RootCredential`, 2026-06-22),
-superseding the brief 2026-06-21 password-derived approach (deleted as security theatre — the real
-security is Vault Transit + the bundle's password-AEAD seal). This fixes the retained-PV rebuild mismatch
-(static = stable) and makes the Tier-1 bundle round-trip through MinIO (resolving `InvalidAccessKeyId`).
-🧪 Live-proof: pending — only the **disk-free unseal cutover** (the MinIO-before-Vault-unseal reorder,
-marked `-- Sprint 7.19 (live-proof)` in `CLI/Vault.hs` + `Vault/Host.hs`) needs a live home
-reconcile/unseal/rebuild to prove the bundle unseals Vault from MinIO with no host-disk unlock material.
+**Status**: ✅ Done on the code-owned surface (validated 2026-06-18), with the disk-free unseal
+cutover closed by Sprint `7.25`'s live home proof on 2026-06-23. `src/Prodbox/Vault/BootstrapBundle.hs`
+owns the fixed key `bootstrap/vault-unlock-bundle.v1`, the password-AEAD bundle object IO, and the
+prefer-MinIO/fallback-disk read path for the additive stage. The MinIO access credential is a
+single static constant (`Prodbox.Minio.RootCredential`, 2026-06-22), superseding the brief
+2026-06-21 password-derived approach and fixing the retained-PV rebuild mismatch.
 **Blocked by**: Sprint `7.14` (the landed Vault-Transit decrypt-to-scratch object-store over the
 Model-B durable MinIO bucket). Forward-only (Standard N): this sprint sits in Phase 7 because it
 builds on Sprint `7.14`'s object-store envelope/naming layer in the same durable bucket; it adds the
@@ -3731,9 +3716,8 @@ keys live in the parent's KV), per
   **resolving the previously-deferred `InvalidAccessKeyId` axis**. The disk stays the load-bearing
   fallback. Gate: `dev check` 0, derivation tests removed + a static-field/static-config test added, full
   `test unit` 1058/1058.
-- 🧪 Remaining (Live-proof-pending, Standard O): only the disk-free unseal CUTOVER — the
-  MinIO-before-Vault bootstrap reorder that makes the MinIO object the PRIMARY unseal source and drops the
-  host-disk write/fallback. The live unseal/rebuild proof is the non-blocking axis.
+- None. The disk-free unseal cutover is closed by Sprint `7.25`; historical additive dual-write
+  details remain above for traceability.
 
 ## Sprint 7.20: Test-Harness IAM Credential Lifecycle Doctrine + Teardown-Completeness Guard ✅
 
@@ -4247,19 +4231,21 @@ not a failed teardown.)
 - 🧪 Live (non-blocking, Standard O): a `cluster delete --cascade --yes` with the long-lived bucket
   present now reports it as retained-by-design and exits clean instead of demanding manual cleanup.
 
-## Sprint 7.27: Spot-Price Economics on the AWS Substrate [⏸️ Blocked]
+## Sprint 7.27: Spot-Price Economics on the AWS Substrate [✅ Done]
 
-**Status**: ⏸️ Blocked
+**Status**: ✅ Done on code-owned surface 2026-07-03; 🧪 Live-proof pending for an actual AWS EC2
+spot-price API observation.
 **Implementation**: `src/Prodbox/Aws.hs` (the live spot-market price observer over the
-credential-region projection), `src/Prodbox/Scaling/*` (the `SpotPriceThreshold` gate and the
-three-valued `SpotObservation` → `SpotDecision` admit/defer/refuse decision), `test/unit/Main.hs`
-**Blocked by**: Sprint `4.34` (the autoscaler + multi-cluster placement reconciler the spot-economics
-gate plugs into)
+credential-region projection plus pure output/payload translation), `src/Prodbox/Scaling/Spot.hs`
+(the `SpotPriceThreshold` gate, substrate applicability fold, and three-valued `SpotObservation` →
+`SpotDecision` admit/defer/refuse decision), `test/unit/Main.hs`
+**Blocked by**: none — Sprint `4.34` is closed, so the spot-economics gate now plugs into the
+landed autoscaler/placement surface.
 **Live-proof**: pending
 **Independent Validation**: unit tests over the pure `admitSpotDeploy` decision — `SpotObserved`
-below/above threshold → admit/defer, `SpotUnobservable` → refuse — plus `prodbox test integration
-cli`/`env` on the home/local substrate, where the gate is a no-op because a `ScalingPolicy
-'MetalFixed` has no `SpotPriceThreshold`; no later-phase dependency.
+below/at-or-above threshold → admit/defer, `SpotUnobservable` → refuse — plus AWS payload/output
+translation tests and `prodbox test integration cli`/`env` on the home/local substrate, where the
+gate is a no-op because home-local carries no AWS spot market; no later-phase dependency.
 
 ### Objective
 
@@ -4277,40 +4263,51 @@ the `Unreachable → refuse` soundness rule applied to placement economics.
   UnobservableReason`), mirroring `src/Prodbox/Lifecycle/ResidueStatus.hs`'s
   `ResidueAbsent | ResiduePresent | ResidueUnreachable` discipline.
 - `admitSpotDeploy :: SpotPriceThreshold -> SpotObservation -> SpotDecision` admits below-threshold,
-  defers above-threshold, and **refuses** on `SpotUnobservable` — never a silent "deploy anyway".
-- The `SpotPriceThreshold` field is representable only on `ScalingPolicy 'CloudElastic`, so the home
-  substrate carries no spot gate and the gate is a structural no-op there.
+  defers at-or-above-threshold, and **refuses** on `SpotUnobservable` — never a silent "deploy
+  anyway".
+- `spotGateForScalingPolicy` makes the gate applicable only for `SubstrateAws` +
+  `ScalingPolicyElastic` plus a threshold witness; home-local and fixed policies are structural
+  no-ops.
 
 ### Validation
 
-1. `prodbox dev check`
-2. `prodbox test unit` (the pure `admitSpotDeploy` admit/defer/refuse decision table)
-3. `prodbox test integration cli`
-4. `prodbox test integration env`
-5. Fail-closed proof: `SpotUnobservable` yields `SpotRefuse`, never `SpotAdmit`.
+1. `cabal build --builddir=.build all --ghc-options=-Werror`
+2. `./.build/prodbox test unit` (1153/1153, including the pure
+   `admitSpotDeploy` admit/defer/refuse decision table and AWS payload/output translation tests)
+3. `./.build/prodbox dev lint haskell --write`
+4. `./.build/prodbox test integration cli` (39/39)
+5. `./.build/prodbox test integration env` (39/39)
+6. `./.build/prodbox dev docs generate`
+7. `./.build/prodbox dev docs check`
+8. `git diff --check`
+9. `./.build/prodbox dev check`
+10. Fail-closed proof: `SpotUnobservable` yields `SpotRefuse`, never `SpotAdmit`.
 
 ### Remaining Work
 
-- Pending — the live spot-market observer and the placement-economics gate are scheduled; blocked on
-  the Sprint `4.34` autoscaler + multi-cluster placement reconciler.
+- None for the code-owned surface. The live EC2 spot-price API proof remains a non-blocking
+  live-infra axis.
 
-## Sprint 7.28: Static Pre-Created EBS as Retain PVs on EKS [📋 Planned]
+## Sprint 7.28: Static Pre-Created EBS as Retain PVs on EKS [✅ Done]
 
-**Status**: 📋 Planned
+**Status**: ✅ Done on code-owned surface 2026-07-03; 🧪 Live-proof pending for the destructive
+AWS `eks-volume-rebind` parity run.
 **Implementation**: `src/Prodbox/Lib/Storage.hs` (CSI PV volume-source renderer + AZ
-`nodeAffinity`), `src/Prodbox/Lib/ChartPlatform.hs` (static storage dispatch on `SubstrateAws`;
-two-substrate no-provisioner guard in `buildChartDeploymentPlanPure`), `pulumi/aws-eks/Main.yaml`
-(node placement in the chosen AZ); the durable EBS volumes are provisioned out-of-band through the
-Phase 4 managed-resource registry (Sprint `4.39`).
+`nodeAffinity`), `src/Prodbox/Lifecycle/EbsVolume.hs` (retained, PV-tagged EBS
+discover/create/wait + static binding projection), `src/Prodbox/Lib/ChartPlatform.hs` (static EBS
+storage dispatch on `SubstrateAws`; two-substrate no-provisioner guard in
+`buildChartDeploymentPlanPure`), `src/Prodbox/Lib/AwsSubstratePlatform.hs` (MinIO/Vault retained
+EBS PV bootstrap before MinIO), `src/Prodbox/CLI/Rke2.hs` (AWS retained inventory capacity and
+manual MinIO class), and `pulumi/aws-eks/Main.yaml` (node placement + retained-EBS AZ output).
 **Blocked by**: none — extends the home static-`Retain` model of Sprints `3.1`/`4.31` onto EKS; the
 EBS managed-resource class it provisions through (Sprint `4.39`) is scheduled forward, not a
 backward block (Standard N).
 **Live-proof**: pending
 **Independent Validation**: pure unit tests over the CSI PV renderer (`claimRef`, `Retain`, CSI
-`volumeHandle`, `topology.ebs.csi.aws.com/zone` affinity) and the substrate storage-class
-selection; no later-phase dependency. Live-EKS rebinding proof is Phase 5 Sprint `5.12` suite
-content on the AWS substrate, tracked as a non-blocking parity axis in
-[substrates.md](substrates.md) (Standards N/O).
+`volumeHandle`, `topology.ebs.csi.aws.com/zone` affinity), retained-EBS create/discover/binding
+helpers, AWS snapshot AZ output, substrate storage-class selection, MinIO capacity selection, and
+platform ordering. Live-EKS rebinding proof is Phase 5 Sprint `5.12` suite content on the AWS
+substrate, tracked as a non-blocking parity axis in [substrates.md](substrates.md) (Standards N/O).
 **Docs to update**: `storage_lifecycle_doctrine.md`, `cluster_topology_doctrine.md`,
 `helm_chart_platform_doctrine.md`, `substrates.md`, `system-components.md`.
 
@@ -4334,33 +4331,41 @@ unified-storage doctrine of
 - `ensureChartStorage` renders a static PV + static PVC (`spec.volumeName` set) on `SubstrateAws`,
   and the no-dynamic-provisioner guard applies to both substrates rather than home-only.
 - Durable EBS volumes (MinIO 20Gi, Vault 1Gi, keycloak-postgres/Patroni 20Gi, vscode 50Gi)
-  provisioned out-of-band through the Phase 4 registry (Sprint `4.39`) in a single AZ (`AZ[0]`),
-  with `{volumeHandle, availabilityZone}` resolved into the PV renderer; the EKS nodegroup keeps a
-  node in that AZ.
+  provisioned out-of-band through the Phase 4 registry path (Sprint `4.39`) in a single AZ
+  (`AZ[0]`), with `{volumeHandle, availabilityZone}` resolved into the PV renderer; the EKS
+  nodegroup keeps a node in that AZ.
 - The dynamic `gp2` path (`awsChartStorageClassName`, `chartDynamicStorageManifest` AWS usage) is
-  recorded in [legacy-tracking-for-deletion.md](legacy-tracking-for-deletion.md) Pending Removal.
+  removed and the row is moved to
+  [legacy-tracking-for-deletion.md](legacy-tracking-for-deletion.md) Completed.
 
 ### Validation
 
-1. `prodbox dev check`
-2. `prodbox test unit` (CSI PV renderer + substrate storage-class selection)
-3. `prodbox test integration cli`
-4. `prodbox test integration env`
-5. `prodbox dev docs check` (the generated `resource-lifecycle-classes` table reflects the new EBS
-   class once Sprint `4.39` lands)
+1. `cabal build --builddir=.build all --ghc-options=-Werror`
+2. `./.build/prodbox test unit` (1143/1143; CSI PV renderer + retained-EBS helpers + storage-class
+   selection + AWS platform ordering)
+3. `./.build/prodbox dev lint haskell --write`
+4. `./.build/prodbox dev docs generate`
+5. `./.build/prodbox dev docs check`
+6. `./.build/prodbox test integration cli` (39/39)
+7. `./.build/prodbox test integration env` (39/39)
+8. `git diff --check`
+9. `./.build/prodbox dev check`
 
 ### Remaining Work
 
-- Pending — the CSI PV renderer, static dispatch, and out-of-band EBS provisioning are scheduled;
-  live-EKS proof rides the Sprint `5.12` rebinding validation on the AWS substrate.
+- Code-owned work closed. Remaining 🧪 Live-proof: run
+  `./.build/prodbox test integration eks-volume-rebind --substrate aws` against a live AWS substrate
+  to prove PV/PVC/`volumeHandle` rebinding and sentinel preservation end-to-end.
 
-## Sprint 7.29: EKS VPC Ownership Hardening + Always-Fresh Test VPC [📋 Planned]
+## Sprint 7.29: EKS VPC Ownership Hardening + Always-Fresh Test VPC [✅ Done]
 
-**Status**: 📋 Planned
+**Status**: ✅ Done on code-owned surface 2026-07-03; 🧪 live-proof pending for the next real
+AWS-substrate provision/destroy cycle.
 **Implementation**: `pulumi/aws-eks/Main.yaml` (`prodbox.io/managed-by=prodbox` tags on the
 VPC/IGW/route-table/subnets), `src/Prodbox/Infra/AwsEksTestStack.hs` (fresh-VPC guarantee via the
 existing destroy-before-ensure residue purge), `src/Prodbox/Lifecycle/TagSweep.hs` (VPC-scoped
-escapee classification).
+escapee classification), and `test/unit/Main.hs` (Pulumi tag coverage + VPC-scoped escapee unit
+proof).
 **Blocked by**: none.
 **Live-proof**: pending
 **Independent Validation**: unit/`dev check` over the tag set and the tag-sweep classification of a
@@ -4373,31 +4378,39 @@ destroy-before-ensure path. No later-phase dependency.
 
 Make EKS VPC ownership explicit and leak-safe. prodbox already creates its own self-contained VPC
 (`10.91.0.0/16`, never the account default); this sprint (a) tags the VPC/IGW/route-table/subnets
-`prodbox.io/managed-by=prodbox` so an escaped VPC is caught by the postflight tag sweep (today the
-VPC/IGW/RT are untagged and invisible to it), and (b) guarantees the test harness always provisions
-a fresh test VPC irrespective of any pre-existing one, via the existing destroy-before-ensure
-residue purge.
+`prodbox.io/managed-by=prodbox` so an escaped VPC is caught by the postflight tag sweep (these
+VPC-scoped resources were previously untagged and invisible to it), and (b) guarantees the test
+harness always provisions a fresh test VPC irrespective of any pre-existing one, via the existing
+destroy-before-ensure residue purge.
 
 ### Deliverables
 
 - `prodbox.io/managed-by=prodbox` tags on the `aws-eks` VPC, IGW, route table, and subnets in
   `pulumi/aws-eks/Main.yaml` (subnets keep their existing `kubernetes.io/cluster/<name>` +
   `kubernetes.io/role/elb` tags).
-- The postflight tag sweep (`src/Prodbox/Lifecycle/TagSweep.hs`) surfaces an escaped VPC/IGW/RT as a
-  per-run escapee.
+- The postflight tag sweep (`src/Prodbox/Lifecycle/TagSweep.hs`) surfaces an escaped VPC/IGW/RT/subnet
+  as a per-run escapee.
 - The always-fresh test VPC is documented as a guarantee of the destroy-before-ensure residue purge
   (`purgeCanonicalAwsEksResidueIfPresent` → `deleteVpcScopedResidue`), not a new mechanism.
 
 ### Validation
 
-1. `prodbox dev check`
-2. `prodbox test unit` (tag-sweep classification of a VPC-scoped escapee)
-3. `prodbox test integration cli`
-4. `prodbox test integration env`
+1. `cabal build --builddir=.build all --ghc-options=-Werror`
+2. `./.build/prodbox test unit` (1145/1145; Pulumi VPC tag coverage + VPC-scoped escapee
+   classification)
+3. `./.build/prodbox dev lint haskell --write`
+4. `./.build/prodbox dev docs generate`
+5. `./.build/prodbox dev docs check`
+6. `./.build/prodbox test integration cli` (39/39)
+7. `./.build/prodbox test integration env` (39/39)
+8. `git diff --check`
+9. `./.build/prodbox dev check`
 
 ### Remaining Work
 
-- Pending — the VPC tag additions and the sweep classification are scheduled.
+- Code-owned work closed. Remaining 🧪 Live-proof: exercise a real AWS `aws-eks` provision/destroy
+  cycle and confirm the postflight tag sweep sees no escaped VPC-scoped residue after the existing
+  destroy-before-ensure purge.
 
 ## Related Documents
 

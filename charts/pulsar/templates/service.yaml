@@ -1,0 +1,16 @@
+apiVersion: v1
+kind: Service
+metadata:
+  name: pulsar
+  labels:
+    {{- include "pulsar.labels" . | nindent 4 }}
+spec:
+  selector:
+    {{- include "pulsar.selectorLabels" . | nindent 4 }}
+  ports:
+    - name: broker
+      port: {{ .Values.pulsar.brokerPort }}
+      targetPort: broker
+    - name: http
+      port: {{ .Values.pulsar.httpPort }}
+      targetPort: http

@@ -97,7 +97,7 @@ plus delayed delivery via `msgQueue`.
 | `SendHeartbeat(sender)` | `heartbeatLoop` appends local signed `heartbeat` events and refreshes local heartbeat time | `src/Prodbox/Gateway/Daemon.hs` |
 | `DeliverHeartbeat` | `peerListenerLoop` accepts inbound peer event batches and updates `stateLastHeartbeatTimes` from the emitter timestamps | `src/Prodbox/Gateway/Peer.hs`, `peerListenerLoop` in `src/Prodbox/Gateway/Daemon.hs` |
 | `Heartbeat(s, r)` | Model-only synchronous heartbeat step retained for tractable TLC exploration | `documents/engineering/tla/gateway_orders_rule.tla` |
-| `PromoteOrders(r, newTs)` | Orders parsing and `ordersVersionUtc` promotion boundary | `parseOrders`, `runGatewayDaemon` |
+| `PromoteOrders(r, newTs)` | Orders decoding and `ordersVersionUtc` promotion boundary | `GatewaySettings.loadOrders`, `runGatewayDaemon` |
 | `RecomputeOwner(n)` | `gatewayLoop` recomputes owner from ranked fresh heartbeats | `src/Prodbox/Gateway/Daemon.hs` |
 | `DnsWrite(n)` | `dnsWriteLoop` plus `fetchPublicIp` / `writeDnsRecord` | `src/Prodbox/Gateway/Daemon.hs` |
 

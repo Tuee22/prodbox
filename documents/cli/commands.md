@@ -15,6 +15,7 @@
 | `prodbox aws teardown` | Delete operational IAM user |
 | `prodbox aws quotas check` | Inspect supported AWS quotas |
 | `prodbox aws quotas request` | Request supported AWS quotas |
+| `prodbox aws ebs reap-test` | Delete test-scoped EBS volumes |
 | `prodbox aws stack eks reconcile` | Provision or inspect the eks stack |
 | `prodbox aws stack eks destroy` | Destroy the eks stack |
 | `prodbox aws stack eks prune-corrupt-checkpoint` | Clear a corrupt eks per-run Pulumi checkpoint |
@@ -70,6 +71,8 @@
 | `prodbox host firewall gateway-restrict` | Restrict the gateway NodePort to 127.0.0.1 |
 | `prodbox host firewall gateway-unrestrict` | Remove the gateway NodePort loopback restriction |
 | `prodbox nuke` | Total teardown of every prodbox-owned AWS resource (operator-only) |
+| `prodbox test init` | Create prodbox.test.dhall |
+| `prodbox test run` | Run a topology-declared suite |
 | `prodbox test all` | Run the full test suite |
 | `prodbox test lint` | Run lint and build checks |
 | `prodbox test unit` | Run unit tests |
@@ -85,6 +88,7 @@
 | `prodbox test integration ha-rke2-aws` | Run HA RKE2 AWS integration tests |
 | `prodbox test integration lifecycle` | Run lifecycle integration tests |
 | `prodbox test integration pulumi` | Run Pulumi integration tests |
+| `prodbox test integration eks-volume-rebind` | Run retained-volume rebinding integration tests |
 | `prodbox test integration charts-storage` | Run chart-storage integration tests |
 | `prodbox test integration charts-platform` | Run chart-platform integration tests |
 | `prodbox test integration charts-vscode` | Run vscode stack integration tests |

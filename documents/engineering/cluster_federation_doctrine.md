@@ -83,6 +83,9 @@ Cross-cluster **workload placement** rides on this same trust tree: a placing cl
 only clusters within its own subtree — a child spec cannot reach beyond it, and a sealed or
 unreachable target is never an eligible placement destination — per
 [resource_scaling_doctrine.md § 6 (rule t)](./resource_scaling_doctrine.md#6-federation-scoped-placement-rule-t-and-untouched-gateway-leadership).
+Sprint `4.34` implements the pure trust-tree admission check in
+`Prodbox.Scaling.Autoscaler.clusterInTrustTree`; live multi-cluster placement remains a
+non-blocking proof axis.
 
 ## 3. Parent custody of child init keys
 

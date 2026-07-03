@@ -84,10 +84,10 @@
 - The same retain-on-teardown policy governs the AWS/EKS pre-created EBS volumes: they are the
   EBS analog of `.data/`. `prodbox cluster delete`, `prodbox aws stack eks destroy`, and per-run
   Pulumi destroy never delete the retained EBS volumes (they are `Retain` and are not owned by
-  the per-run `aws-eks` Pulumi stack). The **only** path that deletes EBS volumes is the test
-  harness suite postflight reaper, which deletes only volumes tagged as test-scoped — so
-  production workflows never lose block storage and test runs never leak it (Sprints `4.39`,
-  `4.40`).
+  the per-run `aws-eks` Pulumi stack). Only the test-scoped EBS reaper paths delete EBS volumes:
+  suite postflight, `cluster delete --cascade`, and `prodbox aws ebs reap-test --yes`; all three
+  delete only volumes tagged as test-scoped — so production workflows never lose block storage and
+  test runs never leak it (Sprints `4.39`, `4.40`).
 - When the MinIO-backed Pulumi backend is still running but kubelet reports its `/export`
   mount as deleted, the Haskell backend helper recreates the declared retained host path,
   reapplies the `1000:1000` plus `0770` contract, and restarts `statefulset/minio` before
@@ -120,9 +120,13 @@ This doctrine governs:
    static `Retain` PVs (CSI `volumeHandle`, AZ affinity) and their deterministic rebinding
    across `prodbox aws stack eks destroy` plus `prodbox aws stack eks reconcile` (Sprint `7.28`)
 10. the production-retain / test-delete EBS lifecycle — EBS volumes are `Retain` and never
-    deleted by cluster/stack teardown; only the test harness deletes test-scoped EBS at suite
-    postflight (Sprints `4.39`, `4.40`). The managed-resource registry entry, tag markers, and
+    deleted by cluster/stack teardown; only the test-scoped EBS reaper paths delete test-scoped EBS
+    at suite postflight, cascade teardown, or `prodbox aws ebs reap-test --yes` (Sprints `4.39`,
+    `4.40`). The managed-resource registry entry, tag markers, and
     reaper are owned by [lifecycle_reconciliation_doctrine.md](./lifecycle_reconciliation_doctrine.md) § 1
+11. EKS VPC ownership visibility: the AWS substrate's dedicated, non-default VPC plus its IGW,
+    route table, and public subnets carry `prodbox.io/managed-by=prodbox` so the postflight tag
+    sweep can surface escaped VPC-scoped residue after failed teardown (Sprint `7.29`)
 
 Harbor registry details remain in
 [Local Registry Pipeline](./local_registry_pipeline.md).
@@ -231,11 +235,13 @@ On the AWS/EKS substrate the retained EBS volumes are preserved by teardown exac
 `prodbox aws stack eks destroy`, nor the per-run Pulumi destroy deletes them: they are
 `Retain`, and they are not owned by the per-run `aws-eks` Pulumi stack, so `pulumi destroy`
 cannot remove them. The K8s drain deletes only `Delete`-reclaim PVCs, so the `Retain` EBS PVs
-survive the drain untouched. The **only** path that deletes EBS volumes is the test harness
-suite postflight reaper, which deletes only volumes tagged as test-scoped — production
-workflows never lose block storage, and test runs never leak it. The EBS managed-resource
-class (typed `discover`/`destroy`), the retain/test-scoped tag markers, and the reaper are
-owned by Sprints `4.39` and `4.40`; see
+survive the drain untouched. Only the test-scoped EBS reaper paths delete EBS volumes: suite
+postflight, `cluster delete --cascade`, and `prodbox aws ebs reap-test --yes`. Each deletes only
+volumes tagged as test-scoped — production workflows never lose block storage, and test runs never
+leak it. Sprint `4.39` has landed the
+EBS managed-resource class (`aws-ebs-volumes`), typed `discover`/`destroy` EC2 boundary, retained
+vs test-scoped tag markers, and deterministic retained-inventory parity; Sprint `4.40` has landed
+the test-scoped reaper, cascade hook, standalone recovery entrypoint, and retain-safe drain guard. See
 [lifecycle_reconciliation_doctrine.md](./lifecycle_reconciliation_doctrine.md) § 1.
 
 Both delete shapes preserve `.data/` and remove nothing else on the operator host. The
@@ -279,6 +285,11 @@ Lifecycle-oriented validation should prove:
     directory before Pulumi backend login or stack operations continue
 11. no `prodbox` invocation writes to `.prodbox-state/` (enforced by
     `forbidDotProdboxState` in `prodbox dev check`)
+12. `prodbox test integration eks-volume-rebind` writes a sentinel through the retained
+    MinIO workload PV, tears the cluster substrate down, brings it back, and verifies the
+    same PV/PVC is `Bound`, the sentinel persists, and any EBS CSI `volumeHandle` is
+    identical before and after the cycle. The AWS live proof remains the non-blocking
+    parity axis for the Sprint `7.28` retained-EBS PV path on EKS.
 
 Cleanup ownership is defined in
 [Integration Fixture Doctrine](./integration_fixture_doctrine.md).
@@ -349,7 +360,8 @@ Rules:
     is the set of pre-created EBS volumes, which play the role `.data/` plays on home. They are
     `Retain`, AZ-pinned, and preserved across cluster/stack teardown. A production operator
     deletes them only deliberately (the EBS analog of wiping `.data/`), while the test harness
-    deletes only test-scoped-tagged volumes at suite postflight — the EBS analog of the
+    deletes only test-scoped-tagged volumes at suite postflight, cascade teardown, or the standalone
+    `aws ebs reap-test --yes` recovery command — the EBS analog of the
     `.test-data/` isolation in rule 13 (Sprints `7.28`, `4.39`, `4.40`).
 
 ## Cross-References

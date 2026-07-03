@@ -24,6 +24,8 @@ module Prodbox.Lifecycle.K8sDrain
   , clusterReachable
   , collectSurvivors
   , defaultDrainTimeout
+  , deleteReclaimPersistentVolumeJsonPath
+  , deleteReclaimPvcBindings
   , drainAwsAffectingK8sResources
   , renderDrainTimeoutRefusal
   )
@@ -190,6 +192,20 @@ deleteAwsAffectingResources env = do
 -- Retain-policy PVs intentionally survive the drain because their
 -- controllers do not own AWS resources; the operator-managed PV
 -- mounts on the home substrate are an example.
+deleteReclaimPersistentVolumeJsonPath :: String
+deleteReclaimPersistentVolumeJsonPath =
+  "jsonpath={range .items[?(@.spec.persistentVolumeReclaimPolicy==\"Delete\")]}\
+  \{.spec.claimRef.namespace}{\"|\"}{.spec.claimRef.name}{\"\\n\"}{end}"
+
+deleteReclaimPvcBindings :: String -> [(String, String)]
+deleteReclaimPvcBindings rawOutput =
+  [ (namespace, name)
+  | line <- lines rawOutput
+  , (namespace, '|' : name) <- [break (== '|') line]
+  , not (null namespace)
+  , not (null name)
+  ]
+
 deleteDeleteReclaimPvcs :: K8sDrainEnv -> IO (Either String ())
 deleteDeleteReclaimPvcs env = do
   listResult <-
@@ -198,19 +214,12 @@ deleteDeleteReclaimPvcs env = do
       [ "get"
       , "pv"
       , "-o"
-      , "jsonpath={range .items[?(@.spec.persistentVolumeReclaimPolicy==\"Delete\")]}\
-        \{.spec.claimRef.namespace}{\"|\"}{.spec.claimRef.name}{\"\\n\"}{end}"
+      , deleteReclaimPersistentVolumeJsonPath
       ]
   case listResult of
     Left err -> pure (Left ("list Delete-reclaim PVs: " ++ err))
     Right rawOutput -> do
-      let bindings =
-            [ (namespace, name)
-            | line <- lines rawOutput
-            , (namespace, '|' : name) <- [break (== '|') line]
-            , not (null namespace)
-            , not (null name)
-            ]
+      let bindings = deleteReclaimPvcBindings rawOutput
       results <- mapM (deletePvc env) bindings
       pure $ case [err | Left err <- results] of
         [] -> Right ()

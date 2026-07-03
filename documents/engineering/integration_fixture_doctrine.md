@@ -48,7 +48,9 @@ Ownership rules:
 
 The per-run-vs-long-lived teardown split for test runs and the never-touch-`.data/` guard are
 governed by [test_topology_doctrine.md](./test_topology_doctrine.md), which reuses the same
-`LifecycleClass` split these fixture-ownership rules rely on.
+`LifecycleClass` split these fixture-ownership rules rely on. The topology runner's generated
+variant config and `.test-data/<case>/` root are per-run fixtures; the authored
+`prodbox.test.dhall`, production `.data/`, and long-lived resources remain outside fixture cleanup.
 
 The destructive `--dry-run` golden fixtures under `test/golden/destructive/` (Sprint `5.6`:
 `rke2-delete.txt`, `rke2-delete-cascade.txt`, `nuke.txt`) are **registry-generated** — their

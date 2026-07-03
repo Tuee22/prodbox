@@ -237,6 +237,11 @@ parserForPath path =
         fmap
           (RunNative . NativeAws . AwsRequestQuotas)
           (tierOptionParser PolicyFull "Quota target tier to request")
+    ["aws", "ebs", "reap-test"] ->
+      Just $
+        fmap
+          (RunNative . NativeAws . AwsReapTestEbs)
+          (yesSwitchParser "Confirm deletion of test-scoped EBS volumes")
     ["charts", "list"] -> Just (pure (RunNative (NativeCharts ChartsList)))
     ["charts", "status"] ->
       Just (fmap (RunNative . NativeCharts . ChartsStatus) (strArgument (metavar "CHART")))
@@ -473,6 +478,8 @@ parserForPath path =
                   )
               )
           )
+    ["test", "init"] -> Just testInitParser
+    ["test", "run"] -> Just testRunParser
     ["test", "all"] -> Just (withCoverage TestAll)
     ["test", "lint"] ->
       Just
@@ -492,6 +499,7 @@ parserForPath path =
     ["test", "integration", "ha-rke2-aws"] -> Just (withCoverage (TestIntegration IntegrationHaRke2Aws))
     ["test", "integration", "lifecycle"] -> Just (withCoverage (TestIntegration IntegrationLifecycle))
     ["test", "integration", "pulumi"] -> Just (withCoverage (TestIntegration IntegrationPulumi))
+    ["test", "integration", "eks-volume-rebind"] -> Just (withCoverage (TestIntegration IntegrationEksVolumeRebind))
     ["test", "integration", "charts-storage"] -> Just (withCoverage (TestIntegration IntegrationChartsStorage))
     ["test", "integration", "charts-platform"] -> Just (withCoverage (TestIntegration IntegrationChartsPlatform))
     ["test", "integration", "charts-vscode"] -> Just (withCoverage (TestIntegration IntegrationChartsVscode))
@@ -688,6 +696,24 @@ withCoverage :: TestScope -> Parser CommandRequest
 withCoverage scope =
   (\coverage substrate -> RunNative (NativeTest (TestCommand scope coverage substrate)))
     <$> coverageFlagsParser
+    <*> substrateOptionParser
+
+testInitParser :: Parser CommandRequest
+testInitParser =
+  RunNative
+    . NativeTest
+    . (\force -> TestCommand (TestInit force) (CoverageFlags False Nothing) defaultSubstrate)
+    <$> switch
+      ( long "force"
+          <> help "Overwrite an existing executable-sibling prodbox.test.dhall"
+      )
+
+testRunParser :: Parser CommandRequest
+testRunParser =
+  ( \suiteName coverage substrate -> RunNative (NativeTest (TestCommand (TestRun suiteName) coverage substrate))
+  )
+    <$> strArgument (metavar "SUITE")
+    <*> coverageFlagsParser
     <*> substrateOptionParser
 
 substrateOptionParser :: Parser Substrate
@@ -1085,6 +1111,19 @@ awsGroup =
         ]
         []
         [example ["aws", "quotas", "check"] "Inspect AWS quotas."]
+    , group
+        "ebs"
+        "AWS EBS maintenance"
+        "Recover test-scoped EBS volumes left behind after AWS-substrate test runs."
+        [ leaf
+            "reap-test"
+            "Delete test-scoped EBS volumes"
+            "Delete only EBS volumes tagged as per-run test volumes for the canonical AWS EKS test cluster. Retained-production EBS volumes are never selected."
+            [flagOption "yes" Nothing Nothing "Confirm deletion of test-scoped EBS volumes"]
+            [example ["aws", "ebs", "reap-test", "--yes"] "Delete leaked test-scoped EBS volumes."]
+        ]
+        []
+        [example ["aws", "ebs", "reap-test", "--yes"] "Delete leaked test-scoped EBS volumes."]
     , awsStackGroup
     ]
     []
@@ -1721,6 +1760,18 @@ testGroupSpec =
     "Named test suites"
     "Supported automated test commands."
     [ leaf
+        "init"
+        "Create prodbox.test.dhall"
+        "Create the executable-sibling prodbox.test.dhall test-topology document."
+        [flagOption "force" Nothing Nothing "Overwrite an existing prodbox.test.dhall"]
+        [example ["test", "init"] "Create the test-topology document."]
+    , leaf
+        "run"
+        "Run a topology-declared suite"
+        "Run one topology-declared suite, or every suite with `all`, using .test-data isolation."
+        coverageOptions
+        [example ["test", "run", "unit"] "Run the topology-declared unit suite."]
+    , leaf
         "all"
         "Run the full test suite"
         "Run lint and then the full test surface."
@@ -1754,6 +1805,7 @@ testGroupSpec =
         , integrationLeaf "ha-rke2-aws" "Run HA RKE2 AWS integration tests"
         , integrationLeaf "lifecycle" "Run lifecycle integration tests"
         , integrationLeaf "pulumi" "Run Pulumi integration tests"
+        , integrationLeaf "eks-volume-rebind" "Run retained-volume rebinding integration tests"
         , integrationLeaf "charts-storage" "Run chart-storage integration tests"
         , integrationLeaf "charts-platform" "Run chart-platform integration tests"
         , integrationLeaf "charts-vscode" "Run vscode stack integration tests"

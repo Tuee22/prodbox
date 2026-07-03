@@ -30,8 +30,9 @@ Build a clean-room Haskell `prodbox` repository with:
 2. One supported local lifecycle operator environment: `Ubuntu 24.04 LTS` with systemd. This
    Ubuntu-only host gate is generalized to a multi-OS host-provider model (Linux-native, macOS via a
    Lima VM, Windows via a WSL2 distro) per
-   [host_platform_doctrine.md](../documents/engineering/host_platform_doctrine.md) — scheduled
-   Sprints `1.52`/`4.37`, not yet implemented; everything Docker-inward stays OS-agnostic Linux.
+   [host_platform_doctrine.md](../documents/engineering/host_platform_doctrine.md) — Sprint `1.52`
+   landed the host-provider config/detection surface, and Sprint `4.37` landed host-provider ensure
+   decisions plus Docker Linux-frame dispatch; everything Docker-inward stays OS-agnostic Linux.
 3. One host-owned `prodbox rke2 reconcile|delete [--yes|--cascade [--yes]|--allow-pulumi-residue [--yes]]|status|start|stop|restart|logs` surface for
    the local RKE2 cluster, plus the operator-only `prodbox nuke` total-teardown command that
    refuses non-TTY contexts and requires the typed-confirmation literal `NUKE EVERYTHING`.
@@ -64,7 +65,9 @@ Build a clean-room Haskell `prodbox` repository with:
     builds, `docker buildx`, and mixed-arch clusters are unsupported. Native-host-architecture
     publication extends across the macOS (Lima) and Windows (WSL2) host providers — the build runs
     inside the OS-appropriate Linux frame — per
-    [host_platform_doctrine.md](../documents/engineering/host_platform_doctrine.md) (scheduled).
+    [host_platform_doctrine.md](../documents/engineering/host_platform_doctrine.md) (Sprint `1.52`
+    config/detection surface landed; Sprint `4.37` provider decisions and Linux-frame dispatch
+    landed).
 13. One local-cluster-first Pulumi backend model: the local RKE2 cluster runs MinIO and stores AWS
     test-stack state in the generic `prodbox-state` bucket; Sprint `7.14` now routes main Pulumi
     stack cycles and production residue/output reads through the decrypt-to-scratch Model-B
@@ -104,7 +107,7 @@ Build a clean-room Haskell `prodbox` repository with:
     and [Retained Storage Lifecycle Doctrine](../documents/engineering/storage_lifecycle_doctrine.md).
     Test runs use a separate `.test-data/` retained root and are mechanically forbidden from touching
     `.data/` per [test_topology_doctrine.md](../documents/engineering/test_topology_doctrine.md)
-    (scheduled Sprints `1.54`/`5.11`).
+    (Sprint `1.54` schema/preflight and Sprint `5.11` command/isolation work landed).
 18. One PostgreSQL doctrine for Helm-managed application data: every supported PostgreSQL
     deployment is external, Percona-operator-backed Patroni HA with exactly three PostgreSQL
     replicas, synchronous replication, and no embedded chart-local PostgreSQL subchart.
@@ -133,11 +136,11 @@ Build a clean-room Haskell `prodbox` repository with:
 26. Pulumi retained for true IaC surfaces such as AWS substrate resources, with no supported
     Python Pulumi program and no supported local-cluster public operator flow.
 
-> **Scheduled doctrine generalizations (2026-07-01 batch — documentation + plan only, not yet
-> implemented).** Structured payloads unify on canonical **CBOR** project-wide (the unimplemented
-> gateway "protobuf" language is superseded; `cborg`/`serialise` scheduled) —
+> **Scheduled doctrine generalizations (2026-07-01 batch — partly implemented).** Structured
+> payloads unify on canonical **CBOR** project-wide (the former
+> gateway "protobuf" language is superseded; `cborg`/`serialise` landed for Sprints `2.27`–`2.28`) —
 > [pulsar_messaging_doctrine.md](../documents/engineering/pulsar_messaging_doctrine.md). A
-> self-maintained native-protocol **Pulsar** client + platform chart, prodbox-as-its-own
+> self-maintained native-protocol **Pulsar** client boundary + platform chart, prodbox-as-its-own
 > **autoscaler** capacity/scaling with a per-deploy AWS region service-quota gate and mandatory ML
 > JIT/model-cache storage budgets
 > ([resource_scaling_doctrine.md](../documents/engineering/resource_scaling_doctrine.md),
@@ -147,20 +150,39 @@ Build a clean-room Haskell `prodbox` repository with:
 > **host-provider** model, and the **test-topology** `prodbox.test.dhall` SSoT
 > ([test_topology_doctrine.md](../documents/engineering/test_topology_doctrine.md)) are scheduled
 > across Phases 1–7 (Sprints `2.27`–`2.28`, `3.21`, `1.51`–`1.54`, `4.34`–`4.38`, `5.11`, `7.27`; no
-> new phase, Standard E preserved). Each makes the illegal states catalogued in its doctrine doc
+> new phase, Standard E preserved). Sprints `1.51` through `1.54` have landed the capacity/scaling
+> schema, multi-OS host-provider config/detection surface, cluster-topology config/schema surface,
+> and test-topology schema/topology-mode preflight, and Sprints `2.27`–`2.28` have landed the
+> gateway gossip + Orders CBOR codec and durable at-least-once CBOR store. Sprint `3.21` has landed
+> the Pulsar CBOR/topic/envelope/chart boundary while broker I/O remains blocked on generated
+> Apache Pulsar `BaseCommand`; Sprint `4.34` has landed the pure autoscaler planner and
+> federation-scoped placement guard; Sprint `4.36` has landed the tiered-storage finite-budget
+> planner, autoscaling witness, ML storage totals, and AWS quota preflight adapter; Sprint `4.37`
+> has landed host-provider ensure decisions and Docker Linux-frame dispatch; Sprint `4.38` has
+> landed substrate-typed one-worker-per-machine placement and anti-affinity; Sprint `5.11` has
+> landed the test-topology command surface and `.test-data` isolation; Sprint `7.27` has landed the
+> spot-price economics gate and AWS observer surface. Each makes the illegal
+> states catalogued in its doctrine doc
 > unrepresentable and specifies prodbox as the proven single-node specialization the `~/amoebius`
 > umbrella generalizes.
 
-> **Unified block storage across substrates (2026-07-02 — documentation + plan only, not yet
-> implemented).** EKS moves off dynamic `gp2` to **pre-created EBS volumes lifted in as static
-> `Retain` PVs** (CSI `volumeHandle`, AZ-pinned), mirroring the home `manual`/no-provisioner model —
-> no dynamic provisioning on either substrate
+> **Unified block storage across substrates (2026-07-02).** EKS moves off dynamic `gp2` to
+> **pre-created EBS volumes lifted in as static `Retain` PVs** (CSI `volumeHandle`, AZ-pinned),
+> mirroring the home `manual`/no-provisioner model — no dynamic provisioning on either substrate
 > ([storage_lifecycle_doctrine.md § 1](../documents/engineering/storage_lifecycle_doctrine.md),
 > [cluster_topology_doctrine.md § 4](../documents/engineering/cluster_topology_doctrine.md)).
 > Production retains EBS (the analog of `.data/`); the test harness deletes only test-scoped EBS at
-> suite postflight, closing the EBS-leak class an abnormal AWS bill surfaced. Scheduled by reopening
-> Phase 7 (Sprints `7.28`/`7.29`), Phase 4 (Sprints `4.39`/`4.40`), and Phase 5 (Sprint `5.12`) to
-> expand each phase's own owned surface (no new phase, Standards A/E/N preserved).
+> suite postflight, closing the EBS-leak class an abnormal AWS bill surfaced. Sprint `4.39` has
+> landed the managed-resource registry entry, typed EC2 discover/destroy boundary, retain/test
+> scoped tag markers, and retained-inventory parity; Sprint `4.40` has landed the suite postflight
+> test-EBS reaper, retain-safe drain guard, cascade hook, and `aws ebs reap-test --yes` recovery
+> entrypoint. Sprint `7.28` has landed static EBS PV materialization on the AWS code-owned path
+> (CSI renderer, retained EBS ensure loop, AWS chart/bootstrap dispatch, and AZ-pinned node group);
+> Sprint `5.12` has landed the code-owned `eks-volume-rebind` validation surface
+> (command/planner/body/oracle). The destructive home/AWS live proofs remain non-blocking live-infra
+> axes in Sprints `5.12`/`7.28`. The work expands
+> each phase's own owned surface (no
+> new phase, Standards A/E/N preserved).
 
 Vault is the **sole, finalized** secrets / KMS / encryption-as-a-service / PKI root of every
 prodbox-managed cluster — there is no transitional or bridge pattern. Every secret, credential, key,
@@ -825,9 +847,9 @@ The reopened ranges close on the following sprint sets:
 | Public-edge transport boundary | Public listener TLS terminates at Envoy on the supported path; backend HTTP remains the current workload default and backend TLS or mTLS requires later explicit doctrine ownership | Haskell lifecycle plus chart doctrine |
 | Optional realtime-state model | Redis-backed shared state for supported WebSocket workloads today and any later explicit external rate-limit service | Haskell chart platform plus application workload doctrine |
 | Interactive onboarding | `prodbox config setup` | Haskell CLI plus prompt-driven temporary admin AWS credentials and AWS CLI subprocesses |
-| AWS IAM and quota management | `prodbox aws policy|setup|teardown|check-quotas|request-quotas` | Haskell CLI plus AWS CLI subprocesses; `aws teardown` carries the Sprint `7.6`/`7.7` `PulumiResiduePolicy` contract (default refuse, `--destroy-pulumi-residue` to destroy live stacks first, `--allow-pulumi-residue` operator-acknowledged orphan escape; mutually exclusive at parse time). `aws setup` auto-detects `AKIA…` vs `ASIA…` access keys to conditionally prompt for the session token (Sprint `7.7`). |
+| AWS IAM, quota, and EBS maintenance | `prodbox aws policy|setup|teardown|quotas check|quotas request|ebs reap-test --yes` | Haskell CLI plus AWS CLI subprocesses; `aws teardown` carries the Sprint `7.6`/`7.7` `PulumiResiduePolicy` contract (default refuse, `--destroy-pulumi-residue` to destroy live stacks first, `--allow-pulumi-residue` operator-acknowledged orphan escape; mutually exclusive at parse time). `aws setup` auto-detects `AKIA…` vs `ASIA…` access keys to conditionally prompt for the session token (Sprint `7.7`). `aws ebs reap-test --yes` deletes only test-scoped EBS volumes for the canonical AWS EKS test cluster using operational `aws.*` loaded from Vault/config. |
 | AWS IAM validation harness | `prodbox test integration aws-iam`, targeted `prodbox test integration <name> --substrate aws` validations, `prodbox test integration all`, `prodbox test all` | Shared Haskell validation harness with idempotent IAM-user and config cleanup. Sprint `7.6` orphan-safety guards: the harness postflight auto-destroys per-run Pulumi stacks (`aws-eks`, `aws-eks-subzone`, `aws-test`) on success / failure / Ctrl-C when a managed suite may provision them. Sprint `7.10` (2026-05-29): the operational-credential teardown (clearing operational `aws.*` + deleting the operational `prodbox` IAM user) runs **only when the per-run destroy succeeded** (pure `clearOperationalCredsAfterPostflight`); on a per-run destroy failure it is **held** so the orphaned per-run stacks keep the operational creds needed to destroy them on retry. The per-run EKS destroy itself now drains the cluster's AWS-affecting K8s resources before `pulumi destroy` (Sprint `4.23`), closing the May 28/29 `DependencyViolation` root cause. Sprint `7.9` (2026-05-29): the harness postflight teardown (`runAwsIamHarnessTeardown`) no longer refuses on long-lived `aws-ses` residue. The Sprint `7.7` `BypassPerRunResidueOnly` refusal was correct only pre-Sprint-4.10, when `aws-ses` was operationally credentialed; post-4.10 `aws-ses` ops acquire admin power through the interactive `SecretRef.Prompt` (the harness simulating it from the `test-config.dhall` fixture `aws_admin_for_test_simulation.*`, not a stored `prodbox-config.dhall` block), so clearing operational `aws.*` cannot strand it. The postflight now uses `BypassAllResidueForHarnessRefresh`, matching the preflight (Sprint `7.5.c.v.c`), so an `aws-ses`-live run no longer strands the freshly-created operational `prodbox` IAM user. |
-| Leak-proof resource lifecycle | `Prodbox.Lifecycle.ResourceRegistry` (scheduled Sprints `4.20`–`4.22`, `7.8`) | Typed managed-resource registry — the SSoT for every AWS/cluster resource prodbox can create and how to `discover`/`destroy` it. Teardown (`rke2 delete`, `aws teardown`, `nuke`) is one idempotent `reconcileAbsent` reconciler over the registry with `Unreachable` never silently passing; `check-code` makes a creatable-but-undiscoverable resource unrepresentable. Doctrine: [lifecycle_reconciliation_doctrine.md § 3.1](../documents/engineering/lifecycle_reconciliation_doctrine.md). |
+| Leak-proof resource lifecycle | `Prodbox.Lifecycle.ResourceClass`, `Prodbox.Lifecycle.ResourceRegistry`, and typed resource modules such as `Prodbox.Lifecycle.EbsVolume` | Typed managed-resource registry — the SSoT for every AWS/cluster resource prodbox can create and how to `discover`/`destroy` it. Teardown (`rke2 delete`, `aws teardown`, `nuke`) composes idempotent typed reconcilers with `Unreachable` never silently passing; `check-code` makes a creatable-but-undiscoverable resource unrepresentable. Sprint `4.39` extends the class table with `aws-ebs-volumes`, typed EC2 `describe-volumes`/`delete-volume`, and retain/test-scoped tag partitioning; Sprint `4.40` adds the test-scoped EBS reaper in suite postflight, `cluster delete --cascade`, and `aws ebs reap-test --yes`, plus the retain-safe `Delete`-only drain guard. Doctrine: [lifecycle_reconciliation_doctrine.md § 3.1](../documents/engineering/lifecycle_reconciliation_doctrine.md). |
 | Formal verification | `prodbox tla-check` | Haskell CLI invoking the TLA+ toolchain |
 | Code quality gate | `prodbox check-code` | Haskell CLI plus governed doctrine-alignment enforcement |
 | Status and blockers | `DEVELOPMENT_PLAN/` | This plan suite |

@@ -72,7 +72,8 @@ validation environments.
   AWS/EKS substrate. There is no dynamic provisioning on either substrate. Production retains the EBS
   volumes exactly as it retains `.data/`; the test harness deletes only test-scoped EBS at suite
   postflight, so test runs never leak block storage. prodbox creates its own dedicated EKS VPC (never
-  the account default), and the test harness always provisions a fresh test VPC. See
+  the account default), tags the VPC/IGW/route-table/subnets with `prodbox.io/managed-by=prodbox`
+  for postflight sweep visibility, and the test harness always provisions a fresh test VPC. See
   [documents/engineering/storage_lifecycle_doctrine.md](./documents/engineering/storage_lifecycle_doctrine.md).
 - Lifecycle commands enforce leak-safety by refusing to proceed when residue is detected and by
   sweeping for cluster-tagged AWS resources after every destructive run; the consolidated doctrine

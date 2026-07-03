@@ -1,13 +1,14 @@
 RKE2_DELETE_CASCADE_PLAN
 REPO_ROOT=/tmp/prodbox
 MODE=cascade
-NARRATION=rke2 delete --cascade: confirm-MinIO → drain → per-run destroys → uninstall → sweep
+NARRATION=rke2 delete --cascade: confirm-MinIO → drain → per-run destroys → test-EBS reaper → uninstall → sweep
 STEP=ensure_host_inotify_limits
 STEP=confirm_minio_per_run_residue
 STEP=k8s_drain
 STEP=per_run_destroy aws-eks
 STEP=per_run_destroy aws-eks-subzone
 STEP=per_run_destroy aws-test
+STEP=test_ebs_reaper
 STEP=delete_rke2_cluster_substrate
 STEP=remove_calico_endpoint_status_residue
 STEP=remove_managed_kubeconfig

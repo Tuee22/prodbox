@@ -13,6 +13,7 @@
 -- in Sprints 7.8 / nuke.
 module Prodbox.Lifecycle.ResourceRegistry
   ( ManagedResource (..)
+  , capacityScaledManagedResources
   , perRunManagedResources
   , longLivedManagedResources
   , awsSesPulumiResource
@@ -41,6 +42,7 @@ import Prodbox.Lifecycle.ResidueStatus
   , residueBlocksTeardownGate
   )
 import Prodbox.Lifecycle.ResourceClass (LifecycleClass (..))
+import Prodbox.Scaling.Autoscaler qualified as Autoscaler
 import System.Exit (ExitCode (..))
 
 -- | One managed resource: its canonical name, lifecycle class (from the
@@ -55,6 +57,14 @@ data ManagedResource = ManagedResource
   , resourceDestroyCommand :: String
   , resourceDestroy :: FilePath -> IO ExitCode
   }
+
+-- | Sprint 4.34: the chart workloads whose replica counts are governed by the
+-- pure autoscaler planner. Their live scale-up / scale-down interpreter is
+-- separate from the Pulumi-stack destroy registry, but exposing the names here
+-- keeps capacity-scaled resources discoverable from the lifecycle registry
+-- surface.
+capacityScaledManagedResources :: [String]
+capacityScaledManagedResources = Autoscaler.capacityScaledResourceNames
 
 -- | The per-run Pulumi stacks as managed resources, in the canonical
 -- teardown order @aws-eks → aws-eks-subzone → aws-test@ (so dependent

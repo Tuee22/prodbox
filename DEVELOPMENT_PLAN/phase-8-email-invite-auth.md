@@ -71,8 +71,8 @@ code-owned surface (2026-06-17) and **home-substrate live-proven 2026-06-26** by
 ✅ **Done** (2026-06-09) — All sprints `8.1`–`8.8` are closed on their owned surfaces.
 Sprints `8.5`/`8.6` closed live (home + AWS `keycloak-invite` end-to-end with
 `OIDC_CLAIMS_VERIFIED=true` on both substrates, clean teardown, no leak). Sprint `8.8` closed via
-the home **and** AWS `prodbox test all` aggregates (both green: all 16 canonical validations +
-cabal suites), the certificate round-trip restore-no-reorder proof (a rebuild restores the cert
+the home **and** AWS `prodbox test all` aggregates (both green for the then-canonical 16
+validations plus cabal suites), the certificate round-trip restore-no-reorder proof (a rebuild restores the cert
 from the long-lived S3 store and cert-manager adopts it with zero new ACME orders), and the
 operator-invited `prodbox nuke` total-teardown proof — the last exercised end-to-end through the
 interactive integration harness (the same `PRODBOX_ALLOW_NON_TTY_INTERACTIVE` + stdin seam the
@@ -226,12 +226,14 @@ brought the `Certificate` Ready **with zero ACME orders created and zero readine
 (`kubectl get order -n vscode` → none), then `keycloak-invite` passed (`KCINVITE5_EXIT=0`). Gates:
 `check-code` 0, `test unit` 695/695 (the `certManagerAdoptionAnnotations` + `newUserCreationPayload`
 + credential-setup-parser regression tests). The full AWS aggregate then closed ✅ **GREEN**
-(`TESTALL_AWS_EXIT=0`, 2026-06-09): all 16 canonical native validations on the EKS substrate —
+(`TESTALL_AWS_EXIT=0`, 2026-06-09): all 16 then-canonical native validations on the EKS substrate —
 including `keycloak-invite` (`OIDC_CLAIMS_VERIFIED=true`) and the destructive `lifecycle` — plus
 both cabal suites (`prodbox-unit` 695/695, `prodbox-integration` 32/32); postflight destroyed
 `aws-eks` / `aws-test` / `aws-eks-subzone` with residue checks passing, cleared operational creds,
-and deleted the IAM user with no leak. So the **complete canonical suite is now green on both
-substrates** (home `TESTALL_HOME4_EXIT=0` + AWS `TESTALL_AWS_EXIT=0`). The final Sprint `8.8` deliverable — the
+and deleted the IAM user with no leak. That closed the Phase 8-owned then-canonical substrate proof
+(home `TESTALL_HOME4_EXIT=0` + AWS `TESTALL_AWS_EXIT=0`); current full-suite membership is defined in
+`src/Prodbox/TestPlan.hs` and current AWS live-proof axes are tracked in
+[substrates.md](substrates.md). The final Sprint `8.8` deliverable — the
 `prodbox nuke` nuke-only-removes-the-retained-cert proof — then closed via the **interactive
 integration harness** (2026-06-09). `prodbox nuke` is operator-only (TTY + typed confirmation),
 but the integration suite drives it through the same `PRODBOX_ALLOW_NON_TTY_INTERACTIVE` + stdin
@@ -289,7 +291,7 @@ cleared, IAM user deleted, no leak). Getting there required four fixes, each ver
    exported + unit-tested.
 
 The full home `prodbox test all` aggregate then closed the Sprint `8.8` home deliverable
-✅ **GREEN** (`TESTALL_HOME4_EXIT=0`, 2026-06-08): all 16 canonical native validations passed
+✅ **GREEN** (`TESTALL_HOME4_EXIT=0`, 2026-06-08): all 16 then-canonical native validations passed
 including `keycloak-invite` (`OIDC_CLAIMS_VERIFIED=true`) and the destructive `lifecycle`
 (`rke2 delete --cascade` + full reconcile + re-validate = the live cluster-wipe-and-rebuild
 cycle), plus both cabal suites (`prodbox-unit` 693/693, `prodbox-integration` 32/32); postflight

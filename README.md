@@ -94,8 +94,10 @@ validation environments.
   the per-run Pulumi destroys, so re-running `--cascade` against an already-torn-down host is safe.
   `prodbox nuke` is the operator-only total-teardown path that also destroys long-lived shared
   infrastructure.
-- This target edge doctrine applies to the self-managed local-cluster path; the AWS validation
-  stacks remain separate and do not currently provision MetalLB or Envoy Gateway.
+- This target edge doctrine has substrate-specific lower layers: the home substrate uses MetalLB,
+  while the AWS substrate uses the AWS Load Balancer Controller/NLB path. Both substrates provision
+  Envoy Gateway, Gateway API, cert-manager, and the same shared service set through their
+  substrate-aware installers.
 - The current shipped edge workloads share the single public hostname
   `test.resolvefintech.com`, with Keycloak on `/auth`, `vscode` on `/vscode`, the API on `/api`,
   the WebSocket workload on `/ws`, Harbor on `/harbor`, and MinIO console on `/minio`.
@@ -155,7 +157,8 @@ The current codebase baseline still deploys and manages:
 - **Route 53** for the single public A-record ownership contract
 - **Interactive onboarding** through `prodbox config setup`
 - **AWS IAM automation** through `prodbox aws ...`
-- **AWS validation stacks** through `prodbox aws stack eks reconcile|eks destroy --yes|test reconcile|test destroy --yes`
+- **AWS validation stacks** through `prodbox aws stack <stack> reconcile|destroy --yes` for
+  `eks`, `aws-subzone`, `test`, and `aws-ses`
 - **Bespoke charts** for `gateway`, `keycloak`, `vscode`, `api`, and `websocket`, with internal
   `redis` and `keycloak-postgres` dependency releases
 
@@ -633,8 +636,13 @@ Fourmolu, HLint, a warning-clean Cabal build, and syncs the built executable to 
 These commands run real native Haskell validation flows against the named environment:
 
 ```bash
-./.build/prodbox test integration aws-iam
+./.build/prodbox test integration charts-vscode
+./.build/prodbox test integration charts-api
+./.build/prodbox test integration charts-websocket
+./.build/prodbox test integration admin-routes
+./.build/prodbox test integration public-dns
 ./.build/prodbox test integration dns-aws
+./.build/prodbox test integration aws-iam
 ./.build/prodbox test integration aws-eks
 ./.build/prodbox test integration pulumi
 ./.build/prodbox test integration ha-rke2-aws
@@ -642,11 +650,12 @@ These commands run real native Haskell validation flows against the named enviro
 ./.build/prodbox test integration gateway-pods
 ./.build/prodbox test integration gateway-partition
 ./.build/prodbox test integration charts-platform
+./.build/prodbox test integration pulsar-broker
+./.build/prodbox test integration keycloak-invite
 ./.build/prodbox test integration charts-storage
-./.build/prodbox test integration charts-vscode
-./.build/prodbox test integration public-dns
-./.build/prodbox test integration lifecycle
+./.build/prodbox test integration eks-volume-rebind
 ./.build/prodbox test integration sealed-vault
+./.build/prodbox test integration lifecycle
 ```
 
 `./.build/prodbox test integration sealed-vault` asserts the fail-closed invariant: a sealed Vault leaves PVs and MinIO

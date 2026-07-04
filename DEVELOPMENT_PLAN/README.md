@@ -1893,9 +1893,11 @@ S3 store at the readiness gate, and `retainedPublicEdgeTlsSecretManifest` now pr
 `cert-manager.io/*` adoption annotations so the restored cert is **adopted** on rebuild — verified
 live (a home rebuild brought the cert Ready with **zero ACME orders / zero readiness cycles**,
 then `keycloak-invite` passed). Gates: `check-code` 0, `test unit` 695/695. The full AWS aggregate then closed ✅ **GREEN**
-(`TESTALL_AWS_EXIT=0`): all 16 canonical validations on EKS including `keycloak-invite` + the
+(`TESTALL_AWS_EXIT=0`): all 16 then-canonical validations on EKS including `keycloak-invite` + the
 destructive `lifecycle`, both cabal suites (unit 695, integration 32), clean teardown (no leak).
-**The complete canonical suite is now green on both substrates** (home + AWS). The final Sprint
+That closed the Phase 8-owned then-canonical substrate proof; current full-suite membership is
+defined in `src/Prodbox/TestPlan.hs` and current AWS live-proof axes are tracked in
+[substrates.md](substrates.md). The final Sprint
 `8.8` deliverable — the `prodbox nuke` nuke-only-removes-the-retained-cert proof — then closed via
 the **interactive integration harness**: `prodbox nuke` is operator-only (TTY + typed
 confirmation), but the suite drives it through the same `PRODBOX_ALLOW_NON_TTY_INTERACTIVE` + stdin
@@ -1924,7 +1926,7 @@ preserve outcome is now surfaced (Sprint `8.7` "never silent"); (4) `newUserCrea
 (`Keycloak/Admin.hs`) now sets `firstName`/`lastName` so the invited user is "fully set up" for
 Keycloak 26's user-profile validation — without them the OIDC password-grant returned `400
 invalid_grant: "Account is not fully set up"`. The full home `prodbox test all` aggregate then closed
-the Sprint `8.8` home deliverable ✅ **GREEN** (`TESTALL_HOME4_EXIT=0`): all 16 canonical
+the Sprint `8.8` home deliverable ✅ **GREEN** (`TESTALL_HOME4_EXIT=0`): all 16 then-canonical
 validations passed including `keycloak-invite` and the destructive `lifecycle` cluster-wipe cycle,
 plus both cabal suites (unit 693/693, integration 32/32), postflight clean (no AWS leak). Remaining
 for Phase `8`: AWS parity (Sprint `8.6`), the certificate round-trip restore-no-reorder proof

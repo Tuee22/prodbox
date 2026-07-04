@@ -16,8 +16,8 @@
 
 ## Phase Status
 
-✅ **Live-proven 2026-06-26 — the canonical suite runs fully green on the home substrate.** A full home
-`prodbox test all` (2026-06-26) passes 18/18 named validations end-to-end — including `sealed-vault`
+✅ **Live-proven 2026-06-26 — the then-current canonical suite ran fully green on the home substrate.** A full home
+`prodbox test all` (2026-06-26) passed 18/18 named validations end-to-end — including `sealed-vault`
 (Sprint `5.8`) and the destructive `lifecycle` ordering — with `prodbox-unit` 1062/1062 and
 `prodbox-integration` 39/39 (see [00-overview.md](00-overview.md) Alignment Status). Sprint `5.10`
 (harness-generated run config from `test-secrets.dhall`) is exercised by the run: the harness

@@ -559,8 +559,10 @@ no leak) → `keycloak-invite` green on both substrates. The cert no longer re-o
 preserves the `cert-manager.io/*` adoption annotations so cert-manager adopts it (verified live: a
 home rebuild reached Ready with zero ACME orders, then `keycloak-invite` passed). `check-code` 0,
 `test unit` 695/695. The full AWS aggregate then closed ✅ GREEN (`TESTALL_AWS_EXIT=0`): all 16
-validations on EKS incl. `keycloak-invite` + `lifecycle`, both cabal suites, clean teardown.
-The complete canonical suite is now green on both substrates. The final Sprint `8.8` deliverable —
+then-canonical validations on EKS incl. `keycloak-invite` + `lifecycle`, both cabal suites, clean
+teardown. That closed the Phase 8-owned then-canonical substrate proof; current full-suite
+membership is defined in `src/Prodbox/TestPlan.hs` and current AWS live-proof axes are tracked in
+[substrates.md](substrates.md). The final Sprint `8.8` deliverable —
 the `prodbox nuke` nuke-only-removes-the-retained-cert proof — then closed via the interactive
 integration harness (the `PRODBOX_ALLOW_NON_TTY_INTERACTIVE` + stdin seam the other interactive
 surfaces use): three new `CliSuite.hs` cases prove the typed-confirmation gate, the `--dry-run`

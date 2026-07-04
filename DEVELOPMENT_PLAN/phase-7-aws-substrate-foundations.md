@@ -591,10 +591,10 @@ becomes ✅ Full canonical suite.
   - The same prerequisite set (`infra_ready`, `public_edge_ready`, `k8s_ready`, chart-platform
     prereqs) satisfied for the AWS substrate. (`7.5.b`)
 - The canonical-suite content (`charts-vscode`, `charts-api`, `charts-websocket`,
-  `public-dns`, `admin-routes`, public-edge readiness, plus phase-8's `keycloak-invite` when
-  it lands) runs unchanged against the AWS substrate and produces the same pass/fail
-  semantics as on the home substrate. The validations themselves do not change; only the
-  substrate they target changes. (`7.5.c`)
+  `public-dns`, `admin-routes`, public-edge readiness, `keycloak-invite`, and later
+  suite additions tracked in `src/Prodbox/TestPlan.hs`) runs unchanged against the AWS
+  substrate and produces the same pass/fail semantics as on the home substrate. The
+  validations themselves do not change; only the substrate they target changes. (`7.5.c`)
 - AWS substrate teardown leaves no AWS residue: no orphaned hosted zone, no orphaned cert,
   no leaked ACME order/challenge, no stale `HTTPRoute` or `Certificate` resources, no leaked
   EBS volumes from chart PVCs. (`7.5.c`)

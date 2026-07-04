@@ -123,10 +123,9 @@ data EdgeCommand
   deriving (Eq, Show)
 
 -- | Sprint 1.36: the in-cluster Vault lifecycle surface. 'VaultStatus' probes
--- seal state (implemented); the remaining subcommands drive init / unseal /
--- seal / reconcile / key rotation / PKI inspection. 'VaultRotateTransitKey'
--- carries the Transit key name. The subcommands are nullary (no 'PlanOptions')
--- until the init/unseal orchestration and its @--dry-run@ plan land.
+-- seal state; the mutating subcommands drive init / unseal / seal / reconcile
+-- / key rotation / PKI inspection through the Vault CLI handlers.
+-- 'VaultRotateTransitKey' carries the Transit key name.
 data VaultCommand
   = VaultStatus
   | VaultInit

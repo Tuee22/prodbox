@@ -87,8 +87,7 @@ import Prodbox.EffectInterpreter
   )
 import Prodbox.Error (fatalError)
 import Prodbox.Infra.AwsEksTestStack
-  ( awsEksCanonicalClusterName
-  , withEksKubeconfig
+  ( withEksKubeconfig
   )
 import Prodbox.Infra.AwsSesStack qualified as AwsSesStack
 import Prodbox.Lib.ChartPlatform
@@ -100,7 +99,6 @@ import Prodbox.Lib.Storage
   , testDataRootRelative
   , testManualPvHostRootEnv
   )
-import Prodbox.Lifecycle.EbsVolume qualified as EbsVolume
 import Prodbox.Lifecycle.ResourceClass qualified as ResourceClass
 import Prodbox.Prerequisite
   ( prerequisiteRegistry
@@ -779,7 +777,7 @@ runWithAwsHarnessCleanup repoRoot environment suitePlan body = do
   -- Sprint 7.10: clear operational @aws.*@ + delete the operational
   -- @prodbox@ user only when the per-run destroy succeeded. On a
   -- per-run destroy failure, preserve the operational credentials so the
-  -- orphaned per-run stacks can be destroyed on retry, and explain the
+  -- orphaned per-run resources can be destroyed on retry, and explain the
   -- recovery path.
   runConditionalHarnessTeardown :: ExitCode -> IO ExitCode
   runConditionalHarnessTeardown destroyExit
@@ -787,19 +785,20 @@ runWithAwsHarnessCleanup repoRoot environment suitePlan body = do
         runManagedAwsHarnessTeardown repoRoot
     | otherwise = do
         writeDiagnosticLine
-          ( "Per-run Pulumi destroy failed ("
+          ( "Per-run AWS postflight cleanup failed ("
               ++ show destroyExit
               ++ "); the per-run AWS stacks (aws-eks, aws-eks-subzone, "
-              ++ "aws-test) may still hold live resources. PRESERVING "
+              ++ "aws-test) or test-scoped EBS volumes may still hold live resources. PRESERVING "
               ++ "operational aws.* and the operational `prodbox` IAM "
-              ++ "user so the orphaned per-run stacks can be destroyed on "
+              ++ "user so the orphaned per-run resources can be destroyed on "
               ++ "retry. Skipping the operational-credential teardown to "
               ++ "avoid stranding the orphans without the credentials "
               ++ "required to delete them. Recover with: resolve the "
               ++ "destroy failure (e.g. wait out / clean up the orphan "
               ++ "ENIs behind a DependencyViolation), then "
               ++ "`prodbox aws stack <stack> destroy --yes` for each "
-              ++ "remaining per-run stack, then `prodbox aws teardown` to "
+              ++ "remaining per-run stack, `prodbox aws ebs reap-test --yes` "
+              ++ "for any test-scoped EBS volumes, then `prodbox aws teardown` to "
               ++ "clear the operational credentials."
           )
         -- The per-run destroy failure is already surfaced as the
@@ -820,10 +819,10 @@ runWithAwsHarnessCleanup repoRoot environment suitePlan body = do
 
 -- | Sprint 7.10 pure decision: should the operational-credential
 -- teardown ('runManagedAwsHarnessTeardown') run after the per-run
--- Pulumi destroy postflight?
+-- AWS per-run cleanup postflight?
 --
--- Returns 'True' iff the per-run destroy succeeded ('ExitSuccess'). On
--- any 'ExitFailure' the orphaned per-run stacks still hold live AWS
+-- Returns 'True' iff the per-run cleanup succeeded ('ExitSuccess'). On
+-- any 'ExitFailure' the orphaned per-run resources may still hold live AWS
 -- resources that require operational creds to destroy on retry, so the
 -- teardown is held and the operational @aws.*@ + @prodbox@ IAM user are
 -- preserved. Extracted as a pure helper so the decision matrix is
@@ -855,7 +854,7 @@ awsPostflightDestroyActions repoRoot environment suitePlan =
         -- preserving the operational credentials for manual recovery as before.
         : runNativeCliCommandForExitCode repoRoot environment ["vault", "unseal"]
         : map (runNativeCliCommandForExitCode repoRoot environment) commands
-        ++ [runTestScopedEbsReaperAction repoRoot environment]
+        ++ [runNativeCliCommandForExitCode repoRoot environment ["aws", "ebs", "reap-test", "--yes"]]
 
 awsPostflightDestroyCommandArgs :: NativeSuitePlan -> [[String]]
 awsPostflightDestroyCommandArgs suitePlan =
@@ -866,23 +865,6 @@ awsPostflightDestroyCommandArgs suitePlan =
       , ["aws", "stack", "test", "destroy", "--yes"]
       ]
     else []
-
-runTestScopedEbsReaperAction :: FilePath -> [(String, String)] -> IO ExitCode
-runTestScopedEbsReaperAction repoRoot environment = do
-  result <-
-    EbsVolume.runTestScopedEbsReaper
-      EbsVolume.TestEbsReaperInput
-        { EbsVolume.testEbsReaperEnvironment = environment
-        , EbsVolume.testEbsReaperWorkingDirectory = Just repoRoot
-        , EbsVolume.testEbsReaperClusterName = awsEksCanonicalClusterName
-        }
-  case result of
-    Left err -> do
-      writeDiagnosticLine ("Test-scoped EBS reaper failed: " ++ err)
-      pure (ExitFailure 1)
-    Right report -> do
-      writeOutputLine (EbsVolume.renderTestScopedEbsReaperReport report)
-      pure ExitSuccess
 
 nativeMayProvisionPerRunAwsStacks :: NativeSuitePlan -> Bool
 nativeMayProvisionPerRunAwsStacks suitePlan =

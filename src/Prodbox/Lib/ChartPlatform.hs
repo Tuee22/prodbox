@@ -600,18 +600,24 @@ renderChartStatus repoRoot settings chartName = do
                 ++ releaseLines
                 ++ renderStorageReport (chartReleasePlanStorageBindings chartRelease)
 
--- | Pure: the releases in @plan@ that are NOT yet present in @helm list@
--- (keyed by release name). @reconcile@ deploys exactly these, so a chart root
--- whose deploy was partially rolled back (e.g. a sibling release uninstalled
--- by a failed @helm --wait@) converges on the next reconcile. An empty result
--- means every release is already installed — an idempotent no-op. Exposed for
--- unit testing because 'deployChartPlan' is otherwise IO-bound on @helm@.
-chartReleasesToDeploy :: Map.Map String v -> ChartDeploymentPlan -> [ChartReleasePlan]
+-- | Pure: the releases in @plan@ that are not in Helm's steady-state
+-- @deployed@ status. @reconcile@ deploys exactly these, so a chart root whose
+-- deploy was partially rolled back, failed, or interrupted in a pending state
+-- converges on the next reconcile. An empty result means every release is
+-- already installed and deployed — an idempotent no-op. Exposed for unit
+-- testing because 'deployChartPlan' is otherwise IO-bound on @helm@.
+chartReleasesToDeploy
+  :: Map.Map String ChartInstallSnapshot -> ChartDeploymentPlan -> [ChartReleasePlan]
 chartReleasesToDeploy snapshots plan =
   [ release
   | release <- chartDeploymentPlanReleases plan
-  , not (Map.member (chartReleasePlanReleaseName release) snapshots)
+  , releaseRequiresDeploy release
   ]
+ where
+  releaseRequiresDeploy release =
+    case Map.lookup (chartReleasePlanReleaseName release) snapshots of
+      Nothing -> True
+      Just snapshot -> map toLower (chartInstallSnapshotStatus snapshot) /= "deployed"
 
 deployChartPlan :: ChartDeploymentPlan -> IO (Either String String)
 deployChartPlan plan = do
@@ -2745,17 +2751,22 @@ ensureChartStorage plan = do
                       case nodeHostnameResult of
                         Left err -> pure (Left err)
                         Right nodeHostname -> do
-                          prepareResult <- foldM prepareStorageBinding (Right ()) eagerBindings
-                          case prepareResult of
+                          resetPulsarResult <-
+                            foldM resetPulsarStorageBindingIfNeeded (Right ()) eagerBindings
+                          case resetPulsarResult of
                             Left err -> pure (Left err)
-                            Right () ->
-                              applyManifest
-                                ( chartStorageManifest
-                                    (chartDeploymentPlanNamespace plan)
-                                    (chartDeploymentPlanRootChart plan)
-                                    eagerBindings
-                                    nodeHostname
-                                )
+                            Right () -> do
+                              prepareResult <- foldM prepareStorageBinding (Right ()) eagerBindings
+                              case prepareResult of
+                                Left err -> pure (Left err)
+                                Right () ->
+                                  applyManifest
+                                    ( chartStorageManifest
+                                        (chartDeploymentPlanNamespace plan)
+                                        (chartDeploymentPlanRootChart plan)
+                                        eagerBindings
+                                        nodeHostname
+                                    )
  where
   ensureAwsEbsVolumeBindings :: [ChartStorageBinding] -> IO (Either String [StaticEbsVolumeBinding])
   ensureAwsEbsVolumeBindings awsBindings = do
@@ -2887,6 +2898,54 @@ ensureChartStorage plan = do
   resetBinding (Left err) _ = pure (Left err)
   resetBinding (Right ()) binding =
     runCommandExpectSuccess "sudo rm" "sudo" ["rm", "-rf", chartStorageBindingHostPath binding]
+
+  resetPulsarStorageBindingIfNeeded
+    :: Either String () -> ChartStorageBinding -> IO (Either String ())
+  resetPulsarStorageBindingIfNeeded (Left err) _ = pure (Left err)
+  resetPulsarStorageBindingIfNeeded (Right ()) binding
+    | chartStorageBindingReleaseName binding /= "pulsar" = pure (Right ())
+    | otherwise = do
+        statefulSetResult <-
+          deleteKubectlObject
+            [ "delete"
+            , "statefulset"
+            , chartStorageBindingStatefulSetName binding
+            , "--namespace"
+            , chartDeploymentPlanNamespace plan
+            , "--ignore-not-found=true"
+            , "--wait=true"
+            ]
+        case statefulSetResult of
+          Left err -> pure (Left err)
+          Right () -> do
+            pvcResult <-
+              deleteKubectlObject
+                [ "delete"
+                , "pvc"
+                , chartStorageBindingPersistentVolumeClaimName binding
+                , "--namespace"
+                , chartDeploymentPlanNamespace plan
+                , "--ignore-not-found=true"
+                , "--wait=true"
+                ]
+            case pvcResult of
+              Left err -> pure (Left err)
+              Right () -> do
+                pvResult <-
+                  deleteKubectlObject
+                    [ "delete"
+                    , "pv"
+                    , chartStorageBindingPersistentVolumeName binding
+                    , "--ignore-not-found=true"
+                    , "--wait=true"
+                    ]
+                case pvResult of
+                  Left err -> pure (Left err)
+                  Right () ->
+                    runCommandExpectSuccess
+                      "sudo rm"
+                      "sudo"
+                      ["rm", "-rf", chartStorageBindingHostPath binding]
 
 prepareStorageBinding :: Either String () -> ChartStorageBinding -> IO (Either String ())
 prepareStorageBinding (Left err) _ = pure (Left err)

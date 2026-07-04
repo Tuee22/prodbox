@@ -443,6 +443,15 @@ harborReadyAnnotationKey = "prodbox.io/harbor-nginx-readiness-contract"
 harborReadyAnnotationValue :: String
 harborReadyAnnotationValue = "readyz-v1"
 
+harborHelmFieldManager :: String
+harborHelmFieldManager = "helm"
+
+vaultApiReadinessAttempts :: Int
+vaultApiReadinessAttempts = 60
+
+vaultApiReadinessDelayMicroseconds :: Int
+vaultApiReadinessDelayMicroseconds = 2000000
+
 publicEdgeListenerName :: String
 publicEdgeListenerName = "https"
 
@@ -2330,29 +2339,54 @@ ensureRootVaultLifecycleDetailed repoRoot = do
     Just other ->
       lifecycleFailure <$> failWith ("invalid PRODBOX_TEST_ROOT_VAULT_LIFECYCLE=" ++ other)
     Nothing -> do
-      initExit <- runVaultInit repoRoot hostVaultAddress
-      case initExit of
-        ExitFailure _ -> pure (lifecycleFailure initExit)
-        ExitSuccess -> do
-          unsealExit <- runVaultUnseal repoRoot hostVaultAddress
-          case unsealExit of
-            ExitFailure _ -> pure (lifecycleFailure unsealExit)
-            ExitSuccess -> do
-              -- Sprint 1.39 (self-heal): @vault init@ writes the Tier-0 basics
-              -- floor only at first-ever bring-up; on a rebuild against a
-              -- durable Vault PV it early-returns and the floor is never
-              -- rewritten. Guarantee it idempotently here — AFTER init/unseal
-              -- succeed and BEFORE reconcile — so the per-run Pulumi destroy and
-              -- the other `loadUnencryptedBasics` consumers always find it.
-              floorResult <- ensureBasicsFloor repoRoot (unVaultAddress hostVaultAddress)
-              case floorResult of
-                Left err -> lifecycleFailure <$> failWith err
-                Right () -> do
-                  reconcileResult <- runVaultReconcileCommandDetailed repoRoot hostVaultAddress
-                  pure
-                    VaultLifecycleResult
-                      { vaultLifecycleExitCode = vaultReconcileCommandExitCode reconcileResult
-                      }
+      waitExit <- waitForVaultApiReadiness hostVaultAddress
+      case waitExit of
+        ExitFailure _ -> pure (lifecycleFailure waitExit)
+        ExitSuccess -> continue
+ where
+  continue = do
+    initExit <- runVaultInit repoRoot hostVaultAddress
+    case initExit of
+      ExitFailure _ -> pure (lifecycleFailure initExit)
+      ExitSuccess -> do
+        unsealExit <- runVaultUnseal repoRoot hostVaultAddress
+        case unsealExit of
+          ExitFailure _ -> pure (lifecycleFailure unsealExit)
+          ExitSuccess -> do
+            -- Sprint 1.39 (self-heal): @vault init@ writes the Tier-0 basics
+            -- floor only at first-ever bring-up; on a rebuild against a
+            -- durable Vault PV it early-returns and the floor is never
+            -- rewritten. Guarantee it idempotently here — AFTER init/unseal
+            -- succeed and BEFORE reconcile — so the per-run Pulumi destroy and
+            -- the other `loadUnencryptedBasics` consumers always find it.
+            floorResult <- ensureBasicsFloor repoRoot (unVaultAddress hostVaultAddress)
+            case floorResult of
+              Left err -> lifecycleFailure <$> failWith err
+              Right () -> do
+                reconcileResult <- runVaultReconcileCommandDetailed repoRoot hostVaultAddress
+                pure
+                  VaultLifecycleResult
+                    { vaultLifecycleExitCode = vaultReconcileCommandExitCode reconcileResult
+                    }
+
+waitForVaultApiReadiness :: VaultAddress -> IO ExitCode
+waitForVaultApiReadiness address =
+  go vaultApiReadinessAttempts "Vault API not yet checked"
+ where
+  go :: Int -> String -> IO ExitCode
+  go attemptsRemaining lastDetail
+    | attemptsRemaining <= 0 =
+        failWith
+          ( "Vault API did not become reachable before lifecycle reconciliation: "
+              ++ lastDetail
+          )
+    | otherwise = do
+        statusResult <- vaultSealStatus address
+        case statusResult of
+          Right _ -> pure ExitSuccess
+          Left err -> do
+            threadDelay vaultApiReadinessDelayMicroseconds
+            go (attemptsRemaining - 1) (renderHttpError err)
 
 ensureFederatedVaultLifecycleDetailed :: FilePath -> IO VaultLifecycleResult
 ensureFederatedVaultLifecycleDetailed repoRoot = do
@@ -3281,6 +3315,7 @@ ensureHarborRegistryRuntime repoRoot substrate = do
             , "--install"
             , harborReleaseName
             , harborRepositoryName ++ "/harbor"
+            , "--force-conflicts"
             , "--namespace"
             , harborNamespace
             , "--create-namespace"
@@ -3526,16 +3561,7 @@ probeHarborHttpStatus repoRoot path = do
 ensureHarborNginxReadinessContract :: FilePath -> IO ExitCode
 ensureHarborNginxReadinessContract repoRoot = do
   configOutputResult <-
-    captureKubectl
-      repoRoot
-      [ "get"
-      , "configmap"
-      , harborComponentName harborReleaseName "nginx"
-      , "-n"
-      , harborNamespace
-      , "-o"
-      , "jsonpath={.data.nginx\\.conf}"
-      ]
+    readHarborNginxConfig repoRoot
   case configOutputResult of
     Left err -> failWith err
     Right configOutput ->
@@ -3545,92 +3571,121 @@ ensureHarborNginxReadinessContract repoRoot = do
           case renderHarborNginxReadyzConfig (processStdout configOutput) of
             Nothing -> failWith "Failed to inject Harbor nginx readiness path into ConfigMap"
             Just patchedConfig -> do
-              let configMapManifest =
-                    object
-                      [ "apiVersion" .= ("v1" :: String)
-                      , "kind" .= ("ConfigMap" :: String)
-                      , "metadata"
+              applyHarborNginxReadinessContract repoRoot patchedConfig
+
+applyHarborNginxReadinessContract :: FilePath -> String -> IO ExitCode
+applyHarborNginxReadinessContract repoRoot patchedConfig = do
+  configPatchExit <- patchHarborNginxConfigMap repoRoot patchedConfig
+  case configPatchExit of
+    ExitFailure _ -> pure configPatchExit
+    ExitSuccess -> patchHarborNginxDeployment repoRoot
+
+readHarborNginxConfig :: FilePath -> IO (Either String ProcessOutput)
+readHarborNginxConfig repoRoot =
+  captureKubectl
+    repoRoot
+    [ "get"
+    , "configmap"
+    , harborComponentName harborReleaseName "nginx"
+    , "-n"
+    , harborNamespace
+    , "-o"
+    , "jsonpath={.data.nginx\\.conf}"
+    ]
+
+patchHarborNginxConfigMap :: FilePath -> String -> IO ExitCode
+patchHarborNginxConfigMap repoRoot patchedConfig = do
+  let configMapPatch =
+        object
+          [ "data" .= object ["nginx.conf" .= patchedConfig]
+          ]
+  patchResult <-
+    captureKubectl
+      repoRoot
+      [ "patch"
+      , "configmap"
+      , harborComponentName harborReleaseName "nginx"
+      , "-n"
+      , harborNamespace
+      , "--type"
+      , "merge"
+      , "--field-manager=" ++ harborHelmFieldManager
+      , "--patch"
+      , trimTrailingNewlines (BL8.unpack (encode configMapPatch))
+      ]
+  case patchResult of
+    Left err -> failWith err
+    Right patchOutput ->
+      case processExitCode patchOutput of
+        ExitFailure _ -> failWith ("Failed to patch Harbor nginx ConfigMap: " ++ outputDetail patchOutput)
+        ExitSuccess -> pure ExitSuccess
+
+patchHarborNginxDeployment :: FilePath -> IO ExitCode
+patchHarborNginxDeployment repoRoot = do
+  let deploymentPatch =
+        object
+          [ "spec"
+              .= object
+                [ "template"
+                    .= object
+                      [ "metadata"
                           .= object
-                            [ "name" .= harborComponentName harborReleaseName "nginx"
-                            , "namespace" .= harborNamespace
-                            ]
-                      , "data" .= object ["nginx.conf" .= patchedConfig]
-                      ]
-                  deploymentPatch =
-                    object
-                      [ "spec"
-                          .= object
-                            [ "template"
+                            [ "annotations"
                                 .= object
-                                  [ "metadata"
-                                      .= object
-                                        [ "annotations"
-                                            .= object
-                                              [ Key.fromString harborReadyAnnotationKey .= harborReadyAnnotationValue
-                                              ]
-                                        ]
-                                  , "spec"
-                                      .= object
-                                        [ "containers"
-                                            .= ( [ object
-                                                     [ "name" .= ("nginx" :: String)
-                                                     , "readinessProbe"
-                                                         .= object
-                                                           [ "httpGet"
-                                                               .= object
-                                                                 [ "path" .= harborReadyPath
-                                                                 , "port" .= (8080 :: Int)
-                                                                 , "scheme" .= ("HTTP" :: String)
-                                                                 ]
-                                                           ]
-                                                     , "livenessProbe"
-                                                         .= object
-                                                           [ "httpGet"
-                                                               .= object
-                                                                 [ "path" .= harborReadyPath
-                                                                 , "port" .= (8080 :: Int)
-                                                                 , "scheme" .= ("HTTP" :: String)
-                                                                 ]
-                                                           ]
-                                                     ]
-                                                 ]
-                                                   :: [Value]
-                                               )
-                                        ]
+                                  [ Key.fromString harborReadyAnnotationKey .= harborReadyAnnotationValue
                                   ]
                             ]
+                      , "spec"
+                          .= object
+                            [ "containers"
+                                .= ( [ object
+                                         [ "name" .= ("nginx" :: String)
+                                         , "readinessProbe"
+                                             .= object
+                                               [ "httpGet"
+                                                   .= object
+                                                     [ "path" .= harborReadyPath
+                                                     , "port" .= (8080 :: Int)
+                                                     , "scheme" .= ("HTTP" :: String)
+                                                     ]
+                                               ]
+                                         , "livenessProbe"
+                                             .= object
+                                               [ "httpGet"
+                                                   .= object
+                                                     [ "path" .= harborReadyPath
+                                                     , "port" .= (8080 :: Int)
+                                                     , "scheme" .= ("HTTP" :: String)
+                                                     ]
+                                               ]
+                                         ]
+                                     ]
+                                       :: [Value]
+                                   )
+                            ]
                       ]
-              applyExit <-
-                withTemporaryJsonBytes "prodbox-harbor-nginx" (encode configMapManifest) $ \manifestPath -> do
-                  outputResult <- captureKubectl repoRoot ["apply", "-f", manifestPath]
-                  case outputResult of
-                    Left err -> failWith err
-                    Right applyOutput ->
-                      case processExitCode applyOutput of
-                        ExitFailure _ -> failWith ("Failed to apply Harbor nginx ConfigMap: " ++ outputDetail applyOutput)
-                        ExitSuccess -> pure ExitSuccess
-              case applyExit of
-                ExitFailure _ -> pure applyExit
-                ExitSuccess -> do
-                  patchResult <-
-                    captureKubectl
-                      repoRoot
-                      [ "patch"
-                      , "deployment"
-                      , harborComponentName harborReleaseName "nginx"
-                      , "-n"
-                      , harborNamespace
-                      , "--type"
-                      , "strategic"
-                      , "--patch"
-                      , trimTrailingNewlines (BL8.unpack (encode deploymentPatch))
-                      ]
-                  case patchResult of
-                    Left err -> failWith err
-                    Right patchOutput ->
-                      case processExitCode patchOutput of
-                        ExitFailure _ -> failWith ("Failed to patch Harbor nginx Deployment: " ++ outputDetail patchOutput)
-                        ExitSuccess -> pure ExitSuccess
+                ]
+          ]
+  patchResult <-
+    captureKubectl
+      repoRoot
+      [ "patch"
+      , "deployment"
+      , harborComponentName harborReleaseName "nginx"
+      , "-n"
+      , harborNamespace
+      , "--type"
+      , "strategic"
+      , "--field-manager=" ++ harborHelmFieldManager
+      , "--patch"
+      , trimTrailingNewlines (BL8.unpack (encode deploymentPatch))
+      ]
+  case patchResult of
+    Left err -> failWith err
+    Right patchOutput ->
+      case processExitCode patchOutput of
+        ExitFailure _ -> failWith ("Failed to patch Harbor nginx Deployment: " ++ outputDetail patchOutput)
+        ExitSuccess -> pure ExitSuccess
 
 ensureHarborProject :: FilePath -> String -> IO ExitCode
 ensureHarborProject repoRoot projectName = do
@@ -4070,10 +4125,11 @@ ensureMetalLbRuntime repoRoot settings prodboxId labelValue metallbPool = do
     ExitFailure _ -> pure repoExit
     ExitSuccess -> do
       installExit <-
-        helmUpgradeInstallWithJsonValues
+        helmUpgradeInstallWithJsonValuesAndArgs
           repoRoot
           metallbReleaseName
           metallbChartRef
+          ["--force-conflicts"]
           metallbChartVersion
           metallbNamespace
           (metallbHelmValues prodboxId labelValue)
@@ -5103,21 +5159,36 @@ ensureHelmRepoAdded repoRoot repoName repoUrl = do
 helmUpgradeInstallWithJsonValues
   :: FilePath -> String -> String -> String -> String -> Value -> IO ExitCode
 helmUpgradeInstallWithJsonValues repoRoot releaseName chartRef chartVersion namespace values =
+  helmUpgradeInstallWithJsonValuesAndArgs
+    repoRoot
+    releaseName
+    chartRef
+    []
+    chartVersion
+    namespace
+    values
+
+helmUpgradeInstallWithJsonValuesAndArgs
+  :: FilePath -> String -> String -> [String] -> String -> String -> Value -> IO ExitCode
+helmUpgradeInstallWithJsonValuesAndArgs repoRoot releaseName chartRef extraArgs chartVersion namespace values =
   withTemporaryJsonBytes ("prodbox-helm-values-" ++ releaseName) (encode values) $ \valuesPath ->
     runHelmCommandWithRetries
       repoRoot
-      [ "upgrade"
-      , "--install"
-      , releaseName
-      , chartRef
-      , "--version"
-      , chartVersion
-      , "--namespace"
-      , namespace
-      , "--create-namespace"
-      , "-f"
-      , valuesPath
-      ]
+      ( [ "upgrade"
+        , "--install"
+        , releaseName
+        , chartRef
+        ]
+          ++ extraArgs
+          ++ [ "--version"
+             , chartVersion
+             , "--namespace"
+             , namespace
+             , "--create-namespace"
+             , "-f"
+             , valuesPath
+             ]
+      )
 
 runHelmCommandWithRetries :: FilePath -> [String] -> IO ExitCode
 runHelmCommandWithRetries repoRoot arguments = go (retryPolicyMaxAttempts helmTransientRetryPolicy)

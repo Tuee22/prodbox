@@ -478,6 +478,7 @@ import Prodbox.Keycloak.Email qualified
 import Prodbox.Lib.AwsSubstratePlatform qualified
 import Prodbox.Lib.ChartPlatform
   ( ChartDeploymentPlan (..)
+  , ChartInstallSnapshot (..)
   , ChartReleasePlan (..)
   , PatroniAuthObservation (..)
   , PatroniResetDecision (..)
@@ -6224,7 +6225,7 @@ main = mainWithSuite "prodbox-unit" $ do
           manifestJson `shouldNotContain` "\"storageClassName\":\"gp2\""
 
     it
-      "chartReleasesToDeploy deploys only the releases missing from helm list (heals a partial rollback)"
+      "chartReleasesToDeploy deploys missing and non-deployed helm releases"
       $ do
         result <-
           buildChartDeploymentPlan
@@ -6237,15 +6238,26 @@ main = mainWithSuite "prodbox-unit" $ do
           Left err -> expectationFailure err
           Right plan -> do
             let names snaps = map chartReleasePlanReleaseName (chartReleasesToDeploy snaps plan)
-                present ks = Map.fromList [(k, ()) | k <- ks]
+                snapshot name status = ChartInstallSnapshot name "vscode" status
+                present ks = Map.fromList [(k, snapshot k "deployed") | k <- ks]
             -- Nothing installed yet: deploy the whole chart root in order.
-            names (Map.empty :: Map.Map String ()) `shouldBe` ["keycloak-postgres", "keycloak", "vscode"]
+            names Map.empty `shouldBe` ["keycloak-postgres", "keycloak", "vscode"]
             -- Fully installed: idempotent no-op.
             names (present ["keycloak-postgres", "keycloak", "vscode"]) `shouldBe` []
             -- Partial rollback (keycloak uninstalled, siblings remain): deploy ONLY
             -- keycloak — the case the old all-or-nothing duplicates guard could
             -- never heal.
             names (present ["keycloak-postgres", "vscode"]) `shouldBe` ["keycloak"]
+            -- Failed or interrupted Helm releases are not steady state and must be
+            -- repaired by the next reconcile instead of being skipped as present.
+            names
+              ( Map.fromList
+                  [ ("keycloak-postgres", snapshot "keycloak-postgres" "deployed")
+                  , ("keycloak", snapshot "keycloak" "failed")
+                  , ("vscode", snapshot "vscode" "pending-upgrade")
+                  ]
+              )
+              `shouldBe` ["keycloak", "vscode"]
 
     it
       "kubernetesSecretDecodedDataField base64-decodes a present field and treats absent data/field as a benign no-op"

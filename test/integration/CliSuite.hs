@@ -655,7 +655,11 @@ integrationCliSuite = do
         kubectlRecord `shouldContain` "get|storageclass|-o|name"
         kubectlRecord
           `shouldContain` "delete|storageclass|storageclass.storage.k8s.io/local-path|--ignore-not-found=true"
-        kubectlRecord `shouldContain` "patch|deployment|harbor-nginx|-n|harbor|--type|strategic|--patch|"
+        kubectlRecord
+          `shouldContain` "patch|configmap|harbor-nginx|-n|harbor|--type|merge|--field-manager=helm|--patch|"
+        kubectlRecord
+          `shouldContain` "patch|deployment|harbor-nginx|-n|harbor|--type|strategic|--field-manager=helm|--patch|"
+        kubectlRecord `shouldContain` "/readyz"
         kubectlRecord `shouldContain` "annotate|namespace/prodbox|prodbox.io/id=prodbox-"
         kubectlRecord `shouldContain` "label|namespace/prodbox|prodbox.io/id=prodbox-"
         kubectlRecord
@@ -693,9 +697,6 @@ integrationCliSuite = do
         applyHarborBootstrap `shouldContain` "s3:ListMultipartUploadParts"
         applyHarborBootstrap `shouldContain` "s3:ListBucketMultipartUploads"
         applyHarborBootstrap `shouldContain` "mc admin policy rm local prodbox-harbor-registry-policy"
-        applyHarbor <- readAppliedManifestContaining rke2StateDir "/readyz"
-        applyHarbor `shouldContain` "nginx.conf"
-        applyHarbor `shouldContain` "/readyz"
         applyAdminRoutes <- readAppliedManifestContaining rke2StateDir "harbor-ui"
         applyAdminRoutes `shouldContain` "harbor-ui"
         applyAdminRoutes `shouldContain` "minio-console"
@@ -723,6 +724,7 @@ integrationCliSuite = do
         helmRecord `shouldContain` "/charts/vault|--namespace|vault|--create-namespace"
         helmRecord `shouldContain` "repo|add|harbor|https://helm.goharbor.io"
         helmRecord `shouldContain` "upgrade|--install|harbor|harbor/harbor"
+        helmRecord `shouldContain` "harbor/harbor|--force-conflicts|--namespace|harbor"
         helmRecord `shouldContain` "persistence.imageChartStorage.type=s3"
         helmRecord `shouldContain` "persistence.imageChartStorage.disableredirect=true"
         helmRecord
@@ -733,6 +735,7 @@ integrationCliSuite = do
           `shouldContain` ("persistence.imageChartStorage.s3.existingSecret=" ++ harborRegistryStorageSecretName)
         helmRecord `shouldContain` "repo|add|metallb|https://metallb.github.io/metallb"
         helmRecord `shouldContain` "upgrade|--install|metallb|metallb/metallb"
+        helmRecord `shouldContain` "metallb/metallb|--force-conflicts|--version|0.14.9"
         helmRecord `shouldContain` "upgrade|--install|envoy-gateway|oci://docker.io/envoyproxy/gateway-helm"
         helmRecord `shouldContain` "repo|add|jetstack|https://charts.jetstack.io"
         helmRecord `shouldContain` "upgrade|--install|cert-manager|jetstack/cert-manager"

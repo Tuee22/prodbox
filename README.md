@@ -31,7 +31,9 @@ validation environments.
   daemon lifecycle in `distributed_gateway_architecture.md`; unified block storage —
   static `Retain` no-provisioner PVs on both substrates (home `hostPath`, EKS pre-created
   EBS) and deterministic rebinding — in `storage_lifecycle_doctrine.md`; testing doctrine in
-  `unit_testing_policy.md`; toolchain pinning in `dependency_management.md`. Phase
+  `unit_testing_policy.md`; explicit cpu/ram/storage budgets, RKE2 reservations, namespace quotas,
+  and chart resource envelopes in `resource_scaling_doctrine.md`; toolchain pinning in
+  `dependency_management.md`. Phase
   documents in `DEVELOPMENT_PLAN/` cite doctrine sections by name when scheduling
   adoption work.
 - The repository is Haskell-only on the supported path: the public CLI, lifecycle runtime, Pulumi
@@ -80,6 +82,14 @@ validation environments.
   the account default), tags the VPC/IGW/route-table/subnets with `prodbox.io/managed-by=prodbox`
   for postflight sweep visibility, and the test harness always provisions a fresh test VPC. See
   [documents/engineering/storage_lifecycle_doctrine.md](./documents/engineering/storage_lifecycle_doctrine.md).
+- Resource consumption is explicit and bounded: host capacity, RKE2 reservations, eviction floors,
+  namespace quotas, per-container cpu/memory/ephemeral-storage request+limit envelopes, and durable
+  PVC capacities are part of the typed capacity plan, not template-local defaults. A prodbox cluster
+  that reserves more than the host has, a workload set that exceeds cluster allocatable capacity, or
+  a chart container without a limit is invalid before render; runtime reconciliation installs the
+  matching RKE2/kubelet guardrails, Kubernetes `ResourceQuota` / `LimitRange`, and chart
+  `resources` stanzas. See
+  [documents/engineering/resource_scaling_doctrine.md](./documents/engineering/resource_scaling_doctrine.md).
 - Lifecycle commands enforce leak-safety by refusing to proceed when residue is detected and by
   sweeping for cluster-tagged AWS resources after every destructive run; the consolidated doctrine
   lives in

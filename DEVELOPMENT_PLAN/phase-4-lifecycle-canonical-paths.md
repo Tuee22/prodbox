@@ -5,7 +5,8 @@
 **Referenced by**: [README.md](README.md), [00-overview.md](00-overview.md),
 [legacy-tracking-for-deletion.md](legacy-tracking-for-deletion.md),
 [system-components.md](system-components.md), [the engineering doctrine docs](../documents/engineering/README.md),
-[vault_doctrine.md](../documents/engineering/vault_doctrine.md)
+[vault_doctrine.md](../documents/engineering/vault_doctrine.md),
+[resource_scaling_doctrine.md](../documents/engineering/resource_scaling_doctrine.md)
 **Generated sections**: none
 
 > **Purpose**: Capture the lifecycle hardening work, Pulumi scope reduction, Python-removal
@@ -13,6 +14,17 @@
 > validation surfaces in line with [> Reconcilers](../documents/engineering/README.md) and `Test Organization`.
 
 ## Phase Status
+
+✅ **Reclosed 2026-07-04 for host/RKE2 resource guardrails** — Phase `4` reopened to expand its
+own local-cluster lifecycle surface with Sprint `4.41`, now ✅ Done on its code-owned surface.
+`prodbox cluster reconcile` reconciles RKE2/kubelet resource reservations, eviction thresholds,
+log/image garbage-collection limits, and a systemd resource-control drop-in from the validated
+capacity plan, and refuses when observed host capacity is lower than the authored host declaration.
+Earlier lifecycle, storage, and teardown closures remain valid; this work adds the runtime
+enforcement ring beneath the Phase `1` resource schema and Phase `3` chart rendering. Validation:
+warning-clean build, `prodbox test unit` 1167/1167, and `prodbox test integration cli` 40/40. Sprint
+`5.13` has since added canonical-suite pod/quota/limit-range validation; the live over-limit pod /
+host-availability proof remains a non-blocking Standard O live-proof axis.
 
 ✅ **Live-proven 2026-06-26 — the destructive `lifecycle` validation passes under the green home
 `test all`.** The `lifecycle` named validation (`cluster delete` → `cluster reconcile` → `cluster
@@ -57,13 +69,13 @@ red-team). Sprints `4.29` through `4.33` are now `Done`; Sprint `4.33` closes th
 sealed-state residue gate, redaction, and opaque-namespace audit surface.
 **Extended 2026-06-13** with Sprint `4.31` (the unified deterministic
 retained-storage topology — a machine-id-free `.data/<namespace>/<StatefulSet>/<replica>` layout
-under one reconciler, with MinIO and `vscode` converted to StatefulSets), also `📋 Planned`. All
+under one reconciler, with MinIO and `vscode` converted to StatefulSets), also now ✅ Done. All
 earlier Phase 4 sprints remain `Done` on their owned surfaces; the authoritative reopen narration is
 the [README.md → Closure Status](README.md#closure-status) entries of the same dates. Sprint `4.31`
 refines the canonical retained-storage paths — it extends, it does not reverse, the Phase `3`
 storage-binding model (Sprint `3.1`).
 
-🔄 **Finalized 2026-06-14 (Vault-root finalization + cluster federation)** — the secrets model is
+✅ **Finalized 2026-06-14 (Vault-root finalization + cluster federation)** — the secrets model is
 finalized: Vault is the sole secrets/KMS/PKI root, the master-seed HMAC derivation model is retired
 (not extended), `FileSecret` / Secret-mounted plaintext Dhall is removed (not bridged), and a sealed
 Vault fail-closed-bricks the cluster. Sprints `4.29` and `4.30` are reframed to own that finalized
@@ -121,8 +133,8 @@ actionable upstream context. (The inotify warning `Failed to allocate directory 
 open files` is emitted out-of-band by systemd/journald to the console and is not capturable by the
 quiet path, so it may still appear on a successful run; it is benign — see streaming_doctrine.md §6.)
 
-🔄 **Reopened 2026-07-02 for the AWS EBS block-storage lifecycle** — two new sprints expand
-Phase 4's own lifecycle/teardown surface (narrated in [README.md → Closure Status](README.md) per
+✅ **Reclosed 2026-07-03 after the AWS EBS block-storage lifecycle reopen** — two new sprints
+expanded Phase 4's own lifecycle/teardown surface (narrated in [README.md → Closure Status](README.md) per
 rule A). Sprint `4.39` is ✅ Done: the **pre-created EBS volume is a registered managed
 resource** (typed `discover`/`destroy`, extending the Sprint `4.20`/`4.22` registry) with
 retain-vs-test-scoped tag markers, so production EBS is retained on teardown exactly like `.data/`
@@ -3284,6 +3296,61 @@ every suite exit path (success/failure/Ctrl-C).
 - None on the Sprint `4.40` code-owned surface. The live EKS postflight leak check remains a
   non-blocking `Live-proof: pending` axis owned by Sprint `5.12`/AWS substrate parity.
 
+## Sprint 4.41: RKE2 Host Guardrails and Observed-Capacity Refusal [✅ Done]
+
+**Status**: Done (2026-07-04)
+**Implementation**: `src/Prodbox/CLI/Rke2.hs`, `src/Prodbox/Capacity/Config.hs`,
+`src/Prodbox/Host.hs`, `src/Prodbox/Subprocess.hs`, `test/unit/Main.hs`,
+`test/integration/CliSuite.hs`
+**Live-proof**: pending — on a real local host, prove allocatable cpu/memory/ephemeral-storage are
+below physical capacity by the configured reservations and an over-limit pod is OOMKilled/evicted
+without starving host SSH/network availability.
+**Independent Validation**: pure unit tests over rendered RKE2 config fragments, systemd drop-in
+plans, observed-host-capacity comparison, and refusal cases; CLI integration with fake host probes
+and fake filesystem/systemctl/kubectl boundaries proves no live cluster is required.
+**Docs to update**: `documents/engineering/resource_scaling_doctrine.md`,
+`documents/engineering/lifecycle_reconciliation_doctrine.md`,
+`documents/engineering/host_platform_doctrine.md`
+
+### Objective
+
+Make the local RKE2 lifecycle enforce the resource plan at the host boundary. The host should stay
+responsive even when a prodbox workload leaks memory: Kubernetes should OOM/evict the offending pod
+inside declared limits, and RKE2 should never schedule into the host's reserved survival margin.
+
+### Deliverables
+
+- `cluster reconcile` observes host cpu, RAM, node filesystem capacity, and image filesystem
+  capacity, then compares those observations against the authored `HostCapacity`. If observed
+  capacity is lower, reconcile refuses before mutating the cluster.
+- RKE2 config rendering writes a prodbox-owned config fragment for `kubelet-arg` values:
+  `system-reserved`, `kube-reserved`, `eviction-hard`, `eviction-soft`,
+  `eviction-soft-grace-period`, image-garbage-collection thresholds, and container log caps.
+- The rendered kubelet reservations satisfy the Sprint `1.55` lemma
+  `rke2.reserved + eviction.floor <= host.physical`.
+- A systemd drop-in plan for `rke2-server.service` sets bounded `CPUQuota`, `MemoryHigh`,
+  `MemoryMax`, `TasksMax`, and accounting options for the RKE2 process tree. The doctrine notes
+  that this protects RKE2/kubelet/containerd processes, while pod limits are enforced through
+  Kubernetes cgroups under `/kubepods.slice`.
+- `cluster status` reports the authored host budget, observed host capacity, node allocatable
+  capacity, and current quota headroom in a structured, non-secret form.
+
+### Validation
+
+1. `prodbox test unit` covering observed-capacity refusal, kubelet arg rendering, systemd drop-in
+   rendering, and reservation arithmetic.
+2. `prodbox test integration cli` with fake `systemctl`, `kubectl`, and host probes proving
+   reconcile plans the guardrails before chart deployment.
+3. `prodbox dev check`
+4. Live-proof (Standard O): on a real local host, `kubectl describe node` shows allocatable cpu,
+   memory, and ephemeral storage below capacity by the configured reservations, and an over-limit
+   pod is OOMKilled/evicted without starving SSH/NetworkManager.
+
+### Remaining Work
+
+- None on the code-owned surface. Sprint `5.13` has landed suite-level coverage; the live host
+  stress proof is a non-blocking live-infra axis.
+
 ## Documentation Requirements
 
 **Engineering docs to create/update:**
@@ -3301,7 +3368,12 @@ every suite exit path (success/failure/Ctrl-C).
   totality + soundness pattern; for Sprints `4.26`–`4.27` it records the refuse-gate vs
   reconciler split (default `rke2 delete` / `aws teardown` stay refuse-gates, only `--cascade`
   reconciles), the registry-derived default-delete sweep, the nuke step-4 fail-closed tag sweep,
-  and the `StackDescriptor` SSoT feeding the § 3.1 registry totality.
+  and the `StackDescriptor` SSoT feeding the § 3.1 registry totality; for Sprint `4.41` it records
+  RKE2/kubelet/systemd resource guardrails as lifecycle-owned reconcile inputs.
+- `documents/engineering/resource_scaling_doctrine.md` - for Sprint `4.41`, host/RKE2 reservation,
+  eviction-floor, observed-capacity refusal, and runtime enforcement rings.
+- `documents/engineering/host_platform_doctrine.md` - for Sprint `4.41`, host capacity observation
+  and host-provider-specific filesystem/cgroup capacity facts.
 - `documents/engineering/code_quality.md` - final non-Python quality gate; for Sprint `4.26` it
   also lists the `checkPlanOptionsHonored` lint, and for Sprint `4.27` the generalized
   `awsCreateSiteViolations` create-site lint.

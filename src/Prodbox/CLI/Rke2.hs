@@ -27,6 +27,11 @@ module Prodbox.CLI.Rke2
   , renderNativeDeletePlan
   , renderNativeInstallPlan
   , renderInotifySysctlDropIn
+  , renderResourceVectorRuntime
+  , renderRke2ResourceGuardrailConfig
+  , renderRke2SystemdResourceDropIn
+  , parseHostCapacityObservation
+  , hostCapacityCoversPlan
   , renderMinioChartArgs
   , retainedStorageInventoryEntries
   , rke2InstallPresent
@@ -68,7 +73,8 @@ import Data.Char
   , toLower
   )
 import Data.List
-  ( intercalate
+  ( find
+  , intercalate
   , isInfixOf
   , isPrefixOf
   , nub
@@ -78,6 +84,7 @@ import Data.Maybe (fromMaybe)
 import Data.Text qualified as Text
 import Data.Text.Encoding qualified as TextEncoding
 import Data.Word (Word8)
+import Numeric.Natural (Natural)
 import Prodbox.Aws (adminAwsEnvironment)
 import Prodbox.AwsEnvironment
   ( overlayAwsCredentials
@@ -105,6 +112,7 @@ import Prodbox.CLI.Vault
   , runVaultReconcileCommandDetailed
   , runVaultUnseal
   )
+import Prodbox.Capacity.Config qualified as Capacity
 import Prodbox.Cluster.Federation
   ( ChildBootstrapCredential (..)
   , ChildIndex (..)
@@ -328,6 +336,9 @@ rke2BinaryPath = "/usr/local/bin/rke2"
 rke2ConfigPath :: FilePath
 rke2ConfigPath = "/etc/rancher/rke2/config.yaml"
 
+rke2ResourceGuardrailConfigPath :: FilePath
+rke2ResourceGuardrailConfigPath = "/etc/rancher/rke2/config.yaml.d/90-prodbox-resource-guardrails.yaml"
+
 rke2KubeconfigPath :: FilePath
 rke2KubeconfigPath = "/etc/rancher/rke2/rke2.yaml"
 
@@ -352,6 +363,9 @@ rke2UninstallPath = "/usr/local/bin/rke2-uninstall.sh"
 
 rke2ServiceName :: String
 rke2ServiceName = "rke2-server.service"
+
+rke2SystemdResourceDropInPath :: FilePath
+rke2SystemdResourceDropInPath = "/etc/systemd/system/rke2-server.service.d/90-prodbox-resource-guardrails.conf"
 
 -- | On-disk markers that indicate an RKE2 install is present on this host.
 -- @rke2 delete@ short-circuits to a no-op success only when ALL of these are
@@ -794,6 +808,7 @@ runClusterStatus repoRoot = do
     Left err -> failWith err
     Right serviceOutput -> do
       writeOutputLine ("RKE2_SERVICE=" ++ serviceStatusLine serviceOutput)
+      mapM_ writeOutputLine =<< resourceStatusLines repoRoot defaultResourceStatusSettings
       (vaultLine, _vaultExit) <- probeVaultStatusLine hostVaultAddress
       writeOutputLine vaultLine
       pure (processExitCode serviceOutput)
@@ -802,6 +817,33 @@ runClusterStatus repoRoot = do
     case trimWhitespace (processStdout output) of
       "" -> trimWhitespace (outputDetail output)
       status -> status
+  defaultResourceStatusSettings =
+    ValidatedSettings
+      { validatedConfig = defaultConfigFile
+      , resolvedManualPvHostRoot = ".data"
+      }
+
+resourceStatusLines :: FilePath -> ValidatedSettings -> IO [String]
+resourceStatusLines repoRoot settings = do
+  observedResult <- observeHostCapacity repoRoot
+  let plan = Capacity.resource_plan (capacity (validatedConfig settings))
+      authored = Capacity.host_capacity plan
+      allocatable = clusterAllocatable plan
+      baseLines =
+        [ "RESOURCE_HOST_AUTHORED=" ++ renderResourceVectorRuntime authored
+        , "RESOURCE_RKE2_RESERVED=" ++ renderResourceVectorRuntime (Capacity.rke2_reserved plan)
+        , "RESOURCE_EVICTION_FLOOR=" ++ renderResourceVectorRuntime (Capacity.eviction_floor plan)
+        , "RESOURCE_CLUSTER_ALLOCATABLE=" ++ renderResourceVectorRuntime allocatable
+        ]
+  pure $
+    case observedResult of
+      Left err -> baseLines ++ ["RESOURCE_HOST_OBSERVED=unavailable:" ++ err]
+      Right observed ->
+        baseLines
+          ++ [ "RESOURCE_HOST_OBSERVED=" ++ renderResourceVectorRuntime observed
+             , "RESOURCE_HOST_CAPACITY="
+                 ++ if hostCapacityCoversPlan observed plan then "sufficient" else "insufficient"
+             ]
 
 data FederationRegisterPayload = FederationRegisterPayload
   { federationRegisterPayloadPlan :: ChildRegistrationPlan
@@ -1146,6 +1188,11 @@ renderNativeInstallPlan repoRoot settings machineId prodboxId labelValue withEdg
       , "LABEL_VALUE=" ++ labelValue
       , "MANUAL_PV_ROOT=" ++ resolvedManualPvHostRoot settings
       , "WITH_EDGE=" ++ (if withEdge then "true" else "false")
+      , "HOST_CAPACITY=" ++ renderResourceVectorRuntime (Capacity.host_capacity resourcePlan)
+      , "RKE2_RESERVED=" ++ renderResourceVectorRuntime (Capacity.rke2_reserved resourcePlan)
+      , "EVICTION_FLOOR=" ++ renderResourceVectorRuntime (Capacity.eviction_floor resourcePlan)
+      , "CLUSTER_ALLOCATABLE=" ++ renderResourceVectorRuntime (clusterAllocatable resourcePlan)
+      , "STEP=ensure_rke2_resource_guardrails"
       , "STEP=ensure_host_inotify_limits"
       , "STEP=ensure_rke2_server_installed"
       , "STEP=ensure_rke2_ingress_controller"
@@ -1183,6 +1230,8 @@ renderNativeInstallPlan repoRoot settings machineId prodboxId labelValue withEdg
         ++ [ "STEP=reconcile_dns_bootstrap_record" | withEdge
            ]
     )
+ where
+  resourcePlan = Capacity.resource_plan (capacity (validatedConfig settings))
 
 buildNativeInstallExecutionPlan
   :: FilePath
@@ -1214,7 +1263,8 @@ applyNativeInstallPlan
 applyNativeInstallPlan repoRoot bootstrapSettings withEdge (machineId, prodboxId, labelValue) = do
   bootstrapExit <-
     runSequentially
-      [ ensureHostInotifyLimits repoRoot
+      [ ensureRke2ResourceGuardrails repoRoot bootstrapSettings
+      , ensureHostInotifyLimits repoRoot
       , ensureRke2ServerInstalled repoRoot
       , ensureRke2IngressController repoRoot
       , runCommand
@@ -5927,6 +5977,268 @@ renderInotifySysctlDropIn =
     , "fs.inotify.max_user_instances = 8192"
     , "fs.inotify.max_user_watches = 1048576"
     ]
+
+renderRke2ResourceGuardrailConfig :: Capacity.ResourcePlan -> String
+renderRke2ResourceGuardrailConfig plan =
+  unlines
+    [ "# Managed by `prodbox cluster reconcile`. Derived from capacity.resource_plan."
+    , "kubelet-arg:"
+    , kubeletArgLine ("system-reserved=" ++ renderKubeletReservation systemReserved)
+    , kubeletArgLine ("kube-reserved=" ++ renderKubeletReservation kubeReserved)
+    , kubeletArgLine ("eviction-hard=" ++ renderEvictionHard (Capacity.eviction_floor plan))
+    , kubeletArgLine ("eviction-soft=" ++ renderEvictionSoft (Capacity.eviction_floor plan))
+    , kubeletArgLine
+        "eviction-soft-grace-period=memory.available=1m,nodefs.available=1m,imagefs.available=1m"
+    , kubeletArgLine "image-gc-high-threshold=70"
+    , kubeletArgLine "image-gc-low-threshold=60"
+    , kubeletArgLine "container-log-max-size=50Mi"
+    , kubeletArgLine "container-log-max-files=3"
+    ]
+ where
+  (systemReserved, kubeReserved) = splitReservedVector (Capacity.rke2_reserved plan)
+
+kubeletArgLine :: String -> String
+kubeletArgLine value = "  - " ++ show value
+
+renderRke2SystemdResourceDropIn :: Capacity.ResourcePlan -> String
+renderRke2SystemdResourceDropIn plan =
+  unlines
+    [ "# Managed by `prodbox cluster reconcile`. Bounds the RKE2 service process tree."
+    , "[Service]"
+    , "CPUAccounting=true"
+    , "MemoryAccounting=true"
+    , "TasksAccounting=true"
+    , "CPUQuota=" ++ show (cpuQuotaPercent (Capacity.milli_cpu (Capacity.rke2_reserved plan))) ++ "%"
+    , "MemoryHigh=" ++ show (Capacity.memory_mib (Capacity.rke2_reserved plan)) ++ "M"
+    , "MemoryMax=" ++ show (Capacity.memory_mib systemdMax) ++ "M"
+    , "TasksMax=4096"
+    ]
+ where
+  systemdMax = Capacity.rke2_reserved plan `Capacity.plusResourceVector` Capacity.eviction_floor plan
+
+renderKubeletReservation :: Capacity.ResourceVector -> String
+renderKubeletReservation vector =
+  intercalate
+    ","
+    [ "cpu=" ++ cpuQuantity (Capacity.milli_cpu vector)
+    , "memory=" ++ memoryQuantity (Capacity.memory_mib vector)
+    , "ephemeral-storage=" ++ memoryQuantity (Capacity.ephemeral_storage_mib vector)
+    ]
+
+renderEvictionHard :: Capacity.ResourceVector -> String
+renderEvictionHard floorVector =
+  intercalate
+    ","
+    [ "memory.available<" ++ memoryQuantity (Capacity.memory_mib floorVector)
+    , "nodefs.available<" ++ memoryQuantity (Capacity.ephemeral_storage_mib floorVector)
+    , "imagefs.available<" ++ memoryQuantity (Capacity.ephemeral_storage_mib floorVector)
+    ]
+
+renderEvictionSoft :: Capacity.ResourceVector -> String
+renderEvictionSoft floorVector =
+  intercalate
+    ","
+    [ "memory.available<" ++ memoryQuantity (2 * Capacity.memory_mib floorVector)
+    , "nodefs.available<" ++ memoryQuantity (2 * Capacity.ephemeral_storage_mib floorVector)
+    , "imagefs.available<" ++ memoryQuantity (2 * Capacity.ephemeral_storage_mib floorVector)
+    ]
+
+splitReservedVector :: Capacity.ResourceVector -> (Capacity.ResourceVector, Capacity.ResourceVector)
+splitReservedVector vector =
+  (halfVector, vector `Capacity.resourceVectorMinus` halfVector)
+ where
+  half value = value `div` 2
+  halfVector =
+    Capacity.ResourceVector
+      { Capacity.milli_cpu = half (Capacity.milli_cpu vector)
+      , Capacity.memory_mib = half (Capacity.memory_mib vector)
+      , Capacity.ephemeral_storage_mib = half (Capacity.ephemeral_storage_mib vector)
+      , Capacity.durable_storage_mib = half (Capacity.durable_storage_mib vector)
+      }
+
+cpuQuotaPercent :: Natural -> Natural
+cpuQuotaPercent milliCpu = (milliCpu + 9) `div` 10
+
+cpuQuantity :: Natural -> String
+cpuQuantity value = show value ++ "m"
+
+memoryQuantity :: Natural -> String
+memoryQuantity value = show value ++ "Mi"
+
+renderResourceVectorRuntime :: Capacity.ResourceVector -> String
+renderResourceVectorRuntime vector =
+  intercalate
+    ","
+    [ "cpu=" ++ cpuQuantity (Capacity.milli_cpu vector)
+    , "memory=" ++ memoryQuantity (Capacity.memory_mib vector)
+    , "ephemeral-storage=" ++ memoryQuantity (Capacity.ephemeral_storage_mib vector)
+    , "durable-storage=" ++ memoryQuantity (Capacity.durable_storage_mib vector)
+    ]
+
+clusterAllocatable :: Capacity.ResourcePlan -> Capacity.ResourceVector
+clusterAllocatable plan =
+  Capacity.host_capacity plan
+    `Capacity.resourceVectorMinus` Capacity.rke2_reserved plan
+    `Capacity.resourceVectorMinus` Capacity.eviction_floor plan
+
+hostCapacityCoversPlan :: Capacity.ResourceVector -> Capacity.ResourcePlan -> Bool
+hostCapacityCoversPlan observed plan =
+  Capacity.host_capacity plan `Capacity.resourceVectorFitsWithin` observed
+
+parseHostCapacityObservation :: String -> Either String Capacity.ResourceVector
+parseHostCapacityObservation raw =
+  Capacity.ResourceVector
+    <$> lookupNatural "milli_cpu"
+    <*> lookupNatural "memory_mib"
+    <*> lookupNatural "ephemeral_storage_mib"
+    <*> lookupNatural "durable_storage_mib"
+ where
+  fields = map splitField (splitOnChar ',' raw)
+  lookupNatural key =
+    case lookup key fields of
+      Just value -> parseNatural key value
+      Nothing -> Left ("missing host capacity field `" ++ key ++ "`")
+  splitField field =
+    case break (== '=') field of
+      (key, '=' : value) -> (trimWhitespace key, trimWhitespace value)
+      _ -> (trimWhitespace field, "")
+
+parseNatural :: String -> String -> Either String Natural
+parseNatural key value =
+  case reads value of
+    [(parsed, "")] -> Right parsed
+    _ -> Left ("invalid natural for `" ++ key ++ "`: " ++ value)
+
+splitOnChar :: Char -> String -> [String]
+splitOnChar _ "" = [""]
+splitOnChar delimiter input =
+  case break (== delimiter) input of
+    (before, _ : remaining) -> before : splitOnChar delimiter remaining
+    (before, []) -> [before]
+
+observeHostCapacity :: FilePath -> IO (Either String Capacity.ResourceVector)
+observeHostCapacity repoRoot = do
+  override <- lookupEnv "PRODBOX_TEST_HOST_CAPACITY"
+  case override of
+    Just raw -> pure (parseHostCapacityObservation raw)
+    Nothing -> observeHostCapacityFromHost repoRoot
+
+observeHostCapacityFromHost :: FilePath -> IO (Either String Capacity.ResourceVector)
+observeHostCapacityFromHost repoRoot = do
+  cpuResult <- observedCpuMilli repoRoot
+  memoryResult <- observedMemoryMib
+  storageResult <- observedFilesystemMib repoRoot "/"
+  pure $ do
+    cpu <- cpuResult
+    memory <- memoryResult
+    storage <- storageResult
+    Right
+      Capacity.ResourceVector
+        { Capacity.milli_cpu = cpu
+        , Capacity.memory_mib = memory
+        , Capacity.ephemeral_storage_mib = storage
+        , Capacity.durable_storage_mib = storage
+        }
+
+observedCpuMilli :: FilePath -> IO (Either String Natural)
+observedCpuMilli repoRoot = do
+  outputResult <- captureToolOutput repoRoot "nproc" []
+  pure $ do
+    output <- outputResult
+    case processExitCode output of
+      ExitFailure _ -> Left ("failed to observe host CPU count: " ++ outputDetail output)
+      ExitSuccess -> (* 1000) <$> parseNatural "nproc" (trimWhitespace (processStdout output))
+
+observedMemoryMib :: IO (Either String Natural)
+observedMemoryMib = do
+  meminfoResult <- try (readFile "/proc/meminfo") :: IO (Either IOException String)
+  pure $ do
+    meminfo <- either (Left . displayException) Right meminfoResult
+    line <-
+      maybe
+        (Left "failed to observe host memory: /proc/meminfo has no MemTotal line")
+        Right
+        (find ("MemTotal:" `isPrefixOf`) (lines meminfo))
+    case words line of
+      ["MemTotal:", kibText, "kB"] -> (`div` 1024) <$> parseNatural "MemTotal" kibText
+      _ -> Left ("failed to parse host memory line: " ++ line)
+
+observedFilesystemMib :: FilePath -> FilePath -> IO (Either String Natural)
+observedFilesystemMib repoRoot path = do
+  outputResult <- captureToolOutput repoRoot "df" ["-Pm", path]
+  pure $ do
+    output <- outputResult
+    case processExitCode output of
+      ExitFailure _ -> Left ("failed to observe filesystem capacity for " ++ path ++ ": " ++ outputDetail output)
+      ExitSuccess ->
+        case drop 1 (lines (processStdout output)) of
+          line : _ ->
+            case words line of
+              _filesystem : blocks : _ -> parseNatural "df-1M-blocks" blocks
+              _ -> Left ("failed to parse df output line: " ++ line)
+          [] -> Left "failed to parse df output: missing data line"
+
+ensureRke2ResourceGuardrails :: FilePath -> ValidatedSettings -> IO ExitCode
+ensureRke2ResourceGuardrails repoRoot settings = do
+  observedResult <- observeHostCapacity repoRoot
+  case observedResult of
+    Left err -> failWith ("failed to observe host capacity before RKE2 reconcile: " ++ err)
+    Right observed -> do
+      let plan = Capacity.resource_plan (capacity (validatedConfig settings))
+          authored = Capacity.host_capacity plan
+      if not (hostCapacityCoversPlan observed plan)
+        then
+          failWith
+            ( "observed host capacity is below capacity.resource_plan.host_capacity: observed="
+                ++ renderResourceVectorRuntime observed
+                ++ " required="
+                ++ renderResourceVectorRuntime authored
+            )
+        else do
+          writeOutputLine
+            ( "RKE2 resource guardrails: host capacity ok (observed="
+                ++ renderResourceVectorRuntime observed
+                ++ ", required="
+                ++ renderResourceVectorRuntime authored
+                ++ ")"
+            )
+          runSequentially
+            [ ensureRootFileContent
+                repoRoot
+                rke2ResourceGuardrailConfigPath
+                (renderRke2ResourceGuardrailConfig plan)
+                "RKE2 kubelet resource guardrails"
+            , ensureRootFileContent
+                repoRoot
+                rke2SystemdResourceDropInPath
+                (renderRke2SystemdResourceDropIn plan)
+                "RKE2 systemd resource guardrails"
+            , runCommand
+                Subprocess
+                  { subprocessPath = "sudo"
+                  , subprocessArguments = ["systemctl", "daemon-reload"]
+                  , subprocessEnvironment = Nothing
+                  , subprocessWorkingDirectory = Just repoRoot
+                  }
+            ]
+
+ensureRootFileContent :: FilePath -> FilePath -> String -> String -> IO ExitCode
+ensureRootFileContent repoRoot path expectedContent label = do
+  contentResult <- readRootFile repoRoot path
+  case contentResult of
+    Left err -> failWith err
+    Right existingContent ->
+      if existingContent == expectedContent
+        then do
+          writeOutputLine (label ++ ": already current")
+          pure ExitSuccess
+        else do
+          writeExit <- writeRootFile repoRoot path expectedContent
+          case writeExit of
+            ExitFailure _ -> pure writeExit
+            ExitSuccess -> do
+              writeOutputLine (label ++ ": written")
+              pure ExitSuccess
 
 -- | First reconcile/delete host-prep step: idempotently raise the host inotify
 -- limits via a persisted @/etc/sysctl.d@ drop-in. The kernel default of

@@ -34,6 +34,8 @@ spec:
         - name: api
           image: "{{ .Values.image.repository }}:{{ .Values.image.tag }}"
           imagePullPolicy: Always
+          resources:
+            {{- toYaml .Values.resources.api | nindent 12 }}
           args: ["workload", "start", "--config", "/etc/workload/config.dhall"]
           volumeMounts:
             - name: workload-config

@@ -302,6 +302,43 @@ integrationCliSuite = do
       stdoutText `shouldContain` "FORMAL_MODEL_DELEGATED=false"
       stdoutText `shouldContain` "SINGLE_WRITER_AFTER_TAKEOVER=true"
 
+    it "runs native resource-guardrails validation through fake Kubernetes resource JSON" $
+      withSystemTempDirectory "prodbox-hs-cli" $ \tmpDir -> do
+        binary <- resolveBinaryPath >>= \b -> installOperatorBinaryInDir b tmpDir
+        writeRepoMarkers tmpDir
+        writeFile (tmpDir </> "prodbox.dhall") (wrapTier0 validConfig)
+        createDirectoryIfMissing True (tmpDir </> ".build")
+        writeFile (tmpDir </> ".build" </> "prodbox.dhall") (wrapTier0 validConfig)
+        envVars <- (("PRODBOX_TEST_HOST_VAULT_TOKEN", "fake-root-token") :) <$> fakeRke2Environment tmpDir
+        writeExecutable (tmpDir </> "bin" </> "cabal") (fakeCabalListBinScript binary)
+
+        (exitCode, stdoutText, stderrText) <-
+          readCreateProcessWithExitCode
+            (proc binary ["test", "integration", "resource-guardrails"]) {cwd = Just tmpDir, env = Just envVars}
+            ""
+
+        let output =
+              unlines
+                [ "resource-guardrails stdout:"
+                , stdoutText
+                , "resource-guardrails stderr:"
+                , stderrText
+                ]
+        when (exitCode /= ExitSuccess) (expectationFailure output)
+        exitCode `shouldBe` ExitSuccess
+        stderrText
+          `shouldContain` "[validation=resource-guardrails substrate=home-local] entering body"
+        stderrText
+          `shouldContain` "[validation=resource-guardrails substrate=home-local] body exit=ExitSuccess"
+        stdoutText `shouldContain` "Validation: resource-guardrails"
+        stdoutText `shouldContain` "RESOURCE_GUARDRAILS_VALIDATION"
+        stdoutText `shouldContain` "PODS_CHECKED=5"
+        stdoutText `shouldContain` "CONTAINERS_CHECKED=5"
+        stdoutText `shouldContain` "QUOTA_NAMESPACES=keycloak,vscode,api,websocket,gateway"
+        stdoutText `shouldContain` "LIMIT_RANGE_NAMESPACES=keycloak,vscode,api,websocket,gateway"
+        stdoutText `shouldContain` "BESTEFFORT_PODS=0"
+        stdoutText `shouldContain` "UNCAPPED_CONTAINERS=0"
+
     it
       "runs native charts list, status, deploy, and delete through the built frontend with fake helm and kubectl"
       $ withSystemTempDirectory "prodbox-hs-cli"
@@ -586,6 +623,9 @@ integrationCliSuite = do
         when (installExitCode /= ExitSuccess) (expectationFailure installOutput)
         installExitCode `shouldBe` ExitSuccess
         installStdout `shouldContain` "Kubernetes control plane is running"
+        installStdout `shouldContain` "RKE2 resource guardrails: host capacity ok"
+        installStdout `shouldContain` "RKE2 kubelet resource guardrails: written"
+        installStdout `shouldContain` "RKE2 systemd resource guardrails: written"
         -- The first reconcile host-prep step raises the inotify limits so the
         -- systemd manager does not exhaust the per-user instance cap during RKE2
         -- lifecycle operations (see streaming_doctrine.md § 6).
@@ -632,6 +672,10 @@ integrationCliSuite = do
 
         sudoRecord <- readFile (tmpDir </> "fake-rke2-state" </> "sudo.txt")
         sudoRecord `shouldContain` "env|INSTALL_RKE2_TYPE=server|sh|"
+        sudoRecord `shouldContain` "/etc/rancher/rke2/config.yaml.d/90-prodbox-resource-guardrails.yaml"
+        sudoRecord
+          `shouldContain` "/etc/systemd/system/rke2-server.service.d/90-prodbox-resource-guardrails.conf"
+        sudoRecord `shouldContain` "systemctl|daemon-reload"
         sudoRecord `shouldContain` "cp|/etc/rancher/rke2/rke2.yaml|"
         sudoRecord `shouldContain` "ctr|--address|"
         sudoRecord
@@ -2583,6 +2627,7 @@ fakeRke2Environment repoRoot = do
                           , "PRODBOX_TEST_HOST_VAULT_KV"
                           , "PRODBOX_TEST_ROOT_VAULT_LIFECYCLE"
                           , "PRODBOX_TEST_CLUSTER_VAULT_STATUS"
+                          , "PRODBOX_TEST_HOST_CAPACITY"
                           , "HOME"
                           ]
           )
@@ -2606,6 +2651,10 @@ fakeRke2Environment repoRoot = do
       , ("PRODBOX_TEST_HOST_VAULT_KV", "allow")
       , ("PRODBOX_TEST_ROOT_VAULT_LIFECYCLE", "ready")
       , ("PRODBOX_TEST_CLUSTER_VAULT_STATUS", "ready")
+      ,
+        ( "PRODBOX_TEST_HOST_CAPACITY"
+        , "milli_cpu=16000,memory_mib=49152,ephemeral_storage_mib=300000,durable_storage_mib=800000"
+        )
       , ("HOME", repoRoot)
       ]
         ++ baseEnvironment
@@ -2658,10 +2707,13 @@ fakeSystemctlScript =
     , "}"
     , "append_args \"$record_dir/systemctl.txt\" \"$@\""
     , "case \"${1:-}\" in"
+    , "  --version)"
+    , "    printf 'systemd 255\\n'"
+    , "    ;;"
     , "  is-active)"
     , "    printf 'active\\n'"
     , "    ;;"
-    , "  start|stop|restart|enable|disable)"
+    , "  start|stop|restart|enable|disable|daemon-reload)"
     , "    ;;"
     , "  *)"
     , "    printf 'unsupported fake systemctl command: %s\\n' \"$*\" >&2"
@@ -2713,6 +2765,10 @@ fakeSudoScript =
     , "  printf '%s' \"$arg\" >> \"$record_dir/sudo.txt\""
     , "done"
     , "printf '\\n' >> \"$record_dir/sudo.txt\""
+    , "if [[ \"${1:-}\" == '--version' ]]; then"
+    , "  printf 'sudo 1.9.15\\n'"
+    , "  exit 0"
+    , "fi"
     , "if [[ \"${1:-}\" == '/usr/local/bin/rke2-uninstall.sh' && \"${PRODBOX_FAKE_RKE2_UNINSTALL_EXISTS:-0}\" == '1' ]]; then"
     , "  printf '+ systemctl stop rke2-server.service\\n'"
     , "  printf 'Cannot find device \"cni0\"\\n' >&2"
@@ -2834,6 +2890,14 @@ fakeRke2KubectlScript =
     , "  cluster-info)"
     , "    printf 'Kubernetes control plane is running\\n'"
     , "    ;;"
+    , "  version)"
+    , "    if [[ \"$*\" == *'--client=true'* ]]; then"
+    , "      printf 'Client Version: v1.33.0\\n'"
+    , "    else"
+    , "      printf 'unsupported fake kubectl version command: %s\\n' \"$*\" >&2"
+    , "      exit 1"
+    , "    fi"
+    , "    ;;"
     , "  api-resources)"
     , "    if [[ \"$*\" == *'--namespaced=true'* ]]; then"
     , "      printf 'deployments.apps\\nconfigmaps\\n'"
@@ -2869,6 +2933,20 @@ fakeRke2KubectlScript =
     , "      pvc)"
     , "        printf 'Error from server (NotFound): persistentvolumeclaims \"%s\" not found\\n' \"${3:-pvc}\" >&2"
     , "        exit 1"
+    , "        ;;"
+    , "      resourcequota)"
+    , "        if [[ \"$*\" == *'-o json'* ]]; then"
+    , "          /bin/cat <<'JSON'"
+    , "{\"items\":[{\"metadata\":{\"namespace\":\"keycloak\",\"name\":\"keycloak-resource-quota\"},\"spec\":{\"hard\":{\"requests.cpu\":\"3000m\",\"limits.cpu\":\"3000m\",\"requests.memory\":\"10000Mi\",\"limits.memory\":\"10000Mi\",\"requests.ephemeral-storage\":\"50000Mi\",\"limits.ephemeral-storage\":\"50000Mi\",\"requests.storage\":\"150000Mi\"}}},{\"metadata\":{\"namespace\":\"vscode\",\"name\":\"vscode-resource-quota\"},\"spec\":{\"hard\":{\"requests.cpu\":\"2000m\",\"limits.cpu\":\"2000m\",\"requests.memory\":\"5000Mi\",\"limits.memory\":\"5000Mi\",\"requests.ephemeral-storage\":\"30000Mi\",\"limits.ephemeral-storage\":\"30000Mi\",\"requests.storage\":\"100000Mi\"}}},{\"metadata\":{\"namespace\":\"api\",\"name\":\"api-resource-quota\"},\"spec\":{\"hard\":{\"requests.cpu\":\"1500m\",\"limits.cpu\":\"1500m\",\"requests.memory\":\"2000Mi\",\"limits.memory\":\"2000Mi\",\"requests.ephemeral-storage\":\"10000Mi\",\"limits.ephemeral-storage\":\"10000Mi\",\"requests.storage\":\"1000Mi\"}}},{\"metadata\":{\"namespace\":\"websocket\",\"name\":\"websocket-resource-quota\"},\"spec\":{\"hard\":{\"requests.cpu\":\"1000m\",\"limits.cpu\":\"1000m\",\"requests.memory\":\"2000Mi\",\"limits.memory\":\"2000Mi\",\"requests.ephemeral-storage\":\"10000Mi\",\"limits.ephemeral-storage\":\"10000Mi\",\"requests.storage\":\"1000Mi\"}}},{\"metadata\":{\"namespace\":\"gateway\",\"name\":\"gateway-resource-quota\"},\"spec\":{\"hard\":{\"requests.cpu\":\"4000m\",\"limits.cpu\":\"4000m\",\"requests.memory\":\"10000Mi\",\"limits.memory\":\"10000Mi\",\"requests.ephemeral-storage\":\"60000Mi\",\"limits.ephemeral-storage\":\"60000Mi\",\"requests.storage\":\"100000Mi\"}}}]}"
+    , "JSON"
+    , "        fi"
+    , "        ;;"
+    , "      limitrange)"
+    , "        if [[ \"$*\" == *'-o json'* ]]; then"
+    , "          /bin/cat <<'JSON'"
+    , "{\"items\":[{\"metadata\":{\"namespace\":\"keycloak\",\"name\":\"keycloak-limit-range\"},\"spec\":{\"limits\":[{\"type\":\"Container\",\"defaultRequest\":{\"cpu\":\"500m\",\"memory\":\"1024Mi\",\"ephemeral-storage\":\"1024Mi\"},\"default\":{\"cpu\":\"1000m\",\"memory\":\"2048Mi\",\"ephemeral-storage\":\"2048Mi\"}}]}},{\"metadata\":{\"namespace\":\"vscode\",\"name\":\"vscode-limit-range\"},\"spec\":{\"limits\":[{\"type\":\"Container\",\"defaultRequest\":{\"cpu\":\"500m\",\"memory\":\"1024Mi\",\"ephemeral-storage\":\"1024Mi\"},\"default\":{\"cpu\":\"1000m\",\"memory\":\"2048Mi\",\"ephemeral-storage\":\"4096Mi\"}}]}},{\"metadata\":{\"namespace\":\"api\",\"name\":\"api-limit-range\"},\"spec\":{\"limits\":[{\"type\":\"Container\",\"defaultRequest\":{\"cpu\":\"250m\",\"memory\":\"256Mi\",\"ephemeral-storage\":\"512Mi\"},\"default\":{\"cpu\":\"500m\",\"memory\":\"512Mi\",\"ephemeral-storage\":\"1024Mi\"}}]}},{\"metadata\":{\"namespace\":\"websocket\",\"name\":\"websocket-limit-range\"},\"spec\":{\"limits\":[{\"type\":\"Container\",\"defaultRequest\":{\"cpu\":\"100m\",\"memory\":\"256Mi\",\"ephemeral-storage\":\"512Mi\"},\"default\":{\"cpu\":\"250m\",\"memory\":\"512Mi\",\"ephemeral-storage\":\"1024Mi\"}}]}},{\"metadata\":{\"namespace\":\"gateway\",\"name\":\"gateway-limit-range\"},\"spec\":{\"limits\":[{\"type\":\"Container\",\"defaultRequest\":{\"cpu\":\"250m\",\"memory\":\"256Mi\",\"ephemeral-storage\":\"512Mi\"},\"default\":{\"cpu\":\"500m\",\"memory\":\"512Mi\",\"ephemeral-storage\":\"1024Mi\"}}]}}]}"
+    , "JSON"
+    , "        fi"
     , "        ;;"
     , "      configmap)"
     , "        /bin/cat <<'EOF'"
@@ -2919,7 +2997,13 @@ fakeRke2KubectlScript =
     , "        printf 'customresourcedefinition.apiextensions.k8s.io/gatewayclasses.gateway.networking.k8s.io\\n'"
     , "        ;;"
     , "      pods)"
-    , "        printf 'docker.io/library/busybox:latest\\ngoharbor/harbor-core:v2\\n'"
+    , "        if [[ \"$*\" == *'-o json'* ]]; then"
+    , "          /bin/cat <<'JSON'"
+    , "{\"items\":[{\"metadata\":{\"namespace\":\"keycloak\",\"name\":\"keycloak-0\"},\"status\":{\"qosClass\":\"Burstable\"},\"spec\":{\"containers\":[{\"name\":\"keycloak\",\"resources\":{\"requests\":{\"cpu\":\"500m\",\"memory\":\"1024Mi\",\"ephemeral-storage\":\"1024Mi\"},\"limits\":{\"cpu\":\"1000m\",\"memory\":\"2048Mi\",\"ephemeral-storage\":\"2048Mi\"}}}]}},{\"metadata\":{\"namespace\":\"vscode\",\"name\":\"vscode-0\"},\"status\":{\"qosClass\":\"Burstable\"},\"spec\":{\"containers\":[{\"name\":\"vscode\",\"resources\":{\"requests\":{\"cpu\":\"500m\",\"memory\":\"1024Mi\",\"ephemeral-storage\":\"1024Mi\"},\"limits\":{\"cpu\":\"1000m\",\"memory\":\"2048Mi\",\"ephemeral-storage\":\"4096Mi\"}}}]}},{\"metadata\":{\"namespace\":\"api\",\"name\":\"api-0\"},\"status\":{\"qosClass\":\"Burstable\"},\"spec\":{\"containers\":[{\"name\":\"api\",\"resources\":{\"requests\":{\"cpu\":\"250m\",\"memory\":\"256Mi\",\"ephemeral-storage\":\"512Mi\"},\"limits\":{\"cpu\":\"500m\",\"memory\":\"512Mi\",\"ephemeral-storage\":\"1024Mi\"}}}]}},{\"metadata\":{\"namespace\":\"websocket\",\"name\":\"websocket-0\"},\"status\":{\"qosClass\":\"Burstable\"},\"spec\":{\"containers\":[{\"name\":\"websocket\",\"resources\":{\"requests\":{\"cpu\":\"100m\",\"memory\":\"256Mi\",\"ephemeral-storage\":\"512Mi\"},\"limits\":{\"cpu\":\"250m\",\"memory\":\"512Mi\",\"ephemeral-storage\":\"1024Mi\"}}}]}},{\"metadata\":{\"namespace\":\"gateway\",\"name\":\"gateway-0\"},\"status\":{\"qosClass\":\"Burstable\"},\"spec\":{\"containers\":[{\"name\":\"gateway\",\"resources\":{\"requests\":{\"cpu\":\"250m\",\"memory\":\"256Mi\",\"ephemeral-storage\":\"512Mi\"},\"limits\":{\"cpu\":\"500m\",\"memory\":\"512Mi\",\"ephemeral-storage\":\"1024Mi\"}}}]}}]}"
+    , "JSON"
+    , "        else"
+    , "          printf 'docker.io/library/busybox:latest\\ngoharbor/harbor-core:v2\\n'"
+    , "        fi"
     , "        ;;"
     , "      *)"
     , "        ;;"
@@ -3800,7 +3884,99 @@ fixedScalingDhall count =
 
 capacityDhallFragment :: String
 capacityDhallFragment =
-  "{ node_budget = { cpu = 8, memory = 16, storage = 100 }, workload_budget = { cpu = 4, memory = 8, storage = 40 }, region_quota = { cpu = 32, memory = 64, storage = 500 } }"
+  unlines
+    [ "{ node_budget = { cpu = 8, memory = 16, storage = 100 }"
+    , ", workload_budget = { cpu = 4, memory = 8, storage = 40 }"
+    , ", region_quota = { cpu = 32, memory = 64, storage = 500 }"
+    , ", resource_plan = " ++ resourcePlanDhallFragment
+    , "}"
+    ]
+
+resourcePlanDhallFragment :: String
+resourcePlanDhallFragment =
+  unlines
+    [ "{ host_capacity = { milli_cpu = 16000, memory_mib = 49152, ephemeral_storage_mib = 300000, durable_storage_mib = 800000 }"
+    , ", rke2_reserved = { milli_cpu = 1000, memory_mib = 2048, ephemeral_storage_mib = 10240, durable_storage_mib = 1024 }"
+    , ", eviction_floor = { milli_cpu = 500, memory_mib = 1024, ephemeral_storage_mib = 10240, durable_storage_mib = 1024 }"
+    , ", namespace_quotas ="
+    , "  [ { namespace_name = \"keycloak\", quota = { milli_cpu = 3000, memory_mib = 10000, ephemeral_storage_mib = 50000, durable_storage_mib = 150000 } }"
+    , "  , { namespace_name = \"vscode\", quota = { milli_cpu = 2000, memory_mib = 5000, ephemeral_storage_mib = 30000, durable_storage_mib = 100000 } }"
+    , "  , { namespace_name = \"api\", quota = { milli_cpu = 1500, memory_mib = 2000, ephemeral_storage_mib = 10000, durable_storage_mib = 1000 } }"
+    , "  , { namespace_name = \"websocket\", quota = { milli_cpu = 1000, memory_mib = 2000, ephemeral_storage_mib = 10000, durable_storage_mib = 1000 } }"
+    , "  , { namespace_name = \"gateway\", quota = { milli_cpu = 4000, memory_mib = 10000, ephemeral_storage_mib = 60000, durable_storage_mib = 100000 } }"
+    , "  , { namespace_name = \"prodbox\", quota = { milli_cpu = 2000, memory_mib = 4000, ephemeral_storage_mib = 40000, durable_storage_mib = 250000 } }"
+    , "  , { namespace_name = \"vault\", quota = { milli_cpu = 1000, memory_mib = 2000, ephemeral_storage_mib = 20000, durable_storage_mib = 100000 } }"
+    , "  ]"
+    , ", workload_profiles ="
+    , "  [ " ++ resourceProfileDhall "keycloak" "keycloak" 1 (500, 1024, 1024, 1) (1000, 2048, 2048, 1)
+    , "  , "
+        ++ resourceProfileDhall "keycloak-vault-secrets" "keycloak" 1 (50, 128, 256, 1) (100, 256, 512, 1)
+    , "  , "
+        ++ resourceProfileDhall "keycloak-postgres" "keycloak" 3 (250, 512, 1024, 1024) (500, 1024, 4096, 2048)
+    , "  , "
+        ++ resourceProfileDhall
+          "keycloak-postgres-vault-secrets"
+          "keycloak"
+          1
+          (50, 128, 256, 1)
+          (100, 256, 512, 1)
+    , "  , "
+        ++ resourceProfileDhall
+          "keycloak-postgres-secret-materializer"
+          "keycloak"
+          1
+          (50, 128, 256, 1)
+          (100, 256, 512, 1)
+    , "  , " ++ resourceProfileDhall "vscode" "vscode" 1 (500, 1024, 1024, 1024) (1000, 2048, 4096, 2048)
+    , "  , "
+        ++ resourceProfileDhall "vscode-vault-secrets" "vscode" 1 (50, 128, 256, 1) (100, 256, 512, 1)
+    , "  , "
+        ++ resourceProfileDhall "vscode-secret-materializer" "vscode" 1 (50, 128, 256, 1) (100, 256, 512, 1)
+    , "  , " ++ resourceProfileDhall "api" "api" 2 (250, 256, 512, 1) (500, 512, 1024, 1)
+    , "  , " ++ resourceProfileDhall "websocket" "websocket" 2 (100, 256, 512, 1) (250, 512, 1024, 1)
+    , "  , " ++ resourceProfileDhall "redis" "websocket" 1 (100, 256, 512, 1) (250, 512, 1024, 1)
+    , "  , " ++ resourceProfileDhall "gateway" "gateway" 3 (250, 256, 512, 1) (500, 512, 1024, 1)
+    , "  , " ++ resourceProfileDhall "pulsar" "gateway" 1 (250, 1024, 1024, 1) (500, 2048, 4096, 1)
+    , "  , " ++ resourceProfileDhall "minio" "prodbox" 1 (500, 1024, 2048, 1024) (1000, 2048, 4096, 2048)
+    , "  , " ++ resourceProfileDhall "harbor" "prodbox" 1 (250, 512, 1024, 1024) (500, 1024, 4096, 2048)
+    , "  , "
+        ++ resourceProfileDhall "percona-postgres-operator" "prodbox" 1 (100, 256, 512, 1) (250, 512, 1024, 1)
+    , "  , " ++ resourceProfileDhall "vault" "vault" 1 (250, 512, 1024, 1) (500, 1024, 2048, 1)
+    , "  ]"
+    , "}"
+    ]
+
+resourceProfileDhall
+  :: String
+  -> String
+  -> Int
+  -> (Int, Int, Int, Int)
+  -> (Int, Int, Int, Int)
+  -> String
+resourceProfileDhall profile namespace count req lim =
+  "{ profile_id = "
+    ++ show profile
+    ++ ", profile_namespace = "
+    ++ show namespace
+    ++ ", replicas = "
+    ++ show count
+    ++ ", resources = { request = "
+    ++ resourceVectorDhall req
+    ++ ", limit = "
+    ++ resourceVectorDhall lim
+    ++ " } }"
+
+resourceVectorDhall :: (Int, Int, Int, Int) -> String
+resourceVectorDhall (cpuMilli, memoryMib, ephemeralMib, durableMib) =
+  "{ milli_cpu = "
+    ++ show cpuMilli
+    ++ ", memory_mib = "
+    ++ show memoryMib
+    ++ ", ephemeral_storage_mib = "
+    ++ show ephemeralMib
+    ++ ", durable_storage_mib = "
+    ++ show durableMib
+    ++ " }"
 
 clusterTopologyDhallFragment :: String
 clusterTopologyDhallFragment =

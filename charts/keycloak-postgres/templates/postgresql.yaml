@@ -19,6 +19,8 @@ spec:
   instances:
     - name: instance1
       replicas: {{ .Values.cluster.instances }}
+      resources:
+        {{- toYaml .Values.resources.postgres | nindent 8 }}
       {{- if .Values.podAntiAffinity.enabled }}
       affinity:
         podAntiAffinity:

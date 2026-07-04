@@ -6,7 +6,8 @@
 [substrates.md](substrates.md),
 [the engineering doctrine docs](../documents/engineering/README.md),
 [vault_doctrine.md](../documents/engineering/vault_doctrine.md),
-[test_topology_doctrine.md](../documents/engineering/test_topology_doctrine.md)
+[test_topology_doctrine.md](../documents/engineering/test_topology_doctrine.md),
+[resource_scaling_doctrine.md](../documents/engineering/resource_scaling_doctrine.md)
 **Generated sections**: none
 
 > **Purpose**: Own the substrate-agnostic canonical test suite — the named-validation set in
@@ -15,6 +16,15 @@
 > substrate-owning phase docs); this phase owns what the suite proves and how.
 
 ## Phase Status
+
+✅ **Reclosed 2026-07-04 for resource-guardrail validation** — Sprint `5.13` is Done on the
+code-owned canonical-suite surface. The new `resource-guardrails` validation is wired through the
+parser, command registry, native validation plan, topology mapping, and aggregate ordering; it loads
+the validated `capacity.resource_plan`, checks live Kubernetes pod, `ResourceQuota`, and
+`LimitRange` JSON, refuses `BestEffort` or uncapped containers, and proves guardrail objects match
+the declared plan for the root chart namespaces. This is suite content and remains
+substrate-agnostic; AWS coverage is tracked through the normal substrate parity table. The optional
+real over-limit pod stress proof remains a non-blocking `Live-proof: pending` axis per Standard O.
 
 ✅ **Live-proven 2026-06-26 — the then-current canonical suite ran fully green on the home substrate.** A full home
 `prodbox test all` (2026-06-26) passed 18/18 named validations end-to-end — including `sealed-vault`
@@ -153,6 +163,7 @@ The full inventory of canonical-suite validations owned by this phase lives in
 | `ha-rke2-aws` | `aws_credentials_valid`, `pulumi_logged_in`, `tool_ssh` | SSH reachability to all three EC2 instances; destroy-and-recreate repair on stale instances |
 | `charts-platform` | `k8s_ready`, chart-platform prereqs | `charts list`, `charts status` produce expected output for the supported chart set |
 | `charts-storage` | `k8s_ready`, chart-platform prereqs | Retained-storage reconciler, PV/PVC pairing, secret rendering |
+| `resource-guardrails` | `k8s_ready`, chart-platform prereqs | Every prodbox pod has explicit cpu/memory/ephemeral-storage requests and limits, no pod is `BestEffort`, namespace quotas/limit ranges match the declared resource plan, and over-budget configs refuse before mutation |
 | `eks-volume-rebind` | `k8s_ready`, chart-platform prereqs (AWS parity: operational AWS/Pulumi stack access) | Identical block-storage rebinding across a teardown/spinup cycle: write sentinel → teardown → spinup → the same PV rebinds (home hostPath / EKS EBS `volumeHandle`) and the data persists |
 | `charts-vscode` | `public_edge_ready`, `tool_curl` | Real HTTPS curl to `https://<publicFqdn>/vscode`; redirect to OIDC callback with expected fragments |
 | `charts-api` | `public_edge_ready`, `tool_curl` | Real HTTPS curl to `https://<publicFqdn>/api`; bearer-token validation; 401/403 contract |
@@ -781,7 +792,10 @@ config decode.
 - `documents/engineering/unit_testing_policy.md` - external-only public-host validation doctrine;
   for Sprint `5.6`, the typed `PrerequisiteId` surface, minimal-and-precise per-validation
   prerequisites, the `public_edge_ready` readiness split, and the three destructive `--dry-run`
-  goldens generated from the managed-resource registry.
+  goldens generated from the managed-resource registry; for Sprint `5.13`, the
+  `resource-guardrails` named validation and its pod/quota JSON oracle.
+- `documents/engineering/resource_scaling_doctrine.md` - for Sprint `5.13`, the validation contract
+  proving no `BestEffort` pods and over-budget config refusal before mutation.
 - `documents/engineering/integration_fixture_doctrine.md` - for Sprint `5.6`, the
   capability-derived IAM-harness tier (replacing the `normalizeManagedAwsHarness` `substrate=aws`
   blanket override) and the registry-generated destructive-dry-run golden fixtures.
@@ -1007,6 +1021,57 @@ persists — hostPath on home, the same EBS `volumeHandle` on EKS.
   the destructive home `prodbox test integration eks-volume-rebind` against a disposable local
   substrate, then the AWS `--substrate aws` parity row against the Sprint `7.28` static retained-EBS
   PV path. The code-owned command/planner/parser/body/oracle surface is complete.
+
+## Sprint 5.13: `resource-guardrails` Validation [✅ Done]
+
+**Status**: ✅ Done (code-owned surface) — 2026-07-04
+**Implementation**: `src/Prodbox/CLI/Command.hs` (`IntegrationResourceGuardrails`),
+`src/Prodbox/CLI/Spec.hs` (parser + command-registry leaf), `src/Prodbox/TestPlan.hs`
+(`ValidationResourceGuardrails`, ordering, prerequisites, and named-suite mapping),
+`src/Prodbox/TestRunner.hs` (topology suite mapping), `src/Prodbox/TestValidation.hs`
+(`runResourceGuardrailsValidation` and `resourceGuardrailReport`), `test/unit/Main.hs`,
+`test/unit/Parser.hs`, `test/integration/CliSuite.hs`, and CLI goldens.
+**Live-proof**: pending
+**Independent Validation**: pure report-oracle tests over Kubernetes pod/quota JSON, invalid-config
+fixtures that fail before mutation, and CLI/env integration against fake `kubectl`; the home live
+run is the first real substrate proof, with AWS parity tracked normally in [substrates.md](substrates.md).
+**Docs to update**: `documents/engineering/unit_testing_policy.md`,
+`documents/engineering/resource_scaling_doctrine.md`, `DEVELOPMENT_PLAN/substrates.md`
+
+### Objective
+
+Add canonical-suite coverage for the resource-governor contract introduced by Sprints `1.55`,
+`3.22`, and `4.41`.
+
+### Deliverables
+
+- New named validation `resource-guardrails` in the canonical suite, ordered after chart platform
+  readiness and before destructive lifecycle/rebind validations.
+- Kubernetes JSON oracle proving every prodbox-owned pod has `resources.requests` and
+  `resources.limits` for cpu, memory, and ephemeral storage, and that `.status.qosClass` is never
+  `BestEffort`.
+- Namespace oracle proving every root chart namespace has the expected `ResourceQuota` and
+  `LimitRange`, and that rendered quota values match the declared resource plan.
+- Negative config fixture proving over-reserved host capacity, namespace quota overcommit, and a
+  missing resource profile fail before Helm/RKE2 mutation.
+- Optional stress sub-proof for the live home substrate: a deliberately over-limit test pod is
+  OOMKilled or evicted inside Kubernetes without dropping host SSH/network availability.
+
+### Validation
+
+1. ✅ `prodbox test unit` — 1172/1172, covering pod/quota/limit-range JSON parsing, report
+   rendering, invalid resource config refusal, parser routing, planner ordering, and CLI goldens.
+2. ✅ `cabal test --builddir=.build prodbox-integration --test-options='-p resource-guardrails'`
+   — 1/1 with fake `kubectl` pod/quota/limit-range JSON.
+3. ✅ `prodbox test integration cli` — 41/41.
+4. ✅ `prodbox test integration env` — 41/41.
+5. ✅ `prodbox dev check`
+
+### Remaining Work
+
+- 🧪 Live-proof (non-blocking, Standard O): run the optional real over-limit pod stress proof on a
+  disposable home substrate and the AWS `--substrate aws` parity row once the AWS substrate is
+  provisioned. The code-owned command/planner/body/oracle surface is complete.
 
 ## Related Documents
 

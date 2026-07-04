@@ -73,7 +73,7 @@ _prodbox()
         words="init run all lint unit integration"
         ;;
       "test integration")
-        words="all cli aws-iam dns-aws aws-eks env gateway-daemon gateway-pods gateway-partition ha-rke2-aws lifecycle pulumi eks-volume-rebind charts-storage charts-platform pulsar-broker charts-vscode charts-api charts-websocket admin-routes public-dns keycloak-invite sealed-vault"
+        words="all cli aws-iam dns-aws aws-eks env gateway-daemon gateway-pods gateway-partition ha-rke2-aws lifecycle pulumi eks-volume-rebind charts-storage charts-platform resource-guardrails pulsar-broker charts-vscode charts-api charts-websocket admin-routes public-dns keycloak-invite sealed-vault"
         ;;
       "users")
         words="invite list revoke"

@@ -19,6 +19,8 @@ spec:
         - name: redis
           image: "{{ .Values.image.repository }}:{{ .Values.image.tag }}"
           imagePullPolicy: IfNotPresent
+          resources:
+            {{- toYaml .Values.resources.redis | nindent 12 }}
           args:
             - redis-server
             - --save

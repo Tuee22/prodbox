@@ -2,10 +2,14 @@
 
 **Status**: Authoritative source
 **Supersedes**: the scaling prose in [envoy_gateway_edge_doctrine.md § 8](./envoy_gateway_edge_doctrine.md#8-scaling-and-availability-doctrine) (Envoy / application / Keycloak / Redis "may scale horizontally" statements) — that section now points here for the typed capacity, policy, and placement model; it retains only per-component availability notes.
-**Referenced by**: [documents/engineering/README.md](./README.md), [DEVELOPMENT_PLAN/phase-1-runtime-cli-aws-foundations.md](../../DEVELOPMENT_PLAN/phase-1-runtime-cli-aws-foundations.md), [DEVELOPMENT_PLAN/phase-4-lifecycle-canonical-paths.md](../../DEVELOPMENT_PLAN/phase-4-lifecycle-canonical-paths.md), [DEVELOPMENT_PLAN/phase-7-aws-substrate-foundations.md](../../DEVELOPMENT_PLAN/phase-7-aws-substrate-foundations.md), [documents/engineering/cluster_topology_doctrine.md](./cluster_topology_doctrine.md), [documents/engineering/tiered_storage_capacity_doctrine.md](./tiered_storage_capacity_doctrine.md)
+**Referenced by**: [README.md](../../README.md), [documents/engineering/README.md](./README.md), [DEVELOPMENT_PLAN/00-overview.md](../../DEVELOPMENT_PLAN/00-overview.md), [DEVELOPMENT_PLAN/system-components.md](../../DEVELOPMENT_PLAN/system-components.md), [DEVELOPMENT_PLAN/phase-1-runtime-cli-aws-foundations.md](../../DEVELOPMENT_PLAN/phase-1-runtime-cli-aws-foundations.md), [DEVELOPMENT_PLAN/phase-3-chart-platform-vscode.md](../../DEVELOPMENT_PLAN/phase-3-chart-platform-vscode.md), [DEVELOPMENT_PLAN/phase-4-lifecycle-canonical-paths.md](../../DEVELOPMENT_PLAN/phase-4-lifecycle-canonical-paths.md), [DEVELOPMENT_PLAN/phase-5-canonical-test-suite.md](../../DEVELOPMENT_PLAN/phase-5-canonical-test-suite.md), [DEVELOPMENT_PLAN/phase-7-aws-substrate-foundations.md](../../DEVELOPMENT_PLAN/phase-7-aws-substrate-foundations.md), [documents/engineering/cluster_topology_doctrine.md](./cluster_topology_doctrine.md), [documents/engineering/helm_chart_platform_doctrine.md](./helm_chart_platform_doctrine.md), [documents/engineering/host_platform_doctrine.md](./host_platform_doctrine.md), [documents/engineering/tiered_storage_capacity_doctrine.md](./tiered_storage_capacity_doctrine.md)
 **Generated sections**: none
 
-> **Purpose**: Single Source of Truth for how prodbox sizes, scales, and places workloads against a typed capacity budget — the `fitsWithin` lemmas that make over-committed nodes, clusters, and AWS regions unrepresentable, the substrate-indexed `ScalingPolicy`, the spot-price and region-quota gates, and federation-scoped placement — with prodbox acting as its own autoscaler.
+> **Purpose**: Single Source of Truth for how prodbox sizes, caps, scales, and places workloads
+> against typed cpu, memory, ephemeral-storage, and durable-storage budgets — the `fitsWithin`
+> lemmas that make over-committed hosts, RKE2 clusters, pods, namespaces, clusters, and AWS regions
+> unrepresentable, the substrate-indexed `ScalingPolicy`, the spot-price and region-quota gates, and
+> federation-scoped placement — with prodbox acting as its own autoscaler and resource governor.
 
 > **Scheduling honesty.** Everything here is written as present-tense doctrine per
 > [development_plan_standards § D](../../DEVELOPMENT_PLAN/README.md), but the capability is
@@ -13,7 +17,12 @@
 > 1.51** (Phase 1), the pure autoscaler + federation-scoped placement planner landed in
 > **Sprint 4.34** (Phase 4), the storage/region-quota preflight adapter landed in **Sprint 4.36**
 > (Phase 4), and the spot-economics gate plus AWS observer surface landed in **Sprint 7.27**
-> (Phase 7). Status is owned only by
+> (Phase 7). The resource-guardrail extension has landed its schema/config ring in **Sprint 1.55**,
+> chart-rendering ring in **Sprint 3.22**, host/RKE2 reconciliation ring in **Sprint 4.41**, and
+> canonical validation ring in **Sprint 5.13**. Together these turn the aggregate
+> budget into explicit host, RKE2, namespace, and per-container envelopes; render Kubernetes
+> `resources`, `LimitRange`, and `ResourceQuota`; and reconcile kubelet/systemd guardrails on the
+> host. Status is owned only by
 > [DEVELOPMENT_PLAN/README.md](../../DEVELOPMENT_PLAN/README.md); this doc never restates it.
 
 ## 1. Prodbox Is Its Own Autoscaler
@@ -88,6 +97,105 @@ any Haskell planner runs. This is the compile ring of hostbootstrap's three-ring
 **storage** axis of every `Budget` (per-PV / per-region storage-quota-as-budget) is owned by
 [tiered_storage_capacity_doctrine.md](./tiered_storage_capacity_doctrine.md); this doc treats storage
 only as the third axis of the shared `fitsWithin` relation.
+
+## 2A. Resource Requirements Are Mandatory and Capped
+
+The aggregate `Budget` relation is strengthened into an admitted-resource contract for every
+runtime surface that can consume host resources. A decoded, validated prodbox configuration has no
+value that means "use whatever the host has." Every consumer declares both a **request** and a
+**limit** for:
+
+- cpu, in millicores
+- memory, in MiB
+- ephemeral storage, in MiB
+- durable storage, in MiB, for PVC/PV-backed claims
+
+`Request <= Limit` is a constructor invariant, not a convention. A missing limit, a zero limit, or a
+container without an envelope is not representable in the validated type. The old aggregate
+`CapacityBudget {cpu,memory,storage}` remains only as the compatibility core that the strengthened
+schema projects from; the resource-governor surface uses closed, unit-specific newtypes so cpu,
+memory, ephemeral storage, and durable storage cannot be accidentally added together.
+
+```haskell
+-- Implemented in src/Prodbox/Capacity/Config.hs
+newtype MilliCpu = MilliCpu Natural
+newtype MebiBytes = MebiBytes Natural
+
+data ResourceVector = ResourceVector
+  { milli_cpu :: Natural
+  , memory_mib :: Natural
+  , ephemeral_storage_mib :: Natural
+  , durable_storage_mib :: Natural
+  }
+
+data ResourceEnvelope = ResourceEnvelope
+  { request :: ResourceVector
+  , limit :: ResourceVector
+  }
+
+data ResourcePlan = ResourcePlan
+  { host_capacity :: ResourceVector
+  , rke2_reserved :: ResourceVector
+  , eviction_floor :: ResourceVector
+  , namespace_quotas :: [NamespaceQuota]
+  , workload_profiles :: [WorkloadResourceProfile]
+  }
+```
+
+Dhall mirrors this with smart-constructor style records plus `assert`-carried lemmas in
+`dhall/capacity/Schema.dhall`. The assertion is the static ring for authored capacity documents:
+if a plan over-reserves the host, omits a limit, or sums pod requirements beyond cluster
+allocatable capacity, the Dhall capacity contract fails before Haskell decodes anything. Haskell
+repeats the same checks in `validateResourcePlan`, which is called from `Settings.validateLocalConfig`
+for every supported config load.
+
+## 2B. Host, RKE2, Cluster, Namespace, and Pod Lemmas
+
+The resource-governor schema has five nested levels. Each lower level must fit in the level above it
+after subtracting the reservations that protect the host and Kubernetes control plane:
+
+| Rule | Statement | The illegal state it forbids |
+|------|-----------|------------------------------|
+| **a** | `rke2.reserved + eviction.floor <= host.physical` | An RKE2 cluster reserving more cpu/ram/storage than the host has. |
+| **b** | `cluster.allocatable = host.physical - rke2.reserved - eviction.floor` | Pods being scheduled against the host's survival margin. |
+| **c** | `sum(namespace.quotas) <= cluster.allocatable` | Namespace quotas that promise more than the cluster can admit. |
+| **d** | `sum(workload.requirements) <= namespace.quota` | Pods/deployments that need more resources than their namespace has. |
+| **e** | `forall container. request <= limit && limit > 0` | Undefined or uncapped container consumption, including Kubernetes `BestEffort` pods. |
+
+The rendered Kubernetes shape follows directly from these values:
+
+- kubelet args for `system-reserved`, `kube-reserved`, `eviction-hard`, `eviction-soft`,
+  image-garbage-collection thresholds, and container log caps
+- optional systemd drop-in limits for the `rke2-server` service process tree
+- one `ResourceQuota` and `LimitRange` per prodbox-owned namespace
+- one non-empty `resources.requests` and `resources.limits` stanza for every container and init
+  container in every repo-owned chart
+- explicit PVC sizes and retained PV capacities drawn from the durable-storage budget
+
+No chart template may synthesize these values locally. Chart values consume a `ResourceProfileId`
+that resolves through the Haskell/Dhall resource registry. A chart whose profile is absent fails to
+render, and `prodbox dev lint chart` rejects any repo-owned workload container without a rendered
+`resources` block.
+
+## 2C. Enforcement Rings
+
+The same resource facts are enforced in three rings:
+
+1. **Static Dhall ring**: generated `dhall/capacity/Schema.dhall` exports the constructors, sums,
+   `fitsWithin` lemmas, and self-checking `assert`s. Illegal resource declarations fail at
+   `dhall type`.
+2. **Pure Haskell ring**: `validateCapacitySection` decodes to an opaque `ValidatedResourcePlan`
+   only when host reservations, namespace quotas, pod requirements, and durable claims all fit.
+   Renderers accept the validated plan, not raw settings.
+3. **Runtime cgroup/Kubernetes ring**: `prodbox cluster reconcile` writes RKE2/kubelet guardrails,
+   reconciles namespace quotas and limit ranges, renders container limits, and verifies that no
+   prodbox pod is `BestEffort`. A live host whose observed cpu, memory, or filesystem capacity is
+   lower than the authored host declaration is `Unreachable/Insufficient -> refuse`; prodbox does not
+   "best effort" its way into bring-up.
+
+This three-ring model is intentionally redundant. Dhall makes illegal authored states impossible,
+Haskell makes illegal generated states impossible, and Kubernetes/systemd make runtime runaway
+behavior local to the offending pod or service instead of the host.
 
 ## 3. `ScalingPolicy` Indexed by Substrate Elasticity
 
@@ -220,20 +328,26 @@ three-valued `discover` and a `reconcileAbsent`-style converge step:
   cluster, and `apply` is the only effectful arm.
 
 This is the data-oriented "make illegal states unrepresentable" answer, not a global scaling state
-machine: the budget lemmas (§2) forbid over-commit at typecheck, the substrate index (§3) forbids
-illegal elasticity, and the fail-closed gates (§4–§6) forbid acting on unobserved capacity.
+machine: the budget lemmas (§2) forbid over-commit at typecheck, the resource-governor lemmas
+(§2A–§2C) forbid uncapped pods and over-reserved clusters, the substrate index (§3) forbids illegal
+elasticity, and the fail-closed gates (§4–§6) forbid acting on unobserved capacity.
 
 ## Intent Ownership
 
-This SSoT co-owns prodbox resource-scaling and capacity-placement doctrine.
+This SSoT co-owns prodbox resource-scaling, resource-governance, and capacity-placement doctrine.
 
-- **Owned statement**: prodbox is its own autoscaler; over-committed nodes/clusters/regions are made
-  unrepresentable by the `fitsWithin` budget lemmas, illegal elasticity is unrepresentable by the
-  substrate-indexed `ScalingPolicy`, and every scaling gate is `Unreachable → refuse`.
-- **Linked dependents** (the modules Sprints 1.51 / 4.34 / 4.36 / 7.27 implement this in):
+- **Owned statement**: prodbox is its own autoscaler and resource governor; over-committed hosts,
+  RKE2 reservations, namespaces, pods, clusters, and regions are made unrepresentable by the
+  `fitsWithin` budget lemmas; uncapped cpu/memory/ephemeral-storage consumption is unrepresentable
+  because every container must carry a non-empty request/limit envelope; illegal elasticity is
+  unrepresentable by the substrate-indexed `ScalingPolicy`; and every scaling or capacity-observation
+  gate is `Unreachable -> refuse`.
+- **Linked dependents** (the modules Sprints 1.51 / 1.55 / 3.22 / 4.34 / 4.36 / 4.41 / 7.27
+  implement this in):
   `dhall/capacity/Schema.dhall` and `src/Prodbox/Capacity/Config.hs` (the shared `Budget` /
-  `fitsWithin` / `storageFitsWithin` algebra), `src/Prodbox/Settings.hs` (`DeploymentSection`
-  scaling fields plus the binary-sibling `capacity` block), `src/Prodbox/Substrate.hs`
+  `fitsWithin` / `storageFitsWithin` algebra plus the scheduled resource-governor envelope),
+  `src/Prodbox/Settings.hs` (`DeploymentSection` scaling fields plus the binary-sibling `capacity`
+  block), `src/Prodbox/Substrate.hs`
   (`ScalingPolicy`, `ScalingPolicyBySubstrate`, and substrate validation),
   `src/Prodbox/Capacity/Storage.hs` (storage-capacity drawdown, ML storage totals, and
   region-quota preflight refusal fold),
@@ -257,7 +371,9 @@ This SSoT co-owns prodbox resource-scaling and capacity-placement doctrine.
 - [Pure FP Standards](./pure_fp_standards.md) — type-index "illegal states unrepresentable" + Plan/Apply
 - [Envoy Gateway Edge Doctrine § 8](./envoy_gateway_edge_doctrine.md#8-scaling-and-availability-doctrine)
   — the per-component availability notes this typed model supersedes
+- [Helm Chart Platform Doctrine](./helm_chart_platform_doctrine.md) — chart-side consumption of the
+  resource-profile registry and the no-uncapped-container render contract
 - [Tiered Storage Capacity Doctrine](./tiered_storage_capacity_doctrine.md) · [Cluster Topology Doctrine](./cluster_topology_doctrine.md) · [Engineering Doctrine Index](./README.md) · [Documentation Standards](../documentation_standards.md)
-- [Development Plan](../../DEVELOPMENT_PLAN/README.md) (status; sprints 1.51 / 4.34 / 7.27) · [substrates.md](../../DEVELOPMENT_PLAN/substrates.md)
+- [Development Plan](../../DEVELOPMENT_PLAN/README.md) (status; sprints 1.51 / 3.22 / 4.34 / 4.41 / 5.13 / 7.27) · [substrates.md](../../DEVELOPMENT_PLAN/substrates.md)
 - Umbrella: `/home/matthewnowak/amoebius/.../cluster_lifecycle_doctrine.md § 8`; mirrored-in-kind
   vocabulary from `~/hostbootstrap resource_budgeting.md` and `~/jitML dhall/project/Schema.dhall`

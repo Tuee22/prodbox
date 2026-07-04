@@ -19,6 +19,17 @@
 
 ## Phase Status
 
+✅ **Reclosed 2026-07-04 for explicit resource-governor schema** — Sprint `1.55` is Done on the
+Phase `1` config/schema surface. The existing Sprint `1.51` aggregate capacity algebra remains as a
+compatibility projection, and the new `capacity.resource_plan` carries explicit host capacity,
+RKE2 reservation, namespace quota, workload request+limit envelopes, ephemeral storage, and
+durable-storage capacity values. The Dhall schema and Haskell mirror reject over-reserved hosts,
+over-committed namespace/workload plans, zero/uncapped resource envelopes, and malformed resource
+config before command execution. Later rendering and side-effecting enforcement landed in Phase `3`
+Sprint `3.22` and Phase `4` Sprint `4.41`; the regression validation landed in Phase `5` Sprint
+`5.13`.
+All earlier Phase `1` sprints remain `Done` on their owned surfaces per Standards A/N.
+
 ✅ **Reclosed 2026-07-02** (capacity/scaling, host-provider, cluster-topology, and test-topology
 schema surfaces) — Phase `1` reopened to expand its own config/schema surface with Sprints
 `1.51`–`1.54`. Sprint `1.51` is ✅ Done on its code-owned surface: the shared
@@ -49,8 +60,8 @@ The prior `🧪 Live-proof: pending` notes on `1.39`–`1.50` are satisfied on t
 `--substrate aws` aggregate coverage remains a distinct, non-blocking axis tracked only in
 [substrates.md](substrates.md). The `1.1`–`1.38` sprints remain `Done` on their owned surfaces.
 
-🔄 **Reopened 2026-06-16** (Tier 0 binary-context config surface) — Phase `1` is reopened to expand
-its own config-SSoT surface with two sprints (`1.39`/`1.40`, both now ✅ Done — see the reclose note
+✅ **Prior 2026-06-16 reopen reclosed** (Tier 0 binary-context config surface) — Phase `1` was
+reopened to expand its own config-SSoT surface with two sprints (`1.39`/`1.40`, both now ✅ Done — see the reclose note
 above) that fold the non-secret config tier into a
 single binary-owned `prodbox.dhall` shaped to `hostbootstrap`'s binary-context contract. Sprint
 `1.39` folds `.data/prodbox/unencrypted-basics.json` and the non-secret sections of the seed/propose
@@ -1690,6 +1701,10 @@ None.
 - `documents/engineering/prerequisite_doctrine.md` - prerequisite registry doctrine, deferring
   to the doctrine for `Prerequisites as Typed Effects`; Sprint 1.31 records the
   `settings_loaded`/`settings_object` collapse and the interpreter satisfied-node memo.
+- `documents/engineering/resource_scaling_doctrine.md` - for Sprint `1.55`, the explicit
+  resource-governor schema: host capacity, RKE2 reservations, namespace quotas, per-container
+  request+limit envelopes, ephemeral storage, durable PVC capacity, and the static Dhall
+  `fitsWithin` assertions.
 - `documents/engineering/pure_fp_standards.md` - pure-FP and state-machine doctrine; Sprint 1.32
   softens the GADT-indexed-state-machine mandate (change D1) to permit a flat exhaustive ADT for
   externally-authoritative / log-reconciled state (the gateway `Disposition` projection) while
@@ -3390,6 +3405,60 @@ fail-if-absent resolution.
 
 - The `test init` / `test run` topology, `.test-data/` isolation, finally-guaranteed teardown, and
   the never-touch-`.data/` guard land in Phase 5 Sprint `5.11` (out of Phase 1 scope).
+
+## Sprint 1.55: Resource-Requirement Dhall Schema and Validated Config Surface [✅ Complete]
+
+**Status**: Done
+**Implementation**: `dhall/capacity/Schema.dhall`, `src/Prodbox/Capacity/Config.hs`,
+`src/Prodbox/Settings.hs`, `src/Prodbox/Config/Tier0.hs`, `test/unit/Main.hs`,
+`test/integration/EnvSuite.hs`
+**Independent Validation**: unit tests over pure resource-vector arithmetic, request<=limit smart
+constructors, host-reservation fits, namespace quota fits, and invalid Dhall/config decode
+rejections; CLI/env integration on the home/local substrate with no deployed cluster dependency.
+**Docs to update**: `documents/engineering/resource_scaling_doctrine.md`,
+`documents/engineering/config_doctrine.md`
+
+### Objective
+
+Strengthen the Sprint `1.51` aggregate capacity schema into the explicit resource-governor schema
+defined by [resource_scaling_doctrine.md](../documents/engineering/resource_scaling_doctrine.md):
+host physical capacity, RKE2/kubelet reservations, eviction floors, namespace quotas, per-container
+request+limit envelopes, ephemeral storage, and durable PVC capacities are all first-class,
+non-optional values.
+
+### Deliverables
+
+- ✅ Unit-specific resource types (`MilliCpu`, memory MiB, ephemeral-storage MiB, durable-storage MiB)
+  with positive smart constructors; cpu and storage units cannot be mixed accidentally.
+- ✅ `ResourceEnvelope { request, limit }` with `request <= limit` and `limit > 0` enforced at
+  construction and Dhall decode.
+- ✅ `ResourcePlan` fields for host capacity, RKE2 reservation, eviction floor, derived cluster
+  allocatable capacity, `NamespaceQuota`, and `WorkloadResourceProfile` records in Dhall/Haskell,
+  with assertions for:
+  `rke2.reserved + eviction.floor <= host.physical`,
+  `sum namespace quotas <= cluster.allocatable`, and
+  `sum workload profiles <= namespace quota`.
+- ✅ The binary-sibling `capacity` block carries the new resource plan; legacy aggregate
+  `node_budget` / `workload_budget` / `region_quota` values are either derived from the new plan or
+  retained only as compatibility projections until the callers are migrated.
+- ✅ Config display and generated Dhall schema output include resource requirements without masking
+  non-secret capacities.
+
+### Validation
+
+1. ✅ `dhall type --file dhall/capacity/Schema.dhall`
+2. ✅ `./.build/prodbox test unit` — 1162/1162 tests passed, including valid/invalid
+   request-limit envelopes, over-reserved RKE2 config, over-quota namespace plans, and durable
+   capacity draw-down.
+3. ✅ `./.build/prodbox test integration env` — 40/40 tests passed, including malformed resource
+   config refusal before command execution.
+4. `prodbox dev check` remains the final cross-phase gate after Phases `3`/`4`/`5` close.
+
+### Remaining Work
+
+- None on the Phase `1` code-owned config/schema surface. Chart consumption landed in Sprint
+  `3.22`; RKE2/systemd enforcement landed in Sprint `4.41`; suite validation landed in Sprint
+  `5.13`.
 
 ## Related Documents
 

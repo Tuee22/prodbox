@@ -40,6 +40,7 @@ data NativeValidation
   | ValidationGatewayPods
   | ValidationGatewayPartition
   | ValidationChartsPlatform
+  | ValidationResourceGuardrails
   | ValidationPulsarBroker
   | ValidationChartsStorage
   | ValidationEksVolumeRebind
@@ -248,6 +249,12 @@ testExecutionPlan substrate scope =
             "integration-charts-platform"
             [ValidationChartsPlatform]
             True
+        IntegrationResourceGuardrails ->
+          nativeNamedSuite
+            "integration resource-guardrails"
+            "integration-resource-guardrails"
+            [ValidationResourceGuardrails]
+            True
         IntegrationPulsarBroker ->
           nativeNamedSuite
             "integration pulsar-broker"
@@ -375,6 +382,7 @@ canonicalNativeValidations =
   , ValidationGatewayPods
   , ValidationGatewayPartition
   , ValidationChartsPlatform
+  , ValidationResourceGuardrails
   , ValidationPulsarBroker
   , ValidationKeycloakInvite
   , ValidationChartsStorage
@@ -421,6 +429,7 @@ validationInitialPrerequisites validation =
     -- The chart-platform / storage / lifecycle validations operate on the
     -- local cluster: cluster only, no AWS credentials.
     ValidationChartsPlatform -> clusterPrerequisites
+    ValidationResourceGuardrails -> clusterPrerequisites
     ValidationPulsarBroker -> clusterPrerequisites
     ValidationChartsStorage -> clusterPrerequisites
     ValidationEksVolumeRebind -> clusterPrerequisites
@@ -451,6 +460,7 @@ validationDeferredPrerequisites validation =
     ValidationGatewayPods -> []
     ValidationGatewayPartition -> []
     ValidationChartsPlatform -> []
+    ValidationResourceGuardrails -> []
     ValidationPulsarBroker -> []
     ValidationChartsStorage -> []
     ValidationEksVolumeRebind -> []
@@ -564,6 +574,7 @@ nativeValidationId validation =
     ValidationGatewayPods -> "gateway-pods"
     ValidationGatewayPartition -> "gateway-partition"
     ValidationChartsPlatform -> "charts-platform"
+    ValidationResourceGuardrails -> "resource-guardrails"
     ValidationPulsarBroker -> "pulsar-broker"
     ValidationChartsStorage -> "charts-storage"
     ValidationEksVolumeRebind -> "eks-volume-rebind"

@@ -91,6 +91,7 @@
 | `prodbox test integration eks-volume-rebind` | Run retained-volume rebinding integration tests |
 | `prodbox test integration charts-storage` | Run chart-storage integration tests |
 | `prodbox test integration charts-platform` | Run chart-platform integration tests |
+| `prodbox test integration resource-guardrails` | Run resource-guardrail integration tests |
 | `prodbox test integration pulsar-broker` | Run Pulsar broker transport integration tests |
 | `prodbox test integration charts-vscode` | Run vscode stack integration tests |
 | `prodbox test integration charts-api` | Run API stack integration tests |

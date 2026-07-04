@@ -61,7 +61,7 @@ cross-substrate shared infrastructure (see
 | [vault_doctrine.md](./vault_doctrine.md) | Vault as the fail-closed secrets / KMS / PKI backend: the SecretRef config contract, the MinIO-resident password-AEAD unlock bundle and bootstrap MinIO credential (Tier 1), Vault Transit envelope encryption of MinIO and Pulumi state, the sealed-state invariant, and in-cluster Vault Kubernetes auth |
 | [cluster_federation_doctrine.md](./cluster_federation_doctrine.md) | Cluster federation: the root/child Vault transit-seal trust tree, parent custody of child init keys, downstream-cluster metadata as secret, the config SSoT inversion and root-token config authority, and the fail-closed unseal cascade |
 | [pulsar_messaging_doctrine.md](./pulsar_messaging_doctrine.md) | Self-maintained native-protocol Pulsar client and the project-wide CBOR-always payload rule (no codec-selection field — non-CBOR payloads unrepresentable), the derived `topicFor` topic algebra, and the `Work*` envelope family |
-| [resource_scaling_doctrine.md](./resource_scaling_doctrine.md) | prodbox-as-autoscaler: capacity `Budget` + `fitsWithin` lemmas making over-committed nodes/clusters/regions unrepresentable, the substrate-indexed `ScalingPolicy` (Fixed vs Elastic), the fail-closed spot-price and region-quota gates, and federation-scoped placement |
+| [resource_scaling_doctrine.md](./resource_scaling_doctrine.md) | prodbox-as-autoscaler and resource governor: explicit cpu/memory/ephemeral/durable budgets, host/RKE2 reservations, per-container request/limit envelopes, namespace quotas, capacity `fitsWithin` lemmas making over-committed hosts/clusters/regions unrepresentable, substrate-indexed scaling, fail-closed spot-price and region-quota gates, and federation-scoped placement |
 | [pulsar_topic_lifecycle_doctrine.md](./pulsar_topic_lifecycle_doctrine.md) | Pulsar topics as first-class managed resources — typed three-valued broker discover, typed idempotent destroy, and a lifecycle class reconciled through the §3.1 registry; names from the topic algebra, retention drawn from the finite storage budget |
 | [tiered_storage_capacity_doctrine.md](./tiered_storage_capacity_doctrine.md) | Finite-budget durable-storage capacity DSL: no `Infinite` constructor, sizeless-claim and over-quota unrepresentable, MinIO "unlimited" only with an autoscaling witness, AWS region service-quota as the real cloud ceiling, mandatory ML JIT + model-cache budgets, and no durable-destruction primitive |
 | [host_platform_doctrine.md](./host_platform_doctrine.md) | Per-OS host-provider model mirrored in kind from hostbootstrap: the detected `HostSubstrate`, the closed `HostTool` enum, and the `LiftLayer` provider fold (Lima on Apple, WSL2 on Windows, Incus/native on Linux) with "everything Docker-inward is OS-agnostic Linux"; makes rke2-without-a-VM (Apple/Windows) and host-frame `docker` on Windows unrepresentable |
@@ -154,6 +154,13 @@ cross-substrate shared infrastructure (see
 - [Managed-Resource Registry (production-cert LongLived registration)](./lifecycle_reconciliation_doctrine.md#31-the-managed-resource-registry-the-reconciler-substrate)
 - [Repo-Local Storage](./storage_lifecycle_doctrine.md#7-repo-local-retained-state-layout)
 - Supported `vscode` path: cluster-backed `prodbox charts` only
+
+### Resource Governance
+
+- [Resource Scaling Doctrine](./resource_scaling_doctrine.md)
+- [Mandatory Resource Requirements](./resource_scaling_doctrine.md#2a-resource-requirements-are-mandatory-and-capped)
+- [Host, RKE2, Cluster, Namespace, and Pod Lemmas](./resource_scaling_doctrine.md#2b-host-rke2-cluster-namespace-and-pod-lemmas)
+- [Tiered Storage Capacity Doctrine](./tiered_storage_capacity_doctrine.md)
 
 ### Secrets and Vault
 

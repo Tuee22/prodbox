@@ -5,6 +5,11 @@ PRODBOX_ID=prodbox-123
 LABEL_VALUE=prodbox-123
 MANUAL_PV_ROOT=/tmp/prodbox/.data
 WITH_EDGE=false
+HOST_CAPACITY=cpu=16000m,memory=49152Mi,ephemeral-storage=300000Mi,durable-storage=800000Mi
+RKE2_RESERVED=cpu=1000m,memory=2048Mi,ephemeral-storage=10240Mi,durable-storage=1024Mi
+EVICTION_FLOOR=cpu=500m,memory=1024Mi,ephemeral-storage=10240Mi,durable-storage=1024Mi
+CLUSTER_ALLOCATABLE=cpu=14500m,memory=46080Mi,ephemeral-storage=279520Mi,durable-storage=797952Mi
+STEP=ensure_rke2_resource_guardrails
 STEP=ensure_host_inotify_limits
 STEP=ensure_rke2_server_installed
 STEP=ensure_rke2_ingress_controller

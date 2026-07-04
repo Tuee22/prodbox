@@ -573,6 +573,29 @@ Placing it before the preflight mirrors §5a: it is local-host kernel config, no
 cluster-side or AWS-side work, and it is non-destructive and idempotent, so running it
 ahead of a possible residue refusal is harmless.
 
+### 5a.2. RKE2 Resource Guardrails (install/reconcile host-prep)
+
+`prodbox cluster reconcile` begins its install/reconcile path by applying the
+resource guardrails derived from `capacity.resource_plan`, before installing or
+restarting RKE2 and before any chart render can create workloads. The step is
+owned by lifecycle because it writes host/RKE2 control-plane files, not chart
+manifests:
+
+- `/etc/rancher/rke2/config.yaml.d/90-prodbox-resource-guardrails.yaml` carries
+  kubelet args for `system-reserved`, `kube-reserved`, `eviction-hard`,
+  `eviction-soft`, image garbage-collection thresholds, and container log caps.
+- `/etc/systemd/system/rke2-server.service.d/90-prodbox-resource-guardrails.conf`
+  carries accounting plus `CPUQuota`, `MemoryHigh`, `MemoryMax`, and `TasksMax`
+  for the RKE2 process tree.
+
+The reconciler observes host cpu, memory, and filesystem capacity first. If the
+observed host is smaller than the authored `host_capacity`, it refuses before
+mutating these files. This is the runtime counterpart of the static
+`rke2.reserved + eviction.floor <= host.physical` lemma in
+[resource_scaling_doctrine.md](./resource_scaling_doctrine.md). It bounds
+RKE2/kubelet/containerd; pod-level runaway behavior is separately bounded by
+the chart-rendered Kubernetes `resources`, `ResourceQuota`, and `LimitRange`.
+
 ### 5b. Canonical Cascade Order
 
 `prodbox cluster delete --cascade --yes` orchestrates these phases in order. The order is

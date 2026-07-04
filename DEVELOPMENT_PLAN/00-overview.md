@@ -93,7 +93,13 @@ Build a clean-room Haskell `prodbox` repository with:
 16. One retained PV host-path model rooted at the configured manual PV root, defaulting to
     `.data/<namespace>/<StatefulSet>/<replica>` — one deterministic PV per StatefulSet ordinal,
     no machine-id prefix, provisioned by a single reconciler.
-17. Exactly one preserved operator-host directory: `.data/`. Chart secrets, gateway
+17. One explicit resource-governance model: host physical capacity, RKE2/kubelet reservations,
+    eviction floors, namespace quotas, every chart container's cpu/memory/ephemeral-storage
+    request+limit envelope, and every durable PVC capacity are declared in the typed capacity plan.
+    A configuration that over-reserves the host, schedules workloads beyond cluster allocatable
+    capacity, or renders an uncapped container is invalid before mutation. See
+    [resource_scaling_doctrine.md](../documents/engineering/resource_scaling_doctrine.md).
+18. Exactly one preserved operator-host directory: `.data/`. Chart secrets, gateway
     peer-event keys, AWS stack outputs, EKS kubeconfig material, and HA-RKE2 SSH key
     material all live inside the cluster (k8s Secrets fetched from Vault KV via Vault
     Kubernetes auth, or Pulumi stack outputs read on demand). The legacy
@@ -108,32 +114,32 @@ Build a clean-room Haskell `prodbox` repository with:
     Test runs use a separate `.test-data/` retained root and are mechanically forbidden from touching
     `.data/` per [test_topology_doctrine.md](../documents/engineering/test_topology_doctrine.md)
     (Sprint `1.54` schema/preflight and Sprint `5.11` command/isolation work landed).
-18. One PostgreSQL doctrine for Helm-managed application data: every supported PostgreSQL
+19. One PostgreSQL doctrine for Helm-managed application data: every supported PostgreSQL
     deployment is external, Percona-operator-backed Patroni HA with exactly three PostgreSQL
     replicas, synchronous replication, and no embedded chart-local PostgreSQL subchart.
-19. One supported public workload catalog comprising the cluster-backed `vscode` browser route, a
+20. One supported public workload catalog comprising the cluster-backed `vscode` browser route, a
     JWT-protected API route, a WebSocket route, and path-routed operational dashboards such as
     Harbor and MinIO, all on the same public hostname.
-20. One explicit single-host routing model for the public edge:
+21. One explicit single-host routing model for the public edge:
     `https://test.resolvefintech.com/<service-path>`, with one public DNS record, one public
     certificate, a port `80` redirect to the HTTPS URL, and no dedicated identity, browser-app,
     API, or WebSocket hostnames.
-21. One repo-owned Redis workload path for supported realtime workloads and any later explicit
+22. One repo-owned Redis workload path for supported realtime workloads and any later explicit
     external rate-limit service, only as shared application state and never as an Envoy JWT cache.
-22. One explicit public-edge transport boundary where public TLS terminates at Envoy, backend HTTP
+23. One explicit public-edge transport boundary where public TLS terminates at Envoy, backend HTTP
     remains the current supported workload default, and backend TLS or mTLS requires later
     explicit doctrine ownership.
-23. One supported WebSocket connection-lifetime doctrine: auth at connection setup, one live
+24. One supported WebSocket connection-lifetime doctrine: auth at connection setup, one live
     upgraded connection pinned to one backend pod until disconnect, reconnect-safe state outside
     the pod, and readiness-based drain before pod exit.
-24. One canonical test suite, expressed through named validation commands, with each validation
+25. One canonical test suite, expressed through named validation commands, with each validation
     described as substrate-agnostic suite content (no substrate-conditional branches in the
     validation logic) and exercised per substrate independently — there is no silent fallback
     between substrates, and a complete canonical-suite proof requires both supported substrates
     to land their own run.
-25. One explicit ledger for compatibility or cleanup history that preserves completed removals and
+26. One explicit ledger for compatibility or cleanup history that preserves completed removals and
     closes with zero pending supported-path residue.
-26. Pulumi retained for true IaC surfaces such as AWS substrate resources, with no supported
+27. Pulumi retained for true IaC surfaces such as AWS substrate resources, with no supported
     Python Pulumi program and no supported local-cluster public operator flow.
 
 > **Scheduled doctrine generalizations (2026-07-01 batch — partly implemented).** Structured
@@ -167,6 +173,23 @@ Build a clean-room Haskell `prodbox` repository with:
 > states catalogued in its doctrine doc
 > unrepresentable and specifies prodbox as the proven single-node specialization the `~/amoebius`
 > umbrella generalizes.
+
+> **Explicit resource guardrails (2026-07-04 reclosure).** The July 4 host OOM incident exposed a
+> remaining gap in the capacity doctrine: aggregate budgets existed, but RKE2 guardrails,
+> namespace quotas, and chart container request/limit envelopes were not yet mandatory. Phase `1`
+> has reclosed on Sprint `1.55`: the Dhall/Haskell config schema now carries
+> `capacity.resource_plan` and rejects over-reserved hosts, over-committed quotas, and malformed
+> request/limit envelopes before command execution. Phase `3` has reclosed on Sprint `3.22`: chart
+> rendering consumes that validated plan, every repo-owned container/init container gets an explicit
+> cpu/memory/ephemeral-storage request+limit envelope, root charts render `ResourceQuota` and
+> `LimitRange`, and chart lint refuses unbounded templates. Phase `4` has reclosed on Sprint
+> `4.41`: `cluster reconcile` writes RKE2/kubelet reservation, eviction, log, and image-GC
+> guardrails plus the bounded `rke2-server.service` systemd drop-in, and refuses observed hosts
+> below the authored declaration. Phase `5` has reclosed on Sprint `5.13`: the
+> `resource-guardrails` canonical validation proves no prodbox pod is `BestEffort`, every checked
+> container has cpu/memory/ephemeral-storage requests and limits, root chart namespace
+> `ResourceQuota`/`LimitRange` objects match the resource plan, and over-budget configs fail before
+> mutation. The optional live stress proof remains a non-blocking Standard O live-proof axis.
 
 > **Unified block storage across substrates (2026-07-02).** EKS moves off dynamic `gp2` to
 > **pre-created EBS volumes lifted in as static `Retain` PVs** (CSI `volumeHandle`, AZ-pinned),
@@ -430,17 +453,17 @@ per the operator's 2026-06-19 config/secrets target. Phase `5` Sprint `5.9` (dae
 fixture SecretRef repair) and Phase `7`/`8` follow-ups are tracked in their phase docs. See the
 Closure Status in [README.md](README.md#closure-status).
 
-**2026-06-17 — Three-tier config separation canonicalized; Phase `1` and Phase `7` reopened on
+**2026-06-17 — Three-tier config separation canonicalized; Phase `1` and Phase `7` later reclosed on
 their own surfaces.** The config model is named explicitly as three tiers, with
 [config_doctrine.md §0](../documents/engineering/config_doctrine.md#0-three-tier-config-model) as the
 single canonical home: **Tier 0** the non-secret binary-context `prodbox.dhall` (shaped to align with
 hostbootstrap's binary-context contract, with a derived `prodbox-basics.json` sealed-Vault bootstrap
 floor); **Tier 1** the password-gated Vault unlock material relocated to the durable MinIO bucket as a
 password-AEAD object read via a password-derived bootstrap MinIO credential; and **Tier 2** the
-opaque-named Vault-Transit operational secrets in the same bucket. Phase `1` reopens (📋 Sprints
-`1.39`/`1.40`, Tier 0) and Phase `7` reopens (📋 Sprint `7.19` Tier 1 + Sprint `7.20` — IAM
-credential-lifecycle doctrine ✅ on its code-owned surface, 📋 for the doctrine + teardown-completeness
-guard), each forward-only-blocked on an earlier-or-same-phase sprint per
+opaque-named Vault-Transit operational secrets in the same bucket. Phase `1` reopened and later
+reclosed with Sprints `1.39`/`1.40` for Tier 0; Phase `7` reopened and later reclosed with Sprint
+`7.19` for Tier 1 and Sprint `7.20` for IAM credential-lifecycle doctrine plus the teardown-
+completeness guard. Each was forward-only-blocked on an earlier-or-same-phase sprint per
 [Standard N](development_plan_standards.md#n-phase-independence-no-backward-blocking); no earlier phase
 is blocked by a later one. The doctrine SSoT for the tier definitions is
 [config_doctrine.md §0](../documents/engineering/config_doctrine.md#0-three-tier-config-model) and for
@@ -611,8 +634,8 @@ keycloak + vscode `Certificate` issuers reference the single ZeroSSL `ClusterIss
 sprint originally added was reverted with the ZeroSSL single-issuer decision above.) Gates:
 `check-code` 0, `test unit` 690/690, `docs check` 0, `lint docs` 0; integration cli/env only the
 2 pre-existing `charts deploy vscode` environmental failures. The live S3 round-trip is the
-Sprint `8.8` gate. Sprints `8.5`/`8.6`/`8.8` remain operator-driven live gates (live AWS/cluster
-+ external ACME state); Phase `8` stays `Active` until they land.
+Sprint `8.8` gate. Sprints `8.5`/`8.6`/`8.8` were operator-driven live gates (live AWS/cluster +
+external ACME state) at this point; they later landed under the Phase `8` live-closure notes.
 
 **2026-06-07 — Sprint `7.11` ✅ Done; Phase `7` reclosed on its code-owned surface.** The ACME
 runtime renders one cert-manager `ClusterIssuer` from `acmeRuntimeManifestWith` —

@@ -77,6 +77,7 @@ import Data.Map.Strict (Map)
 import Data.Map.Strict qualified as Map
 import Data.Text qualified as Text
 import Data.Text.Encoding qualified as TextEncoding
+import Prodbox.Capacity.Config qualified as Capacity
 import Prodbox.ContainerImage qualified as ContainerImage
 import Prodbox.Infra.AwsEksTestStack qualified as AwsEks
 import Prodbox.Infra.LongLivedPulumiBackend
@@ -1722,7 +1723,7 @@ renderReleaseValuesJson
   -> Maybe String
   -> Either String String
 renderReleaseValuesJson substrate definition namespace rootChart settings chartSecrets gatewayEventKeys storageClassName storageBindings maybePublicFqdn maybeRuntimeImage maybeGatewayHostedZoneId = do
-  values <-
+  baseValues <-
     case chartDefinitionName definition of
       "keycloak-postgres" ->
         case storageBindings of
@@ -1777,7 +1778,136 @@ renderReleaseValuesJson substrate definition namespace rootChart settings chartS
           (Nothing, _) -> Left "gateway requires a public host"
           (_, Nothing) -> Left "gateway requires a Route 53 hosted zone id"
       _ -> Left ("Unsupported chart definition '" ++ chartDefinitionName definition ++ "'")
+  values <- attachResourcePlanValues settings definition rootChart baseValues
   pure (BL8.unpack (Pretty.encodePretty' prettyJsonConfig values))
+
+attachResourcePlanValues
+  :: ValidatedSettings -> ChartDefinition -> String -> Value -> Either String Value
+attachResourcePlanValues settings definition rootChart values = do
+  let plan = Capacity.resource_plan (capacity (validatedConfig settings))
+  resources <- chartResourcesValue plan (chartDefinitionName definition)
+  guardrails <- resourceGuardrailsValue plan rootChart (chartDefinitionName definition == rootChart)
+  mergeObjectValues
+    values
+    ( object
+        [ "resources" .= resources
+        , "resourceGuardrails" .= guardrails
+        ]
+    )
+
+chartResourcesValue :: Capacity.ResourcePlan -> String -> Either String Value
+chartResourcesValue plan chartName =
+  object <$> traverse profilePair (chartResourceProfiles chartName)
+ where
+  profilePair (valueKey, profileId) = do
+    profile <- requireResourceProfile plan profileId
+    pure (Key.fromString valueKey .= resourceEnvelopeValue (Capacity.resources profile))
+
+chartResourceProfiles :: String -> [(String, String)]
+chartResourceProfiles chartName =
+  case chartName of
+    "keycloak-postgres" ->
+      [ ("postgres", "keycloak-postgres")
+      , ("vaultSecrets", "keycloak-postgres-vault-secrets")
+      , ("secretMaterializer", "keycloak-postgres-secret-materializer")
+      ]
+    "keycloak" ->
+      [ ("keycloak", "keycloak")
+      , ("vaultSecrets", "keycloak-vault-secrets")
+      ]
+    "vscode" ->
+      [ ("vscode", "vscode")
+      , ("vaultSecrets", "vscode-vault-secrets")
+      , ("secretMaterializer", "vscode-secret-materializer")
+      ]
+    "redis" -> [("redis", "redis")]
+    "pulsar" -> [("pulsar", "pulsar")]
+    "api" -> [("api", "api")]
+    "websocket" -> [("websocket", "websocket")]
+    "gateway" -> [("gateway", "gateway")]
+    other -> [(other, other)]
+
+resourceGuardrailsValue :: Capacity.ResourcePlan -> String -> Bool -> Either String Value
+resourceGuardrailsValue plan rootChart enabled = do
+  namespaceQuota <- requireNamespaceQuota plan rootChart
+  limitEnvelope <- namespaceLimitEnvelope plan rootChart
+  pure
+    ( object
+        [ "enabled" .= enabled
+        , "quota" .= resourceQuotaValue namespaceQuota
+        , "limitRange" .= limitRangeValue limitEnvelope
+        ]
+    )
+
+requireResourceProfile
+  :: Capacity.ResourcePlan -> String -> Either String Capacity.WorkloadResourceProfile
+requireResourceProfile plan profileId =
+  case find ((== Text.pack profileId) . Capacity.profile_id) (Capacity.workload_profiles plan) of
+    Just profile -> Right profile
+    Nothing -> Left ("capacity.resource_plan is missing workload profile `" ++ profileId ++ "`")
+
+requireNamespaceQuota :: Capacity.ResourcePlan -> String -> Either String Capacity.NamespaceQuota
+requireNamespaceQuota plan namespace =
+  case find ((== Text.pack namespace) . Capacity.namespace_name) (Capacity.namespace_quotas plan) of
+    Just namespaceQuota -> Right namespaceQuota
+    Nothing -> Left ("capacity.resource_plan is missing namespace quota `" ++ namespace ++ "`")
+
+namespaceLimitEnvelope :: Capacity.ResourcePlan -> String -> Either String Capacity.ResourceEnvelope
+namespaceLimitEnvelope plan namespace =
+  case find ((== Text.pack namespace) . Capacity.profile_namespace) (Capacity.workload_profiles plan) of
+    Just profile -> Right (Capacity.resources profile)
+    Nothing -> Left ("capacity.resource_plan has no workload profile for namespace `" ++ namespace ++ "`")
+
+resourceEnvelopeValue :: Capacity.ResourceEnvelope -> Value
+resourceEnvelopeValue envelope =
+  object
+    [ "requests" .= resourceVectorRuntimeValue (Capacity.request envelope)
+    , "limits" .= resourceVectorRuntimeValue (Capacity.limit envelope)
+    ]
+
+resourceVectorRuntimeValue :: Capacity.ResourceVector -> Value
+resourceVectorRuntimeValue vector =
+  object
+    [ "cpu" .= cpuQuantity (Capacity.milli_cpu vector)
+    , "memory" .= memoryQuantity (Capacity.memory_mib vector)
+    , "ephemeral-storage" .= memoryQuantity (Capacity.ephemeral_storage_mib vector)
+    ]
+
+resourceQuotaValue :: Capacity.NamespaceQuota -> Value
+resourceQuotaValue namespaceQuota =
+  let vector = Capacity.quota namespaceQuota
+   in object
+        [ "hard"
+            .= object
+              [ "requests.cpu" .= cpuQuantity (Capacity.milli_cpu vector)
+              , "limits.cpu" .= cpuQuantity (Capacity.milli_cpu vector)
+              , "requests.memory" .= memoryQuantity (Capacity.memory_mib vector)
+              , "limits.memory" .= memoryQuantity (Capacity.memory_mib vector)
+              , "requests.ephemeral-storage" .= memoryQuantity (Capacity.ephemeral_storage_mib vector)
+              , "limits.ephemeral-storage" .= memoryQuantity (Capacity.ephemeral_storage_mib vector)
+              , "requests.storage" .= memoryQuantity (Capacity.durable_storage_mib vector)
+              ]
+        ]
+
+limitRangeValue :: Capacity.ResourceEnvelope -> Value
+limitRangeValue envelope =
+  object
+    [ "defaultRequest" .= resourceVectorRuntimeValue (Capacity.request envelope)
+    , "default" .= resourceVectorRuntimeValue (Capacity.limit envelope)
+    ]
+
+cpuQuantity :: (Show a) => a -> String
+cpuQuantity value = show value ++ "m"
+
+memoryQuantity :: (Show a) => a -> String
+memoryQuantity value = show value ++ "Mi"
+
+mergeObjectValues :: Value -> Value -> Either String Value
+mergeObjectValues base additions =
+  case (base, additions) of
+    (Object baseObject, Object additionsObject) ->
+      Right (Object (KeyMap.union additionsObject baseObject))
+    _ -> Left "chart resource-plan injection requires object values"
 
 valuesForKeycloak
   :: String

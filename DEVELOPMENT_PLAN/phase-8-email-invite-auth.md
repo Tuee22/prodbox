@@ -46,7 +46,7 @@ gating an earlier phase. Per Standards N/O a live-infrastructure proof (live AWS
 cluster, unsealed Vault) is tracked as a distinct non-blocking 'Live-proof: pending' note and never
 marks an earlier phase or this phase's code-owned closure ⏸️ Blocked.
 
-🔄 **Reopened 2026-06-11, finalized 2026-06-14** (Vault-root + cluster federation) — the
+✅ **Reclosed after the 2026-06-11 reopen and 2026-06-14 finalization** (Vault-root + cluster federation) — the
 Vault-root finalization (narrated in [README.md → Closure Status](README.md) per rule A) makes
 Vault the sole, finalized secrets / KMS / PKI root for the whole stack. Sprint `8.9`
 (✅ Done on its code-owned surface, 2026-06-17 — its deliverables were already provided by the
@@ -88,12 +88,12 @@ implemented through invite → S3 capture → credential setup → invited-user 
 → cleanup, with the June 6 local unit proof green after the SMTP-reconcile, SMTP
 NetworkPolicy, verify-email continuation, public-edge certificate status-patch renderer, and
 public-edge TLS Secret retention fixes (674/674).
-Remaining work on the owned surface: live home and AWS substrate validation of the Sprint `8.5`
-POST/OIDC body, plus the Sprint `8.6` AWS
-aggregate rerun that exercises the now-green targeted AWS `keycloak-invite` path inside the full
-suite. The Phase 7 AWS substrate
-proof is now closed; the active Sprint `8.6` residual is the Keycloak invite public-edge closure
-exposed by the June 5 AWS aggregate runs.
+Historical pre-closure residual from this point in the dated narrative: live home and AWS substrate
+validation of the Sprint `8.5` POST/OIDC body, plus the Sprint `8.6` AWS aggregate rerun that
+exercised the then-green targeted AWS `keycloak-invite` path inside the full suite. The Phase 7 AWS
+substrate proof had already closed; the Sprint `8.6` residual was the Keycloak invite public-edge
+closure exposed by the June 5 AWS aggregate runs, and it later closed under the June 8/9 Phase `8`
+live-closure notes above.
 The first run scheduled `ValidationKeycloakInvite` after destructive `ValidationLifecycle`;
 the follow-up run reached `ValidationKeycloakInvite` before lifecycle and exposed that the
 admin client still targeted the home `domain.demo_fqdn` instead of the selected substrate public

@@ -5,7 +5,8 @@
 **Referenced by**: [README.md](README.md), [00-overview.md](00-overview.md),
 [system-components.md](system-components.md), [the engineering doctrine docs](../documents/engineering/README.md),
 [vault_doctrine.md](../documents/engineering/vault_doctrine.md),
-[pulsar_messaging_doctrine.md](../documents/engineering/pulsar_messaging_doctrine.md)
+[pulsar_messaging_doctrine.md](../documents/engineering/pulsar_messaging_doctrine.md),
+[resource_scaling_doctrine.md](../documents/engineering/resource_scaling_doctrine.md)
 **Generated sections**: none
 
 > **Purpose**: Capture the Haskell chart platform, deterministic retained storage model, the
@@ -13,6 +14,15 @@
 > orchestration with [the engineering doctrine docs](../documents/engineering/README.md).
 
 ## Phase Status
+
+✅ **Reclosed 2026-07-04 for chart resource requirements** — Sprint `3.22` now expands the
+chart-platform surface so every repo-owned chart template with containers/init containers renders a
+values-backed cpu/memory/ephemeral-storage request+limit envelope, root charts render
+`ResourceQuota` and `LimitRange` manifests from the validated `capacity.resource_plan`, and missing
+workload profiles refuse before Helm invocation. Validation: `prodbox dev lint chart`,
+`prodbox test unit` (1164/1164), and `prodbox test integration cli` (40/40). The schema source is
+Phase `1` Sprint `1.55`; host/RKE2 enforcement landed in Phase `4` Sprint `4.41`; canonical
+cluster-state validation landed in Phase `5` Sprint `5.13`.
 
 ✅ **Live-proven 2026-06-26 — the full chart stack passes end-to-end under the green home `test all`.**
 The `charts-vscode`, `charts-api`, `charts-websocket`, `charts-platform`, and `charts-storage` named
@@ -1458,7 +1468,10 @@ owned by Sprint `8.5`.
 - `documents/engineering/helm_chart_platform_doctrine.md` - Haskell chart runtime, supported stack
   topology, internal dependency-release boundary, the authoritative synchronous-replication
   Patroni doctrine, and the land-or-delete loud-failure Patroni-storage-mismatch contract
-  (Sprint `3.16`).
+  (Sprint `3.16`); for Sprint `3.22`, the chart resource-profile registry, mandatory
+  request+limit rendering, namespace `ResourceQuota`/`LimitRange`, and no-BestEffort lint.
+- `documents/engineering/resource_scaling_doctrine.md` - for Sprint `3.22`, the chart-side
+  consumption of the validated resource plan and the no-uncapped-container invariant.
 - `documents/engineering/storage_lifecycle_doctrine.md` - retained storage and rebinding doctrine.
 - `documents/engineering/vault_doctrine.md` - Vault as the sole secrets/KMS/PKI root on a durable
   `.data/vault/vault/0` PV (init-once/unseal-on-rebuild, both substrates), the `prodbox-envelope-v1`
@@ -2190,6 +2203,52 @@ Code-owned validation on 2026-07-03:
 ### Remaining Work
 
 None.
+
+## Sprint 3.22: Chart Resource Envelopes, Namespace Quotas, and Limit Ranges [✅ Done]
+
+**Status**: Done
+**Implementation**: `src/Prodbox/Lib/ChartPlatform.hs`, `charts/*/templates/`,
+`src/Prodbox/CheckCode.hs`, `test/unit/Main.hs`, `test/integration/CliSuite.hs`
+**Independent Validation**: `helm template`/chart-plan unit tests and chart lint over rendered
+manifests prove that every repo-owned container/init container has cpu, memory, and
+ephemeral-storage requests and limits, every prodbox namespace has quota/limit-range manifests, and
+namespace sums fit the Phase `1` validated resource plan; no later-phase dependency.
+**Docs to update**: `documents/engineering/helm_chart_platform_doctrine.md`,
+`documents/engineering/resource_scaling_doctrine.md`
+
+### Objective
+
+Make undefined or uncapped chart resource consumption impossible on the supported chart path. The
+chart renderer consumes the Sprint `1.55` validated resource plan and renders Kubernetes resources
+from that plan only; chart-local resource defaults are forbidden.
+
+### Deliverables
+
+- [x] A `ResourceProfileId` for every repo-owned root chart, internal dependency release, init
+  container, and sidecar: `gateway`, `keycloak`, `keycloak-postgres`, `vscode`, `api`, `redis`,
+  `websocket`, `minio`, `vault`, `harbor` bootstrap jobs, Percona operator install helpers, and
+  `pulsar`.
+- [x] Every rendered container/init container has non-empty `resources.requests` and `resources.limits`
+  for cpu, memory, and ephemeral storage.
+- [x] Every prodbox-owned root-chart namespace receives a `ResourceQuota` and `LimitRange` derived from the same
+  namespace resource budget as the containers it admits.
+- [x] PVC requests and retained PV capacities are tied to durable-storage claims in the capacity plan;
+  a chart cannot introduce an unbudgeted durable claim.
+- [x] `prodbox dev lint chart` rejects repo-owned chart templates or rendered manifests that omit
+  `resources`, render a limit lower than its request, or introduce a `BestEffort` pod.
+
+### Validation
+
+1. ✅ `prodbox dev lint chart`
+2. ✅ `prodbox test unit` — 1164/1164, including chart profile lookup, namespace guardrail values,
+   rendered resource stanzas, and missing-profile refusal.
+3. ✅ `prodbox test integration cli` — 40/40, including the fake Helm/Kubernetes chart path.
+4. `prodbox dev check` — final cross-phase gate after Sprints `4.41` and `5.13`.
+
+### Remaining Work
+
+None on the Sprint `3.22` code-owned surface. Host-side RKE2 guardrails landed in Sprint `4.41`;
+canonical cluster-state validation landed in Sprint `5.13`.
 
 ## Related Documents
 

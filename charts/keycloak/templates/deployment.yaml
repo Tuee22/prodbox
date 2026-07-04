@@ -31,6 +31,8 @@ spec:
         - name: vault-secrets
           image: "{{ .Values.vault.image.repository }}:{{ .Values.vault.image.tag }}"
           imagePullPolicy: {{ .Values.vault.image.pullPolicy }}
+          resources:
+            {{- toYaml .Values.resources.vaultSecrets | nindent 12 }}
           env:
             - name: VAULT_ADDR
               value: {{ .Values.vault.address | quote }}
@@ -94,6 +96,8 @@ spec:
         - name: keycloak
           image: "{{ .Values.image.repository }}:{{ .Values.image.tag }}"
           imagePullPolicy: IfNotPresent
+          resources:
+            {{- toYaml .Values.resources.keycloak | nindent 12 }}
           command:
             - /bin/sh
             - -ec

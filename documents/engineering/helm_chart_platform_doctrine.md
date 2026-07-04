@@ -15,6 +15,7 @@
 [README.md](./README.md), [cli_command_surface.md](./cli_command_surface.md),
 [envoy_gateway_edge_doctrine.md](./envoy_gateway_edge_doctrine.md),
 [local_registry_pipeline.md](./local_registry_pipeline.md),
+[resource_scaling_doctrine.md](./resource_scaling_doctrine.md),
 [secret_derivation_doctrine.md](./secret_derivation_doctrine.md),
 [storage_lifecycle_doctrine.md](./storage_lifecycle_doctrine.md),
 [unit_testing_policy.md](./unit_testing_policy.md),
@@ -76,6 +77,11 @@ The supported chart doctrine is:
 13. Keycloak's NetworkPolicy keeps explicit egress: PostgreSQL, in-namespace Keycloak service
     traffic, cluster DNS, external HTTPS for issuer/OIDC paths, and the configured SMTP port from
     `.Values.smtp.port` for SES-backed invite email.
+14. Every repo-owned chart renders explicit cpu, memory, and ephemeral-storage
+    `resources.requests` and `resources.limits` for every container and init container, plus explicit
+    PVC capacities for every durable claim. A chart without a resource profile is invalid; the chart
+    renderer consumes the validated resource plan from
+    [resource_scaling_doctrine.md](./resource_scaling_doctrine.md), never a template-local default.
 
 ## 1A. Chart Lint and Route Inventory Generation
 
@@ -84,7 +90,9 @@ The supported chart-maintenance surface is split between `prodbox dev lint chart
 
 - `prodbox dev lint chart` validates every chart under `charts/` for the canonical
   `Chart.yaml` metadata fields (`apiVersion: v2`, `name`, `version`, `appVersion`), the
-  required chart-label helper lines, and drift on the generated `route-registry` sections.
+  required chart-label helper lines, values-backed `resources` stanzas on every template
+  `containers:` / `initContainers:` item, root-chart `ResourceQuota`/`LimitRange` manifests, and
+  drift on the generated `route-registry` sections.
 - `prodbox dev docs generate` refreshes the marker-delimited route inventory consumed by:
   - `charts/keycloak/templates/gateway.yaml`
   - `charts/vscode/templates/http-route.yaml`
@@ -92,6 +100,29 @@ The supported chart-maintenance surface is split between `prodbox dev lint chart
   - `charts/websocket/templates/http-route.yaml`
 - The generated route inventory is derived from `src/Prodbox/PublicEdge.hs`, so the public
   path catalog stays synchronized across docs, chart manifests, and validation surfaces.
+
+## 1B. Resource Requirement Rendering
+
+The chart platform consumes a validated resource plan, not raw settings. `Prodbox.Lib.ChartPlatform`
+resolves a `ResourceProfileId` for each root chart, internal dependency release, init container, and
+sidecar; the resulting profile renders exactly one Kubernetes `resources` stanza per container. The
+profile includes request and limit values for cpu, memory, and ephemeral storage. Persistent volumes
+continue to use the retained-storage inventory, but their requested capacity must also be represented
+as a durable-storage draw in the capacity plan.
+
+The chart-side illegal states are:
+
+- a workload or init container without a resource profile
+- a `resources.requests` field without a matching `resources.limits` field
+- a limit lower than its request
+- a namespace quota lower than the sum of the profiles rendered into that namespace
+- a PVC capacity that is not present in the durable-storage budget
+
+Those states are rejected before Helm is invoked. The structural lint scans chart templates so a
+future template edit cannot accidentally omit the values-backed resource stanza; the live
+`BestEffort`/QoS proof is owned by the canonical `resource-guardrails` validation. Namespace
+`ResourceQuota` and `LimitRange` manifests are rendered from the same profile set, making quota and
+container limits agree by construction.
 
 ## 2. Singleton Chart Identity Rule
 

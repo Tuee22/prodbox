@@ -502,6 +502,7 @@ parserForPath path =
     ["test", "integration", "eks-volume-rebind"] -> Just (withCoverage (TestIntegration IntegrationEksVolumeRebind))
     ["test", "integration", "charts-storage"] -> Just (withCoverage (TestIntegration IntegrationChartsStorage))
     ["test", "integration", "charts-platform"] -> Just (withCoverage (TestIntegration IntegrationChartsPlatform))
+    ["test", "integration", "resource-guardrails"] -> Just (withCoverage (TestIntegration IntegrationResourceGuardrails))
     ["test", "integration", "pulsar-broker"] -> Just (withCoverage (TestIntegration IntegrationPulsarBroker))
     ["test", "integration", "charts-vscode"] -> Just (withCoverage (TestIntegration IntegrationChartsVscode))
     ["test", "integration", "charts-api"] -> Just (withCoverage (TestIntegration IntegrationChartsApi))
@@ -1809,6 +1810,7 @@ testGroupSpec =
         , integrationLeaf "eks-volume-rebind" "Run retained-volume rebinding integration tests"
         , integrationLeaf "charts-storage" "Run chart-storage integration tests"
         , integrationLeaf "charts-platform" "Run chart-platform integration tests"
+        , integrationLeaf "resource-guardrails" "Run resource-guardrail integration tests"
         , integrationLeaf "pulsar-broker" "Run Pulsar broker transport integration tests"
         , integrationLeaf "charts-vscode" "Run vscode stack integration tests"
         , integrationLeaf "charts-api" "Run API stack integration tests"

@@ -35,6 +35,8 @@ spec:
         - name: websocket
           image: "{{ .Values.image.repository }}:{{ .Values.image.tag }}"
           imagePullPolicy: Always
+          resources:
+            {{- toYaml .Values.resources.websocket | nindent 12 }}
           args: ["workload", "start", "--config", "/etc/workload/config.dhall"]
           volumeMounts:
             - name: workload-config

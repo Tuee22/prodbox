@@ -9,6 +9,7 @@ module Prodbox.TestValidation
   , sealedVaultHostDiskRoot
   , sealedVaultAuditReport
   , sealedVaultForbiddenPatterns
+  , resourceGuardrailReport
   , volumeRebindReport
   , verifyAwsTestSshReachability
   , assertInviteOidcClaims
@@ -81,6 +82,7 @@ import Prodbox.CLI.Rke2
   ( RetainedStorageInventoryEntry (..)
   , retainedStorageInventoryEntries
   )
+import Prodbox.Capacity.Config qualified as Capacity
 import Prodbox.Cbor
   ( CborPayload (..)
   )
@@ -465,6 +467,8 @@ runNativeValidation substrate repoRoot environment validation = do
               ["charts", "status", "vscode"]
               ["CHART_STATUS", "NAME=vscode"]
           ]
+      ValidationResourceGuardrails ->
+        runResourceGuardrailsValidation repoRoot
       ValidationPulsarBroker ->
         runPulsarBrokerValidation repoRoot environment substrate
       ValidationChartsStorage ->
@@ -933,6 +937,296 @@ sealedVaultHostDiskRoot repoRoot = do
           Just testRoot | not (null testRoot) -> testRoot
           _ -> repoRoot </> defaultChartDataRootRelative
   pure (manualPvRoot </> "prodbox" </> "minio" </> "0")
+
+resourceGuardrailRootNamespaces :: [String]
+resourceGuardrailRootNamespaces = ["keycloak", "vscode", "api", "websocket", "gateway"]
+
+data ResourceGuardrailPodSummary = ResourceGuardrailPodSummary
+  { resourceGuardrailPodsChecked :: Int
+  , resourceGuardrailContainersChecked :: Int
+  }
+  deriving (Eq, Show)
+
+runResourceGuardrailsValidation :: FilePath -> IO ExitCode
+runResourceGuardrailsValidation repoRoot = do
+  settingsResult <- validateAndLoadSettings repoRoot
+  case settingsResult of
+    Left err -> failWith ("load settings for resource guardrail validation: " ++ err)
+    Right settings -> do
+      let plan =
+            Capacity.resource_plan
+              (Prodbox.Settings.capacity (Prodbox.Settings.validatedConfig settings))
+      podsResult <- kubectlJson ["get", "pods", "-A", "-o", "json"]
+      quotasResult <- kubectlJson ["get", "resourcequota", "-A", "-o", "json"]
+      limitRangesResult <- kubectlJson ["get", "limitrange", "-A", "-o", "json"]
+      case (podsResult, quotasResult, limitRangesResult) of
+        (Left err, _, _) -> failWith err
+        (_, Left err, _) -> failWith err
+        (_, _, Left err) -> failWith err
+        (Right pods, Right quotas, Right limitRanges) ->
+          emitResourceGuardrailReport plan pods quotas limitRanges
+ where
+  kubectlJson args =
+    runJsonCommand
+      Subprocess
+        { subprocessPath = "kubectl"
+        , subprocessArguments = args
+        , subprocessEnvironment = Nothing
+        , subprocessWorkingDirectory = Just repoRoot
+        }
+
+emitResourceGuardrailReport
+  :: Capacity.ResourcePlan -> Value -> Value -> Value -> IO ExitCode
+emitResourceGuardrailReport plan pods quotas limitRanges =
+  case resourceGuardrailReport plan pods quotas limitRanges of
+    Left err -> failWith err
+    Right report -> do
+      writeOutput report
+      pure ExitSuccess
+
+resourceGuardrailReport
+  :: Capacity.ResourcePlan -> Value -> Value -> Value -> Either String String
+resourceGuardrailReport plan podPayload quotaPayload limitRangePayload = do
+  podSummary <- resourceGuardrailPodSummary plan podPayload
+  quotaNamespaces <- resourceGuardrailQuotaNamespaces plan quotaPayload
+  limitRangeNamespaces <- resourceGuardrailLimitRangeNamespaces plan limitRangePayload
+  pure
+    ( unlines
+        [ "RESOURCE_GUARDRAILS_VALIDATION"
+        , "PODS_CHECKED=" ++ show (resourceGuardrailPodsChecked podSummary)
+        , "CONTAINERS_CHECKED=" ++ show (resourceGuardrailContainersChecked podSummary)
+        , "QUOTA_NAMESPACES=" ++ intercalate "," quotaNamespaces
+        , "LIMIT_RANGE_NAMESPACES=" ++ intercalate "," limitRangeNamespaces
+        , "BESTEFFORT_PODS=0"
+        , "UNCAPPED_CONTAINERS=0"
+        ]
+    )
+
+resourceGuardrailPodSummary
+  :: Capacity.ResourcePlan -> Value -> Either String ResourceGuardrailPodSummary
+resourceGuardrailPodSummary plan payload = do
+  items <- jsonArrayAt ["items"] payload
+  checked <- traverse (resourceGuardrailPodCheck expectedNamespaces) items
+  let relevant = [summary | Just summary <- checked]
+      failures = concatMap snd relevant
+      podsChecked = length relevant
+      containersChecked = sum (map (fst . fst) relevant)
+  if podsChecked == 0
+    then
+      Left
+        ("resource guardrail validation found no pods in namespaces " ++ intercalate "," expectedNamespaces)
+    else
+      if null failures
+        then
+          Right
+            ResourceGuardrailPodSummary
+              { resourceGuardrailPodsChecked = podsChecked
+              , resourceGuardrailContainersChecked = containersChecked
+              }
+        else Left (intercalate "; " failures)
+ where
+  expectedNamespaces =
+    map (Text.unpack . Capacity.namespace_name) (Capacity.namespace_quotas plan)
+
+resourceGuardrailPodCheck
+  :: [String] -> Value -> Either String (Maybe ((Int, String), [String]))
+resourceGuardrailPodCheck expectedNamespaces item = do
+  namespace <- jsonStringAt ["metadata", "namespace"] item
+  if namespace `notElem` expectedNamespaces
+    then Right Nothing
+    else do
+      podName <- jsonStringAt ["metadata", "name"] item
+      qosClass <- jsonStringAt ["status", "qosClass"] item
+      containers <- jsonArrayAt ["spec", "containers"] item
+      initContainers <- jsonArrayAtOptional ["spec", "initContainers"] item
+      let podId = namespace ++ "/" ++ podName
+          qosFailures =
+            [ "pod " ++ podId ++ " is BestEffort"
+            | qosClass == "BestEffort"
+            ]
+          emptyFailures =
+            [ "pod " ++ podId ++ " has no containers"
+            | null containers
+            ]
+          containerFailures =
+            concat
+              ( zipWith
+                  (resourceGuardrailContainerFailures podId "container")
+                  [(0 :: Int) ..]
+                  containers
+                  ++ zipWith
+                    (resourceGuardrailContainerFailures podId "initContainer")
+                    [(0 :: Int) ..]
+                    initContainers
+              )
+      Right
+        ( Just
+            ( (length containers + length initContainers, podId)
+            , qosFailures ++ emptyFailures ++ containerFailures
+            )
+        )
+
+resourceGuardrailContainerFailures :: String -> String -> Int -> Value -> [String]
+resourceGuardrailContainerFailures podId containerKind index container =
+  let containerName =
+        case jsonMaybeStringAt ["name"] container of
+          Right (Just name) -> name
+          _ -> containerKind ++ "[" ++ show index ++ "]"
+      containerId = podId ++ " " ++ containerKind ++ " " ++ containerName
+      requiredPaths =
+        [ ["resources", "requests", "cpu"]
+        , ["resources", "requests", "memory"]
+        , ["resources", "requests", "ephemeral-storage"]
+        , ["resources", "limits", "cpu"]
+        , ["resources", "limits", "memory"]
+        , ["resources", "limits", "ephemeral-storage"]
+        ]
+   in concatMap (\path -> resourceQuantityFailures containerId path container) requiredPaths
+
+resourceQuantityFailures :: String -> [String] -> Value -> [String]
+resourceQuantityFailures containerId path value =
+  case jsonValueAtMaybe path value of
+    Right (Just (String quantity)) | not (Text.null (Text.strip quantity)) -> []
+    Right (Just (Number _)) -> []
+    Right (Just _) -> [containerId ++ " has non-scalar resource quantity `" ++ intercalate "." path ++ "`"]
+    Right Nothing -> [containerId ++ " is missing `" ++ intercalate "." path ++ "`"]
+    Left err -> [containerId ++ " has malformed resources: " ++ err]
+
+resourceGuardrailQuotaNamespaces :: Capacity.ResourcePlan -> Value -> Either String [String]
+resourceGuardrailQuotaNamespaces plan payload = do
+  items <- jsonArrayAt ["items"] payload
+  traverse (requireResourceQuotaForNamespace plan items) resourceGuardrailRootNamespaces
+
+requireResourceQuotaForNamespace
+  :: Capacity.ResourcePlan -> [Value] -> String -> Either String String
+requireResourceQuotaForNamespace plan items namespace = do
+  namespaceQuota <- requireNamespaceQuotaForValidation plan namespace
+  quotaObject <- requireK8sObjectInNamespace "ResourceQuota" namespace items
+  let vector = Capacity.quota namespaceQuota
+      expected =
+        [ ("requests.cpu", cpuQuantity (Capacity.milli_cpu vector))
+        , ("limits.cpu", cpuQuantity (Capacity.milli_cpu vector))
+        , ("requests.memory", memoryQuantity (Capacity.memory_mib vector))
+        , ("limits.memory", memoryQuantity (Capacity.memory_mib vector))
+        , ("requests.ephemeral-storage", memoryQuantity (Capacity.ephemeral_storage_mib vector))
+        , ("limits.ephemeral-storage", memoryQuantity (Capacity.ephemeral_storage_mib vector))
+        , ("requests.storage", memoryQuantity (Capacity.durable_storage_mib vector))
+        ]
+  mapM_ (requireQuantityEquals ("ResourceQuota " ++ namespace) ["spec", "hard"] quotaObject) expected
+  Right namespace
+
+resourceGuardrailLimitRangeNamespaces :: Capacity.ResourcePlan -> Value -> Either String [String]
+resourceGuardrailLimitRangeNamespaces plan payload = do
+  items <- jsonArrayAt ["items"] payload
+  traverse (requireLimitRangeForNamespace plan items) resourceGuardrailRootNamespaces
+
+requireLimitRangeForNamespace :: Capacity.ResourcePlan -> [Value] -> String -> Either String String
+requireLimitRangeForNamespace plan items namespace = do
+  envelope <- namespaceLimitEnvelopeForValidation plan namespace
+  limitRangeObject <- requireK8sObjectInNamespace "LimitRange" namespace items
+  limits <- jsonArrayAt ["spec", "limits"] limitRangeObject
+  containerLimit <- requireContainerLimitRange namespace limits
+  let requestVector = Capacity.request envelope
+      limitVector = Capacity.limit envelope
+      expected =
+        [ (["defaultRequest"], "cpu", cpuQuantity (Capacity.milli_cpu requestVector))
+        , (["defaultRequest"], "memory", memoryQuantity (Capacity.memory_mib requestVector))
+        ,
+          ( ["defaultRequest"]
+          , "ephemeral-storage"
+          , memoryQuantity (Capacity.ephemeral_storage_mib requestVector)
+          )
+        , (["default"], "cpu", cpuQuantity (Capacity.milli_cpu limitVector))
+        , (["default"], "memory", memoryQuantity (Capacity.memory_mib limitVector))
+        , (["default"], "ephemeral-storage", memoryQuantity (Capacity.ephemeral_storage_mib limitVector))
+        ]
+  mapM_
+    ( \(prefix, fieldName, expectedQuantity) ->
+        requireQuantityEquals
+          ("LimitRange " ++ namespace)
+          prefix
+          containerLimit
+          (fieldName, expectedQuantity)
+    )
+    expected
+  Right namespace
+
+requireK8sObjectInNamespace :: String -> String -> [Value] -> Either String Value
+requireK8sObjectInNamespace kind namespace items = do
+  indexed <-
+    traverse
+      ( \item -> do
+          itemNamespace <- jsonStringAt ["metadata", "namespace"] item
+          pure (itemNamespace, item)
+      )
+      items
+  case lookup namespace indexed of
+    Just item -> Right item
+    Nothing -> Left (kind ++ " missing for namespace `" ++ namespace ++ "`")
+
+requireContainerLimitRange :: String -> [Value] -> Either String Value
+requireContainerLimitRange namespace limits =
+  case filter isContainerLimit limits of
+    limit : _ -> Right limit
+    [] -> Left ("LimitRange " ++ namespace ++ " has no Container limit entry")
+ where
+  isContainerLimit value =
+    case jsonStringAt ["type"] value of
+      Right "Container" -> True
+      _ -> False
+
+requireQuantityEquals :: String -> [String] -> Value -> (String, String) -> Either String ()
+requireQuantityEquals label prefix value (fieldName, expectedQuantity) = do
+  actual <- jsonStringAt (prefix ++ [fieldName]) value
+  if actual == expectedQuantity
+    then Right ()
+    else
+      Left
+        ( label
+            ++ " field `"
+            ++ intercalate "." (prefix ++ [fieldName])
+            ++ "` mismatch: expected `"
+            ++ expectedQuantity
+            ++ "`, observed `"
+            ++ actual
+            ++ "`"
+        )
+
+requireNamespaceQuotaForValidation
+  :: Capacity.ResourcePlan -> String -> Either String Capacity.NamespaceQuota
+requireNamespaceQuotaForValidation plan namespace =
+  case filter ((== Text.pack namespace) . Capacity.namespace_name) (Capacity.namespace_quotas plan) of
+    namespaceQuota : _ -> Right namespaceQuota
+    [] -> Left ("capacity.resource_plan is missing namespace quota `" ++ namespace ++ "`")
+
+namespaceLimitEnvelopeForValidation
+  :: Capacity.ResourcePlan -> String -> Either String Capacity.ResourceEnvelope
+namespaceLimitEnvelopeForValidation plan namespace =
+  case filter ((== Text.pack namespace) . Capacity.profile_namespace) (Capacity.workload_profiles plan) of
+    profile : _ -> Right (Capacity.resources profile)
+    [] -> Left ("capacity.resource_plan has no workload profile for namespace `" ++ namespace ++ "`")
+
+jsonArrayAt :: [String] -> Value -> Either String [Value]
+jsonArrayAt path value = do
+  fieldValue <- jsonValueAt path value
+  case fieldValue of
+    Array arrayValue -> Right (Vector.toList arrayValue)
+    _ -> Left ("JSON field `" ++ intercalate "." path ++ "` is not an array")
+
+jsonArrayAtOptional :: [String] -> Value -> Either String [Value]
+jsonArrayAtOptional path value =
+  case jsonValueAtMaybe path value of
+    Left err -> Left err
+    Right Nothing -> Right []
+    Right (Just Null) -> Right []
+    Right (Just (Array arrayValue)) -> Right (Vector.toList arrayValue)
+    Right (Just _) -> Left ("JSON field `" ++ intercalate "." path ++ "` is not an array")
+
+cpuQuantity :: (Show a) => a -> String
+cpuQuantity value = show value ++ "m"
+
+memoryQuantity :: (Show a) => a -> String
+memoryQuantity value = show value ++ "Mi"
 
 data VolumeRebindSnapshot = VolumeRebindSnapshot
   { volumeRebindSnapshotPersistentVolume :: String

@@ -225,6 +225,20 @@ distinct typed outcome (`NeedsReboot` / `Unsatisfiable` in the WSL2 readiness cl
 shape as `Prodbox.Lifecycle.ResidueStatus`'s `ResidueUnreachable` and `Prodbox.Gateway.Types`'
 `Disposition`). "Cannot observe" is a constructor the caller must handle, not a silent success.
 
+## 8. Host Capacity Is Observed, Not Configured
+
+The `HostSubstrate` says which execution frame the binary is in; host capacity is a measured fact
+inside that frame. For the home RKE2 substrate, `cluster reconcile` observes cpu, memory, node
+filesystem capacity, and image filesystem capacity from the Linux frame and compares that observation
+with `capacity.resource_plan.host_capacity`. A host that is smaller than the authored declaration is
+rejected before RKE2 files or chart workloads are mutated.
+
+This keeps the host-provider model pure: macOS/Windows only choose the Lima/WSL2 Linux frame; the
+capacity contract is then evaluated against facts observed in that frame. The resource algebra and
+runtime guardrails are owned by
+[resource_scaling_doctrine.md](./resource_scaling_doctrine.md); this document owns only the rule
+that those probes happen in the detected Linux frame instead of through a config override.
+
 ## Intent Ownership
 
 This SSoT owns the host-platform doctrine intention.
@@ -240,6 +254,7 @@ This SSoT owns the host-platform doctrine intention.
   `src/Prodbox/Host/Lima.hs` and `src/Prodbox/Host/Wsl2.hs` (provider argv builders),
   `src/Prodbox/Host/Ensure.hs` (the host-gated reconciler plans and provider-state decisions),
   `src/Prodbox/DockerConfig.hs` (the rule-j Docker host-frame gate and Linux-frame dispatch), and
+  `src/Prodbox/CLI/Rke2.hs` (capacity observation from the selected Linux frame),
   `src/Prodbox/Prerequisite.hs` / `src/Prodbox/TestPlan.hs` (the `host_substrate_supported` root).
 
 ## Cross-References
@@ -247,6 +262,7 @@ This SSoT owns the host-platform doctrine intention.
 - [cluster_topology_doctrine.md](./cluster_topology_doctrine.md) — cluster/node topology (the frame's contents)
 - [local_registry_pipeline.md § 6.1](./local_registry_pipeline.md#61-host-docker-cli-auth-isolation-harbor-login-vs-the-operators-docker-hub-login) — the mirrored registry-credential seam and rule-j fail-stub
 - [prerequisite_doctrine.md](./prerequisite_doctrine.md) — the fail-fast host gate this relaxes
+- [resource_scaling_doctrine.md](./resource_scaling_doctrine.md) — the host-capacity budget, RKE2 reservations, and runtime guardrails evaluated inside the selected Linux frame
 - [pure_fp_standards.md](./pure_fp_standards.md) — smart constructors, exhaustive-ADT state, Plan / Apply
 - [lifecycle_reconciliation_doctrine.md § 3.1](./lifecycle_reconciliation_doctrine.md#31-the-managed-resource-registry-the-reconciler-substrate) — the "make illegal states unconstructible" and unobservable-is-modelled house pattern
 - [config_doctrine.md](./config_doctrine.md) · [Engineering Doctrine Index](./README.md) · [Development Plan](../../DEVELOPMENT_PLAN/README.md) · [Documentation Standards](../documentation_standards.md)

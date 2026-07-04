@@ -399,6 +399,7 @@ data IntegrationSuite
   | IntegrationEksVolumeRebind
   | IntegrationChartsStorage
   | IntegrationChartsPlatform
+  | IntegrationResourceGuardrails
   | IntegrationPulsarBroker
   | IntegrationChartsVscode
   | IntegrationChartsApi

@@ -58,6 +58,20 @@ integrationEnvSuite = do
         exitCode `shouldBe` ExitFailure 1
         stderrText `shouldContain` "domain.demo_fqdn must not be empty"
 
+    it "fails fast when resource reservations exceed host capacity" $
+      withSystemTempDirectory "prodbox-hs-env" $ \tmpDir -> do
+        binary <- resolveBinaryPath >>= \b -> installOperatorBinaryInDir b tmpDir
+        writeRepoMarkers tmpDir
+        writeFile (tmpDir </> "prodbox.dhall") (wrapTier0 invalidResourceConfig)
+
+        (exitCode, _, stderrText) <-
+          readCreateProcessWithExitCode
+            (proc binary ["config", "validate"]) {cwd = Just tmpDir}
+            ""
+
+        exitCode `shouldBe` ExitFailure 1
+        stderrText `shouldContain` "rke2_reserved + eviction_floor must fit within host_capacity"
+
     it "requires repo-root commands to run from the repository root instead of searching upward" $
       withSystemTempDirectory "prodbox-hs-env" $ \tmpDir -> do
         binary <- resolveBinaryPath >>= \b -> installOperatorBinaryInDir b tmpDir
@@ -145,44 +159,31 @@ awsCredentialRefDhall path regionValue includeSessionToken =
 
 validConfig :: String
 validConfig =
+  configWithDomainAndCapacity "test.resolvefintech.com" capacityDhallFragment
+
+invalidConfig :: String
+invalidConfig =
+  configWithDomainAndCapacity "" capacityDhallFragment
+
+invalidResourceConfig :: String
+invalidResourceConfig =
+  configWithDomainAndCapacity "test.resolvefintech.com" overReservedCapacityDhallFragment
+
+configWithDomainAndCapacity :: String -> String -> String
+configWithDomainAndCapacity domainName capacityFragment =
   unlines
     [ "{ aws = " ++ awsCredentialRefDhall "gateway/gateway/aws" "us-east-1" True
     , ", route53 = { zone_id = \"Z1234567890ABC\" }"
     , ", aws_substrate = { hosted_zone_id = \"\", subzone_name = \"\" }"
     , ", ses = { sender_domain = \"\", receive_subdomain = \"\", capture_bucket = \"\" }"
-    , ", domain = { demo_fqdn = \"test.resolvefintech.com\", demo_ttl = 60 }"
+    , ", domain = { demo_fqdn = " ++ show domainName ++ ", demo_ttl = 60 }"
     , ", acme = { email = \"test@resolvefintech.com\", server = \"https://acme.zerossl.com/v2/DV90\", eab_key_id = "
         ++ eabVaultRefDhall "key_id"
         ++ ", eab_hmac_key = "
         ++ eabVaultRefDhall "hmac_key"
         ++ " }"
     , ", deployment = " ++ deploymentDhallFragment
-    , ", capacity = " ++ capacityDhallFragment
-    , ", cluster_topology = " ++ clusterTopologyDhallFragment
-    , ", storage = { manual_pv_host_root = \".data\" }"
-    , ", pulumi_state_backend = { bucket_name = \"\", region = \"\", key_prefix = \"\" }"
-    , "}"
-    ]
-
-invalidConfig :: String
-invalidConfig =
-  unlines
-    [ "{ aws = " ++ awsCredentialRefDhall "gateway/gateway/aws" "us-east-1" False
-    , ", route53 = { zone_id = \"Z1234567890ABC\" }"
-    , ", aws_substrate = { hosted_zone_id = \"\", subzone_name = \"\" }"
-    , ", ses = { sender_domain = \"\", receive_subdomain = \"\", capture_bucket = \"\" }"
-    , -- Invalid by current rules: `domain.demo_fqdn` is still validated as
-      -- non-empty by `config validate`. Empty operational `aws.*` is
-      -- intentionally VALID now (populated on demand by the harness /
-      -- `--with-edge`), so an empty `aws.access_key_id` no longer fails fast.
-      ", domain = { demo_fqdn = \"\", demo_ttl = 60 }"
-    , ", acme = { email = \"test@resolvefintech.com\", server = \"https://acme.zerossl.com/v2/DV90\", eab_key_id = "
-        ++ eabVaultRefDhall "key_id"
-        ++ ", eab_hmac_key = "
-        ++ eabVaultRefDhall "hmac_key"
-        ++ " }"
-    , ", deployment = " ++ deploymentDhallFragment
-    , ", capacity = " ++ capacityDhallFragment
+    , ", capacity = " ++ capacityFragment
     , ", cluster_topology = " ++ clusterTopologyDhallFragment
     , ", storage = { manual_pv_host_root = \".data\" }"
     , ", pulumi_state_backend = { bucket_name = \"\", region = \"\", key_prefix = \"\" }"
@@ -223,7 +224,115 @@ fixedScalingDhall count =
 
 capacityDhallFragment :: String
 capacityDhallFragment =
-  "{ node_budget = { cpu = 8, memory = 16, storage = 100 }, workload_budget = { cpu = 4, memory = 8, storage = 40 }, region_quota = { cpu = 32, memory = 64, storage = 500 } }"
+  capacityWithResourcePlan resourcePlanDhallFragment
+
+overReservedCapacityDhallFragment :: String
+overReservedCapacityDhallFragment =
+  capacityWithResourcePlan overReservedResourcePlanDhallFragment
+
+capacityWithResourcePlan :: String -> String
+capacityWithResourcePlan resourcePlanFragment =
+  unlines
+    [ "{ node_budget = { cpu = 8, memory = 16, storage = 100 }"
+    , ", workload_budget = { cpu = 4, memory = 8, storage = 40 }"
+    , ", region_quota = { cpu = 32, memory = 64, storage = 500 }"
+    , ", resource_plan = " ++ resourcePlanFragment
+    , "}"
+    ]
+
+resourcePlanDhallFragment :: String
+resourcePlanDhallFragment =
+  resourcePlanDhallFragmentWithReserved (resourceVectorDhall (1000, 2048, 10240, 1024))
+
+overReservedResourcePlanDhallFragment :: String
+overReservedResourcePlanDhallFragment =
+  resourcePlanDhallFragmentWithReserved (resourceVectorDhall (16000, 2048, 10240, 1024))
+
+resourcePlanDhallFragmentWithReserved :: String -> String
+resourcePlanDhallFragmentWithReserved reservedVector =
+  unlines
+    [ "{ host_capacity = { milli_cpu = 16000, memory_mib = 49152, ephemeral_storage_mib = 300000, durable_storage_mib = 800000 }"
+    , ", rke2_reserved = " ++ reservedVector
+    , ", eviction_floor = { milli_cpu = 500, memory_mib = 1024, ephemeral_storage_mib = 10240, durable_storage_mib = 1024 }"
+    , ", namespace_quotas ="
+    , "  [ { namespace_name = \"keycloak\", quota = { milli_cpu = 3000, memory_mib = 10000, ephemeral_storage_mib = 50000, durable_storage_mib = 150000 } }"
+    , "  , { namespace_name = \"vscode\", quota = { milli_cpu = 2000, memory_mib = 5000, ephemeral_storage_mib = 30000, durable_storage_mib = 100000 } }"
+    , "  , { namespace_name = \"api\", quota = { milli_cpu = 1500, memory_mib = 2000, ephemeral_storage_mib = 10000, durable_storage_mib = 1000 } }"
+    , "  , { namespace_name = \"websocket\", quota = { milli_cpu = 1000, memory_mib = 2000, ephemeral_storage_mib = 10000, durable_storage_mib = 1000 } }"
+    , "  , { namespace_name = \"gateway\", quota = { milli_cpu = 4000, memory_mib = 10000, ephemeral_storage_mib = 60000, durable_storage_mib = 100000 } }"
+    , "  , { namespace_name = \"prodbox\", quota = { milli_cpu = 2000, memory_mib = 4000, ephemeral_storage_mib = 40000, durable_storage_mib = 250000 } }"
+    , "  , { namespace_name = \"vault\", quota = { milli_cpu = 1000, memory_mib = 2000, ephemeral_storage_mib = 20000, durable_storage_mib = 100000 } }"
+    , "  ]"
+    , ", workload_profiles ="
+    , "  [ " ++ resourceProfileDhall "keycloak" "keycloak" 1 (500, 1024, 1024, 1) (1000, 2048, 2048, 1)
+    , "  , "
+        ++ resourceProfileDhall "keycloak-vault-secrets" "keycloak" 1 (50, 128, 256, 1) (100, 256, 512, 1)
+    , "  , "
+        ++ resourceProfileDhall "keycloak-postgres" "keycloak" 3 (250, 512, 1024, 1024) (500, 1024, 4096, 2048)
+    , "  , "
+        ++ resourceProfileDhall
+          "keycloak-postgres-vault-secrets"
+          "keycloak"
+          1
+          (50, 128, 256, 1)
+          (100, 256, 512, 1)
+    , "  , "
+        ++ resourceProfileDhall
+          "keycloak-postgres-secret-materializer"
+          "keycloak"
+          1
+          (50, 128, 256, 1)
+          (100, 256, 512, 1)
+    , "  , " ++ resourceProfileDhall "vscode" "vscode" 1 (500, 1024, 1024, 1024) (1000, 2048, 4096, 2048)
+    , "  , "
+        ++ resourceProfileDhall "vscode-vault-secrets" "vscode" 1 (50, 128, 256, 1) (100, 256, 512, 1)
+    , "  , "
+        ++ resourceProfileDhall "vscode-secret-materializer" "vscode" 1 (50, 128, 256, 1) (100, 256, 512, 1)
+    , "  , " ++ resourceProfileDhall "api" "api" 2 (250, 256, 512, 1) (500, 512, 1024, 1)
+    , "  , " ++ resourceProfileDhall "websocket" "websocket" 2 (100, 256, 512, 1) (250, 512, 1024, 1)
+    , "  , " ++ resourceProfileDhall "redis" "websocket" 1 (100, 256, 512, 1) (250, 512, 1024, 1)
+    , "  , " ++ resourceProfileDhall "gateway" "gateway" 3 (250, 256, 512, 1) (500, 512, 1024, 1)
+    , "  , " ++ resourceProfileDhall "pulsar" "gateway" 1 (250, 1024, 1024, 1) (500, 2048, 4096, 1)
+    , "  , " ++ resourceProfileDhall "minio" "prodbox" 1 (500, 1024, 2048, 1024) (1000, 2048, 4096, 2048)
+    , "  , " ++ resourceProfileDhall "harbor" "prodbox" 1 (250, 512, 1024, 1024) (500, 1024, 4096, 2048)
+    , "  , "
+        ++ resourceProfileDhall "percona-postgres-operator" "prodbox" 1 (100, 256, 512, 1) (250, 512, 1024, 1)
+    , "  , " ++ resourceProfileDhall "vault" "vault" 1 (250, 512, 1024, 1) (500, 1024, 2048, 1)
+    , "  ]"
+    , "}"
+    ]
+
+resourceProfileDhall
+  :: String
+  -> String
+  -> Int
+  -> (Int, Int, Int, Int)
+  -> (Int, Int, Int, Int)
+  -> String
+resourceProfileDhall profile namespace count req lim =
+  "{ profile_id = "
+    ++ show profile
+    ++ ", profile_namespace = "
+    ++ show namespace
+    ++ ", replicas = "
+    ++ show count
+    ++ ", resources = { request = "
+    ++ resourceVectorDhall req
+    ++ ", limit = "
+    ++ resourceVectorDhall lim
+    ++ " } }"
+
+resourceVectorDhall :: (Int, Int, Int, Int) -> String
+resourceVectorDhall (cpuMilli, memoryMib, ephemeralMib, durableMib) =
+  "{ milli_cpu = "
+    ++ show cpuMilli
+    ++ ", memory_mib = "
+    ++ show memoryMib
+    ++ ", ephemeral_storage_mib = "
+    ++ show ephemeralMib
+    ++ ", durable_storage_mib = "
+    ++ show durableMib
+    ++ " }"
 
 clusterTopologyDhallFragment :: String
 clusterTopologyDhallFragment =

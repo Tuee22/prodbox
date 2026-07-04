@@ -187,6 +187,16 @@ for all of these fields while CBOR is the at-rest / wire serialization per
 secret — secrets stay `SecretRef`-by-name (§6.2), with no literal secret at rest except the flagged
 `test-secrets.dhall`.
 
+Sprint `1.55` makes `capacity.resource_plan` part of the generated Tier-0 schema. It is non-secret
+operator-authored Dhall and carries host physical capacity, RKE2 reservation, eviction floor,
+namespace quotas, and workload request/limit profiles for cpu, memory, ephemeral storage, and
+durable storage. `Settings.validateLocalConfig` validates the pure resource lemmas before any
+command mutates the host or cluster: `rke2_reserved + eviction_floor <= host_capacity`,
+`sum namespace_quotas <= cluster_allocatable`, each workload profile references a declared
+namespace, every profile has positive replicas, and each `ResourceEnvelope` has positive bounded
+requests and limits. The older `node_budget` / `workload_budget` / `region_quota` fields remain as
+compatibility projections for callers not yet migrated to the resource plan.
+
 ## 1. Why this doctrine exists
 
 Every `prodbox` process needs configuration: hostnames, AWS coordinates, ports, ranked-node

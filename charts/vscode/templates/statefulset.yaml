@@ -40,6 +40,8 @@ spec:
         - name: vscode
           image: {{ .Values.vscode.image | quote }}
           imagePullPolicy: IfNotPresent
+          resources:
+            {{- toYaml .Values.resources.vscode | nindent 12 }}
           args:
             - --auth
             - none

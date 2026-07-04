@@ -180,13 +180,18 @@ import Prodbox.CLI.Rke2
   , buildNativeDeletePlan
   , cascadeOrderNarration
   , homeSubstratePlatformComponents
+  , hostCapacityCoversPlan
   , inferCascadeSubstrate
   , isMinioSecretKeyArgumentSafe
   , operationalAwsCredentialGateFromResult
+  , parseHostCapacityObservation
   , renderInotifySysctlDropIn
   , renderMinioChartArgs
   , renderNativeDeletePlan
   , renderNativeInstallPlan
+  , renderResourceVectorRuntime
+  , renderRke2ResourceGuardrailConfig
+  , renderRke2SystemdResourceDropIn
   , retainedStorageInventoryEntries
   )
 import Prodbox.CLI.Spec
@@ -719,6 +724,7 @@ import Prodbox.TestValidation
   , defaultSealedVaultAuditInput
   , parseVolumeRebindSnapshot
   , renderGatewayValidationConfigDhall
+  , resourceGuardrailReport
   , sealedVaultAuditReport
   , sealedVaultForbiddenPatterns
   , sealedVaultHostDiskRoot
@@ -3601,6 +3607,43 @@ main = mainWithSuite "prodbox-unit" $ do
       dropIn `shouldSatisfy` ("fs.inotify.max_user_watches = 1048576" `isInfixOf`)
       dropIn `shouldSatisfy` ("Managed by `prodbox cluster reconcile`" `isInfixOf`)
 
+    it "renders RKE2 kubelet resource guardrails from the capacity resource plan" $ do
+      let rendered = renderRke2ResourceGuardrailConfig Capacity.defaultResourcePlan
+      rendered `shouldContain` "# Managed by `prodbox cluster reconcile`"
+      rendered `shouldContain` "kubelet-arg:"
+      rendered `shouldContain` "\"system-reserved=cpu=500m,memory=1024Mi,ephemeral-storage=5120Mi\""
+      rendered `shouldContain` "\"kube-reserved=cpu=500m,memory=1024Mi,ephemeral-storage=5120Mi\""
+      rendered
+        `shouldContain` "\"eviction-hard=memory.available<1024Mi,nodefs.available<10240Mi,imagefs.available<10240Mi\""
+      rendered `shouldContain` "\"image-gc-high-threshold=70\""
+      rendered `shouldContain` "\"container-log-max-size=50Mi\""
+
+    it "renders a bounded systemd drop-in for the RKE2 service tree" $ do
+      let rendered = renderRke2SystemdResourceDropIn Capacity.defaultResourcePlan
+      rendered `shouldContain` "[Service]"
+      rendered `shouldContain` "CPUAccounting=true"
+      rendered `shouldContain` "MemoryAccounting=true"
+      rendered `shouldContain` "CPUQuota=100%"
+      rendered `shouldContain` "MemoryHigh=2048M"
+      rendered `shouldContain` "MemoryMax=3072M"
+      rendered `shouldContain` "TasksMax=4096"
+
+    it "parses observed host capacity and refuses hosts below the authored capacity" $ do
+      let observedText =
+            "milli_cpu=16000,memory_mib=49152,ephemeral_storage_mib=300000,durable_storage_mib=800000"
+          smallText =
+            "milli_cpu=8000,memory_mib=49152,ephemeral_storage_mib=300000,durable_storage_mib=800000"
+      case parseHostCapacityObservation observedText of
+        Left err -> expectationFailure err
+        Right observed -> do
+          renderResourceVectorRuntime observed
+            `shouldBe` "cpu=16000m,memory=49152Mi,ephemeral-storage=300000Mi,durable-storage=800000Mi"
+          hostCapacityCoversPlan observed Capacity.defaultResourcePlan `shouldBe` True
+      case parseHostCapacityObservation smallText of
+        Left err -> expectationFailure err
+        Right observed ->
+          hostCapacityCoversPlan observed Capacity.defaultResourcePlan `shouldBe` False
+
     it "skips plan application on --dry-run while persisting the rendered plan" $
       withSystemTempDirectory "prodbox-plan-options" $ \tmpDir -> do
         appliedRef <- newIORef False
@@ -4134,6 +4177,7 @@ main = mainWithSuite "prodbox-unit" $ do
                            , "gateway-pods"
                            , "gateway-partition"
                            , "charts-platform"
+                           , "resource-guardrails"
                            , "pulsar-broker"
                            , "keycloak-invite"
                            , "charts-storage"
@@ -4182,12 +4226,13 @@ main = mainWithSuite "prodbox-unit" $ do
                 `shouldBe` ["charts-vscode", "charts-api", "charts-websocket", "admin-routes"]
               take 6 (dropWhile (/= ValidationChartsPlatform) (nativeValidations suitePlan))
                 `shouldBe` [ ValidationChartsPlatform
+                           , ValidationResourceGuardrails
                            , ValidationPulsarBroker
                            , ValidationKeycloakInvite
                            , ValidationChartsStorage
                            , ValidationEksVolumeRebind
-                           , ValidationSealedVault
                            ]
+              ValidationSealedVault `shouldSatisfy` (`elem` nativeValidations suitePlan)
               last (nativeValidations suitePlan) `shouldBe` ValidationLifecycle
             DelegatedSuite _ -> expectationFailure "expected native integration-all plan"
 
@@ -4558,6 +4603,44 @@ main = mainWithSuite "prodbox-unit" $ do
       validationSource `shouldContain` "ValidationEksVolumeRebind ->"
       validationSource `shouldContain` "runEksVolumeRebindValidation"
       nativeValidationId ValidationEksVolumeRebind `shouldBe` "eks-volume-rebind"
+
+    it "Sprint 5.13 routes resource-guardrails through a native validation path" $ do
+      repoRoot <- getCurrentDirectory
+      validationSource <- readFile (repoRoot </> "src" </> "Prodbox" </> "TestValidation.hs")
+
+      validationSource `shouldContain` "ValidationResourceGuardrails ->"
+      validationSource `shouldContain` "runResourceGuardrailsValidation"
+      nativeValidationId ValidationResourceGuardrails `shouldBe` "resource-guardrails"
+
+    it "Sprint 5.13 validates capped pod resources and namespace guardrail objects" $ do
+      case resourceGuardrailReport
+        Capacity.defaultResourcePlan
+        resourceGuardrailPodsFixture
+        resourceGuardrailQuotaFixture
+        resourceGuardrailLimitRangeFixture of
+        Left err -> expectationFailure err
+        Right report -> do
+          report `shouldContain` "RESOURCE_GUARDRAILS_VALIDATION"
+          report `shouldContain` "PODS_CHECKED=5"
+          report `shouldContain` "CONTAINERS_CHECKED=5"
+          report `shouldContain` "QUOTA_NAMESPACES=keycloak,vscode,api,websocket,gateway"
+          report `shouldContain` "LIMIT_RANGE_NAMESPACES=keycloak,vscode,api,websocket,gateway"
+          report `shouldContain` "BESTEFFORT_PODS=0"
+          report `shouldContain` "UNCAPPED_CONTAINERS=0"
+
+    it "Sprint 5.13 rejects BestEffort or uncapped pods in resource namespaces" $ do
+      let result =
+            resourceGuardrailReport
+              Capacity.defaultResourcePlan
+              resourceGuardrailBadPodsFixture
+              resourceGuardrailQuotaFixture
+              resourceGuardrailLimitRangeFixture
+      result `shouldSatisfy` isLeft
+      case result of
+        Left err -> do
+          err `shouldContain` "pod api/api-0 is BestEffort"
+          err `shouldContain` "api/api-0 container api is missing `resources.requests.cpu`"
+        Right _ -> expectationFailure "expected resource-guardrails report to reject uncapped pod"
 
     it "Sprint 5.12 parses retained PV snapshots from Kubernetes JSON" $ do
       let pvJson =
@@ -6027,6 +6110,91 @@ main = mainWithSuite "prodbox-unit" $ do
                 Right _ -> expectationFailure "expected pulsar values object"
                 Left err -> expectationFailure err
             _ -> expectationFailure "expected one pulsar release"
+
+    it "injects capacity-plan resources and namespace guardrails into chart values" $ do
+      result <-
+        buildChartDeploymentPlan
+          "/tmp/prodbox"
+          (testValidatedSettings "/tmp/prodbox/.data")
+          "vscode"
+          testChartSecrets
+          Map.empty
+      case result of
+        Left err -> expectationFailure err
+        Right plan -> do
+          let releaseValues =
+                Map.fromList
+                  [ ( chartReleasePlanReleaseName release
+                    , eitherDecode (BL8.pack (chartReleasePlanValuesJson release)) :: Either String Value
+                    )
+                  | release <- chartDeploymentPlanReleases plan
+                  ]
+          case Map.lookup "vscode" releaseValues of
+            Just (Right (Object payload)) -> do
+              expectResourceEnvelope
+                payload
+                "vscode"
+                ("500m", "1024Mi", "1024Mi")
+                ("1000m", "2048Mi", "4096Mi")
+              case KeyMap.lookup (Key.fromString "resourceGuardrails") payload of
+                Just (Object guardrailsPayload) -> do
+                  KeyMap.lookup (Key.fromString "enabled") guardrailsPayload
+                    `shouldBe` Just (Bool True)
+                  expectQuotaHard guardrailsPayload "limits.memory" "5000Mi"
+                  expectQuotaHard guardrailsPayload "requests.storage" "100000Mi"
+                  expectLimitRangeDefault guardrailsPayload "cpu" "1000m"
+                  expectLimitRangeDefaultRequest guardrailsPayload "memory" "1024Mi"
+                _ -> expectationFailure "expected vscode resourceGuardrails payload"
+            Just (Right _) -> expectationFailure "expected vscode values object"
+            Just (Left err) -> expectationFailure err
+            Nothing -> expectationFailure "expected vscode release"
+          case Map.lookup "keycloak-postgres" releaseValues of
+            Just (Right (Object payload)) -> do
+              expectResourceEnvelope
+                payload
+                "postgres"
+                ("250m", "512Mi", "1024Mi")
+                ("500m", "1024Mi", "4096Mi")
+              case KeyMap.lookup (Key.fromString "resourceGuardrails") payload of
+                Just (Object guardrailsPayload) ->
+                  KeyMap.lookup (Key.fromString "enabled") guardrailsPayload
+                    `shouldBe` Just (Bool False)
+                _ -> expectationFailure "expected keycloak-postgres resourceGuardrails payload"
+            Just (Right _) -> expectationFailure "expected keycloak-postgres values object"
+            Just (Left err) -> expectationFailure err
+            Nothing -> expectationFailure "expected keycloak-postgres release"
+
+    it "refuses to render chart values when a required workload profile is missing" $ do
+      let settings = testValidatedSettings "/tmp/prodbox/.data"
+          config = validatedConfig settings
+          capacitySection = capacity config
+          plan = Capacity.resource_plan capacitySection
+          badPlan =
+            plan
+              { Capacity.workload_profiles =
+                  filter
+                    ((/= Text.pack "vscode") . Capacity.profile_id)
+                    (Capacity.workload_profiles plan)
+              }
+          badSettings =
+            settings
+              { validatedConfig =
+                  config
+                    { capacity =
+                        capacitySection
+                          { Capacity.resource_plan = badPlan
+                          }
+                    }
+              }
+      result <-
+        buildChartDeploymentPlan
+          "/tmp/prodbox"
+          badSettings
+          "vscode"
+          testChartSecrets
+          Map.empty
+      result
+        `shouldBe` Left "capacity.resource_plan is missing workload profile `vscode`"
 
     it "builds delete plans in reverse dependency order" $ do
       case buildChartDeletePlan "/tmp/prodbox" Nothing "vscode" of
@@ -12362,12 +12530,47 @@ main = mainWithSuite "prodbox-unit" $ do
         Capacity.defaultCapacitySection
         `shouldBe` Right ()
       Capacity.validateCapacitySection
-        ( Capacity.CapacitySection
-            (Capacity.node_budget Capacity.defaultCapacitySection)
-            tooMuchStorage
-            (Capacity.region_quota Capacity.defaultCapacitySection)
-        )
+        Capacity.defaultCapacitySection {Capacity.workload_budget = tooMuchStorage}
         `shouldBe` Left "capacity.workload_budget must fit within capacity.node_budget"
+
+    it "validates explicit resource envelopes and host/namespace capacity lemmas" $ do
+      let request = Capacity.ResourceVector 250 256 512 1
+          limit = Capacity.ResourceVector 500 512 1024 1
+          tooSmallLimit = Capacity.ResourceVector 100 512 1024 1
+          overReservedPlan =
+            Capacity.defaultResourcePlan
+              { Capacity.rke2_reserved = Capacity.ResourceVector 16000 2048 10240 1024
+              }
+          overQuotaPlan =
+            Capacity.defaultResourcePlan
+              { Capacity.namespace_quotas =
+                  [ Capacity.NamespaceQuota
+                      "keycloak"
+                      (Capacity.ResourceVector 16000 22000 100000 250000)
+                  ]
+              }
+          shrinkKeycloakQuota namespaceQuota =
+            if Capacity.namespace_name namespaceQuota == "keycloak"
+              then Capacity.NamespaceQuota "keycloak" (Capacity.ResourceVector 1 1 1 1)
+              else namespaceQuota
+          workloadOverQuotaPlan =
+            Capacity.defaultResourcePlan
+              { Capacity.namespace_quotas =
+                  map shrinkKeycloakQuota (Capacity.namespace_quotas Capacity.defaultResourcePlan)
+              }
+      Capacity.mkMilliCpu 0 `shouldBe` Left "cpu must be positive"
+      Capacity.mkMebiBytes 0 `shouldBe` Left "MiB value must be positive"
+      Capacity.mkResourceEnvelope request limit `shouldBe` Right (Capacity.ResourceEnvelope request limit)
+      Capacity.mkResourceEnvelope request tooSmallLimit
+        `shouldBe` Left "resource request must fit within resource limit"
+      Capacity.validateResourcePlan Capacity.defaultResourcePlan `shouldBe` Right ()
+      Capacity.validateResourcePlan overReservedPlan
+        `shouldBe` Left "capacity.resource_plan.rke2_reserved + eviction_floor must fit within host_capacity"
+      Capacity.validateResourcePlan overQuotaPlan
+        `shouldBe` Left "capacity.resource_plan.namespace_quotas must fit within cluster allocatable capacity"
+      Capacity.validateResourcePlan workloadOverQuotaPlan
+        `shouldBe` Left
+          "capacity.resource_plan.workload_profiles for namespace keycloak must fit within that namespace quota"
 
     it "decodes locally even when the ZeroSSL EAB binding is incomplete (AWS-tier check)" $
       -- The ACME / ZeroSSL binding is an AWS / public-edge concern, so the
@@ -12898,7 +13101,99 @@ fixedScalingDhall count =
 
 capacityDhallFragment :: String
 capacityDhallFragment =
-  "{ node_budget = { cpu = 8, memory = 16, storage = 100 }, workload_budget = { cpu = 4, memory = 8, storage = 40 }, region_quota = { cpu = 32, memory = 64, storage = 500 } }"
+  unlines
+    [ "{ node_budget = { cpu = 8, memory = 16, storage = 100 }"
+    , ", workload_budget = { cpu = 4, memory = 8, storage = 40 }"
+    , ", region_quota = { cpu = 32, memory = 64, storage = 500 }"
+    , ", resource_plan = " ++ resourcePlanDhallFragment
+    , "}"
+    ]
+
+resourcePlanDhallFragment :: String
+resourcePlanDhallFragment =
+  unlines
+    [ "{ host_capacity = { milli_cpu = 16000, memory_mib = 49152, ephemeral_storage_mib = 300000, durable_storage_mib = 800000 }"
+    , ", rke2_reserved = { milli_cpu = 1000, memory_mib = 2048, ephemeral_storage_mib = 10240, durable_storage_mib = 1024 }"
+    , ", eviction_floor = { milli_cpu = 500, memory_mib = 1024, ephemeral_storage_mib = 10240, durable_storage_mib = 1024 }"
+    , ", namespace_quotas ="
+    , "  [ { namespace_name = \"keycloak\", quota = { milli_cpu = 3000, memory_mib = 10000, ephemeral_storage_mib = 50000, durable_storage_mib = 150000 } }"
+    , "  , { namespace_name = \"vscode\", quota = { milli_cpu = 2000, memory_mib = 5000, ephemeral_storage_mib = 30000, durable_storage_mib = 100000 } }"
+    , "  , { namespace_name = \"api\", quota = { milli_cpu = 1500, memory_mib = 2000, ephemeral_storage_mib = 10000, durable_storage_mib = 1000 } }"
+    , "  , { namespace_name = \"websocket\", quota = { milli_cpu = 1000, memory_mib = 2000, ephemeral_storage_mib = 10000, durable_storage_mib = 1000 } }"
+    , "  , { namespace_name = \"gateway\", quota = { milli_cpu = 4000, memory_mib = 10000, ephemeral_storage_mib = 60000, durable_storage_mib = 100000 } }"
+    , "  , { namespace_name = \"prodbox\", quota = { milli_cpu = 2000, memory_mib = 4000, ephemeral_storage_mib = 40000, durable_storage_mib = 250000 } }"
+    , "  , { namespace_name = \"vault\", quota = { milli_cpu = 1000, memory_mib = 2000, ephemeral_storage_mib = 20000, durable_storage_mib = 100000 } }"
+    , "  ]"
+    , ", workload_profiles ="
+    , "  [ " ++ resourceProfileDhall "keycloak" "keycloak" 1 (500, 1024, 1024, 1) (1000, 2048, 2048, 1)
+    , "  , "
+        ++ resourceProfileDhall "keycloak-vault-secrets" "keycloak" 1 (50, 128, 256, 1) (100, 256, 512, 1)
+    , "  , "
+        ++ resourceProfileDhall "keycloak-postgres" "keycloak" 3 (250, 512, 1024, 1024) (500, 1024, 4096, 2048)
+    , "  , "
+        ++ resourceProfileDhall
+          "keycloak-postgres-vault-secrets"
+          "keycloak"
+          1
+          (50, 128, 256, 1)
+          (100, 256, 512, 1)
+    , "  , "
+        ++ resourceProfileDhall
+          "keycloak-postgres-secret-materializer"
+          "keycloak"
+          1
+          (50, 128, 256, 1)
+          (100, 256, 512, 1)
+    , "  , " ++ resourceProfileDhall "vscode" "vscode" 1 (500, 1024, 1024, 1024) (1000, 2048, 4096, 2048)
+    , "  , "
+        ++ resourceProfileDhall "vscode-vault-secrets" "vscode" 1 (50, 128, 256, 1) (100, 256, 512, 1)
+    , "  , "
+        ++ resourceProfileDhall "vscode-secret-materializer" "vscode" 1 (50, 128, 256, 1) (100, 256, 512, 1)
+    , "  , " ++ resourceProfileDhall "api" "api" 2 (250, 256, 512, 1) (500, 512, 1024, 1)
+    , "  , " ++ resourceProfileDhall "websocket" "websocket" 2 (100, 256, 512, 1) (250, 512, 1024, 1)
+    , "  , " ++ resourceProfileDhall "redis" "websocket" 1 (100, 256, 512, 1) (250, 512, 1024, 1)
+    , "  , " ++ resourceProfileDhall "gateway" "gateway" 3 (250, 256, 512, 1) (500, 512, 1024, 1)
+    , "  , " ++ resourceProfileDhall "pulsar" "gateway" 1 (250, 1024, 1024, 1) (500, 2048, 4096, 1)
+    , "  , " ++ resourceProfileDhall "minio" "prodbox" 1 (500, 1024, 2048, 1024) (1000, 2048, 4096, 2048)
+    , "  , " ++ resourceProfileDhall "harbor" "prodbox" 1 (250, 512, 1024, 1024) (500, 1024, 4096, 2048)
+    , "  , "
+        ++ resourceProfileDhall "percona-postgres-operator" "prodbox" 1 (100, 256, 512, 1) (250, 512, 1024, 1)
+    , "  , " ++ resourceProfileDhall "vault" "vault" 1 (250, 512, 1024, 1) (500, 1024, 2048, 1)
+    , "  ]"
+    , "}"
+    ]
+
+resourceProfileDhall
+  :: String
+  -> String
+  -> Int
+  -> (Int, Int, Int, Int)
+  -> (Int, Int, Int, Int)
+  -> String
+resourceProfileDhall profile namespace count req lim =
+  "{ profile_id = "
+    ++ show profile
+    ++ ", profile_namespace = "
+    ++ show namespace
+    ++ ", replicas = "
+    ++ show count
+    ++ ", resources = { request = "
+    ++ resourceVectorDhall req
+    ++ ", limit = "
+    ++ resourceVectorDhall lim
+    ++ " } }"
+
+resourceVectorDhall :: (Int, Int, Int, Int) -> String
+resourceVectorDhall (cpuMilli, memoryMib, ephemeralMib, durableMib) =
+  "{ milli_cpu = "
+    ++ show cpuMilli
+    ++ ", memory_mib = "
+    ++ show memoryMib
+    ++ ", ephemeral_storage_mib = "
+    ++ show ephemeralMib
+    ++ ", durable_storage_mib = "
+    ++ show durableMib
+    ++ " }"
 
 clusterTopologyDhallFragment :: String
 clusterTopologyDhallFragment =
@@ -12971,6 +13266,136 @@ workerSubstrateDhallType :: String
 workerSubstrateDhallType =
   "< LinuxCpu | LinuxCuda | AppleMetal | CudaWindows >"
 
+resourceGuardrailPodsFixture :: Value
+resourceGuardrailPodsFixture =
+  object
+    [ "items"
+        .= Array
+          ( Vector.fromList
+              [ resourceGuardrailPod "keycloak" "keycloak-0" "keycloak"
+              , resourceGuardrailPod "vscode" "vscode-0" "vscode"
+              , resourceGuardrailPod "api" "api-0" "api"
+              , resourceGuardrailPod "websocket" "websocket-0" "websocket"
+              , resourceGuardrailPod "gateway" "gateway-0" "gateway"
+              ]
+          )
+    ]
+
+resourceGuardrailBadPodsFixture :: Value
+resourceGuardrailBadPodsFixture =
+  object
+    [ "items"
+        .= Array
+          ( Vector.fromList
+              [ object
+                  [ "metadata" .= object ["namespace" .= ("api" :: String), "name" .= ("api-0" :: String)]
+                  , "status" .= object ["qosClass" .= ("BestEffort" :: String)]
+                  , "spec" .= object ["containers" .= Array (Vector.fromList [object ["name" .= ("api" :: String)]])]
+                  ]
+              ]
+          )
+    ]
+
+resourceGuardrailPod :: String -> String -> String -> Value
+resourceGuardrailPod namespace podName containerName =
+  object
+    [ "metadata" .= object ["namespace" .= namespace, "name" .= podName]
+    , "status" .= object ["qosClass" .= ("Burstable" :: String)]
+    , "spec"
+        .= object
+          [ "containers"
+              .= Array
+                ( Vector.fromList
+                    [ object
+                        [ "name" .= containerName
+                        , "resources"
+                            .= object
+                              [ "requests" .= resourceGuardrailRuntimeVector "100m" "128Mi" "256Mi"
+                              , "limits" .= resourceGuardrailRuntimeVector "250m" "256Mi" "512Mi"
+                              ]
+                        ]
+                    ]
+                )
+          ]
+    ]
+
+resourceGuardrailRuntimeVector :: String -> String -> String -> Value
+resourceGuardrailRuntimeVector cpu memory ephemeral =
+  object
+    [ "cpu" .= cpu
+    , "memory" .= memory
+    , "ephemeral-storage" .= ephemeral
+    ]
+
+resourceGuardrailQuotaFixture :: Value
+resourceGuardrailQuotaFixture =
+  object
+    [ "items"
+        .= Array
+          ( Vector.fromList
+              [ resourceGuardrailQuota "keycloak" "3000m" "10000Mi" "50000Mi" "150000Mi"
+              , resourceGuardrailQuota "vscode" "2000m" "5000Mi" "30000Mi" "100000Mi"
+              , resourceGuardrailQuota "api" "1500m" "2000Mi" "10000Mi" "1000Mi"
+              , resourceGuardrailQuota "websocket" "1000m" "2000Mi" "10000Mi" "1000Mi"
+              , resourceGuardrailQuota "gateway" "4000m" "10000Mi" "60000Mi" "100000Mi"
+              ]
+          )
+    ]
+
+resourceGuardrailQuota :: String -> String -> String -> String -> String -> Value
+resourceGuardrailQuota namespace cpu memory ephemeral durable =
+  object
+    [ "metadata" .= object ["namespace" .= namespace, "name" .= (namespace ++ "-resource-quota")]
+    , "spec"
+        .= object
+          [ "hard"
+              .= object
+                [ "requests.cpu" .= cpu
+                , "limits.cpu" .= cpu
+                , "requests.memory" .= memory
+                , "limits.memory" .= memory
+                , "requests.ephemeral-storage" .= ephemeral
+                , "limits.ephemeral-storage" .= ephemeral
+                , "requests.storage" .= durable
+                ]
+          ]
+    ]
+
+resourceGuardrailLimitRangeFixture :: Value
+resourceGuardrailLimitRangeFixture =
+  object
+    [ "items"
+        .= Array
+          ( Vector.fromList
+              [ resourceGuardrailLimitRange "keycloak" "500m" "1024Mi" "1024Mi" "1000m" "2048Mi" "2048Mi"
+              , resourceGuardrailLimitRange "vscode" "500m" "1024Mi" "1024Mi" "1000m" "2048Mi" "4096Mi"
+              , resourceGuardrailLimitRange "api" "250m" "256Mi" "512Mi" "500m" "512Mi" "1024Mi"
+              , resourceGuardrailLimitRange "websocket" "100m" "256Mi" "512Mi" "250m" "512Mi" "1024Mi"
+              , resourceGuardrailLimitRange "gateway" "250m" "256Mi" "512Mi" "500m" "512Mi" "1024Mi"
+              ]
+          )
+    ]
+
+resourceGuardrailLimitRange
+  :: String -> String -> String -> String -> String -> String -> String -> Value
+resourceGuardrailLimitRange namespace reqCpu reqMemory reqEphemeral limitCpu limitMemory limitEphemeral =
+  object
+    [ "metadata" .= object ["namespace" .= namespace, "name" .= (namespace ++ "-limit-range")]
+    , "spec"
+        .= object
+          [ "limits"
+              .= Array
+                ( Vector.fromList
+                    [ object
+                        [ "type" .= ("Container" :: String)
+                        , "defaultRequest" .= resourceGuardrailRuntimeVector reqCpu reqMemory reqEphemeral
+                        , "default" .= resourceGuardrailRuntimeVector limitCpu limitMemory limitEphemeral
+                        ]
+                    ]
+                )
+          ]
+    ]
+
 validDeploymentSection :: DeploymentSection
 validDeploymentSection =
   DeploymentSection
@@ -12997,6 +13422,59 @@ clusterIssuerNamesIn = concatMap nameOf
     , Just (String name) <- KeyMap.lookup (Key.fromString "name") meta =
         [Text.unpack name]
   nameOf _ = []
+
+expectResourceEnvelope
+  :: KeyMap.KeyMap Value
+  -> String
+  -> (String, String, String)
+  -> (String, String, String)
+  -> Expectation
+expectResourceEnvelope payload profileName requestValues limitValues =
+  case KeyMap.lookup (Key.fromString "resources") payload of
+    Just (Object resourcesPayload) ->
+      case KeyMap.lookup (Key.fromString profileName) resourcesPayload of
+        Just (Object envelopePayload) -> do
+          expectResourceVector envelopePayload "requests" requestValues
+          expectResourceVector envelopePayload "limits" limitValues
+        _ -> expectationFailure ("expected resource envelope `" ++ profileName ++ "`")
+    _ -> expectationFailure "expected resources payload"
+
+expectResourceVector :: KeyMap.KeyMap Value -> String -> (String, String, String) -> Expectation
+expectResourceVector envelopePayload fieldName (cpu, memory, ephemeralStorage) =
+  case KeyMap.lookup (Key.fromString fieldName) envelopePayload of
+    Just (Object vectorPayload) -> do
+      expectTextField vectorPayload "cpu" cpu
+      expectTextField vectorPayload "memory" memory
+      expectTextField vectorPayload "ephemeral-storage" ephemeralStorage
+    _ -> expectationFailure ("expected resource vector `" ++ fieldName ++ "`")
+
+expectQuotaHard :: KeyMap.KeyMap Value -> String -> String -> Expectation
+expectQuotaHard guardrailsPayload fieldName expected =
+  case KeyMap.lookup (Key.fromString "quota") guardrailsPayload of
+    Just (Object quotaPayload) ->
+      case KeyMap.lookup (Key.fromString "hard") quotaPayload of
+        Just (Object hardPayload) -> expectTextField hardPayload fieldName expected
+        _ -> expectationFailure "expected quota hard payload"
+    _ -> expectationFailure "expected quota payload"
+
+expectLimitRangeDefault :: KeyMap.KeyMap Value -> String -> String -> Expectation
+expectLimitRangeDefault = expectLimitRangeVector "default"
+
+expectLimitRangeDefaultRequest :: KeyMap.KeyMap Value -> String -> String -> Expectation
+expectLimitRangeDefaultRequest = expectLimitRangeVector "defaultRequest"
+
+expectLimitRangeVector :: String -> KeyMap.KeyMap Value -> String -> String -> Expectation
+expectLimitRangeVector vectorName guardrailsPayload fieldName expected =
+  case KeyMap.lookup (Key.fromString "limitRange") guardrailsPayload of
+    Just (Object limitRangePayload) ->
+      case KeyMap.lookup (Key.fromString vectorName) limitRangePayload of
+        Just (Object vectorPayload) -> expectTextField vectorPayload fieldName expected
+        _ -> expectationFailure ("expected LimitRange `" ++ vectorName ++ "` payload")
+    _ -> expectationFailure "expected LimitRange payload"
+
+expectTextField :: KeyMap.KeyMap Value -> String -> String -> Expectation
+expectTextField payload fieldName expected =
+  KeyMap.lookup (Key.fromString fieldName) payload `shouldBe` Just (String (Text.pack expected))
 
 testValidatedSettings :: FilePath -> ValidatedSettings
 testValidatedSettings manualRoot =

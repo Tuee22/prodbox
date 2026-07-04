@@ -2374,10 +2374,156 @@ chartViolationsFor repoRoot relativeChartPath = do
         helperContents <- readFile helperPath
         pure (labelViolations helperPath helperContents)
       else pure [helperPath ++ " is missing the shared label helper."]
-  pure (manifestViolations relativeChartPath chartContents ++ helperViolations)
+  templateViolations <- chartTemplateResourceViolations chartDir
+  guardrailViolations <- chartRootGuardrailViolations (takeFileName chartDir) chartDir
+  pure
+    ( manifestViolations relativeChartPath chartContents
+        ++ helperViolations
+        ++ templateViolations
+        ++ guardrailViolations
+    )
  where
   manifestViolations path contents =
     missingPrefixedFields path contents ["apiVersion: v2", "name:", "version:", "appVersion:"]
+
+chartTemplateResourceViolations :: FilePath -> IO [String]
+chartTemplateResourceViolations chartDir = do
+  let templatesDir = chartDir </> "templates"
+  templatesDirExists <- doesDirectoryExist templatesDir
+  if not templatesDirExists
+    then pure []
+    else do
+      entries <- listDirectory templatesDir
+      fmap concat $
+        forM
+          (sort [entry | entry <- entries, ".yaml" `isSuffixOf` entry])
+          ( \entry -> do
+              let path = templatesDir </> entry
+              contents <- readFile path
+              pure (containerResourceViolations path contents)
+          )
+
+containerResourceViolations :: FilePath -> String -> [String]
+containerResourceViolations path contents =
+  concatMap sectionViolations (containerSections numberedLines)
+ where
+  numberedLines = zip [1 :: Int ..] (lines contents)
+  sectionViolations (sectionLineNumber, sectionIndent, sectionLines) =
+    case containerBlocks sectionIndent sectionLines of
+      [] ->
+        [ path
+            ++ " line "
+            ++ show sectionLineNumber
+            ++ " declares a container section with no container items."
+        ]
+      blocks -> concatMap blockViolation blocks
+  blockViolation (lineNumber, name, blockLines) =
+    [ path
+        ++ " line "
+        ++ show lineNumber
+        ++ " container `"
+        ++ name
+        ++ "` must render a values-backed `resources` stanza."
+    | not (hasValuesBackedResources blockLines)
+    ]
+
+containerSections :: [(Int, String)] -> [(Int, Int, [(Int, String)])]
+containerSections [] = []
+containerSections ((lineNumber, lineText) : remaining) =
+  if trimmedLine `elem` ["containers:", "initContainers:"]
+    then (lineNumber, sectionIndent, sectionBody) : containerSections rest
+    else containerSections remaining
+ where
+  trimmedLine = trimLine lineText
+  sectionIndent = leadingWhitespaceCount lineText
+  (sectionBody, rest) = span (belongsToSection sectionIndent) remaining
+
+belongsToSection :: Int -> (Int, String) -> Bool
+belongsToSection sectionIndent (_, lineText) =
+  null trimmedLine
+    || "{{" `isPrefixOf` trimmedLine
+    || leadingWhitespaceCount lineText > sectionIndent
+ where
+  trimmedLine = trimLine lineText
+
+containerBlocks :: Int -> [(Int, String)] -> [(Int, String, [(Int, String)])]
+containerBlocks sectionIndent sectionLines =
+  case containerItemIndent sectionIndent sectionLines of
+    Nothing -> []
+    Just itemIndent -> blocksAtIndent itemIndent sectionLines
+
+containerItemIndent :: Int -> [(Int, String)] -> Maybe Int
+containerItemIndent sectionIndent sectionLines =
+  case sort itemIndents of
+    [] -> Nothing
+    firstIndent : _ -> Just firstIndent
+ where
+  itemIndents =
+    [ leadingWhitespaceCount lineText
+    | (_, lineText) <- sectionLines
+    , leadingWhitespaceCount lineText > sectionIndent
+    , "- name:" `isPrefixOf` trimLine lineText
+    ]
+
+blocksAtIndent :: Int -> [(Int, String)] -> [(Int, String, [(Int, String)])]
+blocksAtIndent _ [] = []
+blocksAtIndent itemIndent ((lineNumber, lineText) : remaining) =
+  if leadingWhitespaceCount lineText == itemIndent && "- name:" `isPrefixOf` trimLine lineText
+    then
+      let (blockBody, rest) = break (startsContainerItem itemIndent) remaining
+       in (lineNumber, containerName lineText, (lineNumber, lineText) : blockBody)
+            : blocksAtIndent itemIndent rest
+    else blocksAtIndent itemIndent remaining
+
+startsContainerItem :: Int -> (Int, String) -> Bool
+startsContainerItem itemIndent (_, lineText) =
+  leadingWhitespaceCount lineText == itemIndent && "- name:" `isPrefixOf` trimLine lineText
+
+containerName :: String -> String
+containerName lineText =
+  case words (drop (length "- name:") (trimLine lineText)) of
+    quotedName : _ -> filter (`notElem` ("\"'" :: String)) quotedName
+    [] -> "<unknown>"
+
+hasValuesBackedResources :: [(Int, String)] -> Bool
+hasValuesBackedResources blockLines =
+  any ((== "resources:") . trimLine . snd) blockLines
+    && any ((".Values.resources" `isInfixOf`) . snd) blockLines
+
+chartRootGuardrailViolations :: String -> FilePath -> IO [String]
+chartRootGuardrailViolations chartName chartDir =
+  if chartName `elem` rootGuardrailCharts
+    then do
+      let guardrailPath = chartDir </> "templates" </> "resource-guardrails.yaml"
+      guardrailExists <- doesFileExist guardrailPath
+      if not guardrailExists
+        then pure [guardrailPath ++ " is missing the root-chart ResourceQuota/LimitRange manifest."]
+        else do
+          contents <- readFile guardrailPath
+          pure
+            ( missingPrefixedFields guardrailPath contents ["kind: ResourceQuota", "kind: LimitRange"]
+                ++ missingLiteralFields
+                  guardrailPath
+                  contents
+                  [ ".Values.resourceGuardrails.enabled"
+                  , ".Values.resourceGuardrails.quota.hard"
+                  , ".Values.resourceGuardrails.limitRange.default"
+                  , ".Values.resourceGuardrails.limitRange.defaultRequest"
+                  ]
+            )
+    else pure []
+
+rootGuardrailCharts :: [String]
+rootGuardrailCharts = ["api", "gateway", "keycloak", "vscode", "websocket"]
+
+missingLiteralFields :: FilePath -> String -> [String] -> [String]
+missingLiteralFields path contents =
+  map missingFieldMessage . filter (not . containsField)
+ where
+  containsField expectedLiteral =
+    expectedLiteral `isInfixOf` contents
+  missingFieldMessage expectedLiteral =
+    path ++ " is missing required chart literal `" ++ expectedLiteral ++ "`."
 
 labelViolations :: FilePath -> String -> [String]
 labelViolations helperPath contents =

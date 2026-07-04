@@ -88,7 +88,12 @@ import Numeric.Natural (Natural)
 import Prodbox.Capacity.Config
   ( CapacityBudget (..)
   , CapacitySection (..)
+  , NamespaceQuota (..)
+  , ResourcePlan (..)
+  , ResourceVector (..)
+  , WorkloadResourceProfile (..)
   , defaultCapacitySection
+  , resourceVectorMinus
   , validateCapacitySection
   )
 import Prodbox.Cluster.Topology
@@ -819,6 +824,18 @@ renderSettingsDisplay showSecrets settings =
     , "capacity.node_budget=" ++ renderCapacityBudget (node_budget (capacity config))
     , "capacity.workload_budget=" ++ renderCapacityBudget (workload_budget (capacity config))
     , "capacity.region_quota=" ++ renderCapacityBudget (region_quota (capacity config))
+    , "capacity.resource_plan.host_capacity="
+        ++ renderResourceVector (host_capacity (resource_plan (capacity config)))
+    , "capacity.resource_plan.rke2_reserved="
+        ++ renderResourceVector (rke2_reserved (resource_plan (capacity config)))
+    , "capacity.resource_plan.eviction_floor="
+        ++ renderResourceVector (eviction_floor (resource_plan (capacity config)))
+    , "capacity.resource_plan.cluster_allocatable="
+        ++ renderResourceVector (clusterAllocatable (resource_plan (capacity config)))
+    , "capacity.resource_plan.namespace_quotas="
+        ++ renderNamespaceQuotas (namespace_quotas (resource_plan (capacity config)))
+    , "capacity.resource_plan.workload_profiles="
+        ++ renderWorkloadProfiles (workload_profiles (resource_plan (capacity config)))
     , "cluster_topology.type=" ++ renderClusterType (clusterType (cluster_topology config))
     , "storage.manual_pv_host_root=" ++ resolvedManualPvHostRoot settings
     , "pulumi_state_backend.bucket_name="
@@ -1259,6 +1276,49 @@ renderCapacityBudget budget =
     ++ ";storage="
     ++ show (budgetStorage budget)
 
+renderResourceVector :: ResourceVector -> String
+renderResourceVector vector =
+  "cpu_milli="
+    ++ show (milli_cpu vector)
+    ++ ";memory_mib="
+    ++ show (memory_mib vector)
+    ++ ";ephemeral_storage_mib="
+    ++ show (ephemeral_storage_mib vector)
+    ++ ";durable_storage_mib="
+    ++ show (durable_storage_mib vector)
+
+clusterAllocatable :: ResourcePlan -> ResourceVector
+clusterAllocatable plan =
+  host_capacity plan
+    `resourceVectorMinus` rke2_reserved plan
+    `resourceVectorMinus` eviction_floor plan
+
+renderNamespaceQuotas :: [NamespaceQuota] -> String
+renderNamespaceQuotas quotas =
+  Text.unpack
+    ( Text.intercalate
+        ";"
+        [ namespace_name namespaceQuota
+            <> "="
+            <> Text.pack (renderResourceVector (quota namespaceQuota))
+        | namespaceQuota <- quotas
+        ]
+    )
+
+renderWorkloadProfiles :: [WorkloadResourceProfile] -> String
+renderWorkloadProfiles profiles =
+  Text.unpack
+    ( Text.intercalate
+        ";"
+        [ profile_id profile
+            <> "@"
+            <> profile_namespace profile
+            <> "#replicas="
+            <> Text.pack (show (replicas profile))
+        | profile <- profiles
+        ]
+    )
+
 renderBgpPeers :: Maybe [MetallbBgpPeer] -> String
 renderBgpPeers maybePeers =
   case maybePeers of
@@ -1407,6 +1467,7 @@ renderConfigDhall config =
     , "        , node_budget = " ++ dhallCapacityBudget (node_budget (capacity config))
     , "        , workload_budget = " ++ dhallCapacityBudget (workload_budget (capacity config))
     , "        , region_quota = " ++ dhallCapacityBudget (region_quota (capacity config))
+    , "        , resource_plan = " ++ dhallResourcePlan (resource_plan (capacity config))
     , "        }"
     , "    , cluster_topology = " ++ dhallClusterTopology (cluster_topology config)
     , "    , storage = Config.default.storage // {"
@@ -1492,6 +1553,10 @@ dhallCapacityBudget budget =
     ++ ", storage = "
     ++ show (budgetStorage budget)
     ++ " }"
+
+dhallResourcePlan :: ResourcePlan -> String
+dhallResourcePlan =
+  Text.unpack . Core.pretty . injectedValue (Dhall.inject @ResourcePlan)
 
 type DhallExpr = Core.Expr Src Void
 

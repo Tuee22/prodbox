@@ -723,9 +723,9 @@ class is:
 - The operational `prodbox` IAM user, owned by `prodbox aws setup` /
   `aws teardown` (not by `cluster delete`); an interrupted run can leave it.
 
-How the doctrine handles this class without scanning AWS behind Pulumi
-(an anti-pattern) and without an auto-sweep (which would mask genuine
-leaks):
+How the doctrine handles this class without broad AWS-name scanning behind
+Pulumi (an anti-pattern) and without a generic auto-sweep (which would mask
+genuine leaks):
 
 1. **Register the durable classes (§3.1).** The operational `prodbox`
    IAM user and the generated operational `aws.*` Vault KV credential
@@ -736,7 +736,7 @@ leaks):
    `reconcileAbsent` pass observes and reconciles them like any other
    resource, and `check-code` totality refuses any future create without
    a registered counterpart. This closes the *coverage* half of the
-   blind spot for everything except the irreducible residual below.
+   blind spot for the operational resources.
 2. **Prevent new silent leaks.** The fail-closed soundness invariant
    (§3 layer 1, §4, §3.1) — `Unreachable → refuse` — applies to
    `aws teardown`'s long-lived gate and to the cascade's per-run query,
@@ -745,23 +745,21 @@ leaks):
    `cluster delete` is a pure local uninstall: it never reports on per-run
    state at all, and preserves `.data/` so nothing is wiped.) New
    divergence is surfaced, not hidden.
-3. **The irreducible residual is operator-cleaned.** The one case the
-   registry cannot observe is a fixed-name resource created by a partial
-   `pulumi up` whose state was then lost (create-then-crash; a Pulumi
-   atomicity gap, not a prodbox one) — because its only intended
-   `discover` is "query Pulumi state," which is gone. This is removed
-   via the bounded escape hatch (targeted `aws iam delete-policy` /
-   `delete-role` / `delete-user`), the documented exception to the
-   "harness owns AWS" rule. A live operator cleanup of this class was
-   performed 2026-05-28 (see
-   [DEVELOPMENT_PLAN/README.md](../../DEVELOPMENT_PLAN/README.md) Closure
-   Status). The long-lived `aws-ses` stack is the bounded configured-name
-   exception: `prodbox aws stack aws-ses reconcile` can repair missing Pulumi
-   state by importing the retained capture bucket / SMTP IAM user / SES receipt
-   resources and rotating stale SMTP access keys, because those names are
-   operator-configured or hard-coded by the long-lived stack contract. Generic
-   per-run residue remains deliberately **not** closed with an AWS-name-scanning
-   detector (an anti-pattern) or an auto-sweep (which would mask genuine leaks).
+3. **Fixed-name per-run IAM is narrowly harness-cleaned.** The harness
+   preflight first verifies that the authoritative `aws-eks-test` Pulumi
+   checkpoint is absent, then deletes only the fixed-name
+   `aws-eks-test-aws-lb-controller` policy/role and
+   `aws-eks-test-ebs-csi-driver` role. If the policy is attached to anything
+   outside that exact harness-owned role set, preflight fails loud instead of
+   detaching it. Auto-named `clusterRole-*` / `nodeRole-*` residue remains an
+   operator-investigated residual because there is no exact safe ownership key
+   once Pulumi state is gone. The long-lived `aws-ses` stack is the bounded
+   configured-name exception: `prodbox aws stack aws-ses reconcile` can repair
+   missing Pulumi state by importing the retained capture bucket / SMTP IAM
+   user / SES receipt resources and rotating stale SMTP access keys, because
+   those names are operator-configured or hard-coded by the long-lived stack
+   contract. Generic per-run residue remains deliberately **not** closed with an
+   AWS-name-scanning detector or a broad auto-sweep.
 
 This residual is recorded as a class in
 [DEVELOPMENT_PLAN/substrates.md → Resource Lifecycle Classes](../../DEVELOPMENT_PLAN/substrates.md#resource-lifecycle-classes).

@@ -1592,6 +1592,9 @@ integrationCliSuite = do
         stdoutText `shouldContain` "Phase 2/2: running test suites"
         stdoutText `shouldContain` "Validation: aws-iam"
         stdoutText `shouldContain` "PREEXISTING_OPERATIONAL_USER=leaked-user"
+        stdoutText `shouldContain` "PREFLIGHT_EKS_IAM_ORPHAN_CLEANUP=ran"
+        stdoutText `shouldContain` "PREFLIGHT_EKS_IAM_ORPHAN_POLICIES_DELETED=1"
+        stdoutText `shouldContain` "PREFLIGHT_EKS_IAM_ORPHAN_ROLES_DELETED=2"
         stdoutText `shouldContain` "PREFLIGHT_OPERATIONAL_CONFIG_CLEARED=true"
         stdoutText `shouldContain` "IAM_USER=prodbox"
         stdoutText `shouldContain` "CREDENTIAL_SOURCE=iam-user"
@@ -1611,6 +1614,10 @@ integrationCliSuite = do
 
         deletedUsers <- fmap lines (readFile (tmpDir </> "fake-aws-state" </> "iam_deleted_users"))
         deletedUsers `shouldBe` ["prodbox", "leaked-user", "prodbox"]
+        deletedPolicies <- fmap lines (readFile (tmpDir </> "fake-aws-state" </> "iam_deleted_policies"))
+        deletedPolicies `shouldBe` ["aws-eks-test-aws-lb-controller"]
+        deletedRoles <- fmap lines (readFile (tmpDir </> "fake-aws-state" </> "iam_deleted_roles"))
+        deletedRoles `shouldBe` ["aws-eks-test-aws-lb-controller", "aws-eks-test-ebs-csi-driver"]
 
     it
       "seeds the ACME EAB into Vault non-interactively from test-secrets.dhall's acme_eab block"
@@ -2653,7 +2660,7 @@ fakeRke2Environment repoRoot = do
       , ("PRODBOX_TEST_CLUSTER_VAULT_STATUS", "ready")
       ,
         ( "PRODBOX_TEST_HOST_CAPACITY"
-        , "milli_cpu=16000,memory_mib=49152,ephemeral_storage_mib=300000,durable_storage_mib=800000"
+        , "milli_cpu=8000,memory_mib=15872,ephemeral_storage_mib=100000,durable_storage_mib=180000"
         )
       , ("HOME", repoRoot)
       ]
@@ -2937,14 +2944,14 @@ fakeRke2KubectlScript =
     , "      resourcequota)"
     , "        if [[ \"$*\" == *'-o json'* ]]; then"
     , "          /bin/cat <<'JSON'"
-    , "{\"items\":[{\"metadata\":{\"namespace\":\"keycloak\",\"name\":\"keycloak-resource-quota\"},\"spec\":{\"hard\":{\"requests.cpu\":\"3000m\",\"limits.cpu\":\"3000m\",\"requests.memory\":\"10000Mi\",\"limits.memory\":\"10000Mi\",\"requests.ephemeral-storage\":\"50000Mi\",\"limits.ephemeral-storage\":\"50000Mi\",\"requests.storage\":\"150000Mi\"}}},{\"metadata\":{\"namespace\":\"vscode\",\"name\":\"vscode-resource-quota\"},\"spec\":{\"hard\":{\"requests.cpu\":\"2000m\",\"limits.cpu\":\"2000m\",\"requests.memory\":\"5000Mi\",\"limits.memory\":\"5000Mi\",\"requests.ephemeral-storage\":\"30000Mi\",\"limits.ephemeral-storage\":\"30000Mi\",\"requests.storage\":\"100000Mi\"}}},{\"metadata\":{\"namespace\":\"api\",\"name\":\"api-resource-quota\"},\"spec\":{\"hard\":{\"requests.cpu\":\"1500m\",\"limits.cpu\":\"1500m\",\"requests.memory\":\"2000Mi\",\"limits.memory\":\"2000Mi\",\"requests.ephemeral-storage\":\"10000Mi\",\"limits.ephemeral-storage\":\"10000Mi\",\"requests.storage\":\"1000Mi\"}}},{\"metadata\":{\"namespace\":\"websocket\",\"name\":\"websocket-resource-quota\"},\"spec\":{\"hard\":{\"requests.cpu\":\"1000m\",\"limits.cpu\":\"1000m\",\"requests.memory\":\"2000Mi\",\"limits.memory\":\"2000Mi\",\"requests.ephemeral-storage\":\"10000Mi\",\"limits.ephemeral-storage\":\"10000Mi\",\"requests.storage\":\"1000Mi\"}}},{\"metadata\":{\"namespace\":\"gateway\",\"name\":\"gateway-resource-quota\"},\"spec\":{\"hard\":{\"requests.cpu\":\"4000m\",\"limits.cpu\":\"4000m\",\"requests.memory\":\"10000Mi\",\"limits.memory\":\"10000Mi\",\"requests.ephemeral-storage\":\"60000Mi\",\"limits.ephemeral-storage\":\"60000Mi\",\"requests.storage\":\"100000Mi\"}}}]}"
+    , "{\"items\":[{\"metadata\":{\"namespace\":\"keycloak\",\"name\":\"keycloak-resource-quota\"},\"spec\":{\"hard\":{\"requests.cpu\":\"2025m\",\"limits.cpu\":\"2025m\",\"requests.memory\":\"4448Mi\",\"limits.memory\":\"4448Mi\",\"requests.ephemeral-storage\":\"12000Mi\",\"limits.ephemeral-storage\":\"12000Mi\",\"requests.storage\":\"61440Mi\"}}},{\"metadata\":{\"namespace\":\"vscode\",\"name\":\"vscode-resource-quota\"},\"spec\":{\"hard\":{\"requests.cpu\":\"2425m\",\"limits.cpu\":\"2425m\",\"requests.memory\":\"5216Mi\",\"limits.memory\":\"5216Mi\",\"requests.ephemeral-storage\":\"10944Mi\",\"limits.ephemeral-storage\":\"10944Mi\",\"requests.storage\":\"112640Mi\"}}},{\"metadata\":{\"namespace\":\"api\",\"name\":\"api-resource-quota\"},\"spec\":{\"hard\":{\"requests.cpu\":\"500m\",\"limits.cpu\":\"500m\",\"requests.memory\":\"768Mi\",\"limits.memory\":\"768Mi\",\"requests.ephemeral-storage\":\"2000Mi\",\"limits.ephemeral-storage\":\"2000Mi\",\"requests.storage\":\"1000Mi\"}}},{\"metadata\":{\"namespace\":\"websocket\",\"name\":\"websocket-resource-quota\"},\"spec\":{\"hard\":{\"requests.cpu\":\"500m\",\"limits.cpu\":\"500m\",\"requests.memory\":\"768Mi\",\"limits.memory\":\"768Mi\",\"requests.ephemeral-storage\":\"3000Mi\",\"limits.ephemeral-storage\":\"3000Mi\",\"requests.storage\":\"1000Mi\"}}},{\"metadata\":{\"namespace\":\"gateway\",\"name\":\"gateway-resource-quota\"},\"spec\":{\"hard\":{\"requests.cpu\":\"1250m\",\"limits.cpu\":\"1250m\",\"requests.memory\":\"3584Mi\",\"limits.memory\":\"3584Mi\",\"requests.ephemeral-storage\":\"6000Mi\",\"limits.ephemeral-storage\":\"6000Mi\",\"requests.storage\":\"20480Mi\"}}}]}"
     , "JSON"
     , "        fi"
     , "        ;;"
     , "      limitrange)"
     , "        if [[ \"$*\" == *'-o json'* ]]; then"
     , "          /bin/cat <<'JSON'"
-    , "{\"items\":[{\"metadata\":{\"namespace\":\"keycloak\",\"name\":\"keycloak-limit-range\"},\"spec\":{\"limits\":[{\"type\":\"Container\",\"defaultRequest\":{\"cpu\":\"500m\",\"memory\":\"1024Mi\",\"ephemeral-storage\":\"1024Mi\"},\"default\":{\"cpu\":\"1000m\",\"memory\":\"2048Mi\",\"ephemeral-storage\":\"2048Mi\"}}]}},{\"metadata\":{\"namespace\":\"vscode\",\"name\":\"vscode-limit-range\"},\"spec\":{\"limits\":[{\"type\":\"Container\",\"defaultRequest\":{\"cpu\":\"500m\",\"memory\":\"1024Mi\",\"ephemeral-storage\":\"1024Mi\"},\"default\":{\"cpu\":\"1000m\",\"memory\":\"2048Mi\",\"ephemeral-storage\":\"4096Mi\"}}]}},{\"metadata\":{\"namespace\":\"api\",\"name\":\"api-limit-range\"},\"spec\":{\"limits\":[{\"type\":\"Container\",\"defaultRequest\":{\"cpu\":\"250m\",\"memory\":\"256Mi\",\"ephemeral-storage\":\"512Mi\"},\"default\":{\"cpu\":\"500m\",\"memory\":\"512Mi\",\"ephemeral-storage\":\"1024Mi\"}}]}},{\"metadata\":{\"namespace\":\"websocket\",\"name\":\"websocket-limit-range\"},\"spec\":{\"limits\":[{\"type\":\"Container\",\"defaultRequest\":{\"cpu\":\"100m\",\"memory\":\"256Mi\",\"ephemeral-storage\":\"512Mi\"},\"default\":{\"cpu\":\"250m\",\"memory\":\"512Mi\",\"ephemeral-storage\":\"1024Mi\"}}]}},{\"metadata\":{\"namespace\":\"gateway\",\"name\":\"gateway-limit-range\"},\"spec\":{\"limits\":[{\"type\":\"Container\",\"defaultRequest\":{\"cpu\":\"250m\",\"memory\":\"256Mi\",\"ephemeral-storage\":\"512Mi\"},\"default\":{\"cpu\":\"500m\",\"memory\":\"512Mi\",\"ephemeral-storage\":\"1024Mi\"}}]}}]}"
+    , "{\"items\":[{\"metadata\":{\"namespace\":\"keycloak\",\"name\":\"keycloak-limit-range\"},\"spec\":{\"limits\":[{\"type\":\"Container\",\"defaultRequest\":{\"cpu\":\"500m\",\"memory\":\"1024Mi\",\"ephemeral-storage\":\"1024Mi\"},\"default\":{\"cpu\":\"600m\",\"memory\":\"1280Mi\",\"ephemeral-storage\":\"2048Mi\"}}]}},{\"metadata\":{\"namespace\":\"vscode\",\"name\":\"vscode-limit-range\"},\"spec\":{\"limits\":[{\"type\":\"Container\",\"defaultRequest\":{\"cpu\":\"500m\",\"memory\":\"1024Mi\",\"ephemeral-storage\":\"1024Mi\"},\"default\":{\"cpu\":\"600m\",\"memory\":\"1280Mi\",\"ephemeral-storage\":\"2048Mi\"}}]}},{\"metadata\":{\"namespace\":\"api\",\"name\":\"api-limit-range\"},\"spec\":{\"limits\":[{\"type\":\"Container\",\"defaultRequest\":{\"cpu\":\"250m\",\"memory\":\"256Mi\",\"ephemeral-storage\":\"512Mi\"},\"default\":{\"cpu\":\"250m\",\"memory\":\"384Mi\",\"ephemeral-storage\":\"512Mi\"}}]}},{\"metadata\":{\"namespace\":\"websocket\",\"name\":\"websocket-limit-range\"},\"spec\":{\"limits\":[{\"type\":\"Container\",\"defaultRequest\":{\"cpu\":\"100m\",\"memory\":\"256Mi\",\"ephemeral-storage\":\"512Mi\"},\"default\":{\"cpu\":\"150m\",\"memory\":\"256Mi\",\"ephemeral-storage\":\"512Mi\"}}]}},{\"metadata\":{\"namespace\":\"gateway\",\"name\":\"gateway-limit-range\"},\"spec\":{\"limits\":[{\"type\":\"Container\",\"defaultRequest\":{\"cpu\":\"250m\",\"memory\":\"256Mi\",\"ephemeral-storage\":\"512Mi\"},\"default\":{\"cpu\":\"250m\",\"memory\":\"512Mi\",\"ephemeral-storage\":\"512Mi\"}}]}}]}"
     , "JSON"
     , "        fi"
     , "        ;;"
@@ -3407,6 +3414,12 @@ fakeAwsScript stateDir =
     , "identity_file() {"
     , "  printf '%s/identity-%s' \"$STATE_DIR\" \"$1\""
     , "}"
+    , "policy_file() {"
+    , "  printf '%s/policy-%s-exists' \"$STATE_DIR\" \"$1\""
+    , "}"
+    , "role_file() {"
+    , "  printf '%s/role-%s-exists' \"$STATE_DIR\" \"$1\""
+    , "}"
     , "append_line() {"
     , "  printf '%s\\n' \"$2\" >> \"$1\""
     , "}"
@@ -3447,6 +3460,75 @@ fakeAwsScript stateDir =
     , "    else"
     , "      aws_error 'InvalidClientTokenId' 'GetHostedZone' 'The security token included in the request is invalid.'"
     , "    fi"
+    , "    ;;"
+    , "  \"iam list-entities-for-policy\")"
+    , "    policy_arn=${4:-}"
+    , "    policy_name=${policy_arn##*/}"
+    , "    if [[ ! -f \"$(policy_file \"$policy_name\")\" ]]; then"
+    , "      aws_error 'NoSuchEntity' 'ListEntitiesForPolicy' \"Policy $policy_arn was not found.\""
+    , "    fi"
+    , "    if [[ -f \"$(role_file 'aws-eks-test-aws-lb-controller')\" ]]; then"
+    , "      cat <<'JSON'"
+    , "{\"PolicyRoles\":[{\"RoleName\":\"aws-eks-test-aws-lb-controller\"}],\"PolicyUsers\":[],\"PolicyGroups\":[]}"
+    , "JSON"
+    , "    else"
+    , "      cat <<'JSON'"
+    , "{\"PolicyRoles\":[],\"PolicyUsers\":[],\"PolicyGroups\":[]}"
+    , "JSON"
+    , "    fi"
+    , "    ;;"
+    , "  \"iam detach-role-policy\")"
+    , "    role_name=${4:-}"
+    , "    policy_arn=${6:-}"
+    , "    append_line \"$STATE_DIR/iam_detached_role_policies\" \"$role_name:$policy_arn\""
+    , "    printf '{}\\n'"
+    , "    ;;"
+    , "  \"iam delete-policy\")"
+    , "    policy_arn=${4:-}"
+    , "    policy_name=${policy_arn##*/}"
+    , "    if [[ ! -f \"$(policy_file \"$policy_name\")\" ]]; then"
+    , "      aws_error 'NoSuchEntity' 'DeletePolicy' \"Policy $policy_arn was not found.\""
+    , "    fi"
+    , "    rm -f \"$(policy_file \"$policy_name\")\""
+    , "    append_line \"$STATE_DIR/iam_deleted_policies\" \"$policy_name\""
+    , "    printf '{}\\n'"
+    , "    ;;"
+    , "  \"iam get-role\")"
+    , "    role_name=${4:-}"
+    , "    if [[ ! -f \"$(role_file \"$role_name\")\" ]]; then"
+    , "      aws_error 'NoSuchEntity' 'GetRole' \"The role with name $role_name cannot be found.\""
+    , "    fi"
+    , "    printf '{\"Role\":{\"RoleName\":\"%s\",\"Arn\":\"arn:aws:iam::123456789012:role/%s\"}}\\n' \"$role_name\" \"$role_name\""
+    , "    ;;"
+    , "  \"iam list-attached-role-policies\")"
+    , "    role_name=${4:-}"
+    , "    if [[ ! -f \"$(role_file \"$role_name\")\" ]]; then"
+    , "      aws_error 'NoSuchEntity' 'ListAttachedRolePolicies' \"The role with name $role_name cannot be found.\""
+    , "    fi"
+    , "    cat <<'JSON'"
+    , "{\"AttachedPolicies\":[]}"
+    , "JSON"
+    , "    ;;"
+    , "  \"iam list-role-policies\")"
+    , "    role_name=${4:-}"
+    , "    if [[ ! -f \"$(role_file \"$role_name\")\" ]]; then"
+    , "      aws_error 'NoSuchEntity' 'ListRolePolicies' \"The role with name $role_name cannot be found.\""
+    , "    fi"
+    , "    cat <<'JSON'"
+    , "{\"PolicyNames\":[]}"
+    , "JSON"
+    , "    ;;"
+    , "  \"iam delete-role-policy\")"
+    , "    printf '{}\\n'"
+    , "    ;;"
+    , "  \"iam delete-role\")"
+    , "    role_name=${4:-}"
+    , "    if [[ ! -f \"$(role_file \"$role_name\")\" ]]; then"
+    , "      aws_error 'NoSuchEntity' 'DeleteRole' \"The role with name $role_name cannot be found.\""
+    , "    fi"
+    , "    rm -f \"$(role_file \"$role_name\")\""
+    , "    append_line \"$STATE_DIR/iam_deleted_roles\" \"$role_name\""
+    , "    printf '{}\\n'"
     , "    ;;"
     , "  \"iam create-user\")"
     , "    user_name=${4:-}"
@@ -3596,6 +3678,9 @@ seedFakeAwsHarnessState repoRoot = do
   writeFile (stateDir </> "user-leaked-user-policy") ""
   writeFile (stateDir </> "user-leaked-user-access-key-id") "AKIALEAKED"
   writeFile (stateDir </> "identity-AKIALEAKED") "leaked-user"
+  writeFile (stateDir </> "policy-aws-eks-test-aws-lb-controller-exists") ""
+  writeFile (stateDir </> "role-aws-eks-test-aws-lb-controller-exists") ""
+  writeFile (stateDir </> "role-aws-eks-test-ebs-csi-driver-exists") ""
 
 harborRegistryStorageSecretName :: String
 harborRegistryStorageSecretName = "harbor-registry-s3"
@@ -3895,24 +3980,31 @@ capacityDhallFragment =
 resourcePlanDhallFragment :: String
 resourcePlanDhallFragment =
   unlines
-    [ "{ host_capacity = { milli_cpu = 16000, memory_mib = 49152, ephemeral_storage_mib = 300000, durable_storage_mib = 800000 }"
+    [ "{ host_capacity = { milli_cpu = 8000, memory_mib = 15872, ephemeral_storage_mib = 100000, durable_storage_mib = 180000 }"
     , ", rke2_reserved = { milli_cpu = 1000, memory_mib = 2048, ephemeral_storage_mib = 10240, durable_storage_mib = 1024 }"
     , ", eviction_floor = { milli_cpu = 500, memory_mib = 1024, ephemeral_storage_mib = 10240, durable_storage_mib = 1024 }"
     , ", namespace_quotas ="
-    , "  [ { namespace_name = \"keycloak\", quota = { milli_cpu = 3000, memory_mib = 10000, ephemeral_storage_mib = 50000, durable_storage_mib = 150000 } }"
-    , "  , { namespace_name = \"vscode\", quota = { milli_cpu = 2000, memory_mib = 5000, ephemeral_storage_mib = 30000, durable_storage_mib = 100000 } }"
-    , "  , { namespace_name = \"api\", quota = { milli_cpu = 1500, memory_mib = 2000, ephemeral_storage_mib = 10000, durable_storage_mib = 1000 } }"
-    , "  , { namespace_name = \"websocket\", quota = { milli_cpu = 1000, memory_mib = 2000, ephemeral_storage_mib = 10000, durable_storage_mib = 1000 } }"
-    , "  , { namespace_name = \"gateway\", quota = { milli_cpu = 4000, memory_mib = 10000, ephemeral_storage_mib = 60000, durable_storage_mib = 100000 } }"
-    , "  , { namespace_name = \"prodbox\", quota = { milli_cpu = 2000, memory_mib = 4000, ephemeral_storage_mib = 40000, durable_storage_mib = 250000 } }"
-    , "  , { namespace_name = \"vault\", quota = { milli_cpu = 1000, memory_mib = 2000, ephemeral_storage_mib = 20000, durable_storage_mib = 100000 } }"
+    , "  [ { namespace_name = \"keycloak\", quota = { milli_cpu = 2025, memory_mib = 4448, ephemeral_storage_mib = 12000, durable_storage_mib = 61440 } }"
+    , "  , { namespace_name = \"vscode\", quota = { milli_cpu = 2425, memory_mib = 5216, ephemeral_storage_mib = 10944, durable_storage_mib = 112640 } }"
+    , "  , { namespace_name = \"api\", quota = { milli_cpu = 500, memory_mib = 768, ephemeral_storage_mib = 2000, durable_storage_mib = 1000 } }"
+    , "  , { namespace_name = \"websocket\", quota = { milli_cpu = 500, memory_mib = 768, ephemeral_storage_mib = 3000, durable_storage_mib = 1000 } }"
+    , "  , { namespace_name = \"gateway\", quota = { milli_cpu = 1250, memory_mib = 3584, ephemeral_storage_mib = 6000, durable_storage_mib = 20480 } }"
+    , "  , { namespace_name = \"prodbox\", quota = { milli_cpu = 1000, memory_mib = 1792, ephemeral_storage_mib = 5000, durable_storage_mib = 20480 } }"
+    , "  , { namespace_name = \"vault\", quota = { milli_cpu = 300, memory_mib = 512, ephemeral_storage_mib = 2000, durable_storage_mib = 1024 } }"
     , "  ]"
     , ", workload_profiles ="
-    , "  [ " ++ resourceProfileDhall "keycloak" "keycloak" 1 (500, 1024, 1024, 1) (1000, 2048, 2048, 1)
+    , "  [ " ++ resourceProfileDhall "keycloak" "keycloak" 1 (500, 1024, 1024, 1) (600, 1280, 2048, 1)
     , "  , "
         ++ resourceProfileDhall "keycloak-vault-secrets" "keycloak" 1 (50, 128, 256, 1) (100, 256, 512, 1)
     , "  , "
-        ++ resourceProfileDhall "keycloak-postgres" "keycloak" 3 (250, 512, 1024, 1024) (500, 1024, 4096, 2048)
+        ++ resourceProfileDhall "keycloak-postgres" "keycloak" 3 (250, 512, 1024, 1024) (350, 768, 2048, 2048)
+    , "  , "
+        ++ resourceProfileDhall
+          "keycloak-postgres-replica-cert-copy"
+          "keycloak"
+          3
+          (10, 16, 32, 1)
+          (25, 32, 64, 1)
     , "  , "
         ++ resourceProfileDhall
           "keycloak-postgres-vault-secrets"
@@ -3927,21 +4019,21 @@ resourcePlanDhallFragment =
           1
           (50, 128, 256, 1)
           (100, 256, 512, 1)
-    , "  , " ++ resourceProfileDhall "vscode" "vscode" 1 (500, 1024, 1024, 1024) (1000, 2048, 4096, 2048)
+    , "  , " ++ resourceProfileDhall "vscode" "vscode" 1 (500, 1024, 1024, 1024) (600, 1280, 2048, 2048)
     , "  , "
         ++ resourceProfileDhall "vscode-vault-secrets" "vscode" 1 (50, 128, 256, 1) (100, 256, 512, 1)
     , "  , "
         ++ resourceProfileDhall "vscode-secret-materializer" "vscode" 1 (50, 128, 256, 1) (100, 256, 512, 1)
-    , "  , " ++ resourceProfileDhall "api" "api" 2 (250, 256, 512, 1) (500, 512, 1024, 1)
-    , "  , " ++ resourceProfileDhall "websocket" "websocket" 2 (100, 256, 512, 1) (250, 512, 1024, 1)
-    , "  , " ++ resourceProfileDhall "redis" "websocket" 1 (100, 256, 512, 1) (250, 512, 1024, 1)
-    , "  , " ++ resourceProfileDhall "gateway" "gateway" 3 (250, 256, 512, 1) (500, 512, 1024, 1)
+    , "  , " ++ resourceProfileDhall "api" "api" 2 (250, 256, 512, 1) (250, 384, 512, 1)
+    , "  , " ++ resourceProfileDhall "websocket" "websocket" 2 (100, 256, 512, 1) (150, 256, 512, 1)
+    , "  , " ++ resourceProfileDhall "redis" "websocket" 1 (100, 256, 512, 1) (150, 256, 512, 1)
+    , "  , " ++ resourceProfileDhall "gateway" "gateway" 3 (250, 256, 512, 1) (250, 512, 512, 1)
     , "  , " ++ resourceProfileDhall "pulsar" "gateway" 1 (250, 1024, 1024, 1) (500, 2048, 4096, 1)
-    , "  , " ++ resourceProfileDhall "minio" "prodbox" 1 (500, 1024, 2048, 1024) (1000, 2048, 4096, 2048)
-    , "  , " ++ resourceProfileDhall "harbor" "prodbox" 1 (250, 512, 1024, 1024) (500, 1024, 4096, 2048)
+    , "  , " ++ resourceProfileDhall "minio" "prodbox" 1 (250, 512, 1024, 1024) (500, 1024, 2048, 2048)
+    , "  , " ++ resourceProfileDhall "harbor" "prodbox" 1 (200, 256, 512, 1024) (300, 512, 1024, 2048)
     , "  , "
-        ++ resourceProfileDhall "percona-postgres-operator" "prodbox" 1 (100, 256, 512, 1) (250, 512, 1024, 1)
-    , "  , " ++ resourceProfileDhall "vault" "vault" 1 (250, 512, 1024, 1) (500, 1024, 2048, 1)
+        ++ resourceProfileDhall "percona-postgres-operator" "prodbox" 1 (100, 128, 512, 1) (150, 256, 1024, 1)
+    , "  , " ++ resourceProfileDhall "vault" "vault" 1 (200, 256, 1024, 1) (250, 512, 1024, 1)
     , "  ]"
     , "}"
     ]

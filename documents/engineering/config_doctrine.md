@@ -192,9 +192,10 @@ operator-authored Dhall and carries host physical capacity, RKE2 reservation, ev
 namespace quotas, and workload request/limit profiles for cpu, memory, ephemeral storage, and
 durable storage. `Settings.validateLocalConfig` validates the pure resource lemmas before any
 command mutates the host or cluster: `rke2_reserved + eviction_floor <= host_capacity`,
-`sum namespace_quotas <= cluster_allocatable`, each workload profile references a declared
-namespace, every profile has positive replicas, and each `ResourceEnvelope` has positive bounded
-requests and limits. The older `node_budget` / `workload_budget` / `region_quota` fields remain as
+each namespace quota individually fits within `cluster_allocatable`, the concurrent supported-runtime
+quota set fits within `cluster_allocatable`, each workload profile references a declared namespace,
+every profile has positive replicas, and each `ResourceEnvelope` has positive bounded requests and
+limits. The older `node_budget` / `workload_budget` / `region_quota` fields remain as
 compatibility projections for callers not yet migrated to the resource plan.
 
 ## 1. Why this doctrine exists

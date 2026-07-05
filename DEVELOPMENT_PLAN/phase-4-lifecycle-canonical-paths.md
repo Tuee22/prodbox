@@ -2001,15 +2001,14 @@ A read-only AWS sweep after a live `rke2 delete --yes` confirmed the per-run lea
 confined entirely to **IAM** (no orphan EKS/EC2/VPC/ELB/NAT/EBS/OIDC residue): the
 `aws-eks-test-aws-lb-controller` policy, three EKS roles (`clusterRole-*`/`nodeRole-*`),
 and the operational `prodbox` IAM user, accumulated across runs dated 2026-04-25 →
-2026-05-28. These were removed by the bounded operator escape hatch (targeted `aws iam`
-deletes) and a re-sweep confirmed only the retained `prodbox-admin-temp`,
-`prodbox-ses-smtp`, and the operator-owned Route 53 zone remain. The IAM-orphan class
-has **no automated detection backstop** (the AWS Resource Groups Tagging API does not
-return IAM), so it is handled by prevention (this sprint's fail-closed gate) plus
-operator cleanup — deliberately **not** by an AWS-name-scanning detector or an
-auto-sweep. Documented as a residual class in
-[substrates.md → Orphaned IAM residue](substrates.md#resource-lifecycle-classes) and
-[lifecycle_reconciliation_doctrine.md § 6a](../documents/engineering/lifecycle_reconciliation_doctrine.md).
+2026-05-28. These were removed by the then-bounded operator escape hatch (targeted
+`aws iam` deletes) and a re-sweep confirmed only the retained `prodbox-admin-temp`,
+`prodbox-ses-smtp`, and the operator-owned Route 53 zone remain. The current harness
+preflight now owns only the fixed-name `aws-eks-test-aws-lb-controller` policy/role and
+`aws-eks-test-ebs-csi-driver` role when the authoritative `aws-eks-test` Pulumi
+checkpoint is absent; broad IAM scanning remains deliberately unsupported. Documented as
+a residual class in [substrates.md → Resource Lifecycle Classes](substrates.md#resource-lifecycle-classes)
+and [lifecycle_reconciliation_doctrine.md § 6a](../documents/engineering/lifecycle_reconciliation_doctrine.md).
 
 ## Sprint 4.20: Managed-Resource Registry Foundation + Soundness ✅
 

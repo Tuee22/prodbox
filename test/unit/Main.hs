@@ -3630,14 +3630,14 @@ main = mainWithSuite "prodbox-unit" $ do
 
     it "parses observed host capacity and refuses hosts below the authored capacity" $ do
       let observedText =
-            "milli_cpu=16000,memory_mib=49152,ephemeral_storage_mib=300000,durable_storage_mib=800000"
+            "milli_cpu=8000,memory_mib=15872,ephemeral_storage_mib=100000,durable_storage_mib=180000"
           smallText =
-            "milli_cpu=8000,memory_mib=49152,ephemeral_storage_mib=300000,durable_storage_mib=800000"
+            "milli_cpu=7000,memory_mib=15872,ephemeral_storage_mib=100000,durable_storage_mib=180000"
       case parseHostCapacityObservation observedText of
         Left err -> expectationFailure err
         Right observed -> do
           renderResourceVectorRuntime observed
-            `shouldBe` "cpu=16000m,memory=49152Mi,ephemeral-storage=300000Mi,durable-storage=800000Mi"
+            `shouldBe` "cpu=8000m,memory=15872Mi,ephemeral-storage=100000Mi,durable-storage=180000Mi"
           hostCapacityCoversPlan observed Capacity.defaultResourcePlan `shouldBe` True
       case parseHostCapacityObservation smallText of
         Left err -> expectationFailure err
@@ -3845,6 +3845,8 @@ main = mainWithSuite "prodbox-unit" $ do
       bootstrapRbacTemplate `shouldContain` "{{ .Values.secrets.standby.name | quote }}"
       postgresTemplate `shouldContain` "kind: PerconaPGCluster"
       postgresTemplate `shouldContain` "apiVersion: pgv2.percona.com/v2"
+      postgresTemplate `shouldContain` "replicaCertCopy:"
+      postgresTemplate `shouldContain` ".Values.resources.replicaCertCopy"
       valuesTemplate `shouldContain` "role: keycloak-keycloak-postgres-pg"
       valuesTemplate `shouldContain` "serviceAccountName: prodbox-keycloak-pg"
       valuesTemplate `shouldContain` "application: keycloak/keycloak-postgres/patroni/app"
@@ -4627,6 +4629,16 @@ main = mainWithSuite "prodbox-unit" $ do
           report `shouldContain` "LIMIT_RANGE_NAMESPACES=keycloak,vscode,api,websocket,gateway"
           report `shouldContain` "BESTEFFORT_PODS=0"
           report `shouldContain` "UNCAPPED_CONTAINERS=0"
+
+    it "Sprint 5.13 accepts Kubernetes-canonicalized guardrail quantities" $ do
+      case resourceGuardrailReport
+        Capacity.defaultResourcePlan
+        resourceGuardrailPodsFixture
+        resourceGuardrailCanonicalQuotaFixture
+        resourceGuardrailCanonicalLimitRangeFixture of
+        Left err -> expectationFailure err
+        Right report ->
+          report `shouldContain` "RESOURCE_GUARDRAILS_VALIDATION"
 
     it "Sprint 5.13 rejects BestEffort or uncapped pods in resource namespaces" $ do
       let result =
@@ -6107,6 +6119,16 @@ main = mainWithSuite "prodbox-unit" $ do
                       KeyMap.lookup (Key.fromString "size") storagePayload
                         `shouldBe` Just (String "20Gi")
                     _ -> expectationFailure "expected pulsar storage payload"
+                  case KeyMap.lookup (Key.fromString "pulsar") payload of
+                    Just (Object pulsarPayload) ->
+                      KeyMap.lookup (Key.fromString "memoryOptions") pulsarPayload
+                        `shouldBe` Just (String "-Xms512m -Xmx1024m -XX:MaxDirectMemorySize=512m")
+                    _ -> expectationFailure "expected pulsar runtime payload"
+                  expectResourceEnvelope
+                    payload
+                    "pulsar"
+                    ("250m", "1024Mi", "1024Mi")
+                    ("500m", "2048Mi", "4096Mi")
                 Right _ -> expectationFailure "expected pulsar values object"
                 Left err -> expectationFailure err
             _ -> expectationFailure "expected one pulsar release"
@@ -6135,14 +6157,14 @@ main = mainWithSuite "prodbox-unit" $ do
                 payload
                 "vscode"
                 ("500m", "1024Mi", "1024Mi")
-                ("1000m", "2048Mi", "4096Mi")
+                ("600m", "1280Mi", "2048Mi")
               case KeyMap.lookup (Key.fromString "resourceGuardrails") payload of
                 Just (Object guardrailsPayload) -> do
                   KeyMap.lookup (Key.fromString "enabled") guardrailsPayload
                     `shouldBe` Just (Bool True)
-                  expectQuotaHard guardrailsPayload "limits.memory" "5000Mi"
-                  expectQuotaHard guardrailsPayload "requests.storage" "100000Mi"
-                  expectLimitRangeDefault guardrailsPayload "cpu" "1000m"
+                  expectQuotaHard guardrailsPayload "limits.memory" "5216Mi"
+                  expectQuotaHard guardrailsPayload "requests.storage" "112640Mi"
+                  expectLimitRangeDefault guardrailsPayload "cpu" "600m"
                   expectLimitRangeDefaultRequest guardrailsPayload "memory" "1024Mi"
                 _ -> expectationFailure "expected vscode resourceGuardrails payload"
             Just (Right _) -> expectationFailure "expected vscode values object"
@@ -6154,7 +6176,12 @@ main = mainWithSuite "prodbox-unit" $ do
                 payload
                 "postgres"
                 ("250m", "512Mi", "1024Mi")
-                ("500m", "1024Mi", "4096Mi")
+                ("350m", "768Mi", "2048Mi")
+              expectResourceEnvelope
+                payload
+                "replicaCertCopy"
+                ("10m", "16Mi", "32Mi")
+                ("25m", "32Mi", "64Mi")
               case KeyMap.lookup (Key.fromString "resourceGuardrails") payload of
                 Just (Object guardrailsPayload) ->
                   KeyMap.lookup (Key.fromString "enabled") guardrailsPayload
@@ -9594,7 +9621,7 @@ main = mainWithSuite "prodbox-unit" $ do
                   retainedStatefulSetPersistentVolumeName "prodbox" "minio" 0
               , retainedStorageInventoryPersistentClaim =
                   retainedStatefulSetPersistentVolumeClaimName "minio" 0
-              , retainedStorageInventoryStorageSize = "200Gi"
+              , retainedStorageInventoryStorageSize = "20Gi"
               }
           expectedVault =
             RetainedStorageInventoryEntry
@@ -9608,10 +9635,7 @@ main = mainWithSuite "prodbox-unit" $ do
               , retainedStorageInventoryStorageSize = "1Gi"
               }
           expectedHome = [expectedMinioHome, expectedVault]
-          expectedAws =
-            [ expectedMinioHome {retainedStorageInventoryStorageSize = "20Gi"}
-            , expectedVault
-            ]
+          expectedAws = [expectedMinioHome, expectedVault]
       retainedStorageInventoryEntries SubstrateHomeLocal `shouldBe` expectedHome
       retainedStorageInventoryEntries SubstrateAws `shouldBe` expectedAws
 
@@ -10700,11 +10724,11 @@ main = mainWithSuite "prodbox-unit" $ do
     -- MinIO backs Harbor, so it always uses the public (bootstrap-exception)
     -- image regardless of the requested image source — never the Harbor mirror,
     -- which would deadlock a non-surging StatefulSet. Only storage varies.
-    it "Home substrate: manual StorageClass + 200Gi, always the public image (never Harbor)" $ do
+    it "Home substrate: manual StorageClass + 20Gi, always the public image (never Harbor)" $ do
       let bootstrapArgs = renderMinioChartArgs SubstrateHomeLocal MinioBootstrapPublic
           steadyArgs = renderMinioChartArgs SubstrateHomeLocal MinioSteadyStateHarbor
       consecutivePair bootstrapArgs "storage.className=manual" `shouldBe` True
-      consecutivePair bootstrapArgs "storage.size=200Gi" `shouldBe` True
+      consecutivePair bootstrapArgs "storage.size=20Gi" `shouldBe` True
       consecutivePair bootstrapArgs "storage.className=gp2" `shouldBe` False
       any ("image.repository=" `isPrefixOf`) bootstrapArgs `shouldBe` True
       -- Sprint 7.25: the STATIC MinIO root credential is injected directly so
@@ -12539,15 +12563,26 @@ main = mainWithSuite "prodbox-unit" $ do
           tooSmallLimit = Capacity.ResourceVector 100 512 1024 1
           overReservedPlan =
             Capacity.defaultResourcePlan
-              { Capacity.rke2_reserved = Capacity.ResourceVector 16000 2048 10240 1024
+              { Capacity.rke2_reserved = Capacity.ResourceVector 8000 2048 10240 1024
               }
           overQuotaPlan =
             Capacity.defaultResourcePlan
               { Capacity.namespace_quotas =
                   [ Capacity.NamespaceQuota
                       "keycloak"
-                      (Capacity.ResourceVector 16000 22000 100000 250000)
+                      (Capacity.ResourceVector 7000 13000 90000 160000)
                   ]
+              }
+          overConcurrentQuotaPlan =
+            Capacity.defaultResourcePlan
+              { Capacity.namespace_quotas =
+                  map
+                    ( \namespaceQuota ->
+                        if Capacity.namespace_name namespaceQuota == "api"
+                          then Capacity.NamespaceQuota "api" (Capacity.ResourceVector 500 3000 2000 1000)
+                          else namespaceQuota
+                    )
+                    (Capacity.namespace_quotas Capacity.defaultResourcePlan)
               }
           shrinkKeycloakQuota namespaceQuota =
             if Capacity.namespace_name namespaceQuota == "keycloak"
@@ -12567,7 +12602,11 @@ main = mainWithSuite "prodbox-unit" $ do
       Capacity.validateResourcePlan overReservedPlan
         `shouldBe` Left "capacity.resource_plan.rke2_reserved + eviction_floor must fit within host_capacity"
       Capacity.validateResourcePlan overQuotaPlan
-        `shouldBe` Left "capacity.resource_plan.namespace_quotas must fit within cluster allocatable capacity"
+        `shouldBe` Left
+          "capacity.resource_plan.namespace_quotas[keycloak].quota must fit within cluster allocatable capacity"
+      Capacity.validateResourcePlan overConcurrentQuotaPlan
+        `shouldBe` Left
+          "capacity.resource_plan.concurrent_namespace_quotas must fit within cluster allocatable capacity"
       Capacity.validateResourcePlan workloadOverQuotaPlan
         `shouldBe` Left
           "capacity.resource_plan.workload_profiles for namespace keycloak must fit within that namespace quota"
@@ -13112,24 +13151,31 @@ capacityDhallFragment =
 resourcePlanDhallFragment :: String
 resourcePlanDhallFragment =
   unlines
-    [ "{ host_capacity = { milli_cpu = 16000, memory_mib = 49152, ephemeral_storage_mib = 300000, durable_storage_mib = 800000 }"
+    [ "{ host_capacity = { milli_cpu = 8000, memory_mib = 15872, ephemeral_storage_mib = 100000, durable_storage_mib = 180000 }"
     , ", rke2_reserved = { milli_cpu = 1000, memory_mib = 2048, ephemeral_storage_mib = 10240, durable_storage_mib = 1024 }"
     , ", eviction_floor = { milli_cpu = 500, memory_mib = 1024, ephemeral_storage_mib = 10240, durable_storage_mib = 1024 }"
     , ", namespace_quotas ="
-    , "  [ { namespace_name = \"keycloak\", quota = { milli_cpu = 3000, memory_mib = 10000, ephemeral_storage_mib = 50000, durable_storage_mib = 150000 } }"
-    , "  , { namespace_name = \"vscode\", quota = { milli_cpu = 2000, memory_mib = 5000, ephemeral_storage_mib = 30000, durable_storage_mib = 100000 } }"
-    , "  , { namespace_name = \"api\", quota = { milli_cpu = 1500, memory_mib = 2000, ephemeral_storage_mib = 10000, durable_storage_mib = 1000 } }"
-    , "  , { namespace_name = \"websocket\", quota = { milli_cpu = 1000, memory_mib = 2000, ephemeral_storage_mib = 10000, durable_storage_mib = 1000 } }"
-    , "  , { namespace_name = \"gateway\", quota = { milli_cpu = 4000, memory_mib = 10000, ephemeral_storage_mib = 60000, durable_storage_mib = 100000 } }"
-    , "  , { namespace_name = \"prodbox\", quota = { milli_cpu = 2000, memory_mib = 4000, ephemeral_storage_mib = 40000, durable_storage_mib = 250000 } }"
-    , "  , { namespace_name = \"vault\", quota = { milli_cpu = 1000, memory_mib = 2000, ephemeral_storage_mib = 20000, durable_storage_mib = 100000 } }"
+    , "  [ { namespace_name = \"keycloak\", quota = { milli_cpu = 2025, memory_mib = 4448, ephemeral_storage_mib = 12000, durable_storage_mib = 61440 } }"
+    , "  , { namespace_name = \"vscode\", quota = { milli_cpu = 2425, memory_mib = 5216, ephemeral_storage_mib = 10944, durable_storage_mib = 112640 } }"
+    , "  , { namespace_name = \"api\", quota = { milli_cpu = 500, memory_mib = 768, ephemeral_storage_mib = 2000, durable_storage_mib = 1000 } }"
+    , "  , { namespace_name = \"websocket\", quota = { milli_cpu = 500, memory_mib = 768, ephemeral_storage_mib = 3000, durable_storage_mib = 1000 } }"
+    , "  , { namespace_name = \"gateway\", quota = { milli_cpu = 1250, memory_mib = 3584, ephemeral_storage_mib = 6000, durable_storage_mib = 20480 } }"
+    , "  , { namespace_name = \"prodbox\", quota = { milli_cpu = 1000, memory_mib = 1792, ephemeral_storage_mib = 5000, durable_storage_mib = 20480 } }"
+    , "  , { namespace_name = \"vault\", quota = { milli_cpu = 300, memory_mib = 512, ephemeral_storage_mib = 2000, durable_storage_mib = 1024 } }"
     , "  ]"
     , ", workload_profiles ="
-    , "  [ " ++ resourceProfileDhall "keycloak" "keycloak" 1 (500, 1024, 1024, 1) (1000, 2048, 2048, 1)
+    , "  [ " ++ resourceProfileDhall "keycloak" "keycloak" 1 (500, 1024, 1024, 1) (600, 1280, 2048, 1)
     , "  , "
         ++ resourceProfileDhall "keycloak-vault-secrets" "keycloak" 1 (50, 128, 256, 1) (100, 256, 512, 1)
     , "  , "
-        ++ resourceProfileDhall "keycloak-postgres" "keycloak" 3 (250, 512, 1024, 1024) (500, 1024, 4096, 2048)
+        ++ resourceProfileDhall "keycloak-postgres" "keycloak" 3 (250, 512, 1024, 1024) (350, 768, 2048, 2048)
+    , "  , "
+        ++ resourceProfileDhall
+          "keycloak-postgres-replica-cert-copy"
+          "keycloak"
+          3
+          (10, 16, 32, 1)
+          (25, 32, 64, 1)
     , "  , "
         ++ resourceProfileDhall
           "keycloak-postgres-vault-secrets"
@@ -13144,21 +13190,21 @@ resourcePlanDhallFragment =
           1
           (50, 128, 256, 1)
           (100, 256, 512, 1)
-    , "  , " ++ resourceProfileDhall "vscode" "vscode" 1 (500, 1024, 1024, 1024) (1000, 2048, 4096, 2048)
+    , "  , " ++ resourceProfileDhall "vscode" "vscode" 1 (500, 1024, 1024, 1024) (600, 1280, 2048, 2048)
     , "  , "
         ++ resourceProfileDhall "vscode-vault-secrets" "vscode" 1 (50, 128, 256, 1) (100, 256, 512, 1)
     , "  , "
         ++ resourceProfileDhall "vscode-secret-materializer" "vscode" 1 (50, 128, 256, 1) (100, 256, 512, 1)
-    , "  , " ++ resourceProfileDhall "api" "api" 2 (250, 256, 512, 1) (500, 512, 1024, 1)
-    , "  , " ++ resourceProfileDhall "websocket" "websocket" 2 (100, 256, 512, 1) (250, 512, 1024, 1)
-    , "  , " ++ resourceProfileDhall "redis" "websocket" 1 (100, 256, 512, 1) (250, 512, 1024, 1)
-    , "  , " ++ resourceProfileDhall "gateway" "gateway" 3 (250, 256, 512, 1) (500, 512, 1024, 1)
+    , "  , " ++ resourceProfileDhall "api" "api" 2 (250, 256, 512, 1) (250, 384, 512, 1)
+    , "  , " ++ resourceProfileDhall "websocket" "websocket" 2 (100, 256, 512, 1) (150, 256, 512, 1)
+    , "  , " ++ resourceProfileDhall "redis" "websocket" 1 (100, 256, 512, 1) (150, 256, 512, 1)
+    , "  , " ++ resourceProfileDhall "gateway" "gateway" 3 (250, 256, 512, 1) (250, 512, 512, 1)
     , "  , " ++ resourceProfileDhall "pulsar" "gateway" 1 (250, 1024, 1024, 1) (500, 2048, 4096, 1)
-    , "  , " ++ resourceProfileDhall "minio" "prodbox" 1 (500, 1024, 2048, 1024) (1000, 2048, 4096, 2048)
-    , "  , " ++ resourceProfileDhall "harbor" "prodbox" 1 (250, 512, 1024, 1024) (500, 1024, 4096, 2048)
+    , "  , " ++ resourceProfileDhall "minio" "prodbox" 1 (250, 512, 1024, 1024) (500, 1024, 2048, 2048)
+    , "  , " ++ resourceProfileDhall "harbor" "prodbox" 1 (200, 256, 512, 1024) (300, 512, 1024, 2048)
     , "  , "
-        ++ resourceProfileDhall "percona-postgres-operator" "prodbox" 1 (100, 256, 512, 1) (250, 512, 1024, 1)
-    , "  , " ++ resourceProfileDhall "vault" "vault" 1 (250, 512, 1024, 1) (500, 1024, 2048, 1)
+        ++ resourceProfileDhall "percona-postgres-operator" "prodbox" 1 (100, 128, 512, 1) (150, 256, 1024, 1)
+    , "  , " ++ resourceProfileDhall "vault" "vault" 1 (200, 256, 1024, 1) (250, 512, 1024, 1)
     , "  ]"
     , "}"
     ]
@@ -13333,11 +13379,26 @@ resourceGuardrailQuotaFixture =
     [ "items"
         .= Array
           ( Vector.fromList
-              [ resourceGuardrailQuota "keycloak" "3000m" "10000Mi" "50000Mi" "150000Mi"
-              , resourceGuardrailQuota "vscode" "2000m" "5000Mi" "30000Mi" "100000Mi"
-              , resourceGuardrailQuota "api" "1500m" "2000Mi" "10000Mi" "1000Mi"
-              , resourceGuardrailQuota "websocket" "1000m" "2000Mi" "10000Mi" "1000Mi"
-              , resourceGuardrailQuota "gateway" "4000m" "10000Mi" "60000Mi" "100000Mi"
+              [ resourceGuardrailQuota "keycloak" "2025m" "4448Mi" "12000Mi" "61440Mi"
+              , resourceGuardrailQuota "vscode" "2425m" "5216Mi" "10944Mi" "112640Mi"
+              , resourceGuardrailQuota "api" "500m" "768Mi" "2000Mi" "1000Mi"
+              , resourceGuardrailQuota "websocket" "500m" "768Mi" "3000Mi" "1000Mi"
+              , resourceGuardrailQuota "gateway" "1250m" "3584Mi" "6000Mi" "20480Mi"
+              ]
+          )
+    ]
+
+resourceGuardrailCanonicalQuotaFixture :: Value
+resourceGuardrailCanonicalQuotaFixture =
+  object
+    [ "items"
+        .= Array
+          ( Vector.fromList
+              [ resourceGuardrailQuota "keycloak" "2025m" "4448Mi" "12000Mi" "60Gi"
+              , resourceGuardrailQuota "vscode" "2425m" "5216Mi" "10944Mi" "110Gi"
+              , resourceGuardrailQuota "api" "500m" "768Mi" "2000Mi" "1000Mi"
+              , resourceGuardrailQuota "websocket" "500m" "768Mi" "3000Mi" "1000Mi"
+              , resourceGuardrailQuota "gateway" "1250m" "3584Mi" "6000Mi" "20Gi"
               ]
           )
     ]
@@ -13367,11 +13428,26 @@ resourceGuardrailLimitRangeFixture =
     [ "items"
         .= Array
           ( Vector.fromList
-              [ resourceGuardrailLimitRange "keycloak" "500m" "1024Mi" "1024Mi" "1000m" "2048Mi" "2048Mi"
-              , resourceGuardrailLimitRange "vscode" "500m" "1024Mi" "1024Mi" "1000m" "2048Mi" "4096Mi"
-              , resourceGuardrailLimitRange "api" "250m" "256Mi" "512Mi" "500m" "512Mi" "1024Mi"
-              , resourceGuardrailLimitRange "websocket" "100m" "256Mi" "512Mi" "250m" "512Mi" "1024Mi"
-              , resourceGuardrailLimitRange "gateway" "250m" "256Mi" "512Mi" "500m" "512Mi" "1024Mi"
+              [ resourceGuardrailLimitRange "keycloak" "500m" "1024Mi" "1024Mi" "600m" "1280Mi" "2048Mi"
+              , resourceGuardrailLimitRange "vscode" "500m" "1024Mi" "1024Mi" "600m" "1280Mi" "2048Mi"
+              , resourceGuardrailLimitRange "api" "250m" "256Mi" "512Mi" "250m" "384Mi" "512Mi"
+              , resourceGuardrailLimitRange "websocket" "100m" "256Mi" "512Mi" "150m" "256Mi" "512Mi"
+              , resourceGuardrailLimitRange "gateway" "250m" "256Mi" "512Mi" "250m" "512Mi" "512Mi"
+              ]
+          )
+    ]
+
+resourceGuardrailCanonicalLimitRangeFixture :: Value
+resourceGuardrailCanonicalLimitRangeFixture =
+  object
+    [ "items"
+        .= Array
+          ( Vector.fromList
+              [ resourceGuardrailLimitRange "keycloak" "500m" "1Gi" "1Gi" "600m" "1280Mi" "2Gi"
+              , resourceGuardrailLimitRange "vscode" "500m" "1Gi" "1Gi" "600m" "1280Mi" "2Gi"
+              , resourceGuardrailLimitRange "api" "250m" "256Mi" "512Mi" "250m" "384Mi" "512Mi"
+              , resourceGuardrailLimitRange "websocket" "100m" "256Mi" "512Mi" "150m" "256Mi" "512Mi"
+              , resourceGuardrailLimitRange "gateway" "250m" "256Mi" "512Mi" "250m" "512Mi" "512Mi"
               ]
           )
     ]

@@ -352,7 +352,7 @@ Rules:
     `.test-data/<case>/`), and test commands are mechanically forbidden from touching the
     production `.data/`; see
     [test_topology_doctrine.md § 4](./test_topology_doctrine.md#4-fail-fast-preconditions-and-test-data-isolation).
-14. The hardcoded chart storage sizes (e.g. the 200Gi MinIO PV hint) are a transitional default:
+14. The hardcoded chart storage sizes (e.g. the 20Gi MinIO PV hint) are a transitional default:
     how much durable data each store may hold is superseded by the finite-budget capacity DSL in
     [tiered_storage_capacity_doctrine.md](./tiered_storage_capacity_doctrine.md), where a sizeless
     durable claim or an over-quota topology is a Dhall typecheck failure.

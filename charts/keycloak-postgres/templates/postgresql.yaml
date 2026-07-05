@@ -21,6 +21,10 @@ spec:
       replicas: {{ .Values.cluster.instances }}
       resources:
         {{- toYaml .Values.resources.postgres | nindent 8 }}
+      containers:
+        replicaCertCopy:
+          resources:
+            {{- toYaml .Values.resources.replicaCertCopy | nindent 12 }}
       {{- if .Values.podAntiAffinity.enabled }}
       affinity:
         podAntiAffinity:

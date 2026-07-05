@@ -2564,15 +2564,14 @@ operator escape hatch (targeted `aws iam` deletes); a re-sweep confirmed only th
 intentionally-retained `prodbox-admin-temp`, `prodbox-ses-smtp`, and the
 operator-owned `resolvefintech.com` Route 53 zone remain. **Why it was IAM-only and
 undetected:** the postflight tag sweep queries the AWS Resource Groups Tagging API,
-which does not return IAM resources, so IAM residue has no automated detection
-backstop; combined with the (now-fixed) silent-pass-on-unreachable delete gate, IAM
-orphans from partial/diverged runs accumulated unnoticed. The doctrine now records
-this explicitly as a residual, operator-cleaned class —
+which does not return IAM resources; combined with the (now-fixed)
+silent-pass-on-unreachable delete gate, IAM orphans from partial/diverged runs
+accumulated unnoticed. Current doctrine keeps broad IAM name scanning forbidden, but
+the harness preflight now owns the exact fixed-name `aws-eks-test-aws-lb-controller`
+policy/role and `aws-eks-test-ebs-csi-driver` role when the authoritative
+`aws-eks-test` Pulumi checkpoint is absent. See
 [lifecycle_reconciliation_doctrine.md § 6a](../documents/engineering/lifecycle_reconciliation_doctrine.md)
-and [substrates.md → Orphaned IAM residue](substrates.md#resource-lifecycle-classes)
-— handled by **prevention** (Sprint 4.19's fail-closed gate stops new silent
-leaks), deliberately **not** by an AWS-name-scanning detector (anti-pattern) or an
-auto-sweep (would mask genuine leaks).
+and [substrates.md → Resource Lifecycle Classes](substrates.md#resource-lifecycle-classes).
 
 **2026-05-28 — Sprint 4.19: `rke2 delete` fails closed when per-run Pulumi
 state is unreachable.** Root-caused from a live incident: `prodbox rke2 delete

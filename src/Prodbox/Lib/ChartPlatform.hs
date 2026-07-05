@@ -1808,6 +1808,7 @@ chartResourceProfiles chartName =
   case chartName of
     "keycloak-postgres" ->
       [ ("postgres", "keycloak-postgres")
+      , ("replicaCertCopy", "keycloak-postgres-replica-cert-copy")
       , ("vaultSecrets", "keycloak-postgres-vault-secrets")
       , ("secretMaterializer", "keycloak-postgres-secret-materializer")
       ]
@@ -2421,6 +2422,7 @@ valuesForPulsar namespace rootChart storageClassName binding =
               [ "brokerPort" .= (6650 :: Int)
               , "httpPort" .= (8080 :: Int)
               , "clusterName" .= ("prodbox" :: String)
+              , "memoryOptions" .= ("-Xms512m -Xmx1024m -XX:MaxDirectMemorySize=512m" :: String)
               ]
         , "storage"
             .= object

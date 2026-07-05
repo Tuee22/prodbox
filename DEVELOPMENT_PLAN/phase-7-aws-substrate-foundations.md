@@ -1361,8 +1361,9 @@ substrate's hostPath-bound PVC. Foundational for 7.5.c.iii.
 - `Prodbox.CLI.Rke2.renderMinioChartArgs :: Substrate -> MinioImageSource ->
   [String]` returns the flat `["--set", "k=v", …]` arg list, substrate-aware
   on the persistence block only:
-  - `SubstrateHomeLocal` → `persistence.existingClaim=minio` +
-    `persistence.size=200Gi` (existing hostPath-backed contract).
+  - `SubstrateHomeLocal` → retained `manual` StorageClass +
+    `storage.size=20Gi` (hostPath-backed contract, right-sized to the default
+    full-workflow capacity envelope).
   - `SubstrateAws` → `persistence.storageClass=gp2` + `persistence.size=20Gi`
     + no `existingClaim` so the chart dynamically provisions EBS against
     EKS's default storage class.

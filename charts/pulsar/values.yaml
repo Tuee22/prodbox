@@ -11,6 +11,7 @@ pulsar:
   brokerPort: 6650
   httpPort: 8080
   clusterName: prodbox
+  memoryOptions: "-Xms512m -Xmx1024m -XX:MaxDirectMemorySize=512m"
 
 storage:
   className: manual

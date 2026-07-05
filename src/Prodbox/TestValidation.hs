@@ -40,6 +40,7 @@ import Data.ByteString.Char8 qualified as BS8
 import Data.ByteString.Lazy qualified as BL
 import Data.CaseInsensitive qualified as CI
 import Data.Char (isAsciiUpper)
+import Data.Foldable (asum)
 import Data.List (intercalate, isInfixOf, isPrefixOf, isSuffixOf, nub, sort)
 import Data.Map.Strict qualified as Map
 import Data.Text qualified as Text
@@ -118,10 +119,6 @@ import Prodbox.Infra.AwsTestStack qualified as AwsTest
 import Prodbox.Infra.StackOutputs (StackName (..))
 import Prodbox.Keycloak.CredentialSetupForm qualified as CredentialSetupForm
 import Prodbox.Keycloak.Email qualified
-import Prodbox.Lib.ChartPlatform
-  ( buildChartDeploymentPlanForSubstrate
-  , deployChartPlan
-  )
 import Prodbox.Lib.Storage
   ( defaultChartDataRootRelative
   , testManualPvHostRootEnv
@@ -377,7 +374,7 @@ gatewayValidationNamespace :: String
 gatewayValidationNamespace = "gateway"
 
 pulsarValidationNamespace :: String
-pulsarValidationNamespace = "pulsar"
+pulsarValidationNamespace = gatewayValidationNamespace
 
 gatewayStatusRetryAttempts :: Int
 gatewayStatusRetryAttempts = 12
@@ -567,37 +564,12 @@ withSubstrateKubeconfigEnv repoRoot substrate action =
   restoreOne ((name, _), Just value) = setEnv name value
 
 runPulsarBrokerValidation :: FilePath -> [(String, String)] -> Substrate -> IO ExitCode
-runPulsarBrokerValidation repoRoot environment substrate =
+runPulsarBrokerValidation repoRoot environment _substrate =
   runSequentially
     [ runNativeCliCommandForExitCode repoRoot environment ["cluster", "health"]
-    , runPulsarChartReconcile repoRoot substrate
     , runPulsarRolloutWait repoRoot
     , runPulsarBrokerProof repoRoot
     ]
-
-runPulsarChartReconcile :: FilePath -> Substrate -> IO ExitCode
-runPulsarChartReconcile repoRoot substrate = do
-  settingsResult <- validateAndLoadSettings repoRoot
-  case settingsResult of
-    Left err -> failWith ("load settings for Pulsar chart reconcile: " ++ err)
-    Right settings -> do
-      planResult <-
-        buildChartDeploymentPlanForSubstrate
-          substrate
-          repoRoot
-          settings
-          "pulsar"
-          Map.empty
-          Map.empty
-      case planResult of
-        Left err -> failWith ("build Pulsar chart deployment plan: " ++ err)
-        Right plan -> do
-          deployResult <- deployChartPlan plan
-          case deployResult of
-            Left err -> failWith ("deploy Pulsar chart: " ++ err)
-            Right report -> do
-              writeOutput report
-              pure ExitSuccess
 
 runPulsarRolloutWait :: FilePath -> IO ExitCode
 runPulsarRolloutWait repoRoot =
@@ -1178,7 +1150,7 @@ requireContainerLimitRange namespace limits =
 requireQuantityEquals :: String -> [String] -> Value -> (String, String) -> Either String ()
 requireQuantityEquals label prefix value (fieldName, expectedQuantity) = do
   actual <- jsonStringAt (prefix ++ [fieldName]) value
-  if actual == expectedQuantity
+  if actual == expectedQuantity || quantitiesEquivalent expectedQuantity actual
     then Right ()
     else
       Left
@@ -1191,6 +1163,45 @@ requireQuantityEquals label prefix value (fieldName, expectedQuantity) = do
             ++ actual
             ++ "`"
         )
+
+quantitiesEquivalent :: String -> String -> Bool
+quantitiesEquivalent expected actual =
+  case (parseCpuMilliQuantity expected, parseCpuMilliQuantity actual) of
+    (Just expectedMilli, Just actualMilli) | expectedMilli == actualMilli -> True
+    _ ->
+      case (parseMebiQuantity expected, parseMebiQuantity actual) of
+        (Just expectedMebi, Just actualMebi) -> expectedMebi == actualMebi
+        _ -> False
+
+parseCpuMilliQuantity :: String -> Maybe Integer
+parseCpuMilliQuantity raw =
+  case stripQuantitySuffix "m" raw of
+    Just milliText -> parseIntegerQuantity milliText
+    Nothing -> (* 1000) <$> parseIntegerQuantity raw
+
+parseMebiQuantity :: String -> Maybe Integer
+parseMebiQuantity raw =
+  asum
+    [ parseWithUnit "Ki" (`div` 1024)
+    , parseWithUnit "Mi" id
+    , parseWithUnit "Gi" (* 1024)
+    , parseWithUnit "Ti" (* 1048576)
+    ]
+ where
+  parseWithUnit suffix scale = do
+    quantityText <- stripQuantitySuffix suffix raw
+    scale <$> parseIntegerQuantity quantityText
+
+stripQuantitySuffix :: String -> String -> Maybe String
+stripQuantitySuffix suffix raw
+  | suffix `isSuffixOf` raw = Just (take (length raw - length suffix) raw)
+  | otherwise = Nothing
+
+parseIntegerQuantity :: String -> Maybe Integer
+parseIntegerQuantity raw =
+  case reads raw of
+    [(value, "")] | value >= 0 -> Just value
+    _ -> Nothing
 
 requireNamespaceQuotaForValidation
   :: Capacity.ResourcePlan -> String -> Either String Capacity.NamespaceQuota

@@ -246,29 +246,36 @@ resourcePlanDhallFragment =
 
 overReservedResourcePlanDhallFragment :: String
 overReservedResourcePlanDhallFragment =
-  resourcePlanDhallFragmentWithReserved (resourceVectorDhall (16000, 2048, 10240, 1024))
+  resourcePlanDhallFragmentWithReserved (resourceVectorDhall (8000, 2048, 10240, 1024))
 
 resourcePlanDhallFragmentWithReserved :: String -> String
 resourcePlanDhallFragmentWithReserved reservedVector =
   unlines
-    [ "{ host_capacity = { milli_cpu = 16000, memory_mib = 49152, ephemeral_storage_mib = 300000, durable_storage_mib = 800000 }"
+    [ "{ host_capacity = { milli_cpu = 8000, memory_mib = 15872, ephemeral_storage_mib = 100000, durable_storage_mib = 180000 }"
     , ", rke2_reserved = " ++ reservedVector
     , ", eviction_floor = { milli_cpu = 500, memory_mib = 1024, ephemeral_storage_mib = 10240, durable_storage_mib = 1024 }"
     , ", namespace_quotas ="
-    , "  [ { namespace_name = \"keycloak\", quota = { milli_cpu = 3000, memory_mib = 10000, ephemeral_storage_mib = 50000, durable_storage_mib = 150000 } }"
-    , "  , { namespace_name = \"vscode\", quota = { milli_cpu = 2000, memory_mib = 5000, ephemeral_storage_mib = 30000, durable_storage_mib = 100000 } }"
-    , "  , { namespace_name = \"api\", quota = { milli_cpu = 1500, memory_mib = 2000, ephemeral_storage_mib = 10000, durable_storage_mib = 1000 } }"
-    , "  , { namespace_name = \"websocket\", quota = { milli_cpu = 1000, memory_mib = 2000, ephemeral_storage_mib = 10000, durable_storage_mib = 1000 } }"
-    , "  , { namespace_name = \"gateway\", quota = { milli_cpu = 4000, memory_mib = 10000, ephemeral_storage_mib = 60000, durable_storage_mib = 100000 } }"
-    , "  , { namespace_name = \"prodbox\", quota = { milli_cpu = 2000, memory_mib = 4000, ephemeral_storage_mib = 40000, durable_storage_mib = 250000 } }"
-    , "  , { namespace_name = \"vault\", quota = { milli_cpu = 1000, memory_mib = 2000, ephemeral_storage_mib = 20000, durable_storage_mib = 100000 } }"
+    , "  [ { namespace_name = \"keycloak\", quota = { milli_cpu = 2025, memory_mib = 4448, ephemeral_storage_mib = 12000, durable_storage_mib = 61440 } }"
+    , "  , { namespace_name = \"vscode\", quota = { milli_cpu = 2425, memory_mib = 5216, ephemeral_storage_mib = 10944, durable_storage_mib = 112640 } }"
+    , "  , { namespace_name = \"api\", quota = { milli_cpu = 500, memory_mib = 768, ephemeral_storage_mib = 2000, durable_storage_mib = 1000 } }"
+    , "  , { namespace_name = \"websocket\", quota = { milli_cpu = 500, memory_mib = 768, ephemeral_storage_mib = 3000, durable_storage_mib = 1000 } }"
+    , "  , { namespace_name = \"gateway\", quota = { milli_cpu = 1250, memory_mib = 3584, ephemeral_storage_mib = 6000, durable_storage_mib = 20480 } }"
+    , "  , { namespace_name = \"prodbox\", quota = { milli_cpu = 1000, memory_mib = 1792, ephemeral_storage_mib = 5000, durable_storage_mib = 20480 } }"
+    , "  , { namespace_name = \"vault\", quota = { milli_cpu = 300, memory_mib = 512, ephemeral_storage_mib = 2000, durable_storage_mib = 1024 } }"
     , "  ]"
     , ", workload_profiles ="
-    , "  [ " ++ resourceProfileDhall "keycloak" "keycloak" 1 (500, 1024, 1024, 1) (1000, 2048, 2048, 1)
+    , "  [ " ++ resourceProfileDhall "keycloak" "keycloak" 1 (500, 1024, 1024, 1) (600, 1280, 2048, 1)
     , "  , "
         ++ resourceProfileDhall "keycloak-vault-secrets" "keycloak" 1 (50, 128, 256, 1) (100, 256, 512, 1)
     , "  , "
-        ++ resourceProfileDhall "keycloak-postgres" "keycloak" 3 (250, 512, 1024, 1024) (500, 1024, 4096, 2048)
+        ++ resourceProfileDhall "keycloak-postgres" "keycloak" 3 (250, 512, 1024, 1024) (350, 768, 2048, 2048)
+    , "  , "
+        ++ resourceProfileDhall
+          "keycloak-postgres-replica-cert-copy"
+          "keycloak"
+          3
+          (10, 16, 32, 1)
+          (25, 32, 64, 1)
     , "  , "
         ++ resourceProfileDhall
           "keycloak-postgres-vault-secrets"
@@ -283,21 +290,21 @@ resourcePlanDhallFragmentWithReserved reservedVector =
           1
           (50, 128, 256, 1)
           (100, 256, 512, 1)
-    , "  , " ++ resourceProfileDhall "vscode" "vscode" 1 (500, 1024, 1024, 1024) (1000, 2048, 4096, 2048)
+    , "  , " ++ resourceProfileDhall "vscode" "vscode" 1 (500, 1024, 1024, 1024) (600, 1280, 2048, 2048)
     , "  , "
         ++ resourceProfileDhall "vscode-vault-secrets" "vscode" 1 (50, 128, 256, 1) (100, 256, 512, 1)
     , "  , "
         ++ resourceProfileDhall "vscode-secret-materializer" "vscode" 1 (50, 128, 256, 1) (100, 256, 512, 1)
-    , "  , " ++ resourceProfileDhall "api" "api" 2 (250, 256, 512, 1) (500, 512, 1024, 1)
-    , "  , " ++ resourceProfileDhall "websocket" "websocket" 2 (100, 256, 512, 1) (250, 512, 1024, 1)
-    , "  , " ++ resourceProfileDhall "redis" "websocket" 1 (100, 256, 512, 1) (250, 512, 1024, 1)
-    , "  , " ++ resourceProfileDhall "gateway" "gateway" 3 (250, 256, 512, 1) (500, 512, 1024, 1)
+    , "  , " ++ resourceProfileDhall "api" "api" 2 (250, 256, 512, 1) (250, 384, 512, 1)
+    , "  , " ++ resourceProfileDhall "websocket" "websocket" 2 (100, 256, 512, 1) (150, 256, 512, 1)
+    , "  , " ++ resourceProfileDhall "redis" "websocket" 1 (100, 256, 512, 1) (150, 256, 512, 1)
+    , "  , " ++ resourceProfileDhall "gateway" "gateway" 3 (250, 256, 512, 1) (250, 512, 512, 1)
     , "  , " ++ resourceProfileDhall "pulsar" "gateway" 1 (250, 1024, 1024, 1) (500, 2048, 4096, 1)
-    , "  , " ++ resourceProfileDhall "minio" "prodbox" 1 (500, 1024, 2048, 1024) (1000, 2048, 4096, 2048)
-    , "  , " ++ resourceProfileDhall "harbor" "prodbox" 1 (250, 512, 1024, 1024) (500, 1024, 4096, 2048)
+    , "  , " ++ resourceProfileDhall "minio" "prodbox" 1 (250, 512, 1024, 1024) (500, 1024, 2048, 2048)
+    , "  , " ++ resourceProfileDhall "harbor" "prodbox" 1 (200, 256, 512, 1024) (300, 512, 1024, 2048)
     , "  , "
-        ++ resourceProfileDhall "percona-postgres-operator" "prodbox" 1 (100, 256, 512, 1) (250, 512, 1024, 1)
-    , "  , " ++ resourceProfileDhall "vault" "vault" 1 (250, 512, 1024, 1) (500, 1024, 2048, 1)
+        ++ resourceProfileDhall "percona-postgres-operator" "prodbox" 1 (100, 128, 512, 1) (150, 256, 1024, 1)
+    , "  , " ++ resourceProfileDhall "vault" "vault" 1 (200, 256, 1024, 1) (250, 512, 1024, 1)
     , "  ]"
     , "}"
     ]

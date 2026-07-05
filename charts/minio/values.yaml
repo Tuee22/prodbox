@@ -22,14 +22,17 @@ storage:
   # per the storage-lifecycle doctrine. On the AWS substrate this is overridden
   # to the EKS `gp2` dynamic class via --set.
   className: manual
-  size: 200Gi
+  size: 20Gi
 
 resources:
   requests:
+    cpu: 250m
     memory: 512Mi
-    cpu: 100m
+    ephemeral-storage: 1024Mi
   limits:
-    memory: 2Gi
+    cpu: 500m
+    memory: 1024Mi
+    ephemeral-storage: 2048Mi
 
 # Sprint 7.25: the STATIC MinIO root credential, injected by `renderMinioChartArgs`
 # (--set rootUser / rootPassword) from `Prodbox.Minio.RootCredential` (the single

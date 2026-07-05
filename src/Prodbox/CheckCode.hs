@@ -2409,14 +2409,16 @@ containerResourceViolations path contents =
  where
   numberedLines = zip [1 :: Int ..] (lines contents)
   sectionViolations (sectionLineNumber, sectionIndent, sectionLines) =
-    case containerBlocks sectionIndent sectionLines of
-      [] ->
-        [ path
-            ++ " line "
-            ++ show sectionLineNumber
-            ++ " declares a container section with no container items."
-        ]
-      blocks -> concatMap blockViolation blocks
+    if isPerconaReplicaCertCopyContainerMap sectionLines
+      then []
+      else case containerBlocks sectionIndent sectionLines of
+        [] ->
+          [ path
+              ++ " line "
+              ++ show sectionLineNumber
+              ++ " declares a container section with no container items."
+          ]
+        blocks -> concatMap blockViolation blocks
   blockViolation (lineNumber, name, blockLines) =
     [ path
         ++ " line "
@@ -2489,6 +2491,11 @@ hasValuesBackedResources :: [(Int, String)] -> Bool
 hasValuesBackedResources blockLines =
   any ((== "resources:") . trimLine . snd) blockLines
     && any ((".Values.resources" `isInfixOf`) . snd) blockLines
+
+isPerconaReplicaCertCopyContainerMap :: [(Int, String)] -> Bool
+isPerconaReplicaCertCopyContainerMap sectionLines =
+  any ((== "replicaCertCopy:") . trimLine . snd) sectionLines
+    && any ((".Values.resources.replicaCertCopy" `isInfixOf`) . snd) sectionLines
 
 chartRootGuardrailViolations :: String -> FilePath -> IO [String]
 chartRootGuardrailViolations chartName chartDir =

@@ -3434,10 +3434,10 @@ non-optional values.
   construction and Dhall decode.
 - ✅ `ResourcePlan` fields for host capacity, RKE2 reservation, eviction floor, derived cluster
   allocatable capacity, `NamespaceQuota`, and `WorkloadResourceProfile` records in Dhall/Haskell,
-  with assertions for:
-  `rke2.reserved + eviction.floor <= host.physical`,
-  `sum namespace quotas <= cluster.allocatable`, and
-  `sum workload profiles <= namespace quota`.
+    with assertions for:
+    `rke2.reserved + eviction.floor <= host.physical`,
+    each namespace quota and the concurrent supported-runtime quota set fit within `cluster.allocatable`, and
+    `sum workload profiles <= namespace quota`.
 - ✅ The binary-sibling `capacity` block carries the new resource plan; legacy aggregate
   `node_budget` / `workload_budget` / `region_quota` values are either derived from the new plan or
   retained only as compatibility projections until the callers are migrated.

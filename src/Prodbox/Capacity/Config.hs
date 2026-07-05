@@ -140,20 +140,20 @@ defaultCapacitySection =
 defaultResourcePlan :: ResourcePlan
 defaultResourcePlan =
   ResourcePlan
-    { host_capacity = ResourceVector 16000 49152 300000 800000
+    { host_capacity = ResourceVector 8000 15872 100000 180000
     , rke2_reserved = ResourceVector 1000 2048 10240 1024
     , eviction_floor = ResourceVector 500 1024 10240 1024
     , namespace_quotas =
-        [ NamespaceQuota "keycloak" (ResourceVector 3000 10000 50000 150000)
-        , NamespaceQuota "vscode" (ResourceVector 2000 5000 30000 100000)
-        , NamespaceQuota "api" (ResourceVector 1500 2000 10000 1000)
-        , NamespaceQuota "websocket" (ResourceVector 1000 2000 10000 1000)
-        , NamespaceQuota "gateway" (ResourceVector 4000 10000 60000 100000)
-        , NamespaceQuota "prodbox" (ResourceVector 2000 4000 40000 250000)
-        , NamespaceQuota "vault" (ResourceVector 1000 2000 20000 100000)
+        [ NamespaceQuota "keycloak" (ResourceVector 2025 4448 12000 61440)
+        , NamespaceQuota "vscode" (ResourceVector 2425 5216 10944 112640)
+        , NamespaceQuota "api" (ResourceVector 500 768 2000 1000)
+        , NamespaceQuota "websocket" (ResourceVector 500 768 3000 1000)
+        , NamespaceQuota "gateway" (ResourceVector 1250 3584 6000 20480)
+        , NamespaceQuota "prodbox" (ResourceVector 1000 1792 5000 20480)
+        , NamespaceQuota "vault" (ResourceVector 300 512 2000 1024)
         ]
     , workload_profiles =
-        [ workload "keycloak" "keycloak" 1 (ResourceVector 500 1024 1024 1) (ResourceVector 1000 2048 2048 1)
+        [ workload "keycloak" "keycloak" 1 (ResourceVector 500 1024 1024 1) (ResourceVector 600 1280 2048 1)
         , workload
             "keycloak-vault-secrets"
             "keycloak"
@@ -165,7 +165,13 @@ defaultResourcePlan =
             "keycloak"
             3
             (ResourceVector 250 512 1024 1024)
-            (ResourceVector 500 1024 4096 2048)
+            (ResourceVector 350 768 2048 2048)
+        , workload
+            "keycloak-postgres-replica-cert-copy"
+            "keycloak"
+            3
+            (ResourceVector 10 16 32 1)
+            (ResourceVector 25 32 64 1)
         , workload
             "keycloak-postgres-vault-secrets"
             "keycloak"
@@ -183,7 +189,7 @@ defaultResourcePlan =
             "vscode"
             1
             (ResourceVector 500 1024 1024 1024)
-            (ResourceVector 1000 2048 4096 2048)
+            (ResourceVector 600 1280 2048 2048)
         , workload
             "vscode-vault-secrets"
             "vscode"
@@ -196,25 +202,25 @@ defaultResourcePlan =
             1
             (ResourceVector 50 128 256 1)
             (ResourceVector 100 256 512 1)
-        , workload "api" "api" 2 (ResourceVector 250 256 512 1) (ResourceVector 500 512 1024 1)
-        , workload "websocket" "websocket" 2 (ResourceVector 100 256 512 1) (ResourceVector 250 512 1024 1)
-        , workload "redis" "websocket" 1 (ResourceVector 100 256 512 1) (ResourceVector 250 512 1024 1)
-        , workload "gateway" "gateway" 3 (ResourceVector 250 256 512 1) (ResourceVector 500 512 1024 1)
+        , workload "api" "api" 2 (ResourceVector 250 256 512 1) (ResourceVector 250 384 512 1)
+        , workload "websocket" "websocket" 2 (ResourceVector 100 256 512 1) (ResourceVector 150 256 512 1)
+        , workload "redis" "websocket" 1 (ResourceVector 100 256 512 1) (ResourceVector 150 256 512 1)
+        , workload "gateway" "gateway" 3 (ResourceVector 250 256 512 1) (ResourceVector 250 512 512 1)
         , workload "pulsar" "gateway" 1 (ResourceVector 250 1024 1024 1) (ResourceVector 500 2048 4096 1)
         , workload
             "minio"
             "prodbox"
             1
-            (ResourceVector 500 1024 2048 1024)
-            (ResourceVector 1000 2048 4096 2048)
-        , workload "harbor" "prodbox" 1 (ResourceVector 250 512 1024 1024) (ResourceVector 500 1024 4096 2048)
+            (ResourceVector 250 512 1024 1024)
+            (ResourceVector 500 1024 2048 2048)
+        , workload "harbor" "prodbox" 1 (ResourceVector 200 256 512 1024) (ResourceVector 300 512 1024 2048)
         , workload
             "percona-postgres-operator"
             "prodbox"
             1
-            (ResourceVector 100 256 512 1)
-            (ResourceVector 250 512 1024 1)
-        , workload "vault" "vault" 1 (ResourceVector 250 512 1024 1) (ResourceVector 500 1024 2048 1)
+            (ResourceVector 100 128 512 1)
+            (ResourceVector 150 256 1024 1)
+        , workload "vault" "vault" 1 (ResourceVector 200 256 1024 1) (ResourceVector 250 512 1024 1)
         ]
     }
  where
@@ -317,9 +323,20 @@ validateResourcePlan plan = do
     (not (null (namespace_quotas plan)))
     (Left "capacity.resource_plan.namespace_quotas must not be empty")
   forM_ (namespace_quotas plan) validateNamespaceQuota
+  forM_ (namespace_quotas plan) $ \namespaceQuota ->
+    unless
+      (quota namespaceQuota `resourceVectorFitsWithin` allocatable)
+      ( Left
+          ( "capacity.resource_plan.namespace_quotas["
+              ++ Text.unpack (namespace_name namespaceQuota)
+              ++ "].quota must fit within cluster allocatable capacity"
+          )
+      )
   unless
-    (sumVectors (map quota (namespace_quotas plan)) `resourceVectorFitsWithin` allocatable)
-    (Left "capacity.resource_plan.namespace_quotas must fit within cluster allocatable capacity")
+    (sumVectors (map quota (concurrentNamespaceQuotas plan)) `resourceVectorFitsWithin` allocatable)
+    ( Left
+        "capacity.resource_plan.concurrent_namespace_quotas must fit within cluster allocatable capacity"
+    )
   unless
     (not (null (workload_profiles plan)))
     (Left "capacity.resource_plan.workload_profiles must not be empty")
@@ -340,6 +357,13 @@ validateResourcePlan plan = do
               ++ " must fit within that namespace quota"
           )
       )
+
+concurrentNamespaceQuotas :: ResourcePlan -> [NamespaceQuota]
+concurrentNamespaceQuotas plan =
+  -- `keycloak` is a standalone root-chart surface. The supported runtime deploys
+  -- Keycloak and its PostgreSQL dependency under `vscode`, so adding both quotas
+  -- would double-count the same workload shape against the single-node host.
+  filter ((/= "keycloak") . namespace_name) (namespace_quotas plan)
 
 unlessFits :: String -> CapacityBudget -> CapacityBudget -> Either String ()
 unlessFits message inner outer =

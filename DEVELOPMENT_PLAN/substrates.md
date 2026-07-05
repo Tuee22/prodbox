@@ -330,26 +330,23 @@ tag sweep that fails any destructive lifecycle command if cluster-tagged resourc
 see
 [../documents/engineering/lifecycle_reconciliation_doctrine.md](../documents/engineering/lifecycle_reconciliation_doctrine.md).
 
-### Orphaned IAM residue (operator-cleaned residual class)
+### Fixed-name IAM orphan residue (harness preflight residual class)
 
 | Resource | Origin | Why it orphans | Cleanup owner |
 |----------|--------|----------------|---------------|
-| `aws-eks-test-aws-lb-controller` policy/role, `aws-eks-test-ebs-csi-driver` role (fixed-name), and auto-named `clusterRole-*` / `nodeRole-*` | The `aws-eks` Pulumi program (per-run) | A `pulumi up` partially succeeds (IAM created early), then its state is lost — the create-then-crash window, or a `.data/` wipe / cluster crash before the per-run `pulumi destroy` | Operator, via the bounded escape hatch (targeted `aws iam delete-policy` / `delete-role`) |
+| `aws-eks-test-aws-lb-controller` policy/role and `aws-eks-test-ebs-csi-driver` role (fixed-name) | The `aws-eks` Pulumi program (per-run) | A `pulumi up` partially succeeds (IAM created early), then its state is lost — the create-then-crash window, or a `.data/` wipe / cluster crash before the per-run `pulumi destroy` | Harness preflight, scoped to these exact names and only when the authoritative `aws-eks-test` Pulumi checkpoint is absent |
+| auto-named `clusterRole-*` / `nodeRole-*` | The `aws-eks` Pulumi program (per-run) | Same create-then-crash window, but names are provider-assigned and cannot be reaped safely without broader IAM scanning | Operator investigation; do not add a broad automatic IAM sweep |
 | Operational `prodbox` IAM user + access key + `prodbox-inline` policy | `prodbox aws setup` / the test-harness IAM bootstrap | An interrupted run leaves it; `rke2 delete` does not own it (`aws teardown` / the harness postflight does) | `prodbox aws teardown`, or operator via `aws iam delete-user` |
 
-This IAM residue is the one leak class with **no automated detection backstop**: the AWS
-Resource Groups Tagging API does not return IAM resources, so the postflight tag sweep cannot
-see it (see
+The AWS Resource Groups Tagging API does not return IAM resources, so the postflight tag sweep
+cannot see this class (see
 [lifecycle_reconciliation_doctrine.md § 6a](../documents/engineering/lifecycle_reconciliation_doctrine.md)).
-It is handled by **prevention, not auto-cleanup**: Sprint `4.19`'s fail-closed delete gate
-stops `rke2 delete` / `aws teardown` from silently reporting "clean" when the per-run Pulumi
-state backend is unreachable (the condition that let this residue accumulate undetected),
-and pre-existing IAM orphans are removed by operator action. A deliberate decision was made
-**not** to add an AWS-name-scanning detector (scanning live AWS behind Pulumi is an
-anti-pattern) and **not** to add an auto-sweep (silent cleanup would mask genuine logical
-leaks). A live operator cleanup of accumulated IAM orphans (1 policy + 3 roles + the
-operational `prodbox` user, dated 2026-04-25 through 2026-05-28) was performed 2026-05-28 —
-see [README.md → Closure Status](README.md).
+The supported automation is intentionally narrow: `runAwsIamHarnessSetup` checks the
+authoritative per-run `aws-eks-test` Pulumi checkpoint first, then deletes only the two
+fixed-name IRSA roles and the fixed-name AWS Load Balancer Controller policy. If the policy is
+attached to anything outside that exact harness-owned role set, the preflight fails loud instead
+of detaching it. Broad IAM name scanning remains forbidden because it would mask genuine logical
+leaks and could cross ownership boundaries.
 
 ### Operational resources (registered, ephemeral per run)
 

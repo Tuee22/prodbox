@@ -537,6 +537,10 @@ gatewayMinioBucket = "prodbox-state"
 gatewayNamespace :: String
 gatewayNamespace = "gateway"
 
+gatewayBootstrapNamespaces :: [String]
+gatewayBootstrapNamespaces =
+  ["keycloak", "vscode"]
+
 -- | Canonical IAM policy name granting the gateway user
 -- @s3:GetObject@/@s3:PutObject@/@s3:ListBucket@ on @prodbox-state/*@.
 gatewayMinioPolicyName :: String
@@ -679,7 +683,7 @@ data CustomImageBuildPlan = CustomImageBuildPlan
   deriving (Eq, Show)
 
 minioStorageSize :: String
-minioStorageSize = "200Gi"
+minioStorageSize = "20Gi"
 
 -- Sprint 4.31: the in-cluster Vault durable PV joins the unified
 -- retained-storage reconciler at `.data/vault/vault/0`, replacing the
@@ -1219,6 +1223,7 @@ renderNativeInstallPlan repoRoot settings machineId prodboxId labelValue withEdg
       , "STEP=ensure_minio_runtime_steady_state"
       , "STEP=ensure_gateway_minio_bootstrap"
       , "STEP=ensure_gateway_chart_ready"
+      , "STEP=ensure_root_chart_namespace_guardrails"
       , "STEP=ensure_admin_public_edge_routes"
       , "STEP=reconcile_managed_annotations"
       ]
@@ -1319,6 +1324,7 @@ applyNativeInstallPlan repoRoot bootstrapSettings withEdge (machineId, prodboxId
                   , ensureMinioRuntime repoRoot SubstrateHomeLocal MinioSteadyStateHarbor
                   , ensureGatewayMinioBootstrap repoRoot
                   , ensureGatewayChartReady repoRoot settings SubstrateHomeLocal
+                  , ensureRootChartNamespaceGuardrails repoRoot settings
                   , ensureAdminPublicEdgeRoutes repoRoot settings SubstrateHomeLocal prodboxId labelValue
                   , reconcileManagedAnnotations repoRoot prodboxId labelValue
                   ]
@@ -2701,13 +2707,13 @@ renderMinioChartArgs substrate _imageSource =
 -- | Substrate-specific MinIO storage args for the @data@ volumeClaimTemplate:
 -- both substrates use the retained @manual@ StorageClass. Home binds to the
 -- hostPath PV at @.data/prodbox/minio/0@; AWS binds to the pre-created EBS
--- volume lifted in as a static CSI PV (bounded at 20 GiB to keep test-substrate
--- EBS cost predictable).
+-- volume lifted in as a static CSI PV. Both are bounded at 20 GiB so the
+-- default full-workflow resource plan fits a small single-node host.
 minioSubstratePersistenceArgs :: Substrate -> [String]
 minioSubstratePersistenceArgs substrate =
   case substrate of
     SubstrateHomeLocal ->
-      ["--set", "storage.className=manual", "--set", "storage.size=200Gi"]
+      ["--set", "storage.className=manual", "--set", "storage.size=20Gi"]
     SubstrateAws ->
       ["--set", "storage.className=manual", "--set", "storage.size=20Gi"]
 
@@ -3892,33 +3898,66 @@ ensureGatewayChartReadyForSubstrate repoRoot settings substrate = do
 ensureGatewayChartReadyCredentialed
   :: FilePath -> ValidatedSettings -> Substrate -> IO ExitCode
 ensureGatewayChartReadyCredentialed repoRoot settings substrate = do
-  secretsResult <- resolveChartSecrets repoRoot gatewayNamespace
-  case secretsResult of
-    Left err -> failWith err
-    Right chartSecrets -> do
-      planResult <-
-        buildChartDeploymentPlanForSubstrate
-          substrate
-          repoRoot
-          settings
-          gatewayNamespace
-          chartSecrets
-          Map.empty
-      case planResult of
+  namespaceExit <- ensureGatewayBootstrapNamespaceOwnership repoRoot
+  case namespaceExit of
+    ExitFailure _ -> pure namespaceExit
+    ExitSuccess -> do
+      secretsResult <- resolveChartSecrets repoRoot gatewayNamespace
+      case secretsResult of
         Left err -> failWith err
-        Right plan -> do
-          deployResult <- deployChartPlan plan
-          case deployResult of
+        Right chartSecrets -> do
+          planResult <-
+            buildChartDeploymentPlanForSubstrate
+              substrate
+              repoRoot
+              settings
+              gatewayNamespace
+              chartSecrets
+              Map.empty
+          case planResult of
             Left err -> failWith err
-            Right report -> do
-              writeOutputLine report
-              firewallExit <- case substrate of
-                SubstrateHomeLocal ->
-                  runHostFirewallGatewayRestrictOptional defaultGatewayNodePort
-                _ -> pure ExitSuccess
-              case firewallExit of
-                ExitFailure _ -> pure firewallExit
-                ExitSuccess -> pure ExitSuccess
+            Right plan -> do
+              deployResult <- deployChartPlan plan
+              case deployResult of
+                Left err -> failWith err
+                Right report -> do
+                  writeOutputLine report
+                  firewallExit <- case substrate of
+                    SubstrateHomeLocal ->
+                      runHostFirewallGatewayRestrictOptional defaultGatewayNodePort
+                    _ -> pure ExitSuccess
+                  case firewallExit of
+                    ExitFailure _ -> pure firewallExit
+                    ExitSuccess -> pure ExitSuccess
+
+ensureGatewayBootstrapNamespaceOwnership :: FilePath -> IO ExitCode
+ensureGatewayBootstrapNamespaceOwnership repoRoot =
+  kubectlApplyJsonManifest
+    repoRoot
+    "gateway-bootstrap-namespaces"
+    (map gatewayBootstrapNamespaceManifest gatewayBootstrapNamespaces)
+
+gatewayBootstrapNamespaceManifest :: String -> Value
+gatewayBootstrapNamespaceManifest namespace =
+  object
+    [ "apiVersion" .= ("v1" :: String)
+    , "kind" .= ("Namespace" :: String)
+    , "metadata"
+        .= object
+          [ "name" .= namespace
+          , "labels"
+              .= object
+                [ "app.kubernetes.io/managed-by" .= ("Helm" :: String)
+                , "prodbox.io/created-by" .= ("gateway-chart-rbac-bootstrap" :: String)
+                ]
+          , "annotations"
+              .= object
+                [ "meta.helm.sh/release-name" .= gatewayNamespace
+                , "meta.helm.sh/release-namespace" .= gatewayNamespace
+                , "helm.sh/resource-policy" .= ("keep" :: String)
+                ]
+          ]
+    ]
 
 ensureAdminPublicEdgeRoutes
   :: FilePath -> ValidatedSettings -> Substrate -> String -> String -> IO ExitCode
@@ -5334,6 +5373,129 @@ kubectlApplyJsonManifest repoRoot prefix items =
         case processExitCode output of
           ExitSuccess -> pure ExitSuccess
           ExitFailure _ -> failWith ("kubectl apply failed: " ++ outputDetail output)
+
+ensureRootChartNamespaceGuardrails :: FilePath -> ValidatedSettings -> IO ExitCode
+ensureRootChartNamespaceGuardrails repoRoot settings = do
+  credentialGate <- resolveOperationalAwsCredentialGate repoRoot settings
+  case credentialGate of
+    OperationalAwsCredentialsAbsent _ -> do
+      writeOutputLine
+        ( "Skipping root chart namespace guardrails: operational aws.* is empty or"
+            ++ " missing in Vault, so the gateway chart namespace bootstrap was skipped."
+        )
+      pure ExitSuccess
+    OperationalAwsCredentialsInvalid err ->
+      failWith ("load operational AWS credentials from Vault: " ++ err)
+    OperationalAwsCredentialsReady ->
+      case rootChartNamespaceGuardrailItems plan of
+        Left err -> failWith err
+        Right items -> kubectlApplyJsonManifest repoRoot "root-chart-namespace-guardrails" items
+ where
+  plan = Capacity.resource_plan (capacity (validatedConfig settings))
+
+rootChartNamespaceGuardrailItems :: Capacity.ResourcePlan -> Either String [Value]
+rootChartNamespaceGuardrailItems plan =
+  fmap concat (traverse (rootChartNamespaceGuardrailItemsFor plan) dormantRootChartNamespaces)
+
+dormantRootChartNamespaces :: [String]
+dormantRootChartNamespaces =
+  -- `vscode`, `api`, `websocket`, and `gateway` render their guardrails from
+  -- active Helm releases. `keycloak` is also a supported root chart, but the
+  -- canonical workflow normally consumes it as the `vscode` dependency; keep
+  -- the standalone namespace capped without deploying a duplicate workload.
+  ["keycloak"]
+
+rootChartNamespaceGuardrailItemsFor :: Capacity.ResourcePlan -> String -> Either String [Value]
+rootChartNamespaceGuardrailItemsFor plan namespace = do
+  namespaceQuota <- requireGuardrailNamespaceQuota plan namespace
+  limitEnvelope <- requireGuardrailLimitEnvelope plan namespace
+  pure
+    [ rootChartResourceQuotaManifest namespace namespaceQuota
+    , rootChartLimitRangeManifest namespace limitEnvelope
+    ]
+
+requireGuardrailNamespaceQuota
+  :: Capacity.ResourcePlan -> String -> Either String Capacity.NamespaceQuota
+requireGuardrailNamespaceQuota plan namespace =
+  case find ((== Text.pack namespace) . Capacity.namespace_name) (Capacity.namespace_quotas plan) of
+    Just namespaceQuota -> Right namespaceQuota
+    Nothing -> Left ("capacity.resource_plan is missing namespace quota `" ++ namespace ++ "`")
+
+requireGuardrailLimitEnvelope
+  :: Capacity.ResourcePlan -> String -> Either String Capacity.ResourceEnvelope
+requireGuardrailLimitEnvelope plan namespace =
+  case find ((== Text.pack namespace) . Capacity.profile_namespace) (Capacity.workload_profiles plan) of
+    Just profile -> Right (Capacity.resources profile)
+    Nothing -> Left ("capacity.resource_plan has no workload profile for namespace `" ++ namespace ++ "`")
+
+rootChartResourceQuotaManifest :: String -> Capacity.NamespaceQuota -> Value
+rootChartResourceQuotaManifest namespace namespaceQuota =
+  object
+    [ "apiVersion" .= ("v1" :: String)
+    , "kind" .= ("ResourceQuota" :: String)
+    , "metadata" .= rootChartGuardrailMetadata namespace (namespace ++ "-resource-quota")
+    , "spec" .= resourceQuotaSpec (Capacity.quota namespaceQuota)
+    ]
+
+rootChartLimitRangeManifest :: String -> Capacity.ResourceEnvelope -> Value
+rootChartLimitRangeManifest namespace envelope =
+  object
+    [ "apiVersion" .= ("v1" :: String)
+    , "kind" .= ("LimitRange" :: String)
+    , "metadata" .= rootChartGuardrailMetadata namespace (namespace ++ "-limit-range")
+    , "spec"
+        .= object
+          [ "limits"
+              .= [ object
+                     [ "type" .= ("Container" :: String)
+                     , "default" .= runtimeResourceVectorValue (Capacity.limit envelope)
+                     , "defaultRequest" .= runtimeResourceVectorValue (Capacity.request envelope)
+                     ]
+                 ]
+          ]
+    ]
+
+rootChartGuardrailMetadata :: String -> String -> Value
+rootChartGuardrailMetadata namespace name =
+  object
+    [ "name" .= name
+    , "namespace" .= namespace
+    , "annotations"
+        .= object
+          [ "meta.helm.sh/release-name" .= namespace
+          , "meta.helm.sh/release-namespace" .= namespace
+          ]
+    , "labels"
+        .= object
+          [ "app.kubernetes.io/name" .= namespace
+          , "app.kubernetes.io/instance" .= namespace
+          , "app.kubernetes.io/managed-by" .= ("Helm" :: String)
+          , "prodbox.io/chart-root" .= namespace
+          ]
+    ]
+
+resourceQuotaSpec :: Capacity.ResourceVector -> Value
+resourceQuotaSpec vector =
+  object
+    [ "hard"
+        .= object
+          [ "requests.cpu" .= cpuQuantity (Capacity.milli_cpu vector)
+          , "limits.cpu" .= cpuQuantity (Capacity.milli_cpu vector)
+          , "requests.memory" .= memoryQuantity (Capacity.memory_mib vector)
+          , "limits.memory" .= memoryQuantity (Capacity.memory_mib vector)
+          , "requests.ephemeral-storage" .= memoryQuantity (Capacity.ephemeral_storage_mib vector)
+          , "limits.ephemeral-storage" .= memoryQuantity (Capacity.ephemeral_storage_mib vector)
+          , "requests.storage" .= memoryQuantity (Capacity.durable_storage_mib vector)
+          ]
+    ]
+
+runtimeResourceVectorValue :: Capacity.ResourceVector -> Value
+runtimeResourceVectorValue vector =
+  object
+    [ "cpu" .= cpuQuantity (Capacity.milli_cpu vector)
+    , "memory" .= memoryQuantity (Capacity.memory_mib vector)
+    , "ephemeral-storage" .= memoryQuantity (Capacity.ephemeral_storage_mib vector)
+    ]
 
 awsCommandEnvironment
   :: FilePath -> [(String, String)] -> ValidatedSettings -> IO [(String, String)]

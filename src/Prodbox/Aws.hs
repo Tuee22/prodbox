@@ -314,6 +314,13 @@ data IamUserCleanupResult = IamUserCleanupResult
   }
   deriving (Eq, Show)
 
+data EksIamOrphanCleanupResult = EksIamOrphanCleanupResult
+  { eksIamOrphanCleanupSkippedReason :: Maybe Text
+  , eksIamOrphanCleanupDeletedPolicies :: [Text]
+  , eksIamOrphanCleanupDeletedRoles :: [Text]
+  }
+  deriving (Eq, Show)
+
 -- | Sprint 7.20: the observed AWS-side state of the operational @prodbox@
 -- IAM user AFTER teardown, fed to the pure teardown-completeness
 -- classifier 'residueFromProbe'. Both facts are carried independently so
@@ -503,6 +510,15 @@ prodboxIamUserName = "prodbox"
 
 prodboxIamInlinePolicyName :: Text
 prodboxIamInlinePolicyName = "prodbox-inline"
+
+awsEksFixedIamPolicyName :: Text
+awsEksFixedIamPolicyName = "aws-eks-test-aws-lb-controller"
+
+awsEksFixedIamRoleNames :: [Text]
+awsEksFixedIamRoleNames =
+  [ "aws-eks-test-aws-lb-controller"
+  , "aws-eks-test-ebs-csi-driver"
+  ]
 
 operationalCredentialReadyAttempts :: Int
 operationalCredentialReadyAttempts = 30
@@ -1161,6 +1177,7 @@ runAwsIamHarnessSetup :: FilePath -> PolicyTier -> IO String
 runAwsIamHarnessSetup repoRoot policyTier = do
   credentials <- loadHarnessAdminCredentials repoRoot
   existingIdentity <- probeConfiguredOperationalIdentity repoRoot
+  eksIamOrphanCleanup <- cleanupAwsEksIamOrphans repoRoot credentials
   preflightTeardownResult <-
     applyAwsTeardown
       repoRoot
@@ -1221,6 +1238,7 @@ runAwsIamHarnessSetup repoRoot policyTier = do
   pure
     ( renderAwsIamHarnessSetupReport
         existingIdentity
+        eksIamOrphanCleanup
         preflightTeardown
         preflightAssociatedCleanup
         preflightConfigCleared
@@ -2900,6 +2918,272 @@ parseHostedZoneChoice value = do
       , hostedZoneChoiceName = Text.dropWhileEnd (== '.') zoneNameValue
       }
 
+cleanupAwsEksIamOrphans :: FilePath -> Credentials -> IO EksIamOrphanCleanupResult
+cleanupAwsEksIamOrphans repoRoot adminCredentials = do
+  perRunResidue <- queryPerRunResidueStatuses repoRoot
+  let eksStatus = perRunAwsEksTest perRunResidue
+  if not (ResidueStatus.isResidueAbsent eksStatus)
+    then
+      pure
+        EksIamOrphanCleanupResult
+          { eksIamOrphanCleanupSkippedReason =
+              Just
+                ( Text.pack
+                    ( "aws-eks-test Pulumi state is "
+                        ++ ResidueStatus.renderResidueStatus eksStatus
+                    )
+                )
+          , eksIamOrphanCleanupDeletedPolicies = []
+          , eksIamOrphanCleanupDeletedRoles = []
+          }
+    else do
+      accountIdValue <- awsCallerAccountId repoRoot adminCredentials
+      let policyArnValue = awsEksFixedIamPolicyArn accountIdValue
+      policyDeleted <-
+        deleteManagedPolicyIfPresent
+          repoRoot
+          adminCredentials
+          policyArnValue
+          awsEksFixedIamRoleNames
+      deletedRoles <-
+        fmap concat $
+          forM awsEksFixedIamRoleNames $
+            \roleName -> do
+              deleted <- deleteRoleIfPresent repoRoot adminCredentials roleName
+              pure [roleName | deleted]
+      pure
+        EksIamOrphanCleanupResult
+          { eksIamOrphanCleanupSkippedReason = Nothing
+          , eksIamOrphanCleanupDeletedPolicies =
+              [awsEksFixedIamPolicyName | policyDeleted]
+          , eksIamOrphanCleanupDeletedRoles = deletedRoles
+          }
+
+awsCallerAccountId :: FilePath -> Credentials -> IO Text
+awsCallerAccountId repoRoot adminCredentials = do
+  payload <-
+    decodeJsonCommand
+      repoRoot
+      adminCredentials
+      ["sts", "get-caller-identity"]
+      "aws sts get-caller-identity"
+  payloadObject <- liftAwsEither (requireObject "aws sts get-caller-identity" payload)
+  liftAwsEither (requireTextField "aws sts get-caller-identity" "Account" payloadObject)
+
+awsEksFixedIamPolicyArn :: Text -> Text
+awsEksFixedIamPolicyArn accountIdValue =
+  "arn:aws:iam::" <> accountIdValue <> ":policy/" <> awsEksFixedIamPolicyName
+
+deleteManagedPolicyIfPresent :: FilePath -> Credentials -> Text -> [Text] -> IO Bool
+deleteManagedPolicyIfPresent repoRoot adminCredentials policyArnValue allowedRoleNames = do
+  entities <- listPolicyEntitiesIfPresent repoRoot adminCredentials policyArnValue
+  case entities of
+    Nothing -> pure False
+    Just (attachedRoles, attachedUsers, attachedGroups) -> do
+      let unexpectedRoles = filter (`notElem` allowedRoleNames) attachedRoles
+          unexpected =
+            map (("role/" <>) . Text.unpack) unexpectedRoles
+              ++ map (("user/" <>) . Text.unpack) attachedUsers
+              ++ map (("group/" <>) . Text.unpack) attachedGroups
+      unless (null unexpected) $
+        throwAws
+          ( "Refusing to delete fixed-name aws-eks IAM policy "
+              ++ Text.unpack policyArnValue
+              ++ " because it is attached outside the harness-owned role set: "
+              ++ intercalate ", " unexpected
+          )
+      mapM_
+        (\roleName -> detachRolePolicyIfPresent repoRoot adminCredentials roleName policyArnValue)
+        attachedRoles
+      deletePolicyIfPresent repoRoot adminCredentials policyArnValue
+
+listPolicyEntitiesIfPresent
+  :: FilePath -> Credentials -> Text -> IO (Maybe ([Text], [Text], [Text]))
+listPolicyEntitiesIfPresent repoRoot adminCredentials policyArnValue = do
+  output <-
+    runAwsCliCompleted
+      repoRoot
+      adminCredentials
+      [ "iam"
+      , "list-entities-for-policy"
+      , "--policy-arn"
+      , Text.unpack policyArnValue
+      ]
+  case processExitCode output of
+    ExitFailure _ ->
+      case awsErrorCode (errorDetail output) of
+        Just "NoSuchEntity" -> pure Nothing
+        _ -> throwAws ("aws iam list-entities-for-policy failed: " ++ errorDetail output)
+    ExitSuccess -> do
+      payload <- liftAwsEither (decodeJsonPayload "list-entities-for-policy" (processStdout output))
+      payloadObject <- liftAwsEither (requireObject "list-entities-for-policy" payload)
+      roles <-
+        liftAwsEither (requireEntityNames "list-entities-for-policy" "PolicyRoles" "RoleName" payloadObject)
+      users <-
+        liftAwsEither (requireEntityNames "list-entities-for-policy" "PolicyUsers" "UserName" payloadObject)
+      groups <-
+        liftAwsEither
+          (requireEntityNames "list-entities-for-policy" "PolicyGroups" "GroupName" payloadObject)
+      pure (Just (roles, users, groups))
+
+requireEntityNames :: String -> String -> String -> Object -> Either String [Text]
+requireEntityNames context fieldName entityNameField objectValue = do
+  entities <- requireArrayField context fieldName objectValue
+  forM (Vector.toList entities) $ \entityValue -> do
+    entityObject <- requireObject (context ++ "." ++ fieldName) entityValue
+    requireTextField (context ++ "." ++ fieldName) entityNameField entityObject
+
+detachRolePolicyIfPresent :: FilePath -> Credentials -> Text -> Text -> IO ()
+detachRolePolicyIfPresent repoRoot adminCredentials roleName policyArnValue = do
+  output <-
+    runAwsCliCompleted
+      repoRoot
+      adminCredentials
+      [ "iam"
+      , "detach-role-policy"
+      , "--role-name"
+      , Text.unpack roleName
+      , "--policy-arn"
+      , Text.unpack policyArnValue
+      ]
+  when
+    ( processExitCode output /= ExitSuccess
+        && awsErrorCode (errorDetail output) /= Just "NoSuchEntity"
+    )
+    $ throwAws ("aws iam detach-role-policy failed: " ++ errorDetail output)
+
+deletePolicyIfPresent :: FilePath -> Credentials -> Text -> IO Bool
+deletePolicyIfPresent repoRoot adminCredentials policyArnValue = do
+  output <-
+    runAwsCliCompleted
+      repoRoot
+      adminCredentials
+      [ "iam"
+      , "delete-policy"
+      , "--policy-arn"
+      , Text.unpack policyArnValue
+      ]
+  case processExitCode output of
+    ExitSuccess -> pure True
+    ExitFailure _ ->
+      case awsErrorCode (errorDetail output) of
+        Just "NoSuchEntity" -> pure False
+        _ -> throwAws ("aws iam delete-policy failed: " ++ errorDetail output)
+
+deleteRoleIfPresent :: FilePath -> Credentials -> Text -> IO Bool
+deleteRoleIfPresent repoRoot adminCredentials roleName = do
+  present <- roleExists repoRoot adminCredentials roleName
+  if not present
+    then pure False
+    else do
+      attachedPolicyArns <- listAttachedRolePolicies repoRoot adminCredentials roleName
+      mapM_
+        (\policyArnValue -> detachRolePolicyIfPresent repoRoot adminCredentials roleName policyArnValue)
+        attachedPolicyArns
+      inlinePolicyNames <- listRoleInlinePolicies repoRoot adminCredentials roleName
+      mapM_
+        (\policyName -> deleteRolePolicyIfPresent repoRoot adminCredentials roleName policyName)
+        inlinePolicyNames
+      deleteRoleOutput <-
+        runAwsCliCompleted
+          repoRoot
+          adminCredentials
+          [ "iam"
+          , "delete-role"
+          , "--role-name"
+          , Text.unpack roleName
+          ]
+      case processExitCode deleteRoleOutput of
+        ExitSuccess -> pure True
+        ExitFailure _ ->
+          case awsErrorCode (errorDetail deleteRoleOutput) of
+            Just "NoSuchEntity" -> pure False
+            _ -> throwAws ("aws iam delete-role failed: " ++ errorDetail deleteRoleOutput)
+
+roleExists :: FilePath -> Credentials -> Text -> IO Bool
+roleExists repoRoot adminCredentials roleName = do
+  output <-
+    runAwsCliCompleted
+      repoRoot
+      adminCredentials
+      [ "iam"
+      , "get-role"
+      , "--role-name"
+      , Text.unpack roleName
+      ]
+  case processExitCode output of
+    ExitSuccess -> pure True
+    ExitFailure _ ->
+      case awsErrorCode (errorDetail output) of
+        Just "NoSuchEntity" -> pure False
+        _ -> throwAws ("aws iam get-role failed: " ++ errorDetail output)
+
+listAttachedRolePolicies :: FilePath -> Credentials -> Text -> IO [Text]
+listAttachedRolePolicies repoRoot adminCredentials roleName = do
+  output <-
+    runAwsCliCompleted
+      repoRoot
+      adminCredentials
+      [ "iam"
+      , "list-attached-role-policies"
+      , "--role-name"
+      , Text.unpack roleName
+      ]
+  payloadText <- liftAwsEither (requireCommandSuccess "aws iam list-attached-role-policies" output)
+  payload <- liftAwsEither (decodeJsonPayload "list-attached-role-policies" payloadText)
+  payloadObject <- liftAwsEither (requireObject "list-attached-role-policies" payload)
+  attachedPolicies <-
+    liftAwsEither (requireArrayField "list-attached-role-policies" "AttachedPolicies" payloadObject)
+  forM (Vector.toList attachedPolicies) $ \policyValue -> do
+    policyObject <- liftAwsEither (requireObject "AttachedPolicies" policyValue)
+    liftAwsEither (requireTextField "AttachedPolicies" "PolicyArn" policyObject)
+
+listRoleInlinePolicies :: FilePath -> Credentials -> Text -> IO [Text]
+listRoleInlinePolicies repoRoot adminCredentials roleName = do
+  output <-
+    runAwsCliCompleted
+      repoRoot
+      adminCredentials
+      [ "iam"
+      , "list-role-policies"
+      , "--role-name"
+      , Text.unpack roleName
+      ]
+  payloadText <- liftAwsEither (requireCommandSuccess "aws iam list-role-policies" output)
+  payload <- liftAwsEither (decodeJsonPayload "list-role-policies" payloadText)
+  payloadObject <- liftAwsEither (requireObject "list-role-policies" payload)
+  liftAwsEither (requireTextArrayField "list-role-policies" "PolicyNames" payloadObject)
+
+requireTextArrayField :: String -> String -> Object -> Either String [Text]
+requireTextArrayField context fieldName objectValue = do
+  values <- requireArrayField context fieldName objectValue
+  mapM (requireTextArrayItem context fieldName) (Vector.toList values)
+
+requireTextArrayItem :: String -> String -> Value -> Either String Text
+requireTextArrayItem context fieldName value =
+  case value of
+    String textValue -> Right textValue
+    _ -> Left (context ++ "." ++ fieldName ++ " contains a non-string value")
+
+deleteRolePolicyIfPresent :: FilePath -> Credentials -> Text -> Text -> IO ()
+deleteRolePolicyIfPresent repoRoot adminCredentials roleName policyName = do
+  output <-
+    runAwsCliCompleted
+      repoRoot
+      adminCredentials
+      [ "iam"
+      , "delete-role-policy"
+      , "--role-name"
+      , Text.unpack roleName
+      , "--policy-name"
+      , Text.unpack policyName
+      ]
+  when
+    ( processExitCode output /= ExitSuccess
+        && awsErrorCode (errorDetail output) /= Just "NoSuchEntity"
+    )
+    $ throwAws ("aws iam delete-role-policy failed: " ++ errorDetail output)
+
 listOperationalAccessKeys :: FilePath -> Credentials -> IO [Text]
 listOperationalAccessKeys repoRoot adminCredentials =
   listUserAccessKeys repoRoot adminCredentials prodboxIamUserName
@@ -3425,14 +3709,16 @@ renderAwsTeardownResult result =
 
 renderAwsIamHarnessSetupReport
   :: OperationalIdentityProbe
+  -> EksIamOrphanCleanupResult
   -> IamTeardownResult
   -> Maybe IamUserCleanupResult
   -> Bool
   -> IamSetupResult
   -> String
-renderAwsIamHarnessSetupReport identityProbe preflightTeardown preflightAssociatedCleanup preflightConfigCleared setupResult =
+renderAwsIamHarnessSetupReport identityProbe eksIamOrphanCleanup preflightTeardown preflightAssociatedCleanup preflightConfigCleared setupResult =
   concat
     [ renderOperationalIdentityProbe identityProbe
+    , renderEksIamOrphanCleanup eksIamOrphanCleanup
     , renderAwsTeardownResult preflightTeardown
     , renderAssociatedCleanup preflightAssociatedCleanup
     , "PREFLIGHT_OPERATIONAL_CONFIG_CLEARED="
@@ -3451,6 +3737,25 @@ renderAwsIamHarnessSetupReport identityProbe preflightTeardown preflightAssociat
       , "PREEXISTING_ASSOCIATED_USER_DELETED_ACCESS_KEYS="
           ++ show (length (iamUserCleanupDeletedAccessKeys cleanupResult))
       ]
+
+  renderEksIamOrphanCleanup :: EksIamOrphanCleanupResult -> String
+  renderEksIamOrphanCleanup cleanup =
+    case eksIamOrphanCleanupSkippedReason cleanup of
+      Just reasonValue ->
+        unlines
+          [ "PREFLIGHT_EKS_IAM_ORPHAN_CLEANUP=skipped"
+          , "PREFLIGHT_EKS_IAM_ORPHAN_CLEANUP_SKIP_REASON=" ++ Text.unpack reasonValue
+          , "PREFLIGHT_EKS_IAM_ORPHAN_POLICIES_DELETED=0"
+          , "PREFLIGHT_EKS_IAM_ORPHAN_ROLES_DELETED=0"
+          ]
+      Nothing ->
+        unlines
+          [ "PREFLIGHT_EKS_IAM_ORPHAN_CLEANUP=ran"
+          , "PREFLIGHT_EKS_IAM_ORPHAN_POLICIES_DELETED="
+              ++ show (length (eksIamOrphanCleanupDeletedPolicies cleanup))
+          , "PREFLIGHT_EKS_IAM_ORPHAN_ROLES_DELETED="
+              ++ show (length (eksIamOrphanCleanupDeletedRoles cleanup))
+          ]
 
 renderOperationalIdentityProbe :: OperationalIdentityProbe -> String
 renderOperationalIdentityProbe probe =

@@ -36,6 +36,8 @@ spec:
               value: {{ .Values.pulsar.clusterName | quote }}
             - name: PULSAR_PREFIX_advertisedAddress
               value: pulsar
+            - name: PULSAR_MEM
+              value: {{ .Values.pulsar.memoryOptions | quote }}
           ports:
             - name: broker
               containerPort: {{ .Values.pulsar.brokerPort }}

@@ -35,7 +35,7 @@ Clean-room sequencing, completion status, remaining work, and cleanup ownership 
   doctrine with in-image `ghcup`, pinned GHC `9.12.4`, no symlinked Haskell tool shims, `tini` as
   PID 1, and the official AWS CLI bundle from the image's native Debian architecture (the gateway
   daemon shells out to `aws route53 ...` for DNS writes). The supported custom-image publish path
-  uses ordinary host-native `docker build` plus `docker push` to the canonical Harbor endpoint
+  uses ordinary host-native `docker build` plus `docker push` to the canonical in-cluster registry endpoint (`127.0.0.1:30080`)
   `127.0.0.1:30080`.
 - The build uses **basic `docker` commands only** with the daemon's default builder. There is no
   supported `docker buildx`, no `docker-container`-driver builder, and no multi-arch publication

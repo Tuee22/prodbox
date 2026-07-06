@@ -819,11 +819,12 @@ integrationCliSuite = do
         kubectlRecord `shouldContain` "get|storageclass|-o|name"
         kubectlRecord
           `shouldContain` "delete|storageclass|storageclass.storage.k8s.io/local-path|--ignore-not-found=true"
+        -- registry:2 is applied as a plain Deployment + NodePort Service (no
+        -- Harbor nginx `/readyz` readiness patch); reconcile waits for the
+        -- Deployment to become Available.
+        kubectlRecord `shouldNotContain` "harbor-nginx"
         kubectlRecord
-          `shouldContain` "patch|configmap|harbor-nginx|-n|harbor|--type|merge|--field-manager=helm|--patch|"
-        kubectlRecord
-          `shouldContain` "patch|deployment|harbor-nginx|-n|harbor|--type|strategic|--field-manager=helm|--patch|"
-        kubectlRecord `shouldContain` "/readyz"
+          `shouldContain` "wait|--for=condition=Available|deployment/registry|-n|harbor|--timeout=300s"
         kubectlRecord `shouldContain` "annotate|namespace/prodbox|prodbox.io/id=prodbox-"
         kubectlRecord `shouldContain` "label|namespace/prodbox|prodbox.io/id=prodbox-"
         kubectlRecord
@@ -861,11 +862,19 @@ integrationCliSuite = do
         applyHarborBootstrap `shouldContain` "s3:ListMultipartUploadParts"
         applyHarborBootstrap `shouldContain` "s3:ListBucketMultipartUploads"
         applyHarborBootstrap `shouldContain` "mc admin policy rm local prodbox-harbor-registry-policy"
-        applyAdminRoutes <- readAppliedManifestContaining rke2StateDir "harbor-ui"
-        applyAdminRoutes `shouldContain` "harbor-ui"
+        -- The registry:2 runtime manifest: Deployment pulling registry:2, its
+        -- config.yml ConfigMap, and the S3 storage Secret consumed via envFrom.
+        applyRegistryRuntime <- readAppliedManifestContaining rke2StateDir "registry:2"
+        applyRegistryRuntime `shouldContain` "registry:2"
+        applyRegistryRuntime `shouldContain` "config.yml"
+        applyRegistryRuntime `shouldContain` harborRegistryStorageSecretName
+        applyRegistryRuntime `shouldContain` "nodePort"
+        -- registry:2 has no web UI, so only the MinIO console admin route remains.
+        applyAdminRoutes <- readAppliedManifestContaining rke2StateDir "minio-console"
         applyAdminRoutes `shouldContain` "minio-console"
-        applyAdminRoutes `shouldContain` "harbor-oidc"
         applyAdminRoutes `shouldContain` "minio-oidc"
+        applyAdminRoutes `shouldNotContain` "harbor-ui"
+        applyAdminRoutes `shouldNotContain` "harbor-oidc"
         applyAdminRoutes
           `shouldContain` "https://test.resolvefintech.com/auth/realms/prodbox/protocol/openid-connect/auth"
         applyAdminRoutes
@@ -886,17 +895,12 @@ integrationCliSuite = do
         helmRecord `shouldNotContain` "image.repository=127.0.0.1:30080/prodbox/minio-mirror"
         helmRecord `shouldNotContain` "mcImage.repository"
         helmRecord `shouldContain` "/charts/vault|--namespace|vault|--create-namespace"
-        helmRecord `shouldContain` "repo|add|harbor|https://helm.goharbor.io"
-        helmRecord `shouldContain` "upgrade|--install|harbor|harbor/harbor"
-        helmRecord `shouldContain` "harbor/harbor|--force-conflicts|--namespace|harbor"
-        helmRecord `shouldContain` "persistence.imageChartStorage.type=s3"
-        helmRecord `shouldContain` "persistence.imageChartStorage.disableredirect=true"
-        helmRecord
-          `shouldContain` ("persistence.imageChartStorage.s3.bucket=" ++ harborRegistryStorageBucket)
-        helmRecord
-          `shouldContain` ("persistence.imageChartStorage.s3.regionendpoint=" ++ minioClusterEndpoint)
-        helmRecord
-          `shouldContain` ("persistence.imageChartStorage.s3.existingSecret=" ++ harborRegistryStorageSecretName)
+        -- registry:2 replaces the Harbor helm stack: no helm repo/install for the
+        -- registry (it is a single kubectl-applied Deployment), just a best-effort
+        -- uninstall of any legacy Harbor release left on a rebuilt-in-place cluster.
+        helmRecord `shouldNotContain` "upgrade|--install|harbor|harbor/harbor"
+        helmRecord `shouldNotContain` "persistence.imageChartStorage.type=s3"
+        helmRecord `shouldContain` "uninstall|harbor|--namespace|harbor|--ignore-not-found"
         helmRecord `shouldContain` "repo|add|metallb|https://metallb.github.io/metallb"
         helmRecord `shouldContain` "upgrade|--install|metallb|metallb/metallb"
         helmRecord `shouldContain` "metallb/metallb|--force-conflicts|--version|0.14.9"
@@ -908,15 +912,14 @@ integrationCliSuite = do
         helmRecord `shouldNotContain` "uninstall|traefik|--namespace|traefik-system|--wait"
         helmRecord `shouldNotContain` "uninstall|postgres-operator|--namespace|postgres-operator|--wait"
         -- Sprint 7.25: MinIO is installed BEFORE Vault (cluster-only, serves the
-        -- unlock bundle before Vault unseal), and both precede Harbor.
+        -- unlock bundle before Vault unseal). Both precede the registry:2 runtime
+        -- (applied via kubectl, not helm).
         findRecordLineIndex "/charts/minio|--namespace|prodbox" helmRecord
           `shouldSatisfy` (< findRecordLineIndex "/charts/vault|--namespace|vault" helmRecord)
-        findRecordLineIndex "/charts/vault|--namespace|vault" helmRecord
-          `shouldSatisfy` (< findRecordLineIndex "upgrade|--install|harbor|harbor/harbor" helmRecord)
 
         dockerRecord <- readFile (tmpDir </> "fake-rke2-state" </> "docker.txt")
-        -- Sprint 1.47: NO `docker login` runs at all — Harbor auth is inline in the
-        -- ephemeral DOCKER_CONFIG, public pulls use the host docker.io login.
+        -- NO `docker login` runs at all — the registry:2 NodePort is anonymous, so
+        -- pushes carry no credential; public pulls use the host docker.io login.
         dockerRecord `shouldNotContain` "login|127.0.0.1:30080"
         dockerRecord `shouldNotContain` "buildx|"
         dockerRecord `shouldNotContain` "docker/bitnami-postgresql-repmgr.Dockerfile"
@@ -950,9 +953,11 @@ integrationCliSuite = do
 
         curlRecord <- readFile (tmpDir </> "fake-rke2-state" </> "curl.txt")
         curlRecord `shouldContain` "https://get.rke2.io"
-        curlRecord `shouldContain` "http://127.0.0.1:30080/readyz"
+        -- registry:2 readiness is a plain GET /v2/ probe — no Harbor /readyz
+        -- nginx endpoint and no /api/v2.0 projects REST reconcile.
         curlRecord `shouldContain` "http://127.0.0.1:30080/v2/"
-        curlRecord `shouldContain` "/api/v2.0/projects"
+        curlRecord `shouldNotContain` "http://127.0.0.1:30080/readyz"
+        curlRecord `shouldNotContain` "/api/v2.0/projects"
 
         pulumiRecordExists <- doesFileExist (tmpDir </> "fake-rke2-state" </> "pulumi.txt")
         pulumiRecordExists `shouldBe` False
@@ -3896,9 +3901,6 @@ harborRegistryStorageBucket = "prodbox-harbor-registry"
 
 harborRegistryStorageBootstrapJobName :: String
 harborRegistryStorageBootstrapJobName = "harbor-registry-bucket-init"
-
-minioClusterEndpoint :: String
-minioClusterEndpoint = "http://minio.prodbox.svc.cluster.local:9000"
 
 readAppliedManifestContaining :: FilePath -> String -> IO String
 readAppliedManifestContaining stateDir needle = do

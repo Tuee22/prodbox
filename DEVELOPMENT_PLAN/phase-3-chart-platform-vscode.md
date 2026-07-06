@@ -593,10 +593,11 @@ one public hostname, one DNS entry, and one certificate.
 
 ### Current Validation State
 
-- `src/Prodbox/CLI/Rke2.hs` now renders the supported Harbor and MinIO `HTTPRoute` plus
-  `SecurityPolicy` resources behind Envoy on `/harbor` and `/minio`.
+- `src/Prodbox/CLI/Rke2.hs` now renders the supported MinIO console `HTTPRoute` plus
+  `SecurityPolicy` resources behind Envoy on `/minio` (the in-cluster `registry:2` registry has no
+  web UI, so there is no `/harbor` admin route).
 - `src/Prodbox/PublicEdge.hs` now centralizes the supported `/auth`, `/vscode`, `/api`, `/ws`,
-  `/harbor`, and `/minio` path catalog used by the shared-host admin manifests, host
+  and `/minio` path catalog used by the shared-host admin manifests, host
   diagnostics, and named validation surfaces.
 - `src/Prodbox/TestPlan.hs` and `src/Prodbox/TestValidation.hs` now expose
   `prodbox test integration admin-routes` as the named external validation surface for the
@@ -1790,7 +1791,7 @@ inventory test is updated, and `Prodbox.CLI.Rke2.ensureVaultRuntime` is the real
 The AWS-substrate platform runtime now also calls the same Vault chart helper through
 `Prodbox.Lib.AwsSubstratePlatform.ensureAwsSubstrateVaultRuntime`, sequenced after the AWS
 LoadBalancer/Envoy/cert-manager/ACME layer and before the storage/registry bootstrap. Unit coverage
-pins the canonical 17-step AWS platform sequence and asserts Vault precedes MinIO/Harbor bootstrap,
+pins the canonical 17-step AWS platform sequence and asserts Vault precedes MinIO/registry bootstrap,
 so `ComponentVault` is not only declared but actually installed by both substrate reconcilers.
 
 **LIVE-VALIDATED 2026-06-12.** `prodbox cluster reconcile` stood up RKE2 (`v1.35.5+rke2r2`, node

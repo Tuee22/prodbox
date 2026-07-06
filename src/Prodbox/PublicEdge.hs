@@ -6,7 +6,6 @@ module Prodbox.PublicEdge
   , apiPathPrefix
   , authPathPrefix
   , canonicalPublicRouteCatalog
-  , harborPathPrefix
   , identityIssuerUrl
   , minioPathPrefix
   , publicEdgeClusterIssuerName
@@ -54,7 +53,6 @@ data PublicEdgeRoute
   | PublicRouteVscode
   | PublicRouteApi
   | PublicRouteWebsocket
-  | PublicRouteHarbor
   | PublicRouteMinio
   deriving (Eq, Show)
 
@@ -73,9 +71,6 @@ websocketPathPrefix = "/ws"
 websocketOidcPathPrefix :: String
 websocketOidcPathPrefix = websocketPathPrefix ++ "/oidc"
 
-harborPathPrefix :: String
-harborPathPrefix = "/harbor"
-
 minioPathPrefix :: String
 minioPathPrefix = "/minio"
 
@@ -85,12 +80,11 @@ canonicalPublicRouteCatalog =
   , PublicRouteVscode
   , PublicRouteApi
   , PublicRouteWebsocket
-  , PublicRouteHarbor
   , PublicRouteMinio
   ]
 
 adminPublicRoutes :: [PublicEdgeRoute]
-adminPublicRoutes = [PublicRouteHarbor, PublicRouteMinio]
+adminPublicRoutes = [PublicRouteMinio]
 
 publicRoutePathPrefix :: PublicEdgeRoute -> String
 publicRoutePathPrefix route =
@@ -99,7 +93,6 @@ publicRoutePathPrefix route =
     PublicRouteVscode -> vscodePathPrefix
     PublicRouteApi -> apiPathPrefix
     PublicRouteWebsocket -> websocketPathPrefix
-    PublicRouteHarbor -> harborPathPrefix
     PublicRouteMinio -> minioPathPrefix
 
 publicFqdn :: ValidatedSettings -> String
@@ -282,5 +275,4 @@ renderRouteName route =
     PublicRouteVscode -> "vscode"
     PublicRouteApi -> "api"
     PublicRouteWebsocket -> "websocket"
-    PublicRouteHarbor -> "harbor"
     PublicRouteMinio -> "minio"

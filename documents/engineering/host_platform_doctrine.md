@@ -26,7 +26,7 @@ generalizes: "the substrate is a fact about the host, not a knob." prodbox mirro
 `HostBootstrap.Substrate`, `HostBootstrap.HostTool`, `HostBootstrap.Lift`, and
 `HostBootstrap.Ensure` structurally, with **no code dependency**. This is the mirror-now,
 refactor-onto-`hostbootstrap`-later posture already established for the registry-credential seam in
-[local_registry_pipeline.md § 6.1](./local_registry_pipeline.md#61-host-docker-cli-auth-isolation-harbor-login-vs-the-operators-docker-hub-login).
+[local_registry_pipeline.md § 6.1](./local_registry_pipeline.md#61-host-docker-cli-auth-isolation-registry-push-vs-the-operators-docker-hub-login).
 
 Sprint `1.52` landed the multi-OS host-provider config/detection surface: the `HostSubstrate`
 detector, the closed `HostTool` / `AbsExe` surface, the `LiftLayer` fold, pure host-gated
@@ -155,7 +155,7 @@ macOS or Windows the host binary has no Linux Docker frame; host-frame Docker fa
 `docker run` happens only *inside* the Lima or WSL2 frame. This mirrors the fail-stub shape of
 `HostBootstrap.Registry.withEphemeralDockerConfig` — the seam prodbox mirrors as
 `Prodbox.DockerConfig.withEphemeralDockerConfig`
-([local_registry_pipeline.md § 6.1](./local_registry_pipeline.md#61-host-docker-cli-auth-isolation-harbor-login-vs-the-operators-docker-hub-login)).
+([local_registry_pipeline.md § 6.1](./local_registry_pipeline.md#61-host-docker-cli-auth-isolation-registry-push-vs-the-operators-docker-hub-login)).
 
 ```haskell
 -- Example: host-frame docker is OS-gated. On non-Linux hosts it fails rather
@@ -260,7 +260,7 @@ This SSoT owns the host-platform doctrine intention.
 ## Cross-References
 
 - [cluster_topology_doctrine.md](./cluster_topology_doctrine.md) — cluster/node topology (the frame's contents)
-- [local_registry_pipeline.md § 6.1](./local_registry_pipeline.md#61-host-docker-cli-auth-isolation-harbor-login-vs-the-operators-docker-hub-login) — the mirrored registry-credential seam and rule-j fail-stub
+- [local_registry_pipeline.md § 6.1](./local_registry_pipeline.md#61-host-docker-cli-auth-isolation-registry-push-vs-the-operators-docker-hub-login) — the mirrored registry-credential seam and rule-j fail-stub
 - [prerequisite_doctrine.md](./prerequisite_doctrine.md) — the fail-fast host gate this relaxes
 - [resource_scaling_doctrine.md](./resource_scaling_doctrine.md) — the host-capacity budget, RKE2 reservations, and runtime guardrails evaluated inside the selected Linux frame
 - [pure_fp_standards.md](./pure_fp_standards.md) — smart constructors, exhaustive-ADT state, Plan / Apply

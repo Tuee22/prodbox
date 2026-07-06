@@ -706,20 +706,20 @@ Containerization is first-class for integration/runtime image publishing:
   the gateway chart only after the Vault-backed operational `aws.*` credential gate resolves, and a
   bare local reconcile skips the chart cleanly when `secret/gateway/gateway/aws` has not yet been
   materialized
-- the publish path runs an ordinary host-native `docker build`, then pushes the resulting Harbor
+- the publish path runs an ordinary host-native `docker build`, then pushes the resulting registry
   tags from the repo-owned single-stage `ubuntu:24.04` Dockerfile with in-image `ghcup` and
   pinned GHC `9.12.4`
-- Harbor is the supported source for the gateway workload image, and the host-arch variant is
+- The in-cluster registry (registry:2) is the supported source for the gateway workload image, and the host-arch variant is
   pulled back into local Docker before import into the RKE2 containerd cache
-- Kubernetes pod integration tests run against that Harbor-published image by default
+- Kubernetes pod integration tests run against that registry-published image by default
 - The gateway workload image reference is pinned in code (the canonical
-  `127.0.0.1:30080/prodbox/...` Harbor ref, shared across both substrates),
+  `127.0.0.1:30080/prodbox/...` registry ref, shared across both substrates),
   not selected by an operator config field or environment variable. There is
   no `gateway.image_override` (or equivalent) config knob — the Dhall config
   carries no image field, and image pinning is a code constant, not operator
   input
 
-See [Local Registry Pipeline](./local_registry_pipeline.md) for Harbor install,
+See [Local Registry Pipeline](./local_registry_pipeline.md) for the registry install,
 native-host-architecture publish flow, explicit public-image reconcile, and RKE2 registry behavior.
 
 ### CLI Management

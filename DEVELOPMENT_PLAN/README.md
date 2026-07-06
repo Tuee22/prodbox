@@ -3260,11 +3260,11 @@ The authoritative target still closes on:
   scheduled as Phase 4 Sprints 4.20–4.22 and Phase 7 Sprint 7.8)
 - one direct `Dhall -> Haskell types` config contract rooted at operator-authored
   `prodbox-config.dhall`
-- one Harbor-first local lifecycle that reconciles MetalLB, Envoy Gateway, cert-manager, Harbor,
-  MinIO, and the Percona PostgreSQL operator on the supported self-managed cluster path
+- one local lifecycle that reconciles MetalLB, Envoy Gateway, cert-manager, the in-cluster registry
+  (`registry:2`), MinIO, and the Percona PostgreSQL operator on the supported self-managed cluster path
 - one supported public-edge doctrine where every externally reachable application or dashboard sits
   behind Envoy Gateway on `test.resolvefintech.com`, distinguished only by explicit path prefixes
-  such as `/auth`, `/vscode`, `/api`, `/ws`, `/harbor`, and `/minio`, protected by Keycloak-
+  such as `/auth`, `/vscode`, `/api`, `/ws`, and `/minio`, protected by Keycloak-
   backed JWT auth or RBAC, covered by one Route 53 record plus one listener certificate, and
   fronted by a port `80` HTTP listener that only redirects to HTTPS
 - one native-host-architecture lifecycle image-publication doctrine where `amd64` hosts build and
@@ -3760,7 +3760,7 @@ implemented baseline surfaces remain current on the supported path:
   chart-workload contract unless a later doctrine revision expands that path.
 - `src/Prodbox/PublicEdge.hs` now centralizes the shared-host route catalog and issuer derivation
   consumed by lifecycle, DNS, chart, host-diagnostic, and native validation surfaces, keeping
-  `/auth`, `/vscode`, `/api`, `/ws`, `/harbor`, and `/minio` aligned on one Haskell-owned
+  `/auth`, `/vscode`, `/api`, `/ws`, and `/minio` aligned on one Haskell-owned
   public-edge contract.
 - Root `README.md` plus the governed public-edge, gateway, chart-platform, registry, and testing
   doctrine docs now describe that same supported route catalog and command surface, and the

@@ -110,7 +110,8 @@ validation environments.
   substrate-aware installers.
 - The current shipped edge workloads share the single public hostname
   `test.resolvefintech.com`, with Keycloak on `/auth`, `vscode` on `/vscode`, the API on `/api`,
-  the WebSocket workload on `/ws`, Harbor on `/harbor`, and MinIO console on `/minio`.
+  the WebSocket workload on `/ws`, and the MinIO console on `/minio`. The in-cluster registry has
+  no web UI and therefore no public-edge route.
 - The Haskell `prodbox gateway ...` command group and `charts reconcile gateway` manage the separate
   distributed gateway daemon; they are not the Envoy Gateway public edge controller.
 - Vault is the sole, finalized fail-closed secrets / KMS / PKI root of every prodbox-managed
@@ -156,14 +157,16 @@ The development-plan target architecture centers the local public edge on:
 The current codebase baseline still deploys and manages:
 
 - **RKE2** for the local Kubernetes lifecycle
-- **Harbor** for the local registry, Harbor-first steady-state workload sourcing with a narrow
-  public-registry bootstrap exception for Harbor storage-backend prerequisites, and native-host-
-  architecture image publication
+- **`registry:2`** (single-binary CNCF distribution) for the local registry — a `registry:2`
+  Deployment plus a NodePort Service (nodePort `30080`) applied with `kubectl apply` (no Helm),
+  with registry-backed steady-state workload sourcing, a narrow public-registry bootstrap exception
+  for the registry's MinIO/S3 storage-backend prerequisites, anonymous HTTP push, and native-host-
+  architecture image publication (its namespace and Service retain the historical `harbor` name)
 - **MinIO** for the local-cluster-first Pulumi backend
 - **MetalLB**, **Envoy Gateway**, **Gateway API**, and **cert-manager** for the current cluster
   edge implementation
 - **Percona Operator for PostgreSQL** for Helm-managed application databases, with namespace-local
-  three-replica synchronous Patroni clusters and Harbor-backed PostgreSQL sidecar images
+  three-replica synchronous Patroni clusters and registry-backed PostgreSQL sidecar images
 - **Route 53** for the single public A-record ownership contract
 - **Interactive onboarding** through `prodbox config setup`
 - **AWS IAM automation** through `prodbox aws ...`
@@ -192,7 +195,6 @@ Shared public hostname:
   https://test.resolvefintech.com/vscode -> Envoy-protected browser app
   https://test.resolvefintech.com/api    -> JWT-protected API
   https://test.resolvefintech.com/ws     -> JWT-protected WebSocket workload
-  https://test.resolvefintech.com/harbor -> Harbor admin surface
   https://test.resolvefintech.com/minio  -> MinIO console
 ```
 
@@ -212,8 +214,8 @@ Router port forwarding:
 
 The current worktree closes on the supported edge architecture. Today:
 
-- local `cluster reconcile` reconciles Harbor, MinIO, MetalLB, Envoy Gateway, cert-manager, and the
-  Percona PostgreSQL operator
+- local `cluster reconcile` reconciles the in-cluster registry (`registry:2`), MinIO, MetalLB,
+  Envoy Gateway, cert-manager, and the Percona PostgreSQL operator
 - the public `vscode` path uses Gateway API `HTTPRoute` plus Envoy Gateway `SecurityPolicy`
 - the public `api` route uses Gateway API `HTTPRoute` plus Envoy-local JWT validation and
   claim-based authorization
@@ -318,8 +320,8 @@ What this does:
 
 - `config setup` writes the supported Dhall config file.
 - `host ...` verifies the host toolchain, port availability, and firewall assumptions.
-- `cluster reconcile` reconciles the local substrate, including Harbor, MinIO, MetalLB, Envoy Gateway,
-  cert-manager, and the Percona PostgreSQL operator.
+- `cluster reconcile` reconciles the local substrate, including the in-cluster registry
+  (`registry:2`), MinIO, MetalLB, Envoy Gateway, cert-manager, and the Percona PostgreSQL operator.
 - `charts reconcile vscode` deploys the `vscode` stack plus its supported dependencies:
   `keycloak` and the internal `keycloak-postgres` Patroni release, with the browser path protected
   by Envoy Gateway and Keycloak on the shared `/auth` path.
@@ -327,7 +329,7 @@ What this does:
 - `charts reconcile websocket` deploys the shared-host WebSocket workload plus its internal Redis
   dependency on `/ws`.
 - `edge status` confirms Route 53, Envoy Gateway, Gateway API, and certificate readiness for
-  the shared browser, API, WebSocket, Harbor, and MinIO edge paths (the public edge uses the
+  the shared browser, API, WebSocket, and MinIO edge paths (the public edge uses the
   single ZeroSSL ACME issuer with retained-and-restored certificate material; see
   [acme_provider_guide.md](./documents/engineering/acme_provider_guide.md)).
 - `charts reconcile gateway` is optional for the separate Haskell distributed gateway daemon and is

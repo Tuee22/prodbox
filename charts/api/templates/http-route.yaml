@@ -5,9 +5,7 @@
 {{/* ROUTE vscode=/vscode */}}
 {{/* ROUTE api=/api */}}
 {{/* ROUTE websocket=/ws */}}
-{{/* ROUTE harbor=/harbor */}}
 {{/* ROUTE minio=/minio */}}
-{{/* ADMIN_ROUTE harbor=/harbor */}}
 {{/* ADMIN_ROUTE minio=/minio */}}
 {{/* prodbox:route-registry:end */}}
 apiVersion: gateway.networking.k8s.io/v1

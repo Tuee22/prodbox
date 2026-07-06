@@ -457,7 +457,7 @@ The target public-edge doctrine for that surface is defined in
 [Envoy Gateway Edge Doctrine](./envoy_gateway_edge_doctrine.md). `prodbox edge status`
 classifies Route 53 ownership, Envoy Gateway readiness, Gateway API attachment, HTTP redirect
 listener readiness, HTTPS listener readiness, redirect `HTTPRoute` acceptance, `SecurityPolicy`
-attachment, certificate readiness, the shared-host `/auth`, `/vscode`, `/api`, `/ws`, `/harbor`,
+attachment, certificate readiness, the shared-host `/auth`, `/vscode`, `/api`, `/ws`,
 and `/minio` routes, and readiness for named external proof.
 
 ### `prodbox cluster` notes
@@ -732,7 +732,7 @@ Named suite commands:
 | `prodbox test integration charts-vscode` | Native external `vscode` validation |
 | `prodbox test integration charts-api` | Native external API validation |
 | `prodbox test integration charts-websocket` | Native external WebSocket validation |
-| `prodbox test integration admin-routes` | Native shared-host Harbor and MinIO route validation |
+| `prodbox test integration admin-routes` | Native shared-host MinIO console route validation |
 | `prodbox test integration public-dns` | Native public DNS delegation validation |
 | `prodbox test integration keycloak-invite` | Native Keycloak operator-invite validation (Phase 8 invite flow) |
 

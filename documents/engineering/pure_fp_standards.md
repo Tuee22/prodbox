@@ -201,7 +201,7 @@ strings.
 Filesystem reads, environment reads, network calls, Kubernetes calls, Docker calls, and AWS CLI
 calls belong in the narrowest boundary that can own them.
 
-- A planner may decide that Harbor reconciliation is required.
+- A planner may decide that registry reconciliation is required.
 - The boundary layer performs `docker`, `kubectl`, `helm`, `aws`, or `curl`.
 - Output is translated back into typed success or failure for the caller.
 

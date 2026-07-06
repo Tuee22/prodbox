@@ -81,12 +81,12 @@ itself remains in-cluster on both substrates.
 
 The current repository closes on the implemented self-managed public-edge doctrine:
 
-1. `prodbox cluster reconcile` installs or reconciles Harbor, MinIO, MetalLB, Envoy Gateway, cert-manager, and the
+1. `prodbox cluster reconcile` installs or reconciles the in-cluster registry (registry:2), MinIO, MetalLB, Envoy Gateway, cert-manager, and the
    Percona PostgreSQL operator.
 2. The current MetalLB runtime supports config-selected L2 or BGP advertisement from repo-owned
    settings, rendered through `IPAddressPool` plus `L2Advertisement` on the L2 path and
    `BGPPeer` plus `BGPAdvertisement` on the BGP path.
-3. The current shipped public workloads are `vscode`, `api`, `websocket`, Harbor, and MinIO,
+3. The current shipped public workloads are `vscode`, `api`, `websocket`, and MinIO,
    each delivered through shared-host Gateway API `HTTPRoute` resources on
    `test.resolvefintech.com`.
 4. The supported shared public edge is owned by the `keycloak` chart: the `keycloak` stack
@@ -102,14 +102,14 @@ The current repository closes on the implemented self-managed public-edge doctri
 7. `prodbox edge status` classifies Route 53, Envoy Gateway deployment, `GatewayClass`,
    `Gateway`, listener readiness, redirect `HTTPRoute`, application `HTTPRoute`,
    `SecurityPolicy`, certificate, `LoadBalancer`, and advertisement-mode state across the browser,
-   API, WebSocket, Harbor, and MinIO routes.
+   API, WebSocket, and MinIO routes.
 8. `prodbox test integration charts-api` and `prodbox test integration charts-websocket` now
    prove the shipped JWT-only API and Redis-backed WebSocket paths externally, while
-   `prodbox test integration admin-routes` proves the Harbor and MinIO auth gates externally.
+   `prodbox test integration admin-routes` proves the MinIO console auth gate externally.
 9. Public browser redirects use the shared-host `/auth` identity route, while non-browser
    provider backchannels stay in-cluster: VS Code's Envoy `SecurityPolicy` targets the in-cluster
    Keycloak Service, API/WebSocket JWT policies fetch JWKS through the shared internal Keycloak
-   endpoint, Harbor/MinIO admin OIDC policies use the shared internal Keycloak token endpoint, and
+   endpoint, the MinIO console admin OIDC policy uses the shared internal Keycloak token endpoint, and
    the WebSocket workload uses the in-cluster Keycloak Service on port 8080. These are current
    runtime boundaries, not second public identity surfaces.
 
@@ -287,7 +287,7 @@ The supported route model is explicit:
 - Keycloak on `/auth`
 - browser workloads on explicit path prefixes such as `/vscode`
 - API and WebSocket workloads on explicit path prefixes such as `/api` and `/ws`
-- admin surfaces on explicit path prefixes such as `/harbor` and `/minio`
+- the MinIO console admin surface on the explicit `/minio` path prefix
 
 Example hostname routing inside this model may look like:
 
@@ -296,7 +296,6 @@ Example hostname routing inside this model may look like:
 /vscode -> Envoy -> Browser App Service
 /api    -> Envoy -> API Service
 /ws     -> Envoy -> WebSocket Service
-/harbor -> Envoy -> Harbor Service
 /minio  -> Envoy -> MinIO Service
 ```
 
@@ -312,7 +311,7 @@ listener, while every backend route attaches to HTTPS listener sections.
 
 The chart→edge-resource ownership above is **editorial doctrine, not a generated section** — and
 deliberately so. The route→service catalog *is* generated: the canonical six-route inventory
-(`/auth`, `/vscode`, `/api`, `/ws`, `/harbor`, `/minio` and their path prefixes) is a faithful
+(`/auth`, `/vscode`, `/api`, `/ws`, `/minio` and their path prefixes) is a faithful
 projection of the typed `PublicEdgeRoute` catalog in `src/Prodbox/PublicEdge.hs`, rendered into
 the chart `HTTPRoute` / `Gateway` manifests by the Sprint `3.12` `route-registry` generated
 sections (`charts/api/...`, `charts/keycloak/...`, `charts/vscode/...`, `charts/websocket/...`).
@@ -323,7 +322,7 @@ Chart-*ownership* of the shared edge resources, however, has **no typed source**
 - The shared `Gateway`, the listener certificate, and the port-80 redirect `HTTPRoute` are **not
   routes** — they do not appear in `PublicEdgeRoute` at all — so no `route-registry` extension can
   attribute them.
-- The `/harbor` and `/minio` admin routes are not owned by any chart template; they are applied
+- The `/minio` admin route is not owned by any chart template; it is applied
   imperatively by `ensureAdminPublicEdgeRoutes` in `src/Prodbox/CLI/Rke2.hs`.
 - The keycloak-chart attribution of the `Gateway` / listener-cert / redirect / `/auth` route is a
   deployment fact reattributed by Sprint `7.13`, not derived from the catalog.
@@ -411,9 +410,9 @@ The current worktree ships all three supported public-edge auth shapes:
   JWKS, audience, and route claims. The issuer stays public, while Envoy fetches JWKS from the
   in-cluster Keycloak Service on port 8080 through `remoteJWKS.backendRefs` plus a
   `ReferenceGrant` from `api` to the Keycloak Service.
-- Harbor and MinIO admin routes use Envoy-managed browser OIDC enforcement through
+- The MinIO console admin route uses Envoy-managed browser OIDC enforcement through
   `SecurityPolicy`, public authorization redirects, and the shared internal Keycloak token
-  endpoint for provider exchange. Their host, issuer, and redirect URL are substrate-aware:
+  endpoint for provider exchange. Its host, issuer, and redirect URL are substrate-aware:
   home local uses `domain.demo_fqdn`; AWS uses `aws_substrate.subzone_name`. The AWS substrate
   platform applies these routes after gateway MinIO bootstrap.
 - `websocket` uses workload-managed OIDC bootstrap and cookie-backed session ownership on
@@ -612,7 +611,7 @@ The supported operational model is:
 2. Backend HTTP is acceptable on the trusted cluster network, but workloads with stricter
    zero-trust requirements may also use TLS or mTLS from Envoy to backends.
 3. Shared-host path routing must remain explicit, with `/auth`, `/vscode`, `/api`, `/ws`,
-   `/harbor`, and `/minio` owned as first-class public-edge paths.
+   and `/minio` owned as first-class public-edge paths.
 4. Keycloak must be proxy-aware and must emit public redirects and issuer URLs that match the
    shared public hostname and `/auth` path contract.
 5. Proxy headers such as `X-Forwarded-For`, `X-Forwarded-Proto`, and `X-Forwarded-Host` are part
@@ -628,7 +627,7 @@ Lifecycle and chart implications:
 
 1. `prodbox cluster reconcile` owns MetalLB, Envoy Gateway, cert-manager, and the Percona PostgreSQL
    operator on the self-managed cluster path.
-2. Harbor-backed steady-state image sourcing mirrors or publishes the Envoy Gateway control-plane
+2. Registry-backed steady-state image sourcing mirrors or publishes the Envoy Gateway control-plane
    and Envoy data-plane images rather than Traefik images. As of Sprint `7.12` the Envoy Gateway
    chart version, the control-plane (gateway controller) image, and the data-plane (Envoy proxy)
    image are pinned together as one release in `Prodbox.ContainerImage.envoyGatewayRelease` and
@@ -647,8 +646,8 @@ Lifecycle and chart implications:
 5. Additional JWT-only API routes, Redis-backed workloads, or WebSocket services must be added
    only when a real workload needs them and must follow this doctrine rather than inventing a
    parallel edge model.
-6. The current `vscode` SecurityPolicy, API/WebSocket JWT `remoteJWKS` policies, Harbor/MinIO
-   admin SecurityPolicies, and `websocket` workload keep token/provider/JWKS backchannels
+6. The current `vscode` SecurityPolicy, API/WebSocket JWT `remoteJWKS` policies, the MinIO console
+   admin SecurityPolicy, and `websocket` workload keep token/provider/JWKS backchannels
    in-cluster rather than exposing a second public Keycloak route or relying on EKS
    public-load-balancer hairpin behavior. The `vscode` SecurityPolicy's client Secret is
    materialized from Vault KV by the chart before Envoy needs the credential.
@@ -751,8 +750,8 @@ Current named validation implications:
    shared hostname under `/ws/oidc`, real WebSocket upgrade, connection-time auth, shared-state
    continuity, cross-replica behavior, revocation-driven reconnect, and readiness-based drain,
    while token-expiry behavior remains workload-specific doctrine when required.
-5. `prodbox test integration admin-routes` proves that Harbor and MinIO stay behind shared-host
-   Envoy OIDC auth gates on `/harbor` and `/minio`.
+5. `prodbox test integration admin-routes` proves that the MinIO console stays behind the
+   shared-host Envoy OIDC auth gate on `/minio`.
 
 ## 12. Cross-References
 

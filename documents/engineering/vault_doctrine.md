@@ -234,7 +234,7 @@ cleartext-secret-at-rest file, accepted only through the `TestPlaintext` arm, pe
 ## 5. Vault deployment model and durability
 
 Vault runs **inside** the prodbox-managed cluster as a platform component, on the same footing as
-MinIO, Harbor, MetalLB, Envoy Gateway, cert-manager, and the Percona PostgreSQL operator. It is a
+MinIO, the in-cluster registry (registry:2), MetalLB, Envoy Gateway, cert-manager, and the Percona PostgreSQL operator. It is a
 normal in-cluster Helm release (`charts/vault/`) on the same ephemeral-PVC / retained-PV pattern
 as everything else, and it appears in the shared `[PlatformComponent]` inventory so **both**
 substrates (home + AWS) stand it up identically (substrate equivalence; see
@@ -639,7 +639,7 @@ on-disk/k8s/log sweep while Vault is sealed.
 **One generically-named bucket.** Prodbox-owned MinIO state uses the **single generic bucket**
 `prodbox-state` (Sprint `4.30`). The role-revealing bucket name
 `prodbox-test-pulumi-backends` is retired; a bucket-level `s3api ls` no longer advertises the
-Pulumi role. Harbor's public image layers stay a separate, non-secret store — the §13 public class,
+Pulumi role. The registry's public image layers stay a separate, non-secret store — the §13 public class,
 not enveloped. The Sprint `7.14` interposition makes Pulumi see only a scratch `file://` backend on
 main stack cycles; persistent checkpoints are opaque `objects/<id>.enc` Model-B objects.
 

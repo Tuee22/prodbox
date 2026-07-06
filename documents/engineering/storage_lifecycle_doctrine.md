@@ -128,15 +128,15 @@ This doctrine governs:
     route table, and public subnets carry `prodbox.io/managed-by=prodbox` so the postflight tag
     sweep can surface escaped VPC-scoped residue after failed teardown (Sprint `7.29`)
 
-Harbor registry details remain in
+In-cluster registry (registry:2) details remain in
 [Local Registry Pipeline](./local_registry_pipeline.md).
 
 ## 3. eDAG Contract
 
-`rke2 reconcile` reconciles Harbor, retained storage, and MinIO using the Haskell
-lifecycle runtime. The Harbor portion of that lifecycle must reach a stable
+`rke2 reconcile` reconciles the in-cluster registry (registry:2), retained storage, and MinIO using the Haskell
+lifecycle runtime. The registry portion of that lifecycle must reach a stable
 external-serving state before public-image mirror, custom-image publication, or
-Harbor-backed steady-state workload reconcile continues. The bootstrap MinIO install
+registry-backed steady-state workload reconcile continues. The bootstrap MinIO install
 that establishes the local backend may pull its images from public registries first.
 
 The retained-storage effect must reconcile:
@@ -154,8 +154,8 @@ The retained-storage effect must reconcile:
    `0` anchor comes up first, and follower ordinals `1` and `2` rejoin only after their
    retained roots are reset
 5. host storage directories rooted at `storage.manual_pv_host_root`
-6. Harbor external readiness plus stable `/readyz` and `/v2/` probes before image writes
-   and Harbor-backed steady-state workload reconcile continue
+6. registry external readiness plus a stable `GET /v2/` probe (expect 200/401) before image writes
+   and registry-backed steady-state workload reconcile continue
 7. deleted MinIO export-mount detection and a bounded recreate-plus-restart repair before
    MinIO-backed Pulumi validation continues
 8. MinIO IAM bootstrap (the single generically-named object-store bucket and the

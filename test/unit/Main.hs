@@ -5292,8 +5292,13 @@ main = mainWithSuite "prodbox-unit" $ do
       rke2Source `shouldContain` "harborEndpointStabilitySuccesses = 6"
       rke2Source `shouldContain` "harborEndpointStabilityDelayMicroseconds = 5000000"
       rke2Source `shouldContain` "ensureHarborRegistryStorageBackend repoRoot"
-      rke2Source `shouldContain` "persistence.imageChartStorage.type=s3"
-      rke2Source `shouldContain` "persistence.imageChartStorage.disableredirect=true"
+      -- The single-binary registry:2 (no Harbor helm chart) is applied with its
+      -- own config.yml selecting the S3 storage driver against the MinIO bucket.
+      rke2Source `shouldContain` "registryImage = \"registry:2\""
+      rke2Source `shouldContain` "registryConfigYaml"
+      rke2Source `shouldContain` "bucket: \" ++ harborRegistryStorageBucket"
+      rke2Source `shouldNotContain` "persistence.imageChartStorage.type=s3"
+      rke2Source `shouldNotContain` "harbor/harbor"
       rke2Source `shouldContain` "mc mb --ignore-existing local/"
 
     it "Harbor bucket-init uses static MinIO root cred; gateway Job reads Vault (7.25)" $ do
@@ -8549,7 +8554,7 @@ main = mainWithSuite "prodbox-unit" $ do
       Preconditions.preconditionLabel (Preconditions.noLiveLongLivedPulumiStacks "/repo")
         `shouldBe` "noLiveLongLivedPulumiStacks"
 
-  describe "DockerConfig: ephemeral Harbor + Docker Hub auth (Sprint 1.47, hostbootstrap Registry)" $ do
+  describe "DockerConfig: ephemeral docker.io-only pull auth (anonymous registry:2 push)" $ do
     let systemConfig =
           BL8.pack
             "{\"credsStore\":\"desktop\",\"auths\":{\"127.0.0.1:30080\":{\"auth\":\"aGFyYm9y\"},\"https://index.docker.io/v1/\":{\"auth\":\"ZG9ja2Vy\"}}}"
@@ -8574,32 +8579,25 @@ main = mainWithSuite "prodbox-unit" $ do
       DockerConfig.dockerHubAuthFromConfig "{}" `shouldBe` Nothing
       DockerConfig.dockerHubAuthFromConfig "not json" `shouldBe` Nothing
 
-    it "renderEphemeralDockerConfig combines the docker.io auth + an inline Harbor entry, no credsStore" $ do
-      let rendered =
-            DockerConfig.renderEphemeralDockerConfig
-              "admin"
-              "Harbor12345"
-              (DockerConfig.dockerHubAuthFromConfig systemConfig)
-      case eitherDecode rendered :: Either String Value of
-        Right (Object top) -> KeyMap.member "credsStore" top `shouldBe` False
-        _ -> expectationFailure "expected a top-level object"
-      case authsOf rendered of
-        Just auths -> do
-          KeyMap.member (Key.fromString "127.0.0.1:30080") auths `shouldBe` True
-          KeyMap.member (Key.fromString "https://index.docker.io/v1/") auths `shouldBe` True
-        Nothing -> expectationFailure "expected an auths object"
+    it
+      "renderEphemeralDockerConfig carries the docker.io auth and NO registry credential, no credsStore"
+      $ do
+        let rendered =
+              DockerConfig.renderEphemeralDockerConfig
+                (DockerConfig.dockerHubAuthFromConfig systemConfig)
+        case eitherDecode rendered :: Either String Value of
+          Right (Object top) -> KeyMap.member "credsStore" top `shouldBe` False
+          _ -> expectationFailure "expected a top-level object"
+        case authsOf rendered of
+          Just auths -> do
+            -- Anonymous registry:2 push: no 127.0.0.1:30080 credential is written.
+            KeyMap.member (Key.fromString "127.0.0.1:30080") auths `shouldBe` False
+            KeyMap.member (Key.fromString "https://index.docker.io/v1/") auths `shouldBe` True
+          Nothing -> expectationFailure "expected an auths object"
 
-    it "renderEphemeralDockerConfig with no host login has only the Harbor entry" $
-      fmap KeyMap.keys (authsOf (DockerConfig.renderEphemeralDockerConfig "admin" "Harbor12345" Nothing))
-        `shouldBe` Just [Key.fromString "127.0.0.1:30080"]
-
-    it "renderEphemeralDockerConfig encodes the Harbor auth as base64 user:password" $
-      case authsOf (DockerConfig.renderEphemeralDockerConfig "admin" "Harbor12345" Nothing)
-        >>= KeyMap.lookup (Key.fromString "127.0.0.1:30080")
-        >>= asObj
-        >>= KeyMap.lookup "auth" of
-        Just (String b64) -> b64 `shouldBe` "YWRtaW46SGFyYm9yMTIzNDU="
-        _ -> expectationFailure "expected the Harbor auth string"
+    it "renderEphemeralDockerConfig with no host login has an empty auths set (anonymous)" $
+      fmap KeyMap.keys (authsOf (DockerConfig.renderEphemeralDockerConfig Nothing))
+        `shouldBe` Just []
 
   describe "Sprint 1.52 host-platform DSL" $ do
     it "classifies supported host substrates from OS, architecture, and GPU facts" $ do
@@ -11067,8 +11065,12 @@ main = mainWithSuite "prodbox-unit" $ do
                     )
                 )
         rendered `shouldContain` "\"hostnames\":[\"aws.test.resolvefintech.com\"]"
+        -- registry:2 has no web UI, so only the MinIO console admin route is
+        -- rendered; the former /harbor OIDC route is gone.
         rendered
-          `shouldContain` "\"redirectURL\":\"https://aws.test.resolvefintech.com/harbor/oauth2/callback\""
+          `shouldContain` "\"redirectURL\":\"https://aws.test.resolvefintech.com/minio/oauth2/callback\""
+        rendered
+          `shouldNotContain` "/harbor/oauth2/callback"
         rendered
           `shouldContain` "\"issuer\":\"https://aws.test.resolvefintech.com/auth/realms/prodbox\""
         rendered

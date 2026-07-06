@@ -145,7 +145,7 @@ between substrates is provision and teardown, not the validation itself.
 
 The suite content owned by this phase covers public DNS delegation, real TLS issuance via
 cert-manager and ZeroSSL, Envoy Gateway readiness, shared-host application routing
-(`/auth`, `/vscode`, `/api`, `/ws`), shared-host admin routing (`/harbor`, `/minio`), HTTP-to-HTTPS
+(`/auth`, `/vscode`, `/api`, `/ws`), shared-host admin routing (`/minio`), HTTP-to-HTTPS
 redirect on port `80`, Keycloak issuer alignment behind Envoy, route-level RBAC, real WebSocket
 upgrade behavior, one-connection-per-pod lifetime, revocation-driven reconnect, and
 readiness-based drain.

@@ -240,7 +240,8 @@ S3 bucket-destroy step.
 **The home local substrate and the AWS substrate stand up the same set of services.**
 Both run the canonical chart set (`gateway`, `keycloak`, `keycloak-postgres`,
 `vscode`, `api`, `redis`, `websocket`) plus the same supporting platform pieces:
-MinIO, Harbor, the Percona PostgreSQL operator, Envoy Gateway, cert-manager, real
+MinIO, the in-cluster registry (single-binary `registry:2`), the Percona PostgreSQL
+operator, Envoy Gateway, cert-manager, real
 ZeroSSL via cert-manager DNS01. The two substrates differ in their lower-layer
 load-balancer (MetalLB on home, AWS Load Balancer Controller on EKS) and their
 Route 53 hosting (one parent zone on home, the dedicated subzone provisioned by
@@ -248,16 +249,20 @@ Route 53 hosting (one parent zone on home, the dedicated subzone provisioned by
 
 This means:
 
-- Harbor + MinIO + Percona are installed on **both** substrates. The AWS substrate
-  is not a "no-Harbor" cluster; if `prodbox charts reconcile ... --substrate aws`
-  fails because chart pods can't reach `127.0.0.1:30080/prodbox/...`, the fix is to
-  bring Harbor (and its MinIO storage backend, and the Percona operator) up on EKS
-  via the substrate-platform install — not to render different image references.
+- The in-cluster registry (`registry:2`) + MinIO + Percona are installed on **both**
+  substrates. The AWS substrate is not a "no-registry" cluster; if
+  `prodbox charts reconcile ... --substrate aws` fails because chart pods can't reach
+  `127.0.0.1:30080/prodbox/...`, the fix is to bring the registry (and its MinIO
+  storage backend, and the Percona operator) up on EKS via the substrate-platform
+  install — not to render different image references. The registry has no web UI, so
+  there is no admin route to reconcile — only the MinIO console `/minio` admin route.
+  For continuity the registry's Kubernetes namespace and front-door Service are still
+  named `harbor`.
 - The chart templates and `Prodbox.Lib.ChartPlatform` use one set of image refs
-  across both substrates: `127.0.0.1:30080/prodbox/...` (the in-cluster Harbor on
+  across both substrates: `127.0.0.1:30080/prodbox/...` (the in-cluster registry on
   whichever substrate is active). The substrate-aware code in
   `Prodbox.Lib.AwsSubstratePlatform` is responsible for making `127.0.0.1:30080`
-  resolve on EKS too (via an EKS-side Harbor + node-local registry proxy, mirroring
+  resolve on EKS too (via an EKS-side registry + node-local registry proxy, mirroring
   the home cluster's NodePort-on-127.0.0.1 pattern).
 - `prodbox edge status`, `prodbox charts reconcile`, and the canonical
   `prodbox test integration ... --substrate aws` validations all assume substrate

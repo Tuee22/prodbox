@@ -99,7 +99,7 @@ Recommended patterns:
 - keep any repository-local self-heal bounded, logged, and followed by the same final readiness
   proof, such as recreating a deleted MinIO export host path before retrying Pulumi backend login
 - use explicit runtime-stability gates after prerequisite success when a long-running command needs
-  a proven steady state, such as Harbor endpoint stability before image reconcile
+  a proven steady state, such as registry endpoint stability before image reconcile
 
 ## 5. Anti-Patterns
 

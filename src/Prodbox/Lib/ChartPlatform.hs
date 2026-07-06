@@ -121,7 +121,6 @@ import Prodbox.PostgresPlatform
 import Prodbox.PublicEdge
   ( apiPathPrefix
   , authPathPrefix
-  , harborPathPrefix
   , minioPathPrefix
   , publicEdgeClusterIssuerName
   , publicEdgeTlsRetentionKey
@@ -1996,8 +1995,7 @@ valuesForKeycloak namespace rootChart settings _chartSecrets sharedHostFqdn = do
               [ "vscodeClientId" .= keycloakVscodeClientId
               , "redirectUri" .= ("https://" ++ sharedHostFqdn ++ vscodePathPrefix ++ "/oauth2/callback")
               , "adminRedirectUris"
-                  .= [ "https://" ++ sharedHostFqdn ++ harborPathPrefix ++ "/oauth2/callback"
-                     , "https://" ++ sharedHostFqdn ++ minioPathPrefix ++ "/oauth2/callback"
+                  .= [ "https://" ++ sharedHostFqdn ++ minioPathPrefix ++ "/oauth2/callback"
                      ]
               , "apiClientId" .= keycloakApiClientId
               , "apiAudience" .= keycloakApiClientId

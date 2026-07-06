@@ -111,7 +111,8 @@ Sprint `7.12` this is a *structural* invariant, not prose, enforced by three mec
    exempt — those have no cross-substrate counterpart to keep in lockstep.
 3. **A shared `[PlatformComponent]` inventory + coverage test.**
    `Prodbox.ContainerImage.sharedPlatformComponents` declares the shared set once (`gateway`,
-   `keycloak`, `keycloak-postgres`, `vscode`, `api`, `redis`, `websocket`, MinIO, Harbor, the
+   `keycloak`, `keycloak-postgres`, `vscode`, `api`, `redis`, `websocket`, MinIO, the in-cluster
+   registry (`registry:2`), the
    Percona operator, Envoy Gateway, cert-manager, ZeroSSL DNS01, and an in-cluster Vault). A
    `test/unit/Main.hs` coverage
    test asserts both installers (`homeSubstratePlatformComponents` in `Prodbox.CLI.Rke2`,
@@ -119,8 +120,9 @@ Sprint `7.12` this is a *structural* invariant, not prose, enforced by three mec
    is **not** a unified step DAG — each substrate keeps its own ordering and its own lower-layer
    implementation — but neither installer may silently drop a shared component.
 
-Harbor + MinIO + the Percona operator are therefore installed on **both** substrates; the AWS
-substrate is **not** a "no-Harbor" cluster. When AWS appears to be "missing" a shared platform
+The in-cluster registry (`registry:2`) + MinIO + the Percona operator are therefore installed on
+**both** substrates; the AWS
+substrate is **not** a "no-registry" cluster. When AWS appears to be "missing" a shared platform
 piece the home cluster has, the fix is to extend the shared inventory and the AWS installer,
 never to render different image refs or re-pin versions per substrate.
 
@@ -128,11 +130,11 @@ Both substrates also stand up an in-cluster Vault on a durable PV from the share
 `[PlatformComponent]` inventory, **installed identically on both as the
 sole, finalized secrets / key-management / encryption-as-a-service / PKI root**. Vault is **not** a
 substrate — that word is reserved for the home-local and AWS substrates — it is a platform component
-that **both** substrates run identically, exactly like Harbor, MinIO, and the Percona operator.
+that **both** substrates run identically, exactly like the registry, MinIO, and the Percona operator.
 Every secret/credential/key/cert is a Vault object (KV v2, Transit, or PKI), with no second store and
 no plaintext fallback; a sealed (or unreachable/uninitialized) Vault **bricks** whichever substrate
 is active, reducing the cluster to an opaque durable-data pile until it is unsealed. The same
-shared-inventory coverage test that keeps Harbor/MinIO/Percona in lockstep across both installers
+shared-inventory coverage test that keeps the registry/MinIO/Percona in lockstep across both installers
 extends to the Vault component, so neither installer may silently drop it.
 
 Block storage is likewise identical in **discipline** across both substrates and different only in
@@ -199,11 +201,11 @@ reached, never *which* services are stood up, so substrate equivalence is preser
 | Provision | `prodbox aws stack eks reconcile` (EKS test cluster), `prodbox aws stack aws-subzone reconcile` (per-substrate Route 53 subzone), and `prodbox aws stack test reconcile` (three Ubuntu 24.04 EC2 instances for HA-RKE2) |
 | Teardown | `prodbox aws stack eks destroy --yes`, `prodbox aws stack aws-subzone destroy --yes`, and `prodbox aws stack test destroy --yes` |
 | Inventory today | Three per-run Pulumi stacks: registry `aws-eks` / Pulumi stack id `aws-eks-test` (a dedicated, non-default VPC; `prodbox.io/managed-by=prodbox` tagged VPC/IGW/route-table/subnets; EKS cluster; node group; IAM; security group), `aws-eks-subzone` (delegated Route 53 hosted subzone), and `aws-test` (VPC, subnets, three EC2 instances, security group, key pair). State is stored as opaque Model-B objects in the in-cluster MinIO `prodbox-state` bucket and accessed from the host through the daemon object-store API (Sprint `7.30`). Sprint `7.29` pins the fresh-EKS-VPC guarantee to the existing destroy-before-ensure residue purge. |
-| Target inventory | Same canonical service set as the home substrate (Sprint 7.12 substrate equivalence): cert-manager + real ZeroSSL, Envoy Gateway, Harbor + MinIO + the Percona PostgreSQL operator, Keycloak, Patroni Postgres, `gateway`, `keycloak-postgres`, `vscode`, `api`, `redis`, `websocket`. Harbor + MinIO + Percona are installed on **both** substrates — the AWS Harbor is the EKS-side Harbor reached through the node-local registry proxy (the EKS containerd registry-mirror DaemonSet that makes `127.0.0.1:30080/prodbox/...` resolve on EKS, mirroring the home NodePort-on-`127.0.0.1` pattern). The two substrates differ only in their LOWER layer: ingress load-balancer (MetalLB on home, the AWS Load Balancer Controller / NLB on EKS), Route 53 hosting (parent zone on home, the per-substrate subzone provisioned by `pulumi/aws-eks-subzone/` on AWS), and the block-storage volume source (`hostPath` under `.data/` on home, pre-created EBS lifted in as static `Retain` PVs on EKS — same static no-provisioner discipline, Sprint `7.28`). |
+| Target inventory | Same canonical service set as the home substrate (Sprint 7.12 substrate equivalence): cert-manager + real ZeroSSL, Envoy Gateway, the in-cluster registry (`registry:2`) + MinIO + the Percona PostgreSQL operator, Keycloak, Patroni Postgres, `gateway`, `keycloak-postgres`, `vscode`, `api`, `redis`, `websocket`. The registry + MinIO + Percona are installed on **both** substrates — the AWS registry is the EKS-side registry reached through the node-local registry proxy (the EKS containerd registry-mirror DaemonSet that makes `127.0.0.1:30080/prodbox/...` resolve on EKS, mirroring the home NodePort-on-`127.0.0.1` pattern). The two substrates differ only in their LOWER layer: ingress load-balancer (MetalLB on home, the AWS Load Balancer Controller / NLB on EKS), Route 53 hosting (parent zone on home, the per-substrate subzone provisioned by `pulumi/aws-eks-subzone/` on AWS), and the block-storage volume source (`hostPath` under `.data/` on home, pre-created EBS lifted in as static `Retain` PVs on EKS — same static no-provisioner discipline, Sprint `7.28`). |
 | Required Config | `aws_substrate.subzone_name` (the AWS-substrate public FQDN, e.g. `aws.test.resolvefintech.com`), optional `aws_substrate.hosted_zone_id` when an operator wants to pin the already-provisioned subzone ID in config, `ses.*` (sender_domain, receive_subdomain, capture_bucket — shared cross-substrate; same values as home substrate), AWS operator credentials, plus the same `acme.*` settings the home substrate uses. During harness-driven AWS runs, the suite reads the live `aws-eks-subzone` Pulumi output after provisioning and passes the hosted-zone ID to child commands. Missing AWS-substrate values fail fast; the AWS substrate does not fall back to `route53.zone_id` or `domain.demo_fqdn` from the home substrate. |
 | Prerequisites satisfied today | `aws_credentials_valid`, `route53_accessible`, `route53_lifecycle_capable`, `pulumi_logged_in`, the AWS-stack snapshot prereqs |
 | Phase ownership (provision/teardown) | [phase-7-aws-substrate-foundations.md](phase-7-aws-substrate-foundations.md) |
-| Suite parity | ✅ Phase 7-owned AWS substrate parity was proved live for the then-canonical AWS slice on June 5-9, 2026. The supported `Substrate` ADT, `--substrate {home-local\|aws}` CLI surface, EKS kubeconfig materialization, per-substrate Route 53 subzone, cert-manager DNS01, EKS-side Harbor/MinIO/Percona, AWS-specific Envoy Gateway runtime, AWS chart values, and public-edge diagnostics are wired. The June 5 AWS runs proved AWS public DNS reconciles to the Envoy NLB target, postflight destroys `aws-eks-subzone`, `aws-eks`, and `aws-test` with residue checks passing, `charts-vscode`, `charts-api`, `charts-websocket`, `admin-routes`, and destructive `ValidationLifecycle` succeed under the harness. The June 6/9 `keycloak-invite --substrate aws` proofs passed invite capture/link-follow and OIDC claim verification on `aws.test.resolvefintech.com` with clean teardown, and Sprint `8.8` proved certificate round-trip restore-no-reorder plus the interactive `prodbox nuke` total-teardown proof. Current canonical-suite membership is defined in `src/Prodbox/TestPlan.hs`; validations whose AWS live proof is on a separate non-blocking axis remain tracked in the per-validation coverage table below. |
+| Suite parity | ✅ Phase 7-owned AWS substrate parity was proved live for the then-canonical AWS slice on June 5-9, 2026. The supported `Substrate` ADT, `--substrate {home-local\|aws}` CLI surface, EKS kubeconfig materialization, per-substrate Route 53 subzone, cert-manager DNS01, EKS-side registry (`registry:2`)/MinIO/Percona, AWS-specific Envoy Gateway runtime, AWS chart values, and public-edge diagnostics are wired. The June 5 AWS runs proved AWS public DNS reconciles to the Envoy NLB target, postflight destroys `aws-eks-subzone`, `aws-eks`, and `aws-test` with residue checks passing, `charts-vscode`, `charts-api`, `charts-websocket`, `admin-routes`, and destructive `ValidationLifecycle` succeed under the harness. The June 6/9 `keycloak-invite --substrate aws` proofs passed invite capture/link-follow and OIDC claim verification on `aws.test.resolvefintech.com` with clean teardown, and Sprint `8.8` proved certificate round-trip restore-no-reorder plus the interactive `prodbox nuke` total-teardown proof. Current canonical-suite membership is defined in `src/Prodbox/TestPlan.hs`; validations whose AWS live proof is on a separate non-blocking axis remain tracked in the per-validation coverage table below. |
 | Notes | The AWS substrate is exclusively a test substrate. There is no production EKS cluster that `prodbox` manages. The literal stack names (`aws-eks-test`, `aws-test`) reflect that. |
 
 ## Resource Lifecycle Classes

@@ -56,9 +56,9 @@
   `ClusterIssuer` is named `zerossl-dns01` (DNS-01-honest; renamed from the misleading
   HTTP-01-claiming name in Sprint `7.13`).
 - **The home substrate and the AWS substrate stand up the same shared service set** (Sprint
-  `7.12` substrate equivalence): Harbor + MinIO + the Percona PostgreSQL operator are installed
-  on **both** substrates — the AWS substrate is **not** a "no-Harbor on EKS" cluster. The AWS
-  Harbor is the EKS-side Harbor reached through the node-local registry proxy (the EKS containerd
+  `7.12` substrate equivalence): The in-cluster registry (registry:2) + MinIO + the Percona PostgreSQL operator are installed
+  on **both** substrates — the AWS substrate is **not** a "no-registry on EKS" cluster. The AWS
+  registry is the EKS-side registry reached through the node-local registry proxy (the EKS containerd
   registry-mirror DaemonSet that makes `127.0.0.1:30080/prodbox/...` resolve on EKS, mirroring
   the home NodePort-on-`127.0.0.1` pattern), so the canonical chart image refs are identical
   across substrates. The two installers differ only in their LOWER layer (MetalLB on home, the
@@ -66,7 +66,7 @@
   the block-storage volume source — hostPath on home, pre-created EBS on EKS — though the static
   `Retain` storage discipline is identical across both, see
   [storage_lifecycle_doctrine.md § 1](./storage_lifecycle_doctrine.md#1-canonical-doctrine-statements)). The
-  shared platform-component pins (Envoy Gateway, cert-manager, Harbor, MinIO, Percona) come from
+  shared platform-component pins (Envoy Gateway, cert-manager, the registry, MinIO, Percona) come from
   the single `Prodbox.ContainerImage` SSoT and are enforced by the `checkSubstrateImagePinning`
   lint plus the `[PlatformComponent]` coverage test. See
   [`DEVELOPMENT_PLAN/substrates.md` → Substrate Equivalence (Structural Invariant)](../../DEVELOPMENT_PLAN/substrates.md#substrate-equivalence-structural-invariant).

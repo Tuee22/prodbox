@@ -1,26 +1,27 @@
 {-# LANGUAGE OverloadedStrings #-}
 
--- | Sprint 1.47: isolate the host @docker@ CLI's Harbor auth from the operator's
--- system-wide Docker Hub login using the **ephemeral** @DOCKER_CONFIG@ pattern
--- the operator's @hostbootstrap@ project uses (@HostBootstrap.Registry@).
+-- | Isolate the host @docker@ CLI's pull auth from the operator's system-wide
+-- Docker Hub login using the **ephemeral** @DOCKER_CONFIG@ pattern the
+-- operator's @hostbootstrap@ project uses (@HostBootstrap.Registry@).
 --
--- prodbox must push the images it builds to the in-cluster Harbor NodePort
--- (@127.0.0.1:30080@), and must pull public images (the mirror + base-image
--- builds) using the operator's fixed-token Docker Hub login to avoid rate
--- limits. With no @DOCKER_CONFIG@ a Harbor @docker login@ would write the
--- global @~\/.docker\/config.json@ — leaking Harbor creds and risking the
--- operator's Docker Hub state.
+-- prodbox pushes the images it builds to the in-cluster registry NodePort
+-- (@127.0.0.1:30080@) and pulls public images (the mirror + base-image builds)
+-- using the operator's fixed-token Docker Hub login to avoid rate limits. The
+-- in-cluster registry is the single-binary CNCF @distribution@ (@registry:2@)
+-- served **anonymous over HTTP** on a @localhost@ NodePort (insecure-by-default
+-- in Docker), so pushes need **no credentials, no @docker login@, and no TLS** —
+-- the ephemeral config exists purely to carry the read-only @docker.io@ pull
+-- auth without touching the operator's global @~\/.docker\/config.json@.
 --
--- Instead, every host-docker flow runs inside 'withEphemeralDockerConfig',
--- which:
+-- Every host-docker flow runs inside 'withEphemeralDockerConfig', which:
 --
 --   * discovers the host's @docker.io@ auth **read-only** from
 --     @${DOCKER_CONFIG:-$HOME\/.docker}\/config.json@, projected to a minimal
 --     @docker.io@-only set ('dockerHubAuthFromConfig'); absent ⇒ anonymous;
---   * materialises a **throwaway** @DOCKER_CONFIG@ holding that @docker.io@ auth
---     plus an **inline** Harbor entry (so NO @docker login@ runs at all), points
---     the process at it, and **scrubs it on exit** (the temp dir is removed and
---     the prior @DOCKER_CONFIG@ restored).
+--   * materialises a **throwaway** @DOCKER_CONFIG@ holding just that @docker.io@
+--     auth (no registry credential at all), points the process at it, and
+--     **scrubs it on exit** (the temp dir is removed and the prior
+--     @DOCKER_CONFIG@ restored).
 --
 -- The host @~\/.docker\/config.json@ is only ever read; nothing persists in
 -- @~\/prodbox@. The @docker.io@ discovery/projection is the seam that later
@@ -38,13 +39,9 @@ import Control.Exception (SomeException, bracket, try)
 import Data.Aeson qualified as Aeson
 import Data.Aeson.Key qualified as Key
 import Data.Aeson.KeyMap qualified as KeyMap
-import Data.ByteString.Base64 qualified as Base64
-import Data.ByteString.Char8 qualified as BS8
 import Data.ByteString.Lazy qualified as BL
 import Data.List (isInfixOf)
 import Data.Maybe (fromMaybe)
-import Data.Text.Encoding qualified as TextEncoding
-import Prodbox.ContainerImage (harborRegistryEndpoint)
 import Prodbox.Host.Lift
   ( HostDispatch
   , SelfRef
@@ -79,23 +76,16 @@ dockerHubAuthFromConfig raw =
  where
   isDockerHubKey key = "docker.io" `isInfixOf` Key.toString key
 
--- | PURE render of the ephemeral @config.json@: the optional host @docker.io@
--- auth (for public pulls) plus an INLINE Harbor @127.0.0.1:30080@ entry
--- (@base64 user:password@) so pushes authenticate WITHOUT a @docker login@.
--- No @credsStore@/@credHelpers@. Unit-testable.
+-- | PURE render of the ephemeral @config.json@: just the optional host
+-- @docker.io@ auth (for public pulls). The in-cluster @registry:2@ NodePort is
+-- anonymous over HTTP, so no registry credential is written — pushes need no
+-- @docker login@. No @credsStore@/@credHelpers@. Unit-testable.
 renderEphemeralDockerConfig
-  :: String -> String -> Maybe (KeyMap.KeyMap Aeson.Value) -> BL.ByteString
-renderEphemeralDockerConfig harborUser harborPassword hubAuth =
-  Aeson.encode (Aeson.Object (KeyMap.singleton "auths" (Aeson.Object combinedAuths)))
+  :: Maybe (KeyMap.KeyMap Aeson.Value) -> BL.ByteString
+renderEphemeralDockerConfig hubAuth =
+  Aeson.encode (Aeson.Object (KeyMap.singleton "auths" (Aeson.Object hubAuths)))
  where
-  combinedAuths =
-    KeyMap.insert
-      (Key.fromString harborRegistryEndpoint)
-      harborEntry
-      (fromMaybe KeyMap.empty hubAuth)
-  harborEntry = Aeson.Object (KeyMap.singleton "auth" (Aeson.String harborAuthBase64))
-  harborAuthBase64 =
-    TextEncoding.decodeUtf8 (Base64.encode (BS8.pack (harborUser ++ ":" ++ harborPassword)))
+  hubAuths = fromMaybe KeyMap.empty hubAuth
 
 dockerLinuxFrameDispatch :: SelfRef -> HostSubstrate -> [String] -> HostDispatch
 dockerLinuxFrameDispatch self substrate =
@@ -125,17 +115,18 @@ hostDockerConfigPath = do
       pure (home </> ".docker" </> "config.json")
 
 -- | Run an action with an ephemeral @DOCKER_CONFIG@ active for every @docker@
--- subprocess it spawns: a throwaway temp dir holding the host @docker.io@ auth
--- (read-only, discovered BEFORE the redirect) + the inline Harbor entry. On exit
--- the temp dir is scrubbed and the prior @DOCKER_CONFIG@ restored — whatever
--- happens. No @docker login@, nothing persisted. Mirrors
+-- subprocess it spawns: a throwaway temp dir holding just the host @docker.io@
+-- auth (read-only, discovered BEFORE the redirect). On exit the temp dir is
+-- scrubbed and the prior @DOCKER_CONFIG@ restored — whatever happens. No
+-- @docker login@, nothing persisted, no registry credential (the in-cluster
+-- @registry:2@ NodePort is anonymous). Mirrors
 -- @HostBootstrap.Registry.withEphemeralDockerConfig@.
-withEphemeralDockerConfig :: String -> String -> IO a -> IO a
-withEphemeralDockerConfig harborUser harborPassword action = do
+withEphemeralDockerConfig :: IO a -> IO a
+withEphemeralDockerConfig action = do
   substrateResult <- detectHostSubstrate
   case substrateResult >>= hostFrameDockerSupported of
     Left err -> ioError (userError err)
-    Right () -> withEphemeralDockerConfigUnchecked harborUser harborPassword action
+    Right () -> withEphemeralDockerConfigUnchecked action
 
 hostFrameDockerSupported :: HostSubstrate -> Either String ()
 hostFrameDockerSupported substrate =
@@ -149,13 +140,13 @@ hostFrameDockerSupported substrate =
             ++ "; descend into the Linux lift frame first"
         )
 
-withEphemeralDockerConfigUnchecked :: String -> String -> IO a -> IO a
-withEphemeralDockerConfigUnchecked harborUser harborPassword action = do
+withEphemeralDockerConfigUnchecked :: IO a -> IO a
+withEphemeralDockerConfigUnchecked action = do
   hubAuth <- discoverHostDockerHubAuth
   withSystemTempDirectory "prodbox-docker-config" $ \dir -> do
     BL.writeFile
       (dir </> "config.json")
-      (renderEphemeralDockerConfig harborUser harborPassword hubAuth)
+      (renderEphemeralDockerConfig hubAuth)
     bracket
       ( do
           previous <- lookupEnv "DOCKER_CONFIG"

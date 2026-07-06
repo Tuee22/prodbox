@@ -181,6 +181,30 @@ the gateway or workload ConfigMaps trigger a Pod restart without operator action
 design — there is no separate "reload running daemons" step in the cascade. See
 [Sprint 2.21](phase-2-gateway-dns.md) for the implementation.
 
+**2026-07-06 — in-cluster registry swapped from Harbor to single-binary `registry:2`**:
+The multi-pod Harbor Helm stack (core/nginx/portal/jobservice/bundled-postgres/bundled-redis,
+installed via `helm upgrade --install harbor harbor/harbor`) is replaced by one `registry:2`
+(CNCF distribution) Deployment plus a NodePort Service (nodePort `30080`) plus a `config.yml`
+ConfigMap, all applied with `kubectl apply` (no Helm); on reconcile any legacy Harbor Helm
+release is best-effort `helm uninstall`ed first. The durable MinIO/S3 storage backend is
+**retained unchanged** — the registry keeps blobs in the existing `prodbox-harbor-registry`
+bucket via `registry:2`'s native S3 driver + the `harbor-registry-s3` Secret (`envFrom`), and
+the MinIO→registry circular-dependency ordering (MinIO public bootstrap → registry → mirror →
+MinIO steady-state) is unchanged. Push is now **anonymous over HTTP**: no `docker login`, no
+`admin:Harbor12345` credential, no TLS, and no projects REST API (repos auto-create on first
+push). Registry readiness is a plain `GET /v2/` probe on `127.0.0.1:30080` (expect 200/401)
+with the same six-consecutive-rounds stability contract before image writes — the old Harbor
+nginx `/readyz` readiness patch is gone. The registry has no web UI, so the OIDC-gated
+`/harbor` public-edge admin route (`PublicRouteHarbor`, its `HTTPRoute`, the `harbor-oidc`
+`SecurityPolicy`, and the `harbor-oidc-client` secret) is removed entirely; only the MinIO
+console `/minio` admin route remains, and `admin-routes` now asserts only that route. The
+canonical `127.0.0.1:30080/prodbox/<repo>:<tag>` image-ref scheme, the RKE2 `registries.yaml`
+mirror, the mirror/publish pipeline, and the union-runtime build are all unchanged. For
+continuity the Kubernetes namespace and front-door Service stay named `harbor`, and internal
+identifiers (`harbor-registry-s3`, `prodbox-harbor-registry`, `ensureHarborRegistryRuntime`)
+keep the historical `harbor` name; the namespace was **not** renamed. Doctrine SSoT is
+[local_registry_pipeline.md](../documents/engineering/local_registry_pipeline.md).
+
 **Independent Validation** (development_plan_standards.md Standard N): Phase 4 is
 validatable on its owned surface — the local-cluster lifecycle reconcile/delete paths,
 the Pulumi-decoupling and Python-removal surfaces, and the destructive Plan/Apply gates —

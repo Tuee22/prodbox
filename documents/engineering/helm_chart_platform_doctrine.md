@@ -61,7 +61,7 @@ The supported chart doctrine is:
    in-cluster Keycloak service boundary.
 8. The current supported shared public edge is anchored in the `vscode` namespace, where the chart
    platform publishes the shared `Gateway`, listener certificate, and `/auth` Keycloak identity
-   route consumed by the shipped browser, API, WebSocket, Harbor, and MinIO surfaces.
+   route consumed by the shipped browser, API, WebSocket, and MinIO surfaces.
 9. The shared `Gateway` renders a port `80` HTTP listener only for the redirect-only `HTTPRoute`
    named `public-edge-http-redirect`; all backend routes attach to HTTPS listener sections and the
    chart platform does not render plaintext application forwarding.
@@ -185,10 +185,10 @@ enforced as a structural invariant, not maintained by parallel hand-edited insta
    divergence.
 3. **A shared `[PlatformComponent]` inventory drives both installers.** Both the home-substrate
    reconcile and the AWS substrate-platform install draw from one `[PlatformComponent]` list
-   (Harbor, MinIO, the Percona PostgreSQL operator, MetalLB-or-ALB-controller, Envoy Gateway,
+   (the in-cluster registry (registry:2), MinIO, the Percona PostgreSQL operator, MetalLB-or-ALB-controller, Envoy Gateway,
    cert-manager). A coverage test asserts both installers cover every entry — it is **not** a
    unified step DAG; each substrate keeps its own ordering, but neither may silently drop a
-   component the other installs. The AWS substrate is **not** a "no-Harbor" cluster.
+   component the other installs. The AWS substrate is **not** a "no-registry" cluster.
 
 This is the chart-platform-side statement of the substrate-equivalence doctrine in
 [../../CLAUDE.md](../../CLAUDE.md) "Substrate Equivalence" and
@@ -209,7 +209,7 @@ The supported contract is:
   `keycloak-postgres` release before `keycloak`.
 - Each Patroni cluster runs exactly three PostgreSQL replicas.
 - Patroni synchronous replication is enabled across the supported three-replica steady state.
-- The PostgreSQL workload images are Harbor-backed:
+- The PostgreSQL workload images are registry-backed:
   `percona-distribution-postgresql-mirror:17.9-1`,
   `percona-pgbouncer-mirror:1.25.1-1`, and `percona-pgbackrest-mirror:2.58.0-1`.
 - Keycloak consumes the namespace-local retained credentials secret
@@ -423,8 +423,8 @@ The supported `vscode` public path is:
 2. Keycloak remains the OIDC identity provider.
 3. `code-server` is reachable only through the Envoy-authenticated public route.
 4. Keycloak stores its data in the namespace-local Patroni cluster for the root chart.
-5. Supported image refs are Harbor-only for `keycloak`, `code-server`, the Envoy Gateway public
-   edge image set, the Percona operator, and the Percona PostgreSQL workload after Harbor
+5. Supported image refs are registry-only for `keycloak`, `code-server`, the Envoy Gateway public
+   edge image set, the Percona operator, and the Percona PostgreSQL workload after the registry
    bootstrap.
 
 The current implementation boundary is:
@@ -476,7 +476,7 @@ catalog:
 
 | Setting | Purpose |
 |---------|---------|
-| `domain.demo_fqdn` | Canonical shared public hostname for `/auth`, `/vscode`, `/api`, `/ws`, `/harbor`, and `/minio` |
+| `domain.demo_fqdn` | Canonical shared public hostname for `/auth`, `/vscode`, `/api`, `/ws`, and `/minio` |
 
 Namespace-local chart secrets are Vault KV objects, fetched in-cluster via Vault
 Kubernetes auth and materialized only at the consuming workload boundary per
@@ -517,7 +517,7 @@ values from Vault KV as already generated. The `vscode` SecurityPolicy, API/WebS
 workload all keep provider/token/JWKS backchannels in-cluster (`keycloak` Service for
 namespace-local VS Code; the shared `keycloak.vscode.svc.cluster.local:8080` endpoint for
 separately deployed API/WebSocket) rather than depending on a second public identity surface or
-public-load-balancer hairpin behavior. The host-side Harbor/MinIO admin routes use the same
+public-load-balancer hairpin behavior. The host-side MinIO console admin route uses the same
 public-edge rule: substrate-aware public issuer and redirect URLs, plus the shared internal
 Keycloak token endpoint for Envoy's provider exchange. The AWS substrate platform installs those
 admin routes after gateway MinIO bootstrap.
@@ -539,7 +539,7 @@ idiom are retired, not retained. `vault_doctrine.md` is the single source of tru
 model; the statements below are the chart-platform-side summary.
 
 - **Vault is a singleton platform component.** Vault stands up on the same footing as
-  MinIO, Harbor, the Percona PostgreSQL operator, Envoy Gateway, and cert-manager, drawn from the
+  MinIO, the in-cluster registry (registry:2), the Percona PostgreSQL operator, Envoy Gateway, and cert-manager, drawn from the
   same shared `[PlatformComponent]` inventory (§3A) so it installs identically on both the home and
   AWS substrates. It runs on a durable PV alongside the MinIO PV, preserved across cluster wipes:
   `vault init` runs exactly once (first time the PV is empty) and every subsequent

@@ -1971,22 +1971,15 @@ runAdminRoutesValidation repoRoot substrate = do
       case readyExit of
         ExitFailure _ -> pure readyExit
         ExitSuccess ->
-          runSequentially
-            [ assertOidcProtectedRoute
-                repoRoot
-                settings
-                substrate
-                (substratePublicRouteUrl settings substrate PublicRouteHarbor)
-                (substratePublicRouteUrl settings substrate PublicRouteHarbor ++ "/oauth2/callback")
-                "Harbor admin route did not preserve the shared-host auth contract"
-            , assertOidcProtectedRoute
-                repoRoot
-                settings
-                substrate
-                (substratePublicRouteUrl settings substrate PublicRouteMinio)
-                (substratePublicRouteUrl settings substrate PublicRouteMinio ++ "/oauth2/callback")
-                "MinIO admin route did not preserve the shared-host auth contract"
-            ]
+          -- The single-binary registry:2 has no web UI, so the former /harbor
+          -- OIDC admin route is gone; the MinIO console is the only admin route.
+          assertOidcProtectedRoute
+            repoRoot
+            settings
+            substrate
+            (substratePublicRouteUrl settings substrate PublicRouteMinio)
+            (substratePublicRouteUrl settings substrate PublicRouteMinio ++ "/oauth2/callback")
+            "MinIO admin route did not preserve the shared-host auth contract"
 
 runKeycloakPublicHostValidation :: FilePath -> ValidatedSettings -> Substrate -> IO ExitCode
 runKeycloakPublicHostValidation repoRoot settings substrate = do

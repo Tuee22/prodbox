@@ -216,7 +216,7 @@ Markers are sentinel comments in the host syntax of the target file:
 | Haskell / PureScript / TypeScript | `-- <project>:<key>:start` (or `//`) | mirror |
 
 `<key>` is dotted, hierarchical, and unique across the registry — e.g.
-`command-registry`, `route-registry.web-portal`, `route-registry.harbor`.
+`command-registry`, `route-registry.web-portal`, `route-registry.minio`.
 
 ### Paired check and write commands
 

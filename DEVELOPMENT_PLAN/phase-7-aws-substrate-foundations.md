@@ -1325,13 +1325,27 @@ currently lays down the lower-layer ingress + TLS pieces on EKS:
 
 ### Remaining Work
 
-The substrate-platform install on EKS stands up the Harbor + MinIO + Percona operator layer that
+The substrate-platform install on EKS stands up the in-cluster registry (`registry:2`) + MinIO +
+Percona operator layer that
 the home substrate uses. Per the substrate-equivalence doctrine in [`../CLAUDE.md`](../CLAUDE.md),
 [`../AGENTS.md`](../AGENTS.md), and [`substrates.md`](substrates.md), the AWS substrate runs the
 same canonical chart set as the home substrate, so chart pods on EKS resolve
-`127.0.0.1:30080/prodbox/...` through the EKS-side Harbor and node-local registry routing. The
+`127.0.0.1:30080/prodbox/...` through the EKS-side registry and node-local registry routing. The
 May 19 implementation survey split this into the sub-sprints below; each closed its own validation
 gate, and child Sprint `7.5.c.v` closed the parent live proof:
+
+> **2026-07-06 — EKS-side registry swap follows the home substrate.** The home-substrate
+> Harbor→single-binary `registry:2` swap (see
+> [phase-4 § Phase Summary](phase-4-lifecycle-canonical-paths.md#phase-summary) and
+> [local_registry_pipeline.md](../documents/engineering/local_registry_pipeline.md)) applies to the
+> EKS-side registry identically: `registry:2` replaces the Harbor Helm stack, storage stays on the
+> MinIO/S3 `prodbox-harbor-registry` bucket, push is anonymous, and readiness is `GET /v2/`. The
+> EKS-side path itself — the containerd registry-mirror DaemonSet and the in-cluster crane
+> push/mirror Jobs reaching `harbor.harbor.svc.cluster.local` — is otherwise unchanged, and the
+> namespace/Service keep the historical `harbor` name. The historical `7.5.c.*` sub-sprint records
+> below describe the Harbor-era implementation as it was closed at the time and are retained as
+> history. The substrate-aware admin-route work now installs only the MinIO console `/minio`
+> route; the `/harbor` route is removed with Harbor's web UI.
 
 | Sub-sprint | Status | Scope |
 |------------|--------|-------|

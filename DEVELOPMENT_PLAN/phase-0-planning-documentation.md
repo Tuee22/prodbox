@@ -1031,7 +1031,7 @@ that composes with the `StackDescriptor` record (Sprint `4.27`: `stack-command-s
 **chart→edge-resource ownership table** — was deliberately **not** generated, per the design
 guardrail (generate only a faithful projection of a typed value, with no new hand-authored
 annotation): `PublicEdgeRoute` has no owning-chart field, the shared Gateway / listener-cert /
-port-80-redirect resources are not routes at all, `/harbor` and `/minio` are applied imperatively
+port-80-redirect resources are not routes at all, `/minio` is applied imperatively
 (`Rke2.hs::ensureAdminPublicEdgeRoutes`), and the `/auth` + Gateway + cert ownership is a deployment
 fact the keycloak chart owns (reattributed editorially by Sprint `7.13`). Generating it would have
 required a parallel hand-authored annotation — relocating drift, not removing it — so it stays

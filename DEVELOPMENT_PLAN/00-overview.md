@@ -928,7 +928,7 @@ runtime and tooling surfaces remain removed.
 The supported public edge uses MetalLB, Envoy Gateway, Gateway API, cert-manager, and
 Keycloak on the single public hostname `test.resolvefintech.com`. Every externally reachable
 application or operational dashboard routes through explicit shared-host paths such as `/auth`,
-`/vscode`, `/api`, `/ws`, `/harbor`, and `/minio`, protected by Keycloak-backed JWT auth or RBAC
+`/vscode`, `/api`, `/ws`, and `/minio`, protected by Keycloak-backed JWT auth or RBAC
 at Envoy, with one Route 53 record and one listener certificate. The shipped API route validates
 bearer tokens locally at Envoy from Keycloak issuer metadata plus JWKS-backed signing keys,
 browser-auth and direct-OIDC flows stay explicit on their owned paths, WebSocket workloads close

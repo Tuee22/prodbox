@@ -63,7 +63,6 @@ import Data.ByteString qualified as BS
 import Data.ByteString.Base64 qualified as Base64
 import Data.ByteString.Char8 qualified as BS8
 import Data.ByteString.Lazy qualified as BL
-import Data.ByteString.Lazy.Char8 qualified as BL8
 import Data.Char
   ( isAsciiLower
   , isAsciiUpper
@@ -205,7 +204,6 @@ import Prodbox.PostgresPlatform
 import Prodbox.PublicEdge
   ( PublicEdgeRoute (..)
   , authPathPrefix
-  , harborPathPrefix
   , minioPathPrefix
   , publicEdgeClusterIssuerName
   , substrateHostedZoneId
@@ -422,41 +420,29 @@ manualStorageClass = "manual"
 harborNamespace :: String
 harborNamespace = "harbor"
 
-harborReleaseName :: String
-harborReleaseName = "harbor"
+-- | The in-cluster OCI registry image: the single-binary, natively multi-arch
+-- CNCF @distribution@ registry. It ships one multi-arch manifest, so the same
+-- image runs on every substrate (amd64 + arm64) with no per-component override.
+-- The pod pulls this from Docker Hub itself on first schedule (a pre-registry
+-- bootstrap public pull, alongside MinIO).
+registryImage :: String
+registryImage = "registry:2"
 
-harborRepositoryName :: String
-harborRepositoryName = "harbor"
+-- | Kubernetes resource names for the single-binary registry (Deployment +
+-- ConfigMap; the front-door Service keeps 'harborServiceName' so the EKS-side
+-- in-cluster DNS @harbor.harbor.svc.cluster.local@ is unchanged).
+registryDeploymentName :: String
+registryDeploymentName = "registry"
 
-harborRepositoryUrl :: String
-harborRepositoryUrl = "https://helm.goharbor.io"
+registryConfigMapName :: String
+registryConfigMapName = "registry-config"
+
+-- | The container port @registry:2@ listens on.
+registryContainerPort :: Int
+registryContainerPort = 5000
 
 harborRegistryEndpoint :: String
 harborRegistryEndpoint = ContainerImage.harborRegistryEndpoint
-
-harborMirrorProject :: String
-harborMirrorProject = ContainerImage.harborMirrorProject
-
-harborRuntimeRepository :: String
-harborRuntimeRepository = ContainerImage.harborRuntimeRepository
-
-harborAdminUser :: String
-harborAdminUser = "admin"
-
-harborAdminPassword :: String
-harborAdminPassword = "Harbor12345"
-
-harborReadyPath :: String
-harborReadyPath = "/readyz"
-
-harborReadyAnnotationKey :: String
-harborReadyAnnotationKey = "prodbox.io/harbor-nginx-readiness-contract"
-
-harborReadyAnnotationValue :: String
-harborReadyAnnotationValue = "readyz-v1"
-
-harborHelmFieldManager :: String
-harborHelmFieldManager = "helm"
 
 vaultApiReadinessAttempts :: Int
 vaultApiReadinessAttempts = 60
@@ -466,15 +452,6 @@ vaultApiReadinessDelayMicroseconds = 2000000
 
 publicEdgeListenerName :: String
 publicEdgeListenerName = "https"
-
-harborAdminRouteName :: String
-harborAdminRouteName = "harbor-ui"
-
-harborAdminSecurityPolicyName :: String
-harborAdminSecurityPolicyName = "harbor-oidc"
-
-harborAdminClientSecretName :: String
-harborAdminClientSecretName = "harbor-oidc-client"
 
 harborServiceName :: String
 harborServiceName = "harbor"
@@ -3303,162 +3280,209 @@ harborStorageBackendManifestItems accessKey secretKey =
       ]
   ]
 
+-- | Stand up the in-cluster OCI registry: a single-binary CNCF @distribution@
+-- (@registry:2@) Deployment + NodePort Service applied with @kubectl@ (no Helm,
+-- no multi-pod chart), backed by the MinIO/S3 storage bootstrapped by
+-- 'ensureHarborRegistryStorageBackend'. @registry:2@ is anonymous over HTTP —
+-- a @localhost@ NodePort is insecure-by-default in Docker, so pushes need no
+-- @docker login@ and no TLS — and auto-creates the @prodbox/<repo>@ path on
+-- first push, so there is no projects API to reconcile. The same Deployment
+-- serves both substrates; @registry:2@ ships one multi-arch manifest, so the
+-- node pulls the native platform with no per-component override.
 ensureHarborRegistryRuntime :: FilePath -> Substrate -> IO ExitCode
-ensureHarborRegistryRuntime repoRoot substrate = do
-  repoAddResult <-
-    captureToolOutput repoRoot "helm" ["repo", "add", harborRepositoryName, harborRepositoryUrl]
-  case repoAddResult of
-    Left err -> failWith err
-    Right repoAddOutput ->
-      case processExitCode repoAddOutput of
-        ExitFailure _
-          | "already exists" `isInfixOf` map toLower (outputDetail repoAddOutput) -> continue
-          | otherwise -> failWith ("Failed to add Harbor helm repo: " ++ outputDetail repoAddOutput)
-        ExitSuccess -> continue
- where
-  continue = do
-    installExit <-
+ensureHarborRegistryRuntime repoRoot _substrate = do
+  -- Remove any prior Harbor helm release so its multi-pod stack (core, nginx,
+  -- portal, jobservice, bundled db/redis) does not linger beside the
+  -- single-binary registry:2 Deployment on a rebuilt-in-place cluster. The
+  -- registry:2 Deployment/Service/ConfigMap and the storage Secret are applied
+  -- separately (kubectl), so uninstalling the release does not touch them.
+  _ <- uninstallLegacyHarborRelease repoRoot
+  installExit <-
+    withTemporaryJsonManifest
+      "prodbox-registry-runtime"
+      registryRuntimeManifestItems
+      ( \manifestPath ->
+          runCommand
+            Subprocess
+              { subprocessPath = "kubectl"
+              , subprocessArguments = ["apply", "-f", manifestPath]
+              , subprocessEnvironment = Nothing
+              , subprocessWorkingDirectory = Just repoRoot
+              }
+      )
+  case installExit of
+    ExitFailure _ -> pure installExit
+    ExitSuccess ->
+      -- Wait for the Deployment to become Available (the pod's first,
+      -- unauthenticated registry:2 pull can be slow), then confirm the NodePort
+      -- serves GET /v2/ and holds stable before the mirror loop pushes.
       runSequentially
-        [ runHelmCommandWithRetries repoRoot ["repo", "update"]
-        , runHelmCommandWithRetries
-            repoRoot
-            [ "upgrade"
-            , "--install"
-            , harborReleaseName
-            , harborRepositoryName ++ "/harbor"
-            , "--force-conflicts"
-            , "--namespace"
-            , harborNamespace
-            , "--create-namespace"
-            , "--set"
-            , "expose.type=nodePort"
-            , "--set"
-            , "expose.tls.enabled=false"
-            , "--set"
-            , "expose.nodePort.ports.http.nodePort=30080"
-            , "--set"
-            , "externalURL=http://" ++ harborRegistryEndpoint
-            , "--set"
-            , "harborAdminPassword=Harbor12345"
-            , "--set"
-            , "persistence.enabled=false"
-            , "--set"
-            , "persistence.imageChartStorage.type=s3"
-            , "--set"
-            , "persistence.imageChartStorage.disableredirect=true"
-            , "--set"
-            , "persistence.imageChartStorage.s3.region=us-east-1"
-            , "--set"
-            , "persistence.imageChartStorage.s3.bucket=" ++ harborRegistryStorageBucket
-            , "--set"
-            , "persistence.imageChartStorage.s3.regionendpoint=" ++ minioClusterEndpoint
-            , "--set"
-            , "persistence.imageChartStorage.s3.existingSecret=" ++ harborRegistryStorageSecretName
-            , "--set"
-            , "persistence.imageChartStorage.s3.secure=false"
-            , "--set"
-            , "persistence.imageChartStorage.s3.v4auth=true"
-            ]
+        [ waitForDeployment repoRoot harborNamespace registryDeploymentName
+        , waitForHarborRegistryEndpoint repoRoot
+        , waitForHarborStableEndpoints repoRoot
         ]
-    case installExit of
-      ExitFailure _ -> pure installExit
-      ExitSuccess -> do
-        readinessExit <- ensureHarborNginxReadinessContract repoRoot
-        case readinessExit of
-          ExitFailure _ -> pure readinessExit
-          ExitSuccess -> do
-            waitExit <-
-              runSequentially
-                [ waitForDeployment repoRoot harborNamespace (harborComponentName harborReleaseName component)
-                | component <- ["core", "registry", "nginx"]
-                ]
-            case waitExit of
-              ExitFailure _ -> pure waitExit
-              ExitSuccess -> do
-                harborEndpointExit <-
-                  runSequentially
-                    [ waitForHarborReadyEndpoint repoRoot
-                    , waitForHarborRegistryEndpoint repoRoot
-                    , waitForHarborStableEndpoints repoRoot
-                    ]
-                case harborEndpointExit of
-                  ExitFailure _ -> pure harborEndpointExit
-                  ExitSuccess -> ensureHarborProjectsForSubstrate substrate repoRoot
 
--- | Harbor project bootstrap tail. On the home substrate the operator
--- host's Docker daemon authenticates to the in-cluster Harbor NodePort
--- (so subsequent host-side @docker push@ steps in the image-mirror loop
--- can publish images) and the bootstrap projects are created via the
--- Harbor REST API. On the AWS substrate the operator host has no
--- network path into the EKS-side Harbor NodePort, so the docker-login
--- step is skipped; the in-cluster image-mirror Job from Sprint
--- @7.5.c.iv@ replaces the host-Docker path. Bootstrap-project
--- creation also runs in-cluster on AWS: a one-shot pod in the
--- @harbor@ namespace POSTs to @http:\/\/harbor.harbor.svc.cluster.local
--- \/api\/v2.0\/projects@ since the operator-host @127.0.0.1:30080@
--- endpoint @ensureHarborProject@ uses on the home substrate only
--- resolves to Harbor on RKE2.
-ensureHarborProjectsForSubstrate :: Substrate -> FilePath -> IO ExitCode
-ensureHarborProjectsForSubstrate substrate repoRoot =
-  case substrate of
-    -- Sprint 1.47: no docker login — project creation uses the Harbor REST API
-    -- with inline `curl -u admin:Harbor12345`; Harbor readiness is gated by the
-    -- preceding waitForHarbor* probes, and image pushes authenticate via the
-    -- per-flow ephemeral DOCKER_CONFIG.
-    SubstrateHomeLocal -> createHarborProjectsHomeLocal repoRoot
-    SubstrateAws -> createHarborProjectsAws repoRoot
+-- | Best-effort removal of a legacy Harbor helm release. Always succeeds: on a
+-- fresh cluster there is nothing to uninstall, and a stale release is cleaned
+-- up so its resources do not collide with the registry:2 manifest.
+uninstallLegacyHarborRelease :: FilePath -> IO ExitCode
+uninstallLegacyHarborRelease repoRoot = do
+  _ <-
+    captureToolOutput
+      repoRoot
+      "helm"
+      ["uninstall", "harbor", "--namespace", harborNamespace, "--ignore-not-found"]
+  pure ExitSuccess
 
-createHarborProjectsHomeLocal :: FilePath -> IO ExitCode
-createHarborProjectsHomeLocal repoRoot =
-  runSequentially
-    [ ensureHarborProject repoRoot projectName
-    | projectName <- nub harborBootstrapProjects
+-- | The registry:2 runtime manifest: a ConfigMap holding the @registry:2@
+-- @config.yml@ (S3 storage driver pointed at the MinIO-backed
+-- @prodbox-harbor-registry@ bucket), a single-replica Deployment, and a
+-- NodePort Service on 30080. The S3 access/secret keys are injected from the
+-- 'harborRegistryStorageSecretName' Secret via @envFrom@ (its keys are already
+-- registry:2's native @REGISTRY_STORAGE_S3_ACCESSKEY@/@SECRETKEY@ overrides),
+-- so no credential is written into the ConfigMap. The Service keeps the
+-- @harbor@ name/port 80 so the EKS-side in-cluster DNS
+-- @harbor.harbor.svc.cluster.local@ is unchanged.
+registryRuntimeManifestItems :: [Value]
+registryRuntimeManifestItems =
+  [ object
+      [ "apiVersion" .= ("v1" :: String)
+      , "kind" .= ("Namespace" :: String)
+      , "metadata" .= object ["name" .= harborNamespace]
+      ]
+  , object
+      [ "apiVersion" .= ("v1" :: String)
+      , "kind" .= ("ConfigMap" :: String)
+      , "metadata"
+          .= object
+            [ "name" .= registryConfigMapName
+            , "namespace" .= harborNamespace
+            ]
+      , "data" .= object ["config.yml" .= registryConfigYaml]
+      ]
+  , object
+      [ "apiVersion" .= ("apps/v1" :: String)
+      , "kind" .= ("Deployment" :: String)
+      , "metadata"
+          .= object
+            [ "name" .= registryDeploymentName
+            , "namespace" .= harborNamespace
+            , "labels" .= object ["app" .= registryDeploymentName]
+            ]
+      , "spec"
+          .= object
+            [ "replicas" .= (1 :: Int)
+            , "selector" .= object ["matchLabels" .= object ["app" .= registryDeploymentName]]
+            , "template"
+                .= object
+                  [ "metadata" .= object ["labels" .= object ["app" .= registryDeploymentName]]
+                  , "spec"
+                      .= object
+                        [ "containers"
+                            .= ( [ object
+                                     [ "name" .= registryDeploymentName
+                                     , "image" .= registryImage
+                                     , "imagePullPolicy" .= ("IfNotPresent" :: String)
+                                     , "ports" .= ([object ["containerPort" .= registryContainerPort]] :: [Value])
+                                     , "envFrom"
+                                         .= ( [ object
+                                                  [ "secretRef"
+                                                      .= object ["name" .= harborRegistryStorageSecretName]
+                                                  ]
+                                              ]
+                                                :: [Value]
+                                            )
+                                     , "volumeMounts"
+                                         .= ( [ object
+                                                  [ "name" .= registryConfigMapName
+                                                  , "mountPath" .= ("/etc/docker/registry/config.yml" :: String)
+                                                  , "subPath" .= ("config.yml" :: String)
+                                                  ]
+                                              ]
+                                                :: [Value]
+                                            )
+                                     , -- Gate the Service endpoints on the registry actually serving
+                                       -- GET /v2/, so the mirror push cannot race a scheduled-but-not-
+                                       -- yet-listening registry. A generous failureThreshold tolerates
+                                       -- a slow first (unauthenticated) registry:2 pull.
+                                       "readinessProbe"
+                                         .= object
+                                           [ "httpGet" .= object ["path" .= ("/v2/" :: String), "port" .= registryContainerPort]
+                                           , "periodSeconds" .= (5 :: Int)
+                                           , "failureThreshold" .= (60 :: Int)
+                                           ]
+                                     ]
+                                 ]
+                                   :: [Value]
+                               )
+                        , "volumes"
+                            .= ( [ object
+                                     [ "name" .= registryConfigMapName
+                                     , "configMap" .= object ["name" .= registryConfigMapName]
+                                     ]
+                                 ]
+                                   :: [Value]
+                               )
+                        ]
+                  ]
+            ]
+      ]
+  , object
+      [ "apiVersion" .= ("v1" :: String)
+      , "kind" .= ("Service" :: String)
+      , "metadata"
+          .= object
+            [ "name" .= harborServiceName
+            , "namespace" .= harborNamespace
+            ]
+      , "spec"
+          .= object
+            [ "type" .= ("NodePort" :: String)
+            , "selector" .= object ["app" .= registryDeploymentName]
+            , "ports"
+                .= ( [ object
+                         [ "port" .= harborServicePort
+                         , "targetPort" .= registryContainerPort
+                         , "nodePort" .= (30080 :: Int)
+                         ]
+                     ]
+                       :: [Value]
+                   )
+            ]
+      ]
+  ]
+
+-- | The @registry:2@ @config.yml@: S3 storage driver against the MinIO-backed
+-- @prodbox-harbor-registry@ bucket. The @accesskey@/@secretkey@ are supplied at
+-- runtime via @REGISTRY_STORAGE_S3_ACCESSKEY@/@SECRETKEY@ (envFrom the storage
+-- Secret), overriding the config, so no credential appears here.
+registryConfigYaml :: String
+registryConfigYaml =
+  unlines
+    [ "version: 0.1"
+    , "log:"
+    , "  fields:"
+    , "    service: registry"
+    , "storage:"
+    , "  cache:"
+    , "    blobdescriptor: inmemory"
+    , "  s3:"
+    , "    region: us-east-1"
+    , "    regionendpoint: " ++ minioClusterEndpoint
+    , "    bucket: " ++ harborRegistryStorageBucket
+    , "    secure: false"
+    , "    v4auth: true"
+    , "    rootdirectory: /"
+    , "  delete:"
+    , "    enabled: true"
+    , "http:"
+    , "  addr: :" ++ show registryContainerPort
+    , "health:"
+    , "  storagedriver:"
+    , "    enabled: true"
+    , "    interval: 10s"
+    , "    threshold: 3"
     ]
-
--- | On the AWS substrate the operator host cannot reach Harbor at
--- @127.0.0.1:30080@. Exec into the already-running Harbor core pod
--- and call Harbor's in-cluster DNS endpoint, avoiding a pre-mirror
--- bootstrap dependency on any additional pod image.
-createHarborProjectsAws :: FilePath -> IO ExitCode
-createHarborProjectsAws repoRoot = do
-  let projects = nub harborBootstrapProjects
-      podNamespace = harborNamespace
-      script =
-        "set -eu\n"
-          ++ concatMap
-            ( \p ->
-                "echo \"prodbox-harbor-projects: creating "
-                  ++ p
-                  ++ "\"\n"
-                  ++ "code=$(curl -sS -u admin:Harbor12345 -H 'Content-Type: application/json' -X POST "
-                  ++ "-d '{\"project_name\":\""
-                  ++ p
-                  ++ "\",\"public\":true}' "
-                  ++ "-o /dev/null -w '%{http_code}' "
-                  ++ "http://harbor.harbor.svc.cluster.local/api/v2.0/projects)\n"
-                  ++ "case \"$code\" in 201|409) echo \"  HTTP $code (ok)\" ;; *) echo \"  HTTP $code (FAIL)\"; exit 1 ;; esac\n"
-            )
-            projects
-  runCommand
-    Subprocess
-      { subprocessPath = "kubectl"
-      , subprocessArguments =
-          [ "exec"
-          , "-n"
-          , podNamespace
-          , "deployment/" ++ harborComponentName harborReleaseName "core"
-          , "--"
-          , "sh"
-          , "-c"
-          , script
-          ]
-      , subprocessEnvironment = Nothing
-      , subprocessWorkingDirectory = Just repoRoot
-      }
-
-harborBootstrapProjects :: [String]
-harborBootstrapProjects =
-  [harborMirrorProject, harborProjectFromRepository harborRuntimeRepository]
 
 waitForDeployment :: FilePath -> String -> String -> IO ExitCode
 waitForDeployment repoRoot namespace deploymentName =
@@ -3477,47 +3501,40 @@ waitForDeployment repoRoot namespace deploymentName =
       , subprocessWorkingDirectory = Just repoRoot
       }
 
-waitForHarborReadyEndpoint :: FilePath -> IO ExitCode
-waitForHarborReadyEndpoint repoRoot =
-  waitForHarborHttpStatus repoRoot harborReadyPath ["200"] "Harbor nginx readiness endpoint"
-
 waitForHarborRegistryEndpoint :: FilePath -> IO ExitCode
 waitForHarborRegistryEndpoint repoRoot =
-  waitForHarborHttpStatus repoRoot "/v2/" ["200", "401"] "Harbor registry endpoint"
+  waitForHarborHttpStatus repoRoot "/v2/" ["200", "401"] "registry endpoint"
 
+-- | Require several consecutive successful @GET /v2/@ rounds on the registry
+-- NodePort before any image write continues on a fresh cluster, so the mirror
+-- loop never races a scheduled-but-not-yet-serving registry.
 waitForHarborStableEndpoints :: FilePath -> IO ExitCode
 waitForHarborStableEndpoints repoRoot =
-  go harborEndpointStabilityAttempts 0 "Harbor endpoints not yet checked"
+  go harborEndpointStabilityAttempts 0 "registry endpoint not yet checked"
  where
   go :: Int -> Int -> String -> IO ExitCode
   go attemptsRemaining consecutiveSuccesses lastDetail
     | consecutiveSuccesses >= harborEndpointStabilitySuccesses = pure ExitSuccess
     | attemptsRemaining <= 0 =
         failWith
-          ( "Failed to observe stable Harbor endpoints before continuing: "
+          ( "Failed to observe a stable registry endpoint before continuing: "
               ++ lastDetail
           )
     | otherwise = do
-        readyStatusResult <- probeHarborHttpStatus repoRoot harborReadyPath
         registryStatusResult <- probeHarborHttpStatus repoRoot "/v2/"
-        case (readyStatusResult, registryStatusResult) of
-          (Right "200", Right registryStatus)
+        case registryStatusResult of
+          Right registryStatus
             | registryStatus `elem` ["200", "401"] ->
                 let nextSuccesses = consecutiveSuccesses + 1
                  in if nextSuccesses >= harborEndpointStabilitySuccesses
                       then pure ExitSuccess
-                      else retry attemptsRemaining nextSuccesses "Harbor endpoints are stable"
-          (Left err, _) -> retry attemptsRemaining 0 err
-          (_, Left err) -> retry attemptsRemaining 0 err
-          (Right readyStatus, Right registryStatus) ->
+                      else retry attemptsRemaining nextSuccesses "registry endpoint is stable"
+          Left err -> retry attemptsRemaining 0 err
+          Right registryStatus ->
             retry
               attemptsRemaining
               0
-              ( "unexpected Harbor statuses: /readyz="
-                  ++ readyStatus
-                  ++ ", /v2/="
-                  ++ registryStatus
-              )
+              ("unexpected registry status: /v2/=" ++ registryStatus)
 
   retry :: Int -> Int -> String -> IO ExitCode
   retry attemptsRemaining consecutiveSuccesses detail = do
@@ -3568,171 +3585,6 @@ probeHarborHttpStatus repoRoot path = do
         case processExitCode output of
           ExitSuccess -> Right (trimWhitespace (processStdout output))
           ExitFailure _ -> Left (outputDetail output)
-
-ensureHarborNginxReadinessContract :: FilePath -> IO ExitCode
-ensureHarborNginxReadinessContract repoRoot = do
-  configOutputResult <-
-    readHarborNginxConfig repoRoot
-  case configOutputResult of
-    Left err -> failWith err
-    Right configOutput ->
-      case processExitCode configOutput of
-        ExitFailure _ -> failWith ("Failed to read Harbor nginx ConfigMap: " ++ outputDetail configOutput)
-        ExitSuccess ->
-          case renderHarborNginxReadyzConfig (processStdout configOutput) of
-            Nothing -> failWith "Failed to inject Harbor nginx readiness path into ConfigMap"
-            Just patchedConfig -> do
-              applyHarborNginxReadinessContract repoRoot patchedConfig
-
-applyHarborNginxReadinessContract :: FilePath -> String -> IO ExitCode
-applyHarborNginxReadinessContract repoRoot patchedConfig = do
-  configPatchExit <- patchHarborNginxConfigMap repoRoot patchedConfig
-  case configPatchExit of
-    ExitFailure _ -> pure configPatchExit
-    ExitSuccess -> patchHarborNginxDeployment repoRoot
-
-readHarborNginxConfig :: FilePath -> IO (Either String ProcessOutput)
-readHarborNginxConfig repoRoot =
-  captureKubectl
-    repoRoot
-    [ "get"
-    , "configmap"
-    , harborComponentName harborReleaseName "nginx"
-    , "-n"
-    , harborNamespace
-    , "-o"
-    , "jsonpath={.data.nginx\\.conf}"
-    ]
-
-patchHarborNginxConfigMap :: FilePath -> String -> IO ExitCode
-patchHarborNginxConfigMap repoRoot patchedConfig = do
-  let configMapPatch =
-        object
-          [ "data" .= object ["nginx.conf" .= patchedConfig]
-          ]
-  patchResult <-
-    captureKubectl
-      repoRoot
-      [ "patch"
-      , "configmap"
-      , harborComponentName harborReleaseName "nginx"
-      , "-n"
-      , harborNamespace
-      , "--type"
-      , "merge"
-      , "--field-manager=" ++ harborHelmFieldManager
-      , "--patch"
-      , trimTrailingNewlines (BL8.unpack (encode configMapPatch))
-      ]
-  case patchResult of
-    Left err -> failWith err
-    Right patchOutput ->
-      case processExitCode patchOutput of
-        ExitFailure _ -> failWith ("Failed to patch Harbor nginx ConfigMap: " ++ outputDetail patchOutput)
-        ExitSuccess -> pure ExitSuccess
-
-patchHarborNginxDeployment :: FilePath -> IO ExitCode
-patchHarborNginxDeployment repoRoot = do
-  let deploymentPatch =
-        object
-          [ "spec"
-              .= object
-                [ "template"
-                    .= object
-                      [ "metadata"
-                          .= object
-                            [ "annotations"
-                                .= object
-                                  [ Key.fromString harborReadyAnnotationKey .= harborReadyAnnotationValue
-                                  ]
-                            ]
-                      , "spec"
-                          .= object
-                            [ "containers"
-                                .= ( [ object
-                                         [ "name" .= ("nginx" :: String)
-                                         , "readinessProbe"
-                                             .= object
-                                               [ "httpGet"
-                                                   .= object
-                                                     [ "path" .= harborReadyPath
-                                                     , "port" .= (8080 :: Int)
-                                                     , "scheme" .= ("HTTP" :: String)
-                                                     ]
-                                               ]
-                                         , "livenessProbe"
-                                             .= object
-                                               [ "httpGet"
-                                                   .= object
-                                                     [ "path" .= harborReadyPath
-                                                     , "port" .= (8080 :: Int)
-                                                     , "scheme" .= ("HTTP" :: String)
-                                                     ]
-                                               ]
-                                         ]
-                                     ]
-                                       :: [Value]
-                                   )
-                            ]
-                      ]
-                ]
-          ]
-  patchResult <-
-    captureKubectl
-      repoRoot
-      [ "patch"
-      , "deployment"
-      , harborComponentName harborReleaseName "nginx"
-      , "-n"
-      , harborNamespace
-      , "--type"
-      , "strategic"
-      , "--field-manager=" ++ harborHelmFieldManager
-      , "--patch"
-      , trimTrailingNewlines (BL8.unpack (encode deploymentPatch))
-      ]
-  case patchResult of
-    Left err -> failWith err
-    Right patchOutput ->
-      case processExitCode patchOutput of
-        ExitFailure _ -> failWith ("Failed to patch Harbor nginx Deployment: " ++ outputDetail patchOutput)
-        ExitSuccess -> pure ExitSuccess
-
-ensureHarborProject :: FilePath -> String -> IO ExitCode
-ensureHarborProject repoRoot projectName = do
-  let payload = "{\"project_name\":\"" ++ projectName ++ "\",\"public\":true}"
-  outputResult <-
-    captureToolOutput
-      repoRoot
-      "curl"
-      [ "-sS"
-      , "-u"
-      , harborAdminUser ++ ":" ++ harborAdminPassword
-      , "-H"
-      , "Content-Type: application/json"
-      , "-X"
-      , "POST"
-      , "-d"
-      , payload
-      , "-o"
-      , "/dev/null"
-      , "-w"
-      , "%{http_code}"
-      , "http://" ++ harborRegistryEndpoint ++ "/api/v2.0/projects"
-      ]
-  case outputResult of
-    Left err -> failWith err
-    Right output ->
-      case trimWhitespace (processStdout output) of
-        "201" -> pure ExitSuccess
-        "409" -> pure ExitSuccess
-        statusCode ->
-          failWith
-            ( "Failed to create Harbor project '"
-                ++ projectName
-                ++ "': HTTP "
-                ++ statusCode
-            )
 
 ensureClusterPlatformRuntime :: FilePath -> ValidatedSettings -> String -> String -> IO ExitCode
 ensureClusterPlatformRuntime repoRoot settings prodboxId labelValue = do
@@ -3939,32 +3791,10 @@ readKeycloakVscodeClientSecret repoRoot = do
 adminPublicEdgeManifestItems
   :: ValidatedSettings -> Substrate -> String -> String -> String -> [Value]
 adminPublicEdgeManifestItems settings substrate prodboxId labelValue clientSecret =
+  -- The single-binary registry:2 has no web UI, so there is no admin edge route
+  -- for it (the former OIDC-gated /harbor surface is gone). Only the MinIO
+  -- console admin route remains.
   [ adminOidcClientSecretManifest
-      harborNamespace
-      harborAdminClientSecretName
-      prodboxId
-      labelValue
-      clientSecret
-  , adminHttpRouteManifest
-      harborNamespace
-      harborAdminRouteName
-      harborPathPrefix
-      harborServiceName
-      harborServicePort
-      prodboxId
-      labelValue
-      (substratePublicFqdn settings substrate)
-  , adminSecurityPolicyManifest
-      harborNamespace
-      harborAdminSecurityPolicyName
-      harborAdminRouteName
-      harborAdminClientSecretName
-      (substratePublicRouteUrl settings substrate PublicRouteHarbor)
-      prodboxId
-      labelValue
-      substrate
-      settings
-  , adminOidcClientSecretManifest
       minioNamespace
       minioAdminClientSecretName
       prodboxId
@@ -5467,10 +5297,11 @@ nonEmptyTextValue rawValue =
 
 mirrorClusterImagesOnce :: FilePath -> IO ExitCode
 mirrorClusterImagesOnce repoRoot =
-  -- Sprint 1.47: run the mirror pulls + Harbor pushes inside an ephemeral
-  -- DOCKER_CONFIG (host docker.io auth read-only for public pulls + inline Harbor
-  -- auth for pushes), scrubbed on exit — no docker login, nothing persisted.
-  withEphemeralDockerConfig harborAdminUser harborAdminPassword $ do
+  -- Run the mirror pulls + registry pushes inside an ephemeral DOCKER_CONFIG
+  -- (host docker.io auth read-only for public pulls), scrubbed on exit — no
+  -- docker login, nothing persisted. The in-cluster registry:2 NodePort is
+  -- anonymous over HTTP, so pushes carry no credential.
+  withEphemeralDockerConfig $ do
     imagesResult <- collectClusterImages repoRoot
     case imagesResult of
       Left err -> failWith err
@@ -5480,7 +5311,6 @@ mirrorClusterImagesOnce repoRoot =
               [ (sources, target)
               | image <- images
               , Just source <- [ContainerImage.normalizeImageRefText image]
-              , not (isHarborBootstrapImage source)
               , not (isHarborHostedImage source)
               , Just target <- [ContainerImage.harborMirrorTargetForSource source]
               , Just sources <- [ContainerImage.harborMirrorSourceCandidates source]
@@ -5566,10 +5396,11 @@ ensureCustomImageVariantsForSubstrate substrate repoRoot imageBuildPlan taggedRe
 ensureCustomImageVariantsHomeLocal
   :: FilePath -> CustomImageBuildPlan -> [String] -> String -> IO ExitCode
 ensureCustomImageVariantsHomeLocal repoRoot imageBuildPlan taggedRefs importRef =
-  -- Sprint 1.47: build + push + Harbor pull + ctr import inside an ephemeral
-  -- DOCKER_CONFIG (no docker login; the Harbor auth is inline, the base-image
-  -- build pull uses the host docker.io login), scrubbed on exit.
-  withEphemeralDockerConfig harborAdminUser harborAdminPassword $ do
+  -- Build + push + registry pull + ctr import inside an ephemeral DOCKER_CONFIG
+  -- (no docker login; the anonymous registry:2 NodePort needs no push
+  -- credential, the base-image build pull uses the host docker.io login),
+  -- scrubbed on exit.
+  withEphemeralDockerConfig $ do
     buildExit <- buildAndPushCustomImageVariants repoRoot imageBuildPlan taggedRefs
     case buildExit of
       ExitFailure _ -> pure buildExit
@@ -5591,10 +5422,10 @@ ensureCustomImageVariantsAws repoRoot imageBuildPlan taggedRefs =
   case taggedRefs of
     [] -> pure ExitSuccess
     (primaryRef : _) ->
-      -- Sprint 1.47: the host `docker build` base-image pull authenticates to
-      -- Docker Hub via an ephemeral DOCKER_CONFIG; the Harbor push runs
-      -- in-cluster (crane pod) and the `docker save` is local.
-      withEphemeralDockerConfig harborAdminUser harborAdminPassword $ do
+      -- The host `docker build` base-image pull authenticates to Docker Hub via
+      -- an ephemeral DOCKER_CONFIG; the registry push runs in-cluster (crane
+      -- pod, anonymous) and the `docker save` is local.
+      withEphemeralDockerConfig $ do
         buildExit <- buildCustomImageHostArchitecture repoRoot imageBuildPlan taggedRefs
         case buildExit of
           ExitFailure _ -> pure buildExit
@@ -5898,67 +5729,13 @@ harborTargetAvailableForHostArchitecture repoRoot imageRef = do
           ExitSuccess -> Right True
           ExitFailure _ -> Right False
 
+-- | No-op reset of a mirror target before re-tagging a fresh candidate onto it.
+-- @registry:2@ overwrites a tag on push (a push re-uploads only the missing
+-- blobs and re-points the tag), so — unlike Harbor's REST project-repository
+-- delete — no explicit purge is required before mirroring the next candidate
+-- source. Retained as a seam so the candidate-retry flow reads unchanged.
 purgeHarborMirrorTarget :: FilePath -> String -> IO ExitCode
-purgeHarborMirrorTarget repoRoot target =
-  case parseHarborTargetRepository target of
-    Left err -> failWith err
-    Right Nothing -> pure ExitSuccess
-    Right (Just (projectName, repositoryName)) -> do
-      outputResult <-
-        captureToolOutput
-          repoRoot
-          "curl"
-          [ "-sS"
-          , "-u"
-          , harborAdminUser ++ ":" ++ harborAdminPassword
-          , "-X"
-          , "DELETE"
-          , "-o"
-          , "/dev/null"
-          , "-w"
-          , "%{http_code}"
-          , "http://"
-              ++ harborRegistryEndpoint
-              ++ "/api/v2.0/projects/"
-              ++ projectName
-              ++ "/repositories/"
-              ++ encodeHarborRepositoryName repositoryName
-          ]
-      case outputResult of
-        Left err -> failWith err
-        Right output ->
-          case trimWhitespace (processStdout output) of
-            "200" -> pure ExitSuccess
-            "201" -> pure ExitSuccess
-            "202" -> pure ExitSuccess
-            "204" -> pure ExitSuccess
-            "404" -> pure ExitSuccess
-            statusCode ->
-              failWith
-                ( "Failed to reset Harbor mirror target '"
-                    ++ target
-                    ++ "': HTTP "
-                    ++ statusCode
-                )
-
-parseHarborTargetRepository :: String -> Either String (Maybe (String, String))
-parseHarborTargetRepository target = do
-  imageRef <- ContainerImage.parseImageRef target
-  if ContainerImage.imageRegistry imageRef /= harborRegistryEndpoint
-    then Right Nothing
-    else case break (== '/') (ContainerImage.imageRepository imageRef) of
-      (projectName, '/' : repositoryName)
-        | projectName /= "" && repositoryName /= "" ->
-            Right (Just (projectName, repositoryName))
-      _ ->
-        Left ("invalid Harbor image repository path: " ++ ContainerImage.imageRepository imageRef)
-
-encodeHarborRepositoryName :: String -> String
-encodeHarborRepositoryName =
-  concatMap encodeCharacter
- where
-  encodeCharacter '/' = "%252F"
-  encodeCharacter character = [character]
+purgeHarborMirrorTarget _ _ = pure ExitSuccess
 
 mirrorHostArchitectureTargetFromCandidates
   :: FilePath -> [String] -> String -> IO (Either String ())
@@ -6039,9 +5816,6 @@ mergeMirrorCandidatePairs = foldl mergePair []
 isHarborHostedImage :: String -> Bool
 isHarborHostedImage imageRef =
   (harborRegistryEndpoint ++ "/") `isPrefixOf` imageRef
-
-isHarborBootstrapImage :: String -> Bool
-isHarborBootstrapImage imageRef = "goharbor/" `isInfixOf` imageRef
 
 importImageIntoRke2Containerd :: FilePath -> String -> IO ExitCode
 importImageIntoRke2Containerd repoRoot imageRef = do
@@ -7216,34 +6990,6 @@ renderRke2RegistriesYaml =
     , "    tls:"
     , "      insecure_skip_verify: true"
     ]
-
-renderHarborNginxReadyzConfig :: String -> Maybe String
-renderHarborNginxReadyzConfig nginxConf
-  | ("location = " ++ harborReadyPath ++ " {") `isInfixOf` nginxConf = Just nginxConf
-  | otherwise =
-      case break isRootLocation (lines nginxConf) of
-        (_, []) -> Nothing
-        (before, rootLine : after) ->
-          let indent = takeWhile isSpace rootLine
-              readyLines =
-                [ indent ++ "location = " ++ harborReadyPath ++ " {"
-                , indent ++ "  access_log off;"
-                , indent ++ "  return 200 \"ok\\n\";"
-                , indent ++ "}"
-                , ""
-                ]
-           in Just (unlines (before ++ readyLines ++ (rootLine : after)))
- where
-  isRootLocation line = trimWhitespace line == "location / {"
-
-harborComponentName :: String -> String -> String
-harborComponentName releaseName component = releaseName ++ "-" ++ component
-
-harborProjectFromRepository :: String -> String
-harborProjectFromRepository repository =
-  case break (== '/') repository of
-    (projectName, '/' : _) | projectName /= "" -> projectName
-    _ -> harborMirrorProject
 
 renderImageRefWithoutTag :: ContainerImage.ImageRef -> String
 renderImageRefWithoutTag imageRef =

@@ -49,7 +49,6 @@ oidc:
   vscodeClientId: vscode
   redirectUri: https://test.resolvefintech.com/vscode/oauth2/callback
   adminRedirectUris:
-    - https://test.resolvefintech.com/harbor/oauth2/callback
     - https://test.resolvefintech.com/minio/oauth2/callback
   apiClientId: prodbox-api
   apiAudience: prodbox-api

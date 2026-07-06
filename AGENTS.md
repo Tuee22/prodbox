@@ -149,21 +149,24 @@ for the authoritative inventory:
 
 - The home local substrate and the AWS substrate stand up the **same set of services**:
   the canonical chart set (`gateway`, `keycloak`, `keycloak-postgres`, `vscode`, `api`,
-  `redis`, `websocket`) plus the same supporting platform pieces — MinIO, Harbor, the
-  Percona PostgreSQL operator, Envoy Gateway, cert-manager, real ZeroSSL via
+  `redis`, `websocket`) plus the same supporting platform pieces — MinIO, the in-cluster
+  registry (single-binary `registry:2`), the Percona PostgreSQL operator, Envoy Gateway,
+  cert-manager, real ZeroSSL via
   cert-manager DNS01. The two substrates differ in their load-balancer (MetalLB on home,
   AWS Load Balancer Controller on EKS) and their Route 53 hosting (parent zone on home,
   dedicated subzone provisioned by `prodbox aws stack aws-subzone reconcile` on AWS).
   Nothing else.
-- Harbor + MinIO + Percona are installed on **both** substrates. The AWS substrate is
-  not a "no-Harbor" cluster. If `prodbox charts reconcile ... --substrate aws` fails because
-  chart pods can't reach `127.0.0.1:30080/prodbox/...`, the fix is to bring Harbor
+- The in-cluster registry (`registry:2`) + MinIO + Percona are installed on **both**
+  substrates. The AWS substrate is not a "no-registry" cluster. If
+  `prodbox charts reconcile ... --substrate aws` fails because chart pods can't reach
+  `127.0.0.1:30080/prodbox/...`, the fix is to bring the registry
   (and its MinIO storage backend, and the Percona operator) up on EKS via the
   substrate-platform install in `Prodbox.Lib.AwsSubstratePlatform` — not to render
-  different image references.
+  different image references. The registry has no web UI (no admin route); for continuity
+  its namespace and front-door Service are still named `harbor`.
 - Chart templates and `Prodbox.Lib.ChartPlatform` use one set of image refs across both
   substrates. Substrate-aware code is responsible for making `127.0.0.1:30080` resolve
-  on EKS too (via an EKS-side Harbor plus a node-local registry-mirror pattern
+  on EKS too (via an EKS-side registry plus a node-local registry-mirror pattern
   matching the home cluster's NodePort-on-127.0.0.1 layout).
 - When something on the AWS substrate looks "missing", the fix is almost always
   "extend the harness's substrate-platform install" — never "operator workaround".

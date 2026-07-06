@@ -22,9 +22,9 @@ That flow expects one AWS account, one accessible Route 53 hosted zone, and one 
 elevated/admin credential set that the operator pastes at the interactive prompt
 (`SecretRef.Prompt`). That credential is held in memory for one command, used once to mint the
 dedicated least-privilege operational `prodbox` IAM identity, then discarded — it is never
-written to `prodbox-config.dhall`, never stored in Vault, and never persisted to disk. The
+written to `prodbox.dhall`, never stored in Vault, and never persisted to disk. The
 generated operational `aws.*` credential is minted straight into Vault KV
-(`secret/gateway/gateway/aws`); `prodbox-config.dhall` carries only a `SecretRef.Vault`
+(`secret/gateway/gateway/aws`); `prodbox.dhall` carries only a `SecretRef.Vault`
 reference to it.
 
 The supported goal is full from-scratch bootstrap: `prodbox` can create the operational AWS
@@ -103,7 +103,7 @@ UI — feeding the same interactive prompts a real operator answers so the harne
 admin-credentialed flows non-interactively. Real operators **always** paste the ephemeral
 elevated credential at the interactive prompt described in section 3 above; there is no
 production path that reads a stored admin credential. The fixture is never imported by
-`prodbox-config.dhall`, never read by any production binary, and never stored in Vault. The
+`prodbox.dhall`, never read by any production binary, and never stored in Vault. The
 canonical rules live in
 [aws_admin_credentials.md](./aws_admin_credentials.md).
 
@@ -144,7 +144,7 @@ The wizard walks through:
 5. dedicated least-privilege `prodbox` IAM identity creation — performed after Vault is set up and
    unsealed, using the prompted elevated credential, with the generated `aws.*` credential minted
    straight into Vault KV (`secret/gateway/gateway/aws`)
-6. `prodbox-config.dhall` write (carrying only a `SecretRef.Vault` reference to the generated
+6. `prodbox.dhall` write (carrying only a `SecretRef.Vault` reference to the generated
    `aws.*` credential) and direct-Dhall validation
 
 The supported public setup path prompts for the ephemeral elevated credential when needed
@@ -162,8 +162,8 @@ After the wizard succeeds:
 
 1. delete the ephemeral elevated/admin access key you pasted at the prompt for setup
 2. the generated `aws.*` operational credential lives in Vault KV (`secret/gateway/gateway/aws`);
-   `prodbox-config.dhall` carries only a `SecretRef.Vault` reference to it, never the plaintext key
-3. `aws_admin_for_test_simulation.*` is not a `prodbox-config.dhall` field — it lives in
+   `prodbox.dhall` carries only a `SecretRef.Vault` reference to it, never the plaintext key
+3. `aws_admin_for_test_simulation.*` is not a `prodbox.dhall` field — it lives in
    `test-secrets.dhall` as a `TestPlaintext` fixture for the native IAM lifecycle test harness (and
    other repository tests that simulate the interactive elevated-credential prompt), never in
    production config and never in Vault

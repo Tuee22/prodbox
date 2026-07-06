@@ -214,8 +214,8 @@ workloads.
 That mix is no longer the supported architecture. Every `prodbox` binary takes its
 configuration from exactly one Dhall file. The in-cluster binaries — the gateway daemon and
 the workload Pods — name that file with a `--config <path>` flag (the chart passes the
-mounted ConfigMap path). The **host CLI** locates the repo root and reads the on-disk
-`prodbox-config.dhall` as a *seed/propose input only* — never as the in-force source of truth.
+mounted ConfigMap path). The **host CLI** reads the executable-sibling Tier-0 `prodbox.dhall`
+as a *seed/propose input only* — never as the in-force source of truth.
 Either way the rule is one Dhall file per process and nothing else, and that file carries no
 secret material. Sensitive fields are typed `SecretRef` values, never inline plaintext: the
 production targets are `SecretRef.Vault` / `SecretRef.TransitKey` references resolved through
@@ -231,7 +231,7 @@ longer the canonical reload trigger.
 
 One further inversion governs *what the file means*. The in-force cluster configuration is not
 the on-disk Dhall — it is a Vault-Transit-enveloped object in MinIO. The filesystem
-`prodbox-config.dhall` is a seed/propose input that bootstraps or proposes an update to that
+`prodbox.dhall` is the Tier-0 seed/propose input that bootstraps or proposes an update to that
 encrypted source of truth; the binary reads only the unencrypted basics locally and fetches +
 decrypts the in-force config through Vault. Section 1a states this inversion in full; the
 SecretRef union (Section 6.2), the import rules (Section 5), and the cluster mount contract
@@ -281,12 +281,13 @@ reach an unsealed Vault is allowed to see. The legacy `.data/prodbox/unencrypted
 surface AND the derived `prodbox-basics.json` projection are both ELIMINATED: the floor is read
 directly from `prodbox.dhall` (Sprint `1.41`; see §0).
 
-**Filesystem Dhall is seed/propose, not SSoT.** A filesystem `prodbox-config.dhall` is a
-seed/propose input only. On first-ever bring-up it seeds the encrypted MinIO source of truth;
-thereafter supplying a file is a *proposed update*, reconciled into the in-force config rather
-than read as the live config. The prior host-CLI model — read the repo-root
-`prodbox-config.dhall` directly as the live config — is replaced by "read the basics locally,
-fetch and decrypt the in-force config from MinIO via Vault." The Sprint `1.38` foundation has
+**Filesystem Dhall is seed/propose, not SSoT.** A filesystem `prodbox.dhall` is a Tier-0
+seed/propose input only. On first-ever bring-up its `parameters` seed the encrypted MinIO source
+of truth; thereafter supplying or updating that file is a *proposed update*, reconciled into the
+in-force config rather than read as the live config. The prior host-CLI model — read the repo-root
+`prodbox-config.dhall` directly as the live config — is retired and survives only as a legacy
+payload/temp-decode shape. Supported reads are "read the basics locally, fetch and decrypt the
+in-force config from MinIO via Vault." The Sprint `1.38` foundation has
 landed the Dhall-payload decoder (`decodeConfigDhallBytes`) and the injected
 `fetchInForceConfigWith` / `storeInForceConfigWith` composition. Sprint `4.30` routes the
 production MinIO read through `Prodbox.Minio.EncryptedObject` / `ObjectStore`: `Settings` reads
@@ -359,7 +360,7 @@ import syntax (Section 5).
 
 | Binary instance | Canonical Dhall path | Resolution |
 |---|---|---|
-| Host CLI (`prodbox` on the operator host) | Tier-0 **binary-sibling** `prodbox.dhall` — the file beside the executable (`.build/prodbox.dhall`), not the repo root (GENERATED, self-contained non-secret binary context AND sealed-Vault bootstrap floor AND the operator seed config in its `parameters`). The standalone `./prodbox-config.dhall` seed file is RETIRED (Sprint `1.42`). | `src/Prodbox/Repo.hs::canonicalConfigPaths` (resolved via `takeDirectory getExecutablePath`) + `src/Prodbox/Settings.hs::loadConfigForSettingsWith`; the binary reads the sibling `prodbox.dhall`, projects the basics via `projectBasics`, and decodes `( prodbox.dhall ).parameters` (`loadConfigFile`) as the seed; before establishment (no unlock bundle) it uses those `parameters`, and once established it fetches/decrypts the in-force MinIO envelope (Tier 2) via Vault |
+| Host CLI (`prodbox` on the operator host) | Tier-0 **binary-sibling** `prodbox.dhall` — the file beside the executable (`.build/prodbox.dhall`), not the repo root (GENERATED, self-contained non-secret binary context AND sealed-Vault bootstrap floor AND the operator seed config in its `parameters`). The standalone `./prodbox-config.dhall` seed file is RETIRED (Sprint `1.42`). | `src/Prodbox/Repo.hs::resolveTier0ConfigPath` (resolved via `takeDirectory getExecutablePath`) + `src/Prodbox/Settings.hs::loadConfigForSettingsWith`; the binary reads the sibling `prodbox.dhall`, projects the basics via `projectBasics`, and decodes `( prodbox.dhall ).parameters` (`loadConfigFile`) as the seed; before establishment (no unlock bundle) it uses those `parameters`, and once established it fetches/decrypts the in-force MinIO envelope (Tier 2) via Vault |
 | In-cluster ephemeral CLI (`prodbox …` run inside the container) | Tier-0 **binary-sibling** `prodbox.dhall` (beside the in-container binary) | NO committed or COPY-ed container default. The image build, after installing the binary, **runs the binary** (`prodbox config generate`) to write the binary-sibling `prodbox.dhall`; same resolution as the host CLI (Sprint `1.49`) |
 | In-cluster gateway daemon | `/etc/gateway/config` (Tier-0 `prodbox.dhall`) | the long-running daemon is configured by the chart-side `gateway-config-<nodeId>` ConfigMap mount (unchanged), independent of the build-time binary-sibling default; see [helm_chart_platform_doctrine.md](./helm_chart_platform_doctrine.md) and [distributed_gateway_architecture.md](./distributed_gateway_architecture.md) |
 | In-cluster workload Pods (`api`, `websocket`) | `/etc/workload/config.dhall` | chart-side ConfigMap mount on the owning workload chart |
@@ -370,15 +371,15 @@ committed container default — the in-container `prodbox.dhall` is generated by
 (Sprint `1.49`). No `.dhall` surface is version-controlled (§0).
 
 The host CLI has no `--config` flag; it always resolves the binary-sibling path via
-`takeDirectory getExecutablePath </> "prodbox.dhall"` + `canonicalConfigPaths`. Inside the cluster
+`takeDirectory getExecutablePath </> "prodbox.dhall"` via `resolveTier0ConfigPath`. Inside the cluster
 the daemon deployment passes `--config <path>` explicitly so the resolution rule is trivial.
 
 The self-contained Tier-0 `prodbox.dhall` (§0, §1a) is the non-secret binary context the host
-reads locally and IS the sealed-Vault bootstrap floor; there is no separate JSON floor. The
-seed/propose `prodbox-config.dhall` is the proposed-update Dhall input, not the in-force config,
-and is retired once the SSoT is seeded (Sprint `1.42`, §0). The in-force config is the
+reads locally and IS the sealed-Vault bootstrap floor; there is no separate JSON floor. Its
+`parameters` field is the proposed-update Dhall input, not the in-force config. The former
+standalone `prodbox-config.dhall` seed/propose file is retired (Sprint `1.42`, §0). The in-force config is the
 Vault-Transit-enveloped MinIO object (Tier 2, Section 1a); a host that cannot reach an unsealed
-Vault sees only the basics projected from `prodbox.dhall`, and supplying a seed file is a proposed
+Vault sees only the basics projected from `prodbox.dhall`, and supplying a Tier-0 update is a proposed
 update reconciled into the encrypted source of truth. Sprint `1.38` landed the local foundations
 and switched host settings consumers off the `loadConfigFile` live-config path once the basics
 exist.
@@ -391,7 +392,7 @@ Every binary decodes its Dhall in-process through the native Haskell `dhall` lib
 -- src/Prodbox/Settings.hs
 loadConfigFile :: FilePath -> IO (Either String ConfigFile)
 loadConfigFile repoRoot = do
-  let configPath = configDhallPath (canonicalConfigPaths repoRoot)
+  configPath <- resolveTier0ConfigPath repoRoot
   configExists <- doesFileExist configPath
   if not configExists
     then pure (Left (missingConfigMessage configPath))
@@ -402,11 +403,10 @@ loadConfigFile repoRoot = do
         Right config -> Right config
 ```
 
-The host loader takes the **repository root**, derives the canonical
-`prodbox-config.dhall` path via `canonicalConfigPaths`, guards existence with
-`doesFileExist`, and wraps the decode in `try` so a missing or malformed config surfaces as
-a `Left String` rather than an exception. The in-cluster binaries pass their mounted
-`--config` path straight to `Dhall.inputFile auto`.
+The host loader takes the **repository root**, resolves the executable-sibling Tier-0
+`prodbox.dhall` path, guards existence with `doesFileExist`, and wraps the decode in `try` so a
+missing or malformed config surfaces as a `Left String` rather than an exception. The in-cluster
+binaries pass their mounted `--config` path straight to `Dhall.inputFile auto`.
 
 There is no intermediate JSON projection on the supported path. `dhall-to-json` is not part
 of the supported toolchain. The on-disk artifact is the typed, operator-authored Dhall
@@ -537,7 +537,7 @@ than the leaf-file `mtime`.
 The `acme` config block carries the ACME-issuance inputs consumed by cert-manager
 `ClusterIssuer` rendering. It is decoded into `AcmeSection` in
 `src/Prodbox/Settings.hs`, declared in `prodbox-config-types.dhall`, and given its default
-in `prodbox-config.dhall`:
+in the Tier-0 `prodbox.dhall` parameters:
 
 | Field | Type | Purpose |
 |---|---|---|
@@ -582,10 +582,10 @@ seam (`resolveSecretRefWithVault` / `resolveSecretRefFromVault`) are implemented
 
 - `prodbox config validate` rejects any plaintext secret value in production config and rejects
   `TestPlaintext` outside the test harness.
-- Production config and test plaintext are split: `prodbox-config.dhall` holds references only,
+- Production config and test plaintext are split: `prodbox.dhall` holds references only,
   while `test-secrets.dhall` holds plaintext used solely by the test harness — including the
   `aws_admin_for_test_simulation.*` elevated-credential simulation — never imported by
-  `prodbox-config.dhall` and never in Vault. See
+  `prodbox.dhall` and never in Vault. See
   [vault_doctrine.md §4](./vault_doctrine.md#4-config-split-production-references-vs-test-plaintext).
 
 This is the SSoT-deferring summary; [vault_doctrine.md §3](./vault_doctrine.md#3-the-secretref-model)
@@ -712,12 +712,12 @@ so the prohibition is the intended end state rather than a present-tense fact:
   role Secret materialization landed; host/admin helper and AWS SES SMTP Vault reads/writes landed;
   sealed-startup structural proof landed; legacy derivation/removal remains Sprint 3.19; see §5,
   §6, and [vault_doctrine.md §12](./vault_doctrine.md#12-in-cluster-service-auth)).
-- Plaintext secret values in `prodbox-config.dhall` or in ConfigMap-rendered Dhall. Sensitive
+- Plaintext secret values in `prodbox.dhall` or in ConfigMap-rendered Dhall. Sensitive
   fields carry `SecretRef` references instead. The FileSecret-free `SecretRef` contract is Sprint
   `1.35`; AWS provider credential migration is Sprint `7.14`; ACME EAB migration is Sprint `7.15`
   (see §6.2 and [vault_doctrine.md §3](./vault_doctrine.md#3-the-secretref-model)).
 - Any secret value in the Tier-0 non-secret binary context (§0). The Tier-0 `prodbox.dhall` (which
-  IS the sealed-Vault bootstrap floor) and the seed/propose `prodbox-config.dhall` carry
+  IS the sealed-Vault bootstrap floor) carries
   parameters, context, witness, and `SecretRef.Vault` POINTERS only — never inline secret material.
   Bootstrap secrets are Tier 1 (password-gated MinIO bundle); operational secrets are Tier 2
   (Vault-gated, Vault-Transit-enveloped MinIO objects). A secret value appearing in any Tier-0
@@ -731,8 +731,8 @@ so the prohibition is the intended end state rather than a present-tense fact:
   default `.dhall` — the in-container `prodbox.dhall` is generated by running the binary (Sprint
   `1.47`).
 - Treating any Tier-0 surface as the in-force config SSoT. Tier 0 is a **read-only, non-secret
-  bootstrap input**: the host reads `prodbox.dhall` locally to reach and unseal Vault, and a
-  seed/propose `prodbox-config.dhall` proposes an update. The in-force config SSoT is the Tier-2
+  bootstrap input**: the host reads `prodbox.dhall` locally to reach and unseal Vault, and its
+  `parameters` propose updates. The in-force config SSoT is the Tier-2
   Vault-Transit-enveloped MinIO object, never an on-disk or ConfigMap-mounted Dhall file (Sprints
   `1.38` / `1.42`; see §0 and §1a).
 

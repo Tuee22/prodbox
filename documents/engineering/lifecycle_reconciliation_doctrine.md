@@ -92,7 +92,7 @@ bucket data; `prodbox aws stack <stack> destroy --yes` (or `prodbox cluster dele
 teardown sequences.
 
 **Retained S3 compatibility store.** The `pulumi_state_backend` block in
-`prodbox-config.dhall` declares the long-lived S3 bucket still used for public-edge TLS retention
+`prodbox.dhall` declares the long-lived S3 bucket still used for public-edge TLS retention
 and as the optional first-touch source for old `aws-ses` Pulumi checkpoints. The schema lives in
 `prodbox-config-types.dhall` (record type `PulumiStateBackend` with `bucket_name : Text`,
 `region : Text`, `key_prefix : Text`). Empty defaults force the operator to set `bucket_name` and
@@ -116,12 +116,12 @@ class.
 
 | Class | Credential class | How the credential is obtained |
 |---|---|---|
-| Per-run stacks | Generated operational `prodbox` IAM credential | The least-privilege `aws.*` identity, minted into Vault KV (`secret/gateway/gateway/aws`); `prodbox-config.dhall` carries only a `SecretRef.Vault` reference, never the plaintext key. Materialized for the run by `prodbox aws setup`, cleared by `prodbox aws teardown`. |
-| Long-lived stacks + retained-bucket compatibility | Ephemeral elevated/admin credential | Supplied at runtime through the one interactive `SecretRef.Prompt` arm — held in memory for one command, used once, then discarded. It is never written to `prodbox-config.dhall`, never stored in Vault. In tests the harness simulates that prompt by feeding `aws_admin_for_test_simulation.*` from `test-secrets.dhall` (a `TestPlaintext` fixture, not a production-config section). |
+| Per-run stacks | Generated operational `prodbox` IAM credential | The least-privilege `aws.*` identity, minted into Vault KV (`secret/gateway/gateway/aws`); `prodbox.dhall` carries only a `SecretRef.Vault` reference, never the plaintext key. Materialized for the run by `prodbox aws setup`, cleared by `prodbox aws teardown`. |
+| Long-lived stacks + retained-bucket compatibility | Ephemeral elevated/admin credential | Supplied at runtime through the one interactive `SecretRef.Prompt` arm — held in memory for one command, used once, then discarded. It is never written to `prodbox.dhall`, never stored in Vault. In tests the harness simulates that prompt by feeding `aws_admin_for_test_simulation.*` from `test-secrets.dhall` (a `TestPlaintext` fixture, not a production-config section). |
 
 Long-lived stack management uses the elevated/admin credential because that level of power
 outlives any single cluster cycle, matching the resource lifetime; there is no stored admin
-block in `prodbox-config.dhall` — real ops prompt for the ephemeral elevated credential and the
+block in `prodbox.dhall` — real ops prompt for the ephemeral elevated credential and the
 harness simulates that prompt from `test-secrets.dhall`. The generated operational `prodbox` IAM
 user does not need `s3:GetObject`/`PutObject` permission on the retained S3 bucket. Migrating any
 code path off the stored-admin model is scheduled as Sprint `7.16`.
@@ -296,7 +296,7 @@ pre-Sprint-4.19 per-run gate, and the file-existence proxy before
 Sprint 4.16); or (b) **incomplete coverage** — a resource the system can
 create that has no registered `discover`/destroy at all (the operational
 `prodbox` IAM user, the generated operational `aws.*` Vault KV credential
-and its `SecretRef.Vault` reference in `prodbox-config.dhall`, fixed-name
+and its `SecretRef.Vault` reference in `prodbox.dhall`, fixed-name
 IAM left by a partial `pulumi up`; see §6a). The registry closes both
 structurally.
 
@@ -729,7 +729,7 @@ genuine leaks):
 
 1. **Register the durable classes (§3.1).** The operational `prodbox`
    IAM user and the generated operational `aws.*` Vault KV credential
-   (referenced from `prodbox-config.dhall` only by `SecretRef.Vault`)
+   (referenced from `prodbox.dhall` only by `SecretRef.Vault`)
    become registered `Operational` resources in the managed-resource
    registry, each with a `discover` (`aws iam get-user` / Vault-KV-present)
    and a `destroy` (the existing delete/clear paths) — so `aws teardown`'s

@@ -1334,8 +1334,8 @@ defaultGatewayNodePort = 30443
 -- @iptables@ binary, an unprivileged caller, or any other probe
 -- failure as success-with-reason — the post-deploy / reconcile hook
 -- is defense-in-depth, not the primary contract. Operators on hosts
--- without iptables (containers, CI) or running @prodbox charts deploy@
--- without sudo still complete the chart deploy; a one-line hint names
+-- without iptables (containers, CI) or running @prodbox charts reconcile@
+-- without sudo still complete the chart reconcile; a one-line hint names
 -- the canonical operator command to re-enforce the rule.
 runHostFirewallGatewayRestrictOptional :: Int -> IO ExitCode
 runHostFirewallGatewayRestrictOptional port = do
@@ -1434,7 +1434,7 @@ runHostFirewallGatewayRestrict port = do
 -- via @iptables -C@ first; if the rule is absent it reports
 -- @FirewallRuleNotPresent@ and exits 0; otherwise it invokes @iptables
 -- -D@ to remove the rule and reports @FirewallRuleRemoved@. Idempotent:
--- safe to call from @prodbox rke2 delete --yes@ regardless of whether
+-- safe to call from @prodbox cluster delete --yes@ regardless of whether
 -- the rule was previously installed.
 runHostFirewallGatewayUnrestrict :: Int -> IO ExitCode
 runHostFirewallGatewayUnrestrict port = do

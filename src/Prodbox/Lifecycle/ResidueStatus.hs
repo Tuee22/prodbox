@@ -10,7 +10,7 @@
 -- Sprint 4.19: the destructive-teardown **gates** treat per-run
 -- 'ResidueUnreachable' as a refusal, not as absent. "I cannot read the
 -- per-run Pulumi state backend (MinIO)" is not the same as "the
--- resources are gone" — treating it as absent let @prodbox rke2 delete
+-- resources are gone" — treating it as absent let @prodbox cluster delete
 -- --yes@ silently pass on a degraded cluster (MinIO pod down, state
 -- intact on @.data/@), after which @rm .data@ orphaned the live AWS
 -- resources. Long-lived 'ResidueUnreachable' has always been a refusal

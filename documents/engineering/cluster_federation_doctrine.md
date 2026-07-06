@@ -217,13 +217,13 @@ tier: the existing `LogicalDownstreamCluster` Vault-Transit object in the shared
 the non-secret basics locate the parent Vault, and the orders themselves resolve only behind an
 unsealed Vault.
 
-A filesystem `prodbox-config.dhall` is a **seed/propose input only, not the SSoT**. On first-ever
-bring-up it seeds the encrypted MinIO SSoT; thereafter supplying a file is a *proposed update*
-applied through Vault, not a direct read of the in-force config. The host CLI reads the basics
-locally and fetches + decrypts the in-force config from MinIO via Vault; it does not read a
+The binary-sibling Tier-0 `prodbox.dhall` is a **seed/propose input only, not the SSoT**. On
+first-ever bring-up it seeds the encrypted MinIO SSoT; thereafter supplying a file is a *proposed
+update* applied through Vault, not a direct read of the in-force config. The host CLI reads the
+basics locally and fetches + decrypts the in-force config from MinIO via Vault; it does not read a
 repo-root Dhall file directly as the live config (Sprint `1.38`). The Sprint `1.38` local
-foundations and global host-loader switch are landed; when unencrypted basics exist, host settings
-loads go through Vault and MinIO instead of direct repo-root Dhall.
+foundations and global host-loader switch are landed; Sprint `1.42` retired the repo-root
+`prodbox-config.dhall` seed and moved the seed/propose payload into Tier-0 `prodbox.dhall`.
 
 ## 6. Root-token config-write authority
 

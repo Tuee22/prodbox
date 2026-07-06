@@ -281,8 +281,8 @@ Forbidden by default:
    project-owned doctrine
 3. plaintext credentials in `.env` files, CI variables, or project trees when federation is available
 
-For `prodbox`, the supported stored-credential exception is limited to repository-root
-`prodbox-config.dhall` under the ownership rules in
+For `prodbox`, the supported stored-reference exception is limited to the executable-sibling
+Tier-0 `prodbox.dhall` carrying typed `SecretRef.Vault` values under the ownership rules in
 [AWS Integration Environment Doctrine](./aws_integration_environment_doctrine.md) and
 [AWS Account Setup Guide](./aws_account_setup_guide.md).
 

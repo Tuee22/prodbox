@@ -138,7 +138,7 @@ main = mainWithSuite "prodbox-daemon-lifecycle" $ do
   -- inherently asynchronous (fsnotify's parent-directory watch races with
   -- the test's config rewrite), so deterministic unit-level coverage is no
   -- longer feasible here. The closure gate moved to the live operator
-  -- exercise on this host: `prodbox rke2 reconcile` brings up the gateway
+  -- exercise on this host: `prodbox cluster reconcile` brings up the gateway
   -- daemon with a mounted Dhall ConfigMap; editing the ConfigMap triggers a
   -- LiveConfig reload (log_level / timing knob change) in-process or a
   -- BootConfig drain-and-exit (node identity / cert paths) followed by a

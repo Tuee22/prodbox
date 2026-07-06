@@ -111,7 +111,7 @@ nukeInteractiveGuard =
           , ""
           , "  prodbox aws stack aws-ses destroy --yes"
           , "  prodbox aws teardown"
-          , "  prodbox rke2 delete --cascade"
+          , "  prodbox cluster delete --cascade"
           , ""
           , "If the long-lived `pulumi_state_backend` bucket should also be"
           , "destroyed, follow up with the explicit S3 bucket-destroy step."

@@ -174,7 +174,7 @@ configTypesHeader =
     , "-- hand; edit the Haskell `ConfigFile` / `defaultConfigFile` types and the"
     , "-- `SecretRef` union, then regenerate. (Sprint 7.17.)"
     , "--"
-    , "-- User config (`prodbox-config.dhall`) imports this and overrides required"
+    , "-- Tier-0 config (`prodbox.dhall`) imports this and overrides required"
     , "-- fields:"
     , "--"
     , "--   let Config = ./prodbox-config-types.dhall"

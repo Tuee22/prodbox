@@ -1,4 +1,4 @@
 AWS_SETUP_PLAN
-CONFIG_PATH=/tmp/prodbox/prodbox-config.dhall
+CONFIG_PATH=/tmp/prodbox/.build/prodbox.dhall
 POLICY_TIER=full
 ACCESS_KEY_ID=admin-access-key

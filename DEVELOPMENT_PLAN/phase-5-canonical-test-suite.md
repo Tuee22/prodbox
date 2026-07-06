@@ -231,8 +231,8 @@ Today the home local substrate runs the full suite; the AWS substrate runs only 
 - `src/Prodbox/TestPlan.hs` owns the `NativeValidation` ADT and the `IntegrationSuite`-to-plan
   mapping for the `prodbox test integration <name>` CLI surface.
 - `src/Prodbox/TestRunner.hs` owns phase-bannered execution: prerequisite gating, optional
-  runbook (`rke2 reconcile`), supported-runtime bootstrap (charts deploy + wait for public-edge
-  ready), suite execution, optional postflight (charts redeploy + substrate destroy).
+  runbook (`cluster reconcile`), supported-runtime bootstrap (`charts reconcile` + wait for
+  public-edge ready), suite execution, optional postflight (charts reconcile + substrate destroy).
 - `src/Prodbox/Prerequisite.hs` owns the prerequisite DAG that gates suite execution.
 - Validations historically named "public-edge proofs" exercise real ZeroSSL certificates
   via cert-manager + ACME, real OIDC redirects through Keycloak, real WebSocket fan-out via
@@ -551,8 +551,8 @@ dispatch and the `StackDescriptor` SSoT), and the typed-error reframe in Sprint 
   EKS run must hold (per [substrates.md](substrates.md) and
   [phase-7-aws-substrate-foundations.md](phase-7-aws-substrate-foundations.md)) rather than a
   weaker existence check.
-- Three destructive `--dry-run` goldens are added — for `prodbox rke2 delete`,
-  `prodbox rke2 delete --cascade`, and `prodbox nuke` — proving the planned step list each
+- Three destructive `--dry-run` goldens are added — for `prodbox cluster delete`,
+  `prodbox cluster delete --cascade`, and `prodbox nuke` — proving the planned step list each
   destructive path emits without executing it. The golden coverage is generated from the
   managed-resource registry / `StackDescriptor` SSoT (Sprints `4.26`/`4.27`) so the goldens track
   the registry rather than drifting from it.
@@ -660,12 +660,12 @@ extends the canonical suite; existing validations are unchanged.
   `client_secret = "…"`, `password = "…"`, Pulumi passphrase, kubeconfig user token, raw master
   seed).
 - Unit proofs for plaintext-secret rejection (the `SecretRef.TestPlaintext` arm is accepted only by
-  the test harness from `test-config.dhall`, never in production), Vault init/unseal/reconcile,
-  fixture seeding from `test-config.dhall`, and teardown-preserves-Vault-PV. The plaintext-rejection
-  proof also asserts `prodbox-config.dhall` carries no plaintext admin/operational AWS key — the
+  the test harness from `test-secrets.dhall`, never in production), Vault init/unseal/reconcile,
+  fixture seeding from `test-secrets.dhall`, and teardown-preserves-Vault-PV. The plaintext-rejection
+  proof also asserts `prodbox.dhall` carries no plaintext admin/operational AWS key — the
   `aws_admin_for_test_simulation.*` test-simulation block is a `TestPlaintext` fixture that lives
-  only in `test-config.dhall` (never imported by `prodbox-config.dhall`, never in Vault), while the
-  generated operational `aws.*` credential is minted into Vault KV and `prodbox-config.dhall` carries
+  only in `test-secrets.dhall` (never imported by `prodbox.dhall`, never in Vault), while the
+  generated operational `aws.*` credential is minted into Vault KV and `prodbox.dhall` carries
   only a `SecretRef.Vault` reference to it (see
   [vault_doctrine.md §3/§4/§13](../documents/engineering/vault_doctrine.md) and
   [aws_admin_credentials.md](../documents/engineering/aws_admin_credentials.md)).

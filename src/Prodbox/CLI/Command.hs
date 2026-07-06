@@ -232,7 +232,7 @@ data AwsTeardownFlags = AwsTeardownFlags
 --   without flags. If any Pulumi stack reports live resources, refuse to
 --   delete the operational IAM user and emit an actionable message.
 -- * 'DestroyPulumiResidueFirst' — operator-driven via
---   @--destroy-pulumi-residue@. Run @prodbox pulumi \<stack>-destroy --yes@
+--   @--destroy-pulumi-residue@. Run @prodbox aws stack \<stack> destroy --yes@
 --   for each live stack (per-run AND long-lived) in canonical order, then
 --   proceed with the IAM teardown. Long-lived 'aws-ses' destruction
 --   emits a stderr warning about SES re-verify + S3 bucket cooldown.

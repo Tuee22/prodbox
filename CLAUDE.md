@@ -207,11 +207,11 @@ prompts, you have picked the wrong command, not hit a blocker.
 | Total teardown including long-lived shared infrastructure | (no automation alias — compose `prodbox aws stack aws-ses destroy --yes` + `prodbox aws teardown` + `prodbox cluster delete --cascade` + long-lived state-bucket cleanup individually) | `prodbox nuke` |
 | Provision a Pulumi stack | exercised by the harness; no standalone automation alias | `prodbox aws stack <stack> reconcile` |
 | Destroy a Pulumi stack | `prodbox aws stack <stack> destroy --yes` (already non-interactive) | same |
-| Author repo config | edit `prodbox-config.dhall` against `prodbox-config-types.dhall` | `prodbox config setup` |
+| Author repo config | edit the binary-sibling `prodbox.dhall` against `prodbox-config-types.dhall` | `prodbox config setup` |
 | Inspect AWS state | `aws sts get-caller-identity`, `prodbox aws quotas check` (after `aws.*` populated) | same |
 
 The automation path materializes operational `aws.*` from
-`aws_admin_for_test_simulation.*` in `prodbox-config.dhall` via the
+`aws_admin_for_test_simulation.*` in `test-secrets.dhall` via the
 suite-level IAM harness, runs validations, then clears `aws.*` and
 auto-destroys per-run stacks on suite exit (success, failure, or Ctrl-C).
 The retained `aws-ses` long-lived stack is intentionally **not**

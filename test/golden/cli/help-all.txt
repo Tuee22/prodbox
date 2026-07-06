@@ -364,7 +364,7 @@ Examples:
 ## prodbox config setup
 prodbox config setup - Interactively author config
 
-Write the supported prodbox Dhall config.
+Write or refresh the supported binary-sibling prodbox.dhall.
 Options:
 - --dry-run - Render the config-setup plan without mutating state
 - --plan-file <PATH> - Write the rendered plan to a file
@@ -385,7 +385,7 @@ Examples:
 ## prodbox config validate
 prodbox config validate - Validate current config
 
-Validate the repository-root config file.
+Validate the binary-sibling prodbox.dhall.
 Examples:
 - prodbox config validate  # Validate the current config.
 
@@ -394,7 +394,7 @@ prodbox config schema - Regenerate Dhall schema files
 
 Regenerate prodbox-config-types.dhall + test-secrets-types.dhall from the Haskell source of truth.
 Examples:
-- prodbox config schema  # Regenerate the committed Dhall schema files.
+- prodbox config schema  # Regenerate the generated Dhall schema files.
 
 ## prodbox config generate
 prodbox config generate - Generate the default non-secret config

@@ -45,7 +45,7 @@
 prodbox manages an intentionally ephemeral cluster: the Kubernetes runtime may be destroyed and
 recreated while `.data/`-backed persistent volumes survive and rebind on the next spin-up (see
 [storage_lifecycle_doctrine.md](./storage_lifecycle_doctrine.md)). Before this doctrine, secret
-material lived in three uneven places: plaintext fields inside the operator-authored
+material lived in three uneven places: plaintext fields inside the then-operator-authored
 `prodbox-config.dhall` (AWS keys, ACME EAB material), plaintext Dhall fragments mounted from
 k8s Secrets, and an unencrypted master-seed object in MinIO that any holder of the bucket
 credential could read, with every per-namespace secret HMAC-derived from that seed. A `.data/`
@@ -70,11 +70,13 @@ prior secret machinery:
   passwords, Keycloak admin, OIDC client secrets, gateway event keys) is instead a Vault KV
   object: generated once, persisted on Vault's durable storage, and fetched by each in-cluster
   consumer via Vault Kubernetes auth. There is no `master-seed` object in MinIO.
-- The **single-Dhall-file config contract** ([config_doctrine.md](./config_doctrine.md))
+- The **Tier-0 Dhall config contract** ([config_doctrine.md](./config_doctrine.md))
   changes posture: the in-force cluster configuration is a Vault-Transit-enveloped MinIO object
-  (the SSoT), and a filesystem `prodbox-config.dhall` is a seed/propose input only. The file's
-  sensitive fields are typed `SecretRef.Vault` references — no plaintext secret value, and no
-  `FileSecret` arm (§3, §4; [cluster_federation_doctrine.md](./cluster_federation_doctrine.md)).
+  (the SSoT), and the binary-sibling `prodbox.dhall` is the non-secret bootstrap floor plus
+  seed/propose payload. Its sensitive fields are typed `SecretRef.Vault` references — no plaintext
+  secret value, and no `FileSecret` arm (§3, §4;
+  [cluster_federation_doctrine.md](./cluster_federation_doctrine.md)). The retired
+  `prodbox-config.dhall` name survives only as a legacy payload/import shape.
 - The **Secret-mounted plaintext Dhall fragment** delivery path is **removed, not bridged**.
   There are no `/etc/gateway/secrets/*.dhall` mounts and no `as Text` credential imports; the
   `SecretRefFile` constructor and its resolver arm are deleted from `Prodbox.Settings.SecretRef`
@@ -121,7 +123,7 @@ Stated as hard architectural invariants — not implementation preferences:
 1. **Sole-backend invariant.** Every secret/credential/key/cert is a Vault object. There is no
    second store and no plaintext fallback. No secret reconstructs from any non-Vault source (§3,
    §9).
-2. **Dhall invariant.** `prodbox-config.dhall` never contains a plaintext secret value; sensitive
+2. **Dhall invariant.** `prodbox.dhall` never contains a plaintext secret value; sensitive
    fields are `SecretRef.Vault` references only (§3).
 3. **Cluster-metadata-is-secret invariant.** Downstream-cluster names, endpoints, kubeconfigs,
    account IDs, DNS names, Pulumi stack identities, and the in-force config are secret data; a
@@ -190,13 +192,13 @@ Constructor rules:
 in-cluster component needs must be a `VaultSecret` / `VaultTransitKey` reference before
 deployment.
 
-`prodbox-config.dhall` **may** contain: non-secret topology; public, non-sensitive endpoint
+`prodbox.dhall` **may** contain: non-secret topology; public, non-sensitive endpoint
 names; Vault mount names; Vault policy intent; logical `SecretRef` values; the unencrypted-basics
 bootstrap surface needed to reach and unseal Vault (cluster id, this cluster's Vault address, seal
 mode, and — for a child cluster — the parent reference it must contact to auto-unseal; see §16 and
 [config_doctrine.md](./config_doctrine.md)).
 
-`prodbox-config.dhall` **must not** contain: AWS access keys; ACME EAB HMAC material; TLS private
+`prodbox.dhall` **must not** contain: AWS access keys; ACME EAB HMAC material; TLS private
 keys; MinIO root credentials; Keycloak admin passwords or client secrets; Pulumi passphrases or
 stack secrets; downstream-cluster kubeconfigs; downstream-cluster hostnames, IPs, account IDs, or
 identities that reveal managed-cluster inventory; or any plaintext material needed to unseal,
@@ -208,7 +210,7 @@ Two files, one rule each:
 
 | File | Content | Consumed by |
 |---|---|---|
-| `prodbox-config.dhall` | Production-safe topology, the unencrypted basics, and `SecretRef` values only — a seed/propose input, not the in-force SSoT (§16). NO plaintext secrets; NO `aws_admin_for_test_simulation` block | Every supported binary, host and in-cluster |
+| `prodbox.dhall` | Production-safe topology, the unencrypted basics, and `SecretRef` values only — a binary-sibling Tier-0 bootstrap floor plus seed/propose payload, not the in-force SSoT (§16). NO plaintext secrets; NO `aws_admin_for_test_simulation` block | Host CLI and generated/mounted Dhall config paths |
 | `test-secrets.dhall` (Sprint `1.43`; formerly `test-config.dhall`) | All test-only plaintext that simulates operator prompts and seeds fixtures — the Vault unlock-bundle password (simulates the unseal prompt) and the `aws_admin_for_test_simulation.*` elevated-AWS credentials (simulates the elevated-credential prompt) among them | The test harness only |
 
 `test-secrets.dhall` may carry the Vault unlock-bundle password used by tests (which simulates the
@@ -217,7 +219,7 @@ elevated AWS credentials that simulate the operator typing the elevated/admin cr
 `SecretRef.Prompt` arm, fake ACME/EAB values, fake MinIO credentials, fake Keycloak bootstrap
 passwords, and fixtures used to seed Vault in integration tests. None of these testing secrets live
 in Vault — Vault holds production secrets only. `test-secrets.dhall` must never be required for
-production, imported by `prodbox-config.dhall`, copied into generated cluster config, stored in
+production, imported by `prodbox.dhall`, copied into generated cluster config, stored in
 MinIO, mounted into the cluster, or committed with real values; it has no production role. It is the
 only cleartext home of the root operator's memorized unseal password (§6, §16) and the only home of
 the `aws_admin_for_test_simulation.*` test fixture (a test-harness fixture, not a production-config
@@ -784,10 +786,10 @@ carries a mandatory `SecretRef.Vault` reference (never the plaintext key); the e
 credential never enters config at all — it is supplied through the interactive `SecretRef.Prompt`
 arm and discarded after use (the test harness simulates that prompt from the
 `aws_admin_for_test_simulation.*` `TestPlaintext` fixture in `test-secrets.dhall`, not from a
-`prodbox-config.dhall` section). Setup/config-setup mint the dedicated least-privilege `prodbox`
+production config section). Setup/config-setup mint the dedicated least-privilege `prodbox`
 identity using the prompted elevated credential and write the generated operational provider keys
 straight into `secret/gateway/gateway/aws`, and teardown clears that Vault object without writing
-provider secrets to `prodbox-config.dhall`.
+provider secrets to `prodbox.dhall`.
 First-touch deletion/import of pre-existing raw Pulumi checkpoint layouts is code-owned: the per-run raw
 backend environment is confined to `LegacyPulumiBackend` first-touch export/delete, while supported
 Pulumi actions receive provider-only input before `fileBackendEnvironment` rewrites the backend to
@@ -1017,14 +1019,15 @@ the auto-unseal mechanics, and the custody and config-authority flows.
 - **Unencrypted basics** = the minimal, non-revealing bootstrap needed only to reach and unseal
   Vault: cluster id, this cluster's Vault address, seal mode, and (for a child) the parent
   reference it must contact to auto-unseal. Nothing about workloads, downstream clusters, or
-  credentials. The basics are the only thing legible from `prodbox-config.dhall` and from a
+  credentials. The basics are the only thing legible from `prodbox.dhall` and from a
   sealed cluster.
-- A filesystem `prodbox-config.dhall` is a **seed/propose input only, not the SSoT** (§4). On
-  first-ever bring-up it seeds the encrypted MinIO SSoT; thereafter supplying a file is a
-  *proposed update*. The prior host-CLI model of reading repo-root `prodbox-config.dhall` directly
-  as the config is replaced by "read the basics locally, fetch+decrypt the in-force config from
-  MinIO via Vault" (Sprint `1.38`). The Sprint `1.38` local foundations and global host-loader
-  switch are landed
+- The filesystem seed/propose role now lives in the binary-sibling `prodbox.dhall`, not the
+  retired repo-root `prodbox-config.dhall` (§4). On first-ever bring-up it seeds the encrypted
+  MinIO SSoT; thereafter supplying a file is a *proposed update*. The prior host-CLI model of
+  reading repo-root `prodbox-config.dhall` directly as the live config is replaced by "read the
+  basics locally, fetch+decrypt the in-force config from MinIO via Vault" (Sprint `1.38`), with
+  Sprint `1.42` moving the seed/propose payload into Tier-0 `prodbox.dhall`. The Sprint `1.38`
+  local foundations and global host-loader switch are landed
   (`loadUnencryptedBasics`, `decodeConfigDhallBytes`, MinIO envelope get/put, injected
   fetch/open/decode + seal/store, and `loadConfigForSettingsWith`).
 - **Updating the root cluster's in-force config requires the root Vault token** (which requires an

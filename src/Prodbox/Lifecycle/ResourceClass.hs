@@ -31,7 +31,7 @@ import Data.List (intercalate)
 data LifecycleClass
   = -- | Per-run AWS-substrate Pulumi stacks. State lives in the
     -- in-cluster MinIO backend and dies with the cluster; destroyed by
-    -- @prodbox rke2 delete@ and the test-harness postflight.
+    -- @prodbox cluster delete@ and the test-harness postflight.
     PerRun
   | -- | Long-lived cross-substrate shared infrastructure (e.g.
     -- @aws-ses@). State lives in the operator-account S3 backend;

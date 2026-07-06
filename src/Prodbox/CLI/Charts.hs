@@ -174,7 +174,7 @@ applyChartPlanOutput applyPlan plan = do
   applyResult <- applyPlan plan
   either failWith writeSuccess applyResult
 
--- | Sprint 2.19 lifecycle hook: after a successful @charts deploy gateway@
+-- | Sprint 2.19 lifecycle hook: after a successful @charts reconcile gateway@
 -- on the home substrate, install the iptables loopback-only rule on the
 -- gateway NodePort. Other charts and substrates pass through unchanged.
 applyChartDeployWithPostHook
@@ -231,7 +231,7 @@ failWith message = do
 -- | For the AWS substrate, reconcile the platform runtime (AWS Load
 -- Balancer Controller, Envoy Gateway, cert-manager, ACME ClusterIssuer)
 -- before deploying a chart. For the home substrate this is a no-op
--- because the operator runs `prodbox rke2 reconcile` separately and that
+-- because the operator runs `prodbox cluster reconcile` separately and that
 -- command owns the home-cluster platform reconcile.
 --
 -- The AWS-substrate orchestrator is idempotent: each underlying step uses

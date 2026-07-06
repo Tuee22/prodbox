@@ -213,7 +213,7 @@ unchanged. Under the refactor:
 
 - **Landed (Sprint 7.15):** the ACME EAB material (the ZeroSSL external-account-binding key id
   and HMAC) lives in the `secret/acme/eab` Vault KV object and is referenced from
-  `prodbox-config.dhall` by a typed `Optional SecretRef` (`SecretRef.Vault`) rather than carried
+  `prodbox.dhall` by a typed `Optional SecretRef` (`SecretRef.Vault`) rather than carried
   as plaintext. The non-secret key id is resolved host-side and rendered inline on the
   `zerossl-dns01` `ClusterIssuer`; the HMAC key is materialized into the `cert-manager` namespace
   as the `acme-eab-credentials` Secret by a Vault-login materializer Job (the same Sprint 3.18

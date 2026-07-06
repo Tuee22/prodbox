@@ -53,8 +53,8 @@ data StackDescriptor = StackDescriptor
   -- ^ The project subdir under @pulumi/@ holding @Pulumi.yaml@ +
   -- @Main.yaml@.
   , stackCliVerb :: String
-  -- ^ The CLI verb stem: the @<stem>@ in @prodbox pulumi
-  -- <stem>-resources@ / @prodbox pulumi <stem>-destroy@.
+  -- ^ The CLI verb stem: the @<stem>@ in @prodbox aws stack <stem>
+  -- reconcile@ / @prodbox aws stack <stem> destroy --yes@.
   , stackLifecycleClass :: LifecycleClass
   -- ^ The lifecycle class. Pulumi-managed stacks are either @PerRun@
   -- (auto-managed per suite run) or @LongLived@ (retained shared
@@ -99,11 +99,11 @@ stackDescriptors =
       }
   ]
 
--- | The @prodbox pulumi <verb>-resources@ command for a descriptor.
+-- | Legacy Pulumi-resource verb label for compatibility displays.
 stackResourcesCliVerb :: StackDescriptor -> String
 stackResourcesCliVerb descriptor = stackCliVerb descriptor ++ "-resources"
 
--- | The @prodbox pulumi <verb>-destroy@ command for a descriptor.
+-- | Legacy Pulumi-destroy verb label for compatibility displays.
 stackDestroyCliVerb :: StackDescriptor -> String
 stackDestroyCliVerb descriptor = stackCliVerb descriptor ++ "-destroy"
 

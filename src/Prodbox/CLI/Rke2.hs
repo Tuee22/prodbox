@@ -531,7 +531,7 @@ gatewayMinioBucket :: String
 gatewayMinioBucket = "prodbox-state"
 
 -- | Namespace where the gateway chart deploys. Reconcile pre-creates it
--- before @prodbox charts deploy gateway@ runs.
+-- before @prodbox charts reconcile gateway@ runs.
 gatewayNamespace :: String
 gatewayNamespace = "gateway"
 
@@ -1417,7 +1417,7 @@ applyPublicEdgeReconcile repoRoot settings prodboxId labelValue =
         , reconcileDnsBootstrapRecord repoRoot settings
         ]
 
--- | Sprint 4.26: the Plan for @prodbox rke2 delete@ (default and
+-- | Sprint 4.26: the Plan for @prodbox cluster delete@ (default and
 -- @--cascade@). The payload is the 'Rke2DeleteFlags' so the apply closure
 -- branches on @--cascade@ / @--allow-pulumi-residue@ exactly as the dispatch
 -- arm used to; the rendered plan is the operator-visible destructive
@@ -1426,7 +1426,7 @@ buildNativeDeletePlan :: FilePath -> Rke2DeleteFlags -> Plan Rke2DeleteFlags
 buildNativeDeletePlan repoRoot =
   buildPlan (renderNativeDeletePlan repoRoot)
 
--- | Sprint 4.26: render the destructive @rke2 delete@ plan. The cascade
+-- | Sprint 4.26: render the destructive @cluster delete@ plan. The cascade
 -- variant renders the canonical phase order (confirm-MinIO → drain →
 -- per-run destroys → test-EBS reaper → uninstall → sweep); the default variant
 -- renders the refuse-gate + per-run sweep + cluster-substrate removal. Both list the
@@ -1477,7 +1477,7 @@ renderNativeDeletePlan repoRoot flags
         , "STEP=render_retained_state_notice"
         ]
 
--- | Sprint 4.26: the apply closure for @prodbox rke2 delete@. Performs the
+-- | Sprint 4.26: the apply closure for @prodbox cluster delete@. Performs the
 -- effects @--dry-run@ deliberately skips: the no-RKE2-install
 -- short-circuit, the inotify-limit host prep, and either the cascade
 -- reconciler (@--cascade@) or the refuse-gate default path.
@@ -3816,7 +3816,7 @@ homeSubstratePlatformComponents =
 
 -- | Deploy the gateway chart as a reconcile-time platform component and
 -- install the loopback-only NodePort iptables restriction on home (mirrors
--- the @charts deploy gateway@ post-hook).
+-- the @charts reconcile gateway@ post-hook).
 --
 -- Idempotent: 'deployChartPlan' no-ops when the gateway release is already
 -- installed, and the firewall step is safe to repeat.

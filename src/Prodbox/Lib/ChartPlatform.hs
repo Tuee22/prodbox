@@ -1039,7 +1039,7 @@ validatePatroniPlatformReady = do
           ExitFailure _ ->
             Left
               ( "Patroni PostgreSQL platform is not ready. "
-                  ++ "Run `prodbox rke2 reconcile` before deploying charts that depend on PostgreSQL. "
+                  ++ "Run `prodbox cluster reconcile` before deploying charts that depend on PostgreSQL. "
                   ++ processStderr crdOutput
                   ++ processStdout crdOutput
               )
@@ -1052,7 +1052,7 @@ validatePatroniPlatformReady = do
                   ExitFailure _ ->
                     Left
                       ( "Patroni PostgreSQL platform is not ready. "
-                          ++ "Run `prodbox rke2 reconcile` before deploying charts that depend on PostgreSQL."
+                          ++ "Run `prodbox cluster reconcile` before deploying charts that depend on PostgreSQL."
                       )
 
 waitForPatroniClusterReady :: String -> IO (Either String ())

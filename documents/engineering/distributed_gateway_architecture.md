@@ -488,7 +488,7 @@ The Haskell daemon wires DNS writes through native subprocess helpers:
   resolves them through Vault Kubernetes auth before projecting them only into the `aws` subprocess
   environment
 
-AWS auth for gateway DNS writes is seeded into Vault from the repository-root Dhall configuration by
+AWS auth for gateway DNS writes is seeded into Vault from the Tier-0 `prodbox.dhall` parameters by
 `prodbox vault reconcile` and then read in-cluster through the gateway daemon's Vault role.
 `dns_write_gate` must not contain AWS access key, secret key, session token, or similar
 credential fields.

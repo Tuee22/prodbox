@@ -961,7 +961,7 @@ supportedRuntimeBootstrapActions repoRoot environment suitePlan =
                  -- Secret + the matching MinIO user AFTER `charts delete gateway`
                  -- (helm uninstall + atomic rollback can delete the Secret despite
                  -- the `helm.sh/resource-policy: keep` annotation) and BEFORE
-                 -- `charts deploy gateway` so the Deployment's volume mount can
+                 -- `charts reconcile gateway` so the Deployment's volume mount can
                  -- bind to a present Secret and the daemon authenticates as a
                  -- user that exists in MinIO. Idempotent: reuses existing Secret
                  -- when present, regenerates when absent; the Job's
@@ -1021,9 +1021,9 @@ syncKeycloakSmtpForSupportedRuntime repoRoot suitePlan =
 -- 'Prodbox.Lib.AwsSubstratePlatform.ensureAwsSubstratePlatformRuntime'
 -- documents the Pulumi stacks as preconditions; the test harness owns the
 -- provisioning per [CLAUDE.md "AWS Substrate Provisioning
--- Ownership"](../../CLAUDE.md). Idempotent: every @prodbox pulumi
--- <stack>-resources@ entrypoint uses Pulumi's standard @up@ semantics, and
--- every chart deploy uses Helm's upgrade/install path.
+-- Ownership"](../../CLAUDE.md). Idempotent: every @prodbox aws stack
+-- <stack> reconcile@ entrypoint uses Pulumi's standard @up@ semantics, and
+-- every chart reconcile uses Helm's upgrade/install path.
 --
 -- The canonical validation order (@canonicalNativeValidations@ in
 -- 'Prodbox.TestPlan') puts @charts-vscode@ first and @aws-eks@ /
@@ -1166,7 +1166,7 @@ supportedRuntimePostflightActions repoRoot environment suitePlan =
         -- Secret + the matching MinIO user AFTER `charts delete gateway`
         -- (helm uninstall + atomic rollback can delete the Secret despite
         -- the `helm.sh/resource-policy: keep` annotation) and BEFORE
-        -- `charts deploy gateway` so the Deployment's volume mount can
+        -- `charts reconcile gateway` so the Deployment's volume mount can
         -- bind to a present Secret and the daemon authenticates as a
         -- user that exists in MinIO. Idempotent: reuses existing Secret
         -- when present, regenerates when absent; the Job's

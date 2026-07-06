@@ -80,12 +80,12 @@ follow-up to the `METALLB_ENVOY_KEYCLOAK_REDIS_WEBSOCKETS.md` planning-doc delet
 
 ### Objective
 
-Prove the clean-room baseline from full local cluster delete and a supported config contract that
-lives only in operator-authored repository-root Dhall on the Haskell stack.
+Prove the clean-room baseline from full local cluster delete and a supported config contract rooted
+in the executable-sibling Tier-0 `prodbox.dhall` on the Haskell stack.
 
 ### Deliverables
 
-- The authoritative rerun starts from `prodbox rke2 delete --yes` and no supported-path generated
+- The authoritative rerun starts from `prodbox cluster delete --yes` and no supported-path generated
   `prodbox-config.json` artifact.
 - The local cluster is rebuilt through the Haskell lifecycle path.
 - The Pulumi backend is restored and both AWS-backed validation patterns rerun through Haskell
@@ -94,18 +94,18 @@ lives only in operator-authored repository-root Dhall on the Haskell stack.
 
 ### Validation
 
-1. `prodbox rke2 delete --yes`
+1. `prodbox cluster delete --yes`
 2. Repository artifact proof starts with no supported-path `prodbox-config.json` and no supported
    command recreates it during `prodbox config show` or `prodbox config validate`.
-3. `prodbox rke2 reconcile`
+3. `prodbox cluster reconcile`
 4. `prodbox config show`
 5. `prodbox config validate`
-6. `prodbox pulumi eks-resources`
+6. `prodbox aws stack eks reconcile`
 7. `prodbox test integration aws-eks`
-8. `prodbox pulumi test-resources`
+8. `prodbox aws stack test reconcile`
 9. `prodbox test integration ha-rke2-aws`
-10. `prodbox pulumi eks-destroy --yes`
-11. `prodbox pulumi test-destroy --yes`
+10. `prodbox aws stack eks destroy --yes`
+11. `prodbox aws stack test destroy --yes`
 12. `prodbox test all`
 13. `prodbox host public-edge`
 
@@ -218,8 +218,8 @@ supported path.
 
 ### Validation
 
-1. `prodbox rke2 delete --yes`
-2. `prodbox rke2 reconcile`
+1. `prodbox cluster delete --yes`
+2. `prodbox cluster reconcile`
 3. `prodbox config show`
 4. `prodbox config validate`
 5. `prodbox test all`

@@ -52,7 +52,7 @@ Supported cluster projection (Sprint 7.15 — EAB material is Vault-sourced, nev
 1. `acme.eab_key_id` and `acme.eab_hmac_key` are `SecretRef.Vault` references into the
    `secret/acme/eab` KV object (fields `key_id` / `hmac_key`), not plaintext `Optional Text`.
    The operator/harness seeds that object via `prodbox config setup` (which prompts for the
-   ZeroSSL values and writes them to Vault, never to `prodbox-config.dhall`) or `vault kv put`.
+   ZeroSSL values and writes them to Vault, never to `prodbox.dhall`) or `vault kv put`.
 2. The **EAB key ID** is not secret. The host CLI resolves it from Vault
    (`secret/acme/eab#key_id`) at reconcile time and renders it inline into the `ClusterIssuer`
    as `spec.acme.externalAccountBinding.keyID`.

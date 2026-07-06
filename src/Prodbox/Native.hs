@@ -194,7 +194,7 @@ runConfigCommand repoRoot configCommand =
         )
       pure ExitSuccess
     ConfigGenerate -> do
-      -- Sprint 7.25: non-interactively generate the repo-root prodbox.dhall from
+      -- Sprint 7.25: non-interactively generate binary-sibling prodbox.dhall from
       -- the Haskell-default non-secret config when absent. Idempotent — an
       -- existing file is left untouched. This is the binary-owned, non-secret
       -- generation the test harness (and headless bring-up) use; it is NOT a

@@ -160,7 +160,7 @@ commandRegistry =
         , flagOption "version" Nothing Nothing "Show version"
         ]
     , examples =
-        [ example ["config", "validate"] "Validate the repository Dhall config."
+        [ example ["config", "validate"] "Validate the binary-sibling Dhall config."
         , example ["test", "all"] "Run the full test surface."
         ]
     }
@@ -800,7 +800,7 @@ yesSwitchParser helpText =
         <> help helpText
     )
 
--- | Sprint 4.11: parser for the @prodbox rke2 delete@ flag matrix.
+-- | Sprint 4.11: parser for the @prodbox cluster delete@ flag matrix.
 -- @--yes@ is independent; @--cascade@ opts into the full teardown (K8s
 -- drain + per-run Pulumi destroys + uninstall + postflight tag sweep).
 -- The default (no @--cascade@) is a pure local cluster uninstall that
@@ -1013,11 +1013,11 @@ configGroup =
   group
     "config"
     "Configuration management"
-    "Repository-root Dhall configuration commands."
+    "Binary-sibling Tier-0 Dhall configuration commands."
     [ leaf
         "setup"
         "Interactively author config"
-        "Write the supported prodbox Dhall config."
+        "Write or refresh the supported binary-sibling prodbox.dhall."
         [ flagOption "dry-run" Nothing Nothing "Render the config-setup plan without mutating state"
         , optionalOption "plan-file" Nothing "PATH" "Write the rendered plan to a file"
         ]
@@ -1031,7 +1031,7 @@ configGroup =
     , leaf
         "validate"
         "Validate current config"
-        "Validate the repository-root config file."
+        "Validate the binary-sibling prodbox.dhall."
         []
         [example ["config", "validate"] "Validate the current config."]
     , leaf
@@ -1039,7 +1039,7 @@ configGroup =
         "Regenerate Dhall schema files"
         "Regenerate prodbox-config-types.dhall + test-secrets-types.dhall from the Haskell source of truth."
         []
-        [example ["config", "schema"] "Regenerate the committed Dhall schema files."]
+        [example ["config", "schema"] "Regenerate the generated Dhall schema files."]
     , leaf
         "generate"
         "Generate the default non-secret config"
@@ -1048,7 +1048,7 @@ configGroup =
         [example ["config", "generate"] "Generate prodbox.dhall from defaults for a headless bring-up."]
     ]
     []
-    [example ["config", "validate"] "Validate the config before running lifecycle commands."]
+    [example ["config", "validate"] "Validate prodbox.dhall before running lifecycle commands."]
 
 awsGroup :: CommandSpec
 awsGroup =

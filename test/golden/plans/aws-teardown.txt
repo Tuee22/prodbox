@@ -1,3 +1,3 @@
 AWS_TEARDOWN_PLAN
-CONFIG_PATH=/tmp/prodbox/prodbox-config.dhall
+CONFIG_PATH=/tmp/prodbox/.build/prodbox.dhall
 ACCESS_KEY_ID=admin-access-key

@@ -43,8 +43,8 @@ Typical prerequisite categories include:
   root
 - required host tools such as `aws`, `curl`, `dig`, `docker`, `helm`, `kubectl`, `pulumi`, and
   `ssh`
-- repository configuration readiness through in-process decoding of `prodbox-config.dhall` by
-  the native `dhall` Haskell library
+- repository configuration readiness through in-process decoding of executable-sibling
+  `prodbox.dhall` by the native `dhall` Haskell library
 - cluster-backed runtime readiness
 - AWS- and Route-53-backed readiness
 

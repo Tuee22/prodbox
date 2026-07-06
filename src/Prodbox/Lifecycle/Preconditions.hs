@@ -5,7 +5,7 @@
 --
 -- Each named 'Precondition' wraps one 'discover' IO action and
 -- returns @IO (Either StructuredError ())@. Predicates compose with
--- 'checkAll'. Every command in @{prodbox rke2 delete, prodbox aws
+-- 'checkAll'. Every command in @{prodbox cluster delete, prodbox aws
 -- teardown, prodbox aws stack <stack> destroy, prodbox nuke}@ opens
 -- with @checkAll [...]@ over the appropriate set, per
 -- @documents/engineering/lifecycle_reconciliation_doctrine.md § 5@.
@@ -223,7 +223,7 @@ renderUndrainedK8sRefusal survivors =
       , ""
       , "Deleting the cluster now would orphan their AWS-side resources"
       , "(ALBs, target groups, cert-manager DNS01 records). Run"
-      , "`prodbox rke2 delete --cascade` to drain them automatically,"
+      , "`prodbox cluster delete --cascade` to drain them automatically,"
       , "or delete each manually before proceeding:"
       , ""
       ]
@@ -283,7 +283,7 @@ noLiveOperationalIamUser repoRoot adminCredentials =
               )
     }
 
--- | Sprint 4.11: the bootstrap DNS record `prodbox rke2 reconcile`
+-- | Sprint 4.11: the bootstrap DNS record `prodbox cluster reconcile`
 -- writes to the operator's Route 53 hosted zone still exists.
 -- A non-empty result is a hard refusal for any operator action that
 -- assumes a clean DNS surface.
@@ -327,7 +327,7 @@ noLeftoverDnsBootstrapRecords repoRoot adminCredentials =
                           [ "Refused: the bootstrap A record `test.resolvefintech.com` still"
                           , "exists in the operator's Route 53 hosted zone."
                           , ""
-                          , "Run `prodbox rke2 delete --cascade` (which removes it) before"
+                          , "Run `prodbox cluster delete --cascade` (which removes it) before"
                           , "the next reprovision, or delete it manually via:"
                           , ""
                           , "  aws route53 change-resource-record-sets \\"

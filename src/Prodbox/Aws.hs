@@ -169,9 +169,8 @@ import Prodbox.Lifecycle.ResourceRegistry
   , residueGateRefusalList
   )
 import Prodbox.Repo
-  ( ConfigPaths (..)
-  , canonicalConfigPaths
-  , resolveTier0ConfigPath
+  ( resolveTier0ConfigPath
+  , tier0ConfigFileName
   )
 import Prodbox.Result (Result (..))
 import Prodbox.Scaling.Spot
@@ -233,6 +232,10 @@ import System.Environment
   )
 import System.Exit
   ( ExitCode (ExitFailure, ExitSuccess)
+  )
+import System.FilePath
+  ( takeDirectory
+  , (</>)
   )
 import System.IO
   ( hFlush
@@ -736,7 +739,7 @@ renderAwsSetupPlan :: FilePath -> AwsSetupInput -> String
 renderAwsSetupPlan repoRoot input =
   unlines
     [ "AWS_SETUP_PLAN"
-    , "CONFIG_PATH=" ++ configDhallPath (canonicalConfigPaths repoRoot)
+    , "CONFIG_PATH=" ++ canonicalTier0ConfigDisplayPath repoRoot
     , "POLICY_TIER=" ++ renderPolicyTier (awsSetupPolicyTierInput input)
     , "ACCESS_KEY_ID=" ++ Text.unpack (access_key_id (awsSetupAdminCredentials input))
     ]
@@ -745,7 +748,7 @@ renderAwsTeardownPlan :: FilePath -> AwsTeardownInput -> String
 renderAwsTeardownPlan repoRoot input =
   unlines
     [ "AWS_TEARDOWN_PLAN"
-    , "CONFIG_PATH=" ++ configDhallPath (canonicalConfigPaths repoRoot)
+    , "CONFIG_PATH=" ++ canonicalTier0ConfigDisplayPath repoRoot
     , "ACCESS_KEY_ID=" ++ Text.unpack (access_key_id (awsTeardownAdminCredentials input))
     ]
 
@@ -753,11 +756,15 @@ renderConfigSetupPlan :: FilePath -> ConfigSetupInput -> String
 renderConfigSetupPlan repoRoot input =
   unlines
     [ "CONFIG_SETUP_PLAN"
-    , "CONFIG_PATH=" ++ configDhallPath (canonicalConfigPaths repoRoot)
+    , "CONFIG_PATH=" ++ canonicalTier0ConfigDisplayPath repoRoot
     , "ZONE_ID=" ++ Text.unpack (configSetupRoute53ZoneIdInput input)
     , "PUBLIC_HOST=" ++ Text.unpack (configSetupDemoFqdnInput input)
     , "POLICY_TIER=" ++ renderPolicyTier (configSetupPolicyTierInput input)
     ]
+
+canonicalTier0ConfigDisplayPath :: FilePath -> FilePath
+canonicalTier0ConfigDisplayPath repoRoot =
+  takeDirectory (canonicalOperatorBinaryPath repoRoot) </> tier0ConfigFileName
 
 corePolicyStatements :: [Value]
 corePolicyStatements =
@@ -1280,7 +1287,7 @@ runAwsIamHarnessInspect repoRoot = do
                 ( unlines
                     [ "IAM_USER=" ++ Text.unpack userName
                     , "IAM_PRINCIPAL=iam-user"
-                    , "CONFIG_PATH=" ++ configDhallPath (canonicalConfigPaths repoRoot)
+                    , "CONFIG_PATH=" ++ canonicalTier0ConfigDisplayPath repoRoot
                     ]
                 )
             OperationalIdentityFederatedUser userName ->
@@ -1288,7 +1295,7 @@ runAwsIamHarnessInspect repoRoot = do
                 ( unlines
                     [ "IAM_USER=" ++ Text.unpack userName
                     , "IAM_PRINCIPAL=federated-user"
-                    , "CONFIG_PATH=" ++ configDhallPath (canonicalConfigPaths repoRoot)
+                    , "CONFIG_PATH=" ++ canonicalTier0ConfigDisplayPath repoRoot
                     ]
                 )
 
@@ -1669,7 +1676,6 @@ applyAwsSetupWithFallbackMode allowFederatedFallback repoRoot input = do
                 { awsCredentialRegion = region operationalCredentials
                 }
           }
-      paths = canonicalConfigPaths repoRoot
   writeProjectConfigParameters repoRoot updatedConfig
   validationResult <- validateAndLoadSettings repoRoot
   case validationResult of
@@ -1688,7 +1694,7 @@ applyAwsSetupWithFallbackMode allowFederatedFallback repoRoot input = do
           , iamSetupAccessKeyId = access_key_id operationalCredentials
           , iamSetupCredentialSource = credentialSource
           , iamSetupQuotaStatuses = quotaStatuses
-          , iamSetupDhallPath = configDhallPath paths
+          , iamSetupDhallPath = canonicalTier0ConfigDisplayPath repoRoot
           }
 
 applyAwsTeardown :: FilePath -> AwsTeardownInput -> IO (Either String IamTeardownResult)
@@ -1784,7 +1790,7 @@ applyAwsTeardown repoRoot input = do
                     { iamTeardownUserName = prodboxIamUserName
                     , iamTeardownDeletedAccessKeys = deletedAccessKeys
                     , iamTeardownUserDeleted = userWasPresent
-                    , iamTeardownDhallPath = configDhallPath (canonicalConfigPaths repoRoot)
+                    , iamTeardownDhallPath = canonicalTier0ConfigDisplayPath repoRoot
                     }
               )
 
@@ -2087,7 +2093,7 @@ probeOperationalIamResidue repoRoot adminCreds = do
       }
 
 -- | Sprint 7.7 — destroy-first dispatch helper. Invokes
--- @prodbox pulumi \<stack>-destroy --yes@ for each stack in the plan,
+-- @prodbox aws stack \<stack> destroy --yes@ for each stack in the plan,
 -- in canonical order. Stops at first failure and returns its
 -- subprocess error. The destroy subprocesses inherit the existing
 -- operational @aws.*@ from the dhall config — they do NOT consume the
@@ -2545,7 +2551,6 @@ applyConfigSetup repoRoot input = do
     (configSetupAcmeEabKeyIdInput input)
     (configSetupAcmeEabHmacKeyInput input)
   let updatedConfig = configFromSetupInput currentConfig input
-      paths = canonicalConfigPaths repoRoot
   writeProjectConfigParameters repoRoot updatedConfig
   validationResult <- validateAndLoadSettings repoRoot
   case validationResult of
@@ -2559,7 +2564,7 @@ applyConfigSetup repoRoot input = do
           , configSetupPolicyTier = configSetupPolicyTierInput input
           , configSetupAccessKeyId = newAccessKeyId
           , configSetupQuotaStatuses = quotaStatuses
-          , configSetupDhallPath = configDhallPath paths
+          , configSetupDhallPath = canonicalTier0ConfigDisplayPath repoRoot
           }
 
 ensureOperationalIamUser :: FilePath -> Credentials -> PolicyTier -> IO (Text, Text, [QuotaStatus])
@@ -3314,7 +3319,7 @@ operationalIamUserExists repoRoot adminCredentials = do
         _ -> Left ("aws iam get-user failed: " ++ errorDetail result)
 
 -- | Sprint 4.11: predicate-library probe for the bootstrap DNS
--- record that @prodbox rke2 reconcile@ writes to the operator's
+-- record that @prodbox cluster reconcile@ writes to the operator's
 -- Route 53 hosted zone. Returns 'Right True' when the record set
 -- exists, 'Right False' when no matching record set is present, and
 -- 'Left' on any other AWS error.

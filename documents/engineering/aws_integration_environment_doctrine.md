@@ -10,10 +10,10 @@
 
 ## 0. Canonical Doctrine Statements
 
-- Operational `prodbox` AWS authentication material in the repository-root
-  `prodbox-config.dhall` is a `SecretRef.Vault` reference (the generated `aws.*` identity), never
+- Operational `prodbox` AWS authentication material in Tier-0 `prodbox.dhall`
+  is a `SecretRef.Vault` reference (the generated `aws.*` identity), never
   a plaintext key; test-simulation credentials live in `test-secrets.dhall`, not in
-  `prodbox-config.dhall`. The SecretRef model, the config split, and the secret classification
+  `prodbox.dhall`. The SecretRef model, the config split, and the secret classification
   are owned by [vault_doctrine.md §3, §4, §13](./vault_doctrine.md) — this document defers to that
   SSoT rather than restating it.
 - `prodbox` must not search upward from the current working directory or prefer alternate config
@@ -22,12 +22,12 @@
   interactive `SecretRef.Prompt`. Public `prodbox config setup`, public `prodbox aws ...` flows,
   the native IAM harness, long-lived `aws-ses` stack ops, and `prodbox nuke` all prompt for the
   ephemeral temporary-admin AWS credential (historically called "elevated credentials"); none of
-  them read a stored admin section from `prodbox-config.dhall`. The prompted credential is held in
+  them read a stored admin section from `prodbox.dhall`. The prompted credential is held in
   memory for one command, used once, and discarded — never written to config, never stored in Vault.
 - `aws_admin_for_test_simulation.*` is a test-harness-only fixture that lives in `test-secrets.dhall`
   and exists solely to drive the interactive UI: it feeds the same temporary-admin prompt a real
   operator answers so the harness can exercise admin-credentialed flows non-interactively. It is
-  `TestPlaintext`-class, is never imported by `prodbox-config.dhall`, never read by a production
+  `TestPlaintext`-class, is never imported by `prodbox.dhall`, never read by a production
   binary, and never stored in Vault. The block specifics are owned by
   [aws_admin_credentials.md](./aws_admin_credentials.md).
 - `prodbox test integration aws-iam`, `prodbox test integration <name> --substrate aws`,
@@ -111,7 +111,8 @@
   documented in
   [lifecycle_reconciliation_doctrine.md §3](lifecycle_reconciliation_doctrine.md).
 - The operational-credential lifecycle is brought under the managed-resource registry. The
-  operational `prodbox` IAM user and the operational `aws.*` block in `prodbox-config.dhall`
+  operational `prodbox` IAM user and the operational `aws.*` Vault KV material referenced by
+  `prodbox.dhall`
   are registered `Operational`-class resources (each with a `discover` + `destroy`), and
   `prodbox aws setup`/`teardown` are expressed as `reconcileAbsent` reconciliations over the
   registry — idempotent on re-run, `Unreachable`-fails-closed. This is the current enforced
@@ -220,16 +221,16 @@ temporary-admin credential through the interactive `SecretRef.Prompt`. There is 
 config-backed admin path: managed suite-driven validation, targeted AWS-substrate validation, and
 long-lived stack / `prodbox nuke` teardown all use the same prompt; the test harness simply
 automates it by feeding `aws_admin_for_test_simulation.*` from `test-secrets.dhall` (a test-harness
-fixture, not a `prodbox-config.dhall` section).
+fixture, not a `prodbox.dhall` section).
 
 ## 2. Authentication Source And Storage Rules
 
 ### 2.1 Dhall Configuration Ownership
 
-Operational AWS authentication material referenced by `prodbox-config.dhall` is a
+Operational AWS authentication material referenced by `prodbox.dhall` is a
 `SecretRef.Vault` reference, not a plaintext key. The generated operational `prodbox` IAM
 identity is minted into Vault KV (`secret/gateway/gateway/aws`) the instant it is created;
-`prodbox-config.dhall` carries only the reference to it. The config-split and SecretRef model are
+`prodbox.dhall` carries only the reference to it. The config-split and SecretRef model are
 owned by [vault_doctrine.md §3, §4](./vault_doctrine.md).
 
 Operational config fields (each a `SecretRef.Vault` reference, never plaintext):
@@ -240,17 +241,17 @@ Operational config fields (each a `SecretRef.Vault` reference, never plaintext):
 4. `aws.session_token` (optional)
 
 Test-simulation admin fixture (in `test-secrets.dhall`, `TestPlaintext`-class — NOT in
-`prodbox-config.dhall`):
+`prodbox.dhall`):
 
 1. `aws_admin_for_test_simulation.access_key_id`
 2. `aws_admin_for_test_simulation.secret_access_key`
 3. `aws_admin_for_test_simulation.session_token`
 4. `aws_admin_for_test_simulation.region`
 
-`prodbox-config.dhall` holds no plaintext secrets and no `aws_admin_for_test_simulation` block.
+`prodbox.dhall` holds no plaintext secrets and no `aws_admin_for_test_simulation` block.
 The `aws_admin_for_test_simulation.*` fixture is a test-harness-only simulation of the interactive
 temporary-admin-credential prompt; it lives only in `test-secrets.dhall`, is never imported by
-`prodbox-config.dhall`, and is never stored in Vault. It exists so the harness can drive
+`prodbox.dhall`, and is never stored in Vault. It exists so the harness can drive
 `prodbox test integration aws-iam`, targeted `prodbox test integration <name> --substrate aws`
 validation, aggregate-harness execution of that suite, long-lived `aws-ses` / state-backend
 operations, and `prodbox nuke` non-interactively. The block specifics are owned by
@@ -258,7 +259,7 @@ operations, and `prodbox nuke` non-interactively. The block specifics are owned 
 
 Public `prodbox config setup`, public `prodbox aws ...` commands, and every admin-credentialed
 flow prompt for the ephemeral temporary-admin credential through `SecretRef.Prompt`; none of them
-read a stored admin section from `prodbox-config.dhall`.
+read a stored admin section from `prodbox.dhall`.
 
 The harness simulates that prompt from `aws_admin_for_test_simulation.*` in `test-secrets.dhall`;
 a missing or partial fixture must fail fast with an actionable error rather than falling back to
@@ -447,14 +448,14 @@ The full ordered init → mint → write-to-Vault → postflight-delete-and-clea
 suite-level IAM harness drives (the harness drives `vault init` with the `test-secrets.dhall`
 operator password; the elevated `aws_admin_for_test_simulation.*` fixture mints the operational
 IAM user/keys; those keys are written directly to Vault at `secret/gateway/gateway/aws`, never to
-`prodbox-config.dhall`; and postflight deletes the IAM user/keys from AWS and clears the Vault
+`prodbox.dhall`; and postflight deletes the IAM user/keys from AWS and clears the Vault
 creds on success/failure/Ctrl-C with preflight idempotency, the Vault clear being an empty-value
 write rather than a hard delete) is canonicalized in
 [aws_admin_credentials.md §4.2](./aws_admin_credentials.md). This document defers to that SSoT for
 the lifecycle; the items below state the credential-boundary invariants the lifecycle obeys.
 
 1. `aws.*` remains the normal operational identity, minted into Vault KV and referenced from
-   `prodbox-config.dhall` as a `SecretRef.Vault` value
+   `prodbox.dhall` as a `SecretRef.Vault` value
 2. `aws_admin_for_test_simulation.*` is the test-harness-only fixture in `test-secrets.dhall`
    (`TestPlaintext`-class) that simulates the ephemeral temporary-admin prompt the real flows
    answer interactively — driving `prodbox test integration aws-iam`,
@@ -486,7 +487,7 @@ bucket.
 The lifecycle class still matters, but it no longer means a separate raw Pulumi backend for
 `aws-ses`. Per-run stacks remain harness-owned and auto-destroyed by suite postflight; `aws-ses`
 remains long-lived and is destroyed only by an explicit long-lived teardown command. The dedicated
-`pulumi_state_backend` S3 bucket configured in `prodbox-config.dhall` remains supported for retained
+`pulumi_state_backend` S3 bucket configured in `prodbox.dhall` remains supported for retained
 public-edge TLS material and as the optional first-touch source for old `aws-ses` checkpoints.
 
 Concretely, this means:
@@ -643,7 +644,7 @@ and SMTP IAM user are account-scoped resources shared across every substrate tha
 `pulumi/aws-ses/` and operated through
 `src/Prodbox/Infra/AwsSesStack.hs`. The operator-supplied inputs are
 `ses.sender_domain`, `ses.receive_subdomain`, and `ses.capture_bucket` in
-`prodbox-config.dhall`; the parent Route 53 zone (`route53.zone_id`) carries the MX records for
+`prodbox.dhall`; the parent Route 53 zone (`route53.zone_id`) carries the MX records for
 the receive subdomain.
 
 The SMTP IAM user's `aws:iam:AccessKey` is exported by the Pulumi stack as

@@ -5296,16 +5296,25 @@ main = mainWithSuite "prodbox-unit" $ do
       rke2Source `shouldContain` "persistence.imageChartStorage.disableredirect=true"
       rke2Source `shouldContain` "mc mb --ignore-existing local/"
 
-    it "materializes MinIO bootstrap root credentials from Vault in Jobs (Sprint 3.18)" $ do
+    it "Harbor bucket-init uses static MinIO root cred; gateway Job reads Vault (7.25)" $ do
       repoRoot <- getCurrentDirectory
       rke2Source <- readFile (repoRoot </> "src" </> "Prodbox" </> "CLI" </> "Rke2.hs")
 
       rke2Source `shouldContain` "resolveHarborStorageCredentials repoRoot"
-      rke2Source `shouldContain` "vault-minio-root"
+      -- The gateway MinIO bootstrap Job runs AFTER Vault init/unseal and still
+      -- materializes root creds from Vault via its init container.
+      rke2Source `shouldContain` "vault-gateway-minio"
       rke2Source `shouldContain` "vault kv get -field=rootUser secret/minio/root"
       rke2Source `shouldContain` "\"serviceAccountName\" .= minioReleaseName"
       rke2Source `shouldContain` "MINIO_ROOT_USER_FILE"
       rke2Source `shouldContain` "HARBOR_STORAGE_ACCESS_KEY"
+      -- The Harbor bucket-init Job runs BEFORE the daemon-mediated Vault init (a
+      -- fresh cluster has no unsealed Vault yet, and Vault init itself depends on
+      -- Harbor via the gateway image), so it must use the static MinIO root
+      -- constant directly instead of a Vault init container.
+      rke2Source `shouldContain` "\"value\" .= minioRootUser"
+      rke2Source `shouldContain` "\"value\" .= minioRootPassword"
+      rke2Source `shouldNotContain` "vault-minio-root"
       rke2Source `shouldNotContain` "readMinioRootCredentials"
       rke2Source `shouldNotContain` "secretKeyRef"
 

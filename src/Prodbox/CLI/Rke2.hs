@@ -3100,48 +3100,6 @@ minioRootVaultMaterializedVolumeName = "minio-root-vault"
 minioRootVaultMaterializedPath :: String
 minioRootVaultMaterializedPath = "/vault-materialized"
 
-minioRootVaultInitContainer :: Value
-minioRootVaultInitContainer =
-  object
-    [ "name" .= ("vault-minio-root" :: String)
-    , "image" .= ("hashicorp/vault:1.18.3" :: String)
-    , "imagePullPolicy" .= ("IfNotPresent" :: String)
-    , "env"
-        .= [ object
-               [ "name" .= ("VAULT_ADDR" :: String)
-               , "value" .= ("http://vault.vault.svc.cluster.local:8200" :: String)
-               ]
-           , object
-               [ "name" .= ("VAULT_AUTH_PATH" :: String)
-               , "value" .= ("kubernetes" :: String)
-               ]
-           , object
-               [ "name" .= ("VAULT_ROLE" :: String)
-               , "value" .= ("minio" :: String)
-               ]
-           , object
-               [ "name" .= ("VAULT_SA_TOKEN_FILE" :: String)
-               , "value" .= ("/var/run/secrets/kubernetes.io/serviceaccount/token" :: String)
-               ]
-           ]
-    , "command" .= ["sh" :: String, "-ec"]
-    , "args"
-        .= [ unlines
-               [ "set -eu"
-               , "jwt=\"$(cat \"${VAULT_SA_TOKEN_FILE}\")\""
-               , "export VAULT_TOKEN=\"$(vault write -field=token \"auth/${VAULT_AUTH_PATH}/login\" role=\"${VAULT_ROLE}\" jwt=\"${jwt}\")\""
-               , "umask 077"
-               , "vault kv get -field=rootUser secret/minio/root > "
-                   ++ minioRootVaultMaterializedPath
-                   ++ "/rootUser"
-               , "vault kv get -field=rootPassword secret/minio/root > "
-                   ++ minioRootVaultMaterializedPath
-                   ++ "/rootPassword"
-               ]
-           ]
-    , "volumeMounts" .= [minioRootVaultMaterializedInitVolumeMount]
-    ]
-
 gatewayMinioVaultInitContainer :: Value
 gatewayMinioVaultInitContainer =
   object
@@ -3282,9 +3240,15 @@ harborStorageBackendManifestItems accessKey secretKey =
                   [ "spec"
                       .= object
                         [ "restartPolicy" .= ("OnFailure" :: String)
-                        , "serviceAccountName" .= minioReleaseName
-                        , "initContainers" .= [minioRootVaultInitContainer]
-                        , "volumes" .= [minioRootVaultMaterializedVolume]
+                        , -- Sprint 7.25 follow-up: the MinIO root credential is a fixed,
+                          -- non-secret static constant (Prodbox.Minio.RootCredential), identical
+                          -- to the @secret/minio/root@ Vault value and injected directly into the
+                          -- MinIO chart. This bootstrap Job runs BEFORE the daemon-mediated Vault
+                          -- init/unseal (which itself depends on Harbor via the gateway image), so
+                          -- it must NOT read from Vault. It uses the static constant directly,
+                          -- mirroring 'ensureMinioRuntime'. (The gateway MinIO bootstrap Job runs
+                          -- AFTER Vault is up and still materializes creds from Vault.)
+                          "serviceAccountName" .= minioReleaseName
                         , "containers"
                             .= [ object
                                    [ "name" .= ("bucket-bootstrap" :: String)
@@ -3293,8 +3257,6 @@ harborStorageBackendManifestItems accessKey secretKey =
                                    , "args"
                                        .= [ unlines
                                               [ "set -eu"
-                                              , "MINIO_ROOT_USER=\"$(cat \"$MINIO_ROOT_USER_FILE\")\""
-                                              , "MINIO_ROOT_PASSWORD=\"$(cat \"$MINIO_ROOT_PASSWORD_FILE\")\""
                                               , "mc alias set local " ++ minioClusterEndpoint ++ " \"$MINIO_ROOT_USER\" \"$MINIO_ROOT_PASSWORD\""
                                               , "mc mb --ignore-existing local/" ++ harborRegistryStorageBucket
                                               , "mc admin user add local \"$HARBOR_STORAGE_ACCESS_KEY\" \"$HARBOR_STORAGE_SECRET_KEY\""
@@ -3316,18 +3278,23 @@ harborStorageBackendManifestItems accessKey secretKey =
                                               ]
                                           ]
                                    , "env"
-                                       .= ( minioRootFileEnv
-                                              ++ [ object
-                                                     [ "name" .= ("HARBOR_STORAGE_ACCESS_KEY" :: String)
-                                                     , "value" .= accessKey
-                                                     ]
-                                                 , object
-                                                     [ "name" .= ("HARBOR_STORAGE_SECRET_KEY" :: String)
-                                                     , "value" .= secretKey
-                                                     ]
-                                                 ]
-                                          )
-                                   , "volumeMounts" .= [minioRootVaultMaterializedVolumeMount]
+                                       .= [ object
+                                              [ "name" .= ("MINIO_ROOT_USER" :: String)
+                                              , "value" .= minioRootUser
+                                              ]
+                                          , object
+                                              [ "name" .= ("MINIO_ROOT_PASSWORD" :: String)
+                                              , "value" .= minioRootPassword
+                                              ]
+                                          , object
+                                              [ "name" .= ("HARBOR_STORAGE_ACCESS_KEY" :: String)
+                                              , "value" .= accessKey
+                                              ]
+                                          , object
+                                              [ "name" .= ("HARBOR_STORAGE_SECRET_KEY" :: String)
+                                              , "value" .= secretKey
+                                              ]
+                                          ]
                                    ]
                                ]
                         ]

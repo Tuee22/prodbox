@@ -203,7 +203,14 @@ import Prodbox.CLI.Spec
   , leafCommandPaths
   )
 import Prodbox.CLI.Tree (renderCommandTree)
-import Prodbox.CLI.Vault (gatewayAwsVaultFields)
+import Prodbox.CLI.Vault
+  ( HostVaultDirectSeam (..)
+  , VaultDaemonProbe (..)
+  , VaultLifecycleTransportDecision (..)
+  , gatewayAwsVaultFields
+  , gatewayProbeFromResult
+  , vaultLifecycleTransportDecision
+  )
 import Prodbox.Capacity.Config qualified as Capacity
 import Prodbox.Capacity.Storage qualified as Storage
 import Prodbox.Cbor qualified as Cbor
@@ -362,18 +369,48 @@ import Prodbox.Gateway
   )
 import Prodbox.Gateway.Client qualified
 import Prodbox.Gateway.Daemon
-  ( allowedOperatorSecretPaths
+  ( BootstrapVaultRequest (..)
+  , BootstrapVaultRequestError (..)
+  , BootstrapVaultRotateTransitKeyRequest (..)
+  , BootstrapVaultRotateUnlockBundleRequest (..)
+  , PulumiObjectRequestError (..)
+  , allowedOperatorSecretPaths
+  , bootstrapVaultPath
+  , bootstrapVaultPkiIssueTestCertPath
+  , bootstrapVaultPkiStatusPath
+  , bootstrapVaultRequestMaxBytes
+  , bootstrapVaultRotateTransitKeyPath
+  , bootstrapVaultRotateUnlockBundlePath
+  , bootstrapVaultSealPath
+  , bootstrapVaultStatusPath
+  , decodeBootstrapVaultAuthenticatedRequest
+  , decodeBootstrapVaultRequest
+  , decodeBootstrapVaultRotateTransitKeyRequest
+  , decodeBootstrapVaultRotateUnlockBundleRequest
   , decodeOperatorSecretFields
+  , decodePulumiObjectPutRequest
+  , decodePulumiObjectRequest
   , operatorSecretJwtHeader
   , operatorSecretLogicalPath
   , operatorSecretRequestMethod
   , operatorWriteRoleName
+  , renderBootstrapVaultRequestError
+  , renderPulumiObjectRequestError
   , requestBodyBytes
   )
 import Prodbox.Gateway.Logging
   ( Severity (..)
   , severityFromLogLevel
   , shouldLogSeverity
+  )
+import Prodbox.Gateway.ObjectStore
+  ( PulumiObjectGetResponse (..)
+  , PulumiObjectPutRequest (..)
+  , PulumiObjectRequest (..)
+  , pulumiObjectGetPath
+  , pulumiObjectPutPath
+  , pulumiObjectRequestMaxBytes
+  , validatePulumiObjectStackName
   )
 import Prodbox.Gateway.Peer
   ( PeerEventBatch (..)
@@ -718,9 +755,13 @@ import Prodbox.TestTopology
   ( renderTestTopologyDhall
   )
 import Prodbox.TestValidation
-  ( SealedVaultAuditInput (..)
+  ( DaemonBootstrapAuditInput (..)
+  , SealedVaultAuditInput (..)
   , VolumeRebindSnapshot (..)
   , assertInviteOidcClaims
+  , daemonBootstrapAuditReport
+  , daemonBootstrapForbiddenPatterns
+  , defaultDaemonBootstrapAuditInput
   , defaultSealedVaultAuditInput
   , parseVolumeRebindSnapshot
   , renderGatewayValidationConfigDhall
@@ -2664,10 +2705,197 @@ main = mainWithSuite "prodbox-unit" $ do
       policy `shouldContain` "capabilities = [\"create\", \"update\"]"
       policy `shouldNotContain` "transit/"
       policy `shouldNotContain` "secret/data/clusters/"
+    it "grants the gateway daemon the Pulumi object-store HMAC and Transit capabilities" $ do
+      let gatewayPolicies =
+            [ Text.unpack (vaultPolicySpecDocument spec)
+            | spec <- vaultReconcilePolicies defaultVaultReconcilePlan
+            , vaultPolicySpecName spec == "prodbox-gateway"
+            ]
+      case gatewayPolicies of
+        [policy] -> do
+          policy `shouldContain` "path \"secret/data/object-store/hmac\""
+          policy `shouldContain` "path \"transit/encrypt/prodbox-pulumi-state\""
+          policy `shouldContain` "path \"transit/decrypt/prodbox-pulumi-state\""
+        other ->
+          expectationFailure ("expected exactly one prodbox-gateway policy, got " ++ show other)
     it "builds the operator-secret URL on the loopback gateway endpoint" $ do
       let endpoint = Prodbox.Gateway.Client.hostLoopbackGatewayEndpoint 30443
       Prodbox.Gateway.Client.operatorSecretUrl endpoint "acme/eab"
         `shouldBe` "http://127.0.0.1:30443/v1/secret/acme/eab"
+  describe "pre-Vault daemon bootstrap endpoint (Sprint 2.29)" $ do
+    let requestFor path method body =
+          BS8.pack
+            ( method
+                ++ " "
+                ++ path
+                ++ " HTTP/1.1\r\nContent-Type: application/json\r\nContent-Length: "
+                ++ show (length body)
+                ++ "\r\n\r\n"
+                ++ body
+            )
+        bootstrapRequest = requestFor bootstrapVaultPath "POST"
+    it "decodes a bounded password-bearing request only with loopback proof" $ do
+      decodeBootstrapVaultRequest
+        (bootstrapRequest "{\"unlock_password\":\"pw\",\"loopback_nodeport_verified\":true}")
+        `shouldBe` Right (BootstrapVaultRequest "pw" True)
+      decodeBootstrapVaultRequest
+        (bootstrapRequest "{\"unlock_password\":\"pw\",\"loopback_nodeport_verified\":false}")
+        `shouldBe` Left BootstrapVaultLoopbackUnverified
+    it "rejects unsupported methods, empty passwords, and oversized bodies before actions" $ do
+      decodeBootstrapVaultRequest
+        (BS8.pack ("GET " ++ bootstrapVaultPath ++ " HTTP/1.1\r\n\r\n"))
+        `shouldBe` Left (BootstrapVaultMethodNotAllowed "GET")
+      decodeBootstrapVaultRequest
+        (bootstrapRequest "{\"unlock_password\":\"   \",\"loopback_nodeport_verified\":true}")
+        `shouldBe` Left BootstrapVaultPasswordEmpty
+      decodeBootstrapVaultRequest
+        (bootstrapRequest (replicate (bootstrapVaultRequestMaxBytes + 1) 'x'))
+        `shouldBe` Left (BootstrapVaultRequestTooLarge (bootstrapVaultRequestMaxBytes + 1))
+    it "redacts the unlock password in Show and request error rendering" $ do
+      show (BootstrapVaultRequest "super-secret-password" True)
+        `shouldNotContain` "super-secret-password"
+      renderBootstrapVaultRequestError BootstrapVaultLoopbackUnverified
+        `shouldNotContain` "super-secret-password"
+    it "builds the bootstrap URL on the loopback gateway endpoint" $ do
+      let endpoint = Prodbox.Gateway.Client.hostLoopbackGatewayEndpoint 30443
+      Prodbox.Gateway.Client.bootstrapVaultUrl endpoint
+        `shouldBe` "http://127.0.0.1:30443/v1/bootstrap/vault/ensure"
+    it "decodes authenticated daemon lifecycle actions with the same loopback proof" $ do
+      decodeBootstrapVaultAuthenticatedRequest
+        ( requestFor
+            bootstrapVaultSealPath
+            "POST"
+            "{\"unlock_password\":\"pw\",\"loopback_nodeport_verified\":true}"
+        )
+        `shouldBe` Right (BootstrapVaultRequest "pw" True)
+      decodeBootstrapVaultAuthenticatedRequest
+        ( requestFor
+            bootstrapVaultPkiStatusPath
+            "GET"
+            "{\"unlock_password\":\"pw\",\"loopback_nodeport_verified\":true}"
+        )
+        `shouldBe` Left (BootstrapVaultMethodNotAllowed "GET")
+      bootstrapVaultStatusPath `shouldBe` "/v1/bootstrap/vault/status"
+      bootstrapVaultPkiIssueTestCertPath `shouldBe` "/v1/bootstrap/vault/pki/issue-test-cert"
+    it "decodes bundle and transit rotation requests without showing passwords" $ do
+      let rotateBundle =
+            decodeBootstrapVaultRotateUnlockBundleRequest
+              ( requestFor
+                  bootstrapVaultRotateUnlockBundlePath
+                  "POST"
+                  "{\"unlock_password\":\"old\",\"new_unlock_password\":\"new\",\"loopback_nodeport_verified\":true}"
+              )
+          rotateTransit =
+            decodeBootstrapVaultRotateTransitKeyRequest
+              ( requestFor
+                  bootstrapVaultRotateTransitKeyPath
+                  "POST"
+                  "{\"unlock_password\":\"pw\",\"key_name\":\"pulumi\",\"loopback_nodeport_verified\":true}"
+              )
+      rotateBundle `shouldBe` Right (BootstrapVaultRotateUnlockBundleRequest "old" "new" True)
+      rotateTransit `shouldBe` Right (BootstrapVaultRotateTransitKeyRequest "pw" "pulumi" True)
+      show (BootstrapVaultRotateUnlockBundleRequest "old-secret" "new-secret" True)
+        `shouldNotContain` "old-secret"
+      show (BootstrapVaultRotateUnlockBundleRequest "old-secret" "new-secret" True)
+        `shouldNotContain` "new-secret"
+      show (BootstrapVaultRotateTransitKeyRequest "pw-secret" "pulumi" True)
+        `shouldNotContain` "pw-secret"
+    it "routes host lifecycle through daemon unless only an explicit test seam is available" $ do
+      let refusesDirectHostFallback decision =
+            case decision of
+              RefuseDirectHostVaultFallback msg ->
+                "Refusing direct host Vault/MinIO fallback" `isInfixOf` msg
+              _ -> False
+      vaultLifecycleTransportDecision VaultDaemonReachable HostVaultDirectSeamAbsent
+        `shouldBe` UseDaemonVaultLifecycle
+      vaultLifecycleTransportDecision
+        (VaultDaemonUnavailable "connection refused")
+        HostVaultDirectSeamPresent
+        `shouldBe` UseDirectHostVaultTestSeam
+      vaultLifecycleTransportDecision
+        (VaultDaemonUnavailable "connection refused")
+        HostVaultDirectSeamAbsent
+        `shouldSatisfy` refusesDirectHostFallback
+      gatewayProbeFromResult (Right (object [] :: Value)) `shouldBe` VaultDaemonReachable
+      gatewayProbeFromResult
+        ( Left
+            ( Prodbox.Gateway.Client.GatewayTransport
+                (Prodbox.Http.Client.HttpConnectionFailure "connection refused")
+            )
+            :: Either Prodbox.Gateway.Client.GatewayError Value
+        )
+        `shouldBe` VaultDaemonUnavailable "connection refused"
+      gatewayProbeFromResult
+        ( Left
+            (Prodbox.Gateway.Client.GatewayTransport (Prodbox.Http.Client.HttpStatus 503 "sealed"))
+            :: Either Prodbox.Gateway.Client.GatewayError Value
+        )
+        `shouldBe` VaultDaemonReachable
+  describe "daemon Pulumi object-store endpoint (Sprint 7.30)" $ do
+    let requestFor path method body =
+          BS8.pack
+            ( method
+                ++ " "
+                ++ path
+                ++ " HTTP/1.1\r\nContent-Type: application/json\r\nContent-Length: "
+                ++ show (length body)
+                ++ "\r\n\r\n"
+                ++ body
+            )
+        objectRequest = requestFor pulumiObjectGetPath "POST"
+    it "decodes bounded get/delete requests only with loopback proof and valid stack names" $ do
+      decodePulumiObjectRequest
+        (objectRequest "{\"stack\":\"aws-eks-test\",\"loopback_nodeport_verified\":true}")
+        `shouldBe` Right (PulumiObjectRequest "aws-eks-test" True)
+      decodePulumiObjectRequest
+        (objectRequest "{\"stack\":\"aws-eks-test\",\"loopback_nodeport_verified\":false}")
+        `shouldBe` Left PulumiObjectLoopbackUnverified
+      decodePulumiObjectRequest
+        (objectRequest "{\"stack\":\"../aws\",\"loopback_nodeport_verified\":true}")
+        `shouldBe` Left
+          ( PulumiObjectStackInvalid
+              "stack may contain only ASCII letters, digits, '.', '_', and '-'"
+          )
+      validatePulumiObjectStackName " aws-test "
+        `shouldBe` Right "aws-test"
+    it "rejects unsupported methods, empty bodies, malformed JSON, and oversized bodies" $ do
+      decodePulumiObjectRequest
+        (BS8.pack ("GET " ++ pulumiObjectGetPath ++ " HTTP/1.1\r\n\r\n"))
+        `shouldBe` Left (PulumiObjectMethodNotAllowed "GET")
+      decodePulumiObjectRequest
+        (objectRequest "")
+        `shouldBe` Left PulumiObjectRequestEmpty
+      decodePulumiObjectRequest
+        (objectRequest "not json")
+        `shouldSatisfy` isLeft
+      decodePulumiObjectRequest
+        (objectRequest (replicate (pulumiObjectRequestMaxBytes + 1) 'x'))
+        `shouldBe` Left (PulumiObjectRequestTooLarge (pulumiObjectRequestMaxBytes + 1))
+    it "round-trips put/get JSON while redacting checkpoint bytes from Show" $ do
+      let checkpoint = BS8.pack "checkpoint-secret"
+          putRequest = PulumiObjectPutRequest "aws-test" checkpoint True
+          putWire = requestFor pulumiObjectPutPath "POST" (BL8.unpack (encode putRequest))
+      decodePulumiObjectPutRequest putWire `shouldBe` Right putRequest
+      show putRequest `shouldNotContain` "checkpoint-secret"
+      (eitherDecode (encode PulumiObjectAbsent) :: Either String PulumiObjectGetResponse)
+        `shouldBe` Right PulumiObjectAbsent
+      ( eitherDecode (encode (PulumiObjectPresent checkpoint))
+          :: Either String PulumiObjectGetResponse
+        )
+        `shouldBe` Right (PulumiObjectPresent checkpoint)
+    it "renders request errors without checkpoint material" $ do
+      renderPulumiObjectRequestError PulumiObjectLoopbackUnverified
+        `shouldContain` "loopback NodePort"
+      renderPulumiObjectRequestError PulumiObjectLoopbackUnverified
+        `shouldNotContain` "checkpoint-secret"
+    it "builds daemon object-store URLs on the loopback gateway endpoint" $ do
+      let endpoint = Prodbox.Gateway.Client.hostLoopbackGatewayEndpoint 30443
+      Prodbox.Gateway.Client.pulumiObjectGetUrl endpoint
+        `shouldBe` "http://127.0.0.1:30443/v1/object-store/pulumi/get"
+      Prodbox.Gateway.Client.pulumiObjectPutUrl endpoint
+        `shouldBe` "http://127.0.0.1:30443/v1/object-store/pulumi/put"
+      Prodbox.Gateway.Client.pulumiObjectDeleteUrl endpoint
+        `shouldBe` "http://127.0.0.1:30443/v1/object-store/pulumi/delete"
   describe "Model B object store (Sprint 4.30)" $ do
     it "uses one generic bucket name for object-store and Pulumi backend paths" $ do
       defaultObjectStoreBucket `shouldBe` "prodbox-state"
@@ -2677,6 +2905,7 @@ main = mainWithSuite "prodbox-unit" $ do
       repoRoot <- getCurrentDirectory
       source <- readFile (repoRoot </> "src" </> "Prodbox" </> "CLI" </> "Rke2.hs")
       source `shouldContain` "gatewayMinioBucket = \"prodbox-state\""
+      source `shouldContain` "s3:DeleteObject"
       source `shouldNotContain` "gatewayMinioBucket = \"prodbox\""
     it "builds typed bucket lifecycle commands for the object-store bucket" $ do
       objectStoreHeadBucketArgs "http://127.0.0.1:39000" defaultObjectStoreBucket
@@ -3340,6 +3569,20 @@ main = mainWithSuite "prodbox-unit" $ do
                   )
               )
           )
+      parseArgs ["test", "integration", "daemon-bootstrap"]
+        `shouldBe` Right
+          ( Options
+              False
+              ( RunNative
+                  ( NativeTest
+                      ( TestCommand
+                          (TestIntegration IntegrationDaemonBootstrap)
+                          (CoverageFlags False Nothing)
+                          SubstrateHomeLocal
+                      )
+                  )
+              )
+          )
 
     it "renders the full AWS policy with EKS lifecycle statements" $ do
       case buildIamPolicyDocument PolicyFull of
@@ -3566,7 +3809,28 @@ main = mainWithSuite "prodbox-unit" $ do
           )
       )
 
-    it "classifies absent operational AWS Vault credentials as a skippable local gateway gate" $ do
+    it "orders root Vault bootstrap after the pre-Vault gateway daemon" $ do
+      let steps =
+            lines
+              ( renderNativeInstallPlan
+                  "/tmp/prodbox"
+                  (testValidatedSettings "/tmp/prodbox/.data")
+                  "machine-id-123"
+                  "prodbox-123"
+                  "prodbox-123"
+                  False
+              )
+          minioIndex = elemIndex "STEP=ensure_minio_runtime_bootstrap" steps
+          vaultRuntimeIndex = elemIndex "STEP=ensure_vault_runtime" steps
+          gatewayIndex = elemIndex "STEP=ensure_gateway_chart_ready_pre_vault" steps
+          lifecycleIndex = elemIndex "STEP=ensure_federated_vault_lifecycle" steps
+          steadyGatewayIndex = elemIndex "STEP=ensure_gateway_chart_ready" steps
+      minioIndex `shouldSatisfy` (`indexPrecedes` vaultRuntimeIndex)
+      vaultRuntimeIndex `shouldSatisfy` (`indexPrecedes` gatewayIndex)
+      gatewayIndex `shouldSatisfy` (`indexPrecedes` lifecycleIndex)
+      lifecycleIndex `shouldSatisfy` (`indexPrecedes` steadyGatewayIndex)
+
+    it "classifies absent operational AWS Vault credentials as a skippable public-edge gate" $ do
       operationalAwsCredentialGateFromResult
         (Left "Vault KV object secret/gateway/gateway/aws missing: HTTP 404 response")
         `shouldBe` OperationalAwsCredentialsAbsent
@@ -4097,6 +4361,33 @@ main = mainWithSuite "prodbox-unit" $ do
       awsTestMain `shouldNotContain` "std:getenv"
       awsTestInfra `shouldContain` "\"config\", \"set\", \"--stack\", awsTestStackName"
 
+    it "keeps supported per-run AWS stacks on the daemon object-store API" $ do
+      repoRoot <- getCurrentDirectory
+      encryptedBackend <-
+        readFile (repoRoot </> "src" </> "Prodbox" </> "Pulumi" </> "EncryptedBackend.hs")
+      perRunStacks <-
+        traverse
+          ( \path -> do
+              source <- readFile (repoRoot </> path)
+              pure (path, source)
+          )
+          [ "src" </> "Prodbox" </> "Infra" </> "AwsEksTestStack.hs"
+          , "src" </> "Prodbox" </> "Infra" </> "AwsEksSubzoneStack.hs"
+          , "src" </> "Prodbox" </> "Infra" </> "AwsTestStack.hs"
+          ]
+
+      encryptedBackend `shouldContain` "GatewayClient.getPulumiObject"
+      encryptedBackend `shouldContain` "GatewayClient.putPulumiObject"
+      encryptedBackend `shouldContain` "GatewayClient.deletePulumiObject"
+      encryptedBackend `shouldNotContain` "withMinioPortForward"
+      encryptedBackend `shouldNotContain` "127.0.0.1:39000"
+      forM_ perRunStacks $ \(_, source) -> do
+        source `shouldContain` "withDecryptedStackEnvironment"
+        source `shouldNotContain` "withMinioPortForward"
+        source `shouldNotContain` "readMinioCredentials"
+        source `shouldNotContain` "ensureMinioBackendBucket"
+        source `shouldNotContain` "withMigratedDecryptedStackEnvironment"
+
     it "treats IAM NoSuchEntity as successful absence during EKS destroy residue checks" $ do
       repoRoot <- getCurrentDirectory
       awsEksInfra <- readFile (repoRoot </> "src" </> "Prodbox" </> "Infra" </> "AwsEksTestStack.hs")
@@ -4180,6 +4471,7 @@ main = mainWithSuite "prodbox-unit" $ do
                            , "gateway-partition"
                            , "charts-platform"
                            , "resource-guardrails"
+                           , "daemon-bootstrap"
                            , "pulsar-broker"
                            , "keycloak-invite"
                            , "charts-storage"
@@ -4226,9 +4518,10 @@ main = mainWithSuite "prodbox-unit" $ do
               nativeRequiresSupportedRuntimePostflight suitePlan `shouldBe` True
               take 4 (map nativeValidationId (nativeValidations suitePlan))
                 `shouldBe` ["charts-vscode", "charts-api", "charts-websocket", "admin-routes"]
-              take 6 (dropWhile (/= ValidationChartsPlatform) (nativeValidations suitePlan))
+              take 7 (dropWhile (/= ValidationChartsPlatform) (nativeValidations suitePlan))
                 `shouldBe` [ ValidationChartsPlatform
                            , ValidationResourceGuardrails
+                           , ValidationDaemonBootstrap
                            , ValidationPulsarBroker
                            , ValidationKeycloakInvite
                            , ValidationChartsStorage
@@ -4391,6 +4684,19 @@ main = mainWithSuite "prodbox-unit" $ do
               nativeRequiresIntegrationRunbook suitePlan `shouldBe` True
               integrationRunbookCommandArgs suitePlan `shouldBe` [["cluster", "reconcile"]]
             DelegatedSuite _ -> expectationFailure "expected native sealed-vault plan"
+
+      case testExecutionPlan SubstrateHomeLocal (TestIntegration IntegrationDaemonBootstrap) of
+        testPlan ->
+          case testPlanExecutionMode testPlan of
+            NativeSuite suitePlan -> do
+              nativeSuiteId suitePlan `shouldBe` "integration-daemon-bootstrap"
+              nativeValidations suitePlan `shouldBe` [ValidationDaemonBootstrap]
+              nativeInitialIntegrationGatePrerequisites suitePlan `shouldBe` []
+              nativeDeferredIntegrationGatePrerequisites suitePlan `shouldBe` []
+              nativeManagedAwsHarnessPolicyTier suitePlan `shouldBe` Nothing
+              nativeRequiresIntegrationRunbook suitePlan `shouldBe` False
+              integrationRunbookCommandArgs suitePlan `shouldBe` []
+            DelegatedSuite _ -> expectationFailure "expected native daemon-bootstrap plan"
 
       case testExecutionPlan SubstrateHomeLocal (TestIntegration IntegrationPulsarBroker) of
         testPlan ->
@@ -4613,6 +4919,79 @@ main = mainWithSuite "prodbox-unit" $ do
       validationSource `shouldContain` "ValidationResourceGuardrails ->"
       validationSource `shouldContain` "runResourceGuardrailsValidation"
       nativeValidationId ValidationResourceGuardrails `shouldBe` "resource-guardrails"
+
+    it "Sprint 5.14 routes daemon-bootstrap through a native validation path" $ do
+      repoRoot <- getCurrentDirectory
+      validationSource <- readFile (repoRoot </> "src" </> "Prodbox" </> "TestValidation.hs")
+
+      validationSource `shouldContain` "ValidationDaemonBootstrap ->"
+      validationSource `shouldContain` "runDaemonBootstrapValidation"
+      nativeValidationId ValidationDaemonBootstrap `shouldBe` "daemon-bootstrap"
+
+    it "Sprint 5.14 accepts only daemon-mediated bootstrap transports" $ do
+      case daemonBootstrapAuditReport defaultDaemonBootstrapAuditInput of
+        Left err -> expectationFailure err
+        Right report -> do
+          report `shouldContain` "DAEMON_BOOTSTRAP_VALIDATION"
+          report `shouldContain` "DAEMON_AVAILABLE=true"
+          report `shouldContain` "/v1/bootstrap/vault/ensure"
+          report `shouldContain` "LEGACY_TRANSPORTS=0"
+          report `shouldContain` "HOST_ROOT_TOKEN_FALLBACKS=0"
+          report `shouldContain` "REDACTION=ok"
+
+    it "Sprint 5.14 rejects legacy MinIO, direct Vault, and root-token fallback traces" $ do
+      let minioTrace =
+            defaultDaemonBootstrapAuditInput
+              { daemonBootstrapObservedTransports =
+                  "kubectl port-forward service/minio 39000:9000"
+                    : daemonBootstrapObservedTransports defaultDaemonBootstrapAuditInput
+              }
+          vaultTrace =
+            defaultDaemonBootstrapAuditInput
+              { daemonBootstrapObservedTransports =
+                  "POST http://127.0.0.1:31820/v1/sys/unseal"
+                    : daemonBootstrapObservedTransports defaultDaemonBootstrapAuditInput
+              }
+          rootTokenTrace =
+            defaultDaemonBootstrapAuditInput
+              { daemonBootstrapObservedOutput =
+                  "falling back to host Vault root-token write"
+                    : daemonBootstrapObservedOutput defaultDaemonBootstrapAuditInput
+              }
+      map
+        (`elem` daemonBootstrapForbiddenPatterns)
+        ["kubectl port-forward", "127.0.0.1:31820", "host root-token"]
+        `shouldBe` [True, True, True]
+      daemonBootstrapAuditReport minioTrace
+        `shouldSatisfy` leftContains "legacy transport"
+      daemonBootstrapAuditReport vaultTrace
+        `shouldSatisfy` leftContains "legacy transport"
+      daemonBootstrapAuditReport rootTokenTrace
+        `shouldSatisfy` leftContains "legacy transport"
+
+    it "Sprint 5.14 fails closed on unavailable daemon, missing routes, or leaked secrets" $ do
+      let unavailableTrace =
+            defaultDaemonBootstrapAuditInput
+              { daemonBootstrapDaemonAvailable = False
+              }
+          missingRouteTrace =
+            defaultDaemonBootstrapAuditInput
+              { daemonBootstrapRequiredDaemonPaths =
+                  "/v1/bootstrap/vault/ensure-missing"
+                    : daemonBootstrapRequiredDaemonPaths defaultDaemonBootstrapAuditInput
+              }
+          leakyTrace =
+            defaultDaemonBootstrapAuditInput
+              { daemonBootstrapObservedOutput =
+                  "vault-unseal-key-1"
+                    : daemonBootstrapObservedOutput defaultDaemonBootstrapAuditInput
+              }
+      daemonBootstrapAuditReport unavailableTrace
+        `shouldSatisfy` leftContains "unavailable daemon"
+      daemonBootstrapAuditReport missingRouteTrace
+        `shouldSatisfy` leftContains "missing daemon routes"
+      daemonBootstrapAuditReport leakyTrace
+        `shouldSatisfy` leftContains "unredacted secret sample"
 
     it "Sprint 5.13 validates capped pod resources and namespace guardrail objects" $ do
       case resourceGuardrailReport
@@ -6936,6 +7315,22 @@ main = mainWithSuite "prodbox-unit" $ do
               Nothing -> pure ()
               Just _ -> expectationFailure "expected daemonAwsCreds = Nothing for empty home-substrate aws creds"
 
+    it "decodes chart-shaped config in pre-Vault mode without resolving SecretRefs" $ do
+      decoded <-
+        GatewaySettings.decodeDaemonConfigDhallPreVault
+          (Text.pack (renderGatewayConfigTemplate (testValidatedSettings "/tmp/prodbox/.data") "node-a"))
+      case decoded of
+        Left err -> expectationFailure err
+        Right config -> do
+          daemonEventKeys config `shouldBe` []
+          daemonAwsCreds config `shouldBe` Nothing
+          daemonMinioCreds config `shouldBe` Nothing
+          daemonMinioEndpointUrl config `shouldBe` Nothing
+          case daemonVaultAuth config of
+            Nothing -> expectationFailure "expected gateway Vault auth"
+            Just vaultAuth ->
+              gatewayVaultAddress vaultAuth `shouldBe` "http://vault.vault.svc.cluster.local:8200"
+
   describe "Sprint 2.17 Haskell HTTP client" $ do
     it "renders HttpConnectionFailure as a single-line operator-facing string" $
       Prodbox.Http.Client.renderHttpError
@@ -8610,6 +9005,8 @@ main = mainWithSuite "prodbox-unit" $ do
         `shouldBe` Right (TestIntegration IntegrationHaRke2Aws)
       testScopeForTopologySuite "eks-volume-rebind"
         `shouldBe` Right (TestIntegration IntegrationEksVolumeRebind)
+      testScopeForTopologySuite "daemon-bootstrap"
+        `shouldBe` Right (TestIntegration IntegrationDaemonBootstrap)
       testScopeForTopologySuite "pulsar-broker"
         `shouldBe` Right (TestIntegration IntegrationPulsarBroker)
       testScopeForTopologySuite "unknown"

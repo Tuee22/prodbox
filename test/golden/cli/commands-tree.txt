@@ -103,6 +103,7 @@ prodbox
       charts-storage
       charts-platform
       resource-guardrails
+      daemon-bootstrap
       pulsar-broker
       charts-vscode
       charts-api

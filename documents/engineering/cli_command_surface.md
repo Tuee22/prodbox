@@ -302,6 +302,7 @@ The per-group command matrix (generated; do not edit by hand):
 | `prodbox test integration charts-storage` | none | `--coverage`, `--cov-fail-under`, `--substrate` |
 | `prodbox test integration charts-platform` | none | `--coverage`, `--cov-fail-under`, `--substrate` |
 | `prodbox test integration resource-guardrails` | none | `--coverage`, `--cov-fail-under`, `--substrate` |
+| `prodbox test integration daemon-bootstrap` | none | `--coverage`, `--cov-fail-under`, `--substrate` |
 | `prodbox test integration pulsar-broker` | none | `--coverage`, `--cov-fail-under`, `--substrate` |
 | `prodbox test integration charts-vscode` | none | `--coverage`, `--cov-fail-under`, `--substrate` |
 | `prodbox test integration charts-api` | none | `--coverage`, `--cov-fail-under`, `--substrate` |
@@ -342,8 +343,11 @@ The per-group command matrix (generated; do not edit by hand):
 
 ### `prodbox vault` (Sprint 1.36)
 
-The `prodbox vault` command group is the host-side Vault lifecycle surface. It is the
-Sprint 1.36 structure for the `prodbox vault` command group plus the encrypted unlock bundle.
+The `prodbox vault` command group is the operator-facing Vault lifecycle surface. It is the
+Sprint 1.36 structure for the `prodbox vault` command group plus the encrypted unlock bundle; the
+Sprint 4.42 implementation routes post-bootstrap root lifecycle work through the loopback-restricted
+daemon NodePort instead of direct host MinIO/Vault transports. Direct host handlers remain only for
+explicit test seams when the daemon is unavailable.
 The leaves are now part of the typed command registry and have native handlers. The PKI
 `issue-test-cert` handler calls the later-configured `prodbox-test` role, so it is expected to
 return a Vault HTTP error until the concrete PKI issuer/role sprint lands.
@@ -364,18 +368,18 @@ Per-command intent (authoritative model in
 [vault_doctrine.md § 7](./vault_doctrine.md#7-vault-lifecycle-commands)):
 
 - `prodbox vault status` — report whether Vault is deployed, initialized, sealed/unsealed, and
-  policy-reconciled.
+  policy-reconciled through the daemon status route.
 - `prodbox vault init` — idempotent init-if-empty; capture the unseal/recovery keys and root
-  token once into the encrypted unlock bundle at
-  `.data/prodbox/vault-unlock-bundle.age` (Argon2id/age authenticated encryption).
-- `prodbox vault unseal` — read the unlock bundle, prompt for its password, and unseal Vault.
+  token once into the password-AEAD-sealed unlock bundle in the durable MinIO bucket.
+- `prodbox vault unseal` — prompt for the unlock-bundle password and unseal Vault; it posts the
+  password to the daemon bootstrap endpoint, which reads MinIO and calls Vault in-cluster.
 - `prodbox vault seal` — seal Vault (fail-closed back to the sealed-state invariant).
 - `prodbox vault reconcile` — idempotently reconcile the baseline auth mounts, policies, roles, KV
   mount, Transit keys, PKI mount, and Kubernetes auth roles, in keeping with the single-reconcile
-  doctrine. The current native handler refuses uninitialized/sealed Vaults, decrypts the unlock
-  bundle for the root token, then applies `Prodbox.Vault.Reconcile.defaultVaultReconcilePlan`.
+  doctrine. The daemon refuses uninitialized/sealed Vaults with redacted errors, decrypts the
+  unlock bundle for the root token, then applies `Prodbox.Vault.Reconcile.defaultVaultReconcilePlan`.
 - `prodbox vault rotate-unlock-bundle` — re-encrypt the unlock bundle under a new password
-  without re-initializing Vault.
+  without re-initializing Vault, through the authenticated daemon route.
 - `prodbox vault rotate-transit-key <key>` — rotate a named Transit key version (envelope
   re-wrap is forward-compatible via the `prodbox-envelope-v1` tag).
 - `prodbox vault pki status` / `prodbox vault pki issue-test-cert` — inspect the Vault PKI mount
@@ -879,10 +883,11 @@ validator command.
 
 ### `prodbox vault`
 
-The `prodbox vault` group (Sprint 1.36) is the host-side Vault lifecycle surface — `status`,
+The `prodbox vault` group (Sprint 1.36) is the operator-facing Vault lifecycle surface — `status`,
 `init`, `unseal`, `seal`, `reconcile`, `rotate-unlock-bundle`, `rotate-transit-key`, and the
 `pki` inspection leaves (full row set in [§3 Command Matrix](#3-command-matrix)). These commands
-manage the in-cluster Vault backend and its encrypted unlock bundle from the operator host.
+manage the in-cluster Vault backend and its encrypted unlock bundle by posting bounded requests to
+the loopback-restricted daemon NodePort after bootstrap.
 Startup-config sourcing, the typed
 `SecretRef` contract, and the sealed-state fail-closed invariant are not owned here; they are
 owned by [vault_doctrine.md](./vault_doctrine.md) and

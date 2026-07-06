@@ -299,7 +299,20 @@ lookupPeerEndpoint nodeId orders =
     endpoint : _ -> Just endpoint
 
 loadDaemonConfig :: FilePath -> IO (Either String DaemonConfig)
-loadDaemonConfig = GatewaySettings.loadDaemonConfig
+loadDaemonConfig path = do
+  fullResult <- GatewaySettings.loadDaemonConfig path
+  case fullResult of
+    Right config -> pure (Right config)
+    Left fullErr -> do
+      preVaultResult <- GatewaySettings.loadDaemonConfigPreVault path
+      pure $ case preVaultResult of
+        Right config -> Right config
+        Left preVaultErr ->
+          Left
+            ( fullErr
+                ++ "\npre-Vault bootstrap config decode also failed: "
+                ++ preVaultErr
+            )
 
 -- Sprint 2.22: 'loadOrdersFile' now dispatches by file extension via
 -- 'GatewaySettings.loadOrders' so both the legacy JSON-rendering chart

@@ -17,6 +17,15 @@
 
 ## Phase Status
 
+✅ **Reclosed 2026-07-05 for daemon-mediated bootstrap validation.** Sprint `5.14` is Done on the
+code-owned canonical-suite surface. The new `daemon-bootstrap` validation is wired through the
+parser, command registry, native validation plan, topology mapping, and aggregate ordering; its pure
+transport oracle requires the daemon bootstrap/lifecycle routes, rejects observed legacy MinIO
+port-forwards, direct host Vault NodePort calls, and host root-token fallback traces, and proves
+request/response/log redaction. Built-frontend integration covers both the passing trace and a
+legacy-transport failure trace. AWS/Pulumi object-store parity remains a forward Phase `7` live-proof
+axis tracked through Sprint `7.30`, never a backward block on this phase.
+
 ✅ **Reclosed 2026-07-04 for resource-guardrail validation** — Sprint `5.13` is Done on the
 code-owned canonical-suite surface. The new `resource-guardrails` validation is wired through the
 parser, command registry, native validation plan, topology mapping, and aggregate ordering; it loads
@@ -164,6 +173,7 @@ The full inventory of canonical-suite validations owned by this phase lives in
 | `charts-platform` | `k8s_ready`, chart-platform prereqs | `charts list`, `charts status` produce expected output for the supported chart set |
 | `charts-storage` | `k8s_ready`, chart-platform prereqs | Retained-storage reconciler, PV/PVC pairing, secret rendering |
 | `resource-guardrails` | `k8s_ready`, chart-platform prereqs | Every prodbox pod has explicit cpu/memory/ephemeral-storage requests and limits, no pod is `BestEffort`, namespace quotas/limit ranges match the declared resource plan, and over-budget configs refuse before mutation |
+| `daemon-bootstrap` | (in-process transport oracle; live daemon parity tracked separately) | Post-bootstrap Vault bootstrap/lifecycle traces use the daemon NodePort routes and do not open host MinIO port-forwards, direct host Vault NodePort calls, or host root-token fallback writes; request/response/log output stays redacted |
 | `eks-volume-rebind` | `k8s_ready`, chart-platform prereqs (AWS parity: operational AWS/Pulumi stack access) | Identical block-storage rebinding across a teardown/spinup cycle: write sentinel → teardown → spinup → the same PV rebinds (home hostPath / EKS EBS `volumeHandle`) and the data persists |
 | `charts-vscode` | `public_edge_ready`, `tool_curl` | Real HTTPS curl to `https://<publicFqdn>/vscode`; redirect to OIDC callback with expected fragments |
 | `charts-api` | `public_edge_ready`, `tool_curl` | Real HTTPS curl to `https://<publicFqdn>/api`; bearer-token validation; 401/403 contract |
@@ -1073,10 +1083,65 @@ Add canonical-suite coverage for the resource-governor contract introduced by Sp
   disposable home substrate and the AWS `--substrate aws` parity row once the AWS substrate is
   provisioned. The code-owned command/planner/body/oracle surface is complete.
 
+## Sprint 5.14: Daemon-Mediated Bootstrap Validation [✅ Done]
+
+**Status**: Done
+**Implementation**: `src/Prodbox/TestPlan.hs`, `src/Prodbox/TestValidation.hs`,
+`src/Prodbox/TestRunner.hs`, `src/Prodbox/CLI/Spec.hs`, `test/unit/Main.hs`,
+`test/unit/Parser.hs`, `test/integration/CliSuite.hs`, generated CLI goldens/docs
+**Independent Validation**: pure/fake-daemon tests over validation planning and transport-use
+oracles; live home/AWS substrate runs are non-blocking proof axes.
+**Live-proof**: pending for real deployed daemon/object-store parity on AWS; Sprint `7.30` is code-Done
+**Docs to update**: `documents/engineering/unit_testing_policy.md`,
+`documents/engineering/integration_fixture_doctrine.md`, `documents/engineering/vault_doctrine.md`,
+`DEVELOPMENT_PLAN/substrates.md`
+
+### Objective
+
+Add canonical-suite coverage that the daemon-mediated post-bootstrap boundary is real: unseal and
+object-store-backed operations must use the daemon service and must not fall back to host MinIO
+port-forwarding or direct host Vault NodePort access on supported paths.
+
+### Deliverables
+
+- ✅ A named validation, `daemon-bootstrap`, wired through the parser, command registry, native
+  validation plan, aggregate ordering, and topology suite mapping.
+- ✅ A transport-use oracle that fails on observed `kubectl port-forward` invocation for MinIO,
+  `127.0.0.1:39000` backend use, direct `127.0.0.1:31820` Vault bootstrap calls, or host root-token
+  fallback writes after daemon readiness.
+- ✅ Positive proof that the daemon endpoint handles sealed-root bootstrap from the MinIO-resident
+  unlock bundle with the operator/test password while keeping request/response/log output redacted.
+- ✅ Negative proof that an unavailable daemon fails with a daemon-actionable error rather than silently
+  using the legacy direct transports.
+- 🧪 AWS parity row in `substrates.md` for the live EKS/MinIO daemon object-store proof after Sprint
+  `7.30`'s code-owned object-store API landing.
+
+### Validation
+
+1. ✅ `cabal test --builddir=.build prodbox-unit --test-options=--hide-successes` — 1188/1188.
+2. ✅ `prodbox test integration daemon-bootstrap` — named validation passes with no live
+   prerequisite gate.
+3. ✅ `cabal test --builddir=.build prodbox-integration --test-options='-p daemon-bootstrap --hide-successes'`
+   — 1/1 targeted built-frontend proof.
+4. ✅ `prodbox test integration cli` — 44/44; fake daemon-bootstrap trace proves the
+   validation fails on legacy transport attempts.
+5. ✅ `prodbox test integration env` — 44/44; no ambient `MINIO_*`, `PRODBOX_*`, or `AWS_*`
+   fallback is introduced.
+6. ✅ `prodbox dev check` — 0 after the repo Haskell formatter pass.
+7. Live-proof (Standard O): run the same `daemon-bootstrap` substrate parity row on AWS with Sprint
+   `7.30`'s daemon object-store APIs for Pulumi backend/residue paths.
+
+### Remaining Work
+
+- 🧪 Live-proof pending (non-blocking, Standard O): AWS/Pulumi object-store parity composes with
+  Sprint `7.30`'s code-owned landing and is tracked through [substrates.md](substrates.md), not as
+  a backward block.
+
 ## Related Documents
 
 - [README.md](README.md)
 - [00-overview.md](00-overview.md)
+- [legacy-tracking-for-deletion.md](legacy-tracking-for-deletion.md)
 - [substrates.md](substrates.md)
 - [phase-7-aws-substrate-foundations.md](phase-7-aws-substrate-foundations.md)
 - [phase-8-email-invite-auth.md](phase-8-email-invite-auth.md)

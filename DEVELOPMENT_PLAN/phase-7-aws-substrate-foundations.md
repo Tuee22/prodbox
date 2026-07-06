@@ -19,6 +19,15 @@
 
 ## Phase Status
 
+✅ **Reclosed 2026-07-05 for daemon-mediated Pulumi/object-store access.** Sprint `7.30` is now
+Done on its code-owned surface. Encrypted Pulumi backend hydration/persistence, per-run residue
+checks, stack-output reads, and corrupt-checkpoint prune deletes now use the loopback-restricted
+daemon object-store API; the daemon resolves Vault Transit/HMAC material through Kubernetes auth
+and reaches MinIO over in-cluster Service DNS. Earlier AWS substrate, IAM, encrypted-backend,
+static-EBS, and VPC ownership surfaces remain `Done`/as-tracked on their owned validation axes.
+Live AWS/EKS parity remains a non-blocking Standard O proof axis tracked in
+[substrates.md](substrates.md).
+
 ✅ **Live-proven 2026-06-26 (the AWS per-run resource cycles the home suite exercises) — partial; the
 `--substrate aws` aggregate stays open.** The green home `prodbox test all` (2026-06-26, 18/18; see
 [00-overview.md](00-overview.md) Alignment Status) provisions **and cleanly destroys** real AWS per-run
@@ -3673,8 +3682,9 @@ Move the Vault unlock material — the Shamir unseal keys, recovery keys, and in
 host disk and into the durable MinIO bucket as the **Tier 1 bootstrap secret**
 ([config_doctrine.md §0](../documents/engineering/config_doctrine.md)). It is the material that
 *unseals* Vault, so it cannot be a Vault-Transit envelope (which would require an unsealed Vault);
-instead it is password-AEAD-sealed (Argon2id + ChaCha20-Poly1305) and read via a password-derived
-(KDF) bootstrap MinIO credential, with the operator password the sole ephemeral secret. This is the
+instead it is password-AEAD-sealed (Argon2id + ChaCha20-Poly1305) and read via the static bootstrap
+MinIO root credential, with the operator password the sole ephemeral secret for decrypting the bundle.
+This is the
 prodbox-specific additive layer hostbootstrap deliberately does not own — the obfuscated MinIO secret
 store plus the sealed-Vault fail-closed posture — layered over the same durable bucket Sprint `7.14`
 established. Tier 1 is root-cluster-only: child clusters use transit-seal (no bundle; their recovery
@@ -3686,9 +3696,9 @@ keys live in the parent's KV), per
 - The password-AEAD-sealed unlock bundle (Shamir unseal keys + recovery keys + initial root token) is
   written to the durable MinIO bucket under the shared opaque-naming layer, **not** to host disk, and
   **not** as a Vault-Transit envelope.
-- A password-derived (KDF) bootstrap MinIO credential reads the bundle before Vault is reachable; the
-  bundle is sealed with Argon2id key derivation + ChaCha20-Poly1305 AEAD; the operator password is the
-  only ephemeral secret in the unseal path.
+- The static bootstrap MinIO root credential reads the bundle before Vault is reachable; the bundle is
+  sealed with Argon2id key derivation + ChaCha20-Poly1305 AEAD; the operator password is the only
+  ephemeral secret in the unseal path.
 - The bootstrap reorder this requires — MinIO reachable *before* Vault unseal — is staged, with the
   MinIO-root-decoupling reorder applied **last** so each reorder step is independently provable.
 - Child-cluster bring-up keeps the transit-seal path unchanged (no local bundle; recovery keys in the
@@ -3703,7 +3713,7 @@ keys live in the parent's KV), per
 ### Remaining Work
 
 - ✅ Landed (code-owned, validated 2026-06-18): the additive dual-write to the MinIO bootstrap object +
-  the password-derived bootstrap MinIO read credential + the prefer-MinIO/fallback-disk unseal read.
+  the then-KDF bootstrap MinIO read credential + the prefer-MinIO/fallback-disk unseal read.
   Disk remains PRIMARY this stage; the bundle is now written to **both** disk and MinIO.
 - ✅ Landed (code-owned, validated 2026-06-22): the MinIO access credential is now a **single static
   constant** (`Prodbox.Minio.RootCredential`), superseding the 2026-06-21 password-derived approach
@@ -4412,6 +4422,70 @@ destroy-before-ensure residue purge.
 - Code-owned work closed. Remaining 🧪 Live-proof: exercise a real AWS `aws-eks` provision/destroy
   cycle and confirm the postflight tag sweep sees no escaped VPC-scoped residue after the existing
   destroy-before-ensure purge.
+
+## Sprint 7.30: Daemon Object-Store API for Pulumi Backends [✅ Done]
+
+**Status**: Done
+**Live-proof**: pending for the live AWS/EKS daemon object-store parity run (non-blocking,
+Standard O)
+**Implementation**: `src/Prodbox/Pulumi/EncryptedBackend.hs`,
+`src/Prodbox/Lifecycle/LiveResidue.hs`, `src/Prodbox/Infra/StackOutputs.hs`,
+`src/Prodbox/Gateway/ObjectStore.hs`, `src/Prodbox/Gateway/Client.hs`,
+`src/Prodbox/Gateway/Daemon.hs`, `src/Prodbox/Infra/AwsEksTestStack.hs`,
+`src/Prodbox/Infra/AwsEksSubzoneStack.hs`, `src/Prodbox/Infra/AwsTestStack.hs`,
+`src/Prodbox/Vault/Reconcile.hs`, `src/Prodbox/CLI/Rke2.hs`, `test/unit/Main.hs`,
+`test/integration/CliSuite.hs`
+**Independent Validation**: unit tests and fake-daemon CLI integration proving encrypted-backend
+hydrate/store, residue queries, and stack-output reads use the daemon client without opening a local
+MinIO port; live AWS parity remains a substrate row.
+**Docs to update**: `documents/engineering/vault_doctrine.md`,
+`documents/engineering/aws_integration_environment_doctrine.md`,
+`documents/engineering/lifecycle_reconciliation_doctrine.md`, `DEVELOPMENT_PLAN/substrates.md`,
+`DEVELOPMENT_PLAN/legacy-tracking-for-deletion.md`
+
+### Objective
+
+Move the AWS/Pulumi encrypted-backend and residue surfaces behind the same daemon-mediated
+post-bootstrap boundary as Vault lifecycle. The host Pulumi runner may still execute Pulumi
+subprocesses, but persistent state hydration, store, residue, and output reads are served by the
+daemon over the loopback-restricted NodePort and performed against MinIO in-cluster.
+
+### Deliverables
+
+- ✅ A daemon object-store API for typed Model-B object reads/writes needed by
+  `Prodbox.Pulumi.EncryptedBackend`, including exact logical-object classification and redacted
+  errors.
+- ✅ `EncryptedBackend` hydrates scratch `file://` backends from daemon-served objects and stores the
+  resulting checkpoint back through the daemon, with no `127.0.0.1:39000` MinIO endpoint in the
+  supported path.
+- ✅ `LiveResidue` and `StackOutputs` query encrypted checkpoints through the daemon client instead of
+  batching a host MinIO port-forward.
+- ✅ Legacy first-touch raw-checkpoint import remains explicit and bounded; after import, supported
+  state cycles use only the daemon object-store API.
+- ✅ The AWS-substrate docs and parity table stop describing host-local MinIO port-forwarding as the
+  Pulumi backend transport.
+
+### Validation
+
+1. ✅ `cabal test --builddir=.build prodbox-unit --test-options=--hide-successes` — 1195/1195;
+   covers daemon object-store request/response encoding, redacted checkpoint-bearing `Show`,
+   gateway URL construction, Vault/MinIO policy grants, and supported per-run stack source
+   regressions away from host MinIO port-forwarding.
+2. ✅ `./.build/prodbox test unit` — 1195/1195.
+3. ✅ `./.build/prodbox test integration cli` — 44/44; fake daemon object-store routes are exercised
+   by the built frontend and the daemon-bootstrap trace proof still rejects legacy transport
+   attempts.
+4. ✅ `./.build/prodbox test integration env` — 44/44; no AWS/MinIO ambient env fallback is
+   introduced.
+5. Live-proof (Standard O): `prodbox test integration pulumi --substrate aws` and the AWS aggregate
+   prove the daemon-backed object-store path against real EKS/MinIO.
+
+### Remaining Work
+
+- 🧪 Live-proof pending (non-blocking, Standard O): run the AWS-substrate Pulumi/aggregate parity
+  proof against real EKS/MinIO. Remaining direct host MinIO helpers are explicit legacy/config/test
+  seams tracked separately in the legacy ledger; the supported per-run Pulumi path no longer uses
+  them.
 
 ## Related Documents
 

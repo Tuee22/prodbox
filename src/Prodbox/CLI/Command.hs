@@ -400,6 +400,7 @@ data IntegrationSuite
   | IntegrationChartsStorage
   | IntegrationChartsPlatform
   | IntegrationResourceGuardrails
+  | IntegrationDaemonBootstrap
   | IntegrationPulsarBroker
   | IntegrationChartsVscode
   | IntegrationChartsApi

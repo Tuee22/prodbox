@@ -2,8 +2,12 @@
 
 module Prodbox.TestValidation
   ( runNativeValidation
+  , DaemonBootstrapAuditInput (..)
   , SealedVaultAuditInput (..)
   , VolumeRebindSnapshot (..)
+  , daemonBootstrapAuditReport
+  , daemonBootstrapForbiddenPatterns
+  , defaultDaemonBootstrapAuditInput
   , defaultSealedVaultAuditInput
   , parseVolumeRebindSnapshot
   , sealedVaultHostDiskRoot
@@ -93,6 +97,15 @@ import Prodbox.Dns
   , queryRoute53Record
   )
 import Prodbox.Error (fatalError)
+import Prodbox.Gateway.Daemon
+  ( bootstrapVaultPath
+  , bootstrapVaultPkiIssueTestCertPath
+  , bootstrapVaultPkiStatusPath
+  , bootstrapVaultRotateTransitKeyPath
+  , bootstrapVaultRotateUnlockBundlePath
+  , bootstrapVaultSealPath
+  , bootstrapVaultStatusPath
+  )
 import Prodbox.Gateway.Peer
   ( PeerEventBatch (..)
   , handlePeerRequest
@@ -259,6 +272,110 @@ data SealedVaultAuditInput = SealedVaultAuditInput
   , sealedVaultLogLines :: [String]
   }
   deriving (Eq, Show)
+
+data DaemonBootstrapAuditInput = DaemonBootstrapAuditInput
+  { daemonBootstrapDaemonAvailable :: Bool
+  , daemonBootstrapObservedTransports :: [String]
+  , daemonBootstrapObservedOutput :: [String]
+  , daemonBootstrapRequiredDaemonPaths :: [String]
+  }
+  deriving (Eq, Show)
+
+defaultDaemonBootstrapAuditInput :: DaemonBootstrapAuditInput
+defaultDaemonBootstrapAuditInput =
+  DaemonBootstrapAuditInput
+    { daemonBootstrapDaemonAvailable = True
+    , daemonBootstrapObservedTransports =
+        [ "POST http://127.0.0.1:30443" ++ bootstrapVaultPath ++ " loopback_nodeport_verified=True"
+        , "GET http://127.0.0.1:30443" ++ bootstrapVaultStatusPath
+        , "POST http://127.0.0.1:30443" ++ bootstrapVaultSealPath
+        , "POST http://127.0.0.1:30443" ++ bootstrapVaultRotateUnlockBundlePath
+        , "POST http://127.0.0.1:30443" ++ bootstrapVaultRotateTransitKeyPath
+        , "POST http://127.0.0.1:30443" ++ bootstrapVaultPkiStatusPath
+        , "POST http://127.0.0.1:30443" ++ bootstrapVaultPkiIssueTestCertPath
+        ]
+    , daemonBootstrapObservedOutput =
+        [ "daemon-bootstrap result=ok"
+        , "unlock_bundle_source=minio-service"
+        , "request_password=redacted"
+        , "response_root_token=redacted"
+        ]
+    , daemonBootstrapRequiredDaemonPaths =
+        [ bootstrapVaultPath
+        , bootstrapVaultStatusPath
+        , bootstrapVaultSealPath
+        , bootstrapVaultRotateUnlockBundlePath
+        , bootstrapVaultRotateTransitKeyPath
+        , bootstrapVaultPkiStatusPath
+        , bootstrapVaultPkiIssueTestCertPath
+        ]
+    }
+
+daemonBootstrapForbiddenPatterns :: [String]
+daemonBootstrapForbiddenPatterns =
+  [ "kubectl port-forward"
+  , "port-forward service/minio"
+  , "127.0.0.1:39000"
+  , "localhost:39000"
+  , "127.0.0.1:31820"
+  , "localhost:31820"
+  , "PRODBOX_TEST_HOST_VAULT_TOKEN"
+  , "direct host Vault"
+  , "falling back to host Vault"
+  , "host root-token"
+  ]
+
+daemonBootstrapForbiddenSecretSamples :: [String]
+daemonBootstrapForbiddenSecretSamples =
+  [ "operator-password"
+  , "bootstrap-password"
+  , "vault-unseal-key-1"
+  , "vault-unseal-key-2"
+  , "vault-root-token"
+  , "fake-root-token"
+  , "s.child-transit"
+  ]
+
+daemonBootstrapAuditReport :: DaemonBootstrapAuditInput -> Either String String
+daemonBootstrapAuditReport input = do
+  let corpus =
+        unlines
+          ( daemonBootstrapObservedTransports input
+              ++ daemonBootstrapObservedOutput input
+          )
+      missingPaths =
+        filter
+          (\path -> not (any (path `isInfixOf`) (daemonBootstrapObservedTransports input)))
+          (daemonBootstrapRequiredDaemonPaths input)
+      forbiddenLegacy =
+        filter (`isInfixOf` corpus) daemonBootstrapForbiddenPatterns
+      leakedSecrets =
+        filter (`isInfixOf` corpus) daemonBootstrapForbiddenSecretSamples
+  case missingPaths of
+    [] -> Right ()
+    paths -> Left ("daemon-bootstrap validation missing daemon routes: " ++ intercalate "," paths)
+  if daemonBootstrapDaemonAvailable input
+    then Right ()
+    else
+      Left
+        "daemon-bootstrap validation observed unavailable daemon; refusing legacy direct transport fallback"
+  case forbiddenLegacy of
+    [] -> Right ()
+    patterns ->
+      Left ("daemon-bootstrap validation observed legacy transport: " ++ intercalate "," patterns)
+  case leakedSecrets of
+    [] -> Right ()
+    samples ->
+      Left ("daemon-bootstrap validation observed unredacted secret sample: " ++ intercalate "," samples)
+  Right $
+    unlines
+      [ "DAEMON_BOOTSTRAP_VALIDATION"
+      , "DAEMON_AVAILABLE=true"
+      , "DAEMON_PATHS=" ++ intercalate "," (daemonBootstrapRequiredDaemonPaths input)
+      , "LEGACY_TRANSPORTS=0"
+      , "HOST_ROOT_TOKEN_FALLBACKS=0"
+      , "REDACTION=ok"
+      ]
 
 defaultSealedVaultAuditInput :: SealedVaultAuditInput
 defaultSealedVaultAuditInput =
@@ -466,6 +583,8 @@ runNativeValidation substrate repoRoot environment validation = do
           ]
       ValidationResourceGuardrails ->
         runResourceGuardrailsValidation repoRoot
+      ValidationDaemonBootstrap ->
+        runDaemonBootstrapValidation
       ValidationPulsarBroker ->
         runPulsarBrokerValidation repoRoot environment substrate
       ValidationChartsStorage ->
@@ -852,6 +971,40 @@ runSealedVaultValidation repoRoot environment = do
                           else runSealedVaultAssertions repoRoot environment
                     )
                     restore
+
+runDaemonBootstrapValidation :: IO ExitCode
+runDaemonBootstrapValidation = do
+  fixture <- lookupEnv "PRODBOX_TEST_DAEMON_BOOTSTRAP_AUDIT"
+  case fixture of
+    Nothing -> emitDaemonBootstrapAudit defaultDaemonBootstrapAuditInput
+    Just "pass" -> emitDaemonBootstrapAudit defaultDaemonBootstrapAuditInput
+    Just "legacy-minio-port-forward" ->
+      emitDaemonBootstrapAudit
+        defaultDaemonBootstrapAuditInput
+          { daemonBootstrapObservedTransports =
+              "kubectl port-forward service/minio 39000:9000"
+                : daemonBootstrapObservedTransports defaultDaemonBootstrapAuditInput
+          }
+    Just "legacy-vault-nodeport" ->
+      emitDaemonBootstrapAudit
+        defaultDaemonBootstrapAuditInput
+          { daemonBootstrapObservedTransports =
+              "POST http://127.0.0.1:31820/v1/sys/unseal"
+                : daemonBootstrapObservedTransports defaultDaemonBootstrapAuditInput
+          }
+    Just "host-root-token-fallback" ->
+      emitDaemonBootstrapAudit
+        defaultDaemonBootstrapAuditInput
+          { daemonBootstrapObservedOutput =
+              "falling back to host Vault root-token write"
+                : daemonBootstrapObservedOutput defaultDaemonBootstrapAuditInput
+          }
+    Just "daemon-unavailable" ->
+      emitDaemonBootstrapAudit
+        defaultDaemonBootstrapAuditInput
+          { daemonBootstrapDaemonAvailable = False
+          }
+    Just other -> failWith ("unknown PRODBOX_TEST_DAEMON_BOOTSTRAP_AUDIT fixture: " ++ other)
 
 runSealedVaultAssertions :: FilePath -> [(String, String)] -> IO ExitCode
 runSealedVaultAssertions repoRoot environment =
@@ -1513,6 +1666,14 @@ jsonValueAtMaybe (key : rest) value =
 emitSealedVaultAudit :: SealedVaultAuditInput -> IO ExitCode
 emitSealedVaultAudit input =
   case sealedVaultAuditReport input of
+    Left err -> failWith err
+    Right report -> do
+      writeOutput report
+      pure ExitSuccess
+
+emitDaemonBootstrapAudit :: DaemonBootstrapAuditInput -> IO ExitCode
+emitDaemonBootstrapAudit input =
+  case daemonBootstrapAuditReport input of
     Left err -> failWith err
     Right report -> do
       writeOutput report

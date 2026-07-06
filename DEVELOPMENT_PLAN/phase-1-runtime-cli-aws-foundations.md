@@ -2866,8 +2866,8 @@ decision 2026-06-19), replacing the host root-token direct Vault write for these
   `502`, and unconfigured gateway Vault auth is `503`.
 - A host CLI client write method (`Prodbox.Gateway.Client.writeOperatorSecret`) and the harness
   invoking it as simulated operator CLI calls (`writeOperatorSecretViaDaemonOrHost`, minting the JWT via
-  `kubectl create token prodbox-operator-write -n gateway`, falling back to the host root-token write
-  when the daemon path is unavailable so non-daemon contexts never regress).
+  `kubectl create token prodbox-operator-write -n gateway`; Sprint `4.42` later narrows the host
+  root-token fallback to the no-JWT/test-seam cases so daemon failure after JWT mint is authoritative).
 - Scope: only the secrets actually written to Vault flow through the daemon — the ACME EAB
   (`secret/acme/eab`) and the **minted** operational `aws.*` (`secret/gateway/gateway/aws`). The
   `vault_operator_password` (the unlock-bundle decryption password, needed BEFORE Vault is unsealed) and the
@@ -2885,7 +2885,8 @@ operational `aws.*` into Vault via the daemon NodePort path under the `prodbox-o
 - 🧪 Live-proof (non-blocking, Standard O): a live home run that confirms the daemon path is taken
   (no host-write fallback diagnostic) for the EAB + operational `aws.*`. The
   `prodbox-operator-write` Kubernetes ServiceAccount must exist in the `gateway` namespace for the
-  JWT mint to succeed; until then the harness falls back to the host root-token write.
+  JWT mint to succeed; until then the harness falls back to the host root-token write. After Sprint
+  `4.42`, a daemon rejection or transport failure after JWT mint is not bypassed by a host write.
 
 ## Sprint 1.45: Consolidate the gateway + workload images into one union runtime image ✅
 

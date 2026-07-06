@@ -554,13 +554,13 @@ Used by integration tests for observability and by `prodbox gateway status` CLI.
 
 `event_count` is the full unique-event cardinality of the local commit log. `event_hashes` is a
 bounded recent tail of that log (currently the 64 most recent event hashes) so `GET /v1/state`
-remains small enough for chart probes, `kubectl port-forward` backed validation, and
+remains small enough for chart probes, loopback-restricted NodePort validation, and
 `prodbox gateway status` on long-lived meshes.
 
 The `/v1/state` observability endpoint is an operator-facing HTTP surface on the in-pod REST
 port. It is separate from the peer-to-peer event-batch transport used for gateway mesh
 communication. The REST handler consumes the inbound HTTP request before closing the socket so the
-operator-facing response contract stays intact when queried through `kubectl port-forward`.
+operator-facing response contract stays intact when queried through the daemon NodePort.
 
 ### Removed Secret-Derivation Endpoints
 
@@ -624,11 +624,37 @@ write failure is `502`.
 The host side (`Prodbox.Gateway.Client.writeOperatorSecret`) mints the JWT with
 `kubectl create token prodbox-operator-write --namespace gateway` and posts the field map.
 `Prodbox.Aws.writeOperatorSecretViaDaemonOrHost` prefers this daemon path and falls back to the
-host root-token Vault write only when the daemon path is unavailable (no live cluster, no operator
-service-account token, or the unit/integration host-vault seam is active), so non-daemon contexts
-never regress. The `vault_operator_password` (needed before Vault is unsealed) and the ephemeral
-`aws_admin_for_test_simulation` credential (deliberately never stored in Vault) stay host-side —
-a daemon needing an already-unsealed Vault cannot bootstrap them.
+host root-token Vault write only when no operator service-account token can be minted yet or an
+explicit unit/integration host-vault seam is active. Once the operator JWT exists, a daemon
+rejection or transport failure is authoritative and does not bypass to a host root-token write.
+
+### Pre-Vault Bootstrap Endpoint (`POST /v1/bootstrap/vault/ensure`)
+
+The daemon owns a deliberately small pre-Vault REST surface for the root-cluster bootstrap path. It
+exists so the host binary uses the Kubernetes control plane only for initial substrate bootstrap
+and daemon deployment; once MinIO, Vault, and the daemon NodePort are up, further host requests go
+through the daemon service.
+
+The endpoint accepts one bounded request carrying the operator/test unlock-bundle password, never
+logs or echoes it, and performs the remaining steps in-cluster:
+
+- read the password-AEAD-sealed unlock bundle from MinIO through
+  `minio.prodbox.svc.cluster.local`;
+- initialize Vault if the retained Vault PV is empty, preserving init-once semantics;
+- submit Shamir unseal shares to Vault through the in-cluster Vault Service;
+- run the baseline Vault reconcile after Vault is unsealed.
+
+The daemon must not have standing authority to unseal Vault. It holds no persisted operator
+password, no persisted plaintext unseal shares, and no alternate secret store that can reconstruct
+the shares while Vault is sealed. A sealed Vault still bricks the cluster until fresh operator/test
+input arrives. The endpoint is reachable only through the loopback-restricted NodePort described in
+§12.1, with the firewall restriction treated as mandatory for this password-bearing route.
+
+Sprint `2.29` implements the pre-Vault bootstrap mode by decoding the daemon's non-secret boot/live
+fields without resolving Vault-backed event keys, AWS credentials, or MinIO credentials. The REST
+listener can therefore bind diagnostics and this endpoint before those Vault-resolved fields are
+available. Sprint `4.42` routes root Vault lifecycle through this daemon boundary; Sprint `7.30`
+adds the same daemon boundary for supported Pulumi/object-store paths.
 
 ### `GET /healthz`, `GET /readyz`, and `GET /metrics`
 
@@ -660,6 +686,12 @@ TLS material set, and the secret or config inputs required by the daemon at runt
 The chart's liveness and readiness probes should query the health endpoints over HTTP on the
 in-pod REST port; `/v1/state` remains the operator-facing state surface consumed by
 `prodbox gateway status`.
+
+For the bootstrap path, the same binary must also be able to start in a pre-Vault mode: it binds the
+REST listener, serves health/readiness plus `POST /v1/bootstrap/vault/ensure`, and reports
+Vault-dependent steady-state routes unavailable until Vault is initialized, unsealed, and
+reconciled. Once Vault is ready, the normal SecretRef/Vault Kubernetes-auth config path becomes
+available and the daemon transitions to the full gateway runtime.
 
 `prodbox gateway start --config <path>` is the Haskell daemon entrypoint and remains the in-pod
 startup path invoked by the gateway chart's container. `prodbox gateway status --config <path>`
@@ -708,6 +740,11 @@ traffic) and an additional NodePort Service that exposes the REST listener for h
 access. The NodePort is restricted to `127.0.0.1` on the operator host via a host
 iptables rule installed by `prodbox cluster reconcile` and removed by `prodbox cluster
 delete --yes`. External access (LAN, WAN) is dropped at the host firewall.
+
+The loopback restriction is a hard requirement for bootstrap endpoints. Password-bearing routes
+such as `POST /v1/bootstrap/vault/ensure` must refuse to be considered supported when the host
+firewall rule is absent or unverifiable; health and read-only status may still exist as
+diagnostics, but they do not weaken the bootstrap boundary.
 
 The host CLI calls the gateway via the native Haskell HTTP client in
 `Prodbox.Http.Client` and the typed gateway client in `Prodbox.Gateway.Client`. The

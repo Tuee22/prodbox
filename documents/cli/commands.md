@@ -92,6 +92,7 @@
 | `prodbox test integration charts-storage` | Run chart-storage integration tests |
 | `prodbox test integration charts-platform` | Run chart-platform integration tests |
 | `prodbox test integration resource-guardrails` | Run resource-guardrail integration tests |
+| `prodbox test integration daemon-bootstrap` | Run daemon-bootstrap transport integration tests |
 | `prodbox test integration pulsar-broker` | Run Pulsar broker transport integration tests |
 | `prodbox test integration charts-vscode` | Run vscode stack integration tests |
 | `prodbox test integration charts-api` | Run API stack integration tests |
@@ -121,7 +122,8 @@ The `prodbox vault` leaf commands are now in the generated registry above. `vaul
 wired — it probes the in-cluster Vault and reports initialized / sealed / unseal-progress, or that
 it is unreachable. The mutating subcommands (`init`, `unseal`, `seal`, `reconcile`,
 `rotate-unlock-bundle`, `rotate-transit-key`, `pki status`, `pki issue-test-cert`) are implemented
-through the Vault CLI handlers and authenticated Vault client/orchestration modules. The
+through the Vault CLI handlers and authenticated Vault client/orchestration modules. The target
+post-bootstrap implementation routes them through the loopback-restricted daemon NodePort. The
 [unlock bundle](../engineering/vault_doctrine.md#6-the-unlock-bundle) lives in the durable MinIO
 bucket (host disk holds no unseal material) and recovers a torn-down cluster's Vault,
 and a sealed Vault fails closed; the model these commands operate against is owned by

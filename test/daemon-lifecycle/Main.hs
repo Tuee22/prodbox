@@ -122,6 +122,17 @@ main = mainWithSuite "prodbox-daemon-lifecycle" $ do
           firstLine : _ -> assertStructuredLogLine firstLine
           [] -> expectationFailure "expected at least one daemon log line on stderr"
 
+    it "binds diagnostics in pre-Vault mode before SecretRef resolution succeeds" $
+      withGatewayDaemonWithConfig renderPreVaultConfig 5 $ \daemon -> do
+        waitForHttpStatus (daemonRestPort daemon) "/readyz" 200
+        readHttp (daemonRestPort daemon) "/healthz"
+          `shouldReturn` HttpResponse 200 "ok\n"
+        federationResponse <- readHttp (daemonRestPort daemon) "/v1/federation/children"
+        responseStatus federationResponse `shouldBe` 503
+        responseBody federationResponse `shouldContain` "gateway service-account token"
+        terminateGatewayDaemon daemon
+        waitForProcessExitSuccess daemon 10
+
   -- Sprint 2.21: the SIGHUP-based reload test was removed when SIGHUP was
   -- replaced by the file-watch worker. The file-watch reload behavior is
   -- inherently asynchronous (fsnotify's parent-directory watch races with
@@ -233,6 +244,14 @@ data HttpResponse = HttpResponse
 
 withGatewayDaemon :: Int -> (RunningGatewayDaemon -> IO a) -> IO a
 withGatewayDaemon drainDeadlineSeconds action =
+  withGatewayDaemonWithConfig renderConfig drainDeadlineSeconds action
+
+withGatewayDaemonWithConfig
+  :: (FilePath -> FilePath -> FilePath -> FilePath -> Int -> Maybe String -> String)
+  -> Int
+  -> (RunningGatewayDaemon -> IO a)
+  -> IO a
+withGatewayDaemonWithConfig renderConfigFn drainDeadlineSeconds action =
   withSystemTempDirectory "prodbox-gateway-daemon" $ \tmpDir -> do
     repoRoot <- getCurrentDirectory
     binary <- resolveProdboxBinary repoRoot
@@ -248,7 +267,9 @@ withGatewayDaemon drainDeadlineSeconds action =
     writeFile caPath "ca"
     writeFile ordersPath (renderOrders restPort peerPort)
     let writeConfig deadlineSeconds maybeLogLevel =
-          writeFile configPath (renderConfig certPath keyPath caPath ordersPath deadlineSeconds maybeLogLevel)
+          writeFile
+            configPath
+            (renderConfigFn certPath keyPath caPath ordersPath deadlineSeconds maybeLogLevel)
     writeConfig drainDeadlineSeconds Nothing
     bracket
       (startGatewayProcess binary tmpDir configPath restPort writeConfig)
@@ -604,6 +625,58 @@ renderConfig certPath keyPath caPath ordersPath drainDeadlineSeconds maybeLogLev
     , "        , minio_secret_key : < Vault : { mount : Text, path : Text, field : Text } | TransitKey : Text | Prompt : { name : Text, purpose : Text } | TestPlaintext : Text >"
     , "        }"
     , "  , minio_endpoint_url = None Text"
+    , "  }"
+    , ", live ="
+    , "  { heartbeat_interval_seconds = 0.2"
+    , "  , reconnect_interval_seconds = 0.2"
+    , "  , sync_interval_seconds = 0.2"
+    , "  , max_clock_skew_seconds = 10.0"
+    , "  , drain_deadline_seconds = Some " ++ show drainDeadlineSeconds
+    , "  , log_level = " ++ maybe "None Text" (\l -> "Some " ++ show l) maybeLogLevel
+    , "  }"
+    , "}"
+    ]
+
+renderPreVaultConfig
+  :: FilePath -> FilePath -> FilePath -> FilePath -> Int -> Maybe String -> String
+renderPreVaultConfig certPath keyPath caPath ordersPath drainDeadlineSeconds maybeLogLevel =
+  unlines
+    [ "{ schemaVersion = 1"
+    , ", vault ="
+    , "    Some"
+    , "      { address = \"http://127.0.0.1:1\""
+    , "      , auth_path = \"kubernetes\""
+    , "      , role = \"gateway-gateway\""
+    , "      , service_account_token_file = Some \"/definitely/missing/prodbox-token\""
+    , "      }"
+    , ", boot ="
+    , "  { node_id = \"node-a\""
+    , "  , cert_file = " ++ show certPath
+    , "  , key_file = " ++ show keyPath
+    , "  , ca_file = " ++ show caPath
+    , "  , orders_file = " ++ show ordersPath
+    , "  , event_keys ="
+    , "    [ { name = \"node-a\""
+    , "      , value ="
+    , "          < Vault : { mount : Text, path : Text, field : Text } | TransitKey : Text | Prompt : { name : Text, purpose : Text } | TestPlaintext : Text >.Vault"
+    , "            { mount = \"secret\", path = \"gateway/gateway/node-a/event-key\", field = \"key\" }"
+    , "      }"
+    , "    ]"
+    , "  , dns_write_gate ="
+    , "      None { zone_id : Text, fqdn : Text, ttl : Natural, aws_region : Text }"
+    , "  , aws_creds ="
+    , "      None"
+    , "        { access_key_id : < Vault : { mount : Text, path : Text, field : Text } | TransitKey : Text | Prompt : { name : Text, purpose : Text } | TestPlaintext : Text >"
+    , "        , secret_access_key : < Vault : { mount : Text, path : Text, field : Text } | TransitKey : Text | Prompt : { name : Text, purpose : Text } | TestPlaintext : Text >"
+    , "        , session_token : Optional < Vault : { mount : Text, path : Text, field : Text } | TransitKey : Text | Prompt : { name : Text, purpose : Text } | TestPlaintext : Text >"
+    , "        , region : Text"
+    , "        }"
+    , "  , minio_creds ="
+    , "      None"
+    , "        { minio_access_key : < Vault : { mount : Text, path : Text, field : Text } | TransitKey : Text | Prompt : { name : Text, purpose : Text } | TestPlaintext : Text >"
+    , "        , minio_secret_key : < Vault : { mount : Text, path : Text, field : Text } | TransitKey : Text | Prompt : { name : Text, purpose : Text } | TestPlaintext : Text >"
+    , "        }"
+    , "  , minio_endpoint_url = Some \"http://minio.prodbox.svc.cluster.local:9000\""
     , "  }"
     , ", live ="
     , "  { heartbeat_interval_seconds = 0.2"

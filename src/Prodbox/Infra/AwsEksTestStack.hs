@@ -53,22 +53,17 @@ import Prodbox.Http.Client
   )
 import Prodbox.Infra.AwsProviderCredentials qualified as AwsProviderCredentials
 import Prodbox.Infra.MinioBackend
-  ( bucketObjectCount
-  , ensureMinioBackendBucket
-  , pulumiBackendLoginTimeoutSeconds
+  ( pulumiBackendLoginTimeoutSeconds
   , pulumiBackendUrl
-  , readMinioCredentials
-  , withMinioPortForward
   )
 import Prodbox.Infra.StackOutputs qualified as StackOutputs
 import Prodbox.Lifecycle.K8sDrain qualified as K8sDrain
 import Prodbox.Lifecycle.LiveResidue qualified as LiveResidue
 import Prodbox.Lifecycle.ResidueStatus qualified as ResidueStatus
 import Prodbox.Pulumi.EncryptedBackend
-  ( LegacyPulumiBackend (..)
-  , PulumiStackRef (..)
+  ( PulumiStackRef (..)
   , renderEncryptedBackendError
-  , withMigratedDecryptedStackEnvironment
+  , withDecryptedStackEnvironment
   )
 import Prodbox.Result (Result (..))
 import Prodbox.Settings
@@ -489,11 +484,9 @@ pulumiProviderBaseEnv repoRoot = do
             )
         )
 
--- | Legacy raw MinIO backend environment used only for first-touch
--- checkpoint import/delete through 'LegacyPulumiBackend'. Supported
--- Pulumi actions receive 'pulumiProviderBaseEnv' and then have
--- @PULUMI_BACKEND_URL@ rewritten to a scratch @file://@ backend by
--- 'withMigratedDecryptedStackEnvironment'.
+-- | Legacy raw MinIO backend environment retained as an explicit migration
+-- helper. Supported per-run Pulumi actions use daemon-backed
+-- 'withDecryptedStackEnvironment' and never construct this environment.
 pulumiBackendBaseEnv :: Int -> String -> String -> IO [(String, String)]
 pulumiBackendBaseEnv localPort minioAccessKey minioSecretKey = do
   currentEnv <- getEnvironment
@@ -538,12 +531,9 @@ loadOperationalAwsCredentials =
 runEnsureAwsEksPulumiCycle
   :: FilePath
   -> AwsEksTestStackConfig
-  -> Int
-  -> String
-  -> String
   -> [(String, String)]
   -> IO (Either String ())
-runEnsureAwsEksPulumiCycle projectDir stackConfig localPort accessKey secretKey environment = do
+runEnsureAwsEksPulumiCycle projectDir stackConfig environment = do
   loginExit <- pulumiLogin projectDir environment
   case loginExit of
     ExitFailure _ -> pure (Left "pulumi login failed")
@@ -566,12 +556,8 @@ runEnsureAwsEksPulumiCycle projectDir stackConfig localPort accessKey secretKey 
                       case snapshotFromOutputs outputs of
                         Left err -> pure (Left err)
                         Right snapshot -> do
-                          objectCountResult <- bucketObjectCount localPort accessKey secretKey
-                          case objectCountResult of
-                            Left err -> pure (Left err)
-                            Right objectCount -> do
-                              writeOutput (renderAwsEksTestStackReport snapshot objectCount)
-                              pure (Right ())
+                          writeOutput (renderAwsEksTestStackReport snapshot 0)
+                          pure (Right ())
         PulumiStackMissing ->
           pure (Left "pulumi stack select reported a missing stack after --create")
         PulumiStackSelectFailed detail ->
@@ -1452,38 +1438,23 @@ ensureAwsEksTestStackResources repoRoot = do
     if not projectExists
       then failWith ("Pulumi AWS EKS test project missing: " ++ projectDir)
       else do
-        portForwardResult <- withMinioPortForward $ \localPort -> do
-          credsResult <- readMinioCredentials
-          case credsResult of
-            Left err -> pure (Left err)
-            Right (accessKey, secretKey) -> do
-              bucketResult <- ensureMinioBackendBucket localPort accessKey secretKey
-              case bucketResult of
-                Left err -> pure (Left err)
-                Right () -> do
-                  configResult <- resolveAwsEksTestStackConfig
-                  case configResult of
-                    Left err -> pure (Left err)
-                    Right stackConfig -> do
-                      providerEnvironmentResult <- pulumiProviderBaseEnv repoRoot
-                      case providerEnvironmentResult of
-                        Left err -> pure (Left err)
-                        Right providerEnvironment -> do
-                          legacyEnvironment <- pulumiBackendBaseEnv localPort accessKey secretKey
-                          backendResult <-
-                            withMigratedDecryptedStackEnvironment
-                              repoRoot
-                              awsEksTestPulumiStackRef
-                              (LegacyPulumiBackend projectDir legacyEnvironment (Text.pack awsEksTestStackName))
-                              providerEnvironment
-                              (runEnsureAwsEksPulumiCycle projectDir stackConfig localPort accessKey secretKey)
-                          pure $ case backendResult of
-                            Left err -> Left (renderEncryptedBackendError err)
-                            Right () -> Right ()
-        case portForwardResult of
+        configResult <- resolveAwsEksTestStackConfig
+        case configResult of
           Left err -> failWith err
-          Right (Left err) -> failWith err
-          Right (Right ()) -> pure ExitSuccess
+          Right stackConfig -> do
+            providerEnvironmentResult <- pulumiProviderBaseEnv repoRoot
+            case providerEnvironmentResult of
+              Left err -> failWith err
+              Right providerEnvironment -> do
+                backendResult <-
+                  withDecryptedStackEnvironment
+                    repoRoot
+                    awsEksTestPulumiStackRef
+                    providerEnvironment
+                    (runEnsureAwsEksPulumiCycle projectDir stackConfig)
+                case backendResult of
+                  Left err -> failWith (renderEncryptedBackendError err)
+                  Right () -> pure ExitSuccess
 
 destroyAwsEksTestStack :: FilePath -> Bool -> IO ExitCode
 destroyAwsEksTestStack repoRoot summary = do
@@ -1575,40 +1546,19 @@ destroyAwsEksTestStackStatusPresent :: FilePath -> Bool -> IO (Either String Str
 destroyAwsEksTestStackStatusPresent repoRoot summary = do
   currentSnapshot <- fetchAwsEksTestSnapshotFromBackend repoRoot
   let projectDir = awsEksTestPulumiProjectDir repoRoot
-  portForwardResult <- withMinioPortForward $ \localPort -> do
-    credsResult <- readMinioCredentials
-    case credsResult of
-      Left err -> pure (Left err)
-      Right (accessKey, secretKey) -> do
-        bucketResult <- ensureMinioBackendBucket localPort accessKey secretKey
-        case bucketResult of
-          Left err -> pure (Left err)
-          Right () -> do
-            providerEnvironmentResult <- pulumiProviderBaseEnv repoRoot
-            case providerEnvironmentResult of
-              Left err -> pure (Left err)
-              Right providerEnvironment -> do
-                legacyEnvironment <- pulumiBackendBaseEnv localPort accessKey secretKey
-                backendResult <-
-                  withMigratedDecryptedStackEnvironment
-                    repoRoot
-                    awsEksTestPulumiStackRef
-                    (LegacyPulumiBackend projectDir legacyEnvironment (Text.pack awsEksTestStackName))
-                    providerEnvironment
-                    (runDestroyAwsEksPulumiCycle repoRoot projectDir currentSnapshot summary)
-                pure $ case backendResult of
-                  Left err -> Left (renderEncryptedBackendError err)
-                  Right status -> Right status
-  case portForwardResult of
-    Left err ->
-      case currentSnapshot of
-        Nothing ->
-          pure (Right "no local Pulumi backend or saved residue snapshot; nothing to destroy")
-        Just _ ->
-          pure
-            (Left ("local MinIO backend unavailable while an AWS EKS test stack snapshot still exists: " ++ err))
-    Right (Left err) -> pure (Left err)
-    Right (Right status) -> pure (Right status)
+  providerEnvironmentResult <- pulumiProviderBaseEnv repoRoot
+  case providerEnvironmentResult of
+    Left err -> pure (Left err)
+    Right providerEnvironment -> do
+      backendResult <-
+        withDecryptedStackEnvironment
+          repoRoot
+          awsEksTestPulumiStackRef
+          providerEnvironment
+          (runDestroyAwsEksPulumiCycle repoRoot projectDir currentSnapshot summary)
+      pure $ case backendResult of
+        Left err -> Left (renderEncryptedBackendError err)
+        Right status -> Right status
 
 completeDestroy
   :: FilePath

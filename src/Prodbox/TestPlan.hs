@@ -41,6 +41,7 @@ data NativeValidation
   | ValidationGatewayPartition
   | ValidationChartsPlatform
   | ValidationResourceGuardrails
+  | ValidationDaemonBootstrap
   | ValidationPulsarBroker
   | ValidationChartsStorage
   | ValidationEksVolumeRebind
@@ -255,6 +256,12 @@ testExecutionPlan substrate scope =
             "integration-resource-guardrails"
             [ValidationResourceGuardrails]
             True
+        IntegrationDaemonBootstrap ->
+          nativeNamedSuite
+            "integration daemon-bootstrap"
+            "integration-daemon-bootstrap"
+            [ValidationDaemonBootstrap]
+            False
         IntegrationPulsarBroker ->
           nativeNamedSuite
             "integration pulsar-broker"
@@ -383,6 +390,7 @@ canonicalNativeValidations =
   , ValidationGatewayPartition
   , ValidationChartsPlatform
   , ValidationResourceGuardrails
+  , ValidationDaemonBootstrap
   , ValidationPulsarBroker
   , ValidationKeycloakInvite
   , ValidationChartsStorage
@@ -430,6 +438,9 @@ validationInitialPrerequisites validation =
     -- local cluster: cluster only, no AWS credentials.
     ValidationChartsPlatform -> clusterPrerequisites
     ValidationResourceGuardrails -> clusterPrerequisites
+    -- daemon-bootstrap is a code-owned transport oracle: live daemon and
+    -- object-store parity are separate substrate proof axes.
+    ValidationDaemonBootstrap -> []
     ValidationPulsarBroker -> clusterPrerequisites
     ValidationChartsStorage -> clusterPrerequisites
     ValidationEksVolumeRebind -> clusterPrerequisites
@@ -461,6 +472,7 @@ validationDeferredPrerequisites validation =
     ValidationGatewayPartition -> []
     ValidationChartsPlatform -> []
     ValidationResourceGuardrails -> []
+    ValidationDaemonBootstrap -> []
     ValidationPulsarBroker -> []
     ValidationChartsStorage -> []
     ValidationEksVolumeRebind -> []
@@ -575,6 +587,7 @@ nativeValidationId validation =
     ValidationGatewayPartition -> "gateway-partition"
     ValidationChartsPlatform -> "charts-platform"
     ValidationResourceGuardrails -> "resource-guardrails"
+    ValidationDaemonBootstrap -> "daemon-bootstrap"
     ValidationPulsarBroker -> "pulsar-broker"
     ValidationChartsStorage -> "charts-storage"
     ValidationEksVolumeRebind -> "eks-volume-rebind"

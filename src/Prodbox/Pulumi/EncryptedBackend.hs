@@ -39,53 +39,32 @@ import Data.ByteString (ByteString)
 import Data.ByteString qualified as BS
 import Data.ByteString.Char8 qualified as BS8
 import Data.Char (isSpace, toLower)
-import Data.Foldable (traverse_)
 import Data.List (isInfixOf)
-import Data.Map.Strict qualified as Map
 import Data.Text (Text)
 import Data.Text qualified as Text
-import Data.Text.Encoding qualified as TextEncoding
-import Prodbox.Config.Basics (UnencryptedBasics (..))
-import Prodbox.Crypto.Envelope (DekCipher)
-import Prodbox.Http.Client (renderHttpError)
+import Prodbox.Gateway.Client qualified as GatewayClient
+import Prodbox.Gateway.Types (PeerEndpoint)
 import Prodbox.Infra.MinioBackend
-  ( minioEndpointUrl
-  , pulumiBackendLoginTimeoutSeconds
-  , withMinioPortForward
+  ( pulumiBackendLoginTimeoutSeconds
   )
 import Prodbox.Minio.EncryptedObject
-  ( EncryptedObjectError (..)
-  , LogicalObject (LogicalPulumiStack)
-  , getLogical
+  ( LogicalObject (LogicalPulumiStack)
   , objectKeyForOpaqueId
   , opaqueObjectId
-  , putLogical
-  , renderEncryptedObjectError
   )
 import Prodbox.Minio.ObjectStore
   ( ObjectStoreConfig (..)
-  , defaultObjectStoreBucket
   , deleteObject
   )
 import Prodbox.Result (Result (..))
-import Prodbox.Settings (loadUnencryptedBasics)
 import Prodbox.Subprocess
   ( ProcessOutput (..)
   , Subprocess (..)
   , captureSubprocessResult
   )
-import Prodbox.Vault.Client
-  ( VaultAddress (..)
-  , VaultToken
-  , vaultKvReadV2
-  , vaultSealStatus
-  )
 import Prodbox.Vault.Gate
   ( VaultGateOutcome (..)
-  , vaultGateOutcome
   )
-import Prodbox.Vault.Host (loadReadyVaultRootToken)
-import Prodbox.Vault.TransitCipher (vaultTransitDekCipher)
 import System.Directory
   ( createDirectoryIfMissing
   , doesDirectoryExist
@@ -93,6 +72,7 @@ import System.Directory
   , getTemporaryDirectory
   , removeFile
   )
+import System.Environment (lookupEnv)
 import System.Exit (ExitCode (..))
 import System.FilePath
   ( takeDirectory
@@ -224,20 +204,9 @@ withDecryptedStack
   -> PulumiStackRef
   -> (PulumiScratch -> IO (Either String a))
   -> IO (Either EncryptedBackendError a)
-withDecryptedStack repoRoot stackRef action = do
-  materialInputResult <- resolvePulumiBackendMaterialInput repoRoot
-  case materialInputResult of
-    Left err -> pure (Left (EncryptedBackendLoadFailed err))
-    Right materialInput -> do
-      forwardResult <-
-        withMinioPortForward $ \localPort ->
-          withDecryptedStackWith
-            (productionHooks (materialFromInput materialInput localPort))
-            stackRef
-            action
-      pure $ case forwardResult of
-        Left err -> Left (EncryptedBackendLoadFailed ("failed to reach Pulumi object-store MinIO backend: " ++ err))
-        Right result -> result
+withDecryptedStack _repoRoot stackRef action = do
+  endpoint <- pulumiObjectGatewayEndpoint
+  withDecryptedStackWith (productionHooks endpoint) stackRef action
 
 withDecryptedStackEnvironment
   :: FilePath
@@ -266,20 +235,9 @@ withDecryptedStackMigrating
   -> LegacyPulumiBackend
   -> (PulumiScratch -> IO (Either String a))
   -> IO (Either EncryptedBackendError a)
-withDecryptedStackMigrating repoRoot stackRef legacy action = do
-  materialInputResult <- resolvePulumiBackendMaterialInput repoRoot
-  case materialInputResult of
-    Left err -> pure (Left (EncryptedBackendLoadFailed err))
-    Right materialInput -> do
-      forwardResult <-
-        withMinioPortForward $ \localPort ->
-          withDecryptedStackWith
-            (productionHooksWithLegacy legacy (materialFromInput materialInput localPort))
-            stackRef
-            action
-      pure $ case forwardResult of
-        Left err -> Left (EncryptedBackendLoadFailed ("failed to reach Pulumi object-store MinIO backend: " ++ err))
-        Right result -> result
+withDecryptedStackMigrating _repoRoot stackRef legacy action = do
+  endpoint <- pulumiObjectGatewayEndpoint
+  withDecryptedStackWith (productionHooksWithLegacy legacy endpoint) stackRef action
 
 withDecryptedStackWith
   :: EncryptedBackendHooks a
@@ -329,29 +287,14 @@ observeStackCheckpoint
   :: FilePath
   -> PulumiStackRef
   -> IO (Either EncryptedBackendError CheckpointObservability)
-observeStackCheckpoint repoRoot stackRef = do
-  materialInputResult <- resolvePulumiBackendMaterialInput repoRoot
-  case materialInputResult of
-    Left err -> pure (Left (EncryptedBackendLoadFailed err))
-    Right materialInput -> do
-      forwardResult <-
-        withMinioPortForward $ \localPort ->
-          observeStackCheckpointWith
-            (productionHooks (materialFromInput materialInput localPort))
-            stackRef
-      pure $ case forwardResult of
-        Left err ->
-          Left
-            ( EncryptedBackendLoadFailed
-                ("failed to reach Pulumi object-store MinIO backend: " ++ err)
-            )
-        Right result -> result
+observeStackCheckpoint _repoRoot stackRef = do
+  endpoint <- pulumiObjectGatewayEndpoint
+  observeStackCheckpointWith (productionHooks endpoint) stackRef
 
 -- | Sprint 7.22: delete one per-run stack's encrypted Model-B checkpoint
--- object from the object-store. Resolves the same Vault-backed material as
--- 'observeStackCheckpoint' (so the Vault gate is enforced via
--- 'resolvePulumiBackendMaterialInput') and reaches MinIO through the shared
--- port-forward, then removes the opaque object via 'deleteLogicalPulumiStackWith'.
+-- object from the object-store through the daemon object-store API. The daemon
+-- resolves Vault material with Kubernetes auth and reaches MinIO in-cluster, so
+-- the host does not open a MinIO port-forward on the supported prune path.
 -- This is the prune primitive behind
 -- @prodbox aws stack \<stack> prune-corrupt-checkpoint@; the caller
 -- ('Prodbox.Lifecycle.LiveResidue.pruneCorruptPerRunCheckpoint') first
@@ -362,27 +305,12 @@ pruneLogicalPulumiStack
   :: FilePath
   -> PulumiStackRef
   -> IO (Either EncryptedBackendError ())
-pruneLogicalPulumiStack repoRoot stackRef = do
-  materialInputResult <- resolvePulumiBackendMaterialInput repoRoot
-  case materialInputResult of
-    Left err -> pure (Left (EncryptedBackendLoadFailed err))
-    Right materialInput -> do
-      forwardResult <-
-        withMinioPortForward $ \localPort -> do
-          let material = materialFromInput materialInput localPort
-          deleteResult <-
-            deleteLogicalPulumiStackWith
-              (materialObjectStore material)
-              (materialHmacKey material)
-              stackRef
-          pure (mapLeft EncryptedBackendDeleteFailed deleteResult)
-      pure $ case forwardResult of
-        Left err ->
-          Left
-            ( EncryptedBackendDeleteFailed
-                ("failed to reach Pulumi object-store MinIO backend: " ++ err)
-            )
-        Right result -> result
+pruneLogicalPulumiStack _repoRoot stackRef = do
+  endpoint <- pulumiObjectGatewayEndpoint
+  deleteResult <- GatewayClient.deletePulumiObject endpoint (pulumiStackName stackRef)
+  pure $ case deleteResult of
+    Left err -> Left (EncryptedBackendDeleteFailed (GatewayClient.renderGatewayError err))
+    Right () -> Right ()
 
 -- | Hooks-driven read-only observability query (testable seam). Runs the
 -- Vault gate, loads the encrypted-or-legacy checkpoint bytes, and applies
@@ -561,56 +489,28 @@ deleteLogicalPulumiStackWith
 deleteLogicalPulumiStackWith config hmacKey stackRef =
   deleteObject config (logicalPulumiObjectKey hmacKey stackRef)
 
-data PulumiBackendMaterialInput = PulumiBackendMaterialInput
-  { materialInputAccessKey :: Text
-  , materialInputSecretKey :: Text
-  , materialInputCipher :: DekCipher
-  , materialInputHmacKey :: ByteString
-  , materialInputClusterId :: Text
-  }
-
-data PulumiBackendMaterial = PulumiBackendMaterial
-  { materialObjectStore :: ObjectStoreConfig
-  , materialCipher :: DekCipher
-  , materialHmacKey :: ByteString
-  , materialClusterId :: Text
-  }
-
-productionHooks :: PulumiBackendMaterial -> EncryptedBackendHooks a
-productionHooks material =
+productionHooks :: PeerEndpoint -> EncryptedBackendHooks a
+productionHooks endpoint =
   EncryptedBackendHooks
     { encryptedBackendGate = pure VaultGateProceed
-    , encryptedBackendLoad = \stackRef -> do
-        result <-
-          getLogical
-            (materialObjectStore material)
-            (materialCipher material)
-            (materialHmacKey material)
-            (materialClusterId material)
-            (logicalPulumiStack stackRef)
-        pure $ case result of
-          Left (EncryptedObjectMissing _) -> Right Nothing
-          Left err -> Left (renderEncryptedObjectError err)
-          Right bytes -> Right (Just bytes)
+    , encryptedBackendLoad = \stackRef ->
+        mapLeft GatewayClient.renderGatewayError
+          <$> GatewayClient.getPulumiObject endpoint (pulumiStackName stackRef)
     , encryptedBackendLoadLegacy = \_ -> pure (Right Nothing)
     , encryptedBackendStore = \stackRef bytes ->
-        mapLeft renderEncryptedObjectError
-          <$> putLogical
-            (materialObjectStore material)
-            (materialCipher material)
-            (materialHmacKey material)
-            (materialClusterId material)
-            (logicalPulumiStack stackRef)
-            bytes
+        mapLeft GatewayClient.renderGatewayError
+          <$> GatewayClient.putPulumiObject endpoint (pulumiStackName stackRef) bytes
     , encryptedBackendDelete =
-        deleteLogicalPulumiStackWith (materialObjectStore material) (materialHmacKey material)
+        \stackRef ->
+          mapLeft GatewayClient.renderGatewayError
+            <$> GatewayClient.deletePulumiObject endpoint (pulumiStackName stackRef)
     , encryptedBackendDeleteLegacy = \_ -> pure (Right ())
     , encryptedBackendWithScratch = withRamScratch
     }
 
-productionHooksWithLegacy :: LegacyPulumiBackend -> PulumiBackendMaterial -> EncryptedBackendHooks a
-productionHooksWithLegacy legacy material =
-  (productionHooks material)
+productionHooksWithLegacy :: LegacyPulumiBackend -> PeerEndpoint -> EncryptedBackendHooks a
+productionHooksWithLegacy legacy endpoint =
+  (productionHooks endpoint)
     { encryptedBackendLoadLegacy = \_ -> exportLegacyPulumiCheckpoint legacy
     , encryptedBackendDeleteLegacy = \_ -> removeLegacyPulumiStack legacy
     }
@@ -784,72 +684,24 @@ removeCheckpointTemp (path, handle) = do
   _ <- try (removeFile path) :: IO (Either IOException ())
   pure ()
 
-materialFromInput :: PulumiBackendMaterialInput -> Int -> PulumiBackendMaterial
-materialFromInput input localPort =
-  PulumiBackendMaterial
-    { materialObjectStore =
-        ObjectStoreConfig
-          { objectStoreEndpoint = minioEndpointUrl localPort
-          , objectStoreBucket = defaultObjectStoreBucket
-          , objectStoreAccessKey = Text.unpack (materialInputAccessKey input)
-          , objectStoreSecretKey = Text.unpack (materialInputSecretKey input)
-          }
-    , materialCipher = materialInputCipher input
-    , materialHmacKey = materialInputHmacKey input
-    , materialClusterId = materialInputClusterId input
-    }
+pulumiObjectGatewayEndpoint :: IO PeerEndpoint
+pulumiObjectGatewayEndpoint = do
+  override <- lookupEnv "PRODBOX_TEST_GATEWAY_NODEPORT"
+  pure
+    ( GatewayClient.hostLoopbackGatewayEndpoint
+        (maybe defaultPulumiGatewayNodePort parseGatewayNodePort override)
+    )
 
-resolvePulumiBackendMaterialInput :: FilePath -> IO (Either String PulumiBackendMaterialInput)
-resolvePulumiBackendMaterialInput repoRoot = do
-  basicsResult <- loadUnencryptedBasics repoRoot
-  case basicsResult of
-    Left err -> pure (Left err)
-    Right basics -> do
-      let address = VaultAddress (basicsVaultAddress basics)
-      gateResult <- vaultGateOutcome <$> vaultSealStatus address
-      case gateResult of
-        VaultGateRefuse message -> pure (Left message)
-        VaultGateProceed -> do
-          tokenResult <- loadReadyVaultRootToken repoRoot address
-          case tokenResult of
-            Left err -> pure (Left err)
-            Right token -> resolveInputWithToken basics address token
+-- Kept local to avoid importing Prodbox.Host into the Pulumi layer; Host depends
+-- on PublicEdge -> LiveResidue -> StackOutputs -> EncryptedBackend.
+defaultPulumiGatewayNodePort :: Int
+defaultPulumiGatewayNodePort = 30443
 
-resolveInputWithToken
-  :: UnencryptedBasics -> VaultAddress -> VaultToken -> IO (Either String PulumiBackendMaterialInput)
-resolveInputWithToken basics address token = do
-  minioResult <- readVaultFields address token "secret/minio/root" ["rootUser", "rootPassword"]
-  hmacResult <- readVaultFields address token "secret/object-store/hmac" ["key"]
-  case (minioResult, hmacResult) of
-    (Left err, _) -> pure (Left err)
-    (_, Left err) -> pure (Left err)
-    (Right minioFields, Right hmacFields) ->
-      pure
-        ( Right
-            PulumiBackendMaterialInput
-              { materialInputAccessKey = Map.findWithDefault "" "rootUser" minioFields
-              , materialInputSecretKey = Map.findWithDefault "" "rootPassword" minioFields
-              , materialInputCipher = vaultTransitDekCipher address token "prodbox-pulumi-state"
-              , materialInputHmacKey = TextEncoding.encodeUtf8 (Map.findWithDefault "" "key" hmacFields)
-              , materialInputClusterId = basicsClusterId basics
-              }
-        )
-
-readVaultFields
-  :: VaultAddress -> VaultToken -> Text -> [Text] -> IO (Either String (Map.Map Text Text))
-readVaultFields address token path fields = do
-  let kvPath = maybe path id (Text.stripPrefix "secret/" path)
-  result <- vaultKvReadV2 address token "secret" kvPath
-  pure $ case result of
-    Left err -> Left ("failed to read " ++ Text.unpack path ++ " from Vault: " ++ renderHttpError err)
-    Right values -> do
-      traverse_ (requireField values) fields
-      Right values
- where
-  requireField values field =
-    case Map.lookup field values of
-      Just value | not (Text.null (Text.strip value)) -> Right ()
-      _ -> Left ("Vault path " ++ Text.unpack path ++ " is missing field " ++ Text.unpack field)
+parseGatewayNodePort :: String -> Int
+parseGatewayNodePort raw =
+  case reads raw of
+    [(port, "")] | port > 0 -> port
+    _ -> defaultPulumiGatewayNodePort
 
 withRamScratch
   :: PulumiStackRef

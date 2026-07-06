@@ -64,6 +64,8 @@ allocating or destroying any real resource.
 Supported isolation patterns include:
 
 - fake-tool built-frontend proof in `test/integration/CliSuite.hs`
+- fake-trace built-frontend proof for code-owned transport oracles such as `daemon-bootstrap`,
+  where live daemon/AWS parity is tracked as a non-blocking substrate proof axis
 - repository-local config proof in `test/integration/EnvSuite.hs`
 - ephemeral AWS hosted zones or stacks created and destroyed by the named validation flow
 - aggregate runtime repair through the public `prodbox` surface after destructive integration work

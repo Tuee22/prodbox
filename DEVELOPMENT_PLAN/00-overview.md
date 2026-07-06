@@ -78,7 +78,11 @@ Build a clean-room Haskell `prodbox` repository with:
     commit-log replication, runtime claim/yield emission under the `CanWriteDns` gate,
     operator-verifiable bounded-clock-skew enforcement through the supported-host NTP gate and
     `/v1/state` skew reporting, and atomic Orders-promotion coordination keyed off the monotonic
-    `orders_version_utc` field.
+    `orders_version_utc` field. The same daemon is the post-bootstrap host↔cluster control boundary:
+    after the host has deployed the cluster services and the loopback-restricted daemon NodePort,
+    root Vault lifecycle requests go through the daemon rather than direct host Vault/MinIO
+    transports; Sprint `7.30` finishes the same boundary for object-store-backed Pulumi/residue
+    operations.
 15. One self-managed public-edge doctrine where MetalLB exposes Envoy Gateway, Kubernetes Gateway
     API owns Layer 7 routes, cert-manager owns listener TLS through one ZeroSSL ACME
     `ClusterIssuer` whose issued certificate is a `LongLived`, registry-managed resource retained
@@ -190,6 +194,23 @@ Build a clean-room Haskell `prodbox` repository with:
 > container has cpu/memory/ephemeral-storage requests and limits, root chart namespace
 > `ResourceQuota`/`LimitRange` objects match the resource plan, and over-budget configs fail before
 > mutation. The optional live stress proof remains a non-blocking Standard O live-proof axis.
+
+> **Daemon-mediated post-bootstrap boundary (2026-07-05).** Phases `2`, `4`, `5`, and `7` have reclosed on
+> their owned surfaces. Phase `2` landed Sprint `2.29`: the daemon starts in a pre-Vault mode, binds diagnostics, and exposes
+> `POST /v1/bootstrap/vault/ensure` with bounded redacted request parsing, mandatory loopback-proof
+> input, in-cluster MinIO/Vault Service access, init/unseal/reconcile orchestration, no standing
+> unseal authority, and a host-side `Prodbox.Gateway.Client.ensureVaultBootstrap` call. Phase `4`
+> landed Sprint `4.42`: `cluster reconcile` deploys the pre-Vault gateway daemon before root Vault
+> bootstrap, `prodbox vault ...` lifecycle leaves prefer the daemon NodePort, and daemon-side Vault
+> errors do not fall back to direct host Vault/MinIO transports. Phase `5` landed Sprint `5.14`:
+> `daemon-bootstrap` is a named canonical validation whose transport oracle requires daemon
+> bootstrap/lifecycle routes, rejects host MinIO port-forward / direct host Vault NodePort /
+> host-root-token fallback traces, and checks redaction. Phase `7` landed Sprint `7.30`: Pulumi
+> encrypted-backend hydration/store, per-run residue, stack-output reads, and checkpoint prune
+> deletes route through the daemon object-store API instead of host MinIO port-forwarding. Existing
+> direct host transports are
+> tracked only as Pending Removal rows in
+> [legacy-tracking-for-deletion.md](legacy-tracking-for-deletion.md).
 
 > **Unified block storage across substrates (2026-07-02).** EKS moves off dynamic `gp2` to
 > **pre-created EBS volumes lifted in as static `Retain` PVs** (CSI `volumeHandle`, AZ-pinned),
@@ -458,8 +479,8 @@ their own surfaces.** The config model is named explicitly as three tiers, with
 [config_doctrine.md §0](../documents/engineering/config_doctrine.md#0-three-tier-config-model) as the
 single canonical home: **Tier 0** the non-secret binary-context `prodbox.dhall` (shaped to align with
 hostbootstrap's binary-context contract, with a derived `prodbox-basics.json` sealed-Vault bootstrap
-floor); **Tier 1** the password-gated Vault unlock material relocated to the durable MinIO bucket as a
-password-AEAD object read via a password-derived bootstrap MinIO credential; and **Tier 2** the
+   floor); **Tier 1** the password-gated Vault unlock material relocated to the durable MinIO bucket as a
+   password-AEAD object read with the static bootstrap MinIO credential; and **Tier 2** the
 opaque-named Vault-Transit operational secrets in the same bucket. Phase `1` reopened and later
 reclosed with Sprints `1.39`/`1.40` for Tier 0; Phase `7` reopened and later reclosed with Sprint
 `7.19` for Tier 1 and Sprint `7.20` for IAM credential-lifecycle doctrine plus the teardown-
@@ -1046,9 +1067,9 @@ than restated here as a fresh rerun log.
   in-cluster on a durable `.data/vault/vault/0` PV alongside MinIO's PV (Sprint `3.17`
   code-owned foundation), and the `prodbox vault status` / `init` / `unseal` / `seal` / `reconcile` /
   `rotate-unlock-bundle` / `rotate-transit-key <key>` / `pki status` / `pki issue-test-cert`
-  command group is on the public CLI surface (Sprint `1.36`, with the encrypted unlock bundle at
-  `.data/prodbox/vault-unlock-bundle.age`; the base reconcile plan now covers mounts, Kubernetes
-  auth, policies, roles, and Transit keys, and all `vault` leaves have native handlers). Sprint
+  command group is on the public CLI surface (Sprint `1.36`, with the encrypted unlock bundle now
+  MinIO-only under Sprint `7.25`; the base reconcile plan covers mounts, Kubernetes auth, policies,
+  roles, and Transit keys, and all `vault` leaves have native handlers). Sprint
   `4.29` folds root/local Vault deploy, init-if-empty, unseal, and policy reconcile into
   `cluster reconcile` and preserves the durable Vault PV on delete; Sprint `4.32` adds the child
   Transit-seal lifecycle branch and parent-readiness fail-closed cascade. Sprint `5.8` has landed

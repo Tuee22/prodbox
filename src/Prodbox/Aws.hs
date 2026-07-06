@@ -3547,10 +3547,11 @@ writeOperationalAwsVaultCredentials repoRoot credentials = do
 -- loopback-restricted NodePort, authenticated by an operator-injected
 -- Kubernetes JWT that the daemon exchanges for a Vault token under the narrow
 -- @prodbox-operator-write@ role (operator decision 2026-06-19). The host falls
--- back to its own root-token Vault write only when the daemon path is
--- unavailable — no live cluster, no operator service-account token, or the
--- unit/integration host-vault seam is active — so non-daemon contexts never
--- regress. Scope is exactly the two host-minted operator secrets: the ACME EAB
+-- back to its own root-token Vault write only when no operator service-account
+-- token can be minted yet, or when the unit/integration host-vault seam is
+-- active. Once the operator JWT exists, a daemon rejection or transport failure
+-- is authoritative and does not bypass to a host root-token write. Scope is
+-- exactly the two host-minted operator secrets: the ACME EAB
 -- (@secret/acme/eab@) and the minted operational @aws.*@
 -- (@secret/gateway/gateway/aws@).
 writeOperatorSecretViaDaemonOrHost
@@ -3562,9 +3563,9 @@ writeOperatorSecretViaDaemonOrHost repoRoot logical fields = do
     Nothing -> writeHostVaultKvObject repoRoot "secret" logical fields
 
 -- | Try the daemon-mediated operator write. Returns @Nothing@ to signal "fall
--- back to the host write" (test seam active, no operator JWT mintable, or the
--- daemon was unreachable); @Just@ when the daemon definitively accepted or
--- rejected the write.
+-- back to the host write" only when the explicit host-Vault test seam is active
+-- or no operator JWT can be minted yet; @Just@ when the daemon definitively
+-- accepted or rejected the write.
 attemptOperatorDaemonWrite
   :: FilePath -> Text -> Map.Map Text Text -> IO (Maybe (Either String ()))
 attemptOperatorDaemonWrite repoRoot logical fields = do
@@ -3588,15 +3589,17 @@ attemptOperatorDaemonWrite repoRoot logical fields = do
                     ++ " written via the gateway daemon (prodbox-operator-write role)."
                 )
               pure (Just (Right ()))
-            Left err -> do
-              writeDiagnosticLine
-                ( "gateway-daemon operator write for secret/"
-                    ++ Text.unpack logical
-                    ++ " unavailable ("
-                    ++ GatewayClient.renderGatewayError err
-                    ++ "); falling back to the host Vault write."
+            Left err ->
+              pure
+                ( Just
+                    ( Left
+                        ( "gateway-daemon operator write for secret/"
+                            ++ Text.unpack logical
+                            ++ " failed: "
+                            ++ GatewayClient.renderGatewayError err
+                        )
+                    )
                 )
-              pure Nothing
  where
   seamActive = maybe False (not . null)
 

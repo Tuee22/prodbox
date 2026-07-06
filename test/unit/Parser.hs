@@ -280,6 +280,7 @@ commandPathOfRequest request =
                     IntegrationChartsStorage -> ["charts-storage"]
                     IntegrationChartsPlatform -> ["charts-platform"]
                     IntegrationResourceGuardrails -> ["resource-guardrails"]
+                    IntegrationDaemonBootstrap -> ["daemon-bootstrap"]
                     IntegrationPulsarBroker -> ["pulsar-broker"]
                     IntegrationChartsVscode -> ["charts-vscode"]
                     IntegrationChartsApi -> ["charts-api"]

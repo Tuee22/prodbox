@@ -107,10 +107,7 @@ import Prodbox.CLI.Output
   , writeOutputLine
   )
 import Prodbox.CLI.Vault
-  ( VaultReconcileCommandResult (..)
-  , runVaultInit
-  , runVaultReconcileCommandDetailed
-  , runVaultUnseal
+  ( runVaultBootstrapViaDaemon
   )
 import Prodbox.Capacity.Config qualified as Capacity
 import Prodbox.Cluster.Federation
@@ -150,6 +147,7 @@ import Prodbox.Dns (fetchPublicIp)
 import Prodbox.Dns qualified as Dns
 import Prodbox.DockerConfig (withEphemeralDockerConfig)
 import Prodbox.Error (fatalError)
+import Prodbox.Gateway.Client qualified as GatewayClient
 import Prodbox.Host
   ( LanAddressing (..)
   , defaultGatewayNodePort
@@ -1208,17 +1206,16 @@ renderNativeInstallPlan repoRoot settings machineId prodboxId labelValue withEdg
       , "STEP=delete_non_manual_storage_classes"
       , "STEP=ensure_prodbox_identity_config_map"
       , "STEP=ensure_retained_local_storage"
-      , "STEP=ensure_vault_runtime"
-      , "STEP=ensure_federated_vault_lifecycle"
       , "STEP=ensure_minio_runtime_bootstrap"
-      , "STEP=restart_minio_if_vault_root_changed"
-      , "STEP=load_in_force_settings_after_vault_and_minio"
+      , "STEP=ensure_vault_runtime"
       , "STEP=ensure_harbor_registry_storage_backend"
       , "STEP=ensure_harbor_registry_runtime"
       , "STEP=mirror_cluster_images_once"
       , "STEP=ensure_gateway_images"
-      , "STEP=ensure_public_edge_workload_image"
       , "STEP=ensure_rke2_registries_config"
+      , "STEP=ensure_gateway_chart_ready_pre_vault"
+      , "STEP=ensure_federated_vault_lifecycle"
+      , "STEP=load_in_force_settings_after_vault_and_minio"
       , "STEP=ensure_cluster_platform_runtime"
       , "STEP=ensure_minio_runtime_steady_state"
       , "STEP=ensure_gateway_minio_bootstrap"
@@ -1299,6 +1296,12 @@ applyNativeInstallPlan repoRoot bootstrapSettings withEdge (machineId, prodboxId
         -- MinIO (disk-free).
         ensureMinioRuntime repoRoot SubstrateHomeLocal MinioBootstrapPublic
       , ensureVaultRuntime repoRoot
+      , ensureHarborRegistryStorageBackend repoRoot
+      , ensureHarborRegistryRuntime repoRoot SubstrateHomeLocal
+      , mirrorClusterImagesOnce repoRoot
+      , ensureRuntimeImage repoRoot prodboxId
+      , ensureRke2RegistriesConfig repoRoot
+      , ensureGatewayChartReady repoRoot bootstrapSettings SubstrateHomeLocal
       ]
   case bootstrapExit of
     ExitFailure _ -> pure bootstrapExit
@@ -1315,12 +1318,7 @@ applyNativeInstallPlan repoRoot bootstrapSettings withEdge (machineId, prodboxId
             Left err -> failWith err
             Right settings ->
               runSequentially
-                ( [ ensureHarborRegistryStorageBackend repoRoot
-                  , ensureHarborRegistryRuntime repoRoot SubstrateHomeLocal
-                  , mirrorClusterImagesOnce repoRoot
-                  , ensureRuntimeImage repoRoot prodboxId
-                  , ensureRke2RegistriesConfig repoRoot
-                  , ensureClusterPlatformRuntime repoRoot settings prodboxId labelValue
+                ( [ ensureClusterPlatformRuntime repoRoot settings prodboxId labelValue
                   , ensureMinioRuntime repoRoot SubstrateHomeLocal MinioSteadyStateHarbor
                   , ensureGatewayMinioBootstrap repoRoot
                   , ensureGatewayChartReady repoRoot settings SubstrateHomeLocal
@@ -2395,54 +2393,44 @@ ensureRootVaultLifecycleDetailed repoRoot = do
     Just other ->
       lifecycleFailure <$> failWith ("invalid PRODBOX_TEST_ROOT_VAULT_LIFECYCLE=" ++ other)
     Nothing -> do
-      waitExit <- waitForVaultApiReadiness hostVaultAddress
+      waitExit <- waitForGatewayDaemonReadiness
       case waitExit of
         ExitFailure _ -> pure (lifecycleFailure waitExit)
         ExitSuccess -> continue
  where
   continue = do
-    initExit <- runVaultInit repoRoot hostVaultAddress
-    case initExit of
-      ExitFailure _ -> pure (lifecycleFailure initExit)
+    bootstrapExit <- runVaultBootstrapViaDaemon repoRoot
+    case bootstrapExit of
+      ExitFailure _ -> pure (lifecycleFailure bootstrapExit)
       ExitSuccess -> do
-        unsealExit <- runVaultUnseal repoRoot hostVaultAddress
-        case unsealExit of
-          ExitFailure _ -> pure (lifecycleFailure unsealExit)
-          ExitSuccess -> do
-            -- Sprint 1.39 (self-heal): @vault init@ writes the Tier-0 basics
-            -- floor only at first-ever bring-up; on a rebuild against a
-            -- durable Vault PV it early-returns and the floor is never
-            -- rewritten. Guarantee it idempotently here — AFTER init/unseal
-            -- succeed and BEFORE reconcile — so the per-run Pulumi destroy and
-            -- the other `loadUnencryptedBasics` consumers always find it.
-            floorResult <- ensureBasicsFloor repoRoot (unVaultAddress hostVaultAddress)
-            case floorResult of
-              Left err -> lifecycleFailure <$> failWith err
-              Right () -> do
-                reconcileResult <- runVaultReconcileCommandDetailed repoRoot hostVaultAddress
-                pure
-                  VaultLifecycleResult
-                    { vaultLifecycleExitCode = vaultReconcileCommandExitCode reconcileResult
-                    }
+        -- Sprint 1.39 (self-heal): the daemon-mediated bootstrap initializes,
+        -- unseals, and reconciles Vault inside the cluster. The host still owns
+        -- the non-secret Tier-0 floor beside the binary, so guarantee it after
+        -- the daemon reports Vault ready.
+        floorResult <- ensureBasicsFloor repoRoot (unVaultAddress hostVaultAddress)
+        case floorResult of
+          Left err -> lifecycleFailure <$> failWith err
+          Right () -> pure (VaultLifecycleResult ExitSuccess)
 
-waitForVaultApiReadiness :: VaultAddress -> IO ExitCode
-waitForVaultApiReadiness address =
-  go vaultApiReadinessAttempts "Vault API not yet checked"
+waitForGatewayDaemonReadiness :: IO ExitCode
+waitForGatewayDaemonReadiness =
+  go vaultApiReadinessAttempts "Gateway daemon not yet checked"
  where
   go :: Int -> String -> IO ExitCode
   go attemptsRemaining lastDetail
     | attemptsRemaining <= 0 =
         failWith
-          ( "Vault API did not become reachable before lifecycle reconciliation: "
+          ( "Gateway daemon did not become reachable before Vault lifecycle reconciliation: "
               ++ lastDetail
           )
     | otherwise = do
-        statusResult <- vaultSealStatus address
+        statusResult <-
+          GatewayClient.queryState (GatewayClient.hostLoopbackGatewayEndpoint defaultGatewayNodePort)
         case statusResult of
           Right _ -> pure ExitSuccess
           Left err -> do
             threadDelay vaultApiReadinessDelayMicroseconds
-            go (attemptsRemaining - 1) (renderHttpError err)
+            go (attemptsRemaining - 1) (GatewayClient.renderGatewayError err)
 
 ensureFederatedVaultLifecycleDetailed :: FilePath -> IO VaultLifecycleResult
 ensureFederatedVaultLifecycleDetailed repoRoot = do
@@ -3074,7 +3062,7 @@ gatewayMinioPolicyJson =
     , "  \"Statement\": ["
     , "    {"
     , "      \"Effect\": \"Allow\","
-    , "      \"Action\": [\"s3:GetObject\", \"s3:PutObject\"],"
+    , "      \"Action\": [\"s3:GetObject\", \"s3:PutObject\", \"s3:DeleteObject\"],"
     , "      \"Resource\": [\"arn:aws:s3:::" ++ gatewayMinioBucket ++ "/*\"]"
     , "    },"
     , "    {"
@@ -3874,26 +3862,8 @@ operationalAwsCredentialAbsentError err =
 
 ensureGatewayChartReadyForSubstrate
   :: FilePath -> ValidatedSettings -> Substrate -> IO ExitCode
-ensureGatewayChartReadyForSubstrate repoRoot settings substrate = do
-  credentialGate <- resolveOperationalAwsCredentialGate repoRoot settings
-  case credentialGate of
-    -- The gateway chart needs resolved operational AWS credentials for its
-    -- Route 53 DNS write gate. A bare @cluster reconcile@ is allowed to stand
-    -- up the local substrate before @aws.*@ has been materialized into Vault,
-    -- so skip the gateway daemon rather than deploy pods that crash on a
-    -- missing SecretRef.
-    OperationalAwsCredentialsAbsent _ -> do
-      writeOutputLine
-        ( "Skipping gateway daemon deploy: operational aws.* is empty or"
-            ++ " missing in Vault (bare local cluster reconcile). The gateway"
-            ++ " chart needs Route 53 credentials; populate aws.* via the test harness or"
-            ++ " `prodbox aws setup` to bring the gateway up."
-        )
-      pure ExitSuccess
-    OperationalAwsCredentialsInvalid err ->
-      failWith ("load operational AWS credentials from Vault: " ++ err)
-    OperationalAwsCredentialsReady ->
-      ensureGatewayChartReadyCredentialed repoRoot settings substrate
+ensureGatewayChartReadyForSubstrate repoRoot settings substrate =
+  ensureGatewayChartReadyCredentialed repoRoot settings substrate
 
 ensureGatewayChartReadyCredentialed
   :: FilePath -> ValidatedSettings -> Substrate -> IO ExitCode

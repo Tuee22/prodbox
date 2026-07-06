@@ -538,6 +538,7 @@ testScopeForTopologySuite suiteName =
     "charts-storage" -> Right (TestIntegration IntegrationChartsStorage)
     "charts-platform" -> Right (TestIntegration IntegrationChartsPlatform)
     "resource-guardrails" -> Right (TestIntegration IntegrationResourceGuardrails)
+    "daemon-bootstrap" -> Right (TestIntegration IntegrationDaemonBootstrap)
     "pulsar-broker" -> Right (TestIntegration IntegrationPulsarBroker)
     "charts-vscode" -> Right (TestIntegration IntegrationChartsVscode)
     "charts-api" -> Right (TestIntegration IntegrationChartsApi)

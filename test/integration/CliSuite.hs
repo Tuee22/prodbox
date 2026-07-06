@@ -195,6 +195,65 @@ integrationCliSuite = do
             requestLine <- takeMVar requestRef
             requestLine `shouldContain` "GET /v1/state"
 
+    it "Sprint 4.42: vault status prefers the daemon NodePort over direct host Vault seams" $
+      withSystemTempDirectory "prodbox-hs-cli" $ \tmpDir ->
+        withFakeGatewayDaemonServer
+          [ ("/v1/state", 200, gatewayStateResponseJson)
+          ,
+            ( "/v1/bootstrap/vault/status"
+            , 200
+            , "{\"initialized\":true,\"sealed\":false,\"t\":3,\"n\":5,\"progress\":0}"
+            )
+          ]
+          $ \gatewayPort requestsRef -> do
+            binary <- resolveBinaryPath >>= \b -> installOperatorBinaryInDir b tmpDir
+            writeRepoMarkers tmpDir
+            writeFile (tmpDir </> "prodbox.dhall") (wrapTier0 validConfig)
+            baseEnv <- getEnvironment
+            let envVars =
+                  ("PRODBOX_TEST_GATEWAY_NODEPORT", show gatewayPort)
+                    : ("PRODBOX_TEST_HOST_VAULT_ADDR", "http://127.0.0.1:1")
+                    : baseEnv
+
+            (exitCode, stdoutText, stderrText) <-
+              readCreateProcessWithExitCode
+                (proc binary ["vault", "status"]) {cwd = Just tmpDir, env = Just envVars}
+                ""
+
+            exitCode `shouldBe` ExitSuccess
+            stderrText `shouldBe` ""
+            stdoutText `shouldContain` "Vault: initialized=True, sealed=False"
+            requests <- readMVar requestsRef
+            requests `shouldSatisfy` any ("GET /v1/state" `isInfixOf`)
+            requests `shouldSatisfy` any ("GET /v1/bootstrap/vault/status" `isInfixOf`)
+
+    it "Sprint 4.42: daemon-side Vault errors do not fall back to direct host Vault" $
+      withSystemTempDirectory "prodbox-hs-cli" $ \tmpDir ->
+        withFakeGatewayDaemonServer
+          [ ("/v1/state", 200, gatewayStateResponseJson)
+          , ("/v1/bootstrap/vault/status", 503, "Vault status unavailable: sealed")
+          ]
+          $ \gatewayPort _requestsRef -> do
+            binary <- resolveBinaryPath >>= \b -> installOperatorBinaryInDir b tmpDir
+            writeRepoMarkers tmpDir
+            writeFile (tmpDir </> "prodbox.dhall") (wrapTier0 validConfig)
+            baseEnv <- getEnvironment
+            let envVars =
+                  ("PRODBOX_TEST_GATEWAY_NODEPORT", show gatewayPort)
+                    : ("PRODBOX_TEST_HOST_VAULT_ADDR", "http://127.0.0.1:1")
+                    : baseEnv
+
+            (exitCode, stdoutText, stderrText) <-
+              readCreateProcessWithExitCode
+                (proc binary ["vault", "status"]) {cwd = Just tmpDir, env = Just envVars}
+                ""
+
+            exitCode `shouldBe` ExitFailure 1
+            stderrText `shouldBe` ""
+            stdoutText `shouldContain` "daemon-mediated Vault status failed"
+            stdoutText `shouldContain` "HTTP 503 response"
+            stdoutText `shouldNotContain` "127.0.0.1:1"
+
     it "Sprint 2.26: gateway federation endpoints read parent-custodied child inventory" $
       withSystemTempDirectory "prodbox-hs-cli" $ \tmpDir ->
         withFakeVaultServer $ \vaultPort -> do
@@ -338,6 +397,67 @@ integrationCliSuite = do
         stdoutText `shouldContain` "LIMIT_RANGE_NAMESPACES=keycloak,vscode,api,websocket,gateway"
         stdoutText `shouldContain` "BESTEFFORT_PODS=0"
         stdoutText `shouldContain` "UNCAPPED_CONTAINERS=0"
+
+    it "runs native daemon-bootstrap validation and rejects legacy transport traces" $
+      withSystemTempDirectory "prodbox-hs-cli" $ \tmpDir -> do
+        binary <- resolveBinaryPath >>= \b -> installOperatorBinaryInDir b tmpDir
+        writeRepoMarkers tmpDir
+        let fakeBin = tmpDir </> "bin"
+        createDirectoryIfMissing True fakeBin
+        writeExecutable (fakeBin </> "cabal") (fakeCabalListBinScript binary)
+        currentEnvironment <- getEnvironment
+        let existingPath = maybe "" id (lookup "PATH" currentEnvironment)
+            baseEnvironment =
+              ("PATH", fakeBin ++ ":" ++ existingPath)
+                : filter
+                  ( \entry ->
+                      fst entry
+                        `notElem` [ "PATH"
+                                  , "PRODBOX_TEST_DAEMON_BOOTSTRAP_AUDIT"
+                                  ]
+                  )
+                  currentEnvironment
+            envFor fixture =
+              ("PRODBOX_TEST_DAEMON_BOOTSTRAP_AUDIT", fixture)
+                : baseEnvironment
+
+        (passExitCode, passStdout, passStderr) <-
+          readCreateProcessWithExitCode
+            (proc binary ["test", "integration", "daemon-bootstrap"])
+              { cwd = Just tmpDir
+              , env = Just (envFor "pass")
+              }
+            ""
+
+        let passOutput =
+              unlines
+                [ "daemon-bootstrap pass stdout:"
+                , passStdout
+                , "daemon-bootstrap pass stderr:"
+                , passStderr
+                ]
+        when (passExitCode /= ExitSuccess) (expectationFailure passOutput)
+        passStdout `shouldContain` "Validation: daemon-bootstrap"
+        passStdout `shouldContain` "DAEMON_BOOTSTRAP_VALIDATION"
+        passStdout `shouldContain` "LEGACY_TRANSPORTS=0"
+        passStdout `shouldContain` "REDACTION=ok"
+        passStderr
+          `shouldContain` "[validation=daemon-bootstrap substrate=home-local] entering body"
+        passStderr
+          `shouldContain` "[validation=daemon-bootstrap substrate=home-local] body exit=ExitSuccess"
+
+        (legacyExitCode, legacyStdout, legacyStderr) <-
+          readCreateProcessWithExitCode
+            (proc binary ["test", "integration", "daemon-bootstrap"])
+              { cwd = Just tmpDir
+              , env = Just (envFor "legacy-minio-port-forward")
+              }
+            ""
+
+        legacyExitCode `shouldBe` ExitFailure 1
+        legacyStdout `shouldContain` "Validation: daemon-bootstrap"
+        legacyStderr `shouldContain` "legacy transport"
+        legacyStderr `shouldContain` "kubectl port-forward"
 
     it
       "runs native charts list, status, deploy, and delete through the built frontend with fake helm and kubectl"
@@ -1288,50 +1408,60 @@ integrationCliSuite = do
       "Sprint 8.8: nuke runs the total teardown on the typed confirmation and destroys the retained-cert state bucket"
       $ withSystemTempDirectory "prodbox-hs-cli"
       $ \tmpDir ->
-        withFakeVaultServer $ \vaultPort -> do
-          binary <- resolveBinaryPath >>= \b -> installOperatorBinaryInDir b tmpDir
-          repoRoot <- getCurrentDirectory
-          writeRepoMarkers tmpDir
-          writeFile
-            (tmpDir </> "test-secrets.dhall")
-            (testSecretsDhallWithAdmin "CONFIGADMINKEY" "config-admin-secret" "us-west-2" Nothing)
-          writeRootBasics tmpDir (fakeVaultAddress vaultPort) validConfigForNuke
-          createDirectoryIfMissing True (tmpDir </> ".kube")
-          writeFile (tmpDir </> ".kube" </> "config") "server: https://127.0.0.1:6443\n"
-          -- Step 1 (aws-ses destroy) runs `pulumi` in the aws-ses program dir;
-          -- provide it so the long-lived backend login/destroy can chdir there.
-          createDirectoryIfMissing True (tmpDir </> "pulumi" </> "aws-ses")
-          mapM_
-            ( \name ->
-                copyFile
-                  (repoRoot </> "pulumi" </> "aws-ses" </> name)
-                  (tmpDir </> "pulumi" </> "aws-ses" </> name)
-            )
-            ["Pulumi.yaml", "Main.yaml", "Pulumi.aws-ses.yaml"]
-          envVars <- fakeRke2Environment tmpDir
-          let nukeEnv =
-                ("PRODBOX_ALLOW_NON_TTY_INTERACTIVE", "1")
-                  : ("PRODBOX_TEST_HOST_VAULT_TOKEN", "fake-root-token")
-                  : envVars
+        withFakeVaultServer $ \vaultPort ->
+          withFakeGatewayDaemonServer
+            [ ("/v1/object-store/pulumi/get", 200, "{\"status\":\"absent\"}")
+            , ("/v1/object-store/pulumi/put", 200, "{}")
+            , ("/v1/object-store/pulumi/delete", 200, "{}")
+            ]
+            $ \gatewayPort requestsRef -> do
+              binary <- resolveBinaryPath >>= \b -> installOperatorBinaryInDir b tmpDir
+              repoRoot <- getCurrentDirectory
+              writeRepoMarkers tmpDir
+              writeFile
+                (tmpDir </> "test-secrets.dhall")
+                (testSecretsDhallWithAdmin "CONFIGADMINKEY" "config-admin-secret" "us-west-2" Nothing)
+              writeRootBasics tmpDir (fakeVaultAddress vaultPort) validConfigForNuke
+              createDirectoryIfMissing True (tmpDir </> ".kube")
+              writeFile (tmpDir </> ".kube" </> "config") "server: https://127.0.0.1:6443\n"
+              -- Step 1 (aws-ses destroy) runs `pulumi` in the aws-ses program dir;
+              -- provide it so the long-lived backend login/destroy can chdir there.
+              createDirectoryIfMissing True (tmpDir </> "pulumi" </> "aws-ses")
+              mapM_
+                ( \name ->
+                    copyFile
+                      (repoRoot </> "pulumi" </> "aws-ses" </> name)
+                      (tmpDir </> "pulumi" </> "aws-ses" </> name)
+                )
+                ["Pulumi.yaml", "Main.yaml", "Pulumi.aws-ses.yaml"]
+              envVars <- fakeRke2Environment tmpDir
+              let nukeEnv =
+                    ("PRODBOX_ALLOW_NON_TTY_INTERACTIVE", "1")
+                      : ("PRODBOX_TEST_GATEWAY_NODEPORT", show gatewayPort)
+                      : ("PRODBOX_TEST_HOST_VAULT_TOKEN", "fake-root-token")
+                      : envVars
 
-          (exitCode, stdoutText, stderrText) <-
-            readCreateProcessWithExitCode
-              (proc binary ["nuke"]) {cwd = Just tmpDir, env = Just nukeEnv}
-              "NUKE EVERYTHING\n"
+              (exitCode, stdoutText, stderrText) <-
+                readCreateProcessWithExitCode
+                  (proc binary ["nuke"]) {cwd = Just tmpDir, env = Just nukeEnv}
+                  "NUKE EVERYTHING\n"
 
-          when
-            (exitCode /= ExitSuccess)
-            (expectationFailure (unlines ["nuke stdout:", stdoutText, "nuke stderr:", stderrText]))
-          exitCode `shouldBe` ExitSuccess
-          stdoutText `shouldContain` "step 1/5 aws-ses destroy complete"
-          stdoutText `shouldContain` "step 2/5 cluster cascade complete"
-          stdoutText `shouldContain` "step 3/5 operational IAM teardown complete"
-          stdoutText `shouldContain` "step 4/5 postflight tag sweep complete"
-          -- Step 5 (complete) destroyed the long-lived `pulumi_state_backend`
-          -- bucket where the retained public-edge certificate lives — the only
-          -- path that removes it (per the Sprint 4.24 LongLived classification).
-          stdoutText `shouldContain` "step 5/5 long-lived state-bucket destroy complete"
-          stdoutText `shouldContain` "prodbox nuke: total teardown complete."
+              when
+                (exitCode /= ExitSuccess)
+                (expectationFailure (unlines ["nuke stdout:", stdoutText, "nuke stderr:", stderrText]))
+              exitCode `shouldBe` ExitSuccess
+              stdoutText `shouldContain` "step 1/5 aws-ses destroy complete"
+              stdoutText `shouldContain` "step 2/5 cluster cascade complete"
+              stdoutText `shouldContain` "step 3/5 operational IAM teardown complete"
+              stdoutText `shouldContain` "step 4/5 postflight tag sweep complete"
+              -- Step 5 (complete) destroyed the long-lived `pulumi_state_backend`
+              -- bucket where the retained public-edge certificate lives — the only
+              -- path that removes it (per the Sprint 4.24 LongLived classification).
+              stdoutText `shouldContain` "step 5/5 long-lived state-bucket destroy complete"
+              stdoutText `shouldContain` "prodbox nuke: total teardown complete."
+              requests <- readMVar requestsRef
+              requests `shouldSatisfy` any ("POST /v1/object-store/pulumi/get" `isInfixOf`)
+              requests `shouldSatisfy` any ("POST /v1/object-store/pulumi/delete" `isInfixOf`)
 
     it "projects ZeroSSL external account binding into the supported ClusterIssuer reconcile" $
       withSystemTempDirectory "prodbox-hs-cli" $ \tmpDir -> do
@@ -1790,6 +1920,82 @@ withGatewayStateServer body action =
                 close client
           action port requestRef
       )
+
+withFakeGatewayDaemonServer
+  :: [(String, Int, String)]
+  -> (Int -> MVar [String] -> IO a)
+  -> IO a
+withFakeGatewayDaemonServer responses action =
+  withSocketsDo $
+    bracket
+      ( do
+          sock <- socket AF_INET Stream defaultProtocol
+          setSocketOption sock ReuseAddr 1
+          bind sock (SockAddrInet 0 (tupleToHostAddress (127, 0, 0, 1)))
+          listen sock 8
+          pure sock
+      )
+      close
+      ( \sock -> do
+          addr <- getSocketName sock
+          port <- case addr of
+            SockAddrInet p _ -> pure (fromIntegral p)
+            _ -> ioError (userError "expected IPv4 socket address while allocating a fake daemon port")
+          requestsRef <- newMVar []
+          void $ forkIO (fakeGatewayDaemonAcceptLoop sock responses requestsRef)
+          action port requestsRef
+      )
+
+fakeGatewayDaemonAcceptLoop :: Socket -> [(String, Int, String)] -> MVar [String] -> IO ()
+fakeGatewayDaemonAcceptLoop sock responses requestsRef = do
+  acceptResult <- try (accept sock)
+  case acceptResult :: Either SomeException (Socket, SockAddr) of
+    Left _ -> pure ()
+    Right (client, _) -> do
+      requestBytes <- recv client 8192
+      let requestText = BS8.unpack requestBytes
+          firstLine = takeWhile (/= '\r') requestText
+          path = requestPathFromFirstLine firstLine
+          (status, body) =
+            case find (\(candidate, _, _) -> candidate == path) responses of
+              Just (_, responseStatus, responseBody) -> (responseStatus, responseBody)
+              Nothing -> (404, "not found")
+      modifyMVar requestsRef (\seen -> pure (seen ++ [firstLine], ()))
+      _ <-
+        try (sendAll client (BS8.pack (renderFakeGatewayResponse status body)))
+          :: IO (Either SomeException ())
+      close client
+      fakeGatewayDaemonAcceptLoop sock responses requestsRef
+
+requestPathFromFirstLine :: String -> String
+requestPathFromFirstLine firstLine =
+  case words firstLine of
+    _method : path : _ -> path
+    _ -> "/"
+
+renderFakeGatewayResponse :: Int -> String -> String
+renderFakeGatewayResponse status body =
+  "HTTP/1.1 "
+    ++ show status
+    ++ " "
+    ++ fakeGatewayReason status
+    ++ "\r\n"
+    ++ "Content-Type: "
+    ++ (if status >= 200 && status < 300 then "application/json" else "text/plain")
+    ++ "\r\n"
+    ++ "Content-Length: "
+    ++ show (length body)
+    ++ "\r\n"
+    ++ "Connection: close\r\n\r\n"
+    ++ body
+
+fakeGatewayReason :: Int -> String
+fakeGatewayReason status =
+  case status of
+    200 -> "OK"
+    404 -> "Not Found"
+    503 -> "Service Unavailable"
+    _ -> "OK"
 
 allocateTwoLoopbackTcpPorts :: IO (Int, Int)
 allocateTwoLoopbackTcpPorts =

@@ -38,6 +38,7 @@ module Prodbox.Vault.BootstrapBundle
 
     -- * The object-store config for the bundle (static MinIO root credential)
   , bootstrapObjectStoreConfig
+  , bootstrapObjectStoreConfigWithEndpoint
 
     -- * Bundle-object put/get over the durable bucket
   , putBundleObject
@@ -69,8 +70,15 @@ bootstrapUnlockBundleKey = "bootstrap/vault-unlock-bundle.v1"
 -- 'Prodbox.Infra.MinioBackend.withMinioPortForward').
 bootstrapObjectStoreConfig :: Int -> ObjectStoreConfig
 bootstrapObjectStoreConfig localPort =
+  bootstrapObjectStoreConfigWithEndpoint ("http://127.0.0.1:" ++ show localPort)
+
+-- | Build the bundle object-store config against an already-reachable MinIO
+-- endpoint, such as the in-cluster Service DNS the daemon can reach during
+-- pre-Vault bootstrap.
+bootstrapObjectStoreConfigWithEndpoint :: String -> ObjectStoreConfig
+bootstrapObjectStoreConfigWithEndpoint endpoint =
   ObjectStoreConfig
-    { objectStoreEndpoint = "http://127.0.0.1:" ++ show localPort
+    { objectStoreEndpoint = endpoint
     , objectStoreBucket = defaultObjectStoreBucket
     , objectStoreAccessKey = minioRootUser
     , objectStoreSecretKey = minioRootPassword

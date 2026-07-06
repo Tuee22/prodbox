@@ -191,12 +191,11 @@ withMinioPortForward action = do
 
 -- | Port-forward the MinIO Service in the caller's active kubeconfig.
 --
--- The Pulumi backend helpers use 'withMinioPortForward' above because
--- backend state is anchored in the home-local RKE2 cluster even while
--- AWS-substrate tests temporarily switch kubeconfig contexts. Chart
--- bootstrap paths need the opposite behavior: they read active-cluster
--- credentials and write substrate-local object-store data into that same
--- cluster's MinIO.
+-- Legacy/config/test helpers use 'withMinioPortForward' above when they
+-- intentionally target the home-local RKE2 cluster even while AWS-substrate
+-- tests temporarily switch kubeconfig contexts. Chart bootstrap paths need the
+-- opposite behavior: they read active-cluster credentials and write
+-- substrate-local object-store data into that same cluster's MinIO.
 withCurrentMinioPortForward :: (Int -> IO a) -> IO (Either String a)
 withCurrentMinioPortForward =
   withMinioPortForwardEnv Nothing minioBackendLocalPort

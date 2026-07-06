@@ -14,6 +14,19 @@
 
 ## Phase Status
 
+✅ **Reclosed 2026-07-05 for the daemon-mediated post-bootstrap boundary.** Sprint `2.29` is now
+Done on its code-owned surface: the daemon has a pre-Vault config loader that binds diagnostics and
+`POST /v1/bootstrap/vault/ensure` before Vault-backed event keys, AWS credentials, or MinIO
+credentials resolve; the endpoint enforces a bounded redacted request with loopback proof, reaches
+MinIO/Vault over in-cluster Service DNS, performs init/unseal/reconcile with no standing unseal
+authority, and exposes a host-side `Prodbox.Gateway.Client.ensureVaultBootstrap` call for later
+lifecycle routing. Validation: `cabal build --builddir=.build exe:prodbox`,
+`./.build/prodbox test unit` (1178/1178), and
+`cabal test --builddir=.build prodbox-daemon-lifecycle --test-options=--hide-successes` (12/12).
+Sprints `4.42`, `5.14`, and `7.30` consume this endpoint to remove the remaining direct host
+MinIO/Vault transports. All previously closed gateway runtime, DNS, CBOR, and federation surfaces
+remain `Done` on their owned validation axes.
+
 ✅ **Live-proven 2026-06-26 — the gateway integration validations now pass under the green home
 `test all`.** The `gateway-daemon`, `gateway-pods`, and `gateway-partition` named validations —
 previously the operator-driven `🧪 Live-proof: pending` axis (a running cluster is required, see below)
@@ -100,10 +113,11 @@ readiness, health, metrics, graceful drain, and forced drain behavior.
 
 ## Phase Summary
 
-This phase owns the Haskell gateway daemon, DNS inspection command, and related command surfaces,
-preserves the formal model entrypoint, and keeps Route 53 write ownership inside the in-cluster
-gateway workload. It owns the gateway image packaging contract, Harbor-backed image delivery for
-the gateway workload, DNS inspection, and the TLA+ entrypoint. The closed phase-owned surfaces
+This phase owns the Haskell gateway daemon, DNS inspection command, the pre-Vault daemon bootstrap
+REST surface, and related command surfaces, preserves the formal model entrypoint, and keeps Route
+53 write ownership inside the in-cluster gateway workload. It owns the gateway image packaging
+contract, Harbor-backed image delivery for the gateway workload, DNS inspection, and the TLA+
+entrypoint. The closed phase-owned surfaces
 include the daemon, `prodbox gateway status`, the implemented bounded HTTP `/v1/state` payload,
 Orders-backed interval validation, the runtime-to-model correspondence notes, the peer-transport
 gossip surface, runtime claim/yield emission under the `CanWriteDns` gate, operator-verifiable
@@ -245,7 +259,7 @@ while preserving the implemented runtime contract and container doctrine.
   endpoint used by the in-cluster liveness and readiness probes, so the public status path and
   the daemon listener close on one native transport contract.
 - `src/Prodbox/Gateway/Daemon.hs` now drains the inbound REST request before closing the socket,
-  keeping `kubectl port-forward` backed `prodbox gateway status` and the corresponding
+  keeping loopback-restricted NodePort-backed `prodbox gateway status` and the corresponding
   `gateway-daemon` validation path on one complete-response HTTP contract.
 - `src/Prodbox/Gateway/Types.hs` now enforces the timeout range, interval minimums, and the
   documented relationships `heartbeat_interval_seconds <= timeout/2`,
@@ -2440,6 +2454,58 @@ at-least-once delivery and `markEventProcessed` IS-NULL guard contract from
 - `./.build/prodbox test integration env` passes 39/39.
 - `./.build/prodbox dev check` exits 0 as the canonical local quality gate.
 
+## Sprint 2.29: Pre-Vault Daemon Bootstrap Endpoint [✅ Done]
+
+**Status**: Done 2026-07-05
+**Implementation**: `src/Prodbox/Gateway/Daemon.hs`, `src/Prodbox/Gateway/Client.hs`,
+`src/Prodbox/Gateway/Settings.hs`, `src/Prodbox/Vault/BootstrapBundle.hs`,
+`charts/gateway/templates/service-nodeport.yaml`, `charts/gateway/templates/deployments.yaml`,
+`test/unit/Main.hs`, `test/daemon-lifecycle/Main.hs`
+**Independent Validation**: unit tests over request parsing/redaction and a
+`prodbox-daemon-lifecycle` pre-Vault fixture that proves the REST listener binds before Vault
+SecretRef resolution succeeds; no live cluster or later phase required.
+**Docs to update**: `documents/engineering/distributed_gateway_architecture.md`,
+`documents/engineering/vault_doctrine.md`, `documents/engineering/config_doctrine.md`,
+`DEVELOPMENT_PLAN/legacy-tracking-for-deletion.md`
+
+### Objective
+
+Give the in-cluster `prodbox` daemon a minimal pre-Vault REST mode so it can accept the
+operator/test unlock-bundle password and perform Vault init/unseal/reconcile from inside the
+cluster, without holding standing unseal authority.
+
+### Deliverables
+
+- A pre-Vault daemon config path that binds `/healthz`, `/readyz`, and
+  `POST /v1/bootstrap/vault/ensure` before Vault-backed event keys, AWS credentials, or MinIO
+  credentials resolve.
+- A bounded, redacted bootstrap request/response contract. The password is accepted only in memory,
+  never logged, never echoed, and never persisted; malformed or oversized bodies fail before any
+  Vault or MinIO action.
+- In-cluster MinIO and Vault clients for bootstrap: MinIO is reached through
+  `minio.prodbox.svc.cluster.local`, Vault through the in-cluster Vault Service, and Vault's
+  unauthenticated `sys/init`, `sys/seal-status`, and `sys/unseal` bootstrap APIs are the only
+  sealed-Vault calls.
+- Loopback-NodePort enforcement is treated as mandatory for password-bearing routes. A daemon can
+  expose diagnostics without the firewall proof, but `bootstrap/vault/ensure` is unsupported when the
+  loopback restriction is absent or unverifiable.
+- Steady-state Vault-dependent routes continue to fail closed until Vault is initialized, unsealed,
+  and reconciled.
+
+### Validation
+
+1. `prodbox test unit` covers route matching, request-size refusal, redaction, and the pure bootstrap
+   decision table.
+2. `cabal test --builddir=.build prodbox-daemon-lifecycle` includes a pre-Vault fixture proving the
+   listener binds and the steady-state routes report unavailable without crashing.
+3. `prodbox test integration cli` / `env` prove the command registry and generated docs stay aligned.
+4. `prodbox dev check` remains green.
+
+### Remaining Work
+
+None for Phase `2`. Sprint `4.42` consumes this endpoint from the lifecycle interpreter; Sprint
+`7.30` consumes the same daemon boundary for object-store/Pulumi backend access.
+
 ## Documentation Requirements
 
 **Engineering docs to create/update:**
@@ -2465,7 +2531,8 @@ at-least-once delivery and `markEventProcessed` IS-NULL guard contract from
   retained DNS ownership doctrine, the authoritative peer-transport plus REST surface, and the
   §7.5 restart-based Orders-promotion rewrite plus the topology-honest fault-model reframe
   (home = single-host degenerate single-rank mesh; partition tolerance is the AWS / multi-host
-  capability) landing with Sprint 2.25 (doctrine D4).
+  capability) landing with Sprint 2.25 (doctrine D4); for Sprint `2.29`, the pre-Vault daemon
+  bootstrap endpoint and loopback-NodePort boundary.
 - `documents/engineering/local_registry_pipeline.md` - gateway-container build, Harbor loading, and
   native-host-architecture delivery doctrine.
 - `documents/engineering/pulsar_messaging_doctrine.md` - the canonical-CBOR wire codec that
@@ -2486,7 +2553,8 @@ at-least-once delivery and `markEventProcessed` IS-NULL guard contract from
 - `documents/engineering/unit_testing_policy.md` - Haskell gateway integration-suite ownership.
 - `documents/engineering/vault_doctrine.md` - Vault is the sole secrets/KMS/PKI root; Sprint 2.26
   custodies each child cluster's init keys in the parent's Vault KV and records the parent's Transit
-  key as the child's unseal authority.
+  key as the child's unseal authority; Sprint `2.29` records that root unseal remains
+  operator-password-gated while the execution moves into the daemon.
 
 **Product docs to create/update:**
 

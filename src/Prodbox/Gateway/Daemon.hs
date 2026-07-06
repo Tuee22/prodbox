@@ -11,6 +11,32 @@ module Prodbox.Gateway.Daemon
   , operatorSecretJwtHeader
   , requestBodyBytes
   , decodeOperatorSecretFields
+
+    -- * Sprint 2.29: pre-Vault bootstrap endpoint (pure routing helpers)
+  , BootstrapVaultRequest (..)
+  , BootstrapVaultRotateUnlockBundleRequest (..)
+  , BootstrapVaultRotateTransitKeyRequest (..)
+  , BootstrapVaultResponse (..)
+  , BootstrapVaultRequestError (..)
+  , bootstrapVaultPath
+  , bootstrapVaultPkiIssueTestCertPath
+  , bootstrapVaultPkiStatusPath
+  , bootstrapVaultRotateTransitKeyPath
+  , bootstrapVaultRotateUnlockBundlePath
+  , bootstrapVaultSealPath
+  , bootstrapVaultStatusPath
+  , bootstrapVaultRequestMaxBytes
+  , decodeBootstrapVaultAuthenticatedRequest
+  , decodeBootstrapVaultRequest
+  , decodeBootstrapVaultRotateTransitKeyRequest
+  , decodeBootstrapVaultRotateUnlockBundleRequest
+  , renderBootstrapVaultRequestError
+
+    -- * Sprint 7.30: daemon object-store API for Pulumi backends
+  , PulumiObjectRequestError (..)
+  , decodePulumiObjectPutRequest
+  , decodePulumiObjectRequest
+  , renderPulumiObjectRequestError
   )
 where
 
@@ -44,15 +70,22 @@ import Control.Exception
   )
 import Control.Monad (forever, void, when)
 import Data.Aeson
-  ( Value (..)
+  ( FromJSON (..)
+  , ToJSON (..)
+  , Value (..)
   , eitherDecodeStrict'
   , encode
   , object
   , toJSON
+  , withObject
+  , (.!=)
+  , (.:)
+  , (.:?)
   , (.=)
   )
 import Data.Aeson.Key qualified as Key
 import Data.Aeson.KeyMap qualified as KeyMap
+import Data.ByteString (ByteString)
 import Data.ByteString qualified as BS
 import Data.ByteString.Char8 qualified as BS8
 import Data.ByteString.Lazy qualified as BL
@@ -64,6 +97,7 @@ import Data.Map.Strict (Map)
 import Data.Map.Strict qualified as Map
 import Data.Maybe (fromMaybe)
 import Data.Text qualified as Text
+import Data.Text.Encoding qualified as TextEncoding
 import Data.Text.IO qualified as TextIO
 import Data.Time.Clock (UTCTime, diffUTCTime, getCurrentTime)
 import Data.Time.Format.ISO8601 (formatShow, iso8601Format)
@@ -113,6 +147,7 @@ import Prodbox.Config.Tier0
   , Tier0Source (..)
   , loadDaemonBinaryContext
   )
+import Prodbox.Crypto.Envelope (DekCipher)
 import Prodbox.Error
   ( AppError (..)
   , ErrorKind (..)
@@ -123,6 +158,16 @@ import Prodbox.Gateway.Logging
   , field
   , logStructuredAt
   , severityFromLogLevel
+  )
+import Prodbox.Gateway.ObjectStore
+  ( PulumiObjectGetResponse (..)
+  , PulumiObjectPutRequest (..)
+  , PulumiObjectRequest (..)
+  , pulumiObjectDeletePath
+  , pulumiObjectGetPath
+  , pulumiObjectPutPath
+  , pulumiObjectRequestMaxBytes
+  , validatePulumiObjectStackName
   )
 import Prodbox.Gateway.Peer
   ( PeerEventBatch (..)
@@ -141,6 +186,7 @@ import Prodbox.Gateway.Types
   , Disposition (..)
   , DnsWriteGate (..)
   , GatewayAwsCreds (..)
+  , GatewayMinioCreds (..)
   , GatewayRule (..)
   , GatewayVaultAuth (..)
   , Orders (..)
@@ -166,6 +212,20 @@ import Prodbox.Http.Client
   , httpGetText
   , renderHttpError
   )
+import Prodbox.Minio.EncryptedObject
+  ( EncryptedObjectError (..)
+  , LogicalObject (LogicalPulumiStack)
+  , getLogical
+  , objectKeyForOpaqueId
+  , opaqueObjectId
+  , putLogical
+  , renderEncryptedObjectError
+  )
+import Prodbox.Minio.ObjectStore
+  ( ObjectStoreConfig (..)
+  , defaultObjectStoreBucket
+  , deleteObject
+  )
 import Prodbox.Repo (resolveTier0ConfigPath)
 import Prodbox.Result (Result (..))
 import Prodbox.Retry
@@ -177,12 +237,48 @@ import Prodbox.Subprocess
   , Subprocess (..)
   , captureSubprocessResult
   )
+import Prodbox.Vault.BootstrapBundle
+  ( bootstrapObjectStoreConfigWithEndpoint
+  , getBundleObject
+  , putBundleObject
+  )
 import Prodbox.Vault.Client
-  ( VaultAddress (..)
-  , VaultToken
+  ( BootstrapAction (..)
+  , SealStatus (..)
+  , VaultAddress (..)
+  , VaultToken (..)
+  , bootstrapAction
+  , defaultInitRequest
+  , initResponseToUnlockBundle
+  , vaultInit
   , vaultKubernetesLogin
   , vaultKvReadV2
   , vaultKvWriteV2
+  , vaultListMounts
+  , vaultMountType
+  , vaultPkiIssueTestCertificate
+  , vaultRotateTransitKey
+  , vaultSeal
+  , vaultSealStatus
+  , vaultSubmitUnseal
+  )
+import Prodbox.Vault.Orchestration
+  ( UnsealOutcome (..)
+  , UnsealStep (..)
+  , interpretUnsealProgress
+  , planUnseal
+  )
+import Prodbox.Vault.Reconcile
+  ( defaultVaultReconcilePlan
+  , renderVaultReconcileError
+  , runVaultReconcile
+  )
+import Prodbox.Vault.TransitCipher (vaultTransitDekCipher)
+import Prodbox.Vault.UnlockBundle
+  ( UnlockBundle (..)
+  , decryptUnlockBundle
+  , encryptUnlockBundle
+  , renderUnlockBundleError
   )
 import System.Directory (doesFileExist)
 import System.Exit (ExitCode (..))
@@ -947,16 +1043,32 @@ handleRestClient sock env = do
 
   handleParsedRequest rawRequest = do
     now <- getCurrentTime
-    case operatorSecretLogicalPath (requestPath rawRequest) of
-      Just logical
-        | operatorSecretRequestMethod rawRequest == "POST" ->
-            handleOperatorSecretWrite sock env rawRequest logical
+    case requestPath rawRequest of
+      path
+        | path == bootstrapVaultPath -> handleBootstrapVaultEnsure sock env rawRequest
+        | path == bootstrapVaultStatusPath -> handleBootstrapVaultStatus sock env rawRequest
+        | path == bootstrapVaultSealPath -> handleBootstrapVaultSeal sock env rawRequest
+        | path == bootstrapVaultRotateUnlockBundlePath ->
+            handleBootstrapVaultRotateUnlockBundle sock env rawRequest
+        | path == bootstrapVaultRotateTransitKeyPath ->
+            handleBootstrapVaultRotateTransitKey sock env rawRequest
+        | path == bootstrapVaultPkiStatusPath -> handleBootstrapVaultPkiStatus sock env rawRequest
+        | path == bootstrapVaultPkiIssueTestCertPath ->
+            handleBootstrapVaultPkiIssueTestCert sock env rawRequest
+        | path == pulumiObjectGetPath -> handlePulumiObjectGet sock env rawRequest
+        | path == pulumiObjectPutPath -> handlePulumiObjectPut sock env rawRequest
+        | path == pulumiObjectDeletePath -> handlePulumiObjectDelete sock env rawRequest
         | otherwise ->
-            -- The write endpoint exists only for POST; a GET/PUT/etc. against
-            -- it is a client error, never a Vault read (the secrets it owns are
-            -- read in-cluster via Vault Kubernetes auth, never echoed back).
-            sendHttpResponse sock 405 "text/plain" "method not allowed\n"
-      Nothing -> handleReadRequest sock env now rawRequest
+            case operatorSecretLogicalPath path of
+              Just logical
+                | operatorSecretRequestMethod rawRequest == "POST" ->
+                    handleOperatorSecretWrite sock env rawRequest logical
+                | otherwise ->
+                    -- The write endpoint exists only for POST; a GET/PUT/etc. against
+                    -- it is a client error, never a Vault read (the secrets it owns are
+                    -- read in-cluster via Vault Kubernetes auth, never echoed back).
+                    sendHttpResponse sock 405 "text/plain" "method not allowed\n"
+              Nothing -> handleReadRequest sock env now rawRequest
 
 -- | The read-only REST dispatch (health, readiness, metrics, state, and the
 -- federation inventory/bootstrap endpoints). Split out of 'handleRestClient'
@@ -1032,7 +1144,11 @@ statusReason :: Int -> String
 statusReason statusCode =
   case statusCode of
     200 -> "OK"
+    400 -> "Bad Request"
+    401 -> "Unauthorized"
     404 -> "Not Found"
+    405 -> "Method Not Allowed"
+    502 -> "Bad Gateway"
     503 -> "Service Unavailable"
     _ -> "OK"
 
@@ -1123,6 +1239,237 @@ decodeOperatorSecretFields body
         Left err -> Left ("invalid secret JSON body: " ++ err)
         Right fields -> Right fields
 
+-- Sprint 2.29: pre-Vault bootstrap route. The password-bearing request is
+-- accepted only through the loopback-restricted daemon NodePort and is never
+-- logged or echoed.
+bootstrapVaultPath :: String
+bootstrapVaultPath = "/v1/bootstrap/vault/ensure"
+
+bootstrapVaultStatusPath :: String
+bootstrapVaultStatusPath = "/v1/bootstrap/vault/status"
+
+bootstrapVaultSealPath :: String
+bootstrapVaultSealPath = "/v1/bootstrap/vault/seal"
+
+bootstrapVaultRotateUnlockBundlePath :: String
+bootstrapVaultRotateUnlockBundlePath = "/v1/bootstrap/vault/rotate-unlock-bundle"
+
+bootstrapVaultRotateTransitKeyPath :: String
+bootstrapVaultRotateTransitKeyPath = "/v1/bootstrap/vault/rotate-transit-key"
+
+bootstrapVaultPkiStatusPath :: String
+bootstrapVaultPkiStatusPath = "/v1/bootstrap/vault/pki/status"
+
+bootstrapVaultPkiIssueTestCertPath :: String
+bootstrapVaultPkiIssueTestCertPath = "/v1/bootstrap/vault/pki/issue-test-cert"
+
+bootstrapVaultRequestMaxBytes :: Int
+bootstrapVaultRequestMaxBytes = 64 * 1024
+
+data BootstrapVaultRequest = BootstrapVaultRequest
+  { bootstrapVaultUnlockPassword :: Text.Text
+  , bootstrapVaultLoopbackNodePortVerified :: Bool
+  }
+  deriving (Eq)
+
+instance Show BootstrapVaultRequest where
+  show request =
+    "BootstrapVaultRequest {bootstrapVaultUnlockPassword=<redacted>, bootstrapVaultLoopbackNodePortVerified="
+      ++ show (bootstrapVaultLoopbackNodePortVerified request)
+      ++ "}"
+
+instance FromJSON BootstrapVaultRequest where
+  parseJSON =
+    withObject "BootstrapVaultRequest" $ \o ->
+      BootstrapVaultRequest
+        <$> o .: "unlock_password"
+        <*> o .:? "loopback_nodeport_verified" .!= False
+
+instance ToJSON BootstrapVaultRequest where
+  toJSON request =
+    object
+      [ "unlock_password" .= bootstrapVaultUnlockPassword request
+      , "loopback_nodeport_verified" .= bootstrapVaultLoopbackNodePortVerified request
+      ]
+
+data BootstrapVaultRotateUnlockBundleRequest = BootstrapVaultRotateUnlockBundleRequest
+  { bootstrapVaultRotateCurrentPassword :: Text.Text
+  , bootstrapVaultRotateNewPassword :: Text.Text
+  , bootstrapVaultRotateLoopbackNodePortVerified :: Bool
+  }
+  deriving (Eq)
+
+instance Show BootstrapVaultRotateUnlockBundleRequest where
+  show request =
+    "BootstrapVaultRotateUnlockBundleRequest {bootstrapVaultRotateCurrentPassword=<redacted>, bootstrapVaultRotateNewPassword=<redacted>, bootstrapVaultRotateLoopbackNodePortVerified="
+      ++ show (bootstrapVaultRotateLoopbackNodePortVerified request)
+      ++ "}"
+
+instance FromJSON BootstrapVaultRotateUnlockBundleRequest where
+  parseJSON =
+    withObject "BootstrapVaultRotateUnlockBundleRequest" $ \o ->
+      BootstrapVaultRotateUnlockBundleRequest
+        <$> o .: "unlock_password"
+        <*> o .: "new_unlock_password"
+        <*> o .:? "loopback_nodeport_verified" .!= False
+
+instance ToJSON BootstrapVaultRotateUnlockBundleRequest where
+  toJSON request =
+    object
+      [ "unlock_password" .= bootstrapVaultRotateCurrentPassword request
+      , "new_unlock_password" .= bootstrapVaultRotateNewPassword request
+      , "loopback_nodeport_verified" .= bootstrapVaultRotateLoopbackNodePortVerified request
+      ]
+
+data BootstrapVaultRotateTransitKeyRequest = BootstrapVaultRotateTransitKeyRequest
+  { bootstrapVaultRotateTransitPassword :: Text.Text
+  , bootstrapVaultRotateTransitKeyName :: Text.Text
+  , bootstrapVaultRotateTransitLoopbackNodePortVerified :: Bool
+  }
+  deriving (Eq)
+
+instance Show BootstrapVaultRotateTransitKeyRequest where
+  show request =
+    "BootstrapVaultRotateTransitKeyRequest {bootstrapVaultRotateTransitPassword=<redacted>, bootstrapVaultRotateTransitKeyName="
+      ++ show (bootstrapVaultRotateTransitKeyName request)
+      ++ ", bootstrapVaultRotateTransitLoopbackNodePortVerified="
+      ++ show (bootstrapVaultRotateTransitLoopbackNodePortVerified request)
+      ++ "}"
+
+instance FromJSON BootstrapVaultRotateTransitKeyRequest where
+  parseJSON =
+    withObject "BootstrapVaultRotateTransitKeyRequest" $ \o ->
+      BootstrapVaultRotateTransitKeyRequest
+        <$> o .: "unlock_password"
+        <*> o .: "key_name"
+        <*> o .:? "loopback_nodeport_verified" .!= False
+
+instance ToJSON BootstrapVaultRotateTransitKeyRequest where
+  toJSON request =
+    object
+      [ "unlock_password" .= bootstrapVaultRotateTransitPassword request
+      , "key_name" .= bootstrapVaultRotateTransitKeyName request
+      , "loopback_nodeport_verified" .= bootstrapVaultRotateTransitLoopbackNodePortVerified request
+      ]
+
+data BootstrapVaultResponse = BootstrapVaultResponse
+  { bootstrapVaultResponseStatus :: Text.Text
+  , bootstrapVaultResponseAction :: Text.Text
+  , bootstrapVaultResponseReconcileStepCount :: Int
+  }
+  deriving (Eq, Show)
+
+instance FromJSON BootstrapVaultResponse where
+  parseJSON =
+    withObject "BootstrapVaultResponse" $ \o ->
+      BootstrapVaultResponse
+        <$> o .: "status"
+        <*> o .: "action"
+        <*> o .: "reconcile_step_count"
+
+instance ToJSON BootstrapVaultResponse where
+  toJSON response =
+    object
+      [ "status" .= bootstrapVaultResponseStatus response
+      , "action" .= bootstrapVaultResponseAction response
+      , "reconcile_step_count" .= bootstrapVaultResponseReconcileStepCount response
+      ]
+
+data BootstrapVaultRequestError
+  = BootstrapVaultMethodNotAllowed String
+  | BootstrapVaultRequestTooLarge Int
+  | BootstrapVaultRequestEmpty
+  | BootstrapVaultRequestMalformed String
+  | BootstrapVaultPasswordEmpty
+  | BootstrapVaultLoopbackUnverified
+  deriving (Eq, Show)
+
+decodeBootstrapVaultRequest
+  :: BS.ByteString -> Either BootstrapVaultRequestError BootstrapVaultRequest
+decodeBootstrapVaultRequest rawRequest
+  | method /= "POST" = Left (BootstrapVaultMethodNotAllowed method)
+  | BS.length body > bootstrapVaultRequestMaxBytes =
+      Left (BootstrapVaultRequestTooLarge (BS.length body))
+  | BS.null (BS8.dropWhile isSpace body) = Left BootstrapVaultRequestEmpty
+  | otherwise =
+      case eitherDecodeStrict' body of
+        Left err -> Left (BootstrapVaultRequestMalformed err)
+        Right request
+          | Text.null (Text.strip (bootstrapVaultUnlockPassword request)) ->
+              Left BootstrapVaultPasswordEmpty
+          | not (bootstrapVaultLoopbackNodePortVerified request) ->
+              Left BootstrapVaultLoopbackUnverified
+          | otherwise -> Right request
+ where
+  method = operatorSecretRequestMethod rawRequest
+  body = requestBodyBytes rawRequest
+
+decodeBootstrapVaultAuthenticatedRequest
+  :: BS.ByteString -> Either BootstrapVaultRequestError BootstrapVaultRequest
+decodeBootstrapVaultAuthenticatedRequest = decodeBootstrapVaultRequest
+
+decodeBootstrapVaultRotateUnlockBundleRequest
+  :: BS.ByteString -> Either BootstrapVaultRequestError BootstrapVaultRotateUnlockBundleRequest
+decodeBootstrapVaultRotateUnlockBundleRequest rawRequest
+  | method /= "POST" = Left (BootstrapVaultMethodNotAllowed method)
+  | BS.length body > bootstrapVaultRequestMaxBytes =
+      Left (BootstrapVaultRequestTooLarge (BS.length body))
+  | BS.null (BS8.dropWhile isSpace body) = Left BootstrapVaultRequestEmpty
+  | otherwise =
+      case eitherDecodeStrict' body of
+        Left err -> Left (BootstrapVaultRequestMalformed err)
+        Right request
+          | Text.null (Text.strip (bootstrapVaultRotateCurrentPassword request)) ->
+              Left BootstrapVaultPasswordEmpty
+          | Text.null (Text.strip (bootstrapVaultRotateNewPassword request)) ->
+              Left BootstrapVaultPasswordEmpty
+          | not (bootstrapVaultRotateLoopbackNodePortVerified request) ->
+              Left BootstrapVaultLoopbackUnverified
+          | otherwise -> Right request
+ where
+  method = operatorSecretRequestMethod rawRequest
+  body = requestBodyBytes rawRequest
+
+decodeBootstrapVaultRotateTransitKeyRequest
+  :: BS.ByteString -> Either BootstrapVaultRequestError BootstrapVaultRotateTransitKeyRequest
+decodeBootstrapVaultRotateTransitKeyRequest rawRequest
+  | method /= "POST" = Left (BootstrapVaultMethodNotAllowed method)
+  | BS.length body > bootstrapVaultRequestMaxBytes =
+      Left (BootstrapVaultRequestTooLarge (BS.length body))
+  | BS.null (BS8.dropWhile isSpace body) = Left BootstrapVaultRequestEmpty
+  | otherwise =
+      case eitherDecodeStrict' body of
+        Left err -> Left (BootstrapVaultRequestMalformed err)
+        Right request
+          | Text.null (Text.strip (bootstrapVaultRotateTransitPassword request)) ->
+              Left BootstrapVaultPasswordEmpty
+          | Text.null (Text.strip (bootstrapVaultRotateTransitKeyName request)) ->
+              Left (BootstrapVaultRequestMalformed "key_name must not be empty")
+          | not (bootstrapVaultRotateTransitLoopbackNodePortVerified request) ->
+              Left BootstrapVaultLoopbackUnverified
+          | otherwise -> Right request
+ where
+  method = operatorSecretRequestMethod rawRequest
+  body = requestBodyBytes rawRequest
+
+renderBootstrapVaultRequestError :: BootstrapVaultRequestError -> String
+renderBootstrapVaultRequestError err = case err of
+  BootstrapVaultMethodNotAllowed method ->
+    "method " ++ method ++ " is not supported for " ++ bootstrapVaultPath
+  BootstrapVaultRequestTooLarge size ->
+    "bootstrap request body is too large: "
+      ++ show size
+      ++ " bytes; maximum is "
+      ++ show bootstrapVaultRequestMaxBytes
+  BootstrapVaultRequestEmpty ->
+    "empty request body; expected JSON object with unlock_password and loopback_nodeport_verified"
+  BootstrapVaultRequestMalformed detail ->
+    "invalid bootstrap JSON body: " ++ detail
+  BootstrapVaultPasswordEmpty ->
+    "unlock_password must not be empty"
+  BootstrapVaultLoopbackUnverified ->
+    "loopback NodePort restriction is not verified; refusing password-bearing bootstrap route"
+
 splitCrlfLines :: String -> [String]
 splitCrlfLines = foldr step [""] . filter (/= '\r')
  where
@@ -1132,6 +1479,695 @@ splitCrlfLines = foldr step [""] . filter (/= '\r')
 
 trimHeader :: String -> String
 trimHeader = f . f where f = reverse . dropWhile isSpace
+
+data BootstrapVaultEnsureError
+  = BootstrapVaultEnsureVaultUnavailable String
+  | BootstrapVaultEnsureBundleUnavailable String
+  | BootstrapVaultEnsureUnsealFailed String
+  | BootstrapVaultEnsureReconcileFailed String
+  deriving (Eq, Show)
+
+handleBootstrapVaultEnsure :: Socket -> DaemonEnv -> BS.ByteString -> IO ()
+handleBootstrapVaultEnsure sock env rawRequest =
+  case decodeBootstrapVaultRequest rawRequest of
+    Left (BootstrapVaultMethodNotAllowed _) ->
+      sendHttpResponse
+        sock
+        405
+        "text/plain"
+        ( renderBootstrapVaultRequestError
+            (BootstrapVaultMethodNotAllowed (operatorSecretRequestMethod rawRequest))
+            ++ "\n"
+        )
+    Left err ->
+      sendHttpResponse sock 400 "text/plain" (renderBootstrapVaultRequestError err ++ "\n")
+    Right request -> do
+      result <- ensureBootstrapVault (envBootConfig env) request
+      case result of
+        Left err ->
+          let (status, message) = renderBootstrapVaultEnsureError err
+           in sendHttpResponse sock status "text/plain" (message ++ "\n")
+        Right response ->
+          sendLazyHttpResponse sock 200 "application/json" (encode response)
+
+renderBootstrapVaultEnsureError :: BootstrapVaultEnsureError -> (Int, String)
+renderBootstrapVaultEnsureError err = case err of
+  BootstrapVaultEnsureVaultUnavailable detail ->
+    (503, "Vault bootstrap unavailable: " ++ detail)
+  BootstrapVaultEnsureBundleUnavailable detail ->
+    (503, "Vault bootstrap bundle unavailable: " ++ detail)
+  BootstrapVaultEnsureUnsealFailed detail ->
+    (502, "Vault unseal failed: " ++ detail)
+  BootstrapVaultEnsureReconcileFailed detail ->
+    (502, "Vault reconcile failed: " ++ detail)
+
+handleBootstrapVaultStatus :: Socket -> DaemonEnv -> BS.ByteString -> IO ()
+handleBootstrapVaultStatus sock env rawRequest =
+  case operatorSecretRequestMethod rawRequest of
+    "GET" -> do
+      result <- vaultSealStatus (bootstrapVaultAddress (envBootConfig env))
+      case result of
+        Left err ->
+          sendHttpResponse
+            sock
+            503
+            "text/plain"
+            ("Vault status unavailable: " ++ renderHttpError err ++ "\n")
+        Right status ->
+          sendLazyHttpResponse sock 200 "application/json" (encode status)
+    method ->
+      sendHttpResponse
+        sock
+        405
+        "text/plain"
+        ("method " ++ method ++ " is not supported for " ++ bootstrapVaultStatusPath ++ "\n")
+
+handleBootstrapVaultSeal :: Socket -> DaemonEnv -> BS.ByteString -> IO ()
+handleBootstrapVaultSeal sock env rawRequest =
+  handleBootstrapVaultPasswordAction sock rawRequest $ \request -> do
+    result <- sealBootstrapVault (envBootConfig env) request
+    pure $ encodeBootstrapActionResult result
+
+handleBootstrapVaultRotateUnlockBundle :: Socket -> DaemonEnv -> BS.ByteString -> IO ()
+handleBootstrapVaultRotateUnlockBundle sock env rawRequest =
+  case decodeBootstrapVaultRotateUnlockBundleRequest rawRequest of
+    Left (BootstrapVaultMethodNotAllowed _) ->
+      sendBootstrapRequestError
+        sock
+        405
+        rawRequest
+        (BootstrapVaultMethodNotAllowed (operatorSecretRequestMethod rawRequest))
+    Left err -> sendBootstrapRequestError sock 400 rawRequest err
+    Right request -> do
+      result <- rotateBootstrapUnlockBundle (envBootConfig env) request
+      sendBootstrapActionResult sock result
+
+handleBootstrapVaultRotateTransitKey :: Socket -> DaemonEnv -> BS.ByteString -> IO ()
+handleBootstrapVaultRotateTransitKey sock env rawRequest =
+  case decodeBootstrapVaultRotateTransitKeyRequest rawRequest of
+    Left (BootstrapVaultMethodNotAllowed _) ->
+      sendBootstrapRequestError
+        sock
+        405
+        rawRequest
+        (BootstrapVaultMethodNotAllowed (operatorSecretRequestMethod rawRequest))
+    Left err -> sendBootstrapRequestError sock 400 rawRequest err
+    Right request -> do
+      result <- rotateBootstrapTransitKey (envBootConfig env) request
+      sendBootstrapActionResult sock result
+
+handleBootstrapVaultPkiStatus :: Socket -> DaemonEnv -> BS.ByteString -> IO ()
+handleBootstrapVaultPkiStatus sock env rawRequest =
+  handleBootstrapVaultPasswordAction sock rawRequest $ \request -> do
+    result <- bootstrapVaultPkiStatus (envBootConfig env) request
+    pure $ encodeBootstrapActionResult result
+
+handleBootstrapVaultPkiIssueTestCert :: Socket -> DaemonEnv -> BS.ByteString -> IO ()
+handleBootstrapVaultPkiIssueTestCert sock env rawRequest =
+  handleBootstrapVaultPasswordAction sock rawRequest $ \request -> do
+    result <- bootstrapVaultPkiIssueTestCert (envBootConfig env) request
+    pure $ encodeBootstrapActionResult result
+
+handleBootstrapVaultPasswordAction
+  :: Socket
+  -> BS.ByteString
+  -> (BootstrapVaultRequest -> IO (Either BootstrapVaultEnsureError BL.ByteString))
+  -> IO ()
+handleBootstrapVaultPasswordAction sock rawRequest action =
+  case decodeBootstrapVaultAuthenticatedRequest rawRequest of
+    Left (BootstrapVaultMethodNotAllowed _) ->
+      sendBootstrapRequestError
+        sock
+        405
+        rawRequest
+        (BootstrapVaultMethodNotAllowed (operatorSecretRequestMethod rawRequest))
+    Left err -> sendBootstrapRequestError sock 400 rawRequest err
+    Right request -> do
+      result <- action request
+      case result of
+        Left err ->
+          let (status, message) = renderBootstrapVaultEnsureError err
+           in sendHttpResponse sock status "text/plain" (message ++ "\n")
+        Right body ->
+          sendLazyHttpResponse sock 200 "application/json" body
+
+sendBootstrapRequestError :: Socket -> Int -> BS.ByteString -> BootstrapVaultRequestError -> IO ()
+sendBootstrapRequestError sock status _rawRequest err =
+  sendHttpResponse sock status "text/plain" (renderBootstrapVaultRequestError err ++ "\n")
+
+sendBootstrapActionResult
+  :: Socket -> Either BootstrapVaultEnsureError BL.ByteString -> IO ()
+sendBootstrapActionResult sock result =
+  case result of
+    Left err ->
+      let (status, message) = renderBootstrapVaultEnsureError err
+       in sendHttpResponse sock status "text/plain" (message ++ "\n")
+    Right body ->
+      sendLazyHttpResponse sock 200 "application/json" body
+
+encodeBootstrapActionResult
+  :: Either BootstrapVaultEnsureError Value
+  -> Either BootstrapVaultEnsureError BL.ByteString
+encodeBootstrapActionResult = fmap encode
+
+ensureBootstrapVault
+  :: DaemonConfig
+  -> BootstrapVaultRequest
+  -> IO (Either BootstrapVaultEnsureError BootstrapVaultResponse)
+ensureBootstrapVault config request = do
+  statusResult <- vaultSealStatus address
+  case statusResult of
+    Left err ->
+      pure (Left (BootstrapVaultEnsureVaultUnavailable (renderHttpError err)))
+    Right status ->
+      case bootstrapAction status of
+        BootstrapInitialize -> initializeUnsealAndReconcile
+        BootstrapUnseal -> unsealExistingAndReconcile status
+        BootstrapReady -> reconcileReadyVault
+ where
+  address = bootstrapVaultAddress config
+  minioConfig = bootstrapVaultObjectStoreConfig config
+  password = bootstrapVaultUnlockPassword request
+
+  initializeUnsealAndReconcile = do
+    initResult <- vaultInit address defaultInitRequest
+    case initResult of
+      Left err ->
+        pure (Left (BootstrapVaultEnsureVaultUnavailable (renderHttpError err)))
+      Right initResponse -> do
+        now <- getCurrentTime
+        let bundle =
+              initResponseToUnlockBundle
+                (Text.pack (daemonNodeId config))
+                address
+                (Text.pack (formatShow iso8601Format now))
+                initResponse
+        encrypted <- encryptUnlockBundle password bundle
+        case encrypted of
+          Left err ->
+            pure
+              ( Left
+                  ( BootstrapVaultEnsureBundleUnavailable
+                      ("unlock bundle encryption failed: " ++ renderUnlockBundleError err)
+                  )
+              )
+          Right envelopeBytes -> do
+            writeResult <- putAndVerifyBootstrapBundle minioConfig password envelopeBytes
+            case writeResult of
+              Left err -> pure (Left (BootstrapVaultEnsureBundleUnavailable err))
+              Right () -> do
+                currentStatus <- vaultSealStatus address
+                case currentStatus of
+                  Left err ->
+                    pure (Left (BootstrapVaultEnsureVaultUnavailable (renderHttpError err)))
+                  Right sealedStatus -> do
+                    unsealResult <- submitBootstrapUnsealSteps address sealedStatus bundle
+                    case unsealResult of
+                      Left err -> pure (Left (BootstrapVaultEnsureUnsealFailed err))
+                      Right () ->
+                        reconcileWithRootToken
+                          "initialized-unsealed-reconciled"
+                          (VaultToken (unlockBundleInitialRootToken bundle))
+
+  unsealExistingAndReconcile status = do
+    bundleResult <- readBootstrapBundle minioConfig password
+    case bundleResult of
+      Left err -> pure (Left (BootstrapVaultEnsureBundleUnavailable err))
+      Right bundle -> do
+        unsealResult <- submitBootstrapUnsealSteps address status bundle
+        case unsealResult of
+          Left err -> pure (Left (BootstrapVaultEnsureUnsealFailed err))
+          Right () ->
+            reconcileWithRootToken "unsealed-reconciled" (VaultToken (unlockBundleInitialRootToken bundle))
+
+  reconcileReadyVault = do
+    bundleResult <- readBootstrapBundle minioConfig password
+    case bundleResult of
+      Left err -> pure (Left (BootstrapVaultEnsureBundleUnavailable err))
+      Right bundle ->
+        reconcileWithRootToken "reconciled" (VaultToken (unlockBundleInitialRootToken bundle))
+
+  reconcileWithRootToken actionName token = do
+    reconcileResult <- runVaultReconcile address token defaultVaultReconcilePlan
+    pure $ case reconcileResult of
+      Left err ->
+        Left (BootstrapVaultEnsureReconcileFailed (renderVaultReconcileError err))
+      Right steps ->
+        Right
+          BootstrapVaultResponse
+            { bootstrapVaultResponseStatus = "ready"
+            , bootstrapVaultResponseAction = actionName
+            , bootstrapVaultResponseReconcileStepCount = length steps
+            }
+
+sealBootstrapVault
+  :: DaemonConfig -> BootstrapVaultRequest -> IO (Either BootstrapVaultEnsureError Value)
+sealBootstrapVault config request = do
+  tokenResult <- bootstrapRootToken config (bootstrapVaultUnlockPassword request)
+  case tokenResult of
+    Left err -> pure (Left err)
+    Right token -> do
+      result <- vaultSeal (bootstrapVaultAddress config) token
+      pure $ case result of
+        Left err -> Left (BootstrapVaultEnsureVaultUnavailable (renderHttpError err))
+        Right () ->
+          Right
+            ( object
+                [ "status" .= ("sealed" :: Text.Text)
+                , "action" .= ("sealed" :: Text.Text)
+                ]
+            )
+
+rotateBootstrapUnlockBundle
+  :: DaemonConfig
+  -> BootstrapVaultRotateUnlockBundleRequest
+  -> IO (Either BootstrapVaultEnsureError BL.ByteString)
+rotateBootstrapUnlockBundle config request = do
+  bundleResult <- readBootstrapBundle minioConfig (bootstrapVaultRotateCurrentPassword request)
+  case bundleResult of
+    Left err -> pure (Left (BootstrapVaultEnsureBundleUnavailable err))
+    Right bundle -> do
+      encrypted <- encryptUnlockBundle (bootstrapVaultRotateNewPassword request) bundle
+      case encrypted of
+        Left err ->
+          pure
+            ( Left
+                ( BootstrapVaultEnsureBundleUnavailable
+                    ("unlock bundle encryption failed: " ++ renderUnlockBundleError err)
+                )
+            )
+        Right envelopeBytes -> do
+          writeResult <-
+            putAndVerifyBootstrapBundle
+              minioConfig
+              (bootstrapVaultRotateNewPassword request)
+              envelopeBytes
+          pure $ case writeResult of
+            Left err -> Left (BootstrapVaultEnsureBundleUnavailable err)
+            Right () ->
+              Right
+                ( encode
+                    ( object
+                        [ "status" .= ("ready" :: Text.Text)
+                        , "action" .= ("unlock-bundle-rotated" :: Text.Text)
+                        ]
+                    )
+                )
+ where
+  minioConfig = bootstrapVaultObjectStoreConfig config
+
+rotateBootstrapTransitKey
+  :: DaemonConfig
+  -> BootstrapVaultRotateTransitKeyRequest
+  -> IO (Either BootstrapVaultEnsureError BL.ByteString)
+rotateBootstrapTransitKey config request = do
+  tokenResult <- bootstrapRootToken config (bootstrapVaultRotateTransitPassword request)
+  case tokenResult of
+    Left err -> pure (Left err)
+    Right token -> do
+      result <-
+        vaultRotateTransitKey
+          (bootstrapVaultAddress config)
+          token
+          (bootstrapVaultRotateTransitKeyName request)
+      pure $ case result of
+        Left err -> Left (BootstrapVaultEnsureVaultUnavailable (renderHttpError err))
+        Right () ->
+          Right
+            ( encode
+                ( object
+                    [ "status" .= ("ready" :: Text.Text)
+                    , "action" .= ("transit-key-rotated" :: Text.Text)
+                    , "key_name" .= bootstrapVaultRotateTransitKeyName request
+                    ]
+                )
+            )
+
+bootstrapVaultPkiStatus
+  :: DaemonConfig -> BootstrapVaultRequest -> IO (Either BootstrapVaultEnsureError Value)
+bootstrapVaultPkiStatus config request = do
+  tokenResult <- bootstrapRootToken config (bootstrapVaultUnlockPassword request)
+  case tokenResult of
+    Left err -> pure (Left err)
+    Right token -> do
+      mountsResult <- vaultListMounts (bootstrapVaultAddress config) token
+      pure $ case mountsResult of
+        Left err -> Left (BootstrapVaultEnsureVaultUnavailable (renderHttpError err))
+        Right mounts ->
+          case Map.lookup "pki" mounts of
+            Nothing ->
+              Right
+                ( object
+                    [ "status" .= ("missing" :: Text.Text)
+                    , "mount" .= ("pki" :: Text.Text)
+                    ]
+                )
+            Just mount ->
+              Right
+                ( object
+                    [ "status" .= ("present" :: Text.Text)
+                    , "mount" .= ("pki" :: Text.Text)
+                    , "type" .= vaultMountType mount
+                    ]
+                )
+
+bootstrapVaultPkiIssueTestCert
+  :: DaemonConfig -> BootstrapVaultRequest -> IO (Either BootstrapVaultEnsureError Value)
+bootstrapVaultPkiIssueTestCert config request = do
+  tokenResult <- bootstrapRootToken config (bootstrapVaultUnlockPassword request)
+  case tokenResult of
+    Left err -> pure (Left err)
+    Right token -> do
+      result <-
+        vaultPkiIssueTestCertificate
+          (bootstrapVaultAddress config)
+          token
+          "prodbox-test"
+          "prodbox-vault-test.internal"
+          "1m"
+      pure $ case result of
+        Left err -> Left (BootstrapVaultEnsureVaultUnavailable (renderHttpError err))
+        Right certPem ->
+          Right
+            ( object
+                [ "status" .= ("issued" :: Text.Text)
+                , "certificate" .= certPem
+                ]
+            )
+
+bootstrapRootToken :: DaemonConfig -> Text.Text -> IO (Either BootstrapVaultEnsureError VaultToken)
+bootstrapRootToken config password = do
+  bundleResult <- readBootstrapBundle (bootstrapVaultObjectStoreConfig config) password
+  pure $ case bundleResult of
+    Left err -> Left (BootstrapVaultEnsureBundleUnavailable err)
+    Right bundle -> Right (VaultToken (unlockBundleInitialRootToken bundle))
+
+bootstrapVaultAddress :: DaemonConfig -> VaultAddress
+bootstrapVaultAddress config =
+  case daemonVaultAuth config of
+    Just auth -> VaultAddress (Text.pack (gatewayVaultAddress auth))
+    Nothing -> VaultAddress "http://vault.vault.svc.cluster.local:8200"
+
+bootstrapVaultObjectStoreConfig :: DaemonConfig -> ObjectStoreConfig
+bootstrapVaultObjectStoreConfig config =
+  bootstrapObjectStoreConfigWithEndpoint
+    (fromMaybe "http://minio.prodbox.svc.cluster.local:9000" (daemonMinioEndpointUrl config))
+
+data PulumiObjectRequestError
+  = PulumiObjectMethodNotAllowed String
+  | PulumiObjectRequestTooLarge Int
+  | PulumiObjectRequestEmpty
+  | PulumiObjectRequestMalformed String
+  | PulumiObjectStackInvalid String
+  | PulumiObjectLoopbackUnverified
+  deriving (Eq, Show)
+
+decodePulumiObjectRequest
+  :: BS.ByteString -> Either PulumiObjectRequestError PulumiObjectRequest
+decodePulumiObjectRequest rawRequest = do
+  request <- decodePulumiObjectJson rawRequest
+  case validatePulumiObjectStackName (pulumiObjectStackName request) of
+    Left err -> Left (PulumiObjectStackInvalid err)
+    Right stackName
+      | not (pulumiObjectLoopbackNodePortVerified request) ->
+          Left PulumiObjectLoopbackUnverified
+      | otherwise ->
+          Right request {pulumiObjectStackName = stackName}
+
+decodePulumiObjectPutRequest
+  :: BS.ByteString -> Either PulumiObjectRequestError PulumiObjectPutRequest
+decodePulumiObjectPutRequest rawRequest = do
+  request <- decodePulumiObjectJson rawRequest
+  case validatePulumiObjectStackName (pulumiObjectPutStackName request) of
+    Left err -> Left (PulumiObjectStackInvalid err)
+    Right stackName
+      | not (pulumiObjectPutLoopbackNodePortVerified request) ->
+          Left PulumiObjectLoopbackUnverified
+      | otherwise ->
+          Right request {pulumiObjectPutStackName = stackName}
+
+decodePulumiObjectJson
+  :: (FromJSON a) => BS.ByteString -> Either PulumiObjectRequestError a
+decodePulumiObjectJson rawRequest
+  | method /= "POST" = Left (PulumiObjectMethodNotAllowed method)
+  | BS.length body > pulumiObjectRequestMaxBytes =
+      Left (PulumiObjectRequestTooLarge (BS.length body))
+  | BS.null (BS8.dropWhile isSpace body) = Left PulumiObjectRequestEmpty
+  | otherwise =
+      case eitherDecodeStrict' body of
+        Left err -> Left (PulumiObjectRequestMalformed err)
+        Right request -> Right request
+ where
+  method = operatorSecretRequestMethod rawRequest
+  body = requestBodyBytes rawRequest
+
+renderPulumiObjectRequestError :: PulumiObjectRequestError -> String
+renderPulumiObjectRequestError err = case err of
+  PulumiObjectMethodNotAllowed method ->
+    "method " ++ method ++ " is not supported for daemon Pulumi object-store routes"
+  PulumiObjectRequestTooLarge size ->
+    "Pulumi object-store request body is too large: "
+      ++ show size
+      ++ " bytes; maximum is "
+      ++ show pulumiObjectRequestMaxBytes
+  PulumiObjectRequestEmpty ->
+    "empty request body; expected JSON object with stack and loopback_nodeport_verified"
+  PulumiObjectRequestMalformed detail ->
+    "invalid Pulumi object-store JSON body: " ++ detail
+  PulumiObjectStackInvalid detail ->
+    "invalid Pulumi stack name: " ++ detail
+  PulumiObjectLoopbackUnverified ->
+    "loopback NodePort restriction is not verified; refusing daemon Pulumi object-store route"
+
+handlePulumiObjectGet :: Socket -> DaemonEnv -> BS.ByteString -> IO ()
+handlePulumiObjectGet sock env rawRequest =
+  case decodePulumiObjectRequest rawRequest of
+    Left (PulumiObjectMethodNotAllowed _) ->
+      sendPulumiObjectRequestError
+        sock
+        405
+        (PulumiObjectMethodNotAllowed (operatorSecretRequestMethod rawRequest))
+    Left err -> sendPulumiObjectRequestError sock 400 err
+    Right request -> do
+      result <- readDaemonPulumiObject env (pulumiObjectStackName request)
+      case result of
+        Left err -> sendPulumiObjectActionError sock err
+        Right Nothing ->
+          sendLazyHttpResponse sock 200 "application/json" (encode PulumiObjectAbsent)
+        Right (Just checkpoint) ->
+          sendLazyHttpResponse sock 200 "application/json" (encode (PulumiObjectPresent checkpoint))
+
+handlePulumiObjectPut :: Socket -> DaemonEnv -> BS.ByteString -> IO ()
+handlePulumiObjectPut sock env rawRequest =
+  case decodePulumiObjectPutRequest rawRequest of
+    Left (PulumiObjectMethodNotAllowed _) ->
+      sendPulumiObjectRequestError
+        sock
+        405
+        (PulumiObjectMethodNotAllowed (operatorSecretRequestMethod rawRequest))
+    Left err -> sendPulumiObjectRequestError sock 400 err
+    Right request -> do
+      result <-
+        writeDaemonPulumiObject
+          env
+          (pulumiObjectPutStackName request)
+          (pulumiObjectPutCheckpoint request)
+      case result of
+        Left err -> sendPulumiObjectActionError sock err
+        Right () ->
+          sendLazyHttpResponse sock 200 "application/json" (encode (object ["stored" .= True]))
+
+handlePulumiObjectDelete :: Socket -> DaemonEnv -> BS.ByteString -> IO ()
+handlePulumiObjectDelete sock env rawRequest =
+  case decodePulumiObjectRequest rawRequest of
+    Left (PulumiObjectMethodNotAllowed _) ->
+      sendPulumiObjectRequestError
+        sock
+        405
+        (PulumiObjectMethodNotAllowed (operatorSecretRequestMethod rawRequest))
+    Left err -> sendPulumiObjectRequestError sock 400 err
+    Right request -> do
+      result <- deleteDaemonPulumiObject env (pulumiObjectStackName request)
+      case result of
+        Left err -> sendPulumiObjectActionError sock err
+        Right () ->
+          sendLazyHttpResponse sock 200 "application/json" (encode (object ["deleted" .= True]))
+
+sendPulumiObjectRequestError :: Socket -> Int -> PulumiObjectRequestError -> IO ()
+sendPulumiObjectRequestError sock status err =
+  sendHttpResponse sock status "text/plain" (renderPulumiObjectRequestError err ++ "\n")
+
+sendPulumiObjectActionError :: Socket -> String -> IO ()
+sendPulumiObjectActionError sock detail =
+  sendHttpResponse sock 503 "text/plain" ("Pulumi object-store unavailable: " ++ detail ++ "\n")
+
+data DaemonPulumiObjectMaterial = DaemonPulumiObjectMaterial
+  { daemonPulumiObjectStore :: ObjectStoreConfig
+  , daemonPulumiCipher :: DekCipher
+  , daemonPulumiHmacKey :: ByteString
+  , daemonPulumiClusterId :: Text.Text
+  }
+
+readDaemonPulumiObject :: DaemonEnv -> Text.Text -> IO (Either String (Maybe ByteString))
+readDaemonPulumiObject env stackName = do
+  materialResult <- resolveDaemonPulumiObjectMaterial env
+  case materialResult of
+    Left err -> pure (Left err)
+    Right material -> do
+      result <-
+        getLogical
+          (daemonPulumiObjectStore material)
+          (daemonPulumiCipher material)
+          (daemonPulumiHmacKey material)
+          (daemonPulumiClusterId material)
+          (LogicalPulumiStack stackName)
+      pure $ case result of
+        Left (EncryptedObjectMissing _) -> Right Nothing
+        Left err -> Left (renderEncryptedObjectError err)
+        Right checkpoint -> Right (Just checkpoint)
+
+writeDaemonPulumiObject :: DaemonEnv -> Text.Text -> ByteString -> IO (Either String ())
+writeDaemonPulumiObject env stackName checkpoint = do
+  materialResult <- resolveDaemonPulumiObjectMaterial env
+  case materialResult of
+    Left err -> pure (Left err)
+    Right material -> do
+      result <-
+        putLogical
+          (daemonPulumiObjectStore material)
+          (daemonPulumiCipher material)
+          (daemonPulumiHmacKey material)
+          (daemonPulumiClusterId material)
+          (LogicalPulumiStack stackName)
+          checkpoint
+      pure $ case result of
+        Left err -> Left (renderEncryptedObjectError err)
+        Right () -> Right ()
+
+deleteDaemonPulumiObject :: DaemonEnv -> Text.Text -> IO (Either String ())
+deleteDaemonPulumiObject env stackName = do
+  materialResult <- resolveDaemonPulumiObjectMaterial env
+  case materialResult of
+    Left err -> pure (Left err)
+    Right material -> do
+      let key =
+            objectKeyForOpaqueId
+              (opaqueObjectId (daemonPulumiHmacKey material) (LogicalPulumiStack stackName))
+      deleteObject (daemonPulumiObjectStore material) key
+
+resolveDaemonPulumiObjectMaterial :: DaemonEnv -> IO (Either String DaemonPulumiObjectMaterial)
+resolveDaemonPulumiObjectMaterial env = do
+  clusterResult <- loadDaemonClusterId (envConfigPath env)
+  vaultResult <- resolveGatewayVaultToken (envBootConfig env)
+  case (clusterResult, vaultResult) of
+    (Left err, _) -> pure (Left err)
+    (_, Left err) -> pure (Left err)
+    (Right clusterId, Right (address, token)) -> do
+      hmacResult <- readDaemonObjectStoreHmac address token
+      case hmacResult of
+        Left err -> pure (Left err)
+        Right hmacKey ->
+          pure $ do
+            objectStore <- daemonPulumiObjectStoreConfig (envBootConfig env)
+            Right
+              DaemonPulumiObjectMaterial
+                { daemonPulumiObjectStore = objectStore
+                , daemonPulumiCipher = vaultTransitDekCipher address token "prodbox-pulumi-state"
+                , daemonPulumiHmacKey = hmacKey
+                , daemonPulumiClusterId = clusterId
+                }
+
+loadDaemonClusterId :: Maybe FilePath -> IO (Either String Text.Text)
+loadDaemonClusterId maybeConfigPath = do
+  let configMapDir = maybe "/etc/gateway/config" takeDirectory maybeConfigPath
+  containerDefaultPath <- resolveTier0ConfigPath "/"
+  result <- loadDaemonBinaryContext configMapDir containerDefaultPath
+  pure $ case result of
+    Left err -> Left ("daemon Tier-0 cluster id unavailable: " ++ err)
+    Right (_, projectConfig) -> Right (cluster_id (context projectConfig))
+
+readDaemonObjectStoreHmac :: VaultAddress -> VaultToken -> IO (Either String ByteString)
+readDaemonObjectStoreHmac address token = do
+  result <- vaultKvReadV2 address token "secret" "object-store/hmac"
+  pure $ case result of
+    Left err -> Left ("daemon object-store HMAC unavailable: " ++ renderHttpError err)
+    Right fields ->
+      case Map.lookup "key" fields of
+        Just value
+          | not (Text.null (Text.strip value)) ->
+              Right (TextEncoding.encodeUtf8 value)
+        _ -> Left "daemon object-store HMAC unavailable: secret/object-store/hmac is missing field key"
+
+daemonPulumiObjectStoreConfig :: DaemonConfig -> Either String ObjectStoreConfig
+daemonPulumiObjectStoreConfig config =
+  case daemonMinioCreds config of
+    Nothing -> Left "daemon MinIO credentials are not configured"
+    Just creds ->
+      Right
+        ObjectStoreConfig
+          { objectStoreEndpoint =
+              fromMaybe "http://minio.prodbox.svc.cluster.local:9000" (daemonMinioEndpointUrl config)
+          , objectStoreBucket = defaultObjectStoreBucket
+          , objectStoreAccessKey = gatewayMinioAccessKey creds
+          , objectStoreSecretKey = gatewayMinioSecretKey creds
+          }
+
+putAndVerifyBootstrapBundle
+  :: ObjectStoreConfig
+  -> Text.Text
+  -> BS.ByteString
+  -> IO (Either String ())
+putAndVerifyBootstrapBundle config password envelopeBytes = do
+  putResult <- putBundleObject config envelopeBytes
+  case putResult of
+    Left err -> pure (Left ("write failed: " ++ err))
+    Right () -> do
+      readResult <- getBundleObject config
+      pure $ case readResult of
+        Left err -> Left ("read-back failed: " ++ err)
+        Right Nothing -> Left "read-back returned no bootstrap unlock bundle"
+        Right (Just bytes) ->
+          case decryptUnlockBundle password bytes of
+            Right _ -> Right ()
+            Left err ->
+              Left ("read-back did not decrypt: " ++ renderUnlockBundleError err)
+
+readBootstrapBundle
+  :: ObjectStoreConfig
+  -> Text.Text
+  -> IO (Either String UnlockBundle)
+readBootstrapBundle config password = do
+  result <- getBundleObject config
+  pure $ case result of
+    Left err -> Left ("read failed: " ++ err)
+    Right Nothing -> Left "bootstrap unlock bundle is absent"
+    Right (Just bytes) ->
+      case decryptUnlockBundle password bytes of
+        Left err -> Left ("unlock bundle did not decrypt: " ++ renderUnlockBundleError err)
+        Right bundle -> Right bundle
+
+submitBootstrapUnsealSteps
+  :: VaultAddress
+  -> SealStatus
+  -> UnlockBundle
+  -> IO (Either String ())
+submitBootstrapUnsealSteps address status bundle =
+  case planUnseal status (unlockBundleUnsealKeys bundle) of
+    Left err -> pure (Left ("unseal plan failed: " ++ err))
+    Right steps -> go steps
+ where
+  go [] =
+    pure (Left "unseal consumed every key share but Vault is still sealed")
+  go (step : rest) = do
+    result <- vaultSubmitUnseal address (unsealStepKey step)
+    case result of
+      Left err -> pure (Left ("unseal submission failed: " ++ renderHttpError err))
+      Right newStatus ->
+        case interpretUnsealProgress newStatus step of
+          UnsealCompleted -> pure (Right ())
+          UnsealAdvanced _ -> go rest
+          UnsealStalled ->
+            pure (Left "unseal stalled; a key share did not advance progress")
 
 -- | Errors from the operator-secret write path, mapped to HTTP status codes.
 data OperatorWriteError

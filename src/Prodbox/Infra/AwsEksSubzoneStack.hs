@@ -40,25 +40,19 @@ import Prodbox.CLI.Output
 import Prodbox.Error (fatalError)
 import Prodbox.Infra.AwsEksTestStack
   ( loadOperationalAwsCredentials
-  , pulumiBackendBaseEnv
   , pulumiProviderBaseEnv
   , settingsAwsEnv
   )
 import Prodbox.Infra.MinioBackend
-  ( bucketObjectCount
-  , ensureMinioBackendBucket
-  , pulumiBackendLoginTimeoutSeconds
-  , readMinioCredentials
-  , withMinioPortForward
+  ( pulumiBackendLoginTimeoutSeconds
   )
 import Prodbox.Infra.StackOutputs qualified as StackOutputs
 import Prodbox.Lifecycle.LiveResidue qualified as LiveResidue
 import Prodbox.Lifecycle.ResidueStatus qualified as ResidueStatus
 import Prodbox.Pulumi.EncryptedBackend
-  ( LegacyPulumiBackend (..)
-  , PulumiStackRef (..)
+  ( PulumiStackRef (..)
   , renderEncryptedBackendError
-  , withMigratedDecryptedStackEnvironment
+  , withDecryptedStackEnvironment
   )
 import Prodbox.Result (Result (..))
 import Prodbox.Settings
@@ -457,12 +451,9 @@ joinComma items = foldr1 (\a b -> a ++ "," ++ b) items
 runEnsureAwsEksSubzonePulumiCycle
   :: FilePath
   -> AwsEksSubzoneStackConfig
-  -> Int
-  -> String
-  -> String
   -> [(String, String)]
   -> IO (Either String ())
-runEnsureAwsEksSubzonePulumiCycle projectDir stackConfig localPort accessKey secretKey environment = do
+runEnsureAwsEksSubzonePulumiCycle projectDir stackConfig environment = do
   loginExit <- pulumiLogin projectDir environment
   case loginExit of
     ExitFailure _ -> pure (Left "pulumi login failed")
@@ -489,14 +480,9 @@ runEnsureAwsEksSubzonePulumiCycle projectDir stackConfig localPort accessKey sec
                       case snapshotFromOutputs outputs of
                         Left err -> pure (Left err)
                         Right snapshot -> do
-                          objectCountResult <-
-                            bucketObjectCount localPort accessKey secretKey
-                          case objectCountResult of
-                            Left err -> pure (Left err)
-                            Right objectCount -> do
-                              writeOutput
-                                (renderAwsEksSubzoneStackReport snapshot objectCount)
-                              pure (Right ())
+                          writeOutput
+                            (renderAwsEksSubzoneStackReport snapshot 0)
+                          pure (Right ())
 
 ensureAwsEksSubzoneStackResources :: FilePath -> IO ExitCode
 ensureAwsEksSubzoneStackResources repoRoot = do
@@ -509,34 +495,19 @@ ensureAwsEksSubzoneStackResources repoRoot = do
       case configResult of
         Left err -> failWith err
         Right stackConfig -> do
-          portForwardResult <- withMinioPortForward $ \localPort -> do
-            credsResult <- readMinioCredentials
-            case credsResult of
-              Left err -> pure (Left err)
-              Right (accessKey, secretKey) -> do
-                bucketResult <- ensureMinioBackendBucket localPort accessKey secretKey
-                case bucketResult of
-                  Left err -> pure (Left err)
-                  Right () -> do
-                    providerEnvironmentResult <- pulumiProviderBaseEnv repoRoot
-                    case providerEnvironmentResult of
-                      Left err -> pure (Left err)
-                      Right providerEnvironment -> do
-                        legacyEnvironment <- pulumiBackendBaseEnv localPort accessKey secretKey
-                        backendResult <-
-                          withMigratedDecryptedStackEnvironment
-                            repoRoot
-                            awsEksSubzonePulumiStackRef
-                            (LegacyPulumiBackend projectDir legacyEnvironment (Text.pack awsEksSubzoneStackName))
-                            providerEnvironment
-                            (runEnsureAwsEksSubzonePulumiCycle projectDir stackConfig localPort accessKey secretKey)
-                        pure $ case backendResult of
-                          Left err -> Left (renderEncryptedBackendError err)
-                          Right () -> Right ()
-          case portForwardResult of
+          providerEnvironmentResult <- pulumiProviderBaseEnv repoRoot
+          case providerEnvironmentResult of
             Left err -> failWith err
-            Right (Left err) -> failWith err
-            Right (Right ()) -> pure ExitSuccess
+            Right providerEnvironment -> do
+              backendResult <-
+                withDecryptedStackEnvironment
+                  repoRoot
+                  awsEksSubzonePulumiStackRef
+                  providerEnvironment
+                  (runEnsureAwsEksSubzonePulumiCycle projectDir stackConfig)
+              case backendResult of
+                Left err -> failWith (renderEncryptedBackendError err)
+                Right () -> pure ExitSuccess
 
 destroyAwsEksSubzoneStack :: FilePath -> Bool -> IO ExitCode
 destroyAwsEksSubzoneStack repoRoot summary = do
@@ -622,44 +593,19 @@ destroyAwsEksSubzoneStackStatusPresent :: FilePath -> Bool -> IO (Either String 
 destroyAwsEksSubzoneStackStatusPresent repoRoot summary = do
   currentSnapshot <- fetchAwsEksSubzoneStackSnapshotFromBackend repoRoot
   let projectDir = awsEksSubzonePulumiProjectDir repoRoot
-  portForwardResult <- withMinioPortForward $ \localPort -> do
-    credsResult <- readMinioCredentials
-    case credsResult of
-      Left err -> pure (Left err)
-      Right (accessKey, secretKey) -> do
-        bucketResult <- ensureMinioBackendBucket localPort accessKey secretKey
-        case bucketResult of
-          Left err -> pure (Left err)
-          Right () -> do
-            providerEnvironmentResult <- pulumiProviderBaseEnv repoRoot
-            case providerEnvironmentResult of
-              Left err -> pure (Left err)
-              Right providerEnvironment -> do
-                legacyEnvironment <- pulumiBackendBaseEnv localPort accessKey secretKey
-                backendResult <-
-                  withMigratedDecryptedStackEnvironment
-                    repoRoot
-                    awsEksSubzonePulumiStackRef
-                    (LegacyPulumiBackend projectDir legacyEnvironment (Text.pack awsEksSubzoneStackName))
-                    providerEnvironment
-                    (runDestroyAwsEksSubzonePulumiCycle repoRoot projectDir currentSnapshot summary)
-                pure $ case backendResult of
-                  Left err -> Left (renderEncryptedBackendError err)
-                  Right status -> Right status
-  case portForwardResult of
-    Left err ->
-      case currentSnapshot of
-        Nothing ->
-          pure (Right "no local Pulumi backend or saved residue snapshot; nothing to destroy")
-        Just _ ->
-          pure
-            ( Left
-                ( "local MinIO backend unavailable while an AWS subzone stack snapshot still exists: "
-                    ++ err
-                )
-            )
-    Right (Left err) -> pure (Left err)
-    Right (Right status) -> pure (Right status)
+  providerEnvironmentResult <- pulumiProviderBaseEnv repoRoot
+  case providerEnvironmentResult of
+    Left err -> pure (Left err)
+    Right providerEnvironment -> do
+      backendResult <-
+        withDecryptedStackEnvironment
+          repoRoot
+          awsEksSubzonePulumiStackRef
+          providerEnvironment
+          (runDestroyAwsEksSubzonePulumiCycle repoRoot projectDir currentSnapshot summary)
+      pure $ case backendResult of
+        Left err -> Left (renderEncryptedBackendError err)
+        Right status -> Right status
 
 awsCliEnvironmentForCredentials :: Credentials -> IO [(String, String)]
 awsCliEnvironmentForCredentials credentials = do

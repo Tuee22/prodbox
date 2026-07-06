@@ -15,6 +15,17 @@
 
 ## Phase Status
 
+✅ **Reclosed 2026-07-05 for daemon-mediated lifecycle bootstrap.** Sprint `4.42` is now ✅ Done on
+Phase `4`'s lifecycle interpreter surface. `cluster reconcile` brings up bootstrap-readable MinIO,
+Vault, Harbor/image mirroring, the RKE2 registry config, and the loopback-restricted gateway daemon
+before posting root Vault init/unseal/reconcile through the daemon; `prodbox vault ...` lifecycle
+commands prefer the daemon NodePort and refuse direct host fallback when the daemon is reachable but
+returns an error. Sprint `7.30` has since moved the supported Pulumi object-store/residue path
+behind the same daemon boundary; surviving direct host Vault/MinIO helpers are explicit
+legacy/config/test seams in the cleanup ledger. Sprint `5.14` owns the canonical
+no-legacy-transport regression proof. Validation: warning-clean build plus local unit,
+CLI-integration, and env-integration gates listed in Sprint `4.42`.
+
 ✅ **Reclosed 2026-07-04 for host/RKE2 resource guardrails** — Phase `4` reopened to expand its
 own local-cluster lifecycle surface with Sprint `4.41`, now ✅ Done on its code-owned surface.
 `prodbox cluster reconcile` reconciles RKE2/kubelet resource reservations, eviction thresholds,
@@ -3350,6 +3361,57 @@ inside declared limits, and RKE2 should never schedule into the host's reserved 
 - None on the code-owned surface. Sprint `5.13` has landed suite-level coverage; the live host
   stress proof is a non-blocking live-infra axis.
 
+## Sprint 4.42: Route Lifecycle Bootstrap Through the Daemon [✅ Done]
+
+**Status**: Done (2026-07-05)
+**Implementation**: `src/Prodbox/CLI/Rke2.hs`, `src/Prodbox/CLI/Vault.hs`,
+`src/Prodbox/Gateway/Daemon.hs`, `src/Prodbox/Gateway/Client.hs`, `src/Prodbox/Aws.hs`,
+`test/unit/Main.hs`, `test/integration/CliSuite.hs`, `test/golden/plans/rke2-reconcile*.txt`
+**Independent Validation**: fake-daemon integration and unit tests over lifecycle ordering,
+fallback refusal, and no-direct-transport decisions; no AWS substrate or later phase required.
+**Docs to update**: `documents/engineering/vault_doctrine.md`,
+`documents/engineering/config_doctrine.md`, `documents/engineering/lifecycle_reconciliation_doctrine.md`,
+`documents/engineering/cli_command_surface.md`, `DEVELOPMENT_PLAN/legacy-tracking-for-deletion.md`
+
+### Objective
+
+Make `cluster reconcile` and the operator-facing `prodbox vault ...` commands use the daemon
+bootstrap endpoint after the daemon NodePort is available. The host binary still owns initial
+Kubernetes substrate bootstrap and daemon deployment, but it no longer reaches MinIO or Vault
+directly for post-bootstrap lifecycle work.
+
+### Deliverables
+
+- `cluster reconcile` orders platform bring-up as: RKE2 and retained PVs, bootstrap-readable MinIO,
+  Vault on its retained PV, daemon + loopback NodePort, daemon-mediated Vault init/unseal/reconcile,
+  then Vault-dependent chart reconciliation.
+- `prodbox vault status|init|unseal|reconcile|rotate-unlock-bundle|rotate-transit-key|pki ...`
+  prefer the daemon API once the daemon NodePort is reachable; direct host Vault/MinIO access is kept
+  only for explicit legacy/config/test seams tracked in the cleanup ledger.
+- The host-side MinIO port-forward helper is removed from the supported root unlock-bundle
+  lifecycle path; Sprint `7.30` also removes it from supported Pulumi/object-store reads.
+- The Vault `vault-host` direct NodePort and `hostVaultAddress` are no longer part of the supported
+  post-bootstrap lifecycle contract.
+- Error reporting distinguishes "daemon unavailable before bootstrap" from "daemon available but
+  Vault sealed/uninitialized" without leaking passwords, unseal shares, Vault tokens, object keys, or
+  child-cluster metadata.
+
+### Validation
+
+1. `prodbox test unit` covers lifecycle ordering, daemon-client decision tables, bounded request
+   decoders, route constants, and redaction. Passed 2026-07-05: 1182/1182.
+2. `prodbox test integration cli` uses fake daemon/Vault/MinIO boundaries to prove commands prefer
+   the daemon path and refuse unsupported direct fallback. Passed 2026-07-05: 43/43.
+3. `prodbox test integration env` proves no new environment-variable config path is introduced.
+   Passed 2026-07-05: 43/43.
+4. `prodbox dev check` is the closure gate for the full worktree. Passed 2026-07-05 after
+   pinned-format cleanup.
+
+### Remaining Work
+
+- None for Phase `4`. Sprint `7.30` now owns and closes the non-lifecycle object-store/Pulumi
+  daemon API; Sprint `5.14` owns the canonical no-legacy-transport regression proof.
+
 ## Documentation Requirements
 
 **Engineering docs to create/update:**
@@ -3368,7 +3430,8 @@ inside declared limits, and RKE2 should never schedule into the host's reserved 
   reconciler split (default `rke2 delete` / `aws teardown` stay refuse-gates, only `--cascade`
   reconciles), the registry-derived default-delete sweep, the nuke step-4 fail-closed tag sweep,
   and the `StackDescriptor` SSoT feeding the § 3.1 registry totality; for Sprint `4.41` it records
-  RKE2/kubelet/systemd resource guardrails as lifecycle-owned reconcile inputs.
+  RKE2/kubelet/systemd resource guardrails as lifecycle-owned reconcile inputs; for Sprint `4.42`
+  it records the daemon-mediated post-bootstrap lifecycle boundary.
 - `documents/engineering/resource_scaling_doctrine.md` - for Sprint `4.41`, host/RKE2 reservation,
   eviction-floor, observed-capacity refusal, and runtime enforcement rings.
 - `documents/engineering/host_platform_doctrine.md` - for Sprint `4.41`, host capacity observation
@@ -3386,7 +3449,8 @@ inside declared limits, and RKE2 should never schedule into the host's reserved 
   no-name-in-logs and exists-vs-`NoSuchKey` oracle rules for sealed-state output.
 - `documents/engineering/config_doctrine.md` - for Sprint `4.30` the in-force config flows through
   the §9 object-store (opaque `objects/<id>.enc`, not the literal `in-force-config` key); for
-  Sprint `4.32` the lifecycle bootstrap/in-force-settings split for federated child reconcile.
+  Sprint `4.32` the lifecycle bootstrap/in-force-settings split for federated child reconcile; for
+  Sprint `4.42` the removal of direct host MinIO/Vault transports after daemon bootstrap.
 - `documents/engineering/helm_chart_platform_doctrine.md` - for Sprint `4.30` the
   `.data/prodbox/minio/0` hostPath holds opaque-named ciphertext only.
 - `documents/engineering/storage_lifecycle_doctrine.md` - retained storage contract after the
@@ -3443,8 +3507,9 @@ inside declared limits, and RKE2 should never schedule into the host's reserved 
   [§19](../documents/engineering/vault_doctrine.md#19-red-team-checklist)), and for Sprint `4.32` the
   federated lifecycle reconcile — direct parent-side child registration, child-cluster auto-unseal,
   the fail-closed unseal cascade, parent-custodied child root token reuse, and the post-MinIO
-  settings reload. The opaque child-named namespace enforcement landed in Sprint `4.33`. The
-  retained-PV teardown model is extended, not reversed.
+  settings reload; for Sprint `4.42` the daemon-mediated root Vault bootstrap path. The opaque
+  child-named namespace enforcement landed in Sprint `4.33`. The retained-PV teardown model is
+  extended, not reversed.
 - [`documents/engineering/cluster_federation_doctrine.md`](../documents/engineering/cluster_federation_doctrine.md) -
   SSoT for the Vault transit-seal trust tree (root/child hierarchy, parent custody of child init
   keys, downstream-cluster metadata as secret, the root-token config-write authority, the fail-closed

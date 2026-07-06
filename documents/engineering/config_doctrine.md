@@ -253,14 +253,18 @@ prodbox-owned MinIO object obeys — a sealed Vault reduces prodbox to an opaque
 pile. See [vault_doctrine.md §9](./vault_doctrine.md#9-minio-as-a-ciphertext-store) and
 [cluster_federation_doctrine.md](./cluster_federation_doctrine.md).
 
-**One object-store, two accessors.** The same object-store — one envelope, HMAC-naming, and
-index discipline — is shared by host and daemon accessors. Each binds its own Vault-auth
-`DekCipher`: the host CLI through the root Vault token, daemon-side access through Vault
-Kubernetes auth over the in-cluster MinIO Service DNS. Sprint `4.30` lands the shared pure layer
-and the host production in-force read through an opaque object key; the current gateway daemon has
-no durable MinIO state writer left after the master-seed removal. A future daemon-side durable read
-or write uses the same `Prodbox.Minio.EncryptedObject` layer and recovers a logical object only
-while Vault is unsealed and its policy permits the Transit unwrap. See
+**One object-store, daemon-owned after bootstrap.** The same object-store — one envelope,
+HMAC-naming, and index discipline — is shared by host and daemon code, but the target supported
+runtime boundary is daemon-mediated. The host binary uses Kubernetes directly only to bootstrap the
+cluster and deploy the daemon; after that, host requests go through the loopback-restricted daemon
+NodePort and the daemon reaches MinIO through in-cluster Service DNS. Sprint `4.42` removed the
+supported root-lifecycle direct Vault/MinIO transport after daemon bootstrap; Sprint `7.30` removed
+the supported Pulumi object-store direct transport. Any remaining direct host-root-token `DekCipher`
+plus host MinIO port-forward transport is explicit legacy/config/test seam residue tracked in the
+cleanup ledger. A daemon-side durable read or write
+uses the same
+`Prodbox.Minio.EncryptedObject` layer and recovers a logical object only while Vault is unsealed and
+its policy permits the Transit unwrap. See
 [vault_doctrine.md §9](./vault_doctrine.md#9-minio-as-a-ciphertext-store).
 
 **The bootstrap floor is the Tier-0 `prodbox.dhall`.** The basics are the minimal, non-revealing
@@ -693,6 +697,10 @@ so the prohibition is the intended end state rather than a present-tense fact:
 - `MINIO_ENDPOINT_URL` env var on the gateway Pod (the attempted addition rolled back
   May 24, 2026). The MinIO endpoint reaches the daemon via the `boot.minio_endpoint_url`
   field of the mounted Dhall config; see §6 "Non-secret service-endpoint fields".
+- Host-side post-bootstrap MinIO port-forwarding and direct host Vault NodePort access. After the
+  daemon NodePort exists, supported Vault lifecycle and Pulumi object-store operations route through
+  the daemon service; surviving host transports are legacy/config/test implementation residue tracked in
+  [DEVELOPMENT_PLAN/legacy-tracking-for-deletion.md](../../DEVELOPMENT_PLAN/legacy-tracking-for-deletion.md).
 - SIGHUP-driven reload. The signal handler is removed; SIGHUP becomes a process-level
   terminate signal again with the supported behavior `drain + exit`.
 - ConfigMap-rendered credentials, and Secret-mounted Dhall credential fragments (any

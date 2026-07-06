@@ -34,9 +34,9 @@
 
 > **Purpose**: Single source of truth for Vault as the sole, fail-closed secrets,
 > key-management, encryption-as-a-service, and PKI root of every prodbox-managed cluster — the
-> SecretRef configuration contract, the password-AEAD-sealed unlock bundle in durable MinIO and
-> the bootstrap MinIO credential that reaches it before unseal, Vault Transit envelope
-> encryption of MinIO and Pulumi state, the init-once / unseal-on-rebuild durability model, the
+> SecretRef configuration contract, the password-AEAD-sealed unlock bundle in durable MinIO, the
+> daemon-mediated bootstrap path that reaches it before unseal, Vault Transit envelope encryption
+> of MinIO and Pulumi state, the init-once / unseal-on-rebuild durability model, the
 > cluster-federation transit-seal trust tree, the sealed-state brick invariant, and in-cluster
 > Vault Kubernetes auth.
 
@@ -295,7 +295,7 @@ moving the bundle into MinIO does not change the Vault PV's durability contract.
 > write fails); `vault unseal` reads it from MinIO with no disk fallback; `rotate-unlock-bundle` rewrites
 > it in MinIO. A non-secret `.data/prodbox/.cluster-established` marker (not the bundle) is the only
 > on-disk artifact, used solely so the config loader can tell an established cluster from a
-> pre-establishment one without a MinIO port-forward. The live wipe-rebuild proof of this path is a
+> pre-establishment one without a MinIO read. The live wipe-rebuild proof of this path is a
 > non-blocking 🧪 axis ([DEVELOPMENT_PLAN](../../DEVELOPMENT_PLAN/README.md) Sprint `7.25`).
 
 The root cluster's Vault uses **Shamir** seal mode: the operator is the only one who can unseal
@@ -321,9 +321,9 @@ operator password
      (fixed bootstrap key, NOT a Vault-Transit envelope; §6.1, §9)
 ```
 
-The operator password is the **sole ephemeral secret**: it derives both the AEAD key that seals
-the bundle body and (via §6.1) the bootstrap MinIO credential that can fetch that object before
-Vault is reachable. Nothing about the bundle touches host disk.
+The operator password is the **sole ephemeral secret**: it derives the AEAD key that seals the
+bundle body. The MinIO access credential that fetches the ciphertext is static (§6.1) and is not the
+security boundary. Nothing about the bundle touches host disk.
 
 Conceptual plaintext (before encryption) — the stored bundle object is always ciphertext:
 
@@ -353,11 +353,12 @@ CLI unseal prompt, used in memory, and never persisted:
 
 ```text
 operator CLI password
-  -> KDF-derived bootstrap MinIO read credential (§6.1)
-  -> fetch the password-AEAD-sealed unlock bundle from the durable MinIO bucket (fixed key; §6.1, §9)
-  -> Argon2id + ChaCha20-Poly1305 authenticated decryption of the bundle body
-  -> recover the root Vault's unseal/recovery keys (held only inside the bundle)
-  -> submit the unseal keys -> UNSEAL THE ROOT VAULT
+  -> host CLI posts a bounded bootstrap request to the loopback-restricted prodbox daemon NodePort
+  -> daemon uses the static bootstrap MinIO credential to fetch the password-AEAD-sealed unlock
+     bundle from the durable MinIO bucket over in-cluster Service DNS (fixed key; §6.1, §9)
+  -> daemon Argon2id + ChaCha20-Poly1305 decrypts the bundle body in memory
+  -> daemon recovers the root Vault's unseal/recovery keys (held only inside the bundle)
+  -> daemon submits the unseal keys to Vault over in-cluster Service DNS -> UNSEAL THE ROOT VAULT
   -> the unsealed root Vault's Transit keys decrypt the in-force config envelope, the gateway
      state, and the Pulumi backend (§8, §9, §10), and serve as the transit-seal authority that
      auto-unseals child clusters (§16)
@@ -389,11 +390,13 @@ Because the unlock bundle lives in MinIO rather than on host disk (§6), prodbox
 object *before* Vault is unsealed. The credential it uses is the **static MinIO root credential**
 (`Prodbox.Minio.RootCredential`), NOT a password-derived value (operator decision 2026-06-22):
 
-- The MinIO access credential is **not** the security boundary. The unlock-bundle body is
+- The MinIO access credential is **not** the security boundary. The daemon bootstrap path uses it
+  from inside the cluster through the `minio.prodbox.svc.cluster.local` Service rather than from a
+  host-side `kubectl port-forward`. The unlock-bundle body is
   **password-AEAD-sealed** (Argon2id + ChaCha20-Poly1305), so reading its ciphertext is useless
   without the operator password; and every Tier-2 operational object is a **Vault-Transit envelope**,
-  useless without an unsealed Vault. The access credential only gates ciphertext access over a
-  localhost-only NodePort — exactly the situation prodbox already treats as non-secret for Harbor.
+  useless without an unsealed Vault. The access credential only gates ciphertext access; it does
+  not grant unseal authority.
 - A static credential is trivially **stable across rebuilds**, so a retained MinIO data PV always
   matches Vault (no random/derived drift), and it is a credential MinIO actually **accepts** — so the
   bundle round-trips through MinIO rather than failing `InvalidAccessKeyId`.
@@ -406,10 +409,14 @@ The operator password remains the sole ephemeral secret (§6): it is the AEAD ke
 **Bootstrap reorder.** Reaching the bundle before unseal means **MinIO must be reachable before
 Vault unseal**, which inverts the historical `cluster reconcile` ordering (Vault first, then
 MinIO; §7). The reconcile sequence therefore brings MinIO up to a bootstrap-readable state ahead
-of the unseal step, then proceeds with Vault deploy → init-if-empty → fetch+decrypt the unlock
-bundle → unseal. The host-disk bundle remains the load-bearing fallback this stage (dual-write +
-prefer-MinIO read); dropping the host-disk write entirely (the disk-free cutover) is a separate
-later decision.
+of the unseal step, then proceeds with Vault deploy → daemon deploy → init-if-empty →
+fetch+decrypt the unlock bundle → unseal. Sprint `2.29` implements the daemon-side endpoint that
+performs the fetch/decrypt/unseal/reconcile work inside the loopback-restricted `prodbox` daemon
+rather than requiring that work to run in the host process. Sprint `4.42` routes root `cluster
+reconcile` and post-bootstrap `prodbox vault ...` lifecycle leaves through that endpoint and its
+authenticated sibling routes. Remaining direct host transports are explicit test seams or Phase `7`
+object-store/Pulumi residue tracked under
+[DEVELOPMENT_PLAN/legacy-tracking-for-deletion.md](../../DEVELOPMENT_PLAN/legacy-tracking-for-deletion.md).
 
 **Child clusters take none of this.** A child Vault uses transit-seal and auto-unseals against its
 parent (§16); it has no unlock bundle, no bootstrap MinIO credential, and no password prompt — its
@@ -432,22 +439,26 @@ prodbox vault pki status
 prodbox vault pki issue-test-cert
 ```
 
-- `vault init` connects to the in-cluster Vault, returns success unchanged if already
-  initialized (init-once; §5), otherwise initializes Vault, captures unseal/recovery keys and the
-  initial root token exactly once, writes the encrypted unlock bundle (root) or stores them in the
-  parent's Vault KV (child; §16), and prints no raw key material (an optional
-  `--show-sensitive-once` operator-confirmed flag may display it once).
-- `vault unseal` reads the unlock bundle, prompts for the bundle password (unless the test harness
-  supplies it), decrypts in memory, submits unseal keys, verifies Vault is unsealed, and clears
-  sensitive material from process memory where practical. Plaintext unseal keys are never
-  persisted. A child cluster auto-unseals against its parent's transit key with no human prompt
-  (§16).
+- `vault init` is the operator-facing init-if-empty surface. The host CLI reaches the
+  loopback-restricted `prodbox` daemon NodePort; the daemon connects to Vault over in-cluster
+  Service DNS, returns success unchanged if already initialized (init-once; §5),
+  otherwise initializes Vault, captures unseal/recovery keys and the initial root token exactly
+  once, writes the encrypted unlock bundle (root) or stores them in the parent's Vault KV (child;
+  §16), and prints no raw key material (an optional `--show-sensitive-once` operator-confirmed flag
+  may display it once).
+- `vault unseal` is the operator-facing unseal surface. The host CLI prompts for the bundle password
+  unless the test harness supplies it, posts it to the daemon bootstrap endpoint over the
+  loopback-restricted NodePort, and the daemon reads the unlock bundle from MinIO via in-cluster
+  Service DNS, decrypts in memory, submits unseal keys to Vault via in-cluster Service DNS,
+  verifies Vault is unsealed, and clears sensitive material from process memory where practical.
+  Plaintext unseal keys are never persisted. A child cluster auto-unseals against its parent's
+  transit key with no human prompt (§16).
 - `vault reconcile` requires Vault initialized and unsealed, then idempotently reconciles auth
   mounts, policies, roles, KV mounts, Transit keys, PKI mounts and issuers, Kubernetes
   service-account auth for in-cluster workloads, the MinIO bucket encryption policy metadata, and
   the Pulumi encryption configuration. It is safe to run on every cluster spin-up.
-  The current Sprint `1.36` native foundation applies the baseline `secret` KV v2 / Transit / PKI
-  mounts, Kubernetes auth, per-domain Transit keys, and baseline policies/roles through
+  The daemon-mediated native foundation applies the baseline `secret` KV v2 / Transit / PKI mounts,
+  Kubernetes auth, per-domain Transit keys, and baseline policies/roles through
   `Prodbox.Vault.Reconcile`; it also wires unlock-bundle re-encryption, Transit-key rotation, PKI
   mount status, and a PKI test-issue call against the later-configured `prodbox-test` role.
   Chart-by-chart Vault-auth adoption, PKI issuer generation, and child-custody workflows land in
@@ -469,12 +480,15 @@ prodbox cluster reconcile
   -> reconcile RKE2 + retained PV layer
   -> deploy/rebind MinIO to a bootstrap-readable state (durable bucket present; §6.1)
   -> deploy/rebind Vault on its durable PV
-  -> vault init-if-empty (init-once; §5)
-  -> vault unseal
-       (root: KDF-derive the bootstrap MinIO read credential from the operator prompt, fetch the
-        fixed-key unlock bundle from MinIO, password-AEAD-decrypt, submit unseal keys; §6.1.
+  -> deploy/rebind the prodbox daemon and its loopback-restricted NodePort in pre-Vault mode
+  -> host CLI posts one bootstrap request to the daemon
+  -> daemon performs vault init-if-empty (init-once; §5)
+  -> daemon performs vault unseal
+       (root: fetch fixed-key unlock bundle from MinIO via Service DNS with the static bootstrap
+        MinIO credential, password-AEAD-decrypt with the operator password, submit unseal keys to
+        Vault via Service DNS; §6.1.
         child: auto-unseal from parent, §16)
-  -> vault reconcile
+  -> daemon performs vault reconcile
   -> finish MinIO reconcile (steady-state root creds now resolvable; ensure the `prodbox-state`
      object-store bucket and its Vault-Transit encryption path)
   -> fetch + decrypt the in-force config from the MinIO SSoT (or seed it on first bring-up; §16)
@@ -627,12 +641,19 @@ Pulumi role. Harbor's public image layers stay a separate, non-secret store — 
 not enveloped. The Sprint `7.14` interposition makes Pulumi see only a scratch `file://` backend on
 main stack cycles; persistent checkpoints are opaque `objects/<id>.enc` Model-B objects.
 
-**One object-store, shared by host and daemon accessors.** The pure envelope / HMAC-naming / index /
-decoy layer is **shared and identical** across accessors; they differ only in how each binds its
-Vault-auth `DekCipher` and its MinIO transport:
+**One object-store, daemon-owned after bootstrap.** The pure envelope / HMAC-naming / index / decoy
+layer is **shared and identical** across accessors, but the target steady-state host boundary is the
+loopback-restricted daemon API. After the daemon is up, host operations ask the daemon to perform
+MinIO/Vault work in-cluster instead of opening ad-hoc host transports. The accessors differ only in
+how each binds its Vault-auth `DekCipher` and its MinIO transport:
 
-- the **host CLI** binds a Transit `DekCipher` via the root Vault token (privileged writes) and
-  reaches MinIO through the current port-forward;
+- the **host CLI** is an operator UI and bootstrap launcher; Sprint `4.42` removed the supported
+  root-lifecycle direct transport after daemon bootstrap, and Sprint `7.30` removed the supported
+  Pulumi object-store direct transport. Any remaining direct root-token `DekCipher` plus MinIO
+  port-forward transport is explicit legacy/config/test seam residue tracked in the cleanup ledger.
+  Sprint `5.14` pins this boundary in the
+  canonical suite through `prodbox test integration daemon-bootstrap`, whose oracle rejects legacy
+  host MinIO port-forwards, direct host Vault NodePort calls, and host root-token fallback traces;
 - the **gateway daemon** binds a Transit `DekCipher` via Vault **Kubernetes auth** (scoped reads)
   and reaches MinIO over the in-cluster MinIO Service DNS
   (`minio.prodbox.svc.cluster.local`).
@@ -859,10 +880,13 @@ narrow policy with `create`/`update` on exactly two KV paths — `secret/data/ac
 `secret/data/gateway/gateway/aws`. It exists so the gateway daemon's `POST /v1/secret/<logical>`
 endpoint can persist the two host-minted operator secrets routed through the daemon (the ACME EAB
 and the minted operational `aws.*`) on behalf of an operator-injected Kubernetes JWT, instead of a
-host root-token direct write. The daemon never uses its own read-only `prodbox-gateway-daemon`
-identity for the write, and the role cannot reach the rest of the KV store, the Transit keys, or
-the federation custody tree. The `vault_operator_password` (needed before Vault is unsealed) and
-the ephemeral `aws_admin_for_test_simulation` credential (never stored in Vault) stay host-side.
+host root-token direct write. Once the operator JWT can be minted, a daemon rejection or transport
+failure is authoritative and does not bypass to a host root-token write; the host fallback remains
+only before that service account is available or in explicit test seams. The daemon never uses its
+own read-only `prodbox-gateway-daemon` identity for the write, and the role cannot reach the rest
+of the KV store, the Transit keys, or the federation custody tree. The `vault_operator_password`
+(needed before Vault is unsealed) and the ephemeral `aws_admin_for_test_simulation` credential
+(never stored in Vault) stay host-side.
 See [distributed_gateway_architecture.md §11](./distributed_gateway_architecture.md#11-rest-api).
 
 ## 13. Config and state classification
@@ -947,6 +971,13 @@ closed without leaking metadata; that deployed assertion needs live infrastructu
 then sealed, Vault behind a full reconcile against live AWS/Pulumi infrastructure) and is therefore
 recorded as a standalone non-blocking `Live-proof: pending` note (§1) that does not gate Sprint
 `5.8`'s code-owned closure or its phase.
+
+The daemon-bootstrap canonical validation (`prodbox test integration daemon-bootstrap`, Sprint
+`5.14`) is the companion post-bootstrap transport proof. It is code-owned and trace-driven: the
+oracle requires the daemon bootstrap/lifecycle route set, rejects legacy host MinIO/Vault/root-token
+fallback traces, and checks redaction. The live AWS/Pulumi object-store proof composes with the
+code-owned Phase 7 Sprint `7.30` daemon API and is tracked in the substrate parity table rather than
+blocking Phase 5.
 
 ## 16. Cluster federation: a Vault transit-seal trust tree
 

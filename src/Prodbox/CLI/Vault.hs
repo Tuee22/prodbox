@@ -12,16 +12,26 @@
 module Prodbox.CLI.Vault
   ( runVaultCommand
   , VaultReconcileCommandResult (..)
+  , HostVaultDirectSeam (..)
+  , VaultDaemonProbe (..)
+  , VaultLifecycleTransportDecision (..)
+  , gatewayProbeFromResult
   , gatewayAwsVaultFields
+  , runVaultBootstrapViaDaemon
   , runVaultInit
   , runVaultReconcileCommand
   , runVaultReconcileCommandDetailed
   , runVaultUnseal
+  , vaultLifecycleTransportDecision
   )
 where
 
 import Control.Exception (SomeException, try)
+import Data.Aeson (Value (..), encode)
+import Data.Aeson.Key qualified as AesonKey
+import Data.Aeson.KeyMap qualified as AesonKeyMap
 import Data.ByteString qualified as BS
+import Data.ByteString.Lazy.Char8 qualified as BL8
 import Data.Map.Strict qualified as Map
 import Data.Text (Text)
 import Data.Text qualified as Text
@@ -32,7 +42,10 @@ import Prodbox.CLI.Output (writeOutput, writeOutputLine)
 import Prodbox.Config.Tier0
   ( writeTier0FloorPreservingParameters
   )
-import Prodbox.Http.Client (HttpError, renderHttpError)
+import Prodbox.Gateway.Client qualified as GatewayClient
+import Prodbox.Gateway.Types (PeerEndpoint)
+import Prodbox.Host (defaultGatewayNodePort)
+import Prodbox.Http.Client (HttpError (..), renderHttpError)
 import Prodbox.Infra.MinioBackend (withMinioPortForward)
 import Prodbox.Settings qualified as Settings
 import Prodbox.Settings.SecretRef
@@ -108,27 +121,316 @@ import System.FilePath (takeDirectory, (</>))
 defaultClusterId :: Text
 defaultClusterId = "prodbox-home"
 
+data VaultDaemonProbe
+  = VaultDaemonReachable
+  | VaultDaemonUnavailable String
+  deriving (Eq, Show)
+
+data HostVaultDirectSeam
+  = HostVaultDirectSeamPresent
+  | HostVaultDirectSeamAbsent
+  deriving (Eq, Show)
+
+data VaultLifecycleTransportDecision
+  = UseDaemonVaultLifecycle
+  | UseDirectHostVaultTestSeam
+  | RefuseDirectHostVaultFallback String
+  deriving (Eq, Show)
+
+vaultLifecycleTransportDecision
+  :: VaultDaemonProbe -> HostVaultDirectSeam -> VaultLifecycleTransportDecision
+vaultLifecycleTransportDecision probe seam =
+  case (probe, seam) of
+    (VaultDaemonReachable, _) -> UseDaemonVaultLifecycle
+    (VaultDaemonUnavailable _, HostVaultDirectSeamPresent) -> UseDirectHostVaultTestSeam
+    (VaultDaemonUnavailable detail, HostVaultDirectSeamAbsent) ->
+      RefuseDirectHostVaultFallback
+        ( "Gateway daemon is unavailable on loopback NodePort "
+            ++ show defaultGatewayNodePort
+            ++ " before Vault lifecycle bootstrap: "
+            ++ detail
+            ++ ". Refusing direct host Vault/MinIO fallback outside explicit test seams."
+        )
+
+gatewayProbeFromResult :: Either GatewayClient.GatewayError a -> VaultDaemonProbe
+gatewayProbeFromResult result =
+  case result of
+    Right _ -> VaultDaemonReachable
+    Left (GatewayClient.GatewayTransport (HttpConnectionFailure detail)) ->
+      VaultDaemonUnavailable detail
+    Left (GatewayClient.GatewayTransport (HttpTimeout detail)) ->
+      VaultDaemonUnavailable detail
+    Left _ -> VaultDaemonReachable
+
+gatewayEndpointFromEnv :: IO PeerEndpoint
+gatewayEndpointFromEnv = do
+  override <- lookupEnv "PRODBOX_TEST_GATEWAY_NODEPORT"
+  let port = maybe defaultGatewayNodePort parseGatewayNodePort override
+  pure (GatewayClient.hostLoopbackGatewayEndpoint port)
+
+parseGatewayNodePort :: String -> Int
+parseGatewayNodePort raw =
+  case reads raw of
+    [(port, "")] | port > 0 -> port
+    _ -> defaultGatewayNodePort
+
+resolveVaultLifecycleTransport :: IO VaultLifecycleTransportDecision
+resolveVaultLifecycleTransport = do
+  endpoint <- gatewayEndpointFromEnv
+  probeResult <- GatewayClient.queryState endpoint
+  seam <- detectHostVaultDirectSeam
+  pure (vaultLifecycleTransportDecision (gatewayProbeFromResult probeResult) seam)
+
+detectHostVaultDirectSeam :: IO HostVaultDirectSeam
+detectHostVaultDirectSeam = do
+  values <- mapM lookupEnv hostVaultDirectSeamEnvVars
+  pure $
+    if any (maybe False (not . null)) values
+      then HostVaultDirectSeamPresent
+      else HostVaultDirectSeamAbsent
+
+hostVaultDirectSeamEnvVars :: [String]
+hostVaultDirectSeamEnvVars =
+  [ "PRODBOX_TEST_HOST_VAULT_ADDR"
+  , "PRODBOX_TEST_BOOTSTRAP_BUNDLE_DIR"
+  , "PRODBOX_TEST_HOST_VAULT_TOKEN"
+  , "PRODBOX_TEST_CLUSTER_VAULT_STATUS"
+  , "PRODBOX_TEST_HOST_VAULT_KV"
+  , "PRODBOX_TEST_HOST_VAULT_KV_DIR"
+  ]
+
 runVaultCommand :: FilePath -> VaultCommand -> IO ExitCode
-runVaultCommand repoRoot command = do
-  address <- resolveHostVaultAddress
+runVaultCommand repoRoot command =
   case command of
-    VaultStatus -> do
-      result <- vaultSealStatus address
+    VaultStatus ->
+      runDaemonPreferredVaultCommand repoRoot runDirectVaultStatus runDaemonVaultStatus
+    VaultInit ->
+      runDaemonPreferredVaultCommand
+        repoRoot
+        (runDirectVaultInit repoRoot)
+        (runVaultBootstrapViaDaemon repoRoot)
+    VaultUnseal ->
+      runDaemonPreferredVaultCommand
+        repoRoot
+        (runDirectVaultUnseal repoRoot)
+        (runVaultBootstrapViaDaemon repoRoot)
+    VaultReconcile ->
+      runDaemonPreferredVaultCommand
+        repoRoot
+        (runDirectVaultReconcile repoRoot)
+        (runVaultBootstrapViaDaemon repoRoot)
+    VaultSeal ->
+      runDaemonPreferredVaultCommand repoRoot (runDirectVaultSeal repoRoot) (runDaemonVaultSeal repoRoot)
+    VaultRotateUnlockBundle ->
+      runDaemonPreferredVaultCommand
+        repoRoot
+        (runVaultRotateUnlockBundle repoRoot)
+        (runDaemonVaultRotateUnlockBundle repoRoot)
+    VaultRotateTransitKey keyName ->
+      runDaemonPreferredVaultCommand
+        repoRoot
+        (runDirectVaultRotateTransitKey repoRoot (Text.pack keyName))
+        (runDaemonVaultRotateTransitKey repoRoot (Text.pack keyName))
+    VaultPkiStatus ->
+      runDaemonPreferredVaultCommand
+        repoRoot
+        (runDirectVaultPkiStatus repoRoot)
+        (runDaemonVaultPkiStatus repoRoot)
+    VaultPkiIssueTestCert ->
+      runDaemonPreferredVaultCommand
+        repoRoot
+        (runDirectVaultPkiIssueTestCert repoRoot)
+        (runDaemonVaultPkiIssueTestCert repoRoot)
+
+runDaemonPreferredVaultCommand :: FilePath -> IO ExitCode -> IO ExitCode -> IO ExitCode
+runDaemonPreferredVaultCommand _repoRoot directTestSeamAction daemonAction = do
+  decision <- resolveVaultLifecycleTransport
+  case decision of
+    UseDaemonVaultLifecycle -> daemonAction
+    UseDirectHostVaultTestSeam -> directTestSeamAction
+    RefuseDirectHostVaultFallback message -> do
+      writeOutput message
+      pure (ExitFailure 1)
+
+runDirectVaultStatus :: IO ExitCode
+runDirectVaultStatus = do
+  address <- resolveHostVaultAddress
+  result <- vaultSealStatus address
+  case result of
+    Left err -> do
+      writeOutput (unreachableMessage address err)
+      pure (ExitFailure 1)
+    Right status -> do
+      writeOutput (renderSealStatus status)
+      pure ExitSuccess
+
+runDirectVaultInit :: FilePath -> IO ExitCode
+runDirectVaultInit repoRoot = do
+  address <- resolveHostVaultAddress
+  runVaultInit repoRoot address
+
+runDirectVaultUnseal :: FilePath -> IO ExitCode
+runDirectVaultUnseal repoRoot = do
+  address <- resolveHostVaultAddress
+  runVaultUnseal repoRoot address
+
+runDirectVaultSeal :: FilePath -> IO ExitCode
+runDirectVaultSeal repoRoot = do
+  address <- resolveHostVaultAddress
+  runVaultSeal repoRoot address
+
+runDirectVaultReconcile :: FilePath -> IO ExitCode
+runDirectVaultReconcile repoRoot = do
+  address <- resolveHostVaultAddress
+  runVaultReconcileCommand repoRoot address
+
+runDirectVaultRotateTransitKey :: FilePath -> Text -> IO ExitCode
+runDirectVaultRotateTransitKey repoRoot keyName = do
+  address <- resolveHostVaultAddress
+  runVaultRotateTransitKeyCommand repoRoot address keyName
+
+runDirectVaultPkiStatus :: FilePath -> IO ExitCode
+runDirectVaultPkiStatus repoRoot = do
+  address <- resolveHostVaultAddress
+  runVaultPkiStatus repoRoot address
+
+runDirectVaultPkiIssueTestCert :: FilePath -> IO ExitCode
+runDirectVaultPkiIssueTestCert repoRoot = do
+  address <- resolveHostVaultAddress
+  runVaultPkiIssueTestCert repoRoot address
+
+runVaultBootstrapViaDaemon :: FilePath -> IO ExitCode
+runVaultBootstrapViaDaemon repoRoot = do
+  passwordResult <- obtainOperatorPassword repoRoot
+  case passwordResult of
+    Left err -> do
+      writeOutput err
+      pure (ExitFailure 1)
+    Right password -> do
+      endpoint <- gatewayEndpointFromEnv
+      result <- GatewayClient.ensureVaultBootstrap endpoint password
       case result of
         Left err -> do
-          writeOutput (unreachableMessage address err)
+          writeOutput ("daemon-mediated Vault bootstrap failed: " ++ GatewayClient.renderGatewayError err)
           pure (ExitFailure 1)
-        Right status -> do
-          writeOutput (renderSealStatus status)
+        Right value -> do
+          writeOutput ("Vault daemon bootstrap complete: " ++ renderJsonValue value)
           pure ExitSuccess
-    VaultInit -> runVaultInit repoRoot address
-    VaultUnseal -> runVaultUnseal repoRoot address
-    VaultSeal -> runVaultSeal repoRoot address
-    VaultReconcile -> runVaultReconcileCommand repoRoot address
-    VaultRotateUnlockBundle -> runVaultRotateUnlockBundle repoRoot
-    VaultRotateTransitKey keyName -> runVaultRotateTransitKeyCommand repoRoot address (Text.pack keyName)
-    VaultPkiStatus -> runVaultPkiStatus repoRoot address
-    VaultPkiIssueTestCert -> runVaultPkiIssueTestCert repoRoot address
+
+runDaemonVaultStatus :: IO ExitCode
+runDaemonVaultStatus = do
+  endpoint <- gatewayEndpointFromEnv
+  result <- GatewayClient.queryVaultStatus endpoint
+  case result of
+    Left err -> do
+      writeOutput ("daemon-mediated Vault status failed: " ++ GatewayClient.renderGatewayError err)
+      pure (ExitFailure 1)
+    Right status -> do
+      writeOutput (renderSealStatus status)
+      pure ExitSuccess
+
+runDaemonVaultSeal :: FilePath -> IO ExitCode
+runDaemonVaultSeal repoRoot =
+  runDaemonPasswordAction repoRoot GatewayClient.sealVault $ \_ -> do
+    writeOutput "Vault sealed."
+    pure ExitSuccess
+
+runDaemonVaultRotateUnlockBundle :: FilePath -> IO ExitCode
+runDaemonVaultRotateUnlockBundle repoRoot = do
+  passwordResult <- obtainOperatorPassword repoRoot
+  newPasswordResult <- obtainNewOperatorPassword repoRoot
+  case (passwordResult, newPasswordResult) of
+    (Left err, _) -> writeOutput err >> pure (ExitFailure 1)
+    (_, Left err) -> writeOutput err >> pure (ExitFailure 1)
+    (Right password, Right newPassword) -> do
+      endpoint <- gatewayEndpointFromEnv
+      result <- GatewayClient.rotateVaultUnlockBundle endpoint password newPassword
+      case result of
+        Left err -> do
+          writeOutput
+            ("daemon-mediated Vault unlock-bundle rotation failed: " ++ GatewayClient.renderGatewayError err)
+          pure (ExitFailure 1)
+        Right _ -> do
+          writeOutput "Vault unlock bundle re-encrypted in the durable MinIO bucket."
+          pure ExitSuccess
+
+runDaemonVaultRotateTransitKey :: FilePath -> Text -> IO ExitCode
+runDaemonVaultRotateTransitKey repoRoot keyName =
+  runDaemonPasswordAction
+    repoRoot
+    (\endpoint password -> GatewayClient.rotateVaultTransitKey endpoint password keyName)
+    $ \_ -> do
+      writeOutput ("Vault Transit key rotated: " ++ Text.unpack keyName)
+      pure ExitSuccess
+
+runDaemonVaultPkiStatus :: FilePath -> IO ExitCode
+runDaemonVaultPkiStatus repoRoot =
+  runDaemonPasswordAction
+    repoRoot
+    GatewayClient.queryVaultPkiStatus
+    handleDaemonVaultPkiStatusResponse
+
+handleDaemonVaultPkiStatusResponse :: Value -> IO ExitCode
+handleDaemonVaultPkiStatusResponse value =
+  case jsonTextField "status" value of
+    Just "present" -> do
+      writeOutput "Vault PKI: pki mount present."
+      pure ExitSuccess
+    Just "missing" -> do
+      writeOutput "Vault PKI: pki mount missing; run `prodbox vault reconcile`."
+      pure (ExitFailure 1)
+    _ -> do
+      writeOutput ("Vault PKI status response: " ++ renderJsonValue value)
+      pure ExitSuccess
+
+runDaemonVaultPkiIssueTestCert :: FilePath -> IO ExitCode
+runDaemonVaultPkiIssueTestCert repoRoot =
+  runDaemonPasswordAction
+    repoRoot
+    GatewayClient.issueVaultPkiTestCert
+    handleDaemonVaultPkiIssueTestCertResponse
+
+handleDaemonVaultPkiIssueTestCertResponse :: Value -> IO ExitCode
+handleDaemonVaultPkiIssueTestCertResponse value =
+  case jsonTextField "certificate" value of
+    Just certPem -> do
+      writeOutput ("Vault PKI test certificate issued:\n" ++ Text.unpack certPem)
+      pure ExitSuccess
+    Nothing -> do
+      writeOutput ("Vault PKI test certificate response: " ++ renderJsonValue value)
+      pure ExitSuccess
+
+runDaemonPasswordAction
+  :: FilePath
+  -> (PeerEndpoint -> Text -> IO (Either GatewayClient.GatewayError Value))
+  -> (Value -> IO ExitCode)
+  -> IO ExitCode
+runDaemonPasswordAction repoRoot action onSuccess = do
+  passwordResult <- obtainOperatorPassword repoRoot
+  case passwordResult of
+    Left err -> do
+      writeOutput err
+      pure (ExitFailure 1)
+    Right password -> do
+      endpoint <- gatewayEndpointFromEnv
+      result <- action endpoint password
+      case result of
+        Left err -> do
+          writeOutput ("daemon-mediated Vault command failed: " ++ GatewayClient.renderGatewayError err)
+          pure (ExitFailure 1)
+        Right value -> onSuccess value
+
+jsonTextField :: Text -> Value -> Maybe Text
+jsonTextField name value =
+  case value of
+    Object fields ->
+      case AesonKeyMap.lookup (AesonKey.fromText name) fields of
+        Just (String textValue) -> Just textValue
+        _ -> Nothing
+    _ -> Nothing
+
+renderJsonValue :: Value -> String
+renderJsonValue = BL8.unpack . encode
 
 -- | @prodbox vault init@: initialize an empty Vault exactly once, capturing the
 -- unseal/recovery keys + root token into the encrypted unlock bundle. An

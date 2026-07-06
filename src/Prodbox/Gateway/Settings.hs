@@ -18,8 +18,10 @@
 -- now Dhall-only.
 module Prodbox.Gateway.Settings
   ( loadDaemonConfig
+  , loadDaemonConfigPreVault
   , decodeDaemonConfigDhall
   , decodeDaemonConfigDhallWith
+  , decodeDaemonConfigDhallPreVault
   , DaemonConfigDhall (..)
   , DaemonBootDhall (..)
   , DaemonLiveDhall (..)
@@ -30,6 +32,7 @@ module Prodbox.Gateway.Settings
   , VaultKubernetesAuthDhall (..)
   , toDaemonConfig
   , toDaemonConfigWith
+  , toDaemonConfigPreVault
   , loadOrders
   , decodeOrdersDhall
   , OrdersDhall (..)
@@ -257,6 +260,82 @@ toDaemonConfigWith
         Just deadline | deadline == 0 -> Left "drain_deadline_seconds must be positive when set"
         _ -> Right ()
 
+-- | Convert the daemon Dhall DTO for the pre-Vault bootstrap mode.
+--
+-- This path validates only the non-secret boot/live fields and preserves the
+-- in-cluster Vault/MinIO coordinates. SecretRef-backed fields deliberately do
+-- not resolve here: the daemon must bind health/readiness and the bootstrap
+-- route while Vault is still sealed or uninitialized.
+toDaemonConfigPreVault :: DaemonConfigDhall -> Either String DaemonConfig
+toDaemonConfigPreVault
+  DaemonConfigDhall
+    { schemaVersion = sv
+    , vault = maybeVaultAuth
+    , boot =
+      DaemonBootDhall
+        { node_id = nodeIdText
+        , cert_file = certFileText
+        , key_file = keyFileText
+        , ca_file = caFileText
+        , orders_file = ordersFileText
+        , dns_write_gate = maybeDnsGate
+        , minio_endpoint_url = maybeMinioEndpoint
+        }
+    , live =
+      DaemonLiveDhall
+        { heartbeat_interval_seconds = hb
+        , reconnect_interval_seconds = rc
+        , sync_interval_seconds = sy
+        , max_clock_skew_seconds = ms
+        , drain_deadline_seconds = ddl
+        , log_level = ll
+        }
+    } = do
+    validateDaemonStaticFields
+    Right
+      DaemonConfig
+        { daemonNodeId = Text.unpack nodeIdText
+        , daemonCertFile = Text.unpack certFileText
+        , daemonKeyFile = Text.unpack keyFileText
+        , daemonCaFile = Text.unpack caFileText
+        , daemonOrdersFile = Text.unpack ordersFileText
+        , daemonEventKeys = []
+        , daemonHeartbeatInterval = hb
+        , daemonReconnectInterval = rc
+        , daemonSyncInterval = sy
+        , daemonMaxClockSkewSeconds = ms
+        , daemonDrainDeadlineSeconds = fromIntegral <$> ddl
+        , daemonConfigLogLevel = Text.unpack <$> ll
+        , daemonVaultAuth = toGatewayVaultAuth <$> maybeVaultAuth
+        , daemonDnsWriteGate = toDnsWriteGate <$> maybeDnsGate
+        , daemonAwsCreds = Nothing
+        , daemonMinioCreds = Nothing
+        , daemonMinioEndpointUrl = Text.unpack <$> maybeMinioEndpoint
+        }
+   where
+    validateDaemonStaticFields = do
+      if sv == supportedDhallSchemaVersion
+        then Right ()
+        else
+          Left
+            ( "config_schema_mismatch: expected schemaVersion "
+                ++ show supportedDhallSchemaVersion
+                ++ ", got "
+                ++ show sv
+            )
+      requireNonEmpty "node_id" nodeIdText
+      requireNonEmpty "cert_file" certFileText
+      requireNonEmpty "key_file" keyFileText
+      requireNonEmpty "ca_file" caFileText
+      requireNonEmpty "orders_file" ordersFileText
+      validatePositive "heartbeat_interval_seconds" hb
+      validatePositive "reconnect_interval_seconds" rc
+      validatePositive "sync_interval_seconds" sy
+      validateNonNegative "max_clock_skew_seconds" ms
+      case ddl of
+        Just deadline | deadline == 0 -> Left "drain_deadline_seconds must be positive when set"
+        _ -> Right ()
+
 toEventKey
   :: (SecretRef -> IO (Either SecretRefError Text))
   -> EventKeyDhall
@@ -429,6 +508,13 @@ decodeDaemonConfigDhallWith secretResolver src = do
     Left e -> pure (Left ("failed to decode gateway daemon Dhall config: " ++ displayException e))
     Right dto -> toDaemonConfigWith secretResolver dto
 
+decodeDaemonConfigDhallPreVault :: Text -> IO (Either String DaemonConfig)
+decodeDaemonConfigDhallPreVault src = do
+  result <- try (input auto src) :: IO (Either SomeException DaemonConfigDhall)
+  pure $ case result of
+    Left e -> Left ("failed to decode gateway daemon Dhall config: " ++ displayException e)
+    Right dto -> toDaemonConfigPreVault dto
+
 -- | Canonical entrypoint: load the daemon config from the file at the path
 -- passed via `--config <path>`. Sprint 2.20 closure: the JSON dispatch arm
 -- is removed; the daemon decodes Dhall exclusively via
@@ -447,6 +533,21 @@ loadDaemonConfig path = do
             )
         )
     Right dto -> toDaemonConfigWith (resolveGatewaySecretRef dto) dto
+
+-- | Load the daemon config for the pre-Vault bootstrap mode, validating the
+-- static boot/live fields but leaving SecretRef-backed fields unresolved.
+loadDaemonConfigPreVault :: FilePath -> IO (Either String DaemonConfig)
+loadDaemonConfigPreVault path = do
+  result <- try (inputFile auto path) :: IO (Either SomeException DaemonConfigDhall)
+  pure $ case result of
+    Left e ->
+      Left
+        ( "failed to decode gateway daemon Dhall config `"
+            ++ path
+            ++ "`: "
+            ++ displayException e
+        )
+    Right dto -> toDaemonConfigPreVault dto
 
 defaultVaultServiceAccountTokenFile :: FilePath
 defaultVaultServiceAccountTokenFile =

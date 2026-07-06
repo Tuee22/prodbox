@@ -843,6 +843,18 @@ Options:
 Examples:
 - prodbox test integration resource-guardrails  # Run the `resource-guardrails` integration suite.
 
+## prodbox test integration daemon-bootstrap
+prodbox test integration daemon-bootstrap - Run daemon-bootstrap transport integration tests
+
+Run daemon-bootstrap transport integration tests
+Options:
+- --coverage - Enable coverage reporting for the selected test scope
+- --cov-fail-under <INTEGER> - Require a minimum coverage percentage
+- --substrate <SUBSTRATE> - Target substrate (home-local, aws); default home-local
+
+Examples:
+- prodbox test integration daemon-bootstrap  # Run the `daemon-bootstrap` integration suite.
+
 ## prodbox test integration pulsar-broker
 prodbox test integration pulsar-broker - Run Pulsar broker transport integration tests
 

@@ -46,15 +46,16 @@ keys + initial root token):
 
 | Tier | Vault seal mode | Who unseals it | Init keys owned by |
 |------|-----------------|----------------|--------------------|
-| **Root cluster** | Shamir | The operator only, via the `.age` unlock bundle decrypted by a memorized password stored nowhere persistent (`test-secrets.dhall` simulates it in tests) | The operator (the password) |
+| **Root cluster** | Shamir | The operator only, via the password-AEAD unlock bundle in durable MinIO, decrypted by a memorized password stored nowhere persistent (`test-secrets.dhall` simulates it in tests) | The operator (the password) |
 | **Child cluster** | `seal "transit"` pointed at the **parent** cluster's Vault | Auto-unseals against the parent — no human, no local unseal keys | The **parent** cluster's Vault KV |
 
 The root cluster is the only tier a human ever unseals. Its Vault uses Shamir seal mode; its
-unseal/recovery keys live only inside the host-side `.age` unlock bundle on retained host storage
-(`.data/prodbox/vault-unlock-bundle.age`), and the only secret the operator memorizes is the
-bundle password (see [vault_doctrine.md § 6](./vault_doctrine.md#6-the-unlock-bundle)). The
-test harness simulates the operator at the unseal prompt by reading that password from
-`test-secrets.dhall`; there is no production path that stores or logs it.
+unseal/recovery keys live only inside the password-AEAD unlock bundle in the durable MinIO bucket,
+and the only secret the operator memorizes is the bundle password (see
+[vault_doctrine.md § 6](./vault_doctrine.md#6-the-unlock-bundle)). The target host path posts that
+password to the loopback-restricted daemon bootstrap endpoint; the daemon reads MinIO and unseals
+Vault in-cluster. The test harness simulates the operator at the unseal prompt by reading that
+password from `test-secrets.dhall`; there is no production path that stores or logs it.
 
 A child cluster never holds its own unseal keys and never prompts a human. Its Vault is configured
 with Vault `seal "transit"` whose target is its parent cluster's Vault Transit mount. At startup
@@ -63,7 +64,7 @@ cannot unseal without a live, unsealed parent (Sprint `3.20`).
 
 ```text
 root cluster Vault (Shamir)
-  unsealed by operator password -> .age unlock bundle -> Shamir unseal keys
+  unsealed by operator password -> MinIO unlock bundle -> Shamir unseal keys
     |
     +-- child cluster A Vault (seal "transit" -> root's Transit key)
     |     auto-unseals against root; init keys custodied in root's Vault KV
@@ -294,7 +295,7 @@ material that may live outside Vault is the minimum needed to reach and unseal e
 Vault:
 
 - **Root cluster only:** the operator unseal-bundle password (memorized, persisted nowhere) plus
-  the `.age` unlock bundle on retained host storage (`.data/prodbox/vault-unlock-bundle.age`).
+  the password-AEAD unlock bundle in the durable MinIO bucket.
 - **Child cluster only:** the bootstrap reference + transit-seal credential the child uses to reach
   its parent's Vault to auto-unseal — itself provisioned and owned by the parent (§3).
 - The unencrypted basics (§5): cluster id, this cluster's Vault address, seal mode, and (for a

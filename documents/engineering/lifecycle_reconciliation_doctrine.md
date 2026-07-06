@@ -245,10 +245,10 @@ no shared in-memory state.
 3. **Reconciler loop**, not strict sequence. `discover → diff → enact
    → re-observe` until stable or timeout. Idempotent by construction.
    Matches the `prodbox cluster reconcile` doctrine for the install path.
-4. **Bracket-style ownership** for transient handles. Already used at
-   `src/Prodbox/Infra/MinioBackend.hs:144` (`withMinioPortForward`).
-   Reused for the kubectl drain session (Sprint 4.12) and the S3
-   backend env-var session (Sprint 4.10).
+4. **Bracket-style ownership** for transient handles. Used by the kubectl drain session (Sprint
+   4.12), the S3 backend env-var session (Sprint 4.10), and surviving legacy/test helper seams
+   such as `withMinioPortForward`; supported per-run Pulumi state access now goes through the
+   daemon object-store API (Sprint `7.30`).
 5. **Phase ADT for narration**, not state. A flat ADT names the
    sequential phases for dry-run output and structured error
    reporting. Example shape:
@@ -792,12 +792,15 @@ in-cluster Vault is the single source of truth for the Vault secret model; this
 section records only how the lifecycle commands integrate it. See
 [vault_doctrine.md](./vault_doctrine.md) for the full model.
 
-- **Reconcile deploys and unseals Vault first.** `prodbox cluster reconcile`
-  deploys (or rebinds) Vault on its durable `.data/`-backed PV, runs `vault init`
-  if the backend is empty, unseals from the encrypted unlock bundle (or prompts the
-  operator), and runs `vault reconcile` **before** the MinIO and chart reconcile
-  phases — so MinIO ciphertext and chart secrets have a live Transit/KV authority by
-  the time they are needed. See
+- **Reconcile deploys bootstrap MinIO, Vault, then the daemon-mediated lifecycle.**
+  `prodbox cluster reconcile` deploys retained storage, brings MinIO to a
+  bootstrap-readable state, deploys (or rebinds) Vault on its durable `.data/`-backed
+  PV, deploys the loopback-restricted gateway daemon NodePort, then posts the root
+  init/unseal/reconcile request to the daemon. The daemon fetches the unlock bundle
+  from MinIO and calls Vault over in-cluster Service DNS; after Vault is unsealed and
+  reconciled, the command proceeds with steady-state MinIO and chart reconcile phases
+  so ciphertext and chart secrets have a live Transit/KV authority by the time they are
+  needed. See
   [vault_doctrine.md §7](./vault_doctrine.md#7-vault-lifecycle-commands).
 - **Teardown preserves the durable Vault PV.** `prodbox cluster delete --yes` and
   `prodbox cluster delete --cascade --yes` preserve the durable Vault PV exactly

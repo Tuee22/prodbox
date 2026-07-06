@@ -137,6 +137,16 @@ instance FromJSON SealStatus where
         <*> o .: "n"
         <*> o .: "progress"
 
+instance ToJSON SealStatus where
+  toJSON status =
+    object
+      [ "initialized" .= sealStatusInitialized status
+      , "sealed" .= sealStatusSealed status
+      , "t" .= sealStatusThreshold status
+      , "n" .= sealStatusShares status
+      , "progress" .= sealStatusProgress status
+      ]
+
 -- | The @POST \/v1\/sys\/init@ request body.
 data InitRequest = InitRequest
   { initRequestSecretShares :: Maybe Natural

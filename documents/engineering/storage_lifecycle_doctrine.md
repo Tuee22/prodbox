@@ -343,10 +343,10 @@ Rules:
     is first empty, and every later reconcile only unseals the existing data. Vault state is
     lost only when the operator deliberately wipes `.data/`, at which point the next reconcile
     inits a brand-new Vault from an empty anchor.
-12. The host-side encrypted Vault recovery material — the unlock bundle — lives at
-    `.data/prodbox/vault-unlock-bundle.age` (Argon2id/age authenticated encryption); see
-    [vault_doctrine.md §6](./vault_doctrine.md#6-the-unlock-bundle) (scheduled under
-    Sprint 1.36).
+12. The Vault recovery material — the unlock bundle — is password-AEAD-sealed and lives in the
+    durable MinIO bucket, not on host disk; see
+    [vault_doctrine.md §6](./vault_doctrine.md#6-the-unlock-bundle). The only related host-disk
+    artifact is the non-secret `.cluster-established` marker.
 13. Test runs use a **separate `.test-data/` retained root**, never `.data/`. A `prodbox test`
     run overrides `storage.manual_pv_host_root` to `.test-data/` (isolating each case under
     `.test-data/<case>/`), and test commands are mechanically forbidden from touching the

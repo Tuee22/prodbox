@@ -279,6 +279,12 @@ operator path is the explicit `prodbox` command surface documented here and in
 - The AWS validation stacks use the repo-backed MinIO backend in the local RKE2 cluster, so
   `prodbox cluster reconcile` must succeed before `prodbox aws stack eks reconcile` or
   `prodbox aws stack test reconcile` can succeed.
+- The target post-bootstrap boundary is daemon-mediated: after the host binary has used the
+  Kubernetes control plane to bring up the cluster, MinIO, Vault, and the loopback-restricted
+  `prodbox` daemon NodePort, follow-on host operations go through that daemon service. Direct
+  host MinIO port-forwards and direct host Vault NodePort lifecycle calls remain only as explicit
+  legacy/config/test seams tracked in
+  [DEVELOPMENT_PLAN/legacy-tracking-for-deletion.md](./DEVELOPMENT_PLAN/legacy-tracking-for-deletion.md).
 
 ## Quick Start
 
@@ -359,8 +365,10 @@ Configuration separates into three tiers (the canonical definitions live in
   rewrite.
 - **Tier 1 — bootstrap secret (password-gated)**: the Vault unlock material is
   password-AEAD-sealed (Argon2id + ChaCha20-Poly1305) and lives in the durable MinIO
-  bucket, read via a password-derived bootstrap MinIO credential — never on host disk, and
-  root-cluster-only (child clusters auto-unseal via transit-seal).
+  bucket, read with the static bootstrap MinIO root credential through the in-cluster
+  daemon bootstrap path — never on host disk, and root-cluster-only (child clusters
+  auto-unseal via transit-seal). The operator password protects the bundle body; the
+  MinIO access credential is not the security boundary.
 - **Tier 2 — operational secrets (Vault-gated)**: all other secrets are opaque-named,
   Vault-Transit-enveloped objects in the same durable MinIO bucket, decryptable only with
   an unsealed Vault; config carries only `SecretRef.Vault` pointers that resolve here at
@@ -482,7 +490,7 @@ Validate the repository config:
 | DNS | `dns check` | You need Route 53 inspection for the configured public host |
 | AWS IAM and quotas | `aws policy`, `aws setup`, `aws teardown`, `aws quotas check`, `aws quotas request` | You need IAM bootstrap, cleanup, or supported quota inspection/request flows |
 | AWS validation stacks | `aws stack eks reconcile`, `aws stack eks destroy --yes`, `aws stack aws-subzone reconcile`, `aws stack aws-subzone destroy --yes`, `aws stack test reconcile`, `aws stack test destroy --yes`, `aws stack aws-ses reconcile`, `aws stack aws-ses destroy --yes` | You need to create, inspect, or destroy the AWS EKS, Route 53 subzone, HA-RKE2, or SES validation stacks (see [DEVELOPMENT_PLAN/substrates.md → Resource Lifecycle Classes](./DEVELOPMENT_PLAN/substrates.md#resource-lifecycle-classes) for which stacks the test harness auto-destroys vs retains) |
-| Vault | `vault status`, `vault init`, `vault unseal`, `vault seal`, `vault reconcile`, `vault rotate-unlock-bundle`, `vault rotate-transit-key`, `vault pki ...` | You need to initialize, unseal, seal, or reconcile the in-cluster Vault that backs cluster secrets (see [vault_doctrine.md](./documents/engineering/vault_doctrine.md#7-vault-lifecycle-commands)) |
+| Vault | `vault status`, `vault init`, `vault unseal`, `vault seal`, `vault reconcile`, `vault rotate-unlock-bundle`, `vault rotate-transit-key`, `vault pki ...` | You need to initialize, unseal, seal, or reconcile the in-cluster Vault that backs cluster secrets. Post-bootstrap work routes through the loopback-restricted daemon NodePort; direct host Vault/MinIO calls are legacy/config/test seams tracked in the cleanup ledger (see [vault_doctrine.md](./documents/engineering/vault_doctrine.md#7-vault-lifecycle-commands)) |
 | Validation | `dev check`, `dev lint ...`, `dev docs ...`, `test lint`, `test ...`, `dev tla-check` | You need quality gates, generated-doc maintenance, Haskell tests, native integration validation, or TLA+ checks |
 
 ## Common Workflows

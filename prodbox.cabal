@@ -54,6 +54,7 @@ library
         Prodbox.Gateway.Client
         Prodbox.Gateway.Daemon
         Prodbox.Gateway.Logging
+        Prodbox.Gateway.ObjectStore
         Prodbox.Gateway.Peer
         Prodbox.Gateway.Settings
         Prodbox.Gateway.Types

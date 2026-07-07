@@ -15,16 +15,16 @@
 
 ## Phase Status
 
-🔄 **Reopened 2026-07-06 for graph-sourced chart dependency edges** — Phase `3` reopens to expand its
-own chart-platform surface with Sprint `3.23` (⏸️ Blocked by Sprint `1.56`), part of the
+✅ **Reclosed 2026-07-06 for graph-sourced chart dependency edges** — Phase `3` expanded its
+own chart-platform surface with Sprint `3.23` (✅ Done), part of the
 bootstrap-readiness refactor
 ([bootstrap_readiness_doctrine.md](../documents/engineering/bootstrap_readiness_doctrine.md)). Sprint
 `3.23` retires the hardcoded `chartDefinitionDependencies` / `ChartRequiresPatroniPlatform` edges in
 `Prodbox.Lib.ChartPlatform` in favor of the Sprint `1.56` config-sourced component graph, and makes
 the chart→Patroni-operator readiness gate prove the operator Deployment is `Available` (reconciling),
 not merely that it exists. The retired hardcoded edges are recorded in
-[legacy-tracking-for-deletion.md](legacy-tracking-for-deletion.md). Per Standard N the `Blocked by`
-names only the earlier-phase Sprint `1.56`. All earlier Phase `3` closures remain valid.
+[legacy-tracking-for-deletion.md](legacy-tracking-for-deletion.md). Per Standard N it depended forward
+only on the earlier-phase Sprint `1.56` (now ✅ Done). All earlier Phase `3` closures remain valid.
 
 ✅ **Reclosed 2026-07-04 for chart resource requirements** — Sprint `3.22` now expands the
 chart-platform surface so every repo-owned chart template with containers/init containers renders a
@@ -98,7 +98,7 @@ delivery, JWT-API, WebSocket, admin surfaces, and the Patroni doctrine. The phas
 Sprint 0.2 to schedule Sprints `3.8`–`3.12`, which adopt the doctrine's smart-constructor pattern
 for paired chart resources, route Redis and Postgres call sites through capability classes, apply
 the reconciler discipline to `prodbox charts deploy|delete`, surface `--dry-run` plans on chart
-operations, and add the `prodbox lint chart` Helm-chart structural-invariants linter together
+operations, and add the `prodbox dev lint chart` Helm-chart structural-invariants linter together
 with marker-delimited route-inventory generation from `src/Prodbox/PublicEdge.hs` into chart
 artifacts via the existing `generatedSectionRule` registry. Current worktree evidence puts
 Sprints `3.8`–`3.12` in `Done` state: `storageBinding`, the
@@ -107,7 +107,7 @@ call-site migration now centralize the retained paired-resource, related-name, a
 Redis/Postgres capability surfaces; the
 chart reconciler surface now treats already-deployed healthy releases as a success no-op and
 rejects the doctrine-forbidden flags and sister commands, chart dry-run plans are rendered and
-golden-covered, the structural-lint implementation is live on `prodbox lint chart`, and the
+golden-covered, the structural-lint implementation is live on `prodbox dev lint chart`, and the
 marker-delimited route inventory generated from `src/Prodbox/PublicEdge.hs` is now emitted into
 the consuming chart templates. Sprint `3.13` closed on 2026-06-01 via the live
 home-substrate preserved-data and lifecycle exercise; Sprint `3.14` closed on the same
@@ -172,7 +172,7 @@ is only to expand its own owned chart-platform surface.
   host-diagnostic, and native validation surfaces.
 - The chart templates that consume the shared public-edge path catalog now do so through the
   marker-delimited `route-registry` sections generated from `src/Prodbox/PublicEdge.hs` by
-  `prodbox docs generate`, and `prodbox lint chart` validates chart metadata plus generated
+  `prodbox dev docs generate`, and `prodbox dev lint chart` validates chart metadata plus generated
   route-inventory drift on the supported surface.
 - The current worktree renders the `vscode`, `api`, and `websocket` public paths through Gateway
   API `HTTPRoute` resources and Envoy Gateway `SecurityPolicy`, while `keycloak` publishes the
@@ -243,12 +243,12 @@ supported platform doctrine.
 - All non-PV chart state stays inside the cluster; the older master-seed-derived and
   chart-generated Secret model is being retired by Sprints `3.18`–`3.19` in favor of Vault KV via
   Kubernetes auth. The legacy `.prodbox-state/` cache is on the cleanup ledger;
-  `forbidDotProdboxState` in `prodbox check-code` (Sprint `4.18`) refuses regressions.
+  `forbidDotProdboxState` in `prodbox dev check` (Sprint `4.18`) refuses regressions.
 - Chart secret resolution and gateway event-key handling move to Haskell-owned modules.
 
 ### Validation
 
-1. `prodbox check-code`
+1. `prodbox dev check`
 2. `prodbox test unit`
 3. `prodbox test integration charts-storage`
 4. `prodbox test integration charts-platform`
@@ -328,7 +328,7 @@ Patroni HA surface.
 
 ### Validation
 
-1. `prodbox check-code`
+1. `prodbox dev check`
 2. `prodbox test unit`
 3. `prodbox test integration charts-platform`
 4. `prodbox test integration charts-vscode`
@@ -397,7 +397,7 @@ Keycloak as the identity provider.
 
 ### Validation
 
-1. `prodbox check-code`
+1. `prodbox dev check`
 2. `prodbox test integration charts-platform`
 3. `prodbox test integration charts-vscode`
 4. `prodbox test integration public-dns`
@@ -464,7 +464,7 @@ explicitly on Keycloak-backed Envoy auth and RBAC.
 
 ### Validation
 
-1. `prodbox check-code`
+1. `prodbox dev check`
 2. `prodbox test unit`
 3. `prodbox test integration charts-platform`
 4. `prodbox test integration charts-api`
@@ -489,7 +489,7 @@ explicitly on Keycloak-backed Envoy auth and RBAC.
 - `src/Prodbox/TestPlan.hs` and `src/Prodbox/TestValidation.hs` now expose `charts-api` as a
   named external validation surface that proves unauthenticated rejection, wrong-claim rejection,
   and valid-token acceptance.
-- `prodbox check-code`, `prodbox test unit`, `prodbox test integration cli`, and
+- `prodbox dev check`, `prodbox test unit`, `prodbox test integration cli`, and
   `prodbox test integration env` remain aligned with the API workload surface.
 - The shipped chart catalog now exercises the auth shapes the single-host doctrine must preserve:
   Envoy-managed browser OIDC through `vscode`, request-carried bearer JWTs through `api`, and the
@@ -539,7 +539,7 @@ the public edge closes on reconnect-safe realtime delivery under the shared host
 
 ### Validation
 
-1. `prodbox check-code`
+1. `prodbox dev check`
 2. `prodbox test unit`
 3. `prodbox test integration charts-platform`
 4. `prodbox test integration charts-websocket`
@@ -594,7 +594,7 @@ one public hostname, one DNS entry, and one certificate.
 
 ### Validation
 
-1. `prodbox check-code`
+1. `prodbox dev check`
 2. `prodbox test unit`
 3. `prodbox host public-edge`
 4. `prodbox test integration charts-platform`
@@ -746,7 +746,7 @@ Apply the Plan / Apply discipline from Sprint 1.7 to chart operations.
 
 None.
 
-## Sprint 3.12: prodbox lint chart and Route-Inventory Generation ✅
+## Sprint 3.12: prodbox dev lint chart and Route-Inventory Generation ✅
 
 **Status**: Done
 **Implementation**: `src/Prodbox/CheckCode.hs`, `src/Prodbox/PublicEdge.hs`, `charts/keycloak/templates/gateway.yaml`, `charts/vscode/templates/http-route.yaml`, `charts/api/templates/http-route.yaml`, `charts/websocket/templates/http-route.yaml`, `documents/engineering/cli_command_surface.md`, `documents/engineering/helm_chart_platform_doctrine.md`, `documents/documentation_standards.md`
@@ -763,7 +763,7 @@ inventory through marker-delimited generation rather than hand-maintained YAML.
 
 ### Deliverables
 
-- `src/Prodbox/CheckCode.hs` owns the `prodbox lint chart` subcommand declared in the
+- `src/Prodbox/CheckCode.hs` owns the `prodbox dev lint chart` subcommand declared in the
   `CommandSpec` registry (Sprint 1.6). The linter validates Helm chart structural invariants
   for every chart under `charts/`:
   - `Chart.yaml` parses, declares `apiVersion: v2`, and carries the required
@@ -774,7 +774,7 @@ inventory through marker-delimited generation rather than hand-maintained YAML.
     `generatedSectionRule` registry (Sprint 1.10) so drift fails closed.
 - The existing `prodbox-haskell-style` test-suite stanza (Sprint 1.11) covers the
   generated route-inventory output and durable chart-generation surfaces, so the lint
-  contract is exercised from both `prodbox lint chart` and `cabal test
+  contract is exercised from both `prodbox dev lint chart` and `cabal test
   prodbox-haskell-style`.
 - `src/Prodbox/PublicEdge.hs` rendering helpers emit the route catalog into chart
   manifests through marker-delimited blocks (`{{/* prodbox:route-registry:start */}}` /
@@ -783,7 +783,7 @@ inventory through marker-delimited generation rather than hand-maintained YAML.
   registered in `generatedSectionRule` alongside CLI docs. Consumers in `charts/keycloak/`,
   `charts/vscode/`, `charts/api/`, `charts/websocket/`, and the shared-host admin manifests
   consume the generated section rather than hand-maintaining path prefixes.
-- `documents/engineering/cli_command_surface.md` enumerates the new `prodbox lint chart`
+- `documents/engineering/cli_command_surface.md` enumerates the new `prodbox dev lint chart`
   subcommand and the route-inventory generation surface.
 - `documents/documentation_standards.md` adds route inventory to its enumerated list of
   generated files.
@@ -797,12 +797,12 @@ inventory through marker-delimited generation rather than hand-maintained YAML.
 
 ### Validation
 
-1. `prodbox lint chart` succeeds on a clean tree and fails on a chart with a missing
+1. `prodbox dev lint chart` succeeds on a clean tree and fails on a chart with a missing
    mandatory label or malformed `Chart.yaml`.
 2. Hand-editing the route inventory inside any consuming chart manifest fails
-   `prodbox lint docs` with the doctrine's path / registry-key / remedy-hint triple.
-3. Regenerating the route inventory via `prodbox lint docs --write` (or
-   `prodbox docs generate`) produces byte-identical output for the same `PublicEdge.hs`
+   `prodbox dev lint docs` with the doctrine's path / registry-key / remedy-hint triple.
+3. Regenerating the route inventory via `prodbox dev lint docs --write` (or
+   `prodbox dev docs generate`) produces byte-identical output for the same `PublicEdge.hs`
    inputs (idempotent renderer property test from Sprint 1.21 covers this).
 
 ### Remaining Work
@@ -843,9 +843,9 @@ Sprint 3.13 scope)**: the chart pre-install Jobs will POST to
 `/v1/secret/ensure-namespace`; the daemon itself owns the
 kubectl-apply via its in-cluster ServiceAccount, so no new bootstrap
 binary or chart-side Secret-create RBAC is needed. The pre-install Job
-is a thin `curl`-equivalent + wait pattern. `prodbox check-code` 0,
+is a thin `curl`-equivalent + wait pattern. `prodbox dev check` 0,
 `prodbox test unit` 613/613, `prodbox test integration cli` 30/30,
-`prodbox docs check` 0, `prodbox lint docs` 0.
+`prodbox dev docs check` 0, `prodbox dev lint docs` 0.
 
 Second chunk landed 2026-05-30: new `src/Prodbox/K8s/InCluster.hs`
 exposes the foundational K8s API client surface the daemon's
@@ -864,9 +864,9 @@ generated-artifact rule). Seven new unit tests in
 `"Sprint 3.13 in-cluster K8s API client pure helpers"` cover the
 ServiceAccount paths, the kube-apiserver URL, the REST-path renderer,
 manifest field encoding, deterministic key ordering, purity, and the
-empty-stringData edge case. `prodbox check-code` 0, `prodbox test
+empty-stringData edge case. `prodbox dev check` 0, `prodbox test
 unit` 620/620 (+7), `prodbox test integration cli` 30/30, `prodbox
-docs check` 0, `prodbox lint docs` 0.
+docs check` 0, `prodbox dev lint docs` 0.
 
 Third chunk landed 2026-05-30: the `applyDerivedSecrets` pipeline +
 the `K8sSecretOps` capability that decouples the handler logic from
@@ -903,9 +903,9 @@ the TLS-backed HTTPS implementation.
 The handler logic is now testable end-to-end via a mock
 `K8sSecretOps`. The TLS-backed `K8sSecretOps` constructor (with the
 in-pod CA store + bearer-token bearer-auth via `http-client-tls`) is
-the next chunk's target. `prodbox check-code` 0, `prodbox test unit`
+the next chunk's target. `prodbox dev check` 0, `prodbox test unit`
 626/626 (+6), `prodbox test integration cli` 30/30, `prodbox docs
-check` 0, `prodbox lint docs` 0.
+check` 0, `prodbox dev lint docs` 0.
 
 Fourth chunk landed 2026-05-30: TLS-backed `K8sSecretOps` constructor
 ready to drop into the daemon handler.
@@ -934,9 +934,9 @@ ready to drop into the daemon handler.
 
 Inert until the daemon handler dispatch chunk wires it in — the
 TLS-backed constructor lives as a pure factory that the next chunk
-imports. `prodbox check-code` 0, `prodbox test unit` 626/626 (no new
+imports. `prodbox dev check` 0, `prodbox test unit` 626/626 (no new
 tests added; the TLS path is exercise-gated, not unit-gated), `prodbox
-test integration cli` 30/30, `prodbox docs check` 0, `prodbox lint
+test integration cli` 30/30, `prodbox dev docs check` 0, `prodbox lint
 docs` 0.
 
 Fifth chunk landed 2026-05-30: daemon handler dispatch wires all four
@@ -972,9 +972,9 @@ the only remaining moving parts are the chart-side RBAC (so the daemon
 Pod actually has `secrets:create` permission in target namespaces)
 and the chart pre-install Jobs (the in-cluster callers). Live
 exercise — chart pre-install Job → endpoint → derived Secret applied
-to a target namespace — is the closure gate. `prodbox check-code` 0,
+to a target namespace — is the closure gate. `prodbox dev check` 0,
 `prodbox test unit` 626/626, `prodbox test integration cli` 30/30,
-`prodbox docs check` 0, `prodbox lint docs` 0.
+`prodbox dev docs check` 0, `prodbox dev lint docs` 0.
 
 Sixth chunk landed 2026-05-30: gateway-chart RBAC so the daemon's
 in-pod ServiceAccount actually has `secrets:get,create,patch` in the
@@ -1004,8 +1004,8 @@ namespaces it writes to.
 The chart-side daemon-secret-write path is fully wired now. The
 remaining Sprint 3.13 work is the chart pre-install Jobs (the
 in-cluster callers) and the host-side `resolveChartSecrets` rewrite.
-`prodbox check-code` 0, `prodbox test unit` 626/626, `prodbox test
-integration cli` 30/30, `prodbox docs check` 0, `prodbox lint docs` 0.
+`prodbox dev check` 0, `prodbox test unit` 626/626, `prodbox test
+integration cli` 30/30, `prodbox dev docs check` 0, `prodbox dev lint docs` 0.
 
 Seventh chunk landed 2026-05-30: unified gateway ClusterIP + chart
 pre-install Jobs for the two releases with derived inventory entries
@@ -1049,8 +1049,8 @@ rewrite (gut the `.prodbox-state` cache, call
 the silent-reset arm of `shouldResetPatroniStorage`). Live exercise on
 this host (the four-block preserved-data + recovery-escape-hatch +
 original-failure-mode path from the approved plan Part 3) is the
-closure gate. `prodbox check-code` 0, `prodbox test unit` 626/626,
-`prodbox test integration cli` 30/30, `prodbox docs check` 0, `prodbox
+closure gate. `prodbox dev check` 0, `prodbox test unit` 626/626,
+`prodbox test integration cli` 30/30, `prodbox dev docs check` 0, `prodbox
 lint docs` 0.
 
 Eighth chunk landed 2026-05-31: end the chart-vs-daemon multi-writer
@@ -1100,8 +1100,8 @@ silently undoing the entire derivation pipeline.
   the same contract. The stale `awsTestMain shouldContain "publicKey:"`
   assertion is updated to the chunk-6 reality
   (`tls:PrivateKey` + `ssh_private_key:` outputs).
-- Validation: `prodbox check-code` exit 0; `prodbox test unit` 628
-  examples pass; `prodbox lint docs` / `docs check` exit 0;
+- Validation: `prodbox dev check` exit 0; `prodbox test unit` 628
+  examples pass; `prodbox dev lint docs` / `docs check` exit 0;
   `helm template keycloak charts/keycloak` and
   `helm template keycloak-postgres charts/keycloak-postgres` both
   render cleanly without any conflicting Secret apply.
@@ -1184,7 +1184,7 @@ preserve the existing value. The full derived-vs-generated inventory lives in
 
 ### Validation
 
-1. `prodbox check-code` exit 0; the `forbidDotProdboxState` lint (introduced by
+1. `prodbox dev check` exit 0; the `forbidDotProdboxState` lint (introduced by
    Sprint 4.18) fires if any new `.prodbox-state/*` write regresses.
 2. `prodbox test unit` covers the new tests.
 3. `prodbox test integration cli` continues to pass.
@@ -1244,9 +1244,9 @@ markers are deleted and the Patroni anchor decision derives from live k8s state.
   is deferred to the live four-block exercise where the failure paths actually
   fire — until that lands, the reset arm is a documented no-op.
 
-Validated on all five static gates: `prodbox check-code` exit 0,
+Validated on all five static gates: `prodbox dev check` exit 0,
 `prodbox test unit` 628/628, `prodbox test integration cli`/`env` exit 0,
-`prodbox lint docs` / `docs check` exit 0; `helm template` renders cleanly for
+`prodbox dev lint docs` / `docs check` exit 0; `helm template` renders cleanly for
 `keycloak`, `keycloak-postgres`, `vscode`, `websocket`.
 
 ### Current Validation State
@@ -1298,9 +1298,9 @@ contract. After chunk 16 a grep for `.prodbox-state` in `src/`+`app/`
 string literals returns zero hits (only comments mention it for
 historical context).
 
-Validated on all five static gates: `prodbox check-code` exit 0,
+Validated on all five static gates: `prodbox dev check` exit 0,
 `prodbox test unit` 631/631, `prodbox test integration cli`/`env`
-exit 0, `prodbox lint docs` / `docs check` exit 0; `helm template`
+exit 0, `prodbox dev lint docs` / `docs check` exit 0; `helm template`
 renders cleanly for the gateway chart with empty `event_keys` fallback.
 
 The live four-block end-to-end verification from the approved plan
@@ -1544,7 +1544,7 @@ otherwise. `PRODBOX_WORKLOAD_MODE` / `PRODBOX_HTTP_PORT` /
 `PRODBOX_REDIS_HOST` / `PRODBOX_REDIS_PORT` / `PRODBOX_OIDC_*` env vars
 are removed from `charts/api/templates/deployment.yaml` and
 `charts/websocket/templates/deployment.yaml`; the Dhall ConfigMap is the
-sole source on the chart-side surface. Validation: `prodbox check-code`
+sole source on the chart-side surface. Validation: `prodbox dev check`
 exit 0; `prodbox test unit` 543/543; `prodbox test integration cli` 28/28;
 `prodbox test integration env` 28/28; `prodbox-daemon-lifecycle` 14/14.
 **Live closure 2026-06-01:** `prodbox test all` retry 21 deployed the
@@ -1592,11 +1592,11 @@ via `Dhall.inputFile auto`.
 
 ### Validation
 
-1. `prodbox check-code` exit 0 (the `forbidEnvVarConfigReads` lint added by Sprint 1.28
+1. `prodbox dev check` exit 0 (the `forbidEnvVarConfigReads` lint added by Sprint 1.28
    now fires on regressions).
 2. `helm template api charts/api` and `helm template websocket charts/websocket` render
    cleanly.
-3. `prodbox lint chart` exit 0.
+3. `prodbox dev lint chart` exit 0.
 4. Live exercise: `prodbox charts deploy api` and `prodbox charts deploy websocket`
    bring up the respective workloads against the new Dhall surface; both serve their
    public-edge routes.
@@ -1656,7 +1656,7 @@ requires for every long-running `prodbox` binary.
   watches the `--config` parent directory (directory mount, not `subPath`, so the kubelet
   atomic `..data` symlink swap fires the watch — the same gotcha Sprint `2.21` chunk 47 hit).
 - Add `src/Prodbox/Workload.hs` to `checkEnvVarConfigReads.scopedPaths` in
-  `src/Prodbox/CheckCode.hs` so `prodbox check-code` fails closed on any reintroduced
+  `src/Prodbox/CheckCode.hs` so `prodbox dev check` fails closed on any reintroduced
   `PRODBOX_*` config read on the workload surface (joining `Settings.hs`,
   `Gateway/Settings.hs`, and `Gateway.hs`).
 - Remove the legacy-ladder note from the Sprint `3.14` `Workload/Settings.hs` header comment
@@ -1665,7 +1665,7 @@ requires for every long-running `prodbox` binary.
 
 ### Validation
 
-1. `prodbox check-code` exit 0 with `src/Prodbox/Workload.hs` newly in
+1. `prodbox dev check` exit 0 with `src/Prodbox/Workload.hs` newly in
    `checkEnvVarConfigReads.scopedPaths`; reintroducing any `PRODBOX_*` config read on the
    workload surface fails the lint.
 2. `prodbox test unit` covers the Boot/Live field classification and the
@@ -1730,7 +1730,7 @@ code, lint-enforces that confinement, and lands-or-deletes the no-op
   `PRODBOX_TEST_HOST_MASTER_SEED_HEX` host-side test seam with a derived-value test seam at the
   gateway-client boundary so the integration harness still exercises the chunk-18/33 code path
   without re-exporting the raw seed.
-- Add a `prodbox check-code` lint (`checkRawMasterSeedReadScope` or equivalent) that forbids the
+- Add a `prodbox dev check` lint (`checkRawMasterSeedReadScope` or equivalent) that forbids the
   raw-seed read outside the in-cluster daemon module set (`src/Prodbox/Gateway/Daemon.hs`,
   `src/Prodbox/Secret/EnsureNamespace.hs`), the same lint shape `checkEnvVarConfigReads` uses.
 - Add a redacting `Show` instance to `MinioMasterSeedConfig` in
@@ -1746,7 +1746,7 @@ code, lint-enforces that confinement, and lands-or-deletes the no-op
 
 ### Validation
 
-1. `prodbox check-code` exit 0 with the new raw-seed-scope lint; reintroducing a raw-seed read
+1. `prodbox dev check` exit 0 with the new raw-seed-scope lint; reintroducing a raw-seed read
    outside the in-cluster daemon module set fails the lint.
 2. `prodbox test unit` covers the redacting `Show` on `MinioMasterSeedConfig` (no credential
    substring in the rendered output) and the gateway-client-derived host path.
@@ -2111,7 +2111,7 @@ unseal without a live, unsealed parent — the fail-closed brick cascades down t
 - The root cluster's Vault uses a Shamir seal; its unseal/recovery keys + initial root token are
   emitted into the `.age` unlock bundle on retained host storage
   (`.data/prodbox/vault-unlock-bundle.age`), decrypted only by the operator's memorized password
-  (the test harness simulates the password via `test-config.dhall`).
+  (the test harness simulates the password via `test-secrets.dhall`).
 - A child cluster's Vault config carries `seal "transit"` against the parent cluster's Vault; the
   chart renders that stanza only when `seal.mode = transit` and supplies the parent Transit token
   through `VAULT_TOKEN` from a Kubernetes Secret instead of embedding it in `vault.hcl`.

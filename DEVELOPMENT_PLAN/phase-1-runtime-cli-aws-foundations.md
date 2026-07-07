@@ -19,17 +19,17 @@
 
 ## Phase Status
 
-🔄 **Reopened 2026-07-06 for the bootstrap-readiness config/DAG foundation** — Phase `1` reopens to
-expand its own Tier-0 config and prerequisite-DAG surface with Sprint `1.56` (📋 Planned), the
-foundation for making the class of bootstrap readiness races unrepresentable per
+✅ **Reclosed 2026-07-06 for the bootstrap-readiness config/DAG foundation** — Phase `1` expanded its
+own Tier-0 config and prerequisite-DAG surface with Sprint `1.56` (✅ Done), the foundation that makes
+the class of bootstrap readiness races unrepresentable per
 [bootstrap_readiness_doctrine.md](../documents/engineering/bootstrap_readiness_doctrine.md). Sprint
 `1.56` adds a typed component dependency/readiness graph (`ComponentId`, closed `ReadinessProbe`
 ADT, and `depends_on` + `readiness` fields projected into the generated Tier-0 schema) plus the pure
 `EffectDAG` readiness-lowering that rejects, at expansion time, a cycle, a dangling dependency id, or
-a dependency edge with no matching readiness node. It has no unmet blocker (foundation). The
-consuming reconcile/chart/AWS work is owned forward by Sprints `3.23`, `4.43`, and `7.31`; per
-Standard N those later-phase sprints are `⏸️ Blocked by` this earlier-phase sprint and never the
-reverse. All earlier Phase `1` sprints remain `Done` on their owned surfaces.
+a dependency edge with no matching readiness node. It had no unmet blocker (foundation). The
+consuming reconcile/chart/AWS work is owned forward by Sprints `3.23`, `4.43`, and `7.31` (all ✅
+Done); per Standard N those later-phase sprints depend forward on this earlier-phase sprint and never
+the reverse. All earlier Phase `1` sprints remain `Done` on their owned surfaces.
 
 ✅ **Reclosed 2026-07-04 for explicit resource-governor schema** — Sprint `1.55` is Done on the
 Phase `1` config/schema surface. The existing Sprint `1.51` aggregate capacity algebra remains as a
@@ -249,7 +249,7 @@ closed on the cabal-manifest toolchain declarations plus library-first entrypoin
   documentation artifacts from the command registry: the marker-delimited Markdown command
   reference in `documents/cli/commands.md`, the generated manpages under `share/man/man1/`,
   the generated shell completion scripts under `share/completion/`, and the tracked generated
-  path enforcement behind `prodbox docs check|generate` and `prodbox lint files`.
+  path enforcement behind `prodbox dev docs check|generate` and `prodbox dev lint files`.
 - The canonical frontend container build now lives at `docker/prodbox.Dockerfile`.
 - `docker/prodbox.Dockerfile` now preserves the `/opt/build` artifact contract through in-image
   `ghcup` with pinned GHC `9.12.4` and Cabal `3.16.1.0`; no mounted `haskell:9.6.7-slim`
@@ -278,7 +278,7 @@ closed on the cabal-manifest toolchain declarations plus library-first entrypoin
   Route 53 hosted zone before it writes repository config, and the supported schema or fixtures
   no longer carry placeholder-domain residue.
 - The canonical closure gates for this phase are the host artifact contract at `.build/prodbox`,
-  `prodbox check-code`, and the built-frontend `cli` plus `env` integration suites.
+  `prodbox dev check`, and the built-frontend `cli` plus `env` integration suites.
 
 ## Sprint 1.1: Haskell Binary, Build Topology, and Command Surface ✅
 
@@ -310,7 +310,7 @@ topology on the implemented rewrite path.
 
 ### Validation
 
-1. `prodbox check-code`
+1. `prodbox dev check`
 2. `prodbox test unit`
 3. `prodbox test integration cli`
 4. `prodbox test integration env`
@@ -368,9 +368,9 @@ Keep the settings, interpreter, subprocess, and test contracts on Haskell-owned 
 - The supported `prodbox config` surface is `setup|show|validate`; `config compile` is removed.
 - The current command, effect, and result contracts are represented as Haskell ADTs.
 - The Haskell-owned `prodbox host ensure-tools|check-ports|info|firewall`, `prodbox k8s
-  health|wait|logs`, `prodbox test`, and `prodbox check-code` command frameworks are implemented
+  health|wait|logs`, `prodbox test`, and `prodbox dev check` command frameworks are implemented
   on a Haskell-owned entry surface.
-- `prodbox check-code` fails on governed doctrine-alignment violations described by
+- `prodbox dev check` fails on governed doctrine-alignment violations described by
   `documents/engineering/code_quality.md`, not only on formatter, linter, build, or binary-sync
   failures.
 - The named validation payloads behind `prodbox test integration ...` are executable native
@@ -378,7 +378,7 @@ Keep the settings, interpreter, subprocess, and test contracts on Haskell-owned 
 
 ### Validation
 
-1. `prodbox check-code`
+1. `prodbox dev check`
 2. `prodbox test unit`
 3. `prodbox test integration cli`
 4. `prodbox test integration env`
@@ -394,7 +394,7 @@ Keep the settings, interpreter, subprocess, and test contracts on Haskell-owned 
   of surfacing a raw file-open exception from the Dhall loader.
 - `src/Prodbox/BuildSupport.hs` owns the shared `.build/support` linker shim and the
   operator-facing binary sync to `.build/prodbox`.
-- `src/Prodbox/CheckCode.hs` owns `prodbox check-code` and now runs the repository-owned workflow
+- `src/Prodbox/CheckCode.hs` owns `prodbox dev check` and now runs the repository-owned workflow
   and git-hook policy scan, Fourmolu, HLint, warning-clean
   `cabal build --builddir=.build all --ghc-options=-Werror`, then syncs the built executable to
   `.build/prodbox`. That policy scan now skips generated and retained runtime roots including
@@ -483,7 +483,7 @@ the supported product scope.
 - `src/Prodbox/TestValidation.hs` provides the canonical-suite content (`lifecycle`,
   `pulumi`, `aws-eks`, `ha-rke2-aws`, and the rest of the named validations) dispatched by
   `prodbox test integration ...`.
-- The canonical local validation surfaces for this phase remain `prodbox check-code`,
+- The canonical local validation surfaces for this phase remain `prodbox dev check`,
   `prodbox test unit`, `prodbox test integration cli`, and `prodbox test integration env`.
 - Environment-dependent AWS proof for this phase is owned by the named `prodbox pulumi ...` and
   `prodbox test integration ...` commands rather than recorded here as a fresh run result.
@@ -522,7 +522,7 @@ extended that baseline.
 
 ### Validation
 
-1. `prodbox check-code`
+1. `prodbox dev check`
 2. `prodbox test unit`
 3. `prodbox test integration cli`
 4. `prodbox test integration env`
@@ -583,7 +583,7 @@ architecture under the one-host doctrine rather than the earlier dedicated-host 
 
 ### Validation
 
-1. `prodbox check-code`
+1. `prodbox dev check`
 2. `prodbox test unit`
 3. `prodbox test integration cli`
 4. `prodbox test integration env`
@@ -608,7 +608,7 @@ architecture under the one-host doctrine rather than the earlier dedicated-host 
 - `src/Prodbox/Aws.hs` now validates Route 53 hosted-zone alignment for the canonical hostname
   during `prodbox config setup`, while `src/Prodbox/TestValidation.hs` and the built-frontend
   suites align the config and lifecycle proofs with the one-host doctrine.
-- `prodbox check-code`, `prodbox test unit`, `prodbox test integration cli`, and
+- `prodbox dev check`, `prodbox test unit`, `prodbox test integration cli`, and
   `prodbox test integration env` remain the canonical validation gates for the single-host
   settings contract.
 
@@ -731,11 +731,11 @@ Adopt [haskell_code_guide.md#subprocesses-as-typed-values](../documents/engineer
 - Migrate every call site under `src/Prodbox/` that currently constructs subprocesses inline.
 - Sprint 0.4 round-3 extension: name `callProcess`, `readCreateProcess`, and direct
   `System.Process` smart constructors (`createProcess`, `proc`, `shell`) explicitly
-  in the `prodbox lint files` rules and the `.hlint.yaml` negative-space symbol set
+  in the `prodbox dev lint files` rules and the `.hlint.yaml` negative-space symbol set
   (composing with the Sprint 1.19 negative-space rules) per
   [haskell_code_guide.md#subprocesses-as-typed-values](../documents/engineering/haskell_code_guide.md#subprocesses-as-typed-values). A `prodbox-haskell-style` unit test asserts
   the typed-process dependency stays confined to `src/Prodbox/Subprocess.hs`, while
-  `prodbox lint files` rejects raw `System.Process` imports and the forbidden symbols in
+  `prodbox dev lint files` rejects raw `System.Process` imports and the forbidden symbols in
   `src/Prodbox/` call sites outside the subprocess interpreter.
 
 ### Validation
@@ -801,24 +801,24 @@ Adopt [code_quality.md#lint-format-and-code-quality-stack](../documents/engineer
 
 - Pin a repo-root `fourmolu.yaml` with the doctrine's minimum settings (`column-limit: 100`,
   `function-arrows: leading`, etc.).
-- Introduce the `GeneratedSectionRule` registry plus paired `prodbox docs check` and
-  `prodbox docs generate` commands using the doctrine's `<prodbox>:<key>:start|end` marker
+- Introduce the `GeneratedSectionRule` registry plus paired `prodbox dev docs check` and
+  `prodbox dev docs generate` commands using the doctrine's `<prodbox>:<key>:start|end` marker
   conventions.
 - Introduce the `forbiddenPathRegistry` listing `.github/workflows/`, `.husky/`, `.githooks/`,
   `.pre-commit-config.yaml`, and any root-level `Makefile` / `justfile` / `Taskfile.yml` that
   duplicates `prodbox` surfaces. Refactor `src/Prodbox/CheckCode.hs` to consume both registries.
-- Add `--write` counterparts on every check command (`prodbox lint files --write`,
-  `prodbox lint docs --write`, `prodbox lint haskell --write`).
-- Implement `prodbox lint docs [--write]` as a thin alias over the same Haskell function
-  backing `prodbox docs check` / `prodbox docs generate`; both surfaces consume the single
+- Add `--write` counterparts on every check command (`prodbox dev lint files --write`,
+  `prodbox dev lint docs --write`, `prodbox dev lint haskell --write`).
+- Implement `prodbox dev lint docs [--write]` as a thin alias over the same Haskell function
+  backing `prodbox dev docs check` / `prodbox dev docs generate`; both surfaces consume the single
   `GeneratedSectionRule` registry per
   [code_quality.md#generated-artifacts](../documents/engineering/code_quality.md#generated-artifacts)and
   `The Architecture` §2321. `documents/engineering/cli_command_surface.md` records this
   consolidation so future contributors do not split the two surfaces.
-- `prodbox lint haskell` round-trips `prodbox.cabal` through `cabal format` via a temp file
+- `prodbox dev lint haskell` round-trips `prodbox.cabal` through `cabal format` via a temp file
   and asserts byte-equality with the on-disk file per
   [code_quality.md#lint-format-and-code-quality-stack](../documents/engineering/code_quality.md#lint-format-and-code-quality-stack). The check pass never rewrites in place;
-  rewrite-in-place is reserved for `prodbox lint haskell --write`.
+  rewrite-in-place is reserved for `prodbox dev lint haskell --write`.
 - Sprint 0.4 round-3 extension: bind the thirteen minimum `fourmolu.yaml` settings
   explicitly. The repo-root `fourmolu.yaml` carries `indentation: 2`,
   `column-limit: 100`, `function-arrows: leading`, `comma-style: leading`,
@@ -833,15 +833,15 @@ Adopt [code_quality.md#lint-format-and-code-quality-stack](../documents/engineer
 
 ### Validation
 
-1. `prodbox lint all` and `prodbox lint files` succeed on a clean tree.
+1. `prodbox dev lint all` and `prodbox dev lint files` succeed on a clean tree.
 2. The forbidden-path lint fails with the doctrine's three-element error message when a
    prohibited file is introduced.
-3. `prodbox docs check` and `prodbox docs generate` round-trip every marker-delimited section.
-4. `prodbox lint docs` and `prodbox docs check` produce byte-identical output on the same
+3. `prodbox dev docs check` and `prodbox dev docs generate` round-trip every marker-delimited section.
+4. `prodbox dev lint docs` and `prodbox dev docs check` produce byte-identical output on the same
    tree (the two surfaces share one Haskell function).
 5. Hand-editing `prodbox.cabal` in a way that diverges from `cabal format`'s canonical
-   output fails `prodbox lint haskell` with the byte-equality compare; running
-   `prodbox lint haskell --write` repairs the divergence and the next check pass succeeds.
+   output fails `prodbox dev lint haskell` with the byte-equality compare; running
+   `prodbox dev lint haskell --write` repairs the divergence and the next check pass succeeds.
 
 ### Remaining Work
 
@@ -866,12 +866,12 @@ Testing Stack`, `Test Categories`, and `Test Organization`.
   `prodbox-haskell-style` (and prepare `prodbox-daemon-lifecycle` plus `prodbox-pulumi`, which
   are populated in Sprints 2.X and 4.X respectively).
 - Expose `prodbox-haskell-style` as both a cabal `test-suite` and the
-  `prodbox lint haskell` CLI command, sharing one library function.
+  `prodbox dev lint haskell` CLI command, sharing one library function.
 - Enforce `type: exitcode-stdio-1.0` on every cabal `test-suite` stanza (`prodbox-unit`,
   `prodbox-integration`, `prodbox-haskell-style`, and any later stanza added by Sprints 2.14
   and 4.7) per
   [unit_testing_policy.md#test-organization](../documents/engineering/unit_testing_policy.md#test-organization). Add a
-  `prodbox lint files` (Sprint 1.10) rule that fails on any new test-suite stanza missing the
+  `prodbox dev lint files` (Sprint 1.10) rule that fails on any new test-suite stanza missing the
   interface.
 - Enqueue the `hspec` and `hspec-discover` dependencies in the legacy ledger.
 - Sprint 0.4 round-3 extension: enumerate the canonical property-test invariants
@@ -891,7 +891,7 @@ Testing Stack`, `Test Categories`, and `Test Organization`.
 
 1. `cabal test` runs every stanza and passes on a clean worktree.
 2. `prodbox test all` delegates to `cabal test` per doctrine.
-3. `prodbox lint files` fails when a test-suite stanza in `prodbox.cabal` omits
+3. `prodbox dev lint files` fails when a test-suite stanza in `prodbox.cabal` omits
    `type: exitcode-stdio-1.0`.
 
 ### Remaining Work
@@ -1130,7 +1130,7 @@ prescribed surface.
   or machine-readable output, with `--format` rendering driven by typed formatters in
   `src/Prodbox/CLI/Output.hs` (new module).
 - Codify the stdout / stderr split: primary command output writes to stdout, diagnostics to
-  stderr. Add a `prodbox lint haskell` hlint rule (Sprint 1.10) that refuses
+  stderr. Add a `prodbox dev lint haskell` hlint rule (Sprint 1.10) that refuses
   `Text.IO.hPutStrLn stdout` for diagnostic paths and `putStrLn` / `Text.IO.putStrLn` from any
   module under `src/Prodbox/` outside the dedicated output layer.
 - Document the daemon exception explicitly: `prodbox gateway start` and
@@ -1222,7 +1222,7 @@ project-specific `.hlint.yaml` rule pattern.
 
 ### Deliverables
 
-- `prodbox lint haskell` (Sprint 1.10) bootstraps `fourmolu` and `hlint` into
+- `prodbox dev lint haskell` (Sprint 1.10) bootstraps `fourmolu` and `hlint` into
   `.build/prodbox-style-tools/bin/` via `ghcup run` plus `cabal install`, pinned to a
   formatter-tool GHC version declared as a single constant in `src/Prodbox/Lint.hs` (new
   module). The formatter-tool GHC is isolated from the project compiler so format output is
@@ -1241,19 +1241,19 @@ project-specific `.hlint.yaml` rule pattern.
   `replicateConcurrently`) and threads resources through `Env`, not module-level `IORef`.
 - The lint stack runs hlint with `--with-group=default` plus `--with-group=extra` per
   doctrine.
-- `prodbox check-code` continues to dispatch into the same path; no parallel
+- `prodbox dev check` continues to dispatch into the same path; no parallel
   developer-tooling fourmolu invocation survives outside the doctrine-pinned sandbox.
 - The legacy ledger entry for host-installed `fourmolu` / `hlint` use and missing nesting or
   daemon negative-space coverage moves to `Completed`.
 
 ### Validation
 
-1. `prodbox lint haskell` succeeds on a clean tree using only the sandboxed formatter
+1. `prodbox dev lint haskell` succeeds on a clean tree using only the sandboxed formatter
    binaries; no host-installed `fourmolu` or `hlint` is consulted.
-2. Adding a deliberately nested `case` inside a lambda body fails `prodbox lint haskell`
+2. Adding a deliberately nested `case` inside a lambda body fails `prodbox dev lint haskell`
    with the doctrine-named rule.
 3. Introducing a `forkIO`, `unsafePerformIO`, or module-level `IORef` declaration inside
-   any daemon-path module fails `prodbox lint haskell` with the negative-space symbol
+   any daemon-path module fails `prodbox dev lint haskell` with the negative-space symbol
    rule.
 
 ### Completed Work
@@ -1265,7 +1265,7 @@ project-specific `.hlint.yaml` rule pattern.
   repo-local sandbox path to the build environment.
 - `src/Prodbox/CheckCode.hs` invokes the sandboxed binaries by absolute path and enforces the
   nested-case and daemon negative-space custom scans before running Fourmolu and HLint.
-- `./.build/prodbox check-code` passes with the sandboxed style-tool path.
+- `./.build/prodbox dev check` passes with the sandboxed style-tool path.
 
 ## Sprint 1.20: Aggregate Test and Lint Dispatch Alignment ✅
 
@@ -1281,7 +1281,7 @@ Adopt [code_quality.md#lint-format-and-code-quality-stack](../documents/engineer
 
 ### Deliverables
 
-- Introduce `prodbox test lint` as a `CommandSpec` (Sprint 1.6) alias for `prodbox lint all`
+- Introduce `prodbox test lint` as a `CommandSpec` (Sprint 1.6) alias for `prodbox dev lint all`
   plus `cabal build all`. The alias is a thin wrapper, not a new surface.
 - Reorder `prodbox test all` to run `prodbox test lint` first; `cabal test` runs only after
   lint succeeds. Document the ordering in `documents/engineering/unit_testing_policy.md`.
@@ -1319,7 +1319,7 @@ deterministic function.
 - Add the `trackingGeneratedPaths :: [TrackedGeneratedPath]` registry to
   `src/Prodbox/CheckCode.hs` as a third registry alongside `GeneratedSectionRule`
   (Sprint 1.10) and `forbiddenPathRegistry` (Sprint 1.10). The registry names every file
-  owned wholesale by code: hand edits anywhere in such a file fail `prodbox lint files` with
+  owned wholesale by code: hand edits anywhere in such a file fail `prodbox dev lint files` with
   the doctrine's three-element error message.
 - Add a `prodbox-haskell-style` (Sprint 1.11) property test asserting renderer determinism:
   every `GeneratedSectionRule`'s renderer is idempotent across two invocations within a
@@ -1351,7 +1351,7 @@ deterministic function.
 
 ### Validation
 
-1. Hand-editing a registered tracked-generated file fails `prodbox lint files` with the
+1. Hand-editing a registered tracked-generated file fails `prodbox dev lint files` with the
    doctrine's path / registry key / remedy hint triple.
 2. The renderer-determinism property test fails when a deliberately non-deterministic
    renderer (e.g. one that embeds `getCurrentTime`) is injected.
@@ -1386,7 +1386,7 @@ non-doctrine library on the supported path.
   list, file a [legacy-tracking-for-deletion.md](legacy-tracking-for-deletion.md)
   `Pending Removal` row (location, reason, owning Sprint 1.22) and remove or replace the
   dependency in this sprint.
-- `prodbox check-code` continues to enforce warning-clean builds against the audited
+- `prodbox dev check` continues to enforce warning-clean builds against the audited
   dependency set.
 
 ### Validation
@@ -1478,29 +1478,29 @@ documentation artifact, not only the in-process introspection commands.
     `share/completion/fish/prodbox.fish`.
 - Each artifact path is registered in the tracked generated-file registry now
   implemented in `src/Prodbox/CheckCode.hs` (Sprint 1.21) so any hand edit fails
-  `prodbox lint files` with the doctrine's three-element error message
-  (path / registry key / remedy hint pointing at `prodbox docs generate`).
+  `prodbox dev lint files` with the doctrine's three-element error message
+  (path / registry key / remedy hint pointing at `prodbox dev docs generate`).
 - HTML output is **deferred** as an explicit doctrine-aware no-op (same form as
   Sprint 1.23's cross-language-types deferral). The deferral is recorded in
   `documents/engineering/cli_command_surface.md` and
   `documents/documentation_standards.md` so future contributors do not silently
   reintroduce the gap.
-- `prodbox docs generate` (Sprint 1.10) regenerates every artifact; the paired
-  `prodbox docs check` fails on drift.
+- `prodbox dev docs generate` (Sprint 1.10) regenerates every artifact; the paired
+  `prodbox dev docs check` fails on drift.
 - Golden tests in `prodbox-haskell-style` (Sprint 1.11) cover the top-level
   manpage, a representative group manpage, and the bash completion script
-  byte-for-byte against committed fixtures, while `prodbox docs check` and
-  `prodbox lint files` enforce the full generated-artifact registry.
+  byte-for-byte against committed fixtures, while `prodbox dev docs check` and
+  `prodbox dev lint files` enforce the full generated-artifact registry.
 - Enqueue the pre-doctrine absence of durable doc artifacts in
   [legacy-tracking-for-deletion.md](legacy-tracking-for-deletion.md) with Sprint
   1.24 as the owning sprint.
 
 ### Validation
 
-1. `prodbox docs generate` followed by `prodbox docs check` is a no-op on a clean
+1. `prodbox dev docs generate` followed by `prodbox dev docs check` is a no-op on a clean
    tree.
-2. Hand-editing any registered artifact fails `prodbox lint files`.
-3. The committed golden fixtures plus `prodbox docs check` keep the current
+2. Hand-editing any registered artifact fails `prodbox dev lint files`.
+3. The committed golden fixtures plus `prodbox dev docs check` keep the current
    renderers deterministic on a clean tree.
 4. `documents/engineering/cli_command_surface.md` lists the HTML deferral as an
    explicit doctrine-aware no-op rather than as a silent gap.
@@ -1575,7 +1575,7 @@ so error rendering happens only at the CLI boundary and core code is free of
   established by Sprint 1.17 (`src/Prodbox/CLI/Output.hs`). Every command runner
   that surfaces an `AppError` to the user routes it through `renderError`; no
   command runner constructs ad-hoc rendered messages.
-- Extend the `prodbox lint haskell` hlint surface (Sprint 1.10) and the custom
+- Extend the `prodbox dev lint haskell` hlint surface (Sprint 1.10) and the custom
   `.hlint.yaml` rules (Sprint 1.19) with negative-space rules refusing `print`,
   `exitFailure`, and direct terminal formatting (`Pretty.Print` style functions
   outside the output layer) anywhere under `src/Prodbox/` outside the dedicated
@@ -1597,7 +1597,7 @@ so error rendering happens only at the CLI boundary and core code is free of
 2. Every `AppError` error message visible at the CLI boundary flows through
    `renderError`; a unit test asserts this for a representative sample of error
    variants.
-3. `prodbox check-code` continues to enforce the governed doctrine-alignment
+3. `prodbox dev check` continues to enforce the governed doctrine-alignment
    contract after the boundary rules land.
 
 ### Completed Work
@@ -1628,7 +1628,7 @@ None.
 
 Bind the two cabal-level toolchain declarations the doctrine prescribes, name the
 authoritative Cabal version, and codify the library-first / thin-`Main.hs` layout
-as a `prodbox check-code` gate so future contributors cannot reintroduce logic in
+as a `prodbox dev check` gate so future contributors cannot reintroduce logic in
 `app/prodbox/Main.hs`. Closes the round-3 audit gaps A1 (cabal manifest pins) and
 A13 (library-first layout) per
 [dependency_management.md#toolchain-pinning](../documents/engineering/dependency_management.md#toolchain-pinning)and
@@ -1665,7 +1665,7 @@ A13 (library-first layout) per
 
 1. `cabal build all` succeeds on the clean tree with the new
    `tested-with` / `with-compiler` declarations.
-2. `prodbox check-code` fails when synthetic logic is added to
+2. `prodbox dev check` fails when synthetic logic is added to
    `app/prodbox/Main.hs` beyond `main = Prodbox.App.main` and succeeds on the
    clean tree.
 3. Doctrine identifiers `tested-with`, `with-compiler`, `Cabal 3.16.1.0`,
@@ -1779,7 +1779,7 @@ deps under GHC 9.12.4; `src/Prodbox/CheckCode.hs::checkEnvVarConfigReads` lint
 rule landed and is wired into `runDoctrineAlignmentCheck`; the `PRODBOX_LOG_LEVEL` /
 `PRODBOX_CONFIG_PATH` / `PRODBOX_PORT` env-var reads in `src/Prodbox/Gateway.hs`
 are gone; daemon-lifecycle stanza tests updated to the new contract; 533/533
-unit tests pass; `prodbox check-code` exit 0.)
+unit tests pass; `prodbox dev check` exit 0.)
 **Blocked by**: Sprint 0.8 ([config_doctrine.md](../documents/engineering/config_doctrine.md)) — resolved
 **Implementation**: `cabal.project` (`allow-newer` clauses), `prodbox.cabal` (no version bound
 changes expected), `src/Prodbox/CheckCode.hs` (new `forbidEnvVarConfigReads` lint rule)
@@ -1817,7 +1817,7 @@ on supported config-loading paths.
 
 ### Validation
 
-1. `prodbox check-code` exit 0 (proves the new lint rule fires only on intentional
+1. `prodbox dev check` exit 0 (proves the new lint rule fires only on intentional
    violations, not on legitimate non-config env-var reads in test helpers).
 2. `prodbox test unit` exit 0 (no test text changes expected).
 3. `prodbox build` succeeds cleanly under GHC `9.12.4` with the extended `allow-newer`
@@ -1870,7 +1870,7 @@ generate the §2/§3 matrix from a typed registry rather than a hand-maintained 
 - Generate the [cli_command_surface.md](../documents/engineering/cli_command_surface.md) §2/§3
   operator command matrix from `commandRegistry` as a marker-delimited generated section via
   `GeneratedSectionRule` (Sprint 1.10), so the matrix cannot drift from the registry. This is
-  the typed source Sprint `0.10` builds on; `prodbox docs check` fails on drift.
+  the typed source Sprint `0.10` builds on; `prodbox dev docs check` fails on drift.
 - (Deferred — not this sprint.) Reducing `prodbox gateway start` / `prodbox workload start` to a
   single `--config <path>` knob IS the override-flag/`PRODBOX_*` removal, owned by Sprint `2.24`
   (daemon) and Sprint `3.15` (workload). 1.29 generates the *current* parser surface, so the matrix
@@ -1881,8 +1881,8 @@ generate the §2/§3 matrix from a typed registry rather than a hand-maintained 
 
 ### Validation
 
-1. `prodbox docs check` is a no-op on a clean tree after the §2/§3 matrix is generated from
-   `commandRegistry`; hand-editing the matrix fails `prodbox lint files`.
+1. `prodbox dev docs check` is a no-op on a clean tree after the §2/§3 matrix is generated from
+   `commandRegistry`; hand-editing the matrix fails `prodbox dev lint files`.
 2. A `prodbox-unit` parser test (Sprint 1.25) asserts that every command's declared positional
    args round-trip through `execParserPure` to the typed `Command` value.
 3. `prodbox gateway start --config <path>` and `prodbox workload start --config <path>` accept
@@ -1927,7 +1927,7 @@ and [haskell_code_guide.md#retry-policy-as-first-class-values](../documents/engi
 - Replace the hand-built `retryable :: Bool` field on `ServiceError` with a classifiable
   `ServiceError` sum classified at the single subprocess boundary, so `serviceErrorRetryable`
   is derived from the constructor rather than carried as a literal. Forbid hand-built
-  `ServiceError` values that pin a literal `retryable` `Bool`, via a `prodbox check-code`
+  `ServiceError` values that pin a literal `retryable` `Bool`, via a `prodbox dev check`
   lint rule, per
   [haskell_code_guide.md#capability-classes-and-service-errors](../documents/engineering/haskell_code_guide.md#capability-classes-and-service-errors).
 - Split the retrier (retries a classified-retryable action with backoff) from the
@@ -1953,7 +1953,7 @@ and [haskell_code_guide.md#retry-policy-as-first-class-values](../documents/engi
 
 1. A `prodbox-unit` test asserts `serviceErrorRetryable` is derived from the `ServiceError`
    constructor and that a retryable error retries while a non-retryable error does not.
-2. `prodbox check-code` fails when a `ServiceError` is constructed with a literal `retryable`
+2. `prodbox dev check` fails when a `ServiceError` is constructed with a literal `retryable`
    `Bool` or when an `aws` subprocess is built without `awsCliSubprocessEnvironment`.
 3. `prodbox dns check` (and any `aws`-invoking path) finds the `aws` binary on the supported
    path with the PATH/HOME-preserving environment.
@@ -2056,7 +2056,7 @@ log-reconciled state the gateway actually uses, per
 
 ### Validation
 
-1. `cabal build all` and `prodbox check-code` succeed after `src/Prodbox/StateMachine.hs` and
+1. `cabal build all` and `prodbox dev check` succeed after `src/Prodbox/StateMachine.hs` and
    its typecheck test are removed.
 2. `documents/engineering/pure_fp_standards.md` permits a flat exhaustive ADT for
    externally-authoritative log-reconciled state while still forbidding raw-`String` state and
@@ -2111,7 +2111,7 @@ authenticate to Vault directly via Vault Kubernetes auth.
 - A shared `SecretRef` Dhall union (`Vault | TransitKey | Prompt | TestPlaintext`, with **no**
   `FileSecret` arm) in `prodbox-config-types.dhall` and a matching `Prodbox.Settings.SecretRef` ADT.
   `Vault`/`TransitKey` are the production targets; `Prompt` is CLI-only one-off elevated material;
-  `TestPlaintext` is accepted only by the test harness from `test-config.dhall`.
+  `TestPlaintext` is accepted only by the test harness from `test-secrets.dhall`.
 - The landed `SecretRefFile` constructor and its disk resolver arm are deleted from
   `Prodbox.Settings.SecretRef` (queued in [legacy-tracking-for-deletion.md](legacy-tracking-for-deletion.md)).
 - `validateProductionSecretRef` rejects `TestPlaintext` outside the test harness, and the resolver
@@ -2184,7 +2184,7 @@ per-submission classification, the canonical `.data/prodbox/vault-unlock-bundle.
 and is an idempotent no-op on an already-initialized Vault → `vaultInit` → `initResponseToUnlockBundle`
 → `encryptUnlockBundle` → write the `.age` bundle), `vault unseal` (read+decrypt the bundle →
 `planUnseal` → submit shares until unsealed, aborting on a stalled share), and `vault seal` (root
-token from the decrypted bundle → `vaultSeal`). The operator-password seam reads `test-config.dhall`
+token from the decrypted bundle → `vaultSeal`). The operator-password seam reads `test-secrets.dhall`
 when present and otherwise prompts on a TTY with echo disabled; keys / token / password are never
 logged. The host address is corrected to the chart NodePort `http://127.0.0.1:31820`. Eight pure
 orchestration unit tests added. Gates green: `dev check` 0, `dev docs check` 0, `test unit`
@@ -2210,7 +2210,7 @@ docs` 0.
 
 **Update (2026-06-15, remaining Vault leaves)**: the rest of the `prodbox vault` leaf handlers are
 now wired. `vault rotate-unlock-bundle` decrypts the existing host unlock bundle, obtains and
-confirms a new hidden password on a TTY (or reuses the test-only `test-config.dhall` password for
+confirms a new hidden password on a TTY (or reuses the test-only `test-secrets.dhall` password for
 automation), and writes a freshly encrypted bundle without touching Vault state. `vault
 rotate-transit-key KEY` requires initialized+unsealed Vault, recovers the root token from the
 unlock bundle, and calls Vault Transit key rotation. `vault pki status` verifies the baseline `pki`
@@ -2224,7 +2224,7 @@ response JSON; gates: `cabal build --builddir=.build exe:prodbox test:prodbox-un
 
 **Closure update (2026-06-16)**: the native CLI lifecycle proof now exercises the full root-Vault
 command path against a Vault-compatible loopback server through the built `prodbox` executable:
-`vault status`, `vault init`, idempotent re-`init`, `vault unseal` using `test-config.dhall`,
+`vault status`, `vault init`, idempotent re-`init`, `vault unseal` using `test-secrets.dhall`,
 `vault reconcile`, `vault rotate-unlock-bundle`, `vault rotate-transit-key prodbox-minio-envelope`,
 `vault pki status`, `vault pki issue-test-cert`, and `vault seal`. The proof verifies that init
 creates `.data/prodbox/vault-unlock-bundle.age`, re-init refuses to regenerate state, reconcile
@@ -2255,7 +2255,7 @@ gateway-mediated child bootstrap surface is closed by Sprint `2.26`.
 - The root cluster's unlock bundle at `.data/prodbox/vault-unlock-bundle.age` uses an Argon2id (or
   scrypt) KDF + age/sops-style authenticated encryption — never raw SHA-256. The unlock-bundle
   password unseals the root Vault and is stored nowhere persistent (the test harness simulates it
-  through `test-config.dhall`).
+  through `test-secrets.dhall`).
 - `vault unseal` reads the bundle, prompts for the password (or takes it from the test harness),
   decrypts in memory, and unseals; plaintext keys are never persisted.
 - `vault reconcile` idempotently reconciles auth mounts, policies, roles, KV mounts, Transit keys
@@ -2266,7 +2266,7 @@ gateway-mediated child bootstrap surface is closed by Sprint `2.26`.
 
 - Vault init creates an encrypted unlock bundle; re-running init against existing state is a no-op
   (init-once/unseal-on-rebuild).
-- Vault unseal succeeds using a password from `test-config.dhall`.
+- Vault unseal succeeds using a password from `test-secrets.dhall`.
 - Vault reconcile creates KV, Transit, PKI, policies, and Kubernetes auth roles.
 - Vault rotate, PKI status, PKI issue-test-cert, and seal run through the native CLI against a
   Vault-compatible HTTP surface.
@@ -2663,7 +2663,7 @@ version-controlled, so the repository carries zero tracked Dhall
   Haskell-generated and become git-ignored (a one-time operator
   `git rm --cached prodbox-config-types.dhall test-config-types.dhall` untracks them); combined with
   the generated `prodbox.dhall` / `docker/default-prodbox.dhall` and the locally-authored
-  `prodbox-config.dhall` / `test-config.dhall` seeds, the net result is **zero version-controlled
+  `prodbox-config.dhall` / `test-secrets.dhall` seeds, the net result is **zero version-controlled
   `.dhall`** ([config_doctrine.md §0](../documents/engineering/config_doctrine.md#0-three-tier-config-model)).
 - Tiers 1–2 are untouched: this sprint only consolidates the Tier-0 non-secret surface and the
   generated-artifact posture.
@@ -2764,7 +2764,7 @@ and thereafter the cluster reads its config from the SSoT rather than the seed-f
   ([config_doctrine.md §1a](../documents/engineering/config_doctrine.md#1a-the-in-force-config-lives-encrypted-in-minio)).
 - The legacy `prodbox-config.dhall` seed/propose input is retired: it carries **no plaintext secrets**
   (verified — only `SecretRef.Vault` pointers: `aws.*` → `secret/gateway/gateway/aws`,
-  `acme.eab_*` → `secret/acme/eab`; the test secrets already live in `test-config.dhall`), and its
+  `acme.eab_*` → `secret/acme/eab`; the test secrets already live in `test-secrets.dhall`), and its
   non-secret operator config now lives in the SSoT, so its deletion is queued in
   [legacy-tracking-for-deletion.md](legacy-tracking-for-deletion.md). Retirement is **gated** on the
   SSoT being seeded — until then the operator non-secret config lives only in `prodbox-config.dhall`
@@ -2793,7 +2793,7 @@ scheduled as the new Sprints `1.43` and `1.44` below.
 
 **Status**: ✅ Done (2026-06-20). `TestConfig` → `TestSecrets` (the harness secrets fixture), the
 former `test-config.dhall` renamed to `test-secrets.dhall`, and — because the fixture carried no
-non-secret toggles — the now-empty `test-config.dhall` / `test-config-types.dhall` were removed
+non-secret toggles — the now-empty `test-secrets.dhall` / `test-config-types.dhall` were removed
 outright (the sprint's "removed if empty" branch). `test-secrets.dhall` is the sole durable-secret
 fixture file (operator decision 2026-06-19).
 **Implementation**: `src/Prodbox/Vault/Host.hs` (`TestConfig`→`TestSecrets`,
@@ -2821,7 +2821,7 @@ key) — into a dedicated, git-ignored `test-secrets.dhall` (operator decision 2
 
 - The `TestSecrets` Haskell record (source of truth) split out of the former `TestConfig`, with a
   generated `test-secrets-types.dhall` schema emitted by `prodbox config schema`. Because the fixture
-  held no non-secret toggles, the now-empty `test-config.dhall` and its `test-config-types.dhall`
+  held no non-secret toggles, the now-empty `test-secrets.dhall` and its `test-config-types.dhall`
   schema were removed rather than kept as a dead empty record (the sprint's "removed if empty" clause).
 - `obtainOperatorPassword`, `acquireAdminAwsCredentials`, and `seedAcmeEabFromTestSecrets` read from
   `test-secrets.dhall`.
@@ -3419,7 +3419,7 @@ fail-if-absent resolution.
 - The `test init` / `test run` topology, `.test-data/` isolation, finally-guaranteed teardown, and
   the never-touch-`.data/` guard land in Phase 5 Sprint `5.11` (out of Phase 1 scope).
 
-## Sprint 1.55: Resource-Requirement Dhall Schema and Validated Config Surface [✅ Complete]
+## Sprint 1.55: Resource-Requirement Dhall Schema and Validated Config Surface [✅ Done]
 
 **Status**: Done
 **Implementation**: `dhall/capacity/Schema.dhall`, `src/Prodbox/Capacity/Config.hs`,

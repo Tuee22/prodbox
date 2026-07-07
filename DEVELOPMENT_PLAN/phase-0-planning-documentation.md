@@ -149,7 +149,7 @@ removal of Python from the supported architecture.
 
 ### Validation
 
-1. `prodbox check-code`
+1. `prodbox dev check`
 
 ### Remaining Work
 
@@ -194,7 +194,7 @@ adoption through declared phase reopens.
 - `documents/documentation_standards.md` documents the six Generated Sections requirements named
   by the doctrine: marker syntax per file type with literal `<prodbox>:<key>:start|end`
   examples, an authoritative pointer to the in-code `GeneratedSectionRule` registry, a
-  "How to regenerate" instruction naming `prodbox docs generate`, a per-file
+  "How to regenerate" instruction naming `prodbox dev docs generate`, a per-file
   `**Generated sections**: <key1>, <key2>` (or `none`) metadata field with a lint contract, a
   five-step extension protocol, and a "fully generated, do-not-hand-edit" rule.
 - Governed engineering docs that overlap with the doctrine — `code_quality.md`,
@@ -222,7 +222,7 @@ adoption through declared phase reopens.
 
 ### Validation
 
-1. `prodbox check-code` passes after all Sprint 0.2 documentation edits.
+1. `prodbox dev check` passes after all Sprint 0.2 documentation edits.
 2. `documents/documentation_standards.md` covers every one of the six doctrine-mandated
    Generated Sections elements; a diff against the doctrine's "Project-level documentation
    standards" subsection shows no missing item.
@@ -306,7 +306,7 @@ not yet honor was owned by an explicit sprint block, per
 
 ### Validation
 
-1. `prodbox check-code` passes after all Sprint 0.3 documentation edits.
+1. `prodbox dev check` passes after all Sprint 0.3 documentation edits.
 2. Each new sprint block (0.3, 1.24, 1.25, 1.26) follows the rule H sprint format
    (Status / Implementation / Docs to update / Objective / Deliverables / Validation).
 3. Each new sprint cites the [the engineering doctrine docs](../documents/engineering/README.md) section it
@@ -368,7 +368,7 @@ thirteen deliverable extensions to existing sprints.
     [distributed_gateway_architecture.md#daemon-lifecycle](../documents/engineering/distributed_gateway_architecture.md#daemon-lifecycle).
   - Sprint 1.8 names `callProcess`, `readCreateProcess`, and direct
     `System.Process` smart constructors as forbidden subprocess primitives in the
-    `prodbox lint files` rules and the `.hlint.yaml` negative-space symbol set per
+    `prodbox dev lint files` rules and the `.hlint.yaml` negative-space symbol set per
     [haskell_code_guide.md#subprocesses-as-typed-values](../documents/engineering/haskell_code_guide.md#subprocesses-as-typed-values).
   - Sprint 1.10 binds the thirteen minimum `fourmolu.yaml` settings (`indentation`,
     `column-limit`, `function-arrows`, `comma-style`, `import-export-style`,
@@ -446,7 +446,7 @@ thirteen deliverable extensions to existing sprints.
 
 ### Validation
 
-1. `prodbox check-code` passes after all Sprint 0.4 documentation edits.
+1. `prodbox dev check` passes after all Sprint 0.4 documentation edits.
 2. A grep-audit replay against `DEVELOPMENT_PLAN/*.md` confirms every doctrine
    identifier named in this sprint's deliverables now appears at least once.
    Spot-check identifiers: `tested-with`, `with-compiler`, `Cabal 3.16.1.0`,
@@ -542,7 +542,7 @@ context.
 
 ### Validation
 
-1. `prodbox check-code` passes after the Sprint 0.5 plan edits.
+1. `prodbox dev check` passes after the Sprint 0.5 plan edits.
 2. `DEVELOPMENT_PLAN/README.md`, `DEVELOPMENT_PLAN/00-overview.md`,
    `DEVELOPMENT_PLAN/phase-0-planning-documentation.md`,
    `DEVELOPMENT_PLAN/phase-4-lifecycle-canonical-paths.md`, and
@@ -593,7 +593,7 @@ harmony):
   Transit envelope encryption (`prodbox-envelope-v1`), the sealed-state fail-closed invariant,
   in-cluster Vault Kubernetes auth, the config/state classification, and the red-team checklist.
 - `documents/engineering/config_doctrine.md` — defer to `vault_doctrine.md` for the typed
-  `SecretRef` config contract and the `test-config.dhall` test-only plaintext split.
+  `SecretRef` config contract and the `test-secrets.dhall` test-only plaintext split.
 - `documents/engineering/secret_derivation_doctrine.md` — defer to `vault_doctrine.md` for the
   Vault-Transit envelope over the at-rest master seed while keeping the master-seed HMAC-SHA-256
   derivation and daemon-only seed boundary intact.
@@ -719,7 +719,7 @@ that runs against substrates rather than separate home-cluster and AWS validatio
 
 ### Validation
 
-1. `prodbox check-code`.
+1. `prodbox dev check`.
 2. Doctrine integrity grep across `DEVELOPMENT_PLAN/`: no remaining "AWS validation",
    "home-cluster validation", or "named validation surface" wording outside
    `legacy-tracking-for-deletion.md` (or with deliberate justification).
@@ -821,7 +821,7 @@ automation equivalent.
 
 ### Validation
 
-1. `prodbox check-code` exit 0.
+1. `prodbox dev check` exit 0.
 2. `prodbox test unit` exit 0 (6 new guard rendering tests + 1
    env-var-name assertion under the `interactive non-TTY guard`
    describe block).
@@ -837,7 +837,7 @@ None. The legacy-tracking ledger row records the closure.
 **Status**: Done (May 24, 2026 — doctrine SSoT
 [config_doctrine.md](../documents/engineering/config_doctrine.md) created, governed
 engineering docs and root docs revised to defer to it, plan suite updated; the four
-validation gates exit 0 — `prodbox lint docs`, `prodbox docs check`, `prodbox check-code`,
+validation gates exit 0 — `prodbox dev lint docs`, `prodbox dev docs check`, `prodbox dev check`,
 `prodbox test unit` 533/533. The code implementation lands in Phase 1 Sprint 1.28 and
 Phase 2 Sprints 2.20/2.21/2.22 and Phase 3 Sprint 3.14.)
 **Implementation**: new `documents/engineering/config_doctrine.md`;
@@ -900,11 +900,11 @@ implementation of the new doctrine is scheduled in Phase 1 (Sprint 1.28), Phase 
 
 ### Validation
 
-1. `prodbox lint docs` exit 0 (proves Generated Sections metadata stays consistent with
+1. `prodbox dev lint docs` exit 0 (proves Generated Sections metadata stays consistent with
    markers across every governed doc).
-2. `prodbox docs check` exit 0 (proves CLI-doc generated artifacts stay consistent — this
+2. `prodbox dev docs check` exit 0 (proves CLI-doc generated artifacts stay consistent — this
    sprint touches no generated content).
-3. `prodbox check-code` exit 0 (no code changes; passes by no-op).
+3. `prodbox dev check` exit 0 (no code changes; passes by no-op).
 4. `prodbox test unit` 533/533 (no test text changes expected; goldens unaffected).
 5. Manual narrative check: read `DEVELOPMENT_PLAN/00-overview.md` and the revised phase
    docs start-to-finish; the rewrite reads as a coherent buildout, no phase contradicts
@@ -923,7 +923,7 @@ implementation of the new doctrine is scheduled in Phase 1 (Sprint 1.28), Phase 
 `**Generated sections**` header sweep landed, and the lint-enforcement code shipped: the
 header↔markers↔registry reconciler (`checkGeneratedSectionsHarmony`) and the governed-doc
 relative-link check (`checkGovernedDocRelativeLinks`) are wired into `runGeneratedArtifactLint`,
-so `prodbox lint docs` / `docs check` / `check-code` fail closed on any header/marker/registry
+so `prodbox dev lint docs` / `docs check` / `check-code` fail closed on any header/marker/registry
 disagreement or dangling relative link. The sha256 Dhall-freeze decision resolved to **strike**
 the over-claim (see Deliverables). Validation green: `check-code` 0, `test unit` 732/732,
 `lint docs` 0, `docs check` 0.
@@ -1005,10 +1005,10 @@ header field.
 
 ### Validation
 
-1. `prodbox lint docs` exit 0 after the header sweep (proves `**Generated sections**`
+1. `prodbox dev lint docs` exit 0 after the header sweep (proves `**Generated sections**`
    metadata stays consistent with markers across every governed doc).
-2. `prodbox docs check` exit 0 (this sprint's doc edits touch no generated content).
-3. `prodbox check-code` exit 0 — by no-op for the doc-only part; once the reconciler and
+2. `prodbox dev docs check` exit 0 (this sprint's doc edits touch no generated content).
+3. `prodbox dev check` exit 0 — by no-op for the doc-only part; once the reconciler and
    relative-link check land, `check-code` fails closed on any header/marker/registry
    disagreement or dangling relative link.
 4. A grep replay confirms the five corrected statements no longer contradict
@@ -1066,11 +1066,11 @@ the generated-section machinery established by the doctrine's `Generated Artifac
 
 ### Validation
 
-1. `prodbox docs generate` then `prodbox docs check` exit 0 — the generated matrix,
+1. `prodbox dev docs generate` then `prodbox dev docs check` exit 0 — the generated matrix,
    ownership table, and registry-name↔verb list round-trip with the typed registries.
-2. `prodbox lint docs` exit 0 — the new generated sections carry matching
+2. `prodbox dev lint docs` exit 0 — the new generated sections carry matching
    `**Generated sections**` header keys and `<prodbox>:<key>:start|end` markers.
-3. `prodbox check-code` exit 0.
+3. `prodbox dev check` exit 0.
 
 ### Remaining Work
 

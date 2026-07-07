@@ -219,7 +219,7 @@ If a change adds or edits a Mermaid block in this directory, closure requires:
 1. Rendering every Mermaid block in `DEVELOPMENT_PLAN/` through a standalone renderer.
 2. Failing the change on any render error.
 3. Verifying the edited diagram in the repository's target Markdown viewer.
-4. Running `prodbox check-code` after the documentation change.
+4. Running `prodbox dev check` after the documentation change.
 
 This standards document describes Mermaid rules with prose, inline code, or `markdown` examples
 only. Do not add live Mermaid blocks here.
@@ -361,6 +361,6 @@ A sprint has two independent completion axes; keep them distinct.
 3. Update the governed engineering docs listed in `Docs to update`.
 4. Update [legacy-tracking-for-deletion.md](legacy-tracking-for-deletion.md) whenever cleanup scope
    changes.
-5. Run `prodbox check-code` before closing the work.
+5. Run `prodbox dev check` before closing the work.
 6. If the change touched Mermaid, render every Mermaid block in `DEVELOPMENT_PLAN/` and verify the
    edited diagram in the target viewer before closing the work.

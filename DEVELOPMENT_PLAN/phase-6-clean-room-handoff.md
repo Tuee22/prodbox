@@ -34,7 +34,7 @@ validation rather than from a later phase.
 destructive clean-room rerun contract, the zero-Python repository handoff, and the single-host
 handoff criteria — with no dependency on a later phase. The owned-surface proof runs on the
 home/local substrate through `prodbox test all`, `prodbox config show`, `prodbox config validate`,
-and `prodbox host public-edge`, plus `prodbox check-code` and `prodbox test unit` and the
+and `prodbox host public-edge`, plus `prodbox dev check` and `prodbox test unit` and the
 repository artifact/text-search closures; where the rerun composes deliverables owned by earlier
 phases it exercises them against the home/local substrate. AWS-substrate coverage of the rerun is
 tracked in [substrates.md](substrates.md)'s parity table, and any proof needing live
@@ -162,7 +162,7 @@ is never gated on Phase `7` completing.
 
 ### Validation
 
-1. `prodbox check-code`
+1. `prodbox dev check`
 2. `prodbox test unit`
 3. `prodbox test all`
 4. Repository artifact-search proof shows that no supported-path Python files or Python toolchain
@@ -177,7 +177,7 @@ is never gated on Phase `7` completing.
 - The dead Python-era `DelegateToPython` request constructor and
   `supportedRuntimePythonPath` field are removed from `app/` and `src/`, so the zero-Python
   handoff no longer depends on hidden compatibility scaffolding inside Haskell modules.
-- `prodbox check-code` and `prodbox test all` remain the canonical aggregate proof surfaces.
+- `prodbox dev check` and `prodbox test all` remain the canonical aggregate proof surfaces.
 - [legacy-tracking-for-deletion.md](legacy-tracking-for-deletion.md) now preserves completed
   removal history while keeping Python-removal residue at zero. Non-Python doctrine-adoption
   residue owned by reopened Phases `1`–`4` is now closed and is not Phase `6` cleanup.

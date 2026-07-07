@@ -137,8 +137,8 @@ API or Envoy Gateway public edge; those surfaces remain in Phases `1`, `3`, `4`,
 validatable in full on its owned surface — the Haskell gateway daemon runtime, peer transport,
 DNS-write-gate logic, claim/yield protocol, Orders-promotion coordination, secret-derivation
 endpoints, and the formal TLA+ entrypoint — with no dependency on any later phase. The code-owned
-surface closes on local validation (`prodbox check-code`, `prodbox test unit`,
-`prodbox test integration cli`/`env`, the `prodbox-daemon-lifecycle` stanza, and `prodbox tla-check`);
+surface closes on local validation (`prodbox dev check`, `prodbox test unit`,
+`prodbox test integration cli`/`env`, the `prodbox-daemon-lifecycle` stanza, and `prodbox dev tla-check`);
 where a validation would touch Route 53, a deployed cluster, an unsealed Vault, or running MinIO,
 it is exercised on the home/local substrate or against a stub, and the live-infrastructure exercise
 is tracked as a non-blocking `Live-proof: pending` note rather than as `⏸️ Blocked`. Live AWS or
@@ -181,13 +181,13 @@ deployed-cluster proof never gates this phase's closure or reopens it.
   surface.
 - `src/Prodbox/Dns.hs` owns the public `prodbox dns check` surface. All Python DNS wrappers have
   been removed.
-- `src/Prodbox/Tla.hs` owns the public `prodbox tla-check` surface. All Python TLA+ wrappers have
+- `src/Prodbox/Tla.hs` owns the public `prodbox dev tla-check` surface. All Python TLA+ wrappers have
   been removed.
 - The DNS surfaces now close on one canonical public hostname, `test.resolvefintech.com`, and one
   Route 53 record without changing the separate Haskell gateway-daemon boundary.
 - Gateway parser, renderer, and CLI proof live in the Haskell test suites under `test/`, while
   the TLA+ artifacts live under `documents/engineering/tla/` and are exercised through
-  `prodbox tla-check`.
+  `prodbox dev tla-check`.
 - `src/Prodbox/TestPlan.hs` maps the gateway validation names into Haskell-owned validation
   entrypoints in `src/Prodbox/TestValidation.hs`, and `gateway-partition` now runs as a distinct
   native partition scenario with explicit single-writer and commit-log report markers instead of
@@ -196,7 +196,7 @@ deployed-cluster proof never gates this phase's closure or reopens it.
   field in `parseTimedatectlNtpDisposition`, so the Phase `2` host-info path closes on the Ubuntu
   24.04 field format named by the current doctrine.
 - The canonical closure gates for this phase are `prodbox dns check`, the named gateway
-  integration validations, and `prodbox tla-check`.
+  integration validations, and `prodbox dev tla-check`.
 
 ## Sprint 2.1: Haskell Gateway Runtime and Command Surface ✅
 
@@ -227,7 +227,7 @@ while preserving the implemented runtime contract and container doctrine.
 
 ### Validation
 
-1. `prodbox check-code`
+1. `prodbox dev check`
 2. `prodbox test unit`
 3. `prodbox dns check`
 4. `prodbox test integration gateway-daemon`
@@ -300,7 +300,7 @@ gateway port.
 
 ### Deliverables
 
-- `prodbox tla-check` remains part of the supported validation surface.
+- `prodbox dev tla-check` remains part of the supported validation surface.
 - Gateway config generation still emits `dns_write_gate` for the public-edge ownership surface that
   Sprint `2.3` later collapses to one canonical public record.
 - The TLA+ model remains the authoritative formal surface for Route 53 write-ownership semantics.
@@ -309,13 +309,13 @@ gateway port.
 
 ### Validation
 
-1. `prodbox tla-check`
+1. `prodbox dev tla-check`
 2. `prodbox test integration gateway-partition`
 3. `prodbox test integration gateway-pods`
 
 ### Current Validation State
 
-- `src/Prodbox/Tla.hs` owns the public `prodbox tla-check` surface and preserves the Docker-backed
+- `src/Prodbox/Tla.hs` owns the public `prodbox dev tla-check` surface and preserves the Docker-backed
   TLC workflow plus `documents/engineering/tla/tlc_last_run.txt` result persistence.
 - `test/unit/Main.hs` proves parser routing for native `tla-check`.
 - Native Haskell `gateway config-gen` preserves `dns_write_gate` emission. All Python TLA+ and
@@ -324,7 +324,7 @@ gateway port.
   observability payload and the remaining intentional model/runtime compression points.
 - `src/Prodbox/TestValidation.hs` now keeps `prodbox test integration gateway-partition` on a
   distinct native Haskell partition validation path with explicit report markers, while
-  `src/Prodbox/Tla.hs` continues to own the separate formal `prodbox tla-check` surface.
+  `src/Prodbox/Tla.hs` continues to own the separate formal `prodbox dev tla-check` surface.
 
 ### Remaining Work
 
@@ -354,9 +354,9 @@ single supported public record `test.resolvefintech.com`.
 
 ### Validation
 
-1. `prodbox check-code`
+1. `prodbox dev check`
 2. `prodbox dns check`
-3. `prodbox tla-check`
+3. `prodbox dev tla-check`
 4. `prodbox test integration dns-aws`
 5. `prodbox test integration gateway-partition`
 6. `prodbox test integration public-dns`
@@ -409,12 +409,12 @@ runtime and the TLA+ model's peer-communication assumptions.
 
 ### Validation
 
-1. `prodbox check-code`
+1. `prodbox dev check`
 2. `prodbox test unit`
 3. `prodbox test integration gateway-daemon`
 4. `prodbox test integration gateway-pods`
 5. `prodbox test integration gateway-partition`
-6. `prodbox tla-check`
+6. `prodbox dev tla-check`
 
 ### Current Validation State
 
@@ -464,11 +464,11 @@ partition heal that today is benign only because Route 53 UPSERT happens to be i
 
 ### Validation
 
-1. `prodbox check-code`
+1. `prodbox dev check`
 2. `prodbox test unit`
 3. `prodbox test integration gateway-daemon`
 4. `prodbox test integration gateway-partition`
-5. `prodbox tla-check`
+5. `prodbox dev tla-check`
 
 ### Current Validation State
 
@@ -510,7 +510,7 @@ limit rather than to an implicit operator assumption.
 
 ### Validation
 
-1. `prodbox check-code`
+1. `prodbox dev check`
 2. `prodbox test unit`
 3. `prodbox test integration gateway-daemon`
 4. `prodbox host info` reports the supported NTP synchronization state in its supported-host
@@ -554,11 +554,11 @@ disagree with a peer's view of `RankOrder`.
 
 ### Validation
 
-1. `prodbox check-code`
+1. `prodbox dev check`
 2. `prodbox test unit`
 3. `prodbox test integration gateway-daemon`
 4. `prodbox test integration gateway-partition`
-5. `prodbox tla-check`
+5. `prodbox dev tla-check`
 
 ### Current Validation State
 
@@ -595,7 +595,7 @@ described by the current doctrine.
 
 ### Validation
 
-1. `prodbox check-code`
+1. `prodbox dev check`
 2. `prodbox test unit`
 3. `prodbox host info` reports the supported NTP synchronization state on hosts whose
    `timedatectl status` exposes `System clock synchronized`
@@ -664,7 +664,7 @@ Adopt [distributed_gateway_architecture.md#daemon-lifecycle](../documents/engine
   `forkIO`) extend with a positive-space rule requiring every `Async` primitive
   used in daemon paths to come from this set; introducing `async`/`wait` without
   a surrounding `withAsync`, or `mapConcurrently_` in place of
-  `replicateConcurrently`, fails `prodbox lint haskell` with the doctrine-named
+  `replicateConcurrently`, fails `prodbox dev lint haskell` with the doctrine-named
   rule.
 
 ### Validation
@@ -685,7 +685,7 @@ Adopt [distributed_gateway_architecture.md#daemon-lifecycle](../documents/engine
   `cabal test --builddir=.build prodbox-daemon-lifecycle --test-options=--hide-successes`,
   `cabal test --builddir=.build prodbox-unit --test-options=--hide-successes`,
   `cabal test --builddir=.build prodbox-haskell-style --test-options=--hide-successes`,
-  `cabal build --builddir=.build all --ghc-options=-Werror`, and `./.build/prodbox check-code`.
+  `cabal build --builddir=.build all --ghc-options=-Werror`, and `./.build/prodbox dev check`.
 - The May 13, 2026 `./.build/prodbox test all` run restored the supported runtime, reached
   `CLASSIFICATION=ready-for-external-proof` in `prodbox host public-edge`, passed the Cabal
   `prodbox-unit` and `prodbox-integration` suites, and reached the final lifecycle validation.
@@ -759,7 +759,7 @@ Adopt [distributed_gateway_architecture.md#daemon-lifecycle](../documents/engine
 3. Golden tests over `/healthz`, `/readyz`, and `/metrics` response shapes pass on a clean
    tree and visibly diff when the response surface changes.
 4. Introducing a module-local mutable counter (top-level `IORef`/`MVar` outside `Env`)
-   under `src/Prodbox/Gateway/` fails `prodbox lint haskell` with the negative-space
+   under `src/Prodbox/Gateway/` fails `prodbox dev lint haskell` with the negative-space
    rule that backs `envMetrics`.
 
 ### Current Validation State
@@ -864,7 +864,7 @@ Adopt [distributed_gateway_architecture.md#daemon-lifecycle](../documents/engine
 4. A subscriber registered against the broadcast channel observes a refresh event after a
    successful reload; the lifecycle test exercises this assertion alongside the live-
    field swap.
-5. `prodbox check-code` (Sprint 1.23 doctrine-alignment scan) recognizes the prescribed
+5. `prodbox dev check` (Sprint 1.23 doctrine-alignment scan) recognizes the prescribed
    `types.dhall` / `defaults.dhall` / `boot` / `live` shape and rejects any committed
    defaults file that diverges from the doctrine-named layout.
 
@@ -945,7 +945,7 @@ Adopt [distributed_gateway_architecture.md#daemon-lifecycle](../documents/engine
   passes with the structured stderr JSON and hot-reload log-level assertions.
 - `cabal test --builddir=.build prodbox-haskell-style --test-options=--hide-successes`
   passes with the `co-log` dependency-boundary and negative-space checks.
-- `./.build/prodbox check-code` passes after formatting the touched Haskell sources.
+- `./.build/prodbox dev check` passes after formatting the touched Haskell sources.
 - The broader `./.build/prodbox test all` aggregate was intentionally paused by operator
   request after reaching the integration chart-reconcile path; Sprint 2.12's listed validation
   had already passed.
@@ -959,7 +959,7 @@ None.
 Gateway and workload daemon entrypoints emit structured JSON through the co-log-backed logging
 module; gateway log sites read `envLiveConfig` at emission time so SIGHUP reloads update the
 threshold for later calls. `prodbox-daemon-lifecycle` covers the stderr JSON envelope plus the
-hot-reload log-level path, and `prodbox-haskell-style` / `prodbox check-code` guard the
+hot-reload log-level path, and `prodbox-haskell-style` / `prodbox dev check` guard the
 dependency boundary, direct terminal writes, and inline log-object construction.
 
 ## Sprint 2.13: Test Hooks in Env, At-Least-Once Formalization ✅
@@ -1246,7 +1246,7 @@ for the host↔cluster boundary contract.
 - `toolCurl` prerequisite registration removed from
   `src/Prodbox/Prerequisite.hs`. Tests covering its absence land in
   `test/unit/Main.hs`.
-- New `prodbox lint files` rule `forbidCurlInProductionSources` in
+- New `prodbox dev lint files` rule `forbidCurlInProductionSources` in
   `src/Prodbox/CheckCode.hs` refuses any `curl` shell-out in source paths outside
   `test/`. The rule's allowlist accepts test fixtures and integration validation
   scripts only.
@@ -1256,8 +1256,8 @@ for the host↔cluster boundary contract.
 
 ### Validation
 
-1. `prodbox check-code` exit 0 (verified May 23, 2026).
-2. `prodbox lint docs` exit 0; `prodbox docs check` exit 0.
+1. `prodbox dev check` exit 0 (verified May 23, 2026).
+2. `prodbox dev lint docs` exit 0; `prodbox dev docs check` exit 0.
 3. `prodbox test unit` 444/444 (up from 434 before this sprint).
 4. The migrated host-side callers (`queryGatewayState`, `Dns.fetchPublicIp`,
    `Gateway/Daemon.fetchPublicIp`, `Infra/AwsEksTestStack.fetchPublicIpv4`,
@@ -1330,9 +1330,9 @@ for the authoritative contract.
 
 ### Validation
 
-1. `prodbox check-code` exit 0 (verified May 23, 2026).
-2. `prodbox lint docs` exit 0; `prodbox docs check` exit 0 after
-   `prodbox docs generate` re-rendered the new subcommand surface.
+1. `prodbox dev check` exit 0 (verified May 23, 2026).
+2. `prodbox dev lint docs` exit 0; `prodbox dev docs check` exit 0 after
+   `prodbox dev docs generate` re-rendered the new subcommand surface.
 3. `prodbox test unit` 451/451 (up from 444 after Sprint 2.17).
 
 ### Remaining Work
@@ -1431,7 +1431,7 @@ for the authoritative algorithm, endpoint contract, and bootstrap order.
 
 ### Validation
 
-1. `prodbox check-code` exit 0.
+1. `prodbox dev check` exit 0.
 2. `prodbox test unit` covers all new tests.
 3. Live regression on this host (one round of the verification block from the
    approved plan Part 3 step 2): `prodbox rke2 reconcile` materializes
@@ -1497,7 +1497,7 @@ for the authoritative algorithm, endpoint contract, and bootstrap order.
   the `/v1/secret/*` routes still serve the structured 503 placeholder
   per doctrine §8 until `Prodbox.Secret.MasterSeed` reads the vars.
   `helm template gateway charts/gateway` renders all three manifests
-  cleanly; `prodbox check-code` chart-lint passes.
+  cleanly; `prodbox dev check` chart-lint passes.
 - **Symmetric firewall-rule removal landed May 23, 2026**: new
   `runHostFirewallGatewayUnrestrict :: Int -> IO ExitCode` in
   `src/Prodbox/Host.hs` mirrors the Sprint 2.18 install path — probes
@@ -1508,14 +1508,14 @@ for the authoritative algorithm, endpoint contract, and bootstrap order.
   (default port `30443`); generated CLI artifacts under
   `share/man/man1/prodbox-host.1`,
   `share/completion/{bash,zsh,fish}/prodbox*`, and
-  `documents/cli/commands.md` regenerated via `prodbox docs generate`.
+  `documents/cli/commands.md` regenerated via `prodbox dev docs generate`.
   The new `gatewayNodePortFirewallDeleteArgs :: Int -> [String]` pure
   helper mirrors `gatewayNodePortFirewallRuleArgs` verbatim except for
   the leading `-D` verb so the install and remove paths target the
   same rule (matched on the stable `prodbox-gateway-nodeport-loopback-only`
   comment tag).
-- All three gates green: `prodbox check-code` exit 0,
-  `prodbox lint docs` exit 0, `prodbox docs check` exit 0.
+- All three gates green: `prodbox dev check` exit 0,
+  `prodbox dev lint docs` exit 0, `prodbox dev docs check` exit 0.
 - `prodbox test unit` 497/497 (up from 495 after the new
   `host firewall gateway-unrestrict` subcommand added two auto-generated
   parser cases; 464 before Sprint 2.18 work).
@@ -1550,7 +1550,7 @@ live-exercise package:
    the `defaultMinioMasterSeedConfig` endpoint resolution, the six
    error renderings, both AWS-CLI message matchers, and live
    `/dev/urandom` invocation (32 bytes, distinct across calls). Test
-   count 533/533 after the new cases. `prodbox check-code` exit 0.
+   count 533/533 after the new cases. `prodbox dev check` exit 0.
 2. **MinIO IAM bootstrap** (Done May 25, 2026): `prodbox rke2
    reconcile` runs `ensureGatewayMinioBootstrap`
    (`src/Prodbox/CLI/Rke2.hs`), which resolves the dedicated
@@ -1610,7 +1610,7 @@ live-exercise package:
    the cascade's step 4 uninstall block in
    `runNativeDeleteCascade`, so a wipe-and-rebuild cycle removes the
    rule even when the gateway chart was already gone. Validation:
-   `prodbox check-code` exit 0; `prodbox test unit` 543/543;
+   `prodbox dev check` exit 0; `prodbox test unit` 543/543;
    `prodbox test integration cli` 28/28.
 6. **Live regression on this host** per the verification block in the
    approved plan Part 3 step 2. **Attempted May 24, 2026 (later
@@ -1643,7 +1643,7 @@ live-exercise package:
    resolves MinIO root credentials via a cross-namespace Helm
    `lookup "v1" "Secret" "prodbox" "minio"` so the gateway daemon
    authenticates as root until the dedicated `prodbox-gateway` user
-   + IAM policy land in a follow-up. Validation: `prodbox check-code`
+   + IAM policy land in a follow-up. Validation: `prodbox dev check`
    exit 0; `prodbox test unit` 543/543; `prodbox test integration cli`
    28/28; `prodbox test integration env` 28/28;
    `prodbox-daemon-lifecycle` 14/14. The live RKE2 reconcile + gateway
@@ -1686,7 +1686,7 @@ live-exercise package:
    gateway` + `charts deploy gateway` cycles, so the daemon's
    credentials always match a user that `ensureGatewayMinioBootstrap`
    registered in MinIO. Validated on the code-owned surface:
-   `prodbox check-code` exit 0; `prodbox test unit` 606/606;
+   `prodbox dev check` exit 0; `prodbox test unit` 606/606;
    `prodbox test integration cli` 30/30; `prodbox test integration
    env` 30/30; the smoke-install `helm template
    charts/gateway` renders the Secret with empty credentials and the
@@ -1764,7 +1764,7 @@ structured/flat JSON branches) is **removed** from
 test fixtures across `test/unit/Main.hs`, `test/integration/CliSuite.hs`,
 and `test/daemon-lifecycle/Main.hs` migrate to Dhall fixtures; the
 `gateway-start.txt` golden is updated to reference the new `.dhall`
-extension. Validation: `prodbox check-code` exit 0; `prodbox test unit`
+extension. Validation: `prodbox dev check` exit 0; `prodbox test unit`
 543/543; `prodbox test integration cli` 28/28; `prodbox test integration
 env` 28/28; `prodbox-daemon-lifecycle` 14/14. Removal of the
 `--log-level` / `--port` / `--node-id` / `--foreground` daemon CLI flags
@@ -1812,7 +1812,7 @@ authoritative decoder contract.
 
 ### Validation
 
-1. `prodbox check-code` exit 0.
+1. `prodbox dev check` exit 0.
 2. `prodbox test unit` adds Dhall round-trip coverage for the new decoder.
 3. `prodbox test integration cli` continues to pass (28/28).
 4. Live exercise: `prodbox gateway start --config <path-to-test-dhall>` decodes a
@@ -1842,7 +1842,7 @@ surviving `System.FSNotify` marker now records the required-and-mentioned
 file-watch primitive); the SIGHUP-based test
 `refreshes log filtering from reloaded live config` is removed and replaced
 with a documentation comment naming the live operator exercise as the
-closure gate. Validation: `prodbox check-code` exit 0; `prodbox test unit`
+closure gate. Validation: `prodbox dev check` exit 0; `prodbox test unit`
 631/631; `cabal test prodbox-daemon-lifecycle` 14/14.
 **Live closure 2026-06-02** on the home substrate (chunks 47 + 48
 landed during the exercise): (1) the chart's daemon `--config`
@@ -1905,7 +1905,7 @@ kubelet restarts the Pod with the new config. See
 
 ### Validation
 
-1. `prodbox check-code` exit 0 (proves the lint-rule removal is symmetric with the
+1. `prodbox dev check` exit 0 (proves the lint-rule removal is symmetric with the
    doctrine update).
 2. `prodbox test unit` exit 0.
 3. `prodbox test integration cli` exit 0.
@@ -1949,7 +1949,7 @@ standalone `./.build/prodbox gateway start --config <config>.dhall
 --foreground` decodes `config.dhall` + transparent Dhall imports of
 `aws.dhall` / `minio.dhall` + `orders.dhall` and emits
 `gateway_starting` + `orders_loaded` end-to-end (decode-side
-credential binding verified live); `prodbox check-code` exit 0;
+credential binding verified live); `prodbox dev check` exit 0;
 `prodbox test unit` 543/543; `prodbox test integration cli` 28/28;
 `prodbox test integration env` 28/28; `prodbox-daemon-lifecycle` 14/14;
 all Dhall test fixtures across `test/unit/Main.hs`,
@@ -2013,9 +2013,9 @@ for the authoritative mount layout.
 
 ### Validation
 
-1. `prodbox check-code` exit 0.
+1. `prodbox dev check` exit 0.
 2. `helm template gateway charts/gateway` renders cleanly.
-3. `prodbox lint chart` exit 0 (chart structural invariants stay green).
+3. `prodbox dev lint chart` exit 0 (chart structural invariants stay green).
 4. Live exercise: `prodbox rke2 reconcile` brings up the gateway daemon with the new
    chart layout; the daemon reads `/etc/gateway/config.dhall` (Sprint 2.21 moved this to the
    directory mount `/etc/gateway/config`, i.e. `/etc/gateway/config/config.dhall`), imports the credential
@@ -2086,7 +2086,7 @@ flags and rewires those call sites onto the Dhall surface.
 
 ### Validation
 
-1. `prodbox check-code` exit 0.
+1. `prodbox dev check` exit 0.
 2. `prodbox test unit` exit 0 (parser-shape coverage proves the three flags are absent on the
    daemon-launching commands).
 3. `prodbox test integration cli` exit 0.
@@ -2188,7 +2188,7 @@ which already defines the restart contract.
 
 ### Validation
 
-1. `prodbox check-code` exit 0.
+1. `prodbox dev check` exit 0.
 2. `prodbox test unit` exit 0, including the derive-context `decode . encode == id` property test
    and the single-event-key-encoding unit coverage.
 3. `cabal test prodbox-daemon-lifecycle` exit 0 (per-connection timeout and inbound/outbound
@@ -2277,7 +2277,7 @@ parent's unsealed Vault KV.
 
 ### Validation
 
-1. `prodbox check-code` exit 0.
+1. `prodbox dev check` exit 0.
 2. `prodbox test unit` exit 0, including coverage that downstream-cluster metadata round-trips as a
    Vault KV object and that the unencrypted basics never carry child-cluster identities.
 3. `prodbox cluster federation register <child>` writes the child's init keys and metadata only
@@ -2371,7 +2371,7 @@ and renames the `Lint.Proto` stanza to `Lint.Cbor` per
 
 ### Validation
 
-1. `prodbox check-code` exit 0.
+1. `prodbox dev check` exit 0.
 2. `prodbox test unit` exit 0, including the peer-batch and `Orders` CBOR round-trip coverage.
 3. `prodbox test integration cli` and `prodbox test integration env` exit 0 on the home/local
    substrate.
@@ -2430,7 +2430,7 @@ at-least-once delivery and `markEventProcessed` IS-NULL guard contract from
 
 ### Validation
 
-1. `prodbox check-code` exit 0.
+1. `prodbox dev check` exit 0.
 2. `prodbox test unit` exit 0, including the event-store CBOR round-trip and at-least-once
    idempotency coverage.
 3. `prodbox test integration cli` and `prodbox test integration env` exit 0 on the home/local

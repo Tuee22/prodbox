@@ -19,16 +19,16 @@
 
 ## Phase Status
 
-🔄 **Reopened 2026-07-06 for AWS-substrate readiness-barrier parity** — Phase `7` reopens to expand
-its own AWS-substrate surface with Sprint `7.31` (⏸️ Blocked by Sprints `1.56` and `4.43`), the
+✅ **Reclosed 2026-07-06 for AWS-substrate readiness-barrier parity** — Phase `7` expanded
+its own AWS-substrate surface with Sprint `7.31` (✅ Done), the
 AWS-substrate arm of the bootstrap-readiness refactor
 ([bootstrap_readiness_doctrine.md](../documents/engineering/bootstrap_readiness_doctrine.md)). Sprint
 `7.31` applies the same deep registry→MinIO edge-readiness barrier in `AwsSubstratePlatform` before
 the EKS image-mirror Job and crane pushes, and fixes the `EksImageMirror` retry classifier to treat
-transient name-resolution failures as retryable. Per Standard N the `Blocked by` names only
-earlier-phase sprints (`1.56`, `4.43`); the live EKS proof is a non-blocking Standard O
-`🧪 Live-proof: pending` axis tracked in [substrates.md](substrates.md). All earlier Phase `7`
-closures remain valid on their owned surfaces.
+transient name-resolution failures as retryable. Per Standard N it depended forward only on
+earlier-phase sprints (`1.56`, `4.43`, both now ✅ Done); the live EKS proof is a non-blocking
+Standard O `🧪 Live-proof: pending` axis tracked in [substrates.md](substrates.md). All earlier Phase
+`7` closures remain valid on their owned surfaces.
 
 ✅ **Reclosed 2026-07-05 for daemon-mediated Pulumi/object-store access.** Sprint `7.30` is now
 Done on its code-owned surface. Encrypted Pulumi backend hydration/persistence, per-run residue
@@ -214,7 +214,7 @@ sequential, separately validatable sessions:
   an explicit "not yet implemented at Sprint 7.5.a" remedy for chart-deploy /
   public-edge / WebSocket validations. Code-only landing; the kubeconfig extraction,
   per-substrate Route 53 zone field, and substrate-aware `publicFqdn` are deferred to
-  Sprint `7.5.b` per the scoping review. Validated with `prodbox check-code`,
+  Sprint `7.5.b` per the scoping review. Validated with `prodbox dev check`,
   `prodbox test unit` (296 tests pass).
 - **Sprint `7.5.b`** (✅ Done, split into `7.5.b.i` and `7.5.b.ii` per the May 17, 2026
   scoping check-in):
@@ -225,7 +225,7 @@ sequential, separately validatable sessions:
     block (`hosted_zone_id`, `subzone_name`) wired through
     `prodbox-config-types.dhall`, binary-sibling `prodbox.dhall`, and
     `src/Prodbox/Settings.hs::AwsSubstrateSection`. Code-only; validated with
-    `prodbox check-code` and `prodbox test unit` (296/296 pass).
+    `prodbox dev check` and `prodbox test unit` (296/296 pass).
   - **`7.5.b.ii`** (✅ Done) — AWS Load Balancer Controller IAM policy + IRSA setup in
     `pulumi/aws-eks/Main.yaml`, subnet tags for ALB discovery, a new Pulumi program for the
     per-substrate Route 53 hosted subzone with NS delegation, cert-manager DNS01
@@ -239,7 +239,7 @@ sequential, separately validatable sessions:
   [substrates.md](substrates.md), and the engineering doc set. Reclassifies the helper
   fallback shipped in 7.5.b.i / 7.5.b.ii.a as scheduled cleanup residue; the code
   reconciliation is owned by Sprint `7.5.c`'s validation-arms-refinement budget. Validated
-  with `prodbox check-code`, `prodbox lint docs`, `prodbox docs check`, `prodbox test unit`
+  with `prodbox dev check`, `prodbox dev lint docs`, `prodbox dev docs check`, `prodbox test unit`
   (300/300), and the prescribed grep audits.
 - **Sprint `7.5.c`** (✅ Done, June 5, 2026) — code follow-up landed May 18, 2026
   (`substratePublicFqdn` / `substrateHostedZoneId` fail-fast,
@@ -357,7 +357,7 @@ Make the Haskell stack own guided configuration authoring and policy generation.
 
 ### Validation
 
-1. `prodbox check-code`
+1. `prodbox dev check`
 2. `prodbox test unit`
 3. `prodbox config setup`
 4. `prodbox aws policy --tier full`
@@ -399,7 +399,7 @@ supported contract.
 
 ### Validation
 
-1. `prodbox check-code`
+1. `prodbox dev check`
 2. `prodbox test unit`
 3. `prodbox aws setup --tier full`
 4. `prodbox aws teardown`
@@ -546,7 +546,7 @@ output, fixtures, and validation assumptions.
 
 ### Validation
 
-1. `prodbox check-code`
+1. `prodbox dev check`
 2. `prodbox test unit`
 3. `prodbox test integration cli`
 4. `prodbox test integration env`
@@ -682,7 +682,7 @@ ingress or chart set (`7.5.b`) and does not yet run canonical-suite validations 
 
 ### Validation
 
-1. `prodbox check-code`
+1. `prodbox dev check`
 2. `prodbox test unit`
 3. `prodbox test integration cli`
 4. `prodbox test integration env`
@@ -712,7 +712,7 @@ ingress or chart set (`7.5.b`) and does not yet run canonical-suite validations 
 - The CLI artifacts (`documents/cli/commands.md`, `test/golden/cli/commands.json`,
   `test/golden/cli/help-all.txt`) regenerate cleanly under
   `trackingGeneratedPaths`; golden tests in the unit suite are re-accepted.
-- Validated with `prodbox check-code` (exit 0) and `prodbox test unit` (all 296 tests
+- Validated with `prodbox dev check` (exit 0) and `prodbox test unit` (all 296 tests
   pass) on May 17, 2026.
 
 ### Remaining Work
@@ -756,7 +756,7 @@ ingress/chart sub-sub-sprint (`7.5.b.ii`) so each lands in its own session.
 Land the substrate-aware code foundations that `7.5.b.ii` needs without applying any AWS
 infrastructure yet: EKS kubeconfig extraction, substrate-aware path/zone/FQDN helpers, the
 `aws_substrate` Dhall block, and the matching Haskell record. Code-only; validates with
-`prodbox check-code` and `prodbox test unit`.
+`prodbox dev check` and `prodbox test unit`.
 
 ### Deliverables
 
@@ -786,9 +786,9 @@ infrastructure yet: EKS kubeconfig extraction, substrate-aware path/zone/FQDN he
 
 ### Validation
 
-1. `prodbox check-code` — exit 0.
+1. `prodbox dev check` — exit 0.
 2. `prodbox test unit` — 296/296 tests pass.
-3. `prodbox docs check` — exit 0.
+3. `prodbox dev docs check` — exit 0.
 4. `prodbox config validate` — succeeds (with the unchanged pre-existing "aws.access_key_id
    must not be empty" diagnostic from the supported operational-credentials-from-harness
    pattern).
@@ -815,7 +815,7 @@ AWS LB Controller + Envoy Gateway install) is too large for one session.
   take a `Substrate` parameter; the home-substrate path calls them with `SubstrateHomeLocal`
   unchanged, and the AWS-substrate path will call them with `SubstrateAws` to bind the
   per-substrate Route 53 hosted zone (via `substrateHostedZoneId` from
-  `Prodbox.PublicEdge`). Validated with `prodbox check-code` (exit 0) and
+  `Prodbox.PublicEdge`). Validated with `prodbox dev check` (exit 0) and
   `prodbox test unit` (296/296 pass).
 - **`7.5.b.ii.b`** (✅ Done, May 17, 2026) — Pulumi extensions in `pulumi/aws-eks/Main.yaml`:
   vendored AWS Load Balancer Controller IAM policy
@@ -833,7 +833,7 @@ AWS LB Controller + Envoy Gateway install) is too large for one session.
   consume them. Validated via `python3 -m json.tool` on the policy file,
   `python3 yaml.safe_load` on `Main.yaml`, a no-op `pulumi preview` confirming the program
   parses past resource synthesis (failing only at the expected AWS credential validation
-  with fake creds), `prodbox check-code` (exit 0), `prodbox lint files` (exit 0), and
+  with fake creds), `prodbox dev check` (exit 0), `prodbox dev lint files` (exit 0), and
   `prodbox test unit` (296/296 pass).
 - **`7.5.b.ii.c`** (✅ Done, split into `7.5.b.ii.c.I` ✅ done May 17, 2026, and
   `7.5.b.ii.c.II` 📋):
@@ -847,7 +847,7 @@ AWS LB Controller + Envoy Gateway install) is too large for one session.
     `subzone_id`, `subzone_name`, `subzone_name_servers`, and `parent_ns_record_fqdn`.
     Validated with `python3 yaml.safe_load` and a no-op `pulumi preview` (program
     synthesizes past resource definition; fails only at the expected AWS credential
-    validation), `prodbox check-code` (exit 0), and `prodbox test unit` (296/296).
+    validation), `prodbox dev check` (exit 0), and `prodbox test unit` (296/296).
   - **`7.5.b.ii.c.II`** (✅ Done, May 17, 2026) — Haskell-side stack lifecycle in
     `src/Prodbox/Infra/AwsEksSubzoneStack.hs`
     (`ensureAwsEksSubzoneStackResources`, `destroyAwsEksSubzoneStack`,
@@ -866,8 +866,8 @@ AWS LB Controller + Envoy Gateway install) is too large for one session.
     CLI surface: `prodbox aws stack aws-subzone reconcile` and
     `prodbox aws stack aws-subzone destroy` (with `--yes`/`--dry-run`/`--plan-file`)
     registered through `PulumiAwsSubzoneResources` / `PulumiAwsSubzoneDestroy`
-    variants on `PulumiCommand`. Validated with `prodbox check-code` (exit 0),
-    `prodbox docs generate` regeneration, and `prodbox test unit` (300/300 pass; up
+    variants on `PulumiCommand`. Validated with `prodbox dev check` (exit 0),
+    `prodbox dev docs generate` regeneration, and `prodbox test unit` (300/300 pass; up
     from 296 because the two new pulumi subcommands each add a happy-case + an
     unhappy-case parser test).
 - **`7.5.b.ii.d`** (✅ Done, split into `7.5.b.ii.d.I` ✅ done May 17, 2026 and
@@ -881,8 +881,8 @@ AWS LB Controller + Envoy Gateway install) is too large for one session.
     kubeconfig stays in scope; `.prodbox-state/aws-eks-test/kubeconfig` for AWS).
     Existing helm/kubectl subprocesses in `Prodbox.Lib.ChartPlatform` inherit the
     parent environment, so they automatically target the AWS-substrate cluster when
-    the operator selects `--substrate aws`. Validated with `prodbox check-code`
-    (exit 0), `prodbox docs generate` regeneration, and `prodbox test unit`
+    the operator selects `--substrate aws`. Validated with `prodbox dev check`
+    (exit 0), `prodbox dev docs generate` regeneration, and `prodbox test unit`
     (300/300 pass).
   - **`7.5.b.ii.d.II`** (✅ Done; the May 17, 2026 scoping pass split this into
     four session-sized sub-sub-sub-sprints `α`/`β`/`γ`/`δ` because of the depth
@@ -904,8 +904,8 @@ AWS LB Controller + Envoy Gateway install) is too large for one session.
       `serviceAccount.create=false`, and waits for the controller deployment to
       become ready. The function is exposed but not yet wired into
       `prodbox charts reconcile --substrate aws`; the wiring lands in `β` once the
-      Envoy Gateway install path is in place. Validated with `prodbox check-code`
-      (exit 0), `prodbox lint haskell` (clean after one
+      Envoy Gateway install path is in place. Validated with `prodbox dev check`
+      (exit 0), `prodbox dev lint haskell` (clean after one
       `Use isAsciiUpper` hlint fix), and `prodbox test unit` (300/300).
     - **`β`** (✅ Done, May 17, 2026) — Envoy Gateway install on EKS via the
       substrate-aware reconcile path.
@@ -914,7 +914,7 @@ AWS LB Controller + Envoy Gateway install) is too large for one session.
       pinned to `v1.4.4` into the `envoy-gateway-system` namespace, then waits
       for the `envoy-gateway` deployment to become ready. Exposed but not yet
       wired into chart-deploy (wiring lands in `δ`). Validated with
-      `prodbox check-code` (exit 0) and `prodbox test unit` (300/300).
+      `prodbox dev check` (exit 0) and `prodbox test unit` (300/300).
     - **`γ`** (✅ Done, May 17, 2026) — cert-manager install on EKS pulling
       from upstream Quay/DockerHub (not Harbor).
       `Prodbox.Lib.AwsSubstratePlatform::ensureAwsSubstrateCertManagerRuntime`
@@ -928,7 +928,7 @@ AWS LB Controller + Envoy Gateway install) is too large for one session.
       `7.5.b.ii.a` (rendered via `acmeClusterIssuerSpec SubstrateAws`
       against `aws_substrate.hosted_zone_id`); applying that ClusterIssuer
       is part of the orchestrator wired in `δ`. Validated with
-      `prodbox check-code` (exit 0) and `prodbox test unit` (300/300).
+      `prodbox dev check` (exit 0) and `prodbox test unit` (300/300).
     - **`δ`** (✅ Done, May 17, 2026) — top-level orchestrator + chart-deploy
       wiring + validation remedy removal.
       `Prodbox.CLI.Rke2` now exports `acmeRuntimeManifest` and
@@ -948,8 +948,8 @@ AWS LB Controller + Envoy Gateway install) is too large for one session.
       always route to the substrate-agnostic body, wrapped with a new
       `withSubstrateKubeconfigEnv` helper that brackets the action with
       `setEnv`/`unsetEnv` of `KUBECONFIG` (no-op for home; EKS kubeconfig path
-      for AWS). Validated with `prodbox check-code` (exit 0),
-      `prodbox lint haskell` (clean), and `prodbox test unit` (300/300).
+      for AWS). Validated with `prodbox dev check` (exit 0),
+      `prodbox dev lint haskell` (clean), and `prodbox test unit` (300/300).
 
 **Blocked by**: Sprint `7.5.b.i`
 **Implementation**: `pulumi/aws-eks/Main.yaml`, `pulumi/aws-eks-subzone/` (new) or extension
@@ -986,7 +986,7 @@ canonical-suite validations against it.
 
 ### Validation
 
-1. `prodbox check-code`
+1. `prodbox dev check`
 2. `prodbox test unit`
 3. `prodbox aws stack eks reconcile`
 4. `prodbox test integration aws-eks` (existing) — confirms substrate provisioning still
@@ -1010,8 +1010,8 @@ canonical-suite validations against it.
   fallback as doctrine-violating residue, and Sprint `7.5.c`'s code follow-up replaces it
   with a fail-fast error so an AWS-substrate ACME `ClusterIssuer` fails to materialize when
   `aws_substrate.hosted_zone_id` is empty.
-- Validated with `prodbox check-code` (exit 0), `prodbox test unit` (296/296), and
-  `prodbox docs check` (exit 0).
+- Validated with `prodbox dev check` (exit 0), `prodbox test unit` (296/296), and
+  `prodbox dev docs check` (exit 0).
 
 ### Remaining Work (7.5.b.ii.b/c/d)
 
@@ -1081,9 +1081,9 @@ this doctrine.
 
 ### Validation
 
-1. `prodbox check-code` (exit 0).
-2. `prodbox lint docs` (exit 0).
-3. `prodbox docs check` (exit 0).
+1. `prodbox dev check` (exit 0).
+2. `prodbox dev lint docs` (exit 0).
+3. `prodbox dev docs check` (exit 0).
 4. `prodbox test unit` (regression check, all green).
 5. Manual grep audits across `README.md`, `DEVELOPMENT_PLAN/`, and `documents/`:
    - `grep -nrE "graceful fallback|falling back to home|fallback to .route53|when the (aws |AWS )?block is empty"` returns zero hits in supported-path docs.
@@ -1107,8 +1107,8 @@ this doctrine.
   carry the substrate-independence cross-reference.
 - `legacy-tracking-for-deletion.md` records the helper-fallback residue scheduled for
   closure under Sprint `7.5.c`'s code follow-up.
-- Validated with `prodbox check-code` (exit 0), `prodbox lint docs` (exit 0),
-  `prodbox docs check` (exit 0), `prodbox test unit` (300/300), and the three grep audits
+- Validated with `prodbox dev check` (exit 0), `prodbox dev lint docs` (exit 0),
+  `prodbox dev docs check` (exit 0), `prodbox test unit` (300/300), and the three grep audits
   defined under `Validation` (residue-narrative and registry-mirror references only).
 
 ### Remaining Work
@@ -1123,7 +1123,7 @@ May 19, 2026; child Sprint `7.5.c.v` closed the operator-driven live AWS-substra
 2026. Later invite-auth aggregate failures are Phase 8 suite-content work, not Phase 7 substrate
 work.
 **Independent Validation**: The Phase 7-owned substrate-provisioning surface is validatable on its
-own surface now (`prodbox check-code`, `prodbox test unit`, the substrate-platform install unit
+own surface now (`prodbox dev check`, `prodbox test unit`, the substrate-platform install unit
 ordering tests); the remaining proof needs live AWS spend and is a `Live-proof: pending` note
 (Standard O), not a block.
 **Implementation**: `src/Prodbox/TestValidation.hs`, `src/Prodbox/Infra/AwsEksTestStack.hs`,
@@ -1161,7 +1161,7 @@ post-teardown residue, and flip the substrate parity rows in
 
 ### Validation
 
-1. `prodbox check-code`
+1. `prodbox dev check`
 2. `prodbox test unit`
 3. `prodbox aws stack eks reconcile`
 4. `prodbox test integration aws-eks`
@@ -1412,7 +1412,7 @@ substrate's hostPath-bound PVC. Foundational for 7.5.c.iii.
 
 ### Validation
 
-1. `prodbox check-code` exit 0.
+1. `prodbox dev check` exit 0.
 2. `prodbox test unit` exit 0; new
    `describe "Sprint 7.5.c.i substrate-aware MinIO chart values"` block
    covers four fixture-comparison cases (home × bootstrap, home × steady,
@@ -1476,7 +1476,7 @@ containerd to reload.
 
 ### Validation
 
-1. `prodbox check-code` exit 0.
+1. `prodbox dev check` exit 0.
 2. `prodbox test unit` exit 0; new
    `describe "Sprint 7.5.c.ii EKS containerd registry-mirror
    DaemonSet"` block covers eight structural assertions on the
@@ -1566,7 +1566,7 @@ chart-image refs the same way home-substrate pods do.
 
 ### Validation
 
-1. `prodbox check-code` exit 0.
+1. `prodbox dev check` exit 0.
 2. `prodbox test unit` exit 0; new
    `describe "Sprint 7.5.c.iii AWS-substrate platform orchestration"`
    block covers the eight-step canonical ordering, the
@@ -1653,7 +1653,7 @@ public images for Harbor-mirrored copies.
 
 ### Validation
 
-1. `prodbox check-code` exit 0.
+1. `prodbox dev check` exit 0.
 2. `prodbox test unit` exit 0; new
    `describe "Sprint 7.5.c.iv EKS image-mirror Job"` block covers
    five structural assertions on the manifest + copy script:
@@ -1883,9 +1883,9 @@ provisions successfully, the three Sprint 8.4 SES prereqs pass).
    API/WebSocket JWKS-backchannel, and AWS admin-route substrate-host fixes
    passed before the next live AWS run: `cabal build --builddir=.build
    exe:prodbox`, binary refresh to `.build/prodbox`,
-   `prodbox check-code`, `prodbox test unit` (650/650),
-   `prodbox test integration cli` (30/30), `prodbox lint docs`,
-   `prodbox docs check`, `git diff --check`, server-side
+   `prodbox dev check`, `prodbox test unit` (650/650),
+   `prodbox test integration cli` (30/30), `prodbox dev lint docs`,
+   `prodbox dev docs check`, `git diff --check`, server-side
    `kubectl apply --dry-run=server` of the rendered API/WebSocket
    manifests, and the unit assertion that AWS admin route manifests render
    `aws.test.resolvefintech.com` all exited 0.
@@ -1991,7 +1991,7 @@ containerd socket — neither path applies on EKS.
 
 ### Validation
 
-1. `prodbox check-code` exit 0.
+1. `prodbox dev check` exit 0.
 2. `prodbox test unit` exit 0; new
    `describe "Sprint 7.5.c.v.b EKS custom-image push pod"` block
    covers five structural assertions on the pod manifest + the
@@ -2075,7 +2075,7 @@ test-harness run because `aws-ses` is the intended steady state.
 
 ### Validation
 
-1. `prodbox check-code` exit 0.
+1. `prodbox dev check` exit 0.
 2. `prodbox test unit` exit 0 (380 tests after the two new scenarios).
 3. Live verification: harness preflight materializes operational
    `aws.*` successfully on every run regardless of `aws-ses` state.
@@ -2130,7 +2130,7 @@ wildcards are operationally equivalent.
 
 ### Validation
 
-1. `prodbox check-code` exit 0.
+1. `prodbox dev check` exit 0.
 2. `prodbox test unit` exit 0 (extended `buildIamPolicyDocument` Sid
    assertion at `test/unit/Main.hs:508`).
 3. `prodbox test integration cli` exit 0 (extended
@@ -2173,7 +2173,7 @@ prereqs failed with `AccessDenied` on the harness IAM user.
 
 ### Validation
 
-1. `prodbox check-code` exit 0.
+1. `prodbox dev check` exit 0.
 2. `prodbox test unit` exit 0 (Sid assertion extended).
 3. `prodbox test integration cli` exit 0 (golden assertion extended).
 4. Live verification: the three Sprint 8.4 SES prereqs pass under the
@@ -2266,7 +2266,7 @@ five share the same `waitForPublicEdgeReady` plumbing.
 
 ### Validation
 
-1. `prodbox check-code` exit 0.
+1. `prodbox dev check` exit 0.
 2. `prodbox test unit` exit 0 (new regression guard).
 3. A single targeted live re-run:
    `./.build/prodbox test integration charts-vscode --substrate aws`
@@ -2395,7 +2395,7 @@ for the consolidated doctrine.
 
 ### Validation
 
-1. `prodbox check-code` exit 0.
+1. `prodbox dev check` exit 0.
 2. `prodbox test unit` covers the regression matrix in
    `test/unit/Main.hs::describe "Sprint 7.6 AWS harness
    orphan-safety"`: Scenario A (`aws-eks` snapshot present →
@@ -2552,13 +2552,13 @@ Close four related defects observed in the May 19, 2026 diagnostic session, all 
 
 ### Validation
 
-1. `prodbox check-code` exit 0 ✅.
+1. `prodbox dev check` exit 0 ✅.
 2. `prodbox test unit` exit 0 ✅ (378/378, up from 354 — 24 new Sprint 7.7 tests across the
    residue-policy partition, applyAwsTeardown scenarios E/F/G/H/I,
    DestroyPulumiResidueFirst dispatch plan scenarios J/K/L,
    `sessionTokenPromptShape` UX, and `awsTeardownPolicyFromFlags` mutual exclusion).
-3. `prodbox lint docs` exit 0 ✅.
-4. `prodbox docs check` exit 0 ✅.
+3. `prodbox dev lint docs` exit 0 ✅.
+4. `prodbox dev docs check` exit 0 ✅.
 5. `grep -nE "Elevated AWS|elevated operations" src/Prodbox/Aws.hs` returns no hits ✅.
 6. CLI smoke verified live this session: `prodbox aws teardown --help` shows
    `[--destroy-pulumi-residue | --allow-pulumi-residue]` mutual-exclusion bracket.
@@ -2662,7 +2662,7 @@ Deferred to a tracked follow-on (NOT this sprint):
 
 Done (fast gates, no live AWS):
 
-- `prodbox check-code` → exit 0 (warning-clean build + lint + the Sprint 4.22 totality scan).
+- `prodbox dev check` → exit 0 (warning-clean build + lint + the Sprint 4.22 totality scan).
 - `prodbox test unit` → 594 examples pass (was 585; +9 in the new
   `Sprint 7.8 operational-resource registry` group exercising the pure residue-mappers and the
   two-entry `operationalManagedResources` table, asserting the names match
@@ -2765,10 +2765,10 @@ reconcile overwrite-tolerant Route 53 records.
 
 Fast gates (no live AWS):
 
-- `prodbox check-code` → exit 0.
+- `prodbox dev check` → exit 0.
 - `prodbox test unit` → all pass (new `Sprint 7.9` describe block added).
 - `prodbox test integration cli` / `env` → exit 0 each.
-- `prodbox docs check` / `prodbox lint docs` → exit 0 (governed docs reconciled).
+- `prodbox dev docs check` / `prodbox dev lint docs` → exit 0 (governed docs reconciled).
 
 Not run here: live `prodbox test all --substrate aws` roll-up (confirms an `aws-ses`-live run
 ends with operational `aws.*` cleared and the operational `prodbox` IAM user deleted).
@@ -2836,10 +2836,10 @@ would strand operational-credential-owned orphans.
 
 Fast gates (no live AWS):
 
-- `prodbox check-code` → exit 0.
+- `prodbox dev check` → exit 0.
 - `prodbox test unit` → all pass (new `Sprint 7.10` describe block, 2 new tests).
 - `prodbox test integration cli` / `env` → exit 0 each.
-- `prodbox docs check` / `prodbox lint docs` → exit 0.
+- `prodbox dev docs check` / `prodbox dev lint docs` → exit 0.
 
 The pure decision (`clearOperationalCredsAfterPostflight`) is fully unit-tested; the IO wiring in
 `runWithAwsHarnessCleanup` is thin (one gated call). No live AWS required.
@@ -2888,13 +2888,13 @@ preserved.
 - The public-edge cert is added to the [substrates.md](substrates.md) Resource
   Lifecycle Classes (LongLived). This row is rendered by the GENERATED table driven by
   `resourceLifecycleClasses` (landed under Phase 4 Sprint 4.24), so it appears after
-  `prodbox docs generate`, not via hand-edit.
+  `prodbox dev docs generate`, not via hand-edit.
 
 ### Validation
 
 Closure gates (passed 2026-06-07):
 
-1. `./.build/prodbox check-code` → exit `0`.
+1. `./.build/prodbox dev check` → exit `0`.
 2. `./.build/prodbox test unit` → `690/690` (the
    `ZeroSSL ACME ClusterIssuer + cert retention key scheme` describe block covers: the issuer
    rendering `acme.server` + the `zerossl-account-key` account key; the DNS-01 Route 53 solver
@@ -2907,7 +2907,7 @@ Closure gates (passed 2026-06-07):
    failures in this environment (`CliSuite.hs:256`/`:376`, `charts deploy vscode`
    fake-environment flows) reproduce identically on the pre-Sprint-7.11 tree and are
    unrelated.
-4. `./.build/prodbox docs check` / `./.build/prodbox lint docs` → exit `0`.
+4. `./.build/prodbox dev docs check` / `./.build/prodbox dev lint docs` → exit `0`.
 
 ### Remaining Work
 
@@ -2978,7 +2978,7 @@ AWS: AWS Load Balancer Controller + the EKS-side Harbor + node-local registry pr
   **forbids per-substrate chart-version or image re-pinning** — any chart version / image reference
   bound on a per-substrate branch (i.e. keyed off `Substrate`/`SubstrateAws`/`SubstrateHomeLocal`)
   is a violation; the single pinned value from `Prodbox.ContainerImage` is the only sanctioned
-  source. Wired into `prodbox check-code`.
+  source. Wired into `prodbox dev check`.
 - A shared `[PlatformComponent]` inventory (`gateway`, `keycloak`, `keycloak-postgres`, `vscode`,
   `api`, `redis`, `websocket`, plus MinIO, Harbor, the Percona PostgreSQL operator, Envoy Gateway,
   cert-manager, ZeroSSL DNS01) declared once and consumed by both the home install path
@@ -2995,10 +2995,10 @@ AWS: AWS Load Balancer Controller + the EKS-side Harbor + node-local registry pr
 
 ### Validation
 
-1. `prodbox check-code` (exercises the new per-substrate re-pin lint).
+1. `prodbox dev check` (exercises the new per-substrate re-pin lint).
 2. `prodbox test unit` (the `[PlatformComponent]` coverage test asserts both installers cover the
    shared inventory).
-3. `prodbox docs check` / `prodbox lint docs` (corrected "no Harbor on EKS" prose reconciled).
+3. `prodbox dev docs check` / `prodbox dev lint docs` (corrected "no Harbor on EKS" prose reconciled).
 4. Live re-validation: `prodbox test all --substrate aws` proves the single Envoy release value
    stands up Envoy Gateway on EKS with no chart/data-plane skew and the canonical suite stays green.
 
@@ -3081,15 +3081,15 @@ read cannot reappear.
   environment; the AWS-substrate hosted-zone id is sourced from settings
   (`aws_substrate.hosted_zone_id` via `substrateHostedZoneId`) per the config doctrine.
 - `src/Prodbox/CheckCode.hs::checkEnvVarConfigReads.scopedPaths` is extended to cover
-  `src/Prodbox/PublicEdge.hs`, so any future `PRODBOX_*` env read there fails `prodbox check-code`.
+  `src/Prodbox/PublicEdge.hs`, so any future `PRODBOX_*` env read there fails `prodbox dev check`.
 
 ### Validation
 
-1. `prodbox check-code` (the extended `checkEnvVarConfigReads` now scans `PublicEdge.hs`; fails on
+1. `prodbox dev check` (the extended `checkEnvVarConfigReads` now scans `PublicEdge.hs`; fails on
    any `PRODBOX_*` read).
 2. `prodbox test unit` + golden re-acceptance (the renamed issuer flows through the ClusterIssuer
    render goldens).
-3. `prodbox docs check` / `prodbox lint docs` (the ~35 doc sites and the route-ownership
+3. `prodbox dev docs check` / `prodbox dev lint docs` (the ~35 doc sites and the route-ownership
    reattribution reconciled).
 4. Live wipe-and-rebuild: `prodbox rke2 delete --cascade` then reconcile + `prodbox test all`
    proves the renamed issuer issues / restores the public-edge cert and the canonical suite stays
@@ -3410,7 +3410,7 @@ this sprint adopts it rather than restating it.
 
 ### Validation
 
-1. `prodbox check-code`
+1. `prodbox dev check`
 2. `prodbox test unit`
 3. `prodbox config validate` rejects a `prodbox.dhall` carrying any plaintext admin or
    operational AWS key, and rejects an `aws_admin_for_test_simulation` block.

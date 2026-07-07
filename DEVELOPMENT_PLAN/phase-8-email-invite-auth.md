@@ -37,7 +37,7 @@ aws` half as a distinct, non-blocking axis ([substrates.md](substrates.md)).
 the operator-invited, email-verified Keycloak flow, the `prodbox users invite|list|revoke`
 command family, the SES SMTP/IAM-to-SMTP derivation, and `ValidationKeycloakInvite` — is
 validatable on the home/local substrate with no dependency on any later phase. Code-owned closure
-runs against the local gates (`prodbox check-code`, `prodbox test unit`, `prodbox test integration
+runs against the local gates (`prodbox dev check`, `prodbox test unit`, `prodbox test integration
 cli`/`env`), with the SES capture exercised against the operator's account already required for
 Route 53 DNS validation and Keycloak parsing exercised against fixture emails; `keycloak-invite`
 is canonical suite content proven on the home substrate first, and AWS-substrate coverage of that
@@ -167,16 +167,16 @@ retained `aws-ses` SMTP sync before chart deployment, and makes `prodbox users i
 the existing Keycloak realm's `smtpServer` from the live `keycloak-smtp` Secret before creating the
 invited user. That second step covers preserved Keycloak databases where `--import-realm` has
 already skipped the existing realm. Local validation: `cabal build --builddir=.build exe:prodbox`,
-refreshed `.build/prodbox`, `./.build/prodbox test unit` (669/669), `./.build/prodbox lint docs`,
-`./.build/prodbox docs check`, `git diff --check`, and `./.build/prodbox check-code`.
+refreshed `.build/prodbox`, `./.build/prodbox test unit` (669/669), `./.build/prodbox dev lint docs`,
+`./.build/prodbox dev docs check`, `git diff --check`, and `./.build/prodbox dev check`.
 The next live home-substrate rerun proved the local SMTP sync and realm patch, then failed in
 Keycloak's SMTP client with a connect timeout to the SES SMTP endpoint. Root cause: the
 Keycloak chart's `NetworkPolicy` allowed external TCP `443` egress but not the configured SMTP
 port. The active chart fix adds egress to `.Values.smtp.port` (currently SES TCP `587`) and a
 unit guard for the network-policy template. Local validation passed with
-`./.build/prodbox test unit` (670/670), `./.build/prodbox lint chart`,
-`./.build/prodbox lint docs`, `./.build/prodbox docs check`, `git diff --check`, and
-`./.build/prodbox check-code`.
+`./.build/prodbox test unit` (670/670), `./.build/prodbox dev lint chart`,
+`./.build/prodbox dev lint docs`, `./.build/prodbox dev docs check`, `git diff --check`, and
+`./.build/prodbox dev check`.
 The follow-up live home-substrate rerun proved SMTP delivery by reaching SES capture and invite
 link parsing with the NetworkPolicy fix applied, then failed because Keycloak `26.0.0` renders
 `VERIFY_EMAIL` as an intermediate required-action page with a continuation anchor before the
@@ -184,14 +184,14 @@ link parsing with the NetworkPolicy fix applied, then failed because Keycloak `2
 follows it with the same cookie jar, and then parses/posts the password form. Local validation
 passed with `cabal build --builddir=.build exe:prodbox`, refreshed `.build/prodbox`,
 `./.build/prodbox test unit` (672/672), `git diff --check`, and
-`./.build/prodbox check-code`.
+`./.build/prodbox dev check`.
 The next live home-substrate rerun reached the public-edge readiness repair path before the
 invite body and exposed that the certificate reissue status patch renderer emitted malformed JSON
 while marking a failed Certificate for immediate reissuance. The active harness fix renders that
 status patch with Aeson instead of string concatenation and adds a direct unit decode guard.
 Local validation passed with `cabal build --builddir=.build exe:prodbox`, refreshed
 `.build/prodbox`, `./.build/prodbox test unit` (673/673), `git diff --check`, and
-`./.build/prodbox check-code`.
+`./.build/prodbox dev check`.
 The follow-up live home-substrate rerun proved the malformed status patch was fixed and reached
 cert-manager reissue retry, then hit the ACME provider's certificate issuance rate limit for
 the public-edge hostname. The active chart-platform fix preserves an issued `public-edge-tls`
@@ -200,8 +200,8 @@ Secret into a retained Kubernetes backup Secret in the `prodbox` namespace befor
 re-applied. That keeps certificate material in Kubernetes while preventing routine home chart
 resets from forcing fresh production ACME orders. Local validation passed with
 `cabal build --builddir=.build exe:prodbox`, refreshed `.build/prodbox`,
-`./.build/prodbox test unit` (674/674), `./.build/prodbox lint docs`,
-`./.build/prodbox docs check`, `git diff --check`, and `./.build/prodbox check-code`. Sprints
+`./.build/prodbox test unit` (674/674), `./.build/prodbox dev lint docs`,
+`./.build/prodbox dev docs check`, `git diff --check`, and `./.build/prodbox dev check`. Sprints
 `8.7` and `8.8` supersede this in-cluster Secret-retention approach with an S3-backed LongLived
 retention store: the issued public-edge certificate is retained durably across cluster wipes and
 restored before every issuance, so the high-churn rebuild loop never re-orders it against the
@@ -385,7 +385,7 @@ Provision the long-lived, account-scoped SES resources both substrates depend on
 
 ### Validation
 
-1. `prodbox check-code`
+1. `prodbox dev check`
 2. `prodbox test unit`
 3. `aws ses get-identity-verification-attributes` → `VerificationStatus: Success`
 4. `dig MX inbox.<configured_zone>` → SES MX targets
@@ -412,7 +412,7 @@ Provision the long-lived, account-scoped SES resources both substrates depend on
   `ses.receive_subdomain = "inbox.test.resolvefintech.com"`,
   `ses.capture_bucket = "prodbox-ses-capture"`.
 - Test fixtures (`test/unit/Main.hs::validConfig` and `invalidZeroSslConfig`) updated for
-  the new schema; `prodbox check-code` (exit 0) and `prodbox test unit` (300/300) pass.
+  the new schema; `prodbox dev check` (exit 0) and `prodbox test unit` (300/300) pass.
 
 ### Current Validation State (Code + Doctrine Landed)
 
@@ -448,8 +448,8 @@ Provision the long-lived, account-scoped SES resources both substrates depend on
   bucket, and SMTP IAM user.
 - [documents/engineering/aws_integration_environment_doctrine.md](../documents/engineering/aws_integration_environment_doctrine.md) records the cross-substrate shared SES infrastructure doctrine and names
   `src/Prodbox/Infra/AwsSesStack.hs` as the exclusive provisioning surface.
-- Validated with `prodbox check-code` (exit 0), `prodbox lint docs` (exit 0),
-  `prodbox docs check` (exit 0), and `prodbox test unit` (300/300) on May 18, 2026.
+- Validated with `prodbox dev check` (exit 0), `prodbox dev lint docs` (exit 0),
+  `prodbox dev docs check` (exit 0), and `prodbox test unit` (300/300) on May 18, 2026.
 
 ### Live Validation (Landed May 18, 2026)
 
@@ -515,8 +515,8 @@ delivers email via SES SMTP.
 
 ### Validation
 
-1. `prodbox check-code`
-2. `prodbox lint chart`
+1. `prodbox dev check`
+2. `prodbox dev lint chart`
 3. `prodbox charts reconcile keycloak` against the home substrate succeeds and the realm has
    `registrationAllowed=false`, `verifyEmail=true`.
 4. The SMTP secret is present in the namespace and contains the expected fields.
@@ -545,7 +545,7 @@ delivers email via SES SMTP.
   `prodbox.io/ses-pulumi-source: pulumi/aws-ses` annotation as the chart-helper marker
   the phase doc names so the secret is regenerated when the underlying SES IAM
   access-key rotates.
-- Validated with `prodbox check-code` (exit 0), `prodbox lint chart` (exit 0), and
+- Validated with `prodbox dev check` (exit 0), `prodbox dev lint chart` (exit 0), and
   `prodbox test unit` (300/300) on May 18, 2026.
 
 ### Live Deploy Proof (May 18, 2026)
@@ -601,7 +601,7 @@ Add an operator-facing user management surface that wraps the Keycloak admin API
 
 ### Validation
 
-1. `prodbox check-code`
+1. `prodbox dev check`
 2. `prodbox test unit`
 3. `prodbox test integration cli` covers parse-time happy and unhappy paths for the new
    commands.
@@ -632,13 +632,13 @@ Add an operator-facing user management surface that wraps the Keycloak admin API
 - `test/unit/Parser.hs` adds `UsersCommand (..)` import and the matching
   `commandPathOfRequest` arm for the three variants, so the auto-generated parser
   happy- and unhappy-path coverage exercises every registered `users` leaf example.
-- Generated CLI artifacts regenerated via `prodbox docs generate`:
+- Generated CLI artifacts regenerated via `prodbox dev docs generate`:
   `documents/cli/commands.md` (users surface listed), `share/man/man1/prodbox-users-*.1`,
   and the bash/zsh/fish completions all carry the new commands. The
   `test/golden/cli/` fixtures (command tree, commands JSON, leaf help pages) are
   refreshed to match the new registry.
-- Validated with `prodbox check-code` (exit 0), `prodbox lint docs` (exit 0),
-  `prodbox docs check` (exit 0), and `prodbox test unit` (310/310, up from 300/300
+- Validated with `prodbox dev check` (exit 0), `prodbox dev lint docs` (exit 0),
+  `prodbox dev docs check` (exit 0), and `prodbox test unit` (310/310, up from 300/300
   through the new auto-generated parser cases) on May 18, 2026.
 
 ### Live HTTP Integration (Landed May 18, 2026)
@@ -666,8 +666,8 @@ Add an operator-facing user management surface that wraps the Keycloak admin API
   three subcommands now return real `UserSummary` payloads instead of remedy hints.
 - `prodbox.cabal` adds `http-client ^>=0.7.17`, `http-client-tls ^>=0.3.6`,
   `http-types ^>=0.12.4`, and `temporary ^>=1.3` to the library `build-depends`.
-- Validated with `prodbox check-code` (exit 0), `prodbox lint docs` (exit 0),
-  `prodbox docs check` (exit 0), and `prodbox test unit` (315/315) on May 18, 2026.
+- Validated with `prodbox dev check` (exit 0), `prodbox dev lint docs` (exit 0),
+  `prodbox dev docs check` (exit 0), and `prodbox test unit` (315/315) on May 18, 2026.
 
 ### Remaining Work
 
@@ -705,7 +705,7 @@ suite can gate `ValidationKeycloakInvite` (Sprint `8.5`) on them.
 
 ### Validation
 
-1. `prodbox check-code`
+1. `prodbox dev check`
 2. `prodbox test unit` covers the new prerequisite nodes.
 3. Manually breaking the SES setup (e.g. disabling the receive rule set) makes
    `prodbox test integration keycloak-invite` fail fast with the remedy hint.
@@ -733,7 +733,7 @@ suite can gate `ValidationKeycloakInvite` (Sprint `8.5`) on them.
 - `test/unit/Main.hs::"covers the full shared prerequisite inventory"` is extended to
   cover the three new keys; the auto-generated registry-shape, dependency-chain, and
   effect-shape tests all pass against the new nodes.
-- Validated with `prodbox check-code` (exit 0) and `prodbox test unit` (310/310) on May
+- Validated with `prodbox dev check` (exit 0) and `prodbox test unit` (310/310) on May
   18, 2026.
 
 ### Remaining Work
@@ -786,7 +786,7 @@ on whichever substrate is active.
 
 ### Validation
 
-1. `prodbox check-code`
+1. `prodbox dev check`
 2. `prodbox test unit` covers the dispatch arm's parsing logic with fixture emails.
 3. `prodbox test integration keycloak-invite` against the home substrate succeeds and
    leaves no residue.
@@ -829,12 +829,12 @@ on whichever substrate is active.
   `nativeValidationId`s place `charts-platform`, `keycloak-invite`, `charts-storage`, and
   `lifecycle` in that order, and `last (nativeValidations suitePlan)` is
   `ValidationLifecycle`.
-- Generated CLI artifacts regenerated via `prodbox docs generate`:
+- Generated CLI artifacts regenerated via `prodbox dev docs generate`:
   `documents/cli/commands.md` lists `keycloak-invite`, manpages and
   bash/zsh/fish completions carry the new leaf, `test/golden/cli/*` fixtures are
   refreshed.
-- Validated with `prodbox check-code` (exit 0), `prodbox lint docs` (exit 0),
-  `prodbox docs check` (exit 0), and `prodbox test unit` (312/312, up from 310 through
+- Validated with `prodbox dev check` (exit 0), `prodbox dev lint docs` (exit 0),
+  `prodbox dev docs check` (exit 0), and `prodbox test unit` (312/312, up from 310 through
   the new auto-generated parser cases) on May 18, 2026.
 
 ### Live Integration (Landed May 18, 2026)
@@ -864,8 +864,8 @@ on whichever substrate is active.
   claim assertion helpers in `Prodbox.TestValidation`.
 - `test/unit/Main.hs` adds three new fixtures + tests for `parseKeycloakInviteLink`
   (plain-text happy path, quoted-printable soft-wrap, missing-link).
-- Validated with `prodbox check-code` (exit 0), `prodbox lint docs` (exit 0),
-  `prodbox docs check` (exit 0), and `prodbox test unit` (315/315) on May 18, 2026.
+- Validated with `prodbox dev check` (exit 0), `prodbox dev lint docs` (exit 0),
+  `prodbox dev docs check` (exit 0), and `prodbox test unit` (315/315) on May 18, 2026.
 - June 6, 2026 parser hardening adds fixtures for the real Keycloak multipart shape:
   a text/html duplicate whose HTML URL encodes the query delimiter as `=3D`, and a
   separate multiple-distinct-link failure case. Local validation:
@@ -918,37 +918,37 @@ on whichever substrate is active.
   `.Release.Namespace` and renders the realm-import `smtpServer` block only when that
   Secret exists; missing SMTP remains an explicit deferred-invite state for chart deploys
   that are not running the invite-auth validation.
-- Validated with `prodbox check-code` (exit 0), `prodbox lint docs` (exit 0),
-  `prodbox docs check` (exit 0), and `prodbox test unit` (320/320, up from 315
+- Validated with `prodbox dev check` (exit 0), `prodbox dev lint docs` (exit 0),
+  `prodbox dev docs check` (exit 0), and `prodbox test unit` (320/320, up from 315
   through the five new SES SMTP password derivation cases) on May 18, 2026.
 
 ### Remaining Work
 
 - Local validation for the June 6 credential-setup POST / invited-user OIDC claim code path
   and the home SMTP-reconcile fix passed with `cabal build --builddir=.build exe:prodbox`,
-  refreshed `.build/prodbox`, `./.build/prodbox test unit` (669/669), `./.build/prodbox lint docs`,
-  `./.build/prodbox docs check`, `git diff --check`, and `./.build/prodbox check-code`.
+  refreshed `.build/prodbox`, `./.build/prodbox test unit` (669/669), `./.build/prodbox dev lint docs`,
+  `./.build/prodbox dev docs check`, `git diff --check`, and `./.build/prodbox dev check`.
 - Local validation for the SMTP NetworkPolicy fix passed with `./.build/prodbox test unit`
-  (670/670), `./.build/prodbox lint chart`, `./.build/prodbox lint docs`,
-  `./.build/prodbox docs check`, `git diff --check`, and `./.build/prodbox check-code`.
+  (670/670), `./.build/prodbox dev lint chart`, `./.build/prodbox dev lint docs`,
+  `./.build/prodbox dev docs check`, `git diff --check`, and `./.build/prodbox dev check`.
   The live home rerun then proved SMTP delivery and failed at Keycloak 26's verify-email
   continuation page before the password form.
 - Local validation for the verify-email continuation fix passed with
   `cabal build --builddir=.build exe:prodbox`, refreshed `.build/prodbox`,
   `./.build/prodbox test unit` (672/672), `git diff --check`, and
-  `./.build/prodbox check-code`. The live home rerun then reached public-edge certificate
+  `./.build/prodbox dev check`. The live home rerun then reached public-edge certificate
   repair before the invite body and failed because the status patch used to trigger immediate
   cert-manager reissuance was malformed JSON.
 - Local validation for the public-edge certificate reissue status-patch renderer passed with
   `cabal build --builddir=.build exe:prodbox`, refreshed `.build/prodbox`,
   `./.build/prodbox test unit` (673/673), `git diff --check`, and
-  `./.build/prodbox check-code`. The live home rerun proved the status patch no longer emits
+  `./.build/prodbox dev check`. The live home rerun proved the status patch no longer emits
   malformed JSON, then hit the ACME provider's certificate issuance rate limit because the
   already-issued public-edge TLS Secret had been lost during chart namespace reset.
 - Local validation for the public-edge TLS Secret retention fix passed with
   `cabal build --builddir=.build exe:prodbox`, refreshed `.build/prodbox`,
-  `./.build/prodbox test unit` (674/674), `./.build/prodbox lint docs`,
-  `./.build/prodbox docs check`, `git diff --check`, and `./.build/prodbox check-code`. The live
+  `./.build/prodbox test unit` (674/674), `./.build/prodbox dev lint docs`,
+  `./.build/prodbox dev docs check`, `git diff --check`, and `./.build/prodbox dev check`. The live
   home `keycloak-invite` rerun remains the next gate before Sprint `8.5` moves to AWS validation;
   Sprints `8.7`/`8.8` replace the in-cluster Secret backup with the durable S3 retain-and-restore
   store so the rebuild loop restores the issued certificate rather than re-ordering it against
@@ -1074,8 +1074,8 @@ parity rows accordingly.
   code fix removes that duplicate Phase `1.6/2` reconcile when Phase `1.5/2` already ran it.
 - Local validation for the Phase `1.6/2` duplicate-reconcile guard passed on June 6, 2026:
   `cabal build --builddir=.build exe:prodbox`, `./.build/prodbox test unit` (658/658),
-  `./.build/prodbox check-code`, `./.build/prodbox lint docs`,
-  `./.build/prodbox docs check`, `git diff --check`, and
+  `./.build/prodbox dev check`, `./.build/prodbox dev lint docs`,
+  `./.build/prodbox dev docs check`, `git diff --check`, and
   `./.build/prodbox test integration cli` (30/30).
 - The follow-up targeted AWS rerun proved the Phase `1.6/2` guard live: after Phase `1.5/2`
   completed the local runbook reconcile, Phase `1.6/2` reset/deployed charts without rerunning
@@ -1086,8 +1086,8 @@ parity rows accordingly.
   operational IAM/config teardown completed through the harness.
 - Local validation for the namespace-adoption fix passed on June 6, 2026:
   `cabal build --builddir=.build exe:prodbox`, `helm template gateway charts/gateway --namespace
-  gateway`, `./.build/prodbox test unit` (659/659), `./.build/prodbox lint docs`,
-  `./.build/prodbox docs check`, `git diff --check`, `./.build/prodbox check-code`, and
+  gateway`, `./.build/prodbox test unit` (659/659), `./.build/prodbox dev lint docs`,
+  `./.build/prodbox dev docs check`, `git diff --check`, `./.build/prodbox dev check`, and
   `./.build/prodbox test integration cli` (30/30).
 - The follow-up targeted AWS rerun proved the namespace-adoption fix live: the `gateway`
   Helm install moved past the prior ownership failure, AWS `vscode`, `api`, and `websocket`
@@ -1101,8 +1101,8 @@ parity rows accordingly.
   de-duplication, while preserving the multiple-distinct-link failure mode.
 - Local validation for the invite-link parser normalization fix passed on June 6, 2026:
   `cabal build --builddir=.build exe:prodbox`, refreshed `.build/prodbox`, and
-  `./.build/prodbox test unit` (661/661), `./.build/prodbox lint docs`,
-  `./.build/prodbox docs check`, `git diff --check`, `./.build/prodbox check-code`, and
+  `./.build/prodbox test unit` (661/661), `./.build/prodbox dev lint docs`,
+  `./.build/prodbox dev docs check`, `git diff --check`, `./.build/prodbox dev check`, and
   `./.build/prodbox test integration cli` (30/30).
 - The next targeted AWS rerun was interrupted before AWS provisioning because the home-local
   public-edge readiness gate stalled after an ACME order failure: the existing repair helper
@@ -1113,8 +1113,8 @@ parity rows accordingly.
   the `Certificate` status with an `Issuing=True` manual-trigger condition after stale resource
   deletion so cert-manager starts a fresh CertificateRequest immediately. Initial local
   validation: `cabal build --builddir=.build exe:prodbox`, refreshed `.build/prodbox`, and
-  `./.build/prodbox test unit` (661/661), `./.build/prodbox lint docs`,
-  `./.build/prodbox docs check`, `git diff --check`, `./.build/prodbox check-code`, and
+  `./.build/prodbox test unit` (661/661), `./.build/prodbox dev lint docs`,
+  `./.build/prodbox dev docs check`, `git diff --check`, `./.build/prodbox dev check`, and
   `./.build/prodbox test integration cli` (30/30). The follow-up targeted AWS rerun proved the
   first half of the repair but remained in the same local certificate readiness loop when the
   stale ACME children had already been removed before the helper retried. The second harness fix
@@ -1124,8 +1124,8 @@ parity rows accordingly.
   user/key was deleted, and operational `aws.*` config was cleared. Local validation for the
   no-target branch passed: `cabal build --builddir=.build exe:prodbox`, refreshed
   `.build/prodbox`, and `./.build/prodbox test unit` (661/661),
-  `./.build/prodbox lint docs`, `./.build/prodbox docs check`, `git diff --check`,
-  `./.build/prodbox check-code`, and `./.build/prodbox test integration cli` (30/30). The AWS
+  `./.build/prodbox dev lint docs`, `./.build/prodbox dev docs check`, `git diff --check`,
+  `./.build/prodbox dev check`, and `./.build/prodbox test integration cli` (30/30). The AWS
   targeted rerun reached the public-edge readiness loop again with a fresh active ACME Order,
   then stalled because the configured ZeroSSL ACME endpoint returned HTML to cert-manager's
   new-order flow instead of ACME JSON. The SIGINT cleanup path completed through the harness:
@@ -1133,8 +1133,8 @@ parity rows accordingly.
   operational `aws.*` config was cleared. The active follow-up repairs the repo config and
   `prodbox config setup` default to use the ZeroSSL ACME endpoint for validation. Local validation passed:
   `cabal build --builddir=.build exe:prodbox`, refreshed `.build/prodbox`,
-  `./.build/prodbox test unit` (661/661), `./.build/prodbox lint docs`,
-  `./.build/prodbox docs check`, `git diff --check`, `./.build/prodbox check-code`, and
+  `./.build/prodbox test unit` (661/661), `./.build/prodbox dev lint docs`,
+  `./.build/prodbox dev docs check`, `git diff --check`, `./.build/prodbox dev check`, and
   `./.build/prodbox test integration cli` (30/30). The first AWS targeted rerun after this switch
   failed before AWS provisioning because local DiskPressure caused MetalLB rollout timeout. The
   harness cleanup completed, and only generated temp image artifacts plus dangling Docker/build
@@ -1149,14 +1149,14 @@ parity rows accordingly.
   material.
 - Local validation for the fresh-cluster SMTP sync fix passed after the code/doc update:
   `cabal build --builddir=.build exe:prodbox`, `./.build/prodbox test unit` (657/657),
-  `./.build/prodbox check-code`, `./.build/prodbox lint docs`,
-  `./.build/prodbox docs check`, `git diff --check`,
+  `./.build/prodbox dev check`, `./.build/prodbox dev lint docs`,
+  `./.build/prodbox dev docs check`, `git diff --check`,
   live `./.build/prodbox aws stack aws-ses reconcile` state repair, and
   `./.build/prodbox test integration cli` (30/30).
 - Local validation for the `/auth/admin` route plus targeted AWS-substrate harness fix passed on
   June 5, 2026: `cabal build --builddir=.build exe:prodbox`, `./.build/prodbox test unit`
-  (655/655), `./.build/prodbox check-code`, `./.build/prodbox lint docs`,
-  `./.build/prodbox docs check`, `git diff --check`, and
+  (655/655), `./.build/prodbox dev check`, `./.build/prodbox dev lint docs`,
+  `./.build/prodbox dev docs check`, `git diff --check`, and
   `./.build/prodbox test integration cli` (30/30).
 - The substrate parity table flip to ✅ on both substrates closed with the later home and AWS
   aggregate validations captured in the phase closure note. Any later-added AWS live axes are
@@ -1227,7 +1227,7 @@ post-`rke2 delete`), not only the chart-delete→redeploy path.
 
 Closure gates (passed 2026-06-07):
 
-1. `./.build/prodbox check-code` exit `0`.
+1. `./.build/prodbox dev check` exit `0`.
 2. `./.build/prodbox test unit` → `690/690` (the
    `public-edge typed preserve outcome` describe block covers the three-way
    `classifyPublicEdgePreserve` discrimination and `renderPublicEdgePreserveOutcome` surfacing
@@ -1239,7 +1239,7 @@ Closure gates (passed 2026-06-07):
    deploy path is behavior-preserving in the test environment).
 4. `./.build/prodbox test integration env` — runs with `cli` above; the ZeroSSL `acme`
    fixtures decode and the masked-settings/invalid-config paths pass.
-5. `./.build/prodbox docs check` / `./.build/prodbox lint docs` exit `0`.
+5. `./.build/prodbox dev docs check` / `./.build/prodbox dev lint docs` exit `0`.
 
 The engineering docs (`helm_chart_platform_doctrine.md`, `envoy_gateway_edge_doctrine.md`
 § cert-manager, `acme_provider_guide.md`) match the landed behavior.

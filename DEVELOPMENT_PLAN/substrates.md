@@ -66,9 +66,9 @@ for the authoritative doctrine.
 
 Substrate coverage of a suite validation is tracked **here, in the parity table and the
 coverage notes below — never as a phase blocker.** Per
-[development_plan_standards.md → N. Phase Independence](development_plan_standards.md#n-phase-independence)
+[development_plan_standards.md → N. Phase Independence](development_plan_standards.md#n-phase-independence-no-backward-blocking)
 and
-[O. Code-Local vs Live-Infra Proof](development_plan_standards.md#o-code-local-vs-live-infra-proof)
+[O. Code-Local vs Live-Infra Proof](development_plan_standards.md#o-code-local-completion-vs-live-infra-proof)
 (and the [M](development_plan_standards.md#m-test-suite-substrates) amendment), a
 suite-content sprint is Done once its validation exists and passes on the **home
 substrate**; the AWS-substrate run of that same validation is the AWS substrate's
@@ -86,7 +86,7 @@ home-substrate suite-content closure and the AWS-substrate coverage proof are se
 axes; the parity table is the single place the AWS axis is tracked.
 
 The defers-to SSoT for this orthogonality is
-[development_plan_standards.md → N / O](development_plan_standards.md#n-phase-independence);
+[development_plan_standards.md → N / O](development_plan_standards.md#n-phase-independence-no-backward-blocking);
 the substrate-coverage application of it lives in this file's parity table and coverage
 notes.
 
@@ -203,7 +203,7 @@ reached, never *which* services are stood up, so substrate equivalence is preser
 | Required Config | `aws_substrate.subzone_name` (the AWS-substrate public FQDN, e.g. `aws.test.resolvefintech.com`), optional `aws_substrate.hosted_zone_id` when an operator wants to pin the already-provisioned subzone ID in config, `ses.*` (sender_domain, receive_subdomain, capture_bucket — shared cross-substrate; same values as home substrate), AWS operator credentials, plus the same `acme.*` settings the home substrate uses. During harness-driven AWS runs, the suite reads the live `aws-eks-subzone` Pulumi output after provisioning and passes the hosted-zone ID to child commands. Missing AWS-substrate values fail fast; the AWS substrate does not fall back to `route53.zone_id` or `domain.demo_fqdn` from the home substrate. |
 | Prerequisites satisfied today | `aws_credentials_valid`, `route53_accessible`, `route53_lifecycle_capable`, `pulumi_logged_in`, the AWS-stack snapshot prereqs |
 | Phase ownership (provision/teardown) | [phase-7-aws-substrate-foundations.md](phase-7-aws-substrate-foundations.md) |
-| Suite parity | ✅ **for the then-canonical AWS slice** (four later validations' AWS live-proof is still pending on a separate non-blocking axis — see the per-validation coverage table below). Phase 7-owned AWS substrate parity was proved live for that slice on June 5-9, 2026. The supported `Substrate` ADT, `--substrate {home-local\|aws}` CLI surface, EKS kubeconfig materialization, per-substrate Route 53 subzone, cert-manager DNS01, EKS-side registry (`registry:2`)/MinIO/Percona, AWS-specific Envoy Gateway runtime, AWS chart values, and public-edge diagnostics are wired. The June 5 AWS runs proved AWS public DNS reconciles to the Envoy NLB target, postflight destroys `aws-eks-subzone`, `aws-eks`, and `aws-test` with residue checks passing, `charts-vscode`, `charts-api`, `charts-websocket`, `admin-routes`, and destructive `ValidationLifecycle` succeed under the harness. The June 6/9 `keycloak-invite --substrate aws` proofs passed invite capture/link-follow and OIDC claim verification on `aws.test.resolvefintech.com` with clean teardown, and Sprint `8.8` proved certificate round-trip restore-no-reorder plus the interactive `prodbox nuke` total-teardown proof. Current canonical-suite membership is defined in `src/Prodbox/TestPlan.hs`; validations whose AWS live proof is on a separate non-blocking axis remain tracked in the per-validation coverage table below. Sprint `7.31` (2026-07-06) brought the AWS substrate to parity on the bootstrap readiness gate: `ensureAwsSubstratePlatformRuntime` runs the same deep `ensureRegistryStorageBackendEdgeReady` registry→MinIO S3 round-trip gate before the EKS image-mirror Job and crane pushes, and `applyEksImageMirrorJob` re-applies the Job on an `isRetryableEksImageMirrorFailure`-matched transient (name-resolution) failure. Code-owned surface validated locally (unit 1216/1216); a live `prodbox test all --substrate aws` past the EKS image-mirror step is the remaining non-blocking Standard O axis. |
+| Suite parity | 🔄 **Aggregate parity in progress** — ✅ for the then-canonical AWS slice (four later validations' AWS live-proof is still pending on a separate non-blocking axis — see the per-validation coverage table below); the full `prodbox test all --substrate aws` aggregate past the EKS image-mirror step is a non-blocking Standard O live-proof axis. Phase 7-owned AWS substrate parity was proved live for the then-canonical slice on June 5-9, 2026. The supported `Substrate` ADT, `--substrate {home-local\|aws}` CLI surface, EKS kubeconfig materialization, per-substrate Route 53 subzone, cert-manager DNS01, EKS-side registry (`registry:2`)/MinIO/Percona, AWS-specific Envoy Gateway runtime, AWS chart values, and public-edge diagnostics are wired. The June 5 AWS runs proved AWS public DNS reconciles to the Envoy NLB target, postflight destroys `aws-eks-subzone`, `aws-eks`, and `aws-test` with residue checks passing, `charts-vscode`, `charts-api`, `charts-websocket`, `admin-routes`, and destructive `ValidationLifecycle` succeed under the harness. The June 6/9 `keycloak-invite --substrate aws` proofs passed invite capture/link-follow and OIDC claim verification on `aws.test.resolvefintech.com` with clean teardown, and Sprint `8.8` proved certificate round-trip restore-no-reorder plus the interactive `prodbox nuke` total-teardown proof. Current canonical-suite membership is defined in `src/Prodbox/TestPlan.hs`; validations whose AWS live proof is on a separate non-blocking axis remain tracked in the per-validation coverage table below. Sprint `7.31` (2026-07-06) brought the AWS substrate to parity on the bootstrap readiness gate: `ensureAwsSubstratePlatformRuntime` runs the same deep `ensureRegistryStorageBackendEdgeReady` registry→MinIO S3 round-trip gate before the EKS image-mirror Job and crane pushes, and `applyEksImageMirrorJob` re-applies the Job on an `isRetryableEksImageMirrorFailure`-matched transient (name-resolution) failure. Code-owned surface validated locally (unit 1216/1216); a live `prodbox test all --substrate aws` past the EKS image-mirror step is the remaining non-blocking Standard O axis. |
 | Notes | The AWS substrate is exclusively a test substrate. There is no production EKS cluster that `prodbox` manages. The literal stack names (`aws-eks-test`, `aws-test`) reflect that. |
 
 ## Resource Lifecycle Classes
@@ -395,7 +395,7 @@ and one-time/on-demand for the resources below.
 The substrate `Suite parity` rows above track aggregate canonical-suite coverage per
 substrate. Individual validations whose AWS-substrate coverage is on a separate axis from
 their home-substrate suite-content closure are called out here, per the orthogonality rule
-above and [development_plan_standards.md → N / O](development_plan_standards.md#n-phase-independence).
+above and [development_plan_standards.md → N / O](development_plan_standards.md#n-phase-independence-no-backward-blocking).
 
 | Validation | Home-substrate suite-content closure (owned surface) | AWS-substrate coverage (owned surface) |
 |------------|------------------------------------------------------|----------------------------------------|

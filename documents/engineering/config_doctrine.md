@@ -4,7 +4,6 @@
 **Supersedes**: N/A
 **Referenced by**: [README.md](./README.md),
 [../../README.md](../../README.md),
-[envoy_gateway_edge_doctrine.md](./envoy_gateway_edge_doctrine.md),
 [../../CLAUDE.md](../../CLAUDE.md),
 [../../AGENTS.md](../../AGENTS.md),
 [../documentation_standards.md](../documentation_standards.md),
@@ -33,9 +32,11 @@
 [pulsar_messaging_doctrine.md](./pulsar_messaging_doctrine.md),
 [host_platform_doctrine.md](./host_platform_doctrine.md),
 [cluster_topology_doctrine.md](./cluster_topology_doctrine.md),
-[resource_scaling_doctrine.md](./resource_scaling_doctrine.md),
-[tiered_storage_capacity_doctrine.md](./tiered_storage_capacity_doctrine.md),
 [test_topology_doctrine.md](./test_topology_doctrine.md),
+[acme_provider_guide.md](./acme_provider_guide.md),
+[code_quality.md](./code_quality.md),
+[local_registry_pipeline.md](./local_registry_pipeline.md),
+[tla_modelling_assumptions.md](./tla_modelling_assumptions.md),
 [bootstrap_readiness_doctrine.md](./bootstrap_readiness_doctrine.md)
 **Generated sections**: none
 
@@ -615,18 +616,16 @@ reload queue is removed; the watcher feeds the same `TBQueue ()` reload-worker t
 existing implementation drains. The downstream STM broadcast channel that publishes
 LiveConfig changes to subscribers is unchanged.
 
-The gateway daemon already implements this fsnotify-driven Boot/Live reload loop. The
-**workload Pods are a target, not yet a reality**: today `Prodbox.Workload` decodes its Dhall
-once at startup and has no file watcher. Giving the workload the same daemon-style
-fsnotify watcher and Boot/Live reload split is scheduled work (Sprint 3.15); until that lands,
-"the workload Pods watch their config file" describes the intended structure rather than the
-current code.
+The gateway daemon and the workload Pods both implement this fsnotify-driven Boot/Live reload loop.
+Sprint `3.15` (landed 2026-06-09) gave `Prodbox.Workload` the same daemon-style fsnotify watcher
+(`configFileWatchLoop` / `reloadLoop` / `drainCoordinator`) plus the `WorkloadBootConfig` /
+`WorkloadLiveConfig` split, so a `mode`/port change drains and exits while a `log_level`/Redis/OIDC
+change reloads in place — the workload Pods watch their config file today.
 
 This explicitly overrides the prior prohibition on `fsnotify`, `inotify`, and `mtime` as
 reload triggers. The custom `forbidFsnotify` / `forbidInotify` / `forbid-mtime-polling` rules
-in `src/Prodbox/CheckCode.hs` have been removed; a residual `.hlint.yaml` `System.FSNotify`
-restriction remains and is scheduled for full removal under Sprint `3.15`, with the daemon path
-opting in via the existing marker-comment allowlist until it lands. See
+in `src/Prodbox/CheckCode.hs` have been removed, and both the daemon and — since Sprint `3.15` —
+the workload paths use the file-watch primitives. See
 [code_quality.md](./code_quality.md), the lint-stack SSoT for the current state of these rules.
 The legacy ledger records the CheckCode-rule removal.
 
@@ -677,11 +676,12 @@ requires the root Vault token. The local decoding/fetch/store foundations landed
 `1.38`; the global host-loader flip now lands there too. Without basics, `loadConfigFile`
 remains only the first-bring-up seed path.
 
-The host case is the existing baseline (Sprint 1.2). The remaining env-var-read call sites on
-the supported path are not on the host CLI but in `Prodbox.Workload`, which still reads a
-`PRODBOX_*` precedence ladder (`PRODBOX_WORKLOAD_MODE`, `PRODBOX_PORT`, `PRODBOX_LOG_LEVEL`,
-`PRODBOX_REDIS_*`, `PRODBOX_OIDC_*`). Deleting that ladder and moving the workload to the
-config-as-data Dhall surface is scheduled work (Sprint 3.15); see §10.
+The host case is the existing baseline (Sprint 1.2). Sprint `3.15` (landed 2026-06-09) deleted the
+former `Prodbox.Workload` `PRODBOX_*` precedence ladder (`PRODBOX_WORKLOAD_MODE`, `PRODBOX_PORT`,
+`PRODBOX_LOG_LEVEL`, `PRODBOX_REDIS_*`, `PRODBOX_OIDC_*`) and moved the workload to the
+config-as-data Dhall surface; `Workload.hs` is now in `checkEnvVarConfigReads.scopedPaths`, so a
+reintroduced `PRODBOX_*` config read fails `prodbox dev check`. No supported binary sources
+configuration from an env var. See §10.
 
 ## 10. Forbidden surfaces
 
@@ -690,22 +690,22 @@ moving to. Where a surface is named "scheduled" below, the code has not finished
 so the prohibition is the intended end state rather than a present-tense fact:
 
 - Reading configuration from environment variables in any binary code path. `lookupEnv`,
-  `getEnv`, and `getEnvironment` from `System.Environment` are the target for being linted out
-  of the supported config-loading paths. **Not yet complete on the workload**: `Prodbox.Workload`
-  still reads a `PRODBOX_*` precedence ladder (mode, port, log level, Redis host/port, OIDC
-  fields); deleting that ladder and adding `Workload.hs` to the env-var-read lint scope
-  (`checkEnvVarConfigReads.scopedPaths`) is scheduled under Sprint 3.15. The k8s Pod
-  environment may still carry runtime metadata (Pod name, namespace) that the binary does not
-  read; the lint rule is scoped to the config-loading paths.
+  `getEnv`, and `getEnvironment` from `System.Environment` are linted out of the supported
+  config-loading paths. Sprint `3.15` (landed 2026-06-09) deleted the former `Prodbox.Workload`
+  `PRODBOX_*` precedence ladder (mode, port, log level, Redis host/port, OIDC fields) and added
+  `Workload.hs` to the env-var-read lint scope (`checkEnvVarConfigReads.scopedPaths`), so no
+  supported binary sources configuration from an env var. The k8s Pod environment may still carry
+  runtime metadata (Pod name, namespace) that the binary does not read; the lint rule is scoped to
+  the config-loading paths.
 - Materializing `prodbox-config.json` (or any other JSON projection of the Dhall) on a
   supported path. `prodbox config compile` is not a supported subcommand.
 - `--log-level`, `--port`, `--node-id`, `--foreground`, `--config-path`, and any other
   runtime-override CLI flag that fronts a non-`--config` config source. `--config` is the
   sole startup-time CLI knob.
 - `PRODBOX_LOG_LEVEL`, `PRODBOX_CONFIG_PATH`, `PRODBOX_PORT`, `PRODBOX_WORKLOAD_MODE`, and
-  any other `PRODBOX_*` env-var precedence rule. The host CLI carries none of these. The
-  workload's surviving `PRODBOX_*` ladder is the one outstanding violation of this rule;
-  retiring it is scheduled under Sprint 3.15 (see §9 and the first bullet above).
+  any other `PRODBOX_*` env-var precedence rule. Neither the host CLI nor the workload carries any
+  of these; the workload's former `PRODBOX_*` ladder was retired by Sprint `3.15` (see §9 and the
+  first bullet above).
 - `MINIO_ENDPOINT_URL` env var on the gateway Pod (the attempted addition rolled back
   May 24, 2026). The MinIO endpoint reaches the daemon via the `boot.minio_endpoint_url`
   field of the mounted Dhall config; see §6 "Non-secret service-endpoint fields".

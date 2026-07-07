@@ -64,7 +64,10 @@ Prodbox manages a home Kubernetes cluster with a Haskell command surface.
   directly via Vault Kubernetes auth; there are no Secret-mounted Dhall credential
   fragments and no master seed or HMAC derivation. Updating the root cluster's in-force
   config requires the root Vault token (which requires an unsealed root Vault). No
-  supported binary reads `PRODBOX_*` environment variables. See
+  `PRODBOX_*` environment variable participates in config resolution on any supported binary
+  (the host CLI resolves the binary-sibling `prodbox.dhall`; the in-cluster daemon/workload read
+  their mounted `--config` Dhall) — the only `PRODBOX_*` reads in the codebase are documented
+  test-only override hooks (`PRODBOX_TEST_*`, `PRODBOX_ALLOW_NON_TTY_INTERACTIVE`). See
   [documents/engineering/config_doctrine.md](./documents/engineering/config_doctrine.md).
 - `pulumi/aws-eks/Pulumi.yaml` plus `pulumi/aws-eks/Main.yaml` and `pulumi/aws-test/Pulumi.yaml`
   plus `pulumi/aws-test/Main.yaml` are the supported Pulumi programs for AWS validation IaC.

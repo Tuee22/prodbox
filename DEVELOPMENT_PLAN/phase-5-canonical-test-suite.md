@@ -266,7 +266,7 @@ Close the implemented public DNS and public-edge path on the Haskell runtime tha
 
 ### Validation
 
-1. `prodbox check-code`
+1. `prodbox dev check`
 2. `prodbox test unit`
 3. `prodbox host public-edge`
 4. `prodbox test integration charts-vscode`
@@ -312,7 +312,7 @@ proof and external-only validation.
 
 ### Validation
 
-1. `prodbox check-code`
+1. `prodbox dev check`
 2. `prodbox test unit`
 3. `prodbox host public-edge`
 4. `prodbox test integration charts-vscode`
@@ -369,7 +369,7 @@ WebSocket, and Keycloak paths on one public edge.
 
 ### Validation
 
-1. `prodbox check-code`
+1. `prodbox dev check`
 2. `prodbox test unit`
 3. `prodbox host public-edge`
 4. `prodbox test integration charts-vscode`
@@ -394,7 +394,7 @@ WebSocket, and Keycloak paths on one public edge.
   rejection and acceptance on the request-carried JWT path, the shared-host Keycloak redirect and
   issuer contract, workload-managed direct-OIDC session ownership on the WebSocket route, real
   WebSocket upgrade behavior, and Route 53 resolution for the canonical public hostname.
-- `prodbox check-code`, `prodbox test unit`, `prodbox test integration cli`, and
+- `prodbox dev check`, `prodbox test unit`, `prodbox test integration cli`, and
   `prodbox test integration env` remain aligned with the expanded shared-host public-edge proof
   surface.
 - The canonical proof surface for `charts-api`, `charts-websocket`, `public-dns`, and
@@ -424,7 +424,7 @@ Envoy on `test.resolvefintech.com`, protected by Keycloak-backed auth and RBAC.
 
 ### Validation
 
-1. `prodbox check-code`
+1. `prodbox dev check`
 2. `prodbox test unit`
 3. `prodbox host public-edge`
 4. `prodbox test integration public-dns`
@@ -469,7 +469,7 @@ the same shared-host path.
 
 ### Validation
 
-1. `prodbox check-code`
+1. `prodbox dev check`
 2. `prodbox test unit`
 3. `prodbox host public-edge`
 4. `prodbox test integration public-dns`
@@ -559,7 +559,7 @@ dispatch and the `StackDescriptor` SSoT), and the typed-error reframe in Sprint 
 
 ### Validation
 
-1. `prodbox check-code`
+1. `prodbox dev check`
 2. `prodbox test unit`
 3. `prodbox test integration cli`
 4. `prodbox test integration env`

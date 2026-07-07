@@ -520,8 +520,9 @@ integrationCliSuite = do
 
         kubectlRecord <- readFile (tmpDir </> "fake-chart-state" </> "kubectl.txt")
         kubectlRecord `shouldContain` "get|crd|perconapgclusters.pgv2.percona.com|-o|name"
+        -- Sprint 4.43: the operator gate reads the Available condition, not -o name.
         kubectlRecord
-          `shouldContain` "get|deployment|postgres-operator|--namespace|postgres-operator|-o|name"
+          `shouldContain` "get|deployment|postgres-operator|--namespace|postgres-operator|-o|jsonpath={.status.conditions[?(@.type==\"Available\")].status}"
         kubectlRecord
           `shouldContain` "get|pvc|--namespace|vscode|--selector|postgres-operator.crunchydata.com/cluster=prodbox-vscode-pg,postgres-operator.crunchydata.com/data=postgres|-o|json"
         kubectlRecord
@@ -2316,7 +2317,10 @@ writeRootBasics repoRoot vaultAddress configParameters =
   writeFile
     (repoRoot </> "prodbox.dhall")
     ( unlines
-        [ "{ parameters = " ++ configParameters
+        -- Sprint 1.56: supply `components` as a left-biased default (empty graph)
+        -- so schema-less raw config fixtures decode; consumers fall back to the
+        -- built-in default graph when it is empty.
+        [ "{ parameters = { components = " ++ componentsDhallFragment ++ " } // (" ++ configParameters ++ ")"
         , ", context ="
         , "    { project = \"prodbox\""
         , "    , binary = \"prodbox\""
@@ -2679,7 +2683,13 @@ fakeKubectlScript =
     , "    ;;"
     , "  'get deployment')"
     , "    if [[ \"${3:-}\" == 'postgres-operator' && \"$*\" == *'--namespace postgres-operator'* ]]; then"
-    , "      printf 'deployment.apps/postgres-operator\\n'"
+    , "      # Sprint 4.43: the operator gate now reads the Available condition"
+    , "      # (not -o name). A ready operator reports Available=True."
+    , "      if [[ \"$*\" == *'jsonpath={.status.conditions'* ]]; then"
+    , "        printf 'True'"
+    , "      else"
+    , "        printf 'deployment.apps/postgres-operator\\n'"
+    , "      fi"
     , "    else"
     , "      printf 'Error from server (NotFound): deployments \"%s\" not found\\n' \"${3:-deployment}\" >&2"
     , "      exit 1"
@@ -3056,6 +3066,12 @@ fakeRke2CurlScript =
     , "fi"
     , "if [[ \"$*\" == *'http://127.0.0.1:30080/readyz'* ]]; then"
     , "  printf '200'"
+    , "  exit 0"
+    , "fi"
+    , "if [[ \"$*\" == *'/blobs/uploads/'* ]]; then"
+    , "  # Sprint 4.43 deep registry->MinIO gate: a POST blob-upload session"
+    , "  # succeeds (202), modelling a registry that reached its MinIO S3 backend."
+    , "  printf '202'"
     , "  exit 0"
     , "fi"
     , "if [[ \"$*\" == *'http://127.0.0.1:30080/v2/'* ]]; then"

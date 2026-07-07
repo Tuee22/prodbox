@@ -381,7 +381,7 @@ Per-command intent (authoritative model in
 - `prodbox vault rotate-unlock-bundle` — re-encrypt the unlock bundle under a new password
   without re-initializing Vault, through the authenticated daemon route.
 - `prodbox vault rotate-transit-key <key>` — rotate a named Transit key version (envelope
-  re-wrap is forward-compatible via the `prodbox-envelope-v1` tag).
+  re-wrap is forward-compatible via the `prodbox-envelope-v2` tag).
 - `prodbox vault pki status` / `prodbox vault pki issue-test-cert` — inspect the Vault PKI mount
   and issue a throwaway certificate for verification against the `prodbox-test` role once the PKI
   issuer sprint has configured it.
@@ -650,7 +650,7 @@ readiness-based drain for live upgraded connections.
 `src/Prodbox/Lib/Storage.hs`, and `src/Prodbox/PostgresPlatform.hs` own the public chart surface
 and its canonical external Patroni naming contract.
 
-For `prodbox charts status|deploy|delete`, `CHART` must be one of the
+For `prodbox charts status|reconcile|delete`, `CHART` must be one of the
 root chart names `gateway`, `keycloak`, `vscode`, `api`, or
 `websocket`. Internal `keycloak-postgres` and `redis` dependency
 releases are runtime-owned implementation details and are not supported
@@ -735,6 +735,11 @@ Named suite commands:
 | `prodbox test integration admin-routes` | Native shared-host MinIO console route validation |
 | `prodbox test integration public-dns` | Native public DNS delegation validation |
 | `prodbox test integration keycloak-invite` | Native Keycloak operator-invite validation (Phase 8 invite flow) |
+| `prodbox test integration eks-volume-rebind` | Native retained-volume rebinding validation |
+| `prodbox test integration resource-guardrails` | Native resource-guardrail validation |
+| `prodbox test integration daemon-bootstrap` | Native daemon-bootstrap transport validation |
+| `prodbox test integration pulsar-broker` | Native Pulsar broker transport validation |
+| `prodbox test integration sealed-vault` | Native sealed-Vault fail-closed validation |
 
 `src/Prodbox/TestRunner.hs` owns the public `prodbox test` entrypoint. It:
 
@@ -903,7 +908,7 @@ exactly one startup-time CLI knob — `--config <path>` — per
 (`gateway start` additionally exposes only the universal `--dry-run` / `--plan-file` plan
 renderers). Foreground execution is the only supported mode; self-daemonization (`--detach`,
 double-fork, `setsid`, `forkProcess`) is forbidden per
-[CLI-to-Daemon Plumbing](../../documents/engineering/README.md).
+[CLI-to-Daemon Plumbing](./distributed_gateway_architecture.md).
 `--log-level`, `--port`, `--node-id`, and similar runtime-override flags are **not part of
 the surface**; every value the daemon needs lives in the Dhall file. Environment-variable
 precedence is forbidden on supported paths: no `PRODBOX_*` startup fallback ladder. See
@@ -928,7 +933,7 @@ path; daemons emit structured JSON logs to stderr per Sprint 2.12.
 
 ### Cross-language types generation deferral
 
-[Generated Artifacts](../../documents/engineering/README.md)
+[Generated Artifacts](./code_quality.md#generated-artifacts)
 enumerates "cross-language types" as a generation surface (e.g. TypeScript or Go type
 mirrors of Haskell ADTs). No non-Haskell consumer is currently in scope; the supported
 plan does not schedule cross-language-type generation. The generated-artifact registry remains

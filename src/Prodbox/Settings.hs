@@ -107,6 +107,10 @@ import Prodbox.Cluster.Topology
 import Prodbox.Config.Basics
   ( UnencryptedBasics (..)
   )
+import Prodbox.Config.ComponentGraph
+  ( ComponentNode
+  , defaultComponentGraph
+  )
 import Prodbox.Config.FloorDhall (loadUnencryptedBasics, loadUnencryptedBasicsAtPath)
 import Prodbox.Config.InForce.Core
   ( ConfigSource (..)
@@ -339,6 +343,11 @@ data ConfigFile = ConfigFile
   , cluster_topology :: ClusterTopology
   , storage :: StorageSection
   , pulumi_state_backend :: PulumiStateBackendSection
+  , components :: [ComponentNode]
+  -- ^ Sprint 1.56: the Tier-0 component dependency/readiness graph that
+  -- bootstrap ordering is projected from
+  -- (bootstrap_readiness_doctrine.md M2). Non-secret; validated by
+  -- 'Prodbox.Config.ComponentGraph.validateComponentGraph' when projected.
   }
   deriving (Eq, Show, Generic, FromDhall, ToDhall)
 
@@ -1411,6 +1420,7 @@ defaultConfigFile =
           , psbRegion = ""
           , psbKeyPrefix = "pulumi/"
           }
+    , components = defaultComponentGraph
     }
 
 renderConfigDhall :: ConfigFile -> String

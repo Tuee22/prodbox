@@ -102,6 +102,7 @@ import Prodbox.Config.Basics
   , SealMode (..)
   , UnencryptedBasics (..)
   )
+import Prodbox.Config.ComponentGraph (ComponentNode)
 import Prodbox.Config.FloorDhall (loadUnencryptedBasicsAtPath)
 import Prodbox.Repo
   ( resolveTier0ConfigPath
@@ -208,6 +209,7 @@ data ProdboxParameters = ProdboxParameters
   , cluster_topology :: ClusterTopology
   , storage :: StorageSection
   , pulumi_state_backend :: PulumiStateBackendSection
+  , components :: [ComponentNode]
   }
   deriving (Eq, Show, Generic, FromDhall, ToDhall)
 
@@ -268,6 +270,7 @@ defaultProdboxParameters =
     , cluster_topology = Settings.cluster_topology base
     , storage = Settings.storage base
     , pulumi_state_backend = Settings.pulumi_state_backend base
+    , components = Settings.components base
     }
  where
   base = Settings.defaultConfigFile
@@ -293,6 +296,7 @@ configFileToTier0Parameters cf =
     , cluster_topology = Settings.cluster_topology cf
     , storage = Settings.storage cf
     , pulumi_state_backend = Settings.pulumi_state_backend cf
+    , components = Settings.components cf
     }
 
 -- | The default Tier-0 binary-context record.

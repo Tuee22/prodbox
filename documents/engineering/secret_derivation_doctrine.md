@@ -140,7 +140,7 @@ to it, and the Kubernetes service account that consumes it via Vault Kubernetes 
 | ACME EAB material | `secret/acme/eab` (KV) | `policy/acme` | `cert-manager:cert-manager` |
 | AWS IAM identities (prodbox-created) | `secret/aws/<identity>` (KV) | `policy/aws-<identity>` | the gateway / Pulumi runner SA |
 | Internal TLS certs (any chart) | `pki/issue/<role>` (PKI) | `policy/pki-<role>` | per-chart workload SA |
-| Object-store envelope DEKs | `transit/keys/prodbox-envelope-v1` (Transit) | `policy/transit-envelope` | `<ns>:prodbox-gateway` |
+| Object-store envelope DEKs | `transit/keys/prodbox-minio-envelope` (Transit) | `policy/transit-envelope` | `<ns>:prodbox-gateway` |
 | Service-account tokens | n/a — Kubernetes-managed | n/a | k8s generates and rotates automatically |
 
 Adding a new secret to any chart or code path requires a same-change row in this table,
@@ -226,7 +226,8 @@ order:
 3. The Vault chart (`charts/vault/`) deploys on the same ephemeral-PVC / retained-PV pattern
    as MinIO. On a fresh PV, `vault init` runs exactly once; on every subsequent reconcile,
    the existing data is only unsealed (init-once / unseal-on-rebuild). A root cluster is
-   unsealed by the operator via the `.age` unlock bundle; a child cluster auto-unseals
+   unsealed by the operator via the password-AEAD (Argon2id + ChaCha20-Poly1305) unlock bundle;
+   a child cluster auto-unseals
    against its parent's Vault Transit seal — see
    [cluster_federation_doctrine.md](./cluster_federation_doctrine.md).
 4. Vault becomes ready; its KV/Transit/PKI engines and per-domain policies + Kubernetes-auth

@@ -35,7 +35,8 @@
 [cluster_topology_doctrine.md](./cluster_topology_doctrine.md),
 [resource_scaling_doctrine.md](./resource_scaling_doctrine.md),
 [tiered_storage_capacity_doctrine.md](./tiered_storage_capacity_doctrine.md),
-[test_topology_doctrine.md](./test_topology_doctrine.md)
+[test_topology_doctrine.md](./test_topology_doctrine.md),
+[bootstrap_readiness_doctrine.md](./bootstrap_readiness_doctrine.md)
 **Generated sections**: none
 
 > **Purpose**: Single source of truth for how every `prodbox` binary instance — host CLI and
@@ -198,6 +199,14 @@ every profile has positive replicas, and each `ResourceEnvelope` has positive bo
 limits. The older `node_budget` / `workload_budget` / `region_quota` fields remain as
 compatibility projections for callers not yet migrated to the resource plan.
 
+Sprint `1.56` extends the Tier-0 `parameters` with a typed **component dependency/readiness graph**
+(`depends_on` edges plus a `ReadinessProbe` per component), owned by
+[bootstrap_readiness_doctrine.md](./bootstrap_readiness_doctrine.md) and not restated here. The graph
+is non-secret operator/generated Dhall; its validity (acyclic, no dangling id, and every dependency
+edge carrying a readiness node) is checked by the pure `EffectDAG` expansion when the config is
+projected, so a bootstrap plan that would race a consumer ahead of its dependency's proven readiness
+is not a well-formed config value.
+
 ## 1. Why this doctrine exists
 
 Every `prodbox` process needs configuration: hostnames, AWS coordinates, ports, ranked-node
@@ -342,7 +351,7 @@ Example in the cluster:
 # charts/gateway/templates/deployments.yaml
 args:
   - --config
-  - /etc/gateway/config.dhall
+  - /etc/gateway/config/config.dhall
 ```
 
 Forbidden alternatives:
@@ -362,7 +371,7 @@ import syntax (Section 5).
 |---|---|---|
 | Host CLI (`prodbox` on the operator host) | Tier-0 **binary-sibling** `prodbox.dhall` — the file beside the executable (`.build/prodbox.dhall`), not the repo root (GENERATED, self-contained non-secret binary context AND sealed-Vault bootstrap floor AND the operator seed config in its `parameters`). The standalone `./prodbox-config.dhall` seed file is RETIRED (Sprint `1.42`). | `src/Prodbox/Repo.hs::resolveTier0ConfigPath` (resolved via `takeDirectory getExecutablePath`) + `src/Prodbox/Settings.hs::loadConfigForSettingsWith`; the binary reads the sibling `prodbox.dhall`, projects the basics via `projectBasics`, and decodes `( prodbox.dhall ).parameters` (`loadConfigFile`) as the seed; before establishment (no unlock bundle) it uses those `parameters`, and once established it fetches/decrypts the in-force MinIO envelope (Tier 2) via Vault |
 | In-cluster ephemeral CLI (`prodbox …` run inside the container) | Tier-0 **binary-sibling** `prodbox.dhall` (beside the in-container binary) | NO committed or COPY-ed container default. The image build, after installing the binary, **runs the binary** (`prodbox config generate`) to write the binary-sibling `prodbox.dhall`; same resolution as the host CLI (Sprint `1.49`) |
-| In-cluster gateway daemon | `/etc/gateway/config` (Tier-0 `prodbox.dhall`) | the long-running daemon is configured by the chart-side `gateway-config-<nodeId>` ConfigMap mount (unchanged), independent of the build-time binary-sibling default; see [helm_chart_platform_doctrine.md](./helm_chart_platform_doctrine.md) and [distributed_gateway_architecture.md](./distributed_gateway_architecture.md) |
+| In-cluster gateway daemon | `/etc/gateway/config/config.dhall` (Tier-0 `prodbox.dhall`, the `config.dhall` file inside the directory-mounted `/etc/gateway/config`) | the long-running daemon is configured by the chart-side `gateway-config-<nodeId>` ConfigMap mount (unchanged), independent of the build-time binary-sibling default; see [helm_chart_platform_doctrine.md](./helm_chart_platform_doctrine.md) and [distributed_gateway_architecture.md](./distributed_gateway_architecture.md) |
 | In-cluster workload Pods (`api`, `websocket`) | `/etc/workload/config.dhall` | chart-side ConfigMap mount on the owning workload chart |
 
 The schema files `prodbox-config-types.dhall` and `test-secrets-types.dhall` are GENERATED and
@@ -424,7 +433,7 @@ using Dhall's native import system. It imports only non-secret parts — types, 
 and `SecretRef` references — never a secret value:
 
 ```dhall
--- /etc/gateway/config.dhall (rendered into the gateway-config-<nodeId> ConfigMap)
+-- /etc/gateway/config/config.dhall (rendered into the gateway-config-<nodeId> ConfigMap)
 let types  = ./types.dhall
 let orders = ./orders.dhall                          -- separate ConfigMap mount
 in  types.BootConfig::{ node_id   = "node-a"
@@ -476,7 +485,7 @@ file is materialized by the Helm chart as follows:
 
 | Mount source | Mount path | Content |
 |---|---|---|
-| `gateway-config-<nodeId>` ConfigMap | `/etc/gateway/config.dhall` | per-node Dhall expression; imports `orders.dhall`, carries `SecretRef.Vault` references for credentials, and carries non-secret service endpoints (notably `boot.minio_endpoint_url`) inline |
+| `gateway-config-<nodeId>` ConfigMap | `/etc/gateway/config` (directory mount; the daemon reads `config.dhall` inside it) | per-node Dhall expression; imports `orders.dhall`, carries `SecretRef.Vault` references for credentials, and carries non-secret service endpoints (notably `boot.minio_endpoint_url`) inline |
 | `gateway-orders` ConfigMap | `/etc/gateway/orders.dhall` | cluster-wide ranked-node + timing Dhall expression |
 | `gateway-<nodeId>-tls` Secret | `/tls/` | cert-manager-issued per-node TLS keypair; referenced by file path from the Dhall config |
 | Cert-manager CA Secret | `/ca/` | trust anchor for peer mTLS; referenced by file path from the Dhall config |
@@ -614,9 +623,12 @@ fsnotify watcher and Boot/Live reload split is scheduled work (Sprint 3.15); unt
 current code.
 
 This explicitly overrides the prior prohibition on `fsnotify`, `inotify`, and `mtime` as
-reload triggers. The `forbidFsnotify` / `forbidInotify` / `forbid-mtime-polling` lint rules
-in `src/Prodbox/CheckCode.hs` are removed by the implementing sprint and the legacy ledger
-records their removal.
+reload triggers. The custom `forbidFsnotify` / `forbidInotify` / `forbid-mtime-polling` rules
+in `src/Prodbox/CheckCode.hs` have been removed; a residual `.hlint.yaml` `System.FSNotify`
+restriction remains and is scheduled for full removal under Sprint `3.15`, with the daemon path
+opting in via the existing marker-comment allowlist until it lands. See
+[code_quality.md](./code_quality.md), the lint-stack SSoT for the current state of these rules.
+The legacy ledger records the CheckCode-rule removal.
 
 ## 8. Boot-vs-Live split and the restart contract
 
@@ -729,7 +741,7 @@ so the prohibition is the intended end state rather than a present-tense fact:
   git-ignored (the binary-sibling `prodbox.dhall`, the `*-types.dhall` schemas,
   `test-secrets.dhall`); none is committed (Sprint `1.41`; see §0). There is no committed container
   default `.dhall` — the in-container `prodbox.dhall` is generated by running the binary (Sprint
-  `1.47`).
+  `1.49`).
 - Treating any Tier-0 surface as the in-force config SSoT. Tier 0 is a **read-only, non-secret
   bootstrap input**: the host reads `prodbox.dhall` locally to reach and unseal Vault, and its
   `parameters` propose updates. The in-force config SSoT is the Tier-2

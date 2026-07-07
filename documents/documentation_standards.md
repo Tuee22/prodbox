@@ -171,12 +171,15 @@ Code examples must not use:
 ### Committed Dhall Imports
 
 `sha256:` freezes apply to any future **remote** or otherwise-untrusted committed import, where
-the hash is an integrity pin against a source the editor does not co-own. The sole current local
-import is `prodbox-config.dhall` → `./prodbox-config-types.dhall`, a co-edited sibling file in
-the same repository; it is intentionally **not** frozen. Cryptographically freezing a co-edited
-sibling adds re-freeze friction on every type-schema edit with no integrity benefit — the
-schema and the config travel together in the same commit, so a stale hash would only ever block
-legitimate edits.
+the hash is an integrity pin against a source the editor does not co-own. There is **no committed
+Dhall import today**: every `.dhall` surface prodbox uses is GENERATED or locally authored and
+git-ignored (the binary-sibling `prodbox.dhall`, the `*-types.dhall` schemas, and
+`test-secrets.dhall`), so nothing is version-controlled to freeze. The former repo-root
+`prodbox-config.dhall` → `./prodbox-config-types.dhall` local import is retired (Sprint 1.42; see
+[config_doctrine.md §0](./engineering/config_doctrine.md#0-three-tier-config-model)). Were a
+co-edited sibling import to return, cryptographically freezing it would add re-freeze friction on
+every type-schema edit with no integrity benefit — a co-edited schema and config travel together
+in the same commit, so a stale hash would only ever block legitimate edits.
 
 The `prodbox dev check` surface **does not** enforce a sha256 freeze (the implement-or-strike
 decision scheduled for [Sprint 0.9](../DEVELOPMENT_PLAN/README.md) was **struck**: there is no
@@ -304,6 +307,11 @@ cross-language types. The currently scheduled registry entries are:
 | Public-edge route inventory rendered into chart manifests | `route-registry` | Sprint 3.12 |
 | Resource Lifecycle Classes table in `DEVELOPMENT_PLAN/substrates.md`, sourced from `Prodbox.Lifecycle.ResourceRegistry` | `resource-lifecycle-classes` | **Scheduled** — Sprint 4.22 (renderer + markers land then; hand-maintained until) |
 | Cross-language types (TypeScript / Go / PureScript mirrors) | `cross-language-types.*` | **Deferred** — no non-Haskell consumer in scope |
+
+These are **scheduled** registry entries: the marker pairs are not yet physically present in this
+file (they land with the renderers and the Sprint 0.9 reconciler). Until they do, this document's
+header correctly declares `**Generated sections**: none` — the header must match the markers
+actually present, not the scheduled ones listed above.
 
 The `prodbox dev lint docs --write` and `prodbox dev docs generate` surfaces share one Haskell
 function; either name regenerates the registered sections.

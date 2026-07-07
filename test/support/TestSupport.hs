@@ -1,6 +1,7 @@
 module TestSupport
   ( Expectation
   , SuiteBuilder
+  , componentsDhallFragment
   , describe
   , expectationFailure
   , goldenTest
@@ -47,10 +48,17 @@ import Test.Tasty.QuickCheck (Testable, testProperty)
 -- context; because the temp repo has no Vault unlock bundle, the cluster is
 -- "not established", so config loading reads the @parameters@ directly —
 -- exactly as a host CLI command does before bring-up.
+-- | Sprint 1.56: supply the Tier-0 @components@ field (the component
+-- dependency/readiness graph) as a __left-biased default__, so schema-less raw
+-- config fixtures that predate the field still decode (they get an empty graph —
+-- these fixtures do not exercise graph validity), while a fixture that DOES
+-- declare @components@ (e.g. a @Config::{ … }@ completion whose default carries
+-- the real graph) keeps its own value. Dhall @//@ is right-biased, so
+-- @{ components = … } // config@ means "config wins where it sets a field".
 wrapTier0 :: String -> String
 wrapTier0 configRecord =
   unlines
-    [ "{ parameters = " ++ configRecord
+    [ "{ parameters = { components = " ++ componentsDhallFragment ++ " } // (" ++ configRecord ++ ")"
     , ", context ="
     , "  { project = \"prodbox\""
     , "  , binary = \"prodbox\""
@@ -68,6 +76,32 @@ wrapTier0 configRecord =
     , ", witness = [] : List Text"
     , "}"
     ]
+
+-- | An empty typed @components@ list in the schema-less inline-union style the
+-- fixtures use (Sprint 1.56).
+componentsDhallFragment :: String
+componentsDhallFragment = "[] : List " ++ componentNodeTypeDhall
+
+componentIdUnionDhall :: String
+componentIdUnionDhall =
+  "< ComponentClusterBase | ComponentMinio | ComponentVault | ComponentRegistry"
+    ++ " | ComponentMetalLB | ComponentEnvoyGateway | ComponentCertManager"
+    ++ " | ComponentPerconaPostgresOperator | ComponentGatewayDaemon | ComponentChartPulsar"
+    ++ " | ComponentChartRedis | ComponentChartKeycloakPostgres | ComponentChartKeycloak"
+    ++ " | ComponentChartVscode | ComponentChartApi | ComponentChartWebsocket"
+    ++ " | ComponentChartGateway >"
+
+componentNodeTypeDhall :: String
+componentNodeTypeDhall =
+  "{ component_id : "
+    ++ componentIdUnionDhall
+    ++ ", depends_on : List { dependency_on : "
+    ++ componentIdUnionDhall
+    ++ ", dependency_edge : < OrderingEdge | BackendWriteEdge > }"
+    ++ ", readiness : < ProbeResourceExists | ProbeFrontDoorHttp | ProbeRolloutComplete"
+    ++ " | ProbeOperatorAvailable | ProbeBackendRoundTrip : "
+    ++ componentIdUnionDhall
+    ++ " > }"
 
 -- | Install the built operator binary into @dir@ and return the installed
 -- path. The host CLI resolves its Tier-0 @prodbox.dhall@ at the BINARY-SIBLING

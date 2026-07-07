@@ -95,7 +95,7 @@ local-cluster lifecycle on this host.
   `destroy`) in the managed-resource registry, and teardown is one idempotent `reconcileAbsent`
   reconciler with "cannot observe" never silently treated as "absent"
   ([lifecycle_reconciliation_doctrine.md § 3.1](documents/engineering/lifecycle_reconciliation_doctrine.md);
-  scheduled Sprints 4.20–4.22 / 7.8).
+  landed in Sprints 4.20–4.22 / 7.8).
 - `prodbox nuke` is the operator-only total-teardown command — the only sanctioned path to
   destroy long-lived shared infrastructure transitively (`aws-ses`, the
   `pulumi_state_backend` bucket). TTY-only; refuses non-interactive contexts; requires the

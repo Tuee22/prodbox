@@ -16,6 +16,7 @@ module Prodbox.Lib.ChartPlatform
   , classifyPublicEdgePreserve
   , deleteChartPlan
   , deployChartPlan
+  , deploymentConditionReportsTrue
   , gatewayNodeIds
   , keycloakVscodeClientId
   , keycloakRealmName
@@ -29,6 +30,7 @@ module Prodbox.Lib.ChartPlatform
   , retainedPublicEdgeTlsSecretManifest
   , resolveChart
   , resolveChartSecrets
+  , resolveDependencyOrder
   , supportedChartNames
   )
 where
@@ -63,12 +65,12 @@ import Data.Aeson.Types (Parser, parseEither)
 import Data.ByteString.Base64 qualified as B64
 import Data.ByteString.Lazy qualified as BL
 import Data.ByteString.Lazy.Char8 qualified as BL8
-import Data.Char (isDigit, isHexDigit, toLower)
+import Data.Char (isDigit, isHexDigit, isSpace, toLower)
 import Data.List
-  ( find
+  ( dropWhileEnd
+  , find
   , intercalate
   , isInfixOf
-  , nub
   , sort
   , sortOn
   , stripPrefix
@@ -78,6 +80,19 @@ import Data.Map.Strict qualified as Map
 import Data.Text qualified as Text
 import Data.Text.Encoding qualified as TextEncoding
 import Prodbox.Capacity.Config qualified as Capacity
+import Prodbox.Config.ComponentGraph
+  ( ComponentId (..)
+  , ComponentNode
+  , chartComponentDeployOrder
+  , chartNameForComponent
+  , componentIdForChartName
+  , componentIdText
+  , defaultComponentGraph
+  , directChartDependencies
+  , operatorAvailableGates
+  , renderComponentGraphError
+  , validateComponentGraph
+  )
 import Prodbox.ContainerImage qualified as ContainerImage
 import Prodbox.Infra.AwsEksTestStack qualified as AwsEks
 import Prodbox.Infra.LongLivedPulumiBackend
@@ -261,13 +276,16 @@ gatewayNodeIds = ["node-a", "node-b", "node-c"]
 machineIdPath :: FilePath
 machineIdPath = "/etc/machine-id"
 
+-- | Sprint 3.23: a chart's dependency edges and its operator-platform
+-- requirement are no longer carried here — both are sourced from the Tier-0
+-- component dependency/readiness graph ("Prodbox.Config.ComponentGraph"). This
+-- record now describes only the chart's on-disk identity, storage, and
+-- public-host requirement.
 data ChartDefinition = ChartDefinition
   { chartDefinitionName :: String
   , chartDefinitionChartDir :: FilePath
-  , chartDefinitionDependencies :: [String]
   , chartDefinitionStorage :: [ChartStorageSpec]
   , chartDefinitionRequiresPublicHost :: Bool
-  , chartDefinitionExternalRequirements :: [ChartExternalRequirement]
   }
   deriving (Eq, Show)
 
@@ -287,13 +305,13 @@ data ChartDeploymentPlan = ChartDeploymentPlan
   , chartDeploymentPlanNamespace :: String
   , chartDeploymentPlanReleases :: [ChartReleasePlan]
   , chartDeploymentPlanPublicFqdn :: Maybe String
-  , chartDeploymentPlanExternalRequirements :: [ChartExternalRequirement]
+  , chartDeploymentPlanOperatorGates :: [ComponentId]
+  -- ^ Sprint 3.23: the operator components (readiness 'ProbeOperatorAvailable')
+  -- this plan's charts depend on, projected from the component graph. Each is
+  -- gated on the operator Deployment reporting @Available@ before deploy —
+  -- replacing the retired @ChartRequiresPatroniPlatform@ literal.
   , chartDeploymentPlanSubstrate :: Substrate
   }
-  deriving (Eq, Show)
-
-data ChartExternalRequirement
-  = ChartRequiresPatroniPlatform
   deriving (Eq, Show)
 
 data ChartInstallSnapshot = ChartInstallSnapshot
@@ -339,27 +357,22 @@ resolveChart repoRoot chartName =
         ChartDefinition
           { chartDefinitionName = "keycloak-postgres"
           , chartDefinitionChartDir = repoRoot </> "charts" </> "keycloak-postgres"
-          , chartDefinitionDependencies = []
           , chartDefinitionStorage = []
           , chartDefinitionRequiresPublicHost = False
-          , chartDefinitionExternalRequirements = [ChartRequiresPatroniPlatform]
           }
     "keycloak" ->
       Right
         ChartDefinition
           { chartDefinitionName = "keycloak"
           , chartDefinitionChartDir = repoRoot </> "charts" </> "keycloak"
-          , chartDefinitionDependencies = ["keycloak-postgres"]
           , chartDefinitionStorage = []
           , chartDefinitionRequiresPublicHost = True
-          , chartDefinitionExternalRequirements = []
           }
     "vscode" ->
       Right
         ChartDefinition
           { chartDefinitionName = "vscode"
           , chartDefinitionChartDir = repoRoot </> "charts" </> "vscode"
-          , chartDefinitionDependencies = ["keycloak"]
           , chartDefinitionStorage =
               [ ChartStorageSpec
                   { chartStorageSpecStatefulSetName = "vscode"
@@ -370,24 +383,20 @@ resolveChart repoRoot chartName =
                   }
               ]
           , chartDefinitionRequiresPublicHost = True
-          , chartDefinitionExternalRequirements = []
           }
     "redis" ->
       Right
         ChartDefinition
           { chartDefinitionName = "redis"
           , chartDefinitionChartDir = repoRoot </> "charts" </> "redis"
-          , chartDefinitionDependencies = []
           , chartDefinitionStorage = []
           , chartDefinitionRequiresPublicHost = False
-          , chartDefinitionExternalRequirements = []
           }
     "pulsar" ->
       Right
         ChartDefinition
           { chartDefinitionName = "pulsar"
           , chartDefinitionChartDir = repoRoot </> "charts" </> "pulsar"
-          , chartDefinitionDependencies = []
           , chartDefinitionStorage =
               [ ChartStorageSpec
                   { chartStorageSpecStatefulSetName = "pulsar"
@@ -398,37 +407,30 @@ resolveChart repoRoot chartName =
                   }
               ]
           , chartDefinitionRequiresPublicHost = False
-          , chartDefinitionExternalRequirements = []
           }
     "api" ->
       Right
         ChartDefinition
           { chartDefinitionName = "api"
           , chartDefinitionChartDir = repoRoot </> "charts" </> "api"
-          , chartDefinitionDependencies = []
           , chartDefinitionStorage = []
           , chartDefinitionRequiresPublicHost = True
-          , chartDefinitionExternalRequirements = []
           }
     "websocket" ->
       Right
         ChartDefinition
           { chartDefinitionName = "websocket"
           , chartDefinitionChartDir = repoRoot </> "charts" </> "websocket"
-          , chartDefinitionDependencies = ["redis"]
           , chartDefinitionStorage = []
           , chartDefinitionRequiresPublicHost = True
-          , chartDefinitionExternalRequirements = []
           }
     "gateway" ->
       Right
         ChartDefinition
           { chartDefinitionName = "gateway"
           , chartDefinitionChartDir = repoRoot </> "charts" </> "gateway"
-          , chartDefinitionDependencies = ["pulsar"]
           , chartDefinitionStorage = []
           , chartDefinitionRequiresPublicHost = True
-          , chartDefinitionExternalRequirements = []
           }
     _ ->
       Left
@@ -457,7 +459,8 @@ buildChartDeploymentPlanForSubstrate
   -> Map String String
   -> IO (Either String ChartDeploymentPlan)
 buildChartDeploymentPlanForSubstrate substrate repoRoot settings chartName chartSecrets gatewayEventKeys = do
-  let dependencyOrderResult = resolveDependencyOrder repoRoot chartName
+  let dependencyOrderResult =
+        resolveDependencyOrder (components (validatedConfig settings)) repoRoot chartName
   case dependencyOrderResult of
     Left err -> pure (Left err)
     Right releaseOrder -> do
@@ -488,7 +491,8 @@ buildChartDeletePlan
   -> String
   -> Either String ChartDeploymentPlan
 buildChartDeletePlan repoRoot maybeSettings chartName = do
-  releaseOrder <- resolveDependencyOrder repoRoot chartName
+  let graph = maybe defaultComponentGraph (components . validatedConfig) maybeSettings
+  releaseOrder <- resolveDependencyOrder graph repoRoot chartName
   let manualPvRoot = maybe (repoRoot </> defaultChartDataRootRelative) resolvedManualPvHostRoot maybeSettings
       reversedOrder = reverse releaseOrder
   releases <-
@@ -513,7 +517,7 @@ buildChartDeletePlan repoRoot maybeSettings chartName = do
       , chartDeploymentPlanNamespace = chartName
       , chartDeploymentPlanReleases = releases
       , chartDeploymentPlanPublicFqdn = Nothing
-      , chartDeploymentPlanExternalRequirements = []
+      , chartDeploymentPlanOperatorGates = []
       , chartDeploymentPlanSubstrate = SubstrateHomeLocal
       }
 
@@ -535,10 +539,11 @@ renderChartList repoRoot settings = do
                 (const Nothing)
                 Just
                 (resolveRootPublicFqdn SubstrateHomeLocal settings chartName)
+            directDeps = chartDirectDependencyNames (components (validatedConfig settings)) chartName
             dependencies =
-              if null (chartDefinitionDependencies definition)
+              if null directDeps
                 then "<none>"
-                else intercalate "," (chartDefinitionDependencies definition)
+                else intercalate "," directDeps
             baseLines =
               [ "CHART"
               , "NAME=" ++ chartName
@@ -574,10 +579,11 @@ renderChartStatus repoRoot settings chartName = do
               case filter ((== chartName) . chartReleasePlanReleaseName) (chartDeploymentPlanReleases rootPlan) of
                 [release] -> Right release
                 _ -> Left ("Chart '" ++ chartName ++ "' is not part of root plan '" ++ runtimeNamespace ++ "'")
-            let dependencies =
-                  if null (chartDefinitionDependencies definition)
+            let directDeps = chartDirectDependencyNames (components (validatedConfig settings)) chartName
+                dependencies =
+                  if null directDeps
                     then "<none>"
-                    else intercalate "," (chartDefinitionDependencies definition)
+                    else intercalate "," directDeps
                 headerLines =
                   [ "CHART_STATUS"
                   , "NAME=" ++ chartName
@@ -592,7 +598,7 @@ renderChartStatus repoRoot settings chartName = do
                     _ -> []
                 releaseLines =
                   concatMap
-                    (renderStatusRelease snapshots runtimeNamespace definition)
+                    (renderStatusRelease snapshots runtimeNamespace chartName directDeps)
                     (chartDeploymentPlanReleases rootPlan)
             pure . unlines $
               headerLines
@@ -638,7 +644,7 @@ deployChartPlan plan = do
           -- are left untouched. The plan preamble (requirements / storage / TLS
           -- restore) runs over the missing-release subset.
           let planToDeploy = plan {chartDeploymentPlanReleases = missing}
-          requirementResult <- validateExternalRequirements planToDeploy
+          requirementResult <- validateOperatorGates planToDeploy
           case requirementResult of
             Left err -> pure (Left err)
             Right () -> do
@@ -783,15 +789,24 @@ validateReleaseReady release
       waitForPatroniClusterReady (chartReleasePlanNamespace release)
   | otherwise = pure (Right ())
 
-validateExternalRequirements :: ChartDeploymentPlan -> IO (Either String ())
-validateExternalRequirements plan =
-  foldM validateRequirement (Right ()) (chartDeploymentPlanExternalRequirements plan)
+-- | Sprint 3.23: gate the plan behind each operator dependency reporting
+-- @Available@. The gate set is projected from the component graph
+-- ('chartDeploymentPlanOperatorGates') — a chart's graph edge onto an
+-- operator component is what requires it, replacing the retired
+-- @ChartRequiresPatroniPlatform@ literal.
+validateOperatorGates :: ChartDeploymentPlan -> IO (Either String ())
+validateOperatorGates plan =
+  foldM validateGate (Right ()) (chartDeploymentPlanOperatorGates plan)
  where
-  validateRequirement :: Either String () -> ChartExternalRequirement -> IO (Either String ())
-  validateRequirement (Left err) _ = pure (Left err)
-  validateRequirement (Right ()) requirement =
-    case requirement of
-      ChartRequiresPatroniPlatform -> validatePatroniPlatformReady
+  validateGate :: Either String () -> ComponentId -> IO (Either String ())
+  validateGate (Left err) _ = pure (Left err)
+  validateGate (Right ()) gate =
+    case gate of
+      ComponentPerconaPostgresOperator -> validatePatroniPlatformReady
+      -- No other component carries the ProbeOperatorAvailable readiness today, so
+      -- no other gate can appear here; treat any future one as satisfied until it
+      -- wires its own operator-Available check.
+      _ -> pure (Right ())
 
 ensurePerconaPatroniStorageBindings
   :: FilePath
@@ -1016,11 +1031,16 @@ perconaPatroniClaimRetryPolicy =
     , retryPolicyMaxDelayMicros = 5 * 1000000
     }
 
+-- | Sprint 3.23: gate on the Percona/Patroni operator being __Available__, not
+-- merely present. The former @-o name@ probe passed as soon as the Deployment
+-- object existed — a zero-available-replica operator still satisfied it, the
+-- presence≠readiness RACY edge (bootstrap_readiness_doctrine.md §2). This now
+-- reads the Deployment's @Available@ condition and refuses until it is @True@.
 validatePatroniPlatformReady :: IO (Either String ())
 validatePatroniPlatformReady = do
   crdResult <-
     runPg ["get", "crd", patroniPostgresqlCrdName, "-o", "name"]
-  outputResult <-
+  availableResult <-
     runPg
       [ "get"
       , "deployment"
@@ -1028,7 +1048,7 @@ validatePatroniPlatformReady = do
       , "--namespace"
       , patroniOperatorNamespace
       , "-o"
-      , "name"
+      , "jsonpath={.status.conditions[?(@.type==\"Available\")].status}"
       ]
   pure $
     case crdResult of
@@ -1037,22 +1057,48 @@ validatePatroniPlatformReady = do
         case processExitCode crdOutput of
           ExitFailure _ ->
             Left
-              ( "Patroni PostgreSQL platform is not ready. "
-                  ++ "Run `prodbox cluster reconcile` before deploying charts that depend on PostgreSQL. "
+              ( patroniNotReadyMessage
+                  ++ " "
                   ++ processStderr crdOutput
                   ++ processStdout crdOutput
               )
           ExitSuccess ->
-            case outputResult of
+            case availableResult of
               Left err -> Left (Text.unpack (serviceErrorMessage (toServiceError err)))
               Right output ->
                 case processExitCode output of
-                  ExitSuccess -> Right ()
                   ExitFailure _ ->
                     Left
-                      ( "Patroni PostgreSQL platform is not ready. "
-                          ++ "Run `prodbox cluster reconcile` before deploying charts that depend on PostgreSQL."
+                      ( patroniNotReadyMessage
+                          ++ " The operator Deployment `"
+                          ++ patroniOperatorDeploymentName
+                          ++ "` was not found in namespace `"
+                          ++ patroniOperatorNamespace
+                          ++ "`."
                       )
+                  ExitSuccess ->
+                    if deploymentConditionReportsTrue (processStdout output)
+                      then Right ()
+                      else
+                        Left
+                          ( patroniNotReadyMessage
+                              ++ " The operator Deployment `"
+                              ++ patroniOperatorDeploymentName
+                              ++ "` exists but is not yet reporting condition Available=True "
+                              ++ "(presence is not readiness)."
+                          )
+
+patroniNotReadyMessage :: String
+patroniNotReadyMessage =
+  "Patroni PostgreSQL platform is not ready. "
+    ++ "Run `prodbox cluster reconcile` before deploying charts that depend on PostgreSQL."
+
+-- | Sprint 3.23 (pure): whether a @kubectl get ... -o jsonpath@ Deployment
+-- condition-status field reports @True@ (case/whitespace-insensitive). An empty
+-- string (no such condition) or any other value is __not__ ready.
+deploymentConditionReportsTrue :: String -> Bool
+deploymentConditionReportsTrue raw =
+  map toLower (dropWhile isSpace (dropWhileEnd isSpace raw)) == "true"
 
 waitForPatroniClusterReady :: String -> IO (Either String ())
 waitForPatroniClusterReady namespace =
@@ -1607,7 +1653,13 @@ buildChartDeploymentPlanPure substrate repoRoot settings chartName chartSecrets 
     (chartStorageClassName /= "manual")
     (Left "Chart platform requires StorageClass 'manual'; dynamic provisioners are not permitted")
   let storageClassName = chartStorageClassNameForSubstrate substrate
-  releaseOrder <- resolveDependencyOrder repoRoot chartName
+      graph = effectiveComponentGraph (components (validatedConfig settings))
+  releaseOrder <- resolveDependencyOrder graph repoRoot chartName
+  dag <- either (Left . renderComponentGraphError) Right (validateComponentGraph graph)
+  let operatorGates =
+        operatorAvailableGates
+          dag
+          [cid | name <- releaseOrder, Just cid <- [componentIdForChartName name]]
   definitions <- mapM (resolveChart repoRoot) releaseOrder
   maybePublicFqdn <-
     if any chartDefinitionRequiresPublicHost definitions
@@ -1649,8 +1701,7 @@ buildChartDeploymentPlanPure substrate repoRoot settings chartName chartSecrets 
       , chartDeploymentPlanNamespace = chartName
       , chartDeploymentPlanReleases = releases
       , chartDeploymentPlanPublicFqdn = maybePublicFqdn
-      , chartDeploymentPlanExternalRequirements =
-          nub (concatMap chartDefinitionExternalRequirements definitions)
+      , chartDeploymentPlanOperatorGates = operatorGates
       , chartDeploymentPlanSubstrate = substrate
       }
 
@@ -1660,26 +1711,51 @@ chartStorageClassNameForSubstrate substrate =
     SubstrateHomeLocal -> chartStorageClassName
     SubstrateAws -> chartStorageClassName
 
-resolveDependencyOrder :: FilePath -> String -> Either String [String]
-resolveDependencyOrder repoRoot chartName = do
+-- | Sprint 3.23: the chart deploy order (dependencies-before-dependents),
+-- sourced from the Tier-0 component dependency/readiness graph rather than the
+-- retired hardcoded @chartDefinitionDependencies@ literals
+-- (bootstrap_readiness_doctrine.md M1/M2). Cycle rejection and the resulting
+-- order are unchanged — the chart→chart edges of the default graph reproduce the
+-- historical order exactly. 'resolveChart' still validates the chart name.
+-- | Sprint 4.43: an empty config-sourced component graph means "no operator
+-- override" — fall back to the built-in 'defaultComponentGraph'. Production
+-- @prodbox.dhall@ (generated via the schema default) always carries the full
+-- graph, so the config remains the source there (M2); only degenerate fixtures
+-- and legacy configs decode with an empty list, and they get the default.
+effectiveComponentGraph :: [ComponentNode] -> [ComponentNode]
+effectiveComponentGraph graph
+  | null graph = defaultComponentGraph
+  | otherwise = graph
+
+resolveDependencyOrder :: [ComponentNode] -> FilePath -> String -> Either String [String]
+resolveDependencyOrder rawGraph repoRoot chartName = do
   _ <- resolveChart repoRoot chartName
-  (_, ordered) <- visit chartName [] [] []
-  pure ordered
+  let graph = effectiveComponentGraph rawGraph
+  dag <- either (Left . renderComponentGraphError) Right (validateComponentGraph graph)
+  rootId <-
+    maybe
+      (Left ("Chart '" ++ chartName ++ "' has no component-graph node."))
+      Right
+      (componentIdForChartName chartName)
+  order <- chartComponentDeployOrder dag rootId
+  traverse toChartName order
  where
-  visit :: String -> [String] -> [String] -> [String] -> Either String ([String], [String])
-  visit current visiting visited ordered
-    | current `elem` visited = Right (visited, ordered)
-    | current `elem` visiting = Left ("Chart dependency cycle detected at '" ++ current ++ "'")
-    | otherwise = do
-        definition <- resolveChart repoRoot current
-        (visitedAfter, orderedAfter) <-
-          foldM
-            ( \(visitedAcc, orderedAcc) dependency ->
-                visit dependency (current : visiting) visitedAcc orderedAcc
-            )
-            (visited, ordered)
-            (chartDefinitionDependencies definition)
-        pure (current : visitedAfter, orderedAfter ++ [current])
+  toChartName cid =
+    maybe
+      (Left ("Component `" ++ componentIdText cid ++ "` is not a chart."))
+      Right
+      (chartNameForComponent cid)
+
+-- | Sprint 3.23: a chart's direct chart-level dependency names, sourced from the
+-- component graph, for the @charts list@ / @charts status@ DEPENDENCIES display
+-- (replacing the retired hardcoded @chartDefinitionDependencies@ literal). An
+-- invalid graph or unknown chart yields no dependencies (display-robust).
+chartDirectDependencyNames :: [ComponentNode] -> String -> [String]
+chartDirectDependencyNames rawGraph chartName =
+  case (validateComponentGraph (effectiveComponentGraph rawGraph), componentIdForChartName chartName) of
+    (Right dag, Just cid) ->
+      [name | dep <- directChartDependencies dag cid, Just name <- [chartNameForComponent dep]]
+    _ -> []
 
 resolveRootPublicFqdn :: Substrate -> ValidatedSettings -> String -> Either String String
 resolveRootPublicFqdn substrate settings _chartName = do
@@ -2696,12 +2772,13 @@ resolveLocalImageBuildToken imageRef = do
 renderStatusRelease
   :: Map String ChartInstallSnapshot
   -> String
-  -> ChartDefinition
+  -> String
+  -> [String]
   -> ChartReleasePlan
   -> [String]
-renderStatusRelease snapshots runtimeNamespace definition release
-  | chartReleasePlanReleaseName release == chartDefinitionName definition
-      || chartReleasePlanReleaseName release `elem` chartDefinitionDependencies definition =
+renderStatusRelease snapshots runtimeNamespace rootChartName directDeps release
+  | chartReleasePlanReleaseName release == rootChartName
+      || chartReleasePlanReleaseName release `elem` directDeps =
       let snapshot = Map.lookup (chartReleasePlanReleaseName release) snapshots
        in [ "RELEASE"
           , "NAME=" ++ chartReleasePlanReleaseName release

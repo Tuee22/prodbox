@@ -173,16 +173,20 @@ import Prodbox.CLI.Pulumi
 import Prodbox.CLI.Rke2
   ( MinioImageSource (..)
   , OperationalAwsCredentialGate (..)
+  , RegistryStorageEdgeReadiness (..)
   , RetainedStorageInventoryEntry (..)
   , acmeClusterIssuerSpec
   , acmeRuntimeManifestWith
   , adminPublicEdgeManifestItems
   , buildNativeDeletePlan
   , cascadeOrderNarration
+  , classifyRegistryStorageEdgeProbe
   , homeSubstratePlatformComponents
   , hostCapacityCoversPlan
   , inferCascadeSubstrate
   , isMinioSecretKeyArgumentSafe
+  , isRetryableHarborPublicationFailure
+  , nativeInstallStepOrderRespectsGraph
   , operationalAwsCredentialGateFromResult
   , parseHostCapacityObservation
   , renderInotifySysctlDropIn
@@ -291,6 +295,22 @@ import Prodbox.Config.Basics
   , isRootCluster
   , validateBasics
   )
+import Prodbox.Config.ComponentGraph
+  ( ComponentDependency (..)
+  , ComponentGraphError (..)
+  , ComponentId (..)
+  , ComponentNode (..)
+  , EdgeKind (..)
+  , ProbeDepth (..)
+  , ReadinessProbe (..)
+  , componentDagOrder
+  , componentReconcileOrder
+  , defaultComponentGraph
+  , operatorAvailableGates
+  , probeDepth
+  , probeSatisfiesBackendWrite
+  , validateComponentGraph
+  )
 import Prodbox.Config.InForce
   ( ConfigSource (..)
   , InForceConfigError (..)
@@ -347,6 +367,7 @@ import Prodbox.Effect
   )
 import Prodbox.EffectDAG
   ( EffectNode (..)
+  , acyclicTopologicalOrder
   , fromRootIds
   , transitiveClosureIds
   )
@@ -531,11 +552,13 @@ import Prodbox.Lib.ChartPlatform
   , certManagerAdoptionAnnotations
   , chartReleasesToDeploy
   , classifyPublicEdgePreserve
+  , deploymentConditionReportsTrue
   , kubernetesSecretDecodedDataField
   , patroniSeedMismatchDecision
   , renderPatroniResetDecision
   , renderPublicEdgePreserveOutcome
   , resolveChartSecrets
+  , resolveDependencyOrder
   , retainedPublicEdgeTlsSecretManifest
   , supportedChartNames
   )
@@ -1020,6 +1043,13 @@ observabilityHooks loadAction =
     , encryptedBackendDeleteLegacy = const (error "observe path must not delete legacy")
     , encryptedBackendWithScratch = \_ _ -> error "observe path must not hydrate scratch"
     }
+
+-- Sprint 1.56 component-graph edge builders (test helpers).
+orderingOn :: ComponentId -> ComponentDependency
+orderingOn cid = ComponentDependency {dependency_on = cid, dependency_edge = OrderingEdge}
+
+backendWriteOn :: ComponentId -> ComponentDependency
+backendWriteOn cid = ComponentDependency {dependency_on = cid, dependency_edge = BackendWriteEdge}
 
 sampleRootBasics :: UnencryptedBasics
 sampleRootBasics =
@@ -2103,6 +2133,172 @@ main = mainWithSuite "prodbox-unit" $ do
       case scratchRoot of
         Nothing -> expectationFailure "expected scratch root to be recorded"
         Just root -> doesDirectoryExist root `shouldReturn` False
+  describe "component dependency/readiness graph (Sprint 1.56)" $ do
+    -- M3 ADT ranking: a proxy probe cannot satisfy a backend-write edge; only a
+    -- deep round-trip through that exact dependency can.
+    it "ranks front-door HTTP and resource-exists probes as proxy" $ do
+      probeDepth ProbeFrontDoorHttp `shouldBe` ProxyProbe
+      probeDepth ProbeResourceExists `shouldBe` ProxyProbe
+    it "ranks rollout, operator-available, and backend round-trip probes as deep" $ do
+      probeDepth ProbeRolloutComplete `shouldBe` DeepProbe
+      probeDepth ProbeOperatorAvailable `shouldBe` DeepProbe
+      probeDepth (ProbeBackendRoundTrip ComponentMinio) `shouldBe` DeepProbe
+    it "a proxy probe cannot satisfy a backend-write edge" $ do
+      probeSatisfiesBackendWrite ComponentMinio ProbeFrontDoorHttp `shouldBe` False
+      probeSatisfiesBackendWrite ComponentMinio ProbeResourceExists `shouldBe` False
+      probeSatisfiesBackendWrite ComponentMinio ProbeRolloutComplete `shouldBe` False
+    it "a deep round-trip satisfies a backend-write edge only through that exact dependency" $ do
+      probeSatisfiesBackendWrite ComponentMinio (ProbeBackendRoundTrip ComponentMinio)
+        `shouldBe` True
+      probeSatisfiesBackendWrite ComponentMinio (ProbeBackendRoundTrip ComponentVault)
+        `shouldBe` False
+    -- Graph-validity rejections.
+    it "rejects a cycle" $ do
+      let nodes =
+            [ ComponentNode ComponentMinio [orderingOn ComponentRegistry] ProbeRolloutComplete
+            , ComponentNode
+                ComponentRegistry
+                [backendWriteOn ComponentMinio]
+                (ProbeBackendRoundTrip ComponentMinio)
+            ]
+      case validateComponentGraph nodes of
+        Left (ComponentGraphCycle _) -> pure ()
+        other -> expectationFailure ("expected a cycle rejection, got " ++ show other)
+    it "rejects a dangling depends_on id" $ do
+      let nodes =
+            [ComponentNode ComponentRegistry [orderingOn ComponentMinio] ProbeRolloutComplete]
+      case validateComponentGraph nodes of
+        Left (ComponentGraphDanglingDependency ComponentRegistry ComponentMinio) -> pure ()
+        other -> expectationFailure ("expected a dangling-dependency rejection, got " ++ show other)
+    it "rejects a backend-write edge whose consumer carries no deep readiness node" $ do
+      let nodes =
+            [ ComponentNode ComponentMinio [] ProbeRolloutComplete
+            , -- Registry claims a backend-write edge onto MinIO but gates on the
+              -- shallow front-door probe: the exact motivating race.
+              ComponentNode ComponentRegistry [backendWriteOn ComponentMinio] ProbeFrontDoorHttp
+            ]
+      case validateComponentGraph nodes of
+        Left (ComponentGraphBackendEdgeWithoutDeepReadiness ComponentRegistry ComponentMinio _) ->
+          pure ()
+        other ->
+          expectationFailure ("expected a backend-edge-without-deep-readiness rejection, got " ++ show other)
+    it "rejects a duplicate component node" $ do
+      let nodes =
+            [ ComponentNode ComponentMinio [] ProbeRolloutComplete
+            , ComponentNode ComponentMinio [] ProbeRolloutComplete
+            ]
+      validateComponentGraph nodes `shouldBe` Left (ComponentGraphDuplicate ComponentMinio)
+    it "projects a well-formed graph to a deterministic dependencies-before-dependents order" $ do
+      let nodes =
+            [ ComponentNode ComponentMinio [] ProbeRolloutComplete
+            , ComponentNode
+                ComponentRegistry
+                [backendWriteOn ComponentMinio]
+                (ProbeBackendRoundTrip ComponentMinio)
+            , ComponentNode ComponentChartApi [orderingOn ComponentRegistry] ProbeRolloutComplete
+            ]
+      case validateComponentGraph nodes of
+        Left err -> expectationFailure ("expected a valid graph, got " ++ show err)
+        Right dag -> do
+          let order = componentReconcileOrder dag
+          order `shouldBe` [ComponentMinio, ComponentRegistry, ComponentChartApi]
+          -- Deterministic: re-validation yields the identical order.
+          fmap componentDagOrder (validateComponentGraph nodes) `shouldBe` Right order
+    it "the default bootstrap graph is valid and orders MinIO before the registry" $ do
+      case validateComponentGraph defaultComponentGraph of
+        Left err -> expectationFailure ("default component graph is invalid: " ++ show err)
+        Right dag -> do
+          let order = componentReconcileOrder dag
+              indexOf cid = length (takeWhile (/= cid) order)
+          -- The registry's backend-write dependency on MinIO forces MinIO earlier.
+          (indexOf ComponentMinio < indexOf ComponentRegistry) `shouldBe` True
+    it "shares the acyclic expansion with the prerequisite DAG (cycle rejection)" $ do
+      -- The generic expansion the component graph reuses rejects a back-edge.
+      let adjacency k = lookup k [(1 :: Int, [2]), (2, [1])]
+      case acyclicTopologicalOrder show adjacency [1] of
+        Left _ -> pure ()
+        Right order -> expectationFailure ("expected a cycle rejection, got " ++ show order)
+  describe "graph-sourced chart dependency edges + operator Available gate (Sprint 3.23)" $ do
+    -- resolveDependencyOrder now sources chart order from the component graph.
+    -- The default graph's chart→chart edges must reproduce today's order exactly.
+    it "reproduces the historical chart deploy order from the component graph" $ do
+      let order chart = resolveDependencyOrder defaultComponentGraph "." chart
+      order "keycloak-postgres" `shouldBe` Right ["keycloak-postgres"]
+      order "keycloak" `shouldBe` Right ["keycloak-postgres", "keycloak"]
+      order "vscode" `shouldBe` Right ["keycloak-postgres", "keycloak", "vscode"]
+      order "redis" `shouldBe` Right ["redis"]
+      order "pulsar" `shouldBe` Right ["pulsar"]
+      order "api" `shouldBe` Right ["api"]
+      order "websocket" `shouldBe` Right ["redis", "websocket"]
+      order "gateway" `shouldBe` Right ["pulsar", "gateway"]
+    it "rejects a chart dependency cycle sourced from the graph" $ do
+      let cyclicGraph =
+            [ ComponentNode ComponentChartApi [orderingOn ComponentChartWebsocket] ProbeRolloutComplete
+            , ComponentNode ComponentChartWebsocket [orderingOn ComponentChartApi] ProbeRolloutComplete
+            ]
+      case resolveDependencyOrder cyclicGraph "." "api" of
+        Left _ -> pure ()
+        Right order -> expectationFailure ("expected a cycle rejection, got " ++ show order)
+    -- The Percona/Patroni operator gate is now derived from the graph edge and
+    -- gates on Available, not mere presence.
+    it "projects the Percona operator gate from the keycloak-postgres graph edge" $ do
+      case validateComponentGraph defaultComponentGraph of
+        Left err -> expectationFailure ("default graph invalid: " ++ show err)
+        Right dag -> do
+          operatorAvailableGates dag [ComponentChartKeycloakPostgres]
+            `shouldBe` [ComponentPerconaPostgresOperator]
+          operatorAvailableGates dag [ComponentChartRedis] `shouldBe` []
+    it "the operator gate accepts only a Deployment reporting Available=True" $ do
+      deploymentConditionReportsTrue "True" `shouldBe` True
+      deploymentConditionReportsTrue "true\n" `shouldBe` True
+      deploymentConditionReportsTrue "False" `shouldBe` False
+      deploymentConditionReportsTrue "" `shouldBe` False
+  describe "EffectDAG-driven reconcile ordering + deep registry->MinIO gate (Sprint 4.43)" $ do
+    -- M1: the reconcile step order is a valid projection of the component graph.
+    it "the reconcile step order respects the component dependency graph" $
+      nativeInstallStepOrderRespectsGraph `shouldBe` Right ()
+    it "narrates the deep registry->MinIO gate before the mirror push" $ do
+      let steps =
+            lines
+              ( renderNativeInstallPlan
+                  "/tmp/prodbox"
+                  (testValidatedSettings "/tmp/prodbox/.data")
+                  "machine-id-123"
+                  "prodbox-123"
+                  "prodbox-123"
+                  False
+              )
+          edgeIndex = elemIndex "STEP=verify_registry_minio_edge" steps
+          mirrorIndex = elemIndex "STEP=mirror_cluster_images_once" steps
+          registryIndex = elemIndex "STEP=ensure_harbor_registry_runtime" steps
+      registryIndex `shouldSatisfy` (`indexPrecedes` edgeIndex)
+      edgeIndex `shouldSatisfy` (`indexPrecedes` mirrorIndex)
+    -- M3: the deep-gate decision table. Only an upload session (201/202) proves
+    -- the registry->MinIO S3 write path; a curl failure is Unreachable (gates
+    -- closed), a registry 5xx / front-door 200 is retryable NotReady.
+    it "classifies the deep registry->MinIO probe by whether the S3 write edge is proven" $ do
+      classifyRegistryStorageEdgeProbe (Right "202") `shouldBe` RegistryEdgeReady
+      classifyRegistryStorageEdgeProbe (Right "201") `shouldBe` RegistryEdgeReady
+      case classifyRegistryStorageEdgeProbe (Right "500") of
+        RegistryEdgeNotReady _ -> pure ()
+        other -> expectationFailure ("expected NotReady for 500, got " ++ show other)
+      case classifyRegistryStorageEdgeProbe (Right "200") of
+        RegistryEdgeNotReady _ -> pure ()
+        other -> expectationFailure ("expected NotReady for front-door 200, got " ++ show other)
+      case classifyRegistryStorageEdgeProbe (Left "curl: (7) Failed to connect") of
+        RegistryEdgeUnreachable _ -> pure ()
+        other -> expectationFailure ("expected Unreachable for a curl failure, got " ++ show other)
+    -- §4: the retry classifier now treats transient name-resolution failures as
+    -- retryable so residual jitter is bounded, not fatal.
+    it "classifies transient name-resolution push failures as retryable" $ do
+      isRetryableHarborPublicationFailure
+        "dial tcp: lookup minio.prodbox.svc.cluster.local: no such host"
+        `shouldBe` True
+      isRetryableHarborPublicationFailure "temporary failure in name resolution" `shouldBe` True
+      isRetryableHarborPublicationFailure "Get \"https://...\": dial tcp 10.0.0.1:443: i/o timeout"
+        `shouldBe` True
+    it "keeps a genuine authorization failure non-retryable" $
+      isRetryableHarborPublicationFailure "401 unauthorized: authentication required" `shouldBe` False
   describe "config unencrypted basics (Sprint 1.38)" $ do
     it "round-trips a root cluster's basics through JSON" $ do
       basicsFromJson (basicsToJson sampleRootBasics) `shouldBe` Right sampleRootBasics
@@ -2288,6 +2484,7 @@ main = mainWithSuite "prodbox-unit" $ do
               , Tier0.cluster_topology = Tier0.cluster_topology base
               , Tier0.storage = Tier0.storage base
               , Tier0.pulumi_state_backend = Tier0.pulumi_state_backend base
+              , Tier0.components = Tier0.components base
               }
           poisoned = defaultProjectConfig {parameters = poisonedParams}
       tier0CarriesNoSecretValues poisoned `shouldBe` False
@@ -10982,7 +11179,7 @@ main = mainWithSuite "prodbox-unit" $ do
     $ do
       let steps = Prodbox.Lib.AwsSubstratePlatform.awsSubstratePlatformRuntimeStepDescriptions
       it
-        "sequences the canonical 17 steps in order through the Vault platform and admin-route extension"
+        "sequences the canonical steps in order through the Vault platform, the deep registry gate, and admin-route extension"
         $ steps
           `shouldBe` [ "ensureAwsLoadBalancerControllerRuntime"
                      , "ensureAwsSubstrateEnvoyGatewayRuntime"
@@ -10994,6 +11191,7 @@ main = mainWithSuite "prodbox-unit" $ do
                      , "ensureMinioRuntime SubstrateAws MinioBootstrapPublic"
                      , "ensureHarborRegistryStorageBackend"
                      , "ensureHarborRegistryRuntime SubstrateAws"
+                     , "ensureRegistryStorageBackendEdgeReady"
                      , "applyEksImageMirrorJob"
                      , "ensureRuntimeImageForSubstrate SubstrateAws"
                      , "ensurePostgresOperatorRuntime"
@@ -11002,6 +11200,22 @@ main = mainWithSuite "prodbox-unit" $ do
                      , "ensureGatewayChartReady SubstrateAws"
                      , "ensureAdminPublicEdgeRoutes SubstrateAws"
                      ]
+      it "Sprint 7.31: gates the EKS image-mirror Job behind the deep registry->MinIO edge" $ do
+        let edgeIndex = elemIndex "ensureRegistryStorageBackendEdgeReady" steps
+            mirrorIndex = elemIndex "applyEksImageMirrorJob" steps
+            harborIndex = elemIndex "ensureHarborRegistryRuntime SubstrateAws" steps
+        harborIndex `shouldSatisfy` (`indexPrecedes` edgeIndex)
+        edgeIndex `shouldSatisfy` (`indexPrecedes` mirrorIndex)
+      it "Sprint 7.31: EksImageMirror classifies transient name-resolution failures as retryable" $ do
+        Prodbox.Lib.EksImageMirror.isRetryableEksImageMirrorFailure
+          "dial tcp: lookup minio.prodbox.svc.cluster.local: no such host"
+          `shouldBe` True
+        Prodbox.Lib.EksImageMirror.isRetryableEksImageMirrorFailure
+          "temporary failure in name resolution"
+          `shouldBe` True
+        Prodbox.Lib.EksImageMirror.isRetryableEksImageMirrorFailure
+          "MANIFEST_UNKNOWN: manifest unknown"
+          `shouldBe` False
       it "places Vault before the AWS storage and registry bootstrap layer" $ do
         let vaultIndex = elemIndex "ensureAwsSubstrateVaultRuntime" steps
             retainedStorageIndex = elemIndex "ensureAwsSubstrateRetainedStorage" steps
@@ -13349,6 +13563,7 @@ validConfig =
     , ", cluster_topology = " ++ clusterTopologyDhallFragment
     , ", storage = { manual_pv_host_root = \".data\" }"
     , ", pulumi_state_backend = " ++ pulumiStateBackendDhallFragment
+    , ", components = " ++ componentsDhallFragment
     , "}"
     ]
 invalidZeroSslConfig :: String
@@ -13368,6 +13583,7 @@ invalidZeroSslConfig =
     , ", cluster_topology = " ++ clusterTopologyDhallFragment
     , ", storage = { manual_pv_host_root = \".data\" }"
     , ", pulumi_state_backend = " ++ pulumiStateBackendDhallFragment
+    , ", components = " ++ componentsDhallFragment
     , "}"
     ]
 
@@ -13391,6 +13607,7 @@ plaintextEabZeroSslConfig =
     , ", cluster_topology = " ++ clusterTopologyDhallFragment
     , ", storage = { manual_pv_host_root = \".data\" }"
     , ", pulumi_state_backend = " ++ pulumiStateBackendDhallFragment
+    , ", components = " ++ componentsDhallFragment
     , "}"
     ]
 
@@ -13437,6 +13654,9 @@ vaultSecretRefDhall pathValue fieldValue =
 secretRefTypeDhall :: String
 secretRefTypeDhall =
   "< Vault : { mount : Text, path : Text, field : Text } | TransitKey : Text | Prompt : { name : Text, purpose : Text } | TestPlaintext : Text >"
+
+-- Sprint 1.56: 'componentsDhallFragment' (the inline empty @components@ field the
+-- schema-less fixtures carry) is shared from "TestSupport".
 
 -- | Sprint 4.15 helper: assert that a 'DrainResult' maps to a
 -- 'CascadeContinue' arm. Extracted to a named helper to satisfy the

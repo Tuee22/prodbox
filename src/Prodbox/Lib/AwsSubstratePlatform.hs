@@ -53,6 +53,7 @@ module Prodbox.Lib.AwsSubstratePlatform
   )
 where
 
+import Control.Concurrent (threadDelay)
 import Control.Monad (foldM)
 import Data.Aeson
   ( Value
@@ -80,6 +81,7 @@ import Prodbox.CLI.Rke2
   , ensureHarborRegistryStorageBackend
   , ensureMinioRuntime
   , ensurePostgresOperatorRuntime
+  , ensureRegistryStorageBackendEdgeReady
   , ensureRuntimeImageForSubstrate
   , ensureVaultRuntime
   , resolveAcmeEabKeyId
@@ -99,6 +101,7 @@ import Prodbox.Lib.EksContainerdMirror
 import Prodbox.Lib.EksImageMirror
   ( defaultEksImageMirrorConfig
   , eksImageMirrorJobManifest
+  , isRetryableEksImageMirrorFailure
   , mirrorJobName
   , mirrorJobNamespace
   )
@@ -780,6 +783,12 @@ ensureAwsSubstratePlatformRuntime repoRoot settings prodboxId labelValue = do
     , ensureMinioRuntime repoRoot SubstrateAws MinioBootstrapPublic
     , ensureHarborRegistryStorageBackend repoRoot
     , ensureHarborRegistryRuntime repoRoot SubstrateAws
+    , -- Sprint 7.31: the deep registry->MinIO S3 edge gate (M3) runs before the
+      -- EKS image-mirror Job and crane pushes, exactly as on the home substrate
+      -- (Sprint 4.43). A blob-upload round-trip proves the registry reached its
+      -- MinIO backend; the front-door `/v2/` gate and the Job's post-hoc
+      -- `complete` wait never prove that edge before the crane copy runs.
+      ensureRegistryStorageBackendEdgeReady repoRoot
     , applyEksImageMirrorJob repoRoot
     , ensureRuntimeImageForSubstrate SubstrateAws repoRoot prodboxId
     , ensurePostgresOperatorRuntime repoRoot prodboxId labelValue
@@ -876,6 +885,7 @@ awsSubstratePlatformRuntimeStepDescriptions =
   , "ensureMinioRuntime SubstrateAws MinioBootstrapPublic"
   , "ensureHarborRegistryStorageBackend"
   , "ensureHarborRegistryRuntime SubstrateAws"
+  , "ensureRegistryStorageBackendEdgeReady"
   , "applyEksImageMirrorJob"
   , "ensureRuntimeImageForSubstrate SubstrateAws"
   , "ensurePostgresOperatorRuntime"
@@ -931,54 +941,129 @@ awsSubstratePlatformComponents =
 -- failures (e.g. upstream registry rate-limit) retry within the
 -- single Job rather than failing the orchestrator immediately.
 applyEksImageMirrorJob :: FilePath -> IO ExitCode
-applyEksImageMirrorJob repoRoot = do
-  let cfg = defaultEksImageMirrorConfig
-      jobNs = mirrorJobNamespace cfg
-      jobNm = mirrorJobName cfg
-  writeOutputLine
-    ( "Applying in-cluster image-mirror Job ("
-        ++ jobNs
-        ++ "/"
-        ++ jobNm
-        ++ ")"
-    )
-  let manifestList =
-        object
-          [ "apiVersion" .= ("v1" :: String)
-          , "kind" .= ("List" :: String)
-          , "items" .= [eksImageMirrorJobManifest cfg ContainerImage.requiredPublicImagePairs]
-          ]
-  applyExit <-
-    withTempJsonFile
-      repoRoot
-      "eks-image-mirror-job"
-      (encode manifestList)
-      ( \manifestPath ->
+applyEksImageMirrorJob repoRoot = go eksImageMirrorMaxAttempts
+ where
+  cfg = defaultEksImageMirrorConfig
+  jobNs = mirrorJobNamespace cfg
+  jobNm = mirrorJobName cfg
+  manifestList =
+    object
+      [ "apiVersion" .= ("v1" :: String)
+      , "kind" .= ("List" :: String)
+      , "items" .= [eksImageMirrorJobManifest cfg ContainerImage.requiredPublicImagePairs]
+      ]
+
+  go :: Int -> IO ExitCode
+  go attemptsRemaining = do
+    writeOutputLine
+      ( "Applying in-cluster image-mirror Job ("
+          ++ jobNs
+          ++ "/"
+          ++ jobNm
+          ++ ")"
+      )
+    applyExit <-
+      withTempJsonFile
+        repoRoot
+        "eks-image-mirror-job"
+        (encode manifestList)
+        ( \manifestPath ->
+            runStreaming
+              Subprocess
+                { subprocessPath = "kubectl"
+                , subprocessArguments = ["apply", "-f", manifestPath]
+                , subprocessEnvironment = Nothing
+                , subprocessWorkingDirectory = Just repoRoot
+                }
+        )
+    case applyExit of
+      ExitFailure _ -> pure applyExit
+      ExitSuccess -> do
+        waitExit <-
           runStreaming
             Subprocess
               { subprocessPath = "kubectl"
-              , subprocessArguments = ["apply", "-f", manifestPath]
+              , subprocessArguments =
+                  [ "wait"
+                  , "--for=condition=complete"
+                  , "job/" ++ jobNm
+                  , "-n"
+                  , jobNs
+                  , "--timeout=20m"
+                  ]
               , subprocessEnvironment = Nothing
               , subprocessWorkingDirectory = Just repoRoot
               }
-      )
-  case applyExit of
-    ExitFailure _ -> pure applyExit
-    ExitSuccess ->
-      runStreaming
-        Subprocess
-          { subprocessPath = "kubectl"
-          , subprocessArguments =
-              [ "wait"
-              , "--for=condition=complete"
-              , "job/" ++ jobNm
-              , "-n"
-              , jobNs
-              , "--timeout=20m"
-              ]
-          , subprocessEnvironment = Nothing
-          , subprocessWorkingDirectory = Just repoRoot
-          }
+        case waitExit of
+          ExitSuccess -> pure ExitSuccess
+          ExitFailure _
+            | attemptsRemaining > 1 -> do
+                -- Sprint 7.31: the crane push edge fails transiently with
+                -- name-resolution errors while endpoint programming settles. The
+                -- Job's own `backoffLimit=2` bounds in-Job retries; when the whole
+                -- Job fails we classify its logs and re-apply once more if the
+                -- failure is a retryable transient (bootstrap_readiness_doctrine.md
+                -- §4). A non-retryable failure fails fast.
+                detail <- captureEksImageMirrorFailureDetail repoRoot jobNs jobNm
+                if isRetryableEksImageMirrorFailure detail
+                  then do
+                    writeOutputLine
+                      ( "Retrying EKS image-mirror Job after a transient failure ("
+                          ++ show (eksImageMirrorMaxAttempts - attemptsRemaining + 1)
+                          ++ "/"
+                          ++ show eksImageMirrorMaxAttempts
+                          ++ "): "
+                          ++ detail
+                      )
+                    _ <- deleteEksImageMirrorJob repoRoot jobNs jobNm
+                    threadDelay eksImageMirrorRetryDelayMicros
+                    go (attemptsRemaining - 1)
+                  else pure waitExit
+            | otherwise -> pure waitExit
+
+-- | How many times the EKS image-mirror Job is (re)applied before failing.
+eksImageMirrorMaxAttempts :: Int
+eksImageMirrorMaxAttempts = 3
+
+-- | Delay between EKS image-mirror Job re-applies.
+eksImageMirrorRetryDelayMicros :: Int
+eksImageMirrorRetryDelayMicros = 10 * 1000000
+
+-- | Capture the mirror Job's pod logs so the failure can be classified. Best
+-- effort: an empty detail simply classifies as non-retryable.
+captureEksImageMirrorFailureDetail :: FilePath -> String -> String -> IO String
+captureEksImageMirrorFailureDetail repoRoot jobNs jobNm = do
+  result <-
+    captureSubprocessResult
+      Subprocess
+        { subprocessPath = "kubectl"
+        , subprocessArguments =
+            [ "logs"
+            , "job/" ++ jobNm
+            , "-n"
+            , jobNs
+            , "--all-containers=true"
+            , "--tail=200"
+            , "--ignore-errors"
+            ]
+        , subprocessEnvironment = Nothing
+        , subprocessWorkingDirectory = Just repoRoot
+        }
+  pure $ case result of
+    Failure err -> err
+    Success output -> outputDetail output
+
+-- | Delete a failed mirror Job so the next attempt can re-create it.
+deleteEksImageMirrorJob :: FilePath -> String -> String -> IO ExitCode
+deleteEksImageMirrorJob repoRoot jobNs jobNm =
+  runStreaming
+    Subprocess
+      { subprocessPath = "kubectl"
+      , subprocessArguments =
+          ["delete", "job", jobNm, "-n", jobNs, "--ignore-not-found"]
+      , subprocessEnvironment = Nothing
+      , subprocessWorkingDirectory = Just repoRoot
+      }
 
 -- | Sprint 7.5.c.iii: apply the EKS containerd registry-mirror
 -- DaemonSet rendered by 'Prodbox.Lib.EksContainerdMirror' so EKS nodes

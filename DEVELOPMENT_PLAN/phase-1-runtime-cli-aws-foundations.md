@@ -19,6 +19,18 @@
 
 ## Phase Status
 
+🔄 **Reopened 2026-07-06 for the bootstrap-readiness config/DAG foundation** — Phase `1` reopens to
+expand its own Tier-0 config and prerequisite-DAG surface with Sprint `1.56` (📋 Planned), the
+foundation for making the class of bootstrap readiness races unrepresentable per
+[bootstrap_readiness_doctrine.md](../documents/engineering/bootstrap_readiness_doctrine.md). Sprint
+`1.56` adds a typed component dependency/readiness graph (`ComponentId`, closed `ReadinessProbe`
+ADT, and `depends_on` + `readiness` fields projected into the generated Tier-0 schema) plus the pure
+`EffectDAG` readiness-lowering that rejects, at expansion time, a cycle, a dangling dependency id, or
+a dependency edge with no matching readiness node. It has no unmet blocker (foundation). The
+consuming reconcile/chart/AWS work is owned forward by Sprints `3.23`, `4.43`, and `7.31`; per
+Standard N those later-phase sprints are `⏸️ Blocked by` this earlier-phase sprint and never the
+reverse. All earlier Phase `1` sprints remain `Done` on their owned surfaces.
+
 ✅ **Reclosed 2026-07-04 for explicit resource-governor schema** — Sprint `1.55` is Done on the
 Phase `1` config/schema surface. The existing Sprint `1.51` aggregate capacity algebra remains as a
 compatibility projection, and the new `capacity.resource_plan` carries explicit host capacity,
@@ -3460,6 +3472,83 @@ non-optional values.
 - None on the Phase `1` code-owned config/schema surface. Chart consumption landed in Sprint
   `3.22`; RKE2/systemd enforcement landed in Sprint `4.41`; suite validation landed in Sprint
   `5.13`.
+
+## Sprint 1.56: Component Dependency/Readiness Graph and EffectDAG Readiness-Lowering [✅ Done]
+
+**Status**: Done
+**Implementation**: `src/Prodbox/Config/ComponentGraph.hs` (new — the typed graph,
+`ReadinessProbe` ranking, and validity checks), `src/Prodbox/EffectDAG.hs` (the shared
+generic `acyclicTopologicalOrder` expansion), `src/Prodbox/Settings.hs` +
+`src/Prodbox/Config/Tier0.hs` (the `components` Tier-0 field), `src/Prodbox/Config/SchemaDhall.hs`
+(regenerates `prodbox-config-types.dhall` from the Haskell source of truth)
+**Independent Validation**: pure unit tests over graph validity — a cycle, a dangling `depends_on`
+id, and a dependency edge with no matching readiness node each fail expansion; a well-formed graph
+projects to a deterministic topological order. No cluster, AWS substrate, or later phase required.
+**Docs to update**: `documents/engineering/bootstrap_readiness_doctrine.md`,
+`documents/engineering/config_doctrine.md`, `documents/engineering/prerequisite_dag_system.md`
+
+### Objective
+
+Provide the typed foundation that makes bootstrap readiness races unrepresentable
+([bootstrap_readiness_doctrine.md](../documents/engineering/bootstrap_readiness_doctrine.md)): a
+component dependency/readiness graph carried in the Tier-0 config, and the pure `EffectDAG`
+lowering + validity checks that later phases project reconcile ordering from.
+
+### Deliverables
+
+- A closed `ReadinessProbe` ADT whose constructors are ranked by the interface they exercise: deep
+  constructors (a real round-trip through the consumer's own call path — e.g. a registry→MinIO S3
+  write) versus weaker proxy constructors (front-door HTTP, resource-exists). A dependency edge that
+  performs a backend write is satisfiable only by a deep constructor; a proxy cannot type-satisfy it.
+- A `ComponentId` enum and `depends_on :: [ComponentId]` + `readiness :: ReadinessProbe` fields added
+  to the Tier-0 `parameters` (`ProdboxParameters`/`ConfigFile`), regenerated into
+  `prodbox-config-types.dhall` via `SchemaDhall` (`deriving Generic, FromDhall, ToDhall`; snake_case
+  mapping as for existing fields). Non-secret; no `SecretRef`.
+- Pure `EffectDAG` lowering of the component graph reusing the existing acyclic expansion +
+  missing-node rejection, extended so that **every dependency edge must carry a readiness node** —
+  an edge without one is a build-time `Left`, not a runtime race. Readiness observation obeys the
+  `Unreachable → refuse` soundness rule.
+- No behavior change to the reconcile driver yet; this sprint is the type/graph foundation only.
+
+### Validation
+
+1. `prodbox test unit` covers the ADT ranking (proxy probe cannot satisfy a backend-write edge),
+   the schema round-trip (`ToDhall`/`FromDhall`), and the four graph-validity rejections
+   (cycle, dangling id, edge-without-readiness, well-formed → deterministic order). ✅ 1205/1205.
+2. `prodbox dev check` is the closure gate (warning-clean build, formatter, linter). ✅ exit 0.
+3. Regression: `prodbox test integration cli`/`env` green (the new `components` Tier-0 field decodes
+   through the generated schema and the drift-guard test pins the regenerated
+   `prodbox-config-types.dhall`).
+
+Closed 2026-07-06. The `EdgeKind`-tagged `depends_on` edge (an explicit `OrderingEdge` vs
+`BackendWriteEdge` per edge) refines the planned bare `depends_on :: [ComponentId]` so the
+"backend-write edge satisfiable only by a deep probe" obligation (M3) is a distinct, testable
+graph-validity rejection rather than collapsing into the dangling-id case.
+
+### Remaining Work
+
+- Consumption is owned forward: Sprint `3.23` (chart edges), Sprint `4.43` (reconcile ordering +
+  registry→MinIO deep gate), and Sprint `7.31` (AWS-substrate parity). None reopens Phase `1`.
+
+## Documentation Requirements
+
+**Engineering docs to create/update:**
+
+- `documents/engineering/bootstrap_readiness_doctrine.md` - SSoT for the shallow-gate invariant and
+  the M1/M2/M3 mechanisms this sprint's types realize.
+- `documents/engineering/config_doctrine.md` - records the Tier-0 component dependency/readiness
+  graph as config surface.
+- `documents/engineering/prerequisite_dag_system.md` - records the readiness-edge lowering over the
+  pure DAG construction.
+
+**Product docs to create/update:**
+
+- None.
+
+**Cross-references to add:**
+
+- Backlink from `bootstrap_readiness_doctrine.md` Intent Ownership to `src/Prodbox/Config/Tier0.hs`
+  and `src/Prodbox/EffectDAG.hs`.
 
 ## Related Documents
 

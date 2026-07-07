@@ -4,7 +4,7 @@
 **Supersedes**: the prior Harbor-based local-registry doctrine (multi-pod Harbor Helm stack, Harbor
 projects REST API, and the `admin:Harbor12345` credential), retired when the in-cluster registry
 became a single-binary `registry:2`.
-**Referenced by**: README.md, documents/engineering/README.md, documents/engineering/distributed_gateway_architecture.md, documents/engineering/effectful_dag_architecture.md, documents/engineering/envoy_gateway_edge_doctrine.md, documents/engineering/helm_chart_platform_doctrine.md, documents/engineering/prerequisite_doctrine.md, documents/engineering/storage_lifecycle_doctrine.md, documents/engineering/host_platform_doctrine.md
+**Referenced by**: README.md, documents/engineering/README.md, documents/engineering/distributed_gateway_architecture.md, documents/engineering/effectful_dag_architecture.md, documents/engineering/envoy_gateway_edge_doctrine.md, documents/engineering/helm_chart_platform_doctrine.md, documents/engineering/prerequisite_doctrine.md, documents/engineering/storage_lifecycle_doctrine.md, documents/engineering/host_platform_doctrine.md, documents/engineering/bootstrap_readiness_doctrine.md
 **Generated sections**: none
 
 > **Purpose**: Define how `prodbox` provisions the in-cluster single-binary `registry:2` (CNCF
@@ -104,12 +104,26 @@ Policy:
    `401`. There is no nginx `/readyz` readiness patch — `registry:2` serves the OCI distribution
    API directly, so `/v2/` is the canonical readiness event.
 2. Registry bootstrap remains event-driven.
-3. The `/v2/` probe on the external NodePort path is the final capability check before image
-   writes.
-4. Before any registry image write continues on a fresh cluster, `prodbox` requires six consecutive
-   successful probe rounds, spaced five seconds apart, where `GET /v2/` returns `200` or `401` on
-   `127.0.0.1:30080`. This is the same stability discipline as before — just `GET /v2/` instead of
-   the old `/readyz`+`/v2/` pair.
+3. The `/v2/` probe on the external NodePort path is a **front-door pre-check**, not the final
+   barrier before image writes (see point 5).
+4. `prodbox` requires six consecutive successful `GET /v2/` rounds, spaced five seconds apart
+   (returning `200` or `401` on `127.0.0.1:30080`), as the front-door pre-check before the deep gate.
+5. `GET /v2/` is a **front-door** signal: `registry:2` answers it without touching S3, so it does
+   **not** prove the registry → MinIO storage-backend write edge. Per the
+   [Bootstrap Readiness Doctrine](./bootstrap_readiness_doctrine.md) M3, the **final barrier before
+   any image write** (home substrate, Sprint `4.43`) is the deep gate
+   `ensureRegistryStorageBackendEdgeReady`: it opens a blob-upload session against the registry
+   (`POST /v2/<name>/blobs/uploads/`), which the S3 storage driver services by writing to MinIO, so a
+   `201`/`202` proves the registry reached its MinIO backend. A curl-level failure is `Unreachable`
+   and gates closed (doctrine Statement 4); a registry `5xx` (it cannot reach MinIO) is retryable.
+   This runs before `mirrorClusterImagesOnce` and every downstream registry write, closing the
+   transient `minio.prodbox.svc.cluster.local` resolution race that front-door-only gating left open.
+   The retry classifier additionally treats `no such host` / `dial tcp` / `lookup` / `name resolution`
+   push failures as retryable so residual jitter is bounded rather than fatal. The AWS substrate has
+   parity (Sprint `7.31`): `ensureAwsSubstratePlatformRuntime` runs the same
+   `ensureRegistryStorageBackendEdgeReady` gate before the EKS image-mirror Job and crane pushes, and
+   `applyEksImageMirrorJob` re-applies the Job on an `isRetryableEksImageMirrorFailure`-matched
+   transient failure.
 
 ## 3. Runtime Outputs
 

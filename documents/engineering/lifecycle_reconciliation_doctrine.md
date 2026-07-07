@@ -21,7 +21,8 @@
 [pulsar_topic_lifecycle_doctrine.md](pulsar_topic_lifecycle_doctrine.md),
 [host_platform_doctrine.md](host_platform_doctrine.md),
 [cluster_topology_doctrine.md](cluster_topology_doctrine.md),
-[test_topology_doctrine.md](test_topology_doctrine.md)
+[test_topology_doctrine.md](test_topology_doctrine.md),
+[bootstrap_readiness_doctrine.md](bootstrap_readiness_doctrine.md)
 **Generated sections**: none
 
 > **Purpose**: Single Source of Truth for how prodbox lifecycle commands
@@ -596,6 +597,20 @@ mutating these files. This is the runtime counterpart of the static
 RKE2/kubelet/containerd; pod-level runaway behavior is separately bounded by
 the chart-rendered Kubernetes `resources`, `ResourceQuota`, and `LimitRange`.
 
+### 5a.3. Reconcile Bring-Up Order Is a Projection Over the Component Graph (Sprint 4.43)
+
+`prodbox cluster reconcile`'s bring-up steps are not two hand-written parallel
+lists any more. The plan narration and the executor both project from a single
+typed step table (`nativeInstallStepOrder` in `src/Prodbox/CLI/Rke2.hs`), so the
+`STEP=…` preview and the executed order cannot drift. A pure check
+(`nativeInstallStepOrderRespectsGraph`) proves that table is a valid linearization
+of the Tier-0 component dependency/readiness graph
+([bootstrap_readiness_doctrine.md](bootstrap_readiness_doctrine.md) M1) — a
+dependency's bring-up step must precede its consumer's, so a mis-ordering fails at
+build/test time rather than on a live cluster. The registry's step is followed by
+the deep registry→MinIO S3 edge gate before the image-mirror push, so a consumer
+never runs ahead of the exact dependency edge it uses (M3).
+
 ### 5b. Canonical Cascade Order
 
 `prodbox cluster delete --cascade --yes` orchestrates these phases in order. The order is
@@ -801,7 +816,12 @@ section records only how the lifecycle commands integrate it. See
   reconciled, the command proceeds with steady-state MinIO and chart reconcile phases
   so ciphertext and chart secrets have a live Transit/KV authority by the time they are
   needed. See
-  [vault_doctrine.md §7](./vault_doctrine.md#7-vault-lifecycle-commands).
+  [vault_doctrine.md §7](./vault_doctrine.md#7-vault-lifecycle-commands). This bring-up ordering is a
+  pure projection over the component dependency/readiness graph, not a hand-written sequence, and
+  each readiness barrier exercises the exact dependency call path it guards (a front-door proxy does
+  not satisfy a deep edge) per
+  [bootstrap_readiness_doctrine.md](./bootstrap_readiness_doctrine.md); an `Unreachable` readiness
+  observation gates closed (§3.1 soundness), never treated as ready.
 - **Teardown preserves the durable Vault PV.** `prodbox cluster delete --yes` and
   `prodbox cluster delete --cascade --yes` preserve the durable Vault PV exactly
   like the MinIO PV (§2); no `prodbox` command removes it. A wiped-and-rebuilt

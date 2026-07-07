@@ -3,6 +3,7 @@ module Prodbox.EffectDAG
   , EffectNode (..)
   , fromRootIds
   , transitiveClosureIds
+  , acyclicTopologicalOrder
   )
 where
 
@@ -12,6 +13,7 @@ import Control.Monad
 import Data.List
   ( intercalate
   , sortBy
+  , sortOn
   )
 import Data.Map.Strict
   ( Map
@@ -108,3 +110,46 @@ orderedUnique = go Set.empty
   go visited (value : remaining)
     | Set.member value visited = go visited remaining
     | otherwise = value : go (Set.insert value visited) remaining
+
+-- | Sprint 1.56: the generic pure acyclic topological expansion extracted so the
+-- Tier-0 component dependency/readiness graph
+-- ("Prodbox.Config.ComponentGraph") reuses the __same__ back-edge cycle
+-- rejection and missing-node rejection as the prerequisite DAG above, honouring
+-- [bootstrap_readiness_doctrine.md](../documents/engineering/bootstrap_readiness_doctrine.md)
+-- M1/M2 ("ordering is derived, not hand-written" over a config-sourced graph).
+--
+-- Unlike 'transitiveClosureIds' (which returns the closure as a text-sorted
+-- __set__ for the interpreter's ready-set rendering), this returns a
+-- __dependencies-before-dependents__ topological order suitable for driving
+-- bring-up. Determinism comes from visiting roots and each node's adjacency in
+-- rendered-text order, so the projection is a pure function of the graph, never
+-- of declaration order. A node that appears on its own DFS ancestor stack is a
+-- back-edge (cycle → 'Left'); an adjacency id with no entry in the graph is a
+-- dangling dependency (missing node → 'Left').
+acyclicTopologicalOrder
+  :: (Ord k)
+  => (k -> String)
+  -- ^ Render a key for error messages and the deterministic tie-break ordering.
+  -> (k -> Maybe [k])
+  -- ^ Adjacency lookup: @Nothing@ means the key is absent from the graph.
+  -> [k]
+  -- ^ Roots to expand from.
+  -> Either String [k]
+acyclicTopologicalOrder render adjacency roots =
+  fmap (reverse . fst) (foldM (visit []) ([], Set.empty) (sortOn render roots))
+ where
+  visit ancestors (ordered, done) key
+    | key `elem` ancestors =
+        Left (cyclePathMessage (reverse (key : ancestors)))
+    | Set.member key done = Right (ordered, done)
+    | otherwise =
+        case adjacency key of
+          Nothing ->
+            Left ("Missing component node in graph: " ++ render key)
+          Just deps -> do
+            (orderedAfter, doneAfter) <-
+              foldM (visit (key : ancestors)) (ordered, done) (sortOn render deps)
+            Right (key : orderedAfter, Set.insert key doneAfter)
+
+  cyclePathMessage path =
+    "Component dependency cycle detected: " ++ intercalate " -> " (map render path)

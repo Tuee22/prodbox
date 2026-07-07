@@ -15,6 +15,21 @@
 
 ## Phase Status
 
+🔄 **Reopened 2026-07-06 for EffectDAG-driven reconcile ordering and deep readiness barriers** —
+Phase `4` reopens to expand its own local-cluster lifecycle surface with Sprint `4.43`
+(⏸️ Blocked by Sprint `1.56`), the core of the bootstrap-readiness refactor
+([bootstrap_readiness_doctrine.md](../documents/engineering/bootstrap_readiness_doctrine.md)).
+Sprint `4.43` replaces the hand-written `runSequentially` bring-up list (and its parallel
+hand-synced `renderNativeInstallPlan` STEP narration) with an ordering derived from the Sprint
+`1.56` component dependency/readiness graph, adds a **deep** registry→MinIO S3 edge-readiness
+barrier before the image-mirror step (a real S3 round-trip through the registry, not the
+front-door `GET /v2/` proxy), and closes the retry-classifier hole so transient name-resolution
+failures (`no such host` / `dial tcp` / `lookup`) are retryable. The two retired surfaces are
+recorded in [legacy-tracking-for-deletion.md](legacy-tracking-for-deletion.md). Per Standard N the
+`Blocked by` names only the earlier-phase Sprint `1.56`; the live green `test all` is a non-blocking
+Standard O `🧪 Live-proof: pending` axis. All earlier Phase `4` closures remain valid on their owned
+surfaces.
+
 ✅ **Reclosed 2026-07-05 for daemon-mediated lifecycle bootstrap.** Sprint `4.42` is now ✅ Done on
 Phase `4`'s lifecycle interpreter surface. `cluster reconcile` brings up bootstrap-readable MinIO,
 Vault, Harbor/image mirroring, the RKE2 registry config, and the loopback-restricted gateway daemon
@@ -2637,7 +2652,9 @@ retained-PV teardown model is extended, not reversed.
 - `prodbox cluster reconcile` deploys/rebinds Vault before MinIO/chart reconcile, runs `vault init`
   **exactly once, ever** (only when the durable PV is empty), and on every subsequent reconcile
   redeploys the Vault chart against existing data and only **unseals** it from the `.age` unlock
-  bundle (or prompts) — no re-init and no key regeneration. A cluster rebuild is not a fresh Vault.
+  bundle (or prompts) — no re-init and no key regeneration. **[Superseded by Sprint 7.19/7.25:** the
+  unlock bundle is a password-AEAD (Argon2id + ChaCha20-Poly1305) object in the durable MinIO bucket,
+  not an on-disk `.age` file — see [config_doctrine.md §0](../documents/engineering/config_doctrine.md#0-three-tier-config-model).**]** A cluster rebuild is not a fresh Vault.
 - `prodbox cluster delete --yes` and `--cascade --yes` both preserve the durable Vault PV
   (`.data/vault/vault/0`) exactly like the MinIO PV; no `prodbox` command removes it. Vault KV is as
   durable across `cluster delete` + `cluster reconcile` rebuild cycles as any retained PV.
@@ -3568,6 +3585,92 @@ directly for post-bootstrap lifecycle work.
 - For Sprint `4.27`, cross-reference [substrates.md](substrates.md) so the `StackDescriptor` SSoT
   and the renamed `longLivedResourceNames` stay aligned with the Resource Lifecycle Classes
   inventory.
+
+## Sprint 4.43: EffectDAG-Driven Reconcile Ordering and the Deep Registry→MinIO Readiness Barrier [✅ Done]
+
+**Status**: Done (2026-07-06)
+**Implementation**: `src/Prodbox/CLI/Rke2.hs` (the single typed `ReconcileStepId` step table
+narration + execution project from, the deep `ensureRegistryStorageBackendEdgeReady` gate + pure
+`classifyRegistryStorageEdgeProbe`, the name-resolution retry-classifier fix, and the
+`nativeInstallStepOrderRespectsGraph` graph-consistency check), `src/Prodbox/Config/ComponentGraph.hs`
+(`componentDagEdges`)
+**Live-proof**: pending (the green home `prodbox test all` past the image-mirror step — non-blocking,
+Standard O)
+**Independent Validation**: fake-boundary unit + `prodbox test integration cli` tests over
+(a) derived bootstrap ordering from a graph fixture, (b) the deep registry→MinIO edge gate refusing
+to proceed while the S3 write path is unproven / `Unreachable`, and (c) the retry classifier treating
+`no such host`/`dial tcp`/`lookup` as retryable. No AWS substrate or later phase required.
+**Docs to update**: `documents/engineering/bootstrap_readiness_doctrine.md`,
+`documents/engineering/local_registry_pipeline.md`,
+`documents/engineering/lifecycle_reconciliation_doctrine.md`,
+`DEVELOPMENT_PLAN/legacy-tracking-for-deletion.md`
+
+### Objective
+
+Make the home-substrate bootstrap readiness-race class unrepresentable on the reconcile driver:
+derive bring-up order from the typed component graph rather than a hand-written list, and gate every
+consumer→dependency edge behind a barrier that exercises the exact call path it uses — closing the
+registry→MinIO S3 race that fails `cluster reconcile` at the image-mirror step.
+
+### Deliverables
+
+- `cluster reconcile` bring-up order is a pure topological projection over the Sprint `1.56`
+  component dependency/readiness graph (M1). The imperative `runSequentially` step list and the
+  parallel `renderNativeInstallPlan` STEP narration are retired (ledger rows under this sprint); the
+  rendered plan is generated from the same graph so the ordering and its narration cannot drift.
+- A **deep** registry→MinIO readiness barrier runs before `mirrorClusterImagesOnce` and before any
+  runtime/custom-image push: it exercises the registry's own S3 write path (a canary blob push
+  through the registry, or the registry storagedriver health surface wired into readiness), not the
+  front-door `GET /v2/` proxy (M3). An `Unreachable` observation gates closed.
+- `isRetryableHarborPublicationFailure` classifies transient name-resolution failures
+  (`no such host`, `dial tcp`, `lookup`, `name resolution`) as retryable so residual jitter is bounded
+  by `pushDockerImageWithRetry` rather than failing the bootstrap outright.
+- The EKS-substrate parity of the same barrier + classifier is owned forward by Sprint `7.31`.
+
+### Validation
+
+1. `prodbox test unit` covers graph-derived ordering (`nativeInstallStepOrderRespectsGraph`), the
+   deep-gate decision table (proceed only on a `201`/`202` upload session; refuse on `Unreachable`;
+   retry a registry `5xx`/front-door `200`), and the retry-classifier name-resolution cases. ✅ 1214/1214.
+2. The mirror step is not attempted until the deep gate passes: `verify_registry_minio_edge` precedes
+   `mirror_cluster_images_once` in the single step table (golden + ordering unit test), and
+   `runSequentially` short-circuits on the gate's failure, so a failed/`Unreachable` gate never reaches
+   the mirror push. `prodbox test integration cli`/`env` green.
+3. `prodbox dev check` is the closure gate. ✅ exit 0.
+4. Live-proof (non-blocking, Standard O): a home `prodbox test all` reconcile completes past the
+   image-mirror step.
+
+Closed 2026-07-06. Narration and execution now project from ONE typed `ReconcileStepId` table
+(retiring the two hand-synced lists — which had already drifted: `ensure_host_control_data_directory`
+was executed but never narrated, now narrated). The deep registry→MinIO gate exercises the registry's
+own S3 write path (a blob-upload session), not the front-door `GET /v2/` proxy; the `/v2/` gates are
+kept as a cheaper pre-check ahead of it. M1 is realized as a single-sourced order plus a pure
+graph-consistency check that fails a mis-ordering at build/test time.
+
+### Remaining Work
+
+- EKS parity (`AwsSubstratePlatform` gate + `EksImageMirror` classifier) is Sprint `7.31`; it composes
+  this pattern and does not reopen Phase `4`.
+
+## Documentation Requirements
+
+**Engineering docs to create/update:**
+
+- `documents/engineering/bootstrap_readiness_doctrine.md` - the M1/M3 mechanisms this sprint lands on
+  the reconcile driver.
+- `documents/engineering/local_registry_pipeline.md` - the deep registry→MinIO gate replacing
+  front-door-only `/v2/` gating before image writes.
+- `documents/engineering/lifecycle_reconciliation_doctrine.md` - reconcile ordering as a projection
+  over the component graph.
+
+**Product docs to create/update:**
+
+- None.
+
+**Cross-references to add:**
+
+- Add ledger rows (Sprint `4.43`) for the retired `runSequentially` list + STEP narration and the
+  `/v2/`-only registry gates in `legacy-tracking-for-deletion.md`.
 
 ## Related Documents
 

@@ -26,6 +26,11 @@ module Prodbox.CLI.Rke2
   , buildNativeDeletePlan
   , renderNativeDeletePlan
   , renderNativeInstallPlan
+  , nativeInstallStepOrderRespectsGraph
+  , isRetryableHarborPublicationFailure
+  , RegistryStorageEdgeReadiness (..)
+  , classifyRegistryStorageEdgeProbe
+  , ensureRegistryStorageBackendEdgeReady
   , renderInotifySysctlDropIn
   , renderResourceVectorRuntime
   , renderRke2ResourceGuardrailConfig
@@ -72,7 +77,8 @@ import Data.Char
   , toLower
   )
 import Data.List
-  ( find
+  ( elemIndex
+  , find
   , intercalate
   , isInfixOf
   , isPrefixOf
@@ -135,6 +141,14 @@ import Prodbox.Cluster.Federation
 import Prodbox.Config.Basics
   ( ParentRef (..)
   , UnencryptedBasics (..)
+  )
+import Prodbox.Config.ComponentGraph
+  ( ComponentId (..)
+  , componentDagEdges
+  , componentIdText
+  , defaultComponentGraph
+  , renderComponentGraphError
+  , validateComponentGraph
   )
 import Prodbox.Config.Tier0
   ( Tier0ParentRef (..)
@@ -1156,6 +1170,176 @@ renderEdgeReconcilePlan repoRoot (_prodboxId, _labelValue) =
     , "STEP=reconcile_dns_bootstrap_record"
     ]
 
+-- | Sprint 4.43: the phase a reconcile step belongs to. Both the plan narration
+-- and the executor project from the SAME ordered step table
+-- ('nativeInstallStepOrder'), so the ordering and its narration cannot drift
+-- (bootstrap_readiness_doctrine.md M1) — the historical hazard where the
+-- imperative @runSequentially@ list and the parallel @STEP=@ narration were
+-- hand-kept in sync (and had already drifted: @ensure_host_control_data_directory@
+-- was executed but never narrated).
+data ReconcilePhase
+  = -- | Pre-Vault bootstrap steps (one @runSequentially@ list).
+    PhaseBootstrap
+  | -- | The Vault-init / in-force-settings transition — narrated, but driven by
+    -- dedicated control flow rather than an action-mapped step.
+    PhaseTransition
+  | -- | Post-Vault steady-state steps (a second @runSequentially@ list).
+    PhaseSteady
+  | -- | Public-edge steps, narrated only under @--with-edge@ and executed as the
+    -- single 'applyPublicEdgeReconcile' action.
+    PhaseEdge
+  deriving (Eq, Show)
+
+-- | Every reconcile bring-up step, in a single typed table. This is the SSoT the
+-- narration and the executor both read (M1).
+data ReconcileStepId
+  = StepRke2ResourceGuardrails
+  | StepHostInotifyLimits
+  | StepRke2ServerInstalled
+  | StepRke2IngressController
+  | StepEnableRke2Service
+  | StepRestartRke2Service
+  | StepSyncUserKubeconfig
+  | StepVerifyClusterInfo
+  | StepWaitForClusterNodesReady
+  | StepDeleteNonManualStorageClasses
+  | StepEnsureProdboxIdentityConfigMap
+  | StepEnsureHostControlDataDirectory
+  | StepEnsureRetainedLocalStorage
+  | StepMinioRuntimeBootstrap
+  | StepVaultRuntime
+  | StepHarborRegistryStorageBackend
+  | StepHarborRegistryRuntime
+  | StepVerifyRegistryMinioEdge
+  | StepMirrorClusterImagesOnce
+  | StepEnsureRuntimeImage
+  | StepRke2RegistriesConfig
+  | StepGatewayChartReadyPreVault
+  | StepFederatedVaultLifecycle
+  | StepLoadInForceSettings
+  | StepClusterPlatformRuntime
+  | StepMinioRuntimeSteadyState
+  | StepGatewayMinioBootstrap
+  | StepGatewayChartReady
+  | StepRootChartNamespaceGuardrails
+  | StepAdminPublicEdgeRoutes
+  | StepReconcileManagedAnnotations
+  | StepRequireOperationalAwsCredentials
+  | StepPublicEdgeAcmeRuntime
+  | StepReconcileDnsBootstrapRecord
+  deriving (Eq, Show, Enum, Bounded)
+
+-- | The single ordered reconcile step table (M1). Narration and execution both
+-- project from this list.
+nativeInstallStepOrder :: [ReconcileStepId]
+nativeInstallStepOrder = [minBound .. maxBound]
+
+-- | The stable @STEP=@ narration token for a step.
+reconcileStepToken :: ReconcileStepId -> String
+reconcileStepToken step = case step of
+  StepRke2ResourceGuardrails -> "ensure_rke2_resource_guardrails"
+  StepHostInotifyLimits -> "ensure_host_inotify_limits"
+  StepRke2ServerInstalled -> "ensure_rke2_server_installed"
+  StepRke2IngressController -> "ensure_rke2_ingress_controller"
+  StepEnableRke2Service -> "enable_rke2_service"
+  StepRestartRke2Service -> "restart_rke2_service"
+  StepSyncUserKubeconfig -> "sync_user_kubeconfig"
+  StepVerifyClusterInfo -> "verify_cluster_info"
+  StepWaitForClusterNodesReady -> "wait_for_cluster_nodes_ready"
+  StepDeleteNonManualStorageClasses -> "delete_non_manual_storage_classes"
+  StepEnsureProdboxIdentityConfigMap -> "ensure_prodbox_identity_config_map"
+  StepEnsureHostControlDataDirectory -> "ensure_host_control_data_directory"
+  StepEnsureRetainedLocalStorage -> "ensure_retained_local_storage"
+  StepMinioRuntimeBootstrap -> "ensure_minio_runtime_bootstrap"
+  StepVaultRuntime -> "ensure_vault_runtime"
+  StepHarborRegistryStorageBackend -> "ensure_harbor_registry_storage_backend"
+  StepHarborRegistryRuntime -> "ensure_harbor_registry_runtime"
+  StepVerifyRegistryMinioEdge -> "verify_registry_minio_edge"
+  StepMirrorClusterImagesOnce -> "mirror_cluster_images_once"
+  StepEnsureRuntimeImage -> "ensure_gateway_images"
+  StepRke2RegistriesConfig -> "ensure_rke2_registries_config"
+  StepGatewayChartReadyPreVault -> "ensure_gateway_chart_ready_pre_vault"
+  StepFederatedVaultLifecycle -> "ensure_federated_vault_lifecycle"
+  StepLoadInForceSettings -> "load_in_force_settings_after_vault_and_minio"
+  StepClusterPlatformRuntime -> "ensure_cluster_platform_runtime"
+  StepMinioRuntimeSteadyState -> "ensure_minio_runtime_steady_state"
+  StepGatewayMinioBootstrap -> "ensure_gateway_minio_bootstrap"
+  StepGatewayChartReady -> "ensure_gateway_chart_ready"
+  StepRootChartNamespaceGuardrails -> "ensure_root_chart_namespace_guardrails"
+  StepAdminPublicEdgeRoutes -> "ensure_admin_public_edge_routes"
+  StepReconcileManagedAnnotations -> "reconcile_managed_annotations"
+  StepRequireOperationalAwsCredentials -> "require_operational_aws_credentials"
+  StepPublicEdgeAcmeRuntime -> "ensure_public_edge_acme_runtime"
+  StepReconcileDnsBootstrapRecord -> "reconcile_dns_bootstrap_record"
+
+reconcileStepPhase :: ReconcileStepId -> ReconcilePhase
+reconcileStepPhase step = case step of
+  StepFederatedVaultLifecycle -> PhaseTransition
+  StepLoadInForceSettings -> PhaseTransition
+  StepClusterPlatformRuntime -> PhaseSteady
+  StepMinioRuntimeSteadyState -> PhaseSteady
+  StepGatewayMinioBootstrap -> PhaseSteady
+  StepGatewayChartReady -> PhaseSteady
+  StepRootChartNamespaceGuardrails -> PhaseSteady
+  StepAdminPublicEdgeRoutes -> PhaseSteady
+  StepReconcileManagedAnnotations -> PhaseSteady
+  StepRequireOperationalAwsCredentials -> PhaseEdge
+  StepPublicEdgeAcmeRuntime -> PhaseEdge
+  StepReconcileDnsBootstrapRecord -> PhaseEdge
+  _ -> PhaseBootstrap
+
+-- | The bring-up component a step is the barrier for, when it is one of the
+-- graph's bootstrap-critical components. Steps that are host prep or higher-level
+-- app work carry 'Nothing' and are unconstrained by the graph. Sprint 4.43 uses
+-- this to prove the step order respects the component dependency graph (M1): a
+-- dependency's step must precede its consumer's.
+reconcileStepComponent :: ReconcileStepId -> Maybe ComponentId
+reconcileStepComponent step = case step of
+  StepRke2ServerInstalled -> Just ComponentClusterBase
+  StepMinioRuntimeBootstrap -> Just ComponentMinio
+  StepVaultRuntime -> Just ComponentVault
+  StepHarborRegistryStorageBackend -> Just ComponentRegistry
+  StepHarborRegistryRuntime -> Just ComponentRegistry
+  StepVerifyRegistryMinioEdge -> Just ComponentRegistry
+  StepGatewayChartReadyPreVault -> Just ComponentGatewayDaemon
+  _ -> Nothing
+
+-- | The steps to narrate/execute for a run, honouring @--with-edge@ (public-edge
+-- steps appear only when the edge is engaged).
+nativeInstallStepsForRun :: Bool -> [ReconcileStepId]
+nativeInstallStepsForRun withEdge =
+  [ step
+  | step <- nativeInstallStepOrder
+  , withEdge || reconcileStepPhase step /= PhaseEdge
+  ]
+
+-- | Sprint 4.43 (pure, M1): prove the reconcile step order is a valid projection
+-- of the component dependency/readiness graph — for every @(consumer, dependency)@
+-- edge whose endpoints both have anchored bring-up steps, the dependency's first
+-- step precedes the consumer's first step. A future mis-ordering (scheduling a
+-- consumer ahead of its dependency) fails this check rather than a live cluster.
+nativeInstallStepOrderRespectsGraph :: Either String ()
+nativeInstallStepOrderRespectsGraph =
+  case validateComponentGraph defaultComponentGraph of
+    Left err -> Left (renderComponentGraphError err)
+    Right dag -> mapM_ checkEdge (componentDagEdges dag)
+ where
+  order = nativeInstallStepOrder
+  firstIndexFor cid =
+    elemIndex True (map ((== Just cid) . reconcileStepComponent) order)
+  checkEdge (consumer, dependency) =
+    case (firstIndexFor consumer, firstIndexFor dependency) of
+      (Just consumerIndex, Just dependencyIndex)
+        | dependencyIndex >= consumerIndex ->
+            Left
+              ( "Reconcile step order violates component graph edge "
+                  ++ componentIdText consumer
+                  ++ " -> "
+                  ++ componentIdText dependency
+                  ++ ": the dependency's bring-up step must precede its consumer's."
+              )
+      _ -> Right ()
+
 renderNativeInstallPlan
   :: FilePath -> ValidatedSettings -> String -> String -> String -> Bool -> String
 renderNativeInstallPlan repoRoot settings machineId prodboxId labelValue withEdge =
@@ -1171,43 +1355,10 @@ renderNativeInstallPlan repoRoot settings machineId prodboxId labelValue withEdg
       , "RKE2_RESERVED=" ++ renderResourceVectorRuntime (Capacity.rke2_reserved resourcePlan)
       , "EVICTION_FLOOR=" ++ renderResourceVectorRuntime (Capacity.eviction_floor resourcePlan)
       , "CLUSTER_ALLOCATABLE=" ++ renderResourceVectorRuntime (clusterAllocatable resourcePlan)
-      , "STEP=ensure_rke2_resource_guardrails"
-      , "STEP=ensure_host_inotify_limits"
-      , "STEP=ensure_rke2_server_installed"
-      , "STEP=ensure_rke2_ingress_controller"
-      , "STEP=enable_rke2_service"
-      , "STEP=restart_rke2_service"
-      , "STEP=sync_user_kubeconfig"
-      , "STEP=verify_cluster_info"
-      , "STEP=wait_for_cluster_nodes_ready"
-      , "STEP=delete_non_manual_storage_classes"
-      , "STEP=ensure_prodbox_identity_config_map"
-      , "STEP=ensure_retained_local_storage"
-      , "STEP=ensure_minio_runtime_bootstrap"
-      , "STEP=ensure_vault_runtime"
-      , "STEP=ensure_harbor_registry_storage_backend"
-      , "STEP=ensure_harbor_registry_runtime"
-      , "STEP=mirror_cluster_images_once"
-      , "STEP=ensure_gateway_images"
-      , "STEP=ensure_rke2_registries_config"
-      , "STEP=ensure_gateway_chart_ready_pre_vault"
-      , "STEP=ensure_federated_vault_lifecycle"
-      , "STEP=load_in_force_settings_after_vault_and_minio"
-      , "STEP=ensure_cluster_platform_runtime"
-      , "STEP=ensure_minio_runtime_steady_state"
-      , "STEP=ensure_gateway_minio_bootstrap"
-      , "STEP=ensure_gateway_chart_ready"
-      , "STEP=ensure_root_chart_namespace_guardrails"
-      , "STEP=ensure_admin_public_edge_routes"
-      , "STEP=reconcile_managed_annotations"
       ]
-        -- Public-edge steps are AWS-gated and run only under @--with-edge@.
-        ++ [ "STEP=require_operational_aws_credentials" | withEdge
-           ]
-        ++ [ "STEP=ensure_public_edge_acme_runtime" | withEdge
-           ]
-        ++ [ "STEP=reconcile_dns_bootstrap_record" | withEdge
-           ]
+        -- Narration is projected from the single ordered step table (M1), so it
+        -- can never drift from the executor, which reads the same table.
+        ++ ["STEP=" ++ reconcileStepToken step | step <- nativeInstallStepsForRun withEdge]
     )
  where
   resourcePlan = Capacity.resource_plan (capacity (validatedConfig settings))
@@ -1240,45 +1391,14 @@ applyNativeInstallPlan
   -> (String, String, String)
   -> IO ExitCode
 applyNativeInstallPlan repoRoot bootstrapSettings withEdge (machineId, prodboxId, labelValue) = do
+  -- Sprint 4.43: execution is projected from the SAME ordered step table
+  -- (`nativeInstallStepOrder`) the plan narration reads, so the two cannot drift
+  -- (bootstrap_readiness_doctrine.md M1). The pre-Vault bootstrap runs the
+  -- `PhaseBootstrap` steps, the Vault-init transition runs its dedicated control
+  -- flow, and the post-Vault steady phase runs the `PhaseSteady` steps.
   bootstrapExit <-
     runSequentially
-      [ ensureRke2ResourceGuardrails repoRoot bootstrapSettings
-      , ensureHostInotifyLimits repoRoot
-      , ensureRke2ServerInstalled repoRoot
-      , ensureRke2IngressController repoRoot
-      , runCommand
-          Subprocess
-            { subprocessPath = "sudo"
-            , subprocessArguments = ["systemctl", "enable", rke2ServiceName]
-            , subprocessEnvironment = Nothing
-            , subprocessWorkingDirectory = Just repoRoot
-            }
-      , runCommand
-          Subprocess
-            { subprocessPath = "sudo"
-            , subprocessArguments = ["systemctl", "restart", rke2ServiceName]
-            , subprocessEnvironment = Nothing
-            , subprocessWorkingDirectory = Just repoRoot
-            }
-      , syncUserKubeconfig repoRoot
-      , verifyClusterInfo repoRoot
-      , waitForClusterNodesReady repoRoot
-      , deleteNonManualStorageClasses repoRoot
-      , ensureProdboxIdentityConfigMap repoRoot machineId prodboxId labelValue
-      , ensureHostControlDataDirectory repoRoot bootstrapSettings
-      , ensureRetainedLocalStorage repoRoot bootstrapSettings prodboxId labelValue
-      , -- Sprint 7.25: MinIO comes up BEFORE Vault (it depends only on the cluster
-        -- + its retained PV — static root cred, no Vault init container), so Vault
-        -- init writes the unlock bundle to a live MinIO and unseal reads it FROM
-        -- MinIO (disk-free).
-        ensureMinioRuntime repoRoot SubstrateHomeLocal MinioBootstrapPublic
-      , ensureVaultRuntime repoRoot
-      , ensureHarborRegistryStorageBackend repoRoot
-      , ensureHarborRegistryRuntime repoRoot SubstrateHomeLocal
-      , mirrorClusterImagesOnce repoRoot
-      , ensureRuntimeImage repoRoot prodboxId
-      , ensureRke2RegistriesConfig repoRoot
-      , ensureGatewayChartReady repoRoot bootstrapSettings SubstrateHomeLocal
+      [ bootstrapStepAction step | step <- nativeInstallStepOrder, reconcileStepPhase step == PhaseBootstrap
       ]
   case bootstrapExit of
     ExitFailure _ -> pure bootstrapExit
@@ -1295,20 +1415,81 @@ applyNativeInstallPlan repoRoot bootstrapSettings withEdge (machineId, prodboxId
             Left err -> failWith err
             Right settings ->
               runSequentially
-                ( [ ensureClusterPlatformRuntime repoRoot settings prodboxId labelValue
-                  , ensureMinioRuntime repoRoot SubstrateHomeLocal MinioSteadyStateHarbor
-                  , ensureGatewayMinioBootstrap repoRoot
-                  , ensureGatewayChartReady repoRoot settings SubstrateHomeLocal
-                  , ensureRootChartNamespaceGuardrails repoRoot settings
-                  , ensureAdminPublicEdgeRoutes repoRoot settings SubstrateHomeLocal prodboxId labelValue
-                  , reconcileManagedAnnotations repoRoot prodboxId labelValue
+                ( [ steadyStepAction settings step
+                  | step <- nativeInstallStepOrder
+                  , reconcileStepPhase step == PhaseSteady
                   ]
                     -- The public edge (Route 53 DNS + ZeroSSL DNS-01 TLS) is the only
                     -- part of reconcile that needs operational AWS credentials. It runs
                     -- only with @--with-edge@; bare @cluster reconcile@ stands up a fully
-                    -- working local cluster with an empty @aws.*@ block.
+                    -- working local cluster with an empty @aws.*@ block. The PhaseEdge
+                    -- steps in the table are its narration sub-steps.
                     ++ [applyPublicEdgeReconcile repoRoot settings prodboxId labelValue | withEdge]
                 )
+ where
+  -- The `PhaseBootstrap` action for a step. Called only on `PhaseBootstrap`
+  -- steps (filtered above); the catch-all is unreachable.
+  bootstrapStepAction :: ReconcileStepId -> IO ExitCode
+  bootstrapStepAction step = case step of
+    StepRke2ResourceGuardrails -> ensureRke2ResourceGuardrails repoRoot bootstrapSettings
+    StepHostInotifyLimits -> ensureHostInotifyLimits repoRoot
+    StepRke2ServerInstalled -> ensureRke2ServerInstalled repoRoot
+    StepRke2IngressController -> ensureRke2IngressController repoRoot
+    StepEnableRke2Service ->
+      runCommand
+        Subprocess
+          { subprocessPath = "sudo"
+          , subprocessArguments = ["systemctl", "enable", rke2ServiceName]
+          , subprocessEnvironment = Nothing
+          , subprocessWorkingDirectory = Just repoRoot
+          }
+    StepRestartRke2Service ->
+      runCommand
+        Subprocess
+          { subprocessPath = "sudo"
+          , subprocessArguments = ["systemctl", "restart", rke2ServiceName]
+          , subprocessEnvironment = Nothing
+          , subprocessWorkingDirectory = Just repoRoot
+          }
+    StepSyncUserKubeconfig -> syncUserKubeconfig repoRoot
+    StepVerifyClusterInfo -> verifyClusterInfo repoRoot
+    StepWaitForClusterNodesReady -> waitForClusterNodesReady repoRoot
+    StepDeleteNonManualStorageClasses -> deleteNonManualStorageClasses repoRoot
+    StepEnsureProdboxIdentityConfigMap ->
+      ensureProdboxIdentityConfigMap repoRoot machineId prodboxId labelValue
+    StepEnsureHostControlDataDirectory -> ensureHostControlDataDirectory repoRoot bootstrapSettings
+    StepEnsureRetainedLocalStorage ->
+      ensureRetainedLocalStorage repoRoot bootstrapSettings prodboxId labelValue
+    -- Sprint 7.25: MinIO comes up BEFORE Vault (it depends only on the cluster +
+    -- its retained PV — static root cred, no Vault init container), so Vault init
+    -- writes the unlock bundle to a live MinIO and unseal reads it FROM MinIO.
+    StepMinioRuntimeBootstrap -> ensureMinioRuntime repoRoot SubstrateHomeLocal MinioBootstrapPublic
+    StepVaultRuntime -> ensureVaultRuntime repoRoot
+    StepHarborRegistryStorageBackend -> ensureHarborRegistryStorageBackend repoRoot
+    StepHarborRegistryRuntime -> ensureHarborRegistryRuntime repoRoot SubstrateHomeLocal
+    -- Sprint 4.43: the deep registry->MinIO S3 edge gate (M3) runs before the
+    -- mirror push and every downstream registry write, replacing reliance on the
+    -- shallow `GET /v2/` front-door gate.
+    StepVerifyRegistryMinioEdge -> ensureRegistryStorageBackendEdgeReady repoRoot
+    StepMirrorClusterImagesOnce -> mirrorClusterImagesOnce repoRoot
+    StepEnsureRuntimeImage -> ensureRuntimeImage repoRoot prodboxId
+    StepRke2RegistriesConfig -> ensureRke2RegistriesConfig repoRoot
+    StepGatewayChartReadyPreVault -> ensureGatewayChartReady repoRoot bootstrapSettings SubstrateHomeLocal
+    _ -> pure ExitSuccess
+
+  -- The `PhaseSteady` action for a step, closing over the post-Vault settings.
+  -- Called only on `PhaseSteady` steps; the catch-all is unreachable.
+  steadyStepAction :: ValidatedSettings -> ReconcileStepId -> IO ExitCode
+  steadyStepAction settings step = case step of
+    StepClusterPlatformRuntime -> ensureClusterPlatformRuntime repoRoot settings prodboxId labelValue
+    StepMinioRuntimeSteadyState -> ensureMinioRuntime repoRoot SubstrateHomeLocal MinioSteadyStateHarbor
+    StepGatewayMinioBootstrap -> ensureGatewayMinioBootstrap repoRoot
+    StepGatewayChartReady -> ensureGatewayChartReady repoRoot settings SubstrateHomeLocal
+    StepRootChartNamespaceGuardrails -> ensureRootChartNamespaceGuardrails repoRoot settings
+    StepAdminPublicEdgeRoutes ->
+      ensureAdminPublicEdgeRoutes repoRoot settings SubstrateHomeLocal prodboxId labelValue
+    StepReconcileManagedAnnotations -> reconcileManagedAnnotations repoRoot prodboxId labelValue
+    _ -> pure ExitSuccess
 
 loadPostMinioLifecycleSettings
   :: FilePath -> ValidatedSettings -> IO (Either String ValidatedSettings)
@@ -3586,6 +3767,106 @@ probeHarborHttpStatus repoRoot path = do
           ExitSuccess -> Right (trimWhitespace (processStdout output))
           ExitFailure _ -> Left (outputDetail output)
 
+-- | Sprint 4.43: the deep registry→MinIO S3 storage-backend readiness gate
+-- (bootstrap_readiness_doctrine.md M3). A @GET /v2/@ front-door probe is served
+-- by @registry:2@ __without touching S3__, so it never proves the registry can
+-- reach its MinIO storage backend — the exact shallow gate that left the
+-- @dial tcp: lookup minio.prodbox.svc.cluster.local: no such host@ race open at
+-- the image-mirror push. This gate exercises the __same edge the mirror push
+-- uses__: it opens a blob-upload session against the registry
+-- (@POST /v2/<name>/blobs/uploads/@), which the S3 storage driver services by
+-- writing an upload record to MinIO. A @202 Accepted@ therefore proves the
+-- registry reached MinIO S3; a curl-level failure is 'RegistryEdgeUnreachable'
+-- (gates closed, doctrine Statement 4); any non-2xx status is
+-- 'RegistryEdgeNotReady' (retryable — MinIO may be transiently unreachable from
+-- the registry pod). It runs before 'mirrorClusterImagesOnce' and before any
+-- runtime/custom-image push.
+data RegistryStorageEdgeReadiness
+  = RegistryEdgeReady
+  | RegistryEdgeNotReady String
+  | RegistryEdgeUnreachable String
+  deriving (Eq, Show)
+
+-- | The anonymous repository name the deep-gate blob-upload probe targets. It is
+-- never committed — an incomplete upload session the registry garbage-collects.
+registryStorageEdgeProbeRepository :: String
+registryStorageEdgeProbeRepository = "prodbox-readiness-probe"
+
+-- | Pure classification of the deep-gate probe result (M3). A curl-level failure
+-- (the registry NodePort unreachable) is 'RegistryEdgeUnreachable' and gates
+-- closed; a @201@/@202@ upload session proves the S3 write edge; any other status
+-- (including a registry @5xx@ when it cannot reach MinIO) is retryable
+-- 'RegistryEdgeNotReady'.
+classifyRegistryStorageEdgeProbe :: Either String String -> RegistryStorageEdgeReadiness
+classifyRegistryStorageEdgeProbe result =
+  case result of
+    Left err -> RegistryEdgeUnreachable err
+    Right status
+      | status `elem` ["201", "202"] -> RegistryEdgeReady
+      | otherwise ->
+          RegistryEdgeNotReady ("registry storage-backend probe returned HTTP " ++ status)
+
+-- | Open a blob-upload session against the registry NodePort — the real
+-- registry→MinIO S3 write round-trip the deep gate needs (see
+-- 'RegistryStorageEdgeReadiness').
+probeRegistryStorageBackendEdge :: FilePath -> IO (Either String String)
+probeRegistryStorageBackendEdge repoRoot = do
+  outputResult <-
+    captureToolOutput
+      repoRoot
+      "curl"
+      [ "-sS"
+      , "--max-time"
+      , "10"
+      , "-X"
+      , "POST"
+      , "-o"
+      , "/dev/null"
+      , "-w"
+      , "%{http_code}"
+      , "http://"
+          ++ harborRegistryEndpoint
+          ++ "/v2/"
+          ++ registryStorageEdgeProbeRepository
+          ++ "/blobs/uploads/"
+      ]
+  pure $
+    case outputResult of
+      Left err -> Left err
+      Right output ->
+        case processExitCode output of
+          ExitSuccess -> Right (trimWhitespace (processStdout output))
+          ExitFailure _ -> Left (outputDetail output)
+
+-- | Sprint 4.43: poll the deep registry→MinIO edge gate until it proves the S3
+-- write path, refusing (gating closed) on exhaustion. This is the registry
+-- component's real readiness barrier (graph @ProbeBackendRoundTrip minio@),
+-- gating the mirror push and every downstream registry write.
+ensureRegistryStorageBackendEdgeReady :: FilePath -> IO ExitCode
+ensureRegistryStorageBackendEdgeReady repoRoot =
+  go harborEndpointReadinessAttempts "registry storage-backend edge not yet checked"
+ where
+  go :: Int -> String -> IO ExitCode
+  go attemptsRemaining lastDetail
+    | attemptsRemaining <= 0 =
+        failWith
+          ( "Failed to prove the registry->MinIO S3 storage-backend edge before continuing. "
+              ++ "A GET /v2/ front-door probe does not exercise this edge "
+              ++ "(bootstrap_readiness_doctrine.md M3); last observation: "
+              ++ lastDetail
+          )
+    | otherwise = do
+        probeResult <- probeRegistryStorageBackendEdge repoRoot
+        case classifyRegistryStorageEdgeProbe probeResult of
+          RegistryEdgeReady -> pure ExitSuccess
+          RegistryEdgeNotReady detail -> retry attemptsRemaining detail
+          RegistryEdgeUnreachable detail -> retry attemptsRemaining ("unreachable: " ++ detail)
+
+  retry :: Int -> String -> IO ExitCode
+  retry attemptsRemaining detail = do
+    threadDelay harborEndpointReadinessDelayMicroseconds
+    go (attemptsRemaining - 1) detail
+
 ensureClusterPlatformRuntime :: FilePath -> ValidatedSettings -> String -> String -> IO ExitCode
 ensureClusterPlatformRuntime repoRoot settings prodboxId labelValue = do
   lanDefaultsResult <- resolveClusterPlatformLanDefaults
@@ -5700,6 +5981,15 @@ pushDockerImageWithRetry repoRoot imageRef description = go (retryPolicyMaxAttem
                 emitCapturedProcessOutput output
                 pure (ExitFailure 1)
 
+-- | Sprint 4.43: a retry classifier that misclassifies a dependency's
+-- characteristic transient failure is a shallow gate wearing a retry's clothes
+-- (bootstrap_readiness_doctrine.md §4). The registry→MinIO push edge fails
+-- transiently with __name-resolution__ errors (@no such host@ / @dial tcp@ /
+-- @lookup@ / @name resolution@) while endpoint programming settles; these are
+-- now classified retryable so residual jitter is bounded by
+-- 'pushDockerImageWithRetry' rather than failing the bootstrap outright. The
+-- deep gate ('ensureRegistryStorageBackendEdgeReady') is what removes the race;
+-- this classifier only bounds the residual.
 isRetryableHarborPublicationFailure :: String -> Bool
 isRetryableHarborPublicationFailure detail =
   let lowered = map toLower detail
@@ -5716,6 +6006,10 @@ isRetryableHarborPublicationFailure detail =
         , "temporary failure"
         , "unexpected eof"
         , "unexpected status from put request"
+        , "no such host"
+        , "dial tcp"
+        , "lookup"
+        , "name resolution"
         ]
 
 harborTargetAvailableForHostArchitecture :: FilePath -> String -> IO (Either String Bool)

@@ -2,7 +2,7 @@
 
 **Status**: Reference only
 **Supersedes**: N/A
-**Referenced by**: README.md, DEVELOPMENT_PLAN/README.md, DEVELOPMENT_PLAN/00-overview.md, documents/documentation_standards.md, documents/engineering/aws_test_environment.md
+**Referenced by**: README.md, CLAUDE.md, DEVELOPMENT_PLAN/README.md, DEVELOPMENT_PLAN/00-overview.md, documents/documentation_standards.md, documents/engineering/aws_test_environment.md
 **Generated sections**: none
 
 > **Purpose**: Index of engineering and architecture documentation.
@@ -49,6 +49,7 @@ cross-substrate shared infrastructure (see
 | [storage_lifecycle_doctrine.md](./storage_lifecycle_doctrine.md) | Unified block-storage doctrine: static `Retain` no-provisioner PVs on both substrates (home `hostPath`, EKS pre-created EBS) and deterministic PVC/PV rebinding |
 | [prerequisite_doctrine.md](./prerequisite_doctrine.md) | Fail-fast prerequisite philosophy and registry doctrine |
 | [prerequisite_dag_system.md](./prerequisite_dag_system.md) | Prerequisite DAG construction and reduction reference |
+| [bootstrap_readiness_doctrine.md](./bootstrap_readiness_doctrine.md) | The shallow-gate invariant that makes bootstrap readiness races unrepresentable: a step may run only behind a barrier that exercises the exact dependency call path it uses (not a `/v2/`-style proxy), with reconcile order derived from a config-sourced, pure-checked component dependency/readiness graph rather than a hand-written sequence |
 | [streaming_doctrine.md](./streaming_doctrine.md) | Streaming and terminal-record serialization invariants |
 | [tla/README.md](./tla/README.md) | TLA+ model index for formal safety properties |
 | [tla_modelling_assumptions.md](./tla_modelling_assumptions.md) | TLA+ formal model correspondence, divergences, and verification status |
@@ -111,6 +112,8 @@ cross-substrate shared infrastructure (see
 - [Fail-Fast Philosophy](./prerequisite_doctrine.md#1-philosophy)
 - [Prerequisite Registry](./prerequisite_doctrine.md#3-registry)
 - [Prerequisite DAG System](./prerequisite_dag_system.md)
+- [Bootstrap Readiness Doctrine](./bootstrap_readiness_doctrine.md)
+- [Shallow-Gate Invariant](./bootstrap_readiness_doctrine.md#0-canonical-doctrine-statements)
 
 ### Dependency Management
 

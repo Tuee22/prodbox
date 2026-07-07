@@ -1989,7 +1989,10 @@ for the authoritative mount layout.
 ### Deliverables
 
 - Rewrite `charts/gateway/templates/configmap-config.yaml` to render Dhall content at
-  `/etc/gateway/config.dhall`. The Dhall expression imports
+  `/etc/gateway/config.dhall`. **[Superseded by Sprint 2.21:** the ConfigMap is now a directory
+  mount at `/etc/gateway/config`, so the daemon's `--config` is `/etc/gateway/config/config.dhall`
+  — see [config_doctrine.md §6](../documents/engineering/config_doctrine.md#6-cluster-mount-contract).**]**
+  The Dhall expression imports
   `/etc/gateway/orders.dhall`, `/etc/gateway/secrets/aws.dhall`, and
   `/etc/gateway/secrets/minio.dhall`.
 - Rewrite `charts/gateway/templates/configmap-orders.yaml` to render Dhall content at
@@ -2014,7 +2017,8 @@ for the authoritative mount layout.
 2. `helm template gateway charts/gateway` renders cleanly.
 3. `prodbox lint chart` exit 0 (chart structural invariants stay green).
 4. Live exercise: `prodbox rke2 reconcile` brings up the gateway daemon with the new
-   chart layout; the daemon reads `/etc/gateway/config.dhall`, imports the credential
+   chart layout; the daemon reads `/etc/gateway/config.dhall` (Sprint 2.21 moved this to the
+   directory mount `/etc/gateway/config`, i.e. `/etc/gateway/config/config.dhall`), imports the credential
    Secrets, connects to MinIO, and serves `/healthz` 200.
 
 ### Remaining Work

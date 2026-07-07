@@ -27,7 +27,10 @@ validation environments.
   subprocesses, smart constructors, error handling, capability classes, retry policy, and
   application environment in `haskell_code_guide.md`; generated artifacts and lint stack
   in `code_quality.md`; output rules and at-least-once event processing in
-  `streaming_doctrine.md`; prerequisites as typed effects in `prerequisite_doctrine.md`;
+  `streaming_doctrine.md`; prerequisites as typed effects in `prerequisite_doctrine.md`; the
+  shallow-gate invariant that makes bootstrap readiness races unrepresentable — reconcile ordering
+  projected over a config-sourced component dependency/readiness graph, each barrier probing the
+  exact dependency call path — in `bootstrap_readiness_doctrine.md`;
   daemon lifecycle in `distributed_gateway_architecture.md`; unified block storage —
   static `Retain` no-provisioner PVs on both substrates (home `hostPath`, EKS pre-created
   EBS) and deterministic rebinding — in `storage_lifecycle_doctrine.md`; testing doctrine in
@@ -231,6 +234,12 @@ The current worktree closes on the supported edge architecture. Today:
   `dev check` makes a creatable-but-undiscoverable resource unrepresentable (doctrine:
   [lifecycle_reconciliation_doctrine.md § 3.1](./documents/engineering/lifecycle_reconciliation_doctrine.md);
   Phase 4 Sprints 4.20–4.22 and Phase 7 Sprint 7.8)
+- **scheduled**: bootstrap reconcile ordering becomes a pure projection over a config-sourced
+  component dependency/readiness graph, and every readiness barrier probes the exact dependency
+  call path it guards (the registry→MinIO S3 write edge, not a front-door `/v2/` proxy), so the
+  class of bootstrap readiness races is unrepresentable (doctrine:
+  [bootstrap_readiness_doctrine.md](./documents/engineering/bootstrap_readiness_doctrine.md);
+  Phase 1 Sprint 1.56, Phase 3 Sprint 3.23, Phase 4 Sprint 4.43, Phase 7 Sprint 7.31)
 
 Closure, validation ownership, and phase history are tracked in
 [DEVELOPMENT_PLAN/README.md](./DEVELOPMENT_PLAN/README.md).
@@ -744,6 +753,9 @@ prodbox/
 - [CLI Command Surface](./documents/engineering/cli_command_surface.md)
 - [Code Quality Doctrine](./documents/engineering/code_quality.md)
 - [Lifecycle Reconciliation Doctrine](./documents/engineering/lifecycle_reconciliation_doctrine.md)
+- [Bootstrap Readiness Doctrine](./documents/engineering/bootstrap_readiness_doctrine.md)
 - [Storage Lifecycle Doctrine](./documents/engineering/storage_lifecycle_doctrine.md)
 - [Vault Secret-Management Doctrine](./documents/engineering/vault_doctrine.md)
 - [Unit Testing Policy](./documents/engineering/unit_testing_policy.md)
+- [Claude Code Patterns (CLAUDE.md)](./CLAUDE.md)
+- [Agent Guidelines (AGENTS.md)](./AGENTS.md)

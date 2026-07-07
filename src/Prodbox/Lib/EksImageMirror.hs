@@ -28,6 +28,7 @@ module Prodbox.Lib.EksImageMirror
   , defaultEksImageMirrorConfig
   , eksImageMirrorJobManifest
   , eksImageMirrorCopyScript
+  , isRetryableEksImageMirrorFailure
   )
 where
 
@@ -37,7 +38,8 @@ import Data.Aeson
   , (.=)
   )
 import Data.Aeson.Key qualified as Key
-import Data.List (intercalate)
+import Data.Char (toLower)
+import Data.List (intercalate, isInfixOf)
 
 -- | Configuration for the in-cluster image-mirror Job.
 data EksImageMirrorConfig = EksImageMirrorConfig
@@ -119,6 +121,38 @@ eksImageMirrorCopyScript config pairs =
            , ""
            ]
     )
+
+-- | Sprint 7.31: the EKS-side counterpart of
+-- 'Prodbox.CLI.Rke2.isRetryableHarborPublicationFailure'
+-- (bootstrap_readiness_doctrine.md §4). The EKS crane push exercises the same
+-- registry→MinIO S3 write edge as the home mirror, so its characteristic
+-- transient failure is a name-resolution error against
+-- @minio.prodbox.svc.cluster.local@ (or the internal Harbor Service) while
+-- endpoint programming settles. Classifying @no such host@ / @dial tcp@ /
+-- @lookup@ / @name resolution@ as retryable — plus the usual transient HTTP /
+-- connection errors — bounds residual jitter with a host-side Job re-apply
+-- rather than failing the AWS-substrate bootstrap on first contact. The deep
+-- gate ('ensureRegistryStorageBackendEdgeReady') is what removes the race; this
+-- classifier only bounds the residual.
+isRetryableEksImageMirrorFailure :: String -> Bool
+isRetryableEksImageMirrorFailure detail =
+  let lowered = map toLower detail
+   in any
+        (`isInfixOf` lowered)
+        [ "no such host"
+        , "dial tcp"
+        , "lookup"
+        , "name resolution"
+        , "connection reset by peer"
+        , "connection refused"
+        , "tls handshake timeout"
+        , "i/o timeout"
+        , "temporary failure"
+        , "502 bad gateway"
+        , "503 service unavailable"
+        , "504 gateway timeout"
+        , "429 too many requests"
+        ]
 
 renderCopyCommand :: EksImageMirrorConfig -> String -> String -> [String]
 renderCopyCommand config src chartTarget =

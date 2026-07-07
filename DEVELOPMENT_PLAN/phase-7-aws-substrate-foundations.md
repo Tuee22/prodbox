@@ -19,6 +19,17 @@
 
 ## Phase Status
 
+🔄 **Reopened 2026-07-06 for AWS-substrate readiness-barrier parity** — Phase `7` reopens to expand
+its own AWS-substrate surface with Sprint `7.31` (⏸️ Blocked by Sprints `1.56` and `4.43`), the
+AWS-substrate arm of the bootstrap-readiness refactor
+([bootstrap_readiness_doctrine.md](../documents/engineering/bootstrap_readiness_doctrine.md)). Sprint
+`7.31` applies the same deep registry→MinIO edge-readiness barrier in `AwsSubstratePlatform` before
+the EKS image-mirror Job and crane pushes, and fixes the `EksImageMirror` retry classifier to treat
+transient name-resolution failures as retryable. Per Standard N the `Blocked by` names only
+earlier-phase sprints (`1.56`, `4.43`); the live EKS proof is a non-blocking Standard O
+`🧪 Live-proof: pending` axis tracked in [substrates.md](substrates.md). All earlier Phase `7`
+closures remain valid on their owned surfaces.
+
 ✅ **Reclosed 2026-07-05 for daemon-mediated Pulumi/object-store access.** Sprint `7.30` is now
 Done on its code-owned surface. Encrypted Pulumi backend hydration/persistence, per-run residue
 checks, stack-output reads, and corrupt-checkpoint prune deletes now use the loopback-restricted
@@ -4500,6 +4511,72 @@ daemon over the loopback-restricted NodePort and performed against MinIO in-clus
   proof against real EKS/MinIO. Remaining direct host MinIO helpers are explicit legacy/config/test
   seams tracked separately in the legacy ledger; the supported per-run Pulumi path no longer uses
   them.
+
+## Sprint 7.31: AWS-Substrate Deep Registry→MinIO Barrier and EksImageMirror Classifier Parity [✅ Done]
+
+**Status**: Done (2026-07-06) on the code-owned surface
+**Implementation**: `src/Prodbox/Lib/AwsSubstratePlatform.hs` (the shared
+`ensureRegistryStorageBackendEdgeReady` gate inserted before `applyEksImageMirrorJob`, and the
+classifier-gated Job re-apply), `src/Prodbox/Lib/EksImageMirror.hs`
+(`isRetryableEksImageMirrorFailure`)
+**Live-proof**: pending (a live `prodbox test all --substrate aws` past the EKS image-mirror step —
+non-blocking, Standard O; tracked in [substrates.md](substrates.md))
+**Independent Validation**: fake-boundary unit tests over the EKS-side deep gate decision and the
+`EksImageMirror` classifier treating `no such host`/`dial tcp`/`lookup` as retryable. Code-owned
+surface validated locally; the live EKS run is a separate non-blocking axis.
+**Docs to update**: `documents/engineering/bootstrap_readiness_doctrine.md`,
+`documents/engineering/local_registry_pipeline.md`, `DEVELOPMENT_PLAN/substrates.md`
+
+### Objective
+
+Bring the AWS substrate to parity with the home-substrate bootstrap-readiness guarantee: no EKS
+image-mirror or crane push may run before the registry→MinIO S3 write edge is proven ready, and
+transient name-resolution failures on that edge are retryable.
+
+### Deliverables
+
+- `ensureAwsSubstratePlatformRuntime` gates the EKS image-mirror Job and crane custom-image pushes
+  behind the same deep registry→MinIO edge-readiness barrier landed in Sprint `4.43` (a real S3
+  round-trip through the registry, not a Job-`complete`/front-door proxy). `Unreachable` gates
+  closed.
+- `EksImageMirror` classifies transient name-resolution failures (`no such host`, `dial tcp`,
+  `lookup`, `name resolution`) as retryable.
+
+### Validation
+
+1. `prodbox test unit` covers the EKS deep-gate ordering (`ensureRegistryStorageBackendEdgeReady`
+   precedes `applyEksImageMirrorJob` in `awsSubstratePlatformRuntimeStepDescriptions`) and the
+   `isRetryableEksImageMirrorFailure` classifier cases. ✅ 1216/1216.
+2. `prodbox dev check` (exit 0) + `prodbox test integration cli`/`env` green on the code-owned
+   surface.
+3. Live-proof (non-blocking, Standard O): `prodbox test all --substrate aws` reconcile completes past
+   the EKS image-mirror step; tracked in [substrates.md](substrates.md).
+
+Closed 2026-07-06 on the code-owned surface. The AWS path reuses the exact home-substrate deep gate
+(`ensureRegistryStorageBackendEdgeReady`, a blob-upload S3 round-trip) before the EKS image-mirror Job
+and crane pushes, and `applyEksImageMirrorJob` re-applies the Job on a classifier-matched transient
+failure (`isRetryableEksImageMirrorFailure`), replacing sole reliance on the Job's `backoffLimit=2`.
+
+### Remaining Work
+
+- The live EKS proof is the non-blocking Standard O axis; it never marks this sprint or Phase `7`
+  Blocked.
+
+## Documentation Requirements
+
+**Engineering docs to create/update:**
+
+- `documents/engineering/bootstrap_readiness_doctrine.md` - the AWS-substrate application of the deep
+  registry→MinIO barrier and classifier.
+- `documents/engineering/local_registry_pipeline.md` - EKS-side registry→MinIO gate parity.
+
+**Product docs to create/update:**
+
+- None.
+
+**Cross-references to add:**
+
+- Update [substrates.md](substrates.md) parity notes for the EKS image-mirror readiness gate.
 
 ## Related Documents
 

@@ -19,7 +19,8 @@
 [secret_derivation_doctrine.md](./secret_derivation_doctrine.md),
 [storage_lifecycle_doctrine.md](./storage_lifecycle_doctrine.md),
 [unit_testing_policy.md](./unit_testing_policy.md),
-[vault_doctrine.md](./vault_doctrine.md)
+[vault_doctrine.md](./vault_doctrine.md),
+[bootstrap_readiness_doctrine.md](./bootstrap_readiness_doctrine.md)
 **Generated sections**: none
 
 > **Purpose**: Define the singleton chart identity, shared public-edge attachment model, external Patroni
@@ -38,7 +39,7 @@ The supported chart doctrine is:
 
 1. `prodbox charts` manages the repo-owned root charts `gateway`, `keycloak`, `vscode`, `api`,
    and `websocket`, with internal `keycloak-postgres` and `redis` dependency releases.
-   Public `status|deploy|delete` inputs are restricted to those root chart names; the internal
+   Public `status|reconcile|delete` inputs are restricted to those root chart names; the internal
    dependency releases are runtime-owned and are not supported public CLI targets.
 2. No repo-owned chart may render or own an embedded PostgreSQL subchart.
 3. Helm-managed application PostgreSQL is namespace-local and Patroni-based: the internal
@@ -204,7 +205,10 @@ same namespace as the consuming chart stack.
 The supported contract is:
 
 - `prodbox cluster reconcile` installs the cluster-wide `percona/pg-operator` Helm release into the
-  `postgres-operator` namespace.
+  `postgres-operator` namespace. The chart → operator readiness gate proves the operator Deployment
+  is **`Available`** (reconciling), not merely that it exists; and the chart dependency edges below
+  are sourced from the typed component graph, not hardcoded, per
+  [bootstrap_readiness_doctrine.md](./bootstrap_readiness_doctrine.md).
 - `prodbox charts reconcile keycloak` and `prodbox charts reconcile vscode` include the internal
   `keycloak-postgres` release before `keycloak`.
 - Each Patroni cluster runs exactly three PostgreSQL replicas.
@@ -344,10 +348,16 @@ follows a uniform mount layout:
 
 | Mount source | Mount path | Content |
 |---|---|---|
-| `<release>-config-<podId>` ConfigMap | `/etc/<release>/config.dhall` | per-Pod Dhall expression; sensitive fields are `SecretRef.Vault` references, not inline credential imports |
+| `<release>-config-<podId>` ConfigMap | `/etc/<release>/config.dhall` (gateway exception below) | per-Pod Dhall expression; sensitive fields are `SecretRef.Vault` references, not inline credential imports |
 | `<release>-orders` ConfigMap (gateway only) | `/etc/gateway/orders.dhall` | cluster-wide ranked-node + timing Dhall expression |
 | Cert-manager-issued per-Pod TLS Secret | `/tls/` | TLS keypair referenced by file path from the Dhall config |
 | Cert-manager CA Secret | `/ca/` | trust anchor referenced by file path from the Dhall config |
+
+The gateway daemon is the mount-shape exception to the uniform row above: its ConfigMap is a
+**directory** mount at `/etc/gateway/config` (no `subPath`, so the kubelet's atomic `..data`
+swap fires the fsnotify reload), and the daemon reads `--config /etc/gateway/config/config.dhall`
+— the `config.dhall` file inside that directory. See
+[config_doctrine.md §6-§7](./config_doctrine.md#6-cluster-mount-contract).
 
 The operator-facing ConfigMap holds no secret material — sensitive fields are typed
 `SecretRef.Vault` references that each consumer resolves against Vault at runtime.

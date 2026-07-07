@@ -118,7 +118,7 @@ token, reads the Vault-owned federation HMAC key, ensures the per-child Transit 
 child token policy, creates the child transit-seal token, writes child metadata/bootstrap/index KV
 objects to parent Vault, and applies the child-side `vault/vault-transit-seal-token` Secret without
 printing that token. Sprint `2.26` closes the gateway-mediated read path: the gateway daemon keeps
-its non-secret Vault Kubernetes-auth coordinates from `/etc/gateway/config.dhall`, logs in through
+its non-secret Vault Kubernetes-auth coordinates from `/etc/gateway/config/config.dhall`, logs in through
 Vault on demand, serves `/v1/federation/children` from `secret/data/clusters/index` plus each
 metadata object, and serves `/v1/federation/children/<child>/bootstrap` from the child bootstrap KV
 object. The listing response never returns the transit-seal token; token-bearing custody values have
@@ -310,7 +310,7 @@ init keys, every credential — is Vault-owned and unrecoverable from a sealed c
 |--------|----------------------------------|
 | `1.38` | Config SSoT inversion: the Vault-Transit-enveloped MinIO object is the in-force config; filesystem Dhall is seed/propose only; the unencrypted-basics local surface; root-token-gated root-config writes (§5, §6). |
 | `2.26` | Cluster federation trust topology and downstream-cluster custody: the parent/child hierarchy; downstream-cluster config/identities as secret; the CLI/gateway surface to register a child cluster, custody its init keys, record full downstream inventory, and expose Vault-backed child-listing / bootstrap-reference endpoints (§2–§4). |
-| `3.20` | Vault transit-seal hierarchy and per-cluster seal custody: root Shamir + `.age` bundle; child `seal "transit"` chart rendering against the parent; child recovery-key init request shape; child init keys mapped to parent-owned Vault KV; per-domain Transit keys + policies (§2, §3). |
+| `3.20` | Vault transit-seal hierarchy and per-cluster seal custody: root Shamir + password-AEAD (Argon2id + ChaCha20-Poly1305) unlock bundle; child `seal "transit"` chart rendering against the parent; child recovery-key init request shape; child init keys mapped to parent-owned Vault KV; per-domain Transit keys + policies (§2, §3). |
 | `4.32` | Federated lifecycle reconcile and fail-closed unseal cascade: direct parent-side live child registration; child `cluster reconcile` auto-unseals from its parent; init-once/unseal-on-rebuild; the brick cascade when a parent is sealed/unreachable; lifecycle settings reload after Vault/MinIO uses the child root token custodied in the parent KV (§6, §7). |
 | `5.8` | Canonical sealed-Vault validation: `prodbox test integration sealed-vault` proves the deployed parent/child fail-closed cascade and cross-surface no-child-info invariant during the live red-team closure (§7). |
 

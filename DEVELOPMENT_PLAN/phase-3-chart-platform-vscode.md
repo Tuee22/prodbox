@@ -15,6 +15,17 @@
 
 ## Phase Status
 
+🔄 **Reopened 2026-07-06 for graph-sourced chart dependency edges** — Phase `3` reopens to expand its
+own chart-platform surface with Sprint `3.23` (⏸️ Blocked by Sprint `1.56`), part of the
+bootstrap-readiness refactor
+([bootstrap_readiness_doctrine.md](../documents/engineering/bootstrap_readiness_doctrine.md)). Sprint
+`3.23` retires the hardcoded `chartDefinitionDependencies` / `ChartRequiresPatroniPlatform` edges in
+`Prodbox.Lib.ChartPlatform` in favor of the Sprint `1.56` config-sourced component graph, and makes
+the chart→Patroni-operator readiness gate prove the operator Deployment is `Available` (reconciling),
+not merely that it exists. The retired hardcoded edges are recorded in
+[legacy-tracking-for-deletion.md](legacy-tracking-for-deletion.md). Per Standard N the `Blocked by`
+names only the earlier-phase Sprint `1.56`. All earlier Phase `3` closures remain valid.
+
 ✅ **Reclosed 2026-07-04 for chart resource requirements** — Sprint `3.22` now expands the
 chart-platform surface so every repo-owned chart template with containers/init containers renders a
 values-backed cpu/memory/ephemeral-storage request+limit envelope, root charts render
@@ -1207,7 +1218,9 @@ markers are deleted and the Patroni anchor decision derives from live k8s state.
   merges static fields into the manifest body. `configmap.yaml` realm-import +
   `charts/vscode/templates/http-route.yaml` + `charts/websocket/templates/configmap-config.yaml`
   all read the OAuth client secrets via Helm `lookup` (cross-namespace for vscode/
-  websocket from the keycloak namespace).
+  websocket from the keycloak namespace). **[Current canonical topology:** Keycloak and the shared
+  public edge run in the `vscode` namespace (the `keycloak` chart is a dependency of the `vscode`
+  root chart) — see [envoy_gateway_edge_doctrine.md](../documents/engineering/envoy_gateway_edge_doctrine.md).**]**
 - **Chunk 12** — `resolveChartSecrets` reduced to `pure (Right Map.empty)`.
   `requireMapValue`, `requiredChartSecretKeys`, `recoverPatroniSecretValues`,
   `mergeChartSecretValues`, `readSharedKeycloakSecretValues` deleted.
@@ -2250,6 +2263,74 @@ from that plan only; chart-local resource defaults are forbidden.
 
 None on the Sprint `3.22` code-owned surface. Host-side RKE2 guardrails landed in Sprint `4.41`;
 canonical cluster-state validation landed in Sprint `5.13`.
+
+## Sprint 3.23: Graph-Sourced Chart Dependency Edges and Operator `Available` Gate [✅ Done]
+
+**Status**: Done (2026-07-06)
+**Implementation**: `src/Prodbox/Lib/ChartPlatform.hs` (graph-sourced `resolveDependencyOrder`,
+graph-projected operator gates, the `Available` operator check),
+`src/Prodbox/Config/ComponentGraph.hs` (`chartComponentDeployOrder`, `directChartDependencies`,
+`operatorAvailableGates`)
+**Independent Validation**: pure unit tests over the chart dependency-order resolver consuming a
+component-graph fixture (same topological order as today, cycle rejection preserved), and the
+chart→operator gate refusing until the operator Deployment reports `Available`. Home-substrate chart
+deploy/delete path; no later phase required.
+**Docs to update**: `documents/engineering/helm_chart_platform_doctrine.md`,
+`documents/engineering/bootstrap_readiness_doctrine.md`,
+`DEVELOPMENT_PLAN/legacy-tracking-for-deletion.md`
+
+### Objective
+
+Remove the last hardcoded corner of the bootstrap dependency graph from the chart platform: source
+chart ordering from the Sprint `1.56` typed component graph, and replace the presence-not-readiness
+operator gate with an `Available` gate, per
+[bootstrap_readiness_doctrine.md](../documents/engineering/bootstrap_readiness_doctrine.md).
+
+### Deliverables
+
+- `resolveDependencyOrder` consumes the config-sourced component graph instead of the hardcoded
+  `chartDefinitionDependencies` literals; the `ChartRequiresPatroniPlatform` external-requirement
+  constructor is retired in favor of a graph edge (ledger row under this sprint). Cycle detection and
+  the resulting deploy order are unchanged.
+- `validatePatroniPlatformReady` (and any sibling operator check) gates on the operator Deployment
+  being `Available`/reconciling, not merely present — closing the presence≠ready RACY edge.
+
+### Validation
+
+1. `prodbox test unit` proves graph-sourced ordering matches today's order (all eight charts), cycles
+   are rejected, the Percona operator gate is projected from the `keycloak-postgres` graph edge, and
+   the gate accepts only a Deployment reporting `Available=True`. ✅ 1209/1209.
+2. `prodbox dev lint chart` ✅ exit 0 + the home-substrate chart deploy/delete path (`resolveDependencyOrder`
+   is now graph-sourced on both). `prodbox test integration cli`/`env` green.
+3. `prodbox dev check` is the closure gate. ✅ exit 0.
+
+Closed 2026-07-06. The hardcoded `chartDefinitionDependencies` literals and the
+`ChartExternalRequirement`/`ChartRequiresPatroniPlatform` type are removed; chart ordering and the
+`charts list`/`charts status` dependency display now read the component graph, and the operator gate
+is projected from the graph edge (`operatorAvailableGates`) and checks the Deployment's `Available`
+condition (`deploymentConditionReportsTrue`) rather than mere object existence.
+
+### Remaining Work
+
+- None beyond Sprint `1.56` landing; AWS-substrate chart coverage stays orthogonal (substrates.md
+  parity).
+
+## Documentation Requirements
+
+**Engineering docs to create/update:**
+
+- `documents/engineering/helm_chart_platform_doctrine.md` - graph-sourced chart edges + the operator
+  `Available` gate.
+- `documents/engineering/bootstrap_readiness_doctrine.md` - the chart-edge application of M2/M3.
+
+**Product docs to create/update:**
+
+- None.
+
+**Cross-references to add:**
+
+- Add a ledger row (Sprint `3.23`) for the retired `chartDefinitionDependencies` /
+  `ChartRequiresPatroniPlatform` edges.
 
 ## Related Documents
 

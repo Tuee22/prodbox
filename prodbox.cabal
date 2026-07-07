@@ -36,6 +36,7 @@ library
         Prodbox.Cluster.Topology
         Prodbox.Cbor
         Prodbox.Config.Basics
+        Prodbox.Config.ComponentGraph
         Prodbox.Config.FloorDhall
         Prodbox.Config.SchemaDhall
         Prodbox.Config.Tier0

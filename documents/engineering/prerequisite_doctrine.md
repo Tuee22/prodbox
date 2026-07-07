@@ -2,7 +2,7 @@
 
 **Status**: Authoritative source
 **Supersedes**: N/A
-**Referenced by**: documents/engineering/README.md, documents/engineering/cli_command_surface.md, documents/engineering/code_quality.md, documents/engineering/effectful_dag_architecture.md, documents/engineering/prerequisite_dag_system.md, documents/engineering/unit_testing_policy.md, documents/engineering/host_platform_doctrine.md
+**Referenced by**: documents/engineering/README.md, documents/engineering/cli_command_surface.md, documents/engineering/code_quality.md, documents/engineering/effectful_dag_architecture.md, documents/engineering/prerequisite_dag_system.md, documents/engineering/unit_testing_policy.md, documents/engineering/host_platform_doctrine.md, documents/engineering/bootstrap_readiness_doctrine.md
 **Generated sections**: none
 
 > **Purpose**: Define the fail-fast prerequisite doctrine for supported `prodbox` command flows.
@@ -99,7 +99,10 @@ Recommended patterns:
 - keep any repository-local self-heal bounded, logged, and followed by the same final readiness
   proof, such as recreating a deleted MinIO export host path before retrying Pulumi backend login
 - use explicit runtime-stability gates after prerequisite success when a long-running command needs
-  a proven steady state, such as registry endpoint stability before image reconcile
+  a proven steady state, such as registry endpoint stability before image reconcile — and per the
+  [Bootstrap Readiness Doctrine](./bootstrap_readiness_doctrine.md), that steady-state gate must
+  exercise the **exact dependency call path** the next step uses (a front-door proxy such as
+  `GET /v2/` does not prove the registry → MinIO S3 write edge)
 
 ## 5. Anti-Patterns
 

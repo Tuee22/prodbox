@@ -89,11 +89,13 @@ The current repository closes on the implemented self-managed public-edge doctri
 3. The current shipped public workloads are `vscode`, `api`, `websocket`, and MinIO,
    each delivered through shared-host Gateway API `HTTPRoute` resources on
    `test.resolvefintech.com`.
-4. The supported shared public edge is owned by the `keycloak` chart: the `keycloak` stack
-   publishes the shared `Gateway`, the listener certificate, the port-80 redirect `HTTPRoute`, and
-   the `/auth` Keycloak route, while `vscode`, `api`, and `websocket` attach `HTTPRoute` resources
-   from their own namespaces. (The shared edge co-locates with the OIDC identity provider that
-   terminates `/auth`, rather than with an application workload.)
+4. The supported shared public edge is defined by the `keycloak` chart and deployed into the
+   `vscode` namespace: the `keycloak` chart (a dependency of the `vscode` root chart, reconciled
+   via `prodbox charts reconcile vscode`) publishes the shared `Gateway`, the listener certificate,
+   the port-80 redirect `HTTPRoute`, and the `/auth` Keycloak route into the `vscode` namespace,
+   while `api` and `websocket` attach `HTTPRoute` resources from their own namespaces. (The shared
+   edge co-locates with the OIDC identity provider that terminates `/auth`, rather than with an
+   application workload — Keycloak itself runs in the `vscode` namespace.)
 5. Keycloak publishes the identity flow and the authenticated admin API used by `prodbox users`
    on the shared hostname under `/auth`.
 6. The shared `public-edge` `Gateway` exposes HTTPS on port `443` for application traffic and
@@ -302,10 +304,11 @@ Example hostname routing inside this model may look like:
 The supported architecture no longer treats an app-local nginx auth proxy or Traefik `Ingress`
 surface as the canonical public edge.
 
-In the supported implementation, the `keycloak` chart owns the shared `public-edge` `Gateway` and
-listener certificate in the `keycloak` namespace, alongside the `/auth` identity route it
-terminates. `vscode`, `api`, and `websocket` keep their workloads in their own namespaces, but
-their `HTTPRoute` resources attach to that shared `Gateway` through cross-namespace `parentRefs`.
+In the supported implementation, the `keycloak` chart defines the shared `public-edge` `Gateway`
+and listener certificate, deployed into the `vscode` namespace (the `keycloak` chart is a
+dependency of the `vscode` root chart), alongside the `/auth` identity route it terminates.
+`api` and `websocket` keep their workloads in their own namespaces, but their `HTTPRoute` resources
+attach to that shared `Gateway` through cross-namespace `parentRefs`.
 The HTTP redirect route also lives with the shared `Gateway` and attaches only to the port `80`
 listener, while every backend route attaches to HTTPS listener sections.
 
@@ -419,7 +422,7 @@ The current worktree ships all three supported public-edge auth shapes:
   `/ws/oidc`, then a JWT-protected `/ws` upgrade path plus Redis-backed shared state for upgraded
   connections; the current token exchange path uses private in-cluster access to the Keycloak
   Service on port 8080, and its Envoy JWT JWKS fetch uses the same internal service boundary
-  through a `ReferenceGrant` from `websocket` to the Keycloak namespace.
+  through a `ReferenceGrant` from `websocket` to the `vscode` namespace (where the Keycloak Service runs).
 
 The shared-host Keycloak route on `/auth` remains the external identity surface for issuer
 metadata, browser login, and workload-managed redirect flows.
@@ -637,8 +640,9 @@ Lifecycle and chart implications:
    `distroless-v1.37.0`.
 3. The chart platform ships Keycloak, `vscode`, `api`, and `websocket` on one shared
    public hostname, anchors the shared `Gateway`, listener certificate, port-80 redirect route,
-   and `/auth` Keycloak route in the `keycloak` namespace via the `keycloak` chart, attaches
-   `vscode`, `api`, and `websocket` `HTTPRoute` resources through cross-namespace `parentRefs`,
+   and `/auth` Keycloak route in the `vscode` namespace via the `keycloak` chart (a dependency of
+   the `vscode` root chart), attaches `api` and `websocket` `HTTPRoute` resources through
+   cross-namespace `parentRefs`,
    keeps the Keycloak public route limited to browser/OIDC identity paths plus `/auth/admin` for
    the authenticated `prodbox users` invite API, and no longer depends on `vscode-nginx`.
 4. The Haskell distributed gateway daemon remains a separate chart and runtime surface; it is not

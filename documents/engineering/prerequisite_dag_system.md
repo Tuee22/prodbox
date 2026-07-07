@@ -2,7 +2,7 @@
 
 **Status**: Authoritative source
 **Supersedes**: N/A
-**Referenced by**: documents/engineering/README.md, documents/engineering/effect_interpreter.md, documents/engineering/prerequisite_doctrine.md, documents/engineering/unit_testing_policy.md
+**Referenced by**: documents/engineering/README.md, documents/engineering/effect_interpreter.md, documents/engineering/prerequisite_doctrine.md, documents/engineering/unit_testing_policy.md, documents/engineering/bootstrap_readiness_doctrine.md
 **Generated sections**: none
 
 > **Purpose**: Define the DAG construction and reduction model for prerequisite execution.
@@ -18,6 +18,11 @@ The prerequisite DAG system is defined by:
   `src/Prodbox/Prerequisite.hs`
 - graph construction in `src/Prodbox/EffectDAG.hs` (`fromRootIds`, `transitiveClosureIds`)
 - graph execution in `src/Prodbox/EffectInterpreter.hs` (`runEffectDAG`)
+
+Per the [Bootstrap Readiness Doctrine](./bootstrap_readiness_doctrine.md), this same pure
+construction (acyclicity + missing-node rejection) also carries component **bring-up/readiness**
+edges lowered from the Tier-0 config, so that reconcile ordering is a projection over the graph and a
+consumer-before-dependency readiness race is not a well-formed value.
 
 Node IDs are presently raw `String`s. The intended target is a typed `PrerequisiteId` ADT so
 that root selection and dependency edges are checked by the compiler rather than by string
@@ -52,6 +57,15 @@ node executes twice within one run (Sprint 1.31).
 `test/unit/Main.hs` retains coverage of these invariants as defense-in-depth, but the construction
 path — not the test suite — is the authoritative gate: a back-edge is rejected by
 `transitiveClosureIds`/`fromRootIds` before any `EffectDAG` reaches the interpreter.
+
+Sprint `1.56` extracts the same back-edge cycle rejection + missing-node rejection into the generic
+`EffectDAG.acyclicTopologicalOrder`, which the Tier-0 component dependency/readiness graph
+(`Prodbox.Config.ComponentGraph`, owned by
+[bootstrap_readiness_doctrine.md](./bootstrap_readiness_doctrine.md)) reuses to lower its declared
+`depends_on` edges into a deterministic dependencies-before-dependents bring-up order. Unlike
+`transitiveClosureIds` (a text-sorted closure set for the interpreter's ready-set rendering), the
+generic expansion returns a topological order and visits roots/adjacency in rendered-text order, so
+the projection is a pure function of the declared graph rather than of declaration order.
 
 ## 4. Test Command Integration
 

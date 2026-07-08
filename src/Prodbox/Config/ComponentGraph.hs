@@ -469,7 +469,7 @@ defaultComponentGraph =
       ProbeOperatorAvailable
   , node
       ComponentGatewayDaemon
-      [orderingOn ComponentMinio, orderingOn ComponentVault]
+      [orderingOn ComponentMinio, orderingOn ComponentVault, orderingOn ComponentCertManager]
       ProbeRolloutComplete
   , -- Charts (deploy behind the registry — their images are mirrored there — and
     -- behind their platform dependencies).

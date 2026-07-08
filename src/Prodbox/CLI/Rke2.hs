@@ -1214,6 +1214,7 @@ data ReconcileStepId
   | StepMirrorClusterImagesOnce
   | StepEnsureRuntimeImage
   | StepRke2RegistriesConfig
+  | StepCertManagerRuntime
   | StepGatewayChartReadyPreVault
   | StepFederatedVaultLifecycle
   | StepLoadInForceSettings
@@ -1258,6 +1259,7 @@ reconcileStepToken step = case step of
   StepMirrorClusterImagesOnce -> "mirror_cluster_images_once"
   StepEnsureRuntimeImage -> "ensure_gateway_images"
   StepRke2RegistriesConfig -> "ensure_rke2_registries_config"
+  StepCertManagerRuntime -> "ensure_cert_manager_runtime"
   StepGatewayChartReadyPreVault -> "ensure_gateway_chart_ready_pre_vault"
   StepFederatedVaultLifecycle -> "ensure_federated_vault_lifecycle"
   StepLoadInForceSettings -> "load_in_force_settings_after_vault_and_minio"
@@ -1301,6 +1303,7 @@ reconcileStepComponent step = case step of
   StepHarborRegistryStorageBackend -> Just ComponentRegistry
   StepHarborRegistryRuntime -> Just ComponentRegistry
   StepVerifyRegistryMinioEdge -> Just ComponentRegistry
+  StepCertManagerRuntime -> Just ComponentCertManager
   StepGatewayChartReadyPreVault -> Just ComponentGatewayDaemon
   _ -> Nothing
 
@@ -1474,6 +1477,7 @@ applyNativeInstallPlan repoRoot bootstrapSettings withEdge (machineId, prodboxId
     StepMirrorClusterImagesOnce -> mirrorClusterImagesOnce repoRoot
     StepEnsureRuntimeImage -> ensureRuntimeImage repoRoot prodboxId
     StepRke2RegistriesConfig -> ensureRke2RegistriesConfig repoRoot
+    StepCertManagerRuntime -> ensureCertManagerRuntime repoRoot prodboxId labelValue
     StepGatewayChartReadyPreVault -> ensureGatewayChartReady repoRoot bootstrapSettings SubstrateHomeLocal
     _ -> pure ExitSuccess
 
@@ -3647,6 +3651,8 @@ registryConfigYaml =
     , "storage:"
     , "  cache:"
     , "    blobdescriptor: inmemory"
+    , "  redirect:"
+    , "    disable: true"
     , "  s3:"
     , "    region: us-east-1"
     , "    regionendpoint: " ++ minioClusterEndpoint
@@ -3876,7 +3882,6 @@ ensureClusterPlatformRuntime repoRoot settings prodboxId labelValue = do
       runSequentially
         [ ensureMetalLbRuntime repoRoot settings prodboxId labelValue metallbPool
         , ensureEnvoyGatewayRuntime repoRoot settings prodboxId labelValue edgeLbIp
-        , ensureCertManagerRuntime repoRoot prodboxId labelValue
         , ensurePostgresOperatorRuntime repoRoot prodboxId labelValue
         ]
 

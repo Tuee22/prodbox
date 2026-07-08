@@ -968,8 +968,16 @@ supportedRuntimeBootstrapActions repoRoot environment suitePlan =
                  -- `mc admin user add` / `mc admin policy attach` are no-ops on
                  -- re-run.
                  ensureGatewayMinioBootstrap repoRoot
-               , syncKeycloakSmtpForSupportedRuntime repoRoot suitePlan
                , runNativeCliCommandForExitCode repoRoot environment ["charts", "reconcile", "gateway"]
+               , -- The Keycloak SMTP sync reads the aws-ses Pulumi stack outputs
+                 -- through the gateway daemon's MinIO object-store, so it MUST run
+                 -- AFTER `charts reconcile gateway` restores the daemon. Running it
+                 -- while the daemon is down (from the preceding `charts delete
+                 -- gateway`) fails with the daemon unreachable on the loopback
+                 -- NodePort ("failed to load encrypted Pulumi checkpoint: Connection
+                 -- refused"), which strands the restore before the gateway reconcile
+                 -- and leaves the postflight AWS destroys without a daemon too.
+                 syncKeycloakSmtpForSupportedRuntime repoRoot suitePlan
                , runNativeCliCommandForExitCode repoRoot environment ["charts", "reconcile", "vscode"]
                , runNativeCliCommandForExitCode repoRoot environment ["charts", "reconcile", "api"]
                , runNativeCliCommandForExitCode repoRoot environment ["charts", "reconcile", "websocket"]

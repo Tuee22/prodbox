@@ -2303,7 +2303,13 @@ valuesForGateway substrate namespace rootChart settings _gatewayEventKeys shared
             .= object
               [ "address" .= ("http://vault.vault.svc.cluster.local:8200" :: String)
               , "authPath" .= ("kubernetes" :: String)
-              , "role" .= ("gateway-gateway" :: String)
+              , -- The daemon logs in under this Vault role. It must be
+                -- `prodbox-gateway-daemon` (bound to BOTH the prodbox-gateway policy
+                -- for the object-store HMAC + prodbox-pulumi-state Transit, and the
+                -- gateway-gateway policy for event-key/aws/minio KV — see
+                -- Vault/Reconcile.hs). `gateway-gateway` alone lacks the HMAC/Transit
+                -- grants and 403s the AWS postflight object-store read (44e896f).
+                "role" .= ("prodbox-gateway-daemon" :: String)
               , "serviceAccountTokenFile"
                   .= ("/var/run/secrets/kubernetes.io/serviceaccount/token" :: String)
               , "paths"

@@ -70,7 +70,12 @@ dnsWriteGate:
 vault:
   address: http://vault.vault.svc.cluster.local:8200
   authPath: kubernetes
-  role: gateway-gateway
+  # The daemon reads the object-store HMAC (secret/object-store/hmac) and the
+  # prodbox-pulumi-state Transit key for the encrypted Pulumi backend, which live
+  # on the `prodbox-gateway` policy — bound to this `prodbox-gateway-daemon` role.
+  # That role also binds the `gateway-gateway` policy for the daemon's
+  # per-node event-key / aws / minio KV reads (see Vault/Reconcile.hs).
+  role: prodbox-gateway-daemon
   serviceAccountTokenFile: /var/run/secrets/kubernetes.io/serviceaccount/token
   paths:
     eventKeyNodeA: gateway/gateway/node-a/event-key

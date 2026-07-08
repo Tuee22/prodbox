@@ -2915,6 +2915,21 @@ main = mainWithSuite "prodbox-unit" $ do
           policy `shouldContain` "path \"transit/decrypt/prodbox-pulumi-state\""
         other ->
           expectationFailure ("expected exactly one prodbox-gateway policy, got " ++ show other)
+    it "binds the gateway daemon role to BOTH the object-store and event-key policies" $ do
+      -- Regression guard for 44e896f: the daemon logs in under role
+      -- prodbox-gateway-daemon (charts/gateway/values.yaml vault.role). That role
+      -- must carry prodbox-gateway (object-store HMAC read + prodbox-pulumi-state
+      -- Transit encrypt/decrypt) AND gateway-gateway (per-node event-key / gateway
+      -- aws|minio KV). Missing either 403s the AWS postflight object-store read.
+      case [ vaultKubernetesRoleSpecPolicies spec
+           | spec <- vaultReconcileKubernetesRoles defaultVaultReconcilePlan
+           , vaultKubernetesRoleSpecName spec == "prodbox-gateway-daemon"
+           ] of
+        [policies] -> do
+          ("prodbox-gateway" `elem` policies) `shouldBe` True
+          ("gateway-gateway" `elem` policies) `shouldBe` True
+        other ->
+          expectationFailure ("expected exactly one prodbox-gateway-daemon role, got " ++ show other)
     it "builds the operator-secret URL on the loopback gateway endpoint" $ do
       let endpoint = Prodbox.Gateway.Client.hostLoopbackGatewayEndpoint 30443
       Prodbox.Gateway.Client.operatorSecretUrl endpoint "acme/eab"
@@ -4019,11 +4034,15 @@ main = mainWithSuite "prodbox-unit" $ do
               )
           minioIndex = elemIndex "STEP=ensure_minio_runtime_bootstrap" steps
           vaultRuntimeIndex = elemIndex "STEP=ensure_vault_runtime" steps
+          certManagerIndex = elemIndex "STEP=ensure_cert_manager_runtime" steps
           gatewayIndex = elemIndex "STEP=ensure_gateway_chart_ready_pre_vault" steps
           lifecycleIndex = elemIndex "STEP=ensure_federated_vault_lifecycle" steps
           steadyGatewayIndex = elemIndex "STEP=ensure_gateway_chart_ready" steps
       minioIndex `shouldSatisfy` (`indexPrecedes` vaultRuntimeIndex)
       vaultRuntimeIndex `shouldSatisfy` (`indexPrecedes` gatewayIndex)
+      -- The pre-Vault gateway daemon mounts cert-manager-issued (self-signed) TLS
+      -- secrets, so cert-manager must be stood up before it (147215f regression guard).
+      certManagerIndex `shouldSatisfy` (`indexPrecedes` gatewayIndex)
       gatewayIndex `shouldSatisfy` (`indexPrecedes` lifecycleIndex)
       lifecycleIndex `shouldSatisfy` (`indexPrecedes` steadyGatewayIndex)
 
@@ -4256,7 +4275,7 @@ main = mainWithSuite "prodbox-unit" $ do
       configTemplate `shouldContain` "role = {{ $.Values.vault.role | quote }}"
       configTemplate `shouldNotContain` "lookup \"v1\" \"Secret\""
       configTemplate `shouldNotContain` "Some /etc/gateway/secrets"
-      valuesTemplate `shouldContain` "role: gateway-gateway"
+      valuesTemplate `shouldContain` "role: prodbox-gateway-daemon"
       valuesTemplate `shouldContain` "aws: gateway/gateway/aws"
       valuesTemplate `shouldContain` "minio: gateway/gateway/minio"
       awsSecretTemplateExists `shouldBe` False
@@ -5494,6 +5513,15 @@ main = mainWithSuite "prodbox-unit" $ do
       rke2Source `shouldContain` "registryImage = \"registry:2\""
       rke2Source `shouldContain` "registryConfigYaml"
       rke2Source `shouldContain` "bucket: \" ++ harborRegistryStorageBucket"
+      -- The S3 storage driver MUST disable blob redirects. registry:2 otherwise
+      -- answers blob GET/HEAD with a 307 to a presigned MinIO URL at the
+      -- cluster-internal minio.prodbox.svc.cluster.local:9000, which the host-side
+      -- mirror push/pull client cannot resolve (host DNS has no *.svc.cluster.local).
+      -- The Harbor chart era set imageChartStorage.disableredirect=true; the
+      -- registry:2 config.yml must carry the equivalent storage.redirect.disable
+      -- stanza. Regression guard for the 80a08e3 migration.
+      rke2Source `shouldContain` "\"  redirect:\""
+      rke2Source `shouldContain` "\"    disable: true\""
       rke2Source `shouldNotContain` "persistence.imageChartStorage.type=s3"
       rke2Source `shouldNotContain` "harbor/harbor"
       rke2Source `shouldContain` "mc mb --ignore-existing local/"

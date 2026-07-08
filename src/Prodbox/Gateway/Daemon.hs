@@ -2056,7 +2056,31 @@ deleteDaemonPulumiObject env stackName = do
       deleteObject (daemonPulumiObjectStore material) key
 
 resolveDaemonPulumiObjectMaterial :: DaemonEnv -> IO (Either String DaemonPulumiObjectMaterial)
-resolveDaemonPulumiObjectMaterial env = do
+resolveDaemonPulumiObjectMaterial env = go 0
+ where
+  -- Each call does a fresh Vault k8s-auth login + object-store HMAC read. Right
+  -- after a fresh `vault reconcile` (the post-teardown AWS postflight) or a daemon
+  -- restart, the login can succeed before the role's policy has fully propagated,
+  -- yielding a transient 403. Retry with a fresh re-login (daemonWorkerRetryPolicy:
+  -- 5 attempts, exp backoff) so a transient failure self-heals instead of failing
+  -- the postflight object-store read (readiness hardening).
+  go attemptIndex = do
+    result <- resolveDaemonPulumiObjectMaterialOnce env
+    case result of
+      Right material -> pure (Right material)
+      Left err
+        | attemptIndex + 1 < retryPolicyMaxAttempts daemonWorkerRetryPolicy -> do
+            logForEnv
+              env
+              Warn
+              "daemon_object_store_material_retry"
+              [field "attempt" (attemptIndex + 1), field "detail" err]
+            threadDelay (retryDelayMicros daemonWorkerRetryPolicy attemptIndex)
+            go (attemptIndex + 1)
+        | otherwise -> pure (Left err)
+
+resolveDaemonPulumiObjectMaterialOnce :: DaemonEnv -> IO (Either String DaemonPulumiObjectMaterial)
+resolveDaemonPulumiObjectMaterialOnce env = do
   clusterResult <- loadDaemonClusterId (envConfigPath env)
   vaultResult <- resolveGatewayVaultToken (envBootConfig env)
   case (clusterResult, vaultResult) of

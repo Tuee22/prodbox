@@ -196,7 +196,12 @@ defaultVaultReconcilePlan =
             "prodbox-gateway-daemon"
             ["prodbox-gateway-daemon"]
             ["gateway"]
-            ["prodbox-gateway"]
+            -- The gateway daemon logs in under this role (charts/gateway/values.yaml
+            -- `vault.role`). It needs BOTH policies: `prodbox-gateway` for the
+            -- object-store HMAC read + prodbox-pulumi-state Transit encrypt/decrypt,
+            -- and `gateway-gateway` (the gateway-event-keys consumer policy) for the
+            -- per-node event-key / gateway aws / gateway minio KV reads.
+            ["prodbox-gateway", "gateway-gateway"]
             "1h"
         , VaultKubernetesRoleSpec
             "prodbox-pulumi-runner"

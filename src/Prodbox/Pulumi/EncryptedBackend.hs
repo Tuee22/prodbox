@@ -21,10 +21,12 @@ module Prodbox.Pulumi.EncryptedBackend
   , hydrateScratchCheckpoint
   , observeStackCheckpoint
   , observeStackCheckpointWith
+  , productionHooksWithHostFallback
   , pruneLogicalPulumiStack
   , renderCheckpointObservability
   , renderEncryptedBackendError
   , stackCheckpointPath
+  , withDaemonFirstFallback
   , withDecryptedStack
   , withDecryptedStackEnvironment
   , withMigratedDecryptedStackEnvironment
@@ -55,6 +57,14 @@ import Prodbox.Minio.EncryptedObject
 import Prodbox.Minio.ObjectStore
   ( ObjectStoreConfig (..)
   , deleteObject
+  )
+import Prodbox.Pulumi.HostDirectObjectStore
+  ( HostDirectPulumiHandle
+  , hostDirectDeletePulumiObject
+  , hostDirectGetPulumiObject
+  , hostDirectPutPulumiObject
+  , resolveHostDirectPulumiMaterial
+  , withHostDirectPulumiPortForward
   )
 import Prodbox.Result (Result (..))
 import Prodbox.Subprocess
@@ -204,9 +214,21 @@ withDecryptedStack
   -> PulumiStackRef
   -> (PulumiScratch -> IO (Either String a))
   -> IO (Either EncryptedBackendError a)
-withDecryptedStack _repoRoot stackRef action = do
+withDecryptedStack repoRoot stackRef action = do
   endpoint <- pulumiObjectGatewayEndpoint
-  withDecryptedStackWith (productionHooks endpoint) stackRef action
+  -- Attempt the daemon-only path first (unchanged, zero extra cost when the
+  -- daemon is healthy). The checkpoint LOAD happens before @action@, so a
+  -- daemon-down failure surfaces as 'EncryptedBackendLoadFailed' BEFORE pulumi
+  -- runs; on exactly that error, retry the whole flow host-directly under one
+  -- port-forward (so the load and the post-pulumi store\/delete reuse it), and
+  -- pulumi is never run twice. Any other error (a real action\/store failure) is
+  -- returned as-is. Sprint: host-direct fallback.
+  firstResult <- withDecryptedStackWith (productionHooks endpoint) stackRef action
+  case firstResult of
+    Left (EncryptedBackendLoadFailed daemonDetail) ->
+      retryLoadWithHostFallback repoRoot daemonDetail $ \handle ->
+        withDecryptedStackWith (productionHooksWithHostFallback endpoint handle) stackRef action
+    other -> pure other
 
 withDecryptedStackEnvironment
   :: FilePath
@@ -283,6 +305,11 @@ withDecryptedStackWith hooks stackRef action = do
 -- or re-storing the object (it must not mutate teardown state just to
 -- observe it). Resolves the same Vault-backed material as
 -- 'withDecryptedStack', then classifies the loaded bytes purely.
+-- The host-direct fallback for the residue OBSERVE is applied by the caller
+-- ('Prodbox.Lifecycle.LiveResidue.observePerRunWithSharedFallback'), which
+-- batches all per-run stacks under ONE shared port-forward (so a degraded daemon
+-- costs at most one root-token load + one port-forward across the query). This
+-- daemon-only observe stays the base primitive.
 observeStackCheckpoint
   :: FilePath
   -> PulumiStackRef
@@ -305,12 +332,30 @@ pruneLogicalPulumiStack
   :: FilePath
   -> PulumiStackRef
   -> IO (Either EncryptedBackendError ())
-pruneLogicalPulumiStack _repoRoot stackRef = do
+pruneLogicalPulumiStack repoRoot stackRef = do
   endpoint <- pulumiObjectGatewayEndpoint
   deleteResult <- GatewayClient.deletePulumiObject endpoint (pulumiStackName stackRef)
-  pure $ case deleteResult of
-    Left err -> Left (EncryptedBackendDeleteFailed (GatewayClient.renderGatewayError err))
-    Right () -> Right ()
+  case deleteResult of
+    Right () -> pure (Right ())
+    -- Daemon delete failed: retry host-directly under one port-forward. Only the
+    -- combined daemon+host failure surfaces as 'EncryptedBackendDeleteFailed'.
+    -- Sprint: host-direct fallback.
+    Left gatewayErr -> do
+      let daemonDetail = GatewayClient.renderGatewayError gatewayErr
+      materialResult <- resolveHostDirectPulumiMaterial repoRoot
+      case materialResult of
+        Left matErr ->
+          pure (Left (EncryptedBackendDeleteFailed (combinedFallbackError "delete" daemonDetail matErr)))
+        Right material -> do
+          pfResult <-
+            withHostDirectPulumiPortForward material $ \handle ->
+              hostDirectDeletePulumiObject handle (pulumiStackName stackRef)
+          pure $ case pfResult of
+            Left pfErr ->
+              Left (EncryptedBackendDeleteFailed (combinedFallbackError "delete" daemonDetail pfErr))
+            Right (Left hostErr) ->
+              Left (EncryptedBackendDeleteFailed (combinedFallbackError "delete" daemonDetail hostErr))
+            Right (Right ()) -> Right ()
 
 -- | Hooks-driven read-only observability query (testable seam). Runs the
 -- Vault gate, loads the encrypted-or-legacy checkpoint bytes, and applies
@@ -507,6 +552,95 @@ productionHooks endpoint =
     , encryptedBackendDeleteLegacy = \_ -> pure (Right ())
     , encryptedBackendWithScratch = withRamScratch
     }
+
+-- | Daemon-first, host-direct-fallback hooks (Sprint: host-direct fallback).
+-- Identical to 'productionHooks' except that the three object-store ops
+-- (load\/store\/delete) try the in-cluster gateway daemon first and, only on a
+-- daemon failure ('Left'), retry the same logical op host-directly through the
+-- supplied 'HostDirectPulumiHandle' (an already-open MinIO port-forward). A
+-- daemon @Right _@ — including @Right Nothing@ (a positively-absent object) —
+-- short-circuits and never triggers the fallback. The gate, scratch, and legacy
+-- seams are inherited unchanged (per-run stacks have no legacy backend).
+productionHooksWithHostFallback :: PeerEndpoint -> HostDirectPulumiHandle -> EncryptedBackendHooks a
+productionHooksWithHostFallback endpoint handle =
+  (productionHooks endpoint)
+    { encryptedBackendLoad = \stackRef ->
+        withDaemonFirstFallback
+          "load"
+          ( mapLeft GatewayClient.renderGatewayError
+              <$> GatewayClient.getPulumiObject endpoint (pulumiStackName stackRef)
+          )
+          (hostDirectGetPulumiObject handle (pulumiStackName stackRef))
+    , encryptedBackendStore = \stackRef bytes ->
+        withDaemonFirstFallback
+          "store"
+          ( mapLeft GatewayClient.renderGatewayError
+              <$> GatewayClient.putPulumiObject endpoint (pulumiStackName stackRef) bytes
+          )
+          (hostDirectPutPulumiObject handle (pulumiStackName stackRef) bytes)
+    , encryptedBackendDelete = \stackRef ->
+        withDaemonFirstFallback
+          "delete"
+          ( mapLeft GatewayClient.renderGatewayError
+              <$> GatewayClient.deletePulumiObject endpoint (pulumiStackName stackRef)
+          )
+          (hostDirectDeletePulumiObject handle (pulumiStackName stackRef))
+    }
+
+-- | Run the daemon op; only on a daemon failure ('Left', both errors already
+-- rendered to 'String') run the host-direct op. A daemon @Right value@ (absence
+-- included) is returned immediately. When both fail, the combined detail names
+-- both, so the surfaced error is fail-closed and actionable. Polymorphic in the
+-- op's success type (@Maybe ByteString@ for load, @()@ for store\/delete).
+withDaemonFirstFallback
+  :: String
+  -> IO (Either String r)
+  -> IO (Either String r)
+  -> IO (Either String r)
+withDaemonFirstFallback context daemonOp hostOp = do
+  daemonResult <- daemonOp
+  case daemonResult of
+    Right value -> pure (Right value)
+    Left daemonErr -> do
+      hostResult <- hostOp
+      pure $ case hostResult of
+        Right value -> Right value
+        Left hostErr -> Left (combinedFallbackError context daemonErr hostErr)
+
+-- | Retry an object-store-backed action host-directly after the daemon LOAD
+-- failed. Resolves the host-direct material and opens ONE MinIO port-forward;
+-- @run@ executes the full flow with 'productionHooksWithHostFallback' inside that
+-- forward (its own hooks combine the daemon+host detail on a host failure).
+-- The first-attempt daemon detail is folded in only when the host MATERIAL or
+-- the port-forward itself is unavailable.
+retryLoadWithHostFallback
+  :: FilePath
+  -> String
+  -> (HostDirectPulumiHandle -> IO (Either EncryptedBackendError a))
+  -> IO (Either EncryptedBackendError a)
+retryLoadWithHostFallback repoRoot daemonDetail run = do
+  materialResult <- resolveHostDirectPulumiMaterial repoRoot
+  case materialResult of
+    Left matErr ->
+      pure (Left (EncryptedBackendLoadFailed (combinedFallbackError "load" daemonDetail matErr)))
+    Right material -> do
+      pfResult <- withHostDirectPulumiPortForward material run
+      pure $ case pfResult of
+        Left pfErr -> Left (EncryptedBackendLoadFailed (combinedFallbackError "load" daemonDetail pfErr))
+        Right result -> result
+
+-- | The operator-visible detail when the daemon object-store op and its
+-- host-direct MinIO fallback both fail — names both so the residue status line
+-- explains the whole picture rather than a bare @503@.
+combinedFallbackError :: String -> String -> String -> String
+combinedFallbackError context daemonDetail hostDetail =
+  "gateway daemon object-store "
+    ++ context
+    ++ " failed ("
+    ++ daemonDetail
+    ++ "); host-direct MinIO fallback also failed ("
+    ++ hostDetail
+    ++ ")"
 
 productionHooksWithLegacy :: LegacyPulumiBackend -> PeerEndpoint -> EncryptedBackendHooks a
 productionHooksWithLegacy legacy endpoint =

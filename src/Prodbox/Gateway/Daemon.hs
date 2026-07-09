@@ -2,6 +2,7 @@
 
 module Prodbox.Gateway.Daemon
   ( runGatewayDaemon
+  , daemonBootFieldsChanged
 
     -- * Sprint 1.44: operator-write REST endpoint (pure routing helpers)
   , allowedOperatorSecretPaths
@@ -818,6 +819,11 @@ daemonBootFieldsChanged old new =
     || daemonEventKeys old /= daemonEventKeys new
     || daemonVaultAuth old /= daemonVaultAuth new
     || daemonDnsWriteGate old /= daemonDnsWriteGate new
+    -- Vault-resolved boot secrets: a daemon that booted pre-Vault carries these
+    -- as Nothing; once a reload can resolve them (Vault ready) that is a boot
+    -- change and must drain-restart into full mode, not be discarded.
+    || daemonMinioCreds old /= daemonMinioCreds new
+    || daemonAwsCreds old /= daemonAwsCreds new
 
 validateDaemonStartupInputs :: DaemonConfig -> IO (Either String ())
 validateDaemonStartupInputs config = do

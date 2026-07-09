@@ -39,6 +39,7 @@ import Prodbox.EffectInterpreter
 import Prodbox.Error (fatalError)
 import Prodbox.Gateway.Client qualified as GatewayClient
 import Prodbox.Gateway.Daemon qualified as Daemon
+import Prodbox.Gateway.Logging qualified as Logging
 import Prodbox.Gateway.Settings qualified as GatewaySettings
 import Prodbox.Gateway.Types
   ( DaemonConfig (..)
@@ -305,13 +306,27 @@ loadDaemonConfig path = do
     Right config -> pure (Right config)
     Left fullErr -> do
       preVaultResult <- GatewaySettings.loadDaemonConfigPreVault path
-      pure $ case preVaultResult of
-        Right config -> Right config
+      case preVaultResult of
+        Right config -> do
+          -- The full Vault-resolving decode failed (typically Vault still sealed
+          -- at the pre-Vault gateway boot), so the daemon runs DEGRADED: MinIO /
+          -- AWS creds are Nothing and object-store ops return 503 until the pod
+          -- is restarted into full mode. Surface it loudly (it used to be silent)
+          -- so an operator can see WHY the daemon is degraded and which
+          -- resolution failed.
+          Logging.logWarn
+            "gateway_degraded_pre_vault_boot"
+            [ Logging.field "reason" (Text.pack fullErr)
+            , Logging.field "path" (Text.pack path)
+            ]
+          pure (Right config)
         Left preVaultErr ->
-          Left
-            ( fullErr
-                ++ "\npre-Vault bootstrap config decode also failed: "
-                ++ preVaultErr
+          pure
+            ( Left
+                ( fullErr
+                    ++ "\npre-Vault bootstrap config decode also failed: "
+                    ++ preVaultErr
+                )
             )
 
 -- Sprint 2.22: 'loadOrdersFile' now dispatches by file extension via

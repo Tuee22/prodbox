@@ -171,7 +171,8 @@ import Prodbox.CLI.Pulumi
   , runPulumiCommandWithGate
   )
 import Prodbox.CLI.Rke2
-  ( MinioImageSource (..)
+  ( GatewayObjectStoreProbe (..)
+  , MinioImageSource (..)
   , OperationalAwsCredentialGate (..)
   , RegistryStorageEdgeReadiness (..)
   , RetainedStorageInventoryEntry (..)
@@ -180,7 +181,9 @@ import Prodbox.CLI.Rke2
   , adminPublicEdgeManifestItems
   , buildNativeDeletePlan
   , cascadeOrderNarration
+  , classifyGatewayObjectStoreProbe
   , classifyRegistryStorageEdgeProbe
+  , gatewayDaemonDeploymentRefs
   , homeSubstratePlatformComponents
   , hostCapacityCoversPlan
   , inferCascadeSubstrate
@@ -404,6 +407,7 @@ import Prodbox.Gateway.Daemon
   , bootstrapVaultRotateUnlockBundlePath
   , bootstrapVaultSealPath
   , bootstrapVaultStatusPath
+  , daemonBootFieldsChanged
   , decodeBootstrapVaultAuthenticatedRequest
   , decodeBootstrapVaultRequest
   , decodeBootstrapVaultRotateTransitKeyRequest
@@ -661,6 +665,7 @@ import Prodbox.Pulumi.EncryptedBackend
   , observeStackCheckpointWith
   , renderCheckpointObservability
   , stackCheckpointPath
+  , withDaemonFirstFallback
   , withDecryptedStackWith
   )
 import Prodbox.Result qualified as Result
@@ -3200,6 +3205,37 @@ main = mainWithSuite "prodbox-unit" $ do
           "cluster2"
           LogicalInForceConfig
       fetchResult `shouldBe` Left (EncryptedObjectOpenFailed EnvelopeAuthFailed)
+    it "round-trips a per-run Pulumi stack object across daemon-shape params (host-direct byte-compat)" $ do
+      -- The host-direct fallback GET must open an envelope a daemon PUT sealed:
+      -- same HMAC key, clusterId, and LogicalPulumiStack name (transit cipher is
+      -- fixed here). A clusterId mismatch (AAD) must fail closed.
+      storeRef <- newIORef Map.empty
+      putResult <-
+        putLogicalWith
+          (\key bytes -> modifyIORef' storeRef (Map.insert key bytes) >> pure (Right ()))
+          insecureLocalDekCipher
+          "object-store-hmac"
+          "prodbox-home"
+          (LogicalPulumiStack "aws-eks-test")
+          "{\"version\":3,\"checkpoint\":{}}"
+      putResult `shouldBe` Right ()
+      stored <- readIORef storeRef
+      okResult <-
+        getLogicalWith
+          (\key -> pure (Right (Map.lookup key stored)))
+          insecureLocalDekCipher
+          "object-store-hmac"
+          "prodbox-home"
+          (LogicalPulumiStack "aws-eks-test")
+      okResult `shouldBe` Right "{\"version\":3,\"checkpoint\":{}}"
+      mismatchResult <-
+        getLogicalWith
+          (\key -> pure (Right (Map.lookup key stored)))
+          insecureLocalDekCipher
+          "object-store-hmac"
+          "prodbox-other"
+          (LogicalPulumiStack "aws-eks-test")
+      mismatchResult `shouldBe` Left (EncryptedObjectOpenFailed EnvelopeAuthFailed)
     it "round-trips the Vault-encrypted index payload shape" $ do
       let index = Map.fromList [("objects/opaque.enc", "in-force-config")]
       decodeIndex (encodeIndex index) `shouldBe` Right index
@@ -7570,6 +7606,50 @@ main = mainWithSuite "prodbox-unit" $ do
             Just vaultAuth ->
               gatewayVaultAddress vaultAuth `shouldBe` "http://vault.vault.svc.cluster.local:8200"
 
+  describe "gateway daemon full-mode reconcile (post-Vault pre-Vault-boot fix)" $ do
+    it "gatewayDaemonDeploymentRefs targets one Deployment per gateway node" $
+      gatewayDaemonDeploymentRefs
+        `shouldBe` [ "deployment/gateway-node-a"
+                   , "deployment/gateway-node-b"
+                   , "deployment/gateway-node-c"
+                   ]
+
+    it "classifyGatewayObjectStoreProbe: a reachable object-store (present or absent) is healthy" $ do
+      classifyGatewayObjectStoreProbe (Right (Just "checkpoint")) `shouldBe` GatewayObjectStoreHealthy
+      classifyGatewayObjectStoreProbe (Right Nothing) `shouldBe` GatewayObjectStoreHealthy
+
+    it "classifyGatewayObjectStoreProbe: a 503 is degraded pre-Vault mode (needs restart)" $
+      case classifyGatewayObjectStoreProbe
+        ( Left
+            ( Prodbox.Gateway.Client.GatewayTransport
+                (Prodbox.Http.Client.HttpStatus 503 "daemon MinIO credentials are not configured\n")
+            )
+        ) of
+        GatewayObjectStoreDegraded503 body -> body `shouldContain` "MinIO credentials"
+        other -> expectationFailure ("expected GatewayObjectStoreDegraded503, got " ++ show other)
+
+    it "classifyGatewayObjectStoreProbe: other errors are transient (retry, don't restart)" $ do
+      case classifyGatewayObjectStoreProbe
+        (Left (Prodbox.Gateway.Client.GatewayTransport (Prodbox.Http.Client.HttpConnectionFailure "refused"))) of
+        GatewayObjectStoreTransient _ -> pure ()
+        other -> expectationFailure ("expected GatewayObjectStoreTransient, got " ++ show other)
+      case classifyGatewayObjectStoreProbe
+        (Left (Prodbox.Gateway.Client.GatewayTransport (Prodbox.Http.Client.HttpStatus 500 "boom"))) of
+        GatewayObjectStoreTransient _ -> pure ()
+        other -> expectationFailure ("expected GatewayObjectStoreTransient, got " ++ show other)
+
+    it "daemonBootFieldsChanged: a changed daemonMinioCreds / daemonAwsCreds is a boot change" $ do
+      decoded <-
+        GatewaySettings.decodeDaemonConfigDhallWith
+          (\_ -> pure (Right "resolved-secret"))
+          (Text.pack (renderGatewayConfigTemplate (testValidatedSettings "/tmp/prodbox/.data") "node-a"))
+      case decoded of
+        Left err -> expectationFailure err
+        Right config -> do
+          daemonBootFieldsChanged config config `shouldBe` False
+          daemonBootFieldsChanged config (config {daemonMinioCreds = Nothing}) `shouldBe` True
+          daemonBootFieldsChanged config (config {daemonAwsCreds = Nothing}) `shouldBe` True
+
   describe "Sprint 2.17 Haskell HTTP client" $ do
     it "renders HttpConnectionFailure as a single-line operator-facing string" $
       Prodbox.Http.Client.renderHttpError
@@ -9640,6 +9720,55 @@ main = mainWithSuite "prodbox-unit" $ do
     it "StackName preserves the wrapped Text identity" $
       StackOutputs.unStackName (StackOutputs.StackName "aws-ses") `shouldBe` "aws-ses"
 
+  describe "host-direct residue-read shared fallback (LiveResidue batching)" $ do
+    it "isRetryableReadFailure: a degraded-daemon read failure is retry-worthy" $
+      LiveResidue.isRetryableReadFailure
+        (StackOutputs.StackOutputsCommandFailed "HTTP 503 response: object-store unavailable")
+        `shouldBe` True
+
+    it "isRetryableReadFailure: an authoritative bucket-absent message is NOT retry-worthy" $
+      LiveResidue.isRetryableReadFailure
+        ( StackOutputs.StackOutputsCommandFailed
+            "could not list bucket: blob (code=NotFound): NoSuchBucket: The specified bucket does not exist"
+        )
+        `shouldBe` False
+
+    it "mergeSharedObservation: a non-candidate stack keeps its daemon result unchanged" $ do
+      let name = StackOutputs.StackName "aws-eks-test"
+          daemonResult = (name, Right CheckpointPresent)
+          merged = LiveResidue.mergeSharedObservation [] (Right []) daemonResult
+      merged `shouldBe` (name, Right CheckpointPresent)
+
+    it "mergeSharedObservation: a candidate adopts its successful host-direct observation" $ do
+      let name = StackOutputs.StackName "aws-eks-test"
+          candidates = [(name, "HTTP 503")]
+          shared = Right [(name, Right CheckpointPresent)]
+          daemonResult = (name, Left (StackOutputs.StackOutputsCommandFailed "HTTP 503"))
+      LiveResidue.mergeSharedObservation candidates shared daemonResult
+        `shouldBe` (name, Right CheckpointPresent)
+
+    it "mergeSharedObservation: a candidate whose host read also failed stays a combined failure" $ do
+      let name = StackOutputs.StackName "aws-eks-test"
+          candidates = [(name, "HTTP 503 daemon down")]
+          shared = Right [(name, Left "MinIO port-forward failed")]
+          daemonResult = (name, Left (StackOutputs.StackOutputsCommandFailed "HTTP 503 daemon down"))
+      case LiveResidue.mergeSharedObservation candidates shared daemonResult of
+        (n, Left (StackOutputs.StackOutputsCommandFailed detail)) -> do
+          n `shouldBe` name
+          detail `shouldContain` "HTTP 503 daemon down"
+          detail `shouldContain` "MinIO port-forward failed"
+        other -> expectationFailure ("expected combined StackOutputsCommandFailed, got " ++ show other)
+
+    it "mergeSharedObservation: an unavailable shared port-forward keeps every candidate fail-closed" $ do
+      let name = StackOutputs.StackName "aws-eks-test"
+          candidates = [(name, "HTTP 503")]
+          shared = Left "host-direct Pulumi fallback: vault sealed"
+          daemonResult = (name, Left (StackOutputs.StackOutputsCommandFailed "HTTP 503"))
+      case LiveResidue.mergeSharedObservation candidates shared daemonResult of
+        (_, Left (StackOutputs.StackOutputsCommandFailed detail)) ->
+          detail `shouldContain` "vault sealed"
+        other -> expectationFailure ("expected StackOutputsCommandFailed, got " ++ show other)
+
   describe "Sprint 4.16 LiveResidue error mapping + listing translation" $ do
     it "residueReasonFromMinioError maps subprocess failure to MinIO unreachable" $
       LiveResidue.residueReasonFromMinioError (StackOutputs.StackOutputsSubprocessFailed "fork")
@@ -9940,6 +10069,93 @@ main = mainWithSuite "prodbox-unit" $ do
           hooks = observabilityHooks (pure (Left "connection refused"))
       result <- observeStackCheckpointWith hooks stackRef
       result `shouldBe` Left (EncryptedBackendLoadFailed "connection refused")
+
+  describe "host-direct object-store fallback (daemon-first, host-direct on daemon failure)" $ do
+    let stackRef = PulumiStackRef "prodbox-aws-eks-test" "aws-eks-test"
+        validCheckpoint = "{\"version\":3,\"checkpoint\":{}}" :: BS.ByteString
+
+    it "withDaemonFirstFallback: daemon success short-circuits; host op is NOT called" $ do
+      hostCalled <- newIORef False
+      let daemonOp = pure (Right (Just validCheckpoint))
+          hostOp = writeIORef hostCalled True >> pure (Right (Just ("host-bytes" :: BS.ByteString)))
+      result <- withDaemonFirstFallback "load" daemonOp hostOp
+      result `shouldBe` Right (Just validCheckpoint)
+      readIORef hostCalled `shouldReturn` False
+
+    it "withDaemonFirstFallback: daemon Right Nothing (absent) is an ANSWER; host op is NOT called" $ do
+      hostCalled <- newIORef False
+      let daemonOp = pure (Right Nothing) :: IO (Either String (Maybe BS.ByteString))
+          hostOp = writeIORef hostCalled True >> pure (Right (Just "host-bytes"))
+      result <- withDaemonFirstFallback "load" daemonOp hostOp
+      result `shouldBe` Right Nothing
+      readIORef hostCalled `shouldReturn` False
+
+    it "withDaemonFirstFallback: daemon failure falls back to a successful host op" $ do
+      hostCalled <- newIORef False
+      let daemonOp = pure (Left "HTTP 503 response: object-store unavailable")
+          hostOp = writeIORef hostCalled True >> pure (Right (Just validCheckpoint))
+      result <- withDaemonFirstFallback "load" daemonOp hostOp
+      result `shouldBe` Right (Just validCheckpoint)
+      readIORef hostCalled `shouldReturn` True
+
+    it "withDaemonFirstFallback: both failing yields a combined error naming both" $ do
+      let daemonOp = pure (Left "HTTP 503 daemon down") :: IO (Either String (Maybe BS.ByteString))
+          hostOp = pure (Left "port-forward to MinIO failed")
+      result <- withDaemonFirstFallback "load" daemonOp hostOp
+      case result of
+        Left detail -> do
+          detail `shouldContain` "HTTP 503 daemon down"
+          detail `shouldContain` "port-forward to MinIO failed"
+        Right _ -> expectationFailure "expected Left when both daemon and host fail"
+
+    it "composite observe: daemon 503, host-direct present -> CheckpointPresent" $ do
+      let hooks =
+            observabilityHooks
+              (withDaemonFirstFallback "load" (pure (Left "HTTP 503")) (pure (Right (Just validCheckpoint))))
+      result <- observeStackCheckpointWith hooks stackRef
+      result `shouldBe` Right CheckpointPresent
+
+    it "composite observe: daemon 503, host-direct absent -> CheckpointAbsent" $ do
+      let hooks =
+            observabilityHooks
+              (withDaemonFirstFallback "load" (pure (Left "HTTP 503")) (pure (Right Nothing)))
+      result <- observeStackCheckpointWith hooks stackRef
+      result `shouldBe` Right CheckpointAbsent
+
+    it "composite observe: daemon 503, host-direct corrupt -> CheckpointCorrupt" $ do
+      let hooks =
+            observabilityHooks
+              (withDaemonFirstFallback "load" (pure (Left "HTTP 503")) (pure (Right (Just "garbage{"))))
+      result <- observeStackCheckpointWith hooks stackRef
+      case result of
+        Right (CheckpointCorrupt _) -> pure ()
+        other -> expectationFailure ("expected Right (CheckpointCorrupt _), got " ++ show other)
+
+    it "composite observe: daemon 503 + host failure -> EncryptedBackendLoadFailed naming both" $ do
+      let hooks =
+            observabilityHooks
+              ( withDaemonFirstFallback
+                  "load"
+                  (pure (Left "HTTP 503 daemon down"))
+                  (pure (Left "MinIO port-forward failed"))
+              )
+      result <- observeStackCheckpointWith hooks stackRef
+      case result of
+        Left (EncryptedBackendLoadFailed detail) -> do
+          detail `shouldContain` "HTTP 503 daemon down"
+          detail `shouldContain` "MinIO port-forward failed"
+        other -> expectationFailure ("expected EncryptedBackendLoadFailed, got " ++ show other)
+
+    it "composite observe: healthy daemon classifies present and never touches host-direct" $ do
+      let hooks =
+            observabilityHooks
+              ( withDaemonFirstFallback
+                  "load"
+                  (pure (Right (Just validCheckpoint)))
+                  (error "host-direct must not be called")
+              )
+      result <- observeStackCheckpointWith hooks stackRef
+      result `shouldBe` Right CheckpointPresent
 
   describe "Sprint 4.18 live-output parsers for per-run AWS stacks" $ do
     it "parseAwsTestNodesFromOutputs decodes the three-node Pulumi outputs" $ do

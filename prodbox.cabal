@@ -119,6 +119,7 @@ library
         Prodbox.Pulsar.Topic
         Prodbox.Pulsar.TopicResidue
         Prodbox.Pulumi.EncryptedBackend
+        Prodbox.Pulumi.HostDirectObjectStore
         Prodbox.Repo
         Prodbox.Retry
         Prodbox.Result

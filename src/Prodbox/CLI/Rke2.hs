@@ -30,6 +30,9 @@ module Prodbox.CLI.Rke2
   , isRetryableHarborPublicationFailure
   , RegistryStorageEdgeReadiness (..)
   , classifyRegistryStorageEdgeProbe
+  , GatewayObjectStoreProbe (..)
+  , classifyGatewayObjectStoreProbe
+  , gatewayDaemonDeploymentRefs
   , ensureRegistryStorageBackendEdgeReady
   , renderInotifySysctlDropIn
   , renderResourceVectorRuntime
@@ -177,6 +180,7 @@ import Prodbox.Infra.LongLivedPulumiBackend (loadAdminAwsCredentials)
 import Prodbox.Lib.ChartPlatform
   ( buildChartDeploymentPlanForSubstrate
   , deployChartPlan
+  , gatewayNodeIds
   , keycloakRealmName
   , keycloakVscodeClientId
   , resolveChartSecrets
@@ -1488,7 +1492,7 @@ applyNativeInstallPlan repoRoot bootstrapSettings withEdge (machineId, prodboxId
     StepClusterPlatformRuntime -> ensureClusterPlatformRuntime repoRoot settings prodboxId labelValue
     StepMinioRuntimeSteadyState -> ensureMinioRuntime repoRoot SubstrateHomeLocal MinioSteadyStateHarbor
     StepGatewayMinioBootstrap -> ensureGatewayMinioBootstrap repoRoot
-    StepGatewayChartReady -> ensureGatewayChartReady repoRoot settings SubstrateHomeLocal
+    StepGatewayChartReady -> ensureGatewayChartReadyPostVault repoRoot settings SubstrateHomeLocal
     StepRootChartNamespaceGuardrails -> ensureRootChartNamespaceGuardrails repoRoot settings
     StepAdminPublicEdgeRoutes ->
       ensureAdminPublicEdgeRoutes repoRoot settings SubstrateHomeLocal prodboxId labelValue
@@ -1734,9 +1738,10 @@ cascadeOrderNarration =
 runNativeDeleteCascade :: FilePath -> IO ExitCode
 runNativeDeleteCascade repoRoot = do
   writeOutputLine cascadeOrderNarration
-  -- Step 1: confirm-MinIO — live source-of-truth query against the
-  -- per-run MinIO backend (one shared port-forward across the three
-  -- per-run stacks).
+  -- Step 1: confirm-MinIO — live source-of-truth query of the per-run stacks'
+  -- encrypted checkpoints through the in-cluster gateway daemon object-store
+  -- API, with a host-direct MinIO fallback (one shared port-forward across the
+  -- stacks whose daemon read failed) when the daemon is degraded.
   perRun <- queryPerRunResidueStatuses repoRoot
   let eksStatus = perRunAwsEksTest perRun
       subzoneStatus = perRunAwsEksSubzone perRun
@@ -3930,6 +3935,142 @@ ensureGatewayChartReady
 ensureGatewayChartReady repoRoot settings substrate =
   ensureGatewayChartReadyForSubstrate repoRoot settings substrate
 
+-- | Post-Vault gateway convergence: deploy the gateway chart, then ensure the
+-- daemon is actually running in FULL mode (see 'ensureGatewayDaemonFullMode').
+-- Used ONLY for the post-Vault 'StepGatewayChartReady'; the pre-Vault
+-- 'StepGatewayChartReadyPreVault' keeps calling 'ensureGatewayChartReady'
+-- unchanged (the daemon is expected to boot degraded there, by design).
+ensureGatewayChartReadyPostVault :: FilePath -> ValidatedSettings -> Substrate -> IO ExitCode
+ensureGatewayChartReadyPostVault repoRoot settings substrate = do
+  deployExit <- ensureGatewayChartReady repoRoot settings substrate
+  case deployExit of
+    ExitFailure _ -> pure deployExit
+    ExitSuccess -> ensureGatewayDaemonFullMode repoRoot
+
+-- | The gateway daemon resolves its Vault-backed MinIO credentials exactly once,
+-- at pod boot. The reconcile boots the daemon pre-Vault
+-- ('StepGatewayChartReadyPreVault'), so it starts degraded
+-- (@daemonMinioCreds = Nothing@ → object-store 503). The post-Vault chart
+-- re-render is byte-identical (secrets are Vault refs) so it never restarts the
+-- pods; this step does, deterministically, then VERIFIES the daemon left 503.
+--
+-- Idempotent: probe first, restart ONLY when degraded, so a healthy reconcile is
+-- a no-op. The readiness probe @\/v1\/state@ returns 200 even while degraded, so
+-- @kubectl rollout status@ alone is insufficient — the object-store probe is the
+-- real gate. If the daemon will not leave 503 after the restart budget, fail
+-- loud rather than leaving it silently degraded.
+ensureGatewayDaemonFullMode :: FilePath -> IO ExitCode
+ensureGatewayDaemonFullMode repoRoot = do
+  initialProbe <- pollGatewayObjectStore False gatewayFullModeInitialProbeAttempts
+  case initialProbe of
+    GatewayObjectStoreHealthy -> do
+      writeOutputLine "GATEWAY_DAEMON_MODE=full (no restart needed)"
+      pure ExitSuccess
+    GatewayObjectStoreTransient detail ->
+      failWith
+        ("gateway daemon object-store was not reachable to verify full mode: " ++ detail)
+    GatewayObjectStoreDegraded503 body -> do
+      writeOutputLine
+        ( "GATEWAY_DAEMON_MODE=degraded-pre-vault; restarting gateway daemons to resolve "
+            ++ "MinIO credentials from Vault ("
+            ++ trimProbeBody body
+            ++ ")"
+        )
+      restartExit <-
+        runSequentially
+          ( [rolloutRestart repoRoot gatewayNamespace ref | ref <- gatewayDaemonDeploymentRefs]
+              ++ [rolloutStatus repoRoot gatewayNamespace ref | ref <- gatewayDaemonDeploymentRefs]
+          )
+      case restartExit of
+        ExitFailure _ -> pure restartExit
+        ExitSuccess -> do
+          verifyProbe <- pollGatewayObjectStore True gatewayFullModeVerifyAttempts
+          case verifyProbe of
+            GatewayObjectStoreHealthy -> do
+              writeOutputLine "GATEWAY_DAEMON_MODE=full (restarted into full mode)"
+              pure ExitSuccess
+            GatewayObjectStoreDegraded503 verifyBody ->
+              failWith
+                ( "gateway daemon remained in degraded pre-Vault object-store mode after restart: "
+                    ++ trimProbeBody verifyBody
+                )
+            GatewayObjectStoreTransient detail ->
+              failWith
+                ("gateway daemon object-store was not reachable after restart: " ++ detail)
+
+-- | The gateway daemon Deployments to restart, derived from the canonical
+-- 'gatewayNodeIds' SSoT (one @gateway-\<nodeId>@ Deployment per node).
+gatewayDaemonDeploymentRefs :: [String]
+gatewayDaemonDeploymentRefs =
+  ["deployment/gateway-" ++ nodeId | nodeId <- gatewayNodeIds]
+
+-- | A synthetic, never-provisioned per-run stack name used only to PROBE the
+-- daemon object-store health (a read-only @getPulumiObject@; an absent object is
+-- a healthy @Right Nothing@). It is never written.
+gatewayObjectStoreProbeStack :: Text.Text
+gatewayObjectStoreProbeStack = Text.pack "prodbox-reconcile-objectstore-probe"
+
+gatewayFullModeInitialProbeAttempts :: Int
+gatewayFullModeInitialProbeAttempts = 10
+
+gatewayFullModeVerifyAttempts :: Int
+gatewayFullModeVerifyAttempts = vaultApiReadinessAttempts
+
+-- | Classification of the gateway daemon's object-store health. See
+-- 'ensureGatewayDaemonFullMode'.
+data GatewayObjectStoreProbe
+  = -- | Object-store reachable and credentialed (present OR absent object).
+    GatewayObjectStoreHealthy
+  | -- | Degraded pre-Vault mode: @daemonMinioCreds = Nothing@ → HTTP 503 (body).
+    GatewayObjectStoreDegraded503 String
+  | -- | Transient: daemon still starting, connection refused, etc.
+    GatewayObjectStoreTransient String
+  deriving (Eq, Show)
+
+-- | Pure classifier of a 'GatewayClient.getPulumiObject' result. A @Right _@
+-- (present or absent object) means the object-store is reachable and
+-- credentialed; a @503@ means the daemon booted with @daemonMinioCreds = Nothing@;
+-- any other error is transient. Exposed for unit tests.
+classifyGatewayObjectStoreProbe
+  :: Either GatewayClient.GatewayError (Maybe BS.ByteString) -> GatewayObjectStoreProbe
+classifyGatewayObjectStoreProbe result = case result of
+  Right _ -> GatewayObjectStoreHealthy
+  Left (GatewayClient.GatewayTransport (HttpStatus 503 body)) -> GatewayObjectStoreDegraded503 body
+  Left err -> GatewayObjectStoreTransient (GatewayClient.renderGatewayError err)
+
+probeGatewayObjectStoreOnce :: IO GatewayObjectStoreProbe
+probeGatewayObjectStoreOnce = do
+  result <-
+    GatewayClient.getPulumiObject
+      (GatewayClient.hostLoopbackGatewayEndpoint defaultGatewayNodePort)
+      gatewayObjectStoreProbeStack
+  pure (classifyGatewayObjectStoreProbe result)
+
+-- | Poll the object-store probe up to @attempts@ (sleeping
+-- 'vaultApiReadinessDelayMicroseconds' between), returning on the first
+-- 'GatewayObjectStoreHealthy'. @retryOn503@ controls a settled 503: the verify
+-- path retries it (the just-restarted daemon may still be resolving creds / the
+-- Vault role may still be propagating); the initial path returns it immediately
+-- (a degraded pre-Vault daemon that must be restarted). Transient failures are
+-- always retried. Returns the last observation when the budget is exhausted.
+pollGatewayObjectStore :: Bool -> Int -> IO GatewayObjectStoreProbe
+pollGatewayObjectStore retryOn503 attempts =
+  go attempts (GatewayObjectStoreTransient "gateway daemon not yet probed")
+ where
+  go remaining lastProbe
+    | remaining <= 0 = pure lastProbe
+    | otherwise = do
+        probe <- probeGatewayObjectStoreOnce
+        case probe of
+          GatewayObjectStoreHealthy -> pure GatewayObjectStoreHealthy
+          GatewayObjectStoreDegraded503 _ | not retryOn503 -> pure probe
+          _ -> do
+            threadDelay vaultApiReadinessDelayMicroseconds
+            go (remaining - 1) probe
+
+trimProbeBody :: String -> String
+trimProbeBody = Text.unpack . Text.strip . Text.pack
+
 resolveOperationalAwsCredentialGate
   :: FilePath -> ValidatedSettings -> IO OperationalAwsCredentialGate
 resolveOperationalAwsCredentialGate repoRoot settings =
@@ -5411,6 +5552,25 @@ rolloutStatus repoRoot namespace resourceRef =
           , "--namespace"
           , namespace
           , "--timeout=300s"
+          ]
+      , subprocessEnvironment = Nothing
+      , subprocessWorkingDirectory = Just repoRoot
+      }
+
+-- | Roll-restart a Deployment (new pods, same manifest). Used by the post-Vault
+-- gateway step to re-boot the daemon into full mode when its byte-identical
+-- ConfigMap would otherwise never trigger a rollout.
+rolloutRestart :: FilePath -> String -> String -> IO ExitCode
+rolloutRestart repoRoot namespace resourceRef =
+  runCommand
+    Subprocess
+      { subprocessPath = "kubectl"
+      , subprocessArguments =
+          [ "rollout"
+          , "restart"
+          , resourceRef
+          , "--namespace"
+          , namespace
           ]
       , subprocessEnvironment = Nothing
       , subprocessWorkingDirectory = Just repoRoot

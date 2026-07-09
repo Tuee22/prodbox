@@ -2285,16 +2285,40 @@ fakeVaultPkiCertificateJson =
 fakeVaultAddress :: Int -> String
 fakeVaultAddress port = "http://127.0.0.1:" ++ show port
 
+-- | Reserve a loopback TCP port with NO listener (bind an OS-assigned port, read
+-- it, close). A client connect then gets "connection refused". Used to point the
+-- gateway-daemon probe (@PRODBOX_TEST_GATEWAY_NODEPORT@) at a definitely-down
+-- endpoint so the fake-Vault-lifecycle test deterministically takes the
+-- direct-host Vault seam ('UseDirectHostVaultTestSeam') instead of a *real*
+-- cluster gateway daemon that may be listening on the default NodePort when this
+-- suite runs inside `prodbox test all` (which would resolve
+-- 'VaultDaemonReachable' → 'UseDaemonVaultLifecycle' and query the real Vault).
+reserveClosedLoopbackPort :: IO Int
+reserveClosedLoopbackPort =
+  bracket
+    (socket AF_INET Stream defaultProtocol)
+    close
+    ( \sock -> do
+        bind sock (SockAddrInet 0 (tupleToHostAddress (127, 0, 0, 1)))
+        addr <- getSocketName sock
+        case addr of
+          SockAddrInet p _ -> pure (fromIntegral p)
+          _ -> ioError (userError "expected IPv4 socket while reserving a closed loopback port")
+    )
+
 fakeVaultLifecycleEnvironment :: Int -> IO [(String, String)]
 fakeVaultLifecycleEnvironment port = do
   currentEnvironment <- getEnvironment
+  closedGatewayNodePort <- reserveClosedLoopbackPort
   pure
     ( ("PRODBOX_TEST_HOST_VAULT_ADDR", fakeVaultAddress port)
+        : ("PRODBOX_TEST_GATEWAY_NODEPORT", show closedGatewayNodePort)
         : filter
           ( \(key, _) ->
               key /= "PRODBOX_TEST_HOST_VAULT_ADDR"
                 && key /= "PRODBOX_TEST_HOST_VAULT_TOKEN"
                 && key /= "PRODBOX_TEST_HOST_VAULT_KV"
+                && key /= "PRODBOX_TEST_GATEWAY_NODEPORT"
           )
           currentEnvironment
     )

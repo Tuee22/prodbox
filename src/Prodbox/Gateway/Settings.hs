@@ -361,6 +361,16 @@ toGatewayAwsCreds
     } = do
     accessKeyResult <- secretResolver ak
     case accessKeyResult of
+      -- An ABSENT aws_creds secret (the Vault object/field does not exist) is
+      -- the same "no aws creds on this substrate" condition as the present-but-
+      -- empty value handled below: during a bare `cluster reconcile` the
+      -- operational `aws.*` block is unmaterialized (the harness writes
+      -- secret/gateway/gateway/aws only AFTER this pre-reconcile), so the path
+      -- legitimately 404s. Run WITHOUT aws creds rather than failing the whole
+      -- config decode and crash-looping the daemon into degraded pre-Vault
+      -- mode. A sealed / unreachable Vault ('SecretRefVaultUnavailable') or
+      -- other read error stays fatal so real failures still degrade loudly.
+      Left SecretRefVaultFieldMissing -> pure (Right Nothing)
       Left err -> pure (Left ("aws_creds.access_key_id: " ++ renderSecretRefError err))
       Right accessKey
         -- Present-but-EMPTY AWS creds: on the home substrate the operational

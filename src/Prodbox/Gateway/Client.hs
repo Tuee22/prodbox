@@ -5,6 +5,9 @@
 -- Sprint 2.17.
 module Prodbox.Gateway.Client
   ( GatewayError (..)
+  , daemonRestartBridgeRetryPolicy
+  , gatewayErrorIsTransient
+  , retryGatewayTransient
   , deletePulumiObject
   , bootstrapVaultUrl
   , childBootstrapUrl
@@ -34,6 +37,7 @@ module Prodbox.Gateway.Client
   )
 where
 
+import Control.Concurrent (threadDelay)
 import Data.Aeson (Value, object, (.=))
 import Data.ByteString (ByteString)
 import Data.Map.Strict (Map)
@@ -51,13 +55,14 @@ import Prodbox.Gateway.ObjectStore
 import Prodbox.Gateway.Types (PeerEndpoint (..), peerRestUrl)
 import Prodbox.Http.Client
   ( HttpConfig (..)
-  , HttpError
+  , HttpError (..)
   , defaultHttpConfig
   , httpGetJson
   , httpPostJsonNoResponse
   , httpPostJsonResponseJson
   , renderHttpError
   )
+import Prodbox.Retry (RetryPolicy (..), retryDelayMicros)
 import Prodbox.Vault.Client (SealStatus)
 
 -- | Errors that surface from a gateway-client call.
@@ -70,6 +75,53 @@ renderGatewayError :: GatewayError -> String
 renderGatewayError err = case err of
   GatewayTransport httpErr -> renderHttpError httpErr
   GatewayPayload msg -> "gateway response payload error: " ++ msg
+
+-- | A gateway error that is a bridgeable daemon-restart transient: the daemon
+-- was briefly unreachable (connection dropped / refused, e.g.
+-- @NoResponseDataReceived@ or @Connection refused@) or slow (timeout) while it
+-- rolls, as opposed to answering with a definite rejection. Host-side callers
+-- that talk to a daemon which may be mid-restart (the readiness probe, the
+-- encrypted object-store reads) use this with 'retryGatewayTransient' to wait
+-- the restart window out instead of failing the whole reconcile.
+gatewayErrorIsTransient :: GatewayError -> Bool
+gatewayErrorIsTransient err = case err of
+  GatewayTransport (HttpConnectionFailure _) -> True
+  GatewayTransport (HttpTimeout _) -> True
+  GatewayTransport (HttpStatus _ _) -> False
+  GatewayTransport (HttpDecode _) -> False
+  GatewayPayload _ -> False
+
+-- | Retry a daemon call on TRANSIENT transport failures only, with the given
+-- backoff schedule. A definite HTTP status / decode / payload error is the
+-- daemon answering with a real rejection and returns immediately (retrying
+-- would only mask it).
+retryGatewayTransient
+  :: RetryPolicy -> IO (Either GatewayError a) -> IO (Either GatewayError a)
+retryGatewayTransient policy action = go 0
+ where
+  go attemptIndex = do
+    result <- action
+    case result of
+      Right _ -> pure result
+      Left err
+        | gatewayErrorIsTransient err
+        , attemptIndex + 1 < retryPolicyMaxAttempts policy -> do
+            threadDelay (retryDelayMicros policy attemptIndex)
+            go (attemptIndex + 1)
+        | otherwise -> pure result
+
+-- | Backoff for bridging a gateway-daemon restart window on the host side:
+-- ~1+2+4+8+8s ≈ 23s across five retries — enough to ride out a Deployment
+-- rollout (widened by host memory pressure) without hanging forever on a
+-- genuinely-down daemon.
+daemonRestartBridgeRetryPolicy :: RetryPolicy
+daemonRestartBridgeRetryPolicy =
+  RetryPolicy
+    { retryPolicyMaxAttempts = 6
+    , retryPolicyBaseDelayMicros = 1000000
+    , retryPolicyMultiplier = 2
+    , retryPolicyMaxDelayMicros = 8000000
+    }
 
 -- | Host-side view of the in-cluster gateway daemon through the
 -- loopback-restricted NodePort. The @gatewayNodePort@ argument is the daemon

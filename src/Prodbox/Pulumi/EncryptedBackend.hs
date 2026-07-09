@@ -534,21 +534,35 @@ deleteLogicalPulumiStackWith
 deleteLogicalPulumiStackWith config hmacKey stackRef =
   deleteObject config (logicalPulumiObjectKey hmacKey stackRef)
 
+-- | The daemon-mediated object-store ops retry on TRANSIENT transport failures
+-- ('GatewayClient.retryGatewayTransient'): this no-fallback hook set is used by
+-- 'observeStackCheckpoint' and the per-run postflight destroys, which run during
+-- the destructive Phase 1.6 chart cycle that rolls the gateway Deployments — so
+-- a read/delete can hit the daemon mid-restart and get @Connection refused@.
+-- Bridge that window rather than surfacing 'EncryptedBackendLoadFailed'. (The
+-- host-direct fallback variant below overrides these with its own daemon-first,
+-- MinIO-fallback ops and so does not need the retry.)
 productionHooks :: PeerEndpoint -> EncryptedBackendHooks a
 productionHooks endpoint =
   EncryptedBackendHooks
     { encryptedBackendGate = pure VaultGateProceed
     , encryptedBackendLoad = \stackRef ->
         mapLeft GatewayClient.renderGatewayError
-          <$> GatewayClient.getPulumiObject endpoint (pulumiStackName stackRef)
+          <$> GatewayClient.retryGatewayTransient
+            GatewayClient.daemonRestartBridgeRetryPolicy
+            (GatewayClient.getPulumiObject endpoint (pulumiStackName stackRef))
     , encryptedBackendLoadLegacy = \_ -> pure (Right Nothing)
     , encryptedBackendStore = \stackRef bytes ->
         mapLeft GatewayClient.renderGatewayError
-          <$> GatewayClient.putPulumiObject endpoint (pulumiStackName stackRef) bytes
+          <$> GatewayClient.retryGatewayTransient
+            GatewayClient.daemonRestartBridgeRetryPolicy
+            (GatewayClient.putPulumiObject endpoint (pulumiStackName stackRef) bytes)
     , encryptedBackendDelete =
         \stackRef ->
           mapLeft GatewayClient.renderGatewayError
-            <$> GatewayClient.deletePulumiObject endpoint (pulumiStackName stackRef)
+            <$> GatewayClient.retryGatewayTransient
+              GatewayClient.daemonRestartBridgeRetryPolicy
+              (GatewayClient.deletePulumiObject endpoint (pulumiStackName stackRef))
     , encryptedBackendDeleteLegacy = \_ -> pure (Right ())
     , encryptedBackendWithScratch = withRamScratch
     }

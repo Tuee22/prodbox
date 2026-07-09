@@ -16,6 +16,7 @@ module Prodbox.CLI.Vault
   , VaultDaemonProbe (..)
   , VaultLifecycleTransportDecision (..)
   , gatewayProbeFromResult
+  , retryDaemonTransient
   , gatewayAwsVaultFields
   , runVaultBootstrapViaDaemon
   , runVaultInit
@@ -26,6 +27,7 @@ module Prodbox.CLI.Vault
   )
 where
 
+import Control.Concurrent (threadDelay)
 import Control.Exception (SomeException, try)
 import Data.Aeson (Value (..), encode)
 import Data.Aeson.Key qualified as AesonKey
@@ -47,6 +49,7 @@ import Prodbox.Gateway.Types (PeerEndpoint)
 import Prodbox.Host (defaultGatewayNodePort)
 import Prodbox.Http.Client (HttpError (..), renderHttpError)
 import Prodbox.Infra.MinioBackend (withMinioPortForward)
+import Prodbox.Retry (RetryPolicy (..), retryDelayMicros)
 import Prodbox.Settings qualified as Settings
 import Prodbox.Settings.SecretRef
   ( SecretRef (..)
@@ -177,8 +180,20 @@ parseGatewayNodePort raw =
 resolveVaultLifecycleTransport :: IO VaultLifecycleTransportDecision
 resolveVaultLifecycleTransport = do
   endpoint <- gatewayEndpointFromEnv
-  probeResult <- GatewayClient.queryState endpoint
   seam <- detectHostVaultDirectSeam
+  -- With no host-Vault test seam, a 'VaultDaemonUnavailable' probe result would
+  -- REFUSE (no fallback), so a transient connection failure during a daemon
+  -- restart window (e.g. the destructive Phase 1.6 chart cycle rolling the
+  -- gateway Deployments) would abort the lifecycle command. Bridge that window
+  -- by retrying the readiness probe. With a test seam present a down daemon
+  -- should fall back to the seam immediately, so probe just once.
+  probeResult <- case seam of
+    HostVaultDirectSeamAbsent ->
+      retryDaemonTransient
+        GatewayClient.daemonRestartBridgeRetryPolicy
+        "gateway daemon readiness probe"
+        (GatewayClient.queryState endpoint)
+    HostVaultDirectSeamPresent -> GatewayClient.queryState endpoint
   pure (vaultLifecycleTransportDecision (gatewayProbeFromResult probeResult) seam)
 
 detectHostVaultDirectSeam :: IO HostVaultDirectSeam
@@ -308,7 +323,11 @@ runVaultBootstrapViaDaemon repoRoot = do
       pure (ExitFailure 1)
     Right password -> do
       endpoint <- gatewayEndpointFromEnv
-      result <- GatewayClient.ensureVaultBootstrap endpoint password
+      result <-
+        retryDaemonTransient
+          GatewayClient.daemonRestartBridgeRetryPolicy
+          "daemon-mediated Vault bootstrap"
+          (GatewayClient.ensureVaultBootstrap endpoint password)
       case result of
         Left err -> do
           writeOutput ("daemon-mediated Vault bootstrap failed: " ++ GatewayClient.renderGatewayError err)
@@ -316,6 +335,43 @@ runVaultBootstrapViaDaemon repoRoot = do
         Right value -> do
           writeOutput ("Vault daemon bootstrap complete: " ++ renderJsonValue value)
           pure ExitSuccess
+
+-- | Retry a daemon-mediated Vault command on TRANSIENT transport failures only
+-- ('GatewayClient.gatewayErrorIsTransient'), logging each retry so an operator
+-- can see the daemon-restart bridge happening. The daemon is rolled (Deployment
+-- restart) partway through a reconcile, so a probe-then-act sequence can hit the
+-- restart window and get a dropped connection ('HttpConnectionFailure', e.g.
+-- @NoResponseDataReceived@ / @Connection refused@) or a timeout even though the
+-- daemon is moments from ready; bridge that window rather than aborting. A
+-- non-transient gateway error (a definite HTTP status / decode / payload error)
+-- is the daemon answering with a real rejection and fails immediately.
+retryDaemonTransient
+  :: RetryPolicy
+  -> String
+  -> IO (Either GatewayClient.GatewayError a)
+  -> IO (Either GatewayClient.GatewayError a)
+retryDaemonTransient policy label action = go 0
+ where
+  go attemptIndex = do
+    result <- action
+    case result of
+      Right _ -> pure result
+      Left err
+        | GatewayClient.gatewayErrorIsTransient err
+        , attemptIndex + 1 < retryPolicyMaxAttempts policy -> do
+            writeOutput
+              ( label
+                  ++ ": transient daemon transport failure ("
+                  ++ GatewayClient.renderGatewayError err
+                  ++ "); retrying (attempt "
+                  ++ show (attemptIndex + 2)
+                  ++ "/"
+                  ++ show (retryPolicyMaxAttempts policy)
+                  ++ ")"
+              )
+            threadDelay (retryDelayMicros policy attemptIndex)
+            go (attemptIndex + 1)
+        | otherwise -> pure result
 
 runDaemonVaultStatus :: IO ExitCode
 runDaemonVaultStatus = do

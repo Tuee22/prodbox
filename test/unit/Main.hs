@@ -216,6 +216,7 @@ import Prodbox.CLI.Vault
   , VaultLifecycleTransportDecision (..)
   , gatewayAwsVaultFields
   , gatewayProbeFromResult
+  , retryDaemonTransient
   , vaultLifecycleTransportDecision
   )
 import Prodbox.Capacity.Config qualified as Capacity
@@ -3048,6 +3049,96 @@ main = mainWithSuite "prodbox-unit" $ do
             :: Either Prodbox.Gateway.Client.GatewayError Value
         )
         `shouldBe` VaultDaemonReachable
+  describe "daemon-mediated Vault retry (transient restart bridge)" $ do
+    let fastRetryPolicy =
+          RetryPolicy
+            { retryPolicyMaxAttempts = 4
+            , retryPolicyBaseDelayMicros = 1000
+            , retryPolicyMultiplier = 1
+            , retryPolicyMaxDelayMicros = 1000
+            }
+    it "gatewayErrorIsTransient: only dropped connections / timeouts are bridgeable transients" $ do
+      Prodbox.Gateway.Client.gatewayErrorIsTransient
+        ( Prodbox.Gateway.Client.GatewayTransport
+            (Prodbox.Http.Client.HttpConnectionFailure "NoResponseDataReceived")
+        )
+        `shouldBe` True
+      Prodbox.Gateway.Client.gatewayErrorIsTransient
+        (Prodbox.Gateway.Client.GatewayTransport (Prodbox.Http.Client.HttpTimeout "response timeout"))
+        `shouldBe` True
+      Prodbox.Gateway.Client.gatewayErrorIsTransient
+        (Prodbox.Gateway.Client.GatewayTransport (Prodbox.Http.Client.HttpStatus 500 "boom"))
+        `shouldBe` False
+      Prodbox.Gateway.Client.gatewayErrorIsTransient (Prodbox.Gateway.Client.GatewayPayload "bad json")
+        `shouldBe` False
+    it "retryDaemonTransient: bridges a mid-restart NoResponseDataReceived then succeeds" $ do
+      callsRef <- newIORef (0 :: Int)
+      let action = do
+            modifyIORef' callsRef (+ 1)
+            n <- readIORef callsRef
+            pure $
+              if n < 3
+                then
+                  Left
+                    ( Prodbox.Gateway.Client.GatewayTransport
+                        (Prodbox.Http.Client.HttpConnectionFailure "NoResponseDataReceived")
+                    )
+                else Right ("ready" :: String)
+      result <- retryDaemonTransient fastRetryPolicy "test" action
+      result `shouldBe` Right "ready"
+      readIORef callsRef `shouldReturn` 3
+    it "retryDaemonTransient: fails fast on a non-transient gateway error (no retry)" $ do
+      callsRef <- newIORef (0 :: Int)
+      let action = do
+            modifyIORef' callsRef (+ 1)
+            pure
+              ( Left
+                  (Prodbox.Gateway.Client.GatewayTransport (Prodbox.Http.Client.HttpStatus 400 "rejected"))
+                  :: Either Prodbox.Gateway.Client.GatewayError String
+              )
+      result <- retryDaemonTransient fastRetryPolicy "test" action
+      result
+        `shouldBe` Left
+          (Prodbox.Gateway.Client.GatewayTransport (Prodbox.Http.Client.HttpStatus 400 "rejected"))
+      readIORef callsRef `shouldReturn` 1
+    it "retryDaemonTransient: exhausts the attempt budget on a persistent transient" $ do
+      callsRef <- newIORef (0 :: Int)
+      let action = do
+            modifyIORef' callsRef (+ 1)
+            pure
+              ( Left
+                  (Prodbox.Gateway.Client.GatewayTransport (Prodbox.Http.Client.HttpConnectionFailure "down"))
+                  :: Either Prodbox.Gateway.Client.GatewayError String
+              )
+      _ <- retryDaemonTransient fastRetryPolicy "test" action
+      readIORef callsRef `shouldReturn` retryPolicyMaxAttempts fastRetryPolicy
+    it "retryGatewayTransient (shared): bridges a Connection-refused restart window then succeeds" $ do
+      okRef <- newIORef (0 :: Int)
+      let okAction = do
+            modifyIORef' okRef (+ 1)
+            n <- readIORef okRef
+            pure $
+              if n < 2
+                then
+                  Left
+                    ( Prodbox.Gateway.Client.GatewayTransport
+                        (Prodbox.Http.Client.HttpConnectionFailure "Connection refused")
+                    )
+                else Right ("ok" :: String)
+      okResult <- Prodbox.Gateway.Client.retryGatewayTransient fastRetryPolicy okAction
+      okResult `shouldBe` Right "ok"
+      readIORef okRef `shouldReturn` 2
+    it "retryGatewayTransient (shared): fails fast on a non-transient status (no retry)" $ do
+      hardRef <- newIORef (0 :: Int)
+      let hardAction = do
+            modifyIORef' hardRef (+ 1)
+            pure
+              ( Left
+                  (Prodbox.Gateway.Client.GatewayTransport (Prodbox.Http.Client.HttpStatus 409 "conflict"))
+                  :: Either Prodbox.Gateway.Client.GatewayError String
+              )
+      _ <- Prodbox.Gateway.Client.retryGatewayTransient fastRetryPolicy hardAction
+      readIORef hardRef `shouldReturn` 1
   describe "daemon Pulumi object-store endpoint (Sprint 7.30)" $ do
     let requestFor path method body =
           BS8.pack
@@ -7589,6 +7680,35 @@ main = mainWithSuite "prodbox-unit" $ do
             case daemonAwsCreds config of
               Nothing -> pure ()
               Just _ -> expectationFailure "expected daemonAwsCreds = Nothing for empty home-substrate aws creds"
+
+    it
+      "treats an ABSENT aws_creds secret (Vault 404 -> field missing) as no aws creds (daemonAwsCreds = Nothing)"
+      $ do
+        -- Regression: on a fresh Vault during a bare `cluster reconcile` the
+        -- operational `aws.*` block is unmaterialized, so
+        -- secret/gateway/gateway/aws does not exist yet and its Vault refs 404.
+        -- `resolveSecretRefFromVault` maps that 404 to
+        -- 'SecretRefVaultFieldMissing'; the daemon must run WITHOUT aws creds
+        -- rather than fail the whole config decode and boot degraded pre-Vault
+        -- (which failed StepGatewayChartReady's object-store self-heal check and
+        -- aborted `prodbox test all`). Companion to the present-but-empty case
+        -- above.
+        let absentAwsResolver ref =
+              pure $ case ref of
+                SecretRefVault vref
+                  | Text.isInfixOf "aws" (vaultSecretPath vref) ->
+                      Left SecretRefVaultFieldMissing
+                _ -> Right "resolved-secret"
+        decoded <-
+          GatewaySettings.decodeDaemonConfigDhallWith
+            absentAwsResolver
+            (Text.pack (renderGatewayConfigTemplate (testValidatedSettings "/tmp/prodbox/.data") "node-a"))
+        case decoded of
+          Left err -> expectationFailure err
+          Right config ->
+            case daemonAwsCreds config of
+              Nothing -> pure ()
+              Just _ -> expectationFailure "expected daemonAwsCreds = Nothing for absent home-substrate aws creds"
 
     it "decodes chart-shaped config in pre-Vault mode without resolving SecretRefs" $ do
       decoded <-

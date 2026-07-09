@@ -49,7 +49,7 @@ import Dhall
   , genericToDhallWith
   )
 import GHC.Generics (Generic)
-import Prodbox.Http.Client (renderHttpError)
+import Prodbox.Http.Client (HttpError (HttpStatus), renderHttpError)
 import Prodbox.Vault.Client
   ( VaultAddress
   , VaultToken
@@ -232,6 +232,15 @@ resolveSecretRefFromVault mode address token =
         (vaultSecretMount vaultRef)
         (vaultSecretPath vaultRef)
     pure $ case result of
+      -- A 404 means the KV secret object does not exist at all — the same
+      -- "the referenced secret is not present" condition as a present object
+      -- whose field is absent (below). Collapse both to
+      -- 'SecretRefVaultFieldMissing' so an OPTIONAL consumer (e.g. the gateway
+      -- daemon's aws_creds on the home substrate, before the harness
+      -- materializes secret/gateway/gateway/aws) can treat "secret absent"
+      -- uniformly; a genuine transport / non-404 HTTP error stays a loud
+      -- 'SecretRefVaultReadFailed'.
+      Left (HttpStatus 404 _) -> Left SecretRefVaultFieldMissing
       Left err -> Left (SecretRefVaultReadFailed (renderHttpError err))
       Right fields ->
         maybe

@@ -28,9 +28,11 @@ validation environments.
   application environment in `haskell_code_guide.md`; generated artifacts and lint stack
   in `code_quality.md`; output rules and at-least-once event processing in
   `streaming_doctrine.md`; prerequisites as typed effects in `prerequisite_doctrine.md`; the
-  shallow-gate invariant that makes bootstrap readiness races unrepresentable — reconcile ordering
-  projected over a config-sourced component dependency/readiness graph, each barrier probing the
-  exact dependency call path — in `bootstrap_readiness_doctrine.md`;
+  shallow-gate invariant and the bootstrap readiness-race class it targets — reconcile ordering to be
+  projected over a config-sourced component dependency/readiness graph (foundation, bounded
+  Vault/gateway node split, injected-action readiness seam, deep registry→MinIO gate, and shared
+  transient-failure base landed; production consumer bindings remain scheduled), each barrier probing the exact dependency call path — in
+  `bootstrap_readiness_doctrine.md`;
   daemon lifecycle in `distributed_gateway_architecture.md`; unified block storage —
   static `Retain` no-provisioner PVs on both substrates (home `hostPath`, EKS pre-created
   EBS) and deterministic rebinding — in `storage_lifecycle_doctrine.md`; testing doctrine in
@@ -234,12 +236,49 @@ The current worktree closes on the supported edge architecture. Today:
   `dev check` makes a creatable-but-undiscoverable resource unrepresentable (doctrine:
   [lifecycle_reconciliation_doctrine.md § 3.1](./documents/engineering/lifecycle_reconciliation_doctrine.md);
   Phase 4 Sprints 4.20–4.22 and Phase 7 Sprint 7.8)
-- **scheduled**: bootstrap reconcile ordering becomes a pure projection over a config-sourced
-  component dependency/readiness graph, and every readiness barrier probes the exact dependency
-  call path it guards (the registry→MinIO S3 write edge, not a front-door `/v2/` proxy), so the
-  class of bootstrap readiness races is unrepresentable (doctrine:
-  [bootstrap_readiness_doctrine.md](./documents/engineering/bootstrap_readiness_doctrine.md);
-  Phase 1 Sprint 1.56, Phase 3 Sprint 3.23, Phase 4 Sprint 4.43, Phase 7 Sprint 7.31)
+- bootstrap readiness (partly landed, completion **scheduled**): the typed config-sourced component
+  dependency/readiness graph plus the deep registry→MinIO S3 edge-readiness gate (the exact write
+  edge, not a front-door `/v2/` proxy) landed on both substrates (Phase 1 Sprint 1.56, Phase 3
+  Sprint 3.23, Phase 4 Sprint 4.43, Phase 7 Sprint 7.31). Sprint 1.57 is ✅ Done (2026-07-10):
+  `Prodbox.Service` owns the shared constructor-decided transient-failure base, the Phase-1
+  AWS-validation caller delegates to it, and `CheckCode` rejects new standalone inline retry tables
+  (unit 1248/1248, `prodbox dev check` 0). Sprint 1.58 is also ✅ Done (2026-07-10): Vault and
+  gateway-daemon now have bounded split IDs/probes (including `ProbeVaultUnsealed`), the generic
+  `EffectDAG` takes a caller tie-break and `ComponentGraph` supplies `fromEnum`, and
+  `prodbox-config-types.dhall` was regenerated while remaining git-ignored (`config generate` /
+  `config validate` exit 0, unit 1250/1250, `dev check` 0). Sprint 1.59 is ✅ Done and Phase 1 is
+  reclosed: `ReadinessObservation`, `ReadinessProbeResult`, and typed targets carry caller-injected
+  one-shot actions; dispatch is exhaustive, mismatch refuses before polling, and pending/unreachable
+  readings remain bounded and fail closed. The graph uses `ProbeServiceActive` for cluster base,
+  orders Vault unseal behind the pre-Vault daemon, and gives gateway-full a MinIO
+  `BackendWriteEdge` (`config generate`/`config validate` exit 0, unit 1259/1259, `dev check` 0).
+  Sprint 2.30 is ✅ Done and Phase 2 is reclosed: `VaultRoleGatewayDaemon` is shared by the supported
+  `ChartPlatform`-generated gateway `vault.role` and `defaultVaultReconcilePlan`; the resulting
+  `prodbox-gateway-daemon` role binds exactly `prodbox-gateway` plus `gateway-gateway` (unit
+  1260/1260, `dev check` 0). Static chart defaults and other gateway configuration surfaces are
+  outside this SSoT. Sprint 3.24 is ✅ Done and Phase 3 is reclosed: the exhaustive
+  `operatorAvailableTarget` registry routes the Percona one-shot `Available=True` observation
+  through `ReadinessObservation`, and only `ReadyObserved` opens chart mutation. New `ComponentId`
+  constructors require an explicit compile-time decision; existing config-driven IDs without a
+  registered target fail closed at runtime (unit 1266/1266, chart lint 0, `dev check` 0). No existing
+  readiness primitive or coordinate is duplicated; production bindings `4.45`, `5.15`, and `7.32`
+  have landed.
+  Sprint 4.44 is ✅ Done: `RegistryStorageBackend` now carries the registry S3 settings and requires
+  an explicit `RedirectPolicy`; the canonical MinIO-backed record uses `RedirectDisabled`.
+  `registryConfigYaml` remains an `unlines` renderer, but it consumes that typed input. The golden
+  output is preserved and resource ownership is unchanged (registry-config golden, unit 1268/1268,
+  `dev check` 0). Sprints 4.45/4.46 are ✅ Done and Phase 4 is reclosed: the validated graph drives
+  the anchored home reconcile plan, and the Route 53/Helm/Harbor classifiers share the common
+  transient base (unit 1276/1276, `dev check` 0). Sprint 5.15 is ✅ Done and Phase 5 is reclosed:
+  bootstrap and postflight interpret one substrate-aware typed restore plan, and SMTP is gated by
+  bounded gateway object-store readiness (unit 1280/1280; `dev check` 0). Sprint 7.32 is ✅ Done and
+  Phase 7 is reclosed: AWS platform order is graph-derived and fail-closed before mutation, final
+  EKS-owned readiness barriers and a scoped gateway Service port-forward span the Vault transition,
+  the EKS classifier delegates to the shared base with no lint allowance, and AWS bootstrap
+  projects the shared restore builder (unit 1286/1286; `dev check` 0). The home restore-cycle proof
+  and live AWS aggregate remain non-blocking
+  (doctrine:
+  [bootstrap_readiness_doctrine.md](./documents/engineering/bootstrap_readiness_doctrine.md))
 
 Closure, validation ownership, and phase history are tracked in
 [DEVELOPMENT_PLAN/README.md](./DEVELOPMENT_PLAN/README.md).

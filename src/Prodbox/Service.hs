@@ -12,7 +12,9 @@ module Prodbox.Service
   , PgError (..)
   , RedisError (..)
   , ServiceError (..)
+  , TransientFailureClass (..)
   , classifyServiceError
+  , isRetryableTransientFailure
   , serviceErrorMessage
   , serviceErrorRetryable
   , retryServiceAction
@@ -62,6 +64,63 @@ data ServiceError
     -- single subprocess wrapper hardcoded @retryable = True@.
     SEInternalError Text
   deriving (Eq, Show)
+
+-- | Shared retry-classification groups for failures observed after a
+-- subprocess has started. The constructor, rather than each caller, owns the
+-- common fragments for its transient class. Callers may extend the shared
+-- base with operation-specific fragments through
+-- 'isRetryableTransientFailure'.
+data TransientFailureClass
+  = TransientNameResolutionFailure
+  | TransientConnectionFailure
+  | TransientHttpFailure
+  | TransientTimeoutFailure
+  deriving (Bounded, Enum, Eq, Show)
+
+-- | Classify a rendered tool failure against the shared transient base plus
+-- operation-specific fragments. Both the observed detail and extensions are
+-- normalized here so callers cannot accidentally make retry behavior depend
+-- on output casing.
+isRetryableTransientFailure :: [String] -> String -> Bool
+isRetryableTransientFailure operationSpecificFragments detail =
+  any (`isInfixOf` loweredDetail) normalizedFragments
+ where
+  loweredDetail = map toLower detail
+  normalizedFragments =
+    map
+      (map toLower)
+      ( concatMap transientFailureFragments [minBound .. maxBound]
+          ++ operationSpecificFragments
+      )
+
+-- | Exhaustive constructor-owned fragment table. The four groups form the
+-- common base shared by AWS validation, Helm, registry publication, and EKS
+-- image-mirror retry classifiers.
+transientFailureFragments :: TransientFailureClass -> [String]
+transientFailureFragments = \case
+  TransientNameResolutionFailure ->
+    [ "no such host"
+    , "dial tcp"
+    , "lookup"
+    , "name resolution"
+    ]
+  TransientConnectionFailure ->
+    [ "connection reset by peer"
+    , "connection refused"
+    , "unexpected eof"
+    , "temporary failure"
+    ]
+  TransientHttpFailure ->
+    [ "502 bad gateway"
+    , "503 service unavailable"
+    , "504 gateway timeout"
+    , "429 too many requests"
+    ]
+  TransientTimeoutFailure ->
+    [ "tls handshake timeout"
+    , "i/o timeout"
+    , "context deadline exceeded"
+    ]
 
 -- | The human-readable message carried by a 'ServiceError', regardless
 -- of constructor. Total accessor used by error-rendering call sites.

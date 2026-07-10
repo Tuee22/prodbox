@@ -15,6 +15,18 @@
 
 ## Phase Status
 
+✅ **Reclosed 2026-07-10 for operator-gate totality.** Sprint `3.24` is Done on the
+Phase-3-owned chart operator-gate surface. `validateOperatorGates` now routes graph-projected gates
+through an exhaustive `ComponentId` target registry, `OperatorAvailableTarget`, and
+`observeComponentReadiness`. The Percona target uses a one-shot CRD-then-Deployment adapter with
+`--ignore-not-found` and requires `Available=True`; a pending or unreachable observation closes the
+chart-mutation gate. Every current unsupported `ComponentId` has an explicit fail-closed arm.
+Adding a constructor is therefore warning-clean compile-enforced, while configuration that projects
+an existing but unsupported ID is rejected at runtime rather than claimed universally impossible at
+compile time. Validation: `./.build/prodbox dev lint chart` (exit 0),
+`./.build/prodbox test unit` (1266/1266), and `./.build/prodbox dev check` (exit 0). All earlier
+Phase `3` closures remain valid.
+
 ✅ **Reclosed 2026-07-06 for graph-sourced chart dependency edges** — Phase `3` expanded its
 own chart-platform surface with Sprint `3.23` (✅ Done), part of the
 bootstrap-readiness refactor
@@ -2312,8 +2324,10 @@ condition (`deploymentConditionReportsTrue`) rather than mere object existence.
 
 ### Remaining Work
 
-- None beyond Sprint `1.56` landing; AWS-substrate chart coverage stays orthogonal (substrates.md
-  parity).
+- None. Sprint `3.24` closed the former totality follow-up with an exhaustive target registry.
+  Constructor additions require an explicit warning-clean match arm; a config-driven gate that
+  names an already-existing unsupported `ComponentId` fails closed at runtime. AWS-substrate chart
+  coverage stays orthogonal (`substrates.md` parity).
 
 ## Documentation Requirements
 
@@ -2331,6 +2345,67 @@ condition (`deploymentConditionReportsTrue`) rather than mere object existence.
 
 - Add a ledger row (Sprint `3.23`) for the retired `chartDefinitionDependencies` /
   `ChartRequiresPatroniPlatform` edges.
+
+## Sprint 3.24: Operator-Gate Totality via the ReadinessObservation Seam [✅ Done]
+
+**Status**: Done (2026-07-10)
+**Implementation**: `src/Prodbox/Lib/ChartPlatform.hs` (`operatorAvailableTarget`,
+`observePatroniOperatorAvailableWith`, `validateOperatorGatesWith`, `operatorGateResult`),
+`test/unit/Main.hs`
+**Independent Validation**: `./.build/prodbox dev lint chart` exits 0;
+`./.build/prodbox test unit` passes 1266/1266, covering exhaustive target registration, explicit
+unsupported-ID refusal, one-shot Percona classification, and pending/unreachable gate closure;
+`./.build/prodbox dev check` exits 0. No later phase or live infrastructure is required.
+**Docs to update**: `documents/engineering/helm_chart_platform_doctrine.md`, `documents/engineering/bootstrap_readiness_doctrine.md`
+
+### Objective
+
+Make the chart operator gate total over the current `ComponentId` inventory: a graph-projected gate
+either reaches its registered readiness target or returns an explicit error before chart mutation.
+
+### Deliverables
+
+- `operatorAvailableTarget` exhaustively matches the closed `ComponentId` ADT. Percona maps to an
+  `OperatorAvailableTarget`; every current non-operator component has an explicit
+  `unsupportedOperatorGate` arm. There is no wildcard success arm.
+- `observePatroniOperatorAvailableWith` is a one-shot adapter. It queries the Percona CRD with
+  `--ignore-not-found`, stops with `ReadinessProbePending` when that CRD is absent, then queries the
+  operator Deployment with `--ignore-not-found` and accepts only its `Available=True` condition.
+- `validateOperatorGatesWith` routes every graph-projected gate through
+  `observeComponentReadiness`; `operatorGateResult` permits only `ReadyObserved`. Both
+  `NotReadyYet` and `Unreachable` return `Left`, closing the chart-mutation gate.
+- Warning-clean exhaustive matching makes a newly added `ComponentId` constructor require a source
+  decision. Config is data, however: if it projects an already-existing ID whose explicit arm is
+  unsupported, the target registry fails closed at runtime. This sprint does not overstate that
+  data-driven mismatch as a universal compile-time impossibility.
+
+### Validation
+
+1. `./.build/prodbox dev lint chart` — exits 0.
+2. `./.build/prodbox test unit` — passes 1266/1266; proves the production registry has no wildcard,
+   every default graph gate is bound, an existing unsupported ID refuses, absent CRDs and
+   non-Available Deployments stay pending, and pending/unreachable observations both gate closed.
+3. `./.build/prodbox dev check` — exits 0.
+
+### Remaining Work
+
+- None.
+
+## Documentation Requirements
+
+**Engineering docs to create/update:**
+
+- `documents/engineering/helm_chart_platform_doctrine.md` - the operator gate is total (no fallthrough).
+- `documents/engineering/bootstrap_readiness_doctrine.md` - the chart-gate consumer of the M3 seam.
+
+**Product docs to create/update:**
+
+- None.
+
+**Cross-references to add:**
+
+- Former ledger row G (`validateOperatorGates` fallthrough) is recorded under `Completed` in
+  `legacy-tracking-for-deletion.md` for Sprint `3.24`.
 
 ## Related Documents
 

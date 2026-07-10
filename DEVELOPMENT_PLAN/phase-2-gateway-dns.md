@@ -14,6 +14,18 @@
 
 ## Phase Status
 
+✅ **Reclosed 2026-07-10 for the gateway-daemon Vault-role SSoT.** Sprint `2.30` is Done on its
+Phase-2-owned gateway/Vault-identity surface. `Prodbox.Vault.RoleId` owns the closed `VaultRoleId`
+inventory and its `vaultRoleIdText` projection; the supported generated ChartPlatform gateway
+release values and `Vault/Reconcile` role spec both consume `VaultRoleGatewayDaemon`. The role binds
+exactly `prodbox-gateway` and `gateway-gateway`. Unit tests prove that exact policy set, decode the
+actual generated AWS gateway release values and compare `vault.role` with the typed projection, and
+guard `ChartPlatform.hs` against a duplicated role-name literal. `charts/gateway/values.yaml` retains
+the same role name as its documented chart default; the supported generated render supplies the
+typed value, and this closure does not claim that every gateway configuration surface is typed.
+Validation: `./.build/prodbox test unit` (1260/1260) and `./.build/prodbox dev check` (exit 0). All
+earlier Phase `2` closures remain valid.
+
 ✅ **Reclosed 2026-07-05 for the daemon-mediated post-bootstrap boundary.** Sprint `2.29` is now
 Done on its code-owned surface: the daemon has a pre-Vault config loader that binds diagnostics and
 `POST /v1/bootstrap/vault/ensure` before Vault-backed event keys, AWS credentials, or MinIO
@@ -2569,6 +2581,65 @@ None for Phase `2`. Sprint `4.42` consumes this endpoint from the lifecycle inte
 - Keep gateway and TLA+ doctrine linked back to [README.md](README.md).
 - Add a backlink from `documents/engineering/cluster_federation_doctrine.md` to this phase for the
   gateway/CLI federation-trust surface owned by Sprint 2.26.
+
+## Sprint 2.30: Gateway-Daemon Vault-Role SSoT [✅ Done]
+
+**Status**: Done (2026-07-10)
+**Implementation**: `src/Prodbox/Vault/RoleId.hs`, `src/Prodbox/Vault/Reconcile.hs`,
+`src/Prodbox/Lib/ChartPlatform.hs`, `test/unit/Main.hs`
+**Independent Validation**: `./.build/prodbox test unit` passes 1260/1260, including the exact
+gateway-daemon policy-set assertion, the generated ChartPlatform gateway-release values proof, and
+the no-duplicated-literal source guard; `./.build/prodbox dev check` exits 0. No later phase or live
+infrastructure is required.
+**Docs to update**: `documents/engineering/vault_doctrine.md`, `documents/engineering/helm_chart_platform_doctrine.md`
+
+### Objective
+
+Retire the 44e896f string-typo class on the supported generated-render path: the gateway-daemon
+Vault role is one typed identity, so the generated chart value and the Vault-side role/policy
+binding cannot drift into a 403.
+
+### Deliverables
+
+- `Prodbox.Vault.RoleId` defines the closed `VaultRoleId` inventory with
+  `VaultRoleGatewayDaemon`, projected by `vaultRoleIdText` to `prodbox-gateway-daemon`.
+- Both `defaultVaultReconcilePlan`'s `VaultKubernetesRoleSpec` and the supported generated gateway
+  release values in `Prodbox.Lib.ChartPlatform` consume that projection; the former binds exactly
+  `["prodbox-gateway", "gateway-gateway"]`.
+- The generated-values test builds the AWS gateway deployment plan, decodes the gateway release's
+  `chartReleasePlanValuesJson`, and proves `vault.role == vaultRoleIdText VaultRoleGatewayDaemon`.
+  A separate source guard proves `ChartPlatform.hs` contains no duplicated
+  `"prodbox-gateway-daemon"` literal.
+- `charts/gateway/values.yaml` still records `prodbox-gateway-daemon` as the documented Helm-chart
+  default. It is not the typed consumer proved here: the supported `prodbox charts reconcile
+  gateway` generated values override this field from `VaultRoleId`. This sprint does not claim to
+  single-source every gateway configuration value.
+
+### Validation
+
+1. `./.build/prodbox test unit` — passes 1260/1260; covers the exact two-policy set, the actual
+   generated ChartPlatform gateway values, and the `ChartPlatform.hs` no-duplicated-literal guard.
+2. `./.build/prodbox dev check` — exits 0.
+
+### Remaining Work
+
+- None. Standard-E note: this Phase-2 sprint edits the Phase-3-owned `ChartPlatform.hs` render by operator decision — the whole Vault-role SSoT is kept in one sprint rather than splitting the render consumption into Phase 3.
+
+## Documentation Requirements
+
+**Engineering docs to create/update:**
+
+- `documents/engineering/vault_doctrine.md` - §12 gateway-daemon role bound to one `VaultRoleId`.
+- `documents/engineering/helm_chart_platform_doctrine.md` - the values render sources the role from the shared identity, not a literal.
+
+**Product docs to create/update:**
+
+- None.
+
+**Cross-references to add:**
+
+- Former ledger row E (hardcoded Vault-role literal) is recorded under `Completed` in
+  `legacy-tracking-for-deletion.md` for Sprint `2.30`.
 
 ## Related Documents
 

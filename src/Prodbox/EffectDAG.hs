@@ -121,23 +121,28 @@ orderedUnique = go Set.empty
 -- Unlike 'transitiveClosureIds' (which returns the closure as a text-sorted
 -- __set__ for the interpreter's ready-set rendering), this returns a
 -- __dependencies-before-dependents__ topological order suitable for driving
--- bring-up. Determinism comes from visiting roots and each node's adjacency in
--- rendered-text order, so the projection is a pure function of the graph, never
--- of declaration order. A node that appears on its own DFS ancestor stack is a
+-- bring-up. Determinism comes from a caller-supplied tie-break projection;
+-- rendered text remains reserved for diagnostics. This lets the component graph
+-- use constructor declaration order while prerequisite callers can retain their
+-- own ordering doctrine. A node that appears on its own DFS ancestor stack is a
 -- back-edge (cycle → 'Left'); an adjacency id with no entry in the graph is a
 -- dangling dependency (missing node → 'Left').
 acyclicTopologicalOrder
-  :: (Ord k)
+  :: (Ord k, Ord rank)
   => (k -> String)
-  -- ^ Render a key for error messages and the deterministic tie-break ordering.
+  -- ^ Render a key for error messages.
+  -> (k -> rank)
+  -- ^ Deterministic ordering projection for otherwise-independent nodes.
   -> (k -> Maybe [k])
   -- ^ Adjacency lookup: @Nothing@ means the key is absent from the graph.
   -> [k]
   -- ^ Roots to expand from.
   -> Either String [k]
-acyclicTopologicalOrder render adjacency roots =
-  fmap (reverse . fst) (foldM (visit []) ([], Set.empty) (sortOn render roots))
+acyclicTopologicalOrder render tieBreak adjacency roots =
+  fmap (reverse . fst) (foldM (visit []) ([], Set.empty) (orderedKeys roots))
  where
+  orderedKeys = sortOn (\key -> (tieBreak key, render key))
+
   visit ancestors (ordered, done) key
     | key `elem` ancestors =
         Left (cyclePathMessage (reverse (key : ancestors)))
@@ -148,7 +153,7 @@ acyclicTopologicalOrder render adjacency roots =
             Left ("Missing component node in graph: " ++ render key)
           Just deps -> do
             (orderedAfter, doneAfter) <-
-              foldM (visit (key : ancestors)) (ordered, done) (sortOn render deps)
+              foldM (visit (key : ancestors)) (ordered, done) (orderedKeys deps)
             Right (key : orderedAfter, Set.insert key doneAfter)
 
   cyclePathMessage path =

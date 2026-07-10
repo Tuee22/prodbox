@@ -18,7 +18,9 @@ module Prodbox.CLI.Vault
   , gatewayProbeFromResult
   , retryDaemonTransient
   , gatewayAwsVaultFields
+  , gatewayEndpointFromEnv
   , runVaultBootstrapViaDaemon
+  , runVaultBootstrapViaDaemonAt
   , runVaultInit
   , runVaultReconcileCommand
   , runVaultReconcileCommandDetailed
@@ -316,13 +318,20 @@ runDirectVaultPkiIssueTestCert repoRoot = do
 
 runVaultBootstrapViaDaemon :: FilePath -> IO ExitCode
 runVaultBootstrapViaDaemon repoRoot = do
+  endpoint <- gatewayEndpointFromEnv
+  runVaultBootstrapViaDaemonAt repoRoot endpoint
+
+-- | Endpoint-explicit daemon bootstrap used by substrates whose gateway is
+-- reached through a bounded port-forward bracket. The home wrapper above
+-- retains the environment-derived NodePort behaviour.
+runVaultBootstrapViaDaemonAt :: FilePath -> PeerEndpoint -> IO ExitCode
+runVaultBootstrapViaDaemonAt repoRoot endpoint = do
   passwordResult <- obtainOperatorPassword repoRoot
   case passwordResult of
     Left err -> do
       writeOutput err
       pure (ExitFailure 1)
     Right password -> do
-      endpoint <- gatewayEndpointFromEnv
       result <-
         retryDaemonTransient
           GatewayClient.daemonRestartBridgeRetryPolicy

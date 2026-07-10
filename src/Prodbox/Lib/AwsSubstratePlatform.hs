@@ -27,7 +27,13 @@
 -- sub-sprints; see the deliverable inventory in
 -- `DEVELOPMENT_PLAN/phase-7-aws-substrate-foundations.md`.
 module Prodbox.Lib.AwsSubstratePlatform
-  ( ensureAwsLoadBalancerControllerRuntime
+  ( AwsPlatformPayload (..)
+  , AwsPlatformStepId (..)
+  , applyEksContainerdMirrorDaemonSet
+  , applyEksImageMirrorJob
+  , awsComponentReadinessTarget
+  , classifyEksNodesReadiness
+  , ensureAwsLoadBalancerControllerRuntime
   , awsLoadBalancerControllerChartRef
   , awsLoadBalancerControllerChartVersion
   , awsLoadBalancerControllerReleaseName
@@ -46,15 +52,17 @@ module Prodbox.Lib.AwsSubstratePlatform
   , ensureAwsSubstrateAcmeRuntime
   , ensureAwsSubstrateVaultRuntime
   , ensureAwsSubstratePlatformRuntime
-  , applyEksContainerdMirrorDaemonSet
-  , applyEksImageMirrorJob
+  , buildAwsSubstratePlatformExecutionPlan
+  , runAwsSubstratePlatformPlanWith
+  , awsStepsForComponent
+  , awsSubstratePlatformStepOrderRespectsGraph
   , awsSubstratePlatformRuntimeStepDescriptions
   , awsSubstratePlatformComponents
   )
 where
 
 import Control.Concurrent (threadDelay)
-import Control.Monad (foldM)
+import Control.Monad (foldM, unless)
 import Data.Aeson
   ( Value
   , encode
@@ -63,19 +71,21 @@ import Data.Aeson
   )
 import Data.Aeson.Key qualified as Key
 import Data.ByteString.Lazy qualified as BL
-import Data.Char (isAsciiUpper)
-import Data.List (nub)
+import Data.Char (isAsciiUpper, isSpace, toLower)
+import Data.List (isSuffixOf, nub)
 import Data.Text qualified as Text
 import Prodbox.CLI.Output
   ( writeError
   , writeOutputLine
   )
 import Prodbox.CLI.Rke2
-  ( MinioImageSource (..)
+  ( KubernetesReadinessCheck (..)
+  , MinioImageSource (..)
   , RetainedStorageInventoryEntry (..)
   , acmeRuntimeManifestWithCredentials
   , ensureAdminPublicEdgeRoutes
   , ensureGatewayChartReady
+  , ensureGatewayChartReadyPostVaultAt
   , ensureGatewayMinioBootstrap
   , ensureHarborRegistryRuntime
   , ensureHarborRegistryStorageBackend
@@ -84,18 +94,49 @@ import Prodbox.CLI.Rke2
   , ensureRegistryStorageBackendEdgeReady
   , ensureRuntimeImageForSubstrate
   , ensureVaultRuntime
+  , gatewayNamespace
+  , minioNamespace
+  , minioReleaseName
+  , observeGatewayBackendRoundTripOnceAt
+  , observeKubernetesReadinessOnce
+  , observeRegistryBackendRoundTripOnce
+  , observeVaultUnsealedOnceAt
   , resolveAcmeEabKeyId
   , retainedStorageInventoryEntries
+  , vaultNamespace
+  )
+import Prodbox.CLI.Vault (runVaultBootstrapViaDaemonAt)
+import Prodbox.Config.ComponentGraph
+  ( ComponentDag
+  , ComponentId (..)
+  , componentDagEdges
+  , componentIdText
+  , defaultComponentGraph
+  , lookupComponentNode
+  , readiness
   )
 import Prodbox.ContainerImage qualified as ContainerImage
 import Prodbox.Error (fatalError)
+import Prodbox.Gateway.PortForward
+  ( GatewayServicePortForward (..)
+  , renderGatewayPortForwardError
+  , withGatewayServicePortForward
+  )
+import Prodbox.Gateway.Types (PeerEndpoint)
 import Prodbox.Infra.AwsEksTestStack
   ( AwsEksTestStackSnapshot (..)
   , parseAwsEksTestStackFromOutputs
   )
 import Prodbox.Infra.StackOutputs (StackName (..))
+import Prodbox.Lib.ChartPlatform
+  ( gatewayNodeIds
+  , gatewayRestServiceName
+  , gatewayRestServicePort
+  , operatorAvailableTarget
+  )
 import Prodbox.Lib.EksContainerdMirror
-  ( defaultProdboxMirrorConfig
+  ( ContainerdMirrorConfig (..)
+  , defaultProdboxMirrorConfig
   , eksContainerdMirrorDaemonSetManifest
   )
 import Prodbox.Lib.EksImageMirror
@@ -109,10 +150,24 @@ import Prodbox.Lib.Storage
   ( ChartStorageBinding (..)
   , chartEbsPersistentVolumeManifest
   )
+import Prodbox.Lifecycle.AnchoredReconcile
+  ( AnchoredOrderSpec (..)
+  , ReconcilePhase (..)
+  , ReconcileStepAnchor (..)
+  , anchoredOrderRespectsGraph
+  , compileAnchoredOrder
+  , runAnchoredStepOrder
+  )
 import Prodbox.Lifecycle.EbsVolume qualified as EbsVolume
 import Prodbox.Lifecycle.LiveResidue
   ( awsEksTestStackName
   , fetchPerRunStackOutputs
+  )
+import Prodbox.Lifecycle.ReadinessObservation
+  ( ComponentReadinessTarget (..)
+  , ReadinessProbeResult (..)
+  , componentReadinessRetryPolicy
+  , waitForComponentReadiness
   )
 import Prodbox.PublicEdge (publicEdgeClusterIssuerName, resolveSubstrateHostedZoneId)
 import Prodbox.Result (Result (..))
@@ -135,6 +190,253 @@ import System.Directory (getTemporaryDirectory, removeFile)
 import System.Environment (getEnvironment)
 import System.Exit (ExitCode (..))
 import System.IO (hClose, openTempFile)
+
+-- | Closed AWS-substrate platform inventory. Component topology comes from the
+-- validated config graph; this ADT owns only the stable within-component order.
+data AwsPlatformStepId
+  = StepAwsLoadBalancerControllerRuntime
+  | StepAwsClusterBaseReady
+  | StepAwsRetainedStorage
+  | StepAwsMinioRuntimeBootstrap
+  | StepAwsMinioReady
+  | StepAwsVaultRuntime
+  | StepAwsVaultWorkloadReady
+  | StepAwsContainerdMirror
+  | StepAwsRegistryStorageBackend
+  | StepAwsRegistryRuntime
+  | StepAwsRegistryMinioEdge
+  | StepAwsImageMirror
+  | StepAwsRuntimeImage
+  | StepAwsRegistryReady
+  | StepAwsCertManagerRuntime
+  | StepAwsCertManagerReady
+  | StepAwsGatewayPreVault
+  | StepAwsGatewayPreVaultReady
+  | StepAwsVaultLifecycle
+  | StepAwsVaultUnsealedReady
+  | StepAwsEnvoyGatewayRuntime
+  | StepAwsEnvoyGatewayReady
+  | StepAwsPostgresOperatorRuntime
+  | StepAwsPostgresOperatorReady
+  | StepAwsGatewayMinioBootstrap
+  | StepAwsGatewayPostVault
+  | StepAwsGatewayFullReady
+  | StepAwsAcmeRuntime
+  | StepAwsAdminPublicEdgeRoutes
+  deriving (Eq, Show, Enum, Bounded)
+
+data AwsPlatformPayload = AwsPlatformPayload
+  { awsPlatformDag :: ComponentDag
+  , awsPlatformStepOrder :: [AwsPlatformStepId]
+  }
+  deriving (Eq, Show)
+
+awsStepToken :: AwsPlatformStepId -> String
+awsStepToken step = case step of
+  StepAwsLoadBalancerControllerRuntime -> "ensureAwsLoadBalancerControllerRuntime"
+  StepAwsClusterBaseReady -> "observeAwsClusterBaseReady"
+  StepAwsRetainedStorage -> "ensureAwsSubstrateRetainedStorage"
+  StepAwsMinioRuntimeBootstrap -> "ensureMinioRuntime SubstrateAws MinioBootstrapPublic"
+  StepAwsMinioReady -> "observeAwsMinioReady"
+  StepAwsVaultRuntime -> "ensureAwsSubstrateVaultRuntime"
+  StepAwsVaultWorkloadReady -> "observeAwsVaultWorkloadReady"
+  StepAwsContainerdMirror -> "applyEksContainerdMirrorDaemonSet"
+  StepAwsRegistryStorageBackend -> "ensureHarborRegistryStorageBackend"
+  StepAwsRegistryRuntime -> "ensureHarborRegistryRuntime SubstrateAws"
+  StepAwsRegistryMinioEdge -> "ensureRegistryStorageBackendEdgeReady"
+  StepAwsImageMirror -> "applyEksImageMirrorJob"
+  StepAwsRuntimeImage -> "ensureRuntimeImageForSubstrate SubstrateAws"
+  StepAwsRegistryReady -> "observeAwsRegistryReady"
+  StepAwsCertManagerRuntime -> "ensureAwsSubstrateCertManagerRuntime"
+  StepAwsCertManagerReady -> "observeAwsCertManagerReady"
+  StepAwsGatewayPreVault -> "ensureGatewayChartReady SubstrateAws"
+  StepAwsGatewayPreVaultReady -> "observeAwsGatewayPreVaultReady"
+  StepAwsVaultLifecycle -> "runVaultBootstrapViaDaemonAt"
+  StepAwsVaultUnsealedReady -> "observeAwsVaultUnsealedReady"
+  StepAwsEnvoyGatewayRuntime -> "ensureAwsSubstrateEnvoyGatewayRuntime"
+  StepAwsEnvoyGatewayReady -> "observeAwsEnvoyGatewayReady"
+  StepAwsPostgresOperatorRuntime -> "ensurePostgresOperatorRuntime"
+  StepAwsPostgresOperatorReady -> "observeAwsPostgresOperatorReady"
+  StepAwsGatewayMinioBootstrap -> "ensureGatewayMinioBootstrap"
+  StepAwsGatewayPostVault -> "ensureGatewayChartReadyPostVaultAt SubstrateAws"
+  StepAwsGatewayFullReady -> "observeAwsGatewayFullReady"
+  StepAwsAcmeRuntime -> "ensureAwsSubstrateAcmeRuntime"
+  StepAwsAdminPublicEdgeRoutes -> "ensureAdminPublicEdgeRoutes SubstrateAws"
+
+awsStepPhase :: AwsPlatformStepId -> ReconcilePhase
+awsStepPhase step = case step of
+  StepAwsLoadBalancerControllerRuntime -> PhaseBootstrap
+  StepAwsClusterBaseReady -> PhaseBootstrap
+  StepAwsRetainedStorage -> PhaseBootstrap
+  StepAwsMinioRuntimeBootstrap -> PhaseBootstrap
+  StepAwsMinioReady -> PhaseBootstrap
+  StepAwsVaultRuntime -> PhaseBootstrap
+  StepAwsVaultWorkloadReady -> PhaseBootstrap
+  StepAwsContainerdMirror -> PhaseBootstrap
+  StepAwsRegistryStorageBackend -> PhaseBootstrap
+  StepAwsRegistryRuntime -> PhaseBootstrap
+  StepAwsRegistryMinioEdge -> PhaseBootstrap
+  StepAwsImageMirror -> PhaseBootstrap
+  StepAwsRuntimeImage -> PhaseBootstrap
+  StepAwsRegistryReady -> PhaseBootstrap
+  StepAwsCertManagerRuntime -> PhaseBootstrap
+  StepAwsCertManagerReady -> PhaseBootstrap
+  StepAwsGatewayPreVault -> PhaseBootstrap
+  StepAwsGatewayPreVaultReady -> PhaseBootstrap
+  StepAwsVaultLifecycle -> PhaseTransition
+  StepAwsVaultUnsealedReady -> PhaseTransition
+  StepAwsEnvoyGatewayRuntime -> PhaseSteady
+  StepAwsEnvoyGatewayReady -> PhaseSteady
+  StepAwsPostgresOperatorRuntime -> PhaseSteady
+  StepAwsPostgresOperatorReady -> PhaseSteady
+  StepAwsGatewayMinioBootstrap -> PhaseSteady
+  StepAwsGatewayPostVault -> PhaseSteady
+  StepAwsGatewayFullReady -> PhaseSteady
+  StepAwsAcmeRuntime -> PhaseEdge
+  StepAwsAdminPublicEdgeRoutes -> PhaseEdge
+
+awsStepAnchor :: AwsPlatformStepId -> ReconcileStepAnchor
+awsStepAnchor step = case step of
+  StepAwsLoadBalancerControllerRuntime -> ComponentMutation ComponentClusterBase
+  StepAwsClusterBaseReady -> ComponentReadiness ComponentClusterBase
+  StepAwsRetainedStorage -> ComponentMutation ComponentMinio
+  StepAwsMinioRuntimeBootstrap -> ComponentMutation ComponentMinio
+  StepAwsMinioReady -> ComponentReadiness ComponentMinio
+  StepAwsVaultRuntime -> ComponentMutation ComponentVaultWorkload
+  StepAwsVaultWorkloadReady -> ComponentReadiness ComponentVaultWorkload
+  StepAwsContainerdMirror -> HostPrepBefore ComponentRegistry
+  StepAwsRegistryStorageBackend -> ComponentMutation ComponentRegistry
+  StepAwsRegistryRuntime -> ComponentMutation ComponentRegistry
+  StepAwsRegistryMinioEdge -> ComponentMutation ComponentRegistry
+  StepAwsImageMirror -> ComponentMutation ComponentRegistry
+  StepAwsRuntimeImage -> ComponentMutation ComponentRegistry
+  StepAwsRegistryReady -> ComponentReadiness ComponentRegistry
+  StepAwsCertManagerRuntime -> ComponentMutation ComponentCertManager
+  StepAwsCertManagerReady -> ComponentReadiness ComponentCertManager
+  StepAwsGatewayPreVault -> ComponentMutation ComponentGatewayDaemonPreVault
+  StepAwsGatewayPreVaultReady -> ComponentReadiness ComponentGatewayDaemonPreVault
+  StepAwsVaultLifecycle -> TransitionFor ComponentVaultUnsealed
+  StepAwsVaultUnsealedReady -> ComponentReadiness ComponentVaultUnsealed
+  StepAwsEnvoyGatewayRuntime -> ComponentMutation ComponentEnvoyGateway
+  StepAwsEnvoyGatewayReady -> ComponentReadiness ComponentEnvoyGateway
+  StepAwsPostgresOperatorRuntime -> ComponentMutation ComponentPerconaPostgresOperator
+  StepAwsPostgresOperatorReady -> ComponentReadiness ComponentPerconaPostgresOperator
+  StepAwsGatewayMinioBootstrap -> ComponentMutation ComponentGatewayDaemonFull
+  StepAwsGatewayPostVault -> ComponentMutation ComponentGatewayDaemonFull
+  StepAwsGatewayFullReady -> ComponentReadiness ComponentGatewayDaemonFull
+  StepAwsAcmeRuntime -> EdgeOnly
+  StepAwsAdminPublicEdgeRoutes -> EdgeOnly
+
+awsStepsForComponent :: ComponentId -> [AwsPlatformStepId]
+awsStepsForComponent component = case component of
+  ComponentClusterBase ->
+    [StepAwsLoadBalancerControllerRuntime, StepAwsClusterBaseReady]
+  ComponentMinio ->
+    [ StepAwsRetainedStorage
+    , StepAwsMinioRuntimeBootstrap
+    , StepAwsMinioReady
+    ]
+  ComponentVaultWorkload ->
+    [StepAwsVaultRuntime, StepAwsVaultWorkloadReady]
+  ComponentVaultUnsealed ->
+    [StepAwsVaultLifecycle, StepAwsVaultUnsealedReady]
+  ComponentRegistry ->
+    [ StepAwsContainerdMirror
+    , StepAwsRegistryStorageBackend
+    , StepAwsRegistryRuntime
+    , StepAwsRegistryMinioEdge
+    , StepAwsImageMirror
+    , StepAwsRuntimeImage
+    , StepAwsRegistryReady
+    ]
+  ComponentMetalLB -> []
+  ComponentEnvoyGateway ->
+    [StepAwsEnvoyGatewayRuntime, StepAwsEnvoyGatewayReady]
+  ComponentCertManager ->
+    [StepAwsCertManagerRuntime, StepAwsCertManagerReady]
+  ComponentPerconaPostgresOperator ->
+    [StepAwsPostgresOperatorRuntime, StepAwsPostgresOperatorReady]
+  ComponentGatewayDaemonPreVault ->
+    [StepAwsGatewayPreVault, StepAwsGatewayPreVaultReady]
+  ComponentGatewayDaemonFull ->
+    [ StepAwsGatewayMinioBootstrap
+    , StepAwsGatewayPostVault
+    , StepAwsGatewayFullReady
+    ]
+  ComponentChartPulsar -> []
+  ComponentChartRedis -> []
+  ComponentChartKeycloakPostgres -> []
+  ComponentChartKeycloak -> []
+  ComponentChartVscode -> []
+  ComponentChartApi -> []
+  ComponentChartWebsocket -> []
+  ComponentChartGateway -> []
+
+awsEdgeSteps :: [AwsPlatformStepId]
+awsEdgeSteps = [StepAwsAcmeRuntime, StepAwsAdminPublicEdgeRoutes]
+
+awsRequiredComponents :: [ComponentId]
+awsRequiredComponents =
+  [ ComponentClusterBase
+  , ComponentMinio
+  , ComponentVaultWorkload
+  , ComponentRegistry
+  , ComponentCertManager
+  , ComponentGatewayDaemonPreVault
+  , ComponentVaultUnsealed
+  , ComponentEnvoyGateway
+  , ComponentPerconaPostgresOperator
+  , ComponentGatewayDaemonFull
+  ]
+
+awsAnchoredOrderSpec :: AnchoredOrderSpec AwsPlatformStepId
+awsAnchoredOrderSpec =
+  AnchoredOrderSpec
+    { anchoredSurfaceName = "AWS substrate reconcile"
+    , anchoredAllSteps = [minBound .. maxBound]
+    , anchoredRequiredComponents = awsRequiredComponents
+    , anchoredStepsForComponent = awsStepsForComponent
+    , anchoredTailSteps = awsEdgeSteps
+    , anchoredStepAnchor = awsStepAnchor
+    , anchoredStepPhase = awsStepPhase
+    , anchoredStepToken = awsStepToken
+    }
+
+buildAwsSubstratePlatformExecutionPlan
+  :: ValidatedSettings -> Either String AwsPlatformPayload
+buildAwsSubstratePlatformExecutionPlan settings = do
+  (dag, order) <-
+    compileAnchoredOrder
+      awsAnchoredOrderSpec
+      (components (validatedConfig settings))
+  validateAwsDependencyCoverage dag
+  pure AwsPlatformPayload {awsPlatformDag = dag, awsPlatformStepOrder = order}
+
+validateAwsDependencyCoverage :: ComponentDag -> Either String ()
+validateAwsDependencyCoverage dag =
+  unless
+    (null unmappedDependencies)
+    ( Left
+        ( "AWS substrate reconcile maps a component to concrete steps while one of its "
+            ++ "declared dependencies is AWS-inapplicable: "
+            ++ show
+              [ componentIdText consumer ++ " -> " ++ componentIdText dependency
+              | (consumer, dependency) <- unmappedDependencies
+              ]
+        )
+    )
+ where
+  unmappedDependencies =
+    [ (consumer, dependency)
+    | (consumer, dependency) <- componentDagEdges dag
+    , not (null (awsStepsForComponent consumer))
+    , null (awsStepsForComponent dependency)
+    ]
+
+awsSubstratePlatformStepOrderRespectsGraph
+  :: ComponentDag -> [AwsPlatformStepId] -> Either String ()
+awsSubstratePlatformStepOrderRespectsGraph =
+  anchoredOrderRespectsGraph awsAnchoredOrderSpec
 
 awsLoadBalancerControllerRepoName :: String
 awsLoadBalancerControllerRepoName = "eks"
@@ -746,10 +1048,41 @@ ensureAwsSubstrateVaultRuntime repoRoot = do
 --     `Prodbox.CLI.Charts.withSubstrateEnvironment`).
 ensureAwsSubstratePlatformRuntime
   :: FilePath -> ValidatedSettings -> String -> String -> IO ExitCode
-ensureAwsSubstratePlatformRuntime repoRoot settings prodboxId labelValue = do
+ensureAwsSubstratePlatformRuntime repoRoot settings prodboxId labelValue =
+  runAwsSubstratePlatformPlanWith settings $ \payload -> do
+    writeOutputLine
+      ( "Reconciling AWS-substrate platform (graph-derived LB Controller + Envoy Gateway "
+          ++ "+ cert-manager + ACME + Vault + containerd registry mirror + MinIO + Harbor + admin routes)"
+      )
+    applyAwsSubstratePlatformPayload repoRoot settings prodboxId labelValue payload
+
+-- | Compile and validate the complete graph projection before invoking the
+-- effectful continuation. Tests inject a mutation sentinel here to prove an
+-- invalid/inverted graph cannot reach any platform action.
+runAwsSubstratePlatformPlanWith
+  :: ValidatedSettings
+  -> (AwsPlatformPayload -> IO ExitCode)
+  -> IO ExitCode
+runAwsSubstratePlatformPlanWith settings applyPayload =
+  case buildAwsSubstratePlatformExecutionPlan settings of
+    Left detail ->
+      failWith
+        ( "AWS-substrate platform graph refused before mutation: "
+            ++ detail
+        )
+    Right payload -> applyPayload payload
+
+applyAwsSubstratePlatformPayload
+  :: FilePath
+  -> ValidatedSettings
+  -> String
+  -> String
+  -> AwsPlatformPayload
+  -> IO ExitCode
+applyAwsSubstratePlatformPayload repoRoot settings prodboxId labelValue payload = do
   writeOutputLine
-    ( "Reconciling AWS-substrate platform (LB Controller + Envoy Gateway "
-        ++ "+ cert-manager + ACME + Vault + containerd registry mirror + MinIO + Harbor + admin routes)"
+    ( "AWS_SUBSTRATE_GRAPH_ORDER="
+        ++ unwords (map awsStepToken (awsPlatformStepOrder payload))
     )
   outputsResult <-
     fetchPerRunStackOutputs repoRoot (StackName (Text.pack awsEksTestStackName))
@@ -764,39 +1097,369 @@ ensureAwsSubstratePlatformRuntime repoRoot settings prodboxId labelValue = do
     Right outputs ->
       case parseAwsEksTestStackFromOutputs outputs of
         Left err -> failWith ("AWS-substrate platform install could not parse aws-eks-test Pulumi outputs: " ++ err)
-        Right snapshot -> runSequentially (steps snapshot)
+        Right snapshot ->
+          runAwsSubstratePlatformOrder
+            repoRoot
+            settings
+            prodboxId
+            labelValue
+            snapshot
+            payload
+
+runAwsSubstratePlatformOrder
+  :: FilePath
+  -> ValidatedSettings
+  -> String
+  -> String
+  -> AwsEksTestStackSnapshot
+  -> AwsPlatformPayload
+  -> IO ExitCode
+runAwsSubstratePlatformOrder repoRoot settings prodboxId labelValue snapshot payload = do
+  let (beforeVault, fromVault) =
+        break (== StepAwsVaultLifecycle) (awsPlatformStepOrder payload)
+      runSlice endpoint =
+        runAnchoredStepOrder
+          awsStepAnchor
+          (runAwsSubstratePlatformStep repoRoot settings prodboxId labelValue snapshot endpoint)
+          (requireAwsComponentReadiness repoRoot (awsPlatformDag payload) endpoint)
+  bootstrapExit <- runSlice Nothing beforeVault
+  case bootstrapExit of
+    ExitFailure _ -> pure bootstrapExit
+    ExitSuccess ->
+      case fromVault of
+        [] -> failWith "AWS-substrate platform graph has no Vault lifecycle transition step."
+        _ -> do
+          portForwardResult <-
+            withGatewayServicePortForward
+              GatewayServicePortForward
+                { gatewayPortForwardNamespace = gatewayNamespace
+                , gatewayPortForwardServiceName = gatewayRestServiceName
+                , gatewayPortForwardRemotePort = gatewayRestServicePort
+                , gatewayPortForwardEnvironment = Nothing
+                , gatewayPortForwardWorkingDirectory = Just repoRoot
+                }
+              (\endpoint -> runSlice (Just endpoint) fromVault)
+          case portForwardResult of
+            Left err -> failWith (renderGatewayPortForwardError err)
+            Right exitCode -> pure exitCode
+
+runAwsSubstratePlatformStep
+  :: FilePath
+  -> ValidatedSettings
+  -> String
+  -> String
+  -> AwsEksTestStackSnapshot
+  -> Maybe PeerEndpoint
+  -> AwsPlatformStepId
+  -> IO ExitCode
+runAwsSubstratePlatformStep repoRoot settings prodboxId labelValue snapshot endpoint step =
+  case step of
+    StepAwsLoadBalancerControllerRuntime ->
+      ensureAwsLoadBalancerControllerRuntime repoRoot (awsDefaultRegion settings) snapshot
+    StepAwsClusterBaseReady -> pure ExitSuccess
+    StepAwsRetainedStorage -> ensureAwsSubstrateRetainedStorage repoRoot snapshot
+    StepAwsMinioRuntimeBootstrap ->
+      ensureMinioRuntime repoRoot SubstrateAws MinioBootstrapPublic
+    StepAwsMinioReady -> pure ExitSuccess
+    StepAwsVaultRuntime -> ensureAwsSubstrateVaultRuntime repoRoot
+    StepAwsVaultWorkloadReady -> pure ExitSuccess
+    StepAwsContainerdMirror -> applyEksContainerdMirrorDaemonSet repoRoot
+    StepAwsRegistryStorageBackend -> ensureHarborRegistryStorageBackend repoRoot
+    StepAwsRegistryRuntime -> ensureHarborRegistryRuntime repoRoot SubstrateAws
+    StepAwsRegistryMinioEdge -> ensureRegistryStorageBackendEdgeReady repoRoot
+    StepAwsImageMirror -> applyEksImageMirrorJob repoRoot
+    StepAwsRuntimeImage -> ensureRuntimeImageForSubstrate SubstrateAws repoRoot prodboxId
+    StepAwsRegistryReady -> pure ExitSuccess
+    StepAwsCertManagerRuntime -> ensureAwsSubstrateCertManagerRuntime
+    StepAwsCertManagerReady -> pure ExitSuccess
+    StepAwsGatewayPreVault -> ensureGatewayChartReady repoRoot settings SubstrateAws
+    StepAwsGatewayPreVaultReady -> pure ExitSuccess
+    StepAwsVaultLifecycle ->
+      withRequiredGatewayEndpoint step endpoint (runVaultBootstrapViaDaemonAt repoRoot)
+    StepAwsVaultUnsealedReady -> pure ExitSuccess
+    StepAwsEnvoyGatewayRuntime ->
+      ensureAwsSubstrateEnvoyGatewayRuntime repoRoot settings prodboxId labelValue
+    StepAwsEnvoyGatewayReady -> pure ExitSuccess
+    StepAwsPostgresOperatorRuntime ->
+      ensurePostgresOperatorRuntime repoRoot prodboxId labelValue
+    StepAwsPostgresOperatorReady -> pure ExitSuccess
+    StepAwsGatewayMinioBootstrap -> ensureGatewayMinioBootstrap repoRoot
+    StepAwsGatewayPostVault ->
+      withRequiredGatewayEndpoint step endpoint $ \gatewayEndpoint ->
+        ensureGatewayChartReadyPostVaultAt
+          repoRoot
+          settings
+          SubstrateAws
+          gatewayEndpoint
+    StepAwsGatewayFullReady -> pure ExitSuccess
+    StepAwsAcmeRuntime ->
+      ensureAwsSubstrateAcmeRuntime repoRoot settings prodboxId labelValue
+    StepAwsAdminPublicEdgeRoutes ->
+      ensureAdminPublicEdgeRoutes repoRoot settings SubstrateAws prodboxId labelValue
+
+withRequiredGatewayEndpoint
+  :: AwsPlatformStepId
+  -> Maybe PeerEndpoint
+  -> (PeerEndpoint -> IO ExitCode)
+  -> IO ExitCode
+withRequiredGatewayEndpoint step endpoint action =
+  case endpoint of
+    Nothing ->
+      failWith
+        ( "AWS-substrate step `"
+            ++ awsStepToken step
+            ++ "` requires the scoped gateway Service port-forward endpoint."
+        )
+    Just value -> action value
+
+awsDefaultRegion :: ValidatedSettings -> String
+awsDefaultRegion settings =
+  let configured =
+        Text.unpack
+          (Text.strip (awsCredentialRegion (aws (validatedConfig settings))))
+   in if null configured then "us-east-1" else configured
+
+requireAwsComponentReadiness
+  :: FilePath
+  -> ComponentDag
+  -> Maybe PeerEndpoint
+  -> ComponentId
+  -> IO ExitCode
+requireAwsComponentReadiness repoRoot dag endpoint component =
+  case lookupComponentNode component dag of
+    Nothing ->
+      failWith
+        ( "AWS-substrate readiness has no graph node for component `"
+            ++ componentIdText component
+            ++ "`."
+        )
+    Just node ->
+      case awsComponentReadinessTarget repoRoot endpoint component of
+        Left reason -> failWith (Text.unpack reason)
+        Right target -> do
+          result <-
+            waitForComponentReadiness
+              componentReadinessRetryPolicy
+              target
+              (readiness node)
+          case result of
+            Right () -> pure ExitSuccess
+            Left detail ->
+              failWith
+                ( "AWS-substrate component `"
+                    ++ componentIdText component
+                    ++ "` did not satisfy "
+                    ++ show (readiness node)
+                    ++ " within the bounded readiness budget: "
+                    ++ Text.unpack detail
+                )
+
+-- | AWS-owned one-shot bindings for every graph component this platform
+-- driver mutates. MetalLB is explicitly inapplicable on EKS and chart nodes
+-- remain owned by ChartPlatform; either route fails closed if misprojected.
+awsComponentReadinessTarget
+  :: FilePath
+  -> Maybe PeerEndpoint
+  -> ComponentId
+  -> Either Text.Text ComponentReadinessTarget
+awsComponentReadinessTarget repoRoot endpoint component =
+  case component of
+    ComponentClusterBase ->
+      Right
+        ( ServiceActiveTarget
+            component
+            (observeAwsClusterBaseOnce repoRoot)
+        )
+    ComponentMinio ->
+      Right
+        ( RolloutCompleteTarget
+            component
+            ( observeKubernetesReadinessOnce
+                repoRoot
+                [StatefulSetReady minioNamespace minioReleaseName]
+            )
+        )
+    ComponentVaultWorkload ->
+      Right
+        ( RolloutCompleteTarget
+            component
+            ( observeKubernetesReadinessOnce
+                repoRoot
+                [StatefulSetReady vaultNamespace "vault"]
+            )
+        )
+    ComponentVaultUnsealed ->
+      VaultUnsealedTarget component
+        <$> requiredReadinessEndpoint component endpoint observeVaultUnsealedOnceAt
+    ComponentRegistry ->
+      Right
+        ( BackendRoundTripTarget
+            component
+            ComponentMinio
+            ( observeKubernetesThen
+                repoRoot
+                [ DaemonSetReady
+                    (mirrorNamespace defaultProdboxMirrorConfig)
+                    (mirrorDaemonSetName defaultProdboxMirrorConfig)
+                ]
+                (observeRegistryBackendRoundTripOnce repoRoot)
+            )
+        )
+    ComponentMetalLB ->
+      Left "AWS substrate uses AWS Load Balancer Controller; MetalLB is explicitly inapplicable."
+    ComponentEnvoyGateway ->
+      Right
+        ( RolloutCompleteTarget
+            component
+            ( observeKubernetesReadinessOnce
+                repoRoot
+                [ DeploymentAvailable
+                    awsSubstrateEnvoyGatewayNamespace
+                    awsSubstrateEnvoyGatewayReleaseName
+                , CrdEstablished "gatewayclasses.gateway.networking.k8s.io"
+                , CrdEstablished "gateways.gateway.networking.k8s.io"
+                , CrdEstablished "httproutes.gateway.networking.k8s.io"
+                , CrdEstablished "envoyproxies.gateway.envoyproxy.io"
+                , CrdEstablished "securitypolicies.gateway.envoyproxy.io"
+                ]
+            )
+        )
+    ComponentCertManager ->
+      Right
+        ( RolloutCompleteTarget
+            component
+            ( observeKubernetesReadinessOnce
+                repoRoot
+                [ DeploymentAvailable
+                    awsSubstrateCertManagerNamespace
+                    awsSubstrateCertManagerReleaseName
+                , DeploymentAvailable
+                    awsSubstrateCertManagerNamespace
+                    (awsSubstrateCertManagerReleaseName ++ "-webhook")
+                , DeploymentAvailable
+                    awsSubstrateCertManagerNamespace
+                    (awsSubstrateCertManagerReleaseName ++ "-cainjector")
+                , CrdEstablished "clusterissuers.cert-manager.io"
+                ]
+            )
+        )
+    ComponentPerconaPostgresOperator -> operatorAvailableTarget component
+    ComponentGatewayDaemonPreVault ->
+      Right
+        ( RolloutCompleteTarget
+            component
+            ( observeKubernetesReadinessOnce
+                repoRoot
+                [ DeploymentAvailable gatewayNamespace ("gateway-" ++ nodeId)
+                | nodeId <- gatewayNodeIds
+                ]
+            )
+        )
+    ComponentGatewayDaemonFull ->
+      BackendRoundTripTarget component ComponentMinio
+        <$> requiredReadinessEndpoint component endpoint observeGatewayBackendRoundTripOnceAt
+    ComponentChartPulsar -> unsupportedAwsReadiness component
+    ComponentChartRedis -> unsupportedAwsReadiness component
+    ComponentChartKeycloakPostgres -> unsupportedAwsReadiness component
+    ComponentChartKeycloak -> unsupportedAwsReadiness component
+    ComponentChartVscode -> unsupportedAwsReadiness component
+    ComponentChartApi -> unsupportedAwsReadiness component
+    ComponentChartWebsocket -> unsupportedAwsReadiness component
+    ComponentChartGateway -> unsupportedAwsReadiness component
+
+requiredReadinessEndpoint
+  :: ComponentId
+  -> Maybe PeerEndpoint
+  -> (PeerEndpoint -> action)
+  -> Either Text.Text action
+requiredReadinessEndpoint component endpoint action =
+  case endpoint of
+    Nothing ->
+      Left
+        ( Text.pack
+            ( "AWS-substrate readiness for `"
+                ++ componentIdText component
+                ++ "` requires the scoped gateway Service port-forward endpoint."
+            )
+        )
+    Just value -> Right (action value)
+
+unsupportedAwsReadiness :: ComponentId -> Either Text.Text value
+unsupportedAwsReadiness component =
+  Left
+    ( Text.pack
+        ( "AWS platform reconcile has no readiness target for chart-owned component `"
+            ++ componentIdText component
+            ++ "`."
+        )
+    )
+
+observeKubernetesThen
+  :: FilePath
+  -> [KubernetesReadinessCheck]
+  -> IO (Either Text.Text ReadinessProbeResult)
+  -> IO (Either Text.Text ReadinessProbeResult)
+observeKubernetesThen repoRoot checks next = do
+  observation <- observeKubernetesReadinessOnce repoRoot checks
+  case observation of
+    Right ReadinessProbeReady -> next
+    Right pending@(ReadinessProbePending _) -> pure (Right pending)
+    Left reason -> pure (Left reason)
+
+observeAwsClusterBaseOnce :: FilePath -> IO (Either Text.Text ReadinessProbeResult)
+observeAwsClusterBaseOnce repoRoot = do
+  nodes <- observeEksNodesReadyOnce repoRoot
+  case nodes of
+    Right ReadinessProbeReady ->
+      observeKubernetesReadinessOnce
+        repoRoot
+        [ DeploymentAvailable
+            awsLoadBalancerControllerNamespace
+            awsLoadBalancerControllerReleaseName
+        ]
+    Right pending@(ReadinessProbePending _) -> pure (Right pending)
+    Left reason -> pure (Left reason)
+
+observeEksNodesReadyOnce :: FilePath -> IO (Either Text.Text ReadinessProbeResult)
+observeEksNodesReadyOnce repoRoot = do
+  result <-
+    captureSubprocessResult
+      Subprocess
+        { subprocessPath = "kubectl"
+        , subprocessArguments =
+            [ "get"
+            , "nodes"
+            , "--ignore-not-found"
+            , "-o"
+            , "jsonpath={range .items[*]}{.metadata.name}:{range .status.conditions[?(@.type==\"Ready\")]}{.status}{end}{\"\\n\"}{end}"
+            ]
+        , subprocessEnvironment = Nothing
+        , subprocessWorkingDirectory = Just repoRoot
+        }
+  pure $
+    case result of
+      Failure err -> Left (Text.pack err)
+      Success output ->
+        case processExitCode output of
+          ExitFailure _ -> Left (Text.pack (outputDetail output))
+          ExitSuccess -> classifyEksNodesReadiness (processStdout output)
+
+classifyEksNodesReadiness :: String -> Either Text.Text ReadinessProbeResult
+classifyEksNodesReadiness raw =
+  let records = filter (not . null) (map trim (lines raw))
+      nonReady = filter (not . isSuffixOf ":true" . map toLower) records
+   in if null records
+        then Right (ReadinessProbePending "EKS has no observable nodes")
+        else
+          if null nonReady
+            then Right ReadinessProbeReady
+            else
+              Right
+                ( ReadinessProbePending
+                    (Text.pack ("EKS nodes are not Ready: " ++ unwords nonReady))
+                )
  where
-  defaultRegion :: String
-  defaultRegion =
-    let configured =
-          Text.unpack
-            (Text.strip (awsCredentialRegion (aws (validatedConfig settings))))
-     in if null configured then "us-east-1" else configured
-  steps snapshot =
-    [ ensureAwsLoadBalancerControllerRuntime repoRoot defaultRegion snapshot
-    , ensureAwsSubstrateEnvoyGatewayRuntime repoRoot settings prodboxId labelValue
-    , ensureAwsSubstrateCertManagerRuntime
-    , ensureAwsSubstrateAcmeRuntime repoRoot settings prodboxId labelValue
-    , ensureAwsSubstrateVaultRuntime repoRoot
-    , applyEksContainerdMirrorDaemonSet repoRoot
-    , ensureAwsSubstrateRetainedStorage repoRoot snapshot
-    , ensureMinioRuntime repoRoot SubstrateAws MinioBootstrapPublic
-    , ensureHarborRegistryStorageBackend repoRoot
-    , ensureHarborRegistryRuntime repoRoot SubstrateAws
-    , -- Sprint 7.31: the deep registry->MinIO S3 edge gate (M3) runs before the
-      -- EKS image-mirror Job and crane pushes, exactly as on the home substrate
-      -- (Sprint 4.43). A blob-upload round-trip proves the registry reached its
-      -- MinIO backend; the front-door `/v2/` gate and the Job's post-hoc
-      -- `complete` wait never prove that edge before the crane copy runs.
-      ensureRegistryStorageBackendEdgeReady repoRoot
-    , applyEksImageMirrorJob repoRoot
-    , ensureRuntimeImageForSubstrate SubstrateAws repoRoot prodboxId
-    , ensurePostgresOperatorRuntime repoRoot prodboxId labelValue
-    , ensureMinioRuntime repoRoot SubstrateAws MinioSteadyStateHarbor
-    , ensureGatewayMinioBootstrap repoRoot
-    , ensureGatewayChartReady repoRoot settings SubstrateAws
-    , ensureAdminPublicEdgeRoutes repoRoot settings SubstrateAws prodboxId labelValue
-    ]
+  trim = reverse . dropWhile isSpace . reverse . dropWhile isSpace
 
 ensureAwsSubstrateRetainedStorage :: FilePath -> AwsEksTestStackSnapshot -> IO ExitCode
 ensureAwsSubstrateRetainedStorage repoRoot snapshot = do
@@ -868,32 +1531,14 @@ ensureAwsSubstrateRetainedStorage repoRoot snapshot = do
                       }
               )
 
--- | Pure listing of the orchestration steps
--- 'ensureAwsSubstratePlatformRuntime' sequences, in execution order.
--- Used by unit tests to verify the ordering contract without driving
--- live subprocesses; also useful for operator-facing documentation.
--- Keep in lockstep with the @steps@ binding above.
+-- | Pure narration projected from the same compiled default graph and typed
+-- step table as the production executor. There is no parallel ordered list to
+-- keep in lockstep.
 awsSubstratePlatformRuntimeStepDescriptions :: [String]
 awsSubstratePlatformRuntimeStepDescriptions =
-  [ "ensureAwsLoadBalancerControllerRuntime"
-  , "ensureAwsSubstrateEnvoyGatewayRuntime"
-  , "ensureAwsSubstrateCertManagerRuntime"
-  , "ensureAwsSubstrateAcmeRuntime"
-  , "ensureAwsSubstrateVaultRuntime"
-  , "applyEksContainerdMirrorDaemonSet"
-  , "ensureAwsSubstrateRetainedStorage"
-  , "ensureMinioRuntime SubstrateAws MinioBootstrapPublic"
-  , "ensureHarborRegistryStorageBackend"
-  , "ensureHarborRegistryRuntime SubstrateAws"
-  , "ensureRegistryStorageBackendEdgeReady"
-  , "applyEksImageMirrorJob"
-  , "ensureRuntimeImageForSubstrate SubstrateAws"
-  , "ensurePostgresOperatorRuntime"
-  , "ensureMinioRuntime SubstrateAws MinioSteadyStateHarbor"
-  , "ensureGatewayMinioBootstrap"
-  , "ensureGatewayChartReady SubstrateAws"
-  , "ensureAdminPublicEdgeRoutes SubstrateAws"
-  ]
+  case compileAnchoredOrder awsAnchoredOrderSpec defaultComponentGraph of
+    Left detail -> ["INVALID_AWS_SUBSTRATE_GRAPH=" ++ detail]
+    Right (_dag, order) -> map awsStepToken order
 
 -- | Sprint 7.12: the shared platform components the AWS-substrate install
 -- path stands up. The lower-layer pieces (the AWS Load Balancer Controller

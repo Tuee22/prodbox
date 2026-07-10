@@ -10,6 +10,7 @@ module Prodbox.CLI.Rke2
   , ensureGatewayMinioBootstrap
   , ensureAdminPublicEdgeRoutes
   , ensureGatewayChartReady
+  , ensureGatewayChartReadyPostVaultAt
   , adminPublicEdgeManifestItems
   , ensureHarborRegistryRuntime
   , ensureHarborRegistryStorageBackend
@@ -24,16 +25,37 @@ module Prodbox.CLI.Rke2
   , isMinioSecretKeyArgumentSafe
   , OperationalAwsCredentialGate (..)
   , buildNativeDeletePlan
+  , buildNativeInstallExecutionPlan
+  , NativeInstallPayload (..)
+  , ReconcileStepAnchor (..)
+  , ReconcileStepId (..)
+  , nativeInstallStepOrder
+  , nativeComponentReadinessTarget
   , renderNativeDeletePlan
   , renderNativeInstallPlan
   , nativeInstallStepOrderRespectsGraph
+  , stepsForComponent
+  , isRetryableRoute53CredentialFailure
+  , isRetryableHelmFailure
   , isRetryableHarborPublicationFailure
+  , RedirectPolicy (..)
+  , RegistryStorageBackend (..)
   , RegistryStorageEdgeReadiness (..)
   , classifyRegistryStorageEdgeProbe
   , GatewayObjectStoreProbe (..)
+  , KubernetesReadinessCheck (..)
   , classifyGatewayObjectStoreProbe
   , gatewayDaemonDeploymentRefs
+  , gatewayNamespace
+  , minioNamespace
+  , minioReleaseName
+  , vaultNamespace
   , ensureRegistryStorageBackendEdgeReady
+  , observeGatewayBackendRoundTripOnce
+  , observeGatewayBackendRoundTripOnceAt
+  , observeKubernetesReadinessOnce
+  , observeRegistryBackendRoundTripOnce
+  , observeVaultUnsealedOnceAt
   , renderInotifySysctlDropIn
   , renderResourceVectorRuntime
   , renderRke2ResourceGuardrailConfig
@@ -42,6 +64,8 @@ module Prodbox.CLI.Rke2
   , hostCapacityCoversPlan
   , renderMinioChartArgs
   , retainedStorageInventoryEntries
+  , harborRegistryStorageBackend
+  , registryConfigYaml
   , rke2InstallPresent
   , operationalAwsCredentialGateFromResult
   , runEdgeCommand
@@ -80,8 +104,7 @@ import Data.Char
   , toLower
   )
 import Data.List
-  ( elemIndex
-  , find
+  ( find
   , intercalate
   , isInfixOf
   , isPrefixOf
@@ -115,7 +138,8 @@ import Prodbox.CLI.Output
   , writeOutputLine
   )
 import Prodbox.CLI.Vault
-  ( runVaultBootstrapViaDaemon
+  ( gatewayEndpointFromEnv
+  , runVaultBootstrapViaDaemon
   )
 import Prodbox.Capacity.Config qualified as Capacity
 import Prodbox.Cluster.Federation
@@ -146,12 +170,12 @@ import Prodbox.Config.Basics
   , UnencryptedBasics (..)
   )
 import Prodbox.Config.ComponentGraph
-  ( ComponentId (..)
-  , componentDagEdges
+  ( ComponentDag
+  , ComponentId (..)
+  , ComponentNode (..)
   , componentIdText
-  , defaultComponentGraph
-  , renderComponentGraphError
-  , validateComponentGraph
+  , componentReconcileOrder
+  , lookupComponentNode
   )
 import Prodbox.Config.Tier0
   ( Tier0ParentRef (..)
@@ -164,6 +188,7 @@ import Prodbox.Dns qualified as Dns
 import Prodbox.DockerConfig (withEphemeralDockerConfig)
 import Prodbox.Error (fatalError)
 import Prodbox.Gateway.Client qualified as GatewayClient
+import Prodbox.Gateway.Types (PeerEndpoint)
 import Prodbox.Host
   ( LanAddressing (..)
   , defaultGatewayNodePort
@@ -183,6 +208,7 @@ import Prodbox.Lib.ChartPlatform
   , gatewayNodeIds
   , keycloakRealmName
   , keycloakVscodeClientId
+  , operatorAvailableTarget
   , resolveChartSecrets
   )
 import Prodbox.Lib.EksCustomImagePush
@@ -194,6 +220,14 @@ import Prodbox.Lib.EksCustomImagePush
 import Prodbox.Lib.Storage
   ( retainedStatefulSetPersistentVolumeClaimName
   , retainedStatefulSetPersistentVolumeName
+  )
+import Prodbox.Lifecycle.AnchoredReconcile
+  ( AnchoredOrderSpec (..)
+  , ReconcilePhase (..)
+  , ReconcileStepAnchor (..)
+  , anchoredOrderRespectsGraph
+  , compileAnchoredOrder
+  , runAnchoredStepOrder
   )
 import Prodbox.Lifecycle.EbsVolume qualified as EbsVolume
 import Prodbox.Lifecycle.FederatedVault
@@ -208,6 +242,15 @@ import Prodbox.Lifecycle.K8sDrain qualified as K8sDrain
 import Prodbox.Lifecycle.LiveResidue
   ( PerRunResidueStatuses (..)
   , queryPerRunResidueStatuses
+  )
+import Prodbox.Lifecycle.Preconditions
+  ( StructuredError (..)
+  )
+import Prodbox.Lifecycle.ReadinessObservation
+  ( ComponentReadinessTarget (..)
+  , ReadinessProbeResult (..)
+  , componentReadinessRetryPolicy
+  , waitForComponentReadiness
   )
 import Prodbox.Lifecycle.ResidueStatus qualified as ResidueStatus
 import Prodbox.Lifecycle.ResourceRegistry qualified as ResourceRegistry
@@ -234,6 +277,7 @@ import Prodbox.Retry
   ( RetryPolicy (..)
   , retryDelayMicros
   )
+import Prodbox.Service (isRetryableTransientFailure)
 import Prodbox.Settings
   ( AcmeSection (..)
   , AwsCredentialsRef (..)
@@ -284,6 +328,7 @@ import Prodbox.Subprocess
 import Prodbox.Substrate (Substrate (..), replicasForSubstrate, substrateId)
 import Prodbox.Vault.Client
   ( BootstrapAction (..)
+  , SealStatus (..)
   , VaultAddress (..)
   , VaultToken (..)
   , bootstrapAction
@@ -343,6 +388,7 @@ import System.IO
 import System.Info (os)
 import System.Info qualified as SystemInfo
 import Text.Printf (printf)
+import Text.Read (readMaybe)
 
 rke2BinaryPath :: FilePath
 rke2BinaryPath = "/usr/local/bin/rke2"
@@ -506,6 +552,9 @@ harborRegistryStorageSecretName = "harbor-registry-s3"
 
 harborRegistryStorageBucket :: String
 harborRegistryStorageBucket = "prodbox-harbor-registry"
+
+harborRegistryStorageRegion :: String
+harborRegistryStorageRegion = "us-east-1"
 
 harborStorageUserPrefix :: String
 harborStorageUserPrefix = "prodbox-harbor-"
@@ -1127,14 +1176,21 @@ runNativeInstall repoRoot planOptions withEdge = do
       identityResult <- resolveMachineIdentity
       case identityResult of
         Left err -> failWith err
-        Right (machineId, prodboxId) ->
+        Right (machineId, prodboxId) -> do
           let labelValue = prodboxIdToLabelValue prodboxId
-              plan =
-                buildNativeInstallExecutionPlan repoRoot bootstrapSettings machineId prodboxId labelValue withEdge
-           in runPlanWithOptions
+          case buildNativeInstallExecutionPlan
+            repoRoot
+            bootstrapSettings
+            machineId
+            prodboxId
+            labelValue
+            withEdge of
+            Left structuredError -> failWith (errorNarrative structuredError)
+            Right plan ->
+              runPlanWithOptions
                 planOptions
                 plan
-                (applyNativeInstallPlan repoRoot bootstrapSettings withEdge)
+                (applyNativeInstallPlan repoRoot bootstrapSettings)
 
 -- | @prodbox edge ...@ dispatch. @edge reconcile@ is the AWS-gated,
 -- edge-only reconcile (the same plan @cluster reconcile --with-edge@
@@ -1174,26 +1230,6 @@ renderEdgeReconcilePlan repoRoot (_prodboxId, _labelValue) =
     , "STEP=reconcile_dns_bootstrap_record"
     ]
 
--- | Sprint 4.43: the phase a reconcile step belongs to. Both the plan narration
--- and the executor project from the SAME ordered step table
--- ('nativeInstallStepOrder'), so the ordering and its narration cannot drift
--- (bootstrap_readiness_doctrine.md M1) — the historical hazard where the
--- imperative @runSequentially@ list and the parallel @STEP=@ narration were
--- hand-kept in sync (and had already drifted: @ensure_host_control_data_directory@
--- was executed but never narrated).
-data ReconcilePhase
-  = -- | Pre-Vault bootstrap steps (one @runSequentially@ list).
-    PhaseBootstrap
-  | -- | The Vault-init / in-force-settings transition — narrated, but driven by
-    -- dedicated control flow rather than an action-mapped step.
-    PhaseTransition
-  | -- | Post-Vault steady-state steps (a second @runSequentially@ list).
-    PhaseSteady
-  | -- | Public-edge steps, narrated only under @--with-edge@ and executed as the
-    -- single 'applyPublicEdgeReconcile' action.
-    PhaseEdge
-  deriving (Eq, Show)
-
 -- | Every reconcile bring-up step, in a single typed table. This is the SSoT the
 -- narration and the executor both read (M1).
 data ReconcileStepId
@@ -1222,8 +1258,9 @@ data ReconcileStepId
   | StepGatewayChartReadyPreVault
   | StepFederatedVaultLifecycle
   | StepLoadInForceSettings
-  | StepClusterPlatformRuntime
-  | StepMinioRuntimeSteadyState
+  | StepMetalLbRuntime
+  | StepEnvoyGatewayRuntime
+  | StepPostgresOperatorRuntime
   | StepGatewayMinioBootstrap
   | StepGatewayChartReady
   | StepRootChartNamespaceGuardrails
@@ -1233,11 +1270,6 @@ data ReconcileStepId
   | StepPublicEdgeAcmeRuntime
   | StepReconcileDnsBootstrapRecord
   deriving (Eq, Show, Enum, Bounded)
-
--- | The single ordered reconcile step table (M1). Narration and execution both
--- project from this list.
-nativeInstallStepOrder :: [ReconcileStepId]
-nativeInstallStepOrder = [minBound .. maxBound]
 
 -- | The stable @STEP=@ narration token for a step.
 reconcileStepToken :: ReconcileStepId -> String
@@ -1267,8 +1299,9 @@ reconcileStepToken step = case step of
   StepGatewayChartReadyPreVault -> "ensure_gateway_chart_ready_pre_vault"
   StepFederatedVaultLifecycle -> "ensure_federated_vault_lifecycle"
   StepLoadInForceSettings -> "load_in_force_settings_after_vault_and_minio"
-  StepClusterPlatformRuntime -> "ensure_cluster_platform_runtime"
-  StepMinioRuntimeSteadyState -> "ensure_minio_runtime_steady_state"
+  StepMetalLbRuntime -> "ensure_metallb_runtime"
+  StepEnvoyGatewayRuntime -> "ensure_envoy_gateway_runtime"
+  StepPostgresOperatorRuntime -> "ensure_postgres_operator_runtime"
   StepGatewayMinioBootstrap -> "ensure_gateway_minio_bootstrap"
   StepGatewayChartReady -> "ensure_gateway_chart_ready"
   StepRootChartNamespaceGuardrails -> "ensure_root_chart_namespace_guardrails"
@@ -1280,10 +1313,34 @@ reconcileStepToken step = case step of
 
 reconcileStepPhase :: ReconcileStepId -> ReconcilePhase
 reconcileStepPhase step = case step of
+  StepRke2ResourceGuardrails -> PhaseBootstrap
+  StepHostInotifyLimits -> PhaseBootstrap
+  StepRke2ServerInstalled -> PhaseBootstrap
+  StepRke2IngressController -> PhaseBootstrap
+  StepEnableRke2Service -> PhaseBootstrap
+  StepRestartRke2Service -> PhaseBootstrap
+  StepSyncUserKubeconfig -> PhaseBootstrap
+  StepVerifyClusterInfo -> PhaseBootstrap
+  StepWaitForClusterNodesReady -> PhaseBootstrap
+  StepDeleteNonManualStorageClasses -> PhaseBootstrap
+  StepEnsureProdboxIdentityConfigMap -> PhaseBootstrap
+  StepEnsureHostControlDataDirectory -> PhaseBootstrap
+  StepEnsureRetainedLocalStorage -> PhaseBootstrap
+  StepMinioRuntimeBootstrap -> PhaseBootstrap
+  StepVaultRuntime -> PhaseBootstrap
+  StepHarborRegistryStorageBackend -> PhaseBootstrap
+  StepHarborRegistryRuntime -> PhaseBootstrap
+  StepVerifyRegistryMinioEdge -> PhaseBootstrap
+  StepMirrorClusterImagesOnce -> PhaseBootstrap
+  StepEnsureRuntimeImage -> PhaseBootstrap
+  StepRke2RegistriesConfig -> PhaseBootstrap
+  StepCertManagerRuntime -> PhaseBootstrap
+  StepGatewayChartReadyPreVault -> PhaseBootstrap
   StepFederatedVaultLifecycle -> PhaseTransition
   StepLoadInForceSettings -> PhaseTransition
-  StepClusterPlatformRuntime -> PhaseSteady
-  StepMinioRuntimeSteadyState -> PhaseSteady
+  StepMetalLbRuntime -> PhaseSteady
+  StepEnvoyGatewayRuntime -> PhaseSteady
+  StepPostgresOperatorRuntime -> PhaseSteady
   StepGatewayMinioBootstrap -> PhaseSteady
   StepGatewayChartReady -> PhaseSteady
   StepRootChartNamespaceGuardrails -> PhaseSteady
@@ -1292,64 +1349,174 @@ reconcileStepPhase step = case step of
   StepRequireOperationalAwsCredentials -> PhaseEdge
   StepPublicEdgeAcmeRuntime -> PhaseEdge
   StepReconcileDnsBootstrapRecord -> PhaseEdge
-  _ -> PhaseBootstrap
 
--- | The bring-up component a step is the barrier for, when it is one of the
--- graph's bootstrap-critical components. Steps that are host prep or higher-level
--- app work carry 'Nothing' and are unconstrained by the graph. Sprint 4.43 uses
--- this to prove the step order respects the component dependency graph (M1): a
--- dependency's step must precede its consumer's.
-reconcileStepComponent :: ReconcileStepId -> Maybe ComponentId
-reconcileStepComponent step = case step of
-  StepRke2ServerInstalled -> Just ComponentClusterBase
-  StepMinioRuntimeBootstrap -> Just ComponentMinio
-  StepVaultRuntime -> Just ComponentVault
-  StepHarborRegistryStorageBackend -> Just ComponentRegistry
-  StepHarborRegistryRuntime -> Just ComponentRegistry
-  StepVerifyRegistryMinioEdge -> Just ComponentRegistry
-  StepCertManagerRuntime -> Just ComponentCertManager
-  StepGatewayChartReadyPreVault -> Just ComponentGatewayDaemon
-  _ -> Nothing
+-- | The exact anchor for every step. This match is intentionally exhaustive:
+-- adding a 'ReconcileStepId' without an ordering decision fails the
+-- warning-clean build.
+reconcileStepAnchor :: ReconcileStepId -> ReconcileStepAnchor
+reconcileStepAnchor step = case step of
+  StepRke2ResourceGuardrails -> HostPrepBefore ComponentClusterBase
+  StepHostInotifyLimits -> HostPrepBefore ComponentClusterBase
+  StepRke2ServerInstalled -> ComponentMutation ComponentClusterBase
+  StepRke2IngressController -> ComponentMutation ComponentClusterBase
+  StepEnableRke2Service -> ComponentMutation ComponentClusterBase
+  StepRestartRke2Service -> ComponentMutation ComponentClusterBase
+  StepSyncUserKubeconfig -> ComponentMutation ComponentClusterBase
+  StepVerifyClusterInfo -> ComponentMutation ComponentClusterBase
+  StepWaitForClusterNodesReady -> ComponentReadiness ComponentClusterBase
+  StepDeleteNonManualStorageClasses -> HostPostAfter ComponentClusterBase
+  StepEnsureProdboxIdentityConfigMap -> ComponentReadiness ComponentClusterBase
+  StepEnsureHostControlDataDirectory -> HostPrepBefore ComponentMinio
+  StepEnsureRetainedLocalStorage -> HostPrepBefore ComponentMinio
+  StepMinioRuntimeBootstrap -> ComponentReadiness ComponentMinio
+  StepVaultRuntime -> ComponentReadiness ComponentVaultWorkload
+  StepHarborRegistryStorageBackend -> ComponentMutation ComponentRegistry
+  StepHarborRegistryRuntime -> ComponentMutation ComponentRegistry
+  StepVerifyRegistryMinioEdge -> ComponentReadiness ComponentRegistry
+  StepMirrorClusterImagesOnce -> HostPostAfter ComponentRegistry
+  StepEnsureRuntimeImage -> HostPostAfter ComponentRegistry
+  StepRke2RegistriesConfig -> ComponentReadiness ComponentRegistry
+  StepCertManagerRuntime -> ComponentReadiness ComponentCertManager
+  StepGatewayChartReadyPreVault -> ComponentReadiness ComponentGatewayDaemonPreVault
+  StepFederatedVaultLifecycle -> TransitionFor ComponentVaultUnsealed
+  StepLoadInForceSettings -> ComponentReadiness ComponentVaultUnsealed
+  StepMetalLbRuntime -> ComponentReadiness ComponentMetalLB
+  StepEnvoyGatewayRuntime -> ComponentReadiness ComponentEnvoyGateway
+  StepPostgresOperatorRuntime -> ComponentReadiness ComponentPerconaPostgresOperator
+  StepGatewayMinioBootstrap -> HostPrepBefore ComponentGatewayDaemonFull
+  StepGatewayChartReady -> ComponentReadiness ComponentGatewayDaemonFull
+  StepRootChartNamespaceGuardrails -> HostPostAfter ComponentGatewayDaemonFull
+  StepAdminPublicEdgeRoutes -> HostPostAfter ComponentGatewayDaemonFull
+  StepReconcileManagedAnnotations -> ComponentReadiness ComponentGatewayDaemonFull
+  StepRequireOperationalAwsCredentials -> EdgeOnly
+  StepPublicEdgeAcmeRuntime -> EdgeOnly
+  StepReconcileDnsBootstrapRecord -> EdgeOnly
 
--- | The steps to narrate/execute for a run, honouring @--with-edge@ (public-edge
--- steps appear only when the edge is engaged).
-nativeInstallStepsForRun :: Bool -> [ReconcileStepId]
-nativeInstallStepsForRun withEdge =
-  [ step
-  | step <- nativeInstallStepOrder
-  , withEdge || reconcileStepPhase step /= PhaseEdge
+-- | Stable within-component step order. The component order itself comes only
+-- from 'componentReconcileOrder'; chart-only nodes deliberately contribute no
+-- native home-platform steps.
+stepsForComponent :: ComponentId -> [ReconcileStepId]
+stepsForComponent component = case component of
+  ComponentClusterBase ->
+    [ StepRke2ResourceGuardrails
+    , StepHostInotifyLimits
+    , StepRke2ServerInstalled
+    , StepRke2IngressController
+    , StepEnableRke2Service
+    , StepRestartRke2Service
+    , StepSyncUserKubeconfig
+    , StepVerifyClusterInfo
+    , StepWaitForClusterNodesReady
+    , StepDeleteNonManualStorageClasses
+    , StepEnsureProdboxIdentityConfigMap
+    ]
+  ComponentMinio ->
+    [ StepEnsureHostControlDataDirectory
+    , StepEnsureRetainedLocalStorage
+    , StepMinioRuntimeBootstrap
+    ]
+  ComponentVaultWorkload -> [StepVaultRuntime]
+  ComponentVaultUnsealed -> [StepFederatedVaultLifecycle, StepLoadInForceSettings]
+  ComponentRegistry ->
+    [ StepHarborRegistryStorageBackend
+    , StepHarborRegistryRuntime
+    , StepVerifyRegistryMinioEdge
+    , StepMirrorClusterImagesOnce
+    , StepEnsureRuntimeImage
+    , StepRke2RegistriesConfig
+    ]
+  ComponentMetalLB -> [StepMetalLbRuntime]
+  ComponentEnvoyGateway -> [StepEnvoyGatewayRuntime]
+  ComponentCertManager -> [StepCertManagerRuntime]
+  ComponentPerconaPostgresOperator -> [StepPostgresOperatorRuntime]
+  ComponentGatewayDaemonPreVault -> [StepGatewayChartReadyPreVault]
+  ComponentGatewayDaemonFull ->
+    [ StepGatewayMinioBootstrap
+    , StepGatewayChartReady
+    , StepRootChartNamespaceGuardrails
+    , StepAdminPublicEdgeRoutes
+    , StepReconcileManagedAnnotations
+    ]
+  ComponentChartPulsar -> []
+  ComponentChartRedis -> []
+  ComponentChartKeycloakPostgres -> []
+  ComponentChartKeycloak -> []
+  ComponentChartVscode -> []
+  ComponentChartApi -> []
+  ComponentChartWebsocket -> []
+  ComponentChartGateway -> []
+
+edgeReconcileSteps :: [ReconcileStepId]
+edgeReconcileSteps =
+  [ StepRequireOperationalAwsCredentials
+  , StepPublicEdgeAcmeRuntime
+  , StepReconcileDnsBootstrapRecord
   ]
 
--- | Sprint 4.43 (pure, M1): prove the reconcile step order is a valid projection
--- of the component dependency/readiness graph — for every @(consumer, dependency)@
--- edge whose endpoints both have anchored bring-up steps, the dependency's first
--- step precedes the consumer's first step. A future mis-ordering (scheduling a
--- consumer ahead of its dependency) fails this check rather than a live cluster.
-nativeInstallStepOrderRespectsGraph :: Either String ()
-nativeInstallStepOrderRespectsGraph =
-  case validateComponentGraph defaultComponentGraph of
-    Left err -> Left (renderComponentGraphError err)
-    Right dag -> mapM_ checkEdge (componentDagEdges dag)
- where
-  order = nativeInstallStepOrder
-  firstIndexFor cid =
-    elemIndex True (map ((== Just cid) . reconcileStepComponent) order)
-  checkEdge (consumer, dependency) =
-    case (firstIndexFor consumer, firstIndexFor dependency) of
-      (Just consumerIndex, Just dependencyIndex)
-        | dependencyIndex >= consumerIndex ->
-            Left
-              ( "Reconcile step order violates component graph edge "
-                  ++ componentIdText consumer
-                  ++ " -> "
-                  ++ componentIdText dependency
-                  ++ ": the dependency's bring-up step must precede its consumer's."
-              )
-      _ -> Right ()
+-- | The native component order is only a pure projection of the validated
+-- component DAG. The optional public-edge tail is deliberately outside the
+-- component graph and is appended by the plan compiler.
+nativeInstallStepOrder :: ComponentDag -> [ReconcileStepId]
+nativeInstallStepOrder dag =
+  concatMap stepsForComponent (componentReconcileOrder dag)
+
+-- | The steps to narrate/execute for a run, honouring @--with-edge@.
+nativeInstallStepsForRun :: [ReconcileStepId] -> Bool -> [ReconcileStepId]
+nativeInstallStepsForRun order withEdge =
+  [step | step <- order, withEdge || reconcileStepPhase step /= PhaseEdge]
+
+deriveNativeInstallStepOrder
+  :: [ComponentNode] -> Either String (ComponentDag, [ReconcileStepId])
+deriveNativeInstallStepOrder = compileAnchoredOrder nativeAnchoredOrderSpec
+
+nativeAnchoredOrderSpec :: AnchoredOrderSpec ReconcileStepId
+nativeAnchoredOrderSpec =
+  AnchoredOrderSpec
+    { anchoredSurfaceName = "Native reconcile"
+    , anchoredAllSteps = [minBound .. maxBound]
+    , anchoredRequiredComponents = []
+    , anchoredStepsForComponent = stepsForComponent
+    , anchoredTailSteps = edgeReconcileSteps
+    , anchoredStepAnchor = reconcileStepAnchor
+    , anchoredStepPhase = reconcileStepPhase
+    , anchoredStepToken = reconcileStepToken
+    }
+
+-- | Prove every dependency's complete anchored step group precedes the first
+-- step of its consumer. Empty chart-only groups are intentionally skipped.
+nativeInstallStepOrderRespectsGraph
+  :: ComponentDag -> [ReconcileStepId] -> Either String ()
+nativeInstallStepOrderRespectsGraph = anchoredOrderRespectsGraph nativeAnchoredOrderSpec
 
 renderNativeInstallPlan
   :: FilePath -> ValidatedSettings -> String -> String -> String -> Bool -> String
 renderNativeInstallPlan repoRoot settings machineId prodboxId labelValue withEdge =
+  case deriveNativeInstallStepOrder (components (validatedConfig settings)) of
+    Left detail ->
+      unlines
+        [ "RKE2_RECONCILE_PLAN_INVALID"
+        , "ERROR=" ++ detail
+        ]
+    Right (_dag, order) ->
+      renderNativeInstallPlanWithOrder
+        order
+        repoRoot
+        settings
+        machineId
+        prodboxId
+        labelValue
+        withEdge
+
+renderNativeInstallPlanWithOrder
+  :: [ReconcileStepId]
+  -> FilePath
+  -> ValidatedSettings
+  -> String
+  -> String
+  -> String
+  -> Bool
+  -> String
+renderNativeInstallPlanWithOrder order repoRoot settings machineId prodboxId labelValue withEdge =
   unlines
     ( [ "RKE2_RECONCILE_PLAN"
       , "REPO_ROOT=" ++ repoRoot
@@ -1365,10 +1532,20 @@ renderNativeInstallPlan repoRoot settings machineId prodboxId labelValue withEdg
       ]
         -- Narration is projected from the single ordered step table (M1), so it
         -- can never drift from the executor, which reads the same table.
-        ++ ["STEP=" ++ reconcileStepToken step | step <- nativeInstallStepsForRun withEdge]
+        ++ ["STEP=" ++ reconcileStepToken step | step <- nativeInstallStepsForRun order withEdge]
     )
  where
   resourcePlan = Capacity.resource_plan (capacity (validatedConfig settings))
+
+data NativeInstallPayload = NativeInstallPayload
+  { nativeInstallPayloadMachineId :: String
+  , nativeInstallPayloadProdboxId :: String
+  , nativeInstallPayloadLabelValue :: String
+  , nativeInstallPayloadWithEdge :: Bool
+  , nativeInstallPayloadDag :: ComponentDag
+  , nativeInstallPayloadStepOrder :: [ReconcileStepId]
+  }
+  deriving (Eq, Show)
 
 buildNativeInstallExecutionPlan
   :: FilePath
@@ -1377,36 +1554,68 @@ buildNativeInstallExecutionPlan
   -> String
   -> String
   -> Bool
-  -> Plan (String, String, String)
-buildNativeInstallExecutionPlan repoRoot settings machineId prodboxId labelValue withEdge =
-  buildPlan
-    ( \(resolvedMachineId, resolvedProdboxId, resolvedLabelValue) ->
-        renderNativeInstallPlan
-          repoRoot
-          settings
-          resolvedMachineId
-          resolvedProdboxId
-          resolvedLabelValue
-          withEdge
+  -> Either StructuredError (Plan NativeInstallPayload)
+buildNativeInstallExecutionPlan repoRoot settings machineId prodboxId labelValue withEdge = do
+  (dag, order) <-
+    case deriveNativeInstallStepOrder (components (validatedConfig settings)) of
+      Left detail -> Left (nativeInstallPlanStructuredError detail)
+      Right derived -> Right derived
+  let payload =
+        NativeInstallPayload
+          { nativeInstallPayloadMachineId = machineId
+          , nativeInstallPayloadProdboxId = prodboxId
+          , nativeInstallPayloadLabelValue = labelValue
+          , nativeInstallPayloadWithEdge = withEdge
+          , nativeInstallPayloadDag = dag
+          , nativeInstallPayloadStepOrder = order
+          }
+  pure
+    ( buildPlan
+        ( \resolved ->
+            renderNativeInstallPlanWithOrder
+              (nativeInstallPayloadStepOrder resolved)
+              repoRoot
+              settings
+              (nativeInstallPayloadMachineId resolved)
+              (nativeInstallPayloadProdboxId resolved)
+              (nativeInstallPayloadLabelValue resolved)
+              (nativeInstallPayloadWithEdge resolved)
+        )
+        payload
     )
-    (machineId, prodboxId, labelValue)
+
+nativeInstallPlanStructuredError :: String -> StructuredError
+nativeInstallPlanStructuredError detail =
+  StructuredError
+    { errorPreconditionLabel = "nativeInstallGraphOrder"
+    , errorSummaryLine = "Native reconcile graph could not produce a safe execution plan."
+    , errorOffendingItems = []
+    , errorNarrative =
+        unlines
+          [ "Native reconcile graph could not produce a safe execution plan."
+          , detail
+          , "No reconcile mutation was started."
+          ]
+    }
 
 applyNativeInstallPlan
   :: FilePath
   -> ValidatedSettings
-  -> Bool
-  -> (String, String, String)
+  -> NativeInstallPayload
   -> IO ExitCode
-applyNativeInstallPlan repoRoot bootstrapSettings withEdge (machineId, prodboxId, labelValue) = do
+applyNativeInstallPlan repoRoot bootstrapSettings payload = do
   -- Sprint 4.43: execution is projected from the SAME ordered step table
   -- (`nativeInstallStepOrder`) the plan narration reads, so the two cannot drift
   -- (bootstrap_readiness_doctrine.md M1). The pre-Vault bootstrap runs the
   -- `PhaseBootstrap` steps, the Vault-init transition runs its dedicated control
   -- flow, and the post-Vault steady phase runs the `PhaseSteady` steps.
   bootstrapExit <-
-    runSequentially
-      [ bootstrapStepAction step | step <- nativeInstallStepOrder, reconcileStepPhase step == PhaseBootstrap
-      ]
+    runAnchoredReconcileSteps
+      repoRoot
+      bootstrapSettings
+      dag
+      bootstrapStepAction
+      [step | step <- order, reconcileStepPhase step == PhaseBootstrap]
   case bootstrapExit of
     ExitFailure _ -> pure bootstrapExit
     ExitSuccess -> do
@@ -1414,28 +1623,63 @@ applyNativeInstallPlan repoRoot bootstrapSettings withEdge (machineId, prodboxId
       case vaultLifecycleExitCode vaultLifecycleResult of
         ExitFailure _ -> pure (vaultLifecycleExitCode vaultLifecycleResult)
         ExitSuccess -> do
-          -- Sprint 7.25: MinIO (MinioBootstrapPublic) is already up from Phase 1
-          -- above and the static root cred never changes, so no post-Vault MinIO
-          -- bootstrap or restart-on-root-change step is needed here.
-          settingsResult <- loadPostMinioLifecycleSettings repoRoot bootstrapSettings
-          case settingsResult of
-            Left err -> failWith err
-            Right settings ->
-              runSequentially
-                ( [ steadyStepAction settings step
-                  | step <- nativeInstallStepOrder
-                  , reconcileStepPhase step == PhaseSteady
-                  ]
-                    -- The public edge (Route 53 DNS + ZeroSSL DNS-01 TLS) is the only
-                    -- part of reconcile that needs operational AWS credentials. It runs
-                    -- only with @--with-edge@; bare @cluster reconcile@ stands up a fully
-                    -- working local cluster with an empty @aws.*@ block. The PhaseEdge
-                    -- steps in the table are its narration sub-steps.
-                    ++ [applyPublicEdgeReconcile repoRoot settings prodboxId labelValue | withEdge]
-                )
+          vaultReadyExit <-
+            requireNativeComponentReadiness
+              repoRoot
+              bootstrapSettings
+              dag
+              ComponentVaultUnsealed
+          case vaultReadyExit of
+            ExitFailure _ -> pure vaultReadyExit
+            ExitSuccess -> do
+              -- Sprint 7.25: MinIO (MinioBootstrapPublic) is already up from Phase 1
+              -- above and the static root cred never changes, so no post-Vault MinIO
+              -- bootstrap or restart-on-root-change step is needed here.
+              settingsResult <- loadPostMinioLifecycleSettings repoRoot bootstrapSettings
+              case settingsResult of
+                Left err -> failWith err
+                Right settings -> do
+                  -- StepLoadInForceSettings is the final VaultUnsealed-group
+                  -- step, so repeat the authoritative one-shot observation at
+                  -- the compiled component boundary after loading succeeds.
+                  inForceVaultReady <-
+                    requireNativeComponentReadiness
+                      repoRoot
+                      settings
+                      dag
+                      ComponentVaultUnsealed
+                  case inForceVaultReady of
+                    ExitFailure _ -> pure inForceVaultReady
+                    ExitSuccess -> do
+                      lanDefaultsResult <- resolveClusterPlatformLanDefaults
+                      case lanDefaultsResult of
+                        Left err -> failWith err
+                        Right lanDefaults -> do
+                          steadyExit <-
+                            runAnchoredReconcileSteps
+                              repoRoot
+                              settings
+                              dag
+                              (steadyStepAction settings lanDefaults)
+                              [step | step <- order, reconcileStepPhase step == PhaseSteady]
+                          case steadyExit of
+                            ExitFailure _ -> pure steadyExit
+                            ExitSuccess
+                              -- The public edge (Route 53 DNS + ZeroSSL DNS-01 TLS) is the only
+                              -- part of reconcile that needs operational AWS credentials.
+                              | withEdge ->
+                                  applyPublicEdgeReconcile repoRoot settings prodboxId labelValue
+                              | otherwise -> pure ExitSuccess
  where
-  -- The `PhaseBootstrap` action for a step. Called only on `PhaseBootstrap`
-  -- steps (filtered above); the catch-all is unreachable.
+  machineId = nativeInstallPayloadMachineId payload
+  prodboxId = nativeInstallPayloadProdboxId payload
+  labelValue = nativeInstallPayloadLabelValue payload
+  withEdge = nativeInstallPayloadWithEdge payload
+  dag = nativeInstallPayloadDag payload
+  order = nativeInstallPayloadStepOrder payload
+
+  -- The @PhaseBootstrap@ executor is total. A wrong-phase call fails loudly;
+  -- no newly-added step can silently no-op through a wildcard.
   bootstrapStepAction :: ReconcileStepId -> IO ExitCode
   bootstrapStepAction step = case step of
     StepRke2ResourceGuardrails -> ensureRke2ResourceGuardrails repoRoot bootstrapSettings
@@ -1483,21 +1727,408 @@ applyNativeInstallPlan repoRoot bootstrapSettings withEdge (machineId, prodboxId
     StepRke2RegistriesConfig -> ensureRke2RegistriesConfig repoRoot
     StepCertManagerRuntime -> ensureCertManagerRuntime repoRoot prodboxId labelValue
     StepGatewayChartReadyPreVault -> ensureGatewayChartReady repoRoot bootstrapSettings SubstrateHomeLocal
-    _ -> pure ExitSuccess
+    StepFederatedVaultLifecycle -> wrongPhaseStep PhaseBootstrap step
+    StepLoadInForceSettings -> wrongPhaseStep PhaseBootstrap step
+    StepMetalLbRuntime -> wrongPhaseStep PhaseBootstrap step
+    StepEnvoyGatewayRuntime -> wrongPhaseStep PhaseBootstrap step
+    StepPostgresOperatorRuntime -> wrongPhaseStep PhaseBootstrap step
+    StepGatewayMinioBootstrap -> wrongPhaseStep PhaseBootstrap step
+    StepGatewayChartReady -> wrongPhaseStep PhaseBootstrap step
+    StepRootChartNamespaceGuardrails -> wrongPhaseStep PhaseBootstrap step
+    StepAdminPublicEdgeRoutes -> wrongPhaseStep PhaseBootstrap step
+    StepReconcileManagedAnnotations -> wrongPhaseStep PhaseBootstrap step
+    StepRequireOperationalAwsCredentials -> wrongPhaseStep PhaseBootstrap step
+    StepPublicEdgeAcmeRuntime -> wrongPhaseStep PhaseBootstrap step
+    StepReconcileDnsBootstrapRecord -> wrongPhaseStep PhaseBootstrap step
 
-  -- The `PhaseSteady` action for a step, closing over the post-Vault settings.
-  -- Called only on `PhaseSteady` steps; the catch-all is unreachable.
-  steadyStepAction :: ValidatedSettings -> ReconcileStepId -> IO ExitCode
-  steadyStepAction settings step = case step of
-    StepClusterPlatformRuntime -> ensureClusterPlatformRuntime repoRoot settings prodboxId labelValue
-    StepMinioRuntimeSteadyState -> ensureMinioRuntime repoRoot SubstrateHomeLocal MinioSteadyStateHarbor
+  -- The @PhaseSteady@ executor is likewise total.
+  steadyStepAction :: ValidatedSettings -> (String, String) -> ReconcileStepId -> IO ExitCode
+  steadyStepAction settings (metallbPool, edgeLbIp) step = case step of
+    StepMetalLbRuntime -> ensureMetalLbRuntime repoRoot settings prodboxId labelValue metallbPool
+    StepEnvoyGatewayRuntime ->
+      ensureEnvoyGatewayRuntime repoRoot settings prodboxId labelValue edgeLbIp
+    StepPostgresOperatorRuntime -> ensurePostgresOperatorRuntime repoRoot prodboxId labelValue
     StepGatewayMinioBootstrap -> ensureGatewayMinioBootstrap repoRoot
     StepGatewayChartReady -> ensureGatewayChartReadyPostVault repoRoot settings SubstrateHomeLocal
     StepRootChartNamespaceGuardrails -> ensureRootChartNamespaceGuardrails repoRoot settings
     StepAdminPublicEdgeRoutes ->
       ensureAdminPublicEdgeRoutes repoRoot settings SubstrateHomeLocal prodboxId labelValue
     StepReconcileManagedAnnotations -> reconcileManagedAnnotations repoRoot prodboxId labelValue
-    _ -> pure ExitSuccess
+    StepRke2ResourceGuardrails -> wrongPhaseStep PhaseSteady step
+    StepHostInotifyLimits -> wrongPhaseStep PhaseSteady step
+    StepRke2ServerInstalled -> wrongPhaseStep PhaseSteady step
+    StepRke2IngressController -> wrongPhaseStep PhaseSteady step
+    StepEnableRke2Service -> wrongPhaseStep PhaseSteady step
+    StepRestartRke2Service -> wrongPhaseStep PhaseSteady step
+    StepSyncUserKubeconfig -> wrongPhaseStep PhaseSteady step
+    StepVerifyClusterInfo -> wrongPhaseStep PhaseSteady step
+    StepWaitForClusterNodesReady -> wrongPhaseStep PhaseSteady step
+    StepDeleteNonManualStorageClasses -> wrongPhaseStep PhaseSteady step
+    StepEnsureProdboxIdentityConfigMap -> wrongPhaseStep PhaseSteady step
+    StepEnsureHostControlDataDirectory -> wrongPhaseStep PhaseSteady step
+    StepEnsureRetainedLocalStorage -> wrongPhaseStep PhaseSteady step
+    StepMinioRuntimeBootstrap -> wrongPhaseStep PhaseSteady step
+    StepVaultRuntime -> wrongPhaseStep PhaseSteady step
+    StepHarborRegistryStorageBackend -> wrongPhaseStep PhaseSteady step
+    StepHarborRegistryRuntime -> wrongPhaseStep PhaseSteady step
+    StepVerifyRegistryMinioEdge -> wrongPhaseStep PhaseSteady step
+    StepMirrorClusterImagesOnce -> wrongPhaseStep PhaseSteady step
+    StepEnsureRuntimeImage -> wrongPhaseStep PhaseSteady step
+    StepRke2RegistriesConfig -> wrongPhaseStep PhaseSteady step
+    StepCertManagerRuntime -> wrongPhaseStep PhaseSteady step
+    StepGatewayChartReadyPreVault -> wrongPhaseStep PhaseSteady step
+    StepFederatedVaultLifecycle -> wrongPhaseStep PhaseSteady step
+    StepLoadInForceSettings -> wrongPhaseStep PhaseSteady step
+    StepRequireOperationalAwsCredentials -> wrongPhaseStep PhaseSteady step
+    StepPublicEdgeAcmeRuntime -> wrongPhaseStep PhaseSteady step
+    StepReconcileDnsBootstrapRecord -> wrongPhaseStep PhaseSteady step
+
+  wrongPhaseStep :: ReconcilePhase -> ReconcileStepId -> IO ExitCode
+  wrongPhaseStep expected step =
+    failWith
+      ( "Internal reconcile-plan error: step `"
+          ++ reconcileStepToken step
+          ++ "` was dispatched to "
+          ++ show expected
+          ++ " but belongs to "
+          ++ show (reconcileStepPhase step)
+          ++ "."
+      )
+
+-- | Run an already-derived phase slice. A step marked as the component's
+-- readiness barrier performs one final authoritative observation through the
+-- Sprint-1.59 seam after its existing bounded convergence action succeeds.
+runAnchoredReconcileSteps
+  :: FilePath
+  -> ValidatedSettings
+  -> ComponentDag
+  -> (ReconcileStepId -> IO ExitCode)
+  -> [ReconcileStepId]
+  -> IO ExitCode
+runAnchoredReconcileSteps repoRoot settings dag runStep =
+  runAnchoredStepOrder
+    reconcileStepAnchor
+    runStep
+    (requireNativeComponentReadiness repoRoot settings dag)
+
+requireNativeComponentReadiness
+  :: FilePath -> ValidatedSettings -> ComponentDag -> ComponentId -> IO ExitCode
+requireNativeComponentReadiness repoRoot settings dag component =
+  case lookupComponentNode component dag of
+    Nothing ->
+      failWith
+        ( "Native reconcile readiness has no graph node for component `"
+            ++ componentIdText component
+            ++ "`."
+        )
+    Just node ->
+      case nativeComponentReadinessTarget repoRoot settings component of
+        Left reason -> failWith (Text.unpack reason)
+        Right target -> do
+          readinessResult <-
+            waitForComponentReadiness
+              componentReadinessRetryPolicy
+              target
+              (readiness node)
+          case readinessResult of
+            Right () -> pure ExitSuccess
+            Left detail ->
+              failWith
+                ( "Component `"
+                    ++ componentIdText component
+                    ++ "` did not satisfy "
+                    ++ show (readiness node)
+                    ++ " within the bounded readiness budget: "
+                    ++ Text.unpack detail
+                )
+
+-- | Production one-shot target registry for every component the native home
+-- reconcile mutates. Chart-only nodes are owned by ChartPlatform and fail
+-- closed if accidentally routed through this driver.
+nativeComponentReadinessTarget
+  :: FilePath
+  -> ValidatedSettings
+  -> ComponentId
+  -> Either Text.Text ComponentReadinessTarget
+nativeComponentReadinessTarget repoRoot settings component =
+  case component of
+    ComponentClusterBase ->
+      Right (ServiceActiveTarget component (observeRke2ServiceActiveOnce repoRoot))
+    ComponentMinio ->
+      Right
+        ( RolloutCompleteTarget
+            component
+            ( observeKubernetesReadinessOnce
+                repoRoot
+                [StatefulSetReady minioNamespace minioReleaseName]
+            )
+        )
+    ComponentVaultWorkload ->
+      Right
+        ( RolloutCompleteTarget
+            component
+            (observeKubernetesReadinessOnce repoRoot [StatefulSetReady vaultNamespace "vault"])
+        )
+    ComponentVaultUnsealed ->
+      Right (VaultUnsealedTarget component observeVaultUnsealedOnce)
+    ComponentRegistry ->
+      Right
+        ( BackendRoundTripTarget
+            component
+            ComponentMinio
+            (observeRegistryBackendRoundTripOnce repoRoot)
+        )
+    ComponentMetalLB ->
+      Right
+        ( RolloutCompleteTarget
+            component
+            ( observeKubernetesReadinessOnce
+                repoRoot
+                ( [ DeploymentAvailable metallbNamespace "metallb-controller"
+                  , DaemonSetReady metallbNamespace "metallb-speaker"
+                  , CrdEstablished "ipaddresspools.metallb.io"
+                  ]
+                    ++ case configuredPublicEdgeAdvertisementMode settings of
+                      "bgp" ->
+                        [ CrdEstablished "bgppeers.metallb.io"
+                        , CrdEstablished "bgpadvertisements.metallb.io"
+                        ]
+                      _ -> [CrdEstablished "l2advertisements.metallb.io"]
+                )
+            )
+        )
+    ComponentEnvoyGateway ->
+      Right
+        ( RolloutCompleteTarget
+            component
+            ( observeKubernetesReadinessOnce
+                repoRoot
+                [ DeploymentAvailable envoyGatewayNamespace envoyGatewayReleaseName
+                , CrdEstablished "gatewayclasses.gateway.networking.k8s.io"
+                , CrdEstablished "gateways.gateway.networking.k8s.io"
+                , CrdEstablished "httproutes.gateway.networking.k8s.io"
+                , CrdEstablished "envoyproxies.gateway.envoyproxy.io"
+                , CrdEstablished "securitypolicies.gateway.envoyproxy.io"
+                ]
+            )
+        )
+    ComponentCertManager ->
+      Right
+        ( RolloutCompleteTarget
+            component
+            ( observeKubernetesReadinessOnce
+                repoRoot
+                [ DeploymentAvailable certManagerNamespace certManagerReleaseName
+                , DeploymentAvailable certManagerNamespace (certManagerReleaseName ++ "-webhook")
+                , DeploymentAvailable certManagerNamespace (certManagerReleaseName ++ "-cainjector")
+                , CrdEstablished "clusterissuers.cert-manager.io"
+                ]
+            )
+        )
+    ComponentPerconaPostgresOperator -> operatorAvailableTarget component
+    ComponentGatewayDaemonPreVault ->
+      Right
+        ( RolloutCompleteTarget
+            component
+            ( observeKubernetesReadinessOnce
+                repoRoot
+                [ DeploymentAvailable gatewayNamespace ("gateway-" ++ nodeId)
+                | nodeId <- gatewayNodeIds
+                ]
+            )
+        )
+    ComponentGatewayDaemonFull ->
+      Right (BackendRoundTripTarget component ComponentMinio observeGatewayBackendRoundTripOnce)
+    ComponentChartPulsar -> unsupportedNativeReadiness component
+    ComponentChartRedis -> unsupportedNativeReadiness component
+    ComponentChartKeycloakPostgres -> unsupportedNativeReadiness component
+    ComponentChartKeycloak -> unsupportedNativeReadiness component
+    ComponentChartVscode -> unsupportedNativeReadiness component
+    ComponentChartApi -> unsupportedNativeReadiness component
+    ComponentChartWebsocket -> unsupportedNativeReadiness component
+    ComponentChartGateway -> unsupportedNativeReadiness component
+
+unsupportedNativeReadiness :: ComponentId -> Either Text.Text value
+unsupportedNativeReadiness component =
+  Left
+    ( Text.pack
+        ( "Native reconcile has no readiness target for chart-owned component `"
+            ++ componentIdText component
+            ++ "`."
+        )
+    )
+
+observeRke2ServiceActiveOnce :: FilePath -> IO (Either Text.Text ReadinessProbeResult)
+observeRke2ServiceActiveOnce repoRoot = do
+  result <- captureToolOutput repoRoot "systemctl" ["is-active", rke2ServiceName]
+  pure $
+    case result of
+      Left err -> Left (Text.pack err)
+      Right output ->
+        let status = map toLower (trimWhitespace (processStdout output))
+         in if status == "active"
+              then Right ReadinessProbeReady
+              else
+                if status `elem` ["inactive", "activating", "deactivating", "failed"]
+                  then Right (ReadinessProbePending (Text.pack ("systemd state is " ++ status)))
+                  else case processExitCode output of
+                    ExitSuccess ->
+                      Right (ReadinessProbePending (Text.pack ("systemd state is " ++ status)))
+                    ExitFailure _ -> Left (Text.pack (outputDetail output))
+
+data KubernetesReadinessCheck
+  = DeploymentAvailable String String
+  | StatefulSetReady String String
+  | DaemonSetReady String String
+  | CrdEstablished String
+  deriving (Eq, Show)
+
+observeKubernetesReadinessOnce
+  :: FilePath
+  -> [KubernetesReadinessCheck]
+  -> IO (Either Text.Text ReadinessProbeResult)
+observeKubernetesReadinessOnce repoRoot = go
+ where
+  go checks = case checks of
+    [] -> pure (Right ReadinessProbeReady)
+    check : remaining -> do
+      result <- observeKubernetesCheckOnce repoRoot check
+      case result of
+        Right ReadinessProbeReady -> go remaining
+        Right pending@(ReadinessProbePending _) -> pure (Right pending)
+        Left reason -> pure (Left reason)
+
+observeKubernetesCheckOnce
+  :: FilePath
+  -> KubernetesReadinessCheck
+  -> IO (Either Text.Text ReadinessProbeResult)
+observeKubernetesCheckOnce repoRoot check = do
+  outputResult <- captureToolOutput repoRoot "kubectl" (kubernetesReadinessArguments check)
+  pure $
+    case outputResult of
+      Left err -> Left (Text.pack err)
+      Right output ->
+        case processExitCode output of
+          ExitFailure _ -> Left (Text.pack (outputDetail output))
+          ExitSuccess -> classifyKubernetesReadiness check (trimWhitespace (processStdout output))
+
+kubernetesReadinessArguments :: KubernetesReadinessCheck -> [String]
+kubernetesReadinessArguments check =
+  case check of
+    DeploymentAvailable namespace name ->
+      namespacedGetArguments
+        "deployment"
+        namespace
+        name
+        "jsonpath={.status.conditions[?(@.type==\"Available\")].status}"
+    StatefulSetReady namespace name ->
+      namespacedGetArguments
+        "statefulset"
+        namespace
+        name
+        "jsonpath={.spec.replicas}:{.status.readyReplicas}:{.status.updatedReplicas}"
+    DaemonSetReady namespace name ->
+      namespacedGetArguments
+        "daemonset"
+        namespace
+        name
+        "jsonpath={.status.desiredNumberScheduled}:{.status.numberReady}:{.status.updatedNumberScheduled}"
+    CrdEstablished name ->
+      [ "get"
+      , "crd"
+      , name
+      , "--ignore-not-found"
+      , "-o"
+      , "jsonpath={.status.conditions[?(@.type==\"Established\")].status}"
+      ]
+
+namespacedGetArguments :: String -> String -> String -> String -> [String]
+namespacedGetArguments kind namespace name outputFormat =
+  [ "get"
+  , kind
+  , name
+  , "--namespace"
+  , namespace
+  , "--ignore-not-found"
+  , "-o"
+  , outputFormat
+  ]
+
+classifyKubernetesReadiness
+  :: KubernetesReadinessCheck -> String -> Either Text.Text ReadinessProbeResult
+classifyKubernetesReadiness check raw =
+  case check of
+    DeploymentAvailable _ _ -> conditionResult
+    CrdEstablished _ -> conditionResult
+    StatefulSetReady _ _ -> replicaResult
+    DaemonSetReady _ _ -> replicaResult
+ where
+  conditionResult
+    | map toLower raw == "true" = Right ReadinessProbeReady
+    | otherwise = Right (pendingResult raw)
+  replicaResult =
+    case mapM readMaybe (splitOnColon raw) :: Maybe [Int] of
+      Just [desired, ready, updated]
+        | desired > 0 && ready >= desired && updated >= desired -> Right ReadinessProbeReady
+      _ -> Right (pendingResult raw)
+  pendingResult detail =
+    ReadinessProbePending
+      ( Text.pack
+          ( show check
+              ++ " is not ready"
+              ++ if null detail then "" else ": " ++ detail
+          )
+      )
+
+splitOnColon :: String -> [String]
+splitOnColon value =
+  case break (== ':') value of
+    (prefix, []) -> [prefix]
+    (prefix, _ : remaining) -> prefix : splitOnColon remaining
+
+observeVaultUnsealedOnce :: IO (Either Text.Text ReadinessProbeResult)
+observeVaultUnsealedOnce = do
+  endpoint <- gatewayEndpointFromEnv
+  observeVaultUnsealedOnceAt endpoint
+
+observeVaultUnsealedOnceAt :: PeerEndpoint -> IO (Either Text.Text ReadinessProbeResult)
+observeVaultUnsealedOnceAt endpoint = do
+  result <- GatewayClient.queryVaultStatus endpoint
+  pure $
+    case result of
+      Left err -> Left (Text.pack (GatewayClient.renderGatewayError err))
+      Right status
+        | sealStatusInitialized status && not (sealStatusSealed status) ->
+            Right ReadinessProbeReady
+        | not (sealStatusInitialized status) ->
+            Right (ReadinessProbePending "Vault is not initialized")
+        | otherwise -> Right (ReadinessProbePending "Vault is sealed")
+
+observeRegistryBackendRoundTripOnce
+  :: FilePath -> IO (Either Text.Text ReadinessProbeResult)
+observeRegistryBackendRoundTripOnce repoRoot = do
+  result <- classifyRegistryStorageEdgeProbe <$> probeRegistryStorageBackendEdge repoRoot
+  pure $
+    case result of
+      RegistryEdgeReady -> Right ReadinessProbeReady
+      RegistryEdgeNotReady detail -> Right (ReadinessProbePending (Text.pack detail))
+      RegistryEdgeUnreachable detail -> Left (Text.pack detail)
+
+observeGatewayBackendRoundTripOnce :: IO (Either Text.Text ReadinessProbeResult)
+observeGatewayBackendRoundTripOnce = do
+  endpoint <- gatewayEndpointFromEnv
+  observeGatewayBackendRoundTripOnceAt endpoint
+
+observeGatewayBackendRoundTripOnceAt
+  :: PeerEndpoint -> IO (Either Text.Text ReadinessProbeResult)
+observeGatewayBackendRoundTripOnceAt endpoint = do
+  result <- probeGatewayObjectStoreOnceAt endpoint
+  pure $
+    case result of
+      GatewayObjectStoreHealthy -> Right ReadinessProbeReady
+      GatewayObjectStoreDegraded503 detail ->
+        Right (ReadinessProbePending (Text.pack ("gateway object store is degraded: " ++ detail)))
+      GatewayObjectStoreTransient detail -> Left (Text.pack detail)
 
 loadPostMinioLifecycleSettings
   :: FilePath -> ValidatedSettings -> IO (Either String ValidatedSettings)
@@ -2580,24 +3211,24 @@ ensureRootVaultLifecycleDetailed repoRoot = do
           Right () -> pure (VaultLifecycleResult ExitSuccess)
 
 waitForGatewayDaemonReadiness :: IO ExitCode
-waitForGatewayDaemonReadiness =
-  go vaultApiReadinessAttempts "Gateway daemon not yet checked"
+waitForGatewayDaemonReadiness = do
+  endpoint <- gatewayEndpointFromEnv
+  go endpoint vaultApiReadinessAttempts "Gateway daemon not yet checked"
  where
-  go :: Int -> String -> IO ExitCode
-  go attemptsRemaining lastDetail
+  go :: PeerEndpoint -> Int -> String -> IO ExitCode
+  go endpoint attemptsRemaining lastDetail
     | attemptsRemaining <= 0 =
         failWith
           ( "Gateway daemon did not become reachable before Vault lifecycle reconciliation: "
               ++ lastDetail
           )
     | otherwise = do
-        statusResult <-
-          GatewayClient.queryState (GatewayClient.hostLoopbackGatewayEndpoint defaultGatewayNodePort)
+        statusResult <- GatewayClient.queryState endpoint
         case statusResult of
           Right _ -> pure ExitSuccess
           Left err -> do
             threadDelay vaultApiReadinessDelayMicroseconds
-            go (attemptsRemaining - 1) (GatewayClient.renderGatewayError err)
+            go endpoint (attemptsRemaining - 1) (GatewayClient.renderGatewayError err)
 
 ensureFederatedVaultLifecycleDetailed :: FilePath -> IO VaultLifecycleResult
 ensureFederatedVaultLifecycleDetailed repoRoot = do
@@ -3548,7 +4179,7 @@ registryRuntimeManifestItems =
             [ "name" .= registryConfigMapName
             , "namespace" .= harborNamespace
             ]
-      , "data" .= object ["config.yml" .= registryConfigYaml]
+      , "data" .= object ["config.yml" .= registryConfigYaml harborRegistryStorageBackend]
       ]
   , object
       [ "apiVersion" .= ("apps/v1" :: String)
@@ -3642,12 +4273,49 @@ registryRuntimeManifestItems =
       ]
   ]
 
--- | The @registry:2@ @config.yml@: S3 storage driver against the MinIO-backed
--- @prodbox-harbor-registry@ bucket. The @accesskey@/@secretkey@ are supplied at
--- runtime via @REGISTRY_STORAGE_S3_ACCESSKEY@/@SECRETKEY@ (envFrom the storage
--- Secret), overriding the config, so no credential appears here.
-registryConfigYaml :: String
-registryConfigYaml =
+-- | Blob redirect behavior for the registry storage driver. This is a required
+-- field of 'RegistryStorageBackend': callers cannot silently inherit the
+-- registry driver's redirect default.
+data RedirectPolicy
+  = RedirectDisabled
+  | RedirectEnabled
+  deriving (Eq, Show)
+
+-- | Typed S3-compatible storage backend for @registry:2@. Credentials remain
+-- runtime environment overrides and therefore never enter this record.
+data RegistryStorageBackend = RegistryStorageBackend
+  { registryStorageBackendRegion :: String
+  , registryStorageBackendEndpoint :: String
+  , registryStorageBackendBucket :: String
+  , registryStorageBackendSecure :: Bool
+  , registryStorageBackendV4Auth :: Bool
+  , registryStorageBackendRootDirectory :: String
+  , registryStorageBackendRedirect :: RedirectPolicy
+  , registryStorageBackendDeleteEnabled :: Bool
+  }
+  deriving (Eq, Show)
+
+-- | The canonical MinIO-backed storage record for the in-cluster registry.
+-- The load-bearing redirect choice is explicit: the host-side localhost
+-- NodePort cannot follow presigned redirects to cluster-only DNS.
+harborRegistryStorageBackend :: RegistryStorageBackend
+harborRegistryStorageBackend =
+  RegistryStorageBackend
+    { registryStorageBackendRegion = harborRegistryStorageRegion
+    , registryStorageBackendEndpoint = minioClusterEndpoint
+    , registryStorageBackendBucket = harborRegistryStorageBucket
+    , registryStorageBackendSecure = False
+    , registryStorageBackendV4Auth = True
+    , registryStorageBackendRootDirectory = "/"
+    , registryStorageBackendRedirect = RedirectDisabled
+    , registryStorageBackendDeleteEnabled = True
+    }
+
+-- | Render the @registry:2@ @config.yml@ from its typed storage record. The
+-- @accesskey@/@secretkey@ are supplied at runtime via
+-- @REGISTRY_STORAGE_S3_ACCESSKEY@/@SECRETKEY@, so no credential appears here.
+registryConfigYaml :: RegistryStorageBackend -> String
+registryConfigYaml backend =
   unlines
     [ "version: 0.1"
     , "log:"
@@ -3657,16 +4325,16 @@ registryConfigYaml =
     , "  cache:"
     , "    blobdescriptor: inmemory"
     , "  redirect:"
-    , "    disable: true"
+    , "    disable: " ++ renderRedirectDisabled (registryStorageBackendRedirect backend)
     , "  s3:"
-    , "    region: us-east-1"
-    , "    regionendpoint: " ++ minioClusterEndpoint
-    , "    bucket: " ++ harborRegistryStorageBucket
-    , "    secure: false"
-    , "    v4auth: true"
-    , "    rootdirectory: /"
+    , "    region: " ++ registryStorageBackendRegion backend
+    , "    regionendpoint: " ++ registryStorageBackendEndpoint backend
+    , "    bucket: " ++ registryStorageBackendBucket backend
+    , "    secure: " ++ renderYamlBool (registryStorageBackendSecure backend)
+    , "    v4auth: " ++ renderYamlBool (registryStorageBackendV4Auth backend)
+    , "    rootdirectory: " ++ registryStorageBackendRootDirectory backend
     , "  delete:"
-    , "    enabled: true"
+    , "    enabled: " ++ renderYamlBool (registryStorageBackendDeleteEnabled backend)
     , "http:"
     , "  addr: :" ++ show registryContainerPort
     , "health:"
@@ -3675,6 +4343,18 @@ registryConfigYaml =
     , "    interval: 10s"
     , "    threshold: 3"
     ]
+
+renderRedirectDisabled :: RedirectPolicy -> String
+renderRedirectDisabled policy =
+  case policy of
+    RedirectDisabled -> "true"
+    RedirectEnabled -> "false"
+
+renderYamlBool :: Bool -> String
+renderYamlBool value =
+  case value of
+    True -> "true"
+    False -> "false"
 
 waitForDeployment :: FilePath -> String -> String -> IO ExitCode
 waitForDeployment repoRoot namespace deploymentName =
@@ -3878,18 +4558,6 @@ ensureRegistryStorageBackendEdgeReady repoRoot =
     threadDelay harborEndpointReadinessDelayMicroseconds
     go (attemptsRemaining - 1) detail
 
-ensureClusterPlatformRuntime :: FilePath -> ValidatedSettings -> String -> String -> IO ExitCode
-ensureClusterPlatformRuntime repoRoot settings prodboxId labelValue = do
-  lanDefaultsResult <- resolveClusterPlatformLanDefaults
-  case lanDefaultsResult of
-    Left err -> failWith err
-    Right (metallbPool, edgeLbIp) ->
-      runSequentially
-        [ ensureMetalLbRuntime repoRoot settings prodboxId labelValue metallbPool
-        , ensureEnvoyGatewayRuntime repoRoot settings prodboxId labelValue edgeLbIp
-        , ensurePostgresOperatorRuntime repoRoot prodboxId labelValue
-        ]
-
 -- | Sprint 7.12: the shared platform components the HOME-substrate install
 -- path stands up. The lower-layer pieces ('ensureMetalLbRuntime' — MetalLB,
 -- and the in-cluster Harbor NodePort) are intentionally substrate-specific
@@ -3936,16 +4604,22 @@ ensureGatewayChartReady repoRoot settings substrate =
   ensureGatewayChartReadyForSubstrate repoRoot settings substrate
 
 -- | Post-Vault gateway convergence: deploy the gateway chart, then ensure the
--- daemon is actually running in FULL mode (see 'ensureGatewayDaemonFullMode').
+-- daemon is actually running in FULL mode (see 'ensureGatewayDaemonFullModeAt').
 -- Used ONLY for the post-Vault 'StepGatewayChartReady'; the pre-Vault
 -- 'StepGatewayChartReadyPreVault' keeps calling 'ensureGatewayChartReady'
 -- unchanged (the daemon is expected to boot degraded there, by design).
 ensureGatewayChartReadyPostVault :: FilePath -> ValidatedSettings -> Substrate -> IO ExitCode
 ensureGatewayChartReadyPostVault repoRoot settings substrate = do
+  endpoint <- gatewayEndpointFromEnv
+  ensureGatewayChartReadyPostVaultAt repoRoot settings substrate endpoint
+
+ensureGatewayChartReadyPostVaultAt
+  :: FilePath -> ValidatedSettings -> Substrate -> PeerEndpoint -> IO ExitCode
+ensureGatewayChartReadyPostVaultAt repoRoot settings substrate endpoint = do
   deployExit <- ensureGatewayChartReady repoRoot settings substrate
   case deployExit of
     ExitFailure _ -> pure deployExit
-    ExitSuccess -> ensureGatewayDaemonFullMode repoRoot
+    ExitSuccess -> ensureGatewayDaemonFullModeAt repoRoot endpoint
 
 -- | The gateway daemon resolves its Vault-backed MinIO credentials exactly once,
 -- at pod boot. The reconcile boots the daemon pre-Vault
@@ -3959,9 +4633,9 @@ ensureGatewayChartReadyPostVault repoRoot settings substrate = do
 -- @kubectl rollout status@ alone is insufficient — the object-store probe is the
 -- real gate. If the daemon will not leave 503 after the restart budget, fail
 -- loud rather than leaving it silently degraded.
-ensureGatewayDaemonFullMode :: FilePath -> IO ExitCode
-ensureGatewayDaemonFullMode repoRoot = do
-  initialProbe <- pollGatewayObjectStore False gatewayFullModeInitialProbeAttempts
+ensureGatewayDaemonFullModeAt :: FilePath -> PeerEndpoint -> IO ExitCode
+ensureGatewayDaemonFullModeAt repoRoot endpoint = do
+  initialProbe <- pollGatewayObjectStoreAt endpoint False gatewayFullModeInitialProbeAttempts
   case initialProbe of
     GatewayObjectStoreHealthy -> do
       writeOutputLine "GATEWAY_DAEMON_MODE=full (no restart needed)"
@@ -3984,7 +4658,7 @@ ensureGatewayDaemonFullMode repoRoot = do
       case restartExit of
         ExitFailure _ -> pure restartExit
         ExitSuccess -> do
-          verifyProbe <- pollGatewayObjectStore True gatewayFullModeVerifyAttempts
+          verifyProbe <- pollGatewayObjectStoreAt endpoint True gatewayFullModeVerifyAttempts
           case verifyProbe of
             GatewayObjectStoreHealthy -> do
               writeOutputLine "GATEWAY_DAEMON_MODE=full (restarted into full mode)"
@@ -4017,7 +4691,7 @@ gatewayFullModeVerifyAttempts :: Int
 gatewayFullModeVerifyAttempts = vaultApiReadinessAttempts
 
 -- | Classification of the gateway daemon's object-store health. See
--- 'ensureGatewayDaemonFullMode'.
+-- 'ensureGatewayDaemonFullModeAt'.
 data GatewayObjectStoreProbe
   = -- | Object-store reachable and credentialed (present OR absent object).
     GatewayObjectStoreHealthy
@@ -4038,11 +4712,11 @@ classifyGatewayObjectStoreProbe result = case result of
   Left (GatewayClient.GatewayTransport (HttpStatus 503 body)) -> GatewayObjectStoreDegraded503 body
   Left err -> GatewayObjectStoreTransient (GatewayClient.renderGatewayError err)
 
-probeGatewayObjectStoreOnce :: IO GatewayObjectStoreProbe
-probeGatewayObjectStoreOnce = do
+probeGatewayObjectStoreOnceAt :: PeerEndpoint -> IO GatewayObjectStoreProbe
+probeGatewayObjectStoreOnceAt endpoint = do
   result <-
     GatewayClient.getPulumiObject
-      (GatewayClient.hostLoopbackGatewayEndpoint defaultGatewayNodePort)
+      endpoint
       gatewayObjectStoreProbeStack
   pure (classifyGatewayObjectStoreProbe result)
 
@@ -4053,14 +4727,14 @@ probeGatewayObjectStoreOnce = do
 -- Vault role may still be propagating); the initial path returns it immediately
 -- (a degraded pre-Vault daemon that must be restarted). Transient failures are
 -- always retried. Returns the last observation when the budget is exhausted.
-pollGatewayObjectStore :: Bool -> Int -> IO GatewayObjectStoreProbe
-pollGatewayObjectStore retryOn503 attempts =
+pollGatewayObjectStoreAt :: PeerEndpoint -> Bool -> Int -> IO GatewayObjectStoreProbe
+pollGatewayObjectStoreAt endpoint retryOn503 attempts =
   go attempts (GatewayObjectStoreTransient "gateway daemon not yet probed")
  where
   go remaining lastProbe
     | remaining <= 0 = pure lastProbe
     | otherwise = do
-        probe <- probeGatewayObjectStoreOnce
+        probe <- probeGatewayObjectStoreOnceAt endpoint
         case probe of
           GatewayObjectStoreHealthy -> pure GatewayObjectStoreHealthy
           GatewayObjectStoreDegraded503 _ | not retryOn503 -> pure probe
@@ -5385,15 +6059,14 @@ runAwsRoute53ChangeWithRetries repoRoot awsEnvironment arguments =
 
 isRetryableRoute53CredentialFailure :: ProcessOutput -> Bool
 isRetryableRoute53CredentialFailure output =
-  let detail = map toLower (outputDetail output)
-   in any
-        (`isInfixOf` detail)
-        [ "invalidclienttokenid"
-        , "security token included in the request is invalid"
-        , "unrecognizedclientexception"
-        , "accessdenied"
-        , "not authorized to perform: route53:"
-        ]
+  isRetryableTransientFailure
+    [ "invalidclienttokenid"
+    , "security token included in the request is invalid"
+    , "unrecognizedclientexception"
+    , "accessdenied"
+    , "not authorized to perform: route53:"
+    ]
+    (outputDetail output)
 
 resolveDnsBootstrapIp :: ValidatedSettings -> IO (Either String String)
 resolveDnsBootstrapIp settings = do
@@ -5509,21 +6182,11 @@ runHelmCommandWithRetries repoRoot arguments = go (retryPolicyMaxAttempts helmTr
 
 isRetryableHelmFailure :: ProcessOutput -> Bool
 isRetryableHelmFailure output =
-  let detail = map toLower (outputDetail output)
-   in any
-        (`isInfixOf` detail)
-        [ "502 bad gateway"
-        , "503 service unavailable"
-        , "504 gateway timeout"
-        , "429 too many requests"
-        , "failed to fetch"
-        , "failed to download"
-        , "connection reset by peer"
-        , "tls handshake timeout"
-        , "i/o timeout"
-        , "context deadline exceeded"
-        , "temporary failure"
-        ]
+  isRetryableTransientFailure
+    [ "failed to fetch"
+    , "failed to download"
+    ]
+    (outputDetail output)
 
 waitForCrdEstablished :: FilePath -> String -> IO ExitCode
 waitForCrdEstablished repoRoot crdName =
@@ -6156,26 +6819,10 @@ pushDockerImageWithRetry repoRoot imageRef description = go (retryPolicyMaxAttem
 -- deep gate ('ensureRegistryStorageBackendEdgeReady') is what removes the race;
 -- this classifier only bounds the residual.
 isRetryableHarborPublicationFailure :: String -> Bool
-isRetryableHarborPublicationFailure detail =
-  let lowered = map toLower detail
-   in any
-        (`isInfixOf` lowered)
-        [ "502 bad gateway"
-        , "503 service unavailable"
-        , "504 gateway timeout"
-        , "429 too many requests"
-        , "connection reset by peer"
-        , "connection refused"
-        , "tls handshake timeout"
-        , "i/o timeout"
-        , "temporary failure"
-        , "unexpected eof"
-        , "unexpected status from put request"
-        , "no such host"
-        , "dial tcp"
-        , "lookup"
-        , "name resolution"
-        ]
+isRetryableHarborPublicationFailure =
+  isRetryableTransientFailure
+    [ "unexpected status from put request"
+    ]
 
 harborTargetAvailableForHostArchitecture :: FilePath -> String -> IO (Either String Bool)
 harborTargetAvailableForHostArchitecture repoRoot imageRef = do

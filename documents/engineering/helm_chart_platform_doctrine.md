@@ -206,9 +206,17 @@ The supported contract is:
 
 - `prodbox cluster reconcile` installs the cluster-wide `percona/pg-operator` Helm release into the
   `postgres-operator` namespace. The chart → operator readiness gate proves the operator Deployment
-  is **`Available`** (reconciling), not merely that it exists; and the chart dependency edges below
-  are sourced from the typed component graph, not hardcoded, per
-  [bootstrap_readiness_doctrine.md](./bootstrap_readiness_doctrine.md).
+  is **`Available`** (reconciling), not merely that it exists (Sprint `3.23`); and the chart dependency
+  edges below are sourced from the typed component graph, not hardcoded, per
+  [bootstrap_readiness_doctrine.md](./bootstrap_readiness_doctrine.md). Sprint `3.24` installs the
+  ChartPlatform production binding to Sprint `1.59`'s typed seam. The graph-projected gate resolves
+  through the exhaustive `operatorAvailableTarget` registry, an `OperatorAvailableTarget`, and
+  `observeComponentReadiness`; both pending and unreachable observations close chart mutation. The
+  Percona one-shot adapter first queries the CRD and then the operator Deployment, using
+  `--ignore-not-found` for both, and opens only for `Available=True`. Every current unsupported
+  `ComponentId` has an explicit fail-closed registry arm. A newly added constructor therefore
+  requires a warning-clean source match, while configuration that selects an existing unsupported
+  ID is refused at runtime rather than misdescribed as universally compile-time impossible.
 - `prodbox charts reconcile keycloak` and `prodbox charts reconcile vscode` include the internal
   `keycloak-postgres` release before `keycloak`.
 - Each Patroni cluster runs exactly three PostgreSQL replicas.
@@ -364,7 +372,21 @@ The operator-facing ConfigMap holds no secret material — sensitive fields are 
 There is no Secret-mounted plaintext Dhall fragment and no `as Text` credential
 import: in-cluster consumers authenticate to Vault directly via Vault Kubernetes auth
 (a workload service account, a namespace + SA-bound Vault role, and a least-privilege
-policy), per [vault_doctrine.md §12](./vault_doctrine.md#12-in-cluster-service-auth).
+policy), per [vault_doctrine.md §12](./vault_doctrine.md#12-in-cluster-service-auth). Sprint `2.30`
+single-sources the gateway-daemon role on the supported generated-render path:
+`Prodbox.Vault.RoleId` defines `VaultRoleGatewayDaemon :: VaultRoleId`, and `vaultRoleIdText`
+projects it to `prodbox-gateway-daemon`. Both the generated gateway release values in
+`Prodbox.Lib.ChartPlatform` and `defaultVaultReconcilePlan`'s `VaultKubernetesRoleSpec` consume that
+projection. The role spec binds exactly `["prodbox-gateway", "gateway-gateway"]`. Unit tests pin
+those two policies, build and decode the actual generated AWS gateway release values to prove
+`vault.role` is the typed projection, and scan `ChartPlatform.hs` to forbid a duplicated
+`"prodbox-gateway-daemon"` literal.
+
+The static `charts/gateway/values.yaml` file retains the same role name as the documented chart
+default. It is not the typed consumer proved by Sprint `2.30`: the supported `prodbox charts
+reconcile gateway` generated values override this field from `VaultRoleId`. This is a precise
+gateway-daemon role-identity guarantee, not a claim that every gateway configuration value is
+single-sourced.
 ConfigMap volume updates land in the Pod via the kubelet's atomic `..data` symlink
 swap; the daemon's file-watch reload trigger follows that swap rather than the
 leaf-file `mtime`. The chart never injects daemon configuration as environment

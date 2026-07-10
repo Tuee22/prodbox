@@ -208,6 +208,30 @@ edge carrying a readiness node) is checked by the pure `EffectDAG` expansion whe
 projected, so a bootstrap plan that would race a consumer ahead of its dependency's proven readiness
 is not a well-formed config value.
 
+Sprint `1.58` (✅ Done 2026-07-10) splits each genuinely two-phase component into two bounded graph
+nodes, each with exactly one probe:
+
+- `ComponentClusterBase` carries `ProbeServiceActive`; host-service readiness is distinct from a
+  Kubernetes rollout.
+- `ComponentVaultWorkload` carries `ProbeRolloutComplete`;
+  `ComponentVaultUnsealed` carries the deep `ProbeVaultUnsealed` and depends on both the workload
+  node and `ComponentGatewayDaemonPreVault`, because supported root bootstrap/unseal is
+  daemon-mediated.
+- `ComponentGatewayDaemonPreVault` carries `ProbeRolloutComplete` and depends on MinIO,
+  cert-manager, and the Vault workload; `ComponentGatewayDaemonFull` carries
+  `ProbeBackendRoundTrip ComponentMinio`, depends on the unsealed-Vault and pre-Vault-daemon nodes,
+  and declares a `BackendWriteEdge` to MinIO matching that exact deep probe.
+
+Because the graph is a Tier-0 `parameters` field, the ID/probe split is a **schema change**.
+`prodbox config generate` regenerates the GENERATED, git-ignored `prodbox-config-types.dhall` with
+the split IDs, `ProbeServiceActive`, `ProbeVaultUnsealed`, and corrected edge set; the schema
+remains untracked and is never hand-edited. Sprint `1.59`'s closure audit reran generation after
+those final probe/edge corrections, and `prodbox config validate` decoded the result (both commands
+exit 0; unit 1259/1259 and `dev check` 0).
+The generated-artifact discipline remains owned by
+[code_quality.md](./code_quality.md#generated-artifacts). Phase `4` Sprint `4.45`, not this config
+sprint, owns reconcile-driver consumption of the graph-derived order.
+
 ## 1. Why this doctrine exists
 
 Every `prodbox` process needs configuration: hostnames, AWS coordinates, ports, ranked-node

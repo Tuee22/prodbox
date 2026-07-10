@@ -18,9 +18,14 @@ module Prodbox.Lib.ChartPlatform
   , deployChartPlan
   , deploymentConditionReportsTrue
   , gatewayNodeIds
+  , gatewayRestServiceName
+  , gatewayRestServicePort
   , keycloakVscodeClientId
   , keycloakRealmName
   , kubernetesSecretDecodedDataField
+  , observePatroniOperatorAvailableWith
+  , operatorAvailableTarget
+  , operatorGateResult
   , patroniSeedMismatchDecision
   , renderChartList
   , renderChartStatus
@@ -32,6 +37,7 @@ module Prodbox.Lib.ChartPlatform
   , resolveChartSecrets
   , resolveDependencyOrder
   , supportedChartNames
+  , validateOperatorGatesWith
   )
 where
 
@@ -83,6 +89,7 @@ import Prodbox.Capacity.Config qualified as Capacity
 import Prodbox.Config.ComponentGraph
   ( ComponentId (..)
   , ComponentNode
+  , ReadinessProbe (ProbeOperatorAvailable)
   , chartComponentDeployOrder
   , chartNameForComponent
   , componentIdForChartName
@@ -114,6 +121,12 @@ import Prodbox.Lib.Storage
   , storageBinding
   )
 import Prodbox.Lifecycle.EbsVolume qualified as EbsVolume
+import Prodbox.Lifecycle.ReadinessObservation
+  ( ComponentReadinessTarget (OperatorAvailableTarget)
+  , ReadinessObservation (..)
+  , ReadinessProbeResult (..)
+  , observeComponentReadiness
+  )
 import Prodbox.PostgresPlatform
   ( patroniClusterName
   , patroniCredentialsSecretName
@@ -174,6 +187,10 @@ import Prodbox.Subprocess
   )
 import Prodbox.Substrate (Substrate (..), replicasForSubstrate, substrateId)
 import Prodbox.Vault.Host (readHostVaultKvField, writeHostVaultKvObject)
+import Prodbox.Vault.RoleId
+  ( VaultRoleId (VaultRoleGatewayDaemon)
+  , vaultRoleIdText
+  )
 import System.Directory
   ( createDirectoryIfMissing
   , doesDirectoryExist
@@ -272,6 +289,12 @@ publicEdgeRouteClaimName = "prodbox_route"
 
 gatewayNodeIds :: [String]
 gatewayNodeIds = ["node-a", "node-b", "node-c"]
+
+gatewayRestServiceName :: String
+gatewayRestServiceName = "gateway"
+
+gatewayRestServicePort :: Int
+gatewayRestServicePort = 8443
 
 machineIdPath :: FilePath
 machineIdPath = "/etc/machine-id"
@@ -789,24 +812,93 @@ validateReleaseReady release
       waitForPatroniClusterReady (chartReleasePlanNamespace release)
   | otherwise = pure (Right ())
 
--- | Sprint 3.23: gate the plan behind each operator dependency reporting
+-- | Sprint 3.23 / 3.24: gate the plan behind each operator dependency reporting
 -- @Available@. The gate set is projected from the component graph
 -- ('chartDeploymentPlanOperatorGates') — a chart's graph edge onto an
 -- operator component is what requires it, replacing the retired
--- @ChartRequiresPatroniPlatform@ literal.
+-- @ChartRequiresPatroniPlatform@ literal. Every projected gate must resolve to
+-- a concrete readiness target; an unbound target fails closed.
 validateOperatorGates :: ChartDeploymentPlan -> IO (Either String ())
 validateOperatorGates plan =
-  foldM validateGate (Right ()) (chartDeploymentPlanOperatorGates plan)
+  validateOperatorGatesWith
+    operatorAvailableTarget
+    (chartDeploymentPlanOperatorGates plan)
+
+-- | Execute graph-projected operator gates through the typed readiness seam.
+-- The factory argument is the unit-test boundary; production supplies the
+-- exhaustive 'operatorAvailableTarget'.
+validateOperatorGatesWith
+  :: (ComponentId -> Either Text.Text ComponentReadinessTarget)
+  -> [ComponentId]
+  -> IO (Either String ())
+validateOperatorGatesWith targetFor =
+  foldM validateGate (Right ())
  where
   validateGate :: Either String () -> ComponentId -> IO (Either String ())
   validateGate (Left err) _ = pure (Left err)
   validateGate (Right ()) gate =
-    case gate of
-      ComponentPerconaPostgresOperator -> validatePatroniPlatformReady
-      -- No other component carries the ProbeOperatorAvailable readiness today, so
-      -- no other gate can appear here; treat any future one as satisfied until it
-      -- wires its own operator-Available check.
-      _ -> pure (Right ())
+    case targetFor gate of
+      Left reason -> pure (Left (Text.unpack reason))
+      Right target ->
+        operatorGateResult gate
+          <$> observeComponentReadiness target ProbeOperatorAvailable
+
+-- | Lower the three-valued observation without losing its authoritative
+-- detail. Only an affirmative observation opens the chart mutation gate.
+operatorGateResult :: ComponentId -> ReadinessObservation -> Either String ()
+operatorGateResult gate observation =
+  case observation of
+    ReadyObserved -> Right ()
+    NotReadyYet detail -> Left (Text.unpack detail)
+    Unreachable reason ->
+      Left
+        ( "Cannot observe operator readiness for `"
+            ++ componentIdText gate
+            ++ "`: "
+            ++ Text.unpack reason
+        )
+
+-- | Production target registry for @ProbeOperatorAvailable@. The match is
+-- intentionally exhaustive: adding a new 'ComponentId' constructor requires
+-- an explicit decision in the warning-clean build. Existing components that
+-- are not operator gates fail closed if configuration projects them here.
+operatorAvailableTarget :: ComponentId -> Either Text.Text ComponentReadinessTarget
+operatorAvailableTarget component =
+  case component of
+    ComponentPerconaPostgresOperator ->
+      Right
+        ( OperatorAvailableTarget
+            ComponentPerconaPostgresOperator
+            observePatroniOperatorAvailable
+        )
+    ComponentClusterBase -> unsupportedOperatorGate component
+    ComponentMinio -> unsupportedOperatorGate component
+    ComponentVaultWorkload -> unsupportedOperatorGate component
+    ComponentVaultUnsealed -> unsupportedOperatorGate component
+    ComponentRegistry -> unsupportedOperatorGate component
+    ComponentMetalLB -> unsupportedOperatorGate component
+    ComponentEnvoyGateway -> unsupportedOperatorGate component
+    ComponentCertManager -> unsupportedOperatorGate component
+    ComponentGatewayDaemonPreVault -> unsupportedOperatorGate component
+    ComponentGatewayDaemonFull -> unsupportedOperatorGate component
+    ComponentChartPulsar -> unsupportedOperatorGate component
+    ComponentChartRedis -> unsupportedOperatorGate component
+    ComponentChartKeycloakPostgres -> unsupportedOperatorGate component
+    ComponentChartKeycloak -> unsupportedOperatorGate component
+    ComponentChartVscode -> unsupportedOperatorGate component
+    ComponentChartApi -> unsupportedOperatorGate component
+    ComponentChartWebsocket -> unsupportedOperatorGate component
+    ComponentChartGateway -> unsupportedOperatorGate component
+
+unsupportedOperatorGate :: ComponentId -> Either Text.Text value
+unsupportedOperatorGate component =
+  Left
+    ( Text.pack
+        ( "No ProbeOperatorAvailable executor is registered for component `"
+            ++ componentIdText component
+            ++ "`."
+        )
+    )
 
 ensurePerconaPatroniStorageBindings
   :: FilePath
@@ -1031,63 +1123,103 @@ perconaPatroniClaimRetryPolicy =
     , retryPolicyMaxDelayMicros = 5 * 1000000
     }
 
--- | Sprint 3.23: gate on the Percona/Patroni operator being __Available__, not
--- merely present. The former @-o name@ probe passed as soon as the Deployment
--- object existed — a zero-available-replica operator still satisfied it, the
--- presence≠readiness RACY edge (bootstrap_readiness_doctrine.md §2). This now
--- reads the Deployment's @Available@ condition and refuses until it is @True@.
-validatePatroniPlatformReady :: IO (Either String ())
-validatePatroniPlatformReady = do
-  crdResult <-
-    runPg ["get", "crd", patroniPostgresqlCrdName, "-o", "name"]
-  availableResult <-
-    runPg
-      [ "get"
-      , "deployment"
-      , patroniOperatorDeploymentName
-      , "--namespace"
-      , patroniOperatorNamespace
-      , "-o"
-      , "jsonpath={.status.conditions[?(@.type==\"Available\")].status}"
-      ]
-  pure $
-    case crdResult of
-      Left err -> Left (Text.unpack (serviceErrorMessage (toServiceError err)))
-      Right crdOutput ->
-        case processExitCode crdOutput of
-          ExitFailure _ ->
-            Left
-              ( patroniNotReadyMessage
-                  ++ " "
-                  ++ processStderr crdOutput
-                  ++ processStdout crdOutput
-              )
-          ExitSuccess ->
-            case availableResult of
-              Left err -> Left (Text.unpack (serviceErrorMessage (toServiceError err)))
-              Right output ->
-                case processExitCode output of
-                  ExitFailure _ ->
-                    Left
-                      ( patroniNotReadyMessage
-                          ++ " The operator Deployment `"
-                          ++ patroniOperatorDeploymentName
-                          ++ "` was not found in namespace `"
-                          ++ patroniOperatorNamespace
-                          ++ "`."
-                      )
-                  ExitSuccess ->
-                    if deploymentConditionReportsTrue (processStdout output)
-                      then Right ()
-                      else
-                        Left
-                          ( patroniNotReadyMessage
-                              ++ " The operator Deployment `"
-                              ++ patroniOperatorDeploymentName
-                              ++ "` exists but is not yet reporting condition Available=True "
-                              ++ "(presence is not readiness)."
-                          )
+-- | Sprint 3.23 / 3.24: observe the Percona operator once. Authoritative
+-- absence or @Available=False@ is pending convergence; a failed kubectl
+-- observation is unreachable. The caller routes this through the shared
+-- three-valued readiness seam.
+observePatroniOperatorAvailable :: IO (Either Text.Text ReadinessProbeResult)
+observePatroniOperatorAvailable =
+  observePatroniOperatorAvailableWith $ \arguments -> do
+    result <- runPg arguments
+    pure $
+      case result of
+        Left err -> Left (serviceErrorMessage (toServiceError err))
+        Right output -> Right output
 
+-- | Injected one-shot adapter used to prove the Percona target classification
+-- without a live cluster.
+observePatroniOperatorAvailableWith
+  :: ([String] -> IO (Either Text.Text ProcessOutput))
+  -> IO (Either Text.Text ReadinessProbeResult)
+observePatroniOperatorAvailableWith runKubectl = do
+  crdResult <-
+    runKubectl
+      [ "get"
+      , "crd"
+      , patroniPostgresqlCrdName
+      , "--ignore-not-found"
+      , "-o"
+      , "name"
+      ]
+  case crdResult of
+    Left reason -> pure (Left reason)
+    Right crdOutput ->
+      case processExitCode crdOutput of
+        ExitFailure _ -> pure (Left (operatorObservationFailure "Percona CRD" crdOutput))
+        ExitSuccess
+          | null (trimWhitespace (processStdout crdOutput)) ->
+              pure
+                ( Right
+                    ( ReadinessProbePending
+                        ( Text.pack
+                            ( patroniNotReadyMessage
+                                ++ " The CRD `"
+                                ++ patroniPostgresqlCrdName
+                                ++ "` has not been created yet."
+                            )
+                        )
+                    )
+                )
+          | otherwise -> observeDeployment
+ where
+  observeDeployment = do
+    availableResult <-
+      runKubectl
+        [ "get"
+        , "deployment"
+        , patroniOperatorDeploymentName
+        , "--namespace"
+        , patroniOperatorNamespace
+        , "--ignore-not-found"
+        , "-o"
+        , "jsonpath={.status.conditions[?(@.type==\"Available\")].status}"
+        ]
+    pure $
+      case availableResult of
+        Left reason -> Left reason
+        Right output ->
+          case processExitCode output of
+            ExitFailure _ -> Left (operatorObservationFailure "Percona operator Deployment" output)
+            ExitSuccess
+              | deploymentConditionReportsTrue (processStdout output) ->
+                  Right ReadinessProbeReady
+              | otherwise ->
+                  Right
+                    ( ReadinessProbePending
+                        ( Text.pack
+                            ( patroniNotReadyMessage
+                                ++ " The operator Deployment `"
+                                ++ patroniOperatorDeploymentName
+                                ++ "` in namespace `"
+                                ++ patroniOperatorNamespace
+                                ++ "` is absent or is not yet reporting condition Available=True "
+                                ++ "(presence is not readiness)."
+                            )
+                        )
+                    )
+
+operatorObservationFailure :: String -> ProcessOutput -> Text.Text
+operatorObservationFailure subject output =
+  Text.pack
+    ( subject
+        ++ " observation failed with "
+        ++ show (processExitCode output)
+        ++ ": "
+        ++ processStderr output
+        ++ processStdout output
+    )
+
+-- | Shared remediation prefix for an authoritative pending observation.
 patroniNotReadyMessage :: String
 patroniNotReadyMessage =
   "Patroni PostgreSQL platform is not ready. "
@@ -2287,7 +2419,7 @@ valuesForGateway substrate namespace rootChart settings _gatewayEventKeys shared
               ]
         , "ports"
             .= object
-              [ "rest" .= (8443 :: Int)
+              [ "rest" .= gatewayRestServicePort
               , "events" .= (8444 :: Int)
               ]
         , "timing"
@@ -2303,13 +2435,10 @@ valuesForGateway substrate namespace rootChart settings _gatewayEventKeys shared
             .= object
               [ "address" .= ("http://vault.vault.svc.cluster.local:8200" :: String)
               , "authPath" .= ("kubernetes" :: String)
-              , -- The daemon logs in under this Vault role. It must be
-                -- `prodbox-gateway-daemon` (bound to BOTH the prodbox-gateway policy
-                -- for the object-store HMAC + prodbox-pulumi-state Transit, and the
-                -- gateway-gateway policy for event-key/aws/minio KV — see
-                -- Vault/Reconcile.hs). `gateway-gateway` alone lacks the HMAC/Transit
-                -- grants and 403s the AWS postflight object-store read (44e896f).
-                "role" .= ("prodbox-gateway-daemon" :: String)
+              , -- The shared typed role is bound to both the object-store /
+                -- Transit policy and the event-key / AWS / MinIO KV policy in
+                -- Vault.Reconcile. Either grant missing here produces a 403.
+                "role" .= vaultRoleIdText VaultRoleGatewayDaemon
               , "serviceAccountTokenFile"
                   .= ("/var/run/secrets/kubernetes.io/serviceaccount/token" :: String)
               , "paths"

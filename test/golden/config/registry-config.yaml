@@ -1,0 +1,25 @@
+version: 0.1
+log:
+  fields:
+    service: registry
+storage:
+  cache:
+    blobdescriptor: inmemory
+  redirect:
+    disable: true
+  s3:
+    region: us-east-1
+    regionendpoint: http://minio.prodbox.svc.cluster.local:9000
+    bucket: prodbox-harbor-registry
+    secure: false
+    v4auth: true
+    rootdirectory: /
+  delete:
+    enabled: true
+http:
+  addr: :5000
+health:
+  storagedriver:
+    enabled: true
+    interval: 10s
+    threshold: 3

@@ -2,7 +2,7 @@
 
 **Status**: Authoritative source
 **Supersedes**: N/A
-**Referenced by**: documents/engineering/README.md, documents/engineering/effect_interpreter.md, documents/engineering/prerequisite_doctrine.md, documents/engineering/unit_testing_policy.md, documents/engineering/bootstrap_readiness_doctrine.md
+**Referenced by**: documents/engineering/README.md, documents/engineering/effect_interpreter.md, documents/engineering/prerequisite_doctrine.md, documents/engineering/unit_testing_policy.md, documents/engineering/bootstrap_readiness_doctrine.md, DEVELOPMENT_PLAN/phase-1-runtime-cli-aws-foundations.md
 **Generated sections**: none
 
 > **Purpose**: Define the DAG construction and reduction model for prerequisite execution.
@@ -64,8 +64,27 @@ Sprint `1.56` extracts the same back-edge cycle rejection + missing-node rejecti
 [bootstrap_readiness_doctrine.md](./bootstrap_readiness_doctrine.md)) reuses to lower its declared
 `depends_on` edges into a deterministic dependencies-before-dependents bring-up order. Unlike
 `transitiveClosureIds` (a text-sorted closure set for the interpreter's ready-set rendering), the
-generic expansion returns a topological order and visits roots/adjacency in rendered-text order, so
-the projection is a pure function of the declared graph rather than of declaration order.
+generic expansion returns a topological order. Sprint `1.58` (✅ Done 2026-07-10) separates the key
+renderer used for diagnostics from a caller-supplied deterministic tie-break: roots and adjacency
+are visited by `(tieBreak key, render key)`, so independent nodes do not accidentally inherit
+human-readable text order. `Prodbox.Config.ComponentGraph` supplies `fromEnum ComponentId`, making
+constructor declaration order the explicit tie-break for both component reconcile and chart
+projections over the split nodes; the generic API remains usable by callers with a different
+ordering doctrine. Unit coverage proves the caller rank wins even when rendered text orders the
+same independent nodes oppositely. The result is still a pure function of the graph plus the
+caller's explicit ordering projection. Phase `4` Sprint `4.45` remains the owner of reconcile-driver
+consumption; Sprint `1.58` changes only the pure DAG/config foundation.
+
+Sprint `1.59` closes Phase `1`'s separate steady-state observation seam. This does not turn
+readiness into another prerequisite DAG: each `ComponentReadinessTarget` carries one
+caller-injected observation action, and `waitForComponentReadiness` reuses the bounded
+`RetryPolicy` schedule through `pollUntilReady`. A target/probe mismatch is rejected immediately
+before the action or poll loop runs. For a compatible action, `ReadinessProbePending` projects to
+`NotReadyYet` and an observation `Left` projects to `Unreachable`; both lower to bounded
+`PollPending` outcomes and return their last detail on exhaustion. `PollFailed` retains its generic
+meaning as an immediate hard observation failure and is not the representation of a temporarily
+unreachable declared probe. Production action binding remains forward-owned by Sprints
+`3.24`/`4.45`/`5.15`/`7.32`.
 
 ## 4. Test Command Integration
 

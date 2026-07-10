@@ -62,6 +62,9 @@ import Prodbox.PrerequisiteId
 import Prodbox.Result
   ( Result (..)
   )
+import Prodbox.Service
+  ( isRetryableTransientFailure
+  )
 import Prodbox.Settings
   ( ConfigFile (..)
   , Credentials (..)
@@ -875,24 +878,18 @@ captureAwsValidationCommandOutput failureLabel spec =
 
 isRetryableAwsValidationFailure :: ProcessOutput -> Bool
 isRetryableAwsValidationFailure output =
-  any (`Text.isInfixOf` renderedOutput) retryableFragments
+  isRetryableTransientFailure retryableFragments renderedOutput
  where
   renderedOutput =
-    Text.toLower
-      ( Text.pack (processStdout output)
-          <> Text.pack "\n"
-          <> Text.pack (processStderr output)
-      )
+    processStdout output ++ "\n" ++ processStderr output
   retryableFragments =
-    map
-      Text.pack
-      [ "invalidclienttokenid"
-      , "security token included in the request is invalid"
-      , "signaturedoesnotmatch"
-      , "unrecognizedclientexception"
-      , "requestexpired"
-      , "expiredtoken"
-      ]
+    [ "invalidclienttokenid"
+    , "security token included in the request is invalid"
+    , "signaturedoesnotmatch"
+    , "unrecognizedclientexception"
+    , "requestexpired"
+    , "expiredtoken"
+    ]
 
 echoProcessOutput :: ProcessOutput -> IO ()
 echoProcessOutput output = do

@@ -37,16 +37,67 @@ govern this plan suite.
 > live status is the [Phase Overview](#phase-overview) and [Current Plan Status](#current-plan-status)
 > tables below. The dated blow-by-blow was consolidated here on review to keep the plan declarative.
 
-**Current head state (2026-07-06).** All phases are ✅ `Done`/`Reclosed` on their code-owned
-surfaces. The most recent work closed the **bootstrap readiness-race class** as unrepresentable
-across both substrates (Sprints `1.56`, `3.23`, `4.43`, `7.31`): reconcile ordering is a pure
-projection over a typed config-sourced component dependency/readiness graph, a step runs only behind
-a barrier that exercises the exact dependency call path it uses (the deep registry→MinIO S3
-edge-readiness gate before every image-mirror write), and the retry classifier treats
-name-resolution failures as retryable. Home-substrate validation is green (unit 1216/1216,
-`prodbox dev check` 0, CLI/env integration green); the live `prodbox test all --substrate aws` past
-the EKS image-mirror step is the non-blocking Standard O live-proof axis (see
-[Substrate Parity](#substrate-parity) and [substrates.md](substrates.md)).
+**Current head state (2026-07-10 — all phases are Done/Reclosed on their code-owned surfaces).**
+Phase `7` has reclosed after completing its own AWS bootstrap-readiness surface
+([Standard A/N](development_plan_standards.md#n-phase-independence-no-backward-blocking)). Sprints
+`1.56`/`3.23`/`4.43`/`7.31` landed the typed component/readiness graph, graph-sourced chart edges,
+Percona `Available` gate, single step narration, and the deep registry→MinIO S3 gate on both
+substrates. Sprint `4.45` now makes the home RKE2 readiness-race ordering class unrepresentable:
+the validated graph determines component order, `nativeInstallStepOrder` concatenates each
+component's anchored steps in that order, and edge reconciliation is an explicit separate tail.
+Sprint `4.46` is ✅ Done and Phase `4` is reclosed: the Route 53, Helm, and Harbor publication retry
+classifiers delegate to the shared transient-failure base, Helm now inherits the common DNS and
+transport cases, and the three transitional RKE2 lint allowances are gone. Code-local evidence is
+unit 1276/1276; `prodbox dev check` exits 0. Sprints
+`1.57`–`1.59` are
+✅ Done and Phase `1` is reclosed. Sprint `1.59`
+landed the flat `ReadinessObservation` / `ReadinessProbeResult` seam, typed targets carrying
+caller-injected one-shot actions, exhaustive probe dispatch, immediate mismatch refusal, and bounded
+pending/unreachable waits. Its graph audit records `ProbeServiceActive` for cluster base,
+daemon-mediated Vault-unseal ordering, and the gateway-full `BackendWriteEdge` to MinIO
+(`config generate`/`config validate` exit 0, unit 1259/1259, `prodbox dev check` 0). It wraps no
+production primitive and owns no coordinates; the Phase-3, Phase-4, Phase-5, and AWS bindings have
+landed in `3.24`, `4.45`, `5.15`, and `7.32`. Sprint `2.30` is ✅ Done and Phase `2` is
+reclosed:
+`VaultRoleGatewayDaemon` is the one typed
+authority for the supported `ChartPlatform`-generated gateway `vault.role` and the
+`defaultVaultReconcilePlan` Kubernetes-auth role name (`prodbox-gateway-daemon`), whose policy set is
+exactly `prodbox-gateway` plus `gateway-gateway` (unit 1260/1260, `prodbox dev check` 0). Static chart
+defaults and other gateway configuration surfaces are not claimed by this SSoT. Sprint `3.24` is ✅
+Done and Phase `3` is reclosed: the exhaustive `operatorAvailableTarget` registry routes the Percona
+operator through a one-shot `Available=True` observation and `ReadinessObservation`; only
+`ReadyObserved` opens the chart mutation gate. A new `ComponentId` constructor requires an explicit
+registry decision in the warning-clean build, while an existing config-driven ID without a target
+fails closed at runtime (unit 1266/1266, chart lint 0, `prodbox dev check` 0). Sprint `4.44` is ✅
+Done: `RegistryStorageBackend` now carries the rendered non-secret registry S3 settings plus a required
+`RedirectPolicy`; the canonical MinIO-backed value selects `RedirectDisabled`. `registryConfigYaml`
+remains an `unlines` renderer but consumes that typed input. The golden output is preserved, and
+resource ownership is unchanged (registry-config golden, unit 1268/1268, `prodbox dev check` 0).
+Sprint `4.45` is ✅ Done: `buildNativeInstallExecutionPlan` validates the component DAG, derives
+`concatMap stepsForComponent (componentReconcileOrder dag)`, verifies dependency and phase
+monotonicity, and carries the validated DAG/order in its compiled `NativeInstallPayload`; any
+invalid projection returns a structured error before apply. Graph declarations now include the
+registry and post-Vault dependencies actually consumed by cert-manager, the pre-Vault gateway,
+MetalLB, Envoy Gateway, and Percona. Every native step has a total anchor and both phase executors
+match explicitly; MetalLB, Envoy Gateway, and Percona are first-class steps. Production readiness
+targets invoke their caller-injected one-shot observations through bounded fail-closed polling,
+with each component's final anchored barrier required before its dependants run. The plan goldens
+intentionally expose those three platform steps and
+remove the redundant home MinIO steady-state narration (config schema regeneration and validation
+exit 0, unit 1273/1273, real `prodbox cluster reconcile --dry-run` exit 0, `prodbox dev check` 0).
+Phase `4` is reclosed after Sprint `4.46`. Sprint `5.15` is ✅ Done and Phase `5` is reclosed:
+`Prodbox.TestRestore` owns one substrate-aware typed restore-cycle plan consumed by both TestRunner
+restore paths, and the optional SMTP step opens only after a bounded, fail-closed gateway object-store
+precondition. Code-local evidence is unit 1280/1280; `prodbox dev check` exits 0. The home
+`prodbox test all` restore-cycle proof remains a non-blocking Standard O axis. Sprint `7.32` is ✅
+Done and Phase `7` is reclosed: the configured DAG compiles to a closed AWS anchored-step order
+before mutation, every AWS-owned component has a production one-shot target, the gateway Service
+port-forward spans daemon-mediated Vault bootstrap/full-mode convergence, the EKS classifier uses
+the shared base with no lint allowance, and AWS bootstrap projects the shared restore builder.
+Code-local evidence is unit 1286/1286 and `prodbox dev check` exit 0. The live
+`prodbox test all --substrate aws` past the EKS image-mirror step is the
+non-blocking Standard O live-proof axis (see [Substrate Parity](#substrate-parity) and
+[substrates.md](substrates.md)).
 
 ### Milestone ledger
 
@@ -54,7 +105,18 @@ Each row is one dated reopen/closure milestone; the owning phase doc carries the
 
 | Date | Milestone |
 |------|-----------|
-| 2026-07-06 | Bootstrap readiness-race class made unrepresentable — Sprints `1.56` (typed component dependency/readiness graph + `EffectDAG` lowering), `3.23` (graph-sourced chart edges, Percona `Available` gate), `4.43` (single `ReconcileStepId` table + deep registry→MinIO edge gate + retry-classifier fix), `7.31` (same deep gate on the AWS substrate). Phases 1/3/4/7 reclosed. |
+| 2026-07-10 | Sprint `7.32` ✅ **Done; Phase 7 reclosed** — `AwsSubstratePlatform` compiles the configured component DAG through the shared anchored-order engine before stack-output reads or platform mutation, with total AWS step anchors, final substrate-owned readiness barriers, an explicit AWS-inapplicable MetalLB mapping, and a separate ACME/admin-route tail. A positively established gateway Service port-forward remains alive across daemon-mediated Vault bootstrap and post-Vault full-mode convergence. The EKS mirror classifier delegates to the shared transient base and its last lint allowance is removed. AWS TestRunner bootstrap projects Gateway → SMTP → VS Code → API → WebSocket from the shared restore builder after all three stack reconciles. Evidence: unit 1286/1286; `dev check` exit 0. Live `test all --substrate aws` remains a non-blocking Standard-O proof. |
+| 2026-07-10 | Sprint `5.15` ✅ **Done; Phase 5 reclosed** — new `Prodbox.TestRestore` owns one pure, substrate-aware `RestoreCyclePlan`; `supportedRuntimeBootstrapActions` and `supportedRuntimePostflightActions` both interpret it and differ only by the typed optional SMTP step. Before SMTP sync, `gatewayDaemonLivenessPrecondition` adapts the caller-supplied one-shot gateway object-store observation to `BackendRoundTripTarget ComponentGatewayDaemonFull ComponentMinio`, polls it within the shared bounded policy, and returns a loopback-endpoint-naming `StructuredError` without starting SMTP when pending or unreachable. Code-local evidence: unit 1280/1280; CLI integration 44/44; `dev check` exit 0. The home restore-cycle live proof remains non-blocking. |
+| 2026-07-10 | Sprint `4.46` ✅ **Done; Phase 4 reclosed** — `isRetryableRoute53CredentialFailure`, `isRetryableHelmFailure`, and `isRetryableHarborPublicationFailure` now delegate to `isRetryableTransientFailure` while retaining only their path-specific extensions. Helm inherits the shared DNS/transport cases, and all three transitional RKE2 entries were removed; Sprint `7.32` subsequently removed the final EKS allowance. Code-local evidence: unit 1276/1276; `dev check` exit 0. |
+| 2026-07-10 | Sprint `4.45` ✅ **Done; Phase 4 remains open only for `4.46`** — the validated component DAG now compiles the home RKE2 plan as `concatMap stepsForComponent (componentReconcileOrder dag)` plus an explicit edge tail. The builder validates dependency/phase order and carries the validated DAG/order in `NativeInstallPayload`, all step anchors and phase matches are total, MetalLB/Envoy Gateway/Percona are first-class steps, corrected graph dependencies match production consumption, and readiness targets poll caller-injected one-shot observations within bounds and enforce each component's final barrier before dependants. The plan-golden changes are intentional (three visible platform steps; redundant home MinIO steady-state step removed). Evidence: config schema regeneration and validation exit 0, unit 1273/1273, real `cluster reconcile --dry-run` exit 0, `dev check` 0. |
+| 2026-07-10 | Sprint `4.44` ✅ **Done** — `RegistryStorageBackend` holds the registry S3 configuration and requires an explicit `RedirectPolicy`; the canonical MinIO-backed record uses `RedirectDisabled`. `registryConfigYaml` remains an `unlines` renderer but consumes the typed record. The golden output is preserved and resource ownership is unchanged (registry-config golden, unit 1268/1268, `dev check` 0). Sprint `4.45` closes in the row above; Phase 4 is now open only for `4.46`. |
+| 2026-07-10 | Sprint `3.24` ✅ **Done; Phase 3 reclosed** — the exhaustive `operatorAvailableTarget` registry binds the graph-projected Percona gate to a one-shot `Available=True` observation through `ReadinessObservation`; pending and unreachable observations fail closed. New `ComponentId` constructors require an explicit compile-time registry decision, while an existing config-driven ID with no target fails closed at runtime (unit 1266/1266, chart lint 0, `dev check` 0). |
+| 2026-07-10 | Sprint `2.30` ✅ **Done; Phase 2 reclosed** — `Prodbox.Vault.RoleId` supplies `VaultRoleGatewayDaemon` to both the supported `ChartPlatform`-generated gateway `vault.role` and `defaultVaultReconcilePlan`; the shared name is `prodbox-gateway-daemon`, bound to exactly `prodbox-gateway` + `gateway-gateway`. The closure does not claim static chart defaults or other gateway configuration surfaces (unit 1260/1260, `dev check` 0). |
+| 2026-07-10 | Sprint `1.59` ✅ **Done; Phase 1 reclosed** — `ReadinessObservation`, `ReadinessProbeResult`, and typed `ComponentReadinessTarget` values carry caller-injected one-shot actions; dispatch is exhaustive, target/probe mismatch refuses before polling, and pending/unreachable observations remain bounded and fail closed. The graph records `ProbeServiceActive` for cluster base, daemon-mediated Vault-unseal ordering, and gateway-full's `BackendWriteEdge` to MinIO (`config generate`/`config validate` exit 0, unit 1259/1259, `dev check` 0). Its production bindings subsequently landed in `3.24`/`4.45`/`5.15`/`7.32`. |
+| 2026-07-10 | Sprint `1.58` ✅ **Done** — split `ComponentVaultWorkload`/`ComponentVaultUnsealed` (`ProbeRolloutComplete`/`ProbeVaultUnsealed`) and `ComponentGatewayDaemonPreVault`/`ComponentGatewayDaemonFull` (`ProbeRolloutComplete`/`ProbeBackendRoundTrip ComponentMinio`); `EffectDAG.acyclicTopologicalOrder` now accepts a caller tie-break and `ComponentGraph` supplies `fromEnum`; the git-ignored schema was regenerated (`config generate`/`config validate` exit 0, unit 1250/1250, `dev check` 0). Its derived-order consumer subsequently landed in Sprint `4.45`. |
+| 2026-07-10 | Sprint `1.57` ✅ **Done** — `TransientFailureClass` + `isRetryableTransientFailure` form the shared constructor-owned retry base in `Prodbox.Service`, the Phase-1 AWS-validation caller delegates to it, and `CheckCode` rejects new standalone inline retry tables (unit 1248/1248, `prodbox dev check` 0). Phase `1` remains reopened for `1.58`/`1.59`; downstream RKE2/EKS delegation remains `4.46`/`7.32`. |
+| 2026-07-10 | **Bootstrap-readiness refactor reopened** Phases 1/2/3/4/5/7 to complete graph-derived reconcile ordering, total readiness observation, the retry-classifier SSoT, typed registry/Vault-role records, and restore-cycle DRY — Sprints `1.57`/`1.58`/`1.59`/`2.30`/`3.24`/`4.44`/`4.45`/`4.46`/`5.15`/`7.32` (Standard A/N own-surface reopen). Sprint `4.45` subsequently closed the identified home-RKE2 order-projection gap ([Standard C](development_plan_standards.md#c-honest-completion-tracking)). |
+| 2026-07-06 | Bootstrap readiness-race **foundation** landed — Sprints `1.56` (typed component dependency/readiness graph + `EffectDAG` lowering), `3.23` (graph-sourced chart edges, Percona `Available` gate), `4.43` (single `ReconcileStepId` narration table + deep registry→MinIO edge gate + Harbor retry-classifier fix), `7.31` (same deep gate on the AWS substrate). The graph/deep-gate foundation is real; full order-derivation, total readiness observation, and the config SSoTs remain scheduled (reopened 2026-07-10 above). |
 | 2026-07-05 | Daemon-mediated post-bootstrap control-plane boundary — Sprints `2.29` (pre-Vault daemon loader + `POST /v1/bootstrap/vault/ensure`), `4.42` (root Vault lifecycle via the daemon, no host fallback), `5.14` (`daemon-bootstrap` validation), `7.30` (per-run Pulumi object-store via the daemon API). Phases 2/4/5/7 reclosed. |
 | 2026-07-04 | Explicit resource guardrails — Sprints `1.55` (`capacity.resource_plan` schema), `3.22` (chart resource envelopes + namespace quotas), `4.41` (RKE2/kubelet reservation + systemd drop-in), `5.13` (`resource-guardrails` validation). Phases 1/3/4/5 reclosed. |
 | 2026-07-03 | Pulsar broker transport + topic lifecycle (`3.21`/`4.35`), fail-closed spot-price gate (`7.27`), EKS VPC ownership hardening (`7.29`), static retained EBS PVs on EKS (`7.28`), `eks-volume-rebind` validation (`5.12`). |
@@ -134,13 +196,13 @@ or a higher-numbered sprint — and an incomplete later phase never reopens or b
 | Phase | Name | Status | Document |
 |-------|------|--------|----------|
 | 0 | Planning and Documentation Topology for Haskell Rewrite | ✅ **Done on owned surfaces** — planning + documentation topology; secrets model finalized to Vault-root + cluster federation (2026-06-14, Sprint `0.13`), documentation harmony machine-checked. Independent Validation + per-sprint detail: [phase-0-planning-documentation.md](phase-0-planning-documentation.md). | [phase-0-planning-documentation.md](phase-0-planning-documentation.md) |
-| 1 | Haskell Runtime, CLI, Config, and Pulumi Foundations | ✅ **Reclosed 2026-07-06** — Sprint `1.56` bootstrap-readiness config/DAG foundation; prior reclosures cover the three-tier config model, Vault-root `SecretRef`, and the capacity/host-provider/cluster-topology/test-topology schemas. Independent Validation + per-sprint detail: [phase-1-runtime-cli-aws-foundations.md](phase-1-runtime-cli-aws-foundations.md). | [phase-1-runtime-cli-aws-foundations.md](phase-1-runtime-cli-aws-foundations.md) |
-| 2 | Haskell Gateway Runtime and DNS Ownership | ✅ **Reclosed 2026-07-02** — Sprint `2.27`/`2.28` gateway/Orders/durable-event CBOR migration; prior cluster-federation custody (`2.26`) and the gateway-runtime/DNS/peer-transport surfaces through `2.25`. Independent Validation + per-sprint detail: [phase-2-gateway-dns.md](phase-2-gateway-dns.md). | [phase-2-gateway-dns.md](phase-2-gateway-dns.md) |
-| 3 | Haskell Chart Platform and Public Workload Delivery | ✅ **Reclosed 2026-07-06** — Sprint `3.23` graph-sourced chart edges + Percona `Available` gate; prior `3.22` resource envelopes, `3.21` Pulsar broker, `3.17`–`3.20` Vault chart-secrets. Independent Validation + per-sprint detail: [phase-3-chart-platform-vscode.md](phase-3-chart-platform-vscode.md). | [phase-3-chart-platform-vscode.md](phase-3-chart-platform-vscode.md) |
-| 4 | Lifecycle Hardening, Pulumi Decoupling, and Python Removal | ✅ **Reclosed 2026-07-06** — Sprint `4.43` single `ReconcileStepId` table + deep readiness gate; prior `4.42` daemon-mediated Vault lifecycle, `4.34`–`4.40` autoscaler/placement/EBS/topic surfaces, `4.29`–`4.33` Vault-before-MinIO + Model-B object-store. Some live-infra proofs remain non-blocking 🧪 axes. Independent Validation + per-sprint detail: [phase-4-lifecycle-canonical-paths.md](phase-4-lifecycle-canonical-paths.md). | [phase-4-lifecycle-canonical-paths.md](phase-4-lifecycle-canonical-paths.md) |
-| 5 | Canonical Test Suite | ✅ **Reclosed 2026-07-05** through Sprint `5.14` (`daemon-bootstrap`); prior `5.13` resource-guardrails, `5.12` eks-volume-rebind, `5.11` test-topology, `5.8` sealed-vault. 🧪 live-proof pending for destructive volume-rebind, resource-stress, and AWS-substrate parity rows ([substrates.md](substrates.md)). Independent Validation + per-sprint detail: [phase-5-canonical-test-suite.md](phase-5-canonical-test-suite.md). | [phase-5-canonical-test-suite.md](phase-5-canonical-test-suite.md) |
+| 1 | Haskell Runtime, CLI, Config, and Pulumi Foundations | ✅ **Reclosed 2026-07-10** — Sprints `1.57`–`1.59` are Done. `1.59` landed `ReadinessObservation` / `ReadinessProbeResult`, typed targets with injected one-shot actions, exhaustive dispatch, mismatch-before-poll refusal, and bounded pending/unreachable waits; the graph records `ProbeServiceActive`, daemon-mediated Vault-unseal ordering, and gateway-full's MinIO `BackendWriteEdge` (`config generate`/`config validate` exit 0, unit 1259/1259, `dev check` 0). No production primitive or coordinate is duplicated; the downstream bindings landed in `3.24`/`4.45`/`5.15`/`7.32`. Prior 1.x closures are preserved. Independent Validation + detail: [phase-1-runtime-cli-aws-foundations.md](phase-1-runtime-cli-aws-foundations.md). | [phase-1-runtime-cli-aws-foundations.md](phase-1-runtime-cli-aws-foundations.md) |
+| 2 | Haskell Gateway Runtime and DNS Ownership | ✅ **Reclosed 2026-07-10** — Sprint `2.30` makes `VaultRoleGatewayDaemon` the one typed authority shared by the supported `ChartPlatform`-generated gateway `vault.role` and the `defaultVaultReconcilePlan` role spec. The exact `prodbox-gateway-daemon` role binds `prodbox-gateway` + `gateway-gateway`; static chart defaults and other gateway configuration surfaces are outside this closure claim (unit 1260/1260, `dev check` 0). Prior reclosure (`2.27`/`2.28` gateway/Orders/durable-event CBOR migration; cluster-federation custody `2.26`; gateway-runtime/DNS/peer-transport through `2.25`) preserved. Independent Validation + per-sprint detail: [phase-2-gateway-dns.md](phase-2-gateway-dns.md). | [phase-2-gateway-dns.md](phase-2-gateway-dns.md) |
+| 3 | Haskell Chart Platform and Public Workload Delivery | ✅ **Reclosed 2026-07-10** — Sprint `3.24` replaces the wildcard-success operator gate with the exhaustive `operatorAvailableTarget` registry and routes the Percona one-shot `Available=True` observation through `ReadinessObservation`; only `ReadyObserved` opens the chart mutation gate. New `ComponentId` constructors require an explicit compile-time registry decision, while an existing config-driven ID without a target fails closed at runtime (unit 1266/1266, chart lint 0, `dev check` 0). Sprint `3.23` graph-sourced chart edges and prior closures are preserved. Independent Validation + per-sprint detail: [phase-3-chart-platform-vscode.md](phase-3-chart-platform-vscode.md). | [phase-3-chart-platform-vscode.md](phase-3-chart-platform-vscode.md) |
+| 4 | Lifecycle Hardening, Pulumi Decoupling, and Python Removal | ✅ **Reclosed 2026-07-10** — Sprint `4.44` supplies the typed `RegistryStorageBackend` + required `RedirectPolicy`; Sprint `4.45` compiles the validated home RKE2 component DAG into `concatMap stepsForComponent (componentReconcileOrder dag)` plus a separate edge tail, fails closed before apply on invalid dependency/phase order, and carries the validated DAG/order in `NativeInstallPayload`. Corrected dependencies match runtime consumption; all step anchors and phase matches are total; MetalLB, Envoy Gateway, and Percona are first-class steps; production readiness targets poll caller-injected one-shot observations within bounds and enforce final component barriers. Sprint `4.46` delegates the Route 53, Helm, and Harbor classifiers to the shared transient base, closing the Helm-DNS divergence and deleting all RKE2 lint allowances (unit 1276/1276; `dev check` exit 0). Prior closures remain preserved. Independent Validation + per-sprint detail: [phase-4-lifecycle-canonical-paths.md](phase-4-lifecycle-canonical-paths.md). | [phase-4-lifecycle-canonical-paths.md](phase-4-lifecycle-canonical-paths.md) |
+| 5 | Canonical Test Suite | ✅ **Reclosed 2026-07-10** — Sprint `5.15` adds the pure, substrate-aware `Prodbox.TestRestore` builder consumed by both supported-runtime restore paths; their core sequences are identical modulo the typed optional SMTP step. SMTP sync is gated by a bounded `BackendRoundTripTarget ComponentGatewayDaemonFull ComponentMinio` precondition, and pending/unreachable daemon observations produce a structured loopback-endpoint refusal before sync starts (unit 1280/1280; CLI integration 44/44; `dev check` exit 0). Prior closures are preserved. 🧪 the home `prodbox test all` restore proof, destructive volume-rebind/resource-stress proofs, and AWS-substrate parity rows remain non-blocking ([substrates.md](substrates.md)). Independent Validation + per-sprint detail: [phase-5-canonical-test-suite.md](phase-5-canonical-test-suite.md). | [phase-5-canonical-test-suite.md](phase-5-canonical-test-suite.md) |
 | 6 | Final Clean-Room Rerun and Zero-Python Handoff | ✅ **Done on owned surfaces** — clean-room rerun + zero-Python handoff contract; an incomplete later phase never reopens or blocks it ([Standard N](development_plan_standards.md#n-phase-independence-no-backward-blocking)). Independent Validation: [phase-6-clean-room-handoff.md](phase-6-clean-room-handoff.md). | [phase-6-clean-room-handoff.md](phase-6-clean-room-handoff.md) |
-| 7 | AWS Substrate Foundations | ✅ **Reclosed 2026-07-06** — Sprint `7.31` AWS-substrate readiness-barrier parity; prior `7.30` daemon object-store, `7.27`–`7.29` spot/EBS/VPC, `7.19`–`7.26` disk-free unseal + config-model, `7.14`–`7.17` encrypted backend + Vault-only creds, `7.11`/`7.5` ACME + live AWS slice. 🧪 the live `prodbox test all --substrate aws` aggregate is the non-blocking axis ([substrates.md](substrates.md)). Independent Validation + per-sprint detail: [phase-7-aws-substrate-foundations.md](phase-7-aws-substrate-foundations.md). | [phase-7-aws-substrate-foundations.md](phase-7-aws-substrate-foundations.md) |
+| 7 | AWS Substrate Foundations | ✅ **Reclosed 2026-07-10** — Sprint `7.32` compiles the configured DAG through the shared anchored-order engine before mutation, supplies final EKS-owned one-shot readiness targets, holds a positively established gateway Service port-forward across the Vault transition, removes the redundant steady-state MinIO reinstall, delegates the EKS classifier to the shared base with no lint allowance, and projects AWS bootstrap from the shared restore builder after all three stack reconciles (unit 1286/1286; `dev check` exit 0). Prior closures remain preserved. 🧪 the live `prodbox test all --substrate aws` aggregate is the non-blocking Standard-O axis ([substrates.md](substrates.md)). Independent Validation + per-sprint detail: [phase-7-aws-substrate-foundations.md](phase-7-aws-substrate-foundations.md). | [phase-7-aws-substrate-foundations.md](phase-7-aws-substrate-foundations.md) |
 | 8 | Operator-Invited Email Authentication via Keycloak + AWS SES | ✅ **Reclosed 2026-06-14** — Vault-KV SMTP/OIDC secrets consumed via Vault Kubernetes auth, a sealed Vault bricks the invite path (Sprint `8.9`); Sprints `8.1`–`8.8` closed live (home + AWS `keycloak-invite`, OIDC claims verified, `prodbox nuke` proof). 🧪 the both-substrate live invite exercise is the non-blocking axis. Independent Validation + per-sprint detail: [phase-8-email-invite-auth.md](phase-8-email-invite-auth.md). | [phase-8-email-invite-auth.md](phase-8-email-invite-auth.md) |
 
 **Status interpretation.** The finalized architecture: secrets are **Vault-root + cluster
@@ -171,9 +233,21 @@ per-run stacks vs long-lived cross-substrate shared infrastructure) live in
 
 ## Current Plan Status
 
-The development plan remains authoritative and the worktree is fully closed against every phase's
-code-owned scope (see the [Closure Status](#closure-status) milestone ledger and the
-[Phase Overview](#phase-overview) above). The secrets model is finalized to Vault-root + cluster
+The development plan remains authoritative; every phase is Done/Reclosed on its code-owned surface
+(see the [Closure Status](#closure-status) milestone ledger and the [Phase Overview](#phase-overview)
+above). Phase `1` reclosed after Sprints `1.57`–`1.59`, and Phase
+`2` reclosed after Sprint `2.30` single-sourced its supported generated gateway Vault-role surface;
+Phase `3` reclosed after Sprint `3.24` bound its exhaustive, fail-closed operator target registry to
+the shared readiness seam. Sprint `4.45` has landed the Phase-4 production readiness bindings,
+graph-derived step order, total anchors/matches, and fail-closed compiled-plan guard. Sprint `4.46`
+then delegated all three RKE2 retry classifiers to the shared transient base and removed their
+transitional lint allowances, reclosing Phase `4` (unit 1276/1276; `dev check` exit 0). Sprint `5.15`
+then single-sourced the typed, substrate-aware restore cycle and installed the bounded daemon
+object-store precondition before SMTP, reclosing Phase `5` (unit 1280/1280; CLI integration 44/44;
+`dev check` exit 0). Sprint `7.32` then completed the graph-derived AWS execution order, production
+readiness bindings, shared EKS classifier, scoped gateway port-forward, and shared restore
+projection, reclosing Phase `7` (unit 1286/1286; `dev check` exit 0). Sprint `4.44` typed the registry
+storage input and required redirect policy without changing resource ownership. The secrets model is finalized to Vault-root + cluster
 federation and MinIO/Pulumi state to the Model-B object envelope; later finalized-model live-infra
 work (Sprint `5.8` AWS live-proof, `7.14`–`7.16`, `8.9`) is tracked on its owning phase's surface and
 never blocks or reopens an earlier phase per

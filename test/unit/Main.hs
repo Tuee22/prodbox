@@ -174,24 +174,33 @@ import Prodbox.CLI.Rke2
   ( GatewayObjectStoreProbe (..)
   , MinioImageSource (..)
   , OperationalAwsCredentialGate (..)
+  , RedirectPolicy (..)
+  , RegistryStorageBackend (..)
   , RegistryStorageEdgeReadiness (..)
   , RetainedStorageInventoryEntry (..)
   , acmeClusterIssuerSpec
   , acmeRuntimeManifestWith
   , adminPublicEdgeManifestItems
   , buildNativeDeletePlan
+  , buildNativeInstallExecutionPlan
   , cascadeOrderNarration
   , classifyGatewayObjectStoreProbe
   , classifyRegistryStorageEdgeProbe
   , gatewayDaemonDeploymentRefs
+  , harborRegistryStorageBackend
   , homeSubstratePlatformComponents
   , hostCapacityCoversPlan
   , inferCascadeSubstrate
   , isMinioSecretKeyArgumentSafe
   , isRetryableHarborPublicationFailure
+  , isRetryableHelmFailure
+  , isRetryableRoute53CredentialFailure
+  , nativeComponentReadinessTarget
+  , nativeInstallStepOrder
   , nativeInstallStepOrderRespectsGraph
   , operationalAwsCredentialGateFromResult
   , parseHostCapacityObservation
+  , registryConfigYaml
   , renderInotifySysctlDropIn
   , renderMinioChartArgs
   , renderNativeDeletePlan
@@ -200,6 +209,7 @@ import Prodbox.CLI.Rke2
   , renderRke2ResourceGuardrailConfig
   , renderRke2SystemdResourceDropIn
   , retainedStorageInventoryEntries
+  , stepsForComponent
   )
 import Prodbox.CLI.Spec
   ( ArgumentSpec (..)
@@ -233,6 +243,7 @@ import Prodbox.CheckCode
   , extractStringLiterals
   , generatedSectionsReconcilerViolations
   , iamCreateSiteViolations
+  , inlineRetrySubstringListViolations
   , isRelativeLinkTarget
   , listRepoOwnedPaths
   , matchesSprintToken
@@ -308,8 +319,10 @@ import Prodbox.Config.ComponentGraph
   , ProbeDepth (..)
   , ReadinessProbe (..)
   , componentDagOrder
+  , componentDependencyIds
   , componentReconcileOrder
   , defaultComponentGraph
+  , lookupComponentNode
   , operatorAvailableGates
   , probeDepth
   , probeSatisfiesBackendWrite
@@ -447,6 +460,7 @@ import Prodbox.Gateway.Peer
   , parsePeerHttpRequest
   )
 import Prodbox.Gateway.Peer qualified as Peer
+import Prodbox.Gateway.PortForward qualified as GatewayPortForward
 import Prodbox.Gateway.Settings qualified as GatewaySettings
 import Prodbox.Gateway.Types
   ( DaemonConfig (..)
@@ -559,6 +573,9 @@ import Prodbox.Lib.ChartPlatform
   , classifyPublicEdgePreserve
   , deploymentConditionReportsTrue
   , kubernetesSecretDecodedDataField
+  , observePatroniOperatorAvailableWith
+  , operatorAvailableTarget
+  , operatorGateResult
   , patroniSeedMismatchDecision
   , renderPatroniResetDecision
   , renderPublicEdgePreserveOutcome
@@ -566,6 +583,7 @@ import Prodbox.Lib.ChartPlatform
   , resolveDependencyOrder
   , retainedPublicEdgeTlsSecretManifest
   , supportedChartNames
+  , validateOperatorGatesWith
   )
 import Prodbox.Lib.EksContainerdMirror qualified
 import Prodbox.Lib.EksCustomImagePush qualified
@@ -600,6 +618,15 @@ import Prodbox.Lifecycle.K8sDrain
 import Prodbox.Lifecycle.LiveResidue (PerRunResidueStatuses (..))
 import Prodbox.Lifecycle.LiveResidue qualified as LiveResidue
 import Prodbox.Lifecycle.Preconditions qualified as Preconditions
+import Prodbox.Lifecycle.ReadinessObservation
+  ( ComponentReadinessTarget (..)
+  , ReadinessObservation (..)
+  , ReadinessProbeResult (..)
+  , observationPollOutcome
+  , observeComponentReadiness
+  , readinessGateOpen
+  , waitForComponentReadiness
+  )
 import Prodbox.Lifecycle.ResidueStatus qualified as Residue
 import Prodbox.Lifecycle.ResourceClass qualified as ResourceClass
 import Prodbox.Lifecycle.ResourceRegistry qualified as ResourceRegistry
@@ -683,6 +710,7 @@ import Prodbox.Service
   ( RedisError (..)
   , ServiceError (..)
   , classifyServiceError
+  , isRetryableTransientFailure
   , retryServiceAction
   , serviceErrorMessage
   , serviceErrorRetryable
@@ -756,6 +784,14 @@ import Prodbox.TestPlan
   , validationDeferredPrerequisites
   , validationInitialPrerequisites
   )
+import Prodbox.TestRestore
+  ( RestoreChart (..)
+  , RestoreCyclePlan (..)
+  , RestoreCycleStep (..)
+  , RestoreKeycloakSmtp (..)
+  , buildRestoreCyclePlan
+  , gatewayDaemonLivenessPrecondition
+  )
 import Prodbox.TestRunner
   ( ClusterEvidence (..)
   , PublicEdgeCertificateFailure (..)
@@ -764,6 +800,8 @@ import Prodbox.TestRunner
   , TestRefusal (..)
   , awsPostflightDestroyCommandArgs
   , awsSubstrateBootstrapCommandArgs
+  , awsSubstrateBootstrapRestorePlan
+  , awsSubstrateBootstrapRestoreSteps
   , clearOperationalCredsAfterPostflight
   , guardTestDelete
   , integrationRunbookCommandArgs
@@ -771,6 +809,8 @@ import Prodbox.TestRunner
   , renderTestRefusal
   , supportedRuntimeBootstrapNeedsKeycloakSmtpSync
   , supportedRuntimeBootstrapNeedsReconcile
+  , supportedRuntimeBootstrapRestorePlan
+  , supportedRuntimePostflightRestorePlan
   , testModePreflightAtPath
   , testModePreflightAtPaths
   , testProductionClusterGate
@@ -873,6 +913,10 @@ import Prodbox.Vault.Reconcile
   , defaultVaultReconcilePlan
   , operatorWritePolicy
   , runVaultReconcileWith
+  )
+import Prodbox.Vault.RoleId
+  ( VaultRoleId (VaultRoleGatewayDaemon)
+  , vaultRoleIdText
   )
 import Prodbox.Vault.Seal
   ( ChildSealCustody (..)
@@ -2146,17 +2190,20 @@ main = mainWithSuite "prodbox-unit" $ do
       probeDepth ProbeFrontDoorHttp `shouldBe` ProxyProbe
       probeDepth ProbeResourceExists `shouldBe` ProxyProbe
     it "ranks rollout, operator-available, and backend round-trip probes as deep" $ do
+      probeDepth ProbeServiceActive `shouldBe` DeepProbe
       probeDepth ProbeRolloutComplete `shouldBe` DeepProbe
       probeDepth ProbeOperatorAvailable `shouldBe` DeepProbe
+      probeDepth ProbeVaultUnsealed `shouldBe` DeepProbe
       probeDepth (ProbeBackendRoundTrip ComponentMinio) `shouldBe` DeepProbe
     it "a proxy probe cannot satisfy a backend-write edge" $ do
       probeSatisfiesBackendWrite ComponentMinio ProbeFrontDoorHttp `shouldBe` False
       probeSatisfiesBackendWrite ComponentMinio ProbeResourceExists `shouldBe` False
+      probeSatisfiesBackendWrite ComponentMinio ProbeServiceActive `shouldBe` False
       probeSatisfiesBackendWrite ComponentMinio ProbeRolloutComplete `shouldBe` False
     it "a deep round-trip satisfies a backend-write edge only through that exact dependency" $ do
       probeSatisfiesBackendWrite ComponentMinio (ProbeBackendRoundTrip ComponentMinio)
         `shouldBe` True
-      probeSatisfiesBackendWrite ComponentMinio (ProbeBackendRoundTrip ComponentVault)
+      probeSatisfiesBackendWrite ComponentMinio (ProbeBackendRoundTrip ComponentVaultWorkload)
         `shouldBe` False
     -- Graph-validity rejections.
     it "rejects a cycle" $ do
@@ -2218,12 +2265,242 @@ main = mainWithSuite "prodbox-unit" $ do
               indexOf cid = length (takeWhile (/= cid) order)
           -- The registry's backend-write dependency on MinIO forces MinIO earlier.
           (indexOf ComponentMinio < indexOf ComponentRegistry) `shouldBe` True
+    it "models Vault and the gateway daemon as bounded two-phase nodes" $ do
+      case validateComponentGraph defaultComponentGraph of
+        Left err -> expectationFailure ("default component graph is invalid: " ++ show err)
+        Right dag -> do
+          fmap readiness (lookupComponentNode ComponentClusterBase dag)
+            `shouldBe` Just ProbeServiceActive
+          fmap readiness (lookupComponentNode ComponentVaultWorkload dag)
+            `shouldBe` Just ProbeRolloutComplete
+          fmap componentDependencyIds (lookupComponentNode ComponentVaultUnsealed dag)
+            `shouldBe` Just
+              [ ComponentVaultWorkload
+              , ComponentGatewayDaemonPreVault
+              ]
+          fmap readiness (lookupComponentNode ComponentVaultUnsealed dag)
+            `shouldBe` Just ProbeVaultUnsealed
+          fmap componentDependencyIds (lookupComponentNode ComponentGatewayDaemonPreVault dag)
+            `shouldBe` Just
+              [ ComponentMinio
+              , ComponentCertManager
+              , ComponentVaultWorkload
+              , ComponentRegistry
+              ]
+          fmap readiness (lookupComponentNode ComponentGatewayDaemonPreVault dag)
+            `shouldBe` Just ProbeRolloutComplete
+          fmap componentDependencyIds (lookupComponentNode ComponentGatewayDaemonFull dag)
+            `shouldBe` Just
+              [ ComponentVaultUnsealed
+              , ComponentGatewayDaemonPreVault
+              , ComponentMinio
+              ]
+          fmap readiness (lookupComponentNode ComponentGatewayDaemonFull dag)
+            `shouldBe` Just (ProbeBackendRoundTrip ComponentMinio)
+    it "declares every registry-backed native platform dependency explicitly" $ do
+      case validateComponentGraph defaultComponentGraph of
+        Left err -> expectationFailure ("default component graph is invalid: " ++ show err)
+        Right dag -> do
+          fmap componentDependencyIds (lookupComponentNode ComponentCertManager dag)
+            `shouldBe` Just [ComponentClusterBase, ComponentRegistry]
+          fmap componentDependencyIds (lookupComponentNode ComponentMetalLB dag)
+            `shouldBe` Just
+              [ComponentClusterBase, ComponentRegistry, ComponentVaultUnsealed]
+          fmap componentDependencyIds (lookupComponentNode ComponentEnvoyGateway dag)
+            `shouldBe` Just
+              [ComponentClusterBase, ComponentRegistry, ComponentVaultUnsealed]
+          fmap componentDependencyIds (lookupComponentNode ComponentPerconaPostgresOperator dag)
+            `shouldBe` Just
+              [ComponentClusterBase, ComponentRegistry, ComponentVaultUnsealed]
+    it "uses the caller tie-break instead of rendered text for independent nodes" $ do
+      let adjacency key = lookup key [(1 :: Int, []), (2, [])]
+          reverseRender key = show (3 - key)
+      acyclicTopologicalOrder reverseRender id adjacency [2, 1]
+        `shouldBe` Right [1, 2]
     it "shares the acyclic expansion with the prerequisite DAG (cycle rejection)" $ do
       -- The generic expansion the component graph reuses rejects a back-edge.
       let adjacency k = lookup k [(1 :: Int, [2]), (2, [1])]
-      case acyclicTopologicalOrder show adjacency [1] of
+      case acyclicTopologicalOrder show id adjacency [1] of
         Left _ -> pure ()
         Right order -> expectationFailure ("expected a cycle rejection, got " ++ show order)
+  describe "component readiness observation seam (Sprint 1.59)" $ do
+    it "opens the gate only for an affirmative readiness observation" $
+      map
+        readinessGateOpen
+        [ ReadyObserved
+        , NotReadyYet "still converging"
+        , Unreachable "connection refused"
+        ]
+        `shouldBe` [True, False, False]
+    it "lowers pending and unreachable observations to bounded pending polls" $ do
+      observationPollOutcome ReadyObserved `shouldBe` PollReady ()
+      observationPollOutcome (NotReadyYet "still converging")
+        `shouldBe` PollPending "still converging"
+      observationPollOutcome (Unreachable "connection refused")
+        `shouldBe` PollPending "unreachable: connection refused"
+    it "dispatches every declared readiness probe to its dedicated adapter" $ do
+      callsRef <- newIORef ([] :: [String])
+      let record label result = do
+            modifyIORef' callsRef (++ [label])
+            pure result
+          probeTargets =
+            [
+              ( ProbeResourceExists
+              , ResourceExistsTarget
+                  ComponentRegistry
+                  (record "resource" (Right ReadinessProbeReady))
+              )
+            ,
+              ( ProbeFrontDoorHttp
+              , FrontDoorHttpTarget
+                  ComponentRegistry
+                  (record "front-door" (Right ReadinessProbeReady))
+              )
+            ,
+              ( ProbeServiceActive
+              , ServiceActiveTarget
+                  ComponentClusterBase
+                  (record "service" (Right ReadinessProbeReady))
+              )
+            ,
+              ( ProbeRolloutComplete
+              , RolloutCompleteTarget
+                  ComponentGatewayDaemonPreVault
+                  (record "rollout" (Right ReadinessProbeReady))
+              )
+            ,
+              ( ProbeOperatorAvailable
+              , OperatorAvailableTarget
+                  ComponentPerconaPostgresOperator
+                  (record "operator" (Right ReadinessProbeReady))
+              )
+            ,
+              ( ProbeVaultUnsealed
+              , VaultUnsealedTarget
+                  ComponentVaultUnsealed
+                  (record "vault" (Right ReadinessProbeReady))
+              )
+            ,
+              ( ProbeBackendRoundTrip ComponentMinio
+              , BackendRoundTripTarget
+                  ComponentGatewayDaemonFull
+                  ComponentMinio
+                  (record "backend:ComponentMinio" (Right ReadinessProbeReady))
+              )
+            ]
+      observations <-
+        mapM
+          (\(probe, target) -> observeComponentReadiness target probe)
+          probeTargets
+      observations `shouldBe` replicate (length probeTargets) ReadyObserved
+      readIORef callsRef
+        `shouldReturn` [ "resource"
+                       , "front-door"
+                       , "service"
+                       , "rollout"
+                       , "operator"
+                       , "vault"
+                       , "backend:ComponentMinio"
+                       ]
+    it "fails closed when a target does not implement the declared probe" $ do
+      let target = RolloutCompleteTarget ComponentRegistry (pure (Right ReadinessProbeReady))
+      observation <- observeComponentReadiness target (ProbeBackendRoundTrip ComponentMinio)
+      case observation of
+        Unreachable detail -> detail `shouldSatisfy` Text.isInfixOf "does not implement"
+        other -> expectationFailure ("expected an unreachable mismatch, got " ++ show other)
+    it "rejects an incompatible target before entering the poll loop" $ do
+      callsRef <- newIORef (0 :: Int)
+      let target =
+            RolloutCompleteTarget ComponentRegistry $ do
+              modifyIORef' callsRef (+ 1)
+              pure (Right ReadinessProbeReady)
+          policy =
+            RetryPolicy
+              { retryPolicyMaxAttempts = 3
+              , retryPolicyBaseDelayMicros = 0
+              , retryPolicyMultiplier = 1
+              , retryPolicyMaxDelayMicros = 0
+              }
+      result <- waitForComponentReadiness policy target (ProbeBackendRoundTrip ComponentMinio)
+      result `shouldSatisfy` either (Text.isInfixOf "does not implement") (const False)
+      readIORef callsRef `shouldReturn` 0
+    it "fails closed when a backend-round-trip target names the wrong backend" $ do
+      let target =
+            BackendRoundTripTarget
+              ComponentRegistry
+              ComponentMinio
+              (pure (Right ReadinessProbeReady))
+      observation <-
+        observeComponentReadiness target (ProbeBackendRoundTrip ComponentVaultWorkload)
+      case observation of
+        Unreachable detail -> detail `shouldSatisfy` Text.isInfixOf "does not implement"
+        other -> expectationFailure ("expected an unreachable backend mismatch, got " ++ show other)
+    it "preserves authoritative pending and unreachable probe detail" $ do
+      let pendingTarget =
+            OperatorAvailableTarget
+              ComponentPerconaPostgresOperator
+              (pure (Right (ReadinessProbePending "Available=False")))
+          unreachableTarget =
+            VaultUnsealedTarget
+              ComponentVaultUnsealed
+              (pure (Left "Vault seal-status endpoint refused the connection"))
+      observeComponentReadiness pendingTarget ProbeOperatorAvailable
+        `shouldReturn` NotReadyYet "Available=False"
+      observeComponentReadiness unreachableTarget ProbeVaultUnsealed
+        `shouldReturn` Unreachable "Vault seal-status endpoint refused the connection"
+    it "retries not-ready and unreachable readings without opening the gate" $ do
+      observationsRef <-
+        newIORef
+          [ Right (ReadinessProbePending "still converging")
+          , Left "temporarily unreachable"
+          , Right ReadinessProbeReady
+          ]
+      let observeNext = do
+            observations <- readIORef observationsRef
+            case observations of
+              next : remaining -> writeIORef observationsRef remaining >> pure next
+              [] -> pure (Left "observation fixture exhausted")
+          target = RolloutCompleteTarget ComponentGatewayDaemonPreVault observeNext
+          policy =
+            RetryPolicy
+              { retryPolicyMaxAttempts = 3
+              , retryPolicyBaseDelayMicros = 0
+              , retryPolicyMultiplier = 1
+              , retryPolicyMaxDelayMicros = 0
+              }
+      waitForComponentReadiness policy target ProbeRolloutComplete
+        `shouldReturn` Right ()
+      readIORef observationsRef `shouldReturn` []
+    it "fails closed on bounded pending and unreachable exhaustion" $ do
+      pendingCallsRef <- newIORef (0 :: Int)
+      unreachableCallsRef <- newIORef (0 :: Int)
+      let policy =
+            RetryPolicy
+              { retryPolicyMaxAttempts = 2
+              , retryPolicyBaseDelayMicros = 0
+              , retryPolicyMultiplier = 1
+              , retryPolicyMaxDelayMicros = 0
+              }
+          pendingTarget =
+            RolloutCompleteTarget
+              ComponentGatewayDaemonPreVault
+              ( do
+                  modifyIORef' pendingCallsRef (+ 1)
+                  pure (Right (ReadinessProbePending "rollout has 1/3 ready replicas"))
+              )
+          unreachableTarget =
+            VaultUnsealedTarget
+              ComponentVaultUnsealed
+              ( do
+                  modifyIORef' unreachableCallsRef (+ 1)
+                  pure (Left "seal-status unreachable")
+              )
+      waitForComponentReadiness policy pendingTarget ProbeRolloutComplete
+        `shouldReturn` Left "rollout has 1/3 ready replicas"
+      waitForComponentReadiness policy unreachableTarget ProbeVaultUnsealed
+        `shouldReturn` Left "unreachable: seal-status unreachable"
+      readIORef pendingCallsRef `shouldReturn` 2
+      readIORef unreachableCallsRef `shouldReturn` 2
   describe "graph-sourced chart dependency edges + operator Available gate (Sprint 3.23)" $ do
     -- resolveDependencyOrder now sources chart order from the component graph.
     -- The default graph's chart→chart edges must reproduce today's order exactly.
@@ -2259,10 +2536,164 @@ main = mainWithSuite "prodbox-unit" $ do
       deploymentConditionReportsTrue "true\n" `shouldBe` True
       deploymentConditionReportsTrue "False" `shouldBe` False
       deploymentConditionReportsTrue "" `shouldBe` False
-  describe "EffectDAG-driven reconcile ordering + deep registry->MinIO gate (Sprint 4.43)" $ do
-    -- M1: the reconcile step order is a valid projection of the component graph.
-    it "the reconcile step order respects the component dependency graph" $
-      nativeInstallStepOrderRespectsGraph `shouldBe` Right ()
+    it "binds every default-graph operator gate to a production readiness target" $ do
+      let expectProductionTarget gate =
+            case operatorAvailableTarget gate of
+              Left reason -> expectationFailure (Text.unpack reason)
+              Right _ -> pure ()
+      case validateComponentGraph defaultComponentGraph of
+        Left err -> expectationFailure ("default graph invalid: " ++ show err)
+        Right dag ->
+          forM_
+            (operatorAvailableGates dag [ComponentChartKeycloakPostgres])
+            expectProductionTarget
+    it "fails closed for an existing component with no operator-Available executor" $
+      case operatorAvailableTarget ComponentRegistry of
+        Left reason ->
+          Text.unpack reason
+            `shouldContain` "No ProbeOperatorAvailable executor is registered for component `registry`"
+        Right _ -> expectationFailure "expected an unbound operator gate to fail closed"
+    it "keeps the production operator-target registry free of a wildcard arm" $ do
+      repoRoot <- getCurrentDirectory
+      source <- readFile (repoRoot </> "src" </> "Prodbox" </> "Lib" </> "ChartPlatform.hs")
+      let targetBlock =
+            takeWhile
+              (not . isPrefixOf "unsupportedOperatorGate ::")
+              (dropWhile (not . isInfixOf "operatorAvailableTarget component =") (lines source))
+      targetBlock `shouldSatisfy` (not . null)
+      unlines targetBlock `shouldNotContain` "_ ->"
+    it "routes unreachable operator observations through ChartPlatform and gates closed" $ do
+      result <-
+        validateOperatorGatesWith
+          ( \gate ->
+              Right
+                ( OperatorAvailableTarget
+                    gate
+                    (pure (Left "connection refused"))
+                )
+          )
+          [ComponentPerconaPostgresOperator]
+      result
+        `shouldBe` Left
+          "Cannot observe operator readiness for `percona_postgres_operator`: connection refused"
+      operatorGateResult ComponentPerconaPostgresOperator ReadyObserved `shouldBe` Right ()
+      operatorGateResult
+        ComponentPerconaPostgresOperator
+        (NotReadyYet "Available=False")
+        `shouldBe` Left "Available=False"
+    it "classifies the one-shot Percona observation without probing past an absent CRD" $ do
+      callsRef <- newIORef ([] :: [[String]])
+      result <-
+        observePatroniOperatorAvailableWith $ \arguments -> do
+          modifyIORef' callsRef (++ [arguments])
+          pure (Right (ProcessOutput ExitSuccess "" ""))
+      case result of
+        Right (ReadinessProbePending detail) ->
+          Text.unpack detail `shouldContain` "has not been created yet"
+        other -> expectationFailure ("expected pending CRD observation, got " ++ show other)
+      calls <- readIORef callsRef
+      case calls of
+        [arguments] -> ("--ignore-not-found" `elem` arguments) `shouldBe` True
+        other -> expectationFailure ("expected one CRD observation, got " ++ show other)
+    it "requires the Percona Deployment to report Available=True" $ do
+      callsRef <- newIORef (0 :: Int)
+      result <-
+        observePatroniOperatorAvailableWith $ \_ -> do
+          callIndex <- readIORef callsRef
+          modifyIORef' callsRef (+ 1)
+          pure
+            ( Right
+                ( if callIndex == 0
+                    then
+                      ProcessOutput
+                        ExitSuccess
+                        "customresourcedefinition.apiextensions.k8s.io/perconapgclusters.pgv2.percona.com"
+                        ""
+                    else ProcessOutput ExitSuccess "True\n" ""
+                )
+            )
+      result `shouldBe` Right ReadinessProbeReady
+      readIORef callsRef `shouldReturn` 2
+  describe "EffectDAG-driven reconcile ordering + deep registry->MinIO gate (Sprint 4.45)" $ do
+    it "derives the complete native component order directly from the validated graph" $ do
+      case validateComponentGraph defaultComponentGraph of
+        Left err -> expectationFailure ("default component graph is invalid: " ++ show err)
+        Right dag -> do
+          let derived = nativeInstallStepOrder dag
+          derived
+            `shouldBe` concatMap stepsForComponent (componentReconcileOrder dag)
+          nativeInstallStepOrderRespectsGraph dag derived `shouldBe` Right ()
+    it "builds the default execution plan only after its graph and readiness barriers validate" $ do
+      case buildNativeInstallExecutionPlan
+        "/tmp/prodbox"
+        (testValidatedSettings "/tmp/prodbox/.data")
+        "machine-id-123"
+        "prodbox-123"
+        "prodbox-123"
+        False of
+        Left err -> expectationFailure (Preconditions.errorNarrative err)
+        Right _ -> pure ()
+    it "fails closed before planning when a valid graph projects a phase regression" $ do
+      let baseSettings = testValidatedSettings "/tmp/prodbox/.data"
+          baseConfig = validatedConfig baseSettings
+          invertPhaseOrder node
+            | component_id node == ComponentClusterBase =
+                node {depends_on = [orderingOn ComponentMetalLB]}
+            | component_id node == ComponentMetalLB = node {depends_on = []}
+            | otherwise = node
+          invertedSettings =
+            baseSettings
+              { validatedConfig =
+                  baseConfig
+                    { components = map invertPhaseOrder (components baseConfig)
+                    }
+              }
+      case buildNativeInstallExecutionPlan
+        "/tmp/prodbox"
+        invertedSettings
+        "machine-id-123"
+        "prodbox-123"
+        "prodbox-123"
+        False of
+        Left err -> do
+          Preconditions.errorPreconditionLabel err `shouldBe` "nativeInstallGraphOrder"
+          Preconditions.errorNarrative err `shouldContain` "phase regression"
+          Preconditions.errorNarrative err `shouldContain` "No reconcile mutation was started."
+        Right plan -> expectationFailure ("expected a fail-closed plan rejection, got " ++ show plan)
+    it "binds every RKE2-owned component group to a production readiness target" $ do
+      let settings = testValidatedSettings "/tmp/prodbox/.data"
+          expectNativeTarget component =
+            case nativeComponentReadinessTarget "/tmp/prodbox" settings component of
+              Left reason -> expectationFailure (Text.unpack reason)
+              Right _ -> pure ()
+      case validateComponentGraph defaultComponentGraph of
+        Left err -> expectationFailure ("default component graph is invalid: " ++ show err)
+        Right dag ->
+          forM_
+            [ component
+            | component <- componentReconcileOrder dag
+            , not (null (stepsForComponent component))
+            ]
+            expectNativeTarget
+    it "keeps both phase step executors total and wildcard-free" $ do
+      repoRoot <- getCurrentDirectory
+      source <- readFile (repoRoot </> "src" </> "Prodbox" </> "CLI" </> "Rke2.hs")
+      let sourceLines = lines source
+          blockFromTo startMarker endMarker =
+            takeWhile
+              (not . isInfixOf endMarker)
+              (dropWhile (not . isInfixOf startMarker) sourceLines)
+          bootstrapBlock = blockFromTo "bootstrapStepAction step =" "The @PhaseSteady@ executor"
+          steadyBlock =
+            blockFromTo
+              "steadyStepAction settings (metallbPool, edgeLbIp) step ="
+              "wrongPhaseStep ::"
+          containsWildcardArm =
+            any (isPrefixOf "_ ->" . dropWhile (== ' '))
+      bootstrapBlock `shouldSatisfy` (not . null)
+      steadyBlock `shouldSatisfy` (not . null)
+      containsWildcardArm bootstrapBlock `shouldBe` False
+      containsWildcardArm steadyBlock `shouldBe` False
     it "narrates the deep registry->MinIO gate before the mirror push" $ do
       let steps =
             lines
@@ -2302,6 +2733,8 @@ main = mainWithSuite "prodbox-unit" $ do
         `shouldBe` True
       isRetryableHarborPublicationFailure "temporary failure in name resolution" `shouldBe` True
       isRetryableHarborPublicationFailure "Get \"https://...\": dial tcp 10.0.0.1:443: i/o timeout"
+        `shouldBe` True
+      isRetryableHarborPublicationFailure "unexpected status from PUT request: 503"
         `shouldBe` True
     it "keeps a genuine authorization failure non-retryable" $
       isRetryableHarborPublicationFailure "401 unauthorized: authentication required" `shouldBe` False
@@ -2929,11 +3362,10 @@ main = mainWithSuite "prodbox-unit" $ do
       -- aws|minio KV). Missing either 403s the AWS postflight object-store read.
       case [ vaultKubernetesRoleSpecPolicies spec
            | spec <- vaultReconcileKubernetesRoles defaultVaultReconcilePlan
-           , vaultKubernetesRoleSpecName spec == "prodbox-gateway-daemon"
+           , vaultKubernetesRoleSpecName spec == vaultRoleIdText VaultRoleGatewayDaemon
            ] of
-        [policies] -> do
-          ("prodbox-gateway" `elem` policies) `shouldBe` True
-          ("gateway-gateway" `elem` policies) `shouldBe` True
+        [policies] ->
+          sort policies `shouldBe` ["gateway-gateway", "prodbox-gateway"]
         other ->
           expectationFailure ("expected exactly one prodbox-gateway-daemon role, got " ++ show other)
     it "builds the operator-secret URL on the loopback gateway endpoint" $ do
@@ -4026,6 +4458,18 @@ main = mainWithSuite "prodbox-unit" $ do
 
   describe "plan renderers" $ do
     goldenTest
+      "renders the typed registry storage backend deterministically"
+      "test/golden/config/registry-config.yaml"
+      (pure (BL8.pack (registryConfigYaml harborRegistryStorageBackend)))
+
+    it "renders both explicit registry redirect policies without a driver default" $ do
+      registryConfigYaml harborRegistryStorageBackend
+        `shouldContain` "  redirect:\n    disable: true"
+      registryConfigYaml
+        (harborRegistryStorageBackend {registryStorageBackendRedirect = RedirectEnabled})
+        `shouldContain` "  redirect:\n    disable: false"
+
+    goldenTest
       "renders the chart deployment plan deterministically"
       "test/golden/plans/chart-deploy-vscode.txt"
       $ do
@@ -4874,11 +5318,100 @@ main = mainWithSuite "prodbox-unit" $ do
               last (nativeValidations suitePlan) `shouldBe` ValidationLifecycle
             DelegatedSuite _ -> expectationFailure "expected native integration-all plan"
 
+    it "builds the canonical restore cycle in one exact order" $ do
+      restoreCycleSteps
+        (buildRestoreCyclePlan SubstrateHomeLocal RestoreWithoutKeycloakSmtp)
+        `shouldBe` [ RestoreDeleteChart RestoreChartWebsocket
+                   , RestoreDeleteChart RestoreChartApi
+                   , RestoreDeleteChart RestoreChartVscode
+                   , RestoreDeleteChart RestoreChartGateway
+                   , RestoreEnsureGatewayMinioBootstrap
+                   , RestoreReconcileChart RestoreChartGateway
+                   , RestoreReconcileChart RestoreChartVscode
+                   , RestoreReconcileChart RestoreChartApi
+                   , RestoreReconcileChart RestoreChartWebsocket
+                   , RestoreWaitForPublicEdge
+                   ]
+
+    it "projects bootstrap and postflight from the shared restore builder modulo SMTP" $ do
+      case testExecutionPlan SubstrateHomeLocal TestAll of
+        testPlan ->
+          case testPlanExecutionMode testPlan of
+            NativeSuite suitePlan -> do
+              let bootstrapPlan = supportedRuntimeBootstrapRestorePlan suitePlan
+                  postflightPlan = supportedRuntimePostflightRestorePlan suitePlan
+                  bootstrapSteps = restoreCycleSteps bootstrapPlan
+                  postflightSteps = restoreCycleSteps postflightPlan
+                  gatewayIndex = elemIndex (RestoreReconcileChart RestoreChartGateway) bootstrapSteps
+                  smtpIndex = elemIndex RestoreSyncKeycloakSmtp bootstrapSteps
+                  vscodeIndex = elemIndex (RestoreReconcileChart RestoreChartVscode) bootstrapSteps
+              bootstrapPlan
+                `shouldBe` buildRestoreCyclePlan SubstrateHomeLocal RestoreWithKeycloakSmtp
+              postflightPlan
+                `shouldBe` buildRestoreCyclePlan SubstrateHomeLocal RestoreWithoutKeycloakSmtp
+              filter (/= RestoreSyncKeycloakSmtp) bootstrapSteps `shouldBe` postflightSteps
+              gatewayIndex `shouldSatisfy` (`indexPrecedes` smtpIndex)
+              smtpIndex `shouldSatisfy` (`indexPrecedes` vscodeIndex)
+            DelegatedSuite _ -> expectationFailure "expected native aggregate test plan"
+
+    it "opens the gateway-daemon SMTP precondition only on a ready round trip" $ do
+      let policy =
+            RetryPolicy
+              { retryPolicyMaxAttempts = 1
+              , retryPolicyBaseDelayMicros = 0
+              , retryPolicyMultiplier = 1
+              , retryPolicyMaxDelayMicros = 0
+              }
+          precondition =
+            gatewayDaemonLivenessPrecondition
+              policy
+              "127.0.0.1:31234"
+              (pure (Right ReadinessProbeReady))
+      Preconditions.preconditionCheck precondition `shouldReturn` Right ()
+
+    it "returns a bounded structured SMTP refusal for pending or unreachable daemon observations" $ do
+      let policy =
+            RetryPolicy
+              { retryPolicyMaxAttempts = 1
+              , retryPolicyBaseDelayMicros = 0
+              , retryPolicyMultiplier = 1
+              , retryPolicyMaxDelayMicros = 0
+              }
+          observations =
+            [ Right (ReadinessProbePending "gateway returned 503")
+            , Left "Connection refused"
+            ]
+      forM_ observations $ \observation -> do
+        attemptsRef <- newIORef (0 :: Int)
+        let observeOnce = modifyIORef' attemptsRef (+ 1) >> pure observation
+            precondition =
+              gatewayDaemonLivenessPrecondition policy "127.0.0.1:31234" observeOnce
+        result <- Preconditions.preconditionCheck precondition
+        readIORef attemptsRef `shouldReturn` 1
+        case result of
+          Right () -> expectationFailure "expected the daemon readiness precondition to fail closed"
+          Left err -> do
+            Preconditions.errorPreconditionLabel err `shouldBe` "gatewayDaemonObjectStoreReady"
+            Preconditions.errorSummaryLine err `shouldContain` "127.0.0.1:31234"
+            Preconditions.errorOffendingItems err
+              `shouldBe` [("127.0.0.1:31234", "prodbox charts reconcile gateway")]
+            Preconditions.errorNarrative err `shouldContain` "No Keycloak SMTP sync was started."
+
     it "bootstraps the AWS substrate by provisioning per-run stacks before deploying the AWS chart set" $ do
       case testExecutionPlan SubstrateAws TestAll of
         testPlan ->
           case testPlanExecutionMode testPlan of
-            NativeSuite suitePlan ->
+            NativeSuite suitePlan -> do
+              awsSubstrateBootstrapRestorePlan
+                `shouldBe` buildRestoreCyclePlan SubstrateAws RestoreWithKeycloakSmtp
+              restoreCycleSubstrate awsSubstrateBootstrapRestorePlan `shouldBe` SubstrateAws
+              awsSubstrateBootstrapRestoreSteps
+                `shouldBe` [ RestoreReconcileChart RestoreChartGateway
+                           , RestoreSyncKeycloakSmtp
+                           , RestoreReconcileChart RestoreChartVscode
+                           , RestoreReconcileChart RestoreChartApi
+                           , RestoreReconcileChart RestoreChartWebsocket
+                           ]
               awsSubstrateBootstrapCommandArgs suitePlan
                 `shouldBe` [ ["aws", "stack", "aws-subzone", "reconcile"]
                            , ["aws", "stack", "eks", "reconcile"]
@@ -5639,7 +6172,8 @@ main = mainWithSuite "prodbox-unit" $ do
       -- own config.yml selecting the S3 storage driver against the MinIO bucket.
       rke2Source `shouldContain` "registryImage = \"registry:2\""
       rke2Source `shouldContain` "registryConfigYaml"
-      rke2Source `shouldContain` "bucket: \" ++ harborRegistryStorageBucket"
+      rke2Source `shouldContain` "data RegistryStorageBackend = RegistryStorageBackend"
+      rke2Source `shouldContain` "registryStorageBackendBucket = harborRegistryStorageBucket"
       -- The S3 storage driver MUST disable blob redirects. registry:2 otherwise
       -- answers blob GET/HEAD with a 307 to a presigned MinIO URL at the
       -- cluster-internal minio.prodbox.svc.cluster.local:9000, which the host-side
@@ -5647,8 +6181,7 @@ main = mainWithSuite "prodbox-unit" $ do
       -- The Harbor chart era set imageChartStorage.disableredirect=true; the
       -- registry:2 config.yml must carry the equivalent storage.redirect.disable
       -- stanza. Regression guard for the 80a08e3 migration.
-      rke2Source `shouldContain` "\"  redirect:\""
-      rke2Source `shouldContain` "\"    disable: true\""
+      rke2Source `shouldContain` "registryStorageBackendRedirect = RedirectDisabled"
       rke2Source `shouldNotContain` "persistence.imageChartStorage.type=s3"
       rke2Source `shouldNotContain` "harbor/harbor"
       rke2Source `shouldContain` "mc mb --ignore-existing local/"
@@ -5685,9 +6218,8 @@ main = mainWithSuite "prodbox-unit" $ do
       rke2Source `shouldContain` "pushDockerImageWithRetry"
       rke2Source `shouldContain` "isRetryableHarborPublicationFailure"
       rke2Source `shouldContain` "Retrying Harbor publication for "
-      rke2Source `shouldContain` "\"unexpected eof\""
+      rke2Source `shouldContain` "isRetryableTransientFailure"
       rke2Source `shouldContain` "\"unexpected status from put request\""
-      rke2Source `shouldContain` "\"connection refused\""
 
     it "keeps postgres-operator runtime on explicit Percona chart values" $ do
       repoRoot <- getCurrentDirectory
@@ -5860,7 +6392,8 @@ main = mainWithSuite "prodbox-unit" $ do
       minioSource <- readFile (repoRoot </> "src" </> "Prodbox" </> "Infra" </> "MinioBackend.hs")
       serviceSource <- readFile (repoRoot </> "src" </> "Prodbox" </> "Service.hs")
 
-      chartPlatformSource `shouldContain` "runPg [\"get\", \"crd\", patroniPostgresqlCrdName"
+      chartPlatformSource `shouldContain` "observePatroniOperatorAvailableWith"
+      chartPlatformSource `shouldContain` "result <- runPg arguments"
       chartPlatformSource `shouldContain` "runPgExpectSuccess"
       chartPlatformSource `shouldNotContain` "subprocessPath = \"redis-cli\""
       chartPlatformSource `shouldNotContain` "subprocessPath = \"psql\""
@@ -6407,6 +6940,140 @@ main = mainWithSuite "prodbox-unit" $ do
       serviceErrorRetryable (classify "operation timed out") `shouldBe` True
       serviceErrorRetryable (classify "something unexpected went wrong") `shouldBe` True
       serviceErrorMessage (classify "boom") `shouldBe` "boom"
+
+    it "shares name-resolution, connection, HTTP, and timeout retry classes" $ do
+      map
+        (isRetryableTransientFailure [])
+        [ "no such host"
+        , "dial tcp 10.0.0.1:443"
+        , "lookup minio.prodbox.svc.cluster.local"
+        , "name resolution"
+        , "connection refused"
+        , "connection reset by peer"
+        , "upstream returned 503 SERVICE UNAVAILABLE"
+        , "context deadline exceeded"
+        ]
+        `shouldBe` replicate 8 True
+      isRetryableTransientFailure [] "401 unauthorized" `shouldBe` False
+
+    it "extends the shared transient classifier with operation-specific fragments" $ do
+      isRetryableTransientFailure ["expiredtoken"] "ExpiredToken: retry later" `shouldBe` True
+      isRetryableTransientFailure ["failed to fetch"] "failed to fetch chart index" `shouldBe` True
+
+    it "routes Helm DNS and transport failures through the shared retry base" $ do
+      let failed detail = ProcessOutput (ExitFailure 1) "" detail
+      map
+        (isRetryableHelmFailure . failed)
+        [ "no such host"
+        , "dial tcp 10.0.0.1:443"
+        , "lookup charts.example.test"
+        , "connection refused"
+        , "temporary failure in name resolution"
+        , "failed to fetch chart index"
+        , "failed to download chart archive"
+        ]
+        `shouldBe` replicate 7 True
+      isRetryableHelmFailure (failed "401 unauthorized") `shouldBe` False
+
+    it "retains Route 53 credential-specific retry extensions" $ do
+      let failed detail = ProcessOutput (ExitFailure 1) "" detail
+      map
+        (isRetryableRoute53CredentialFailure . failed)
+        [ "InvalidClientTokenId"
+        , "The security token included in the request is invalid"
+        , "UnrecognizedClientException"
+        , "AccessDenied"
+        , "not authorized to perform: route53:ChangeResourceRecordSets"
+        , "lookup route53.amazonaws.com: no such host"
+        ]
+        `shouldBe` replicate 6 True
+      isRetryableRoute53CredentialFailure (failed "validation error: malformed zone id")
+        `shouldBe` False
+
+    it "needs no retry-classifier lint allowance" $ do
+      let inlineClassifier classifierName =
+            unlines
+              [ classifierName ++ " detail ="
+              , "  any (`isInfixOf` detail) [\"connection refused\"]"
+              ]
+      forM_
+        [ "isRetryableRoute53CredentialFailure"
+        , "isRetryableHelmFailure"
+        , "isRetryableHarborPublicationFailure"
+        ]
+        ( \classifierName ->
+            inlineRetrySubstringListViolations
+              "src/Prodbox/CLI/Rke2.hs"
+              (inlineClassifier classifierName)
+              `shouldNotBe` []
+        )
+      inlineRetrySubstringListViolations
+        "src/Prodbox/Lib/EksImageMirror.hs"
+        (inlineClassifier "isRetryableEksImageMirrorFailure")
+        `shouldNotBe` []
+
+    it "flags new inline retry-substring classifiers but permits shared-base delegation" $ do
+      inlineRetrySubstringListViolations
+        "src/Prodbox/Synthetic.hs"
+        ( unlines
+            [ "isRetryableSyntheticFailure :: String -> Bool"
+            , "isRetryableSyntheticFailure detail ="
+            , "  any (`isInfixOf` detail)"
+            , "    [ \"connection refused\""
+            , "    , \"no such host\""
+            , "    ]"
+            ]
+        )
+        `shouldNotBe` []
+      inlineRetrySubstringListViolations
+        "src/Prodbox/Synthetic.hs"
+        ( unlines
+            [ "retryableSyntheticFragments = [\"connection refused\"]"
+            , "isRetryableSyntheticFailure detail ="
+            , "  any (`isInfixOf` detail) retryableSyntheticFragments"
+            ]
+        )
+        `shouldNotBe` []
+      inlineRetrySubstringListViolations
+        "src/Prodbox/Synthetic.hs"
+        ( unlines
+            [ "isRetryableSyntheticFailure detail ="
+            , "  isRetryableTransientFailure [] detail"
+            , "    || \"synthetic busy\" `isInfixOf` detail"
+            ]
+        )
+        `shouldNotBe` []
+      inlineRetrySubstringListViolations
+        "src/Prodbox/CLI/Rke2.hs"
+        "isRetryableNewRke2Failure detail = \"busy\" `isInfixOf` detail"
+        `shouldNotBe` []
+      inlineRetrySubstringListViolations
+        "src/Prodbox/Synthetic.hs"
+        ( unlines
+            [ "isRetryableSyntheticFailure :: String -> Bool"
+            , "isRetryableSyntheticFailure ="
+            , "  isRetryableTransientFailure [\"synthetic busy\"]"
+            ]
+        )
+        `shouldBe` []
+      inlineRetrySubstringListViolations
+        "src/Prodbox/Synthetic.hs"
+        ( unlines
+            [ "isRetryableSyntheticFailure detail ="
+            , "  {- `isInfixOf` is forbidden in this classifier. -}"
+            , "  isRetryableTransientFailure [\"synthetic busy\"] detail"
+            ]
+        )
+        `shouldBe` []
+      inlineRetrySubstringListViolations
+        "src/Prodbox/Synthetic.hs"
+        ( unlines
+            [ "isRetryableSyntheticFailure detail ="
+            , "  -- `isInfixOf` must not be implemented here."
+            , "  isRetryableTransientFailure [\"synthetic busy\"] detail"
+            ]
+        )
+        `shouldBe` []
 
     it "polls a readiness predicate until ready without treating pending as failure" $ do
       observationsRef <- newIORef (0 :: Int)
@@ -7009,9 +7676,20 @@ main = mainWithSuite "prodbox-unit" $ do
                       KeyMap.lookup (Key.fromString "fqdn") dnsPayload
                         `shouldBe` Just (String "")
                     _ -> expectationFailure "expected gateway dnsWriteGate payload"
+                  case KeyMap.lookup (Key.fromString "vault") payload of
+                    Just (Object vaultPayload) ->
+                      KeyMap.lookup (Key.fromString "role") vaultPayload
+                        `shouldBe` Just (String (vaultRoleIdText VaultRoleGatewayDaemon))
+                    _ -> expectationFailure "expected gateway vault payload"
                 Right _ -> expectationFailure "expected gateway values object"
                 Left err -> expectationFailure err
             _ -> expectationFailure "expected one gateway release"
+
+    it "keeps the gateway values render free of a duplicated Vault-role literal" $ do
+      repoRoot <- getCurrentDirectory
+      chartPlatformSource <-
+        readFile (repoRoot </> "src" </> "Prodbox" </> "Lib" </> "ChartPlatform.hs")
+      chartPlatformSource `shouldNotContain` "\"prodbox-gateway-daemon\""
 
     it "renders AWS public-edge workload charts with the AWS-substrate image tag" $ do
       result <-
@@ -11539,64 +12217,133 @@ main = mainWithSuite "prodbox-unit" $ do
         `shouldBe` []
 
   describe
-    "Sprint 7.5.c.iii AWS-substrate platform orchestration (extended through 7.5.c.iv + 7.5.c.v.b)"
+    "Sprint 7.32 graph-derived AWS-substrate platform orchestration"
     $ do
       let steps = Prodbox.Lib.AwsSubstratePlatform.awsSubstratePlatformRuntimeStepDescriptions
       it
-        "sequences the canonical steps in order through the Vault platform, the deep registry gate, and admin-route extension"
+        "projects the exact anchored default order, including every final readiness barrier"
         $ steps
           `shouldBe` [ "ensureAwsLoadBalancerControllerRuntime"
-                     , "ensureAwsSubstrateEnvoyGatewayRuntime"
-                     , "ensureAwsSubstrateCertManagerRuntime"
-                     , "ensureAwsSubstrateAcmeRuntime"
-                     , "ensureAwsSubstrateVaultRuntime"
-                     , "applyEksContainerdMirrorDaemonSet"
+                     , "observeAwsClusterBaseReady"
                      , "ensureAwsSubstrateRetainedStorage"
                      , "ensureMinioRuntime SubstrateAws MinioBootstrapPublic"
+                     , "observeAwsMinioReady"
+                     , "ensureAwsSubstrateVaultRuntime"
+                     , "observeAwsVaultWorkloadReady"
+                     , "applyEksContainerdMirrorDaemonSet"
                      , "ensureHarborRegistryStorageBackend"
                      , "ensureHarborRegistryRuntime SubstrateAws"
                      , "ensureRegistryStorageBackendEdgeReady"
                      , "applyEksImageMirrorJob"
                      , "ensureRuntimeImageForSubstrate SubstrateAws"
-                     , "ensurePostgresOperatorRuntime"
-                     , "ensureMinioRuntime SubstrateAws MinioSteadyStateHarbor"
-                     , "ensureGatewayMinioBootstrap"
+                     , "observeAwsRegistryReady"
+                     , "ensureAwsSubstrateCertManagerRuntime"
+                     , "observeAwsCertManagerReady"
                      , "ensureGatewayChartReady SubstrateAws"
+                     , "observeAwsGatewayPreVaultReady"
+                     , "runVaultBootstrapViaDaemonAt"
+                     , "observeAwsVaultUnsealedReady"
+                     , "ensureAwsSubstrateEnvoyGatewayRuntime"
+                     , "observeAwsEnvoyGatewayReady"
+                     , "ensurePostgresOperatorRuntime"
+                     , "observeAwsPostgresOperatorReady"
+                     , "ensureGatewayMinioBootstrap"
+                     , "ensureGatewayChartReadyPostVaultAt SubstrateAws"
+                     , "observeAwsGatewayFullReady"
+                     , "ensureAwsSubstrateAcmeRuntime"
                      , "ensureAdminPublicEdgeRoutes SubstrateAws"
                      ]
+      it "derives the typed order from the validated config graph" $ do
+        case Prodbox.Lib.AwsSubstratePlatform.buildAwsSubstratePlatformExecutionPlan
+          (testValidatedSettings "/tmp/prodbox/.data") of
+          Left err -> expectationFailure err
+          Right payload ->
+            Prodbox.Lib.AwsSubstratePlatform.awsSubstratePlatformStepOrderRespectsGraph
+              (Prodbox.Lib.AwsSubstratePlatform.awsPlatformDag payload)
+              (Prodbox.Lib.AwsSubstratePlatform.awsPlatformStepOrder payload)
+              `shouldBe` Right ()
+      it "refuses an inverted AWS dependency before invoking the mutation continuation" $ do
+        let baseSettings = testValidatedSettings "/tmp/prodbox/.data"
+            baseConfig = validatedConfig baseSettings
+            invertAwsLowerLayer node
+              | component_id node == ComponentClusterBase =
+                  node {depends_on = [orderingOn ComponentMetalLB]}
+              | component_id node == ComponentMetalLB = node {depends_on = []}
+              | otherwise = node
+            invertedSettings =
+              baseSettings
+                { validatedConfig =
+                    baseConfig
+                      { components = map invertAwsLowerLayer (components baseConfig)
+                      }
+                }
+        mutationStarted <- newIORef False
+        result <-
+          Prodbox.Lib.AwsSubstratePlatform.runAwsSubstratePlatformPlanWith
+            invertedSettings
+            (\_ -> writeIORef mutationStarted True >> pure ExitSuccess)
+        result `shouldBe` ExitFailure 1
+        readIORef mutationStarted `shouldReturn` False
+      it "binds every AWS-owned component group to a production one-shot target" $ do
+        let endpoint = Just (Prodbox.Gateway.Client.hostLoopbackGatewayEndpoint 49152)
+            expectTarget component =
+              case Prodbox.Lib.AwsSubstratePlatform.awsComponentReadinessTarget
+                "/tmp/prodbox"
+                endpoint
+                component of
+                Left reason -> expectationFailure (Text.unpack reason)
+                Right _ -> pure ()
+        case validateComponentGraph defaultComponentGraph of
+          Left err -> expectationFailure (show err)
+          Right dag ->
+            forM_
+              [ component
+              | component <- componentReconcileOrder dag
+              , not
+                  ( null
+                      (Prodbox.Lib.AwsSubstratePlatform.awsStepsForComponent component)
+                  )
+              ]
+              expectTarget
+      it "keeps MetalLB explicitly AWS-inapplicable while LB Controller belongs to cluster base" $ do
+        Prodbox.Lib.AwsSubstratePlatform.awsStepsForComponent ComponentMetalLB
+          `shouldBe` []
+        Prodbox.Lib.AwsSubstratePlatform.awsStepsForComponent ComponentClusterBase
+          `shouldBe` [ Prodbox.Lib.AwsSubstratePlatform.StepAwsLoadBalancerControllerRuntime
+                     , Prodbox.Lib.AwsSubstratePlatform.StepAwsClusterBaseReady
+                     ]
+        case Prodbox.Lib.AwsSubstratePlatform.awsComponentReadinessTarget
+          "/tmp/prodbox"
+          Nothing
+          ComponentMetalLB of
+          Left _ -> pure ()
+          Right _ -> expectationFailure "expected MetalLB readiness to be AWS-inapplicable"
       it "Sprint 7.31: gates the EKS image-mirror Job behind the deep registry->MinIO edge" $ do
         let edgeIndex = elemIndex "ensureRegistryStorageBackendEdgeReady" steps
             mirrorIndex = elemIndex "applyEksImageMirrorJob" steps
             harborIndex = elemIndex "ensureHarborRegistryRuntime SubstrateAws" steps
         harborIndex `shouldSatisfy` (`indexPrecedes` edgeIndex)
         edgeIndex `shouldSatisfy` (`indexPrecedes` mirrorIndex)
-      it "Sprint 7.31: EksImageMirror classifies transient name-resolution failures as retryable" $ do
-        Prodbox.Lib.EksImageMirror.isRetryableEksImageMirrorFailure
-          "dial tcp: lookup minio.prodbox.svc.cluster.local: no such host"
-          `shouldBe` True
-        Prodbox.Lib.EksImageMirror.isRetryableEksImageMirrorFailure
-          "temporary failure in name resolution"
-          `shouldBe` True
+      it "Sprint 7.32: delegates EKS image-mirror failures to the shared transient base" $ do
+        map
+          Prodbox.Lib.EksImageMirror.isRetryableEksImageMirrorFailure
+          [ "dial tcp: lookup minio.prodbox.svc.cluster.local: no such host"
+          , "temporary failure in name resolution"
+          , "UNEXPECTED EOF"
+          , "503 SERVICE UNAVAILABLE"
+          , "i/o timeout"
+          ]
+          `shouldBe` replicate 5 True
         Prodbox.Lib.EksImageMirror.isRetryableEksImageMirrorFailure
           "MANIFEST_UNKNOWN: manifest unknown"
           `shouldBe` False
-      it "places Vault before the AWS storage and registry bootstrap layer" $ do
-        let vaultIndex = elemIndex "ensureAwsSubstrateVaultRuntime" steps
-            retainedStorageIndex = elemIndex "ensureAwsSubstrateRetainedStorage" steps
-            minioIndex = elemIndex "ensureMinioRuntime SubstrateAws MinioBootstrapPublic" steps
-            harborIndex = elemIndex "ensureHarborRegistryRuntime SubstrateAws" steps
-        vaultIndex `shouldSatisfy` (`indexPrecedes` retainedStorageIndex)
-        vaultIndex `shouldSatisfy` (`indexPrecedes` minioIndex)
-        vaultIndex `shouldSatisfy` (`indexPrecedes` harborIndex)
       it
-        "places the containerd mirror DaemonSet apply before any MinIO or Harbor install (so 127.0.0.1:30080 routes are live)"
+        "places MinIO before the registry group and the containerd mirror before Harbor"
         $ do
           let mirrorIndex = elemIndex "applyEksContainerdMirrorDaemonSet" steps
-              retainedStorageIndex = elemIndex "ensureAwsSubstrateRetainedStorage" steps
               minioIndex = elemIndex "ensureMinioRuntime SubstrateAws MinioBootstrapPublic" steps
               harborIndex = elemIndex "ensureHarborRegistryRuntime SubstrateAws" steps
-          mirrorIndex `shouldSatisfy` (`indexPrecedes` retainedStorageIndex)
-          mirrorIndex `shouldSatisfy` (`indexPrecedes` minioIndex)
+          minioIndex `shouldSatisfy` (`indexPrecedes` mirrorIndex)
           mirrorIndex `shouldSatisfy` (`indexPrecedes` harborIndex)
       it "places retained EBS PV reconciliation before AWS MinIO bootstrap" $ do
         let retainedStorageIndex = elemIndex "ensureAwsSubstrateRetainedStorage" steps
@@ -11613,23 +12360,30 @@ main = mainWithSuite "prodbox-unit" $ do
         harborIndex `shouldSatisfy` (`indexPrecedes` mirrorJobIndex)
         mirrorJobIndex `shouldSatisfy` (`indexPrecedes` perconaIndex)
       it
-        "places Percona before steady-state MinIO reconcile (so Percona is up before MinIO reschedules from Harbor refs)"
+        "runs gateway pre-Vault, daemon Vault bootstrap, and full-mode convergence in graph phase order"
         $ do
-          let perconaIndex = elemIndex "ensurePostgresOperatorRuntime" steps
-              steadyIndex = elemIndex "ensureMinioRuntime SubstrateAws MinioSteadyStateHarbor" steps
-          perconaIndex `shouldSatisfy` (`indexPrecedes` steadyIndex)
+          let preIndex = elemIndex "ensureGatewayChartReady SubstrateAws" steps
+              vaultIndex = elemIndex "runVaultBootstrapViaDaemonAt" steps
+              fullIndex = elemIndex "ensureGatewayChartReadyPostVaultAt SubstrateAws" steps
+          preIndex `shouldSatisfy` (`indexPrecedes` vaultIndex)
+          vaultIndex `shouldSatisfy` (`indexPrecedes` fullIndex)
+      it "does not retain the redundant steady-state MinIO reinstall" $
+        steps `shouldNotContain` ["ensureMinioRuntime SubstrateAws MinioSteadyStateHarbor"]
       it
-        "places gateway MinIO bootstrap after AWS MinIO steady-state so first chart deploy has gateway object-store credentials"
+        "places ACME and AWS admin routes after the gateway-full readiness barrier"
         $ do
-          let steadyIndex = elemIndex "ensureMinioRuntime SubstrateAws MinioSteadyStateHarbor" steps
-              bootstrapIndex = elemIndex "ensureGatewayMinioBootstrap" steps
-          steadyIndex `shouldSatisfy` (`indexPrecedes` bootstrapIndex)
-      it
-        "places AWS admin public-edge routes after gateway MinIO bootstrap and gateway chart setup"
-        $ do
-          let bootstrapIndex = elemIndex "ensureGatewayMinioBootstrap" steps
+          let gatewayReadyIndex = elemIndex "observeAwsGatewayFullReady" steps
+              acmeIndex = elemIndex "ensureAwsSubstrateAcmeRuntime" steps
               adminIndex = elemIndex "ensureAdminPublicEdgeRoutes SubstrateAws" steps
-          bootstrapIndex `shouldSatisfy` (`indexPrecedes` adminIndex)
+          gatewayReadyIndex `shouldSatisfy` (`indexPrecedes` acmeIndex)
+          acmeIndex `shouldSatisfy` (`indexPrecedes` adminIndex)
+      it "classifies EKS node observations without treating absence as readiness" $ do
+        Prodbox.Lib.AwsSubstratePlatform.classifyEksNodesReadiness "node-a:True\nnode-b:true\n"
+          `shouldBe` Right ReadinessProbeReady
+        Prodbox.Lib.AwsSubstratePlatform.classifyEksNodesReadiness ""
+          `shouldBe` Right (ReadinessProbePending "EKS has no observable nodes")
+        Prodbox.Lib.AwsSubstratePlatform.classifyEksNodesReadiness "node-a:False\n"
+          `shouldBe` Right (ReadinessProbePending "EKS nodes are not Ready: node-a:False")
       it "renders AWS admin routes on the AWS subzone host and issuer" $ do
         let rendered =
               BL8.unpack
@@ -11661,6 +12415,26 @@ main = mainWithSuite "prodbox-unit" $ do
               perconaIndex = elemIndex "ensurePostgresOperatorRuntime" steps
           mirrorIndex `shouldSatisfy` (`indexPrecedes` runtimeIndex)
           runtimeIndex `shouldSatisfy` (`indexPrecedes` perconaIndex)
+
+  describe "Sprint 7.32 scoped gateway Service port-forward" $ do
+    let spec =
+          GatewayPortForward.GatewayServicePortForward
+            { GatewayPortForward.gatewayPortForwardNamespace = "gateway"
+            , GatewayPortForward.gatewayPortForwardServiceName = "gateway"
+            , GatewayPortForward.gatewayPortForwardRemotePort = 8443
+            , GatewayPortForward.gatewayPortForwardEnvironment = Nothing
+            , GatewayPortForward.gatewayPortForwardWorkingDirectory = Just "/tmp/prodbox"
+            }
+    it "renders the exact loopback gateway Service port-forward command" $
+      renderSubprocess (GatewayPortForward.gatewayServicePortForwardSubprocess spec 49152)
+        `shouldBe` "kubectl --namespace gateway port-forward service/gateway 49152:8443"
+    it "rejects invalid coordinates and TCP ports before launching kubectl" $ do
+      GatewayPortForward.validateGatewayServicePortForward
+        spec {GatewayPortForward.gatewayPortForwardRemotePort = 0}
+        `shouldSatisfy` isLeft
+      GatewayPortForward.validateGatewayServicePortForward
+        spec {GatewayPortForward.gatewayPortForwardServiceName = "Gateway_Invalid"}
+        `shouldSatisfy` isLeft
 
   describe "Sprint 7.5.c.ii EKS containerd registry-mirror DaemonSet" $ do
     let cfg = Prodbox.Lib.EksContainerdMirror.defaultProdboxMirrorConfig

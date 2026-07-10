@@ -886,7 +886,23 @@ host root-token direct write. Once the operator JWT can be minted, a daemon reje
 failure is authoritative and does not bypass to a host root-token write; the host fallback remains
 only before that service account is available or in explicit test seams. The daemon never uses its
 own read-only `prodbox-gateway-daemon` identity for the write, and the role cannot reach the rest
-of the KV store, the Transit keys, or the federation custody tree. The `vault_operator_password`
+of the KV store, the Transit keys, or the federation custody tree. Sprint `2.30` makes this read-only
+role a typed cross-module identity: `Prodbox.Vault.RoleId` defines
+`VaultRoleGatewayDaemon :: VaultRoleId`, and `vaultRoleIdText` projects it to
+`prodbox-gateway-daemon`. Both `defaultVaultReconcilePlan`'s `VaultKubernetesRoleSpec` and the
+supported generated ChartPlatform gateway release values consume that projection. The role spec
+binds exactly `["prodbox-gateway", "gateway-gateway"]`: `prodbox-gateway` grants the object-store
+HMAC read and `prodbox-pulumi-state` Transit operations, while `gateway-gateway` grants the per-node
+event-key and gateway AWS/MinIO KV reads. Unit tests pin exactly those two policies, build and decode
+the actual generated AWS gateway release values to prove `vault.role` equals the typed projection,
+and scan `ChartPlatform.hs` to reject a duplicated role-name literal.
+
+The static `charts/gateway/values.yaml` file retains `prodbox-gateway-daemon` as the documented
+chart default. It is not the typed consumer asserted by Sprint `2.30`: the supported generated
+ChartPlatform values override the role from `VaultRoleId`. This closure therefore covers the
+gateway-daemon role identity on the supported generated-render and Vault-reconcile paths; it does
+not claim that every gateway configuration surface is single-sourced (see
+[helm_chart_platform_doctrine.md](./helm_chart_platform_doctrine.md)). The `vault_operator_password`
 (needed before Vault is unsealed) and the ephemeral `aws_admin_for_test_simulation` credential
 (never stored in Vault) stay host-side.
 See [distributed_gateway_architecture.md §11](./distributed_gateway_architecture.md#11-rest-api).

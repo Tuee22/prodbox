@@ -11,11 +11,15 @@ module Prodbox.TestRunner
   , integrationRunbookCommandArgs
   , PublicEdgeCertificateFailure (..)
   , awsSubstrateBootstrapCommandArgs
+  , awsSubstrateBootstrapRestorePlan
+  , awsSubstrateBootstrapRestoreSteps
   , awsPostflightDestroyCommandArgs
   , publicEdgeCertificateReissueStatusPatch
   , renderTestRefusal
   , supportedRuntimeBootstrapNeedsReconcile
   , supportedRuntimeBootstrapNeedsKeycloakSmtpSync
+  , supportedRuntimeBootstrapRestorePlan
+  , supportedRuntimePostflightRestorePlan
   , testModePreflightAtPaths
   , testModePreflightAtPath
   , testTopologyModeGate
@@ -74,8 +78,10 @@ import Prodbox.CLI.Output
   )
 import Prodbox.CLI.Rke2
   ( ensureGatewayMinioBootstrap
+  , observeGatewayBackendRoundTripOnce
   , rke2InstallPresent
   )
+import Prodbox.CLI.Vault (gatewayEndpointFromEnv)
 import Prodbox.CheckCode (runCheckCode)
 import Prodbox.Config.Tier0 qualified as Tier0
 import Prodbox.EffectDAG
@@ -86,6 +92,8 @@ import Prodbox.EffectInterpreter
   , runEffectDAG
   )
 import Prodbox.Error (fatalError)
+import Prodbox.Gateway.Client qualified as GatewayClient
+import Prodbox.Gateway.Types (PeerEndpoint (..))
 import Prodbox.Infra.AwsEksTestStack
   ( withEksKubeconfig
   )
@@ -98,6 +106,11 @@ import Prodbox.Lib.Storage
   ( testCaseDataRoot
   , testDataRootRelative
   , testManualPvHostRootEnv
+  )
+import Prodbox.Lifecycle.Preconditions
+  ( Precondition
+  , checkAll
+  , renderPreconditionFailures
   )
 import Prodbox.Lifecycle.ResourceClass qualified as ResourceClass
 import Prodbox.Prerequisite
@@ -144,6 +157,15 @@ import Prodbox.TestPlan
   , TestExecutionMode (..)
   , TestExecutionPlan (..)
   , testExecutionPlan
+  )
+import Prodbox.TestRestore
+  ( RestoreChart
+  , RestoreCyclePlan (..)
+  , RestoreCycleStep (..)
+  , RestoreKeycloakSmtp (..)
+  , buildRestoreCyclePlan
+  , gatewayDaemonLivenessPrecondition
+  , restoreChartId
   )
 import Prodbox.TestTopology
   ( TestSuite (..)
@@ -953,41 +975,10 @@ supportedRuntimeBootstrapActions repoRoot environment suitePlan =
             ]
        in [emitLineAction phaseOnePointSixMessage]
             ++ reconcileActions
-            ++ [ runNativeCliCommandForExitCode repoRoot environment ["charts", "delete", "websocket", "--yes"]
-               , runNativeCliCommandForExitCode repoRoot environment ["charts", "delete", "api", "--yes"]
-               , runNativeCliCommandForExitCode repoRoot environment ["charts", "delete", "vscode", "--yes"]
-               , runNativeCliCommandForExitCode repoRoot environment ["charts", "delete", "gateway", "--yes"]
-               , -- Sprint 2.19 closure (2026-05-29): re-ensure the gateway-minio
-                 -- Secret + the matching MinIO user AFTER `charts delete gateway`
-                 -- (helm uninstall + atomic rollback can delete the Secret despite
-                 -- the `helm.sh/resource-policy: keep` annotation) and BEFORE
-                 -- `charts reconcile gateway` so the Deployment's volume mount can
-                 -- bind to a present Secret and the daemon authenticates as a
-                 -- user that exists in MinIO. Idempotent: reuses existing Secret
-                 -- when present, regenerates when absent; the Job's
-                 -- `mc admin user add` / `mc admin policy attach` are no-ops on
-                 -- re-run.
-                 ensureGatewayMinioBootstrap repoRoot
-               , runNativeCliCommandForExitCode repoRoot environment ["charts", "reconcile", "gateway"]
-               , -- The Keycloak SMTP sync reads the aws-ses Pulumi stack outputs
-                 -- through the gateway daemon's MinIO object-store, so it MUST run
-                 -- AFTER `charts reconcile gateway` restores the daemon. Running it
-                 -- while the daemon is down (from the preceding `charts delete
-                 -- gateway`) fails with the daemon unreachable on the loopback
-                 -- NodePort ("failed to load encrypted Pulumi checkpoint: Connection
-                 -- refused"), which strands the restore before the gateway reconcile
-                 -- and leaves the postflight AWS destroys without a daemon too.
-                 syncKeycloakSmtpForSupportedRuntime repoRoot suitePlan
-               , runNativeCliCommandForExitCode repoRoot environment ["charts", "reconcile", "vscode"]
-               , runNativeCliCommandForExitCode repoRoot environment ["charts", "reconcile", "api"]
-               , runNativeCliCommandForExitCode repoRoot environment ["charts", "reconcile", "websocket"]
-               , runWaitForPublicEdgeReady
-                   repoRoot
-                   environment
-                   SubstrateHomeLocal
-                   publicEdgeReadyAttempts
-                   publicEdgeReadyDelayMicroseconds
-               ]
+            ++ restoreCycleActions
+              repoRoot
+              environment
+              (supportedRuntimeBootstrapRestorePlan suitePlan)
             ++ awsSubstrateBootstrapActions repoRoot environment suitePlan
     else []
 
@@ -1011,14 +1002,78 @@ supportedRuntimeBootstrapNeedsKeycloakSmtpSync suitePlan =
   nativeRequiresSupportedRuntimeBootstrap suitePlan
     && ValidationKeycloakInvite `elem` nativeValidations suitePlan
 
-syncKeycloakSmtpForSupportedRuntime :: FilePath -> NativeSuitePlan -> IO ExitCode
-syncKeycloakSmtpForSupportedRuntime repoRoot suitePlan =
-  if supportedRuntimeBootstrapNeedsKeycloakSmtpSync suitePlan
-    then
+supportedRuntimeBootstrapRestorePlan :: NativeSuitePlan -> RestoreCyclePlan
+supportedRuntimeBootstrapRestorePlan suitePlan =
+  buildRestoreCyclePlan SubstrateHomeLocal smtpRestore
+ where
+  smtpRestore
+    | supportedRuntimeBootstrapNeedsKeycloakSmtpSync suitePlan = RestoreWithKeycloakSmtp
+    | otherwise = RestoreWithoutKeycloakSmtp
+
+supportedRuntimePostflightRestorePlan :: NativeSuitePlan -> RestoreCyclePlan
+supportedRuntimePostflightRestorePlan _ =
+  buildRestoreCyclePlan SubstrateHomeLocal RestoreWithoutKeycloakSmtp
+
+restoreCycleActions
+  :: FilePath -> [(String, String)] -> RestoreCyclePlan -> [IO ExitCode]
+restoreCycleActions repoRoot environment restorePlan =
+  map
+    (restoreCycleStepAction repoRoot environment (restoreCycleSubstrate restorePlan))
+    (restoreCycleSteps restorePlan)
+
+restoreCycleStepAction
+  :: FilePath -> [(String, String)] -> Substrate -> RestoreCycleStep -> IO ExitCode
+restoreCycleStepAction repoRoot environment substrate restoreStep =
+  case restoreStep of
+    RestoreDeleteChart chart ->
+      runNativeCliCommandForExitCode
+        repoRoot
+        environment
+        (restoreChartCommandArgs substrate "delete" chart ["--yes"])
+    RestoreEnsureGatewayMinioBootstrap -> ensureGatewayMinioBootstrap repoRoot
+    RestoreReconcileChart chart ->
+      runNativeCliCommandForExitCode
+        repoRoot
+        environment
+        (restoreChartCommandArgs substrate "reconcile" chart [])
+    RestoreSyncKeycloakSmtp -> syncKeycloakSmtpForSupportedRuntime repoRoot
+    RestoreWaitForPublicEdge ->
+      runWaitForPublicEdgeReady
+        repoRoot
+        environment
+        substrate
+        publicEdgeReadyAttempts
+        publicEdgeReadyDelayMicroseconds
+
+restoreChartCommandArgs :: Substrate -> String -> RestoreChart -> [String] -> [String]
+restoreChartCommandArgs substrate commandName chart trailingArguments =
+  ["charts", commandName, restoreChartId chart]
+    ++ trailingArguments
+    ++ case substrate of
+      SubstrateHomeLocal -> []
+      SubstrateAws -> ["--substrate", substrateId substrate]
+
+syncKeycloakSmtpForSupportedRuntime :: FilePath -> IO ExitCode
+syncKeycloakSmtpForSupportedRuntime repoRoot = do
+  daemonPrecondition <- supportedRuntimeGatewayDaemonPrecondition
+  preconditionResult <- checkAll [daemonPrecondition]
+  case preconditionResult of
+    Left failures -> failWith (renderPreconditionFailures failures)
+    Right () ->
       syncKeycloakSmtpForCurrentKubeContext
         repoRoot
         "Supported runtime bootstrap: syncing Keycloak SMTP Secret from aws-ses"
-    else pure ExitSuccess
+
+supportedRuntimeGatewayDaemonPrecondition :: IO Precondition
+supportedRuntimeGatewayDaemonPrecondition = do
+  endpoint <- gatewayEndpointFromEnv
+  let endpointLabel = peerRestHost endpoint ++ ":" ++ show (peerRestPort endpoint)
+  pure
+    ( gatewayDaemonLivenessPrecondition
+        GatewayClient.daemonRestartBridgeRetryPolicy
+        endpointLabel
+        observeGatewayBackendRoundTripOnce
+    )
 
 -- | AWS-substrate-specific bootstrap: provision the per-run AWS Pulumi
 -- stacks and deploy the AWS chart set so substrate-aware validations
@@ -1050,9 +1105,9 @@ awsSubstrateBootstrapActions repoRoot environment suitePlan =
 
 runAwsSubstrateBootstrap :: FilePath -> [(String, String)] -> NativeSuitePlan -> IO ExitCode
 runAwsSubstrateBootstrap repoRoot environment suitePlan =
-  case awsSubstrateBootstrapCommandArgs suitePlan of
+  case awsSubstrateStackCommandArgs suitePlan of
     [] -> pure ExitSuccess
-    subzoneCommand : remainingCommands -> do
+    subzoneCommand : remainingStackCommands -> do
       subzoneExit <- runNativeCliCommandForExitCode repoRoot environment subzoneCommand
       case subzoneExit of
         failure@(ExitFailure _) -> pure failure
@@ -1064,43 +1119,34 @@ runAwsSubstrateBootstrap repoRoot environment suitePlan =
           -- `Prodbox.PublicEdge.resolveSubstrateHostedZoneId`. No
           -- `PRODBOX_AWS_SUBSTRATE_HOSTED_ZONE_ID` env var is set or read
           -- (config_doctrine.md § 10, no `PRODBOX_*` config reads).
-          runAwsSubstrateBootstrapAfterSubzone
-            repoRoot
-            environment
-            remainingCommands
-
-runAwsSubstrateBootstrapAfterSubzone
-  :: FilePath -> [(String, String)] -> [[String]] -> IO ExitCode
-runAwsSubstrateBootstrapAfterSubzone repoRoot environmentWithHostedZone commands =
-  let (stackCommands, chartCommands) = break isAwsSubstrateChartDeployCommand commands
-   in do
-        stackExit <-
           runSequentially
             ( map
-                (runNativeCliCommandForExitCode repoRoot environmentWithHostedZone)
-                stackCommands
+                (runNativeCliCommandForExitCode repoRoot environment)
+                remainingStackCommands
+                ++ map
+                  (awsSubstrateBootstrapRestoreStepAction repoRoot environment)
+                  awsSubstrateBootstrapRestoreSteps
             )
-        case stackExit of
-          failure@(ExitFailure _) -> pure failure
-          ExitSuccess -> do
-            smtpSyncExit <-
-              if null chartCommands
-                then pure ExitSuccess
-                else syncKeycloakSmtpForAwsSubstrate repoRoot
-            case smtpSyncExit of
-              failure@(ExitFailure _) -> pure failure
-              ExitSuccess ->
-                runSequentially
-                  ( map
-                      (runNativeCliCommandForExitCode repoRoot environmentWithHostedZone)
-                      chartCommands
-                  )
 
-isAwsSubstrateChartDeployCommand :: [String] -> Bool
-isAwsSubstrateChartDeployCommand command =
-  case command of
-    ["charts", "reconcile", _chartName, "--substrate", "aws"] -> True
-    _ -> False
+awsSubstrateBootstrapRestoreStepAction
+  :: FilePath -> [(String, String)] -> RestoreCycleStep -> IO ExitCode
+awsSubstrateBootstrapRestoreStepAction repoRoot environment restoreStep =
+  case restoreStep of
+    RestoreReconcileChart chart ->
+      runNativeCliCommandForExitCode
+        repoRoot
+        environment
+        (restoreChartCommandArgs SubstrateAws "reconcile" chart [])
+    RestoreSyncKeycloakSmtp -> syncKeycloakSmtpForAwsSubstrate repoRoot
+    RestoreDeleteChart _ -> unsupportedProjectionStep
+    RestoreEnsureGatewayMinioBootstrap -> unsupportedProjectionStep
+    RestoreWaitForPublicEdge -> unsupportedProjectionStep
+ where
+  unsupportedProjectionStep =
+    failWith
+      ( "AWS substrate bootstrap restore projection admitted unsupported step: "
+          ++ show restoreStep
+      )
 
 syncKeycloakSmtpForAwsSubstrate :: FilePath -> IO ExitCode
 syncKeycloakSmtpForAwsSubstrate repoRoot = do
@@ -1141,17 +1187,52 @@ syncKeycloakSmtpForCurrentKubeContext repoRoot message = do
 
 awsSubstrateBootstrapCommandArgs :: NativeSuitePlan -> [[String]]
 awsSubstrateBootstrapCommandArgs suitePlan =
+  awsSubstrateStackCommandArgs suitePlan
+    ++ case nativeSubstrate suitePlan of
+      SubstrateHomeLocal -> []
+      SubstrateAws ->
+        concatMap awsSubstrateBootstrapRestoreStepCommandArgs awsSubstrateBootstrapRestoreSteps
+
+awsSubstrateStackCommandArgs :: NativeSuitePlan -> [[String]]
+awsSubstrateStackCommandArgs suitePlan =
   case nativeSubstrate suitePlan of
     SubstrateHomeLocal -> []
     SubstrateAws ->
       [ ["aws", "stack", "aws-subzone", "reconcile"]
       , ["aws", "stack", "eks", "reconcile"]
       , ["aws", "stack", "test", "reconcile"]
-      , ["charts", "reconcile", "gateway", "--substrate", "aws"]
-      , ["charts", "reconcile", "vscode", "--substrate", "aws"]
-      , ["charts", "reconcile", "api", "--substrate", "aws"]
-      , ["charts", "reconcile", "websocket", "--substrate", "aws"]
       ]
+
+-- | The AWS bootstrap consumes the same typed restore-cycle builder as the
+-- home bootstrap. The runtime projection below deliberately retains only the
+-- AWS steady-state operations: chart reconciles and the SMTP sync between the
+-- gateway and dependent charts.
+awsSubstrateBootstrapRestorePlan :: RestoreCyclePlan
+awsSubstrateBootstrapRestorePlan =
+  buildRestoreCyclePlan SubstrateAws RestoreWithKeycloakSmtp
+
+awsSubstrateBootstrapRestoreSteps :: [RestoreCycleStep]
+awsSubstrateBootstrapRestoreSteps =
+  concatMap project (restoreCycleSteps awsSubstrateBootstrapRestorePlan)
+ where
+  project :: RestoreCycleStep -> [RestoreCycleStep]
+  project restoreStep =
+    case restoreStep of
+      RestoreDeleteChart _ -> []
+      RestoreEnsureGatewayMinioBootstrap -> []
+      RestoreReconcileChart _ -> [restoreStep]
+      RestoreSyncKeycloakSmtp -> [restoreStep]
+      RestoreWaitForPublicEdge -> []
+
+awsSubstrateBootstrapRestoreStepCommandArgs :: RestoreCycleStep -> [[String]]
+awsSubstrateBootstrapRestoreStepCommandArgs restoreStep =
+  case restoreStep of
+    RestoreReconcileChart chart ->
+      [restoreChartCommandArgs SubstrateAws "reconcile" chart []]
+    RestoreSyncKeycloakSmtp -> []
+    RestoreDeleteChart _ -> []
+    RestoreEnsureGatewayMinioBootstrap -> []
+    RestoreWaitForPublicEdge -> []
 
 -- | Post-success suite restore actions: reconcile the local cluster
 -- and re-deploy the canonical chart set so the operator's substrate
@@ -1166,32 +1247,11 @@ supportedRuntimePostflightActions repoRoot environment suitePlan =
     then
       [ emitLineAction postTestRestoreMessage
       , runNativeCliCommandForExitCode repoRoot environment ["cluster", "reconcile", "--with-edge"]
-      , runNativeCliCommandForExitCode repoRoot environment ["charts", "delete", "websocket", "--yes"]
-      , runNativeCliCommandForExitCode repoRoot environment ["charts", "delete", "api", "--yes"]
-      , runNativeCliCommandForExitCode repoRoot environment ["charts", "delete", "vscode", "--yes"]
-      , runNativeCliCommandForExitCode repoRoot environment ["charts", "delete", "gateway", "--yes"]
-      , -- Sprint 2.19 closure (2026-05-29): re-ensure the gateway-minio
-        -- Secret + the matching MinIO user AFTER `charts delete gateway`
-        -- (helm uninstall + atomic rollback can delete the Secret despite
-        -- the `helm.sh/resource-policy: keep` annotation) and BEFORE
-        -- `charts reconcile gateway` so the Deployment's volume mount can
-        -- bind to a present Secret and the daemon authenticates as a
-        -- user that exists in MinIO. Idempotent: reuses existing Secret
-        -- when present, regenerates when absent; the Job's
-        -- `mc admin user add` / `mc admin policy attach` are no-ops on
-        -- re-run.
-        ensureGatewayMinioBootstrap repoRoot
-      , runNativeCliCommandForExitCode repoRoot environment ["charts", "reconcile", "gateway"]
-      , runNativeCliCommandForExitCode repoRoot environment ["charts", "reconcile", "vscode"]
-      , runNativeCliCommandForExitCode repoRoot environment ["charts", "reconcile", "api"]
-      , runNativeCliCommandForExitCode repoRoot environment ["charts", "reconcile", "websocket"]
-      , runWaitForPublicEdgeReady
+      ]
+        ++ restoreCycleActions
           repoRoot
           environment
-          SubstrateHomeLocal
-          publicEdgeReadyAttempts
-          publicEdgeReadyDelayMicroseconds
-      ]
+          (supportedRuntimePostflightRestorePlan suitePlan)
     else []
 
 runNativeValidations :: FilePath -> [(String, String)] -> NativeSuitePlan -> IO ExitCode

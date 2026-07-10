@@ -32,6 +32,7 @@
 module Prodbox.Config.SchemaDhall
   ( -- * Pure renderers (Haskell source of truth → Dhall schema text)
     renderConfigTypesDhall
+  , renderDefaultComponentGraphDhall
   , renderTestSecretsTypesDhall
 
     -- * IO: materialize the generated schema files at the repository root
@@ -54,6 +55,10 @@ import Dhall.Core (Expr)
 import Dhall.Core qualified as Core
 import Dhall.Map qualified as DhallMap
 import Dhall.Src (Src)
+import Prodbox.Config.ComponentGraph
+  ( ComponentNode
+  , defaultComponentGraph
+  )
 import Prodbox.Settings (ConfigFile, defaultConfigFile)
 import Prodbox.Settings.SecretRef (SecretRef)
 import Prodbox.Vault.Host (TestSecrets, defaultTestSecrets)
@@ -79,6 +84,14 @@ renderTestSecretsTypesDhall =
   testSecretsTypesHeader
     <> Core.pretty testSecretsTypesExpr
     <> "\n"
+
+-- | The production default component graph encoded independently for
+-- schema-less graph-consuming test fixtures. It uses the same generic encoder
+-- as the ConfigFile default, so no second textual graph can drift.
+renderDefaultComponentGraphDhall :: String
+renderDefaultComponentGraphDhall =
+  Text.unpack
+    (Core.pretty (injectedValue (Dhall.inject @[ComponentNode]) defaultComponentGraph))
 
 -- | @let SecretRef = <union> in { SecretRef = SecretRef, Type = …, default = … }@.
 configTypesExpr :: DhallExpr

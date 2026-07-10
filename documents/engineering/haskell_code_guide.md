@@ -77,7 +77,8 @@ The current supported worktree has started converging on a small shared foundati
 - `src/Prodbox/Retry.hs` owns `RetryPolicy` and pure backoff calculation (the `AppError`-keyed
   retrier).
 - `src/Prodbox/Service.hs` owns `ServiceError`, the argv-shaped capability classes, the IO-backed
-  MinIO / Redis / PostgreSQL service runners, and the service-level retry helper.
+  MinIO / Redis / PostgreSQL service runners, the constructor-owned transient-failure classifier,
+  and the service-level retry helper.
 - `src/Prodbox/Naming.hs` owns DNS-1123-safe resource naming helpers.
 - `src/Prodbox/StateMachine.hs` owns phantom-indexed transition surfaces for multi-state gateway,
   Pulumi, and chart workflows.
@@ -466,6 +467,36 @@ Classification happens **once**, where the subprocess result is observed (exit c
 shape), and is the only place that decides which constructor a failure becomes. Downstream
 code reads the classification; it never re-decides retryability.
 
+### Shared transient subprocess-failure classifier (Sprint 1.57)
+
+A subprocess that started and returned a non-zero exit has a `ProcessOutput`, not a
+`ServiceError`. Retry decisions over that rendered output use the shared constructor-owned base in
+`Prodbox.Service`:
+
+```haskell
+data TransientFailureClass
+    = TransientNameResolutionFailure
+    | TransientConnectionFailure
+    | TransientHttpFailure
+    | TransientTimeoutFailure
+    deriving (Bounded, Enum, Eq, Show)
+
+isRetryableTransientFailure :: [String] -> String -> Bool
+```
+
+Each `TransientFailureClass` constructor owns its common fragments. The first argument to
+`isRetryableTransientFailure` contains only operation-specific extensions, such as AWS token
+propagation errors or a Helm fetch failure; the helper case-normalizes both the extensions and the
+observed detail. A caller does not copy the shared name-resolution, connection, transient-HTTP, or
+timeout fragments into its own module.
+
+`checkInlineRetrySubstringLists` in `Prodbox.CheckCode` mechanically rejects a new top-level
+`isRetryable*` definition that performs its own `any`/`isInfixOf` substring-table scan without
+delegating to `isRetryableTransientFailure`. During adoption, its allowlist was limited to exact
+path-and-function pairs for the Route 53, Helm, Harbor, and EKS classifiers. Sprint `4.46` removed
+all three RKE2 exceptions when those callers migrated; Sprint `7.32` removed the final EKS
+exception. No legacy classifier allowance remains.
+
 ### Generic retry across service errors
 
 ```haskell
@@ -500,6 +531,8 @@ constructor short-circuits immediately.
   asserted by the caller.
 - Retrying a non-retryable error (not-found, permission-denied) by classifying it as retryable
   to "get the loop to run".
+- Defining a new top-level `isRetryable*` substring table instead of delegating common transient
+  groups to `isRetryableTransientFailure` and supplying only operation-specific extensions.
 - Subsystem-specific retry logic duplicated across call sites.
 - Service errors that do not implement `AsServiceError`.
 
@@ -556,6 +589,18 @@ keeps these split rather than collapsing them into one loop:
 
 Both may share the `RetryPolicy` backoff schedule, but the poller is its own function. Folding
 "poll until ready" into the error retrier conflates a pending observation with a failure.
+
+Sprint `1.59` makes the readiness side three-valued without changing `PollOutcome`'s generic
+contract. A typed `ComponentReadinessTarget` carries one caller-injected action returning
+`Either Text ReadinessProbeResult`; it closes over caller-owned coordinates rather than introducing
+new endpoint/resource constants. `ReadinessProbePending` becomes `NotReadyYet`, while an action
+`Left` becomes `Unreachable`. Both are gate-closed and lower to bounded `PollPending` outcomes in
+`waitForComponentReadiness`; exhaustion returns the last detail. `PollFailed` remains the generic
+poller's immediate hard-failure arm and is **not** an alias for a temporarily unreachable declared
+probe. Structural target/probe mismatch is different again: the wait rejects it immediately before
+executing the incompatible action or entering the poll loop. Production bindings of existing
+rollout/operator/registry/gateway/systemd/Vault primitives remain Sprints
+`3.24`/`4.45`/`5.15`/`7.32`; the Phase-1 module wraps none of them.
 
 **Forbidden patterns:**
 

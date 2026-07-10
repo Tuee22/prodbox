@@ -14,6 +14,7 @@ module Prodbox.CheckCode
   , haskellStyleViolations
   , iamCreateSiteViolations
   , iamCreateVerbs
+  , inlineRetrySubstringListViolations
   , isRelativeLinkTarget
   , listRepoOwnedPaths
   , matchesSprintToken
@@ -459,6 +460,7 @@ runDoctrineAlignmentCheck repoRoot = do
   let surfaceViolations =
         map (("- " ++) . renderDoctrineViolation) (doctrineViolationsInPaths repoPaths)
   serviceErrorViolations <- checkServiceErrorRetryableLiteral repoRoot
+  inlineRetryListViolations <- checkInlineRetrySubstringLists repoRoot
   planOptionsHonoredViolations' <- checkPlanOptionsHonored repoRoot
   -- Sprint 4.27: the create-site coverage lint (the §3.1 totality gate
   -- over every `aws`/`pulumi` create call site, now generalized from
@@ -473,6 +475,7 @@ runDoctrineAlignmentCheck repoRoot = do
   substrateImagePinningViolations' <- checkSubstrateImagePinning repoRoot
   case surfaceViolations
     ++ map ("- " ++) serviceErrorViolations
+    ++ map ("- " ++) inlineRetryListViolations
     ++ map ("- " ++) planOptionsHonoredViolations'
     ++ map ("- " ++) createCallSiteViolations
     ++ map ("- " ++) substrateImagePinningViolations' of
@@ -482,6 +485,7 @@ runDoctrineAlignmentCheck repoRoot = do
         ( unlines
             ( ( "Doctrine alignment failed. Remove unsupported workflow or git-hook surfaces, "
                   ++ "hand-set ServiceError retryable literals, "
+                  ++ "inline retry-substring lists, "
                   ++ "destructive dispatch arms that discard their --dry-run / --plan-file "
                   ++ "options, and AWS/Pulumi create call sites with no registered managed "
                   ++ "resource:"
@@ -1278,6 +1282,102 @@ serviceErrorRetryableLiteralPresent tokens =
 
 serviceErrorWindow :: Int
 serviceErrorWindow = 4
+
+-- | Sprint 1.57: scan production Haskell modules for retry classifiers that
+-- carry their own substring table instead of delegating to the shared
+-- constructor-owned base in 'Prodbox.Service'. Sprint 7.32 removed the final
+-- EKS allowance, so every production classifier is now checked uniformly.
+checkInlineRetrySubstringLists :: FilePath -> IO [String]
+checkInlineRetrySubstringLists repoRoot = do
+  repoPaths <- listRepoOwnedPaths repoRoot
+  fmap concat $
+    forM
+      [ path
+      | path <- repoPaths
+      , ".hs" `isSuffixOf` path
+      , any (`isPrefixOf` path) ["src/", "app/"]
+      , path /= "src/Prodbox/Service.hs"
+      , path /= forbidLintSelfPath
+      ]
+      ( \relativePath -> do
+          contents <- readFile (repoRoot </> relativePath)
+          pure (inlineRetrySubstringListViolations relativePath contents)
+      )
+
+-- | Pure half of 'checkInlineRetrySubstringLists'. Any @isRetryable…@
+-- definition that performs its own @isInfixOf@ match is an inline classifier;
+-- operation-specific extensions passed to 'isRetryableTransientFailure' do
+-- not need a matcher and therefore pass.
+inlineRetrySubstringListViolations :: FilePath -> String -> [String]
+inlineRetrySubstringListViolations relativePath contents =
+  [ relativePath
+      ++ " defines inline retry substrings in `"
+      ++ classifierName
+      ++ "`; delegate common transient classes to "
+      ++ "`Prodbox.Service.isRetryableTransientFailure` and pass only "
+      ++ "operation-specific extensions. See bootstrap_readiness_doctrine.md §4."
+  | (classifierName, classifierBody) <- topLevelRetryClassifierBodies contents
+  , classifierUsesInlineSubstringList classifierBody
+  ]
+
+classifierUsesInlineSubstringList :: String -> Bool
+classifierUsesInlineSubstringList classifierBody =
+  "isInfixOf" `elem` bodyTokens
+ where
+  bodyTokens =
+    tokenizeSource
+      (stripHaskellComments (stripStringLiterals classifierBody))
+
+-- | Mask line comments and nested block comments while preserving newlines.
+-- String contents are masked before this helper is called, so comment markers
+-- embedded in a diagnostic literal cannot affect the scan.
+stripHaskellComments :: String -> String
+stripHaskellComments = go 0
+ where
+  go :: Int -> String -> String
+  go _ [] = []
+  go 0 ('-' : '-' : remaining) = stripLineComment remaining
+  go depth ('{' : '-' : remaining) = ' ' : ' ' : go (depth + 1) remaining
+  go depth ('-' : '}' : remaining)
+    | depth > 0 = ' ' : ' ' : go (depth - 1) remaining
+  go depth (character : remaining)
+    | depth > 0 = masked character : go depth remaining
+    | otherwise = character : go depth remaining
+
+  stripLineComment :: String -> String
+  stripLineComment [] = []
+  stripLineComment ('\n' : remaining) = '\n' : go 0 remaining
+  stripLineComment (_ : remaining) = ' ' : stripLineComment remaining
+
+  masked :: Char -> Char
+  masked '\n' = '\n'
+  masked _ = ' '
+
+topLevelRetryClassifierBodies :: String -> [(String, String)]
+topLevelRetryClassifierBodies = go . lines
+ where
+  go [] = []
+  go (sourceLine : remaining) =
+    case retryClassifierDefinitionName sourceLine of
+      Nothing -> go remaining
+      Just classifierName ->
+        let definitionIndent = leadingWhitespaceCount sourceLine
+            (bodyLines, rest) = span (isDefinitionContinuation definitionIndent) remaining
+         in (classifierName, unlines (sourceLine : bodyLines)) : go rest
+
+  isDefinitionContinuation definitionIndent sourceLine =
+    null sourceLine
+      || leadingWhitespaceCount sourceLine > definitionIndent
+      || "--" `isPrefixOf` trimLeft sourceLine
+
+retryClassifierDefinitionName :: String -> Maybe String
+retryClassifierDefinitionName sourceLine
+  | '=' `notElem` sourceLine = Nothing
+  | otherwise =
+      case tokenizeSource (trimLeft sourceLine) of
+        classifierName : _
+          | "isRetryable" `isPrefixOf` classifierName -> Just classifierName
+        _ -> Nothing
 
 -- | Sprint 4.22 follow-on: the create-call-site coverage scan that
 -- enforces the managed-resource registry totality invariant

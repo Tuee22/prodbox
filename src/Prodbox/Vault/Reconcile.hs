@@ -63,6 +63,10 @@ import Prodbox.Vault.Client
   , vaultWriteKubernetesRole
   , vaultWritePolicy
   )
+import Prodbox.Vault.RoleId
+  ( VaultRoleId (VaultRoleGatewayDaemon)
+  , vaultRoleIdText
+  )
 
 data VaultMountSpec = VaultMountSpec
   { vaultMountSpecPath :: Text
@@ -193,7 +197,7 @@ defaultVaultReconcilePlan =
           ++ map chartSecretPolicy chartVaultSecretConsumers
     , vaultReconcileKubernetesRoles =
         [ VaultKubernetesRoleSpec
-            "prodbox-gateway-daemon"
+            (vaultRoleIdText VaultRoleGatewayDaemon)
             ["prodbox-gateway-daemon"]
             ["gateway"]
             -- The gateway daemon logs in under this role (charts/gateway/values.yaml

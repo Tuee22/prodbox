@@ -118,9 +118,36 @@ Policy:
    and gates closed (doctrine Statement 4); a registry `5xx` (it cannot reach MinIO) is retryable.
    This runs before `mirrorClusterImagesOnce` and every downstream registry write, closing the
    transient `minio.prodbox.svc.cluster.local` resolution race that front-door-only gating left open.
-   The retry classifier additionally treats `no such host` / `dial tcp` / `lookup` / `name resolution`
-   push failures as retryable so residual jitter is bounded rather than fatal. The AWS substrate has
-   parity (Sprint `7.31`): `ensureAwsSubstratePlatformRuntime` runs the same
+   The S3 storage-backend config this edge depends on carries the load-bearing `redirect.disable: true`
+   (the `127.0.0.1:30080` NodePort cannot follow S3 presigned redirects to cluster-internal MinIO DNS).
+   Sprint `4.44` replaces the former zero-argument untyped policy block with a required
+   `RegistryStorageBackend` value. Its `registryStorageBackendRedirect :: RedirectPolicy` always
+   renders explicitly: `RedirectDisabled` becomes `disable: true`, `RedirectEnabled` becomes
+   `disable: false`, and canonical `harborRegistryStorageBackend` chooses `RedirectDisabled`.
+   `registryConfigYaml` intentionally remains a deterministic `unlines` renderer; the guarantee is
+   that the typed input cannot omit the redirect decision, not that YAML line assembly disappeared.
+   The backend also uses the stable `harborRegistryStorageRegion = "us-east-1"` constant. The golden
+   at `test/golden/config/registry-config.yaml` pins the canonical output, including
+   `redirect.disable: true`, and unit coverage pins the alternate `false` rendering (the dropped
+   redirect line caused the 80a08e3 bring-up regression).
+
+   Registry credentials are unchanged: `REGISTRY_STORAGE_S3_ACCESSKEY` and
+   `REGISTRY_STORAGE_S3_SECRETKEY` remain keys in the existing `harbor-registry-s3` Secret and enter
+   the Deployment through `envFrom`; they are not fields of `RegistryStorageBackend` and do not
+   appear in the ConfigMap. Sprint `4.44` adds no Kubernetes/AWS resource and changes no
+   `ResourceRegistry` ownership; the existing ConfigMap, Deployment, Service, Secret, and bucket
+   keep their current owners. The
+   shared constructor-owned transient-fragment base and the no-new-inline-list `CheckCode` guard now
+   live in `src/Prodbox/Service.hs` / `src/Prodbox/CheckCode.hs` (Sprint `1.57`). Sprint `4.46` moved
+   the home registry-publication caller onto that base, retaining only its PUT-status extension; the
+   EKS edge caller joined the same base in Sprint `7.32`. The shared name-resolution, connection,
+   transient-HTTP, and timeout classes therefore bound residual jitter on both substrates without
+   duplicating a per-path list. Sprint `1.59` also landed the typed `BackendRoundTripTarget` and fail-closed
+   `ReadinessObservation` seam. Sprint `4.45` bound the existing home one-shot registry→MinIO probe
+   to that target while deriving the reconcile order, and Sprint `7.32` applies the corresponding
+   AWS binding. The AWS substrate has
+   deep-gate parity (Sprint `7.31`):
+   `ensureAwsSubstratePlatformRuntime` runs the same
    `ensureRegistryStorageBackendEdgeReady` gate before the EKS image-mirror Job and crane pushes, and
    `applyEksImageMirrorJob` re-applies the Job on an `isRetryableEksImageMirrorFailure`-matched
    transient failure.

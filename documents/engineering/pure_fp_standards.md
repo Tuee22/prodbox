@@ -2,7 +2,7 @@
 
 **Status**: Authoritative source
 **Supersedes**: N/A
-**Referenced by**: README.md, AGENTS.md, CLAUDE.md, documents/engineering/README.md, documents/engineering/code_quality.md, documents/engineering/dependency_management.md, documents/engineering/effect_interpreter.md, documents/engineering/lifecycle_reconciliation_doctrine.md, documents/engineering/refactoring_patterns.md, documents/engineering/unit_testing_policy.md, documents/engineering/pulsar_messaging_doctrine.md, documents/engineering/resource_scaling_doctrine.md, documents/engineering/pulsar_topic_lifecycle_doctrine.md, documents/engineering/tiered_storage_capacity_doctrine.md, documents/engineering/host_platform_doctrine.md, documents/engineering/cluster_topology_doctrine.md, documents/engineering/test_topology_doctrine.md, documents/engineering/bootstrap_readiness_doctrine.md
+**Referenced by**: README.md, AGENTS.md, CLAUDE.md, documents/engineering/README.md, documents/engineering/code_quality.md, documents/engineering/dependency_management.md, documents/engineering/effect_interpreter.md, documents/engineering/lifecycle_reconciliation_doctrine.md, documents/engineering/refactoring_patterns.md, documents/engineering/unit_testing_policy.md, documents/engineering/pulsar_messaging_doctrine.md, documents/engineering/resource_scaling_doctrine.md, documents/engineering/pulsar_topic_lifecycle_doctrine.md, documents/engineering/tiered_storage_capacity_doctrine.md, documents/engineering/host_platform_doctrine.md, documents/engineering/cluster_topology_doctrine.md, documents/engineering/test_topology_doctrine.md, documents/engineering/bootstrap_readiness_doctrine.md, DEVELOPMENT_PLAN/phase-1-runtime-cli-aws-foundations.md
 **Generated sections**: none
 
 > **Purpose**: Define the Haskell coding standards for `prodbox` so pure planning logic,
@@ -301,7 +301,36 @@ commit log, not a command sequence this process authors, so it is an exhaustive 
 a GADT (see
 [distributed_gateway_architecture.md](./distributed_gateway_architecture.md)). There is no valid
 in-process "transition" to encode at the type level, because no transition originates here; the
-log is the source of truth and the projection is recomputed, not stepped.
+log is the source of truth and the projection is recomputed, not stepped. Cluster **readiness** is a
+second reference example: it is *observed*, not commanded, so Sprint `1.59`'s
+`ReadinessObservation` (`ReadyObserved | NotReadyYet | Unreachable`) and `ReadinessProbeResult`
+(`ReadinessProbeReady | ReadinessProbePending`) are flat exhaustive ADTs — never GADTs — under the
+"readiness is a projection" rule that
+[bootstrap_readiness_doctrine.md](./bootstrap_readiness_doctrine.md) Statement 3 cites, and the bring-up
+inverse-polarity twin of the `ResidueStatus` teardown projection. `ComponentReadinessTarget` is also
+a flat sum: each constructor pairs typed component/backend identity with one caller-injected
+one-shot action. The target carries behavior at the interpreter boundary without pretending the
+process owns the external state or duplicating the caller's coordinates.
+
+The component dependency graph follows the same external-observation rule. A graph node is a
+declarative component/readiness fact, not a phantom lifecycle state. A bounded split is permitted
+only when one real component has two distinct externally observable readiness cuts, and each split
+node must carry exactly one `ReadinessProbe`; do not proliferate graph nodes into a general phase
+machine. Sprints `1.58`/`1.59` are the reference shape: `ComponentClusterBase` carries
+`ProbeServiceActive`; `ComponentVaultWorkload`
+(`ProbeRolloutComplete`) precedes `ComponentGatewayDaemonPreVault` (`ProbeRolloutComplete`), and
+both precede `ComponentVaultUnsealed` (`ProbeVaultUnsealed`) because supported root unseal is
+daemon-mediated. The pre-Vault daemon and unsealed-Vault nodes then precede
+`ComponentGatewayDaemonFull` (`ProbeBackendRoundTrip ComponentMinio`), whose dependency list also
+contains a `BackendWriteEdge` to MinIO. These are flat graph
+facts whose edges are pure data. They do not encode transitions or confer in-process authority over
+Vault or the daemon's observed state.
+
+The wait interpreter preserves this distinction. A target/probe type-shape mismatch is rejected
+before polling or executing the incompatible action. A compatible action's authoritative pending
+result becomes `NotReadyYet`; an observation error becomes `Unreachable`. Both remain bounded,
+gate-closed `PollPending` readings. `PollFailed` is the generic poller's separate immediate
+hard-error arm, not an alias for `Unreachable`. Only `ReadyObserved` opens readiness.
 
 This carve-out does **not** relax the rest of the discipline. Externally-authoritative state
 must still be a typed ADT, matched exhaustively (§2.1, §2.2), and must never be a raw `String`

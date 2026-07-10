@@ -15,6 +15,22 @@
 
 ## Phase Status
 
+✅ **Reclosed 2026-07-10 after the classifier follow-up** — Phase `4` expanded
+its **own** reconcile-driver + registry-config surface
+([Standard A/N](development_plan_standards.md#n-phase-independence-no-backward-blocking)). Sprint `4.43`
+single-sourced the STEP narration and landed the deep registry→MinIO gate. Sprint `4.44` is Done:
+the deterministic `registryConfigYaml` `unlines` renderer takes a required typed
+`RegistryStorageBackend`, always renders its `RedirectPolicy` as `disable: true|false`, and the
+canonical backend chooses `RedirectDisabled`. This changes neither managed-resource ownership nor
+credential delivery. Sprint `4.45` is also Done: `nativeInstallStepOrder` is graph-derived, the
+nested platform list is hoisted into three first-class steps, the compiled plan carries its
+validated DAG and order, graph/phase/edge/inventory/readiness violations fail closed, and every
+native component is bound to the Sprint `1.59` readiness seam. Sprint `4.46` delegates the Route 53,
+Helm, and Harbor retry classifiers to the landed Phase-1 `1.57` shared base, closes the confirmed
+Helm-DNS flake, and deletes all three transitional RKE2 lint allowances (unit 1276/1276; `dev check`
+exit 0).
+All earlier Phase `4` closures remain valid.
+
 ✅ **Reclosed 2026-07-06 for EffectDAG-driven reconcile ordering and deep readiness barriers** —
 Phase `4` expanded its own local-cluster lifecycle surface with Sprint `4.43`
 (✅ Done), the core of the bootstrap-readiness refactor
@@ -3597,9 +3613,11 @@ narration + execution project from, the deep `ensureRegistryStorageBackendEdgeRe
 **Live-proof**: pending (the green home `prodbox test all` past the image-mirror step — non-blocking,
 Standard O)
 **Independent Validation**: fake-boundary unit + `prodbox test integration cli` tests over
-(a) derived bootstrap ordering from a graph fixture, (b) the deep registry→MinIO edge gate refusing
-to proceed while the S3 write path is unproven / `Unreachable`, and (c) the retry classifier treating
-`no such host`/`dial tcp`/`lookup` as retryable. No AWS substrate or later phase required.
+(a) the graph-consistency lint over the hand-written step order (the 8/34 anchored steps),
+(b) the deep registry→MinIO edge gate refusing to proceed while the S3 write path is unproven /
+`Unreachable`, and (c) the **Harbor** retry classifier (`isRetryableHarborPublicationFailure`) treating
+`no such host`/`dial tcp`/`lookup` as retryable — the sibling `isRetryableHelmFailure` still omits them
+(a confirmed flake owned by new Sprint `4.46`). No AWS substrate or later phase required.
 **Docs to update**: `documents/engineering/bootstrap_readiness_doctrine.md`,
 `documents/engineering/local_registry_pipeline.md`,
 `documents/engineering/lifecycle_reconciliation_doctrine.md`,
@@ -3614,10 +3632,15 @@ registry→MinIO S3 race that fails `cluster reconcile` at the image-mirror step
 
 ### Deliverables
 
-- `cluster reconcile` bring-up order is a pure topological projection over the Sprint `1.56`
-  component dependency/readiness graph (M1). The imperative `runSequentially` step list and the
-  parallel `renderNativeInstallPlan` STEP narration are retired (ledger rows under this sprint); the
-  rendered plan is generated from the same graph so the ordering and its narration cannot drift.
+- `cluster reconcile` narration and execution project from ONE typed `ReconcileStepId` step table
+  (`nativeInstallStepOrder`), retiring the parallel `renderNativeInstallPlan` STEP narration that had
+  to be hand-kept in sync (ledger row under this sprint) — a real already-live drift closed
+  (`ensure_host_control_data_directory` was executed but never narrated). **Correction (2026-07-10):**
+  the *order* was still the hand-written enum `[minBound..maxBound]` with a test-only
+  `nativeInstallStepOrderRespectsGraph` consistency lint (only 8/34 steps anchored); deriving the order
+  from the graph (M1 proper) + a fail-closed guard + full step-anchoring therefore became Sprint
+  `4.45`, now Done ([Standard C/L](development_plan_standards.md#c-honest-completion-tracking)). The
+  `runSequentially` fold helper is retained as a total ordering primitive.
 - A **deep** registry→MinIO readiness barrier runs before `mirrorClusterImagesOnce` and before any
   runtime/custom-image push: it exercises the registry's own S3 write path (a canary blob push
   through the registry, or the registry storagedriver health surface wired into readiness), not the
@@ -3629,7 +3652,8 @@ registry→MinIO S3 race that fails `cluster reconcile` at the image-mirror step
 
 ### Validation
 
-1. `prodbox test unit` covers graph-derived ordering (`nativeInstallStepOrderRespectsGraph`), the
+1. `prodbox test unit` covers the then-hand-authored order's graph consistency
+   (`nativeInstallStepOrderRespectsGraph`), the
    deep-gate decision table (proceed only on a `201`/`202` upload session; refuse on `Unreachable`;
    retry a registry `5xx`/front-door `200`), and the retry-classifier name-resolution cases. ✅ 1214/1214.
 2. The mirror step is not attempted until the deep gate passes: `verify_registry_minio_edge` precedes
@@ -3644,8 +3668,12 @@ Closed 2026-07-06. Narration and execution now project from ONE typed `Reconcile
 (retiring the two hand-synced lists — which had already drifted: `ensure_host_control_data_directory`
 was executed but never narrated, now narrated). The deep registry→MinIO gate exercises the registry's
 own S3 write path (a blob-upload session), not the front-door `GET /v2/` proxy; the `/v2/` gates are
-kept as a cheaper pre-check ahead of it. M1 is realized as a single-sourced order plus a pure
-graph-consistency check that fails a mis-ordering at build/test time.
+kept as a cheaper pre-check ahead of it. **Correction (2026-07-10):** this sprint delivered the
+narration single-sourcing + the deep gate, NOT M1 order-derivation — the order remained the hand-written
+`[minBound..maxBound]` enum with a *test-only* graph-consistency lint, and a nested
+MetalLB/Envoy/Percona `runSequentially` inside `ensureClusterPlatformRuntime` (`Rke2.hs:3886`) is
+invisible to that lint. Sprint `4.45` has since derived the order from the graph, promoted the check
+to a fail-closed guard, hoisted the nested list, and totalled the step executors.
 
 ### Remaining Work
 
@@ -3671,6 +3699,224 @@ graph-consistency check that fails a mis-ordering at build/test time.
 
 - Add ledger rows (Sprint `4.43`) for the retired `runSequentially` list + STEP narration and the
   `/v2/`-only registry gates in `legacy-tracking-for-deletion.md`.
+
+## Sprint 4.44: Typed Registry Storage Backend and Non-Defaultable Redirect Policy [✅ Done]
+
+**Status**: Done (2026-07-10)
+**Implementation**: `src/Prodbox/CLI/Rke2.hs` (`RedirectPolicy`, `RegistryStorageBackend`,
+`harborRegistryStorageBackend`, `registryConfigYaml`, `harborRegistryStorageRegion`),
+`test/golden/config/registry-config.yaml`, `test/unit/Main.hs`
+**Independent Validation**: `./.build/prodbox test unit` passes 1268/1268, including the registry
+config golden and explicit `RedirectDisabled`/`RedirectEnabled` rendering assertions;
+`./.build/prodbox dev check` exits 0. No later phase or live infrastructure is required.
+**Docs to update**: `documents/engineering/local_registry_pipeline.md`
+
+### Objective
+
+Kill the 80a08e3 class without replacing the deterministic renderer: the load-bearing redirect
+decision (the localhost NodePort cannot follow S3 presigned redirects) is a required field of a
+typed backend value, and `registryConfigYaml` always renders the corresponding
+`redirect.disable: true|false` line.
+
+### Deliverables
+
+- `RegistryStorageBackend` replaces the former zero-argument, untyped storage-policy input. Its
+  required `registryStorageBackendRedirect :: RedirectPolicy` admits `RedirectDisabled` or
+  `RedirectEnabled`; `registryConfigYaml` renders either value explicitly as `disable: true` or
+  `disable: false`.
+- `registryConfigYaml` deliberately remains a deterministic `unlines` renderer. The closure is the
+  required typed input and total policy projection, not the removal of `unlines`.
+- `harborRegistryStorageBackend` is the canonical MinIO-backed value and selects
+  `RedirectDisabled`. It reuses the stable `harborRegistryStorageRegion = "us-east-1"` constant,
+  along with the existing endpoint and bucket constants.
+- Registry S3 credentials remain in the existing `harbor-registry-s3` Secret and reach
+  `registry:2` through Deployment `envFrom`; they do not enter `RegistryStorageBackend` or the
+  ConfigMap.
+- No `ResourceRegistry` ownership changes and no new Kubernetes or AWS resource are part of this
+  sprint. The existing registry ConfigMap, Deployment, Service, Secret, and bucket retain their
+  existing lifecycle owners.
+- `test/golden/config/registry-config.yaml` pins the canonical `disable: true` rendering, and a unit
+  assertion proves `RedirectEnabled` renders `disable: false` rather than inheriting a driver
+  default.
+
+### Validation
+
+1. `./.build/prodbox test unit` — passes 1268/1268, including
+   `test/golden/config/registry-config.yaml` and both explicit redirect-policy projections.
+2. `./.build/prodbox dev check` — exits 0.
+
+### Remaining Work
+
+- None.
+
+## Documentation Requirements
+
+**Engineering docs to create/update:**
+
+- `documents/engineering/local_registry_pipeline.md` - §2.1 the typed registry storage backend + non-defaultable redirect policy.
+
+**Product docs to create/update:**
+
+- None.
+
+**Cross-references to add:**
+
+- Former ledger row F (zero-argument untyped registry storage policy) is recorded under `Completed`
+  in `legacy-tracking-for-deletion.md` for Sprint `4.44`.
+
+## Sprint 4.45: Graph-Derived Reconcile Order, Fail-Closed Guard, and Full Step Anchoring [✅ Done]
+
+**Status**: Done (2026-07-10)
+**Implementation**: `src/Prodbox/CLI/Rke2.hs` (`stepsForComponent`,
+`nativeInstallStepOrder`, `buildNativeInstallExecutionPlan`, `NativeInstallPayload`, total
+bootstrap/steady executors, and the native `ComponentReadinessTarget` factory),
+`src/Prodbox/CLI/Vault.hs` (shared configured gateway endpoint),
+`src/Prodbox/Config/ComponentGraph.hs` (corrected native dependency edges),
+`src/Prodbox/Config/SchemaDhall.hs` (canonical default-graph Dhall projection),
+`test/unit/Main.hs`, `test/golden/plans/rke2-reconcile.txt`,
+`test/golden/plans/rke2-reconcile-with-edge.txt`, `test/support/TestSupport.hs`,
+`test/integration/CliSuite.hs`
+**Live-proof**: pending (a home `prodbox test all` derived-order reconcile; non-blocking Standard O,
+not run as part of this code-local closure)
+**Independent Validation**: `./.build/prodbox test unit` passes 1273/1273, including derived-order,
+valid compiled-plan, inverted-graph phase-fail-closed, total-executor, and native-target coverage;
+`./.build/prodbox cluster reconcile --dry-run` exits 0 with the derived STEP order;
+`./.build/prodbox dev check` exits 0. The generated config schema was refreshed and
+`./.build/prodbox config validate` exits 0. No AWS substrate or later phase is required.
+**Docs to update**: `documents/engineering/bootstrap_readiness_doctrine.md`, `documents/engineering/lifecycle_reconciliation_doctrine.md`, `DEVELOPMENT_PLAN/legacy-tracking-for-deletion.md`
+
+### Objective
+
+Realize doctrine-M1: reconcile order is a pure projection over the validated component graph, so a mis-ordering fails graph expansion / the build guard, not a live cluster — retiring the hand-written enum as the ordering authority.
+
+### Deliverables
+
+- `nativeInstallStepOrder` is exactly
+  `concatMap stepsForComponent (componentReconcileOrder dag)`. The plan compiler appends the
+  separately-owned edge tail to that native order when edge reconcile is requested.
+  `[minBound..maxBound]` is only an inventory-coverage enumeration, never the ordering authority.
+  The compiled `NativeInstallPayload` carries the already-validated DAG and exact run order, so
+  dry-run narration and apply consume the same value.
+- Component dependency declarations include every real native consumer edge: cert-manager,
+  pre-Vault gateway, MetalLB, Envoy Gateway, and Percona depend on the registry; MetalLB, Envoy
+  Gateway, and Percona also depend on unsealed Vault. The resulting graph order is the execution
+  order rather than a post-hoc lint target.
+- Bind the corrected graph declarations to their RKE2-owned observations: cluster base uses
+  `ProbeServiceActive` rather than a fictitious rollout; `ComponentVaultUnsealed` follows both the
+  Vault workload and pre-Vault gateway daemon because supported unseal is daemon-mediated; and
+  `ComponentGatewayDaemonFull` proves its explicit backend-write edge to MinIO through the gateway
+  object-store interface. Sprint `1.59` landed these declarations and target types, not these
+  production bindings. The one-shot target factory covers every native component, and the final
+  step in each component group is followed by a bounded gate over its declared readiness target. The deep
+  registry→MinIO barrier additionally remains immediately before the first registry write.
+- The nested MetalLB/Envoy/Percona aggregate is replaced by first-class
+  `StepMetalLbRuntime`, `StepEnvoyGatewayRuntime`, and `StepPostgresOperatorRuntime` values. The
+  redundant home MinIO steady-state token is removed because it performed no distinct mutation.
+  Consequently both reconcile plan goldens intentionally change: one aggregate platform token
+  becomes three component steps and the redundant MinIO token disappears.
+- `buildNativeInstallExecutionPlan` rejects invalid graph order, phase regression, edge placement,
+  step inventory/anchoring, or readiness-target coverage as a structured error before apply. The
+  deliberately inverted graph fixture proves this is an execution-path guard rather than a
+  test-only assertion.
+- `bootstrapStepAction` and `steadyStepAction` use total constructor matches; adding a step without
+  choosing its phase executor cannot silently succeed.
+
+### Validation
+
+1. `./.build/prodbox test unit` — ✅ 1273/1273, including derived-order equality, a valid
+   compiled plan, the phase-fail-closed inverted fixture, total executor matches, and every native
+   readiness target. Inventory and edge checks are exercised by the valid compiled-plan path; no
+   separate negative inventory/edge fixture is claimed.
+2. `./.build/prodbox cluster reconcile --dry-run` — ✅ exit 0; its STEP narration uses the
+   graph-derived order and matches the intentionally refreshed reconcile golden.
+3. The binary-sibling config schema was regenerated; `./.build/prodbox config validate` — ✅
+   exit 0.
+4. `./.build/prodbox dev check` — ✅ exit 0 closure gate.
+5. Three graph-consuming fake CLI reconcile fixtures — ✅ plain reconcile/delete, mirror fallback,
+   and ZeroSSL `--with-edge` reconcile. Each consumes the full default component graph and the
+   configured fake gateway-daemon endpoint.
+6. 🧪 Live-proof (non-blocking, Standard O): a home `prodbox test all` reconcile completes on
+   the derived order. This live proof was not run for code-local closure.
+
+### Remaining Work
+
+- None on the Sprint `4.45` code-owned surface. AWS-substrate readiness parity subsequently landed
+  in Sprint `7.32`; the home live proof remains the non-blocking axis above.
+
+## Documentation Requirements
+
+**Engineering docs to create/update:**
+
+- `documents/engineering/bootstrap_readiness_doctrine.md` - M1 realized (order derived, not linted).
+- `documents/engineering/lifecycle_reconciliation_doctrine.md` - reconcile ordering as a projection over the component graph.
+
+**Product docs to create/update:**
+
+- None.
+
+**Cross-references to add:**
+
+- Former ledger rows A/B/C/H (`[minBound..maxBound]` authority, nested `runSequentially`,
+  test-only lint, executor wildcards) are recorded under `Completed` in
+  `legacy-tracking-for-deletion.md` for Sprint `4.45`.
+
+## Sprint 4.46: Reconcile-Driver Retry-Classifier Delegation and the Helm-DNS Flake Fix [✅ Done]
+
+**Status**: Done (2026-07-10)
+**Implementation**: `src/Prodbox/CLI/Rke2.hs` — `isRetryableRoute53CredentialFailure`,
+`isRetryableHelmFailure`, and `isRetryableHarborPublicationFailure` delegate to the landed
+Sprint-`1.57` shared transient-fragment base; `src/Prodbox/CheckCode.hs` deletes all three
+corresponding transitional RKE2 allowances; `test/unit/Main.hs` pins the shared and
+operation-specific behavior plus the exact-name lint migration
+**Independent Validation**: `./.build/prodbox test unit` passes 1276/1276, asserting
+`isRetryableHelmFailure` treats `no such host`/`dial tcp`/`lookup`/`connection refused`/name
+resolution as retryable through the shared base, the Route 53 classifier retains its
+credential-specific extensions, Harbor retains its PUT-status extension, and none of the three
+former exact-name RKE2 lint allowances remains. `./.build/prodbox dev check` exits 0. No AWS
+substrate or later phase is required.
+**Docs to update**: `documents/engineering/bootstrap_readiness_doctrine.md`
+
+### Objective
+
+Close the confirmed live flake: a transient name-resolution failure on a Helm install is retryable
+exactly as it is on the registry push because both classifiers read one shared base, while retiring
+the remaining RKE2-owned inline retry lists and their transitional lint allowances.
+
+### Deliverables
+
+- `isRetryableRoute53CredentialFailure`, `isRetryableHelmFailure`, and
+  `isRetryableHarborPublicationFailure` delegate to the Sprint-`1.57` base, keeping only genuinely
+  path-specific fragments; the Helm/Harbor divergence is gone and the `CheckCode` lint prevents its
+  return.
+- Delete all three RKE2 entries from `legacyInlineRetryClassifier`; Sprint `4.46` leaves no
+  RKE2-owned inline-list allowance behind.
+
+### Validation
+
+1. `./.build/prodbox test unit` — ✅ 1276/1276, including the Helm classifier name-resolution
+   cases, Route 53 and Harbor path-specific cases, negative authorization cases, and the
+   no-RKE2-allowance exact-name lint fixture.
+2. `./.build/prodbox dev check` — ✅ exit 0 closure gate.
+
+### Remaining Work
+
+- None. AWS `EksImageMirror` classifier delegation subsequently landed in Sprint `7.32`.
+
+## Documentation Requirements
+
+**Engineering docs to create/update:**
+
+- `documents/engineering/bootstrap_readiness_doctrine.md` - §4 the reconcile-driver classifiers read the shared base.
+
+**Product docs to create/update:**
+
+- None.
+
+**Cross-references to add:**
+
+- Ledger row D records the RKE2 completion in Sprint `4.46` and the final EKS completion in Sprint
+  `7.32`; no classifier allowance remains. Sprint `1.57`'s base/lint and Phase-1 caller migration
+  remain recorded separately.
 
 ## Related Documents
 

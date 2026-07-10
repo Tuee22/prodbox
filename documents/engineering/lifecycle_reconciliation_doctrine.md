@@ -290,6 +290,20 @@ machine-enforced** rather than a convention.
 
 ### 3.1 The managed-resource registry (the reconciler substrate)
 
+> **Bring-up twin.** The three-valued `ResidueStatus` (`Absent | Present | Unreachable`) and its
+> `Unreachable → refuse` soundness rule have an inverse-polarity twin for *bring-up*:
+> `ReadinessObservation` (`ReadyObserved | NotReadyYet | Unreachable`), which opens a readiness gate
+> only on `ReadyObserved`. Sprint `1.59` implements this as flat external-state data alongside
+> `ReadinessProbeResult` and typed `ComponentReadinessTarget` values carrying caller-injected
+> one-shot actions. A target/probe mismatch refuses immediately before polling. For a compatible
+> target, both `NotReadyYet` and `Unreachable` remain gate-closed bounded poll readings and return
+> `Left` on exhaustion; `PollFailed` remains the generic poller's distinct immediate hard-error arm.
+> The generic seam owns no production primitive or probe coordinates; callers inject their
+> one-shot actions. It is owned by
+> [bootstrap_readiness_doctrine.md](./bootstrap_readiness_doctrine.md) (M3) and implemented under
+> Sprint `1.59`. Production bindings `3.24` (ChartPlatform) and `4.45` (local reconcile) have
+> landed; `5.15` (restore precondition) and `7.32` (AWS parity) subsequently landed as well.
+
 Every leak we have hit was one of two failures, neither of which a
 state machine fixes: (a) a **fail-open predicate** — a `discover` whose
 "cannot observe" outcome silently collapsed to "absent/clean" (e.g. the
@@ -597,19 +611,36 @@ mutating these files. This is the runtime counterpart of the static
 RKE2/kubelet/containerd; pod-level runaway behavior is separately bounded by
 the chart-rendered Kubernetes `resources`, `ResourceQuota`, and `LimitRange`.
 
-### 5a.3. Reconcile Bring-Up Order Is a Projection Over the Component Graph (Sprint 4.43)
+### 5a.3. Reconcile Bring-Up Order Is a Projection Over the Component Graph (Sprints 4.43/4.45)
 
 `prodbox cluster reconcile`'s bring-up steps are not two hand-written parallel
 lists any more. The plan narration and the executor both project from a single
-typed step table (`nativeInstallStepOrder` in `src/Prodbox/CLI/Rke2.hs`), so the
-`STEP=…` preview and the executed order cannot drift. A pure check
-(`nativeInstallStepOrderRespectsGraph`) proves that table is a valid linearization
-of the Tier-0 component dependency/readiness graph
-([bootstrap_readiness_doctrine.md](bootstrap_readiness_doctrine.md) M1) — a
-dependency's bring-up step must precede its consumer's, so a mis-ordering fails at
-build/test time rather than on a live cluster. The registry's step is followed by
-the deep registry→MinIO S3 edge gate before the image-mirror push, so a consumer
-never runs ahead of the exact dependency edge it uses (M3).
+typed projection (`nativeInstallStepOrder` in `src/Prodbox/CLI/Rke2.hs`), so the
+`STEP=…` preview and the executed order cannot drift. Sprint `4.45` makes that
+projection graph-authoritative:
+
+```haskell
+nativeInstallStepOrder dag =
+  concatMap stepsForComponent (componentReconcileOrder dag)
+```
+
+The plan compiler appends the separately-owned edge tail only when edge reconcile
+is requested. It validates the Tier-0 component DAG, native step inventory,
+component anchors, dependency order, phase monotonicity, edge placement, and
+readiness-target coverage before producing `NativeInstallPayload`. That payload
+carries the validated DAG and exact run order consumed by both narration and apply;
+an invalid expansion is a fail-closed `StructuredError`, not a test-only warning.
+
+Every native component has an injected one-shot readiness target. A bounded gate
+polls that action after the final step in its component group. The registry retains
+its additional deep registry→MinIO S3 gate immediately before the first image write,
+so the pre-write consumer cannot outrun the exact dependency edge it uses (M3). The graph declares
+registry dependencies for cert-manager, the pre-Vault gateway, MetalLB, Envoy
+Gateway, and Percona; MetalLB, Envoy Gateway, and Percona also depend on unsealed
+Vault. The former aggregate MetalLB/Envoy/Percona runtime action is three
+first-class anchored steps, and bootstrap/steady executors are total constructor
+matches. The redundant home MinIO steady-state step is removed because it had no
+distinct mutation.
 
 ### 5b. Canonical Cascade Order
 
@@ -816,12 +847,16 @@ section records only how the lifecycle commands integrate it. See
   reconciled, the command proceeds with steady-state MinIO and chart reconcile phases
   so ciphertext and chart secrets have a live Transit/KV authority by the time they are
   needed. See
-  [vault_doctrine.md §7](./vault_doctrine.md#7-vault-lifecycle-commands). This bring-up ordering is a
-  pure projection over the component dependency/readiness graph, not a hand-written sequence, and
-  each readiness barrier exercises the exact dependency call path it guards (a front-door proxy does
-  not satisfy a deep edge) per
-  [bootstrap_readiness_doctrine.md](./bootstrap_readiness_doctrine.md); an `Unreachable` readiness
-  observation gates closed (§3.1 soundness), never treated as ready.
+  [vault_doctrine.md §7](./vault_doctrine.md#7-vault-lifecycle-commands). The component graph now
+  represents this daemon-mediated ordering explicitly: Vault-unsealed depends on the pre-Vault
+  daemon, whose status path reaches Vault's `/v1/sys/seal-status`; gateway-full declares the MinIO
+  backend-write edge it probes. Sprint `1.59` supplies the injected-action observation seam, but the
+  Sprint `4.45` reconcile driver now consumes that graph and binds the existing one-shot lifecycle
+  primitives. The final step in each native component group is followed by its declared bounded
+  readiness gate over that one-shot action. No direct `/sys/health` probe or parallel coordinate
+  SSoT is introduced; Vault
+  readiness remains daemon-mediated. An `Unreachable` readiness observation is bounded and
+  gate-closed (§3.1), never treated as ready.
 - **Teardown preserves the durable Vault PV.** `prodbox cluster delete --yes` and
   `prodbox cluster delete --cascade --yes` preserve the durable Vault PV exactly
   like the MinIO PV (§2); no `prodbox` command removes it. A wiped-and-rebuilt

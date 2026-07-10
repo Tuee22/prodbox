@@ -19,6 +19,20 @@
 
 ## Phase Status
 
+✅ **Reclosed 2026-07-10 on the completed bootstrap-readiness foundation** — Sprints `1.57`/`1.58`/
+`1.59` are Done on Phase `1`'s own `Service` / `ComponentGraph` / `EffectDAG` /
+`ReadinessObservation` surface. Sprint `1.59` adds the flat three-valued observation,
+`ReadinessProbeResult`, typed `ComponentReadinessTarget` adapters carrying injected one-shot
+actions, exhaustive `ReadinessProbe` dispatch, and bounded fail-closed waiting. The closure audit
+also makes the graph truthful: `ComponentClusterBase` uses `ProbeServiceActive`;
+`ComponentVaultUnsealed` depends on `ComponentGatewayDaemonPreVault` because root unseal is
+daemon-mediated; and `ComponentGatewayDaemonFull` carries a `BackendWriteEdge` to MinIO matching
+`ProbeBackendRoundTrip ComponentMinio`. The module does not wrap or duplicate existing production
+primitives and owns no coordinates; callers inject those actions and coordinates. Production
+bindings subsequently landed in Sprints `3.24`, `4.45`, `5.15`, and `7.32`; Phase `1` closure did
+not depend backward on those consumers. Validation:
+`config generate`/`config validate` exit 0, unit 1259/1259, `prodbox dev check` 0.
+
 ✅ **Reclosed 2026-07-06 for the bootstrap-readiness config/DAG foundation** — Phase `1` expanded its
 own Tier-0 config and prerequisite-DAG surface with Sprint `1.56` (✅ Done), the foundation that makes
 the class of bootstrap readiness races unrepresentable per
@@ -3549,6 +3563,236 @@ graph-validity rejection rather than collapsing into the dangling-id case.
 
 - Backlink from `bootstrap_readiness_doctrine.md` Intent Ownership to `src/Prodbox/Config/Tier0.hs`
   and `src/Prodbox/EffectDAG.hs`.
+
+## Sprint 1.57: Retry-Classifier SSoT Base and Inline-List Lint [✅ Done]
+
+**Status**: Done (2026-07-10)
+**Implementation**: `src/Prodbox/Service.hs` (`TransientFailureClass` and
+`isRetryableTransientFailure`), `src/Prodbox/CheckCode.hs`
+(`checkInlineRetrySubstringLists`), `src/Prodbox/EffectInterpreter.hs`
+(`isRetryableAwsValidationFailure` delegation), `test/unit/Main.hs`
+**Independent Validation**: `prodbox test unit` covers the pure shared classifier and the
+`CheckCode` lint fixture; no later phase or live infrastructure is required.
+**Docs to update**: `documents/engineering/code_quality.md`,
+`documents/engineering/bootstrap_readiness_doctrine.md`,
+`documents/engineering/haskell_code_guide.md`
+
+### Objective
+
+Establish the Phase-1 shared retry-classifier foundation: common transient failure groups are
+constructor-owned in `Prodbox.Service`, the Phase-1 AWS validation classifier delegates to that
+base, and a mechanical guard prevents a new top-level `isRetryable*` substring classifier from
+bypassing it. Sprint `4.46` has since consumed this foundation for all three reconcile-driver
+classifiers, and Sprint `7.32` consumed it for the EKS image-mirror classifier.
+
+### Deliverables
+
+- `TransientFailureClass` owns the name-resolution, connection, transient-HTTP, and timeout
+  fragment groups. `isRetryableTransientFailure :: [String] -> String -> Bool` combines that base
+  with case-normalized operation-specific extensions.
+- `isRetryableAwsValidationFailure` delegates to the base while retaining its existing AWS
+  token/signature/expiry extensions.
+- `checkInlineRetrySubstringLists` is wired into the doctrine-alignment gate. It rejects a new
+  top-level `isRetryable*` classifier that carries its own `any`/`isInfixOf` string table instead
+  of delegating to `isRetryableTransientFailure`.
+- The lint's exact path-and-function legacy allowlist originally covered Route 53, Helm, Harbor,
+  and EKS classifiers. Sprint `4.46` removed all three RKE2 entries after delegating those callers;
+  Sprint `7.32` removed the final EKS entry.
+
+### Validation
+
+1. ✅ `./.build/prodbox test unit` — 1248/1248, including independent name-resolution,
+   connection, transient-HTTP, timeout, extension, and lint-fixture cases.
+2. ✅ `./.build/prodbox dev check` — exit 0.
+
+### Remaining Work
+
+- None. Reconcile-driver (`Rke2`) delegation landed in Sprint `4.46`; EKS (`EksImageMirror`)
+  delegation and removal of the final narrow lint allowance landed in Sprint `7.32`.
+
+## Documentation Requirements
+
+**Engineering docs to create/update:**
+
+- `documents/engineering/code_quality.md` - the inline-retry-list lint under the guard-coverage
+  stack.
+- `documents/engineering/bootstrap_readiness_doctrine.md` - §4 (retry posture) records the shared
+  classifier SSoT.
+- `documents/engineering/haskell_code_guide.md` - the constructor-owned transient classifier and
+  operation-specific extension contract under the shared service foundation.
+
+**Product docs to create/update:**
+
+- None.
+
+**Cross-references to add:**
+
+- Ledger row D originated as four divergent retry lists and names Sprint `1.57` as the base owner.
+  Sprint `4.46` moved the three RKE2 callers to `Completed`; Sprint `7.32` moved the final EKS
+  caller and removed the pending row.
+
+## Sprint 1.58: Component-Graph Two-Phase Node Split, EffectDAG Tie-Break, and Schema Regen [✅ Done]
+
+**Status**: Done (2026-07-10)
+**Implementation**: `src/Prodbox/Config/ComponentGraph.hs` (split IDs, probes, and
+`defaultComponentGraph`), `src/Prodbox/EffectDAG.hs` (caller-supplied tie-break), generated and
+git-ignored `prodbox-config-types.dhall`, `test/unit/Main.hs`
+**Independent Validation**: `prodbox test unit` covers the split-node graph, one probe per node,
+and caller-supplied `fromEnum` tie-break; `prodbox config generate` regenerates the ignored schema
+and `prodbox config validate` decodes it. No later phase or live infrastructure is required.
+**Docs to update**: `documents/engineering/config_doctrine.md`,
+`documents/engineering/prerequisite_dag_system.md`,
+`documents/engineering/bootstrap_readiness_doctrine.md`,
+`documents/engineering/pure_fp_standards.md`
+
+### Objective
+
+Make the two genuinely two-phase components honest graph nodes so their real ordering edges are
+expansion-checked edges rather than enum positions, and give the shared topological projection a
+deterministic caller-supplied tie-break. This completes the Phase-1 graph/schema foundation; the
+Phase-4 reconcile driver does not consume the derived order until Sprint `4.45`.
+
+### Deliverables
+
+- `ComponentVault` splits into `ComponentVaultWorkload` (`ProbeRolloutComplete`) and
+  `ComponentVaultUnsealed` (`ProbeVaultUnsealed`). Because supported root unseal is
+  daemon-mediated, `ComponentVaultUnsealed` depends on both `ComponentVaultWorkload` and
+  `ComponentGatewayDaemonPreVault`.
+- `ComponentGatewayDaemon` splits into `ComponentGatewayDaemonPreVault`
+  (`ProbeRolloutComplete`; depends on `ComponentMinio`, `ComponentCertManager`, and
+  `ComponentVaultWorkload`) and `ComponentGatewayDaemonFull`
+  (`ProbeBackendRoundTrip ComponentMinio`; depends on `ComponentVaultUnsealed` and
+  `ComponentGatewayDaemonPreVault`). Each node carries exactly one `ReadinessProbe` — the bounded
+  split does not encode an open-ended lifecycle state machine in the graph.
+- `EffectDAG.acyclicTopologicalOrder` takes a caller-supplied deterministic tie-break in addition
+  to the diagnostic renderer; `ComponentGraph` supplies `fromEnum ComponentId`, so independent
+  components follow constructor declaration order rather than rendered-text order.
+- `defaultComponentGraph` and `componentIdText` use the split IDs. `prodbox config generate`
+  regenerates the generated, git-ignored `prodbox-config-types.dhall`, including
+  `ProbeVaultUnsealed` and the split identifiers; no generated schema is committed.
+
+### Validation
+
+1. ✅ `./.build/prodbox config generate` — exit 0; regenerated the git-ignored schema.
+2. ✅ `./.build/prodbox config validate` — exit 0 against the regenerated schema.
+3. ✅ `./.build/prodbox test unit` — 1250/1250, including split-node/probe and caller-tie-break
+   cases.
+4. ✅ `./.build/prodbox dev check` — exit 0.
+
+### Remaining Work
+
+- None on Sprint `1.58`'s Phase-1-owned graph/schema surface. Sprint `1.59` has since landed the
+  injected-action observation seam; production reconcile-order/action binding remains Sprint
+  `4.45`.
+
+## Documentation Requirements
+
+**Engineering docs to create/update:**
+
+- `documents/engineering/config_doctrine.md` - the node split as a Tier-0 schema change that
+  regenerates the git-ignored `prodbox-config-types.dhall`.
+- `documents/engineering/prerequisite_dag_system.md` - the caller-supplied tie-break and
+  `ComponentGraph`'s `fromEnum` projection.
+- `documents/engineering/bootstrap_readiness_doctrine.md` - the split IDs/probes and adoption
+  status.
+- `documents/engineering/pure_fp_standards.md` - the bounded one-probe-per-node split guardrail.
+
+**Product docs to create/update:**
+
+- None.
+
+**Cross-references to add:**
+
+- The bounded-split guardrail (each node one probe) is cross-linked from `pure_fp_standards.md` (no proliferating phase nodes).
+
+## Sprint 1.59: The ReadinessObservation Seam (Total observeComponentReadiness) [✅ Done]
+
+**Status**: Done (2026-07-10)
+**Implementation**: `src/Prodbox/Lifecycle/ReadinessObservation.hs` (new),
+`src/Prodbox/Config/ComponentGraph.hs` (probe/edge corrections), `prodbox.cabal`,
+`test/unit/Main.hs`
+**Independent Validation**: pure and injected-action unit tests cover every `ReadinessProbe`,
+target/probe mismatch, backend-target mismatch, ready/pending/unreachable observations, and bounded
+wait exhaustion. No production cluster primitive, later phase, or live infrastructure is required.
+**Docs to update**: `documents/engineering/bootstrap_readiness_doctrine.md`,
+`documents/engineering/lifecycle_reconciliation_doctrine.md`,
+`documents/engineering/pure_fp_standards.md`, `documents/engineering/config_doctrine.md`,
+`documents/engineering/prerequisite_dag_system.md`,
+`documents/engineering/haskell_code_guide.md`
+
+### Objective
+
+Provide the Phase-1 type/interpreter seam that makes every declared `ReadinessProbe` select one
+compatible injected one-shot action exhaustively, with a three-valued observation whose
+`Unreachable` reading never opens the gate. Production consumers bind their existing primitives in
+later phases; Sprint `1.59` deliberately introduces no second implementation or coordinate SSoT.
+
+### Deliverables
+
+- A flat exhaustive `ReadinessObservation = ReadyObserved | NotReadyYet Text | Unreachable Text`
+  (never a GADT) plus reachable-action result
+  `ReadinessProbeResult = ReadinessProbeReady | ReadinessProbePending Text`.
+- `ComponentReadinessTarget` has one constructor per probe shape — `ResourceExistsTarget`,
+  `FrontDoorHttpTarget`, `ServiceActiveTarget`, `RolloutCompleteTarget`,
+  `OperatorAvailableTarget`, `VaultUnsealedTarget`, and `BackendRoundTripTarget`. Each carries the
+  relevant `ComponentId` (and backend ID where applicable) plus an injected one-shot
+  `IO (Either Text ReadinessProbeResult)` action. The action closes over caller-owned coordinates;
+  this module owns none.
+- `observeComponentReadiness` dispatches exhaustively over every `ReadinessProbe` and executes only
+  the matching target action. A mismatch becomes `Unreachable`; `waitForComponentReadiness`
+  validates compatibility before polling and returns `Left` immediately without executing the
+  incompatible action.
+- `readinessGateOpen` opens only for `ReadyObserved`. `NotReadyYet` and action-level
+  `Unreachable` lower through `observationPollOutcome` to bounded `PollPending` readings; exhaustion
+  returns the final detail as `Left`. Generic `PollFailed` remains the immediate hard-failure arm
+  of `pollUntilReady`; it is not how this seam represents a temporarily unreachable declared
+  probe.
+- No existing rollout, operator, registry, gateway, systemd, or Vault primitive is wrapped yet.
+  The supported Vault binding remains caller-owned and daemon-mediated: gateway status reaches
+  Vault's `/v1/sys/seal-status`, never a new host-side `/sys/health` probe.
+- The graph corrections align declarations with the supported actions: `ComponentClusterBase`
+  uses `ProbeServiceActive`; `ComponentVaultUnsealed` depends on
+  `ComponentGatewayDaemonPreVault`; `ComponentGatewayDaemonFull` has a `BackendWriteEdge` to MinIO
+  and `ProbeBackendRoundTrip ComponentMinio`.
+
+### Validation
+
+1. ✅ `./.build/prodbox config generate` — exit 0; regenerated the git-ignored schema after the
+   probe/edge corrections.
+2. ✅ `./.build/prodbox config validate` — exit 0.
+3. ✅ `./.build/prodbox test unit` — 1259/1259, including exhaustive injected-action dispatch,
+   mismatch-before-poll, backend mismatch, observation mapping, and bounded exhaustion.
+4. ✅ `./.build/prodbox dev check` — exit 0.
+
+### Remaining Work
+
+- None on Sprint `1.59`'s Phase-1-owned surface. Production actions subsequently bound through the
+  seam in operator gates (`3.24`), local reconcile barriers/order (`4.45`), restore daemon
+  preconditions (`5.15`), and AWS reconcile parity (`7.32`).
+
+## Documentation Requirements
+
+**Engineering docs to create/update:**
+
+- `documents/engineering/bootstrap_readiness_doctrine.md` - M3's exhaustive injected-action seam
+  and forward-owned production bindings.
+- `documents/engineering/lifecycle_reconciliation_doctrine.md` - §3.1 records
+  `ReadinessObservation` as the bring-up inverse-polarity twin of `ResidueStatus`.
+- `documents/engineering/pure_fp_standards.md` - readiness observations and targets remain flat
+  projections rather than GADT-indexed commands.
+- `documents/engineering/config_doctrine.md` - the final probe/edge corrections and regenerated
+  git-ignored schema.
+- `documents/engineering/prerequisite_dag_system.md` - bounded readiness polling semantics.
+- `documents/engineering/haskell_code_guide.md` - `PollFailed` versus bounded
+  `Unreachable`/`NotReadyYet` behavior.
+
+**Product docs to create/update:**
+
+- None.
+
+**Cross-references to add:**
+
+- Add `src/Prodbox/Lifecycle/ReadinessObservation.hs` to the `Referenced by` back-link set of the three docs above.
 
 ## Related Documents
 

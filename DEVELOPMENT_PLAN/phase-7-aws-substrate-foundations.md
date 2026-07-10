@@ -19,6 +19,23 @@
 
 ## Phase Status
 
+✅ **Reclosed 2026-07-10 after AWS-substrate reconcile parity** — Sprint `7.32` is Done on Phase
+`7`'s code-owned surface. `AwsSubstratePlatform` now compiles the configured component DAG through
+the shared `Prodbox.Lifecycle.AnchoredReconcile` engine before reading stack outputs or invoking any
+platform mutation. Its closed AWS step ADT supplies total component anchors, final production
+readiness barriers, an explicit AWS-inapplicable MetalLB mapping, and a separate ACME/admin-route
+edge tail. EKS-owned one-shot targets cover nodes plus AWS Load Balancer Controller, MinIO, Vault,
+the containerd-mirror/registry→MinIO deep edge, cert-manager, Envoy Gateway, Percona, and the
+pre-/post-Vault gateway states. A bracketed gateway Service port-forward is positively probed and
+supervised on one local port across daemon-mediated Vault bootstrap and gateway full-mode
+convergence, re-establishing after the selected Pod rolls. The redundant
+steady-state MinIO reinstall is removed. `isRetryableEksImageMirrorFailure` delegates to the shared
+Sprint-`1.57` classifier and the last lint allowance is gone; the AWS TestRunner bootstrap projects
+Gateway → SMTP → VS Code → API → WebSocket from the Sprint-`5.15` restore builder after its three
+stack reconciles. Validation: `prodbox test unit` 1286/1286 and `prodbox dev check` exit 0. All
+earlier Phase `7` closures remain valid; live `prodbox test all --substrate aws` is retained only as
+the non-blocking Standard O proof axis.
+
 ✅ **Reclosed 2026-07-06 for AWS-substrate readiness-barrier parity** — Phase `7` expanded
 its own AWS-substrate surface with Sprint `7.31` (✅ Done), the
 AWS-substrate arm of the bootstrap-readiness refactor
@@ -1647,6 +1664,10 @@ public images for Harbor-mirrored copies.
   11. `ensureMinioRuntime SubstrateAws MinioSteadyStateHarbor` —
       reconcile MinIO with Harbor-mirrored images for the
       steady-state pod set.
+- **Superseded by Sprint `7.32` (2026-07-10):** the MinIO renderer ignores the image-source
+  selector and always uses its public bootstrap image to avoid a registry dependency cycle, so
+  step 11 performed no distinct mutation. The graph-derived AWS plan removes that redundant
+  reinstall; this list remains only the historical Sprint-`7.5.c.iv` closure record.
 - `awsSubstratePlatformRuntimeStepDescriptions` extended with the
   three new step names so unit tests verify the full eleven-step
   ordering contract.
@@ -4556,11 +4577,17 @@ Closed 2026-07-06 on the code-owned surface. The AWS path reuses the exact home-
 (`ensureRegistryStorageBackendEdgeReady`, a blob-upload S3 round-trip) before the EKS image-mirror Job
 and crane pushes, and `applyEksImageMirrorJob` re-applies the Job on a classifier-matched transient
 failure (`isRetryableEksImageMirrorFailure`), replacing sole reliance on the Job's `backoffLimit=2`.
+**Correction (2026-07-10):** "parity" in Sprint `7.31` is the deep registry→MinIO gate plus its
+then-local EKS classifier only. Sprint `7.32` subsequently moved that classifier to the shared base
+and landed the anchored-step/fail-closed/readiness/restore parity without attributing it backward to
+`7.31`.
 
 ### Remaining Work
 
 - The live EKS proof is the non-blocking Standard O axis; it never marks this sprint or Phase `7`
   Blocked.
+- ✅ Full code-owned parity (shared classifier, anchored steps + fail-closed guard/readiness,
+  scoped port-forward, shared restore builder) landed in Sprint `7.32`.
 
 ## Documentation Requirements
 
@@ -4577,6 +4604,55 @@ failure (`isRetryableEksImageMirrorFailure`), replacing sole reliance on the Job
 **Cross-references to add:**
 
 - Update [substrates.md](substrates.md) parity notes for the EKS image-mirror readiness gate.
+
+## Sprint 7.32: AWS-Substrate Parity — Anchored Steps, Fail-Closed Guard, Shared Classifier, Shared Restore [✅ Done]
+
+**Status**: ✅ Done (2026-07-10); Phase `7` reclosed on its code-owned surface
+**Implementation**: `src/Prodbox/Lifecycle/AnchoredReconcile.hs`, `src/Prodbox/Gateway/PortForward.hs`, `src/Prodbox/Lib/AwsSubstratePlatform.hs`, `src/Prodbox/Lib/EksImageMirror.hs`, and `src/Prodbox/TestRunner.hs` — one shared anchored-order compiler/executor, a closed AWS step projection with a pre-mutation fail-closed guard and substrate-owned production readiness targets, a positively established scoped gateway Service port-forward across the Vault transition, shared EKS retry classification, and the Sprint-`5.15` shared restore-cycle projection
+**Independent Validation**: `prodbox test unit` 1286/1286 covers exact anchored ordering, graph-edge proof, an inverted fixture whose mutation continuation remains untouched, exhaustive AWS readiness-target bindings, EKS node classification, port-forward rendering/validation, shared-classifier delegation, and the AWS restore projection; `prodbox dev check` exits 0. Code-owned surface only; live `--substrate aws` remains the non-blocking Standard O axis.
+**Docs to update**: `documents/engineering/bootstrap_readiness_doctrine.md`, `DEVELOPMENT_PLAN/substrates.md`
+
+### Objective
+
+Bring the AWS substrate to full parity with the completed home-path readiness/ordering model: the same graph-derived anchored steps + fail-closed guard, the one shared retry classifier, and the one shared restore-cycle builder — no AWS-specific hand-maintained copy.
+
+### Deliverables
+
+- ✅ The AWS reconcile path anchors its steps and gains the fail-closed graph guard (composing Sprint `4.45`).
+- ✅ The AWS path supplies substrate-owned one-shot adapters to the landed typed readiness targets;
+  Sprint `1.59` itself supplied only the target/observation seam, not AWS production bindings.
+- ✅ `isRetryableEksImageMirrorFailure` delegates to the Sprint-`1.57` shared base; the inline list
+  and final lint allowance are retired.
+- ✅ The AWS restore path projects from the Sprint-`5.15` shared restore-cycle builder after all
+  three per-run stack reconciles.
+- ✅ The EKS gateway daemon is reached through one bracketed, positively established Service
+  port-forward kept alive across Vault bootstrap and post-Vault full-mode convergence.
+
+### Validation
+
+1. ✅ `prodbox test unit` — 1286/1286; anchored-step ordering, fail-closed guard,
+   substrate-owned readiness targets, shared-classifier delegation, scoped port-forward seams, and
+   shared-restore projection.
+2. ✅ `prodbox dev check` — exit 0 closure gate.
+3. 🧪 Live-proof (non-blocking, Standard O): `prodbox test all --substrate aws` past the EKS image-mirror step ([substrates.md](substrates.md)).
+
+### Remaining Work
+
+- The live `--substrate aws` aggregate is the non-blocking Standard O axis; it never marks this sprint or Phase `7` Blocked.
+
+## Documentation Requirements
+
+**Engineering docs to create/update:**
+
+- `documents/engineering/bootstrap_readiness_doctrine.md` - AWS-substrate parity of the derived-order + shared-classifier + restore model.
+
+**Product docs to create/update:**
+
+- None.
+
+**Cross-references to add:**
+
+- Update [substrates.md](substrates.md) parity notes; ledger row D (AWS classifier) names Sprint `7.32`.
 
 ## Related Documents
 

@@ -76,7 +76,6 @@ module Prodbox.Config.ComponentGraph
   )
 where
 
-import Data.List (sortOn)
 import Data.Map.Strict (Map)
 import Data.Map.Strict qualified as Map
 import Dhall (FromDhall, ToDhall)
@@ -93,13 +92,15 @@ data ComponentId
   = -- Base infrastructure
     ComponentClusterBase
   | ComponentMinio
-  | ComponentVault
+  | ComponentVaultWorkload
+  | ComponentVaultUnsealed
   | ComponentRegistry
   | ComponentMetalLB
   | ComponentEnvoyGateway
   | ComponentCertManager
   | ComponentPerconaPostgresOperator
-  | ComponentGatewayDaemon
+  | ComponentGatewayDaemonPreVault
+  | ComponentGatewayDaemonFull
   | -- Public workload charts
     ComponentChartPulsar
   | ComponentChartRedis
@@ -118,13 +119,15 @@ componentIdText :: ComponentId -> String
 componentIdText = \case
   ComponentClusterBase -> "cluster_base"
   ComponentMinio -> "minio"
-  ComponentVault -> "vault"
+  ComponentVaultWorkload -> "vault_workload"
+  ComponentVaultUnsealed -> "vault_unsealed"
   ComponentRegistry -> "registry"
   ComponentMetalLB -> "metallb"
   ComponentEnvoyGateway -> "envoy_gateway"
   ComponentCertManager -> "cert_manager"
   ComponentPerconaPostgresOperator -> "percona_postgres_operator"
-  ComponentGatewayDaemon -> "gateway_daemon"
+  ComponentGatewayDaemonPreVault -> "gateway_daemon_pre_vault"
+  ComponentGatewayDaemonFull -> "gateway_daemon_full"
   ComponentChartPulsar -> "chart_pulsar"
   ComponentChartRedis -> "chart_redis"
   ComponentChartKeycloakPostgres -> "chart_keycloak_postgres"
@@ -190,8 +193,10 @@ data ReadinessProbe
     ProbeResourceExists
   | ProbeFrontDoorHttp
   | -- Deep probes: exercise the consumer's own call path.
-    ProbeRolloutComplete
+    ProbeServiceActive
+  | ProbeRolloutComplete
   | ProbeOperatorAvailable
+  | ProbeVaultUnsealed
   | ProbeBackendRoundTrip ComponentId
   deriving (Eq, Show, Generic, FromDhall, ToDhall)
 
@@ -203,8 +208,10 @@ probeDepth :: ReadinessProbe -> ProbeDepth
 probeDepth = \case
   ProbeResourceExists -> ProxyProbe
   ProbeFrontDoorHttp -> ProxyProbe
+  ProbeServiceActive -> DeepProbe
   ProbeRolloutComplete -> DeepProbe
   ProbeOperatorAvailable -> DeepProbe
+  ProbeVaultUnsealed -> DeepProbe
   ProbeBackendRoundTrip _ -> DeepProbe
 
 -- | Whether a probe can satisfy a 'BackendWriteEdge' to the given dependency:
@@ -374,11 +381,11 @@ checkNodeEdges nodeMap node = mapM_ checkEdge (depends_on node)
 topologicalOrderOf
   :: Map ComponentId ComponentNode -> Either ComponentGraphError [ComponentId]
 topologicalOrderOf nodeMap =
-  case acyclicTopologicalOrder componentIdText adjacency roots of
+  case acyclicTopologicalOrder componentIdText fromEnum adjacency roots of
     Left message -> Left (ComponentGraphCycle message)
     Right order -> Right order
  where
-  roots = sortOn componentIdText (Map.keys nodeMap)
+  roots = Map.keys nodeMap
   adjacency cid =
     fmap componentDependencyIds (Map.lookup cid nodeMap)
 
@@ -397,7 +404,7 @@ componentReconcileOrder = componentDagOrder
 -- acyclic expansion, so a chart cycle is rejected exactly as before.
 chartComponentDeployOrder :: ComponentDag -> ComponentId -> Either String [ComponentId]
 chartComponentDeployOrder dag root =
-  acyclicTopologicalOrder componentIdText chartAdjacency [root]
+  acyclicTopologicalOrder componentIdText fromEnum chartAdjacency [root]
  where
   chartAdjacency cid =
     fmap (filter isChartComponent . componentDependencyIds) (lookupComponentNode cid dag)
@@ -453,24 +460,59 @@ operatorAvailableGates dag consumers =
 --     merely present (Sprint `3.23`).
 defaultComponentGraph :: [ComponentNode]
 defaultComponentGraph =
-  [ node ComponentClusterBase [] ProbeRolloutComplete
-  , node ComponentMetalLB [orderingOn ComponentClusterBase] ProbeRolloutComplete
-  , node ComponentEnvoyGateway [orderingOn ComponentClusterBase] ProbeRolloutComplete
-  , node ComponentCertManager [orderingOn ComponentClusterBase] ProbeRolloutComplete
+  [ node ComponentClusterBase [] ProbeServiceActive
+  , node
+      ComponentMetalLB
+      [ orderingOn ComponentClusterBase
+      , orderingOn ComponentRegistry
+      , orderingOn ComponentVaultUnsealed
+      ]
+      ProbeRolloutComplete
+  , node
+      ComponentEnvoyGateway
+      [ orderingOn ComponentClusterBase
+      , orderingOn ComponentRegistry
+      , orderingOn ComponentVaultUnsealed
+      ]
+      ProbeRolloutComplete
+  , node
+      ComponentCertManager
+      [orderingOn ComponentClusterBase, orderingOn ComponentRegistry]
+      ProbeRolloutComplete
   , node ComponentMinio [orderingOn ComponentClusterBase] ProbeRolloutComplete
-  , node ComponentVault [orderingOn ComponentClusterBase] ProbeRolloutComplete
+  , node ComponentVaultWorkload [orderingOn ComponentClusterBase] ProbeRolloutComplete
+  , node
+      ComponentVaultUnsealed
+      [ orderingOn ComponentVaultWorkload
+      , orderingOn ComponentGatewayDaemonPreVault
+      ]
+      ProbeVaultUnsealed
   , node
       ComponentRegistry
       [orderingOn ComponentClusterBase, backendWriteOn ComponentMinio]
       (ProbeBackendRoundTrip ComponentMinio)
   , node
       ComponentPerconaPostgresOperator
-      [orderingOn ComponentClusterBase]
+      [ orderingOn ComponentClusterBase
+      , orderingOn ComponentRegistry
+      , orderingOn ComponentVaultUnsealed
+      ]
       ProbeOperatorAvailable
   , node
-      ComponentGatewayDaemon
-      [orderingOn ComponentMinio, orderingOn ComponentVault, orderingOn ComponentCertManager]
+      ComponentGatewayDaemonPreVault
+      [ orderingOn ComponentMinio
+      , orderingOn ComponentCertManager
+      , orderingOn ComponentVaultWorkload
+      , orderingOn ComponentRegistry
+      ]
       ProbeRolloutComplete
+  , node
+      ComponentGatewayDaemonFull
+      [ orderingOn ComponentVaultUnsealed
+      , orderingOn ComponentGatewayDaemonPreVault
+      , backendWriteOn ComponentMinio
+      ]
+      (ProbeBackendRoundTrip ComponentMinio)
   , -- Charts (deploy behind the registry — their images are mirrored there — and
     -- behind their platform dependencies).
     node ComponentChartPulsar [orderingOn ComponentRegistry] ProbeRolloutComplete

@@ -2,6 +2,7 @@ module TestSupport
   ( Expectation
   , SuiteBuilder
   , componentsDhallFragment
+  , defaultComponentsDhallFragment
   , describe
   , expectationFailure
   , goldenTest
@@ -16,12 +17,14 @@ module TestSupport
   , shouldReturn
   , shouldSatisfy
   , wrapTier0
+  , wrapTier0WithDefaultComponentGraph
   )
 where
 
 import Data.ByteString.Lazy (ByteString)
 import Data.List (isInfixOf)
 import GHC.Stack (HasCallStack)
+import Prodbox.Config.SchemaDhall (renderDefaultComponentGraphDhall)
 import System.Directory
   ( copyFile
   , getPermissions
@@ -56,9 +59,19 @@ import Test.Tasty.QuickCheck (Testable, testProperty)
 -- the real graph) keeps its own value. Dhall @//@ is right-biased, so
 -- @{ components = … } // config@ means "config wins where it sets a field".
 wrapTier0 :: String -> String
-wrapTier0 configRecord =
+wrapTier0 = wrapTier0WithComponents componentsDhallFragment
+
+-- | A Tier-0 wrapper for graph-consuming command fixtures. These commands must
+-- exercise the same complete default graph as production; an empty compatibility
+-- graph is correctly rejected by the fail-closed native-plan compiler.
+wrapTier0WithDefaultComponentGraph :: String -> String
+wrapTier0WithDefaultComponentGraph =
+  wrapTier0WithComponents defaultComponentsDhallFragment
+
+wrapTier0WithComponents :: String -> String -> String
+wrapTier0WithComponents componentFragment configRecord =
   unlines
-    [ "{ parameters = { components = " ++ componentsDhallFragment ++ " } // (" ++ configRecord ++ ")"
+    [ "{ parameters = { components = " ++ componentFragment ++ " } // (" ++ configRecord ++ ")"
     , ", context ="
     , "  { project = \"prodbox\""
     , "  , binary = \"prodbox\""
@@ -82,11 +95,17 @@ wrapTier0 configRecord =
 componentsDhallFragment :: String
 componentsDhallFragment = "[] : List " ++ componentNodeTypeDhall
 
+-- | The production default component graph rendered through the same generic
+-- Dhall encoder as the generated config schema. This keeps graph-consuming CLI
+-- fixtures aligned without duplicating the graph as test-owned text.
+defaultComponentsDhallFragment :: String
+defaultComponentsDhallFragment = renderDefaultComponentGraphDhall
+
 componentIdUnionDhall :: String
 componentIdUnionDhall =
-  "< ComponentClusterBase | ComponentMinio | ComponentVault | ComponentRegistry"
+  "< ComponentClusterBase | ComponentMinio | ComponentVaultWorkload | ComponentVaultUnsealed | ComponentRegistry"
     ++ " | ComponentMetalLB | ComponentEnvoyGateway | ComponentCertManager"
-    ++ " | ComponentPerconaPostgresOperator | ComponentGatewayDaemon | ComponentChartPulsar"
+    ++ " | ComponentPerconaPostgresOperator | ComponentGatewayDaemonPreVault | ComponentGatewayDaemonFull | ComponentChartPulsar"
     ++ " | ComponentChartRedis | ComponentChartKeycloakPostgres | ComponentChartKeycloak"
     ++ " | ComponentChartVscode | ComponentChartApi | ComponentChartWebsocket"
     ++ " | ComponentChartGateway >"
@@ -98,8 +117,8 @@ componentNodeTypeDhall =
     ++ ", depends_on : List { dependency_on : "
     ++ componentIdUnionDhall
     ++ ", dependency_edge : < OrderingEdge | BackendWriteEdge > }"
-    ++ ", readiness : < ProbeResourceExists | ProbeFrontDoorHttp | ProbeRolloutComplete"
-    ++ " | ProbeOperatorAvailable | ProbeBackendRoundTrip : "
+    ++ ", readiness : < ProbeResourceExists | ProbeFrontDoorHttp | ProbeServiceActive | ProbeRolloutComplete"
+    ++ " | ProbeOperatorAvailable | ProbeVaultUnsealed | ProbeBackendRoundTrip : "
     ++ componentIdUnionDhall
     ++ " > }"
 

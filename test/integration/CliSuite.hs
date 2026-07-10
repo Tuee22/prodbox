@@ -365,16 +365,24 @@ integrationCliSuite = do
       withSystemTempDirectory "prodbox-hs-cli" $ \tmpDir -> do
         binary <- resolveBinaryPath >>= \b -> installOperatorBinaryInDir b tmpDir
         writeRepoMarkers tmpDir
-        writeFile (tmpDir </> "prodbox.dhall") (wrapTier0 validConfig)
+        writeFile
+          (tmpDir </> "prodbox.dhall")
+          (wrapTier0WithDefaultComponentGraph validConfig)
         createDirectoryIfMissing True (tmpDir </> ".build")
-        writeFile (tmpDir </> ".build" </> "prodbox.dhall") (wrapTier0 validConfig)
+        writeFile
+          (tmpDir </> ".build" </> "prodbox.dhall")
+          (wrapTier0WithDefaultComponentGraph validConfig)
         envVars <- (("PRODBOX_TEST_HOST_VAULT_TOKEN", "fake-root-token") :) <$> fakeRke2Environment tmpDir
         writeExecutable (tmpDir </> "bin" </> "cabal") (fakeCabalListBinScript binary)
 
         (exitCode, stdoutText, stderrText) <-
-          readCreateProcessWithExitCode
-            (proc binary ["test", "integration", "resource-guardrails"]) {cwd = Just tmpDir, env = Just envVars}
-            ""
+          withFakeGatewayReadinessEnvironment envVars $ \gatewayEnvironment ->
+            readCreateProcessWithExitCode
+              (proc binary ["test", "integration", "resource-guardrails"])
+                { cwd = Just tmpDir
+                , env = Just gatewayEnvironment
+                }
+              ""
 
         let output =
               unlines
@@ -519,10 +527,12 @@ integrationCliSuite = do
         upgradeRecord `shouldContain` "upgrade|--install|--wait|--timeout|30m0s|vscode"
 
         kubectlRecord <- readFile (tmpDir </> "fake-chart-state" </> "kubectl.txt")
-        kubectlRecord `shouldContain` "get|crd|perconapgclusters.pgv2.percona.com|-o|name"
-        -- Sprint 4.43: the operator gate reads the Available condition, not -o name.
         kubectlRecord
-          `shouldContain` "get|deployment|postgres-operator|--namespace|postgres-operator|-o|jsonpath={.status.conditions[?(@.type==\"Available\")].status}"
+          `shouldContain` "get|crd|perconapgclusters.pgv2.percona.com|--ignore-not-found|-o|name"
+        -- Sprint 3.24: the one-shot operator gate tolerates absent objects while
+        -- converging and opens only on the Deployment's Available=True condition.
+        kubectlRecord
+          `shouldContain` "get|deployment|postgres-operator|--namespace|postgres-operator|--ignore-not-found|-o|jsonpath={.status.conditions[?(@.type==\"Available\")].status}"
         kubectlRecord
           `shouldContain` "get|pvc|--namespace|vscode|--selector|postgres-operator.crunchydata.com/cluster=prodbox-vscode-pg,postgres-operator.crunchydata.com/data=postgres|-o|json"
         kubectlRecord
@@ -721,7 +731,9 @@ integrationCliSuite = do
       $ \tmpDir -> do
         binary <- resolveBinaryPath >>= \b -> installOperatorBinaryInDir b tmpDir
         writeRepoMarkers tmpDir
-        writeFile (tmpDir </> "prodbox.dhall") (wrapTier0 validConfig)
+        writeFile
+          (tmpDir </> "prodbox.dhall")
+          (wrapTier0WithDefaultComponentGraph validConfig)
         -- Sprint 1.42 Part B: with the Tier-0 prodbox.dhall floor present, the
         -- post-MinIO settings reload obtains the host Vault root token; supply
         -- the test seam so it does not try to decrypt an unlock bundle (none
@@ -730,9 +742,11 @@ integrationCliSuite = do
         envVars <- (("PRODBOX_TEST_HOST_VAULT_TOKEN", "fake-root-token") :) <$> fakeRke2Environment tmpDir
 
         (installExitCode, installStdout, installStderr) <-
-          readCreateProcessWithExitCode
-            (proc binary ["cluster", "reconcile"]) {cwd = Just tmpDir, env = Just envVars}
-            ""
+          runRke2ReconcileWithFakeGateway
+            tmpDir
+            binary
+            ["cluster", "reconcile"]
+            envVars
 
         let installOutput =
               unlines
@@ -967,7 +981,9 @@ integrationCliSuite = do
       withSystemTempDirectory "prodbox-hs-cli" $ \tmpDir -> do
         binary <- resolveBinaryPath >>= \b -> installOperatorBinaryInDir b tmpDir
         writeRepoMarkers tmpDir
-        writeFile (tmpDir </> "prodbox.dhall") (wrapTier0 validConfig)
+        writeFile
+          (tmpDir </> "prodbox.dhall")
+          (wrapTier0WithDefaultComponentGraph validConfig)
         baseEnvVars <- fakeRke2Environment tmpDir
         let envVars =
               ( "PRODBOX_FAKE_DOCKER_PULL_RATE_LIMIT_REF"
@@ -977,9 +993,11 @@ integrationCliSuite = do
                 : baseEnvVars
 
         (installExitCode, installStdout, installStderr) <-
-          readCreateProcessWithExitCode
-            (proc binary ["cluster", "reconcile"]) {cwd = Just tmpDir, env = Just envVars}
-            ""
+          runRke2ReconcileWithFakeGateway
+            tmpDir
+            binary
+            ["cluster", "reconcile"]
+            envVars
 
         let installOutput =
               unlines
@@ -1473,7 +1491,9 @@ integrationCliSuite = do
       withSystemTempDirectory "prodbox-hs-cli" $ \tmpDir -> do
         binary <- resolveBinaryPath >>= \b -> installOperatorBinaryInDir b tmpDir
         writeRepoMarkers tmpDir
-        writeFile (tmpDir </> "prodbox.dhall") (wrapTier0 zeroSslConfig)
+        writeFile
+          (tmpDir </> "prodbox.dhall")
+          (wrapTier0WithDefaultComponentGraph zeroSslConfig)
         envVars <- (("PRODBOX_TEST_HOST_VAULT_TOKEN", "fake-root-token") :) <$> fakeRke2Environment tmpDir
 
         -- The refactor moved the ZeroSSL ACME ClusterIssuer (and the Route 53
@@ -1481,9 +1501,11 @@ integrationCliSuite = do
         -- up a local-only cluster with no public edge. The EAB projection this
         -- test asserts therefore lives on the `--with-edge` path.
         (upExitCode, upStdout, upStderr) <-
-          readCreateProcessWithExitCode
-            (proc binary ["cluster", "reconcile", "--with-edge"]) {cwd = Just tmpDir, env = Just envVars}
-            ""
+          runRke2ReconcileWithFakeGateway
+            tmpDir
+            binary
+            ["cluster", "reconcile", "--with-edge"]
+            envVars
 
         when
           (upExitCode /= ExitSuccess)
@@ -2912,6 +2934,42 @@ fakeRke2Environment repoRoot = do
         ++ baseEnvironment
     )
 
+-- | Run a graph-consuming reconcile against a daemon-shaped loopback fixture.
+-- The readiness targets exercise the supported daemon Vault-status and
+-- object-store interfaces; no direct-host Vault fallback is involved.
+runRke2ReconcileWithFakeGateway
+  :: FilePath
+  -> FilePath
+  -> [String]
+  -> [(String, String)]
+  -> IO (ExitCode, String, String)
+runRke2ReconcileWithFakeGateway repoRoot binary arguments environment =
+  withFakeGatewayReadinessEnvironment environment $ \gatewayEnvironment ->
+    readCreateProcessWithExitCode
+      (proc binary arguments)
+        { cwd = Just repoRoot
+        , env = Just gatewayEnvironment
+        }
+      ""
+
+withFakeGatewayReadinessEnvironment
+  :: [(String, String)] -> ([(String, String)] -> IO value) -> IO value
+withFakeGatewayReadinessEnvironment environment action =
+  withFakeGatewayDaemonServer readinessResponses $ \gatewayPort _requestsRef ->
+    action
+      ( ("PRODBOX_TEST_GATEWAY_NODEPORT", show gatewayPort)
+          : filter ((/= "PRODBOX_TEST_GATEWAY_NODEPORT") . fst) environment
+      )
+ where
+  readinessResponses =
+    [
+      ( "/v1/bootstrap/vault/status"
+      , 200
+      , "{\"initialized\":true,\"sealed\":false,\"t\":3,\"n\":5,\"progress\":0}"
+      )
+    , ("/v1/object-store/pulumi/get", 200, "{\"status\":\"absent\"}")
+    ]
+
 writeFakeRke2Scripts :: FilePath -> IO FilePath
 writeFakeRke2Scripts repoRoot = do
   let binDir = repoRoot </> "bin"
@@ -3236,6 +3294,21 @@ fakeRke2KubectlScript =
     , "          exit 1"
     , "        fi"
     , "        ;;"
+    , "      deployment)"
+    , "        if [[ \"$*\" == *'jsonpath={.status.conditions'* ]]; then"
+    , "          printf 'True'"
+    , "        fi"
+    , "        ;;"
+    , "      statefulset)"
+    , "        if [[ \"$*\" == *'jsonpath={.spec.replicas}'* ]]; then"
+    , "          printf '1:1:1'"
+    , "        fi"
+    , "        ;;"
+    , "      daemonset)"
+    , "        if [[ \"$*\" == *'jsonpath={.status.desiredNumberScheduled}'* ]]; then"
+    , "          printf '1:1:1'"
+    , "        fi"
+    , "        ;;"
     , "      deployments.apps)"
     , "        if [[ \"$*\" == *'-n prodbox'* ]]; then"
     , "          printf 'deployment.apps/prodbox-api\\n'"
@@ -3252,7 +3325,11 @@ fakeRke2KubectlScript =
     , "        fi"
     , "        ;;"
     , "      crd)"
-    , "        printf 'customresourcedefinition.apiextensions.k8s.io/gatewayclasses.gateway.networking.k8s.io\\n'"
+    , "        if [[ \"$*\" == *'jsonpath={.status.conditions'* ]]; then"
+    , "          printf 'True'"
+    , "        else"
+    , "          printf 'customresourcedefinition.apiextensions.k8s.io/gatewayclasses.gateway.networking.k8s.io\\n'"
+    , "        fi"
     , "        ;;"
     , "      pods)"
     , "        if [[ \"$*\" == *'-o json'* ]]; then"

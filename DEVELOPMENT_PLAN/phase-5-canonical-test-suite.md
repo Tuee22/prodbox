@@ -17,6 +17,25 @@
 
 ## Phase Status
 
+✅ **Reclosed 2026-07-10 after restore-cycle DRY and daemon-liveness closure.** Sprint `5.15`
+expands Phase `5`'s **own** TestRunner restore-orchestration surface
+([Standard A/N](development_plan_standards.md#n-phase-independence-no-backward-blocking)) and is Done.
+`Prodbox.TestRestore` now owns the typed, substrate-aware `RestoreCyclePlan` and its one canonical
+step sequence. `supportedRuntimeBootstrapActions` and `supportedRuntimePostflightActions` both
+project that builder through one exhaustive TestRunner interpreter; their only permitted sequence
+difference is the optional bootstrap SMTP step. Before SMTP mutation,
+`syncKeycloakSmtpForSupportedRuntime` checks a `ComponentGatewayDaemonFull`/MinIO
+backend-readiness precondition that polls the exported one-shot gateway object-store observer with
+the bounded Sprint-`1.59` poller. Pending and unreachable observations fail closed as a
+`StructuredError` naming the loopback NodePort, and no SMTP sync starts. Validation is green at
+unit 1280/1280 and `prodbox dev check` exit 0. The targeted `resource-guardrails` built-frontend CLI
+fixture also passes under fake gateway readiness as a general CLI regression check. That named plan
+does not run either supported-runtime restore projection or select the optional SMTP step, so it is
+not an end-to-end proof of either the shared restore interpreter or the SMTP gate. A live home
+`prodbox test all` restore remains a non-blocking Standard-O proof. Sprint `7.32` subsequently
+adopted the same builder for the explicit AWS projection. All earlier Phase `5` closures remain
+valid.
+
 ✅ **Reclosed 2026-07-05 for daemon-mediated bootstrap validation.** Sprint `5.14` is Done on the
 code-owned canonical-suite surface. The new `daemon-bootstrap` validation is wired through the
 parser, command registry, native validation plan, topology mapping, and aggregate ordering; its pure
@@ -1136,6 +1155,74 @@ port-forwarding or direct host Vault NodePort access on supported paths.
 - 🧪 Live-proof pending (non-blocking, Standard O): AWS/Pulumi object-store parity composes with
   Sprint `7.30`'s code-owned landing and is tracked through [substrates.md](substrates.md), not as
   a backward block.
+
+## Sprint 5.15: Restore-Cycle DRY Builder and Daemon-Liveness Precondition [✅ Done]
+
+**Status**: Done (2026-07-10)
+**Implementation**: `src/Prodbox/TestRestore.hs` owns `RestoreChart`, `RestoreCycleStep`,
+`RestoreCyclePlan`, `RestoreKeycloakSmtp`, the substrate-aware `buildRestoreCyclePlan`, and
+`gatewayDaemonLivenessPrecondition`; `src/Prodbox/TestRunner.hs` projects the bootstrap/postflight
+plans, interprets every step, and checks the precondition before SMTP mutation;
+`src/Prodbox/CLI/Rke2.hs` exports the existing one-shot gateway object-store adapter
+**Live-proof**: pending (non-blocking, Standard O) — a live home `prodbox test all` destructive
+restore cycle with the gateway daemon up
+**Independent Validation**: `prodbox test unit` passes 1280/1280, including exact builder order,
+bootstrap/postflight equality modulo the SMTP step, the SMTP anchor, ready-open, and bounded
+pending/unreachable `Preconditions.StructuredError` cases. `prodbox test integration cli` passes
+44/44 after aligning all graph-consuming fixtures and the Percona one-shot trace as general
+built-frontend regression coverage; those named plans run neither supported-runtime restore
+projection and therefore do not prove the shared interpreter or SMTP gate end to end. `prodbox dev
+check` exits 0. No later phase or live infrastructure is required for this code-owned closure.
+**Docs to update**: `documents/engineering/bootstrap_readiness_doctrine.md`, `DEVELOPMENT_PLAN/legacy-tracking-for-deletion.md`
+
+### Objective
+
+Retire the Phase-1.6 strand: one restore-cycle builder (no hand-kept duplicate) and a typed daemon-up precondition so `syncKeycloakSmtp` cannot run in the daemon-down window between `charts delete gateway` and `charts reconcile gateway`.
+
+### Deliverables
+
+- ✅ One typed, substrate-aware restore-cycle builder that both
+  `supportedRuntimeBootstrapActions` and `supportedRuntimePostflightActions` project from, deleting
+  the two hand-kept lists. `RestoreWithKeycloakSmtp` inserts exactly one SMTP step after gateway
+  reconciliation and before the dependent charts; `RestoreWithoutKeycloakSmtp` omits only that step.
+- ✅ `syncKeycloakSmtp` is gated behind a daemon-liveness precondition built from a **one-shot** gateway
+  object-store observation adapted as the `ComponentGatewayDaemonFull` backend-round-trip target;
+  `Unreachable`/`NotReadyYet` become a fail-closed `StructuredError` naming the loopback NodePort.
+  The shared Sprint-`1.59` poller owns bounded retry, so this adapter does not nest the existing
+  `pollGatewayObjectStore` loop. This replaces the position-plus-comment ordering invariant.
+
+### Validation
+
+1. ✅ `prodbox test unit` — 1280/1280; exact one-builder projections and fail-closed precondition
+   decisions pass.
+2. ✅ `prodbox test integration cli` — 44/44 general built-frontend regression checks. The named
+   plans run neither supported-runtime restore projection and do not select
+   `RestoreSyncKeycloakSmtp`, so this is intentionally not described as an end-to-end
+   restore-interpreter or gate proof.
+3. ✅ `prodbox dev check` — exit 0 closure gate.
+4. 🧪 Live-proof pending (non-blocking, Standard O): a home `prodbox test all` restore cycle
+   completes with the gateway daemon up.
+
+### Remaining Work
+
+- None on Sprint `5.15`'s code-owned surface.
+- 🧪 The live home restore remains the non-blocking Standard-O proof above.
+- AWS-substrate adoption of the shared builder landed in Sprint `7.32`.
+
+## Documentation Requirements
+
+**Engineering docs to create/update:**
+
+- `documents/engineering/bootstrap_readiness_doctrine.md` - the daemon-liveness precondition as a typed prerequisite (§4 posture).
+
+**Product docs to create/update:**
+
+- None.
+
+**Cross-references to add:**
+
+- Ledger row I (duplicated restore lists + precondition-less `syncKeycloakSmtp`) is moved to
+  `Completed` in `legacy-tracking-for-deletion.md` under Sprint `5.15`.
 
 ## Related Documents
 

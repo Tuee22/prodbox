@@ -7,7 +7,10 @@
 [the engineering doctrine docs](../documents/engineering/README.md),
 [vault_doctrine.md](../documents/engineering/vault_doctrine.md),
 [test_topology_doctrine.md](../documents/engineering/test_topology_doctrine.md),
-[resource_scaling_doctrine.md](../documents/engineering/resource_scaling_doctrine.md)
+[resource_scaling_doctrine.md](../documents/engineering/resource_scaling_doctrine.md),
+[bootstrap_readiness_doctrine.md](../documents/engineering/bootstrap_readiness_doctrine.md),
+[distributed_gateway_architecture.md](../documents/engineering/distributed_gateway_architecture.md),
+[unit_testing_policy.md](../documents/engineering/unit_testing_policy.md)
 **Generated sections**: none
 
 > **Purpose**: Own the substrate-agnostic canonical test suite — the named-validation set in
@@ -16,6 +19,17 @@
 > substrate-owning phase docs); this phase owns what the suite proves and how.
 
 ## Phase Status
+
+✅ **Reclosed 2026-07-10 after retained-resource preparation.** Sprint `5.16` supplies the typed
+restart/OOM/high-water stability oracle and run-scoped restore recorder. Sprint `5.17` now derives
+one opaque nested retained-SES plan solely from invite capability, carries the selected target's
+typed gateway object-store precondition and exact transaction trace, and invokes Sprint `4.47`'s
+registered ensure exactly once against separate retained authority and target-sink coordinates.
+Home and AWS projections select only their own target, non-invite and postflight plans contain no
+SES mutation, deferred prerequisites stay read-only, and ordinary cleanup never destroys
+`aws-ses`. Sprint `8.10` has since landed the complete semantic classifier in its Phase-`8` owner;
+that later strengthening does not retroactively block this phase under Standards N/O. Previous
+named-validation, restore-DRY, and prerequisite closures remain valid.
 
 ✅ **Reclosed 2026-07-10 after restore-cycle DRY and daemon-liveness closure.** Sprint `5.15`
 expands Phase `5`'s **own** TestRunner restore-orchestration surface
@@ -174,45 +188,41 @@ proofs. They are preserved below as historical records of when each validation e
 
 ## Canonical Suite Inventory
 
-The full inventory of canonical-suite validations owned by this phase lives in
-`src/Prodbox/TestPlan.hs` as `NativeValidation` variants. The current set is:
+`src/Prodbox/TestPlan.hs::canonicalNativeValidations` is the authoritative membership list. This
+table describes that code-owned set; it does not maintain a separate substrate-status ledger.
 
 | Validation | Prerequisites (excerpt) | What it proves |
 |------------|-------------------------|----------------|
-| `public-dns` | `aws_credentials_valid`, `route53_accessible` | NS delegation matches public registrar; configured FQDN resolves to operator public IP |
-| `dns-aws` | `aws_credentials_valid`, `route53_lifecycle_capable` | Ephemeral hosted zone create + record write + read-back + zone delete (Route 53 API correctness) |
-| `aws-iam` | `aws_iam_harness_ready` | IAM-user provisioning + STS-federated operational credentials lifecycle |
-| `gateway-daemon` | `gateway_daemon_acquire` | Daemon spawns, exposes `/healthz`, `/readyz`, `/metrics`, accepts SIGTERM drain |
-| `gateway-pods` | `k8s_ready` | Gateway pods reach Ready in their namespace; logs sane |
-| `gateway-partition` | (in-process) | Single-writer invariant, claim/yield ordering, idempotent commit-log append |
-| `lifecycle` | `rke2_*` | `rke2 delete --yes` → `rke2 reconcile` → `k8s health` round-trip |
-| `pulumi` | `aws_credentials_valid`, `pulumi_logged_in` | `aws-test` substrate stack provisions with `NODE_COUNT=3` |
-| `aws-eks` | `aws_credentials_valid`, `pulumi_logged_in` | `aws-eks-test` substrate stack provisions with CLUSTER_NAME and NODE_GROUP_NAME |
-| `ha-rke2-aws` | `aws_credentials_valid`, `pulumi_logged_in`, `tool_ssh` | SSH reachability to all three EC2 instances; destroy-and-recreate repair on stale instances |
-| `charts-platform` | `k8s_ready`, chart-platform prereqs | `charts list`, `charts status` produce expected output for the supported chart set |
-| `charts-storage` | `k8s_ready`, chart-platform prereqs | Retained-storage reconciler, PV/PVC pairing, secret rendering |
-| `resource-guardrails` | `k8s_ready`, chart-platform prereqs | Every prodbox pod has explicit cpu/memory/ephemeral-storage requests and limits, no pod is `BestEffort`, namespace quotas/limit ranges match the declared resource plan, and over-budget configs refuse before mutation |
-| `daemon-bootstrap` | (in-process transport oracle; live daemon parity tracked separately) | Post-bootstrap Vault bootstrap/lifecycle traces use the daemon NodePort routes and do not open host MinIO port-forwards, direct host Vault NodePort calls, or host root-token fallback writes; request/response/log output stays redacted |
-| `eks-volume-rebind` | `k8s_ready`, chart-platform prereqs (AWS parity: operational AWS/Pulumi stack access) | Identical block-storage rebinding across a teardown/spinup cycle: write sentinel → teardown → spinup → the same PV rebinds (home hostPath / EKS EBS `volumeHandle`) and the data persists |
-| `charts-vscode` | `public_edge_ready`, `tool_curl` | Real HTTPS curl to `https://<publicFqdn>/vscode`; redirect to OIDC callback with expected fragments |
-| `charts-api` | `public_edge_ready`, `tool_curl` | Real HTTPS curl to `https://<publicFqdn>/api`; bearer-token validation; 401/403 contract |
-| `charts-websocket` | `public_edge_ready`, `tool_curl` | Real WebSocket upgrade against `/ws`; cross-pod broadcast; revocation-driven reconnect; readiness-based drain |
-| `admin-routes` | `public_edge_ready`, `tool_curl` | Harbor and MinIO auth + RBAC on the shared public edge |
-| `keycloak-invite` | `aws_credentials_valid`, `route53_accessible`, `ses_sending_identity_verified`, `ses_receive_rule_set_active`, `ses_receive_bucket_accessible`, `pulumi_logged_in` | Operator-invited Keycloak flow end-to-end: `prodbox users invite` → SES capture-bucket poll → invite link follow → credential setup → OIDC login |
-| `sealed-vault` | `k8s_ready`, chart-platform prereqs | Seals Vault after a reconciled runtime, asserts sealed-state fail-closed behavior, and runs the cross-surface zero-child-info audit |
+| `charts-vscode` | public edge, curl | HTTPS browser/OIDC route behavior for VS Code |
+| `charts-api` | public edge, curl | bearer-token validation and the API 401/403 contract |
+| `charts-websocket` | public edge, curl | WebSocket upgrade, broadcast, revocation reconnect, and readiness drain |
+| `admin-routes` | public edge, curl | MinIO console auth and RBAC on the shared public edge; the registry has no web UI |
+| `public-dns` | Route 53 lifecycle, dig | registrar delegation and configured-FQDN resolution |
+| `dns-aws` | Route 53 lifecycle | ephemeral hosted-zone and record lifecycle correctness |
+| `aws-iam` | IAM harness, AWS CLI | operational IAM credential provisioning and cleanup |
+| `aws-eks` | AWS, cluster, Pulumi | the `aws-eks` substrate stack and typed outputs |
+| `pulumi` | AWS, cluster, Pulumi | the `aws-test` stack and typed outputs |
+| `ha-rke2-aws` | AWS, cluster, Pulumi, SSH | reachability and stale-instance repair for the three-node test stack |
+| `gateway-daemon` | cluster, curl | local daemon health/readiness/metrics and bounded drain |
+| `gateway-pods` | cluster | in-cluster gateway pod readiness and log sanity |
+| `gateway-partition` | in process | ownership/claim/yield behavior and duplicate rejection on the current representation |
+| `charts-platform` | cluster | supported chart registry/status and platform behavior |
+| `resource-guardrails` | cluster | declared pod resources, quotas/limits, and pre-mutation over-budget refusal |
+| `daemon-bootstrap` | in-process oracle | supported daemon-mediated bootstrap/object-store transport and redaction |
+| `pulsar-broker` | cluster | native-protocol Pulsar produce/consume/ack behavior |
+| `keycloak-invite` | public edge, curl, AWS, Route 53; capability-derived retained-SES preparation; deferred semantic SES observations | Invite, capture, link-follow, credential setup, and OIDC login. Sprint `5.17` supplies desired-present preparation; landed Sprint `8.10` supplies exact sender/DKIM, MX/rule, and operational capture-canary list/get readiness. |
+| `charts-storage` | cluster | retained-storage pairing and chart storage behavior |
+| `eks-volume-rebind` | cluster | identical retained-volume rebinding and sentinel continuity |
+| `sealed-vault` | cluster | sealed-state fail-closed behavior and the cross-surface opacity audit |
+| `lifecycle` | cluster | `cluster delete --yes` → `cluster reconcile` → `cluster health` round trip |
 
-The "Prerequisites" column names declared prerequisite nodes from `src/Prodbox/Prerequisite.hs`,
-keyed by the typed `PrerequisiteId` ADT (Sprint `5.6`; the registry is no longer keyed by raw
-`String`). **Public-edge readiness is now a declared prerequisite node.** Sprint `5.6` promoted
-the former *procedural* bootstrap gate into the declared `public_edge_ready` node split out of
-`infra_ready`: it depends only on cluster + chart-platform readiness (`k8s_ready`), **not** on
-AWS credentials, so `charts-vscode`, `charts-api`, `charts-websocket`, and `admin-routes` gate on
-an AWS-credential-free readiness rather than re-acquiring the full `infra_ready` capability set
-(which still pulls in `aws_credentials_valid`). The runner still runs `runWaitForPublicEdgeReady`
-in `src/Prodbox/TestRunner.hs` (polling `prodbox host public-edge` until
-`CLASSIFICATION=ready-for-external-proof`) to *satisfy* the gate during the supported-runtime
-bootstrap/restore; the declared `public_edge_ready` node is what the `charts-*` and `admin-routes`
-validations name in their minimal-and-precise prerequisite sets.
+Prerequisites are the typed `PrerequisiteId` values in
+`src/Prodbox/TestPlan.hs::validationInitialPrerequisites` and
+`validationDeferredPrerequisites`. They are read-only gates. Sprint `5.17` has moved retained-SES
+mutation into a visible capability-derived preparation action before deferred observation; it does
+not hide creation inside a prerequisite. Sprint `8.10` now routes those observations through
+`Prodbox.Ses.Readiness`: typed command results fold to `Ready`, bounded propagation `Pending`,
+terminal `Failed`, or `Unobservable`, and only `Ready` opens the gate.
 
 ## Substrate Independence
 
@@ -235,33 +245,31 @@ for the authoritative doctrine and
 [substrates.md](substrates.md#substrate-independence-no-fallback) for the substrate-side
 contract.
 
-Today the home local substrate runs the full suite; the AWS substrate runs only `aws-iam`,
-`aws-eks`, `ha-rke2-aws`, `pulumi`, and `dns-aws`. The parity gap is tracked in
-[substrates.md](substrates.md) and in [phase-7-aws-substrate-foundations.md](phase-7-aws-substrate-foundations.md).
+Current per-substrate live evidence and every open parity axis are tracked only in
+[substrates.md](substrates.md). This suite-content phase does not duplicate that changing status.
 
 ## Current Baseline In Worktree
 
-- `src/Prodbox/Host.hs` owns the public `prodbox host public-edge` diagnostic that classifies
-  Route 53, Envoy Gateway controller state, Gateway API readiness, certificate readiness,
-  security-policy attachment, advertisement mode, and external-proof readiness on whichever
-  substrate is active.
-- `src/Prodbox/TestValidation.hs` owns the canonical-suite dispatch (`runNativeValidation`,
-  line 192).
-- `src/Prodbox/TestPlan.hs` owns the `NativeValidation` ADT and the `IntegrationSuite`-to-plan
-  mapping for the `prodbox test integration <name>` CLI surface.
-- `src/Prodbox/TestRunner.hs` owns phase-bannered execution: prerequisite gating, optional
-  runbook (`cluster reconcile`), supported-runtime bootstrap (`charts reconcile` + wait for
-  public-edge ready), suite execution, optional postflight (charts reconcile + substrate destroy).
-- `src/Prodbox/Prerequisite.hs` owns the prerequisite DAG that gates suite execution.
-- Validations historically named "public-edge proofs" exercise real ZeroSSL certificates
-  via cert-manager + ACME, real OIDC redirects through Keycloak, real WebSocket fan-out via
-  Redis, and real Route 53 records. The validations themselves are substrate-agnostic; the home
-  local substrate is what stands those resources up today.
-- The current proof surface intentionally closes on Envoy listener TLS and route behavior only;
-  backend TLS or mTLS is outside the current supported chart-workload contract and is not claimed
-  by this phase.
-- The current implemented Gateway exposes HTTPS application routing on port `443` and a port `80`
-  HTTP listener only for redirect behavior; plaintext backend routing remains unsupported.
+- `src/Prodbox/TestPlan.hs` owns the `NativeValidation` ADT, canonical membership, typed
+  prerequisite projection, and aggregate/named plans; `src/Prodbox/TestValidation.hs` owns native
+  validation execution.
+- `src/Prodbox/TestRunner.hs` interprets phase-bannered prerequisite, preparation, bootstrap,
+  validation, restore, and finally-guaranteed cleanup plans. `Prodbox.TestRestore` owns the shared
+  substrate-aware restore-cycle plan.
+- `prodbox edge status` is the public readiness diagnostic consumed by external-proof setup. The
+  validation set remains substrate-agnostic; provisioning and current live parity are owned only by
+  [substrates.md](substrates.md).
+- `gateway-pods` feeds a structured, continuously sampled Pod/Event/metrics observer into one
+  run-scoped absorbing restart/OOM/failure-high-water/unobservable fold. Planned rollouts pause and
+  drain the observer while the gateway is intentionally absent and reset only the separate
+  three-sample healthy window; they never clear absorbed evidence.
+- Invite-capable setup derives exactly one nested retained-SES preparation plan from the selected
+  validation set. Its explicit target gateway object-store precondition precedes one registered
+  Phase-`4.47` ensure whose visible trace is acquire/reconcile/bounded provider-presence
+  await/target sync/release; non-invite and ordinary postflight plans contain no SES mutation.
+- The current public edge exposes HTTPS application routes on port `443`, redirect-only HTTP on
+  port `80`, and the MinIO console administrative route. The in-cluster registry has no public UI
+  route; backend TLS/mTLS remains outside this chart-workload contract.
 
 ## Sprint 5.1: Public Hostname Closure and External Proof on the Haskell Stack ✅
 
@@ -275,7 +283,7 @@ Close the implemented public DNS and public-edge path on the Haskell runtime tha
 
 ### Deliverables
 
-- `prodbox host public-edge` is implemented in Haskell and preserves the supported diagnostic
+- `prodbox edge status` is implemented in Haskell and preserves the supported diagnostic
   classification contract.
 - Public DNS delegation, live HTTPS reachability, TLS issuance, and auth redirects are proven
   through Haskell-owned command surfaces.
@@ -287,17 +295,17 @@ Close the implemented public DNS and public-edge path on the Haskell runtime tha
 
 1. `prodbox dev check`
 2. `prodbox test unit`
-3. `prodbox host public-edge`
+3. `prodbox edge status`
 4. `prodbox test integration charts-vscode`
 5. `prodbox test integration public-dns`
 
 ### Current Validation State
 
-- `src/Prodbox/Host.hs` now owns the public `prodbox host public-edge` surface and preserves the
+- `src/Prodbox/Host.hs` now owns the public `prodbox edge status` surface and preserves the
   supported readiness-report fields and classification contract.
-- `src/Prodbox/TestRunner.hs` now uses the native Haskell `host public-edge` command directly
+- `src/Prodbox/TestRunner.hs` now uses the native Haskell `edge status` command directly
   inside the supported-runtime bootstrap and postflight checks.
-- `test/unit/Main.hs` proves parser routing for native `host public-edge`.
+- `test/unit/Main.hs` proves parser routing for native `edge status`.
 - The named validation commands `prodbox test integration charts-vscode` and
   `prodbox test integration public-dns` now run executable native Haskell validation flows via
   `src/Prodbox/TestValidation.hs`.
@@ -320,7 +328,7 @@ proof and external-only validation.
 
 ### Deliverables
 
-- `prodbox host public-edge` classifies Route 53, `Gateway`, `HTTPRoute`, certificate, and
+- `prodbox edge status` classifies Route 53, `Gateway`, `HTTPRoute`, certificate, and
   external-proof readiness on the self-managed public edge.
 - The public `charts-vscode` and `public-dns` proofs close on Envoy-authenticated browser delivery
   rather than the retired `vscode-nginx` path.
@@ -333,7 +341,7 @@ proof and external-only validation.
 
 1. `prodbox dev check`
 2. `prodbox test unit`
-3. `prodbox host public-edge`
+3. `prodbox edge status`
 4. `prodbox test integration charts-vscode`
 5. `prodbox test integration public-dns`
 6. Classification proof: the ready state is derived from Gateway API and Envoy Gateway state rather
@@ -359,6 +367,9 @@ None.
 ## Sprint 5.3: API and WebSocket Public-Edge Proof ✅
 
 **Status**: Done
+**Superseded surface note**: This block records the historical Harbor-plus-MinIO proof. The July
+2026 `registry:2` replacement removed Harbor's UI and public route; current `admin-routes` proves
+the MinIO console only, as listed in the canonical inventory above.
 **Implementation**: `src/Prodbox/Host.hs`, `src/Prodbox/K8s.hs`, `src/Prodbox/TestPlan.hs`, `src/Prodbox/TestRunner.hs`, `src/Prodbox/TestValidation.hs`, `test/`
 **Docs to update**: `documents/engineering/cli_command_surface.md`, `documents/engineering/envoy_gateway_edge_doctrine.md`, `documents/engineering/helm_chart_platform_doctrine.md`, `documents/engineering/unit_testing_policy.md`
 
@@ -370,7 +381,7 @@ WebSocket, and Keycloak paths on one public edge.
 
 ### Deliverables
 
-- `prodbox host public-edge` classifies shared-host browser, API, WebSocket, and Keycloak paths on
+- `prodbox edge status` classifies shared-host browser, API, WebSocket, and Keycloak paths on
   the supported Envoy Gateway edge.
 - The public-edge diagnostic reports the active MetalLB advertisement mode and preserves the
   existing Route 53, certificate, and readiness classification contract on one public hostname.
@@ -390,7 +401,7 @@ WebSocket, and Keycloak paths on one public edge.
 
 1. `prodbox dev check`
 2. `prodbox test unit`
-3. `prodbox host public-edge`
+3. `prodbox edge status`
 4. `prodbox test integration charts-vscode`
 5. `prodbox test integration charts-api`
 6. `prodbox test integration charts-websocket`
@@ -417,7 +428,7 @@ WebSocket, and Keycloak paths on one public edge.
   `prodbox test integration env` remain aligned with the expanded shared-host public-edge proof
   surface.
 - The canonical proof surface for `charts-api`, `charts-websocket`, `public-dns`, and
-  `host public-edge` now closes on the shared-host doctrine.
+  `edge status` now closes on the shared-host doctrine.
 
 ### Remaining Work
 
@@ -436,7 +447,7 @@ Envoy on `test.resolvefintech.com`, protected by Keycloak-backed auth and RBAC.
 
 ### Deliverables
 
-- `prodbox host public-edge` classifies the supported Harbor and MinIO admin paths on the shared
+- `prodbox edge status` classifies the supported Harbor and MinIO admin paths on the shared
   hostname.
 - Named external validations prove auth and RBAC on the supported admin routes.
 - The external proof surface preserves the one-DNS or one-cert doctrine as admin coverage grows.
@@ -445,7 +456,7 @@ Envoy on `test.resolvefintech.com`, protected by Keycloak-backed auth and RBAC.
 
 1. `prodbox dev check`
 2. `prodbox test unit`
-3. `prodbox host public-edge`
+3. `prodbox edge status`
 4. `prodbox test integration public-dns`
 5. `prodbox test integration admin-routes`
 
@@ -481,7 +492,7 @@ the same shared-host path.
   to Keycloak, workloads, Harbor, or MinIO.
 - HTTP requests for `test.resolvefintech.com/<service-path>` receive a permanent redirect to
   `https://test.resolvefintech.com/<service-path>`.
-- `prodbox host public-edge` reports the HTTP redirect listener and distinguishes redirect
+- `prodbox edge status` reports the HTTP redirect listener and distinguishes redirect
   readiness from HTTPS application-route readiness.
 - The named public-host validations prove both the redirect behavior on port `80` and the existing
   HTTPS route, certificate, auth, and RBAC behavior on port `443`.
@@ -490,7 +501,7 @@ the same shared-host path.
 
 1. `prodbox dev check`
 2. `prodbox test unit`
-3. `prodbox host public-edge`
+3. `prodbox edge status`
 4. `prodbox test integration public-dns`
 5. `prodbox test integration charts-vscode`
 6. `prodbox test integration charts-api`
@@ -502,7 +513,7 @@ the same shared-host path.
 ### Current Validation State
 
 - The Gateway API HTTP listener and redirect-only `HTTPRoute` now render from the Keycloak chart.
-- `prodbox host public-edge` now reports Envoy service port readiness, HTTP redirect listener
+- `prodbox edge status` now reports Envoy service port readiness, HTTP redirect listener
   readiness, HTTPS listener readiness, and redirect `HTTPRoute` acceptance.
 - `src/Prodbox/TestValidation.hs` now proves the port `80` redirect before the `charts-vscode`
   HTTPS proof and after the `public-dns` record proof.
@@ -614,11 +625,10 @@ cross-surface zero-child-info audit, while the pure `sealedVaultAuditReport` ora
 Dhall/config SecretRef sweep run as local unit tests against fixtures and rendered artifacts. Where the
 red-team would touch a later-phase-owned AWS substrate, it is exercised against the home substrate
 today; the AWS-substrate variant is the orthogonal coverage row, not a gate.
-**Live-proof**: pending — the home-substrate live sealed-Vault red-team (live deployed Vault, sealed
-parent/child cascade, host-disk and Kubernetes probes) is tracked as a distinct, non-blocking
-Live-proof note per [development_plan_standards.md → O. Code-Local vs Live-Infra Proof](development_plan_standards.md#o-code-local-completion-vs-live-infra-proof); it does not gate this sprint's
-code-owned closure. AWS-substrate coverage of the same validation is tracked only in
-[substrates.md](substrates.md)'s parity table (Standards N/O/M) and is not a `5.8` blocker.
+**Live proof**: the home-substrate sealed-Vault validation passed on 2026-06-16 and again inside the
+June 26 aggregate, including the host-disk/Kubernetes/log opacity audit. Remaining parent/child
+federation-cascade and AWS-substrate variants are distinct non-blocking Standard-O axes tracked in
+this sprint's Remaining Work and [substrates.md](substrates.md); they are not `5.8` blockers.
 **Docs to update**: `documents/engineering/unit_testing_policy.md`, `documents/engineering/vault_doctrine.md`, `documents/engineering/cluster_federation_doctrine.md`
 
 ### Objective
@@ -1224,6 +1234,171 @@ Retire the Phase-1.6 strand: one restore-cycle builder (no hand-kept duplicate) 
 - Ledger row I (duplicated restore lists + precondition-less `syncKeycloakSmtp`) is moved to
   `Completed` in `legacy-tracking-for-deletion.md` under Sprint `5.15`.
 
+## Sprint 5.16: Gateway Runtime-Stability Oracle [✅ Done]
+
+**Status**: Done (2026-07-10)
+**Live-proof**: pending — the live restart-free soak longer than the July 10 failure interval is a
+non-blocking Standard-O axis.
+**Implementation**: `src/Prodbox/Test/GatewayRuntimeStability.hs`,
+`src/Prodbox/TestValidation.hs`, `src/Prodbox/TestRunner.hs`, `src/Prodbox/TestRestore.hs`,
+`src/Prodbox/TestPlan.hs`, `test/unit/GatewayRuntimeStability.hs`, `test/unit/Main.hs`, and
+`test/integration/CliSuite.hs`
+**Independent Validation**: table-shaped fake Kubernetes payloads cover stable, restarted,
+OOM-killed, pressured, and unobservable pods plus stability-window folding; no live cluster or
+later phase is required. Focused oracle and boundary tables pass 17/17, the installed-binary
+fake-Kubernetes `gateway-pods` fixtures pass 2/2 (healthy and background-only OOM), the
+warning-clean full unit suite passes 1494/1494, the CLI integration suite passes 47/47, and
+`prodbox dev check` passes as the closure gate.
+**Docs to update**: `documents/engineering/unit_testing_policy.md`,
+`documents/engineering/bootstrap_readiness_doctrine.md`,
+`documents/engineering/resource_scaling_doctrine.md`
+
+### Objective
+
+Make a recovered OOM a durable failing observation rather than a transiently green Deployment.
+Keep authored resource-envelope validation separate from runtime stability, and require explicit
+evidence that gateway replicas remained healthy across a bounded observation window.
+
+### Deliverables
+
+- Add a flat exhaustive `GatewayPodHealthObservation`-style classifier for restart-free ready,
+  restart delta, `OOMKilled` residue, memory pressure/high-water, pending, and unobservable states.
+- Maintain a run-wide absorbing unhealthy-evidence fold over pod UIDs, watch/events, container
+  status, and restart deltas across destructive restore boundaries. Deletion/recreation cannot
+  erase an OOM or restart already observed during the run.
+- Run the observer under structured concurrency after the home baseline or the AWS gateway
+  bootstrap handoff. Serialize foreground/background folds; bound every Kubernetes read at the API,
+  GNU-process, and Haskell wall-clock layers; and keep AWS credentials/kubeconfig in a private
+  explicit subprocess environment.
+- Pause and drain across compiled gateway rollouts and observed-cluster replacement. After EKS
+  recreation, restore the canonical AWS gateway/platform and require a refresh acknowledgement
+  proving the old kubeconfig bracket has exited and a fresh bracket is active before foreground
+  sampling and resume.
+- Keep a separate restartable healthy-window baseline for an explicitly planned rollout. A rollout
+  may restart only the success window; it never clears the absorbing unhealthy evidence. Fail on
+  any OOM/restart evidence and require a configured sequence of stable samples before opening the
+  gateway stability gate.
+- Keep `resource-guardrails` responsible for authored requests/limits, quotas, and QoS. Add or
+  extend a named runtime validation for observed stability rather than conflating the two proofs.
+- Report pod name, restart delta, termination reason/time, current limit, and sampled high-water in
+  one actionable diagnostic without relying on logs as the classifier.
+
+### Validation
+
+1. Fake-payload tables prove a currently Ready/Available pod with prior `OOMKilled` fails.
+2. The absorbing run-evidence fold and separate healthy-window fold prove restarts/OOMs cannot be
+   hidden by a later green sample, pod deletion, UID replacement, or planned chart reconcile.
+3. Unobservable metrics/status fail closed; memory high-water warning/failure thresholds are pure
+   configured inputs rather than free-form string logic.
+4. `prodbox test unit`, built-frontend integration fixtures, and `prodbox dev check` pass.
+5. A live restart-free soak longer than the July 10 failure interval is the non-blocking live-proof
+   axis over Sprint `2.31`'s landed bounded runtime.
+
+### Remaining Work
+
+- None on the code-owned surface. The live restart-free soak longer than the July 10 failure
+  interval remains a non-blocking Standard-O proof axis.
+
+## Sprint 5.17: Retained SES Test-Preparation Plan [✅ Done]
+
+**Status**: Done (2026-07-10)
+**Implementation**: `src/Prodbox/TestRestore.hs`, `src/Prodbox/TestPlan.hs`,
+`src/Prodbox/TestRunner.hs`, `src/Prodbox/Infra/AwsSesStack.hs`,
+`src/Prodbox/Prerequisite.hs`, `src/Prodbox/EffectInterpreter.hs`,
+`test/unit/RetainedSesPreparation.hs`, `test/unit/RetainedSesTargetRecovery.hs`,
+`test/unit/AwsSesLifecycle.hs`, and `test/unit/Main.hs`
+**Live-proof**: pending (non-blocking, Standard O) — clean-state invite preparation on live home
+and AWS targets; a fresh deployed run through Sprint `8.10`'s landed semantic readiness boundary
+remains the Phase-`8` live-proof axis
+**Independent Validation**: pure home/AWS/non-invite projections, an injected readiness plus
+registered-ensure interpreter, the real Phase-`4.47` target-commit/recovery interpreters over two
+fake observable sinks, and explicit target-selection tables prove the code-owned surface without
+AWS or Phase `8` live infrastructure.
+**Docs to update**: `documents/engineering/integration_fixture_doctrine.md`,
+`documents/engineering/prerequisite_doctrine.md`,
+`documents/engineering/aws_integration_environment_doctrine.md`,
+`documents/engineering/unit_testing_policy.md`
+
+### Objective
+
+Derive long-lived SES preparation from suite capabilities. Every invite-capable suite visibly
+reconciles the registered `aws-ses` resource after gateway/Vault/object-store readiness and before
+SMTP sync; unrelated suites do not touch SES, and ordinary postflight never destroys it.
+
+### Deliverables
+
+- ✅ Derive `SesRequired` purely from the selected validation set (`ValidationKeycloakInvite`), not
+  from substrate identity or ambient stack presence.
+- ✅ Extend the typed preparation/restore plan with an opaque nested plan carrying the typed target
+  gateway object-store precondition and visible acquire/reconcile/await-ready/sync/release trace.
+  Its injected interpreter owns only the readiness observation and one registered atomic ensure;
+  the Phase-`4.47` transaction retains the acquire/release bracket and canonical idempotent
+  reconcile, so absence and drift converge through one path.
+- ✅ Order the fragment after the gateway object-store round trip and before Keycloak SMTP sync and
+  dependent chart reconciliation. A failed ensure/readiness step prevents SMTP/chart mutation.
+- ✅ Carry the retained control-plane checkpoint authority and selected target-cluster secret sink as
+  distinct typed inputs: reconcile/read `aws-ses` through the former, then materialize SMTP KV into
+  the latter. Never infer long-lived checkpoint coordinates from the active substrate or ambient
+  port-forward environment.
+- ✅ Interpret target SMTP sync through Sprint `4.47`'s global commit-intent protocol; a fake plan for
+  two concurrent invite runs targeting different sinks must resolve the older nonterminal intent
+  before either a new credential generation or a successor sink write is admitted.
+- ✅ Preserve `aws-ses` on success, failure, timeout, and interruption. The existing per-run stack
+  cleanup remains unchanged.
+- ✅ Keep prerequisite nodes read-only: they classify the post-reconcile external state and never hide
+  the resource mutation inside a prerequisite effect.
+- ✅ The landed Sprint-`8.10` integration preserves the plan shape while strengthening the existing
+  await-ready stage: each bounded attempt first proves the complete registered provider inventory,
+  including the Pulumi-owned S3 canary, then classifies exact sender/DKIM, MX/rule, and capture
+  list/get semantics. Capture probes use the operational credential consumed by invite polling;
+  `Failed` and `Unobservable` stop before SMTP sync, while only propagation `Pending` retries.
+
+### Validation
+
+1. ✅ Focused Sprint-`5.17` plan/recovery tests pass 10/10: home/AWS place one equal nested plan,
+   non-invite sets place none, target readiness precedes exactly one registered ensure, failures
+   block dependent charts, different-sink recovery resolves/read-backs before new generation/write,
+   and unobservable recovery fails closed.
+2. ✅ Explicit SES target-selection API tests pass 6/6; the real Phase-`4.47` global target-commit
+   suite passes 12/12.
+3. ✅ Full unit passes 1508/1508; installed-binary CLI and env integration commands each pass the
+   complete 47/47 built-frontend suite.
+4. ✅ `prodbox dev docs check`, `prodbox dev lint docs`, `git diff --check`, and the final
+   `prodbox dev check` pass.
+
+### Remaining Work
+
+- None on Sprint `5.17`'s code-owned surface.
+- 🧪 Live-proof pending (non-blocking, Standard O): clean-state invite preparation on deployed home
+  and AWS targets through the landed Sprint-`8.10` classifier. This remains a Phase-`8` live-proof
+  axis, not remaining Sprint-`5.17` work or a backward blocker.
+
+## Documentation Requirements
+
+**Engineering docs to create/update:**
+
+- `documents/engineering/unit_testing_policy.md` - runtime-stability and retained-preparation proof
+  categories.
+- `documents/engineering/bootstrap_readiness_doctrine.md` - point readiness versus the run-scoped
+  runtime observer and planned-rollout pause boundary.
+- `documents/engineering/resource_scaling_doctrine.md` - plan-derived runtime warning/failure
+  thresholds remain separate from authored resource-envelope validation.
+- `documents/engineering/integration_fixture_doctrine.md` - retained ensure versus per-run destroy.
+- `documents/engineering/prerequisite_doctrine.md` - SES checks remain read-only after visible
+  preparation.
+- `documents/engineering/aws_integration_environment_doctrine.md` - invite-capability selection and
+  preparation order.
+
+**Product docs to create/update:**
+
+- `README.md` - Sprints `5.16`/`5.17` closure, the subsequently closed Phase-`8`
+  semantic-readiness handoff, and its non-blocking live-proof axis.
+
+**Cross-references to add:**
+
+- Link Sprint `5.16` to Sprints `1.60`/`2.31` and Sprint `5.17` to Sprints `4.47`/`8.10` without
+  creating backward blockers.
+
 ## Related Documents
 
 - [README.md](README.md)
@@ -1232,3 +1407,5 @@ Retire the Phase-1.6 strand: one restore-cycle builder (no hand-kept duplicate) 
 - [substrates.md](substrates.md)
 - [phase-7-aws-substrate-foundations.md](phase-7-aws-substrate-foundations.md)
 - [phase-8-email-invite-auth.md](phase-8-email-invite-auth.md)
+- [Integration Fixture Doctrine](../documents/engineering/integration_fixture_doctrine.md)
+- [Prerequisite Doctrine](../documents/engineering/prerequisite_doctrine.md)

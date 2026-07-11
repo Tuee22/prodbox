@@ -117,7 +117,8 @@ forbidden reconciler flags, forbidden subprocess primitives, structured-concurre
 set, property-test invariants, health-endpoint golden-test shapes, renderer-determinism
 forbidden inputs, production-no-op / test-injected hook contract, and the
 `fourmolu.yaml` 12-setting list as named deliverables on existing planned sprints. Sprint 0.5
-extends that governance contract again for the `prodbox rke2 delete --yes` success-summary
+extends that governance contract again for the lifecycle delete success-summary (now exposed as
+`prodbox cluster delete --yes`)
 surface, scheduling hermetic suppression of benign upstream uninstall chatter plus the governed
 documentation updates required by
 [../documents/documentation_standards.md](../documents/documentation_standards.md). Sprint
@@ -636,9 +637,11 @@ Harmony as an enforced invariant):
   `documents/engineering/tla_modelling_assumptions.md` — rewrite Orders promotion to be
   restart-based and add the single-host-degenerate-mesh topology / fault-model note (Sprint
   `0.9`; owned by Sprint `2.25`).
-- `documents/engineering/aws_integration_environment_doctrine.md` — correct §4.5 so per-run
-  stacks use the in-cluster MinIO backend and `aws-ses` uses the long-lived S3 backend (Sprint
-  `0.9`).
+- `documents/engineering/aws_integration_environment_doctrine.md` — historical Sprint `0.9`
+  correction assigned per-run MinIO and `aws-ses` long-lived S3. That checkpoint assignment is
+  superseded by the uniform Model-B architecture (`0.14`/`7.14`) and the Sprint `4.47` authority
+  clarification: main `aws-ses` state uses the retained control-plane Model-B store; S3 remains
+  retained TLS/legacy-import storage.
 - `documents/engineering/cli_command_surface.md` — convert the §2/§3 operator command matrix to
   a generated section sourced from `commandRegistry` (Sprint `0.10`).
 - `documents/engineering/helm_chart_platform_doctrine.md` — convert the chart→edge-resource
@@ -961,8 +964,8 @@ header field.
 - **Five doctrine corrections** (the doc, not the code, is stale):
   - `documents/engineering/pure_fp_standards.md` (GADT-Indexed State Machines + the
     Forbidden list) softens the GADT mandate to "GADTs for authoritative in-process
-    transitions; externally-authoritative / log-reconciled state (e.g. gateway ownership
-    as a fold over the append-only commit log — a `Disposition` projection) may use a flat
+    transitions; externally-authoritative / log-reconciled state (the then-current gateway
+    ownership fold over the now-superseded append-only commit log was the motivating example) may use a flat
     exhaustive ADT", while keeping the exhaustive-ADT and no-raw-`String` requirements.
     Owned by Sprint `1.32`.
   - `documents/engineering/haskell_code_guide.md` (Capability Classes / Service Errors)
@@ -981,12 +984,13 @@ header field.
     `documents/engineering/tla_modelling_assumptions.md` rewrite Orders promotion to be
     restart-based (already defined by config_doctrine §8 step 4): `stateOrdersVersionUtc`
     never advances in-process, the refuse-to-reclaim-while-behind gate is kept, and a
-    topology / fault-model note records that home is a single-host degenerate single-rank
-    mesh (shared-fate) while partition tolerance is an AWS / future-multi-host capability.
+    topology / fault-model note records that home is a three-logical-peer mesh on one physical
+    host under shared fate, while independent-host tolerance is an AWS / future-multi-host capability.
     Owned by Sprint `2.25`.
-  - `documents/engineering/aws_integration_environment_doctrine.md` §4.5 is corrected so
-    per-run stacks use the in-cluster MinIO backend while `aws-ses` uses the long-lived S3
-    backend (its state must outlive cluster wipes). Doc-only fix landing under this sprint.
+  - Historical `documents/engineering/aws_integration_environment_doctrine.md` §4.5 assigned
+    per-run state to MinIO and `aws-ses` state to long-lived S3. Superseded by Sprint `0.14`/`7.14`
+    Model-B uniformity and Sprint `4.47`: the retained home/control-plane Model-B store owns the
+    main `aws-ses` checkpoint; S3 is TLS/legacy-import storage.
 - **Repo-wide `**Generated sections**` header sweep**: every governed doc missing the
   field gains `**Generated sections**: none` (or its real marker keys) per
   [documentation_standards.md](../documents/documentation_standards.md).

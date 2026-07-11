@@ -2,7 +2,7 @@
 
 **Status**: Authoritative source
 **Supersedes**: N/A
-**Referenced by**: README.md, AGENTS.md, CLAUDE.md, documents/engineering/README.md, documents/engineering/code_quality.md, documents/engineering/dependency_management.md, documents/engineering/effect_interpreter.md, documents/engineering/lifecycle_reconciliation_doctrine.md, documents/engineering/refactoring_patterns.md, documents/engineering/unit_testing_policy.md, documents/engineering/pulsar_messaging_doctrine.md, documents/engineering/resource_scaling_doctrine.md, documents/engineering/pulsar_topic_lifecycle_doctrine.md, documents/engineering/tiered_storage_capacity_doctrine.md, documents/engineering/host_platform_doctrine.md, documents/engineering/cluster_topology_doctrine.md, documents/engineering/test_topology_doctrine.md, documents/engineering/bootstrap_readiness_doctrine.md, DEVELOPMENT_PLAN/phase-1-runtime-cli-aws-foundations.md
+**Referenced by**: README.md, AGENTS.md, CLAUDE.md, documents/engineering/README.md, documents/engineering/code_quality.md, documents/engineering/dependency_management.md, documents/engineering/distributed_gateway_architecture.md, documents/engineering/effect_interpreter.md, documents/engineering/lifecycle_reconciliation_doctrine.md, documents/engineering/refactoring_patterns.md, documents/engineering/unit_testing_policy.md, documents/engineering/pulsar_messaging_doctrine.md, documents/engineering/resource_scaling_doctrine.md, documents/engineering/pulsar_topic_lifecycle_doctrine.md, documents/engineering/tiered_storage_capacity_doctrine.md, documents/engineering/host_platform_doctrine.md, documents/engineering/cluster_topology_doctrine.md, documents/engineering/test_topology_doctrine.md, documents/engineering/bootstrap_readiness_doctrine.md, DEVELOPMENT_PLAN/phase-1-runtime-cli-aws-foundations.md, DEVELOPMENT_PLAN/phase-4-lifecycle-canonical-paths.md
 **Generated sections**: none
 
 > **Purpose**: Define the Haskell coding standards for `prodbox` so pure planning logic,
@@ -207,8 +207,8 @@ calls belong in the narrowest boundary that can own them.
 
 ## 6.3 At-Least-Once Event Processing
 
-Daemons that consume events (peer commit log, future workload event surfaces, any future
-worker) consume the canonical at-least-once pattern from
+Daemons that consume durable work events (future workload event surfaces and workers) consume the
+canonical at-least-once pattern from
 [At-Least-Once Event
 Processing](./streaming_doctrine.md) exposed by
 `src/Prodbox/Daemon/Events.hs` (introduced by Sprint 2.16 in
@@ -221,13 +221,14 @@ encoded in its haddock. Handlers must be idempotent: events may be delivered mul
 strategies include database constraints, check-then-act with a dedup key, or pure
 projections of the event payload.
 
-Pure planning logic must not duplicate the at-least-once pattern; consume the canonical
-module instead. The gateway peer-gossip commit log intentionally remains the in-memory
-anti-entropy variant documented in
+Pure planning logic must not duplicate the at-least-once pattern; consume the canonical module
+instead. Gateway peer gossip is a different, non-durable coordination protocol documented in
 [Distributed Gateway Architecture](./distributed_gateway_architecture.md#721-at-least-once-correspondence):
 it shares the idempotency and ordering discipline but does not need durable `processed_at`
-tracking because peers merge complete signed batches by event hash rather than acknowledging a
-work queue.
+tracking because peers fold bounded cursor deltas or bounded semantic snapshots rather than
+acknowledging a work queue. Complete process-lifetime batch replication is forbidden and is not an
+at-least-once requirement. Sprint `2.31` landed this bounded shape; repair uses a signed
+per-emitter semantic checkpoint plus a bounded contiguous suffix.
 
 ## 7. Testing Implications
 
@@ -292,16 +293,16 @@ two states must use GADTs with phantom type parameters to encode valid transitio
 level. Invalid transitions become compile errors, not runtime errors.
 
 The GADT mandate is scoped to in-process authority. **Externally-authoritative or
-log-reconciled state** does not use a GADT-indexed command type: when the authoritative state
-lives outside this process — derived by folding an append-only commit log, reconstructed from a
+reconciled state** does not use a GADT-indexed command type: when the authoritative state
+lives outside this process — derived by folding a replicated semantic projection, reconstructed from a
 remote system's observed state, or otherwise reconciled rather than commanded — model it as a
 flat **exhaustive ADT** computed by a pure projection. The gateway ownership model is the
-canonical example: ownership is a `Disposition` projection folded over the signed append-only
-commit log, not a command sequence this process authors, so it is an exhaustive ADT rather than
+canonical example: ownership is a `Disposition` projection folded from bounded signed semantic
+state, not a command sequence this process authors, so it is an exhaustive ADT rather than
 a GADT (see
 [distributed_gateway_architecture.md](./distributed_gateway_architecture.md)). There is no valid
 in-process "transition" to encode at the type level, because no transition originates here; the
-log is the source of truth and the projection is recomputed, not stepped. Cluster **readiness** is a
+replicated observation is the source of truth and the projection is recomputed, not stepped. Cluster **readiness** is a
 second reference example: it is *observed*, not commanded, so Sprint `1.59`'s
 `ReadinessObservation` (`ReadyObserved | NotReadyYet | Unreachable`) and `ReadinessProbeResult`
 (`ReadinessProbeReady | ReadinessProbePending`) are flat exhaustive ADTs — never GADTs — under the
@@ -332,11 +333,64 @@ result becomes `NotReadyYet`; an observation error becomes `Unreachable`. Both r
 gate-closed `PollPending` readings. `PollFailed` is the generic poller's separate immediate
 hard-error arm, not an alias for `Unreachable`. Only `ReadyObserved` opens readiness.
 
+Sprint `5.16`'s landed runtime-stability classifier is a third external projection, not a stronger
+readiness constructor. `Prodbox.Test.GatewayRuntimeStability` purely parses Pod, Event, and metrics
+JSON into a flat exhaustive pod observation, then combines a run-wide absorbing outcome with a
+consecutive-success window. Restart, OOM, failure-threshold high-water, and unobservable evidence
+are absorbing. Warning pressure, Pending, and Pod UID replacement reset consecutive success; only
+a gateway rollout present in the compiled restore/lifecycle plan may explicitly reset the whole
+healthy-window baseline. No reset changes the absorbing result. The aggregate observation returns
+stable, not-yet-stable, unhealthy, or unreachable, so a current Ready value cannot erase an
+OOM/restart observed earlier in the run; see
+[bootstrap_readiness_doctrine.md §2.1](./bootstrap_readiness_doctrine.md#21-dependency-readiness-vs-runtime-stability).
+
+The interpreter preserves that pure/effect split with one concurrency-safe, run-scoped recorder.
+A structured continuous observer and every explicit rollout-boundary/final sample serialize their
+folds through the same observation lock and state cell. The explicit baseline is handed off only
+after the continuous observer completes its first observation, so later suite work cannot create a
+sampling gap. AWS supplies the observer a monitor-private EKS kubeconfig and an explicit
+Vault-derived subprocess environment instead of mutating ambient process state. Its gateway
+reconcile and point sample precede the handoff; SMTP synchronization and dependent chart
+reconciles follow it. Only a compiled planned home/target gateway rollout may pause and drain the
+observer; it resets only the healthy window, never the absorbing outcome. Each stability `kubectl`
+read carries
+`--request-timeout=5s` and is independently bounded by GNU `timeout` plus `System.Timeout`.
+
+The separate `GatewayRuntimeRecreatedTarget` projection covers a whole observed-cluster
+replacement such as `eks-volume-rebind`. Its interpreter pauses/drains, takes the pre-replacement
+sample, resets only the healthy window, recreates the target through the canonical AWS
+gateway/platform path where applicable, and requests a monitor-context refresh. The refresh
+acknowledgement proves the worker has exited the old kubeconfig bracket and materialized a new one;
+a foreground sample runs while still paused, then the monitor resumes. This effect choreography
+does not alter the pure absorbing fold.
+
+Runtime-memory planning demonstrates the boundary between a pure proof value and an external
+observation. `Prodbox.Capacity.RuntimeMemory.validateRuntimeMemoryPlan` consumes positive byte-unit
+inputs plus a finite child schedule and returns either a structured `RuntimeMemoryError` or an
+opaque `RuntimeMemoryPlan`. The plan proves the nested heap/container inequalities, derives the GHC
+RTS argv, and projects `container limit - safety margin` as a typed high-water comparison value.
+It performs no IO and does not claim that the running process honored the plan.
+
+`Prodbox.Capacity.Config.runtimeMemoryPlanForProfile` supplies the container limit from the matching
+workload resource envelope, so validation cannot accidentally compare against a second authored
+ceiling. `ChartPlatform` consumes only the validated plan when rendering gateway RTS arguments.
+`Prodbox.Gateway.Bounds` consumes the plan to validate gateway state/transport limits, and
+`Prodbox.Gateway.ChildSchedule` plus the daemon enforce the capacity-one child permit landed in
+Sprint `2.31`. Sprint `5.16` landed the flat exhaustive external stability observation and the
+effectful Kubernetes adapter, shared recorder, and continuous monitor in `Prodbox.TestValidation`.
+Thresholds are projected from the validated runtime-memory plan, and log text remains
+diagnostic-only. Neither external observation nor its effectful adapter is folded into the pure
+planner. Post-refresh code-owned evidence is 17/17 focused unit tests, 2/2 built-frontend
+`gateway-pods` fixtures (healthy and a background-only OOM retained through later healthy samples),
+and 1494/1494 full unit tests, plus the exact post-refresh full CLI integration suite at 47/47.
+`prodbox dev check` passes as the final repository closure gate. The live multi-peer substrate soak
+remains a non-blocking Standard-O proof.
+
 This carve-out does **not** relax the rest of the discipline. Externally-authoritative state
 must still be a typed ADT, matched exhaustively (§2.1, §2.2), and must never be a raw `String`
 or `Text` status field with string comparisons. The difference is only whether transitions are
 encoded as GADT indices (in-process authority) or recomputed as a pure fold over the
-authoritative log (external authority).
+authoritative replicated/external observation (external authority).
 
 The prescribed shape for in-process authoritative state machines:
 
@@ -421,8 +475,9 @@ operations on dynamically loaded values without unsafe casts.
 > **Doctrine realignment**: This section's in-process/external authority split is the
 > doctrine target for Sprint 1.32 (retire the un-adopted `src/Prodbox/StateMachine.hs` and its
 > lone typecheck test, realign the GADT doctrine to the reconciled-projection reality). The
-> gateway `Disposition` projection (an exhaustive ADT folded over the commit log) is the
-> reference implementation of the externally-authoritative case.
+> gateway `Disposition` projection (an exhaustive ADT folded over bounded semantic replica state) is
+> the landed reference shape for the externally-authoritative case. Sprint `2.31` replaced the
+> former append-only projection with keyed bounded state without changing this flat-ADT rule.
 
 ## Plan / Apply
 
@@ -488,6 +543,48 @@ This section composes with two others:
 - [Reconcilers](./cli_command_surface.md#reconcilers-idempotent-mutation-as-a-single-command)
   are a specialization: a reconciler is a Plan/Apply command whose `apply` is
   a no-op when current state already matches the plan's desired state.
+
+For an externally authoritative desired-present reconciler, reconnaissance must preserve each
+independent authority as its own flat exhaustive observation ADT. Resource presence and checkpoint
+usability, for example, are not one Boolean: the pure planner consumes both observations, emits
+explicit create/import/repair/refuse actions, the interpreter enacts them, and the authority is
+re-observed afterward. `Unobservable` never becomes `Absent` or `Missing`, and no GADT claims that
+an in-process constructor proves an external transition occurred. The canonical shape is owned by
+[Lifecycle Reconciliation Doctrine §3.1](./lifecycle_reconciliation_doctrine.md#desired-present-reconciliation-for-long-lived-resources).
+
+The repository implementation is `Prodbox.Lifecycle.ResidueStatus` plus
+`Prodbox.Lifecycle.DesiredPresence`: its total planner names all six observable
+presence × checkpoint actions (three absent/create cases and three present/import/reconcile/repair
+cases), while either unobservable authority produces a structured refusal. The interpreter carries
+the planned action as data, enacts it through injected hooks, and accepts success only after fresh
+`PresencePresent` and `CheckpointValid` observations. Opaque Model-B CAS lives behind
+`CheckpointAuthority` / `CheckpointAuthorityStore`; an object-store version is a conditional-write
+precondition, not proof of a lifecycle transition and not a fencing token.
+
+Sprint `4.47` carries the same rule through the retained SES transaction. `Lease` encodes active
+and released authority state as bounded CBOR projections; acquisition returns both the new grant
+and any predecessor recovery evidence, so a successor cannot erase the expiry/release time that
+anchors provider and target-write grace. A released v2 projection preserves that predecessor;
+legacy released state without a safe recovery anchor fails closed. `LeaseInterpreter` converts a
+validated grant into stage-specific permits, while `LeaseRuntime` derives a bounded AssumeRole
+session from each permit and rejects any session that could outlive the work deadline or grant.
+None of those values claims that AWS work was revoked when the process lost authority.
+
+Cross-authority commit is likewise explicit data rather than a phantom atomic transition.
+`TargetCommitIntent` maintains a bounded registered-target projection with
+prepare/read-back/complete/recover/compact actions; successor recovery resolves every global
+nonterminal intent before permitting a new generation. `SmtpKeyRepair` is a pure exhaustive fold
+over the finite authoritative key inventory and committed projection, while
+`SmtpKeyRepairInterpreter` alone performs delete/wait/re-observe/create/compensate effects. The
+production `AwsSesStack` composes these values with the typed retained authority, selected sink,
+fenced encrypted backend, and fixed-role sessions. Sprint `4.47` is complete on that composition;
+Sprint `5.17` derives and places one opaque nested retained-SES plan from the selected validation
+set. The plan carries a typed target object-store precondition and exact transaction trace, while
+its injected interpreter performs only the precondition and one registered atomic ensure. Sprint
+`8.10` adds `Prodbox.Ses.Readiness`: captured AWS outputs remain at the interpreter boundary, while
+a pure exhaustive fold classifies them as Ready, Pending, Failed, or Unobservable. The enclosing
+interpreter alone owns bounded Pending polling; terminal states and timeout never become a typed
+permit for SMTP materialization.
 
 The lifecycle doctrine for destructive commands extends Plan/Apply with three
 additional layers: a preflight `Precondition` check that refuses on residue

@@ -34,7 +34,7 @@ validation rather than from a later phase.
 destructive clean-room rerun contract, the zero-Python repository handoff, and the single-host
 handoff criteria — with no dependency on a later phase. The owned-surface proof runs on the
 home/local substrate through `prodbox test all`, `prodbox config show`, `prodbox config validate`,
-and `prodbox host public-edge`, plus `prodbox dev check` and `prodbox test unit` and the
+and `prodbox edge status`, plus `prodbox dev check` and `prodbox test unit` and the
 repository artifact/text-search closures; where the rerun composes deliverables owned by earlier
 phases it exercises them against the home/local substrate. AWS-substrate coverage of the rerun is
 tracked in [substrates.md](substrates.md)'s parity table, and any proof needing live
@@ -107,7 +107,7 @@ in the executable-sibling Tier-0 `prodbox.dhall` on the Haskell stack.
 10. `prodbox aws stack eks destroy --yes`
 11. `prodbox aws stack test destroy --yes`
 12. `prodbox test all`
-13. `prodbox host public-edge`
+13. `prodbox edge status`
 
 ### Current Validation State
 
@@ -127,7 +127,7 @@ in the executable-sibling Tier-0 `prodbox.dhall` on the Haskell stack.
   from the repository.
 - `src/Prodbox/TestRunner.hs` encodes the supported-runtime postflight contract: after the
   canonical suite finishes, it re-installs the supported stack on the home substrate, waits
-  for `prodbox host public-edge` to report the required readiness classification, and then
+  for `prodbox edge status` to report the required readiness classification, and then
   tears down the AWS substrate's Pulumi stacks.
 - Environment-dependent rerun success for this phase remains owned by the named `prodbox`
   commands rather than restated here as a fresh execution log.
@@ -223,7 +223,7 @@ supported path.
 3. `prodbox config show`
 4. `prodbox config validate`
 5. `prodbox test all`
-6. `prodbox host public-edge`
+6. `prodbox edge status`
 7. Repository text-search proof that `example.com` is absent from the supported codebase
 
 ### Current Validation State
@@ -261,7 +261,7 @@ supported path.
   websocket socket readability before frame parsing, and consumes the frame header before mask-key
   parsing so client-sent masked frames reach Redis and broadcast validation without corruption.
 - The clean-room closure contract is `prodbox test all`, `prodbox config show`,
-  `prodbox config validate`, and `prodbox host public-edge`, with the aggregate rerun carrying the
+  `prodbox config validate`, and `prodbox edge status`, with the aggregate rerun carrying the
   supported-runtime restore through `CLASSIFICATION=ready-for-external-proof` and the named
   `Validation: charts-vscode`, `Validation: charts-api`, `Validation: charts-websocket`, and
   `Validation: lifecycle` surfaces before post-test restore closes on the shared-host edge.

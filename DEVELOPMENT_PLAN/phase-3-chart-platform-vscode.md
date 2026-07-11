@@ -6,7 +6,11 @@
 [system-components.md](system-components.md), [the engineering doctrine docs](../documents/engineering/README.md),
 [vault_doctrine.md](../documents/engineering/vault_doctrine.md),
 [pulsar_messaging_doctrine.md](../documents/engineering/pulsar_messaging_doctrine.md),
-[resource_scaling_doctrine.md](../documents/engineering/resource_scaling_doctrine.md)
+[resource_scaling_doctrine.md](../documents/engineering/resource_scaling_doctrine.md),
+[bootstrap_readiness_doctrine.md](../documents/engineering/bootstrap_readiness_doctrine.md),
+[distributed_gateway_architecture.md](../documents/engineering/distributed_gateway_architecture.md),
+[helm_chart_platform_doctrine.md](../documents/engineering/helm_chart_platform_doctrine.md),
+[unit_testing_policy.md](../documents/engineering/unit_testing_policy.md)
 **Generated sections**: none
 
 > **Purpose**: Capture the Haskell chart platform, deterministic retained storage model, the
@@ -14,6 +18,17 @@
 > orchestration with [the engineering doctrine docs](../documents/engineering/README.md).
 
 ## Phase Status
+
+✅ **Reclosed 2026-07-10 for constant-time gateway probe binding.** Sprint `3.25` is Done on the
+Phase-3-owned chart surface. `Prodbox.Gateway.Probe` is the typed source for the liveness
+`/healthz` and readiness `/readyz` endpoints plus every timing and threshold value;
+`ChartPlatform` emits that value, the generated `gateway-probes.values` section keeps the static
+chart defaults synchronized, and the Deployment consumes the complete values-backed shape.
+`prodbox dev lint chart` rejects `/v1/state` in either lifecycle probe. Validation: warning-clean
+build (exit 0), unit 1386/1386, focused probe suite 4/4, chart/Haskell lint and generated drift
+checks (exit 0), and Helm rendering of three Deployments with six dedicated lifecycle paths and
+zero `/v1/state` probe paths; the repository-wide `prodbox dev check` exits 0. All prior
+chart-platform, resource-envelope, and operator-gate closures remain valid.
 
 ✅ **Reclosed 2026-07-10 for operator-gate totality.** Sprint `3.24` is Done on the
 Phase-3-owned chart operator-gate surface. `validateOperatorGates` now routes graph-projected gates
@@ -123,19 +138,21 @@ golden-covered, the structural-lint implementation is live on `prodbox dev lint 
 marker-delimited route inventory generated from `src/Prodbox/PublicEdge.hs` is now emitted into
 the consuming chart templates. Sprint `3.13` closed on 2026-06-01 via the live
 home-substrate preserved-data and lifecycle exercise; Sprint `3.14` closed on the same
-run when `charts-api` and `charts-websocket` proved the Dhall workload config path.
+run when `charts-api` and `charts-websocket` proved the Dhall workload config path. This is a
+preserved historical closure record; Sprint `3.25` subsequently reclosed the chart-owned gateway
+probe binding while those earlier closures remain valid.
 
 ## Phase Summary
 
 This phase owns the Haskell chart platform and retained-storage orchestration while preserving
 deterministic PV/PVC rebinding and the supported public workload delivery model. It owns retained
-storage, Harbor-backed image sourcing for the supported chart stack, the Envoy Gateway browser-auth
+storage, in-cluster-registry-backed image sourcing for the supported chart stack, the Envoy Gateway browser-auth
 path for `vscode`, the JWT-only API and Redis-backed WebSocket workload surfaces, and the
 PostgreSQL doctrine for every Helm-managed application stack. Sprints `3.2` through `3.7` remain
 closed on the current chart platform, shared-host API, WebSocket, supported admin delivery, and
 the authoritative Patroni doctrine. Sprint `3.1` now also closes on the root-chart-only public
 command surface. The supported
-`vscode` stack stays on Harbor-backed images after Harbor bootstrap, uses
+`vscode` stack stays on registry-backed images after the bounded public-image bootstrap, uses
 Gateway API plus Envoy Gateway `SecurityPolicy` for the public route, and keeps the
 Percona-operator-backed Patroni HA path for every Helm-managed application stack: exactly three
 replicas, synchronous replication, and no embedded chart-local PostgreSQL subchart.
@@ -144,7 +161,7 @@ replicas, synchronous replication, and no embedded chart-local PostgreSQL subcha
 [development_plan_standards.md](development_plan_standards.md) Standard N): Phase 3 is
 validatable on its owned chart-platform surface — the Haskell chart runtime, retained-storage
 binding, Patroni/Vault rendering, and Gateway-API/Envoy route generation — without depending on
-any later phase. Code-owned closure is proven locally (`prodbox dev check`, `prodbox test unit`,
+any later phase. Prior code-owned closure is proven locally (`prodbox dev check`, `prodbox test unit`,
 `prodbox test integration cli`/`env`, `prodbox dev lint chart`, and `helm template` rendering),
 and the home-substrate live exercise validates the chart stack end-to-end where a dependency owned
 by another phase is touched. Proofs that require live infrastructure (a deployed cluster, an
@@ -153,16 +170,19 @@ non-blocking Live-proof items, per Standard O, and never gate this phase's code-
 live whole-system sealed-Vault validation is owned by Sprint `5.8`, and AWS-substrate coverage of
 the same chart validations is tracked in
 [substrates.md](substrates.md)'s parity table. No incomplete later phase reopens Phase 3 — reopening
-is only to expand its own owned chart-platform surface.
+is only to expand its own owned chart-platform surface. Sprint `3.25` closed its expansion on
+typed rendering, generated-default, golden, negative-fixture, and chart-lint proofs without a live
+cluster or later phase.
 
 ## Current Baseline In Worktree
 
 - The public `prodbox charts ...` runtime lives in `src/Prodbox/CLI/Charts.hs`,
   `src/Prodbox/Lib/ChartPlatform.hs`, `src/Prodbox/Lib/Storage.hs`, and
   `src/Prodbox/PostgresPlatform.hs`.
-- The retained-root contract remains the configured manual PV root (default `.data/`) plus
-  chart-secret resolution via the in-cluster gateway service (k8s Secrets only after Sprint `3.13`; the legacy `.prodbox-state/` cache is on the [legacy-tracking-for-deletion.md](legacy-tracking-for-deletion.md) cleanup ledger); chart secret resolution and gateway
-  event-key handling are Haskell-owned.
+- The retained-root contract is the configured manual PV root (default `.data/`) with deterministic
+  static `Retain` bindings. Chart secrets and gateway event/AWS/MinIO keys are Vault KV objects
+  consumed through Vault Kubernetes auth or narrowly owned materializer Jobs; there is no gateway
+  secret-derivation RPC and no chart-secret `.prodbox-state/` cache on the supported path.
 - The supported chart catalog now includes `keycloak`, `vscode`, `api`, `websocket`, and
   `gateway`, with `keycloak-postgres` plus `redis` as internal dependency releases. The public
   parser and chart CLI now reject those internal names on the operator-facing
@@ -174,7 +194,12 @@ is only to expand its own owned chart-platform surface.
   `keycloak-postgres`.
 - The namespace-local release shape, deterministic manual-PV bindings, retained-secret contract,
   dependent-chart sequencing, and authoritative three-replica synchronous-replication doctrine
-  all close on the Percona operator surface.
+all close on the Percona operator surface.
+- The gateway Deployment renders liveness from the typed `/healthz` projection and readiness from
+  `/readyz`, with every timing and threshold field supplied through generated chart values.
+  `prodbox dev lint chart` and separate liveness/readiness negative fixtures reject `/v1/state` as
+  a kubelet probe; it remains available only as the operator diagnostic consumed by
+  `prodbox gateway status`.
 - `keycloak` now consumes the namespace-local retained Patroni credentials secret and the namespace-local
   primary service endpoint instead of a shared `pgpool` service.
 - `src/Prodbox/TestPlan.hs` maps the chart validation names to executable native validations in
@@ -228,11 +253,12 @@ is only to expand its own owned chart-platform surface.
   them through Vault Kubernetes auth. The `keycloak-postgres` chart materializes Patroni role
   Secrets from Vault through the `prodbox-<namespace>-pg` pre-install hook. The AWS SES setup flow
   writes `secret/keycloak/smtp`, and host/admin helper paths read the remaining Keycloak admin,
-  OIDC, demo-user, and SMTP material from Vault KV. Sprint `3.18` now includes the structural proof
-  that migrated Vault materializers fail closed when Vault is sealed or unreachable; retirement of
-  the old derivation and chart-generated paths is Sprint `3.19`.
-- Supported operational dashboards now close on the shared Envoy edge for Harbor and MinIO.
-- The current `PRODBOX_WORKLOAD_MODE=websocket` runtime now materializes workload-managed OIDC
+  OIDC, demo-user, and SMTP material from Vault KV. Sprint `3.18` includes the structural proof
+  that migrated Vault materializers fail closed when Vault is sealed or unreachable; Sprint
+  `3.19` retired the old derivation and chart-generated paths.
+- The supported operational dashboard on the shared Envoy edge is MinIO; the in-cluster registry
+  has no web UI or public route.
+- The current config-file-owned `workload.mode = websocket` runtime materializes workload-managed OIDC
   bootstrap, a real `/ws` upgrade path, one-live-connection-per-backend-pod lifetime,
   readiness-based drain, revoke-and-reconnect behavior, and long-lived socket session semantics on
   the shared `/ws` route.
@@ -588,6 +614,9 @@ None.
 ## Sprint 3.7: Envoy-Routed Admin Surfaces and Shared-Host RBAC ✅
 
 **Status**: Done
+**Superseded surface note**: This block records the historical Harbor-plus-MinIO closure. The July
+2026 `registry:2` replacement removed Harbor's UI and public route; the current admin surface is
+MinIO-only, as stated in this phase's Current Baseline.
 **Implementation**: `src/Prodbox/CLI/Rke2.hs`, `src/Prodbox/CLI/Charts.hs`, `src/Prodbox/Lib/ChartPlatform.hs`, `src/Prodbox/PublicEdge.hs`, `src/Prodbox/Host.hs`, `src/Prodbox/TestPlan.hs`, `src/Prodbox/TestValidation.hs`, `charts/`
 **Docs to update**: `documents/engineering/cli_command_surface.md`, `documents/engineering/envoy_gateway_edge_doctrine.md`, `documents/engineering/helm_chart_platform_doctrine.md`, `documents/engineering/local_registry_pipeline.md`, `documents/engineering/unit_testing_policy.md`
 
@@ -2406,6 +2435,79 @@ either reaches its registered readiness target or returns an explicit error befo
 
 - Former ledger row G (`validateOperatorGates` fallthrough) is recorded under `Completed` in
   `legacy-tracking-for-deletion.md` for Sprint `3.24`.
+
+## Sprint 3.25: Constant-Time Gateway Probe Binding [✅ Done]
+
+**Status**: Done (2026-07-10)
+**Implementation**: `src/Prodbox/Gateway/Probe.hs`, `src/Prodbox/Lib/ChartPlatform.hs`,
+`src/Prodbox/CheckCode.hs`, `charts/gateway/templates/deployments.yaml`,
+`charts/gateway/values.yaml`, `test/unit/GatewayProbe.hs`,
+`test/unit/fixtures/gateway-probes/`, `test/golden/charts/gateway-probes-values.yaml`,
+`prodbox.cabal`
+**Independent Validation**: Warning-clean executable/unit build and unit 1386/1386 pass; the
+focused probe suite passes 4/4, separate liveness/readiness fixtures prove `/v1/state` refusal,
+and Helm renders three Deployments with six dedicated `/healthz`/`/readyz` paths and no
+`/v1/state` probe. `prodbox dev lint haskell`, `prodbox dev lint chart`, and
+`prodbox dev docs check` exit 0. The daemon endpoints already exist and are constant-time, so no
+live cluster or later phase is required.
+**Docs to update**: `documents/engineering/helm_chart_platform_doctrine.md`,
+`documents/engineering/bootstrap_readiness_doctrine.md`,
+`documents/engineering/distributed_gateway_architecture.md`,
+`documents/engineering/unit_testing_policy.md`
+
+### Objective
+
+Keep kubelet health observation constant-time and independent of operational-state size. The chart
+must consume the gateway's dedicated liveness/readiness projections rather than exercising the
+diagnostic state renderer every ten to fifteen seconds.
+
+### Deliverables
+
+- Liveness binds to the existing `/healthz` endpoint and readiness binds to the existing `/readyz`
+  endpoint; Sprint `2.31` preserved both constant-time routes while refactoring adjacent state.
+- Probe timing, timeout, and success/failure thresholds are explicit and render from the single
+  typed/defaulted `GatewayProbeSpec` surface through `gatewayLifecycleProbeValues`.
+- The `gateway-probes.values` generated-section rule keeps static defaults synchronized with the
+  typed source. Chart lint, the values golden, and separate liveness/readiness fixtures reject
+  `/v1/state` as a lifecycle path.
+- Preserve `/v1/state` as an operator diagnostic only; chart changes do not weaken its bounded
+  output contract.
+
+### Validation
+
+1. `cabal build --builddir=.build exe:prodbox test:prodbox-unit --ghc-options=-Werror` exits 0;
+   `./.build/prodbox test unit` passes 1386/1386 and the focused Sprint `3.25` suite passes 4/4.
+2. Helm renders three gateway Deployments with six `/healthz`/`/readyz` paths and zero
+   `/v1/state` paths; the generated typed-values golden passes.
+3. Physical liveness and readiness fixtures using `/v1/state` are independently rejected.
+4. `./.build/prodbox dev lint haskell`, `./.build/prodbox dev lint chart`,
+   `./.build/prodbox dev docs check`, `git diff --check`, and the repository-wide
+   `./.build/prodbox dev check` exit 0.
+
+### Remaining Work
+
+- None.
+
+## Documentation Requirements
+
+**Engineering docs to create/update:**
+
+- `documents/engineering/helm_chart_platform_doctrine.md` - constant-time probe ownership.
+- `documents/engineering/bootstrap_readiness_doctrine.md` - separate kubelet health from
+  operational diagnostics.
+- `documents/engineering/distributed_gateway_architecture.md` - landed chart binding over the
+  existing daemon endpoint contract.
+- `documents/engineering/unit_testing_policy.md` - typed-values golden and independent
+  liveness/readiness negative-fixture coverage.
+
+**Product docs to create/update:**
+
+- `README.md` - current plan gaps and Sprint `3.25` closure evidence.
+
+**Cross-references to add:**
+
+- Link the landed chart binding to Sprint `2.31`'s endpoint contract and keep Sprint `5.16`'s
+  runtime-stability observation explicitly separate.
 
 ## Related Documents
 

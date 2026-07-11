@@ -83,6 +83,10 @@ The supported chart doctrine is:
     PVC capacities for every durable claim. A chart without a resource profile is invalid; the chart
     renderer consumes the validated resource plan from
     [resource_scaling_doctrine.md](./resource_scaling_doctrine.md), never a template-local default.
+15. Gateway kubelet liveness uses `/healthz` and readiness uses `/readyz`; `/v1/state` is an
+    operator diagnostic and is forbidden as either lifecycle probe. Sprint `3.25` binds the
+    existing endpoints through the typed `GatewayProbeSpec` source, generated chart defaults, and
+    a negative chart-lint guard.
 
 ## 1A. Chart Lint and Route Inventory Generation
 
@@ -364,7 +368,11 @@ follows a uniform mount layout:
 The gateway daemon is the mount-shape exception to the uniform row above: its ConfigMap is a
 **directory** mount at `/etc/gateway/config` (no `subPath`, so the kubelet's atomic `..data`
 swap fires the fsnotify reload), and the daemon reads `--config /etc/gateway/config/config.dhall`
-— the `config.dhall` file inside that directory. See
+— the `config.dhall` file inside that directory. The same ConfigMap carries a sibling
+`prodbox.dhall`: the supported planner renders a daemon-frame Tier-0 document with the selected
+substrate's explicit cluster identity (established home Tier-0 identity or canonical EKS cluster
+name). The empty default values omit that sibling for generic chart linting; production generated
+values always supply it. See
 [config_doctrine.md §6-§7](./config_doctrine.md#6-cluster-mount-contract).
 
 The operator-facing ConfigMap holds no secret material — sensitive fields are typed
@@ -398,6 +406,23 @@ bootstrap Job Vault-init consumers have landed; the VS Code Envoy `SecurityPolic
 Vault-materialized by a chart Job; gateway event/AWS/MinIO Vault consumption has landed; Patroni
 role Secret materialization has landed; host/admin helper reads and AWS SES SMTP Vault writes have
 landed; sealed-startup structural proof landed.)
+
+### Gateway lifecycle probe contract
+
+The gateway chart renders liveness and readiness from one typed/defaulted probe configuration in
+`Prodbox.Gateway.Probe`: liveness targets the daemon's constant-time `/healthz` projection and
+readiness targets its constant-time `/readyz` lifecycle projection. `ChartPlatform` emits the same
+typed value used to generate the `gateway-probes.values` defaults, and the Deployment renders the
+path, initial delay, period, timeout, failure threshold, and success threshold from those values.
+Neither probe may call `/v1/state`, sort or encode gateway semantic state, or perform a
+backend/AWS/Vault check; deep dependency readiness and run-wide runtime stability are separate
+observers.
+
+Sprint `3.25` landed this chart binding over the constant-time endpoints from Sprint `2.10`.
+`prodbox dev lint chart` rejects `/v1/state` in either probe, independent liveness/readiness
+negative fixtures pin that refusal, and a golden pins the typed generated defaults. See
+[Bootstrap Readiness Doctrine §2.1](./bootstrap_readiness_doctrine.md#21-dependency-readiness-vs-runtime-stability)
+and [Distributed Gateway Architecture §11](./distributed_gateway_architecture.md#11-rest-api).
 
 ## 7. Delete Semantics
 

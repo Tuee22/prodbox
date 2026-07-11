@@ -19,6 +19,18 @@
 
 ## Phase Status
 
+✅ **Reclosed 2026-07-11 on semantic SES readiness.** Sprint `8.10` replaces the
+output-discarding prerequisite effects with `Prodbox.Ses.Readiness`: exact configured
+sender-verification, DKIM-signing, receive-subdomain MX, active/enabled receipt-rule/S3 action, and
+Pulumi-owned capture-canary list/get observations classify as `Ready`, retryable `Pending`,
+terminal `Failed`, or `Unobservable`. The registered provider-first transaction polls semantic
+readiness for 20 minutes inside its 30-minute retained-resource lease and never reaches SMTP
+mutation after timeout or terminal evidence. `prodbox host check-ses-readiness` exposes the same
+read-only diagnostic surface. Earlier invite-flow, Vault-secret, certificate-retention, and live
+end-to-end proofs remain preserved. **Live-proof: pending** for fresh AWS
+identity/DKIM/MX/rule propagation and deployed home/AWS invite aggregates; this is non-blocking
+under Standard O.
+
 ✅ **Live-proven 2026-06-26 (home substrate) — `keycloak-invite` passes under the green `test all`,
 satisfying Sprint `8.9`'s home live-proof.** The `keycloak-invite` named validation passes
 `ExitSuccess` in the green home `prodbox test all` (2026-06-26, 18/18; see
@@ -317,9 +329,10 @@ below. The authoritative status row is in
 
 ## Phase Summary
 
-Today the Keycloak chart deploys a realm with `"emailVerified": true` hardcoded for any seeded
-user, no SMTP server configured, no SES integration, and (per current `charts/keycloak/` review)
-no self-registration or invite flow on the supported path. Phase `8` switches this to:
+The operator-invited email flow, SES stack, Vault-backed SMTP/OIDC material, capture/link-follow
+validation, and both-substrate historical proofs have landed in Sprints `8.1`–`8.9`. Sprint `8.10`
+closes the later semantic-readiness correction with exact configured observations, bounded
+provider-first polling, and a read-only host diagnostic. The implemented flow is:
 
 1. **Auth flow**: operator-invited only. No self-registration. Operator runs
    `prodbox users invite <email>`; Keycloak sends an invite email via SES; user follows the
@@ -327,7 +340,8 @@ no self-registration or invite flow on the supported path. Phase `8` switches th
    complete the user-management surface.
 2. **Email transport**: real AWS SES SMTP. Keycloak's `smtpServer` config points at
    `email-smtp.<region>.amazonaws.com:587` with SMTP credentials derived from an IAM user via
-   the SES IAM-to-SMTP credentials algorithm, kept in a K8s secret.
+   the SES IAM-to-SMTP credentials algorithm and stored in Vault KV for consumption through Vault
+   Kubernetes auth; there is no plaintext chart-owned SMTP Secret source of truth.
 3. **Test mechanism**: SES receive rules route incoming mail for a per-substrate receive
    subdomain (e.g. `inbox.<substrate-zone>`) into an S3 capture bucket. The
    `ValidationKeycloakInvite` validation generates a per-test recipient, invokes
@@ -336,14 +350,15 @@ no self-registration or invite flow on the supported path. Phase `8` switches th
    login succeeds.
 4. **Cross-substrate consistency**: the SES infrastructure (sending identity, receive
    subdomain, receive rule set, S3 capture bucket, IAM policy) is provisioned ONCE per
-   AWS account and reused by every substrate. This is documented as a cross-substrate
-   shared resource in [substrates.md](substrates.md), not as either substrate's
-   per-stack provisioning.
+   AWS account and retained across runs. It is a registered cross-substrate shared resource in
+   [substrates.md](substrates.md), not either substrate's per-run stack. Sprint `5.17`
+   idempotently ensures it whenever invite capability is selected; ordinary postflight retains it.
 
 The canonical-suite framing keeps `ValidationKeycloakInvite` substrate-agnostic. The home
 local substrate runs it against the operator's AWS account (which it already needs for Route 53
-DNS validation). The AWS substrate runs it against the same SES infrastructure when Sprint
-`7.5` brings the AWS substrate to suite parity.
+DNS validation), and the AWS substrate runs the same validation against the shared SES
+infrastructure with its own target-cluster Vault sink. Current parity status remains in
+[substrates.md](substrates.md), not this phase summary.
 
 ## Sprint 8.1: Shared AWS SES Infrastructure ✅
 
@@ -414,7 +429,13 @@ Provision the long-lived, account-scoped SES resources both substrates depend on
 - Test fixtures (`test/unit/Main.hs::validConfig` and `invalidZeroSslConfig`) updated for
   the new schema; `prodbox dev check` (exit 0) and `prodbox test unit` (300/300) pass.
 
-### Current Validation State (Code + Doctrine Landed)
+### Historical Sprint-8.1 Validation State (Code + Doctrine Landed)
+
+The backend descriptions below record the state at Sprint `8.1` closure. Sprint `7.14` later moved
+the main `aws-ses` path to the encrypted Model-B wrapper, and completed Sprint `4.47` binds the
+explicit retained home/control-plane checkpoint authority, opaque-CAS boundary, fixed-role lease
+sessions, SMTP repair, and target-intent protocol into the canonical reconcile transaction;
+long-lived S3 remains TLS/legacy-only.
 
 - `src/Prodbox/Infra/AwsSesStack.hs` exports `AwsSesStackSnapshot`,
   `awsSesStackName`, `ensureAwsSesStackResources`, `destroyAwsSesStack`,
@@ -484,7 +505,6 @@ shared resource per [substrates.md](substrates.md).
 ## Sprint 8.2: Keycloak Realm Config — Operator-Invited, Email-Verified ✅
 
 **Status**: Done (chart + doctrine landed May 18, 2026; live deploy proof on home substrate confirmed same day)
-**Blocked by**: Sprint `8.1`
 **Implementation**: `charts/keycloak/values.yaml`, `charts/keycloak/templates/configmap.yaml`,
 `charts/keycloak/templates/*-secret.yaml` (new for SES SMTP creds),
 `src/Prodbox/Lib/ChartPlatform.hs` (if chart-platform helpers need extension)
@@ -526,9 +546,10 @@ delivers email via SES SMTP.
 - `charts/keycloak/values.yaml` adds `keycloak.requireEmailVerification` (default `true`)
   and a `smtp` block (`enabled`, `host`, `port`, `starttls`, `auth`, `from`,
   `fromDisplayName`, `replyTo`, `user`, `password`) consumed from the operator's chart
-  values. The Pulumi outputs from Sprint `8.1` (`smtp_endpoint`,
-  `smtp_iam_access_key_id`, `smtp_iam_secret_access_key`, plus the SES IAM-to-SMTP
-  derivation for the password) are the doctrine source for these values.
+  values. Pulumi supplies `smtp_endpoint` plus the SMTP IAM user metadata, while Sprint `4.47`'s
+  Haskell-owned guarded committed-key projection supplies the access-key ID and recoverable secret
+  used for the SES IAM-to-SMTP password derivation. The current Pulumi program declares no
+  `aws:iam:AccessKey` and exports no key material.
 - `charts/keycloak/templates/configmap.yaml` realm.json now sets
   `"verifyEmail": true`, retains `"registrationAllowed": false`, and includes an
   `"smtpServer"` block rendered from `.Values.smtp` when `smtp.enabled` is true. The
@@ -560,20 +581,18 @@ runtime restore. Verified post-reconcile against the live home substrate:
   `KC_SMTP_REPLY_TO`, `KC_SMTP_USER`, `KC_SMTP_PASSWORD`. The placeholder values from
   `charts/keycloak/values.yaml` are present; threading the SES-derived IAM-to-SMTP
   password into the chart values (so Keycloak can authenticate to
-  `email-smtp.us-west-2.amazonaws.com:587`) is a follow-up item owned by Sprint
-  `8.5`'s remaining OIDC follow-up.
+  `email-smtp.us-west-2.amazonaws.com:587`) was the follow-up subsequently closed by Sprint
+  `8.5`.
 
 ### Remaining Work
 
-None at the chart-level for Sprint `8.2`. The actual end-to-end email send from
-Keycloak's SMTP client through SES depends on the IAM-to-SMTP credential derivation
-(HMAC-SHA256 transform of the SMTP IAM user's secret access key into the
-SES-specific SMTP password format), which is scoped under Sprint `8.5`'s follow-up.
+None. Sprint `8.5` subsequently closed the end-to-end email send and IAM-to-SMTP credential
+derivation (the HMAC-SHA256 transform of the SMTP IAM user's secret access key into the
+SES-specific SMTP password format).
 
 ## Sprint 8.3: `prodbox users invite|list|revoke` CLI ✅
 
 **Status**: Done (CLI surface + live Keycloak admin API HTTP integration landed May 18, 2026)
-**Blocked by**: Sprint `8.2`
 **Implementation**: `src/Prodbox/CLI/Users.hs` (new), `src/Prodbox/UsersAdmin.hs` (new),
 `src/Prodbox/CLI/Command.hs` (add `UsersCommand` constructor),
 `src/Prodbox/CLI/Spec.hs` (register the new command tree),
@@ -622,11 +641,10 @@ Add an operator-facing user management surface that wraps the Keycloak admin API
 - `src/Prodbox/CLI/Users.hs` (new) exports `runUsersCommand` and dispatches the three
   variants through `runPlanWithOptions`, surfacing the configured user summary as
   `USER_ID=`, `EMAIL_VERIFIED=`, `REQUIRED_ACTIONS=`, `LAST_LOGIN=` key=value reports.
-- `src/Prodbox/UsersAdmin.hs` (new) holds the `UserSummary` / `UserVerificationStatus`
-  types and the doctrine-shaped `inviteUser` / `listUsers` / `revokeUser` API. Each
-  function currently emits an actionable error pointing operators at the Sprint 8.5
-  Keycloak admin API integration; the function signatures and report rendering are
-  ready for that integration to land without further CLI changes.
+- The initial `src/Prodbox/UsersAdmin.hs` scaffold established the `UserSummary` /
+  `UserVerificationStatus` types and doctrine-shaped `inviteUser` / `listUsers` / `revokeUser`
+  API. The live HTTP integration below replaced its temporary remedy-only behavior without
+  further CLI changes.
 - `src/Prodbox/Native.hs` dispatches `NativeUsers` through `runUsersCommand`.
 - `prodbox.cabal` registers `Prodbox.CLI.Users` and `Prodbox.UsersAdmin`.
 - `test/unit/Parser.hs` adds `UsersCommand (..)` import and the matching
@@ -671,16 +689,16 @@ Add an operator-facing user management surface that wraps the Keycloak admin API
 
 ### Remaining Work
 
-None at the code level. Live behavior of the three subcommands requires Keycloak to be
-deployed (Sprint `8.2` live workflow); that operator-driven run is tracked under
-Bucket B in the active development plan.
+None. The three subcommands' live behavior was subsequently proven by the Sprint `8.5`/`8.6`
+home and AWS invite runs recorded in this phase.
 
 ## Sprint 8.4: Substrate SES Prerequisites ✅
 
-**Status**: Done (code + tests, May 18, 2026)
-**Blocked by**: Sprint `8.1`
+**Status**: Done (registry nodes + tests, May 18, 2026; semantic interpretation hardened by
+Sprint `8.10` on 2026-07-11)
 **Implementation**: `src/Prodbox/Prerequisite.hs`, `src/Prodbox/Effect.hs`,
-`src/Prodbox/EffectInterpreter.hs`
+`src/Prodbox/EffectInterpreter.hs`, `src/Prodbox/Ses/Readiness.hs`,
+`src/Prodbox/Infra/AwsSesStack.hs`
 **Docs to update**: `documents/engineering/prerequisite_doctrine.md`,
 `DEVELOPMENT_PLAN/substrates.md`
 
@@ -692,14 +710,14 @@ suite can gate `ValidationKeycloakInvite` (Sprint `8.5`) on them.
 ### Deliverables
 
 - New `EffectNode`s in `src/Prodbox/Prerequisite.hs`:
-  - `ses_sending_identity_verified` — SES domain identity status = `Success` for the
-    configured sending domain.
-  - `ses_receive_rule_set_active` — at least one receive rule set is active and captures
-    mail for the configured receive subdomain to the configured S3 bucket.
-  - `ses_receive_bucket_accessible` — the runner can list and get from the capture bucket.
-- Each prerequisite has a description, remedy hint (pointing operators to Sprint `8.1`
-  provisioning), prerequisite dependencies (`aws_credentials_valid`, `route53_accessible`),
-  and a `Validate` effect.
+  - `ses_sending_identity_verified` — the exact configured sender is verified with DKIM status
+    `SUCCESS` and DKIM signing enabled.
+  - `ses_receive_rule_set_active` — the exact regional priority-10 MX plus configured active,
+    enabled, singleton-recipient S3 capture rule/action are ready.
+  - `ses_receive_bucket_accessible` — the operational invite-polling credential can list and get
+    the Pulumi-owned readiness canary at the configured capture prefix.
+- Each prerequisite has a semantic description, a same-validation retry remedy, prerequisite
+  dependencies (`aws_credentials_valid`, `route53_accessible`), and a `Validate` effect.
 - The prerequisites land in the deferred-prereq list of every plan that includes
   `ValidationKeycloakInvite`, so they're checked after substrate provisioning has run.
 
@@ -707,44 +725,36 @@ suite can gate `ValidationKeycloakInvite` (Sprint `8.5`) on them.
 
 1. `prodbox dev check`
 2. `prodbox test unit` covers the new prerequisite nodes.
-3. Manually breaking the SES setup (e.g. disabling the receive rule set) makes
-   `prodbox test integration keycloak-invite` fail fast with the remedy hint.
+3. Captured/fake AWS fixtures prove that malformed, mismatched, failed, or unobservable semantic
+   observations fail closed even when the AWS subprocess exits successfully.
 
 ### Current Validation State
 
-- `src/Prodbox/Effect.hs` adds three `Validation` constructors:
+- `src/Prodbox/Effect.hs` owns three `Validation` constructors:
   `RequireSesSendingIdentityVerified`, `RequireSesReceiveRuleSetActive`,
   `RequireSesReceiveBucketAccessible`.
-- `src/Prodbox/Prerequisite.hs` exposes the matching `EffectNode`s
+- `src/Prodbox/Prerequisite.hs` exposes the matching registered `EffectNode`s
   (`ses_sending_identity_verified`, `ses_receive_rule_set_active`,
-  `ses_receive_bucket_accessible`) with doctrine-shaped descriptions, Sprint-8.1-pointing
-  remedy hints, prerequisite dependencies on `aws_credentials_valid` /
-  `route53_accessible`, and `Validate` effects.
-- `src/Prodbox/EffectInterpreter.hs` implements the three validators against the AWS CLI:
-  `requireSesSendingIdentityVerified` runs
-  `aws ses get-identity-verification-attributes --identities <ses.sender_domain> --query
-  VerificationAttributes.<domain>.VerificationStatus --output text`;
-  `requireSesReceiveRuleSetActive` runs `aws ses describe-active-receipt-rule-set --query
-  Metadata.Name --output text`; `requireSesReceiveBucketAccessible` runs `aws s3api
-  head-bucket --bucket <ses.capture_bucket>`. Each validator uses the same
-  `awsCommandEnvironment` projection and `requireAwsValidationCommandSuccess` failure
-  shaping used by the existing Route 53 validators, and fails fast on empty
-  `ses.sender_domain` / `ses.capture_bucket`.
-- `test/unit/Main.hs::"covers the full shared prerequisite inventory"` is extended to
-  cover the three new keys; the auto-generated registry-shape, dependency-chain, and
-  effect-shape tests all pass against the new nodes.
-- Validated with `prodbox dev check` (exit 0) and `prodbox test unit` (310/310) on May
-  18, 2026.
+  `ses_receive_bucket_accessible`) with semantic descriptions, same-validation remedies,
+  prerequisite dependencies on `aws_credentials_valid` / `route53_accessible`, and `Validate`
+  effects.
+- `src/Prodbox/EffectInterpreter.hs` maps each constructor to its component of the exhaustive
+  `Prodbox.Ses.Readiness` classifier. Successful AWS exit status is only an observation boundary,
+  never the ready result.
+- The registered retained-SES transaction reconciles provider inventory first, then polls the
+  semantic fold for at most 20 minutes; only `Pending` retries, and terminal/timeout evidence
+  cannot reach SMTP mutation.
+- The full prerequisite inventory tests, Sprint-`8.10` readiness tables, and built-frontend fake
+  AWS fixtures cover the registry shape and the exact semantic behavior.
 
 ### Remaining Work
 
-None at the code + test level. Sprint `8.5`'s `ValidationKeycloakInvite` deferred-prereq
-list consumes these nodes; the integration with `Prodbox.TestPlan` happens there.
+None. `ValidationKeycloakInvite` consumes these deferred nodes, and Sprint `8.10` supplies their
+current semantic implementation and bounded polling contract.
 
 ## Sprint 8.5: `ValidationKeycloakInvite` Canonical-Suite Content ✅
 
-**Status**: Done — closed live on the home substrate 2026-06-08 and the AWS substrate 2026-06-09 (`OIDC_CLAIMS_VERIFIED=true` on both; `KCINVITE3_EXIT=0` / `KCINVITE_AWS_EXIT=0`), after the five live-surfaced fixes recorded in the 2026-06-08/09 Phase Status notes. Historical detail: (suite content + dispatch arm + live invite + capture + link-follow steps landed May 18, 2026; credential-setup form parser scaffold landed May 21, 2026 in `src/Prodbox/Keycloak/CredentialSetupForm.hs`; June 6, 2026 code wire-in now parses the live credential page, POSTs the generated password with a cookie jar, requests a fresh invited-user OIDC token through `prodbox-api`, and asserts issuer / `email=<recipient>` / `email_verified=true` claims. The June 6 home SMTP-reconcile fix adds invite-aware local `keycloak-smtp` sync plus realm-level SMTP patching before invite sends; the follow-up chart fix permits Keycloak NetworkPolicy egress to the configured SES SMTP port. Local validation for the new POST/OIDC body, SMTP-reconcile path, network-policy guard, Keycloak 26 verify-email continuation parser, public-edge certificate reissue status-patch renderer, and public-edge TLS Secret retention is green; live home and AWS substrate validation remain the current Sprint 8.5 gate, run against the single ZeroSSL issuer whose certificate is retained in S3 and restored before issuance.)
-**Blocked by**: Sprints `8.1`, `8.2`, `8.3`, `8.4`
+**Status**: Done — closed live on the home substrate 2026-06-08 and the AWS substrate 2026-06-09 (`OIDC_CLAIMS_VERIFIED=true` on both; `KCINVITE3_EXIT=0` / `KCINVITE_AWS_EXIT=0`), after the five live-surfaced fixes recorded in the 2026-06-08/09 Phase Status notes. Historical detail: (suite content + dispatch arm + live invite + capture + link-follow steps landed May 18, 2026; credential-setup form parser scaffold landed May 21, 2026 in `src/Prodbox/Keycloak/CredentialSetupForm.hs`; June 6, 2026 code wire-in now parses the live credential page, POSTs the generated password with a cookie jar, requests a fresh invited-user OIDC token through `prodbox-api`, and asserts issuer / `email=<recipient>` / `email_verified=true` claims. The June 6 home SMTP-reconcile fix adds invite-aware local `keycloak-smtp` sync plus realm-level SMTP patching before invite sends; the follow-up chart fix permits Keycloak NetworkPolicy egress to the configured SES SMTP port. Local validation for the new POST/OIDC body, SMTP-reconcile path, network-policy guard, Keycloak 26 verify-email continuation parser, public-edge certificate reissue status-patch renderer, and public-edge TLS Secret retention was green while live home and AWS substrate validation remained the Sprint `8.5` gate at that checkpoint; those live gates closed on 2026-06-08/09 against the single ZeroSSL issuer whose certificate is retained in S3 and restored before issuance.)
 **Implementation**: `src/Prodbox/TestPlan.hs` (add `ValidationKeycloakInvite` variant and
 `IntegrationKeycloakInvite` integration suite), `src/Prodbox/TestValidation.hs` (add the
 dispatch arm in `runNativeValidation`), `src/Prodbox/CLI/Command.hs` (add
@@ -872,7 +882,12 @@ on whichever substrate is active.
   `cabal build --builddir=.build exe:prodbox` and `./.build/prodbox test unit`
   (661/661).
 
-### SES SMTP Password Derivation Landed (May 18, 2026)
+### Historical SES SMTP Password Derivation Landing (May 18, 2026)
+
+The bullets below record the Sprint `8.5` closure at that date. Completed Sprint `4.47` supersedes
+the key-ownership source: Pulumi no longer declares/exports the access key, and the Haskell
+guarded committed-key interpreter supplies its recoverable material. Vault KV remains the current
+target secret authority.
 
 - New module `src/Prodbox/Ses/SmtpPassword.hs` exposes
   `derivedSesSmtpPassword :: Text -> Text -> Text` implementing the AWS-published
@@ -924,38 +939,10 @@ on whichever substrate is active.
 
 ### Remaining Work
 
-- Local validation for the June 6 credential-setup POST / invited-user OIDC claim code path
-  and the home SMTP-reconcile fix passed with `cabal build --builddir=.build exe:prodbox`,
-  refreshed `.build/prodbox`, `./.build/prodbox test unit` (669/669), `./.build/prodbox dev lint docs`,
-  `./.build/prodbox dev docs check`, `git diff --check`, and `./.build/prodbox dev check`.
-- Local validation for the SMTP NetworkPolicy fix passed with `./.build/prodbox test unit`
-  (670/670), `./.build/prodbox dev lint chart`, `./.build/prodbox dev lint docs`,
-  `./.build/prodbox dev docs check`, `git diff --check`, and `./.build/prodbox dev check`.
-  The live home rerun then proved SMTP delivery and failed at Keycloak 26's verify-email
-  continuation page before the password form.
-- Local validation for the verify-email continuation fix passed with
-  `cabal build --builddir=.build exe:prodbox`, refreshed `.build/prodbox`,
-  `./.build/prodbox test unit` (672/672), `git diff --check`, and
-  `./.build/prodbox dev check`. The live home rerun then reached public-edge certificate
-  repair before the invite body and failed because the status patch used to trigger immediate
-  cert-manager reissuance was malformed JSON.
-- Local validation for the public-edge certificate reissue status-patch renderer passed with
-  `cabal build --builddir=.build exe:prodbox`, refreshed `.build/prodbox`,
-  `./.build/prodbox test unit` (673/673), `git diff --check`, and
-  `./.build/prodbox dev check`. The live home rerun proved the status patch no longer emits
-  malformed JSON, then hit the ACME provider's certificate issuance rate limit because the
-  already-issued public-edge TLS Secret had been lost during chart namespace reset.
-- Local validation for the public-edge TLS Secret retention fix passed with
-  `cabal build --builddir=.build exe:prodbox`, refreshed `.build/prodbox`,
-  `./.build/prodbox test unit` (674/674), `./.build/prodbox dev lint docs`,
-  `./.build/prodbox dev docs check`, `git diff --check`, and `./.build/prodbox dev check`. The live
-  home `keycloak-invite` rerun remains the next gate before Sprint `8.5` moves to AWS validation;
-  Sprints `8.7`/`8.8` replace the in-cluster Secret backup with the durable S3 retain-and-restore
-  store so the rebuild loop restores the issued certificate rather than re-ordering it against
-  ZeroSSL.
-- Exercise `prodbox test integration keycloak-invite` against live home and AWS substrates so the
-  new POST/OIDC body proves against Keycloak's rendered form and public token endpoint.
-- The optional negative path (step 7: revoke-before-activation) remains a follow-on sub-sprint.
+- None on the sprint-owned surface. The home and AWS invite/OIDC gates closed on 2026-06-08/09,
+  as recorded in the status and Phase Status evidence above. The optional
+  revoke-before-activation scenario is outside this sprint's declared closure scope and is not an
+  unscheduled follow-on blocker.
 
 ## Sprint 8.6: Per-Substrate Parity for `keycloak-invite` ✅
 
@@ -969,10 +956,10 @@ operational `aws.*` credential into Vault KV), then
 to fresh-cluster `keycloak-smtp` sync before AWS Keycloak chart render, Phase `1.6/2` local
 restore deduplication, gateway Namespace adoption for SMTP pre-created Keycloak release
 namespaces, Keycloak multipart invite-link normalization, public-edge certificate reissue repair,
-and ZeroSSL repository-validation ACME selection. The June 6 targeted AWS
-`keycloak-invite` rerun now passes through invite capture/link-follow and cleanup; AWS aggregate
-rerun plus live Sprint `8.5` POST/OIDC substrate validation remain open.)
-**Blocked by**: Sprint `8.5` (same phase, earlier sprint)
+and ZeroSSL repository-validation ACME selection. At the June 6 checkpoint, the targeted AWS
+`keycloak-invite` rerun passed through invite capture/link-follow and cleanup while the AWS
+aggregate rerun plus live Sprint `8.5` POST/OIDC substrate validation were still open; both closed
+with the 2026-06-09 evidence recorded above.)
 **Implementation**: `DEVELOPMENT_PLAN/substrates.md`, `DEVELOPMENT_PLAN/system-components.md`
 **Docs to update**: `DEVELOPMENT_PLAN/substrates.md`, `DEVELOPMENT_PLAN/README.md`
 
@@ -1246,13 +1233,11 @@ The engineering docs (`helm_chart_platform_doctrine.md`, `envoy_gateway_edge_doc
 
 ### Remaining Work
 
-- Live closure under Sprint `8.8` (the durable S3 round-trip is exercised live there; it cannot
-  be validated on the fast gates).
+- None. Sprint `8.8` closed the durable S3 round-trip live on 2026-06-09.
 
 ## Sprint 8.8: Live keycloak-invite Gate Closure + Certificate Round-Trip ✅
 
 **Status**: Done (2026-06-09) — home `prodbox test all` green (`TESTALL_HOME4_EXIT=0`) including `keycloak-invite`; AWS aggregate `prodbox test all --substrate aws` green (`TESTALL_AWS_EXIT=0`); the certificate round-trip restore-no-reorder proven live (a rebuild restores the cert from the long-lived S3 store and cert-manager adopts it with zero new ACME orders, via `retainReadyPublicEdgeCertificate` + `certManagerAdoptionAnnotations`); and the `prodbox nuke` nuke-only-removes-the-retained-cert proof exercised through the interactive integration harness (three `CliSuite.hs` cases) plus the Sprint 4.24 `LongLived` registry classification. Gates: `check-code` 0, `test unit` 695/695, `test integration cli` 35/35.
-**Blocked by**: Sprint `4.24`, Sprint `7.11`, Sprint `8.7`
 **Implementation**: exercises `prodbox test all` / `prodbox test integration keycloak-invite`
 (suite content; no new validation added)
 **Docs to update**: `DEVELOPMENT_PLAN/README.md` (Substrate Parity + Phase Overview),
@@ -1284,7 +1269,8 @@ The live runs above; home gate first (ordering), then AWS parity.
 
 ### Remaining Work
 
-- This is the live closure gate; Phase `8` stays Active until it lands.
+- None. The live closure gate landed on 2026-06-09; the July semantic-readiness correction is
+  closed separately by Sprint `8.10` below.
 
 ## Sprint 8.9: Keycloak SMTP and Invite Secrets via Vault ✅
 
@@ -1301,9 +1287,10 @@ init container materializes `PRODBOX_SMTP_*` and the per-namespace `secret/<ns>/
 `prodbox users invite` fails closed on a sealed Vault before sending); `src/Prodbox/Secret/VaultInventory.hs`
 (`secret/keycloak/smtp` + the generated `secret/<ns>/oidc/*` objects — no master-seed derivation,
 no chart `lookup`+`randAlphaNum`).
-**Live-proof**: pending — the both-substrate live `keycloak-invite` exercise (real SES send +
-link-follow + a live sealed-Vault-fails-invite proof) is the non-blocking live-infra axis
-(Standard O). Earlier-phase dependencies (Sprints `3.19`, `7.14`) were satisfied.
+**Live-proof**: pending — the home invite path passed on 2026-06-26; a fresh AWS/deployed
+both-substrate aggregate through the Vault-backed path plus a live sealed-Vault-fails-invite proof
+remain the non-blocking live-infra axes (Standard O). Earlier-phase dependencies (Sprints `3.19`,
+`7.14`) were satisfied.
 **Docs to update**: `documents/engineering/vault_doctrine.md`, `documents/engineering/aws_integration_environment_doctrine.md`
 
 ### Objective
@@ -1336,7 +1323,8 @@ re-derived from any non-Vault source on each consumer.
 
 ### Remaining Work
 
-- The both-substrate live invite exercise is operator-driven.
+- None on the code-owned surface. The fresh AWS/deployed aggregate and live
+  sealed-Vault-fails-invite exercise remain the non-blocking `Live-proof: pending` axes above.
 
 ## Documentation Requirements
 
@@ -1392,6 +1380,116 @@ re-derived from any non-Vault source on each consumer.
 - `substrates.md` flips the `keycloak-invite` substrate-parity rows to ✅ when Sprint `8.8`
   closes the live gate.
 
+## Sprint 8.10: Semantic SES Readiness Classification [✅ Done]
+
+**Status**: Done (2026-07-11)
+**Implementation**: `src/Prodbox/Ses/Readiness.hs`,
+`src/Prodbox/Infra/AwsSesStack.hs`, `src/Prodbox/Infra/AwsSesLeaseRole.hs`,
+`src/Prodbox/Ses/Capture.hs`, `src/Prodbox/EffectInterpreter.hs`,
+`src/Prodbox/Prerequisite.hs`, `src/Prodbox/Host.hs`, the typed command/spec/parser modules,
+`pulumi/aws-ses/Main.yaml`, `test/unit/AwsSesReadiness.hs`,
+`test/unit/AwsSesLifecycle.hs`, and `test/integration/CliSuite.hs`
+**Live-proof**: pending — fresh AWS identity/DKIM/MX/rule propagation and deployed home/AWS
+invite aggregates; non-blocking per Standard O
+**Independent Validation**: captured/fake AWS JSON and text fixtures cover every identity, DKIM,
+receipt-rule, and bucket classification plus bounded polling; no live AWS account or later phase is
+required.
+**Docs to update**: `documents/engineering/prerequisite_doctrine.md`,
+`documents/engineering/aws_integration_environment_doctrine.md`,
+`documents/engineering/integration_fixture_doctrine.md`,
+`documents/engineering/unit_testing_policy.md`,
+`documents/engineering/aws_admin_credentials.md`,
+`documents/engineering/cli_command_surface.md`,
+`documents/engineering/lifecycle_reconciliation_doctrine.md`,
+`documents/engineering/pure_fp_standards.md`, and
+`documents/engineering/vault_doctrine.md`
+
+### Objective
+
+The SES readiness gate opens only from semantic evidence that the configured sending and receiving
+path is ready. Command exit success proves only that AWS answered; it is not the readiness result.
+
+### Deliverables
+
+- `Prodbox.Ses.Readiness` parses sending-identity and DKIM observations into the flat exhaustive
+  `AwsSesReady`, `AwsSesPending`, `AwsSesFailed`, and `AwsSesUnobservable` states while retaining
+  structured component/reason evidence.
+- The gate accepts only the configured sender domain with `VerifiedForSendingStatus = true`, DKIM
+  status exactly `SUCCESS`, and DKIM signing enabled. Propagation states are bounded retryable
+  pending; explicit or disabled states are hard failures.
+- The configured receive subdomain must have the exact regional SES inbound MX target and priority
+  rendered by the stack; an unrelated or merely present MX record is not ready.
+- The active receipt-rule set and rule actions prove the configured rule-set name,
+  enabled capture rule, receive-subdomain recipient set, S3 capture bucket, and key prefix rather
+  than accepting any exit-zero response.
+- A Pulumi-owned canary at the canonical capture prefix proves that the operational capture
+  credential can perform the exact list/get operations consumed by invite polling; `head-bucket`
+  is not readiness evidence.
+- The visible await-ready step uses the canonical 20-minute propagation policy, within the
+  doctrine's 5–30 minute range and the enclosing 30-minute lease budget. Timeout retains the
+  long-lived resources for the next idempotent run.
+- AWS state remains externally authoritative: reconnaissance produces typed observations, a pure
+  fold classifies them, and the prerequisite interpreter performs no hidden provisioning.
+- Provider reconciliation completes before semantic polling starts; only `AwsSesPending` retries.
+  `AwsSesFailed` and `AwsSesUnobservable` are terminal, and neither timeout nor terminal evidence
+  reaches the SMTP synchronization stage.
+- `prodbox host check-ses-readiness` runs the registered semantic prerequisites as a read-only
+  diagnostic and reports retry-the-same-validation remedies without prescribing manual AWS
+  mutation.
+
+### Validation
+
+1. Focused readiness tables pass 23/23, rejecting `Pending`, `None`, false
+   verification/signing/rule-enabled booleans, wrong or
+   missing MX priority/target, wrong rule-set names, wrong recipients, missing/wrong S3
+   actions/prefixes, and access-denied/network errors even when the subprocess exited successfully.
+2. The same focused suite distinguishes retryable propagation from hard failure and unobservable
+   state, preserves the last structured reason on exhaustion, and proves provider-before-semantic
+   ordering.
+3. SES production-transaction tests pass 8/8 and lease-role tests pass 9/9, including success and
+   timeout/failed/unobservable short-circuit traces that never reach SMTP mutation.
+4. Built-frontend fixtures pass 2/2 and prove read-only prerequisite remedies report the failed
+   semantic observation and direct the caller to retry the same harness-owned validation, without
+   prescribing manual reconciliation or ad-hoc AWS mutation.
+5. The warning-clean Cabal build and Fourmolu check pass; `prodbox test unit` passes 1535/1535 and
+   built-frontend CLI/env integration passes 49/49 each.
+6. Fresh-account identity/DKIM/MX/rule activation plus deployed home/AWS invite aggregates are the
+   non-blocking live-proof axis after code-owned closure.
+
+### Remaining Work
+
+- None on the code-owned surface. Fresh AWS identity/DKIM/MX/rule propagation and deployed
+  home/AWS invite aggregates remain the non-blocking Standard-O `Live-proof: pending` axis.
+
+## Documentation Requirements
+
+**Engineering docs to create/update:**
+
+- `documents/engineering/prerequisite_doctrine.md` - semantic external-readiness observations and
+  bounded pending behavior.
+- `documents/engineering/aws_integration_environment_doctrine.md` - exact SES ready evidence.
+- `documents/engineering/integration_fixture_doctrine.md` - read-only fake-AWS built-frontend
+  fixtures and fail-closed semantic output handling.
+- `documents/engineering/unit_testing_policy.md` - table fixtures for AWS-output classification.
+- `documents/engineering/aws_admin_credentials.md` - control-plane observation authority and the
+  operational capture-capability credential split.
+- `documents/engineering/cli_command_surface.md` - `prodbox host check-ses-readiness` and its
+  read-only remedy contract.
+- `documents/engineering/lifecycle_reconciliation_doctrine.md` - provider-first retained-resource
+  reconciliation followed by semantic readiness before target mutation.
+- `documents/engineering/pure_fp_standards.md` - exhaustive SES readiness ADT and pure classifier.
+- `documents/engineering/vault_doctrine.md` - retained authority versus target-cluster secret sink
+  and operational capture credential custody.
+
+**Product docs to create/update:**
+
+- None.
+
+**Cross-references to add:**
+
+- The readiness classifier links to Sprint `5.17`'s visible await-ready plan step and Sprint
+  `4.47`'s desired-present reconciler.
+
 ## Related Documents
 
 - [README.md](README.md)
@@ -1401,3 +1499,4 @@ re-derived from any non-Vault source on each consumer.
 - [phase-3-chart-platform-vscode.md](phase-3-chart-platform-vscode.md)
 - [phase-5-canonical-test-suite.md](phase-5-canonical-test-suite.md)
 - [phase-7-aws-substrate-foundations.md](phase-7-aws-substrate-foundations.md)
+- [Prerequisite Doctrine](../documents/engineering/prerequisite_doctrine.md)

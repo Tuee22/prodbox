@@ -86,6 +86,8 @@ import Data.Map.Strict qualified as Map
 import Data.Text qualified as Text
 import Data.Text.Encoding qualified as TextEncoding
 import Prodbox.Capacity.Config qualified as Capacity
+import Prodbox.Capacity.RuntimeMemory qualified as RuntimeMemory
+import Prodbox.Config.Basics (basicsClusterId)
 import Prodbox.Config.ComponentGraph
   ( ComponentId (..)
   , ComponentNode
@@ -100,7 +102,10 @@ import Prodbox.Config.ComponentGraph
   , renderComponentGraphError
   , validateComponentGraph
   )
+import Prodbox.Config.FloorDhall (loadUnencryptedBasics)
+import Prodbox.Config.Tier0 qualified as Tier0
 import Prodbox.ContainerImage qualified as ContainerImage
+import Prodbox.Gateway.Probe qualified as GatewayProbe
 import Prodbox.Infra.AwsEksTestStack qualified as AwsEks
 import Prodbox.Infra.LongLivedPulumiBackend
   ( getLongLivedObject
@@ -495,9 +500,14 @@ buildChartDeploymentPlanForSubstrate substrate repoRoot settings chartName chart
         if "gateway" `elem` releaseOrder
           then resolveGatewayHostedZoneIdForSubstrate substrate repoRoot settings
           else pure (Right Nothing)
+      gatewayTier0DhallResult <-
+        if "gateway" `elem` releaseOrder
+          then fmap (fmap Just) (resolveGatewayTier0DhallForSubstrate substrate repoRoot)
+          else pure (Right Nothing)
       pure $ do
         maybeRuntimeImage <- runtimeImageResult
         maybeGatewayHostedZoneId <- gatewayHostedZoneIdResult
+        maybeGatewayTier0Dhall <- gatewayTier0DhallResult
         buildChartDeploymentPlanPure
           substrate
           repoRoot
@@ -507,6 +517,7 @@ buildChartDeploymentPlanForSubstrate substrate repoRoot settings chartName chart
           gatewayEventKeys
           maybeRuntimeImage
           maybeGatewayHostedZoneId
+          maybeGatewayTier0Dhall
 
 buildChartDeletePlan
   :: FilePath
@@ -1779,8 +1790,9 @@ buildChartDeploymentPlanPure
   -> Map String String
   -> Maybe ResolvedCustomImage
   -> Maybe String
+  -> Maybe String
   -> Either String ChartDeploymentPlan
-buildChartDeploymentPlanPure substrate repoRoot settings chartName chartSecrets gatewayEventKeys maybeRuntimeImage maybeGatewayHostedZoneId = do
+buildChartDeploymentPlanPure substrate repoRoot settings chartName chartSecrets gatewayEventKeys maybeRuntimeImage maybeGatewayHostedZoneId maybeGatewayTier0Dhall = do
   when
     (chartStorageClassName /= "manual")
     (Left "Chart platform requires StorageClass 'manual'; dynamic provisioners are not permitted")
@@ -1817,6 +1829,7 @@ buildChartDeploymentPlanPure substrate repoRoot settings chartName chartSecrets 
           maybePublicFqdn
           maybeRuntimeImage
           maybeGatewayHostedZoneId
+          maybeGatewayTier0Dhall
       pure
         ChartReleasePlan
           { chartReleasePlanChartName = chartDefinitionName definition
@@ -1909,6 +1922,39 @@ resolveGatewayHostedZoneIdForSubstrate substrate repoRoot settings =
       hostedZoneResult <- resolveSubstrateHostedZoneId repoRoot settings SubstrateAws
       pure (fmap (Just . Text.unpack) hostedZoneResult)
 
+-- | Render the non-secret daemon-frame Tier-0 document mounted beside the
+-- runtime @config.dhall@. The home identity comes from the established
+-- binary-sibling Tier-0 floor; the per-run AWS identity is the canonical EKS
+-- cluster name. Both paths reuse the daemon default and change only
+-- @context.cluster_id@, so parameters, witness, capabilities, and frame kind
+-- cannot drift from the daemon-owned schema.
+resolveGatewayTier0DhallForSubstrate
+  :: Substrate -> FilePath -> IO (Either String String)
+resolveGatewayTier0DhallForSubstrate substrate repoRoot =
+  case substrate of
+    SubstrateHomeLocal -> do
+      basicsResult <- loadUnencryptedBasics repoRoot
+      pure $ case basicsResult of
+        Left err -> Left ("gateway Tier-0 home cluster identity unavailable: " ++ err)
+        Right basics -> Right (renderGatewayTier0Dhall (basicsClusterId basics))
+    SubstrateAws ->
+      pure
+        ( Right
+            (renderGatewayTier0Dhall (Text.pack AwsEks.awsEksCanonicalClusterName))
+        )
+
+renderGatewayTier0Dhall :: Text.Text -> String
+renderGatewayTier0Dhall clusterId =
+  Text.unpack
+    ( Tier0.renderProjectConfigDhall
+        Tier0.defaultDaemonProjectConfig
+          { Tier0.context =
+              (Tier0.context Tier0.defaultDaemonProjectConfig)
+                { Tier0.cluster_id = clusterId
+                }
+          }
+    )
+
 chartStorageSpecsForRelease :: String -> String -> ChartDefinition -> [ChartStorageSpec]
 chartStorageSpecsForRelease rootChart _releaseName definition =
   case chartDefinitionName definition of
@@ -1928,8 +1974,9 @@ renderReleaseValuesJson
   -> Maybe String
   -> Maybe ResolvedCustomImage
   -> Maybe String
+  -> Maybe String
   -> Either String String
-renderReleaseValuesJson substrate definition namespace rootChart settings chartSecrets gatewayEventKeys storageClassName storageBindings maybePublicFqdn maybeRuntimeImage maybeGatewayHostedZoneId = do
+renderReleaseValuesJson substrate definition namespace rootChart settings chartSecrets gatewayEventKeys storageClassName storageBindings maybePublicFqdn maybeRuntimeImage maybeGatewayHostedZoneId maybeGatewayTier0Dhall = do
   baseValues <-
     case chartDefinitionName definition of
       "keycloak-postgres" ->
@@ -1971,8 +2018,8 @@ renderReleaseValuesJson substrate definition namespace rootChart settings chartS
             valuesForWebsocket substrate namespace rootChart settings chartSecrets fqdn maybeRuntimeImage
           Nothing -> Left "websocket requires a public host"
       "gateway" ->
-        case (maybePublicFqdn, maybeGatewayHostedZoneId) of
-          (Just fqdn, Just zoneId) ->
+        case (maybePublicFqdn, maybeGatewayHostedZoneId, maybeGatewayTier0Dhall) of
+          (Just fqdn, Just zoneId, Just gatewayTier0Dhall) ->
             valuesForGateway
               substrate
               namespace
@@ -1982,8 +2029,10 @@ renderReleaseValuesJson substrate definition namespace rootChart settings chartS
               fqdn
               maybeRuntimeImage
               zoneId
-          (Nothing, _) -> Left "gateway requires a public host"
-          (_, Nothing) -> Left "gateway requires a Route 53 hosted zone id"
+              gatewayTier0Dhall
+          (Nothing, _, _) -> Left "gateway requires a public host"
+          (_, Nothing, _) -> Left "gateway requires a Route 53 hosted zone id"
+          (_, _, Nothing) -> Left "gateway requires a substrate-specific Tier-0 document"
       _ -> Left ("Unsupported chart definition '" ++ chartDefinitionName definition ++ "'")
   values <- attachResourcePlanValues settings definition rootChart baseValues
   pure (BL8.unpack (Pretty.encodePretty' prettyJsonConfig values))
@@ -2380,8 +2429,9 @@ valuesForGateway
   -> String
   -> Maybe ResolvedCustomImage
   -> String
+  -> String
   -> Either String Value
-valuesForGateway substrate namespace rootChart settings _gatewayEventKeys sharedHostFqdn maybeRuntimeImage zoneId = do
+valuesForGateway substrate namespace rootChart settings _gatewayEventKeys sharedHostFqdn maybeRuntimeImage zoneId gatewayTier0Dhall = do
   -- Sprint 3.18: the per-node event keys and gateway AWS/MinIO credentials
   -- are Vault KV objects rendered into config.dhall as SecretRef.Vault
   -- references. The legacy 'gatewayEventKeys' parameter is vestigial and
@@ -2390,6 +2440,8 @@ valuesForGateway substrate namespace rootChart settings _gatewayEventKeys shared
   let config = validatedConfig settings
       operationalAws = aws config
       awsRegion = Text.unpack (awsCredentialRegion operationalAws)
+  runtimeMemoryPlan <-
+    Capacity.runtimeMemoryPlanForProfile (capacity config) "gateway"
   when (null awsRegion) (Left "gateway chart requires aws_region in settings")
   when
     (substrate == SubstrateHomeLocal && null zoneId)
@@ -2417,11 +2469,17 @@ valuesForGateway substrate namespace rootChart settings _gatewayEventKeys shared
               , "tag" .= gatewayTag
               , "pullPolicy" .= ("IfNotPresent" :: String)
               ]
+        , "runtime"
+            .= object
+              [ "rtsArguments"
+                  .= RuntimeMemory.runtimeMemoryRtsArguments runtimeMemoryPlan
+              ]
         , "ports"
             .= object
               [ "rest" .= gatewayRestServicePort
               , "events" .= (8444 :: Int)
               ]
+        , "probes" .= GatewayProbe.gatewayLifecycleProbeValues
         , "timing"
             .= object
               [ "heartbeatIntervalSeconds" .= (0.5 :: Double)
@@ -2430,6 +2488,7 @@ valuesForGateway substrate namespace rootChart settings _gatewayEventKeys shared
               , "heartbeatTimeoutSeconds" .= (5 :: Int)
               ]
         , "nodes" .= object ["rankedIds" .= gatewayNodeIds]
+        , "tier0" .= object ["prodboxDhall" .= gatewayTier0Dhall]
         , "dnsWriteGate" .= gatewayDnsWriteGateValue substrate zoneId sharedHostFqdn awsRegion
         , "vault"
             .= object

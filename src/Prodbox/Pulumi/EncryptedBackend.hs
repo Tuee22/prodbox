@@ -29,6 +29,7 @@ module Prodbox.Pulumi.EncryptedBackend
   , withDaemonFirstFallback
   , withDecryptedStack
   , withDecryptedStackEnvironment
+  , withFencedDecryptedStackEnvironment
   , withMigratedDecryptedStackEnvironment
   , withDecryptedStackWith
   )
@@ -48,6 +49,18 @@ import Prodbox.Gateway.Client qualified as GatewayClient
 import Prodbox.Gateway.Types (PeerEndpoint)
 import Prodbox.Infra.MinioBackend
   ( pulumiBackendLoginTimeoutSeconds
+  )
+import Prodbox.Lifecycle.CheckpointAuthority
+  ( ModelBCasAdapter (..)
+  , ModelBCasRequest (..)
+  , ModelBCasResult (..)
+  , ModelBObjectCoordinate
+  , ModelBObjectVersion
+  , ModelBObservation (..)
+  )
+import Prodbox.Lifecycle.Lease
+  ( FencedCommitPermit
+  , modelBLeaseGuardFromPermit
   )
 import Prodbox.Minio.EncryptedObject
   ( LogicalObject (LogicalPulumiStack)
@@ -240,6 +253,80 @@ withDecryptedStackEnvironment repoRoot stackRef environment action =
   withDecryptedStack repoRoot stackRef $ \scratch ->
     action (fileBackendEnvironment scratch environment)
 
+-- | Fenced variant for a long-lived desired-present transaction. The
+-- checkpoint is loaded and conditionally replaced through the same retained
+-- Model-B authority as the lease. Immediately before the checkpoint CAS the
+-- caller revalidates current lease ownership; a stale writer therefore cannot
+-- commit over a successor's checkpoint version.
+withFencedDecryptedStackEnvironment
+  :: ModelBCasAdapter IO ByteString
+  -> ModelBObjectCoordinate
+  -> ModelBObjectCoordinate
+  -> Maybe LegacyPulumiBackend
+  -> PulumiStackRef
+  -> [(String, String)]
+  -> IO (Either String FencedCommitPermit)
+  -> ([(String, String)] -> IO (Either String a))
+  -> IO (Either EncryptedBackendError a)
+withFencedDecryptedStackEnvironment adapter coordinate leaseCoordinate maybeLegacy stackRef environment authorizeCommit action = do
+  loadedResult <- loadFencedCheckpoint adapter coordinate maybeLegacy stackRef
+  case loadedResult of
+    Left err -> pure (Left (EncryptedBackendLoadFailed err))
+    Right loaded ->
+      withRamScratch stackRef $ \scratch -> do
+        hydrateResult <- hydrateScratchCheckpoint scratch (fencedLoadedBytes loaded)
+        case hydrateResult of
+          Left err -> pure (Left (EncryptedBackendHydrateFailed err))
+          Right () -> do
+            actionResult <- action (fileBackendEnvironment scratch environment)
+            collectResult <- collectScratchCheckpoint scratch
+            case collectResult of
+              Left err -> pure (Left (EncryptedBackendCollectFailed err))
+              Right Nothing ->
+                pure
+                  ( Left
+                      ( EncryptedBackendStoreFailed
+                          "fenced desired-present reconcile produced no checkpoint; conditional delete is not permitted"
+                      )
+                  )
+              Right (Just bytes) -> do
+                authorization <- authorizeCommit
+                case authorization of
+                  Left err ->
+                    pure
+                      ( Left
+                          ( EncryptedBackendStoreFailed
+                              ("fenced checkpoint commit refused: " ++ err)
+                          )
+                      )
+                  Right permit -> do
+                    let guard = modelBLeaseGuardFromPermit leaseCoordinate permit
+                    storeResult <-
+                      modelBCompareAndSwap
+                        adapter
+                        ( case fencedLoadedVersion loaded of
+                            Nothing -> ModelBInitializeGuarded coordinate guard bytes
+                            Just version -> ModelBReplaceGuarded coordinate version guard bytes
+                        )
+                    case storeResult of
+                      ModelBCasApplied _ _ ->
+                        finalizeFencedAction
+                          maybeLegacy
+                          stackRef
+                          (fencedLoadedFromLegacy loaded)
+                          actionResult
+                      ModelBCasConflict _ ->
+                        pure
+                          ( Left
+                              ( EncryptedBackendStoreFailed
+                                  "fenced checkpoint CAS conflicted with a newer authority version"
+                              )
+                          )
+                      ModelBCasRefusedCorrupt detail ->
+                        pure (Left (EncryptedBackendStoreFailed (Text.unpack detail)))
+                      ModelBCasUnobservable detail ->
+                        pure (Left (EncryptedBackendStoreFailed (Text.unpack detail)))
+
 withMigratedDecryptedStackEnvironment
   :: FilePath
   -> PulumiStackRef
@@ -260,6 +347,85 @@ withDecryptedStackMigrating
 withDecryptedStackMigrating _repoRoot stackRef legacy action = do
   endpoint <- pulumiObjectGatewayEndpoint
   withDecryptedStackWith (productionHooksWithLegacy legacy endpoint) stackRef action
+
+data FencedLoadedCheckpoint = FencedLoadedCheckpoint
+  { fencedLoadedBytes :: !(Maybe ByteString)
+  , fencedLoadedVersion :: !(Maybe ModelBObjectVersion)
+  , fencedLoadedFromLegacy :: !Bool
+  }
+
+loadFencedCheckpoint
+  :: ModelBCasAdapter IO ByteString
+  -> ModelBObjectCoordinate
+  -> Maybe LegacyPulumiBackend
+  -> PulumiStackRef
+  -> IO (Either String FencedLoadedCheckpoint)
+loadFencedCheckpoint adapter coordinate maybeLegacy _stackRef = do
+  observation <- modelBObserve adapter coordinate
+  case observation of
+    ModelBMissing -> loadLegacy Nothing
+    ModelBCorrupt detail -> pure (Left ("fenced checkpoint is corrupt: " ++ Text.unpack detail))
+    ModelBUnobservable detail -> pure (Left (Text.unpack detail))
+    ModelBObserved version bytes
+      | checkpointBytesUsable bytes ->
+          pure
+            ( Right
+                FencedLoadedCheckpoint
+                  { fencedLoadedBytes = Just bytes
+                  , fencedLoadedVersion = Just version
+                  , fencedLoadedFromLegacy = False
+                  }
+            )
+      | otherwise -> loadLegacy (Just version)
+ where
+  loadLegacy expectedVersion =
+    case maybeLegacy of
+      Nothing ->
+        pure
+          ( Right
+              FencedLoadedCheckpoint
+                { fencedLoadedBytes = Nothing
+                , fencedLoadedVersion = expectedVersion
+                , fencedLoadedFromLegacy = False
+                }
+          )
+      Just legacy -> do
+        legacyResult <- exportLegacyPulumiCheckpoint legacy
+        pure $ case legacyResult of
+          Left err -> Left err
+          Right bytes ->
+            Right
+              FencedLoadedCheckpoint
+                { fencedLoadedBytes = bytes
+                , fencedLoadedVersion = expectedVersion
+                , fencedLoadedFromLegacy = maybe False (const True) bytes
+                }
+
+finalizeFencedAction
+  :: Maybe LegacyPulumiBackend
+  -> PulumiStackRef
+  -> Bool
+  -> Either String a
+  -> IO (Either EncryptedBackendError a)
+finalizeFencedAction maybeLegacy _stackRef migratedFromLegacy actionResult =
+  case actionResult of
+    Left err -> pure (Left (EncryptedBackendActionFailed err))
+    Right value
+      | not migratedFromLegacy -> pure (Right value)
+      | otherwise ->
+          case maybeLegacy of
+            Nothing ->
+              pure
+                ( Left
+                    ( EncryptedBackendLegacyDeleteFailed
+                        "fenced checkpoint recorded legacy migration without a legacy backend"
+                    )
+                )
+            Just legacy -> do
+              deleteResult <- removeLegacyPulumiStack legacy
+              pure $ case deleteResult of
+                Left err -> Left (EncryptedBackendLegacyDeleteFailed err)
+                Right () -> Right value
 
 withDecryptedStackWith
   :: EncryptedBackendHooks a

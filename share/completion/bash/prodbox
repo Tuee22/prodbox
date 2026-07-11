@@ -64,7 +64,7 @@ _prodbox()
         words="start status config-gen"
         ;;
       "host")
-        words="ensure-tools check-ports info firewall"
+        words="ensure-tools check-ses-readiness check-ports info firewall"
         ;;
       "host firewall")
         words="gateway-restrict gateway-unrestrict"

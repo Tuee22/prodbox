@@ -20,6 +20,11 @@ validation environments.
 
 - The authoritative target architecture, sprint status, and cleanup ownership live in
   [DEVELOPMENT_PLAN/README.md](./DEVELOPMENT_PLAN/README.md).
+- All declared phase-owned code surfaces are closed; the desired-present long-lived transaction,
+  gateway runtime-stability oracle, and exact semantic SES-readiness gate are complete. Fresh AWS
+  propagation and deployed home/AWS invite aggregates remain non-blocking live-proof axes. See
+  [Development Plan → Current Plan Status](./DEVELOPMENT_PLAN/README.md#current-plan-status); this
+  reference guide does not maintain a competing status ledger.
 - The authoritative CLI doctrine is distributed across per-surface engineering docs under
   [documents/engineering/](./documents/engineering/README.md): command topology,
   progressive introspection, and reconcilers in `cli_command_surface.md`; Plan / Apply
@@ -31,7 +36,9 @@ validation environments.
   shallow-gate invariant and the bootstrap readiness-race class it targets — reconcile ordering to be
   projected over a config-sourced component dependency/readiness graph (foundation, bounded
   Vault/gateway node split, injected-action readiness seam, deep registry→MinIO gate, and shared
-  transient-failure base landed; production consumer bindings remain scheduled), each barrier probing the exact dependency call path — in
+  transient-failure base plus production consumer bindings landed), each barrier probing the exact
+  dependency call path while the landed run-scoped runtime-stability gate remains a separate proof
+  surface — in
   `bootstrap_readiness_doctrine.md`;
   daemon lifecycle in `distributed_gateway_architecture.md`; unified block storage —
   static `Retain` no-provisioner PVs on both substrates (home `hostPath`, EKS pre-created
@@ -87,14 +94,24 @@ validation environments.
   the account default), tags the VPC/IGW/route-table/subnets with `prodbox.io/managed-by=prodbox`
   for postflight sweep visibility, and the test harness always provisions a fresh test VPC. See
   [documents/engineering/storage_lifecycle_doctrine.md](./documents/engineering/storage_lifecycle_doctrine.md).
-- Resource consumption is explicit and bounded: host capacity, RKE2 reservations, eviction floors,
+- Resource admission and containment are explicit: host capacity, RKE2 reservations, eviction floors,
   namespace quotas, per-container cpu/memory/ephemeral-storage request+limit envelopes, and durable
   PVC capacities are part of the typed capacity plan, not template-local defaults. A prodbox cluster
   that reserves more than the host has, a workload set that exceeds cluster allocatable capacity, or
   a chart container without a limit is invalid before render; runtime reconciliation installs the
   matching RKE2/kubelet guardrails, Kubernetes `ResourceQuota` / `LimitRange`, and chart
-  `resources` stanzas. See
+  `resources` stanzas. Those declarations do not by themselves prove an arbitrary program's peak
+  working set. Sprint `1.60` adds a validated nested runtime-memory plan (bounded heap state/scratch
+  within an RTS heap cap, then heap cap plus native/subprocess/kernel reserves and margin within the
+  profile-derived cgroup limit) and generates the gateway RTS argv. Sprint `5.16` now feeds that
+  plan's thresholds into the run-scoped restart/OOM/high-water oracle used by `gateway-pods`. See
   [documents/engineering/resource_scaling_doctrine.md](./documents/engineering/resource_scaling_doctrine.md).
+- A `LongLived` lifecycle class controls cleanup, not desired presence. When an invite-capable suite
+  is selected, the target plan visibly reconciles the registered `aws-ses` stack through the
+  retained home/control-plane checkpoint authority, awaits semantic SES readiness, then writes SMTP
+  KV into the selected target cluster; ordinary suite postflight never destroys the stack. See
+  [DEVELOPMENT_PLAN/phase-4-lifecycle-canonical-paths.md](./DEVELOPMENT_PLAN/phase-4-lifecycle-canonical-paths.md)
+  and [DEVELOPMENT_PLAN/phase-5-canonical-test-suite.md](./DEVELOPMENT_PLAN/phase-5-canonical-test-suite.md).
 - Lifecycle commands enforce leak-safety by refusing to proceed when residue is detected and by
   sweeping for cluster-tagged AWS resources after every destructive run; the consolidated doctrine
   lives in
@@ -217,7 +234,26 @@ Router port forwarding:
 
 ### Current Implementation Baseline
 
-The current worktree closes on the supported edge architecture. Today:
+The current worktree implements the supported edge architecture. Today:
+
+> **July 10 correction, closed July 11:** the live run showed that instantaneous Deployment
+> availability was not gateway stability. Sprint `5.16` now preserves
+> restart/OOM/failure-high-water and
+> unobservable evidence across compiled restore/lifecycle boundaries while requiring a separate
+> three-sample healthy window; the longer deployed soak remains non-blocking. The same audit found
+> that invite-capable preparation did not insert the now-registered `aws-ses` transaction, and its
+> SES checks classified exit status rather than returned semantics. The
+> runtime-memory planner/RTS policy and bounded gateway runtime are landed in Sprints `1.60` and
+> `2.31`; typed constant-time chart probes landed in Sprint `3.25`. Sprint `4.47` is complete: the
+> registered desired-present path uses the retained-authority lease, fixed-role bounded STS
+> sessions, fenced checkpoint and SMTP commits, predecessor recovery, and global target intents.
+> Sprint `5.17` has now landed one capability-derived nested plan that proves the selected target
+> gateway edge and invokes that registered transaction once, with no SES mutation for non-invite or
+> postflight plans. Sprint `8.10` is now complete: `Prodbox.Ses.Readiness` proves the exact configured
+> sender/DKIM/MX/rule/action and capture list/get capability, polls only pending propagation within
+> bounds, and exposes `prodbox host check-ses-readiness`. Fresh AWS propagation and deployed
+> home/AWS invite aggregates remain non-blocking live proofs in
+> [the development plan](./DEVELOPMENT_PLAN/README.md#current-plan-status).
 
 - local `cluster reconcile` reconciles the in-cluster registry (`registry:2`), MinIO, MetalLB,
   Envoy Gateway, cert-manager, and the Percona PostgreSQL operator
@@ -236,7 +272,9 @@ The current worktree closes on the supported edge architecture. Today:
   `dev check` makes a creatable-but-undiscoverable resource unrepresentable (doctrine:
   [lifecycle_reconciliation_doctrine.md § 3.1](./documents/engineering/lifecycle_reconciliation_doctrine.md);
   Phase 4 Sprints 4.20–4.22 and Phase 7 Sprint 7.8)
-- bootstrap readiness (partly landed, completion **scheduled**): the typed config-sourced component
+- preserved prior bootstrap-dependency-readiness checkpoint (landed; the phase-status words inside
+  this historical checkpoint do not override the current closure status above): the typed
+  config-sourced component
   dependency/readiness graph plus the deep registry→MinIO S3 edge-readiness gate (the exact write
   edge, not a front-door `/v2/` proxy) landed on both substrates (Phase 1 Sprint 1.56, Phase 3
   Sprint 3.23, Phase 4 Sprint 4.43, Phase 7 Sprint 7.31). Sprint 1.57 is ✅ Done (2026-07-10):
@@ -256,20 +294,36 @@ The current worktree closes on the supported edge architecture. Today:
   `ChartPlatform`-generated gateway `vault.role` and `defaultVaultReconcilePlan`; the resulting
   `prodbox-gateway-daemon` role binds exactly `prodbox-gateway` plus `gateway-gateway` (unit
   1260/1260, `dev check` 0). Static chart defaults and other gateway configuration surfaces are
-  outside this SSoT. Sprint 3.24 is ✅ Done and Phase 3 is reclosed: the exhaustive
+  outside this SSoT. Sprint 2.31 is ✅ Done and Phase 2 is reclosed again: bounded keyed semantic
+  state, signed per-emitter cursor/delta/checkpoint repair, retained exact-stage continuity,
+  validated Orders, finite frame/process allocation, capacity-one child scheduling, and
+  credential/claim/continuity-gated DNS replace the former append-log/full-log path. Local evidence
+  is unit 1382/1382, daemon lifecycle 13/13, CLI/env integration 45/45, native partition validation,
+  and exhaustive TLC exploration of 606,637,449 generated / 51,491,308 distinct states to depth 44
+  across nine invariants. The deployed restart-free soak remains the non-blocking Sprint 5.16
+  live-proof axis. Sprint 3.24 is ✅ Done: the exhaustive
   `operatorAvailableTarget` registry routes the Percona one-shot `Available=True` observation
   through `ReadinessObservation`, and only `ReadyObserved` opens chart mutation. New `ComponentId`
   constructors require an explicit compile-time decision; existing config-driven IDs without a
   registered target fail closed at runtime (unit 1266/1266, chart lint 0, `dev check` 0). No existing
   readiness primitive or coordinate is duplicated; production bindings `4.45`, `5.15`, and `7.32`
-  have landed.
+  have landed. Sprint 3.25 is ✅ Done and Phase 3 is reclosed again: `GatewayProbeEndpoint` and
+  `GatewayProbeSpec` single-source `/healthz` liveness, `/readyz` readiness, and their complete
+  timing/threshold values through `ChartPlatform`, generated chart defaults, and the Deployment;
+  chart lint plus independent liveness/readiness fixtures reject `/v1/state` as a kubelet probe.
+  Evidence is unit 1386/1386, focused probe suite 4/4, chart/Haskell lint and generated drift
+  checks 0, and Helm rendering of three Deployments with six dedicated paths and zero diagnostic
+  probe paths. Runtime stability subsequently landed in Sprint `5.16` (focused 17/17,
+  installed-binary fixtures 2/2, unit 1494/1494, CLI integration 47/47).
   Sprint 4.44 is ✅ Done: `RegistryStorageBackend` now carries the registry S3 settings and requires
   an explicit `RedirectPolicy`; the canonical MinIO-backed record uses `RedirectDisabled`.
   `registryConfigYaml` remains an `unlines` renderer, but it consumes that typed input. The golden
   output is preserved and resource ownership is unchanged (registry-config golden, unit 1268/1268,
-  `dev check` 0). Sprints 4.45/4.46 are ✅ Done and Phase 4 is reclosed: the validated graph drives
-  the anchored home reconcile plan, and the Route 53/Helm/Harbor classifiers share the common
-  transient base (unit 1276/1276, `dev check` 0). Sprint 5.15 is ✅ Done and Phase 5 is reclosed:
+  `dev check` 0). Sprints 4.45/4.46 are ✅ Done, and Sprint 4.47 has reclosed Phase 4 again: the
+  validated graph drives the anchored home reconcile plan; the Route 53/Helm/Harbor classifiers
+  share the common transient base; and retained `aws-ses` reconcile is a registered, leased,
+  fixed-role, fenced transaction with bounded cross-authority recovery (unit 1476/1476; focused
+  87/87; `dev check` 0). Sprint 5.15 is ✅ Done and Phase 5 is reclosed:
   bootstrap and postflight interpret one substrate-aware typed restore plan, and SMTP is gated by
   bounded gateway object-store readiness (unit 1280/1280; `dev check` 0). Sprint 7.32 is ✅ Done and
   Phase 7 is reclosed: AWS platform order is graph-derived and fail-closed before mutation, final
@@ -326,7 +380,8 @@ operator path is the explicit `prodbox` command surface documented here and in
   in-cluster Haskell distributed gateway daemon, not the Envoy Gateway controller.
 - `prodbox aws stack ...` manages only the AWS validation stacks. It does not manage the local
   cluster or the application chart stacks.
-- The AWS validation stacks use the repo-backed MinIO backend in the local RKE2 cluster, so
+- The AWS validation stacks use daemon-mediated encrypted Model-B checkpoints in the local
+  cluster's MinIO object store, so
   `prodbox cluster reconcile` must succeed before `prodbox aws stack eks reconcile` or
   `prodbox aws stack test reconcile` can succeed.
 - The target post-bootstrap boundary is daemon-mediated: after the host binary has used the
@@ -521,7 +576,7 @@ These fields are not all parser-required, but they matter for normal operation:
 operator's interactive admin-credential prompt; it is never read by any production binary and never
 stored in Vault.
 
-Validate the repository config:
+Validate the executable-sibling operator config:
 
 ```bash
 ./.build/prodbox config validate
@@ -578,7 +633,7 @@ The per-run Pulumi state lives on MinIO's PV under
 never deletes `.data/`; removing it is an operator-only action. A cluster rebuild is therefore not
 a fresh Vault: `vault init` runs exactly once (the first time the PV is empty) and every later
 `cluster reconcile` only unseals the existing data, so Vault KV is as durable across rebuilds as
-any retained PV. Invoking `rke2 delete` when no local RKE2 cluster is installed is a
+any retained PV. Invoking `cluster delete` when no local RKE2 cluster is installed is a
 no-op success (`No RKE2 cluster to delete.`, exit 0), not an error.
 
 ### Chart Stacks
@@ -627,9 +682,9 @@ contract.
 Generate a gateway config and inspect a daemon:
 
 ```bash
-./.build/prodbox gateway config-gen gateway.json --node-id node-a
-./.build/prodbox gateway start --config gateway.json
-./.build/prodbox gateway status --config gateway.json
+./.build/prodbox gateway config-gen gateway.dhall --node-id node-a
+./.build/prodbox gateway start --config gateway.dhall
+./.build/prodbox gateway status --config gateway.dhall
 ```
 
 `gateway status` queries the daemon's HTTP `/v1/state` endpoint on the configured REST port.

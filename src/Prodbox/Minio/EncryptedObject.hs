@@ -4,17 +4,22 @@
 -- keys and bodies are Vault-Transit envelopes.
 module Prodbox.Minio.EncryptedObject
   ( EncryptedObjectError (..)
+  , LogicalConditionalPutResult (..)
   , LogicalObject (..)
+  , VersionedLogicalObject (..)
   , decoyObjectKeys
   , decodeIndex
   , encodeIndex
   , getLogical
+  , getLogicalVersioned
   , getLogicalWith
   , logicalObjectAad
   , logicalObjectName
   , objectKeyForOpaqueId
   , opaqueObjectId
   , putLogical
+  , putLogicalIfAbsent
+  , putLogicalIfVersion
   , putLogicalWith
   , renderEncryptedObjectError
   )
@@ -40,8 +45,14 @@ import Prodbox.Crypto.Envelope
   , sealEnvelope
   )
 import Prodbox.Minio.ObjectStore
-  ( ObjectStoreConfig
+  ( ConditionalPutResult (..)
+  , ObjectStoreConfig
+  , ObjectVersion
+  , VersionedObject (..)
   , getObject
+  , getObjectVersioned
+  , putIfAbsentObserved
+  , putIfVersionObserved
   , putObject
   )
 
@@ -49,8 +60,20 @@ data LogicalObject
   = LogicalInForceConfig
   | LogicalGatewayState Text
   | LogicalPulumiStack Text
+  | LogicalLongLivedState Text
   | LogicalDownstreamCluster Text
   deriving (Eq, Ord, Show)
+
+data VersionedLogicalObject = VersionedLogicalObject
+  { versionedLogicalBytes :: ByteString
+  , versionedLogicalStoreVersion :: ObjectVersion
+  }
+  deriving (Eq, Show)
+
+data LogicalConditionalPutResult
+  = LogicalConditionalPutApplied
+  | LogicalConditionalPutConflict
+  deriving (Eq, Show)
 
 data EncryptedObjectError
   = EncryptedObjectFetchFailed String
@@ -75,6 +98,7 @@ logicalObjectName object = case object of
   LogicalInForceConfig -> "in-force-config"
   LogicalGatewayState name -> "gateway-state/" <> Text.strip name
   LogicalPulumiStack stackId -> "pulumi-stack/" <> Text.strip stackId
+  LogicalLongLivedState name -> "long-lived-state/" <> Text.strip name
   LogicalDownstreamCluster childId -> "downstream-cluster/" <> Text.strip childId
 
 logicalObjectAad :: Text -> LogicalObject -> ByteString
@@ -119,6 +143,61 @@ putLogicalWith putOpaque cipher hmacKey clusterId object plaintext = do
         Left err -> Left (EncryptedObjectStoreFailed err)
         Right () -> Right ()
 
+putLogicalIfAbsent
+  :: ObjectStoreConfig
+  -> DekCipher
+  -> ByteString
+  -> Text
+  -> LogicalObject
+  -> ByteString
+  -> IO (Either EncryptedObjectError LogicalConditionalPutResult)
+putLogicalIfAbsent config cipher hmacKey clusterId object plaintext =
+  putLogicalConditional
+    (putIfAbsentObserved config)
+    cipher
+    hmacKey
+    clusterId
+    object
+    plaintext
+
+putLogicalIfVersion
+  :: ObjectStoreConfig
+  -> DekCipher
+  -> ByteString
+  -> Text
+  -> LogicalObject
+  -> ObjectVersion
+  -> ByteString
+  -> IO (Either EncryptedObjectError LogicalConditionalPutResult)
+putLogicalIfVersion config cipher hmacKey clusterId object version plaintext =
+  putLogicalConditional
+    (\key -> putIfVersionObserved config key version)
+    cipher
+    hmacKey
+    clusterId
+    object
+    plaintext
+
+putLogicalConditional
+  :: (Text -> ByteString -> IO (Either String ConditionalPutResult))
+  -> DekCipher
+  -> ByteString
+  -> Text
+  -> LogicalObject
+  -> ByteString
+  -> IO (Either EncryptedObjectError LogicalConditionalPutResult)
+putLogicalConditional putOpaque cipher hmacKey clusterId object plaintext = do
+  sealResult <- sealEnvelope cipher (logicalObjectAad clusterId object) plaintext
+  case sealResult of
+    Left err -> pure (Left (EncryptedObjectSealFailed err))
+    Right envelope -> do
+      let key = objectKeyForOpaqueId (opaqueObjectId hmacKey object)
+      storeResult <- putOpaque key envelope
+      pure $ case storeResult of
+        Left err -> Left (EncryptedObjectStoreFailed err)
+        Right ConditionalPutApplied -> Right LogicalConditionalPutApplied
+        Right ConditionalPutConflict -> Right LogicalConditionalPutConflict
+
 getLogical
   :: ObjectStoreConfig
   -> DekCipher
@@ -128,6 +207,36 @@ getLogical
   -> IO (Either EncryptedObjectError ByteString)
 getLogical config =
   getLogicalWith (getObject config)
+
+getLogicalVersioned
+  :: ObjectStoreConfig
+  -> DekCipher
+  -> ByteString
+  -> Text
+  -> LogicalObject
+  -> IO (Either EncryptedObjectError (Maybe VersionedLogicalObject))
+getLogicalVersioned config cipher hmacKey clusterId object = do
+  let key = objectKeyForOpaqueId (opaqueObjectId hmacKey object)
+  fetchResult <- getObjectVersioned config key
+  case fetchResult of
+    Left err -> pure (Left (EncryptedObjectFetchFailed err))
+    Right Nothing -> pure (Right Nothing)
+    Right (Just versioned) -> do
+      openResult <-
+        openEnvelope
+          cipher
+          (logicalObjectAad clusterId object)
+          (versionedObjectBytes versioned)
+      pure $ case openResult of
+        Left err -> Left (EncryptedObjectOpenFailed err)
+        Right plaintext ->
+          Right
+            ( Just
+                VersionedLogicalObject
+                  { versionedLogicalBytes = plaintext
+                  , versionedLogicalStoreVersion = versionedObjectVersion versioned
+                  }
+            )
 
 getLogicalWith
   :: (Text -> IO (Either String (Maybe ByteString)))

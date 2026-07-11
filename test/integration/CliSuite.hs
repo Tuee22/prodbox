@@ -105,6 +105,18 @@ integrationCliSuite = do
         exitCode `shouldBe` ExitSuccess
         stderrText `shouldBe` ""
 
+    it "accepts the generated GHC RTS heap-policy arguments" $ do
+      binary <- resolveBinaryPath
+
+      (exitCode, stdoutText, stderrText) <-
+        readCreateProcessWithExitCode
+          (proc binary ["+RTS", "-M268435456", "-RTS", "--version"])
+          ""
+
+      exitCode `shouldBe` ExitSuccess
+      stderrText `shouldBe` ""
+      stdoutText `shouldContain` "0.1.0"
+
     it "fails fast with setup guidance when the repo Dhall config is missing" $
       withSystemTempDirectory "prodbox-hs-cli" $ \tmpDir -> do
         binary <- resolveBinaryPath >>= \b -> installOperatorBinaryInDir b tmpDir
@@ -131,6 +143,74 @@ integrationCliSuite = do
       exitCode `shouldBe` ExitSuccess
       stderrText `shouldBe` ""
       stdoutText `shouldContain` "Linux"
+
+    it "proves semantic SES readiness through the built read-only prerequisite frontend" $
+      withSystemTempDirectory "prodbox-hs-ses-ready" $ \tmpDir -> do
+        binary <- resolveBinaryPath >>= \b -> installOperatorBinaryInDir b tmpDir
+        writeRepoMarkers tmpDir
+        writeFile (tmpDir </> "prodbox.dhall") (wrapTier0 validConfigForNuke)
+        seedFakeVaultAwsCredentials
+          tmpDir
+          gatewayAwsVaultPath
+          "AKIASESREADY"
+          "ses-ready-secret"
+          Nothing
+          "us-east-1"
+        envVars <- fakeSesReadinessEnvironment tmpDir "ready"
+
+        (exitCode, stdoutText, stderrText) <-
+          readCreateProcessWithExitCode
+            (proc binary ["host", "check-ses-readiness"]) {cwd = Just tmpDir, env = Just envVars}
+            ""
+
+        exitCode `shouldBe` ExitSuccess
+        stderrText `shouldBe` ""
+        stdoutText `shouldContain` "Retained SES semantic readiness: Ready"
+        commands <- readFile (tmpDir </> "fake-ses-readiness-aws.txt")
+        commands `shouldContain` "sesv2|get-email-identity"
+        commands `shouldContain` "route53|list-resource-record-sets"
+        commands `shouldContain` "ses|describe-active-receipt-rule-set"
+        commands `shouldContain` "s3api|list-objects-v2"
+        commands `shouldContain` "s3api|get-object"
+        commands `shouldNotContain` "create-"
+        commands `shouldNotContain` "update-"
+        commands `shouldNotContain` "put-"
+        commands `shouldNotContain` "delete-"
+
+    it "reports an exit-zero semantic SES failure with the registry remedy through the built frontend" $
+      withSystemTempDirectory "prodbox-hs-ses-failed" $ \tmpDir -> do
+        binary <- resolveBinaryPath >>= \b -> installOperatorBinaryInDir b tmpDir
+        writeRepoMarkers tmpDir
+        writeFile (tmpDir </> "prodbox.dhall") (wrapTier0 validConfigForNuke)
+        seedFakeVaultAwsCredentials
+          tmpDir
+          gatewayAwsVaultPath
+          "AKIASESFAILED"
+          "ses-failed-secret"
+          Nothing
+          "us-east-1"
+        envVars <- fakeSesReadinessEnvironment tmpDir "identity-failed"
+
+        (exitCode, stdoutText, stderrText) <-
+          readCreateProcessWithExitCode
+            (proc binary ["host", "check-ses-readiness"]) {cwd = Just tmpDir, env = Just envVars}
+            ""
+
+        exitCode `shouldBe` ExitFailure 1
+        stdoutText `shouldBe` ""
+        stderrText `shouldContain` "ses_sending_identity_verified"
+        stderrText `shouldContain` "SES semantic readiness check: Failed"
+        stderrText `shouldContain` "VerifiedForSendingStatus=False"
+        stderrText `shouldContain` "Remedy:"
+        stderrText `shouldContain` "Retry the same harness-owned validation"
+        stderrText `shouldNotContain` "aws stack aws-ses reconcile"
+        stderrText `shouldNotContain` "pulumi up"
+        stderrText `shouldNotContain` "manually provision"
+        commands <- readFile (tmpDir </> "fake-ses-readiness-aws.txt")
+        commands `shouldNotContain` "create-"
+        commands `shouldNotContain` "update-"
+        commands `shouldNotContain` "put-"
+        commands `shouldNotContain` "delete-"
 
     it "renders native aws policy JSON directly from the built Haskell frontend" $ do
       repoRoot <- getCurrentDirectory
@@ -405,6 +485,85 @@ integrationCliSuite = do
         stdoutText `shouldContain` "LIMIT_RANGE_NAMESPACES=keycloak,vscode,api,websocket,gateway"
         stdoutText `shouldContain` "BESTEFFORT_PODS=0"
         stdoutText `shouldContain` "UNCAPPED_CONTAINERS=0"
+
+    it "runs gateway-pods through the bounded runtime-stability oracle" $
+      withSystemTempDirectory "prodbox-hs-cli" $ \tmpDir -> do
+        binary <- resolveBinaryPath >>= \b -> installOperatorBinaryInDir b tmpDir
+        writeRepoMarkers tmpDir
+        writeFile
+          (tmpDir </> "prodbox.dhall")
+          (wrapTier0WithDefaultComponentGraph validConfig)
+        createDirectoryIfMissing True (tmpDir </> ".build")
+        writeFile
+          (tmpDir </> ".build" </> "prodbox.dhall")
+          (wrapTier0WithDefaultComponentGraph validConfig)
+        envVars <- (("PRODBOX_TEST_HOST_VAULT_TOKEN", "fake-root-token") :) <$> fakeRke2Environment tmpDir
+        writeExecutable (tmpDir </> "bin" </> "cabal") (fakeCabalListBinScript binary)
+
+        (exitCode, stdoutText, stderrText) <-
+          withFakeGatewayReadinessEnvironment envVars $ \gatewayEnvironment ->
+            readCreateProcessWithExitCode
+              (proc binary ["test", "integration", "gateway-pods"])
+                { cwd = Just tmpDir
+                , env = Just gatewayEnvironment
+                }
+              ""
+
+        let output =
+              unlines
+                [ "gateway-pods stdout:"
+                , stdoutText
+                , "gateway-pods stderr:"
+                , stderrText
+                ]
+        when (exitCode /= ExitSuccess) (expectationFailure output)
+        exitCode `shouldBe` ExitSuccess
+        stderrText
+          `shouldContain` "[validation=gateway-pods substrate=home-local] entering body"
+        stderrText
+          `shouldContain` "[validation=gateway-pods substrate=home-local] body exit=ExitSuccess"
+        stdoutText `shouldContain` "GATEWAY_RUNTIME_STABILITY_VALIDATION"
+        stdoutText `shouldContain` "CLASSIFICATION=stable"
+        stdoutText `shouldContain` "STABLE_SAMPLES=3"
+
+    it "keeps a mid-run gateway OOM absorbing after later healthy samples" $
+      withSystemTempDirectory "prodbox-hs-cli" $ \tmpDir -> do
+        binary <- resolveBinaryPath >>= \b -> installOperatorBinaryInDir b tmpDir
+        writeRepoMarkers tmpDir
+        writeFile
+          (tmpDir </> "prodbox.dhall")
+          (wrapTier0WithDefaultComponentGraph validConfig)
+        createDirectoryIfMissing True (tmpDir </> ".build")
+        writeFile
+          (tmpDir </> ".build" </> "prodbox.dhall")
+          (wrapTier0WithDefaultComponentGraph validConfig)
+        baseEnv <- (("PRODBOX_TEST_HOST_VAULT_TOKEN", "fake-root-token") :) <$> fakeRke2Environment tmpDir
+        let envVars =
+              ("PRODBOX_FAKE_GATEWAY_OOM_PODS_SAMPLE", "2")
+                : baseEnv
+        writeExecutable (tmpDir </> "bin" </> "cabal") (fakeCabalListBinScript binary)
+
+        (exitCode, stdoutText, stderrText) <-
+          withFakeGatewayReadinessEnvironment envVars $ \gatewayEnvironment ->
+            readCreateProcessWithExitCode
+              (proc binary ["test", "integration", "gateway-pods"])
+                { cwd = Just tmpDir
+                , env = Just gatewayEnvironment
+                }
+              ""
+
+        exitCode `shouldBe` ExitFailure 1
+        stderrText `shouldContain` "Gateway runtime is unhealthy"
+        stderrText `shouldContain` "oom-killed-residue"
+        stderrText `shouldContain` "termination_reason=OOMKilled"
+        stdoutText `shouldNotContain` "CLASSIFICATION=stable"
+
+        gatewayPodSampleCount <-
+          readFile (tmpDir </> "fake-rke2-state" </> "gateway-pods-sample.count")
+        (read gatewayPodSampleCount :: Int) `shouldSatisfy` (>= 3)
+        kubectlRecord <- readFile (tmpDir </> "fake-rke2-state" </> "kubectl.txt")
+        kubectlRecord
+          `shouldContain` "get|pods|--namespace|gateway|-o|json|--request-timeout=5s"
 
     it "runs native daemon-bootstrap validation and rejects legacy transport traces" $
       withSystemTempDirectory "prodbox-hs-cli" $ \tmpDir -> do
@@ -1894,7 +2053,7 @@ copySchema sourceRoot targetRoot =
 
 gatewayStateResponseJson :: String
 gatewayStateResponseJson =
-  "{\"node_id\":\"node-a\",\"gateway_owner\":\"node-a\",\"has_active_claim\":true,\"mesh_peers\":[\"node-b\"],\"event_count\":5,\"last_public_ip_observed\":\"203.0.113.10\",\"last_dns_write_ip\":\"203.0.113.10\",\"last_dns_write_at_utc\":\"2026-04-06T10:00:00Z\",\"dns_write_gate\":{\"zone_id\":\"Z123\",\"fqdn\":\"test.resolvefintech.com\",\"ttl\":60},\"heartbeat_age_seconds\":{\"node-a\":0.0,\"node-b\":1.5}}"
+  "{\"node_id\":\"node-a\",\"gateway_owner\":\"node-a\",\"has_active_claim\":true,\"mesh_peers\":[\"node-b\"],\"semantic_member_count\":2,\"signed_replay_assertion_count\":5,\"retained_assertion_count\":7,\"retained_assertion_capacity\":20,\"last_public_ip_observed\":\"203.0.113.10\",\"last_dns_write_ip\":\"203.0.113.10\",\"last_dns_write_at_utc\":\"2026-04-06T10:00:00Z\",\"dns_write_gate\":{\"zone_id\":\"Z123\",\"fqdn\":\"test.resolvefintech.com\",\"ttl\":60},\"heartbeat_age_seconds\":{\"node-a\":0.0,\"node-b\":1.5}}"
 
 sealedVaultStatusJson :: String
 sealedVaultStatusJson =
@@ -2557,6 +2716,83 @@ fakeAwsEnvironment repoRoot = do
         : filtered
     )
 
+-- | Sprint 8.10 built-frontend fixture.  Every supported arm is read-only and
+-- records its argv with an unambiguous separator so the test can reject
+-- mutation verbs as well as assert the exact semantic probes were reached.
+fakeSesReadinessEnvironment :: FilePath -> String -> IO [(String, String)]
+fakeSesReadinessEnvironment repoRoot mode = do
+  let binDir = repoRoot </> "fake-ses-readiness-bin"
+      scriptPath = binDir </> "aws"
+  createDirectoryIfMissing True binDir
+  writeExecutable scriptPath (fakeSesReadinessAwsScript repoRoot)
+  currentEnvironment <- getEnvironment
+  let existingPath = maybe "" id (lookup "PATH" currentEnvironment)
+      updatedPath = binDir ++ ":" ++ existingPath
+      filtered =
+        filter
+          ( \(key, _) ->
+              key /= "PATH"
+                && key /= "PRODBOX_FAKE_SES_READINESS_MODE"
+                && key /= "PRODBOX_TEST_HOST_VAULT_KV_DIR"
+          )
+          currentEnvironment
+  pure
+    ( ("PATH", updatedPath)
+        : ("PRODBOX_FAKE_SES_READINESS_MODE", mode)
+        : ("PRODBOX_TEST_HOST_VAULT_KV_DIR", fakeVaultKvDir repoRoot)
+        : filtered
+    )
+
+fakeSesReadinessAwsScript :: FilePath -> String
+fakeSesReadinessAwsScript repoRoot =
+  unlines
+    [ "#!/usr/bin/env bash"
+    , "set -euo pipefail"
+    , "record_file=" ++ show (repoRoot </> "fake-ses-readiness-aws.txt")
+    , "mode=${PRODBOX_FAKE_SES_READINESS_MODE:?}"
+    , "first=1"
+    , "for arg in \"$@\"; do"
+    , "  if [[ $first -eq 0 ]]; then printf '|' >> \"$record_file\"; fi"
+    , "  first=0"
+    , "  printf '%s' \"$arg\" >> \"$record_file\""
+    , "done"
+    , "printf '\\n' >> \"$record_file\""
+    , "case \"$*\" in"
+    , "  '--version')"
+    , "    printf 'aws-cli/2.31.0 Python/3.13 Linux/fixture\\n'"
+    , "    ;;"
+    , "  'sts get-caller-identity --output json')"
+    , "    printf '%s\\n' '{\"Account\":\"123456789012\",\"Arn\":\"arn:aws:iam::123456789012:user/prodbox\",\"UserId\":\"AIDASESREADY\"}'"
+    , "    ;;"
+    , "  'route53 get-hosted-zone --id Z1234567890ABC --output json')"
+    , "    printf '%s\\n' '{\"HostedZone\":{\"Id\":\"/hostedzone/Z1234567890ABC\",\"Name\":\"resolvefintech.com.\"}}'"
+    , "    ;;"
+    , "  'sesv2 get-email-identity --email-identity test.resolvefintech.com --output json')"
+    , "    if [[ $mode == identity-failed ]]; then"
+    , "      printf '%s\\n' '{\"IdentityType\":\"DOMAIN\",\"VerifiedForSendingStatus\":false,\"VerificationStatus\":\"SUCCESS\",\"DkimAttributes\":{\"SigningEnabled\":true,\"Status\":\"SUCCESS\"}}'"
+    , "    else"
+    , "      printf '%s\\n' '{\"IdentityType\":\"DOMAIN\",\"VerifiedForSendingStatus\":true,\"VerificationStatus\":\"SUCCESS\",\"DkimAttributes\":{\"SigningEnabled\":true,\"Status\":\"SUCCESS\"}}'"
+    , "    fi"
+    , "    ;;"
+    , "  'route53 list-resource-record-sets --hosted-zone-id Z1234567890ABC --output json')"
+    , "    printf '%s\\n' '{\"ResourceRecordSets\":[{\"Name\":\"inbox.test.resolvefintech.com.\",\"Type\":\"MX\",\"TTL\":300,\"ResourceRecords\":[{\"Value\":\"10 inbound-smtp.us-east-1.amazonaws.com\"}]}]}'"
+    , "    ;;"
+    , "  'ses describe-active-receipt-rule-set --output json')"
+    , "    printf '%s\\n' '{\"Metadata\":{\"Name\":\"prodbox-receive-rule-set\"},\"Rules\":[{\"Name\":\"prodbox-capture-all-mail\",\"Enabled\":true,\"Recipients\":[\"inbox.test.resolvefintech.com\"],\"Actions\":[{\"S3Action\":{\"BucketName\":\"prodbox-test-ses-capture\",\"ObjectKeyPrefix\":\"inbound/\"}}]}]}'"
+    , "    ;;"
+    , "  's3api list-objects-v2 --bucket prodbox-test-ses-capture --prefix inbound/.prodbox-readiness-capability-probe --max-keys 1 --output json')"
+    , "    printf '%s\\n' '{\"KeyCount\":1,\"Contents\":[{\"Key\":\"inbound/.prodbox-readiness-capability-probe\"}]}'"
+    , "    ;;"
+    , "  s3api\\ get-object\\ --bucket\\ prodbox-test-ses-capture\\ --key\\ inbound/.prodbox-readiness-capability-probe\\ *\\ --output\\ json)"
+    , "    printf '%s\\n' '{\"ContentLength\":38,\"ContentType\":\"text/plain\"}'"
+    , "    ;;"
+    , "  *)"
+    , "    printf 'unsupported fake SES-readiness aws command: %s\\n' \"$*\" >&2"
+    , "    exit 2"
+    , "    ;;"
+    , "esac"
+    ]
+
 fakeAwsHarnessEnvironment :: FilePath -> FilePath -> IO [(String, String)]
 fakeAwsHarnessEnvironment repoRoot binaryPath = do
   fakeBin <- writeFakeAwsScript repoRoot
@@ -3023,6 +3259,15 @@ fakeSystemctlScript =
     , "  is-active)"
     , "    printf 'active\\n'"
     , "    ;;"
+    , "  show)"
+    , "    if [[ \"$*\" == *'LoadState'* ]]; then"
+    , "      printf 'loaded\\n'"
+    , "    elif [[ \"$*\" == *'ActiveState'* ]]; then"
+    , "      printf 'active\\n'"
+    , "    else"
+    , "      printf 'loaded\\n'"
+    , "    fi"
+    , "    ;;"
     , "  start|stop|restart|enable|disable|daemon-reload)"
     , "    ;;"
     , "  *)"
@@ -3198,8 +3443,21 @@ fakeRke2KubectlScript =
     , "  printf '%s' \"$count\" > \"$counter_file\""
     , "  printf '%s/kubectl-apply-%s.json' \"$record_dir\" \"$count\""
     , "}"
+    , "next_gateway_pods_sample() {"
+    , "  local counter_file=\"$record_dir/gateway-pods-sample.count\""
+    , "  local count=0"
+    , "  if [[ -f \"$counter_file\" ]]; then"
+    , "    count=$(/bin/cat \"$counter_file\")"
+    , "  fi"
+    , "  count=$((count + 1))"
+    , "  printf '%s' \"$count\" > \"$counter_file\""
+    , "  printf '%s' \"$count\""
+    , "}"
     , "append_args \"$record_dir/kubectl.txt\" \"$@\""
     , "if [[ \"${1:-}\" == '--kubeconfig' ]]; then"
+    , "  shift 2"
+    , "fi"
+    , "if [[ \"${1:-}\" == '--namespace' ]]; then"
     , "  shift 2"
     , "fi"
     , "case \"${1:-}\" in"
@@ -3333,12 +3591,33 @@ fakeRke2KubectlScript =
     , "        ;;"
     , "      pods)"
     , "        if [[ \"$*\" == *'-o json'* ]]; then"
-    , "          /bin/cat <<'JSON'"
+    , "          if [[ \"$*\" == *'--namespace gateway'* ]]; then"
+    , "            gateway_pods_sample=$(next_gateway_pods_sample)"
+    , "            if [[ \"${PRODBOX_FAKE_GATEWAY_OOM_PODS_SAMPLE:-0}\" == \"$gateway_pods_sample\" ]]; then"
+    , "              /bin/cat <<'JSON'"
+    , "{\"items\":[{\"metadata\":{\"namespace\":\"gateway\",\"name\":\"gateway-0\",\"uid\":\"gateway-uid-0\"},\"spec\":{\"containers\":[{\"name\":\"gateway\",\"resources\":{\"limits\":{\"memory\":\"512Mi\"}}}]},\"status\":{\"phase\":\"Running\",\"conditions\":[{\"type\":\"Ready\",\"status\":\"True\"}],\"containerStatuses\":[{\"name\":\"gateway\",\"restartCount\":1,\"lastState\":{\"terminated\":{\"reason\":\"OOMKilled\",\"exitCode\":137,\"finishedAt\":\"2026-07-11T00:00:00Z\"}}}]}},{\"metadata\":{\"namespace\":\"gateway\",\"name\":\"gateway-1\",\"uid\":\"gateway-uid-1\"},\"spec\":{\"containers\":[{\"name\":\"gateway\",\"resources\":{\"limits\":{\"memory\":\"512Mi\"}}}]},\"status\":{\"phase\":\"Running\",\"conditions\":[{\"type\":\"Ready\",\"status\":\"True\"}],\"containerStatuses\":[{\"name\":\"gateway\",\"restartCount\":0,\"lastState\":{}}]}},{\"metadata\":{\"namespace\":\"gateway\",\"name\":\"gateway-2\",\"uid\":\"gateway-uid-2\"},\"spec\":{\"containers\":[{\"name\":\"gateway\",\"resources\":{\"limits\":{\"memory\":\"512Mi\"}}}]},\"status\":{\"phase\":\"Running\",\"conditions\":[{\"type\":\"Ready\",\"status\":\"True\"}],\"containerStatuses\":[{\"name\":\"gateway\",\"restartCount\":0,\"lastState\":{}}]}}]}"
+    , "JSON"
+    , "            else"
+    , "              /bin/cat <<'JSON'"
+    , "{\"items\":[{\"metadata\":{\"namespace\":\"gateway\",\"name\":\"gateway-0\",\"uid\":\"gateway-uid-0\"},\"spec\":{\"containers\":[{\"name\":\"gateway\",\"resources\":{\"limits\":{\"memory\":\"512Mi\"}}}]},\"status\":{\"phase\":\"Running\",\"conditions\":[{\"type\":\"Ready\",\"status\":\"True\"}],\"containerStatuses\":[{\"name\":\"gateway\",\"restartCount\":0,\"lastState\":{}}]}},{\"metadata\":{\"namespace\":\"gateway\",\"name\":\"gateway-1\",\"uid\":\"gateway-uid-1\"},\"spec\":{\"containers\":[{\"name\":\"gateway\",\"resources\":{\"limits\":{\"memory\":\"512Mi\"}}}]},\"status\":{\"phase\":\"Running\",\"conditions\":[{\"type\":\"Ready\",\"status\":\"True\"}],\"containerStatuses\":[{\"name\":\"gateway\",\"restartCount\":0,\"lastState\":{}}]}},{\"metadata\":{\"namespace\":\"gateway\",\"name\":\"gateway-2\",\"uid\":\"gateway-uid-2\"},\"spec\":{\"containers\":[{\"name\":\"gateway\",\"resources\":{\"limits\":{\"memory\":\"512Mi\"}}}]},\"status\":{\"phase\":\"Running\",\"conditions\":[{\"type\":\"Ready\",\"status\":\"True\"}],\"containerStatuses\":[{\"name\":\"gateway\",\"restartCount\":0,\"lastState\":{}}]}}]}"
+    , "JSON"
+    , "            fi"
+    , "          else"
+    , "            /bin/cat <<'JSON'"
     , "{\"items\":[{\"metadata\":{\"namespace\":\"keycloak\",\"name\":\"keycloak-0\"},\"status\":{\"qosClass\":\"Burstable\"},\"spec\":{\"containers\":[{\"name\":\"keycloak\",\"resources\":{\"requests\":{\"cpu\":\"500m\",\"memory\":\"1024Mi\",\"ephemeral-storage\":\"1024Mi\"},\"limits\":{\"cpu\":\"1000m\",\"memory\":\"2048Mi\",\"ephemeral-storage\":\"2048Mi\"}}}]}},{\"metadata\":{\"namespace\":\"vscode\",\"name\":\"vscode-0\"},\"status\":{\"qosClass\":\"Burstable\"},\"spec\":{\"containers\":[{\"name\":\"vscode\",\"resources\":{\"requests\":{\"cpu\":\"500m\",\"memory\":\"1024Mi\",\"ephemeral-storage\":\"1024Mi\"},\"limits\":{\"cpu\":\"1000m\",\"memory\":\"2048Mi\",\"ephemeral-storage\":\"4096Mi\"}}}]}},{\"metadata\":{\"namespace\":\"api\",\"name\":\"api-0\"},\"status\":{\"qosClass\":\"Burstable\"},\"spec\":{\"containers\":[{\"name\":\"api\",\"resources\":{\"requests\":{\"cpu\":\"250m\",\"memory\":\"256Mi\",\"ephemeral-storage\":\"512Mi\"},\"limits\":{\"cpu\":\"500m\",\"memory\":\"512Mi\",\"ephemeral-storage\":\"1024Mi\"}}}]}},{\"metadata\":{\"namespace\":\"websocket\",\"name\":\"websocket-0\"},\"status\":{\"qosClass\":\"Burstable\"},\"spec\":{\"containers\":[{\"name\":\"websocket\",\"resources\":{\"requests\":{\"cpu\":\"100m\",\"memory\":\"256Mi\",\"ephemeral-storage\":\"512Mi\"},\"limits\":{\"cpu\":\"250m\",\"memory\":\"512Mi\",\"ephemeral-storage\":\"1024Mi\"}}}]}},{\"metadata\":{\"namespace\":\"gateway\",\"name\":\"gateway-0\"},\"status\":{\"qosClass\":\"Burstable\"},\"spec\":{\"containers\":[{\"name\":\"gateway\",\"resources\":{\"requests\":{\"cpu\":\"250m\",\"memory\":\"256Mi\",\"ephemeral-storage\":\"512Mi\"},\"limits\":{\"cpu\":\"500m\",\"memory\":\"512Mi\",\"ephemeral-storage\":\"1024Mi\"}}}]}}]}"
     , "JSON"
+    , "          fi"
     , "        else"
     , "          printf 'docker.io/library/busybox:latest\\ngoharbor/harbor-core:v2\\n'"
     , "        fi"
+    , "        ;;"
+    , "      events)"
+    , "        printf '{\"items\":[]}'"
+    , "        ;;"
+    , "      --raw)"
+    , "        /bin/cat <<'JSON'"
+    , "{\"items\":[{\"metadata\":{\"name\":\"gateway-0\"},\"containers\":[{\"name\":\"gateway\",\"usage\":{\"memory\":\"128Mi\"}}]},{\"metadata\":{\"name\":\"gateway-1\"},\"containers\":[{\"name\":\"gateway\",\"usage\":{\"memory\":\"128Mi\"}}]},{\"metadata\":{\"name\":\"gateway-2\"},\"containers\":[{\"name\":\"gateway\",\"usage\":{\"memory\":\"128Mi\"}}]}]}"
+    , "JSON"
     , "        ;;"
     , "      *)"
     , "        ;;"
@@ -3353,6 +3632,9 @@ fakeRke2KubectlScript =
     , "    fi"
     , "    ;;"
     , "  wait|rollout)"
+    , "    ;;"
+    , "  logs)"
+    , "    printf 'gateway fake workload logs are diagnostic-only\n'"
     , "    ;;"
     , "  port-forward)"
     , "    trap 'exit 0' TERM INT"
@@ -3667,11 +3949,15 @@ fakeRke2AwsScript =
     , "    exit 0"
     , "    ;;"
     , "  # Sprint 8.8: prodbox nuke step 3 (operational IAM teardown) — the"
-    , "  # operational `prodbox` user is absent in this fixture, so the teardown"
-    , "  # is a no-op."
+    , "  # SES lease role and operational `prodbox` user are absent in this"
+    , "  # fixture, so the teardown is a no-op after observing both states."
     , "  *'sts get-caller-identity'*)"
     , "    printf '{\"Account\":\"123456789012\",\"UserId\":\"AIDAFAKEADMIN\",\"Arn\":\"arn:aws:iam::123456789012:user/prodbox-admin-temp\"}\\n'"
     , "    exit 0"
+    , "    ;;"
+    , "  *'iam get-role'*)"
+    , "    printf 'An error occurred (NoSuchEntity) when calling the GetRole operation: The role with name prodbox-aws-ses-lease cannot be found.\\n' >&2"
+    , "    exit 254"
     , "    ;;"
     , "  *'iam get-user'*)"
     , "    printf 'An error occurred (NoSuchEntity) when calling the GetUser operation: The user with name prodbox cannot be found.\\n' >&2"
@@ -4299,8 +4585,13 @@ capacityDhallFragment =
     , ", workload_budget = { cpu = 4, memory = 8, storage = 40 }"
     , ", region_quota = { cpu = 32, memory = 64, storage = 500 }"
     , ", resource_plan = " ++ resourcePlanDhallFragment
+    , ", runtime_memory_profiles = " ++ runtimeMemoryProfilesDhallFragment
     , "}"
     ]
+
+runtimeMemoryProfilesDhallFragment :: String
+runtimeMemoryProfilesDhallFragment =
+  "[ { runtime_profile_id = \"gateway\", bounded_application_state_bytes = 67108864, bounded_pending_persistence_state_bytes = 16777216, bounded_in_heap_transport_decode_bytes = 67108864, other_heap_reserve_bytes = 50331648, heap_cap_bytes = 268435456, native_non_heap_reserve_bytes = 67108864, child_process_budget = { permit_capacity = Some 1, action_deadline_milliseconds = Some 30000, simultaneous_peak_bytes = [ 67108864 ] }, kernel_cgroup_reserve_bytes = 33554432, safety_margin_bytes = 67108864 } ]"
 
 resourcePlanDhallFragment :: String
 resourcePlanDhallFragment =

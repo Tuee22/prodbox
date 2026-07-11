@@ -1,10 +1,12 @@
--- Capacity schema for Sprint 1.55.
+-- Capacity schema for Sprints 1.55 and 1.60.
 --
 -- The Haskell mirror lives in Prodbox.Capacity.Config. This Dhall file owns the
 -- pure capacity algebra operators that authored capacity documents can import:
 -- componentwise budget containment, explicit request/limit resource envelopes,
--- host/RKE2 reservation containment, and the storage-only projection used by
--- the tiered-storage capacity doctrine.
+-- host/RKE2 reservation containment, the nested runtime-memory accounting
+-- projections, and the storage-only projection used by the tiered-storage
+-- capacity doctrine. Child-schedule validation remains Haskell-owned because
+-- the opaque RuntimeMemoryPlan carries its finite concurrency witness.
 
 let Budget = { cpu : Natural, memory : Natural, storage : Natural }
 
@@ -32,6 +34,25 @@ let ResourcePlan =
       , eviction_floor : ResourceVector
       , namespace_quotas : List NamespaceQuota
       , workload_profiles : List WorkloadResourceProfile
+      }
+
+let ChildProcessBudgetConfig =
+      { permit_capacity : Optional Natural
+      , action_deadline_milliseconds : Optional Natural
+      , simultaneous_peak_bytes : List Natural
+      }
+
+let RuntimeMemoryProfile =
+      { runtime_profile_id : Text
+      , bounded_application_state_bytes : Natural
+      , bounded_pending_persistence_state_bytes : Natural
+      , bounded_in_heap_transport_decode_bytes : Natural
+      , other_heap_reserve_bytes : Natural
+      , heap_cap_bytes : Natural
+      , native_non_heap_reserve_bytes : Natural
+      , child_process_budget : ChildProcessBudgetConfig
+      , kernel_cgroup_reserve_bytes : Natural
+      , safety_margin_bytes : Natural
       }
 
 let lessOrEq =
@@ -100,6 +121,34 @@ let hostReservationFits =
         vectorFitsWithin
           (vectorPlus plan.rke2_reserved plan.eviction_floor)
           plan.host_capacity
+
+let runtimeHeapRequiredBytes =
+      \(profile : RuntimeMemoryProfile) ->
+            profile.bounded_application_state_bytes
+        +   profile.bounded_pending_persistence_state_bytes
+        +   profile.bounded_in_heap_transport_decode_bytes
+        +   profile.other_heap_reserve_bytes
+
+let runtimeHeapFits =
+      \(profile : RuntimeMemoryProfile) ->
+        lessOrEq (runtimeHeapRequiredBytes profile) profile.heap_cap_bytes
+
+let runtimeContainerRequiredBytes =
+      \(profile : RuntimeMemoryProfile) ->
+      \(admitted_child_peak_bytes : Natural) ->
+            profile.heap_cap_bytes
+        +   profile.native_non_heap_reserve_bytes
+        +   admitted_child_peak_bytes
+        +   profile.kernel_cgroup_reserve_bytes
+        +   profile.safety_margin_bytes
+
+let runtimeContainerFits =
+      \(profile : RuntimeMemoryProfile) ->
+      \(admitted_child_peak_bytes : Natural) ->
+      \(container_limit_bytes : Natural) ->
+        lessOrEq
+          (runtimeContainerRequiredBytes profile admitted_child_peak_bytes)
+          container_limit_bytes
 
 let zero = { cpu = 0, memory = 0, storage = 0 }
 
@@ -188,6 +237,8 @@ in  { Budget = Budget
     , NamespaceQuota = NamespaceQuota
     , WorkloadResourceProfile = WorkloadResourceProfile
     , ResourcePlan = ResourcePlan
+    , ChildProcessBudgetConfig = ChildProcessBudgetConfig
+    , RuntimeMemoryProfile = RuntimeMemoryProfile
     , zero = zero
     , zeroVector = zeroVector
     , plus = plus
@@ -197,4 +248,8 @@ in  { Budget = Budget
     , vectorFitsWithin = vectorFitsWithin
     , envelopeValid = envelopeValid
     , hostReservationFits = hostReservationFits
+    , runtimeHeapRequiredBytes = runtimeHeapRequiredBytes
+    , runtimeHeapFits = runtimeHeapFits
+    , runtimeContainerRequiredBytes = runtimeContainerRequiredBytes
+    , runtimeContainerFits = runtimeContainerFits
     }

@@ -13,11 +13,14 @@ module Prodbox.TestRunner
   , awsSubstrateBootstrapCommandArgs
   , awsSubstrateBootstrapRestorePlan
   , awsSubstrateBootstrapRestoreSteps
+  , awsSubstrateBootstrapPreMonitorSteps
+  , awsSubstrateBootstrapPostMonitorSteps
   , awsPostflightDestroyCommandArgs
+  , GatewayRuntimeValidationBoundary (..)
+  , gatewayRuntimeValidationBoundary
   , publicEdgeCertificateReissueStatusPatch
   , renderTestRefusal
   , supportedRuntimeBootstrapNeedsReconcile
-  , supportedRuntimeBootstrapNeedsKeycloakSmtpSync
   , supportedRuntimeBootstrapRestorePlan
   , supportedRuntimePostflightRestorePlan
   , testModePreflightAtPaths
@@ -34,7 +37,6 @@ where
 import Control.Concurrent (threadDelay)
 import Control.Exception
   ( SomeException
-  , bracket_
   , displayException
   , finally
   , throwIO
@@ -55,7 +57,7 @@ import Prodbox.Aws
   , runAwsIamHarnessSetup
   , runAwsIamHarnessTeardown
   )
-import Prodbox.AwsEnvironment (overlayAwsCredentials)
+import Prodbox.AwsEnvironment (awsCliSubprocessEnvironment)
 import Prodbox.BuildSupport
   ( addBuildSupportEnvironment
   , canonicalOperatorBinaryPath
@@ -78,10 +80,10 @@ import Prodbox.CLI.Output
   )
 import Prodbox.CLI.Rke2
   ( ensureGatewayMinioBootstrap
-  , observeGatewayBackendRoundTripOnce
+  , gatewayNamespace
+  , observeGatewayBackendRoundTripOnceAt
   , rke2InstallPresent
   )
-import Prodbox.CLI.Vault (gatewayEndpointFromEnv)
 import Prodbox.CheckCode (runCheckCode)
 import Prodbox.Config.Tier0 qualified as Tier0
 import Prodbox.EffectDAG
@@ -93,13 +95,21 @@ import Prodbox.EffectInterpreter
   )
 import Prodbox.Error (fatalError)
 import Prodbox.Gateway.Client qualified as GatewayClient
-import Prodbox.Gateway.Types (PeerEndpoint (..))
+import Prodbox.Gateway.PortForward
+  ( GatewayServicePortForward (..)
+  , renderGatewayPortForwardError
+  , withGatewayServicePortForward
+  )
+import Prodbox.Gateway.Types (PeerEndpoint (..), peerRestUrl)
 import Prodbox.Infra.AwsEksTestStack
-  ( withEksKubeconfig
+  ( awsEksCanonicalClusterName
+  , withEksKubeconfig
   )
 import Prodbox.Infra.AwsSesStack qualified as AwsSesStack
 import Prodbox.Lib.ChartPlatform
-  ( renderPublicEdgePreserveOutcome
+  ( gatewayRestServiceName
+  , gatewayRestServicePort
+  , renderPublicEdgePreserveOutcome
   , retainReadyPublicEdgeCertificate
   )
 import Prodbox.Lib.Storage
@@ -107,9 +117,17 @@ import Prodbox.Lib.Storage
   , testDataRootRelative
   , testManualPvHostRootEnv
   )
+import Prodbox.Lifecycle.AuthorityConfig
+  ( checkpointGatewayNodePort
+  , resolveLongLivedCheckpointAuthority
+  )
+import Prodbox.Lifecycle.CheckpointAuthority
+  ( checkpointAuthorityClusterId
+  , checkpointAuthorityGatewayEndpoint
+  , mkTargetClusterSecretSink
+  )
 import Prodbox.Lifecycle.Preconditions
-  ( Precondition
-  , checkAll
+  ( checkAll
   , renderPreconditionFailures
   )
 import Prodbox.Lifecycle.ResourceClass qualified as ResourceClass
@@ -156,16 +174,25 @@ import Prodbox.TestPlan
   , NativeValidation (..)
   , TestExecutionMode (..)
   , TestExecutionPlan (..)
+  , retainedSesRequirementForValidations
   , testExecutionPlan
   )
 import Prodbox.TestRestore
-  ( RestoreChart
+  ( RestoreChart (..)
   , RestoreCyclePlan (..)
   , RestoreCycleStep (..)
-  , RestoreKeycloakSmtp (..)
+  , RetainedSesPreparationInputs (..)
+  , RetainedSesPreparationInterpreter (..)
+  , RetainedSesPreparationPlan
+  , RetainedSesPreparationPrecondition (..)
+  , RetainedSesPreparationStep (..)
+  , RetainedSesRequirement (..)
   , buildRestoreCyclePlan
   , gatewayDaemonLivenessPrecondition
   , restoreChartId
+  , restoreStepResetsGatewayHealthyWindow
+  , retainedSesPreparationTrace
+  , runRetainedSesPreparationWith
   )
 import Prodbox.TestTopology
   ( TestSuite (..)
@@ -173,19 +200,26 @@ import Prodbox.TestTopology
   , defaultTestTopology
   , renderTestTopologyDhall
   )
-import Prodbox.TestValidation (runNativeValidation)
+import Prodbox.TestValidation
+  ( GatewayRuntimeStabilityMonitor
+  , GatewayRuntimeStabilityRecorder
+  , newGatewayRuntimeStabilityRecorder
+  , pauseGatewayRuntimeStabilityMonitor
+  , recordGatewayRuntimeStabilitySample
+  , refreshGatewayRuntimeStabilityMonitor
+  , resetGatewayRuntimeStabilityHealthyWindow
+  , resumeGatewayRuntimeStabilityMonitor
+  , runGatewayRuntimeStabilityGate
+  , runNativeValidationWithGatewayStability
+  , withGatewayRuntimeStabilityMonitor
+  )
 import System.Directory
   ( createDirectoryIfMissing
   , doesDirectoryExist
   , doesFileExist
   , removePathForcibly
   )
-import System.Environment
-  ( getEnvironment
-  , lookupEnv
-  , setEnv
-  , unsetEnv
-  )
+import System.Environment (getEnvironment)
 import System.Exit
   ( ExitCode (..)
   )
@@ -911,21 +945,146 @@ runNativeSuiteBody repoRoot environment haskellSuites suitePlan = do
   case initialPrerequisitesExit of
     failure@(ExitFailure _) -> pure failure
     ExitSuccess -> do
-      preparationExit <-
-        runSequentially
-          ( runbookActions repoRoot environment suitePlan
-              ++ supportedRuntimeBootstrapActions repoRoot environment suitePlan
-          )
-      case preparationExit of
-        failure@(ExitFailure _) -> pure failure
-        ExitSuccess -> do
-          deferredPrerequisitesExit <- runPhaseOneDeferredPrerequisites repoRoot suitePlan
-          case deferredPrerequisitesExit of
+      recorderResult <- prepareGatewayRuntimeStabilityRecorder repoRoot suitePlan
+      case recorderResult of
+        Left err -> failWith err
+        Right maybeGatewayStability -> do
+          runbookExit <-
+            runSequentially (runbookActions repoRoot environment suitePlan)
+          case runbookExit of
             failure@(ExitFailure _) -> pure failure
-            ExitSuccess -> runPhaseTwo repoRoot environment haskellSuites suitePlan
+            ExitSuccess -> do
+              baselineExit <-
+                recordGatewayRuntimeStabilityIfPresent
+                  repoRoot
+                  suitePlan
+                  maybeGatewayStability
+              case baselineExit of
+                failure@(ExitFailure _) -> pure failure
+                ExitSuccess ->
+                  runSuiteWithGatewayRuntimeMonitor
+                    repoRoot
+                    environment
+                    haskellSuites
+                    suitePlan
+                    maybeGatewayStability
 
-runPhaseTwo :: FilePath -> [(String, String)] -> [String] -> NativeSuitePlan -> IO ExitCode
-runPhaseTwo repoRoot environment haskellSuites suitePlan = do
+runSuiteWithGatewayRuntimeMonitor
+  :: FilePath
+  -> [(String, String)]
+  -> [String]
+  -> NativeSuitePlan
+  -> Maybe GatewayRuntimeStabilityRecorder
+  -> IO ExitCode
+runSuiteWithGatewayRuntimeMonitor repoRoot environment haskellSuites suitePlan maybeRecorder =
+  case (nativeSubstrate suitePlan, maybeRecorder) of
+    (SubstrateHomeLocal, Just recorder) ->
+      withGatewayRuntimeMonitorExit repoRoot suitePlan recorder $ \monitor ->
+        runBootstrapAndRemaining (Just recorder) (Just monitor)
+    -- The monitor-private EKS kubeconfig cannot be materialized until the AWS
+    -- bootstrap has created the target.  Its compiled gateway reconcile takes
+    -- the first point sample; the continuous observer starts immediately
+    -- afterward and spans every deferred prerequisite, validation, and
+    -- postflight action.
+    (SubstrateAws, Just recorder) -> do
+      bootstrapExit <- runBootstrap (Just recorder) Nothing
+      case bootstrapExit of
+        failure@(ExitFailure _) -> pure failure
+        ExitSuccess ->
+          withGatewayRuntimeMonitorExit repoRoot suitePlan recorder $ \monitor ->
+            runAwsPostGatewayBootstrapAndRemaining recorder monitor
+    (_, Nothing) -> runBootstrapAndRemaining Nothing Nothing
+ where
+  runBootstrap maybeStability maybeMonitor =
+    runSequentially
+      ( supportedRuntimeBootstrapActions
+          repoRoot
+          environment
+          suitePlan
+          maybeStability
+          maybeMonitor
+      )
+
+  runBootstrapAndRemaining maybeStability maybeMonitor = do
+    bootstrapExit <- runBootstrap maybeStability maybeMonitor
+    case bootstrapExit of
+      failure@(ExitFailure _) -> pure failure
+      ExitSuccess -> runRemaining maybeStability maybeMonitor
+
+  runAwsPostGatewayBootstrapAndRemaining recorder monitor = do
+    postGatewayBootstrapExit <-
+      runAwsSubstratePostGatewayBootstrap repoRoot environment suitePlan
+    case postGatewayBootstrapExit of
+      failure@(ExitFailure _) -> pure failure
+      ExitSuccess -> runRemaining (Just recorder) (Just monitor)
+
+  runRemaining maybeStability maybeMonitor = do
+    deferredPrerequisitesExit <-
+      runPhaseOneDeferredPrerequisites repoRoot suitePlan
+    case deferredPrerequisitesExit of
+      failure@(ExitFailure _) -> pure failure
+      ExitSuccess ->
+        runPhaseTwo
+          repoRoot
+          environment
+          haskellSuites
+          suitePlan
+          maybeStability
+          maybeMonitor
+
+withGatewayRuntimeMonitorExit
+  :: FilePath
+  -> NativeSuitePlan
+  -> GatewayRuntimeStabilityRecorder
+  -> (GatewayRuntimeStabilityMonitor -> IO ExitCode)
+  -> IO ExitCode
+withGatewayRuntimeMonitorExit repoRoot suitePlan recorder action = do
+  result <-
+    withGatewayRuntimeStabilityMonitor
+      (nativeSubstrate suitePlan)
+      repoRoot
+      recorder
+      action
+  case result of
+    Left err -> failWith ("start gateway runtime-stability monitor: " ++ err)
+    Right exitCode -> pure exitCode
+
+prepareGatewayRuntimeStabilityRecorder
+  :: FilePath
+  -> NativeSuitePlan
+  -> IO (Either String (Maybe GatewayRuntimeStabilityRecorder))
+prepareGatewayRuntimeStabilityRecorder repoRoot suitePlan =
+  if ValidationGatewayPods `elem` nativeValidations suitePlan
+    then fmap (fmap Just) (newGatewayRuntimeStabilityRecorder repoRoot)
+    else pure (Right Nothing)
+
+recordGatewayRuntimeStabilityIfPresent
+  :: FilePath
+  -> NativeSuitePlan
+  -> Maybe GatewayRuntimeStabilityRecorder
+  -> IO ExitCode
+recordGatewayRuntimeStabilityIfPresent _ _ Nothing = pure ExitSuccess
+recordGatewayRuntimeStabilityIfPresent repoRoot suitePlan (Just recorder) =
+  case nativeSubstrate suitePlan of
+    SubstrateHomeLocal ->
+      recordGatewayRuntimeStabilitySample
+        SubstrateHomeLocal
+        repoRoot
+        recorder
+    -- The per-run EKS target does not exist until the AWS bootstrap below;
+    -- its first authoritative sample is taken after the compiled gateway
+    -- reconcile step in that target plan.
+    SubstrateAws -> pure ExitSuccess
+
+runPhaseTwo
+  :: FilePath
+  -> [(String, String)]
+  -> [String]
+  -> NativeSuitePlan
+  -> Maybe GatewayRuntimeStabilityRecorder
+  -> Maybe GatewayRuntimeStabilityMonitor
+  -> IO ExitCode
+runPhaseTwo repoRoot environment haskellSuites suitePlan maybeGatewayStability maybeGatewayMonitor = do
   phaseTwoExit <- emitLineAction phaseTwoMessage
   case phaseTwoExit of
     failure@(ExitFailure _) -> pure failure
@@ -933,11 +1092,47 @@ runPhaseTwo repoRoot environment haskellSuites suitePlan = do
       haskellExit <- runHaskellSuites repoRoot environment haskellSuites
       case haskellExit of
         failure@(ExitFailure _) -> pure failure
-        ExitSuccess ->
-          runSequentially
-            ( runNativeValidations repoRoot environment suitePlan
-                : supportedRuntimePostflightActions repoRoot environment suitePlan
-            )
+        ExitSuccess -> do
+          validationsExit <-
+            runNativeValidations
+              repoRoot
+              environment
+              suitePlan
+              maybeGatewayStability
+              maybeGatewayMonitor
+          case validationsExit of
+            failure@(ExitFailure _) -> pure failure
+            ExitSuccess -> do
+              postflightExit <-
+                runSequentially
+                  ( supportedRuntimePostflightActions
+                      repoRoot
+                      environment
+                      suitePlan
+                      maybeGatewayStability
+                      maybeGatewayMonitor
+                  )
+              case postflightExit of
+                failure@(ExitFailure _) -> pure failure
+                ExitSuccess ->
+                  runFinalGatewayRuntimeStabilityGate
+                    repoRoot
+                    suitePlan
+                    maybeGatewayStability
+
+runFinalGatewayRuntimeStabilityGate
+  :: FilePath
+  -> NativeSuitePlan
+  -> Maybe GatewayRuntimeStabilityRecorder
+  -> IO ExitCode
+runFinalGatewayRuntimeStabilityGate _ _ Nothing = pure ExitSuccess
+runFinalGatewayRuntimeStabilityGate repoRoot suitePlan (Just recorder)
+  | nativeRequiresSupportedRuntimePostflight suitePlan =
+      runGatewayRuntimeStabilityGate
+        (nativeSubstrate suitePlan)
+        repoRoot
+        recorder
+  | otherwise = pure ExitSuccess
 
 runSequentially :: [IO ExitCode] -> IO ExitCode
 runSequentially = foldM step ExitSuccess
@@ -965,21 +1160,39 @@ integrationRunbookCommandArgs suitePlan
   | otherwise = [["cluster", "reconcile", "--with-edge"]]
 
 supportedRuntimeBootstrapActions
-  :: FilePath -> [(String, String)] -> NativeSuitePlan -> [IO ExitCode]
-supportedRuntimeBootstrapActions repoRoot environment suitePlan =
+  :: FilePath
+  -> [(String, String)]
+  -> NativeSuitePlan
+  -> Maybe GatewayRuntimeStabilityRecorder
+  -> Maybe GatewayRuntimeStabilityMonitor
+  -> [IO ExitCode]
+supportedRuntimeBootstrapActions repoRoot environment suitePlan maybeGatewayStability maybeGatewayMonitor =
   if nativeRequiresSupportedRuntimeBootstrap suitePlan
     then
       let reconcileActions =
-            [ runNativeCliCommandForExitCode repoRoot environment ["cluster", "reconcile", "--with-edge"]
-            | supportedRuntimeBootstrapNeedsReconcile suitePlan
-            ]
+            if supportedRuntimeBootstrapNeedsReconcile suitePlan
+              then
+                plannedHomeGatewayReconcileActions
+                  repoRoot
+                  environment
+                  suitePlan
+                  maybeGatewayStability
+                  maybeGatewayMonitor
+              else []
        in [emitLineAction phaseOnePointSixMessage]
             ++ reconcileActions
             ++ restoreCycleActions
               repoRoot
               environment
               (supportedRuntimeBootstrapRestorePlan suitePlan)
-            ++ awsSubstrateBootstrapActions repoRoot environment suitePlan
+              (nativeSubstrate suitePlan)
+              maybeGatewayStability
+              maybeGatewayMonitor
+            ++ awsSubstrateBootstrapActions
+              repoRoot
+              environment
+              suitePlan
+              maybeGatewayStability
     else []
 
 supportedRuntimeBootstrapNeedsReconcile :: NativeSuitePlan -> Bool
@@ -997,29 +1210,116 @@ supportedRuntimeBootstrapNeedsReconcile suitePlan =
 harnessNeedsVaultBeforeSetup :: NativeSuitePlan -> Bool
 harnessNeedsVaultBeforeSetup = nativeRequiresSupportedRuntimeBootstrap
 
-supportedRuntimeBootstrapNeedsKeycloakSmtpSync :: NativeSuitePlan -> Bool
-supportedRuntimeBootstrapNeedsKeycloakSmtpSync suitePlan =
-  nativeRequiresSupportedRuntimeBootstrap suitePlan
-    && ValidationKeycloakInvite `elem` nativeValidations suitePlan
-
 supportedRuntimeBootstrapRestorePlan :: NativeSuitePlan -> RestoreCyclePlan
 supportedRuntimeBootstrapRestorePlan suitePlan =
-  buildRestoreCyclePlan SubstrateHomeLocal smtpRestore
+  buildRestoreCyclePlan SubstrateHomeLocal retainedSesRequirement
  where
-  smtpRestore
-    | supportedRuntimeBootstrapNeedsKeycloakSmtpSync suitePlan = RestoreWithKeycloakSmtp
-    | otherwise = RestoreWithoutKeycloakSmtp
+  retainedSesRequirement =
+    case nativeSubstrate suitePlan of
+      SubstrateHomeLocal ->
+        retainedSesRequirementForValidations (nativeValidations suitePlan)
+      -- The home bootstrap remains the retained control-plane authority for
+      -- an AWS suite, but its workload secret target is EKS.  Project the one
+      -- capability-derived preparation fragment into the AWS restore below.
+      SubstrateAws -> SesNotRequired
 
 supportedRuntimePostflightRestorePlan :: NativeSuitePlan -> RestoreCyclePlan
 supportedRuntimePostflightRestorePlan _ =
-  buildRestoreCyclePlan SubstrateHomeLocal RestoreWithoutKeycloakSmtp
+  buildRestoreCyclePlan SubstrateHomeLocal SesNotRequired
 
 restoreCycleActions
-  :: FilePath -> [(String, String)] -> RestoreCyclePlan -> [IO ExitCode]
-restoreCycleActions repoRoot environment restorePlan =
+  :: FilePath
+  -> [(String, String)]
+  -> RestoreCyclePlan
+  -> Substrate
+  -> Maybe GatewayRuntimeStabilityRecorder
+  -> Maybe GatewayRuntimeStabilityMonitor
+  -> [IO ExitCode]
+restoreCycleActions repoRoot environment restorePlan observedSubstrate maybeGatewayStability maybeGatewayMonitor =
   map
-    (restoreCycleStepAction repoRoot environment (restoreCycleSubstrate restorePlan))
+    ( restoreCycleStepActionWithGatewayStability
+        repoRoot
+        environment
+        (restoreCycleSubstrate restorePlan)
+        observedSubstrate
+        maybeGatewayStability
+        maybeGatewayMonitor
+    )
     (restoreCycleSteps restorePlan)
+
+restoreCycleStepActionWithGatewayStability
+  :: FilePath
+  -> [(String, String)]
+  -> Substrate
+  -> Substrate
+  -> Maybe GatewayRuntimeStabilityRecorder
+  -> Maybe GatewayRuntimeStabilityMonitor
+  -> RestoreCycleStep
+  -> IO ExitCode
+restoreCycleStepActionWithGatewayStability repoRoot environment restoreSubstrate observedSubstrate maybeRecorder maybeMonitor restoreStep
+  | restoreSubstrate /= observedSubstrate
+      || not (restoreStepResetsGatewayHealthyWindow restoreStep) =
+      restoreCycleStepAction repoRoot environment restoreSubstrate restoreStep
+  | otherwise =
+      case (maybeRecorder, restoreStep) of
+        (Just recorder, RestoreDeleteChart RestoreChartGateway) ->
+          runSequentially
+            [ pauseGatewayRuntimeMonitorIfPresent maybeMonitor
+            , recordGatewayRuntimeStabilitySample observedSubstrate repoRoot recorder
+            , resetGatewayRuntimeStabilityHealthyWindow recorder >> pure ExitSuccess
+            , restoreCycleStepAction repoRoot environment restoreSubstrate restoreStep
+            ]
+        (Just recorder, RestoreReconcileChart RestoreChartGateway) ->
+          runSequentially
+            [ resetGatewayRuntimeStabilityHealthyWindow recorder >> pure ExitSuccess
+            , restoreCycleStepAction repoRoot environment restoreSubstrate restoreStep
+            , recordGatewayRuntimeStabilitySample observedSubstrate repoRoot recorder
+            , resumeGatewayRuntimeMonitorIfPresent maybeMonitor
+            ]
+        _ -> restoreCycleStepAction repoRoot environment restoreSubstrate restoreStep
+
+pauseGatewayRuntimeMonitorIfPresent
+  :: Maybe GatewayRuntimeStabilityMonitor -> IO ExitCode
+pauseGatewayRuntimeMonitorIfPresent Nothing = pure ExitSuccess
+pauseGatewayRuntimeMonitorIfPresent (Just monitor) =
+  pauseGatewayRuntimeStabilityMonitor monitor >> pure ExitSuccess
+
+resumeGatewayRuntimeMonitorIfPresent
+  :: Maybe GatewayRuntimeStabilityMonitor -> IO ExitCode
+resumeGatewayRuntimeMonitorIfPresent Nothing = pure ExitSuccess
+resumeGatewayRuntimeMonitorIfPresent (Just monitor) =
+  resumeGatewayRuntimeStabilityMonitor monitor >> pure ExitSuccess
+
+refreshGatewayRuntimeMonitorIfPresent
+  :: Maybe GatewayRuntimeStabilityMonitor -> IO ExitCode
+refreshGatewayRuntimeMonitorIfPresent Nothing = pure ExitSuccess
+refreshGatewayRuntimeMonitorIfPresent (Just monitor) =
+  refreshGatewayRuntimeStabilityMonitor monitor >> pure ExitSuccess
+
+plannedHomeGatewayReconcileActions
+  :: FilePath
+  -> [(String, String)]
+  -> NativeSuitePlan
+  -> Maybe GatewayRuntimeStabilityRecorder
+  -> Maybe GatewayRuntimeStabilityMonitor
+  -> [IO ExitCode]
+plannedHomeGatewayReconcileActions repoRoot environment suitePlan maybeRecorder maybeMonitor =
+  case (nativeSubstrate suitePlan, maybeRecorder) of
+    (SubstrateHomeLocal, Just recorder) ->
+      [ pauseGatewayRuntimeMonitorIfPresent maybeMonitor
+      , recordGatewayRuntimeStabilitySample SubstrateHomeLocal repoRoot recorder
+      , resetGatewayRuntimeStabilityHealthyWindow recorder >> pure ExitSuccess
+      , reconcile
+      , recordGatewayRuntimeStabilitySample SubstrateHomeLocal repoRoot recorder
+      , resumeGatewayRuntimeMonitorIfPresent maybeMonitor
+      ]
+    _ -> [reconcile]
+ where
+  reconcile =
+    runNativeCliCommandForExitCode
+      repoRoot
+      environment
+      ["cluster", "reconcile", "--with-edge"]
 
 restoreCycleStepAction
   :: FilePath -> [(String, String)] -> Substrate -> RestoreCycleStep -> IO ExitCode
@@ -1036,7 +1336,12 @@ restoreCycleStepAction repoRoot environment substrate restoreStep =
         repoRoot
         environment
         (restoreChartCommandArgs substrate "reconcile" chart [])
-    RestoreSyncKeycloakSmtp -> syncKeycloakSmtpForSupportedRuntime repoRoot
+    RestorePrepareRetainedSes preparationPlan ->
+      prepareRetainedSesForSubstrate
+        repoRoot
+        environment
+        substrate
+        preparationPlan
     RestoreWaitForPublicEdge ->
       runWaitForPublicEdgeReady
         repoRoot
@@ -1052,28 +1357,6 @@ restoreChartCommandArgs substrate commandName chart trailingArguments =
     ++ case substrate of
       SubstrateHomeLocal -> []
       SubstrateAws -> ["--substrate", substrateId substrate]
-
-syncKeycloakSmtpForSupportedRuntime :: FilePath -> IO ExitCode
-syncKeycloakSmtpForSupportedRuntime repoRoot = do
-  daemonPrecondition <- supportedRuntimeGatewayDaemonPrecondition
-  preconditionResult <- checkAll [daemonPrecondition]
-  case preconditionResult of
-    Left failures -> failWith (renderPreconditionFailures failures)
-    Right () ->
-      syncKeycloakSmtpForCurrentKubeContext
-        repoRoot
-        "Supported runtime bootstrap: syncing Keycloak SMTP Secret from aws-ses"
-
-supportedRuntimeGatewayDaemonPrecondition :: IO Precondition
-supportedRuntimeGatewayDaemonPrecondition = do
-  endpoint <- gatewayEndpointFromEnv
-  let endpointLabel = peerRestHost endpoint ++ ":" ++ show (peerRestPort endpoint)
-  pure
-    ( gatewayDaemonLivenessPrecondition
-        GatewayClient.daemonRestartBridgeRetryPolicy
-        endpointLabel
-        observeGatewayBackendRoundTripOnce
-    )
 
 -- | AWS-substrate-specific bootstrap: provision the per-run AWS Pulumi
 -- stacks and deploy the AWS chart set so substrate-aware validations
@@ -1097,14 +1380,29 @@ supportedRuntimeGatewayDaemonPrecondition = do
 -- (and aws-test for the HA-RKE2 validation) here in the bootstrap rather
 -- than waiting for the validation-driven path.
 awsSubstrateBootstrapActions
-  :: FilePath -> [(String, String)] -> NativeSuitePlan -> [IO ExitCode]
-awsSubstrateBootstrapActions repoRoot environment suitePlan =
+  :: FilePath
+  -> [(String, String)]
+  -> NativeSuitePlan
+  -> Maybe GatewayRuntimeStabilityRecorder
+  -> [IO ExitCode]
+awsSubstrateBootstrapActions repoRoot environment suitePlan maybeGatewayStability =
   case nativeSubstrate suitePlan of
     SubstrateHomeLocal -> []
-    SubstrateAws -> [runAwsSubstrateBootstrap repoRoot environment suitePlan]
+    SubstrateAws ->
+      [ runAwsSubstrateBootstrap
+          repoRoot
+          environment
+          suitePlan
+          maybeGatewayStability
+      ]
 
-runAwsSubstrateBootstrap :: FilePath -> [(String, String)] -> NativeSuitePlan -> IO ExitCode
-runAwsSubstrateBootstrap repoRoot environment suitePlan =
+runAwsSubstrateBootstrap
+  :: FilePath
+  -> [(String, String)]
+  -> NativeSuitePlan
+  -> Maybe GatewayRuntimeStabilityRecorder
+  -> IO ExitCode
+runAwsSubstrateBootstrap repoRoot environment suitePlan maybeGatewayStability =
   case awsSubstrateStackCommandArgs suitePlan of
     [] -> pure ExitSuccess
     subzoneCommand : remainingStackCommands -> do
@@ -1124,9 +1422,75 @@ runAwsSubstrateBootstrap repoRoot environment suitePlan =
                 (runNativeCliCommandForExitCode repoRoot environment)
                 remainingStackCommands
                 ++ map
-                  (awsSubstrateBootstrapRestoreStepAction repoRoot environment)
-                  awsSubstrateBootstrapRestoreSteps
+                  ( awsSubstrateBootstrapRestoreStepActionWithGatewayStability
+                      repoRoot
+                      environment
+                      maybeGatewayStability
+                  )
+                  restoreStepsBeforeMonitor
             )
+ where
+  restoreStepsBeforeMonitor =
+    case maybeGatewayStability of
+      Nothing -> awsSubstrateBootstrapRestoreSteps suitePlan
+      Just _ -> awsSubstrateBootstrapPreMonitorSteps suitePlan
+
+runAwsSubstratePostGatewayBootstrap
+  :: FilePath
+  -> [(String, String)]
+  -> NativeSuitePlan
+  -> IO ExitCode
+runAwsSubstratePostGatewayBootstrap repoRoot environment suitePlan =
+  case nativeSubstrate suitePlan of
+    SubstrateHomeLocal -> pure ExitSuccess
+    SubstrateAws ->
+      runSequentially
+        ( map
+            (awsSubstrateBootstrapRestoreStepAction repoRoot environment)
+            (awsSubstrateBootstrapPostMonitorSteps suitePlan)
+        )
+
+splitAwsSubstrateBootstrapAtGateway
+  :: [RestoreCycleStep]
+  -> ([RestoreCycleStep], [RestoreCycleStep])
+splitAwsSubstrateBootstrapAtGateway = go []
+ where
+  go before [] = (reverse before, [])
+  go before (restoreStep : remaining) =
+    case restoreStep of
+      RestoreReconcileChart RestoreChartGateway ->
+        (reverse (restoreStep : before), remaining)
+      _ -> go (restoreStep : before) remaining
+
+awsSubstrateBootstrapPreMonitorSteps :: NativeSuitePlan -> [RestoreCycleStep]
+awsSubstrateBootstrapPreMonitorSteps suitePlan =
+  fst
+    ( splitAwsSubstrateBootstrapAtGateway
+        (awsSubstrateBootstrapRestoreSteps suitePlan)
+    )
+
+awsSubstrateBootstrapPostMonitorSteps :: NativeSuitePlan -> [RestoreCycleStep]
+awsSubstrateBootstrapPostMonitorSteps suitePlan =
+  snd
+    ( splitAwsSubstrateBootstrapAtGateway
+        (awsSubstrateBootstrapRestoreSteps suitePlan)
+    )
+
+awsSubstrateBootstrapRestoreStepActionWithGatewayStability
+  :: FilePath
+  -> [(String, String)]
+  -> Maybe GatewayRuntimeStabilityRecorder
+  -> RestoreCycleStep
+  -> IO ExitCode
+awsSubstrateBootstrapRestoreStepActionWithGatewayStability repoRoot environment maybeRecorder restoreStep =
+  case (maybeRecorder, restoreStep) of
+    (Just recorder, RestoreReconcileChart RestoreChartGateway) ->
+      runSequentially
+        [ resetGatewayRuntimeStabilityHealthyWindow recorder >> pure ExitSuccess
+        , awsSubstrateBootstrapRestoreStepAction repoRoot environment restoreStep
+        , recordGatewayRuntimeStabilitySample SubstrateAws repoRoot recorder
+        ]
+    _ -> awsSubstrateBootstrapRestoreStepAction repoRoot environment restoreStep
 
 awsSubstrateBootstrapRestoreStepAction
   :: FilePath -> [(String, String)] -> RestoreCycleStep -> IO ExitCode
@@ -1137,7 +1501,12 @@ awsSubstrateBootstrapRestoreStepAction repoRoot environment restoreStep =
         repoRoot
         environment
         (restoreChartCommandArgs SubstrateAws "reconcile" chart [])
-    RestoreSyncKeycloakSmtp -> syncKeycloakSmtpForAwsSubstrate repoRoot
+    RestorePrepareRetainedSes preparationPlan ->
+      prepareRetainedSesForSubstrate
+        repoRoot
+        environment
+        SubstrateAws
+        preparationPlan
     RestoreDeleteChart _ -> unsupportedProjectionStep
     RestoreEnsureGatewayMinioBootstrap -> unsupportedProjectionStep
     RestoreWaitForPublicEdge -> unsupportedProjectionStep
@@ -1148,42 +1517,181 @@ awsSubstrateBootstrapRestoreStepAction repoRoot environment restoreStep =
           ++ show restoreStep
       )
 
-syncKeycloakSmtpForAwsSubstrate :: FilePath -> IO ExitCode
-syncKeycloakSmtpForAwsSubstrate repoRoot = do
-  settingsResult <- validateAndLoadSettings repoRoot
-  case settingsResult of
+-- | Interpret the one atomic retained-SES marker against the selected
+-- workload target.  The long-lived home checkpoint authority and the target
+-- secret sink stay distinct typed values all the way into the Phase 4.47
+-- fenced transaction; no kube context or gateway environment selects either.
+prepareRetainedSesForSubstrate
+  :: FilePath
+  -> [(String, String)]
+  -> Substrate
+  -> RetainedSesPreparationPlan
+  -> IO ExitCode
+prepareRetainedSesForSubstrate repoRoot _environment substrate preparationPlan = do
+  authorityResult <- resolveLongLivedCheckpointAuthority repoRoot
+  case authorityResult of
     Left err -> failWith err
-    Right settings ->
-      withEksKubeconfig repoRoot $ \kubeconfigPath -> do
+    Right authority ->
+      case substrate of
+        SubstrateHomeLocal -> prepareHome authority
+        SubstrateAws -> prepareAws authority
+ where
+  prepareHome authority = do
+    let endpoint =
+          GatewayClient.hostLoopbackGatewayEndpoint checkpointGatewayNodePort
+    if Text.pack (peerRestUrl endpoint)
+      /= checkpointAuthorityGatewayEndpoint authority
+      then
+        failWith
+          "Retained SES preparation refused: the canonical home gateway endpoint does not match the retained checkpoint authority."
+      else case mkTargetClusterSecretSink
+        (checkpointAuthorityClusterId authority)
+        (checkpointAuthorityGatewayEndpoint authority)
+        "secret"
+        "keycloak/smtp" of
+        Left err -> failWith (show err)
+        Right target ->
+          prepareRetainedSesAtTarget
+            repoRoot
+            endpoint
+            preparationPlan
+            RetainedSesPreparationInputs
+              { retainedSesCheckpointAuthority = authority
+              , retainedSesTargetSecretSink = target
+              }
+
+  prepareAws authority = do
+    settingsResult <- validateAndLoadSettings repoRoot
+    case settingsResult of
+      Left err -> failWith err
+      Right settings -> do
         credentialsResult <-
           resolveAwsCredentialsRefFromHostVault
             repoRoot
             "aws"
             (aws (validatedConfig settings))
         case credentialsResult of
-          Left err -> failWith ("load operational AWS credentials from Vault: " ++ err)
-          Right credentials -> do
-            let envOverrides = overlayAwsCredentials [("KUBECONFIG", kubeconfigPath)] credentials
-            previousValues <- mapM (\(name, _) -> lookupEnv name) envOverrides
-            bracket_
-              (mapM_ (\(name, value) -> setEnv name value) envOverrides)
-              (mapM_ restoreOne (zip envOverrides previousValues))
-              ( syncKeycloakSmtpForCurrentKubeContext
-                  repoRoot
-                  "AWS substrate bootstrap: syncing Keycloak SMTP Secret from aws-ses"
-              )
- where
-  restoreOne :: ((String, String), Maybe String) -> IO ()
-  restoreOne ((name, _), Nothing) = unsetEnv name
-  restoreOne ((name, _), Just value) = setEnv name value
+          Left err ->
+            failWith ("load operational AWS credentials from Vault: " ++ err)
+          Right credentials ->
+            withEksKubeconfig repoRoot $ \kubeconfigPath -> do
+              baseEnvironment <- awsCliSubprocessEnvironment credentials
+              let kubeEnvironment =
+                    ("KUBECONFIG", kubeconfigPath)
+                      : filter ((/= "KUBECONFIG") . fst) baseEnvironment
+                  portForwardSpec =
+                    GatewayServicePortForward
+                      { gatewayPortForwardNamespace = gatewayNamespace
+                      , gatewayPortForwardServiceName = gatewayRestServiceName
+                      , gatewayPortForwardRemotePort = gatewayRestServicePort
+                      , gatewayPortForwardEnvironment = Just kubeEnvironment
+                      , gatewayPortForwardWorkingDirectory = Just repoRoot
+                      }
+              forwarded <-
+                withGatewayServicePortForward
+                  portForwardSpec
+                  (prepareAwsTarget authority)
+              case forwarded of
+                Left err -> failWith (renderGatewayPortForwardError err)
+                Right exitCode -> pure exitCode
 
-syncKeycloakSmtpForCurrentKubeContext :: FilePath -> String -> IO ExitCode
-syncKeycloakSmtpForCurrentKubeContext repoRoot message = do
-  writeOutputLine message
-  syncResult <- AwsSesStack.syncKeycloakSmtpChartSecrets repoRoot
-  case syncResult of
-    Left err -> failWith err
+  prepareAwsTarget authority endpoint =
+    case mkTargetClusterSecretSink
+      (Text.pack awsEksCanonicalClusterName)
+      (Text.pack (peerRestUrl endpoint))
+      "secret"
+      "keycloak/smtp" of
+      Left err -> failWith (show err)
+      Right target ->
+        prepareRetainedSesAtTarget
+          repoRoot
+          endpoint
+          preparationPlan
+          RetainedSesPreparationInputs
+            { retainedSesCheckpointAuthority = authority
+            , retainedSesTargetSecretSink = target
+            }
+
+prepareRetainedSesAtTarget
+  :: FilePath
+  -> PeerEndpoint
+  -> RetainedSesPreparationPlan
+  -> RetainedSesPreparationInputs
+  -> IO ExitCode
+prepareRetainedSesAtTarget repoRoot endpoint preparationPlan inputs = do
+  writeOutputLine
+    "Retained SES preparation: acquire -> reconcile -> await-ready -> sync-target -> release"
+  interpretationResult <-
+    runRetainedSesPreparationWith
+      RetainedSesPreparationInterpreter
+        { checkRetainedSesPreparationPrecondition = checkTargetReadiness
+        , runRegisteredRetainedSesEnsure = runRegisteredEnsure
+        }
+      preparationPlan
+      inputs
+  case interpretationResult of
+    Left failure -> pure failure
     Right () -> pure ExitSuccess
+ where
+  checkTargetReadiness readinessPrecondition _ =
+    case readinessPrecondition of
+      RetainedSesGatewayObjectStoreReady -> do
+        let daemonPrecondition =
+              gatewayDaemonLivenessPrecondition
+                GatewayClient.daemonRestartBridgeRetryPolicy
+                (peerRestUrl endpoint)
+                (observeGatewayBackendRoundTripOnceAt endpoint)
+        preconditionResult <- checkAll [daemonPrecondition]
+        case preconditionResult of
+          Left failures ->
+            Left <$> failWith (renderPreconditionFailures failures)
+          Right () -> pure (Right ())
+
+  runRegisteredEnsure plannedPreparation selectedInputs =
+    case validateAwsSesPreparationTrace plannedPreparation of
+      Left err -> Left <$> failWith err
+      Right () ->
+        case AwsSesStack.awsSesTargetSelectionForSink
+          (retainedSesCheckpointAuthority selectedInputs)
+          (retainedSesTargetSecretSink selectedInputs) of
+          Left err -> Left <$> failWith err
+          Right selection -> do
+            ensureExit <-
+              AwsSesStack.ensureAwsSesStackResourcesForAuthorityAndTarget
+                repoRoot
+                (retainedSesCheckpointAuthority selectedInputs)
+                selection
+            pure $
+              case ensureExit of
+                ExitSuccess -> Right ()
+                failure@(ExitFailure _) -> Left failure
+
+validateAwsSesPreparationTrace
+  :: RetainedSesPreparationPlan -> Either String ()
+validateAwsSesPreparationTrace preparationPlan =
+  if retainedSesPreparationTrace preparationPlan == expectedTrace
+    then Right ()
+    else
+      Left
+        ( "Retained SES preparation refused: plan semantic trace drifted from "
+            ++ "the registered Phase 4.47 transaction: expected "
+            ++ show expectedTrace
+            ++ ", observed "
+            ++ show (retainedSesPreparationTrace preparationPlan)
+        )
+ where
+  expectedTrace =
+    RetainedSesAcquire
+      : map awsStageToPreparationStep AwsSesStack.awsSesDesiredPresentStages
+      ++ [RetainedSesRelease]
+
+awsStageToPreparationStep
+  :: AwsSesStack.AwsSesTransactionStage -> RetainedSesPreparationStep
+awsStageToPreparationStep awsStage =
+  case awsStage of
+    AwsSesStack.AwsSesStageReconcile -> RetainedSesReconcile
+    AwsSesStack.AwsSesStageAwaitReady -> RetainedSesAwaitReady
+    AwsSesStack.AwsSesStageRepairAndMaterializeSmtp -> RetainedSesSyncTarget
 
 awsSubstrateBootstrapCommandArgs :: NativeSuitePlan -> [[String]]
 awsSubstrateBootstrapCommandArgs suitePlan =
@@ -1191,7 +1699,9 @@ awsSubstrateBootstrapCommandArgs suitePlan =
     ++ case nativeSubstrate suitePlan of
       SubstrateHomeLocal -> []
       SubstrateAws ->
-        concatMap awsSubstrateBootstrapRestoreStepCommandArgs awsSubstrateBootstrapRestoreSteps
+        concatMap
+          awsSubstrateBootstrapRestoreStepCommandArgs
+          (awsSubstrateBootstrapRestoreSteps suitePlan)
 
 awsSubstrateStackCommandArgs :: NativeSuitePlan -> [[String]]
 awsSubstrateStackCommandArgs suitePlan =
@@ -1204,16 +1714,21 @@ awsSubstrateStackCommandArgs suitePlan =
       ]
 
 -- | The AWS bootstrap consumes the same typed restore-cycle builder as the
--- home bootstrap. The runtime projection below deliberately retains only the
--- AWS steady-state operations: chart reconciles and the SMTP sync between the
--- gateway and dependent charts.
-awsSubstrateBootstrapRestorePlan :: RestoreCyclePlan
-awsSubstrateBootstrapRestorePlan =
-  buildRestoreCyclePlan SubstrateAws RestoreWithKeycloakSmtp
+-- home bootstrap.  Only the selected invite capability projects retained SES
+-- preparation into this target; non-invite AWS suites contain no SES action.
+awsSubstrateBootstrapRestorePlan :: NativeSuitePlan -> RestoreCyclePlan
+awsSubstrateBootstrapRestorePlan suitePlan =
+  buildRestoreCyclePlan SubstrateAws retainedSesRequirement
+ where
+  retainedSesRequirement =
+    case nativeSubstrate suitePlan of
+      SubstrateHomeLocal -> SesNotRequired
+      SubstrateAws ->
+        retainedSesRequirementForValidations (nativeValidations suitePlan)
 
-awsSubstrateBootstrapRestoreSteps :: [RestoreCycleStep]
-awsSubstrateBootstrapRestoreSteps =
-  concatMap project (restoreCycleSteps awsSubstrateBootstrapRestorePlan)
+awsSubstrateBootstrapRestoreSteps :: NativeSuitePlan -> [RestoreCycleStep]
+awsSubstrateBootstrapRestoreSteps suitePlan =
+  concatMap project (restoreCycleSteps (awsSubstrateBootstrapRestorePlan suitePlan))
  where
   project :: RestoreCycleStep -> [RestoreCycleStep]
   project restoreStep =
@@ -1221,7 +1736,7 @@ awsSubstrateBootstrapRestoreSteps =
       RestoreDeleteChart _ -> []
       RestoreEnsureGatewayMinioBootstrap -> []
       RestoreReconcileChart _ -> [restoreStep]
-      RestoreSyncKeycloakSmtp -> [restoreStep]
+      RestorePrepareRetainedSes _ -> [restoreStep]
       RestoreWaitForPublicEdge -> []
 
 awsSubstrateBootstrapRestoreStepCommandArgs :: RestoreCycleStep -> [[String]]
@@ -1229,7 +1744,7 @@ awsSubstrateBootstrapRestoreStepCommandArgs restoreStep =
   case restoreStep of
     RestoreReconcileChart chart ->
       [restoreChartCommandArgs SubstrateAws "reconcile" chart []]
-    RestoreSyncKeycloakSmtp -> []
+    RestorePrepareRetainedSes _ -> []
     RestoreDeleteChart _ -> []
     RestoreEnsureGatewayMinioBootstrap -> []
     RestoreWaitForPublicEdge -> []
@@ -1241,29 +1756,163 @@ awsSubstrateBootstrapRestoreStepCommandArgs restoreStep =
 -- 'awsPostflightDestroyActions', which runs on every exit path (Sprint
 -- 7.6 orphan-safety guard).
 supportedRuntimePostflightActions
-  :: FilePath -> [(String, String)] -> NativeSuitePlan -> [IO ExitCode]
-supportedRuntimePostflightActions repoRoot environment suitePlan =
+  :: FilePath
+  -> [(String, String)]
+  -> NativeSuitePlan
+  -> Maybe GatewayRuntimeStabilityRecorder
+  -> Maybe GatewayRuntimeStabilityMonitor
+  -> [IO ExitCode]
+supportedRuntimePostflightActions repoRoot environment suitePlan maybeGatewayStability maybeGatewayMonitor =
   if nativeRequiresSupportedRuntimePostflight suitePlan
     then
-      [ emitLineAction postTestRestoreMessage
-      , runNativeCliCommandForExitCode repoRoot environment ["cluster", "reconcile", "--with-edge"]
-      ]
+      [emitLineAction postTestRestoreMessage]
+        ++ plannedHomeGatewayReconcileActions
+          repoRoot
+          environment
+          suitePlan
+          maybeGatewayStability
+          maybeGatewayMonitor
         ++ restoreCycleActions
           repoRoot
           environment
           (supportedRuntimePostflightRestorePlan suitePlan)
+          (nativeSubstrate suitePlan)
+          maybeGatewayStability
+          maybeGatewayMonitor
     else []
 
-runNativeValidations :: FilePath -> [(String, String)] -> NativeSuitePlan -> IO ExitCode
-runNativeValidations repoRoot environment suitePlan =
+runNativeValidations
+  :: FilePath
+  -> [(String, String)]
+  -> NativeSuitePlan
+  -> Maybe GatewayRuntimeStabilityRecorder
+  -> Maybe GatewayRuntimeStabilityMonitor
+  -> IO ExitCode
+runNativeValidations repoRoot environment suitePlan maybeGatewayStability maybeGatewayMonitor =
   case nativeValidations suitePlan of
     [] -> pure ExitSuccess
     validations -> foldM runValidation ExitSuccess validations
  where
   runValidation :: ExitCode -> NativeValidation -> IO ExitCode
   runValidation failure@(ExitFailure _) _ = pure failure
-  runValidation ExitSuccess validation =
-    runNativeValidation (nativeSubstrate suitePlan) repoRoot environment validation
+  runValidation ExitSuccess validation = do
+    rolloutBoundaryExit <-
+      prepareValidationGatewayRolloutBoundary
+        repoRoot
+        suitePlan
+        maybeGatewayStability
+        maybeGatewayMonitor
+        validation
+    case rolloutBoundaryExit of
+      failure@(ExitFailure _) -> pure failure
+      ExitSuccess -> do
+        validationExit <-
+          runNativeValidationWithGatewayStability
+            maybeGatewayStability
+            (nativeSubstrate suitePlan)
+            repoRoot
+            environment
+            validation
+        case validationExit of
+          failure@(ExitFailure _) -> pure failure
+          ExitSuccess ->
+            finishValidationGatewayRolloutBoundary
+              repoRoot
+              suitePlan
+              maybeGatewayStability
+              maybeGatewayMonitor
+              validation
+
+prepareValidationGatewayRolloutBoundary
+  :: FilePath
+  -> NativeSuitePlan
+  -> Maybe GatewayRuntimeStabilityRecorder
+  -> Maybe GatewayRuntimeStabilityMonitor
+  -> NativeValidation
+  -> IO ExitCode
+prepareValidationGatewayRolloutBoundary _ _ Nothing _ _ = pure ExitSuccess
+prepareValidationGatewayRolloutBoundary repoRoot suitePlan (Just recorder) maybeMonitor validation =
+  case gatewayRuntimeValidationBoundary (nativeSubstrate suitePlan) validation of
+    GatewayRuntimeNoBoundary -> pure ExitSuccess
+    GatewayRuntimePlannedRollout -> pauseSampleAndReset
+    GatewayRuntimeRecreatedTarget -> pauseSampleAndReset
+ where
+  pauseSampleAndReset =
+    runSequentially
+      [ pauseGatewayRuntimeMonitorIfPresent maybeMonitor
+      , recordGatewayRuntimeStabilitySample
+          (nativeSubstrate suitePlan)
+          repoRoot
+          recorder
+      , resetGatewayRuntimeStabilityHealthyWindow recorder >> pure ExitSuccess
+      ]
+
+data GatewayRuntimeValidationBoundary
+  = GatewayRuntimeNoBoundary
+  | GatewayRuntimePlannedRollout
+  | GatewayRuntimeRecreatedTarget
+  deriving (Eq, Show)
+
+gatewayRuntimeValidationBoundary
+  :: Substrate -> NativeValidation -> GatewayRuntimeValidationBoundary
+gatewayRuntimeValidationBoundary substrate validation =
+  case validation of
+    ValidationLifecycle ->
+      case substrate of
+        SubstrateHomeLocal -> GatewayRuntimePlannedRollout
+        SubstrateAws -> GatewayRuntimeNoBoundary
+    ValidationEksVolumeRebind -> GatewayRuntimeRecreatedTarget
+    ValidationChartsVscode -> GatewayRuntimeNoBoundary
+    ValidationChartsApi -> GatewayRuntimeNoBoundary
+    ValidationChartsWebsocket -> GatewayRuntimeNoBoundary
+    ValidationAdminRoutes -> GatewayRuntimeNoBoundary
+    ValidationPublicDns -> GatewayRuntimeNoBoundary
+    ValidationDnsAws -> GatewayRuntimeNoBoundary
+    ValidationAwsIam -> GatewayRuntimeNoBoundary
+    ValidationAwsEks -> GatewayRuntimeNoBoundary
+    ValidationPulumi -> GatewayRuntimeNoBoundary
+    ValidationHaRke2Aws -> GatewayRuntimeNoBoundary
+    ValidationGatewayDaemon -> GatewayRuntimeNoBoundary
+    ValidationGatewayPods -> GatewayRuntimeNoBoundary
+    ValidationGatewayPartition -> GatewayRuntimeNoBoundary
+    ValidationChartsPlatform -> GatewayRuntimeNoBoundary
+    ValidationResourceGuardrails -> GatewayRuntimeNoBoundary
+    ValidationDaemonBootstrap -> GatewayRuntimeNoBoundary
+    ValidationPulsarBroker -> GatewayRuntimeNoBoundary
+    ValidationChartsStorage -> GatewayRuntimeNoBoundary
+    ValidationKeycloakInvite -> GatewayRuntimeNoBoundary
+    ValidationSealedVault -> GatewayRuntimeNoBoundary
+
+finishValidationGatewayRolloutBoundary
+  :: FilePath
+  -> NativeSuitePlan
+  -> Maybe GatewayRuntimeStabilityRecorder
+  -> Maybe GatewayRuntimeStabilityMonitor
+  -> NativeValidation
+  -> IO ExitCode
+finishValidationGatewayRolloutBoundary _ _ Nothing _ _ = pure ExitSuccess
+finishValidationGatewayRolloutBoundary repoRoot suitePlan (Just recorder) maybeMonitor validation =
+  case gatewayRuntimeValidationBoundary (nativeSubstrate suitePlan) validation of
+    GatewayRuntimeNoBoundary -> pure ExitSuccess
+    GatewayRuntimePlannedRollout -> sampleAndResume
+    GatewayRuntimeRecreatedTarget ->
+      runSequentially
+        [ refreshGatewayRuntimeMonitorIfPresent maybeMonitor
+        , recordGatewayRuntimeStabilitySample
+            (nativeSubstrate suitePlan)
+            repoRoot
+            recorder
+        , resumeGatewayRuntimeMonitorIfPresent maybeMonitor
+        ]
+ where
+  sampleAndResume =
+    runSequentially
+      [ recordGatewayRuntimeStabilitySample
+          (nativeSubstrate suitePlan)
+          repoRoot
+          recorder
+      , resumeGatewayRuntimeMonitorIfPresent maybeMonitor
+      ]
 
 runPhaseOneInitialPrerequisites :: FilePath -> NativeSuitePlan -> IO ExitCode
 runPhaseOneInitialPrerequisites repoRoot suitePlan =

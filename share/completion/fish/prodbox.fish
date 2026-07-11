@@ -52,6 +52,7 @@ complete -c prodbox -f -n '__fish_seen_subcommand_from gateway' -a 'start' -d 'S
 complete -c prodbox -f -n '__fish_seen_subcommand_from gateway' -a 'status' -d 'Query gateway daemon status'
 complete -c prodbox -f -n '__fish_seen_subcommand_from gateway' -a 'config-gen' -d 'Generate gateway config'
 complete -c prodbox -f -n '__fish_seen_subcommand_from host' -a 'ensure-tools' -d 'Verify required host tools'
+complete -c prodbox -f -n '__fish_seen_subcommand_from host' -a 'check-ses-readiness' -d 'Check semantic SES readiness'
 complete -c prodbox -f -n '__fish_seen_subcommand_from host' -a 'check-ports' -d 'Check required ports'
 complete -c prodbox -f -n '__fish_seen_subcommand_from host' -a 'info' -d 'Display host diagnostics'
 complete -c prodbox -f -n '__fish_seen_subcommand_from host' -a 'firewall' -d 'Manage host firewall rules'

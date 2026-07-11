@@ -535,7 +535,7 @@ Options:
 - --node-id <NODE_ID> - Node ID for the generated config
 
 Examples:
-- prodbox gateway config-gen gateway.json --node-id node-a  # Generate a gateway config template.
+- prodbox gateway config-gen gateway.dhall --node-id node-a  # Generate a gateway config template.
 
 ## prodbox help
 prodbox help - Render help for a command path
@@ -550,6 +550,13 @@ prodbox host ensure-tools - Verify required host tools
 Check the supported host toolchain.
 Examples:
 - prodbox host ensure-tools  # Verify required host tools are installed.
+
+## prodbox host check-ses-readiness
+prodbox host check-ses-readiness - Check semantic SES readiness
+
+Run the read-only sender, MX, receipt-rule, and capture list/get prerequisite observations without reconciling AWS resources.
+Examples:
+- prodbox host check-ses-readiness  # Inspect the retained SES semantic readiness boundary.
 
 ## prodbox host check-ports
 prodbox host check-ports - Check required ports

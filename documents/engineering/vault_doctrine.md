@@ -787,13 +787,18 @@ credential never enters config at all — it is supplied through the interactive
 arm and discarded after use (the test harness simulates that prompt from the
 `aws_admin_for_test_simulation.*` `TestPlaintext` fixture in `test-secrets.dhall`, not from a
 production config section). Setup/config-setup mint the dedicated least-privilege `prodbox`
-identity using the prompted elevated credential and write the generated operational provider keys
-straight into `secret/gateway/gateway/aws`, and teardown clears that Vault object without writing
-provider secrets to `prodbox.dhall`.
+identity using the prompted elevated credential, install its account-qualified policy, reconcile
+the exact-trust `prodbox-ses-lease-session` role when the complete SES scope is configured, and
+write the generated operational provider keys straight into `secret/gateway/gateway/aws`.
+Teardown deletes the role before the trusted user and clears that Vault object without writing
+provider secrets to `prodbox.dhall`. For canonical `aws-ses reconcile`, the resolved operational
+credential is only an AssumeRole source: each lease stage receives a separately bounded fixed-role
+session, while explicit destroy/migration/nuke remain admin-authorized.
 First-touch deletion/import of pre-existing raw Pulumi checkpoint layouts is code-owned: the per-run raw
 backend environment is confined to `LegacyPulumiBackend` first-touch export/delete, while supported
 Pulumi actions receive provider-only input before `fileBackendEnvironment` rewrites the backend to
-scratch `file://`. Live host-disk proof remains before Sprint `7.14` closes. The legacy
+scratch `file://`. Sprint `7.14` is closed on this supported wrapper path; any live legacy
+first-touch migration remains a non-blocking compatibility proof. The legacy
 `aws-ses migrate-backend` command is now wrapper-backed as well: it opens the encrypted scratch
 backend and relies on first-touch migration to import/delete the old long-lived S3 checkpoint when
 encrypted state is absent, instead of running raw MinIO-to-S3 `pulumi stack export` /
@@ -804,6 +809,24 @@ through the same enveloped, opaque-named object-store. There is no AES256-SSE-on
 long-lived backend — a sealed Vault yields opaque holds uniformly across every backend. The
 operator unlock-bundle password is the ephemeral root that gates the decrypt — see
 [The unlock chain](#the-unlock-chain).
+
+Uniform encryption does not mean ambient endpoint selection. The cross-substrate `aws-ses`
+checkpoint and its reconciliation lease are addressed through an explicit
+`LongLivedCheckpointAuthority`: the retained home/control-plane gateway, `prodbox-state`, and that
+control plane's Vault Transit/HMAC keyspace. A per-run EKS or other selected target gateway can
+never become the long-lived checkpoint authority merely because it is the active kube context or
+port-forward. SMTP materialization is a separate `TargetClusterSecretSink` effect: after the
+retained authority has reconciled/read the stack, the plan writes the resulting SMTP KV fields into
+the explicitly selected substrate's Vault. Sprint `4.47` completes the unrelated authority/sink
+coordinate types, retained-gateway opaque-CAS adapter, lease and successor recovery, fenced
+checkpoint, target intents, fixed-role stage sessions, and guarded SMTP materialization in the
+canonical reconcile command. Sprint `5.17` consumes that command in capability-derived preparation
+for the explicit home or EKS target. Sprint `8.10` inserts provider-then-semantic bounded readiness
+before target-Vault materialization: control-plane observations use the lease-scoped role, the
+capture-canary list/get uses the operational credential, and no SMTP KV write is admitted for
+Pending, Failed, Unobservable, or timeout. Timeout leaves the long-lived SES resources retained and
+the next idempotent run may continue convergence. See status in
+[the development plan](../../DEVELOPMENT_PLAN/README.md#current-plan-status).
 
 ## 11. TLS and PKI under Vault
 

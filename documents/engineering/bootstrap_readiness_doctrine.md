@@ -2,13 +2,14 @@
 
 **Status**: Authoritative source
 **Supersedes**: N/A
-**Referenced by**: documents/engineering/README.md, documents/engineering/prerequisite_doctrine.md, documents/engineering/prerequisite_dag_system.md, documents/engineering/lifecycle_reconciliation_doctrine.md, documents/engineering/local_registry_pipeline.md, documents/engineering/config_doctrine.md, documents/engineering/pure_fp_standards.md, documents/engineering/helm_chart_platform_doctrine.md, README.md, DEVELOPMENT_PLAN/phase-1-runtime-cli-aws-foundations.md, DEVELOPMENT_PLAN/phase-3-chart-platform-vscode.md, DEVELOPMENT_PLAN/phase-4-lifecycle-canonical-paths.md, DEVELOPMENT_PLAN/phase-5-canonical-test-suite.md, DEVELOPMENT_PLAN/phase-7-aws-substrate-foundations.md
+**Referenced by**: documents/engineering/README.md, documents/engineering/prerequisite_doctrine.md, documents/engineering/prerequisite_dag_system.md, documents/engineering/lifecycle_reconciliation_doctrine.md, documents/engineering/local_registry_pipeline.md, documents/engineering/config_doctrine.md, documents/engineering/pure_fp_standards.md, documents/engineering/helm_chart_platform_doctrine.md, documents/engineering/distributed_gateway_architecture.md, documents/engineering/resource_scaling_doctrine.md, documents/engineering/unit_testing_policy.md, README.md, DEVELOPMENT_PLAN/phase-1-runtime-cli-aws-foundations.md, DEVELOPMENT_PLAN/phase-3-chart-platform-vscode.md, DEVELOPMENT_PLAN/phase-4-lifecycle-canonical-paths.md, DEVELOPMENT_PLAN/phase-5-canonical-test-suite.md, DEVELOPMENT_PLAN/phase-7-aws-substrate-foundations.md
 **Generated sections**: none
 
 > **Purpose**: Define the shallow-gate invariant that makes the class of bootstrap readiness races
 > unrepresentable — a consumer step may run only behind a barrier that exercises the exact
 > dependency call path it will use, with bootstrap ordering derived from a config-sourced,
-> pure-checked dependency/readiness graph rather than a hand-written sequence.
+> pure-checked dependency/readiness graph rather than a hand-written sequence — and distinguish
+> that point-in-time dependency fact from time-windowed runtime stability.
 
 ## 0. Canonical Doctrine Statements
 
@@ -34,6 +35,12 @@
    `Unreachable`, and `Unreachable` gates closed. This is the `ResidueStatus` soundness rule of
    [lifecycle_reconciliation_doctrine.md §3.1](./lifecycle_reconciliation_doctrine.md#31-the-managed-resource-registry-the-reconciler-substrate)
    applied to bring-up.
+5. **Readiness is not stability.** A successful point-in-time readiness observation authorizes the
+   next dependency edge only. It does not prove that a pod remained restart-free, avoided OOM,
+   stayed below its high-water threshold, or remained healthy for a soak interval.
+6. **Constant-time lifecycle probes remain shallow by design.** Kubernetes `/healthz` and `/readyz`
+   inspect lifecycle flags only and must be constant-time. They satisfy process liveness/readiness
+   edges, not backend round-trip or runtime-stability edges; deeper facts use different typed probes.
 
 ## 1. The Failure Mode
 
@@ -70,6 +77,73 @@ shallower than the guarded call path:
 Sprints `3.23`, `4.43`, and `7.31` replace these proxy-only barriers on the supported paths. The
 discriminator remains uniform: **deep edges probe the exact call path; shallow edges probe a
 proxy.** The forbidden class is "any dependency edge guarded by a proxy signal."
+
+### 2.1 Dependency Readiness vs Runtime Stability
+
+A Deployment can report `Available=True` immediately after Kubernetes replaces a container that
+was OOM-killed. That fact is a valid point observation about the replacement replica and an invalid
+claim about the preceding interval. Reusing it as a stability proof creates a sampling race: one
+test catches the unavailable replacement window, while another samples after availability returns
+and passes despite the same repeated failure.
+
+The two observations therefore have different closed result types and different temporal scopes:
+
+| Observation | Scope | Opens what gate |
+|---|---|---|
+| `ReadinessObservation` | One current dependency call path | The next bootstrap/reconcile edge |
+| `RuntimeStabilityObservation` | Run-wide absorbing unhealthy evidence plus a separately restartable healthy window | A sustained-runtime validation claim |
+
+`Prodbox.Test.GatewayRuntimeStability` implements the classifier as a pure projection over Pod,
+Event, and metrics JSON. Its flat `GatewayPodHealthObservation` covers restart-free Ready, restart
+delta, OOM residue, warning/failure memory pressure, Pending, and unobservable without encoding an
+external lifecycle as a command-state machine. The aggregate state combines two pure folds. The
+first retains the first run-wide fatal result from pod UIDs, events/status, restart counts,
+current/last termination reasons, and working-set readings. Restart, OOM, failure-threshold
+high-water, and unobservable evidence are absorbing: no replacement pod, resync, or planned rollout
+can remove them. The second tracks consecutive healthy samples. Its thresholds are projected from
+the validated `RuntimeMemoryPlan`, and its baseline may restart only for a gateway rollout present
+in the compiled restore/lifecycle plan. Their exhaustive combined outcomes are:
+
+- `StableObserved`: the absorbing unhealthy-evidence set is empty and the intended replica set
+  supplied the required healthy window below the warning threshold;
+- `NotStableYet`: the healthy window is incomplete, or an explicitly planned rollout restarted
+  only that success window;
+- `RuntimeUnhealthy`: the absorbing fold contains a restart delta, OOM residue, or
+  failure-threshold high-water breach;
+- `StabilityUnreachable`: the observer could not authoritatively read or decode required state.
+
+Only `StableObserved` proves stability. `RuntimeUnhealthy` fails immediately;
+`StabilityUnreachable` refuses; `NotStableYet` remains bounded by the caller's window. Warning-level
+pressure, Pending, and a Pod UID replacement reset consecutive success without becoming healthy;
+UID replacement therefore cannot inherit the predecessor's window. The pure fold owns
+classification, while Kubernetes reads remain effect-boundary observations. Log text is diagnostic
+only and cannot select a verdict. Restarting the healthy window never clears an absorbing unhealthy
+or unreachable result.
+
+`TestRunner` creates one concurrency-safe `gateway-pods` recorder before Phase `1.6/2`. A structured
+continuous observer and every explicit rollout-boundary/final observation serialize their
+Pod/Event/metrics folds through that recorder's observation lock. Home takes an explicit baseline,
+starts the observer before bootstrap, and waits until its first observation completes before the
+suite may continue. The AWS target's compiled gateway reconcile supplies the first point
+observation because that per-run target does not exist before bootstrap; immediately afterward the
+observer starts with a monitor-private EKS kubeconfig and explicit Vault-derived AWS/Kubernetes
+subprocess environment, and the same first-observation handoff gates SMTP synchronization,
+dependent chart reconciliation, and all later deferred work.
+
+Only a planned home/target gateway rollout represented by the compiled restore/lifecycle
+path may pause and drain the observer. Draining waits for an in-flight observation before the
+gateway becomes intentionally absent; the healthy-window reset and post-reconcile sample occur
+inside that boundary, then continuous observation resumes. The absorbing fold is never reset.
+Every stability `kubectl` read has `--request-timeout=5s` and independent GNU `timeout` and
+`System.Timeout` wall-clock bounds, so the structured monitor cannot strand its enclosing suite.
+
+An observed-cluster replacement such as `eks-volume-rebind` has a wider compiled boundary. The
+runner pauses and drains, takes a foreground pre-replacement sample, resets only the healthy
+window, and then recreates the target; AWS restoration includes the canonical gateway/platform
+reconcile. After recreation, a refresh request is acknowledged only after the monitor worker has
+left the old kubeconfig bracket and materialized a new kubeconfig. The runner takes another
+foreground sample while observation remains paused and resumes the monitor only after that sample
+succeeds. The absorbing fold remains unchanged across replacement and refresh.
 
 ## 3. Making the Class Unrepresentable
 
@@ -201,6 +275,14 @@ plan runs neither supported-runtime restore projection and does not select the S
 not evidence for the shared interpreter or the new gate end to end. A live home
 `prodbox test all` restore is retained as a non-blocking Standard-O proof.
 
+Sprint `5.16` adds separate post-refresh code-owned runtime-stability evidence: 17/17 focused unit
+tests over fake Pod/Event/metrics JSON and boundary projections, 2/2 built-frontend `gateway-pods`
+fixtures (healthy and a background-only OOM retained through later healthy samples), and 1494/1494
+full unit tests. The exact post-refresh full CLI integration suite passes 47/47;
+`prodbox dev check` passes as the final repository closure gate. The live
+multi-peer substrate soak remains a non-blocking Standard-O item and is not implied by those
+code-owned results.
+
 Sprint `7.32` installs the AWS production binding. `AwsSubstratePlatform` and the home RKE2 driver
 both compile substrate-owned closed step ADTs through `Prodbox.Lifecycle.AnchoredReconcile`; the
 validated configured DAG determines component order, while each substrate owns only stable
@@ -220,6 +302,14 @@ the reconnect gap. No home NodePort fallback or fixed readiness sleep is used. T
 Gateway → SMTP → VS Code → API → WebSocket from the same
 restore builder after the three AWS stack reconciles. Code-owned proof is unit 1286/1286 plus
 `prodbox dev check` exit 0; live AWS aggregate proof remains non-blocking Standard O.
+
+Kubernetes probe binding is intentionally narrower than these dependency targets. The gateway
+chart uses constant-time `/healthz` for liveness and `/readyz` for process readiness; neither route
+serializes gateway state or performs a backend call. `ProbeBackendRoundTrip ComponentMinio` remains
+a separate explicit graph edge, and the runtime-stability fold in §2.1 remains a separate suite
+oracle. [Sprint 3.25](../../DEVELOPMENT_PLAN/phase-3-chart-platform-vscode.md) landed the typed,
+generated chart binding and the chart-lint/negative-fixture guard that rejects `/v1/state` as
+either kubelet probe.
 
 This is the deep-gate discipline that
 [prerequisite_doctrine.md §4](./prerequisite_doctrine.md#4-patterns) already gestures at when it
@@ -256,7 +346,8 @@ modules. Sprint `4.46` removed all three RKE2 entries when those callers delegat
 ## 5. Intent Ownership
 
 **Owned statement**: This document is the SSoT for the shallow-gate invariant, the GATED-vs-RACY
-discriminator, and the M1/M2/M3 mechanisms that make bootstrap readiness races unrepresentable. The
+discriminator, the separation of point-in-time dependency readiness from time-windowed runtime
+stability, and the M1/M2/M3 mechanisms that make bootstrap readiness races unrepresentable. The
 DAG mechanics, the fail-fast-vs-steady-state seam, the reconcile/soundness model, the config surface,
 the pure-FP external-state rule, the registry worked example, and chart dependency ordering each
 remain owned by their own SSoT and are linked, not restated.
@@ -294,6 +385,10 @@ remain owned by their own SSoT and are linked, not restated.
   `5.15` closed the shared restore plan plus daemon-readiness precondition and reclosed Phase `5`.
   Sprint `7.32` then closed the AWS graph/readiness, classifier, scoped-port-forward, and restore
   projections and reclosed Phase `7`; all completion sprints in this refactor are Done.
+  Sprint `3.25` has since landed the constant-time chart binding and reclosed Phase `3`. Sprint
+  `5.16` has since landed the separate run-wide restart/OOM/high-water classifier,
+  concurrency-safe recorder, structured continuous monitor, and `gateway-pods` gate; its live
+  multi-peer soak remains non-blocking Standard-O evidence. Status remains plan-owned.
 
 ## 6. Cross-References
 
@@ -310,3 +405,9 @@ remain owned by their own SSoT and are linked, not restated.
 - [pure_fp_standards.md](./pure_fp_standards.md) — external-state-is-projected (not a GADT) rule.
 - [helm_chart_platform_doctrine.md](./helm_chart_platform_doctrine.md) — chart dependency edges and
   the chart→operator `Available` gate.
+- [distributed_gateway_architecture.md](./distributed_gateway_architecture.md) — bounded gateway
+  state, constant-time lifecycle probes, and the runtime-memory contract.
+- [resource_scaling_doctrine.md](./resource_scaling_doctrine.md) — admission/containment proof
+  boundary and runtime memory decomposition.
+- [unit_testing_policy.md](./unit_testing_policy.md) — pure stability-oracle and live observation
+  coverage obligations.

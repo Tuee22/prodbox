@@ -46,6 +46,11 @@ prodbox [--verbose|-v] [--version] <command> ...
 Top-level commands (generated from `commandRegistry`; the `Purpose` column
 is each command's registry summary):
 
+The generated `dev` summary retains the generic phrase “Developer and CI tooling.” Under
+[Code Quality Doctrine §2A](./code_quality.md#2a-development-tooling-policy), that means commands
+usable by developers or externally invoked automation; it does not authorize a repo-owned
+`.github/` workflow or another parallel check surface.
+
 <!-- prodbox:command-surface-toplevel:start -->
 | Command | Kind | Purpose |
 |---------|------|---------|
@@ -266,6 +271,7 @@ The per-group command matrix (generated; do not edit by hand):
 | Command | Arguments | Options |
 |---------|-----------|---------|
 | `prodbox host ensure-tools` | none | none |
+| `prodbox host check-ses-readiness` | none | none |
 | `prodbox host check-ports` | none | none |
 | `prodbox host info` | none | none |
 | `prodbox host firewall gateway-restrict` | none | `--port` |
@@ -408,10 +414,12 @@ non-interactively. See [vault_doctrine.md § 4](./vault_doctrine.md#4-config-spl
 ### `prodbox aws` notes
 
 `src/Prodbox/Aws.hs` owns the full public `prodbox aws ...` surface. The supported public contract
-is prompt-driven for the ephemeral elevated/admin AWS credential (the interactive
-`SecretRef.Prompt` arm). The `aws_admin_for_test_simulation.*` block is not part of the public
-`aws setup` flow and is not a production config section: it is a test-harness-only fixture
-in `test-secrets.dhall` that simulates the operator at that prompt.
+uses the interactive `SecretRef.Prompt` arm only for setup/teardown and explicit
+admin-authorized destructive/compatibility operations. Canonical `aws-ses reconcile` instead
+resolves operational `aws.*` solely to assume the exact fixed SES lease role. The
+`aws_admin_for_test_simulation.*` block is not part of public `aws setup` and is not a production
+config section: it is a test-harness-only fixture in `test-secrets.dhall` that simulates the
+operator at admin prompts.
 
 `prodbox aws teardown` carries the Sprint `7.6` orphan-safety refuse-path: it refuses to delete
 the operational IAM user while any Pulumi-managed stack (`aws-eks`, `aws-eks-subzone`,
@@ -526,8 +534,10 @@ dispatch arm from wildcarding its `PlanOptions` away, the regression guard for t
 `cluster delete --yes --dry-run`-silently-mutates bug.
 
 `aws-ses` is **explicitly excluded** from `prodbox cluster delete`'s residue scope regardless of
-flag. Its Pulumi state lives in the dedicated long-lived S3 bucket (Sprint `4.10`), so cluster
-wipes do not orphan it. Sanctioned destroy paths for `aws-ses` are
+flag because its `LongLived` cleanup class is retained across cluster teardown. Its main Pulumi
+checkpoint now uses the encrypted Model-B object in MinIO; ordinary cluster deletion preserves the
+underlying `.data/`, while the retained S3 bucket is only the public-edge TLS store and optional
+first-touch source for legacy `aws-ses` checkpoints. Sanctioned destroy paths for `aws-ses` are
 `prodbox aws stack aws-ses destroy --yes` (explicit) and `prodbox nuke` (total teardown). See
 [lifecycle_reconciliation_doctrine.md](lifecycle_reconciliation_doctrine.md) for the
 predicate library and the full leak-class inventory.
@@ -579,6 +589,30 @@ first-touch import/delete from the old long-lived S3 source when encrypted state
 refuses non-interactive contexts. See
 [aws_integration_environment_doctrine.md §4.5](./aws_integration_environment_doctrine.md)
 for the current backend contract and why this command is not part of the automation path.
+
+`prodbox aws stack aws-ses reconcile` is the one desired-present operation for retained SES. It is
+idempotent across first creation, converged state, ordinary drift, and the bounded missing-checkpoint
+recovery that imports the stack's fixed-name capture bucket, SMTP IAM user, receipt rule set, and
+receipt rule. It must classify AWS observation as `Absent | Present | Unobservable` and fail closed
+on the last case; an AWS CLI failure is never proof of absence.
+
+Sprint `4.47` completes the registered desired-present reconciler and its supported composition:
+explicit `LongLivedCheckpointAuthority` / `TargetClusterSecretSink`, gateway-backed Model-B CAS,
+lease and successor recovery, fixed-role sessions, fenced checkpoint, target intent, provider
+presence, and guarded SMTP repair/materialization. Operational `aws.*` is used only to assume
+`prodbox-ses-lease-session`; each bounded stage receives a separate session and no admin prompt is
+read. Sprint `5.17` makes invite-capable test plans place one atomic bracketed invocation before
+dependent charts on the selected home or explicit EKS target. Sprint `8.10` completes that
+invocation's provider-then-semantic bounded await through `Prodbox.Ses.Readiness`; only Pending
+retries, while Failed, Unobservable, and timeout block SMTP materialization. The harness retains the
+explicit authority/sink split, and ordinary postflight retains `aws-ses`; it never dispatches the
+destroy command. The canonical ordering is
+[AWS Integration Environment Doctrine §4.6](./aws_integration_environment_doctrine.md#46-retained-ses-desired-presence-preparation).
+
+`prodbox host check-ses-readiness` is the read-only operator diagnostic for the same semantic
+boundary. It performs one structured sender/DKIM, exact MX/receipt-rule, and operational capture
+canary list/get observation and reports the current Ready, Pending, Failed, or Unobservable state.
+It neither reconciles nor destroys SES resources and is not an automation alias for preparation.
 
 This matrix is the supported entrypoint set for AWS substrate provisioning and teardown.
 Invoking any entry does not require additional user approval beyond the original request —
@@ -747,17 +781,25 @@ Named suite commands:
 - runs `prodbox test lint` before any Haskell or native validation payload when `prodbox test all`
   is selected
 - enforces an initial fail-fast prerequisite gate, visible runbook/bootstrap steps when required,
-  and deferred cluster-backed backend proofs such as `pulumi_logged_in` before payload execution
+  and deferred cluster-backed backend proofs such as `pulumi_logged_in` before payload execution;
+  prerequisite checks remain read-only and never hide desired-state mutation
 - provisions the shared IAM harness for `prodbox test integration aws-iam`, targeted
   `prodbox test integration <name> --substrate aws` validations,
   `prodbox test integration all`, and `prodbox test all` before AWS-backed prerequisite checks
   begin, then clears operational `aws.*` again before the suite returns
 - applies the canonical aggregate ordering
 - uses the `aws_admin_for_test_simulation.*` fixture from `test-secrets.dhall` only to simulate
-  the operator's elevated-credential prompt for suite-driven destructive validation and
-  long-lived stack flows; the fixture never reaches production config, Vault, or generated
+  the operator's elevated-credential prompt for operational setup/teardown, suite-driven
+  destructive validation, and long-lived destroy/migration flows; the fixture never reaches production config, Vault, or generated
   cluster config
 - performs supported-runtime bootstrap and postflight when required
+- derives one visible retained-SES preparation action when the selected validation set contains
+  `ValidationKeycloakInvite`, projects it exactly once to the home or explicit EKS restore, and
+  keeps acquire/reconcile/await-ready/sync/release inside one bracket; the await proves complete
+  provider presence before applying Sprint `8.10`'s semantic classifier and operational-credential
+  capture list/get check
+- excludes retained `aws-ses` from ordinary suite cleanup on success, failure, and Ctrl-C; only the
+  explicit long-lived destroy surfaces remove it
 - waits for `prodbox edge status` to report `CLASSIFICATION=ready-for-external-proof` before
   external `charts-vscode`, `charts-api`, `charts-websocket`, or `admin-routes` proof continues
   on the supported-runtime path
@@ -800,7 +842,7 @@ production config.
 
 `prodbox nuke` is TTY-confirmed because of the typed `NUKE EVERYTHING` guard, and
 after that gate it acquires elevated AWS power through the same unified prompt path
-as the long-lived `aws-ses` and state-bucket operations: the operator supplies the
+as the long-lived `aws-ses` destroy/migration and state-bucket operations: the operator supplies the
 ephemeral elevated credential at the interactive prompt (the harness simulates this
 from the `test-secrets.dhall` fixture). It does not read a stored admin section from
 production config.

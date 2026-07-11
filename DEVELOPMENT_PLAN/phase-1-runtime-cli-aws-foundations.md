@@ -9,7 +9,11 @@
 [tiered_storage_capacity_doctrine.md](../documents/engineering/tiered_storage_capacity_doctrine.md),
 [host_platform_doctrine.md](../documents/engineering/host_platform_doctrine.md),
 [cluster_topology_doctrine.md](../documents/engineering/cluster_topology_doctrine.md),
-[test_topology_doctrine.md](../documents/engineering/test_topology_doctrine.md)
+[test_topology_doctrine.md](../documents/engineering/test_topology_doctrine.md),
+[bootstrap_readiness_doctrine.md](../documents/engineering/bootstrap_readiness_doctrine.md),
+[distributed_gateway_architecture.md](../documents/engineering/distributed_gateway_architecture.md),
+[pure_fp_standards.md](../documents/engineering/pure_fp_standards.md),
+[unit_testing_policy.md](../documents/engineering/unit_testing_policy.md)
 **Generated sections**: none
 
 > **Purpose**: Capture the Haskell runtime, CLI, configuration, build, and Pulumi foundations that
@@ -18,6 +22,17 @@
 > [the engineering doctrine docs](../documents/engineering/README.md).
 
 ## Phase Status
+
+✅ **Reclosed 2026-07-10 on runtime-memory representability.** Sprint `1.60` now separates authored
+admission/containment from bounded process demand. `capacity.runtime_memory_profiles` binds an
+opaque validated `RuntimeMemoryPlan` to the matching workload profile, derives the cgroup limit
+from that profile's `ResourceEnvelope`, validates the nested heap/container inequalities and finite
+child schedule, and emits the gateway's exact `+RTS -M268435456 -RTS` launch policy through
+ChartPlatform. The executable enables only `-rtsopts`; Cabal, Docker, and Helm contain no authored
+heap cap. Evidence: config generation/validation exit 0, unit 1299/1299, CLI/env integration 45/45,
+and `prodbox dev check` exit 0. Sprint `2.31` consumes the plan and enforces the gateway
+bounds/permit; completed Sprint `5.16` consumes its high-water projection in the separate external
+stability oracle.
 
 ✅ **Reclosed 2026-07-10 on the completed bootstrap-readiness foundation** — Sprints `1.57`/`1.58`/
 `1.59` are Done on Phase `1`'s own `Service` / `ComponentGraph` / `EffectDAG` /
@@ -165,19 +180,21 @@ compare, respectively. Sprint 0.4 adds Sprint `1.27` and threads the round-3 doc
 through the existing Sprint `1` reopen set: `CommandSpec` / `OptionSpec` field names,
 daemon-as-typed-`Command` dispatch, forbidden subprocess primitive names, the minimum
 `fourmolu.yaml` settings, canonical property-test invariants, service-error newtype inventory,
-`AppError` record shape, naming-helper signatures, and forbidden renderer inputs. The reopened
-Phase `1` doctrine surface is now closed: capability classes cover MinIO, Redis, and PostgreSQL
+`AppError` record shape, naming-helper signatures, and forbidden renderer inputs. That earlier
+Phase `1` doctrine-adoption surface closed: capability classes cover MinIO, Redis, and PostgreSQL
 service calls; retry and error-kind classification use the shared policy and `AppError` axes; the
 state-machine, output, and one-shot `App` foundations are code-backed and test-covered; and the
 standardized library audit is documented against the retained dependency set. Sprints `1.6`–`1.27`
 are implemented in code, doc-aligned, and validated locally.
 
-Phase `1` remains `Done` and is not reopened by the managed-resource-registry doctrine
+The managed-resource-registry doctrine did not reopen Phase `1`
 ([lifecycle_reconciliation_doctrine.md § 3.1](../documents/engineering/lifecycle_reconciliation_doctrine.md),
 scheduled in Phase `4` Sprints `4.20`–`4.22`). That registry is a Phase `4` lifecycle
 abstraction **built on** these Phase `1` foundations — the `Plan` / `Apply` discipline
 (Sprint `1.7`), the declare-and-interpret Effect DAG (`src/Prodbox/EffectDAG.hs`), and the
-capability classes + `AsServiceError` (Sprints `1.12`/`1.13`) — not a change to them.
+capability classes + `AsServiceError` (Sprints `1.12`/`1.13`) — not a change to them. The later
+Phase-1-owned runtime-memory/config expansion in Sprint `1.60` is now Done; all prior sprint
+closures remain preserved.
 
 ## Phase Summary
 
@@ -198,19 +215,22 @@ surface. Any proof that genuinely requires live infrastructure is a non-blocking
 `Live-proof: pending` note on the owning later-phase sprint, never a Phase `1` gate.
 
 This phase establishes the Haskell `prodbox` binary, the canonical Cabal build topology, the
-repository-root Dhall config loader, the Haskell command runtime and test harness, and the Pulumi
+executable-sibling Dhall config loader, the Haskell command runtime and test-harness foundations,
+and the Pulumi
 foundations for true IaC plus AWS-substrate provisioning. It also owns the canonical frontend
 image placement under `docker/`, the direct-Dhall config contract, the canonical-suite harness,
 and the aligned
 root guidance or engineering docs listed by its sprints. Later retirement of local-cluster
 Pulumi ownership is Phase `4` work, not a change to the foundations closed here. Sprints `1.1`,
 `1.2`, `1.3`, `1.4`, and `1.5` remain closed on the Haskell-only rewrite baseline. The phase
-closes on the single-host public-edge config doctrine: one canonical public hostname,
+already-landed surface closes on the single-host public-edge config doctrine: one canonical public hostname,
 `test.resolvefintech.com`, settings-backed MetalLB L2 or BGP rendering, explicit public-edge
 scaling inputs, and Route 53 hosted-zone alignment enforced during supported config authoring. The
 implemented frontend container doctrine uses
 `ubuntu:24.04` with in-image `ghcup`, pinned GHC `9.12.4`, no symlinked Haskell tool shims, and
-explicit repo package-bound updates.
+explicit repo package-bound updates. Sprint `1.60` owns the landed nested runtime-memory
+decomposition and generated gateway RTS policy; authored request/limit admission remains current
+but is not represented as proof of arbitrary runtime demand.
 
 Sprints `1.6` through `1.23` adopt the CLI doctrine from
 [the engineering doctrine docs](../documents/engineering/README.md). They split the CLI parser into a
@@ -239,20 +259,18 @@ closed on the cabal-manifest toolchain declarations plus library-first entrypoin
 - The frontend request ADT and entrypoint now close on native Haskell dispatch only:
   `src/Prodbox/CLI/Command.hs` exposes `RunNative`, and `app/prodbox/Main.hs` no longer carries a
   retained Python delegation branch.
-- The supported Haskell config surface is `setup|show|validate`; `config compile` is removed. The
-  rest of the supported command matrix remains Haskell-owned:
-  `aws policy|setup|teardown|check-quotas|request-quotas`,
-  `host ensure-tools|check-ports|info|firewall|public-edge`, `rke2`, `pulumi`, `dns check`,
-  `gateway start|status|config-gen`, `workload start`, `charts`, `k8s health|wait|logs`,
-  `check-code`, `test`, and `tla-check`.
-- The tracked schema artifact is `prodbox-config-types.dhall`; the operator-authored repo-root
-  config is `prodbox-config.dhall`, written by `prodbox config setup` and ignored from version
-  control. `src/Prodbox/Settings.hs` and `src/Prodbox/Repo.hs` own decoding, display,
-  repository-root discovery, and canonical config-path resolution without materializing
-  `prodbox-config.json`.
+- The Haskell command registry owns the current public `config`, `host`, `cluster`, `edge`, `aws`,
+  `dns`, `gateway`, `workload`, `charts`, `vault`, `users`, `dev`, and `test` groups. Removed
+  top-level `rke2`, `pulumi`, `k8s`, `check-code`, and `tla-check` spellings are not compatibility
+  aliases. The generated matrix lives in
+  [cli_command_surface.md](../documents/engineering/cli_command_surface.md).
+- The operator config is the executable-sibling `prodbox.dhall`; generated schema files are
+  binary-owned and git-ignored. `src/Prodbox/Settings.hs` and `src/Prodbox/Repo.hs` own native Dhall
+  decode, masked display, executable-sibling resolution, and the encrypted in-force config path
+  without a repo-root `prodbox-config.dhall` or `prodbox-config.json` supported surface.
 - The host build contract copies the operator-facing binary to `.build/prodbox` after the
-  canonical `cabal build --builddir=.build exe:prodbox` invocation and preserves the shared
-  `.build/support` linker shim for supported local runs.
+  canonical `cabal build --builddir=.build exe:prodbox` invocation; no separate bridge/linker shim
+  owns supported execution.
 - `src/Prodbox/CheckCode.hs` now runs the repository-owned workflow and git-hook policy scan,
   Fourmolu, HLint, warning-clean Cabal builds, and the operator-binary sync step, closing on the
   governed doctrine-alignment contract described by `documents/engineering/code_quality.md`. The
@@ -271,16 +289,17 @@ closed on the cabal-manifest toolchain declarations plus library-first entrypoin
 - `cabal.project` now carries the repo-level `with-compiler: ghc-9.12.4` pin and the temporary
   `allow-newer: *:base, *:template-haskell` allowance required by the current package set, while
   `prodbox.cabal` carries the package-bound updates required by that toolchain.
-- `test/integration/EnvSuite.hs` proves built-frontend config masking and validation directly
-  against repository-root Dhall config without recreating `prodbox-config.json`.
+- `test/integration/EnvSuite.hs` proves built-frontend executable-sibling config resolution,
+  masking, and validation without recreating `prodbox-config.json`.
 - Named external-proof payloads behind `prodbox test integration ...` run executable native
   Haskell validation flows through `src/Prodbox/TestValidation.hs`.
 - `src/Prodbox/AwsEnvironment.hs`, `src/Prodbox/EffectInterpreter.hs`, and the AWS-backed
   runtime modules now strip ambient AWS auth and profile variables before projecting
-  repository-root credentials into supported subprocesses.
-- The current repository ships YAML Pulumi programs under `pulumi/aws-eks/Main.yaml` and
-  `pulumi/aws-test/Main.yaml`. These Pulumi stacks compose the AWS substrate (see
-  [substrates.md](substrates.md)) and match the target Pulumi boundary.
+  explicitly resolved Vault/prompt credentials into supported subprocesses.
+- The current repository ships Haskell-orchestrated YAML Pulumi programs under `pulumi/aws-eks/`,
+  `pulumi/aws-eks-subzone/`, `pulumi/aws-test/`, and `pulumi/aws-ses/`. Their public lifecycle is
+  `prodbox aws stack ...`; local cluster lifecycle remains outside Pulumi. See
+  [substrates.md](substrates.md).
 - The self-managed local edge now installs MetalLB, Envoy Gateway, cert-manager, and the Percona
   PostgreSQL operator.
 - The supported config surface uses one canonical public hostname,
@@ -289,7 +308,7 @@ closed on the cabal-manifest toolchain declarations plus library-first entrypoin
 - The foundational edge surface now supports config-selected L2 or BGP MetalLB rendering plus
   settings-backed Envoy Gateway controller, Envoy data-plane, API, and WebSocket replica counts.
 - `prodbox config setup` now validates that the canonical hostname belongs to the selected
-  Route 53 hosted zone before it writes repository config, and the supported schema or fixtures
+  Route 53 hosted zone before it writes the executable-sibling operator config, and the supported schema or fixtures
   no longer carry placeholder-domain residue.
 - The canonical closure gates for this phase are the host artifact contract at `.build/prodbox`,
   `prodbox dev check`, and the built-frontend `cli` plus `env` integration suites.
@@ -2062,8 +2081,8 @@ log-reconciled state the gateway actually uses, per
 - Doctrine change D1: soften the
   [pure_fp_standards.md#gadt-indexed-state-machines](../documents/engineering/pure_fp_standards.md#gadt-indexed-state-machines)
   mandate to "GADTs for authoritative in-process transitions; externally-authoritative /
-  log-reconciled state (e.g. gateway ownership as a fold over the append-only commit log — a
-  `Disposition` projection) may use a flat exhaustive ADT." Keep the exhaustive-ADT and
+  log-reconciled state (the then-current gateway ownership fold over the now-superseded
+  append-only commit log was the motivating example) may use a flat exhaustive ADT." Keep the exhaustive-ADT and
   no-raw-`String` requirements, and keep the matching Forbidden-list entry consistent with the
   softened mandate. The D1 doc rewrite is landable in the Sprint `0.9` docs-only pass ahead of
   the code removal.
@@ -3793,6 +3812,95 @@ later phases; Sprint `1.59` deliberately introduces no second implementation or 
 **Cross-references to add:**
 
 - Add `src/Prodbox/Lifecycle/ReadinessObservation.hs` to the `Referenced by` back-link set of the three docs above.
+
+## Sprint 1.60: Runtime Memory Budget Decomposition and RTS Policy [✅ Done]
+
+**Status**: Done
+**Implementation**: `src/Prodbox/Capacity/RuntimeMemory.hs`,
+`src/Prodbox/Capacity/Config.hs`, `src/Prodbox/Settings.hs`,
+`src/Prodbox/Lib/ChartPlatform.hs`, `charts/gateway/templates/deployments.yaml`,
+`charts/gateway/values.yaml`, `dhall/capacity/Schema.dhall`, `prodbox.cabal`,
+`test/unit/Main.hs`, `test/integration/CliSuite.hs`, `test/integration/EnvSuite.hs`,
+`test/golden/plans/gateway-runtime-memory.txt`, and the generated Tier-0 schema
+**Independent Validation**: pure table tests and plan goldens prove every component is positive,
+the heap-resident terms fit the derived RTS heap cap, and that cap plus non-heap/subprocess/cgroup
+reserves fits the container memory limit; no cluster, gateway implementation, later phase, or live
+infrastructure is required.
+**Docs to update**: `documents/engineering/resource_scaling_doctrine.md`,
+`documents/engineering/pure_fp_standards.md`, `documents/engineering/haskell_code_guide.md`,
+`documents/engineering/dependency_management.md`
+
+### Objective
+
+Represent the memory the runtime is permitted to consume, rather than treating a Kubernetes limit
+as evidence that the program's demand is bounded. Preserve the existing host/namespace/workload
+admission lemmas while adding a separate runtime decomposition whose known maxima and safety margin
+must fit inside the authored container limit.
+
+### Deliverables
+
+- Add an opaque validated runtime-memory plan with explicit bounded retained heap state, maximum
+  in-heap transport/decode scratch, other heap reserve, native/non-heap reserve, serialized
+  child-process peak, kernel/cgroup reserve, and safety margin. Its pure constructors prove the
+  nested inequalities without counting heap-resident terms twice:
+
+  ```text
+  retained heap state + in-heap scratch + other heap reserve <= heap_cap
+  heap_cap + native/non-heap + child peak + kernel/cgroup reserve + margin <= container limit
+  ```
+- Make the child term carry a bounded-concurrency witness. The gateway uses a capacity-one permit,
+  making the term the maximum serialized child peak; any future concurrency greater than one must
+  sum simultaneous peaks rather than reuse that maximum.
+- Derive the GHC RTS heap cap and runtime arguments from the validated plan, leaving the declared
+  non-heap and child-process headroom outside the heap. Enable only the Cabal RTS surface required
+  by that generated policy; no hand-authored chart-local memory argument is allowed.
+- Keep `ResourceEnvelope` honest: it proves positive request/limit values and admission arithmetic.
+  It does not claim to prove the peak allocation of arbitrary Haskell or subprocess code.
+- Expose typed inputs for Phase `2`'s frame/in-flight bounds and Phase `5`'s high-water observation
+  without importing gateway or test-runner behavior into the capacity layer.
+
+### Validation
+
+1. ✅ Thirteen focused unit cases cover all ten positive byte terms; unbounded, zero-permit,
+   missing/zero-deadline, empty/zero-peak, serialized-max, concurrent-sum, and count-mismatch child
+   schedules; both inequalities; exact no-double-count totals; profile linkage; high-water
+   projection; chart values; and the RTS golden.
+2. ✅ `test/golden/plans/gateway-runtime-memory.txt` is rendered solely from the opaque validated
+   plan and pins `+RTS -M268435456 -RTS`.
+3. ✅ `./.build/prodbox config generate` and `config validate` exit 0; the generated Tier-0 schema
+   contains `runtime_memory_profiles` and the cgroup limit is derived from the existing gateway
+   workload envelope.
+4. ✅ `./.build/prodbox test unit` passes 1299/1299; the existing host, namespace, quota, and
+   workload-envelope tables remain green.
+5. ✅ `cabal test --builddir=.build prodbox-integration` passes 45/45, including the built
+   executable accepting the generated RTS policy and the CLI/env config surfaces.
+6. ✅ `./.build/prodbox dev check` exits 0.
+
+### Remaining Work
+
+- None on Sprint `1.60`'s Phase-1-owned surface. Gateway-specific state/transport bounds and the
+  capacity-one runtime permit landed in Sprint `2.31`; completed Sprint `5.16` owns the separate
+  external high-water/stability classifier.
+
+## Documentation Requirements
+
+**Engineering docs to create/update:**
+
+- `documents/engineering/resource_scaling_doctrine.md` - distinguish admission/containment from
+  bounded runtime demand and define the runtime-memory inequality.
+- `documents/engineering/pure_fp_standards.md` - keep external high-water observations separate
+  from the pure plan that classifies them.
+- `documents/engineering/haskell_code_guide.md` and
+  `documents/engineering/dependency_management.md` - generated RTS-policy ownership.
+
+**Product docs to create/update:**
+
+- None.
+
+**Cross-references to add:**
+
+- Sprint `2.31` consumes the validated runtime-memory inputs; Sprint `5.16` observes the resulting
+  runtime without treating a static plan as proof of external behavior.
 
 ## Related Documents
 

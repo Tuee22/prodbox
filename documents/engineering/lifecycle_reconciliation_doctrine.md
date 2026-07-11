@@ -10,8 +10,11 @@
 [../../DEVELOPMENT_PLAN/substrates.md](../../DEVELOPMENT_PLAN/substrates.md),
 [../../DEVELOPMENT_PLAN/system-components.md](../../DEVELOPMENT_PLAN/system-components.md),
 [README.md](README.md),
+[aws_admin_credentials.md](aws_admin_credentials.md),
 [aws_integration_environment_doctrine.md](aws_integration_environment_doctrine.md),
 [cli_command_surface.md](cli_command_surface.md),
+[integration_fixture_doctrine.md](integration_fixture_doctrine.md),
+[prerequisite_doctrine.md](prerequisite_doctrine.md),
 [pure_fp_standards.md](pure_fp_standards.md),
 [secret_derivation_doctrine.md](secret_derivation_doctrine.md),
 [storage_lifecycle_doctrine.md](storage_lifecycle_doctrine.md),
@@ -25,11 +28,10 @@
 [bootstrap_readiness_doctrine.md](bootstrap_readiness_doctrine.md)
 **Generated sections**: none
 
-> **Purpose**: Single Source of Truth for how prodbox lifecycle commands
-> prevent AWS resource leaks. Names the resource leak classes, sets the
-> rule that Pulumi state lifetime must match resource lifetime per class,
-> and defines the reconciler-with-predicates pattern every destructive
-> lifecycle command composes.
+> **Purpose**: Single Source of Truth for how prodbox lifecycle commands reconcile required
+> resource presence and prevent AWS resource leaks. Names the resource classes, sets the rule that
+> Pulumi state lifetime must match resource lifetime per class, and defines the
+> reconciler-with-predicates pattern lifecycle commands compose.
 
 ## 1. Leak Classes
 
@@ -72,7 +74,49 @@ underlying network teardown.
 | Class | Checkpoint store | Runtime backend URL shape | Lifetime |
 |---|---|---|---|
 | Per-run stacks (`aws-eks`, `aws-eks-subzone`, `aws-test`) | Opaque Model-B object in MinIO `prodbox-state` | Scratch `file://<tmp>` backend hydrated by `Prodbox.Pulumi.EncryptedBackend` | Auto-managed by the harness; persistent checkpoint survives while `.data/` is preserved |
-| Long-lived shared stacks (`aws-ses`, and any future cross-substrate long-lived stack) | Opaque Model-B object in MinIO `prodbox-state` for main paths | Scratch `file://<tmp>` backend hydrated by `Prodbox.Pulumi.EncryptedBackend` | Long-lived resource class; destroyed only by explicit long-lived teardown |
+| Long-lived shared stacks (`aws-ses`, and any future cross-substrate long-lived stack) | Opaque Model-B object in the retained home/control-plane MinIO `prodbox-state` authority for main paths | Scratch `file://<tmp>` backend hydrated by `Prodbox.Pulumi.EncryptedBackend` | Long-lived resource class; destroyed only by explicit long-lived teardown |
+
+`LifecycleClass` controls **cleanup ownership**, not whether setup may depend on ambient state.
+`LongLived` means that ordinary suite postflight retains the resource; it does not mean that a
+suite which requires the resource may assume an operator created it earlier. A selected suite
+capability that requires a registered long-lived resource must put an explicit desired-present
+reconcile into its preparation plan, and must never put that resource into ordinary postflight
+cleanup. The generic desired-present contract and the `aws-ses` specialization are defined in
+§3.1 and
+[AWS Integration Environment Doctrine §4.6](./aws_integration_environment_doctrine.md#46-retained-ses-desired-presence-preparation).
+
+**Cross-substrate authority split.** A long-lived checkpoint and a selected workload substrate are
+different authorities even when both happen to be the home substrate. The pure lifecycle plan
+receives two non-interchangeable values:
+
+- `LongLivedCheckpointAuthority` explicitly identifies the retained home/control-plane gateway,
+  MinIO `prodbox-state` object namespace, and Vault/Transit keyspace used for the encrypted
+  checkpoint and shared lease.
+- `TargetClusterSecretSink` explicitly identifies the selected substrate's gateway/Vault endpoint
+  and the KV destination that receives `secret/keycloak/smtp`.
+
+An AWS-targeted suite must still reconcile `aws-ses` and its lease/checkpoint through the retained
+home/control-plane authority; it must not redirect long-lived state to the active EKS gateway. Only
+after reconcile and semantic readiness may it write derived SMTP material through the selected AWS
+substrate's `TargetClusterSecretSink`. Endpoint, namespace, and key coordinates are decoded plan
+inputs—never ambient kubeconfig, current context, process environment, or “active gateway” fallback.
+Each gateway ConfigMap also mounts the selected substrate's non-secret Tier-0 `cluster_id`; the
+target-secret route compares that daemon-loaded identity with the sink coordinate before Vault
+read/CAS. Home-local uses the established control-plane Tier-0 identity and AWS uses the canonical
+EKS cluster name, so an endpoint mix-up cannot redirect SMTP material to the other substrate.
+The two types must not share a constructor or implicit conversion that lets a target-cluster handle
+stand in for checkpoint authority.
+
+The concrete boundary is implemented in `Prodbox.Lifecycle.CheckpointAuthority` and
+`Prodbox.Lifecycle.CheckpointAuthorityStore`. `gatewayModelBCasAdapter` binds an explicit
+`LongLivedCheckpointAuthority` to the retained gateway routes
+`/v1/object-store/authority/get` and `/v1/object-store/authority/cas`; the generic authority payload
+is bounded to 1 MiB and the CAS request's `Show` instance redacts payload bytes. Logical names still
+pass through the existing HMAC-named, Vault-enveloped object layer. Observation preserves
+`ModelBMissing | ModelBObserved opaqueVersion value | ModelBCorrupt reason |
+ModelBUnobservable reason`; initialization uses put-if-absent, replacement uses the observed opaque
+object-store version (currently its ETag), and a CAS conflict returns a fresh observation. That
+opaque version is a storage precondition, never the lifecycle fencing token.
 
 The dedicated S3 bucket configured by `pulumi_state_backend` is still a long-lived shared resource
 owned by the operator AWS account, but it is no longer the main Pulumi checkpoint backend. It stores
@@ -118,14 +162,20 @@ class.
 | Class | Credential class | How the credential is obtained |
 |---|---|---|
 | Per-run stacks | Generated operational `prodbox` IAM credential | The least-privilege `aws.*` identity, minted into Vault KV (`secret/gateway/gateway/aws`); `prodbox.dhall` carries only a `SecretRef.Vault` reference, never the plaintext key. Materialized for the run by `prodbox aws setup`, cleared by `prodbox aws teardown`. |
-| Long-lived stacks + retained-bucket compatibility | Ephemeral elevated/admin credential | Supplied at runtime through the one interactive `SecretRef.Prompt` arm — held in memory for one command, used once, then discarded. It is never written to `prodbox.dhall`, never stored in Vault. In tests the harness simulates that prompt by feeding `aws_admin_for_test_simulation.*` from `test-secrets.dhall` (a `TestPlaintext` fixture, not a production-config section). |
+| Canonical `aws-ses` desired-present reconcile | Generated operational `prodbox` IAM credential narrowed through the fixed `prodbox-ses-lease-session` role | The base `aws.*` credential is resolved from Vault and is used only to call `sts:AssumeRole` on the exact same-account role. Each reconcile, provider-presence, and SMTP-repair/materialization stage receives a separately minted session bounded by the lease permit and the role's 3,600-second maximum. The base credential is never passed to Pulumi or AWS mutation children. |
+| Long-lived destroy/migration/nuke + retained-bucket compatibility | Ephemeral elevated/admin credential | Supplied at runtime through the one interactive `SecretRef.Prompt` arm — held in memory for one command, used once, then discarded. It is never written to `prodbox.dhall`, never stored in Vault. In tests the harness simulates that prompt by feeding `aws_admin_for_test_simulation.*` from `test-secrets.dhall` (a `TestPlaintext` fixture, not a production-config section). |
 
-Long-lived stack management uses the elevated/admin credential because that level of power
-outlives any single cluster cycle, matching the resource lifetime; there is no stored admin
-block in `prodbox.dhall` — real ops prompt for the ephemeral elevated credential and the
-harness simulates that prompt from `test-secrets.dhall`. The generated operational `prodbox` IAM
-user does not need `s3:GetObject`/`PutObject` permission on the retained S3 bucket. Migrating any
-code path off the stored-admin model is scheduled as Sprint `7.16`.
+Credential class follows operation authority, not merely resource lifetime. `prodbox aws setup`
+and config setup use the prompted admin credential to reconcile the operational IAM user, its
+account-qualified inline policy, and the fixed SES lease role. The role trusts only
+`arn:aws:iam::<account>:user/prodbox`; its inline policy is scoped to the configured account,
+hosted zone, capture bucket, optional legacy bucket, exact SMTP user, and the explicit SES actions
+whose APIs cannot be resource-scoped. The installed operational-user policy permits assuming only
+that role, observing only the exact SMTP user, and reading only the configured capture bucket in
+addition to the existing operational platform permissions. Canonical desired-present reconcile
+then needs no admin prompt. Explicit `aws-ses destroy`, `migrate-backend`, retained-bucket
+compatibility operations, and `nuke` remain admin-credentialed. The generated operational user
+does not receive unrestricted access to the retained compatibility bucket.
 
 **Legacy checkpoint migration.** First-touch migration is owned by
 `Prodbox.Pulumi.EncryptedBackend`. When the encrypted `LogicalPulumiStack <stack-id>` object is
@@ -204,14 +254,13 @@ no shared in-memory state.
    4.11–4.12: `discoverClusterTaggedAwsResources` (AWS Resource
    Tagging API), `discoverK8sAwsAffectingResources` (kubectl).
 
-   **Source-of-truth queries must tolerate the case where the source
-   is already gone.** Destructive lifecycle commands run against
-   partially- or fully-torn-down infrastructure routinely (operator
-   reruns, partial-teardown recovery, first-time provisioning). A
-   `discover` whose authoritative source is unreachable returns a
-   distinct "not present" / "skipped" outcome that the caller treats
-   as success-with-reason, not failure. The Kubernetes-side drain
-   discoverer makes this explicit through the `DrainResult` ADT in
+   **Control-plane absence is not authoritative-resource absence.** Destructive lifecycle commands
+   run against partially- or fully-torn-down infrastructure routinely, so an explicitly scoped
+   control-plane cleanup may expose a distinct skipped result. That exception does not collapse an
+   AWS/resource-authority transport failure to `Absent`: AWS authentication failure, throttling,
+   network failure, and malformed output remain `Unreachable`/`Unobservable` and fail closed. The
+   Kubernetes-side drain discoverer is the worked control-plane exception through the `DrainResult`
+   ADT in
    `src/Prodbox/Lifecycle/K8sDrain.hs`:
 
    - **`DrainSucceeded`** — the cluster was reachable, the targeted
@@ -230,13 +279,10 @@ no shared in-memory state.
      delete-or-poll step errored. This is the only outcome that
      fails the cascade.
 
-   The same skip-on-unreachable rule applies to any future
-   `discover` whose source can be absent during a destructive run
-   (the operator's parent Route 53 zone if the operator account is
-   torn down, future EKS-side discoverers, etc.). Each such
-   `discover` exposes the three-outcome ADT pattern (succeeded /
-   skipped-with-reason / failed) rather than collapsing
-   skipped+succeeded into a single boolean.
+   Any future skip-on-unreachable exception must identify an ephemeral control plane that is itself
+   being removed, preserve a distinct skipped constructor, and name an independent authoritative
+   cleanup/backstop. It must not be applied to an operator parent Route 53 zone, an SES resource, a
+   Pulumi checkpoint, or another AWS authority merely because the account cannot be observed.
 2. **Composable precondition algebra.** Each named `Precondition`
    wraps one `discover` and returns `IO (Either StructuredError ())`.
    Predicates are composed with `checkAll [...]`. Existing example:
@@ -311,7 +357,8 @@ pre-Sprint-4.19 per-run gate, and the file-existence proxy before
 Sprint 4.16); or (b) **incomplete coverage** — a resource the system can
 create that has no registered `discover`/destroy at all (the operational
 `prodbox` IAM user, the generated operational `aws.*` Vault KV credential
-and its `SecretRef.Vault` reference in `prodbox.dhall`, fixed-name
+and its `SecretRef.Vault` reference in `prodbox.dhall`, the fixed
+`prodbox-ses-lease-session` role and inline policy, fixed-name
 IAM left by a partial `pulumi up`; see §6a). The registry closes both
 structurally.
 
@@ -381,6 +428,7 @@ Three invariants make the topology leak-proof and idempotent:
    `prodbox nuke` reconciles all classes. Re-running converges instead
    of erroring; built on `Plan`/`runPlanWithOptions` so `--dry-run`
    works uniformly.
+
 4. **Plan-option totality.** Every destructive command routes its work
    through `runPlanWithOptions`, so `--dry-run` and `--plan-file` are
    honored uniformly — `prodbox cluster delete` (the default local
@@ -398,6 +446,188 @@ Three invariants make the topology leak-proof and idempotent:
    never omit a per-run stack. The gate's `(stack, destroy-command)` list
    and the destroy actions share one registry-derived source
    (`pairPerRunResidue` / `pairAwsSesResidue` + `residueGateRefusalList`).
+
+The `Operational` projection registers the SES lease role independently from the operational IAM
+user and Vault credential. Setup observes/reconciles the role and refreshes the account-qualified
+user policy after configuration changes without rotating the operational access key. Teardown
+deletes the role before the trusted `prodbox` user and re-observes all three operational resources
+as absent. A missing/incomplete SES role scope during initial setup defers that role safely; it does
+not authorize a wildcard policy.
+
+#### Desired-Present Reconciliation for Long-Lived Resources
+
+The same registry substrate now includes a bring-up projection for resources which a selected
+capability may require. This is not a second registry and not a global state machine. The resource
+remains externally authoritative, and one flat observation ADT carries the only three facts
+discovery may establish:
+
+```haskell
+-- Implemented by Prodbox.Lifecycle.ResidueStatus.
+data PresenceObservation a
+  = PresenceAbsent
+  | PresencePresent a
+  | PresenceUnobservable ObservationFailure
+```
+
+Checkpoint observation is a separate flat value, because “AWS resources exist” and “their encrypted
+checkpoint is usable” are independent external facts:
+
+```haskell
+-- Implemented by Prodbox.Lifecycle.ResidueStatus.
+data CheckpointObservation a
+  = CheckpointMissing
+  | CheckpointValid a
+  | CheckpointCorrupt CheckpointFailure
+  | CheckpointUnobservable ObservationFailure
+```
+
+`Prodbox.Lifecycle.DesiredPresence` implements the exhaustive 12-cell decision table as six
+explicit mutation constructors:
+`CreateFromAbsentMissingCheckpoint`, `CreateFromAbsentValidCheckpoint`,
+`CreateFromAbsentCorruptCheckpoint`, `ImportPresentMissingCheckpoint`,
+`ReconcilePresentValidCheckpoint`, and `RepairPresentCorruptCheckpoint`. Its
+`reconcileDesiredPresence` interpreter performs the single
+`observe -> plan -> enact -> re-observe` transaction and carries both fresh observations on an
+enactment failure. `Prodbox.Lifecycle.ResourceRegistry` exposes the independent
+`resourceEnsureCommand` / `resourceEnsurePresent` projection and currently registers
+`desiredPresentManagedResources = [awsSesPulumiResource]`; the existing desired-absence projection
+is unchanged.
+
+The pure planner is total over presence × checkpoint observation. Positively present fixed-name AWS
+resources plus a missing or corrupt checkpoint may plan bounded import/repair; positively absent AWS
+may plan creation and checkpoint replacement; either `PresenceUnobservable` or
+`CheckpointUnobservable` refuses. Corruption is preserved as evidence and never silently recoded as
+missing.
+
+`PresenceUnobservable` is not absence. Authentication failure, throttling, network failure,
+malformed output, and any other inability to classify AWS state map to that constructor and fail
+closed before mutation. Code must not implement `catchError (const False)` around an existence
+probe, and must not perform a separate Boolean check followed by create. The canonical reconciler
+owns `observe -> diff -> enact -> re-observe`; a present but drifted resource is just another diff,
+and re-running the reconciler against converged state is a no-op.
+
+The selected validation set is reduced purely to a set of required managed-resource capabilities.
+For each required long-lived resource, planning emits a visible `EnsurePresent` action. For
+`aws-ses`, both `PresenceAbsent` and `PresencePresent snapshot` enter the canonical idempotent
+reconcile so missing resources and drift converge through one path; `PresenceUnobservable` emits a
+refusal. A resource which no selected validation requires emits no preparation action. No branch
+emits an ordinary-suite destroy for a `LongLived` resource.
+
+Concurrent desired-present reconciliation of an account-scoped resource must be serialized by a
+shared cross-process lease keyed by the authoritative account, region, and managed-resource name.
+For `aws-ses`, the lease covers observation, encrypted-checkpoint repair/import, `pulumi up`, output
+materialization, semantic readiness verification, and the SMTP-secret commit. It prevents two
+current owners from deliberately issuing new mutations and fences prodbox-owned commits; it cannot
+revoke an AWS API request or provider operation accepted before an old session expired. A lease
+timeout is a structured failure, never permission to continue without ownership.
+
+The lease protocol is bounded and fenced, not a best-effort lock:
+
+- atomic CAS acquisition returns an opaque owner nonce, a monotonically increasing fencing token,
+  and an authority-clock expiry;
+- one non-renewable grant covers one transaction. `LeasePolicy` proves its TTL exceeds the sum of
+  the bounded reconcile, 5–30 minute readiness, SMTP-commit, child-cancellation, maximum-clock-skew,
+  and safety margins. No action starts unless its own deadline ends before the grant's safe-use
+  deadline;
+- the Vault-resolved operational `aws.*` input is used solely to assume the exact same-account
+  `prodbox-ses-lease-session` role. Every bounded work stage receives a separately minted STS
+  session whose expiration is no later than its permit deadline or the non-renewable grant and
+  whose duration cannot exceed 3,600 seconds. Neither the base operational credential nor any
+  admin credential is passed to Pulumi/AWS mutation children;
+- checkpoint commits use the fencing token in owner-checked CAS writes at the global authority. A
+  target-secret sink is a distinct external authority and cannot validate that token by local CAS
+  alone; it follows the cross-authority commit protocol below;
+- the fencing token is enforced by prodbox checkpoint/secret authorities, not by AWS. Session expiry
+  prevents new authorization but does not cancel provider work or an AWS request already accepted;
+- loss/unobservability of the lease cancels the bounded child, schedules no further local mutation,
+  and refuses success. `LeasePolicy` declares conservative AWS-provider and target-secret-sink
+  in-flight/visibility grace bounds in addition to clock-skew and cancellation grace. A successor
+  may acquire only after authority
+  expiry plus all three grace bounds, then must obtain a stable quiescence witness from repeated
+  authoritative AWS observations separated by the declared visibility interval. Pending change,
+  an inventory outside its declared finite bound, or any unobservable reading refuses convergence;
+- owner-and-fence-checked release is idempotent.
+
+The lease and checkpoint portions use `LongLivedCheckpointAuthority`; SMTP material uses the
+independently selected `TargetClusterSecretSink`. Holding one authority does not authorize ambient
+discovery of the other. The global authority records a CAS-protected `TargetCommitIntent` before a
+sink write: owner/fence, target identity, credential generation, value digest, deadline, and
+`Prepared | Committed | Aborted` disposition. The interpreter revalidates that exact current intent,
+performs one bounded target-Vault KV CAS carrying the generation/fence metadata, reads it back, and
+then marks the global intent committed by owner/fence CAS. Sink-local metadata is evidence, not a
+replacement global fence.
+
+The intent ledger is finite: target sinks enter through a bounded registered-target set, each
+target has at most one nonterminal intent plus its current committed generation, and terminal
+history is compacted into that projection. An authoritatively retired target removes its intent;
+unbounded target churn or an unregistered sink is unrepresentable/refused rather than accumulated.
+
+A target write already accepted before lease loss may complete late, just like AWS work. Before a
+successor issues a new credential generation or writes any sink, it waits the target-sink grace and
+resolves every nonterminal intent named by the global ledger — including intents for a different
+substrate — by stable target read-back or an authoritative retired-target observation. Unreachable,
+unbounded, still-changing, or unknown target state refuses rotation and commit. Only after all prior
+intents are terminal may the successor reconcile each selected sink to the globally committed
+credential generation. Tests and claims therefore rely on the declared bounded sink adapter and
+post-grace re-observation, not on an impossible atomic CAS spanning two Vault authorities.
+
+Partial or late-visible AWS and target-sink effects from an interrupted owner remain externally
+authoritative input to the successor's post-grace quiescence proof and idempotent repair.
+
+SMTP access-key repair is the non-idempotent edge and therefore has a stricter fold. The fenced
+checkpoint/target-secret commit records the committed IAM access-key ID. Under the current lease,
+repair reads the authoritative finite key inventory for the exact registered SMTP IAM user and
+compares it with that committed ID. Every owned key that is uncommitted or whose secret material is
+unrecoverable is deleted first; repair then waits and re-observes authoritative absence through the
+provider visibility interval before creating another key. Exactly one committed key with recoverable
+SMTP material is reused without creation; only a stable empty witness permits creation and
+global-intent commit of one new key ID plus SMTP material. An unobservable inventory, a late-changing inventory,
+or more keys than the declared bound refuses rather than blindly deleting or creating. This ordering
+remains mandatory even when a stale provider operation surfaces a key after its originating lease
+expired.
+
+The protocol implementation is deliberately split along these authority boundaries:
+`Prodbox.Lifecycle.Lease` defines the bounded non-renewable policy, grants, fences, safe deadlines,
+and CBOR state; `LeaseInterpreter` performs CAS/re-observation, bounded-child cancellation, and
+post-grace quiescence; `TargetCommitIntent` implements the bounded registered-target projection and
+prepare/complete/recover/compact protocol; `SmtpKeyRepair` implements the finite committed-key
+reuse/delete/wait/stable-empty/create/fenced-commit fold;
+`SmtpKeyRepairInterpreter` executes that fold against injected IAM/authority effects, derives the
+next generation from the loaded projection, brackets one created key across guarded CAS, mandates
+re-observation, and compensates every known-uncommitted failure; and
+`Prodbox.Pulumi.EncryptedBackend.withFencedDecryptedStackEnvironment` authorizes the conditional
+checkpoint write immediately before opaque CAS. `Prodbox.Infra.AwsSesStack` composes these pieces
+on the supported `aws-ses reconcile` path: it resolves operational credentials, acquires/releases
+the retained-authority lease on every exit, recovers global target intents before new work, mints a
+fixed-role session for each bounded stage, runs desired-presence reconciliation through the fenced
+encrypted backend, proves provider then semantic readiness, and repairs/materializes SMTP through
+the guarded projection and selected sink. Sprint `4.47` is complete on this composition. Sprint
+`5.17` projects it exactly once into invite-capable home/EKS test plans, and Sprint `8.10` supplies
+the semantic SES readiness classifier. Provider presence remains a necessary first observation; it
+is not itself semantic readiness.
+
+Pulumi owns the SMTP IAM user and policy but deliberately owns no access-key resource and exports no
+key material. The Haskell interpreter is the sole supported access-key creator; its recoverable
+material exists only in the guarded retained projection and the later explicit target-Vault commit.
+
+Reconcile success is not readiness success. `Prodbox.Ses.Readiness` separates captured read-only AWS
+observations from the pure exhaustive `AwsSesReady | AwsSesPending | AwsSesFailed |
+AwsSesUnobservable` fold. Each bounded await attempt first proves the complete registered provider
+inventory, then checks the exact sender/DKIM, regional MX, active receipt rule, and capture canary.
+Control-plane checks use the lease-scoped role; capture list/get uses the operational credential
+consumed by invite polling. `AwsSesPending` is polled for the bounded SES propagation interval;
+`AwsSesFailed` and `AwsSesUnobservable` fail immediately, and timeout fails with the last observed
+Pending reason. Exit zero with discarded or unparsed stdout is not evidence of readiness. Timeout
+releases the surrounding lease but leaves the long-lived resources retained for the next
+idempotent run.
+
+Prerequisite nodes remain read-only gates. Tool/config/backend reachability is established before
+the preparation plan, while semantic readiness is re-observed after the visible reconcile action;
+neither phase hides mutation in a prerequisite. See
+[Prerequisite Doctrine §4A](./prerequisite_doctrine.md#4a-prerequisitepreparation-boundary).
+The read-only `prodbox host check-ses-readiness` diagnostic exposes one current semantic observation
+without entering the reconciliation transaction. Fresh-account propagation remains a non-blocking
+live-proof axis.
 
 This is the data-oriented "make illegal states unrepresentable"
 answer, not a global state machine: the registry is pure data, every
@@ -510,8 +740,10 @@ any AWS-side residue left by a `DrainSkipped` cascade.
 | `noLeftoverDnsBootstrapRecords` | The configured public FQDN has stale prodbox-written Route 53 records | Postflight of `prodbox cluster delete --cascade` and `prodbox nuke` |
 
 `aws-ses` is **explicitly excluded** from every `cluster delete` path:
-its state lives outside the cluster (§2), so `aws-ses` may only be
-destroyed by `prodbox aws stack aws-ses destroy --yes` or `prodbox nuke`.
+its `LongLived` cleanup class is retained across cluster teardown, so `aws-ses` may only be
+destroyed by `prodbox aws stack aws-ses destroy --yes` or `prodbox nuke`. Its main checkpoint is
+the encrypted Model-B object in MinIO (§2), whose durable bytes survive ordinary cluster deletion
+with preserved `.data/`; cleanup classification, not backend location, determines this exclusion.
 
 Default `prodbox cluster delete` carries **no per-run residue preflight at
 all** — it is a pure local cluster uninstall that preserves `.data/` (the
@@ -725,8 +957,10 @@ remaining per-run stack, then `prodbox aws teardown`. The per-run destroy failur
 still surfaced as a non-zero exit.
 
 This is the per-run analog of §5's Sprint 7.9 change: Sprint 7.9 stopped the
-teardown from **refusing** on admin-managed `aws-ses` residue (clearing operational
-creds cannot strand the admin-credential `aws-ses` stack); Sprint 7.10 **holds** the
+teardown from **refusing** on long-lived `aws-ses` residue. Clearing operational
+credentials and deleting the registered SES lease role cannot strand retained SES because the
+explicit destroy/migration surfaces remain admin-credentialed; a later canonical reconcile first
+re-establishes the operational user policy and role through setup. Sprint 7.10 **holds** the
 teardown when the per-run auto-destroy — which *does* need operational creds —
 failed. The two are complementary safety rules on the same teardown.
 
@@ -802,7 +1036,8 @@ genuine leaks):
    once Pulumi state is gone. The long-lived `aws-ses` stack is the bounded
    configured-name exception: `prodbox aws stack aws-ses reconcile` can repair
    missing Pulumi state by importing the retained capture bucket / SMTP IAM
-   user / SES receipt resources and rotating stale SMTP access keys, because
+   user / SES receipt resources and applying the fenced committed-key comparison,
+   delete/wait/re-observe/create protocol for stale SMTP access keys (§3.1), because
    those names are operator-configured or hard-coded by the long-lived stack
    contract. Generic per-run residue remains deliberately **not** closed with an
    AWS-name-scanning detector or a broad auto-sweep.
@@ -878,8 +1113,11 @@ section records only how the lifecycle commands integrate it. See
 ## Related Documents
 
 - [README.md](README.md)
+- [aws_admin_credentials.md](aws_admin_credentials.md)
 - [aws_integration_environment_doctrine.md](aws_integration_environment_doctrine.md)
 - [cli_command_surface.md](cli_command_surface.md)
+- [integration_fixture_doctrine.md](integration_fixture_doctrine.md)
+- [prerequisite_doctrine.md](prerequisite_doctrine.md)
 - [pure_fp_standards.md](pure_fp_standards.md)
 - [unit_testing_policy.md](unit_testing_policy.md)
 - [Vault Secret-Management Doctrine](./vault_doctrine.md)

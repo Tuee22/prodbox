@@ -5,7 +5,9 @@
 **Referenced by**: DEVELOPMENT_PLAN/README.md, documents/engineering/README.md, documents/engineering/aws_integration_environment_doctrine.md
 **Generated sections**: none
 
-> **Purpose**: Define the canonical shared AWS account, DNS, isolation, lifecycle, and authentication model for ephemeral multi-project testing.
+> **Purpose**: Define the canonical shared AWS account, DNS, isolation, lifecycle, and
+> authentication model for ephemeral multi-project testing and narrowly registered retained
+> project resources.
 
 ---
 
@@ -13,13 +15,20 @@
 
 Stateful AWS testing across projects must use a dedicated AWS Organizations member account reserved for testing, not a production, staging, or personal account.
 
-The shared AWS test account may host concurrent ephemeral environments for multiple projects, but persistent workload state is limited to the permanent test domain and its parent hosted zone.
+The shared AWS test account may host concurrent ephemeral environments for multiple projects.
+Persistent workload state is limited to the permanent test domain and its parent hosted zone plus
+explicitly registered project-owned retained resources that satisfy §3.3; discovery alone never
+creates a retained-resource exception.
 
 Administrative baseline state such as IAM Identity Center assignments, SCPs, budgets, logging, and optional janitor automation is intentionally long-lived and is not considered project workload state.
 
-Each project test run must own its own AWS resource set, including DNS namespace, network boundary, storage, and compute resources, and must delete that resource set in teardown.
+Each project test run must own its own per-run AWS resource set, including DNS namespace, network
+boundary, storage, and compute resources, and must delete that per-run set in teardown. A registered
+retained resource has a separate explicit destroy owner and is excluded from ordinary run cleanup.
 
-No test may mutate, depend on, or clean up resources that were created by a different project or a different test run.
+No test may mutate, depend on, or clean up resources owned by a different project or run. A suite may
+reconcile its own registered retained resource across runs only through the declared canonical
+reconciler and shared-lease contract in §3.3.
 
 Shared-account baseline human and automation access must use temporary credentials.
 Project-specific exceptions for repo-local operator workflows or harness-owned credential storage
@@ -126,12 +135,14 @@ Minimum recommended guardrail categories:
 
 Broad use of workload services is acceptable in this account, including S3, EC2, EKS, Route 53, and other application services, but the persistent account baseline must stay protected.
 
-### 3.3 Long-Lived Baseline Resources
+### 3.3 Long-Lived Baseline And Registered Retained Resources
 
 The only long-lived workload resources should be:
 
 1. the reserved test domain registration
 2. the permanent public hosted zone for that parent domain
+3. project-owned retained resources whose exact inventory is registered under a stricter
+   project-specific lifecycle doctrine
 
 Long-lived administrative baseline resources may also exist by design:
 
@@ -142,7 +153,29 @@ Long-lived administrative baseline resources may also exist by design:
 5. optional janitor automation that deletes expired test resources
 6. AWS-managed service-linked roles that are created the first time a supported shared-account service such as EKS is enabled
 
-No long-lived VPCs, EKS clusters, EC2 instances, S3 buckets, child hosted zones, or project-owned databases are allowed in the shared test account.
+The third class is deliberately narrow. A retained-resource exception is valid only when all of the
+following are true:
+
+1. The project registry names the exact resource, AWS account/region scope, lifecycle class,
+   authoritative observer, idempotent reconcile, and explicit destroy owner.
+2. `Unobservable` external state fails closed; errors are never treated as proof of absence.
+3. Ordinary suite cleanup always retains the resource, while a selected suite capability may run a
+   visible desired-present reconcile.
+4. Concurrent reconciliation is serialized by a shared cross-process lease when the AWS service has
+   account-scoped or fixed-name state.
+5. The resource is tagged/namespaced to one project and no other project may adopt, mutate, or delete
+   it.
+
+No long-lived VPCs, EKS clusters, EC2 instances, child hosted zones, or project-owned databases are
+allowed. A long-lived S3 bucket or another service resource is permitted only as an exact registered
+exception under the rules above; “the bucket already exists” is not sufficient.
+
+For `prodbox`, the exact exception inventory is the generated
+[`DEVELOPMENT_PLAN/substrates.md` Resource Lifecycle Classes](../../DEVELOPMENT_PLAN/substrates.md#resource-lifecycle-classes),
+not a prose list in this shared-account document. The invite-capable suite contract for its
+registered `aws-ses` resource is
+[AWS Integration Environment Doctrine §4.6](./aws_integration_environment_doctrine.md#46-retained-ses-desired-presence-preparation):
+the harness ensures it when required, holds the shared lease, and never auto-destroys it.
 
 ### 3.4 Root Credential Policy
 
@@ -447,6 +480,8 @@ Preferred rules:
 1. create a unique bucket per run when practical
 2. delete all objects and delete the bucket in teardown
 3. if a shared bucket is unavoidable, isolate by project-specific prefix and explicit bucket policy, and treat this as an exception, not the default
+4. a cross-run bucket is allowed only when it is an exact registered retained resource under §3.3,
+   with one project owner and an explicit destroy surface
 
 ### 6.5 EC2 And EKS Isolation
 
@@ -462,11 +497,11 @@ Rules:
 
 | Service | Required Isolation Unit | Persistent Allowed | Required Teardown |
 |---------|-------------------------|--------------------|-------------------|
-| Route 53 | Delegated child zone per run | Parent domain and parent hosted zone only | Delete records, remove delegation, delete child zone |
-| S3 | Bucket per run | None | Empty and delete bucket |
+| Route 53 | Delegated child zone per run | Parent domain/zone plus registered retained records (§3.3) | Delete per-run records, delegation, and child zone; retained records only through their explicit destroy owner |
+| S3 | Bucket per run | Registered retained exception only (§3.3) | Empty and delete per-run buckets; retained bucket only through its explicit destroy owner |
 | VPC / EC2 | VPC per run | None | Delete instances, ENIs, gateways, route tables, subnets, security groups, VPC |
 | EKS | Cluster per run | None | Delete workloads, node groups, load balancers, cluster, VPC dependencies |
-| Other services | Project/run-owned namespace | None by default | Delete all fixture-owned resources before teardown returns |
+| Other services | Project/run-owned namespace | Registered retained exception only (§3.3) | Delete all per-run resources before teardown returns; retained resource only through its explicit destroy owner |
 
 ### 6.7 Isolation Boundary Failure Criteria
 
@@ -474,8 +509,9 @@ An environment is not compliant with this doctrine if any of the following are t
 
 1. a project can delete or mutate another project's resources
 2. two projects share a VPC, bucket, cluster, or child DNS zone without an explicit exception
-3. teardown intentionally leaves project workload resources behind
-4. persistent project infrastructure accumulates in the shared account
+3. teardown intentionally leaves per-run project workload resources behind, or retains a resource
+   that is not an exact §3.3 registry entry
+4. persistent project infrastructure accumulates outside the exact §3.3 registry
 
 ---
 
@@ -483,7 +519,7 @@ An environment is not compliant with this doctrine if any of the following are t
 
 ### 7.1 Setup Sequence
 
-Each run must:
+For per-run resources, each run must:
 
 1. allocate a unique `test_run_id`
 2. run project-harness-owned preflight cleanup for any pre-existing fixture-owned resources
@@ -495,7 +531,8 @@ Each run must:
 
 ### 7.2 Teardown Sequence
 
-Each run must destroy resources in reverse dependency order.
+Each run must destroy its per-run resources in reverse dependency order. Registered retained
+resources do not enter this sequence; only their explicit destroy owner removes them.
 
 Typical order:
 
@@ -514,9 +551,10 @@ Test failure does not justify leaving resources behind.
 Required behavior:
 
 1. cleanup runs in `finally` or equivalent teardown logic
-2. cleanup attempts every owned resource even after partial failures
+2. cleanup attempts every per-run owned resource even after partial failures
 3. setup paths that fail before fixture yield or workload execution still roll back already-created
-   resources from that attempt
+   per-run resources from that attempt; partial retained reconciliation remains retained and is
+   repaired by the next idempotent run
 4. cleanup reports explicit failures with enough information to repair them safely
 
 ### 7.4 Expiry And Harness Reclaim Model
@@ -527,7 +565,7 @@ forbids tag-based lifecycle as part of its supported workflow.
 The supported project workflow relies on project-owned cleanup rather than an always-on janitor
 surface:
 
-1. teardown still attempts deletion of every resource created by the current run
+1. teardown still attempts deletion of every per-run resource created by the current run
 2. project-specific doctrine may choose fixture-owned delete, Pulumi-owned destroy, or another
    explicit cleanup surface, but it must be deterministic and documented
 3. account-owner emergency cleanup outside the project harness may still exist, but it is not a
@@ -539,8 +577,15 @@ zone teardown, the AWS EKS test stack is created and destroyed only through
 HA test stack is created and destroyed only through `prodbox aws stack test reconcile` and
 `prodbox aws stack test destroy --yes`. The local `prodbox-pulumi` Cabal stanza proves the
 ephemeral stack-state harness, typed-output handoff, and forced-failure cleanup around those
-retained stack flows, while the live AWS provisioning paths are covered by the named integration
+per-run stack flows, while the live AWS provisioning paths are covered by the named integration
 validations and aggregate suite.
+
+The registered long-lived exception is prepared independently of that per-run cleanup: a selected
+invite-capable suite visibly and idempotently reconciles `aws-ses` through the retained-home
+`LongLivedCheckpointAuthority`, serializes the transaction with the shared lease, and retains it in
+every ordinary postflight. The selected cluster's `TargetClusterSecretSink` receives SMTP material
+but never owns the checkpoint. This is not permission to reuse arbitrary existing AWS state; only
+registry entries in the project SSoT receive the exception.
 
 ---
 
@@ -577,6 +622,11 @@ A project must move to a dedicated AWS account when any of the following become 
 3. the project creates long-lived baseline resources that conflict with the shared-account model
 4. the project cannot be constrained to its own project and run namespace
 
+A narrowly registered retained-resource reconcile does not by itself trigger item 1 when the
+project-specific doctrine constrains the temporary-admin credential to that canonical operation,
+the resource is project-namespaced, and concurrent mutation is leased. Any broader or unregistered
+account-admin requirement still requires a dedicated account.
+
 ---
 
 ## 9. Relationship To Project-Specific Doctrine
@@ -598,6 +648,10 @@ For `prodbox`:
    `prodbox-state`
 4. general integration setup and cleanup ownership is defined in [Integration Fixture Doctrine](./integration_fixture_doctrine.md)
 5. unit vs integration execution policy is defined in [Unit Testing Policy](./unit_testing_policy.md#2-unit-vs-integration-tests)
+6. registered retained-resource inventory and `aws-ses` desired-presence preparation are defined in
+   [`DEVELOPMENT_PLAN/substrates.md`](../../DEVELOPMENT_PLAN/substrates.md#resource-lifecycle-classes)
+   and
+   [AWS Integration Environment Doctrine §4.6](./aws_integration_environment_doctrine.md#46-retained-ses-desired-presence-preparation)
 
 ---
 

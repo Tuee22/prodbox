@@ -200,6 +200,7 @@ commandPathOfRequest request =
         NativeHost hostCommand ->
           case hostCommand of
             HostEnsureTools -> ["host", "ensure-tools"]
+            HostCheckSesReadiness -> ["host", "check-ses-readiness"]
             HostCheckPorts -> ["host", "check-ports"]
             HostInfo -> ["host", "info"]
             HostFirewallGatewayRestrict _ -> ["host", "firewall", "gateway-restrict"]

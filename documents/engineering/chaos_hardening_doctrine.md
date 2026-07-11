@@ -2,7 +2,7 @@
 
 **Status**: Authoritative source
 **Supersedes**: N/A
-**Referenced by**: documents/engineering/README.md, CLAUDE.md, documents/engineering/tla_modelling_assumptions.md
+**Referenced by**: DEVELOPMENT_PLAN/phase-2-gateway-dns.md, documents/engineering/README.md, CLAUDE.md, documents/engineering/distributed_gateway_architecture.md, documents/engineering/tla_modelling_assumptions.md
 **Generated sections**: none
 
 > **Purpose**: A treatise and working doctrine for hardening decisions made under concurrency — *Extract*
@@ -61,10 +61,12 @@ of these hold:
 1. **Decisions under concurrency** — the system takes branches (claim or yield, accept or reject, retry
    or fail, promote or wait) whose correctness depends on state that other actors can change *while the
    decision is being made*.
-2. **Coordination only through shared, durable substrates** — replicas and processes share no in-memory
-   state; they agree only through a database, a log, a broker, a cache, or a consensus store. (Shared
-   in-process memory is a different problem with different tools; it is out of scope — see the honest
-   limit at the end of this section.)
+2. **Coordination only through a named shared protocol/substrate** — replicas and processes share no
+   address-space state; they agree only through a database, a durable log, a broker, a cache, a
+   consensus store, or an authenticated peer protocol with explicit recovery semantics. Durability is
+   a property to name, not assume: the gateway's bounded hot state is recoverable from peers but is not
+   the durable at-least-once store. (Shared in-process memory is a different problem with different
+   tools; it is out of scope — see the honest limit at the end of this section.)
 3. **A safety invariant no single process can enforce alone** — the property that must hold (*at most one
    owner*, *exactly-once effect*, *no split-brain write*) belongs to a protocol spanning several actors
    plus the substrate, not to any one process.
@@ -214,7 +216,7 @@ and Inject for the rare case that needs it, and is kept deliberately subordinate
 
 **And in this codebase, all three are Haskell.** That is not incidental. The quiet third move — make the
 decision a pure value — is the native idiom of a typed functional language, and prodbox already lives
-there: pure decision functions over an event log (`canWriteDns`, `nodeDisposition` in
+there: pure decision functions over bounded semantic replica state (`canWriteDns`, `nodeDisposition` in
 `src/Prodbox/Gateway/Types.hs`), the **Plan / Apply** split (a pure `build` produces a value; an effectful
 `apply` is the only thing that touches the world), the type system as a zero-cost design check. The payoff,
 and the spine of §10, is a single ladder: make the **decision** pure (Extract), then the **command** pure
@@ -403,9 +405,10 @@ its input types make *unknown* and each distinguished state representable; safet
 an explicit fence or live in one atomic snapshot; the apply step revalidates that fence when required; and
 a property test exhausts `(Snapshot × Observation) → Decision`. If the only test of a decision is an
 integration test, you have not done it — the decision is still entangled with effects. This is already the
-shape of the prodbox gateway: `nodeDisposition` and `canWriteDns` (`src/Prodbox/Gateway/Types.hs`) are pure
-folds over the commit log, and `handlePeerRequest` (`src/Prodbox/Gateway/Peer.hs`) is a pure partition of
-an inbound event batch; the daemon loops only *apply* what those functions decide. The repo's
+shape of the landed prodbox gateway: `Prodbox.Gateway.State` owns the pure bounded semantic fold,
+`Prodbox.Gateway.Peer` owns pure signed delta/repair verification, and
+`Prodbox.Gateway.DnsAuthority` constructs an effect action only from agreeing credential,
+continuity, and claim witnesses. The daemon loops only *apply* what those functions decide. The repo's
 [interpreter-only mocking doctrine](./unit_testing_policy.md) is the same rule from the test side — pure
 code never touches a mock, because there is no effect in it to stub.
 
@@ -414,9 +417,10 @@ ever as sound as the observation and fence handed to it; a point-in-time read of
 be invalidated immediately after capture unless the protocol or the apply step handles that invalidation.
 Whether the protocol of *snapshot → observe → decide → fenced apply* guarantees the cluster-wide
 invariant is a question this move structurally cannot answer. **That is Model (§9).** (The strongest form
-of Extract makes the observation a *fold over a replicated append-only log*, so the decision is pure
-*because its input is convergent*, not merely because it was wrapped — the most durable shape this move
-can take, where the substrate allows it. But that convergent-fold form converges **only within one
+of Extract makes the observation a *fold over convergent replicated state* — an append-only durable log
+where history is required, or a compactable semilattice/semantic snapshot where superseded history is
+not — so the decision is pure *because its input is convergent*, not merely because it was wrapped. But
+that convergent-fold form converges **only within one
 consistency boundary** (§16): where the log is replicated asynchronously across a boundary and both sides
 append, each side's fold stays perfectly pure and the two results can still disagree. Purity does not
 imply agreement once the substrate has a boundary — a thread §16 picks up.)
@@ -455,8 +459,8 @@ views converge* — model it with that condition explicit, and verify two things
 inside the condition, and that any violation outside it (under partition) is **bounded and self-healing**
 rather than permanent. The canonical failover hazard the model must rule out is a **deposed actor that
 still believes it owns the resource and keeps acting.** The remedy is not a local flag but to gate every
-owner-only action on **convergent proof of current ownership** — the §8 log-fold, where the action is
-permitted only when the actor observes its own current claim, unsuperseded, in the replicated log — so a
+owner-only action on **convergent proof of current ownership** — the §8 semantic fold, where the action is
+permitted only when the actor observes its own current claim unsuperseded in replicated state — so a
 stale owner cannot act on a belief the rest of the cluster has already overwritten.
 
 **What this move cannot see — the honest limit.** Model checks the **design, not the code.** A green
@@ -530,7 +534,7 @@ change**, not a one-time edit. (prodbox starts from a good place — structured 
 rule: `withAsync`, not `forkIO`, which `CheckCode.hs` forbids — so the shapes lift cleanly.) And the move
 has a fidelity ceiling: its marquee scenario, several simulated actors racing, only faithfully reproduces
 production when they genuinely share *in-process* state. The gateway daemons do **not** — they coordinate
-through the network and the commit log — so an `IOSim` run of one daemon rests on a hand-built stub of its
+through the network and replicated semantic state — so an `IOSim` run of one daemon rests on a hand-built stub of its
 peers, and the catastrophic *cross-actor* invariant (two writers) is still better served by the TLA+
 model. So Simulate stays the one technique the cadence keeps parenthetical: never a fourth move beside
 Extract, Model, and Inject, and **not adopted in prodbox today** — it is the gap-closer to reach for,
@@ -645,10 +649,12 @@ right. (Rules R1–R8 have a first-axis core, stated here; several gain a cross-
 and R9 is purely cross-boundary and lives there.)
 
 - **R1 — No shared in-memory state between replicas; name the substrate's consistency boundary.**
-  Replicas coordinate only through durable shared substrates. Any in-memory cross-replica assumption is a
-  split-brain waiting to happen, and it is invisible to Model. (A substrate's atomicity, ordering, and
-  convergence hold only *within* one consistency boundary; across one, the substrate is asynchronous —
-  the §16 axis. The classification rule that belongs to R1 in that world is stated in §17.)
+  Replicas coordinate through a named shared substrate or authenticated peer protocol whose
+  durability and recovery semantics are explicit. Any unstated in-memory cross-replica assumption is
+  a split-brain waiting to happen, and it is invisible to Model. (A substrate's atomicity, ordering,
+  and convergence hold only *within* one consistency boundary; across one, the substrate is
+  asynchronous — the §16 axis. The classification rule that belongs to R1 in that world is stated in
+  §17.)
 - **R2 — Determinism in tests: inject time and scheduling; never assert on wall-clock.** Tests drive
   timing and ordering through injected hooks and seams, not real delays. Wall-clock tests are slow,
   flaky, and — fatally — cannot deterministically reproduce the interleaving that exposes a §3 defect.
@@ -662,9 +668,12 @@ and R9 is purely cross-boundary and lives there.)
   restart from clean state (negatively-acknowledge in-flight work, kill the child, exit non-zero) rather
   than attempting intricate in-process recovery. Crash-only paths have far smaller state spaces for Model
   and Inject to cover. (The pattern is Candea & Fox, *Crash-Only Software*, HotOS 2003.)
-- **R5 — Bound everything.** Every timeout, retry budget, queue depth, and wait is explicitly finite.
-  (This is Extract's "bound everything" sub-rule promoted system-wide: an unbounded effect is an instant
-  no decision can reason about and no model can scope.)
+- **R5 — Bound everything.** Every retained-state cardinality, byte/frame size, parser input,
+  in-flight operation count, child-process concurrency, timeout, retry budget, queue depth, and wait is
+  explicitly finite. A cgroup limit contains an omitted bound; it does not supply one. Likewise, a
+  point-in-time Ready result does not prove stability across a window. (This is Extract's "bound
+  everything" sub-rule promoted system-wide: an unbounded effect is an instant no decision can reason
+  about and no model can scope.)
 - **R6 — Structured concurrency only.** Coordination paths use scoped concurrency (spawn-within-a-scope,
   race, cancel-on-exit) — never unstructured fire-and-forget tasks or ad-hoc sleeps. Structured scopes
   make cancellation and async-exception safety analyzable; unstructured tasks leak and hide races. (The
@@ -1070,7 +1079,7 @@ Model → (Simulate) → extend-Inject is exactly the sequence that closes it.
 
 ---
 
-## Appendix B — Worked example (fenced): single authoritative writer elected over a replicated log
+## Appendix B — Worked example (fenced): single authoritative writer elected over replicated semantic state
 
 > A second worked example, and the one this whole doctrine is grounded in: **the prodbox gateway** — the
 > ranked daemons that keep exactly one public DNS A record on the elected leader. It exercises what
@@ -1085,18 +1094,27 @@ Model → (Simulate) → extend-Inject is exactly the sequence that closes it.
 > [distributed_gateway_architecture.md](./distributed_gateway_architecture.md). Cite those when scheduling
 > or implementing gateway work; cite this appendix for the method it illustrates.
 
+> **Implementation-status note.** Sprint
+> [2.31](../../DEVELOPMENT_PLAN/phase-2-gateway-dns.md) landed the bounded
+> state/delta/per-emitter-repair and credential-gated effect shape used in this worked example.
+
 **The system.** A small fixed set of ranked daemons must keep exactly one public DNS A record pointing at
 whichever of them is the elected leader, so traffic always reaches a live owner. The daemons share no
-in-memory state; they coordinate only through a **replicated, append-only, signed event log** (claim /
-yield / heartbeat / dns-write entries), reconciled peer-to-peer by idempotent anti-entropy push. The only
-externally-visible effect is the DNS write. The invariant: **at most one daemon writes the DNS record —
+address-space state; they converge a **bounded signed semantic replica state**: latest heartbeat and
+ownership evidence per Orders member, bounded replay/diagnostic windows, and a monotonic
+receive-cursor vector keyed by emitter.
+Peers reconcile by idempotent bounded deltas or a signed per-emitter semantic checkpoint plus a
+bounded suffix. Each daemon separately retains only its own committed continuity anchor and at most
+one exact staged assertion; that authority prevents sequence reset across a total peer restart but
+does not preserve the discarded semantic history. The only externally-visible effect is the DNS
+write. The invariant: **at most one daemon writes the DNS record —
 once the daemons' views have converged.** That conditional clause is deliberate and load-bearing (R7): the
 invariant is *not* absolute. It meets the §2 gate — decisions under concurrency (claim / yield / write),
-coordination only through the shared log, and a *no-two-writers* invariant no single daemon can enforce
+coordination only through the peer protocol, and a *no-two-writers* invariant no single daemon can enforce
 alone.
 
 **The defect (§3 made concrete).** Each daemon decides "am I the owner, and may I write DNS?" from its
-local view of peer liveness (heartbeat ages) and the log. The naive path reads a *peer heartbeat older
+local view of peer liveness (heartbeat ages) and replicated ownership evidence. The naive path reads a *peer heartbeat older
 than the timeout* as "that peer is dead," elects itself, and writes DNS on the premise "I am the sole
 owner" — a premise that may already be false. This is *timeout-coerces-unknown*: a missing heartbeat means
 *unreachable-or-slow*, not provably *dead*. It compounds with *state-conflation* if the daemon collapses
@@ -1104,15 +1122,18 @@ owner" — a premise that may already be false. This is *timeout-coerces-unknown
 (inbound freshness) — two distinct facts that a one-way partition drives apart, and that must be tracked as
 **separate** observations, not one boolean.
 
-**Extract applied.** Make the decision a pure function of a convergent input (§8, log-fold form). Election
+**Extract applied.** Make the decision a pure function of a convergent bounded input (§8). Election
 is `decide : (orders, heartbeat-observations, up-set) → owner`, a *deterministic* total function over the
 ranked node set — given identical observations, every daemon computes the same owner, so convergence alone
-removes accidental split-brain. The owner-only action is gated by a second pure predicate over the **log**:
-*may-write = (I am the computed owner) ∧ (my latest claim in the replicated log is unsuperseded by a later
-yield)*. Because the gate folds over the convergent log rather than local belief, it is pure *because its
-input converges*. Note the §8 typed-unknown scoping at work: the daemon **does** coerce "stale heartbeat →
+removes accidental split-brain. The owner-only action is gated by a second pure predicate over the
+**semantic ownership view**: *may-write = (I am the computed owner) ∧ (my latest replicated claim is
+unsuperseded by a later yield) ∧ (a usable DNS credential generation was observed) ∧ (the retained
+continuity fence is current) ∧ (the claim is bound to that generation and fence)*. Because the gate
+folds over a convergent semantic projection rather than local belief, it is pure *because its input
+converges*. Note the §8 typed-unknown scoping at work: the daemon **does** coerce "stale heartbeat →
 drop peer from the up-set," but that coercion only changes *who attempts to lead* (liveness); it never
-authorizes a write, because the write is gated by the log, not by the heartbeat. The coercion is therefore
+authorizes a write, because the write is gated by ownership, credential, claim, and continuity
+evidence, not by the heartbeat. The coercion is therefore
 licensed — it cannot violate safety. The pure `decide` and `may-write` are exhausted by property tests
 with no cluster or clock.
 
@@ -1124,15 +1145,15 @@ flowchart LR
   T2 --> T3["self-elect and write DNS"]
   T3 --> T4["act on sole-owner belief"]
   L1["after: snapshot orders + observations"] --> L2["pure deterministic owner decision"]
-  L2 --> L3["may-write checks unsuperseded claim"]
-  L3 --> L4["write DNS only if gate passes"]
+  L2 --> L3["may-write checks claim + credential + continuity fence"]
+  L3 --> L4["construct typed DNS action only if gate passes"]
   T4 -->|"refactor into"| L1
 ```
 
 **The impossibility and the synchrony premise (R7, R8).** Under partition you cannot have both *no two
 writers* and *autonomous failover progress* (FLP/CAP). This system makes the R7 choice **explicit and
 availability-first**: an isolated daemon may self-elect as a failsafe, so under severe partition the
-absolute single-writer invariant is not claimed. The DNS write stays gated by the local log view, which
+absolute single-writer invariant is not claimed. The DNS write stays gated by the local semantic view, which
 means any split-brain admitted by the availability choice is *temporary* — its duration bounded by the
 partition itself, and its healing latency once views reconverge bounded by propagation — and
 **deterministically heals on reconvergence** (the losing side observes a superseding claim or yield and
@@ -1142,26 +1163,24 @@ instantiation — also **availability-first** under partition — and its model 
 [tla_modelling_assumptions.md §6](./tla_modelling_assumptions.md#6-flp-impossibility-acknowledgment) and
 [distributed_gateway_architecture.md §5](./distributed_gateway_architecture.md#5-safety-boundary-important);
 the §5 "safety boundary" is the FLP impossibility *limit*, not a safety-first choice.) Safety further rests
-on a **bounded clock-skew premise** (R8): freshness and claim/yield ordering compare wall-clock UTC stamps
-across daemons, so a drifting clock breaks the ordering the invariant assumes. The premise is named with an
-explicit bound (`max_clock_skew_seconds`), **enforced** by rejecting inbound events whose stamps fall
-outside it, and **monitored** by exporting the maximum observed inter-node skew so drift is visible before
-it crosses the bound. No move proves this premise; it is recorded **assumed**.
+on a **bounded clock-skew premise** (R8): heartbeat freshness compares wall-clock UTC stamps across
+daemons, so a drifting clock breaks the liveness view the election consumes. Claim/yield ordering
+itself uses the fixed emitter epoch/sequence cursor. The skew premise is named with an explicit
+bound (`max_clock_skew_seconds`), **enforced** by rejecting inbound heartbeats whose stamps fall
+outside it, and **monitored** by exporting the maximum observed inter-node skew so drift is visible
+before it crosses the bound. No move proves this premise; it is recorded **assumed**.
 
-**Model applied.** Model the protocol: the ranked nodes, an up-set derived from heartbeat-timeout, and
-actions *claim / yield / dns-write / crash*, explored to exhaustion at a scope matching the real node count
-(e.g. 3 nodes). State the safety properties — *deterministic election for equal views*, *no tug-of-war once
-views converge*, *no two simultaneous DNS writers when stable*, *every dns-write is preceded by a claim*,
-*a yield precedes any re-claim*, *a sole survivor elects itself* — and a liveness property — *after views
-converge, a cluster with a live node eventually has exactly one writer*. The model rules out the canonical
-failover hazard of §9: a **deposed daemon that still believes it owns the record and keeps writing** —
-barred because a write requires an unsuperseded self-claim in the replicated log, which a deposed daemon
-cannot have once its yield (or the new owner's claim) has propagated. Honest limits (§9, §12): the model is
-in **logical time with a bounded scope**, so it proves nothing about node counts beyond the scope, nothing
+**Model applied.** The finite TLC model explores two ranked nodes with bounded epoch, sequence,
+Orders, and time domains. It checks the documented safety invariants, including bounded types,
+cursor/authority ordering, credential-and-continuity prerequisites, claim-before-write, no sequence
+wrap, and at most one eligible writer once views are stable. It does not claim liveness or coverage
+of the production three-peer cardinality. Its `ClaimPrecedesWrite` invariant ensures the abstract
+writer has a current self-claim; native semantic-fold and partition tests exercise the corresponding
+yield/takeover convergence behavior. Honest limits (§9, §12): the model is
+in **logical time with a bounded scope**, so it proves nothing about node counts beyond two, nothing
 about unbounded runs, and — critically — nothing about the **real-time clock-skew premise** it abstracts
-away (that lives in R8's ledger row, not the model). Two adjacent invariants earn their own models once
-this one proves out: at-least-once + idempotent log merge (R3), and recovery after an availability-zone
-outage (R4).
+away (that lives in R8's ledger row, not the model). Native properties separately exercise concrete
+delta/repair merge, cursor recovery, byte bounds, and retained-authority crash points.
 
 **Inject applied.** The system already injects benign faults (rolling restarts, isolated failover). Extend
 that harness with the §11 adversarial scenarios that target what Extract and Model assert: partition the
@@ -1176,7 +1195,7 @@ and inject **clock skew beyond the configured bound** to confirm the daemon reje
 
 ```mermaid
 flowchart LR
-  A["Extract · pure decide() + may-write()<br/>over the convergent log"]
+  A["Extract · pure decide() + may-write()<br/>over convergent semantic state"]
   B["Model · election/ownership model<br/>≤1 writer once converged (R7)"]
   S["Simulate (optional)<br/>two in-process claimants, one record"]
   C["Inject · extend fault harness<br/>partition + kill mid-claim, assert chosen R7 mode"]
@@ -1184,10 +1203,11 @@ flowchart LR
   A -->|"if Simulate skipped"| C
 ```
 
-**The ledger this example must keep** (§12): *proven* — election purity and the may-write fold (decision
-layer), and the modeled safety/liveness properties (for the model, at scope 3); *tested* — the partition
-and kill-mid-claim fault scenarios; *assumed* — the bounded clock-skew premise (R8), model↔code
-refinement, and any behaviour above the modeled node count. Reading §15's matrix, the rows that make this
+**The ledger this example must keep** (§12): *proven* — pure decision-layer properties and the seven
+modeled safety invariants for the finite two-node model; *tested* — bounded delta/repair convergence,
+continuity crash points, credential-gate refusal, and the native partition scenario; *assumed* — the
+bounded clock-skew premise (R8), model↔code refinement, and behaviour above the modeled node count.
+Reading §15's matrix, the rows that make this
 subsystem distinctive are *impossibility-bounded invariant (R7)* — the condition stated, the
 availability-first mode chosen, the conditional invariant modeled, and a partition fault asserting the
 violation is bounded and heals — and *synchrony assumption (R8)* — the skew bound named, enforced,
@@ -1275,7 +1295,8 @@ of failover may be permanently lost within the declared data-loss budget.* This 
 regardless of mode (R8/R9); and (2) the **deposed-actor window** — a region that loses singleton authority
 keeps acting for up to the replication lag until the superseding claim propagates across the async gate
 (§9's remedy *weakened across the boundary*) — a bounded, self-healing R7 violation. The merge is where
-Appendix B's single-log "heals itself" does **not** generalize (R7 reconciliation): **content-addressed
+Appendix B's single semantic convergence domain "heals itself" does **not** generalize (R7
+reconciliation): **content-addressed
 blobs merge trivially** (the union of immutable, self-naming objects is conflict-free); the **CAS "latest"
 pointer is the only divergent point and needs an explicit deterministic, total merge** — a
 **timestamp-free** fold over the union of both regions' pointer-advance claims (ordered by

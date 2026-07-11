@@ -91,6 +91,7 @@ import Prodbox.Capacity.Config
   , NamespaceQuota (..)
   , ResourcePlan (..)
   , ResourceVector (..)
+  , RuntimeMemoryProfile (..)
   , WorkloadResourceProfile (..)
   , defaultCapacitySection
   , resourceVectorMinus
@@ -845,6 +846,8 @@ renderSettingsDisplay showSecrets settings =
         ++ renderNamespaceQuotas (namespace_quotas (resource_plan (capacity config)))
     , "capacity.resource_plan.workload_profiles="
         ++ renderWorkloadProfiles (workload_profiles (resource_plan (capacity config)))
+    , "capacity.runtime_memory_profiles="
+        ++ renderRuntimeMemoryProfiles (runtime_memory_profiles (capacity config))
     , "cluster_topology.type=" ++ renderClusterType (clusterType (cluster_topology config))
     , "storage.manual_pv_host_root=" ++ resolvedManualPvHostRoot settings
     , "pulumi_state_backend.bucket_name="
@@ -1328,6 +1331,18 @@ renderWorkloadProfiles profiles =
         ]
     )
 
+renderRuntimeMemoryProfiles :: [RuntimeMemoryProfile] -> String
+renderRuntimeMemoryProfiles profiles =
+  Text.unpack
+    ( Text.intercalate
+        ";"
+        [ runtime_profile_id profile
+            <> ":heap_cap_bytes="
+            <> Text.pack (show (heap_cap_bytes profile))
+        | profile <- profiles
+        ]
+    )
+
 renderBgpPeers :: Maybe [MetallbBgpPeer] -> String
 renderBgpPeers maybePeers =
   case maybePeers of
@@ -1478,6 +1493,8 @@ renderConfigDhall config =
     , "        , workload_budget = " ++ dhallCapacityBudget (workload_budget (capacity config))
     , "        , region_quota = " ++ dhallCapacityBudget (region_quota (capacity config))
     , "        , resource_plan = " ++ dhallResourcePlan (resource_plan (capacity config))
+    , "        , runtime_memory_profiles = "
+        ++ dhallRuntimeMemoryProfiles (runtime_memory_profiles (capacity config))
     , "        }"
     , "    , cluster_topology = " ++ dhallClusterTopology (cluster_topology config)
     , "    , storage = Config.default.storage // {"
@@ -1567,6 +1584,10 @@ dhallCapacityBudget budget =
 dhallResourcePlan :: ResourcePlan -> String
 dhallResourcePlan =
   Text.unpack . Core.pretty . injectedValue (Dhall.inject @ResourcePlan)
+
+dhallRuntimeMemoryProfiles :: [RuntimeMemoryProfile] -> String
+dhallRuntimeMemoryProfiles =
+  Text.unpack . Core.pretty . injectedValue (Dhall.inject @[RuntimeMemoryProfile])
 
 type DhallExpr = Core.Expr Src Void
 

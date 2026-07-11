@@ -8,9 +8,14 @@
 [substrates.md](substrates.md),
 [legacy-tracking-for-deletion.md](legacy-tracking-for-deletion.md),
 [phase-0-planning-documentation.md](phase-0-planning-documentation.md),
+[phase-1-runtime-cli-aws-foundations.md](phase-1-runtime-cli-aws-foundations.md),
+[phase-2-gateway-dns.md](phase-2-gateway-dns.md),
+[phase-3-chart-platform-vscode.md](phase-3-chart-platform-vscode.md),
+[phase-4-lifecycle-canonical-paths.md](phase-4-lifecycle-canonical-paths.md),
 [phase-5-canonical-test-suite.md](phase-5-canonical-test-suite.md),
 [phase-6-clean-room-handoff.md](phase-6-clean-room-handoff.md),
 [phase-7-aws-substrate-foundations.md](phase-7-aws-substrate-foundations.md),
+[phase-8-email-invite-auth.md](phase-8-email-invite-auth.md),
 [../documents/documentation_standards.md](../documents/documentation_standards.md),
 [../documents/engineering/aws_integration_environment_doctrine.md](../documents/engineering/aws_integration_environment_doctrine.md),
 [../documents/engineering/cli_command_surface.md](../documents/engineering/cli_command_surface.md),
@@ -292,10 +297,10 @@ declared in `src/Prodbox/Prerequisite.hs`; and is torn down on suite exit.
 
 The authoritative substrate inventory is [substrates.md](substrates.md). Today's substrates are:
 
-| Substrate | Inventory | Suite parity |
-|-----------|-----------|--------------|
-| Home local | Local RKE2 on the operator host | ✅ Full suite |
-| AWS | Disposable Pulumi stacks `aws-eks`, `aws-eks-subzone`, and `aws-test` | 🔄 Phase 7 substrate parity, targeted Phase 8 invite capture/link-follow, and local Sprint 8.5 POST/OIDC unit proof are green; AWS aggregate plus live POST/OIDC parity remain tracked in [phase-8-email-invite-auth.md](phase-8-email-invite-auth.md) |
+| Substrate | Inventory | Suite-parity authority |
+|-----------|-----------|------------------------|
+| Home local | Local RKE2 on the operator host | Current status is tracked only in [README.md → Substrate Parity](README.md#substrate-parity) and the per-validation table in [substrates.md](substrates.md). |
+| AWS | Disposable Pulumi stacks `aws-eks`, `aws-eks-subzone`, and `aws-test` | Current status is tracked only in [README.md → Substrate Parity](README.md#substrate-parity) and the per-validation table in [substrates.md](substrates.md). |
 
 #### Substrate lifecycle
 

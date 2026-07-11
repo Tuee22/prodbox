@@ -29,6 +29,12 @@ metadata:
     {{- include "gateway.labels" $ | nindent 4 }}
     gateway-node: {{ $nodeId | quote }}
 data:
+{{- if $.Values.tier0.prodboxDhall }}
+  # Non-secret binary context used by target-secret identity attestation. The
+  # daemon loader prefers this ConfigMap sibling over the image-baked fallback.
+  prodbox.dhall: |-
+{{ $.Values.tier0.prodboxDhall | indent 4 }}
+{{- end }}
   config.dhall: |-
     { schemaVersion = 1
     , vault =

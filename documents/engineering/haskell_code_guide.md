@@ -80,8 +80,9 @@ The current supported worktree has started converging on a small shared foundati
   MinIO / Redis / PostgreSQL service runners, the constructor-owned transient-failure classifier,
   and the service-level retry helper.
 - `src/Prodbox/Naming.hs` owns DNS-1123-safe resource naming helpers.
-- `src/Prodbox/StateMachine.hs` owns phantom-indexed transition surfaces for multi-state gateway,
-  Pulumi, and chart workflows.
+- `src/Prodbox/Lifecycle/ReadinessObservation.hs` owns flat exhaustive projections of externally
+  authoritative readiness. GADT-indexed transitions remain reserved for real in-process authority;
+  the former unused `Prodbox.StateMachine` experiment is deleted.
 
 These modules are closed doctrine-adoption surfaces. New code should prefer them over ad-hoc
 reimplementations.
@@ -611,11 +612,43 @@ rollout/operator/registry/gateway/systemd/Vault primitives remain Sprints
 - Driving a readiness poll through the error retrier, or modelling a "still pending" reading as
   a retryable error.
 
+## Runtime Memory And RTS Policy
+
+The authored Kubernetes limit is not a Haskell heap plan. The landed
+`Prodbox.Capacity.RuntimeMemory` module constructs an opaque `RuntimeMemoryPlan` whose inner
+inequality bounds retained Haskell state, in-heap decode/transport scratch, and other heap reserve
+under `heap_cap`; its outer inequality bounds that heap cap plus native/non-heap, admitted
+child-process, kernel/cgroup, and safety reserves under the container limit. `PositiveBytes`,
+`ChildProcessBudget`, and the plan hide their constructors, while `RuntimeMemoryError` preserves the
+exact failed term or inequality. The authoritative algebra is in
+[Resource Scaling Doctrine §2D](./resource_scaling_doctrine.md#2d-runtime-memory-decomposition-and-observation).
+
+`Prodbox.Capacity.Config.runtimeMemoryPlanForProfile` derives the cgroup authority from the matching
+workload profile's `ResourceEnvelope.limit.memory_mib`; runtime config cannot author a second
+container limit. The validator rejects unbounded or malformed child schedules. Capacity one uses
+the maximum serialized peak, while greater concurrency requires one peak per simultaneous permit
+and sums them.
+
+`RuntimeMemory.runtimeMemoryRtsArguments` derives `+RTS -M<exact-bytes> -RTS` solely from the
+validated heap cap. `ChartPlatform.valuesForGateway` emits those arguments and the gateway chart
+appends them to the container argv, before application code runs. Only the `prodbox` executable
+stanza enables `-rtsopts`; no `-with-rtsopts`, `GHCRTS`, Docker setting, or Helm default owns a heap
+value. The same union image continues to serve gateway, API, and WebSocket roles without imposing a
+single global heap cap on every role.
+
+The plan projects a typed high-water threshold, but external behavior stays outside the
+constructor proof. Sprint `2.31` landed gateway-specific bounded state/transport and capacity-one
+child-permit enforcement through `Prodbox.Gateway.Bounds`, `Prodbox.Gateway.ChildSchedule`, and the
+daemon interpreters. Sprint `5.16` owns restart/OOM/high-water observation and the non-blocking live
+soak. Profiling calibrates authored values; it never replaces either nested validation or external
+observation.
+
 ## Application Environment
 
 Use an `Env` record threaded via `ReaderT Env IO`:
 
 ```haskell
+-- Example: application environment shape
 data Env = Env
   { envConfig :: Config
   , envLog    :: LogFn
@@ -644,4 +677,5 @@ registry, shutdown signal, hot-reloadable live config). See
 - [Code Quality Doctrine](./code_quality.md)
 - [Pure FP Standards](./pure_fp_standards.md)
 - [Dependency Management](./dependency_management.md)
+- [Resource Scaling Doctrine](./resource_scaling_doctrine.md)
 - [Development Plan](../../DEVELOPMENT_PLAN/README.md)

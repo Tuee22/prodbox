@@ -24,11 +24,13 @@ documents/engineering/integration_fixture_doctrine.md,
 documents/engineering/lifecycle_reconciliation_doctrine.md,
 documents/engineering/prerequisite_dag_system.md, documents/engineering/prerequisite_doctrine.md,
 documents/engineering/pure_fp_standards.md, documents/engineering/refactoring_patterns.md,
+documents/engineering/bootstrap_readiness_doctrine.md,
+documents/engineering/resource_scaling_doctrine.md,
 documents/engineering/streaming_doctrine.md, documents/engineering/test_topology_doctrine.md
 **Generated sections**: none
 
-> **Purpose**: Define the interpreter-only mocking doctrine and public test-runner contract for
-> `prodbox`.
+> **Purpose**: Define the interpreter-only mocking doctrine, pure runtime-stability oracle boundary,
+> and public test-runner contract for `prodbox`.
 
 ## 0. Canonical Skip Policy Statement
 
@@ -80,6 +82,24 @@ In the current repository:
 | Daemon lifecycle tests | Daemon startup and reload coverage per [config_doctrine.md](../../documents/engineering/config_doctrine.md): the `--config <path>` Dhall-load contract, file-watch reload trigger (write a new Dhall to the watched path and assert the daemon picks up the change), boot-vs-live classification (boot-field change drains and exits with `ExitSuccess`; live-field change atomic-swaps `envLiveConfig`), real process startup through the repository subprocess boundary, `/readyz` waits through the shared retry helper, SIGTERM drain, second-SIGTERM forced-exit assertions, and daemon health endpoint goldens | `test/daemon-lifecycle/Main.hs` via `cabal test prodbox-daemon-lifecycle` |
 | Pulumi harness tests | Ephemeral stack-state ownership, typed output handoff, and forced-failure cleanup around the AWS substrate's Pulumi provisioning helpers | `test/pulumi/Main.hs` via `cabal test prodbox-pulumi` |
 | Golden tests | `/healthz`, `/readyz`, and `/metrics` response shapes; CLI `--help`, `commands --tree`, `commands --json` output; rendered Plans; generated docs | `test/golden/` via `prodbox-unit` |
+
+Gateway bounded-runtime coverage crosses these verification surfaces without crossing their effect
+boundary:
+
+- pure unit/property tests generate duplicate, reordered, lagged, and snapshot-repaired peer deltas
+  and prove semantic convergence plus every cardinality/byte bound;
+- daemon lifecycle tests prove that `/healthz` and `/readyz` remain constant-time lifecycle
+  projections and never call the state renderer or an external backend;
+- chart-probe tests pin the typed/generated values golden, the complete values-backed Deployment
+  binding, and independent liveness/readiness fixtures that must reject `/v1/state`;
+- `gateway-pods` runs a structured continuous Kubernetes Pod/Event/metrics observer plus explicit
+  rollout-boundary/final samples. Every observation is serialized through one concurrency-safe,
+  run-scoped recorder before the pure time-windowed stability oracle in
+  `Prodbox.Test.GatewayRuntimeStability` classifies it.
+
+The bounded/probe bullets are implemented by Sprints `2.31` and `3.25`. Sprint `5.16` implements
+the `gateway-pods` runtime-stability classifier, payload projection, shared run-wide recorder,
+continuous monitor, and final gate described below.
 
 Daemon lifecycle and golden treatment of health-endpoint responses are owned by
 Sprints `2.10`, `2.14`, and `2.16` per
@@ -138,6 +158,63 @@ requests and limits for every checked container/init container, and root-chart n
 objects matching the validated `capacity.resource_plan`. Unit tests pin the oracle; built-frontend
 integration fakes only the subprocess boundary.
 
+The gateway runtime-stability validation is deliberately not part of
+`resourceGuardrailReport`. Resource guardrails prove the authored plan's requests, limits, quotas,
+and QoS; they do not prove that a process stayed below its limit. The effect boundary gathers
+Kubernetes Pod, Event, and metrics JSON. `Prodbox.Test.GatewayRuntimeStability` parses those payloads
+and projects each gateway Pod into one flat exhaustive observation: restart-free Ready, restart
+delta, OOM residue, warning/failure memory pressure, Pending, or unobservable. Its warning and
+failure thresholds come from the validated `RuntimeMemoryPlan`, not separately authored constants.
+
+The run-wide fold is fail-closed:
+
+- the first restart delta, OOM residue, or failure-threshold high-water observation is an absorbing
+  `RuntimeUnhealthy` result;
+- the first missing, unreachable, or undecodable authoritative observation is an absorbing
+  `StabilityUnreachable` result;
+- warning-threshold pressure and Pending observations reset the consecutive-success count without
+  manufacturing fatal evidence;
+- a Pod UID replacement resets the healthy window, so a replacement becoming Ready cannot inherit
+  its predecessor's success samples; and
+- only the required consecutive complete-replica snapshots of restart-free Ready Pods can produce
+  `StableObserved` while the absorbing result remains empty.
+
+`TestRunner` creates the shared recorder before Phase `1.6/2` whenever `gateway-pods` is selected.
+On home it takes an explicit baseline and then starts the structured monitor before bootstrap. On
+AWS the compiled target gateway reconcile supplies the first point observation because the per-run
+target does not exist earlier; the monitor starts immediately afterward with a monitor-private EKS
+kubeconfig and an explicit Vault-derived AWS/Kubernetes subprocess environment. In both cases the
+runner waits for the monitor's first-observation handoff before allowing the remaining suite to
+proceed. On AWS this handoff occurs before SMTP synchronization or any dependent VS Code/API/
+WebSocket chart reconcile. Background observations, rollout-boundary samples, and the final gate
+share both the same state cell and an observation lock, so concurrent reads cannot lose or
+overwrite evidence.
+
+The monitor may be paused and drained only across a planned home/target gateway rollout in
+the compiled restore/lifecycle path. Pause waits for any observation already in flight, a planned
+reset clears only the healthy window, and the monitor resumes only after the post-reconcile point
+sample. No reset or pause clears an absorbing result. Every stability `kubectl` read carries
+`--request-timeout=5s` and is additionally bounded by GNU `timeout` plus a `System.Timeout`
+wall-clock deadline. Log text may enrich diagnostics only; it is never health evidence. Failure
+diagnostics retain pod name/UID, restart delta, termination reason/time, current limit, sampled
+high-water, both thresholds, and observation time.
+
+Whole observed-cluster replacement is a distinct boundary used by `eks-volume-rebind`. The runner
+pauses and drains, takes the pre-replacement sample, and resets only the healthy window before the
+validation recreates the target. AWS then uses the canonical
+`charts reconcile gateway --substrate aws` path to restore the substrate platform and gateway.
+After recreation, a refresh request/acknowledgement makes the monitor worker leave the old
+kubeconfig bracket and materialize a new one. A foreground sample must succeed while the monitor is
+still paused; only then does background observation resume. Absorbing evidence survives the entire
+replacement and context refresh.
+
+Sprint `5.16` post-refresh code-owned evidence is 17/17 focused unit tests, 2/2 built-frontend
+`gateway-pods` fixtures (healthy and a background-only OOM that remains absorbing through later
+healthy samples), 1494/1494 full unit tests, and the exact post-refresh full CLI integration suite
+at 47/47. `prodbox dev check` passes as the final repository closure gate. The live multi-peer substrate
+soak remains a non-blocking Standard-O validation
+item; these passing code-owned gates do not claim that soak ran.
+
 The `daemon-bootstrap` validation is code-owned transport proof for the post-bootstrap daemon
 boundary. Its pure `daemonBootstrapAuditReport` oracle requires the daemon bootstrap/lifecycle route
 set, rejects observed host MinIO port-forwarding, direct host Vault NodePort use, and host
@@ -178,10 +255,57 @@ the command contract.
    runbook only when their test plan does not require it, but still prove the external port `80`
    HTTP-to-HTTPS redirect after DNS records resolve to the configured public address.
 5. The sealed-Vault suite (`prodbox test integration sealed-vault`, Sprint `5.8`) is a
-   cluster-backed named validation. The code-owned surface is present as `ValidationSealedVault`
-   with the pure `sealedVaultAuditReport` forbidden-pattern oracle; full live closure remains gated
-   on deployed Vault state and the Sprint `7.14` Pulumi checkpoint interposition.
+   cluster-backed named validation. `ValidationSealedVault` and the pure
+   `sealedVaultAuditReport` forbidden-pattern oracle are code-owned, and the home live proof passed
+   with the encrypted Pulumi checkpoint interposition in place. AWS and parent/child federation
+   variants remain non-blocking substrate proof axes.
 6. Aggregate suites use the canonical validation ordering defined in `src/Prodbox/TestPlan.hs`.
+
+Retained SES preparation follows the same interpreter-only boundary, with coverage split across
+Sprints `4.47`/`5.17`/`8.10`. Sprint `4.47`'s focused pure/fake suites exercise the
+desired-present, lease, Model-B intent, and SMTP-repair primitives. Sprint `5.17` adds the
+capability-derived plan and target-selection boundary:
+
+- pure plan tables prove that validation sets containing `ValidationKeycloakInvite` select exactly
+  one opaque nested plan on the chosen substrate, with a typed target object-store precondition and
+  acquire/reconcile/await-ready/sync/release trace, while other sets select none;
+- the injected plan-interpreter tests prove target readiness precedes exactly one registered atomic
+  ensure, readiness/ensure failure blocks dependent charts, authority and sink stay distinct, and
+  no ordinary exit schedules `aws-ses` destroy;
+- Sprint `4.47`'s lease/desired-presence/SMTP interpreter tables prove acquire failure stops
+  immediately, every post-acquire failure or interruption releases, release failure remains
+  visible, and provider-presence waiting is bounded;
+- target-selection tables accept only the exact retained-home sink or canonical `aws-eks` identity
+  and SMTP coordinate, rejecting endpoint or identity substitution before mutation; and
+- the focused Sprint `5.17` recovery tests compose the real Phase-`4.47` target-commit interpreters
+  and prove stable predecessor read-back/global resolution before a different sink admits a new
+  generation or write; unobservable predecessor state fails closed.
+
+Sprint `5.17` closure evidence is 10/10 focused plan/recovery tests, 6/6 SES
+target-selection API tests, 12/12 global target-commit tests, and 1508/1508 full unit tests. Sprint
+`8.10` adds `Prodbox.Ses.Readiness` and keeps its proof at the same interpreter boundary:
+
+- captured-output tables exhaust domain identity type, sender verification, DKIM status/signing,
+  exact MX priority/target, active rule-set identity, enabled exact-recipient S3 action, and exact
+  bucket/prefix cases without spawning AWS;
+- capture tables prove that `head-bucket` is insufficient: the operational credential must list and
+  fetch the exact `inbound/.prodbox-readiness-capability-probe` object;
+- pure fold and bounded-poll tables distinguish `AwsSesReady`, retryable `AwsSesPending`, terminal
+  `AwsSesFailed`, and fail-closed `AwsSesUnobservable`, stop immediately on terminal states, and
+  preserve the final Pending reason on timeout;
+- transaction tests prove that every attempt observes complete provider presence before semantic
+  state, that SMTP materialization does not begin before Ready, and that timeout leaves long-lived
+  SES resources retained; and
+- built-frontend fixtures exercise the read-only `prodbox host check-ses-readiness` diagnostic and
+  its structured retry-the-same-harness remedy without permitting reconcile or ad-hoc AWS mutation.
+
+Fresh-account propagation and the real invite run remain a separate, non-blocking live-proof axis
+after these code-owned classifications pass.
+
+The prerequisite fixtures remain read-only. They may open the visible preparation gate, but they
+must not provision SES or encode a manual pre-provisioning assumption. See
+[Lifecycle Reconciliation Doctrine §3.1](./lifecycle_reconciliation_doctrine.md#desired-present-reconciliation-for-long-lived-resources)
+and [AWS Integration Environment Doctrine §4.6](./aws_integration_environment_doctrine.md#46-retained-ses-desired-presence-preparation).
 
 Sprint `5.6` makes this prerequisite surface **typed and minimal-and-precise**:
 
@@ -316,7 +440,7 @@ obligations.
   shared infrastructure (`aws-ses`, the long-lived `pulumi_state_backend`
   bucket), its end-to-end integration test is **not** part of the default
   canonical suite. It is gated behind an explicit nuke-validation suite
-  invocation; CI runs it only on explicit operator request.
+  invocation and runs only on explicit operator request.
 
 ## 8. Intent Ownership
 
@@ -343,9 +467,9 @@ the Haskell-style suite). There is no separate developer workflow for
 cloud-backed tests.
 
 Lint and style checks are part of the canonical test suite rather than a
-parallel CI-only workflow. The `<project>-haskell-style` `test-suite`
-stanza makes `cabal test` self-sufficient for style enforcement, so
-contributors and CI run the same command and fail in the same way.
+parallel workflow. The `<project>-haskell-style` `test-suite` stanza makes
+`cabal test` self-sufficient for style enforcement, so contributors and local
+automation run the same command and fail in the same way.
 
 ### Standard Testing Stack
 
@@ -400,7 +524,9 @@ or equivalent parser-level APIs rather than spawning subprocesses.
 Use `tasty-quickcheck` for property testing. Appropriate for parsers,
 serialization, normalization, transformations, formatting invariants.
 Example properties: `decode . encode == id`, render is deterministic,
-parser roundtrips.
+parser roundtrips. Bounded gateway protocol properties additionally cover duplicate/reordered delta
+idempotence, cursor monotonicity, snapshot/delta semantic equivalence, and retained
+cardinality/byte bounds; generating only happy-path chronological batches is insufficient.
 
 #### Golden Tests
 
@@ -441,6 +567,10 @@ Health-endpoint response shapes (`/healthz`, `/readyz`, `/metrics`) belong
 in the golden-test category. Shutdown signal tests assert that a single
 SIGTERM begins drain and a second SIGTERM (or timeout) forces exit.
 
+Lifecycle tests also assert that `/healthz` and `/readyz` are independent of event/state
+cardinality and injected backend latency. Full `/v1/state` rendering and deep backend readiness are
+tested separately; neither may be called from a Kubernetes lifecycle probe.
+
 Forbidden test patterns: `terminateProcess` without first attempting
 graceful shutdown, `threadDelay`-based readiness probes, polling for
 filesystem readiness markers when `/readyz` exists.
@@ -463,8 +593,8 @@ test-suite <project>-pulumi            (when infrastructure tests apply)
 ```
 
 `cabal test` runs every stanza. A single `tasty` tree spanning all tiers
-is forbidden: separate stanzas give Cabal-native parallelism, let CI and
-developers target one tier (`cabal test <project>-unit`), and isolate
+is forbidden: separate stanzas give Cabal-native parallelism, let developers
+and local automation target one tier (`cabal test <project>-unit`), and isolate
 dependency creep so heavy integration deps do not leak into the unit
 suite.
 
@@ -479,3 +609,6 @@ directly) builds the in-stanza test tree.
 - [Envoy Gateway Edge Doctrine](./envoy_gateway_edge_doctrine.md)
 - [Integration Fixture Doctrine](./integration_fixture_doctrine.md)
 - [Streaming Doctrine](./streaming_doctrine.md)
+- [Distributed Gateway Architecture](./distributed_gateway_architecture.md)
+- [Resource Scaling Doctrine](./resource_scaling_doctrine.md)
+- [Bootstrap Readiness Doctrine](./bootstrap_readiness_doctrine.md)

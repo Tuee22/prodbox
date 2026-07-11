@@ -15,6 +15,7 @@ library
         Prodbox.AwsEnvironment
         Prodbox.BuildSupport
         Prodbox.Capacity.Config
+        Prodbox.Capacity.RuntimeMemory
         Prodbox.Capacity.Storage
         Prodbox.CheckCode
         Prodbox.CLI.Charts
@@ -52,13 +53,22 @@ library
         Prodbox.EffectDAG
         Prodbox.EffectInterpreter
         Prodbox.Gateway
+        Prodbox.Gateway.Bounds
+        Prodbox.Gateway.ChildSchedule
         Prodbox.Gateway.Client
+        Prodbox.Gateway.Continuity
+        Prodbox.Gateway.ContinuityStore
         Prodbox.Gateway.Daemon
+        Prodbox.Gateway.DnsAuthority
         Prodbox.Gateway.Logging
         Prodbox.Gateway.ObjectStore
+        Prodbox.Gateway.Orders
         Prodbox.Gateway.Peer
         Prodbox.Gateway.PortForward
+        Prodbox.Gateway.Probe
         Prodbox.Gateway.Settings
+        Prodbox.Gateway.State
+        Prodbox.Gateway.TargetSecret
         Prodbox.Gateway.Types
         Prodbox.Host
         Prodbox.Host.Ensure
@@ -68,6 +78,8 @@ library
         Prodbox.Host.Tool
         Prodbox.Host.Wsl2
         Prodbox.Http.Client
+        Prodbox.Infra.AwsSesLeaseRole
+        Prodbox.Infra.AwsSesSmtpKey
         Prodbox.Infra.AwsProviderCredentials
         Prodbox.Infra.AwsEksSubzoneStack
         Prodbox.Infra.AwsEksTestStack
@@ -80,19 +92,32 @@ library
         Prodbox.CLI.Nuke
         Prodbox.Lifecycle.EbsVolume
         Prodbox.Lifecycle.AnchoredReconcile
+        Prodbox.Lifecycle.CheckpointAuthority
+        Prodbox.Lifecycle.CheckpointAuthorityStore
+        Prodbox.Lifecycle.AuthorityConfig
+        Prodbox.Lifecycle.DesiredPresence
         Prodbox.Lifecycle.FederatedVault
         Prodbox.Lifecycle.K8sDrain
+        Prodbox.Lifecycle.Lease
+        Prodbox.Lifecycle.LeaseInterpreter
+        Prodbox.Lifecycle.LeaseRuntime
         Prodbox.Lifecycle.LiveResidue
         Prodbox.Lifecycle.Preconditions
         Prodbox.Lifecycle.ReadinessObservation
         Prodbox.Lifecycle.ResidueStatus
         Prodbox.Lifecycle.ResourceClass
         Prodbox.Lifecycle.ResourceRegistry
+        Prodbox.Lifecycle.SmtpKeyRepair
+        Prodbox.Lifecycle.SmtpKeyRepairInterpreter
         Prodbox.Lifecycle.TagSweep
+        Prodbox.Lifecycle.TargetCommitInterpreter
+        Prodbox.Lifecycle.TargetCommitIntent
+        Prodbox.Lifecycle.TargetSecretStore
         Prodbox.Keycloak.Admin
         Prodbox.Keycloak.CredentialSetupForm
         Prodbox.Keycloak.Email
         Prodbox.Ses.Capture
+        Prodbox.Ses.Readiness
         Prodbox.Ses.SmtpPassword
         Prodbox.UsersAdmin
         Prodbox.Infra.MinioBackend
@@ -135,6 +160,7 @@ library
         Prodbox.Substrate
         Prodbox.Subprocess
         Prodbox.TestPlan
+        Prodbox.Test.GatewayRuntimeStability
         Prodbox.TestRestore
         Prodbox.TestRunner
         Prodbox.TestTopology
@@ -177,6 +203,7 @@ library
         cryptohash-sha256 ^>=0.11.102,
         dhall ^>=1.42,
         either ^>=5.0.3,
+        exceptions ^>=0.10.11,
         directory ^>=1.3.8.5,
         filepath ^>=1.4.2.2,
         fsnotify ^>=0.4,
@@ -206,7 +233,7 @@ executable prodbox
     hs-source-dirs:   app/prodbox
     other-modules:    Paths_prodbox
     default-language: GHC2021
-    ghc-options:      -Wall
+    ghc-options:      -Wall -rtsopts
     build-depends:
         base ^>=4.21.2.0,
         optparse-applicative ^>=0.18.1.0,
@@ -217,7 +244,23 @@ test-suite prodbox-unit
     main-is:          Main.hs
     hs-source-dirs:   test/unit test/support
     other-modules:
+        AwsSesLifecycle
+        AwsSesLeaseRole
+        AwsSesReadiness
+        AwsSesSmtpKey
+        DesiredPresentReconciliation
+        FencedCheckpoint
+        GatewayAuthority
+        GatewayBounded
+        GatewayContinuity
+        GatewayProbe
+        GatewayRuntimeStability
+        LifecycleLease
         Parser
+        RetainedSesPreparation
+        RetainedSesTargetRecovery
+        SmtpKeyRepairInterpreter
+        TargetCommitSmtp
         TestSupport
 
     default-language: GHC2021

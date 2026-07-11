@@ -2,358 +2,256 @@
 
 **Status**: Authoritative source
 **Supersedes**: N/A
-**Referenced by**: DEVELOPMENT_PLAN/README.md, documents/engineering/README.md, documents/engineering/distributed_gateway_architecture.md, documents/engineering/chaos_hardening_doctrine.md
+**Referenced by**: DEVELOPMENT_PLAN/README.md, DEVELOPMENT_PLAN/phase-2-gateway-dns.md, documents/engineering/README.md, documents/engineering/distributed_gateway_architecture.md, documents/engineering/chaos_hardening_doctrine.md
 **Generated sections**: none
 
-> **Purpose**: Document the formal modelling decisions, correspondence mapping, known divergences, and verification boundaries for the gateway TLA+ specification.
+> **Purpose**: Define the gateway model-to-runtime correspondence, the finite semantic-state and
+> delta-protocol bounds explored by TLC, and the boundary between finite model domains and a
+> production memory bound.
 
 ---
 
 ## 0A. Planning Ownership
 
-This document owns modelling assumptions, implementation correspondence, and divergence tracking
-only.
-
-Sprint sequencing, completion status, remaining work, validation closure, and cleanup ownership
-for the gateway/TLA surfaces are owned by
+This document owns modelling assumptions, implementation correspondence, and verification limits.
+Sprint status, closure evidence, and remaining work are owned by
 [DEVELOPMENT_PLAN/README.md](../../DEVELOPMENT_PLAN/README.md).
 
-The authoritative verification contract distinguishes the formal
-`prodbox dev tla-check` surface from the separate native
-`prodbox test integration gateway-partition` surface. This document
-describes the model and its correspondence only; current implementation
-closure for those validation paths remains plan-owned.
+The formal entrypoint is `prodbox dev tla-check`. The separate native
+`prodbox test integration gateway-partition` path validates runtime behaviour and does not delegate
+to TLC.
 
 ---
 
-## 1. Abstract System Model
+## 1. Modelled System
 
-The TLA+ specification (`documents/engineering/tla/gateway_orders_rule.tla`) models a set of peer nodes with crash-recovery semantics, delayed heartbeat delivery via full-duplex channels, ranked failover election, ownership claim/yield events, and DNS write gating.
+The specification is
+[`documents/engineering/tla/gateway_orders_rule.tla`](./tla/gateway_orders_rule.tla). It models a
+bounded semantic gateway replica rather than an append-only event history.
 
-### What the model includes
+Each configured node has fixed slots for:
 
-- **Node lifecycle**: Nodes may crash (`Crash(n)`) and recover (`Recover(n)`) non-deterministically. The `live` set tracks which nodes are currently running.
-- **Heartbeat delivery**: Synchronous heartbeats via `Heartbeat(sender, receiver)` — sender's timestamp is recorded at the receiver, and sender refreshes its own self-timestamp. The spec also retains async heartbeat actions (`SendHeartbeat`/`DeliverHeartbeat` via `msgQueue`) for reference, but model checking uses synchronous heartbeats for tractable state space.
-- **Cold-start detection**: `NoTimestamp` sentinel (-1) distinguishes "never heartbeated" from "heartbeated at time 0". Nodes start with self-heartbeat at 0 (past cold-start) but `NoTimestamp` for all peers.
-- **Election**: Each node independently computes `ownerView[n]` via `LeaderFromUpSet(n, n)` using rank-ordered selection from the UpSet. Cold-start self-preference adds self to candidates when a node hasn't yet participated in the heartbeat protocol.
-- **Ownership events**: `RecomputeOwner(n)` emits `GatewayClaim`/`GatewayYield` entries to the global `eventLog` when ownership changes.
-- **DNS write gating**: `DnsWrite(n)` requires `CanWriteDns(n)` — the node must be self-computed owner AND have an active claim (no subsequent yield) in the event log.
-- **Orders promotion**: `PromoteOrders(r, newTs)` models nodes receiving higher-versioned Orders documents.
-- **Discrete time**: `Tick` advances a bounded clock (`now`), used for heartbeat timeout comparison.
+1. one active Orders version and one promotion candidate
+2. one latest assertion and receive cursor for every configured emitter
+3. one overwriteable outbound delta slot for every directed peer link
+4. one retained continuity anchor and semantic kind plus at most one exact staged assertion
+5. two process-local booleans for exact-stage observation and publication acknowledgement
+6. one current owner projection
+7. a live credential-ready capability and continuity-observable capability
 
-### Communication model
+There is deliberately no `eventLog` variable. Repeated heartbeats, duplicate delivery, Orders
+churn, and epoch rotation change values inside fixed slots; they do not add slots.
 
-The spec contains both synchronous heartbeats (`Heartbeat(s, r)`) and async heartbeats via
-`msgQueue` (`SendHeartbeat`/`DeliverHeartbeat`). Model checking uses synchronous heartbeats for
-tractable state space; the async actions are retained in the spec for reference. The operator-facing
-HTTP `/v1/state` observability endpoint is not modelled.
+### 1.1 Per-emitter continuity
 
-In the runtime, peer transport is materialised as anti-entropy gossip:
-each daemon periodically pushes its commit log to every other peer over
-the configured peer-events port, and receivers update
-`stateLastHeartbeatTimes` plus `statePeerHealth` from the inbound event
-timestamps.  The event-log replication is therefore concrete in the
-runtime even though the model abstracts it through a global `eventLog`
-plus delayed delivery via `msgQueue`.
+An emitter position is a fixed-width `(epoch, sequence)` pair. `StageAssertion` conditionally
+records the exact next signed assertion and next anchor in the retained authority without
+publishing it. `ReobserveStaged` records the process-local exact read-back witness.
+`PublishStaged` advances the local semantic projection and bounded outbound delta slots but leaves
+the retained stage intact. Only `CommitPublished` advances the committed authority anchor and
+clears that stage after publication acknowledgement.
 
-### What the model does NOT include
+The distinction is intentional. `authorityPhase`, `staged*`, and the committed `authority*` fields
+are retained. `stageObserved` and `publishAcknowledged` are volatile process memory. `Crash` clears
+both volatile witnesses, all local semantic/cursor state, credentials, promotion work, and peer
+frame slots involving the crashed process while preserving the retained authority. Therefore a
+crash after staging emits nothing, and a crash after publication but before commit must re-observe
+and idempotently re-publish the exact retained stage.
 
-- **Real time**: The model uses discrete timestamps (`0..MaxTimestamp`), not wall-clock time.
-- **TCP connections**: Transport-level details (connection establishment, teardown, partial writes) are abstracted away.
-- **Peer transport establishment**: socket setup, trust-material
-  consumption, and any later transport-auth expansion are abstracted
-  away. The model starts from accepted peer batches plus runtime HMAC
-  validation.
-- **Message ordering beyond append-only log**: The `msgQueue` is a set (unordered). Ordering comes from the event log sequence.
-- **Network-level failures**: Only node crash/recover and message delay are modelled. TCP resets, partial writes, and connection timeouts are not represented.
-- **Anti-entropy gossip**: The sync protocol that reconciles divergent event logs between peers is abstracted through the global `eventLog`.  The runtime materialises this protocol concretely (`Prodbox.Gateway.Peer`, `peerListenerLoop`, and `peerDialerLoop`); the divergence between the model's global log and the runtime's per-node log is therefore narrowed to delivery delay only.
+`StageEpochRotation` is enabled only at sequence exhaustion. It stages a signed checkpoint in the
+next epoch at sequence zero; `ReobserveStaged` and `PublishStaged` remain mandatory. When both epoch
+and sequence domains are exhausted, no emission transition exists. Counters never wrap.
 
----
+`Recover` reloads the bounded retained checkpoint set for every emitter. It is disabled when the
+authority is unobservable and does not infer the local emitter anchor from peers. Consequently,
+crashing every peer does not destroy the committed anchors or a pending exact assertion. A live
+peer may separately supply `RepairFromSemanticCheckpoint` when an overwrite has moved beyond the
+bounded replay suffix; that repair changes semantic replica state, never emitter continuity
+authority.
 
-## 2. Variable-to-Implementation Correspondence
+### 1.2 Delta delivery
 
-### Variables
+Each directed link carries at most one pending delta slot. `DeliverDelta` accepts that slot only
+when it is the immediate same-epoch successor or the valid checkpoint transition to sequence zero
+in the next epoch. `DiscardUnusableDelta` removes duplicates, delayed old epochs, and frames for a
+different Orders anchor without changing semantic state.
 
-| TLA+ Variable | Implementation | Location |
-|---|---|---|
-| `live` | Running `runGatewayDaemon` process and its active loops | `src/Prodbox/Gateway/Daemon.hs` |
-| `seenHeartbeatTs[viewer][peer]` | `DaemonState.stateLastHeartbeatTimes` heartbeat freshness map | `DaemonState`, `heartbeatLoop`, `gatewayLoop` |
-| `ownerView[n]` | `DaemonState.stateGatewayOwner` | `DaemonState`, `gatewayLoop` |
-| `eventLog` | `CommitLog.commitLogEvents` carried in `DaemonState.stateCommitLog` | `src/Prodbox/Gateway/Types.hs`, `src/Prodbox/Gateway/Daemon.hs` |
-| `dnsWriteNode` | Last successful write tracked by `stateLastDnsWriteIp` / `stateLastDnsWriteTime` | `DaemonState`, `dnsWriteLoop` |
-| `msgQueue` | Realised as inbound peer-event batches received over the events port; the receiver merges accepted events into the local commit log via `appendIfNew` | `src/Prodbox/Gateway/Peer.hs`, `peerListenerLoop` in `src/Prodbox/Gateway/Daemon.hs` |
-| `activeOrderTs[n]` | `Orders.ordersVersionUtc` from the parsed Orders document | `src/Prodbox/Gateway/Types.hs` |
-| `now` | `getCurrentTime` samples used by the daemon loops | `src/Prodbox/Gateway/Daemon.hs` |
-| `RankOrder` (constant) | `GatewayRule.rankedNodes` | `src/Prodbox/Gateway/Types.hs` |
-| `Rank1`/`Rank2`/`Rank3` (constants) | TLC-only constants used to build `RankOrder` during model checking | `documents/engineering/tla/gateway_orders_rule.cfg` |
-| `NoTimestamp` (constant, -1) | Absence from `stateLastHeartbeatTimes` for a peer | `gatewayLoop` freshness logic |
+A newer publication may overwrite an undelivered slot. The model does **not** pretend that this
+gap is an applicable delta. `RepairFromSemanticCheckpoint` instead atomically represents the
+runtime's bounded, signed, one-emitter checkpoint application; subsequent rounds deliver its
+bounded replay suffix. The donor and receiver must share an active Orders version, and the repair
+copies semantic kind as well as cursor position. TLC abstracts the concrete checkpoint bytes,
+evidence signatures, and suffix frame into this fixed-cardinality action.
 
-### Actions
+The runtime wire protocol additionally applies byte, assertion-count, parser-input, concurrent
+in-flight, and rejection-summary bounds. TLC abstracts those numerical byte checks into the fixed
+delta-slot shape; native property tests cover the actual encoders and admission functions.
 
-| TLA+ Action | Implementation | Location |
-|---|---|---|
-| `Tick` | Wall-clock progression sampled via `getCurrentTime` | `heartbeatLoop`, `gatewayLoop`, `dnsWriteLoop` |
-| `Crash(n)` / `Recover(n)` | Process or pod stop/restart around `runGatewayDaemon` | `src/Prodbox/Gateway/Daemon.hs`, `charts/gateway/` |
-| `SendHeartbeat(sender)` | `heartbeatLoop` appends local signed `heartbeat` events and refreshes local heartbeat time | `src/Prodbox/Gateway/Daemon.hs` |
-| `DeliverHeartbeat` | `peerListenerLoop` accepts inbound peer event batches and updates `stateLastHeartbeatTimes` from the emitter timestamps | `src/Prodbox/Gateway/Peer.hs`, `peerListenerLoop` in `src/Prodbox/Gateway/Daemon.hs` |
-| `Heartbeat(s, r)` | Model-only synchronous heartbeat step retained for tractable TLC exploration | `documents/engineering/tla/gateway_orders_rule.tla` |
-| `PromoteOrders(r, newTs)` | Orders decoding and `ordersVersionUtc` promotion boundary | `GatewaySettings.loadOrders`, `runGatewayDaemon` |
-| `RecomputeOwner(n)` | `gatewayLoop` recomputes owner from ranked fresh heartbeats | `src/Prodbox/Gateway/Daemon.hs` |
-| `DnsWrite(n)` | `dnsWriteLoop` plus `fetchPublicIp` / `writeDnsRecord` | `src/Prodbox/Gateway/Daemon.hs` |
+### 1.3 Orders and DNS authority
 
----
+`StageOrdersPromotion` owns one promotion slot. The initial active version is zero, so version one
+is reachable in the checked configuration rather than being disabled by construction.
+`CheckpointOrdersPromotion` replaces the active version, clears the slot, reloads matching-version
+semantic checkpoints from retained authority, and evicts evidence from every older version.
 
-## 3. Known Divergences And Compression Points
+`DnsWrite` requires all of the following in the same state:
 
-### Divergence 1: Correspondence Surface Is Haskell-Only
+- the local node is live and its owner projection selects itself
+- its current semantic assertion is a claim
+- its Orders version is active and no promotion is pending
+- a credential generation is ready
+- retained continuity is observable
+- no retained staged assertion remains; the claim is committed
 
-The supported implementation surface is now the Haskell gateway and TLA entrypoint:
-
-1. `src/Prodbox/Gateway/Daemon.hs`
-2. `src/Prodbox/Gateway/Types.hs`
-3. `src/Prodbox/Gateway.hs`
-4. `src/Prodbox/Tla.hs`
-
-Historical Python symbol names are no longer authoritative for model-to-implementation
-correspondence and must not be treated as current repository facts.
-
-### Divergence 2: Message Delivery Is More Explicit In The Model
-
-The TLA+ model keeps both:
-
-1. synchronous `Heartbeat(s, r)` for tractable model checking
-2. asynchronous `SendHeartbeat` / `DeliverHeartbeat` actions over `msgQueue` for protocol
-   reference
-
-The current Haskell runtime now materialises the asynchronous variant
-through `peerDialerLoop` (push) and `peerListenerLoop` (deliver).  Each
-runtime push corresponds to a `SendHeartbeat`/`DeliverHeartbeat` step,
-the receiver updates `stateLastHeartbeatTimes` from inbound event
-timestamps, and the global `eventLog` is converged via idempotent
-`appendIfNew`.  The remaining compression is the synchronous shortcut
-the model uses for tractable TLC exploration.
-
-### Divergence 3: Ownership Lifecycle Now Materialised In The Runtime
-
-The TLA+ model uses `GatewayClaim` / `GatewayYield` as the formal
-DNS-write gate. The runtime now emits the same events from
-`gatewayLoop` on owner transitions and gates `dnsWriteLoop` through the
-`canWriteDns` predicate.  The runtime invariants therefore align with
-the model's `ClaimPrecedesWrite` and `YieldPrecedesReclaim`.
-
-The current Haskell daemon status surface exposes:
-
-1. `stateGatewayOwner` as the in-memory owner view
-2. `has_active_claim` rendered from `stateGatewayOwner state == Just (daemonNodeId config)`
-3. `can_write_dns` rendered from the runtime `canWriteDns` predicate
-4. `node_disposition` and `peer_dispositions` derived from the commit log
-5. `stateLastDnsWriteIp` / `stateLastDnsWriteTime` as the observed last successful write
-6. total `event_count`, a bounded recent `event_hashes` tail, and `heartbeat_age_seconds` on
-   `/v1/state` for operator and integration observability
-7. `peer_inbound_health` (last accepted-event age per peer) and
-   `peer_outbound_health` (per-peer dial connect state / last dial error),
-   split so a one-directional partition is observable (Sprint 2.25; the prior
-   conflated `peer_transport` field is retired)
-
-Phase closure and any remaining alignment work on that boundary are
-owned by [DEVELOPMENT_PLAN/README.md](../../DEVELOPMENT_PLAN/README.md).
-
-### Divergence 4: Operator Time-Base Discipline Is Runtime-Enforced
-
-The model's bounded-delay assumption is now mapped to a runtime-enforced
-skew limit.  `prodbox host info` reports the host's NTP synchronization
-disposition derived from `timedatectl` and fails fast when the system
-clock is unsynchronized.  The gateway daemon refuses inbound peer
-events whose timestamps lie beyond `daemonMaxClockSkewSeconds` (default
-10 seconds) and records the maximum observed inter-node skew on
-`/v1/state` as `max_clock_skew_seconds_observed`.
-
-Validation surface note: today the only enforced constraint on
-`daemonMaxClockSkewSeconds` is `validateNonNegative` — the value must be
-≥ 0; there is no upper bound and no positive-floor check in code yet.
-The intended bounded range `[0.1, 600]` (a positive floor so the skew
-gate is never effectively disabled, and a ceiling that keeps the
-bounded-delay correspondence honest) is scheduled doctrine, not a
-current invariant. Until that smart-constructor bound lands, a
-configured skew of `0` or an arbitrarily large value is accepted at
-decode time; the modelling correspondence assumes the bounded range and
-should not be read as describing enforced behaviour.
-
-### Divergence 5: Orders Promotion Is Restart-Based, Not In-Process
-
-The TLA+ `PromoteOrders(r, newTs)` action lets a running node advance
-its active Orders version in place. The runtime does **not** do this:
-`stateOrdersVersionUtc` is fixed at daemon boot from the Orders document
-present at start and never advances while the process is live. A daemon
-adopts a newer Orders only by restarting against the new document — the
-restart-based promotion path defined in
-[config_doctrine.md § 8 step 4](./config_doctrine.md). The model's
-in-process `PromoteOrders` step therefore corresponds to a
-boot-then-restart cycle in the runtime, not to a mutation of live state.
-
-Orders documents carry the existing monotonic `version_utc` field. Each
-peer push includes the sender's current view of that version. The
-receiver returns `409 Conflict` when the sender's view is older,
-preventing a stale peer from advancing the receiver's commit log behind
-a newer Orders. The daemon tracks the highest observed Orders version on
-`/v1/state` and refuses to claim ownership while
-`stateLatestObservedOrdersVersion > stateOrdersVersionUtc` — the
-refuse-to-reclaim-while-behind gate. Because the in-process version never
-advances, a daemon that boots against a stale Orders stays refused until
-it is restarted against the current document; it cannot reclaim DNS write
-authority by observing a newer version at runtime.
-
-Realigning the `PromoteOrders` action and any associated machinery to
-the restart-based reality — and removing the dead in-process promotion
-path — is owned by Sprint 2.25 in
-[DEVELOPMENT_PLAN/README.md](../../DEVELOPMENT_PLAN/README.md).
+Credential loss, continuity loss, crash, ownership loss, and Orders promotion revoke the modelled
+live DNS-writer lease.
 
 ---
 
-## 4. Modelling Bounds and Limitations
+## 2. Variable-to-runtime Correspondence
 
-### Configuration Values
-
-| Bound | Value | Justification |
-|---|---|---|
-| `Nodes` | `{n1, n2, n3}` | 3 nodes is the minimum for non-trivial partition testing (majority vs minority). This is the *multi-host* topology the model is written for — it does NOT match the current home deployment target, which is a single-host degenerate single-rank mesh (see the topology/fault-model note below). The 3-node bound exercises the partition-tolerance capability reserved for the AWS / future multi-host substrate. |
-| `MaxTimestamp` | `2` | Bounds the state space for exhaustive TLC exploration. With 2 timestamps, heartbeat timeout of 2 allows one timeout cycle. Sufficient to demonstrate the invariants but does NOT prove properties over unbounded runs. |
-| `HeartbeatTimeout` | `2` | Matches the smallest timeout that allows meaningful timeout expiry within `MaxTimestamp`. In production, `heartbeat_timeout_seconds` is typically 5-15 seconds. |
-| `Rank1`/`Rank2`/`Rank3` | `n1`/`n2`/`n3` | Individual constants for rank ordering (TLC config files cannot express sequence literals). Constructs `RankOrder == <<n1, n2, n3>>`. |
-| `StateConstraint` | `Len(eventLog) <= 3` | Bounds event log growth for tractable state space. Sufficient for claim-yield-reclaim sequences. |
-
-### What the bounds prove
-
-- All 6 safety invariants hold for ALL reachable states within the bounded state space (4,394,744 distinct states at MaxTimestamp=2, HeartbeatTimeout=2).
-- `SingletonSelfElection` verified: sole survivor's election function always picks itself.
-
-### What the bounds do NOT prove
-
-- Properties over unbounded execution (infinite runs).
-- Behavior with >3 nodes.
-- Real-time constraints (the model uses discrete timestamps, not wall-clock time).
-- Network-level failures (the model only models message delay, not TCP resets, partial writes, etc.).
-
-### Topology and Fault Model
-
-The model's 3-node ranked mesh with crash/recover and message delay is a
-*multi-host* fault model. It does not describe the current home
-deployment. The home substrate runs a **single-host degenerate
-single-rank mesh**: a single gateway daemon on the one host this
-machine is, with no peer to fail over to. Every component on that host
-shares fate — if the host is down, the daemon, etcd, kubelet, and the
-DNS-write authority all go down together. There is no partition to
-tolerate, because there is no second host to be partitioned from.
-
-Partition tolerance is therefore a **capability the model reserves for
-the AWS / future multi-host substrate**, not a property the home
-deployment exercises. The 3-node bound, the ranked-failover election,
-the crash/recover actions, and the partition-heal reconvergence
-(Section 6) all correspond to the multi-host case; on home they are
-exercised only degenerately (a single rank-1 node that always
-self-elects, satisfying `SingletonSelfElection`). Reading this document,
-treat the partition-related invariants as proving the *intended*
-multi-host behaviour the runtime is built toward — not as describing a
-fault class the single-host home topology can actually enter.
-
-This topology framing is kept consistent with the fault-model reframe in
-[distributed_gateway_architecture.md § 7.5](./distributed_gateway_architecture.md),
-owned by Sprint 2.25 in
-[DEVELOPMENT_PLAN/README.md](../../DEVELOPMENT_PLAN/README.md).
-
----
-
-## 5. Invariant Catalog
-
-| Invariant | Meaning | Failure Prevented |
-|---|---|---|
-| `DeterministicRuleForEqualViews` | Same orders + same heartbeat observations + non-empty UpSet → same computed owner | Split-brain from non-deterministic election |
-| `NoTugOfWarWhenViewsConverged` | After views converge, at most 1 node publishes as gateway | DNS record flip-flopping between nodes |
-| `NoSimultaneousDNSWriters` | When fully stable (converged views, current ownerView, non-empty UpSet), at most 1 node can write DNS | Concurrent conflicting DNS updates in steady state |
-| `ClaimPrecedesWrite` | DNS write only after a claim in the event log | Stale writes from nodes that haven't asserted ownership |
-| `YieldPrecedesReclaim` | A node must yield before claiming again | Re-entrant claims without proper transition tracking |
-| `SingletonSelfElection` (safety) | Sole survivor's election function always picks itself | Election function failure for isolated nodes |
-
-### Invariant Definitions
-
-**`DeterministicRuleForEqualViews`**: For all node pairs `(a, b)` that are past cold start, have identical `activeOrderTs`, identical `seenHeartbeatTs`, and non-empty UpSet, then `LeaderFromUpSet(a, a) = LeaderFromUpSet(b, b)`. Uses the election function directly (not cached `ownerView`). With empty UpSet, self-election fallback is viewer-dependent by design (FLP impossibility).
-
-**`NoTugOfWarWhenViewsConverged`**: When all past-cold-start nodes have converged views (same orders timestamps AND same heartbeat observations), at most 1 node has `LeaderFromUpSet(n, n) = n` with non-empty UpSet on the most recent Orders. This prevents DNS record flip-flopping during steady state.
-
-**`NoSimultaneousDNSWriters`**: Conditional on `FullyStable` — views converged, ownerView current (matches LeaderFromUpSet), and all live nodes have non-empty UpSet. When stable, at most 1 live node satisfies `CanWriteDns`. Under partition (not FullyStable), FLP impossibility means multiple nodes may independently claim and write DNS. Anti-entropy gossip (not modeled) resolves this on partition heal.
-
-**`ClaimPrecedesWrite`**: Every `dns_write` entry in the event log has a preceding `claim` entry from the same node. This ensures no node writes DNS without first asserting ownership.
-
-**`YieldPrecedesReclaim`**: Between any two `claim` entries from the same node, there exists a `yield` entry from that node. This ensures proper ownership lifecycle tracking.
-
-**`SingletonSelfElection`**: If a node is the sole survivor (`live = {n}`), `LeaderFromUpSet(n, n) = n`. This is a safety invariant verifying the election function's correctness — the sole survivor always self-elects. The implementation's periodic `gateway_loop` ensures `ownerView` is updated within milliseconds.
-
----
-
-## 6. FLP Impossibility Acknowledgment
-
-In a fully asynchronous system with partitions, the system cannot guarantee both absolute no-split-brain and always-available autonomous failover (Fischer, Lynch, Paterson, 1985).
-
-The TLA+ model proves safety invariants under the modelled assumptions (bounded timestamps, crash-recovery, message delay). These invariants hold for all reachable states in the bounded state space.
-
-Under severe partition, the implementation chooses **availability-first** (best-effort): nodes
-self-elect as failsafe (satisfying `SingletonSelfElection`) and keep serving, accepting a *bounded,
-self-healing* split-brain that heals on reconvergence rather than failing closed. This is documented in
-[Distributed Gateway Architecture Section 5](./distributed_gateway_architecture.md#5-safety-boundary-important).
-
-(The general methodology behind this correctness argument — the decision/protocol/runtime layers and the
-R7 "impossibility-bounded invariant" framing, under which this availability-first choice is the
-*act-and-heal* branch as distinct from the safety-first / fail-closed / refuse-to-write branch — is set
-out project-neutrally in [chaos_hardening_doctrine.md](./chaos_hardening_doctrine.md); Appendix B there
-instantiates this gateway as its worked example. This doc remains the SSoT for the gateway's model,
-invariant catalog, and posture.)
-
-The design contract:
-1. `NoTugOfWar` and `NoSimultaneousDNSWriters` are proven for the fully-stable state (converged views, current ownerView, non-empty UpSet).
-2. Under partition or cold start, `NoSimultaneousDNSWriters` does NOT hold unconditionally — FLP impossibility means isolated nodes independently self-elect and claim. TLC discovered this counterexample during model checking.
-3. Under severe partition uncertainty, isolated nodes self-elect to maintain availability.
-4. On partition heal, anti-entropy gossip ensures views converge and the deterministic election resolves to a single owner.
-
----
-
-## 7. Verification Status
-
-| Item | Status |
+| TLA+ variable | Runtime correspondence |
 |---|---|
-| TLA+ spec written | Complete (~340 lines) |
-| TLC model checker execution | **Complete** — all 6 invariants verified over 4,394,744 distinct states (HeartbeatTimeout=2, MaxTimestamp=2) |
-| CI integration | **Intentionally not used during active development** |
-| Model-implementation correspondence audit | **Complete at the current Haskell module level; divergences are recorded in this document** |
+| `activeOrders`, `promotionSlot` | opaque admitted Orders anchor plus the single bounded promotion slot |
+| `latestEpoch`, `latestSequence`, `latestKind` | latest heartbeat/ownership semantic checkpoint keyed by admitted emitter; kind is part of semantic equality |
+| `cursorEpoch`, `cursorSequence` | receive `CursorVector`, keyed by admitted emitter |
+| `deltaPresent`, `deltaOrders`, `deltaEpoch`, `deltaSequence`, `deltaKind` | one bounded immediate-delta slot per directed link, including its Orders anchor and semantic kind |
+| `authorityOrders`, `authorityEpoch`, `authoritySequence`, `authorityKind`, `authorityPhase` | retained `GatewayContinuityAuthority` committed checkpoint and idle/staged disposition |
+| `stagedOrders`, `stagedEpoch`, `stagedSequence`, `stagedKind` | exact retained staged signed assertion and next-anchor record |
+| `stageObserved`, `publishAcknowledged` | volatile process witnesses erased on crash; neither is retained continuity state |
+| `continuityObservable` | successful retained-authority observation; missing/corrupt/unobservable observations fail closed |
+| `credentialReady` | generation-tagged `DnsCredentialObservation` that can construct a sealed AWS environment |
+| `ownerView` | constant-time cached owner projection used by readiness and DNS gating |
+| `dnsWriteNode` | current, revocable DNS-write authority lease rather than historical write telemetry |
+| `live` | running gateway process set in the multi-node fault model |
 
-### Running the Model Checker
+The runtime uses HMAC signatures, canonical encodings, byte limits, child-process permits, socket
+deadlines, and structured errors. Those concrete mechanisms refine the abstract transitions; they
+are validated by native tests rather than represented as cryptographic or byte-array state in TLC.
+
+---
+
+## 3. TLC Domains and Production Bounds
+
+The checked configuration is:
+
+| Constant | TLC value | Meaning |
+|---|---:|---|
+| `Nodes` | `{n1, n2}` | smallest ranked multi-node topology that exercises concurrent emitters, crash/recovery, and delivery reordering |
+| `MaxEpoch` | `1` | exercises one durable epoch rotation |
+| `MaxSequence` | `1` | exercises ordinary publication followed by rotation |
+| `MaxOrdersVersion` | `1` | finite Orders-version domain; initialization at zero makes the promotion to one reachable |
+
+The two-node configuration is an exhaustive protocol-state check, not a deployment-size claim.
+Production membership is bounded by admitted Orders and native capacity validation. The home
+substrate runs three logical ranked peers on one physical host. It exercises multi-peer protocol
+behavior, but all three peers share the host's failure fate and therefore cannot prove resilience
+to an independent-host network partition. AWS and future multi-host deployments exercise that
+separate physical-fault axis.
+
+### 3.1 Finite model domains are not runtime bounds
+
+The checked configuration uses no TLC `CONSTRAINT` or `StateConstraint`. Finite model domains make
+exhaustive exploration possible, but they do not bound a list, map, frame, heap, or production
+uptime. Production cardinality correspondence is instead explicit in `TypeOK`: every semantic and
+cursor value is a total function over the admitted finite `Nodes` domain, every directed link has
+one scalar delta slot, each emitter has at most one retained stage, and checkpoint repair handles
+one emitter at a time. A future tractability-only constraint must be documented as an exploration
+restriction and may never be cited as implementation or memory evidence.
+
+Runtime memory is governed separately by:
+
+1. validated raw Orders/member/field limits
+2. bounded semantic, replay, diagnostic, parser, rejection, and in-flight structures
+3. Sprint 1.60's retained-heap, scratch, native, child-peak, kernel, and safety-margin equation
+4. the external runtime-stability oracle owned by Sprint 5.16
+
+Passing TLC cannot substitute for any of those checks.
+
+---
+
+## 4. Checked Invariants
+
+| Invariant | Meaning |
+|---|---|
+| `TypeOK` | Every variable stays inside its finite semantic domain. |
+| `SemanticPositionMatchesCursor` | Every retained semantic checkpoint position equals its receive cursor, including crash-cleared sentinels. |
+| `DeltaSlotsCanonical` | A free directed-link slot contains only sentinels; delivered or discarded frame payloads are cleared instead of becoming hidden historical state. |
+| `EqualCursorAndOrdersDetermineSemantic` | Within one Orders version, equal per-emitter cursors imply equal retained position **and semantic kind**. Orders promotion is deliberately outside an older version's equality class. |
+| `NoCursorAheadOfDurableAuthority` | No receiver observes a position newer than the emitter's committed anchor or its one durable staged frontier. A published-before-commit cursor may equal the stage. |
+| `StagedTransitionIsNonWrapping` | Every retained stage is either the next sequence in-place or a signed checkpoint from an exhausted sequence to sequence zero in the next non-exhausted epoch; volatile publication implies prior exact observation. |
+| `DnsLeaseRequiresCompleteGate` | A live DNS lease continues to satisfy the complete ownership, Orders, credential, and idle committed-continuity gate. |
+| `ClaimPrecedesWrite` | A live DNS writer's current local semantic assertion is a claim. |
+| `NoSimultaneousDNSWriters` | When live nodes have recomputed the same ranked leader, at most one node satisfies the complete DNS gate. |
+
+These are safety properties. Progress depends on scheduler, transport, retained-store, and
+credential availability assumptions and is exercised separately through daemon-lifecycle and
+integration tests.
+
+---
+
+## 5. Deliberate Abstractions
+
+The model does not attempt to prove:
+
+- HMAC or hash collision resistance
+- canonical CBOR/Dhall encoder correctness
+- exact UTF-8, `Content-Length`, frame-byte, or heap-byte accounting
+- TCP partial reads, timeout implementation, or OS socket scheduling
+- Vault, MinIO, or Route 53 service availability
+- GHC residency, garbage-collector behaviour, kernel memory, or child-process RSS
+- liveness during an unbounded asynchronous partition
+
+Native unit tests cover bounds, signing/admission, stage/reobserve/publish/commit crash points,
+delta and checkpoint-repair convergence, stale epochs, credential gates, and constant-time probe
+source guards. Daemon-lifecycle tests cover the real listener, restart, and child scheduling
+boundaries. Profiling and the Sprint 5.16 soak remain independent proof axes.
+
+---
+
+## 6. Partition Posture
+
+The ranked rule cannot guarantee both unconditional autonomous failover and unconditional
+single-writer safety in a fully asynchronous partition. The model therefore states
+`NoSimultaneousDNSWriters` only for `FullyStable`, where every live node has recomputed the same
+ranked leader. Outside that condition, the stronger production DNS gate still requires a current
+claim, retained continuity fence, and credential generation, but it cannot manufacture consensus
+from an unobservable network.
+
+The home substrate's three logical peers can exercise directed peer communication and logical
+partition handling, but their one physical host gives them a shared failure fate. The model checks
+the multi-peer protocol independently of that placement; live AWS or a future multi-host substrate
+is still required to exercise independent-host partition resilience.
+
+---
+
+## 7. Verification Result
+
+Run:
 
 ```bash
 prodbox dev tla-check
 ```
 
-`src/Prodbox/Tla.hs` owns this public entrypoint. It runs TLC 2.18 in a Docker container
-(`maxdiefenbach/tlaplus`) with 8 workers and writes results to
-`documents/engineering/tla/tlc_last_run.txt`.
+`src/Prodbox/Tla.hs` runs TLC 2.18 in the pinned `maxdiefenbach/tlaplus` container with eight
+workers and records the result in `documents/engineering/tla/tlc_last_run.txt`.
 
----
+The Sprint 2.31 configuration completed exhaustive exploration with no invariant violation:
 
-## 8. Model-vs-Test Coverage Boundary
+- 606,637,449 states generated
+- 51,491,308 distinct states checked
+- depth 44
+- zero states left on the queue
 
-The gateway failure space includes crash timing races, delayed heartbeats, asymmetric partitions, and rejoin ordering permutations. The combinatorics make exhaustive runtime testing infeasible.
-
-This is the same class of limitation that led AWS to increase reliance on formal methods for systems such as S3 and DynamoDB: conventional test suites found many defects, but could not enumerate all distributed interleavings.
-
-In prodbox:
-
-1. TLA+ is used to prove bounded-state safety properties for partition semantics.
-2. Runtime unit/integration tests are still mandatory to validate that implementation behavior matches the modelling assumptions and invariants.
+This result covers the finite model and the nine invariants above. It makes no claim about states
+excluded by the documented domains or about the concrete runtime mechanisms listed in §5.
 
 ---
 
 ## Cross-References
 
-- [Distributed Gateway Architecture](./distributed_gateway_architecture.md) — system design and protocol spec
-- [TLA+ Model](./tla/gateway_orders_rule.tla) — formal specification
-- [TLA+ Config](./tla/gateway_orders_rule.cfg) — model checking bounds
-- [Development Plan](../../DEVELOPMENT_PLAN/README.md) — phase status, closure, and cleanup ownership
-- [Documentation Standards](../documentation_standards.md) — document format requirements
+- [Distributed Gateway Architecture](./distributed_gateway_architecture.md)
+- [TLA+ model](./tla/gateway_orders_rule.tla)
+- [TLA+ configuration](./tla/gateway_orders_rule.cfg)
+- [Runtime memory doctrine](./resource_scaling_doctrine.md)
+- [Development plan](../../DEVELOPMENT_PLAN/README.md)

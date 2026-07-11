@@ -5,14 +5,17 @@
 module Prodbox.Capacity.Config
   ( CapacityBudget (..)
   , CapacitySection (..)
+  , ChildProcessBudgetConfig (..)
   , MilliCpu (..)
   , MebiBytes (..)
   , NamespaceQuota (..)
   , ResourceEnvelope (..)
   , ResourcePlan (..)
   , ResourceVector (..)
+  , RuntimeMemoryProfile (..)
   , WorkloadResourceProfile (..)
   , defaultCapacitySection
+  , defaultRuntimeMemoryProfiles
   , defaultResourcePlan
   , fitsWithin
   , mkMebiBytes
@@ -22,6 +25,7 @@ module Prodbox.Capacity.Config
   , resourceVectorFitsWithin
   , resourceVectorMinus
   , resourceVectorScale
+  , runtimeMemoryPlanForProfile
   , storageFitsWithin
   , plusBudget
   , validateCapacitySection
@@ -31,6 +35,8 @@ where
 
 import Control.Monad (forM_, unless)
 import Data.Char qualified as Char
+import Data.List (find)
+import Data.Set qualified as Set
 import Data.Text (Text)
 import Data.Text qualified as Text
 import Dhall
@@ -43,6 +49,7 @@ import Dhall
   )
 import GHC.Generics (Generic)
 import Numeric.Natural (Natural)
+import Prodbox.Capacity.RuntimeMemory qualified as RuntimeMemory
 
 newtype MilliCpu = MilliCpu {unMilliCpu :: Natural}
   deriving (Eq, Show)
@@ -120,11 +127,41 @@ data ResourcePlan = ResourcePlan
   }
   deriving (Eq, Show, Generic, FromDhall, ToDhall)
 
+-- | Authored child-process schedule inputs for one runtime. A missing permit
+-- capacity or deadline represents an unbounded schedule and is rejected when
+-- the runtime-memory profile is compiled. Each list entry is the admitted peak
+-- for one simultaneously running child; a capacity greater than one therefore
+-- has to enumerate and sum every simultaneous peak.
+data ChildProcessBudgetConfig = ChildProcessBudgetConfig
+  { permit_capacity :: Maybe Natural
+  , action_deadline_milliseconds :: Maybe Natural
+  , simultaneous_peak_bytes :: [Natural]
+  }
+  deriving (Eq, Show, Generic, FromDhall, ToDhall)
+
+-- | Raw Tier-0 inputs for a validated runtime-memory plan. The profile id is
+-- also the id of the matching 'WorkloadResourceProfile'; its container limit
+-- is derived from that profile rather than authored a second time.
+data RuntimeMemoryProfile = RuntimeMemoryProfile
+  { runtime_profile_id :: Text
+  , bounded_application_state_bytes :: Natural
+  , bounded_pending_persistence_state_bytes :: Natural
+  , bounded_in_heap_transport_decode_bytes :: Natural
+  , other_heap_reserve_bytes :: Natural
+  , heap_cap_bytes :: Natural
+  , native_non_heap_reserve_bytes :: Natural
+  , child_process_budget :: ChildProcessBudgetConfig
+  , kernel_cgroup_reserve_bytes :: Natural
+  , safety_margin_bytes :: Natural
+  }
+  deriving (Eq, Show, Generic, FromDhall, ToDhall)
+
 data CapacitySection = CapacitySection
   { node_budget :: CapacityBudget
   , workload_budget :: CapacityBudget
   , region_quota :: CapacityBudget
   , resource_plan :: ResourcePlan
+  , runtime_memory_profiles :: [RuntimeMemoryProfile]
   }
   deriving (Eq, Show, Generic, FromDhall, ToDhall)
 
@@ -135,7 +172,31 @@ defaultCapacitySection =
     , workload_budget = CapacityBudget 4 8 40
     , region_quota = CapacityBudget 32 64 500
     , resource_plan = defaultResourcePlan
+    , runtime_memory_profiles = defaultRuntimeMemoryProfiles
     }
+
+defaultRuntimeMemoryProfiles :: [RuntimeMemoryProfile]
+defaultRuntimeMemoryProfiles =
+  [ RuntimeMemoryProfile
+      { runtime_profile_id = "gateway"
+      , bounded_application_state_bytes = mebibytes 64
+      , bounded_pending_persistence_state_bytes = mebibytes 16
+      , bounded_in_heap_transport_decode_bytes = mebibytes 64
+      , other_heap_reserve_bytes = mebibytes 48
+      , heap_cap_bytes = mebibytes 256
+      , native_non_heap_reserve_bytes = mebibytes 64
+      , child_process_budget =
+          ChildProcessBudgetConfig
+            { permit_capacity = Just 1
+            , action_deadline_milliseconds = Just 30000
+            , simultaneous_peak_bytes = [mebibytes 64]
+            }
+      , kernel_cgroup_reserve_bytes = mebibytes 32
+      , safety_margin_bytes = mebibytes 64
+      }
+  ]
+ where
+  mebibytes value = value * 1024 * 1024
 
 defaultResourcePlan :: ResourcePlan
 defaultResourcePlan =
@@ -304,6 +365,139 @@ validateCapacitySection section = do
     (node_budget section)
     (region_quota section)
   validateResourcePlan (resource_plan section)
+  _ <- validateRuntimeMemoryProfiles section
+  Right ()
+
+-- | Resolve one opaque runtime plan by the existing workload-profile id. The
+-- matching Kubernetes memory limit is converted from MiB to exact bytes here,
+-- so the runtime proof and admission envelope cannot drift independently.
+runtimeMemoryPlanForProfile
+  :: CapacitySection -> Text -> Either String RuntimeMemory.RuntimeMemoryPlan
+runtimeMemoryPlanForProfile section requestedProfileId = do
+  validateResourcePlan (resource_plan section)
+  plans <- validateRuntimeMemoryProfiles section
+  case find ((== requestedProfileId) . fst) plans of
+    Just (_, plan) -> Right plan
+    Nothing ->
+      Left
+        ( "capacity.runtime_memory_profiles is missing profile `"
+            ++ Text.unpack requestedProfileId
+            ++ "`"
+        )
+
+validateRuntimeMemoryProfiles
+  :: CapacitySection -> Either String [(Text, RuntimeMemory.RuntimeMemoryPlan)]
+validateRuntimeMemoryProfiles section = do
+  let profiles = runtime_memory_profiles section
+      profileIds = map runtime_profile_id profiles
+  unless
+    (not (null profiles))
+    (Left "capacity.runtime_memory_profiles must not be empty")
+  unless
+    (length profileIds == Set.size (Set.fromList profileIds))
+    (Left "capacity.runtime_memory_profiles must have unique runtime_profile_id values")
+  traverse (compileRuntimeMemoryProfile (resource_plan section)) profiles
+
+compileRuntimeMemoryProfile
+  :: ResourcePlan
+  -> RuntimeMemoryProfile
+  -> Either String (Text, RuntimeMemory.RuntimeMemoryPlan)
+compileRuntimeMemoryProfile plan profile = do
+  let profileId = Text.strip (runtime_profile_id profile)
+      label fieldName =
+        "capacity.runtime_memory_profiles["
+          ++ Text.unpack profileId
+          ++ "]."
+          ++ fieldName
+  unless
+    (not (Text.null profileId))
+    (Left "capacity.runtime_memory_profiles[].runtime_profile_id must not be empty")
+  workloadProfile <-
+    case find ((== profileId) . profile_id) (workload_profiles plan) of
+      Just matched -> Right matched
+      Nothing ->
+        Left
+          ( "capacity.runtime_memory_profiles["
+              ++ Text.unpack profileId
+              ++ "] references unknown workload profile"
+          )
+  applicationState <-
+    positiveBytes
+      (label "bounded_application_state_bytes")
+      RuntimeMemory.BoundedApplicationState
+      (bounded_application_state_bytes profile)
+  pendingPersistence <-
+    positiveBytes
+      (label "bounded_pending_persistence_state_bytes")
+      RuntimeMemory.BoundedPendingPersistenceState
+      (bounded_pending_persistence_state_bytes profile)
+  transportScratch <-
+    positiveBytes
+      (label "bounded_in_heap_transport_decode_bytes")
+      RuntimeMemory.InHeapTransportDecodeScratch
+      (bounded_in_heap_transport_decode_bytes profile)
+  heapReserve <-
+    positiveBytes
+      (label "other_heap_reserve_bytes")
+      RuntimeMemory.OtherHeapReserve
+      (other_heap_reserve_bytes profile)
+  heapCap <-
+    positiveBytes (label "heap_cap_bytes") RuntimeMemory.HeapCap (heap_cap_bytes profile)
+  nativeReserve <-
+    positiveBytes
+      (label "native_non_heap_reserve_bytes")
+      RuntimeMemory.NativeNonHeapReserve
+      (native_non_heap_reserve_bytes profile)
+  kernelReserve <-
+    positiveBytes
+      (label "kernel_cgroup_reserve_bytes")
+      RuntimeMemory.KernelCgroupReserve
+      (kernel_cgroup_reserve_bytes profile)
+  margin <-
+    positiveBytes (label "safety_margin_bytes") RuntimeMemory.SafetyMargin (safety_margin_bytes profile)
+  containerLimit <-
+    positiveBytes
+      (label "container_memory_limit")
+      RuntimeMemory.ContainerMemoryLimit
+      (memory_mib (limit (resources workloadProfile)) * 1024 * 1024)
+  let childConfig = child_process_budget profile
+      childSchedule =
+        case permit_capacity childConfig of
+          Nothing -> RuntimeMemory.UnboundedChildSchedule
+          Just permitCount ->
+            RuntimeMemory.BoundedChildSchedule
+              { RuntimeMemory.rawChildPermitCount = permitCount
+              , RuntimeMemory.rawChildDeadlineMicros =
+                  fmap (* 1000) (action_deadline_milliseconds childConfig)
+              , RuntimeMemory.rawChildPeakBytes = simultaneous_peak_bytes childConfig
+              }
+      inputs =
+        RuntimeMemory.RuntimeMemoryInputs
+          { RuntimeMemory.runtimeBoundedApplicationState = applicationState
+          , RuntimeMemory.runtimeBoundedPendingPersistenceState = pendingPersistence
+          , RuntimeMemory.runtimeInHeapTransportDecodeScratch = transportScratch
+          , RuntimeMemory.runtimeOtherHeapReserve = heapReserve
+          , RuntimeMemory.runtimeHeapCap = heapCap
+          , RuntimeMemory.runtimeNativeNonHeapReserve = nativeReserve
+          , RuntimeMemory.runtimeRawChildSchedule = childSchedule
+          , RuntimeMemory.runtimeKernelCgroupReserve = kernelReserve
+          , RuntimeMemory.runtimeSafetyMargin = margin
+          , RuntimeMemory.runtimeContainerMemoryLimit = containerLimit
+          }
+  compiled <-
+    either
+      (\err -> Left (label "validation" ++ ": " ++ show err))
+      Right
+      (RuntimeMemory.validateRuntimeMemoryPlan inputs)
+  Right (profileId, compiled)
+
+positiveBytes
+  :: String
+  -> RuntimeMemory.MemoryTerm
+  -> Natural
+  -> Either String RuntimeMemory.PositiveBytes
+positiveBytes label term value =
+  either (Left . ((label ++ ": ") ++) . show) Right (RuntimeMemory.mkPositiveBytes term value)
 
 validateResourcePlan :: ResourcePlan -> Either String ()
 validateResourcePlan plan = do

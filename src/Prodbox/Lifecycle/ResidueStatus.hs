@@ -30,6 +30,10 @@ module Prodbox.Lifecycle.ResidueStatus
   ( ResidueStatus (..)
   , ResidueDetails (..)
   , ResidueUnreachableReason (..)
+  , ObservationFailure (..)
+  , CheckpointFailure (..)
+  , PresenceObservation (..)
+  , CheckpointObservation (..)
   , residueAbsent
   , residuePresentByFileExistence
   , renderResidueStatus
@@ -41,6 +45,43 @@ module Prodbox.Lifecycle.ResidueStatus
   , residueBlocksTeardownGate
   )
 where
+
+-- | A failure to classify an externally authoritative fact. The operation is
+-- kept separate from the underlying detail so callers can render a precise
+-- refusal without parsing an exception string. Authentication, authorization,
+-- throttling, transport, and decode failures all remain in this constructor;
+-- none may be recoded as absence.
+data ObservationFailure = ObservationFailure
+  { observationFailureOperation :: !String
+  , observationFailureDetail :: !String
+  }
+  deriving (Eq, Show)
+
+-- | Evidence that a checkpoint object was positively read but could not be
+-- decoded as a usable snapshot. Corruption is distinct from a missing object
+-- and from an authority that could not be reached.
+data CheckpointFailure = CheckpointFailure
+  { checkpointFailureDetail :: !String
+  }
+  deriving (Eq, Show)
+
+-- | Flat observation of authoritative resource presence. The payload is the
+-- finite inventory observed at the external authority.
+data PresenceObservation inventory
+  = PresenceAbsent
+  | PresencePresent !inventory
+  | PresenceUnobservable !ObservationFailure
+  deriving (Eq, Show)
+
+-- | Flat observation of retained checkpoint usability. This is deliberately
+-- independent of 'PresenceObservation': live resources and a usable encrypted
+-- checkpoint are separate external facts.
+data CheckpointObservation snapshot
+  = CheckpointMissing
+  | CheckpointValid !snapshot
+  | CheckpointCorrupt !CheckpointFailure
+  | CheckpointUnobservable !ObservationFailure
+  deriving (Eq, Show)
 
 -- | Source-of-truth status for one Pulumi-managed AWS stack.
 data ResidueStatus

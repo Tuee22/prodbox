@@ -74,6 +74,7 @@ prodbox
   help
   host
     ensure-tools
+    check-ses-readiness
     check-ports
     info
     firewall

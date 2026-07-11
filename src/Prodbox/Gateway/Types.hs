@@ -6,8 +6,6 @@ module Prodbox.Gateway.Types
   , GatewayRule (..)
   , Orders (..)
   , CborPayload (..)
-  , SignedEvent (..)
-  , CommitLog (..)
   , DaemonConfig (..)
   , DnsWriteGate (..)
   , GatewayAwsCreds (..)
@@ -17,45 +15,23 @@ module Prodbox.Gateway.Types
   , ConnectionKey (..)
   , Disposition (..)
   , PeerHealth (..)
-  , eventTypeHeartbeat
-  , eventTypeClaim
-  , eventTypeYield
-  , defaultMaxClockSkewSeconds
   , defaultDrainDeadlineSeconds
   , supportedDaemonConfigSchemaVersion
-  , emptyCommitLog
-  , appendIfNew
-  , sortedEvents
-  , latestTimestamp
   , cborPayloadFromJsonValue
   , encodeOrdersCbor
   , decodeOrdersCbor
-  , encodeSignedEventCbor
-  , decodeSignedEventCbor
-  , eventSignaturePayloadBytes
   , peerDialRestHost
   , peerRestUrl
   , peerDialSocketHost
   , peerSocketUrl
-  , peerEventsUrl
-  , eventTimestampUtc
-  , nodeDisposition
-  , canWriteDns
-  , parseIso8601Utc
-  , formatUtcIso
-  , computeMaxObservedSkew
   , validateDaemonTimingAgainstOrders
   )
 where
 
 import Codec.Serialise (Serialise, deserialiseOrFail, serialise)
 import Data.Bifunctor (first)
-import Data.ByteString qualified as BS
 import Data.ByteString.Lazy qualified as BL
-import Data.List (sortBy)
-import Data.Ord (comparing)
-import Data.Time.Clock (UTCTime, diffUTCTime)
-import Data.Time.Format.ISO8601 (formatShow, iso8601Format, iso8601ParseM)
+import Data.Time.Clock (UTCTime)
 import GHC.Generics (Generic)
 import Prodbox.Cbor (CborPayload (..), cborPayloadFromJsonValue)
 
@@ -94,9 +70,6 @@ peerSocketUrl :: PeerEndpoint -> String
 peerSocketUrl peer =
   "http://" ++ peerDialSocketHost peer ++ ":" ++ show (peerSocketPort peer)
 
-peerEventsUrl :: PeerEndpoint -> String
-peerEventsUrl peer = peerSocketUrl peer ++ "/v1/peer/events"
-
 data GatewayRule = GatewayRule
   { rankedNodes :: [String]
   , heartbeatTimeoutSeconds :: Int
@@ -114,77 +87,12 @@ data Orders = Orders
 
 instance Serialise Orders
 
-data SignedEvent = SignedEvent
-  { eventHash :: String
-  , emitterNodeId :: String
-  , timestampUtc :: String
-  , eventType :: String
-  , payloadCbor :: CborPayload
-  , signatureHex :: String
-  }
-  deriving (Eq, Show, Generic)
-
-instance Serialise SignedEvent
-
-data CommitLog = CommitLog
-  { commitLogEvents :: [SignedEvent]
-  }
-  deriving (Eq, Show)
-
-data UnsignedEventPayload = UnsignedEventPayload
-  { unsignedEmitterNodeId :: String
-  , unsignedTimestampUtc :: String
-  , unsignedEventType :: String
-  , unsignedPayloadCbor :: CborPayload
-  }
-  deriving (Eq, Show, Generic)
-
-instance Serialise UnsignedEventPayload
-
-emptyCommitLog :: CommitLog
-emptyCommitLog = CommitLog []
-
-appendIfNew :: CommitLog -> SignedEvent -> CommitLog
-appendIfNew commitLog event =
-  if any (\e -> eventHash e == eventHash event) (commitLogEvents commitLog)
-    then commitLog
-    else CommitLog (commitLogEvents commitLog ++ [event])
-
-sortedEvents :: CommitLog -> [SignedEvent]
-sortedEvents commitLog =
-  sortBy (comparing (\e -> (timestampUtc e, eventHash e))) (commitLogEvents commitLog)
-
-latestTimestamp :: CommitLog -> Maybe String
-latestTimestamp commitLog =
-  case commitLogEvents commitLog of
-    [] -> Nothing
-    events -> Just (maximum (map timestampUtc events))
-
 encodeOrdersCbor :: Orders -> BL.ByteString
 encodeOrdersCbor = serialise
 
 decodeOrdersCbor :: BL.ByteString -> Either String Orders
 decodeOrdersCbor =
   first (("failed to decode Orders CBOR: " ++) . show) . deserialiseOrFail
-
-encodeSignedEventCbor :: SignedEvent -> BL.ByteString
-encodeSignedEventCbor = serialise
-
-decodeSignedEventCbor :: BL.ByteString -> Either String SignedEvent
-decodeSignedEventCbor =
-  first (("failed to decode SignedEvent CBOR: " ++) . show) . deserialiseOrFail
-
-eventSignaturePayloadBytes :: String -> String -> String -> CborPayload -> BS.ByteString
-eventSignaturePayloadBytes nodeId evType ts payload =
-  BL.toStrict
-    ( serialise
-        UnsignedEventPayload
-          { unsignedEmitterNodeId = nodeId
-          , unsignedTimestampUtc = ts
-          , unsignedEventType = evType
-          , unsignedPayloadCbor = payload
-          }
-    )
 
 data DnsWriteGate = DnsWriteGate
   { dnsWriteGateZoneId :: String
@@ -260,7 +168,7 @@ data Disposition = DispositionOwner | DispositionYielded | DispositionUnknown
 -- transport-health value (Sprint 2.25).
 --
 --   * 'peerHealthLastInboundEvent' is INBOUND delivery health: the timestamp
---     of the most recent signed event this daemon accepted FROM the peer. It
+--     of the most recent signed assertion this daemon accepted FROM the peer. It
 --     is the freshness signal that feeds heartbeat / isolation judgements and
 --     is written only when an inbound event is actually accepted.
 --   * 'peerHealthOutboundConnected' / 'peerHealthOutboundLastError' are
@@ -278,18 +186,6 @@ data PeerHealth = PeerHealth
   }
   deriving (Eq, Show)
 
-eventTypeHeartbeat :: String
-eventTypeHeartbeat = "heartbeat"
-
-eventTypeClaim :: String
-eventTypeClaim = "claim"
-
-eventTypeYield :: String
-eventTypeYield = "yield"
-
-defaultMaxClockSkewSeconds :: Double
-defaultMaxClockSkewSeconds = 10.0
-
 defaultDrainDeadlineSeconds :: Int
 defaultDrainDeadlineSeconds = 30
 
@@ -301,15 +197,6 @@ supportedDaemonConfigSchemaVersion = 1
 -- `Prodbox.Gateway.Settings.loadDaemonConfig` built on
 -- `Dhall.inputFile auto` per
 -- [config_doctrine.md §4](../../documents/engineering/config_doctrine.md#4-decoding).
-
-eventTimestampUtc :: SignedEvent -> Maybe UTCTime
-eventTimestampUtc ev = parseIso8601Utc (timestampUtc ev)
-
-parseIso8601Utc :: String -> Maybe UTCTime
-parseIso8601Utc = iso8601ParseM
-
-formatUtcIso :: UTCTime -> String
-formatUtcIso = formatShow iso8601Format
 
 -- Sprint 2.20 closure: `validateIntervals`, `validateMaxSkew`, and
 -- `validateDrainDeadline` were JSON-parser helpers for the legacy
@@ -332,64 +219,3 @@ validateDaemonTimingAgainstOrders config orders =
               if sync > timeout * 2
                 then Left "sync_interval_seconds must be <= heartbeat_timeout_seconds * 2"
                 else Right ()
-
--- | Compute the disposition (last-known claim/yield state) for a node from
--- the commit log.  A node is the owner if its most recent claim/yield event
--- is a claim; yielded if the most recent is a yield; unknown if neither has
--- been observed.
-nodeDisposition :: String -> CommitLog -> Disposition
-nodeDisposition nodeId commitLog =
-  let claimYieldEvents =
-        [ ev
-        | ev <- sortedEvents commitLog
-        , emitterNodeId ev == nodeId
-        , eventType ev == eventTypeClaim || eventType ev == eventTypeYield
-        ]
-   in case claimYieldEvents of
-        [] -> DispositionUnknown
-        firstEvent : remainingEvents ->
-          let lastEv = foldl (\_ event -> event) firstEvent remainingEvents
-           in if eventType lastEv == eventTypeClaim
-                then DispositionOwner
-                else DispositionYielded
-
--- | The runtime equivalent of the modelled @CanWriteDns@ predicate: the local
--- node may write DNS only when the in-memory election picks the local node
--- AND the local node has an active claim in the commit log AND no later
--- yield from the local node supersedes that claim.
-canWriteDns
-  :: String
-  -- ^ local node id
-  -> Maybe String
-  -- ^ current owner view (in-memory election)
-  -> CommitLog
-  -> Bool
-canWriteDns localNodeId ownerView log_ =
-  ownerView == Just localNodeId
-    && nodeDisposition localNodeId log_ == DispositionOwner
-
--- | Compute the maximum observed inter-node clock skew given a "now"
--- sample and the events recorded in the commit log.  Returns 'Nothing' when
--- no event timestamps were parseable.
-computeMaxObservedSkew :: UTCTime -> CommitLog -> Maybe Double
-computeMaxObservedSkew now log_ =
-  let parsed =
-        [ realToFrac (abs (diffUTCTime now ts)) :: Double
-        | ev <- commitLogEvents log_
-        , Just ts <- [eventTimestampUtc ev]
-        ]
-   in case parsed of
-        [] -> Nothing
-        xs -> Just (foldl' max 0 xs)
-
--- Sprint 2.25 (doctrine D4): the in-process @orders_promoted@ promotion
--- machinery was deleted. @stateOrdersVersionUtc@ never advances at runtime;
--- a newer Orders document is adopted only by restarting the daemon against
--- the new config (config_doctrine.md §8). The former
--- @extractOrdersVersionFromEvent@ recovered an Orders version from an
--- @orders_promoted@ event payload; nothing ever emitted that event class, so
--- it was dead code. The refuse-to-reclaim-while-behind gate
--- (@stateLatestObservedOrdersVersion > stateOrdersVersionUtc@ blocks ownership
--- claims) is kept in 'Prodbox.Gateway.Daemon' and is fed only by the sender's
--- advertised @orders_version_utc@ on each peer push, never by an in-process
--- promotion event.

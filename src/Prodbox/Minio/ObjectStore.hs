@@ -5,10 +5,14 @@
 -- module only moves opaque object bytes.
 module Prodbox.Minio.ObjectStore
   ( ObjectStoreConfig (..)
+  , ConditionalPutResult (..)
+  , ObjectVersion (..)
+  , VersionedObject (..)
   , defaultObjectStoreBucket
   , deleteObject
   , ensureObjectStoreBucket
   , getObject
+  , getObjectVersioned
   , isNoSuchBucketOutput
   , listKeys
   , objectStoreCreateBucketArgs
@@ -16,6 +20,9 @@ module Prodbox.Minio.ObjectStore
   , objectStoreHeadBucketArgs
   , objectStoreListKeysArgs
   , putIfAbsent
+  , putIfAbsentObserved
+  , putIfVersion
+  , putIfVersionObserved
   , putObject
   )
 where
@@ -56,6 +63,23 @@ data ObjectStoreConfig = ObjectStoreConfig
   }
   deriving (Eq, Show)
 
+-- | Opaque object generation returned by the S3-compatible store.  Callers
+-- may compare or feed it back to 'putIfVersion', but cannot manufacture a
+-- generation from untrusted payload data.
+newtype ObjectVersion = ObjectVersion {objectVersionEtag :: Text}
+  deriving (Eq, Ord, Show)
+
+data VersionedObject = VersionedObject
+  { versionedObjectBytes :: ByteString
+  , versionedObjectVersion :: ObjectVersion
+  }
+  deriving (Eq, Show)
+
+data ConditionalPutResult
+  = ConditionalPutApplied
+  | ConditionalPutConflict
+  deriving (Eq, Show)
+
 defaultObjectStoreBucket :: String
 defaultObjectStoreBucket = "prodbox-state"
 
@@ -94,6 +118,42 @@ getObject config key =
               Left err -> Left ("failed to read fetched object-store object: " ++ show err)
               Right bytes -> Right (Just bytes)
 
+-- | Fetch an object together with the store generation used for a subsequent
+-- compare-and-swap.  Failure to observe is never collapsed into absence.
+getObjectVersioned
+  :: ObjectStoreConfig
+  -> Text
+  -> IO (Either String (Maybe VersionedObject))
+getObjectVersioned config key =
+  withSystemTempDirectory "prodbox-object-store-versioned" $ \tmpDir -> do
+    let outputPath = tmpDir </> "object.enc"
+    result <-
+      runMinIOWithEnv
+        (Just (objectStoreEnv config))
+        ( minioGetObjectArgs
+            (objectStoreEndpoint config)
+            (objectStoreBucket config)
+            (Text.unpack key)
+            outputPath
+        )
+    case result of
+      Left err -> pure (Left ("failed to fetch versioned object-store object: " ++ renderMinIOError err))
+      Right output ->
+        case processExitCode output of
+          ExitFailure _
+            | isNoSuchKeyOutput output || isNoSuchBucketOutput output -> pure (Right Nothing)
+            | otherwise ->
+                pure (Left ("aws s3api get-object failed: " ++ trim (processStderr output)))
+          ExitSuccess -> do
+            readResult <- try (BS.readFile outputPath) :: IO (Either IOException ByteString)
+            pure $ do
+              bytes <-
+                case readResult of
+                  Left err -> Left ("failed to read fetched object-store object: " ++ show err)
+                  Right value -> Right value
+              version <- parseObjectVersion (processStdout output)
+              Right (Just (VersionedObject bytes version))
+
 putObject :: ObjectStoreConfig -> Text -> ByteString -> IO (Either String ())
 putObject config key bytes =
   putObjectWithArgs config key bytes id
@@ -101,6 +161,81 @@ putObject config key bytes =
 putIfAbsent :: ObjectStoreConfig -> Text -> ByteString -> IO (Either String ())
 putIfAbsent config key bytes =
   putObjectWithArgs config key bytes (++ ["--if-none-match", "*"])
+
+putIfAbsentObserved
+  :: ObjectStoreConfig
+  -> Text
+  -> ByteString
+  -> IO (Either String ConditionalPutResult)
+putIfAbsentObserved config key bytes =
+  putObjectConditional config key bytes (++ ["--if-none-match", "*"])
+
+-- | Replace an object only when its current store generation is the one the
+-- caller observed.  A conflict is returned as a structured 'Left'; callers
+-- must re-read rather than retrying an unobserved write blindly.
+putIfVersion
+  :: ObjectStoreConfig
+  -> Text
+  -> ObjectVersion
+  -> ByteString
+  -> IO (Either String ())
+putIfVersion config key version bytes =
+  putObjectWithArgs
+    config
+    key
+    bytes
+    (++ ["--if-match", Text.unpack (objectVersionEtag version)])
+
+putIfVersionObserved
+  :: ObjectStoreConfig
+  -> Text
+  -> ObjectVersion
+  -> ByteString
+  -> IO (Either String ConditionalPutResult)
+putIfVersionObserved config key version bytes =
+  putObjectConditional
+    config
+    key
+    bytes
+    (++ ["--if-match", Text.unpack (objectVersionEtag version)])
+
+putObjectConditional
+  :: ObjectStoreConfig
+  -> Text
+  -> ByteString
+  -> ([String] -> [String])
+  -> IO (Either String ConditionalPutResult)
+putObjectConditional config key bytes adjustArgs = do
+  bucketResult <- ensureObjectStoreBucket config
+  case bucketResult of
+    Left err -> pure (Left err)
+    Right () ->
+      withSystemTempDirectory "prodbox-object-store-conditional" $ \tmpDir -> do
+        let inputPath = tmpDir </> "object.enc"
+        writeResult <- try (BS.writeFile inputPath bytes) :: IO (Either IOException ())
+        case writeResult of
+          Left err -> pure (Left ("failed to stage object-store object: " ++ show err))
+          Right () -> do
+            result <-
+              runMinIOWithEnv
+                (Just (objectStoreEnv config))
+                ( adjustArgs
+                    ( minioPutObjectArgs
+                        (objectStoreEndpoint config)
+                        (objectStoreBucket config)
+                        (Text.unpack key)
+                        inputPath
+                    )
+                )
+            pure $ case result of
+              Left err -> Left ("failed to conditionally store object: " ++ renderMinIOError err)
+              Right output ->
+                case processExitCode output of
+                  ExitSuccess -> Right ConditionalPutApplied
+                  ExitFailure _
+                    | isConditionalConflictOutput output -> Right ConditionalPutConflict
+                    | otherwise ->
+                        Left ("aws s3api conditional put-object failed: " ++ trim (processStderr output))
 
 putObjectWithArgs
   :: ObjectStoreConfig
@@ -278,6 +413,20 @@ parseListObjectsKeys payload =
           _ -> Left "failed to parse list-objects-v2 JSON: object missing Key"
       _ -> Left "failed to parse list-objects-v2 JSON: Contents member is not an object"
 
+parseObjectVersion :: String -> Either String ObjectVersion
+parseObjectVersion payload =
+  case eitherDecode (BL8.pack payload) of
+    Left err -> Left ("failed to parse get-object generation JSON: " ++ err)
+    Right (Object root) ->
+      case KeyMap.lookup (Key.fromString "ETag") root of
+        Just (String rawEtag)
+          | not (Text.null (Text.strip rawEtag)) ->
+              -- S3 returns the entity tag including its RFC validator quotes;
+              -- If-Match requires that exact validator value.
+              Right (ObjectVersion (Text.strip rawEtag))
+        _ -> Left "failed to parse get-object generation JSON: ETag is absent"
+    Right _ -> Left "failed to parse get-object generation JSON: root is not an object"
+
 isNoSuchKeyOutput :: ProcessOutput -> Bool
 isNoSuchKeyOutput output =
   any (`Text.isInfixOf` stderrText) ["NoSuchKey", "Not Found", "404"]
@@ -292,6 +441,18 @@ isNoSuchKeyOutput output =
 isNoSuchBucketOutput :: ProcessOutput -> Bool
 isNoSuchBucketOutput output =
   any (`Text.isInfixOf` stderrText) ["NoSuchBucket", "The specified bucket does not exist"]
+ where
+  stderrText = Text.pack (processStderr output)
+
+isConditionalConflictOutput :: ProcessOutput -> Bool
+isConditionalConflictOutput output =
+  any
+    (`Text.isInfixOf` stderrText)
+    [ "PreconditionFailed"
+    , "ConditionalRequestConflict"
+    , "412"
+    , "409"
+    ]
  where
   stderrText = Text.pack (processStderr output)
 

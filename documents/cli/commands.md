@@ -66,6 +66,7 @@
 | `prodbox gateway config-gen` | Generate gateway config |
 | `prodbox help` | Render help for a command path |
 | `prodbox host ensure-tools` | Verify required host tools |
+| `prodbox host check-ses-readiness` | Check semantic SES readiness |
 | `prodbox host check-ports` | Check required ports |
 | `prodbox host info` | Display host diagnostics |
 | `prodbox host firewall gateway-restrict` | Restrict the gateway NodePort to 127.0.0.1 |

@@ -15,6 +15,7 @@ import Data.Aeson.Key qualified as Key
 import Data.Aeson.KeyMap qualified as KeyMap
 import Data.ByteString.Char8 qualified as BS8
 import Data.ByteString.Lazy.Char8 qualified as BL8
+import Data.List (intercalate)
 import Data.Text qualified as Text
 import Network.Socket
   ( Family (AF_INET)
@@ -99,7 +100,7 @@ main = mainWithSuite "prodbox-daemon-lifecycle" $ do
           `shouldReturn` HttpResponse 200 "ok\n"
         metrics <- readHttp (daemonRestPort daemon) "/metrics"
         responseStatus metrics `shouldBe` 200
-        responseBody metrics `shouldContain` "prodbox_gateway_events_total"
+        responseBody metrics `shouldContain` "prodbox_gateway_signed_replay_assertions"
         terminateGatewayDaemon daemon
         waitForHttpStatus (daemonRestPort daemon) "/readyz" 503
         waitForProcessExitSuccess daemon 10
@@ -130,6 +131,60 @@ main = mainWithSuite "prodbox-daemon-lifecycle" $ do
         federationResponse <- readHttp (daemonRestPort daemon) "/v1/federation/children"
         responseStatus federationResponse `shouldBe` 503
         responseBody federationResponse `shouldContain` "gateway service-account token"
+        terminateGatewayDaemon daemon
+        waitForProcessExitSuccess daemon 10
+
+    it "serves the bounded peer cursor protocol while continuity and DNS stay fail-closed" $
+      withGatewayDaemon 5 $ \daemon -> do
+        waitForHttpStatus (daemonRestPort daemon) "/readyz" 200
+        peerResponse <-
+          readHttpRequest
+            (daemonPeerPort daemon)
+            "GET /v1/peer/cursor HTTP/1.1\r\nHost: 127.0.0.1\r\nContent-Length: 0\r\nConnection: close\r\n\r\n"
+        responseStatus peerResponse `shouldBe` 200
+        responseBody peerResponse `shouldSatisfy` (not . null)
+        oversizedOutcome <-
+          timeout
+            1000000
+            ( tryReadHttpRequest
+                (daemonPeerPort daemon)
+                "POST /v1/peer/delta HTTP/1.1\r\nHost: 127.0.0.1\r\nContent-Length: 65537\r\nConnection: close\r\n\r\n"
+            )
+        case oversizedOutcome of
+          Nothing ->
+            expectationFailure
+              "peer listener waited for an oversized declared body instead of rejecting its header"
+          Just (Left _) -> pure ()
+          Just (Right oversizedResponse) ->
+            responseStatus oversizedResponse `shouldSatisfy` (`elem` [400, 413])
+        stateResponse <- readHttp (daemonRestPort daemon) "/v1/state"
+        responseStatus stateResponse `shouldBe` 200
+        case eitherDecode (BL8.pack (responseBody stateResponse)) of
+          Right (Object obj) -> do
+            KeyMap.lookup (Key.fromString "can_write_dns") obj `shouldBe` Just (Bool False)
+            KeyMap.lookup (Key.fromString "semantic_member_count") obj
+              `shouldBe` Just (Number 1)
+            case ( KeyMap.lookup (Key.fromString "signed_replay_assertion_count") obj
+                 , KeyMap.lookup (Key.fromString "retained_assertion_count") obj
+                 , KeyMap.lookup (Key.fromString "retained_assertion_capacity") obj
+                 ) of
+              (Just (Number replayCount), Just (Number retainedCount), Just (Number capacity)) -> do
+                replayCount `shouldSatisfy` (>= 0)
+                retainedCount `shouldSatisfy` (>= replayCount)
+                retainedCount `shouldSatisfy` (<= capacity)
+              other -> expectationFailure ("unexpected bounded count diagnostics: " ++ show other)
+            case KeyMap.lookup (Key.fromString "recent_assertion_hashes") obj of
+              Just (Array hashes) -> length hashes `shouldSatisfy` (<= 64)
+              other -> expectationFailure ("unexpected assertion-hash diagnostic: " ++ show other)
+            case KeyMap.lookup (Key.fromString "peer_receive_cursors") obj of
+              Just (Object cursors) -> KeyMap.size cursors `shouldSatisfy` (<= 1)
+              other -> expectationFailure ("unexpected peer cursor diagnostic: " ++ show other)
+            case KeyMap.lookup (Key.fromString "continuity_authority") obj of
+              Just (Object continuityObject) ->
+                KeyMap.lookup (Key.fromString "status") continuityObject
+                  `shouldBe` Just (String (Text.pack "unavailable"))
+              other -> expectationFailure ("unexpected continuity diagnostic: " ++ show other)
+          other -> expectationFailure ("unexpected gateway state response: " ++ show other)
         terminateGatewayDaemon daemon
         waitForProcessExitSuccess daemon 10
 
@@ -233,6 +288,7 @@ isJust maybeValue =
 data RunningGatewayDaemon = RunningGatewayDaemon
   { daemonBackgroundProcess :: BackgroundProcess
   , daemonRestPort :: Int
+  , daemonPeerPort :: Int
   , daemonWriteConfig :: Int -> Maybe String -> IO ()
   }
 
@@ -272,7 +328,7 @@ withGatewayDaemonWithConfig renderConfigFn drainDeadlineSeconds action =
             (renderConfigFn certPath keyPath caPath ordersPath deadlineSeconds maybeLogLevel)
     writeConfig drainDeadlineSeconds Nothing
     bracket
-      (startGatewayProcess binary tmpDir configPath restPort writeConfig)
+      (startGatewayProcess binary tmpDir configPath restPort peerPort writeConfig)
       stopGatewayProcess
       action
 
@@ -316,9 +372,10 @@ startGatewayProcess
   -> FilePath
   -> FilePath
   -> Int
+  -> Int
   -> (Int -> Maybe String -> IO ())
   -> IO RunningGatewayDaemon
-startGatewayProcess binary workingDir configPath restPort writeConfig = do
+startGatewayProcess binary workingDir configPath restPort peerPort writeConfig = do
   startResult <-
     startBackgroundProcess
       Subprocess
@@ -334,6 +391,7 @@ startGatewayProcess binary workingDir configPath restPort writeConfig = do
         RunningGatewayDaemon
           { daemonBackgroundProcess = process
           , daemonRestPort = restPort
+          , daemonPeerPort = peerPort
           , daemonWriteConfig = writeConfig
           }
 
@@ -419,7 +477,7 @@ renderHttpResponseForGolden response =
 
 normalizeMetricsBody :: String -> String
 normalizeMetricsBody =
-  unlines . map normalizeMetricLine . lines
+  intercalate "\n" . map normalizeMetricLine . lines
  where
   normalizeMetricLine line
     | "#" `prefixOf` line = line
@@ -490,7 +548,17 @@ readHttp port path = do
     Left err -> ioError (userError err)
 
 tryReadHttp :: Int -> String -> IO (Either String HttpResponse)
-tryReadHttp port path =
+tryReadHttp port path = tryReadHttpRequest port (httpRequest path)
+
+readHttpRequest :: Int -> String -> IO HttpResponse
+readHttpRequest port request = do
+  result <- tryReadHttpRequest port request
+  case result of
+    Right response -> pure response
+    Left err -> ioError (userError err)
+
+tryReadHttpRequest :: Int -> String -> IO (Either String HttpResponse)
+tryReadHttpRequest port request =
   withSocketsDo $
     bracket
       (socket AF_INET Stream defaultProtocol)
@@ -500,7 +568,7 @@ tryReadHttp port path =
           case connectResult of
             Left err -> pure (Left err)
             Right () -> do
-              sendAll sock (BS8.pack (httpRequest path))
+              sendAll sock (BS8.pack request)
               raw <- receiveUntilClose sock []
               pure (parseHttpResponse (BS8.unpack (BS8.concat (reverse raw))))
       )

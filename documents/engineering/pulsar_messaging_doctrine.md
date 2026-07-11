@@ -4,7 +4,7 @@
 **Supersedes**: the older non-CBOR wire-format language in
 [distributed_gateway_architecture.md](./distributed_gateway_architecture.md). CBOR is the only
 sanctioned prodbox payload and envelope format.
-**Referenced by**: [../../README.md](../../README.md), documents/engineering/README.md, DEVELOPMENT_PLAN/phase-2-gateway-dns.md, DEVELOPMENT_PLAN/phase-3-chart-platform-vscode.md, documents/engineering/pulsar_topic_lifecycle_doctrine.md, documents/engineering/tiered_storage_capacity_doctrine.md
+**Referenced by**: [../../README.md](../../README.md), documents/engineering/README.md, documents/engineering/distributed_gateway_architecture.md, DEVELOPMENT_PLAN/phase-2-gateway-dns.md, DEVELOPMENT_PLAN/phase-3-chart-platform-vscode.md, documents/engineering/pulsar_topic_lifecycle_doctrine.md, documents/engineering/tiered_storage_capacity_doctrine.md
 **Generated sections**: none
 
 > **Purpose**: SSoT for prodbox's self-maintained native-protocol Pulsar client, its
@@ -12,16 +12,20 @@ sanctioned prodbox payload and envelope format.
 > family — the proven single-node specialization that the amoebius umbrella
 > `pulsar_client_doctrine.md` cites and generalizes.
 
-> **Implementation status.** The gateway peer-gossip batch, `Orders` serialized envelope, and
-> `SignedEvent` payload field moved to canonical CBOR in Phase 2 Sprint `2.27`. The durable
+> **Implementation status.** The gateway peer envelopes and serialized `Orders` document moved to
+> canonical CBOR in Phase 2 Sprint `2.27`. The durable
 > at-least-once event store moved to CBOR in Sprint `2.28`. Phase 3 Sprint `3.21` has landed the
 > shared Pulsar CBOR codec, derived topic algebra, `Work*` envelopes, chart, native-client
 > boundary, and repo-maintained native broker transport/framing layer. The live home-local
 > `pulsar-broker` validation proves CBOR produce/consume/ack against a real broker; there is no
 > generated external schema dependency and no second-runtime transport. Per
 > [development_plan_standards §D](../../DEVELOPMENT_PLAN/development_plan_standards.md) this doc
-> states the target shape in present-tense doctrine; delivery sequencing and status are owned only
+> states the implemented shape in present-tense doctrine; delivery sequencing and status are owned only
 > by [DEVELOPMENT_PLAN/README.md](../../DEVELOPMENT_PLAN/README.md).
+
+> Sprint `2.31` retained CBOR-always encoding while replacing gateway replication with bounded
+> semantic cursor/delta and per-emitter snapshot-repair frames. The durable Pulsar/`Daemon.Events`
+> retention contract is unchanged.
 
 ## 1. Scope — what this document owns
 
@@ -41,7 +45,7 @@ It deliberately does **not** own, and only references:
 | At-least-once delivery, idempotent handlers, first-write-wins dedup | [streaming_doctrine.md § At-Least-Once Event Processing](./streaming_doctrine.md#at-least-once-event-processing) |
 | Topic create / validate / reconcile / teardown lifecycle and retention | [pulsar_topic_lifecycle_doctrine.md](./pulsar_topic_lifecycle_doctrine.md) |
 | Tiered storage, capacity, and offload for Pulsar-backed topics | [tiered_storage_capacity_doctrine.md](./tiered_storage_capacity_doctrine.md) |
-| Gateway leadership, Orders semantics, commit-log hash chaining | [distributed_gateway_architecture.md](./distributed_gateway_architecture.md) |
+| Gateway leadership, Orders semantics, bounded semantic state, and signed delta/cursor transport | [distributed_gateway_architecture.md](./distributed_gateway_architecture.md) |
 | Dhall as the human config-authoring language | [config_doctrine.md](./config_doctrine.md) |
 | Phase order, sprint status, validation closure | [DEVELOPMENT_PLAN/README.md](../../DEVELOPMENT_PLAN/README.md) |
 
@@ -86,8 +90,8 @@ decodeCanonical (CborPayload bytes) =
   bimap snd snd (deserialiseFromBytes decode (fromStrict bytes))
 ```
 
-Determinism is **load-bearing**, not cosmetic. The gateway commit log hash-chains events by
-`eventHash` and the at-least-once store dedups by content
+Determinism is **load-bearing**, not cosmetic. Gateway signed assertions and delta frames derive
+stable identities/signatures from canonical bytes, and the at-least-once store dedups by content
 ([streaming_doctrine.md](./streaming_doctrine.md#at-least-once-event-processing)); a
 nondeterministic encoding would make equal payloads hash differently and silently break both the
 chain and dedup. The canonical rule is therefore consistent with — and checked by — the repo's
@@ -176,37 +180,41 @@ derived topic algebra are identical in kind; the codec is not inherited or negot
 structure, fix the codec to CBOR" is the whole specialization, and a later refactor onto a shared
 `hostbootstrap` core keeps this same seam.
 
-## 5. Application to the current gateway envelopes
+## 5. Application to Gateway Envelopes
 
-The gateway already carries the exact envelopes this doctrine governs.
+The gateway already carries the canonical CBOR assertion and Orders envelopes this doctrine
+governs.
 [`src/Prodbox/Cbor.hs`](../../src/Prodbox/Cbor.hs) defines the shared `CborPayload`;
-[`src/Prodbox/Gateway/Types.hs`](../../src/Prodbox/Gateway/Types.hs) serializes `Orders` and
-`SignedEvent` through `serialise` and keeps the event payload opaque at the signed-event boundary:
+[`src/Prodbox/Gateway/Types.hs`](../../src/Prodbox/Gateway/Types.hs) serializes `Orders` through
+`serialise`, while [`src/Prodbox/Gateway/Peer.hs`](../../src/Prodbox/Gateway/Peer.hs) owns opaque
+signed assertions and bounded delta/repair frames:
 
 ```haskell
--- File: src/Prodbox/Gateway/Types.hs
-newtype CborPayload = CborPayload { cborPayloadBytes :: ByteString }
-
-data SignedEvent = SignedEvent
-  { eventHash :: String
-  , emitterNodeId :: String
-  , timestampUtc :: String
-  , eventType :: String
-  , payloadCbor :: CborPayload
-  , signatureHex :: String
-  }
-  deriving (Eq, Show)
+-- Current public encoding boundaries.
+encodeOrdersCbor :: Orders -> BL.ByteString
+encodeSignedDeltaFrame :: SignedDeltaFrame -> ByteString
+encodeSignedRepairFrame :: SignedRepairFrame -> ByteString
+encodeCursorVector
+  :: GatewayBounds -> ValidatedOrders -> CursorVector -> Either PeerError ByteString
 ```
 
 Sprint `2.27` landed the gateway gossip transport and `Orders` document on canonical CBOR (adding
-the `cborg` / `serialise` dependencies). `src/Prodbox/Gateway/Peer.hs` now sends
-`POST /v1/peer/events` as `application/cbor`, and event hashes/HMAC signatures are derived from the
-same canonical unsigned CBOR payload bytes. Sprint `2.28` moved the durable at-least-once event
+the `cborg` / `serialise` dependencies). The current peer protocol sends
+`GET /v1/peer/cursor`, `POST /v1/peer/delta`, and `POST /v1/peer/repair`; CBOR bodies are admitted by
+explicit frame-byte and assertion-count bounds. An assertion HMAC covers its exact canonical
+unsigned value, and the result digest is derived from the exact canonical signed bytes rather than
+accepted from the wire. Sprint `2.28` moved the durable at-least-once event
 store (`src/Prodbox/Daemon/Events.hs`) to the shared `CborPayload`, with `StoredEvent` CBOR
-round-trip helpers and the first-write-wins `processed_at` marker unchanged. The hash-chain and
-dedup guarantees are preserved precisely because the encoding is canonical (§2.2). This is the
+round-trip helpers and the first-write-wins `processed_at` marker unchanged. Stable assertion
+identity/signature and durable-store dedup guarantees are preserved precisely because the encoding
+is canonical (§2.2). This is the
 concrete removal of older non-CBOR language: CBOR is the only sanctioned prodbox wire format for
 these envelopes.
+
+The bounded gateway keeps `Orders`, signed semantic assertions, cursor/delta frames, and
+per-emitter semantic snapshot/repair frames on this same CBOR codec. Frame cardinality and byte
+bounds are protocol admission facts owned by the gateway doctrine, not alternative codecs. There
+is no complete-history compatibility frame.
 
 ## 6. Dhall-authoring vs CBOR-at-rest boundary
 
@@ -214,8 +222,10 @@ CBOR-always governs the **wire and at-rest** serialization only. It does **not**
 Dhall remains prodbox's human-authoring configuration language
 ([config_doctrine.md](./config_doctrine.md)). The boundary is clean and one-directional — a human
 authors Dhall, the binary decodes it to typed Haskell values, and only serialized/persisted
-artifacts (the gateway `Orders` serialized envelope, commit-log events, at-least-once records, and
-`Work*` payloads) are CBOR. There is no CBOR configuration surface and no Dhall on the wire; the
+artifacts (the gateway `Orders` envelope, signed assertions and bounded delta/snapshot frames,
+at-least-once records, and
+`Work*` payloads) are CBOR. Gateway delta/snapshot compaction changes retention, not this
+serialization boundary. There is no CBOR configuration surface and no Dhall on the wire; the
 topic descriptor is authored in Dhall (§3) and its *derived* topics travel as CBOR-encoded control
 envelopes.
 
@@ -248,8 +258,8 @@ This SSoT owns the prodbox message-codec and message-shape doctrine.
   message types admit no codec-selection field, so any non-CBOR payload is unrepresentable — and
   every topic name is derived from a typed descriptor, never hand-written.
 - **Linked dependents**:
-  `src/Prodbox/Gateway/Types.hs` (Orders / SignedEvent / CommitLog → CBOR, landed in Sprint `2.27`),
-  `src/Prodbox/Gateway/Peer.hs` (anti-entropy gossip transport → CBOR, landed in Sprint `2.27`),
+  `src/Prodbox/Gateway/Types.hs` (`Orders` canonical CBOR),
+  `src/Prodbox/Gateway/Peer.hs` (signed assertions plus bounded cursor/delta/snapshot-repair CBOR),
   `src/Prodbox/Daemon/Events.hs` (durable at-least-once store → CBOR, landed in Sprint `2.28`),
   `src/Prodbox/Pulsar/Codec.hs`, `src/Prodbox/Pulsar/Topic.hs`,
   `src/Prodbox/Pulsar/Envelope.hs`, `src/Prodbox/Pulsar/Protocol.hs`, and

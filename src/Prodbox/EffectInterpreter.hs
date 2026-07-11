@@ -65,8 +65,17 @@ import Prodbox.Result
 import Prodbox.Service
   ( isRetryableTransientFailure
   )
+import Prodbox.Ses.Readiness
+  ( AwsSesReadiness (..)
+  , AwsSesReadinessEnvironments (..)
+  , AwsSesReadinessScope (..)
+  , mkAwsSesReadinessExpectation
+  , observeAwsSesReadiness
+  , renderAwsSesReadiness
+  )
 import Prodbox.Settings
-  ( ConfigFile (..)
+  ( AwsCredentialsRef (..)
+  , ConfigFile (..)
   , Credentials (..)
   , Route53Section (..)
   , SesSection (..)
@@ -293,9 +302,9 @@ runValidation context validation =
     RequirePulumiLogin -> requirePulumiLogin
     RequireKubectlClusterReachable -> requireKubectlClusterReachable
     RequireUbuntu2404 -> requireUbuntu2404
-    RequireSesSendingIdentityVerified -> requireSesSendingIdentityVerified
-    RequireSesReceiveRuleSetActive -> requireSesReceiveRuleSetActive
-    RequireSesReceiveBucketAccessible -> requireSesReceiveBucketAccessible
+    RequireSesSendingIdentityVerified -> requireSesSemanticReadiness AwsSesSendingReadiness
+    RequireSesReceiveRuleSetActive -> requireSesSemanticReadiness AwsSesReceivingReadiness
+    RequireSesReceiveBucketAccessible -> requireSesSemanticReadiness AwsSesCaptureReadiness
  where
   requireSettings :: IO (Result ())
   requireSettings = do
@@ -693,93 +702,42 @@ runValidation context validation =
               _ -> Failure "This suite requires Ubuntu 24.04 LTS."
           )
 
-  requireSesSendingIdentityVerified :: IO (Result ())
-  requireSesSendingIdentityVerified = do
+  -- Sprint 8.10: deferred SES prerequisites are one-shot, read-only semantic
+  -- observations.  Reconciliation already ran in the visible retained-SES
+  -- preparation transaction; this boundary never creates or repairs AWS
+  -- state and never accepts command exit success as readiness by itself.
+  requireSesSemanticReadiness :: AwsSesReadinessScope -> IO (Result ())
+  requireSesSemanticReadiness scope = do
     settingsResult <- validateAndLoadSettings (interpreterRepoRoot context)
     case settingsResult of
       Left err -> pure (Failure err)
       Right settings -> do
-        let domain =
-              Text.unpack
-                (Text.strip (sender_domain (ses (validatedConfig settings))))
-        if null domain
-          then
-            pure
-              ( Failure
-                  "ses.sender_domain must be set in prodbox.dhall before checking the SES sending identity. Run `prodbox aws stack aws-ses reconcile` after populating the ses.* block."
-              )
-          else do
+        let config = validatedConfig settings
+            sesConfig = ses config
+            expectationResult =
+              mkAwsSesReadinessExpectation
+                (Text.unpack (sender_domain sesConfig))
+                (Text.unpack (zone_id (route53 config)))
+                (Text.unpack (awsCredentialRegion (aws config)))
+                (Text.unpack (receive_subdomain sesConfig))
+                (Text.unpack (capture_bucket sesConfig))
+        case expectationResult of
+          Left err -> pure (Failure err)
+          Right expectation -> do
             environment <- awsCommandEnvironment (interpreterRepoRoot context) settings
-            requireAwsValidationCommandSuccess
-              "SES sending-identity verification check failed"
-              Subprocess
-                { subprocessPath = "aws"
-                , subprocessArguments =
-                    [ "ses"
-                    , "get-identity-verification-attributes"
-                    , "--identities"
-                    , domain
-                    , "--query"
-                    , "VerificationAttributes." ++ domain ++ ".VerificationStatus"
-                    , "--output"
-                    , "text"
-                    ]
-                , subprocessEnvironment = Just environment
-                , subprocessWorkingDirectory = Just (interpreterRepoRoot context)
-                }
-
-  requireSesReceiveRuleSetActive :: IO (Result ())
-  requireSesReceiveRuleSetActive = do
-    settingsResult <- validateAndLoadSettings (interpreterRepoRoot context)
-    case settingsResult of
-      Left err -> pure (Failure err)
-      Right settings -> do
-        environment <- awsCommandEnvironment (interpreterRepoRoot context) settings
-        requireAwsValidationCommandSuccess
-          "SES active receive rule set check failed"
-          Subprocess
-            { subprocessPath = "aws"
-            , subprocessArguments =
-                [ "ses"
-                , "describe-active-receipt-rule-set"
-                , "--query"
-                , "Metadata.Name"
-                , "--output"
-                , "text"
-                ]
-            , subprocessEnvironment = Just environment
-            , subprocessWorkingDirectory = Just (interpreterRepoRoot context)
-            }
-
-  requireSesReceiveBucketAccessible :: IO (Result ())
-  requireSesReceiveBucketAccessible = do
-    settingsResult <- validateAndLoadSettings (interpreterRepoRoot context)
-    case settingsResult of
-      Left err -> pure (Failure err)
-      Right settings -> do
-        let bucket =
-              Text.unpack (Text.strip (capture_bucket (ses (validatedConfig settings))))
-        if null bucket
-          then
-            pure
-              ( Failure
-                  "ses.capture_bucket must be set in prodbox.dhall before checking SES capture-bucket reachability."
-              )
-          else do
-            environment <- awsCommandEnvironment (interpreterRepoRoot context) settings
-            requireAwsValidationCommandSuccess
-              "SES capture-bucket reachability check failed"
-              Subprocess
-                { subprocessPath = "aws"
-                , subprocessArguments =
-                    [ "s3api"
-                    , "head-bucket"
-                    , "--bucket"
-                    , bucket
-                    ]
-                , subprocessEnvironment = Just environment
-                , subprocessWorkingDirectory = Just (interpreterRepoRoot context)
-                }
+            readiness <-
+              observeAwsSesReadiness
+                (interpreterRepoRoot context)
+                AwsSesReadinessEnvironments
+                  { awsSesControlPlaneEnvironment = environment
+                  , awsSesCaptureEnvironment = environment
+                  }
+                expectation
+                scope
+            pure $
+              case readiness of
+                AwsSesReady -> Success ()
+                _ -> Failure ("SES semantic readiness check: " ++ renderAwsSesReadiness readiness)
 
 pulumiPrerequisiteEnvironment :: Int -> String -> String -> IO [(String, String)]
 pulumiPrerequisiteEnvironment localPort accessKey secretKey = do

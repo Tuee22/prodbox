@@ -38,38 +38,57 @@ module Prodbox.Gateway.Daemon
   , decodePulumiObjectPutRequest
   , decodePulumiObjectRequest
   , renderPulumiObjectRequestError
+
+    -- * Sprint 4.47: bounded target-secret Vault route
+  , decodeTargetSecretCasRequest
+  , decodeTargetSecretReadRequest
   )
 where
 
 import Control.Concurrent (threadDelay)
-import Control.Concurrent.Async (concurrently, race, waitCatch, withAsync)
+import Control.Concurrent.Async (concurrently, race, replicateConcurrently, withAsync)
 import Control.Concurrent.STM
-  ( TChan
+  ( STM
+  , TBQueue
+  , TChan
+  , TMVar
   , TQueue
   , TVar
   , atomically
   , modifyTVar'
+  , newTBQueueIO
   , newTChanIO
+  , newTMVarIO
   , newTQueueIO
   , newTVarIO
+  , orElse
+  , putTMVar
+  , readTBQueue
   , readTQueue
   , readTVar
   , readTVarIO
+  , retry
+  , takeTMVar
+  , tryReadTQueue
+  , writeTBQueue
   , writeTChan
   , writeTQueue
   , writeTVar
   )
 import Control.Exception
-  ( AsyncException
-  , IOException
+  ( IOException
+  , SomeAsyncException
   , SomeException
   , bracketOnError
+  , bracket_
   , displayException
+  , finally
   , fromException
   , throwIO
   , try
   )
-import Control.Monad (forever, void, when)
+import Control.Monad (forever, replicateM_, unless, void, when)
+import Crypto.Hash.SHA256 qualified as SHA256
 import Data.Aeson
   ( FromJSON (..)
   , ToJSON (..)
@@ -88,12 +107,13 @@ import Data.Aeson.Key qualified as Key
 import Data.Aeson.KeyMap qualified as KeyMap
 import Data.ByteString (ByteString)
 import Data.ByteString qualified as BS
+import Data.ByteString.Builder qualified as ByteStringBuilder
 import Data.ByteString.Char8 qualified as BS8
 import Data.ByteString.Lazy qualified as BL
 import Data.ByteString.Lazy.Char8 qualified as BL8
 import Data.Char (isSpace, toLower)
 import Data.Foldable (for_)
-import Data.List (intercalate, isPrefixOf, isSuffixOf, stripPrefix)
+import Data.List (intercalate, isInfixOf, isPrefixOf, isSuffixOf, sortOn, stripPrefix)
 import Data.Map.Strict (Map)
 import Data.Map.Strict qualified as Map
 import Data.Maybe (fromMaybe)
@@ -101,12 +121,13 @@ import Data.Text qualified as Text
 import Data.Text.Encoding qualified as TextEncoding
 import Data.Text.IO qualified as TextIO
 import Data.Time.Clock (UTCTime, diffUTCTime, getCurrentTime)
+import Data.Time.Clock.POSIX (posixSecondsToUTCTime, utcTimeToPOSIXSeconds)
 import Data.Time.Format.ISO8601 (formatShow, iso8601Format)
+import Data.Word (Word64)
 import GHC.Conc (threadWaitRead)
 import Network.Socket
   ( AddrInfo (..)
   , AddrInfoFlag (AI_PASSIVE)
-  , Family (AF_INET)
   , Socket
   , SocketOption (ReuseAddr)
   , SocketType (Stream)
@@ -120,7 +141,6 @@ import Network.Socket
   , close
   , connect
   , defaultHints
-  , defaultProtocol
   , getAddrInfo
   , listen
   , setSocketOption
@@ -129,6 +149,8 @@ import Network.Socket
   , withSocketsDo
   )
 import Network.Socket.ByteString (recv, sendAll)
+import Numeric.Natural (Natural)
+import Prodbox.Capacity.Config qualified as Capacity
 import Prodbox.Cluster.Federation
   ( ChildBootstrapCredential
   , ChildIndex (..)
@@ -144,6 +166,7 @@ import Prodbox.Cluster.Federation
 import Prodbox.Config.Tier0
   ( ContextKind (..)
   , ProdboxContext (..)
+  , ProdboxParameters (..)
   , ProdboxProjectConfig (..)
   , Tier0Source (..)
   , loadDaemonBinaryContext
@@ -154,6 +177,33 @@ import Prodbox.Error
   , ErrorKind (..)
   , appError
   )
+import Prodbox.Gateway.Bounds
+  ( GatewayBounds
+  , defaultRawGatewayBounds
+  , gatewayChildDeadlineMicros
+  , gatewayChildPeakBytes
+  , gatewayMaxEncodedAssertionBytes
+  , gatewayMaxFrameBytes
+  , gatewayMaxInFlightFrames
+  , gatewayMaxInFlightFramesPerPeer
+  , gatewayMaxNodeIdBytes
+  , gatewayReplayPerEmitter
+  , validateGatewayBounds
+  )
+import Prodbox.Gateway.ChildSchedule
+  ( CapacityOneChildScheduler
+  , RawChildRequest (..)
+  , completeChild
+  , newCapacityOneChildSchedulerFromBounds
+  , scheduleChild
+  , scheduledChildTimeoutMicros
+  )
+import Prodbox.Gateway.Continuity qualified as Continuity
+import Prodbox.Gateway.ContinuityStore
+  ( ContinuityStoreMaterial (..)
+  , modelBContinuityAuthority
+  )
+import Prodbox.Gateway.DnsAuthority qualified as DnsAuthority
 import Prodbox.Gateway.Logging
   ( Severity (..)
   , field
@@ -161,29 +211,69 @@ import Prodbox.Gateway.Logging
   , severityFromLogLevel
   )
 import Prodbox.Gateway.ObjectStore
-  ( PulumiObjectGetResponse (..)
+  ( AuthorityClockRequest (..)
+  , AuthorityClockResponse (..)
+  , AuthorityObjectCasRequest (..)
+  , AuthorityObjectCasResponse (..)
+  , AuthorityObjectLeaseGuard (..)
+  , AuthorityObjectObservation (..)
+  , AuthorityObjectPayloadError (..)
+  , AuthorityObjectRequest (..)
+  , PulumiObjectGetResponse (..)
   , PulumiObjectPutRequest (..)
   , PulumiObjectRequest (..)
+  , authorityClockPath
+  , authorityObjectCasPath
+  , authorityObjectGetPath
+  , authorityObjectRequestMaxBytes
   , pulumiObjectDeletePath
   , pulumiObjectGetPath
   , pulumiObjectPutPath
   , pulumiObjectRequestMaxBytes
+  , validateAuthorityObjectLogicalName
+  , validateAuthorityObjectPayloadSize
   , validatePulumiObjectStackName
   )
 import Prodbox.Gateway.Peer
-  ( PeerEventBatch (..)
-  , PeerTransportRequest (..)
-  , PeerTransportResponse (..)
-  , encodePeerEventBatch
+  ( EventKey
+  , PeerError (..)
+  , PeerTransportResponse
+  , SignedAssertion
+  , boundedSignedAssertionsToList
+  , decodeSignedAssertion
   , handlePeerRequest
+  , mkEventKey
   , parsePeerHttpRequest
+  , parsePeerHttpResponse
+  , peerErrorResponse
+  , peerRequestOrdersVersion
+  , peerRequestReplayAssertions
+  , peerRequestSemanticSnapshot
+  , peerRequestSnapshotEvidence
+  , peerResponseAccepted
+  , peerResponseCursorVector
+  , renderPeerCursorRequest
+  , renderPeerDeltaRequest
   , renderPeerHttpResponse
-  , signEvent
+  , renderPeerRepairRequest
+  , selectSignedDelta
+  , selectSignedRepairFromCheckpoint
+  , signAndConvertAssertion
+  , signedAssertionBytes
+  , signedAssertionEmitter
+  , signedAssertionEpoch
+  , signedAssertionKind
+  , signedAssertionResultDigest
+  , signedAssertionSequence
+  , signedSemanticSnapshotEmitter
+  , validatePeerRequestHeartbeatSkew
+  , verifySignedAssertion
   )
 import Prodbox.Gateway.Settings qualified as GatewaySettings
+import Prodbox.Gateway.State qualified as BoundedState
+import Prodbox.Gateway.TargetSecret qualified as TargetSecret
 import Prodbox.Gateway.Types
-  ( CommitLog (..)
-  , DaemonConfig (..)
+  ( DaemonConfig (..)
   , Disposition (..)
   , DnsWriteGate (..)
   , GatewayAwsCreds (..)
@@ -193,17 +283,7 @@ import Prodbox.Gateway.Types
   , Orders (..)
   , PeerEndpoint (..)
   , PeerHealth (..)
-  , SignedEvent (..)
-  , appendIfNew
-  , canWriteDns
-  , cborPayloadFromJsonValue
   , defaultDrainDeadlineSeconds
-  , emptyCommitLog
-  , eventTimestampUtc
-  , eventTypeClaim
-  , eventTypeHeartbeat
-  , eventTypeYield
-  , nodeDisposition
   , peerDialSocketHost
   , validateDaemonTimingAgainstOrders
   )
@@ -213,17 +293,36 @@ import Prodbox.Http.Client
   , httpGetText
   , renderHttpError
   )
+import Prodbox.Lifecycle.Lease
+  ( authorityTimeFromMicros
+  , decodeLeaseProjection
+  , defaultSesLeasePolicy
+  , fencingTokenValue
+  , leaseGrantFencingToken
+  , leaseGrantKey
+  , leaseGrantOwnerNonce
+  , leaseGrantSafeUseDeadline
+  , leaseLogicalName
+  , leaseProjectionActiveGrant
+  , ownerNonceText
+  )
 import Prodbox.Minio.EncryptedObject
   ( EncryptedObjectError (..)
-  , LogicalObject (LogicalPulumiStack)
+  , LogicalConditionalPutResult (..)
+  , LogicalObject (LogicalLongLivedState, LogicalPulumiStack)
+  , VersionedLogicalObject (..)
   , getLogical
+  , getLogicalVersioned
   , objectKeyForOpaqueId
   , opaqueObjectId
   , putLogical
+  , putLogicalIfAbsent
+  , putLogicalIfVersion
   , renderEncryptedObjectError
   )
 import Prodbox.Minio.ObjectStore
   ( ObjectStoreConfig (..)
+  , ObjectVersion (..)
   , defaultObjectStoreBucket
   , deleteObject
   )
@@ -245,6 +344,8 @@ import Prodbox.Vault.BootstrapBundle
   )
 import Prodbox.Vault.Client
   ( BootstrapAction (..)
+  , KvV2Cas (..)
+  , KvV2VersionedSecret (..)
   , SealStatus (..)
   , VaultAddress (..)
   , VaultToken (..)
@@ -253,7 +354,9 @@ import Prodbox.Vault.Client
   , initResponseToUnlockBundle
   , vaultInit
   , vaultKubernetesLogin
+  , vaultKvCasWriteV2
   , vaultKvReadV2
+  , vaultKvReadVersionedV2
   , vaultKvWriteV2
   , vaultListMounts
   , vaultMountType
@@ -281,7 +384,7 @@ import Prodbox.Vault.UnlockBundle
   , encryptUnlockBundle
   , renderUnlockBundleError
   )
-import System.Directory (doesFileExist)
+import System.Directory (doesFileExist, findExecutable)
 import System.Exit (ExitCode (..))
 import System.FSNotify
   ( Event (..)
@@ -302,13 +405,18 @@ import System.Timeout (timeout)
 -- | In-memory daemon state.  Updated through STM by the loops and HTTP
 -- listeners, and rendered onto @/v1/state@ for operator inspection.
 data DaemonState = DaemonState
-  { stateCommitLog :: CommitLog
+  { stateBoundedGateway :: BoundedState.GatewayState
+  , stateSignedReplay :: Map String [SignedAssertion]
+  , stateSignedCheckpointHeartbeat :: Map String SignedAssertion
+  , stateSignedCheckpointOwnership :: Map String SignedAssertion
+  , statePeerCursors :: Map String BoundedState.CursorVector
   , stateLastHeartbeatTimes :: Map String UTCTime
   , stateGatewayOwner :: Maybe String
   , statePreviousOwner :: Maybe String
   , stateLastPublicIp :: Maybe String
   , stateLastDnsWriteIp :: Maybe String
   , stateLastDnsWriteTime :: Maybe UTCTime
+  , stateDnsClaimAuthority :: Maybe DnsAuthority.CurrentDnsClaim
   , stateMeshPeers :: [String]
   , statePeerHealth :: Map String PeerHealth
   , stateMaxObservedSkewSeconds :: Maybe Double
@@ -361,6 +469,12 @@ data DaemonEnv = DaemonEnv
   { envConfigPath :: Maybe FilePath
   , envBootConfig :: DaemonConfig
   , envOrders :: Orders
+  , envValidatedOrders :: BoundedState.ValidatedOrders
+  , envGatewayBounds :: GatewayBounds
+  , envChildScheduler :: TVar CapacityOneChildScheduler
+  , envChildPermit :: TMVar ()
+  , envFramePermits :: TBQueue ()
+  , envContinuity :: TVar (Maybe ContinuityRuntime)
   , envState :: TVar DaemonState
   , envReadiness :: TVar ReadinessState
   , envLiveConfig :: TVar LiveConfig
@@ -376,6 +490,15 @@ data DrainSignal
   | ForceDrain
   deriving (Eq, Show)
 
+data ContinuityRuntime = ContinuityRuntime
+  { continuityRuntimeAuthority :: Continuity.GatewayContinuityAuthority IO
+  , continuityRuntimeCurrent :: TVar Continuity.CurrentContinuity
+  }
+
+data ContinuityDiagnostic
+  = ContinuityDiagnosticUnavailable
+  | ContinuityDiagnosticReady Continuity.ContinuityAnchor
+
 noopDaemonHooks :: DaemonHooks
 noopDaemonHooks =
   DaemonHooks
@@ -384,16 +507,21 @@ noopDaemonHooks =
     , envOnPeerConnectionEstablished = \_ -> pure ()
     }
 
-initialState :: Int -> DaemonState
-initialState ordersVersion =
+initialState :: Int -> BoundedState.GatewayState -> DaemonState
+initialState ordersVersion boundedGateway =
   DaemonState
-    { stateCommitLog = emptyCommitLog
+    { stateBoundedGateway = boundedGateway
+    , stateSignedReplay = Map.empty
+    , stateSignedCheckpointHeartbeat = Map.empty
+    , stateSignedCheckpointOwnership = Map.empty
+    , statePeerCursors = Map.empty
     , stateLastHeartbeatTimes = Map.empty
     , stateGatewayOwner = Nothing
     , statePreviousOwner = Nothing
     , stateLastPublicIp = Nothing
     , stateLastDnsWriteIp = Nothing
     , stateLastDnsWriteTime = Nothing
+    , stateDnsClaimAuthority = Nothing
     , stateMeshPeers = []
     , statePeerHealth = Map.empty
     , stateMaxObservedSkewSeconds = Nothing
@@ -427,12 +555,12 @@ runGatewayDaemon maybeConfigPath config = withSocketsDo $ do
   -- so the chart-rendered Dhall Orders content decodes through the native
   -- dhall library. The legacy JSON Orders parser was removed with the
   -- Sprint 2.27 CBOR wire-codec closure.
-  ordersResult <- GatewaySettings.loadOrders (daemonOrdersFile config)
-  case ordersResult of
+  startupModelResult <- loadGatewayStartupModel maybeConfigPath config
+  case startupModelResult of
     Left err -> do
-      logAtLevel logLevel Error "orders_parse_failed" [field "detail" err]
+      logAtLevel logLevel Error "gateway_bounded_startup_failed" [field "detail" err]
       pure (ExitFailure 1)
-    Right orders ->
+    Right (gatewayBounds, childScheduler, orders, validatedOrders) ->
       case validateDaemonTimingAgainstOrders config orders of
         Left err -> do
           logAtLevel logLevel Error "gateway_timing_invalid" [field "detail" err]
@@ -456,59 +584,87 @@ runGatewayDaemon maybeConfigPath config = withSocketsDo $ do
                   pure (ExitFailure 1)
                 Right () -> do
                   now <- getCurrentTime
-                  let localNodeId = daemonNodeId config
-                      meshPeers =
-                        [ peerNodeId peer
-                        | peer <- ordersNodes orders
-                        , peerNodeId peer /= localNodeId
-                        ]
-                      initialDaemonState =
-                        (initialState (ordersVersionUtc orders))
-                          { stateLastHeartbeatTimes = Map.singleton localNodeId now
-                          , stateMeshPeers = meshPeers
-                          , statePeerHealth =
-                              Map.fromList
-                                [(p, PeerHealth Nothing False Nothing) | p <- meshPeers]
-                          }
-                  stateVar <- newTVarIO initialDaemonState
-                  readinessVar <- newTVarIO Starting
-                  liveConfigVar <- newTVarIO (liveConfigFromDaemonConfig logLevel config)
-                  reloadBroadcast <- newTChanIO
-                  drainSignals <- newTQueueIO
-                  reloadSignals <- newTQueueIO
-                  signalCount <- newTVarIO (0 :: Int)
-                  let env =
-                        DaemonEnv
-                          { envConfigPath = maybeConfigPath
-                          , envBootConfig = config
-                          , envOrders = orders
-                          , envState = stateVar
-                          , envReadiness = readinessVar
-                          , envLiveConfig = liveConfigVar
-                          , envLiveConfigReloads = reloadBroadcast
-                          , envMetrics = MetricsRegistry "gateway"
-                          , envDrainSignals = drainSignals
-                          , envReloadSignals = reloadSignals
-                          , envHooks = noopDaemonHooks
-                          }
-                  installDaemonSignalHandlers env signalCount
-
-                  logForEnv
-                    env
-                    Info
-                    "orders_loaded"
-                    [ field "node_count" (length (ordersNodes orders))
-                    , field "orders_version_utc" (ordersVersionUtc orders)
-                    ]
-
-                  result <- try (serveGatewayDaemon localPeer env) :: IO (Either SomeException ())
-                  case result of
-                    Left exc -> do
-                      logForEnv env Error "gateway_daemon_error" [field "detail" (show exc)]
+                  case initializeBoundedGateway gatewayBounds validatedOrders of
+                    Left err -> do
+                      logAtLevel logLevel Error "gateway_state_initialization_failed" [field "detail" err]
                       pure (ExitFailure 1)
-                    Right () -> do
-                      logForEnv env Info "gateway_stopped" []
-                      pure ExitSuccess
+                    Right boundedGateway -> do
+                      let localNodeId = daemonNodeId config
+                          meshPeers =
+                            [ peerNodeId peer
+                            | peer <- ordersNodes orders
+                            , peerNodeId peer /= localNodeId
+                            ]
+                          initialDaemonState =
+                            (initialState (ordersVersionUtc orders) boundedGateway)
+                              { stateLastHeartbeatTimes = Map.singleton localNodeId now
+                              , stateMeshPeers = meshPeers
+                              , statePeerHealth =
+                                  Map.fromList
+                                    [(p, PeerHealth Nothing False Nothing) | p <- meshPeers]
+                              }
+                      stateVar <- newTVarIO initialDaemonState
+                      readinessVar <- newTVarIO Starting
+                      liveConfigVar <- newTVarIO (liveConfigFromDaemonConfig logLevel config)
+                      reloadBroadcast <- newTChanIO
+                      drainSignals <- newTQueueIO
+                      reloadSignals <- newTQueueIO
+                      childSchedulerVar <- newTVarIO childScheduler
+                      childPermit <- newTMVarIO ()
+                      framePermits <-
+                        newTBQueueIO
+                          (fromIntegral (gatewayMaxInFlightFrames gatewayBounds))
+                      atomically $
+                        replicateM_
+                          (gatewayMaxInFlightFrames gatewayBounds)
+                          (writeTBQueue framePermits ())
+                      continuityVar <- newTVarIO Nothing
+                      signalCount <- newTVarIO (0 :: Int)
+                      let env =
+                            DaemonEnv
+                              { envConfigPath = maybeConfigPath
+                              , envBootConfig = config
+                              , envOrders = orders
+                              , envValidatedOrders = validatedOrders
+                              , envGatewayBounds = gatewayBounds
+                              , envChildScheduler = childSchedulerVar
+                              , envChildPermit = childPermit
+                              , envFramePermits = framePermits
+                              , envContinuity = continuityVar
+                              , envState = stateVar
+                              , envReadiness = readinessVar
+                              , envLiveConfig = liveConfigVar
+                              , envLiveConfigReloads = reloadBroadcast
+                              , envMetrics = MetricsRegistry "gateway"
+                              , envDrainSignals = drainSignals
+                              , envReloadSignals = reloadSignals
+                              , envHooks = noopDaemonHooks
+                              }
+                      installDaemonSignalHandlers env signalCount
+
+                      continuityResult <- bootstrapContinuity env
+                      case continuityResult of
+                        Left err ->
+                          logForEnv env Warn "gateway_continuity_unavailable" [field "detail" err]
+                        Right () ->
+                          logForEnv env Info "gateway_continuity_ready" []
+
+                      logForEnv
+                        env
+                        Info
+                        "orders_loaded"
+                        [ field "node_count" (length (ordersNodes orders))
+                        , field "orders_version_utc" (ordersVersionUtc orders)
+                        ]
+
+                      result <- try (serveGatewayDaemon localPeer env) :: IO (Either SomeException ())
+                      case result of
+                        Left exc -> do
+                          logForEnv env Error "gateway_daemon_error" [field "detail" (show exc)]
+                          pure (ExitFailure 1)
+                        Right () -> do
+                          logForEnv env Info "gateway_stopped" []
+                          pure ExitSuccess
 
 -- | Sprint 1.40: load and log the Tier-0 binary context using hostbootstrap's
 -- per-frame context-init pattern — the `gateway-config-<nodeId>` ConfigMap
@@ -542,6 +698,874 @@ logDaemonBinaryContext logLevel maybeConfigPath = do
         , field "context_kind" (renderContextKind (context_kind ctx))
         , field "cluster_id" (cluster_id ctx)
         ]
+
+loadGatewayStartupModel
+  :: Maybe FilePath
+  -> DaemonConfig
+  -> IO
+       ( Either
+           String
+           ( GatewayBounds
+           , CapacityOneChildScheduler
+           , Orders
+           , BoundedState.ValidatedOrders
+           )
+       )
+loadGatewayStartupModel maybeConfigPath config = do
+  let configMapDir = maybe "/etc/gateway/config" takeDirectory maybeConfigPath
+  containerDefaultPath <- resolveTier0ConfigPath "/"
+  contextResult <- loadDaemonBinaryContext configMapDir containerDefaultPath
+  case contextResult of
+    Left err -> pure (Left ("gateway runtime-memory context unavailable: " ++ err))
+    Right (_, projectConfig) ->
+      case Capacity.runtimeMemoryPlanForProfile
+        (capacity (parameters projectConfig))
+        "gateway" of
+        Left err -> pure (Left ("gateway runtime-memory plan invalid: " ++ err))
+        Right memoryPlan ->
+          case validateGatewayBounds memoryPlan defaultRawGatewayBounds of
+            Left err -> pure (Left ("gateway finite bounds invalid: " ++ show err))
+            Right bounds -> do
+              case newCapacityOneChildSchedulerFromBounds bounds of
+                Left err -> pure (Left ("gateway child schedule invalid: " ++ show err))
+                Right childScheduler -> do
+                  ordersResult <-
+                    GatewaySettings.loadOrdersBounded
+                      bounds
+                      (daemonEventKeys config)
+                      (daemonOrdersFile config)
+                  pure $ case ordersResult of
+                    Left err -> Left err
+                    Right (orders, validatedOrders) ->
+                      Right (bounds, childScheduler, orders, validatedOrders)
+
+initializeBoundedGateway
+  :: GatewayBounds
+  -> BoundedState.ValidatedOrders
+  -> Either String BoundedState.GatewayState
+initializeBoundedGateway bounds orders = do
+  seeds <-
+    traverse
+      ( \nodeId -> do
+          eventHash <-
+            case BoundedState.mkEventHash (gatewayGenesisDigest orders nodeId) of
+              Left err -> Left (show err)
+              Right value -> Right value
+          Right (nodeId, BoundedState.initialEmitterCursor 1 eventHash)
+      )
+      (BoundedState.validatedOrdersMemberIds orders)
+  case BoundedState.initializeGatewayState bounds orders (Map.fromList seeds) of
+    Left err -> Left (show err)
+    Right state -> Right state
+
+gatewayGenesisDigest
+  :: BoundedState.ValidatedOrders
+  -> BoundedState.NodeId
+  -> ByteString
+gatewayGenesisDigest orders nodeId =
+  SHA256.hash
+    ( BS.concat
+        [ "prodbox.gateway.genesis.v1\NUL"
+        , BoundedState.ordersAnchorHashBytes (BoundedState.validatedOrdersAnchor orders)
+        , TextEncoding.encodeUtf8 (BoundedState.nodeIdText nodeId)
+        ]
+    )
+
+continuityScopeFor
+  :: DaemonEnv
+  -> BoundedState.NodeId
+  -> Either String (Continuity.ContinuityBounds, Continuity.ContinuityScope)
+continuityScopeFor env nodeId = do
+  let bounds = envGatewayBounds env
+      anchor = BoundedState.validatedOrdersAnchor (envValidatedOrders env)
+      anchorBytes =
+        BL.toStrict
+          ( ByteStringBuilder.toLazyByteString
+              ( ByteStringBuilder.word64BE
+                  ( BoundedState.ordersVersionValue
+                      (BoundedState.ordersAnchorVersion anchor)
+                  )
+                  <> ByteStringBuilder.byteString
+                    (BoundedState.ordersAnchorHashBytes anchor)
+              )
+          )
+  continuityBounds <-
+    case Continuity.mkContinuityBounds
+      (gatewayMaxNodeIdBytes bounds)
+      (fromIntegral (BS.length anchorBytes))
+      (gatewayMaxEncodedAssertionBytes bounds) of
+      Left err -> Left (show err)
+      Right value -> Right value
+  scope <-
+    case Continuity.mkContinuityScope
+      continuityBounds
+      (BoundedState.nodeIdText nodeId)
+      anchorBytes of
+      Left err -> Left (show err)
+      Right value -> Right value
+  Right (continuityBounds, scope)
+
+bootstrapContinuity :: DaemonEnv -> IO (Either String ())
+bootstrapContinuity env = do
+  let config = envBootConfig env
+  case (daemonVaultAuth config, daemonMinioCreds config) of
+    (Nothing, _) -> pure (Left "Vault authority is not configured")
+    (_, Nothing) -> pure (Left "MinIO authority is not configured")
+    (Just _, Just _) ->
+      case localBoundedNode env of
+        Left err -> pure (Left err)
+        Right localNode ->
+          case continuityScopeFor env localNode of
+            Left err -> pure (Left err)
+            Right (continuityBounds, scope) -> do
+              materialResult <- resolveDaemonPulumiObjectMaterial env
+              case materialResult of
+                Left err -> pure (Left err)
+                Right material -> do
+                  genesis <-
+                    pure
+                      ( Continuity.mkContinuityDigest
+                          (gatewayGenesisDigest (envValidatedOrders env) localNode)
+                      )
+                  case genesis of
+                    Left err -> pure (Left (show err))
+                    Right genesisDigest -> do
+                      let authority =
+                            modelBContinuityAuthority
+                              ContinuityStoreMaterial
+                                { continuityStoreObjectStore = daemonPulumiObjectStore material
+                                , continuityStoreCipher = daemonPulumiCipher material
+                                , continuityStoreHmacKey = daemonPulumiHmacKey material
+                                , continuityStoreClusterId = daemonPulumiClusterId material
+                                }
+                              scope
+                          admission =
+                            Continuity.mkFirstContinuityAdmission scope genesisDigest
+                      admissionStateResult <- observeContinuityAdmission config localNode
+                      case admissionStateResult of
+                        Left err -> pure (Left err)
+                        Right admissionState -> do
+                          recoveryResult <-
+                            withGatewayChild env "gateway-continuity" $ do
+                              result <-
+                                case admissionState of
+                                  ContinuityFirstAdmission ->
+                                    Continuity.initializeContinuityAtFirstAdmission
+                                      authority
+                                      admission
+                                  ContinuityPreviouslyAdmitted ->
+                                    Continuity.recoverContinuityAtStartup authority
+                              pure (either (Left . show) Right result)
+                          case recoveryResult of
+                            Left err -> pure (Left err)
+                            Right recovery -> do
+                              markerResult <-
+                                case admissionState of
+                                  ContinuityPreviouslyAdmitted -> pure (Right ())
+                                  ContinuityFirstAdmission ->
+                                    persistContinuityAdmission config localNode
+                              case markerResult of
+                                Left err -> pure (Left err)
+                                Right () ->
+                                  installContinuityRecovery
+                                    env
+                                    localNode
+                                    continuityBounds
+                                    authority
+                                    recovery
+
+data ContinuityAdmission
+  = ContinuityFirstAdmission
+  | ContinuityPreviouslyAdmitted
+  deriving (Eq, Show)
+
+continuityAdmissionPath :: BoundedState.NodeId -> Text.Text
+continuityAdmissionPath nodeId =
+  "prodbox/gateway/continuity-admission/"
+    <> BoundedState.nodeIdText nodeId
+
+-- | Vault carries the durable one-time admission witness independently from
+-- the Model-B continuity object.  Once this marker exists, a missing object
+-- is recovery failure—not permission to recreate a genesis anchor.
+observeContinuityAdmission
+  :: DaemonConfig
+  -> BoundedState.NodeId
+  -> IO (Either String ContinuityAdmission)
+observeContinuityAdmission config nodeId = do
+  tokenResult <- resolveGatewayVaultToken config
+  case tokenResult of
+    Left err -> pure (Left ("continuity admission marker is unobservable: " ++ err))
+    Right (address, token) -> do
+      observed <-
+        vaultKvReadV2
+          address
+          token
+          "secret"
+          (continuityAdmissionPath nodeId)
+      pure $ case observed of
+        Left (HttpStatus 404 _) -> Right ContinuityFirstAdmission
+        Left err ->
+          Left
+            ( "continuity admission marker is unobservable: "
+                ++ renderHttpError err
+            )
+        Right fields
+          | Map.lookup "admitted" fields == Just "true"
+              && Map.lookup "node_id" fields
+                == Just (BoundedState.nodeIdText nodeId) ->
+              Right ContinuityPreviouslyAdmitted
+          | otherwise -> Left "continuity admission marker is malformed"
+
+persistContinuityAdmission
+  :: DaemonConfig
+  -> BoundedState.NodeId
+  -> IO (Either String ())
+persistContinuityAdmission config nodeId = do
+  tokenResult <- resolveGatewayVaultToken config
+  case tokenResult of
+    Left err -> pure (Left ("continuity admission marker cannot be persisted: " ++ err))
+    Right (address, token) -> do
+      written <-
+        vaultKvWriteV2
+          address
+          token
+          "secret"
+          (continuityAdmissionPath nodeId)
+          ( Map.fromList
+              [ ("admitted", "true")
+              , ("node_id", BoundedState.nodeIdText nodeId)
+              ]
+          )
+      pure $
+        case written of
+          Left err ->
+            Left
+              ( "continuity admission marker cannot be persisted: "
+                  ++ renderHttpError err
+              )
+          Right () -> Right ()
+
+installContinuityRecovery
+  :: DaemonEnv
+  -> BoundedState.NodeId
+  -> Continuity.ContinuityBounds
+  -> Continuity.GatewayContinuityAuthority IO
+  -> Continuity.StartupRecovery
+  -> IO (Either String ())
+installContinuityRecovery env localNode continuityBounds authority recovery =
+  case recovery of
+    Continuity.StartupCurrent current -> do
+      restored <- restoreCommittedAnchor current
+      case restored of
+        Left err -> pure (Left err)
+        Right () -> installRuntime current
+    Continuity.StartupRepublish witness -> do
+      recovered <- recoverStagedAssertion witness
+      case recovered of
+        Left err -> pure (Left err)
+        Right current -> installRuntime current
+ where
+  installRuntime current = do
+    currentVar <- newTVarIO current
+    atomically
+      ( writeTVar
+          (envContinuity env)
+          (Just (ContinuityRuntime authority currentVar))
+      )
+    pure (Right ())
+
+  restoreCommittedAnchor current = do
+    let anchor = Continuity.currentContinuityAnchor current
+    case BoundedState.mkEventHash
+      ( Continuity.continuityDigestBytes
+          (Continuity.continuityAnchorPreviousDigest anchor)
+      ) of
+      Left err -> pure (Left (show err))
+      Right eventHash ->
+        atomically $ do
+          daemonState <- readTVar (envState env)
+          let cursor =
+                BoundedState.restoredEmitterCursor
+                  (Continuity.continuityAnchorEpoch anchor)
+                  (Continuity.continuityAnchorSequence anchor)
+                  eventHash
+          case BoundedState.restoreEmitterFromContinuity
+            localNode
+            cursor
+            (stateBoundedGateway daemonState) of
+            Left err -> pure (Left (show err))
+            Right restored -> do
+              writeTVar
+                (envState env)
+                daemonState {stateBoundedGateway = restored}
+              pure (Right ())
+
+  recoverStagedAssertion witness =
+    case validateRecoveredWitness witness of
+      Left err -> pure (Left err)
+      Right (signed, semantic, previousCursor) -> do
+        published <- atomically $ do
+          original <- readTVar (envState env)
+          case BoundedState.restoreEmitterFromContinuity
+            localNode
+            previousCursor
+            (stateBoundedGateway original) of
+            Left err -> pure (Left (show err))
+            Right restored -> do
+              writeTVar
+                (envState env)
+                original {stateBoundedGateway = restored}
+              result <- publishSignedAssertion env semantic signed
+              case result of
+                Left err -> do
+                  writeTVar (envState env) original
+                  pure (Left err)
+                Right () -> pure (Right ())
+        case published of
+          Left err -> pure (Left err)
+          Right () ->
+            withGatewayChild env "gateway-continuity-recovery-commit" $ do
+              committed <-
+                Continuity.commitPublishedAssertion
+                  authority
+                  (Continuity.acknowledgePublication witness)
+              pure (either (Left . show) Right committed)
+
+  validateRecoveredWitness witness = do
+    signed <-
+      either
+        (Left . show)
+        Right
+        ( decodeSignedAssertion
+            (envGatewayBounds env)
+            (Continuity.publicationSignedBytes witness)
+        )
+    semantic <-
+      either
+        (Left . show)
+        Right
+        ( verifySignedAssertion
+            (envGatewayBounds env)
+            (envValidatedOrders env)
+            (gatewayEventKeyLookup env)
+            signed
+        )
+    unless
+      (BoundedState.assertionEmitter semantic == localNode)
+      (Left "retained staged assertion belongs to a different emitter")
+    let kind = signedAssertionKind signed
+        transitionMatches =
+          case (Continuity.publicationTransition witness, kind) of
+            (Continuity.EpochInvalidation, BoundedState.EpochRotationAssertion) -> True
+            (Continuity.SemanticAdvance, BoundedState.EpochRotationAssertion) -> False
+            (Continuity.SemanticAdvance, _) -> True
+            (Continuity.EpochInvalidation, _) -> False
+        previousDigest =
+          Continuity.continuityDigestBytes
+            (Continuity.publicationPreviousDigest witness)
+        nextAnchor = Continuity.publicationNextAnchor witness
+    unless transitionMatches (Left "retained staged transition does not match signed assertion")
+    unless
+      ( previousDigest
+          == BoundedState.eventHashBytes
+            (BoundedState.assertionPreviousHash semantic)
+      )
+      (Left "retained staged previous digest does not match signed assertion")
+    unless
+      (Continuity.continuityAnchorEpoch nextAnchor == signedAssertionEpoch signed)
+      (Left "retained staged epoch does not match signed assertion")
+    unless
+      (Continuity.continuityAnchorSequence nextAnchor == signedAssertionSequence signed)
+      (Left "retained staged sequence does not match signed assertion")
+    unless
+      ( Continuity.continuityDigestBytes
+          (Continuity.continuityAnchorPreviousDigest nextAnchor)
+          == signedAssertionResultDigest signed
+      )
+      (Left "retained staged result digest does not match signed assertion")
+    previousHash <- either (Left . show) Right (BoundedState.mkEventHash previousDigest)
+    previousCursor <-
+      case kind of
+        BoundedState.EpochRotationAssertion
+          | signedAssertionEpoch signed == 0 ->
+              Left "retained epoch invalidation has no predecessor epoch"
+          | otherwise ->
+              Right
+                ( BoundedState.restoredEmitterCursor
+                    (signedAssertionEpoch signed - 1)
+                    maxBound
+                    previousHash
+                )
+        _
+          | signedAssertionSequence signed == 0 ->
+              Left "retained semantic assertion has no predecessor sequence"
+          | otherwise ->
+              Right
+                ( BoundedState.restoredEmitterCursor
+                    (signedAssertionEpoch signed)
+                    (signedAssertionSequence signed - 1)
+                    previousHash
+                )
+    -- Re-enter the continuity bound constructor during recovery so retained
+    -- bytes cannot bypass a newly tightened runtime-memory plan.
+    case kind of
+      BoundedState.EpochRotationAssertion -> do
+        _ <-
+          either
+            (Left . show)
+            Right
+            ( Continuity.mkSignedEpochInvalidation
+                continuityBounds
+                (signedAssertionBytes signed)
+            )
+        Right ()
+      _ -> do
+        _ <-
+          either
+            (Left . show)
+            Right
+            ( Continuity.mkSignedSemanticAssertion
+                continuityBounds
+                (signedAssertionBytes signed)
+            )
+        Right ()
+    Right (signed, semantic, previousCursor)
+
+continuityLoop :: DaemonEnv -> IO ()
+continuityLoop env = forever $ do
+  runtime <- readTVarIO (envContinuity env)
+  case runtime of
+    Nothing -> do
+      result <- bootstrapContinuity env
+      case result of
+        Left err ->
+          logForEnv env Warn "gateway_continuity_retry" [field "detail" err]
+        Right () ->
+          logForEnv env Info "gateway_continuity_recovered" []
+    Just active -> do
+      observed <-
+        withGatewayChild env "gateway-continuity-observe" $ do
+          result <-
+            Continuity.recoverContinuityAtStartup
+              (continuityRuntimeAuthority active)
+          pure (either (Left . show) Right result)
+      case observed of
+        Left err -> do
+          atomically (writeTVar (envContinuity env) Nothing)
+          logForEnv env Warn "gateway_continuity_lost" [field "detail" err]
+        Right (Continuity.StartupCurrent current) ->
+          atomically (writeTVar (continuityRuntimeCurrent active) current)
+        Right recovery@(Continuity.StartupRepublish _) ->
+          case localBoundedNode env of
+            Left err -> do
+              atomically (writeTVar (envContinuity env) Nothing)
+              logForEnv env Warn "gateway_continuity_recovery_failed" [field "detail" err]
+            Right localNode ->
+              case continuityScopeFor env localNode of
+                Left err -> do
+                  atomically (writeTVar (envContinuity env) Nothing)
+                  logForEnv env Warn "gateway_continuity_recovery_failed" [field "detail" err]
+                Right (continuityBounds, _) -> do
+                  installed <-
+                    installContinuityRecovery
+                      env
+                      localNode
+                      continuityBounds
+                      (continuityRuntimeAuthority active)
+                      recovery
+                  case installed of
+                    Left err -> do
+                      atomically (writeTVar (envContinuity env) Nothing)
+                      logForEnv env Warn "gateway_continuity_recovery_failed" [field "detail" err]
+                    Right () ->
+                      logForEnv env Info "gateway_continuity_republished" []
+  liveConfig <- readTVarIO (envLiveConfig env)
+  threadDelay (round (liveReconnectInterval liveConfig * 1000000))
+
+localBoundedNode :: DaemonEnv -> Either String BoundedState.NodeId
+localBoundedNode env =
+  case filter
+    ( (== Text.pack (daemonNodeId (envBootConfig env)))
+        . BoundedState.nodeIdText
+    )
+    (BoundedState.validatedOrdersMemberIds (envValidatedOrders env)) of
+    [nodeId] -> Right nodeId
+    _ -> Left "local node is absent from bounded Orders membership"
+
+gatewayEventKeyLookup :: DaemonEnv -> BoundedState.NodeId -> Maybe EventKey
+gatewayEventKeyLookup env nodeId = do
+  raw <-
+    Map.lookup
+      (Text.unpack (BoundedState.nodeIdText nodeId))
+      (Map.fromList (daemonEventKeys (envBootConfig env)))
+  either
+    (const Nothing)
+    Just
+    (mkEventKey (envGatewayBounds env) (TextEncoding.encodeUtf8 (Text.pack raw)))
+
+emitLocalAssertion
+  :: DaemonEnv
+  -> BoundedState.AssertionKind
+  -> IO (Either String SignedAssertion)
+emitLocalAssertion env kind = do
+  continuityRuntime <- readTVarIO (envContinuity env)
+  case continuityRuntime of
+    Nothing -> pure (Left "retained continuity authority is unavailable")
+    Just runtime ->
+      case localBoundedNode env of
+        Left err -> pure (Left err)
+        Right localNode ->
+          case gatewayEventKeyLookup env localNode of
+            Nothing -> pure (Left "local event-key authority is unavailable")
+            Just eventKey -> do
+              state <- readTVarIO (envState env)
+              let cursorVector =
+                    BoundedState.gatewayStateCursorVector
+                      (stateBoundedGateway state)
+              case BoundedState.cursorVectorLookup localNode cursorVector of
+                Nothing -> pure (Left "local continuity cursor is unavailable")
+                Just previousCursor ->
+                  case signAndConvertAssertion
+                    (envGatewayBounds env)
+                    (envValidatedOrders env)
+                    localNode
+                    previousCursor
+                    kind
+                    eventKey of
+                    Left err -> pure (Left (show err))
+                    Right (signed, semantic) -> do
+                      current <- readTVarIO (continuityRuntimeCurrent runtime)
+                      staged <-
+                        stageSignedForContinuity
+                          env
+                          runtime
+                          current
+                          kind
+                          signed
+                      case staged of
+                        Left err -> pure (Left err)
+                        Right acknowledgement -> do
+                          witnessResult <-
+                            withGatewayChild env "gateway-continuity-reobserve" $ do
+                              result <-
+                                Continuity.reobserveDurableStage
+                                  (continuityRuntimeAuthority runtime)
+                                  acknowledgement
+                              pure (either (Left . show) Right result)
+                          case witnessResult of
+                            Left err -> pure (Left err)
+                            Right witness
+                              | Continuity.publicationSignedBytes witness
+                                  /= signedAssertionBytes signed ->
+                                  pure (Left "continuity publication witness bytes changed")
+                              | otherwise -> do
+                                  publishResult <-
+                                    atomically
+                                      (publishSignedAssertion env semantic signed)
+                                  case publishResult of
+                                    Left err -> pure (Left err)
+                                    Right () -> do
+                                      committed <-
+                                        withGatewayChild env "gateway-continuity-commit" $ do
+                                          result <-
+                                            Continuity.commitPublishedAssertion
+                                              (continuityRuntimeAuthority runtime)
+                                              (Continuity.acknowledgePublication witness)
+                                          pure (either (Left . show) Right result)
+                                      case committed of
+                                        Left err -> do
+                                          atomically (writeTVar (envContinuity env) Nothing)
+                                          pure (Left err)
+                                        Right current' -> do
+                                          atomically
+                                            (writeTVar (continuityRuntimeCurrent runtime) current')
+                                          refreshDnsClaimAuthority env kind current'
+                                          pure (Right signed)
+
+-- | Semantic emissions rotate only after the fixed sequence has been fully
+-- consumed.  The invalidating checkpoint crosses the same retained
+-- stage/re-observe/publish/commit boundary before the requested assertion is
+-- signed in the fresh epoch.
+emitLocalSemanticAssertion
+  :: DaemonEnv
+  -> BoundedState.AssertionKind
+  -> IO (Either String SignedAssertion)
+emitLocalSemanticAssertion env kind =
+  case kind of
+    BoundedState.EpochRotationAssertion -> emitLocalAssertion env kind
+    _ ->
+      case localBoundedNode env of
+        Left err -> pure (Left err)
+        Right localNode -> do
+          state <- readTVarIO (envState env)
+          case BoundedState.cursorVectorLookup
+            localNode
+            ( BoundedState.gatewayStateCursorVector
+                (stateBoundedGateway state)
+            ) of
+            Nothing -> pure (Left "local continuity cursor is unavailable")
+            Just cursor
+              | BoundedState.emitterSequenceValue
+                  (BoundedState.emitterCursorSequence cursor)
+                  == maxBound -> do
+                  rotated <-
+                    emitLocalAssertion env BoundedState.EpochRotationAssertion
+                  case rotated of
+                    Left err -> pure (Left err)
+                    Right _ -> emitLocalAssertion env kind
+              | otherwise -> emitLocalAssertion env kind
+
+refreshDnsClaimAuthority
+  :: DaemonEnv
+  -> BoundedState.AssertionKind
+  -> Continuity.CurrentContinuity
+  -> IO ()
+refreshDnsClaimAuthority env kind current =
+  case kind of
+    BoundedState.OwnershipAssertion BoundedState.OwnershipYield ->
+      atomically $ modifyTVar' (envState env) $ \state ->
+        state {stateDnsClaimAuthority = Nothing}
+    _ -> do
+      state <- readTVarIO (envState env)
+      let localNode = daemonNodeId (envBootConfig env)
+          hasCurrentClaim =
+            boundedNodeDisposition env state localNode == DispositionOwner
+      if not hasCurrentClaim
+        then atomically $ modifyTVar' (envState env) $ \currentState ->
+          currentState {stateDnsClaimAuthority = Nothing}
+        else case daemonAwsCreds (envBootConfig env) of
+          Nothing ->
+            atomically $ modifyTVar' (envState env) $ \currentState ->
+              currentState {stateDnsClaimAuthority = Nothing}
+          Just awsCreds ->
+            case do
+              generation <- credentialGenerationFor awsCreds
+              fence <- continuityFenceFromCurrent current
+              DnsAuthority.mkCurrentDnsClaim
+                (Text.pack localNode)
+                generation
+                fence of
+              Left _ ->
+                atomically $ modifyTVar' (envState env) $ \currentState ->
+                  currentState {stateDnsClaimAuthority = Nothing}
+              Right claim ->
+                atomically $ modifyTVar' (envState env) $ \currentState ->
+                  currentState {stateDnsClaimAuthority = Just claim}
+
+continuityFenceFromCurrent
+  :: Continuity.CurrentContinuity
+  -> Either DnsAuthority.DnsAuthorityError DnsAuthority.ContinuityFence
+continuityFenceFromCurrent current =
+  let anchor = Continuity.currentContinuityAnchor current
+   in DnsAuthority.mkContinuityFence
+        (fromIntegral (Continuity.continuityAnchorEpoch anchor))
+        (fromIntegral (Continuity.continuityAnchorSequence anchor))
+        ( hexText
+            ( Continuity.continuityDigestBytes
+                (Continuity.continuityAnchorPreviousDigest anchor)
+            )
+        )
+
+stageSignedForContinuity
+  :: DaemonEnv
+  -> ContinuityRuntime
+  -> Continuity.CurrentContinuity
+  -> BoundedState.AssertionKind
+  -> SignedAssertion
+  -> IO (Either String Continuity.DurableStageAcknowledgement)
+stageSignedForContinuity env runtime current kind signed =
+  case localBoundedNode env >>= fmap fst . continuityScopeFor env of
+    Left err -> pure (Left err)
+    Right continuityBounds ->
+      withGatewayChild env "gateway-continuity-stage" $ do
+        result <-
+          case kind of
+            BoundedState.EpochRotationAssertion ->
+              case Continuity.mkSignedEpochInvalidation
+                continuityBounds
+                (signedAssertionBytes signed) of
+                Left err -> pure (Left err)
+                Right assertion ->
+                  Continuity.stageEpochInvalidation authority current assertion
+            _ ->
+              case Continuity.mkSignedSemanticAssertion
+                continuityBounds
+                (signedAssertionBytes signed) of
+                Left err -> pure (Left err)
+                Right assertion ->
+                  Continuity.stageSemanticAssertion authority current assertion
+        pure (either (Left . show) Right result)
+ where
+  authority = continuityRuntimeAuthority runtime
+
+publishSignedAssertion
+  :: DaemonEnv
+  -> BoundedState.GatewayAssertion
+  -> SignedAssertion
+  -> STM (Either String ())
+publishSignedAssertion env semantic signed = do
+  daemonState <- readTVar (envState env)
+  case BoundedState.applyGatewayAssertion
+    semantic
+    (stateBoundedGateway daemonState) of
+    BoundedState.AssertionRejected _ err -> pure (Left (show err))
+    BoundedState.AssertionDuplicate unchanged -> do
+      writeTVar
+        (envState env)
+        (retainSignedAssertion env signed daemonState {stateBoundedGateway = unchanged})
+      pure (Right ())
+    BoundedState.AssertionApplied advanced -> do
+      let withSemantic =
+            retainSignedAssertion
+              env
+              signed
+              daemonState {stateBoundedGateway = advanced}
+          withHeartbeat =
+            case signedAssertionKind signed of
+              BoundedState.HeartbeatAssertion timestamp ->
+                withSemantic
+                  { stateLastHeartbeatTimes =
+                      Map.insert
+                        (Text.unpack (signedAssertionEmitter signed))
+                        (posixSecondsToUTCTime (fromIntegral timestamp))
+                        (stateLastHeartbeatTimes withSemantic)
+                  }
+              _ -> withSemantic
+      writeTVar (envState env) withHeartbeat
+      pure (Right ())
+
+retainSignedAssertion
+  :: DaemonEnv
+  -> SignedAssertion
+  -> DaemonState
+  -> DaemonState
+retainSignedAssertion env signed state =
+  let emitter = Text.unpack (signedAssertionEmitter signed)
+      capacity = gatewayReplayPerEmitter (envGatewayBounds env)
+      prunedState = pruneSignedReplayAtCheckpoint env emitter state
+      existing = Map.findWithDefault [] emitter (stateSignedReplay prunedState)
+      position = signedAssertionPosition signed
+   in if any ((== position) . signedAssertionPosition) existing
+        then prunedState
+        else
+          let ordered = sortOn signedAssertionPosition (signed : existing)
+              evictedCount = max 0 (length ordered - capacity)
+              (evicted, retained) = splitAt evictedCount ordered
+              withCheckpoint =
+                Prelude.foldl
+                  (flip advanceSignedCheckpointEvidence)
+                  prunedState
+                  evicted
+           in withCheckpoint
+                { stateSignedReplay =
+                    Map.insert emitter retained (stateSignedReplay withCheckpoint)
+                }
+
+retainSignedAssertions
+  :: DaemonEnv
+  -> [SignedAssertion]
+  -> DaemonState
+  -> DaemonState
+retainSignedAssertions env assertions initial =
+  Prelude.foldl (flip (retainSignedAssertion env)) initial assertions
+
+pruneSignedReplayAtCheckpoint
+  :: DaemonEnv
+  -> String
+  -> DaemonState
+  -> DaemonState
+pruneSignedReplayAtCheckpoint env emitter state =
+  case boundedNodeByName env emitter of
+    Nothing -> state
+    Just nodeId ->
+      case BoundedState.gatewayStateEmitterCheckpoint
+        nodeId
+        (stateBoundedGateway state) of
+        Nothing -> state
+        Just checkpoint ->
+          let checkpointPosition =
+                emitterCursorPosition
+                  (BoundedState.emitterCheckpointCursor checkpoint)
+              existing = Map.findWithDefault [] emitter (stateSignedReplay state)
+              (compacted, retained) =
+                span
+                  ((<= checkpointPosition) . signedAssertionPosition)
+                  (sortOn signedAssertionPosition existing)
+              withEvidence =
+                Prelude.foldl
+                  (flip advanceSignedCheckpointEvidence)
+                  state
+                  compacted
+           in withEvidence
+                { stateSignedReplay =
+                    Map.insert emitter retained (stateSignedReplay withEvidence)
+                }
+
+advanceSignedCheckpointEvidence
+  :: SignedAssertion
+  -> DaemonState
+  -> DaemonState
+advanceSignedCheckpointEvidence signed state =
+  let emitter = Text.unpack (signedAssertionEmitter signed)
+      insertLatest evidence =
+        Map.insertWith
+          newerSignedAssertion
+          emitter
+          signed
+          evidence
+   in case signedAssertionKind signed of
+        BoundedState.HeartbeatAssertion _ ->
+          state
+            { stateSignedCheckpointHeartbeat =
+                insertLatest (stateSignedCheckpointHeartbeat state)
+            }
+        BoundedState.OwnershipAssertion _ ->
+          state
+            { stateSignedCheckpointOwnership =
+                insertLatest (stateSignedCheckpointOwnership state)
+            }
+        BoundedState.EpochRotationAssertion -> state
+
+newerSignedAssertion :: SignedAssertion -> SignedAssertion -> SignedAssertion
+newerSignedAssertion candidate existing =
+  if signedAssertionPosition candidate >= signedAssertionPosition existing
+    then candidate
+    else existing
+
+signedAssertionPosition :: SignedAssertion -> (Word64, Word64)
+signedAssertionPosition signed =
+  (signedAssertionEpoch signed, signedAssertionSequence signed)
+
+emitterCursorPosition :: BoundedState.EmitterCursor -> (Word64, Word64)
+emitterCursorPosition cursor =
+  ( BoundedState.emitterEpochValue (BoundedState.emitterCursorEpoch cursor)
+  , BoundedState.emitterSequenceValue (BoundedState.emitterCursorSequence cursor)
+  )
+
+boundedNodeByName :: DaemonEnv -> String -> Maybe BoundedState.NodeId
+boundedNodeByName env nodeName =
+  case filter
+    ((== Text.pack nodeName) . BoundedState.nodeIdText)
+    (BoundedState.validatedOrdersMemberIds (envValidatedOrders env)) of
+    [nodeId] -> Just nodeId
+    _ -> Nothing
+
+boundedNodeDisposition :: DaemonEnv -> DaemonState -> String -> Disposition
+boundedNodeDisposition env state nodeName =
+  case filter
+    ((== Text.pack nodeName) . BoundedState.nodeIdText)
+    (BoundedState.validatedOrdersMemberIds (envValidatedOrders env)) of
+    [nodeId] ->
+      case BoundedState.assertionKind
+        <$> BoundedState.gatewayStateLatestOwnership
+          nodeId
+          (stateBoundedGateway state) of
+        Just (BoundedState.OwnershipAssertion BoundedState.OwnershipClaim) ->
+          DispositionOwner
+        Just (BoundedState.OwnershipAssertion BoundedState.OwnershipYield) ->
+          DispositionYielded
+        _ -> DispositionUnknown
+    _ -> DispositionUnknown
 
 renderTier0Source :: Tier0Source -> String
 renderTier0Source source = case source of
@@ -614,16 +1638,17 @@ serveGatewayDaemon localPeer env = do
 
 daemonWorkers :: PeerEndpoint -> DaemonEnv -> IO ()
 daemonWorkers localPeer env =
-  withAsync (worker "heartbeat" (heartbeatLoop env)) $ \_ ->
-    withAsync (worker "gateway_ownership" (gatewayLoop env)) $ \_ ->
-      withAsync (worker "dns_write" (dnsWriteLoop env)) $ \_ ->
-        withAsync (worker "rest_server" (restServerLoop localPeer env)) $ \_ ->
-          withAsync (worker "peer_listener" (peerListenerLoop localPeer env)) $ \_ ->
-            withAsync (worker "config_watch" (configFileWatchLoop env)) $ \_ ->
-              void $
-                concurrently
-                  (worker "peer_dialer" (peerDialerLoop env))
-                  (worker "config_reload" (reloadLoop env))
+  withAsync (worker "continuity" (continuityLoop env)) $ \_ ->
+    withAsync (worker "heartbeat" (heartbeatLoop env)) $ \_ ->
+      withAsync (worker "gateway_ownership" (gatewayLoop env)) $ \_ ->
+        withAsync (worker "dns_write" (dnsWriteLoop env)) $ \_ ->
+          withAsync (worker "rest_server" (restServerLoop localPeer env)) $ \_ ->
+            withAsync (worker "peer_listener" (peerListenerLoop localPeer env)) $ \_ ->
+              withAsync (worker "config_watch" (configFileWatchLoop env)) $ \_ ->
+                void $
+                  concurrently
+                    (worker "peer_dialer" (peerDialerLoop env))
+                    (worker "config_reload" (reloadLoop env))
  where
   worker = runWorkerWithRetry env
 
@@ -725,7 +1750,7 @@ runWorkerWithRetry env workerName action = go 0
 
 classifyWorkerFailure :: Int -> SomeException -> AppError
 classifyWorkerFailure attemptIndex exc =
-  case fromException exc :: Maybe AsyncException of
+  case fromException exc :: Maybe SomeAsyncException of
     Just _ -> appError Fatal (Text.pack (displayException exc)) (Just exc)
     Nothing ->
       appError
@@ -823,7 +1848,56 @@ daemonBootFieldsChanged old new =
     -- as Nothing; once a reload can resolve them (Vault ready) that is a boot
     -- change and must drain-restart into full mode, not be discarded.
     || daemonMinioCreds old /= daemonMinioCreds new
-    || daemonAwsCreds old /= daemonAwsCreds new
+    || dnsCredentialReloadRequired (daemonAwsCreds old) (daemonAwsCreds new)
+
+dnsCredentialReloadRequired
+  :: Maybe GatewayAwsCreds
+  -> Maybe GatewayAwsCreds
+  -> Bool
+dnsCredentialReloadRequired current observed =
+  case (current, observed) of
+    (Nothing, Nothing) -> False
+    (Just old, Just new) ->
+      case (credentialGenerationFor old, credentialGenerationFor new) of
+        (Right oldGeneration, Right newGeneration) ->
+          case DnsAuthority.decideCredentialReload oldGeneration newGeneration of
+            DnsAuthority.CredentialGenerationUnchanged -> False
+            DnsAuthority.CredentialGenerationRestartRequired _ _ -> True
+        _ -> old /= new
+    _ -> True
+
+credentialGenerationFor
+  :: GatewayAwsCreds
+  -> Either DnsAuthority.DnsAuthorityError DnsAuthority.CredentialGeneration
+credentialGenerationFor credentials =
+  DnsAuthority.mkCredentialGeneration (fromIntegral nonZeroWord)
+ where
+  digest =
+    SHA256.hash
+      ( BL.toStrict
+          ( ByteStringBuilder.toLazyByteString
+              ( foldMap
+                  encodeCredentialField
+                  [ gatewayAwsAccessKeyId credentials
+                  , gatewayAwsSecretAccessKey credentials
+                  , fromMaybe "" (gatewayAwsSessionToken credentials)
+                  , gatewayAwsRegion credentials
+                  ]
+              )
+          )
+      )
+  rawWord =
+    BS.foldl'
+      (\acc byte -> acc * 256 + fromIntegral byte)
+      0
+      (BS.take 8 digest)
+  nonZeroWord :: Word64
+  nonZeroWord = max 1 rawWord
+
+  encodeCredentialField value =
+    let bytes = BS8.pack value
+     in ByteStringBuilder.word64BE (fromIntegral (BS.length bytes))
+          <> ByteStringBuilder.byteString bytes
 
 validateDaemonStartupInputs :: DaemonConfig -> IO (Either String ())
 validateDaemonStartupInputs config = do
@@ -870,26 +1944,18 @@ resolveLocalPeerEndpoint config orders =
 
 heartbeatLoop :: DaemonEnv -> IO ()
 heartbeatLoop env = forever $ do
-  let config = envBootConfig env
-      stateVar = envState env
-      eventKeys = Map.fromList (daemonEventKeys config)
   now <- getCurrentTime
-  let nodeId = daemonNodeId config
-      heartbeatPayload =
-        object
-          [ "node_id" .= nodeId
-          , "timestamp" .= formatUtcIso now
-          ]
-  case Map.lookup nodeId eventKeys of
-    Nothing -> logForEnv env Warn "event_key_missing" [field "node_id" nodeId]
-    Just key -> do
-      let event = createSignedEvent nodeId eventTypeHeartbeat heartbeatPayload key now
-      atomically $ modifyTVar' stateVar $ \state ->
-        state
-          { stateCommitLog = appendIfNew (stateCommitLog state) event
-          , stateLastHeartbeatTimes =
-              Map.insert nodeId now (stateLastHeartbeatTimes state)
-          }
+  let timestamp =
+        fromIntegral
+          (max 0 (floor (utcTimeToPOSIXSeconds now) :: Integer))
+          :: Word64
+  result <-
+    emitLocalSemanticAssertion
+      env
+      (BoundedState.HeartbeatAssertion timestamp)
+  case result of
+    Left err -> logForEnv env Warn "heartbeat_emission_refused" [field "detail" err]
+    Right _ -> pure ()
   liveConfig <- readTVarIO (envLiveConfig env)
   threadDelay (round (liveHeartbeatInterval liveConfig * 1000000))
 
@@ -901,7 +1967,6 @@ gatewayLoop env = forever $ do
   let config = envBootConfig env
       orders = envOrders env
       stateVar = envState env
-      eventKeys = Map.fromList (daemonEventKeys config)
   now <- getCurrentTime
   state <- readTVarIO stateVar
   let nodeId = daemonNodeId config
@@ -924,67 +1989,39 @@ gatewayLoop env = forever $ do
       previous = stateGatewayOwner state
       transitionedToOwner = previous /= Just nodeId && owner == Just nodeId
       transitionedFromOwner = previous == Just nodeId && owner /= Just nodeId
-  when transitionedToOwner $
-    appendOwnershipEvent
-      env
-      stateVar
-      eventKeys
-      nodeId
-      eventTypeClaim
-      now
-      ( object
-          [ "claiming_node_id" .= nodeId
-          , "previous_owner" .= toMaybeString previous
-          ]
-      )
-  when transitionedFromOwner $
-    appendOwnershipEvent
-      env
-      stateVar
-      eventKeys
-      nodeId
-      eventTypeYield
-      now
-      ( object
-          [ "yielding_node_id" .= nodeId
-          , "new_owner" .= toMaybeString owner
-          ]
-      )
+  claimFailure <-
+    if transitionedToOwner
+      then do
+        result <-
+          emitLocalSemanticAssertion
+            env
+            (BoundedState.OwnershipAssertion BoundedState.OwnershipClaim)
+        pure (either Just (const Nothing) result)
+      else pure Nothing
+  for_ claimFailure $ \err ->
+    logForEnv env Warn "gateway_claim_refused" [field "detail" err]
+  yieldFailure <-
+    if transitionedFromOwner
+      then do
+        result <-
+          emitLocalSemanticAssertion
+            env
+            (BoundedState.OwnershipAssertion BoundedState.OwnershipYield)
+        pure (either Just (const Nothing) result)
+      else pure Nothing
+  for_ yieldFailure $ \err ->
+    logForEnv env Warn "gateway_yield_refused" [field "detail" err]
+  let effectiveOwner =
+        if transitionedToOwner && maybe False (const True) claimFailure
+          then Nothing
+          else owner
   atomically $ modifyTVar' stateVar $ \s ->
     s
-      { stateGatewayOwner = owner
+      { stateGatewayOwner = effectiveOwner
       , statePreviousOwner = previous
       }
   liveConfig <- readTVarIO (envLiveConfig env)
   threadDelay (round (liveHeartbeatInterval liveConfig * 1000000))
-
-toMaybeString :: Maybe String -> Value
-toMaybeString Nothing = Null
-toMaybeString (Just s) = String (Text.pack s)
-
-appendOwnershipEvent
-  :: DaemonEnv
-  -> TVar DaemonState
-  -> Map String String
-  -> String
-  -> String
-  -> UTCTime
-  -> Value
-  -> IO ()
-appendOwnershipEvent env stateVar eventKeys nodeId evType now payload =
-  case Map.lookup nodeId eventKeys of
-    Nothing -> logForEnv env Warn "event_key_missing" [field "node_id" nodeId]
-    Just key -> do
-      let ev = createSignedEvent nodeId evType payload key now
-      atomically $ modifyTVar' stateVar $ \s ->
-        s {stateCommitLog = appendIfNew (stateCommitLog s) ev}
-      logForEnv
-        env
-        Info
-        "gateway_ownership_event_emitted"
-        [ field "event_type" evType
-        , field "node_id" nodeId
-        ]
 
 -- | Write Route 53 only when the runtime CanWriteDns predicate holds: the
 -- local node must be the elected owner AND the most recent claim/yield
@@ -995,40 +2032,202 @@ dnsWriteLoop env = forever $ do
       stateVar = envState env
   state <- readTVarIO stateVar
   let nodeId = daemonNodeId config
-      eligible = canWriteDns nodeId (stateGatewayOwner state) (stateCommitLog state)
+      eligible =
+        stateGatewayOwner state == Just nodeId
+          && boundedNodeDisposition env state nodeId == DispositionOwner
   when eligible $ do
-    case daemonDnsWriteGate config of
-      Nothing -> pure ()
-      Just gate -> do
-        publicIpResult <- fetchPublicIp
-        case publicIpResult of
-          Left err -> logForEnv env Warn "dns_write_skipped" [field "detail" err]
-          Right currentIp -> do
-            atomically $ modifyTVar' stateVar $ \s -> s {stateLastPublicIp = Just currentIp}
-            let shouldWrite = case stateLastDnsWriteIp state of
-                  Nothing -> True
-                  Just lastIp -> lastIp /= currentIp
-            when shouldWrite $ do
-              writeResult <- writeDnsRecord (daemonAwsCreds config) gate currentIp
-              case writeResult of
-                Left err -> logForEnv env Error "dns_write_failed" [field "detail" err]
-                Right () -> do
-                  now <- getCurrentTime
-                  atomically $ modifyTVar' stateVar $ \s ->
-                    s
-                      { stateLastPublicIp = Just currentIp
-                      , stateLastDnsWriteIp = Just currentIp
-                      , stateLastDnsWriteTime = Just now
-                      }
-                  logForEnv
-                    env
-                    Info
-                    "dns_write_succeeded"
-                    [ field "fqdn" (dnsWriteGateFqdn gate)
-                    , field "ip" currentIp
-                    ]
+    case (daemonDnsWriteGate config, daemonAwsCreds config) of
+      (Nothing, _) -> pure ()
+      (_, Nothing) ->
+        logForEnv
+          env
+          Warn
+          "dns_write_unavailable"
+          [field "detail" ("credential generation is not ready" :: String)]
+      (Just gate, Just awsCreds) -> do
+        authorityResult <- dnsWriteAuthority env state awsCreds
+        case authorityResult of
+          Left err ->
+            logForEnv env Warn "dns_write_unavailable" [field "detail" err]
+          Right _ -> do
+            publicIpResult <- fetchPublicIp
+            case publicIpResult of
+              Left err -> logForEnv env Warn "dns_write_skipped" [field "detail" err]
+              Right currentIp -> do
+                atomically $ modifyTVar' stateVar $ \s -> s {stateLastPublicIp = Just currentIp}
+                let shouldWrite = case stateLastDnsWriteIp state of
+                      Nothing -> True
+                      Just lastIp -> lastIp /= currentIp
+                when shouldWrite $ do
+                  writeResult <-
+                    withGatewayChild
+                      env
+                      "route53-dns-write"
+                      (reobserveAndWriteDns env awsCreds gate currentIp)
+                  case writeResult of
+                    Left err -> logForEnv env Error "dns_write_failed" [field "detail" err]
+                    Right () -> do
+                      now <- getCurrentTime
+                      atomically $ modifyTVar' stateVar $ \s ->
+                        s
+                          { stateLastPublicIp = Just currentIp
+                          , stateLastDnsWriteIp = Just currentIp
+                          , stateLastDnsWriteTime = Just now
+                          }
+                      logForEnv
+                        env
+                        Info
+                        "dns_write_succeeded"
+                        [ field "fqdn" (dnsWriteGateFqdn gate)
+                        , field "ip" currentIp
+                        ]
   liveConfig <- readTVarIO (envLiveConfig env)
   threadDelay (round (liveSyncInterval liveConfig * 1000000))
+
+dnsWriteAuthority
+  :: DaemonEnv
+  -> DaemonState
+  -> GatewayAwsCreds
+  -> IO (Either String DnsAuthority.DnsWriteAuthorized)
+dnsWriteAuthority env state awsCreds = do
+  runtime <- readTVarIO (envContinuity env)
+  case runtime of
+    Nothing -> pure (Left "retained continuity authority is unavailable")
+    Just active -> do
+      current <- readTVarIO (continuityRuntimeCurrent active)
+      pure $ do
+        generation <- mapDnsError (credentialGenerationFor awsCreds)
+        credentials <-
+          mapDnsError
+            ( DnsAuthority.mkDnsAwsCredentials
+                DnsAuthority.DnsCredentialInput
+                  { DnsAuthority.dnsCredentialAccessKeyId =
+                      Text.pack (gatewayAwsAccessKeyId awsCreds)
+                  , DnsAuthority.dnsCredentialSecretAccessKey =
+                      Text.pack (gatewayAwsSecretAccessKey awsCreds)
+                  , DnsAuthority.dnsCredentialSessionToken =
+                      Text.pack <$> gatewayAwsSessionToken awsCreds
+                  , DnsAuthority.dnsCredentialRegion =
+                      Text.pack (gatewayAwsRegion awsCreds)
+                  }
+            )
+        fence <- mapDnsError (continuityFenceFromCurrent current)
+        mapDnsError
+          ( DnsAuthority.authorizeDnsWrite
+              (Text.pack (daemonNodeId (envBootConfig env)))
+              (DnsAuthority.CredentialsReady generation credentials)
+              (DnsAuthority.ContinuityReady fence)
+              ( if boundedNodeDisposition env state (daemonNodeId (envBootConfig env))
+                  == DispositionOwner
+                  then
+                    maybe
+                      DnsAuthority.DnsClaimAbsent
+                      DnsAuthority.DnsClaimCurrent
+                      (stateDnsClaimAuthority state)
+                  else DnsAuthority.DnsClaimAbsent
+              )
+          )
+ where
+  mapDnsError = either (Left . show) Right
+
+-- | Re-observe the retained continuity object and consume the resulting
+-- credential/claim witness within the same capacity-one child lease as the
+-- Route 53 subprocess.  A staged, missing, corrupt, or unobservable record
+-- cannot cross the effect boundary.
+reobserveAndWriteDns
+  :: DaemonEnv
+  -> GatewayAwsCreds
+  -> DnsWriteGate
+  -> String
+  -> IO (Either String ())
+reobserveAndWriteDns env awsCreds gate currentIp = do
+  runtime <- readTVarIO (envContinuity env)
+  case runtime of
+    Nothing -> pure (Left "retained continuity authority is unavailable")
+    Just active -> do
+      observed <-
+        Continuity.recoverContinuityAtStartup
+          (continuityRuntimeAuthority active)
+      case observed of
+        Left err -> pure (Left (show err))
+        Right (Continuity.StartupRepublish _) ->
+          pure (Left "retained continuity has an uncommitted staged assertion")
+        Right (Continuity.StartupCurrent current) -> do
+          atomically (writeTVar (continuityRuntimeCurrent active) current)
+          freshState <- readTVarIO (envState env)
+          authority <- dnsWriteAuthority env freshState awsCreds
+          case authority of
+            Left err -> pure (Left err)
+            Right ready ->
+              case do
+                if dnsWriteGateTtl gate > 0
+                  then Right ()
+                  else Left (DnsAuthority.DnsWriteTtlInvalid 0)
+                request <-
+                  DnsAuthority.mkDnsWriteRequest
+                    (Text.pack (dnsWriteGateZoneId gate))
+                    (Text.pack (dnsWriteGateFqdn gate))
+                    (fromIntegral (dnsWriteGateTtl gate))
+                    (Text.pack (dnsWriteGateAwsRegion gate))
+                    (Text.pack currentIp)
+                DnsAuthority.authorizeDnsWriteRequest ready request of
+                Left err -> pure (Left (show err))
+                Right action -> writeDnsRecord action
+
+hexText :: ByteString -> Text.Text
+hexText bytes =
+  TextEncoding.decodeUtf8
+    ( BL.toStrict
+        ( ByteStringBuilder.toLazyByteString
+            (foldMap ByteStringBuilder.word8HexFixed (BS.unpack bytes))
+        )
+    )
+
+withGatewayChild
+  :: DaemonEnv
+  -> Text.Text
+  -> IO (Either String value)
+  -> IO (Either String value)
+withGatewayChild env childName action = do
+  let bounds = envGatewayBounds env
+      deadline = gatewayChildDeadlineMicros bounds
+      request =
+        RawChildRequest
+          { rawChildRequestName = childName
+          , rawChildRequestTimeoutMicros = Just deadline
+          , rawChildRequestPeakBytes = Just (gatewayChildPeakBytes bounds)
+          }
+      deadlineInt = fromIntegral deadline
+  permit <- timeout deadlineInt (atomically (takeTMVar (envChildPermit env)))
+  case permit of
+    Nothing -> pure (Left "gateway child permit deadline elapsed")
+    Just () -> do
+      scheduledResult <- atomically $ do
+        scheduler <- readTVar (envChildScheduler env)
+        case scheduleChild scheduler request of
+          Left err -> pure (Left err)
+          Right (scheduled, acquired) -> do
+            writeTVar (envChildScheduler env) acquired
+            pure (Right scheduled)
+      case scheduledResult of
+        Left err -> do
+          atomically (putTMVar (envChildPermit env) ())
+          pure (Left ("gateway child schedule refused: " ++ show err))
+        Right scheduled ->
+          ( do
+              result <- timeout (scheduledChildTimeoutMicros scheduled) action
+              pure $ case result of
+                Nothing -> Left "gateway child process deadline elapsed"
+                Just completed -> completed
+          )
+            `finally` atomically
+              ( do
+                  scheduler <- readTVar (envChildScheduler env)
+                  case completeChild scheduler scheduled of
+                    Left _ -> pure ()
+                    Right available -> writeTVar (envChildScheduler env) available
+                  putTMVar (envChildPermit env) ()
+              )
 
 restServerLoop :: PeerEndpoint -> DaemonEnv -> IO ()
 restServerLoop localPeer env = do
@@ -1036,15 +2235,32 @@ restServerLoop localPeer env = do
       port = peerRestPort localPeer
   withListeningSocket "REST server" host port $ \sock -> do
     logForEnv env Info "rest_server_listening" [field "host" host, field "port" port]
-    acceptWhileServing True sock env (`handleRestClient` env)
+    acceptWhileServing
+      (gatewayMaxInFlightFrames (envGatewayBounds env))
+      True
+      sock
+      env
+      (`handleRestClient` env)
+
+-- | Preserve the listeners' benign handling of connection-local failures,
+-- while allowing structured-concurrency cancellation to leave a fixed worker
+-- immediately instead of being swallowed by a broad request boundary.
+ignoreSynchronousConnectionFailure :: IO () -> IO ()
+ignoreSynchronousConnectionFailure action = do
+  outcome <- try action :: IO (Either SomeException ())
+  case outcome of
+    Right () -> pure ()
+    Left exc ->
+      case fromException exc :: Maybe SomeAsyncException of
+        Just _ -> throwIO exc
+        Nothing -> pure ()
 
 handleRestClient :: Socket -> DaemonEnv -> IO ()
-handleRestClient sock env = do
-  _ <- try handleRequest :: IO (Either SomeException ())
-  close sock
+handleRestClient sock env =
+  ignoreSynchronousConnectionFailure handleRequest
  where
   handleRequest = do
-    maybeRaw <- receiveAllWithin env sock
+    maybeRaw <- receiveAllWithin env pulumiObjectRequestMaxBytes sock
     for_ maybeRaw handleParsedRequest
 
   handleParsedRequest rawRequest = do
@@ -1064,6 +2280,13 @@ handleRestClient sock env = do
         | path == pulumiObjectGetPath -> handlePulumiObjectGet sock env rawRequest
         | path == pulumiObjectPutPath -> handlePulumiObjectPut sock env rawRequest
         | path == pulumiObjectDeletePath -> handlePulumiObjectDelete sock env rawRequest
+        | path == authorityObjectGetPath -> handleAuthorityObjectGet sock env rawRequest
+        | path == authorityObjectCasPath -> handleAuthorityObjectCas sock env rawRequest
+        | path == authorityClockPath -> handleAuthorityClock sock rawRequest
+        | path == TargetSecret.targetSecretReadPath ->
+            handleTargetSecretRead sock env rawRequest
+        | path == TargetSecret.targetSecretCasPath ->
+            handleTargetSecretCas sock env rawRequest
         | otherwise ->
             case operatorSecretLogicalPath path of
               Just logical
@@ -1096,7 +2319,13 @@ handleReadRequest sock env now rawRequest =
       sendHttpResponse sock 200 "text/plain" (renderMetricsText now env state)
     "/v1/state" -> do
       state <- readTVarIO (envState env)
-      sendLazyHttpResponse sock 200 "application/json" (renderStateJson now (envBootConfig env) state)
+      dnsReady <- gatewayDnsWriteReady env state
+      continuityDiagnostic <- readContinuityDiagnostic env
+      sendLazyHttpResponse
+        sock
+        200
+        "application/json"
+        (renderStateJson now env dnsReady continuityDiagnostic state)
     "/v1/federation/children" -> do
       childrenResult <- readFederationChildren (envBootConfig env)
       case childrenResult of
@@ -1508,7 +2737,7 @@ handleBootstrapVaultEnsure sock env rawRequest =
     Left err ->
       sendHttpResponse sock 400 "text/plain" (renderBootstrapVaultRequestError err ++ "\n")
     Right request -> do
-      result <- ensureBootstrapVault (envBootConfig env) request
+      result <- ensureBootstrapVault env request
       case result of
         Left err ->
           let (status, message) = renderBootstrapVaultEnsureError err
@@ -1551,7 +2780,7 @@ handleBootstrapVaultStatus sock env rawRequest =
 handleBootstrapVaultSeal :: Socket -> DaemonEnv -> BS.ByteString -> IO ()
 handleBootstrapVaultSeal sock env rawRequest =
   handleBootstrapVaultPasswordAction sock rawRequest $ \request -> do
-    result <- sealBootstrapVault (envBootConfig env) request
+    result <- sealBootstrapVault env request
     pure $ encodeBootstrapActionResult result
 
 handleBootstrapVaultRotateUnlockBundle :: Socket -> DaemonEnv -> BS.ByteString -> IO ()
@@ -1565,7 +2794,7 @@ handleBootstrapVaultRotateUnlockBundle sock env rawRequest =
         (BootstrapVaultMethodNotAllowed (operatorSecretRequestMethod rawRequest))
     Left err -> sendBootstrapRequestError sock 400 rawRequest err
     Right request -> do
-      result <- rotateBootstrapUnlockBundle (envBootConfig env) request
+      result <- rotateBootstrapUnlockBundle env request
       sendBootstrapActionResult sock result
 
 handleBootstrapVaultRotateTransitKey :: Socket -> DaemonEnv -> BS.ByteString -> IO ()
@@ -1579,19 +2808,19 @@ handleBootstrapVaultRotateTransitKey sock env rawRequest =
         (BootstrapVaultMethodNotAllowed (operatorSecretRequestMethod rawRequest))
     Left err -> sendBootstrapRequestError sock 400 rawRequest err
     Right request -> do
-      result <- rotateBootstrapTransitKey (envBootConfig env) request
+      result <- rotateBootstrapTransitKey env request
       sendBootstrapActionResult sock result
 
 handleBootstrapVaultPkiStatus :: Socket -> DaemonEnv -> BS.ByteString -> IO ()
 handleBootstrapVaultPkiStatus sock env rawRequest =
   handleBootstrapVaultPasswordAction sock rawRequest $ \request -> do
-    result <- bootstrapVaultPkiStatus (envBootConfig env) request
+    result <- bootstrapVaultPkiStatus env request
     pure $ encodeBootstrapActionResult result
 
 handleBootstrapVaultPkiIssueTestCert :: Socket -> DaemonEnv -> BS.ByteString -> IO ()
 handleBootstrapVaultPkiIssueTestCert sock env rawRequest =
   handleBootstrapVaultPasswordAction sock rawRequest $ \request -> do
-    result <- bootstrapVaultPkiIssueTestCert (envBootConfig env) request
+    result <- bootstrapVaultPkiIssueTestCert env request
     pure $ encodeBootstrapActionResult result
 
 handleBootstrapVaultPasswordAction
@@ -1637,10 +2866,10 @@ encodeBootstrapActionResult
 encodeBootstrapActionResult = fmap encode
 
 ensureBootstrapVault
-  :: DaemonConfig
+  :: DaemonEnv
   -> BootstrapVaultRequest
   -> IO (Either BootstrapVaultEnsureError BootstrapVaultResponse)
-ensureBootstrapVault config request = do
+ensureBootstrapVault env request = do
   statusResult <- vaultSealStatus address
   case statusResult of
     Left err ->
@@ -1651,6 +2880,7 @@ ensureBootstrapVault config request = do
         BootstrapUnseal -> unsealExistingAndReconcile status
         BootstrapReady -> reconcileReadyVault
  where
+  config = envBootConfig env
   address = bootstrapVaultAddress config
   minioConfig = bootstrapVaultObjectStoreConfig config
   password = bootstrapVaultUnlockPassword request
@@ -1678,7 +2908,11 @@ ensureBootstrapVault config request = do
                   )
               )
           Right envelopeBytes -> do
-            writeResult <- putAndVerifyBootstrapBundle minioConfig password envelopeBytes
+            writeResult <-
+              withGatewayChild
+                env
+                "vault-bootstrap-bundle-write"
+                (putAndVerifyBootstrapBundle minioConfig password envelopeBytes)
             case writeResult of
               Left err -> pure (Left (BootstrapVaultEnsureBundleUnavailable err))
               Right () -> do
@@ -1696,7 +2930,11 @@ ensureBootstrapVault config request = do
                           (VaultToken (unlockBundleInitialRootToken bundle))
 
   unsealExistingAndReconcile status = do
-    bundleResult <- readBootstrapBundle minioConfig password
+    bundleResult <-
+      withGatewayChild
+        env
+        "vault-bootstrap-bundle-read"
+        (readBootstrapBundle minioConfig password)
     case bundleResult of
       Left err -> pure (Left (BootstrapVaultEnsureBundleUnavailable err))
       Right bundle -> do
@@ -1707,7 +2945,11 @@ ensureBootstrapVault config request = do
             reconcileWithRootToken "unsealed-reconciled" (VaultToken (unlockBundleInitialRootToken bundle))
 
   reconcileReadyVault = do
-    bundleResult <- readBootstrapBundle minioConfig password
+    bundleResult <-
+      withGatewayChild
+        env
+        "vault-bootstrap-bundle-read"
+        (readBootstrapBundle minioConfig password)
     case bundleResult of
       Left err -> pure (Left (BootstrapVaultEnsureBundleUnavailable err))
       Right bundle ->
@@ -1727,13 +2969,13 @@ ensureBootstrapVault config request = do
             }
 
 sealBootstrapVault
-  :: DaemonConfig -> BootstrapVaultRequest -> IO (Either BootstrapVaultEnsureError Value)
-sealBootstrapVault config request = do
-  tokenResult <- bootstrapRootToken config (bootstrapVaultUnlockPassword request)
+  :: DaemonEnv -> BootstrapVaultRequest -> IO (Either BootstrapVaultEnsureError Value)
+sealBootstrapVault env request = do
+  tokenResult <- bootstrapRootToken env (bootstrapVaultUnlockPassword request)
   case tokenResult of
     Left err -> pure (Left err)
     Right token -> do
-      result <- vaultSeal (bootstrapVaultAddress config) token
+      result <- vaultSeal (bootstrapVaultAddress (envBootConfig env)) token
       pure $ case result of
         Left err -> Left (BootstrapVaultEnsureVaultUnavailable (renderHttpError err))
         Right () ->
@@ -1745,11 +2987,15 @@ sealBootstrapVault config request = do
             )
 
 rotateBootstrapUnlockBundle
-  :: DaemonConfig
+  :: DaemonEnv
   -> BootstrapVaultRotateUnlockBundleRequest
   -> IO (Either BootstrapVaultEnsureError BL.ByteString)
-rotateBootstrapUnlockBundle config request = do
-  bundleResult <- readBootstrapBundle minioConfig (bootstrapVaultRotateCurrentPassword request)
+rotateBootstrapUnlockBundle env request = do
+  bundleResult <-
+    withGatewayChild
+      env
+      "vault-bootstrap-bundle-read"
+      (readBootstrapBundle minioConfig (bootstrapVaultRotateCurrentPassword request))
   case bundleResult of
     Left err -> pure (Left (BootstrapVaultEnsureBundleUnavailable err))
     Right bundle -> do
@@ -1764,10 +3010,11 @@ rotateBootstrapUnlockBundle config request = do
             )
         Right envelopeBytes -> do
           writeResult <-
-            putAndVerifyBootstrapBundle
-              minioConfig
-              (bootstrapVaultRotateNewPassword request)
-              envelopeBytes
+            withGatewayChild env "vault-bootstrap-bundle-write" $
+              putAndVerifyBootstrapBundle
+                minioConfig
+                (bootstrapVaultRotateNewPassword request)
+                envelopeBytes
           pure $ case writeResult of
             Left err -> Left (BootstrapVaultEnsureBundleUnavailable err)
             Right () ->
@@ -1780,20 +3027,21 @@ rotateBootstrapUnlockBundle config request = do
                     )
                 )
  where
+  config = envBootConfig env
   minioConfig = bootstrapVaultObjectStoreConfig config
 
 rotateBootstrapTransitKey
-  :: DaemonConfig
+  :: DaemonEnv
   -> BootstrapVaultRotateTransitKeyRequest
   -> IO (Either BootstrapVaultEnsureError BL.ByteString)
-rotateBootstrapTransitKey config request = do
-  tokenResult <- bootstrapRootToken config (bootstrapVaultRotateTransitPassword request)
+rotateBootstrapTransitKey env request = do
+  tokenResult <- bootstrapRootToken env (bootstrapVaultRotateTransitPassword request)
   case tokenResult of
     Left err -> pure (Left err)
     Right token -> do
       result <-
         vaultRotateTransitKey
-          (bootstrapVaultAddress config)
+          (bootstrapVaultAddress (envBootConfig env))
           token
           (bootstrapVaultRotateTransitKeyName request)
       pure $ case result of
@@ -1810,13 +3058,13 @@ rotateBootstrapTransitKey config request = do
             )
 
 bootstrapVaultPkiStatus
-  :: DaemonConfig -> BootstrapVaultRequest -> IO (Either BootstrapVaultEnsureError Value)
-bootstrapVaultPkiStatus config request = do
-  tokenResult <- bootstrapRootToken config (bootstrapVaultUnlockPassword request)
+  :: DaemonEnv -> BootstrapVaultRequest -> IO (Either BootstrapVaultEnsureError Value)
+bootstrapVaultPkiStatus env request = do
+  tokenResult <- bootstrapRootToken env (bootstrapVaultUnlockPassword request)
   case tokenResult of
     Left err -> pure (Left err)
     Right token -> do
-      mountsResult <- vaultListMounts (bootstrapVaultAddress config) token
+      mountsResult <- vaultListMounts (bootstrapVaultAddress (envBootConfig env)) token
       pure $ case mountsResult of
         Left err -> Left (BootstrapVaultEnsureVaultUnavailable (renderHttpError err))
         Right mounts ->
@@ -1838,15 +3086,15 @@ bootstrapVaultPkiStatus config request = do
                 )
 
 bootstrapVaultPkiIssueTestCert
-  :: DaemonConfig -> BootstrapVaultRequest -> IO (Either BootstrapVaultEnsureError Value)
-bootstrapVaultPkiIssueTestCert config request = do
-  tokenResult <- bootstrapRootToken config (bootstrapVaultUnlockPassword request)
+  :: DaemonEnv -> BootstrapVaultRequest -> IO (Either BootstrapVaultEnsureError Value)
+bootstrapVaultPkiIssueTestCert env request = do
+  tokenResult <- bootstrapRootToken env (bootstrapVaultUnlockPassword request)
   case tokenResult of
     Left err -> pure (Left err)
     Right token -> do
       result <-
         vaultPkiIssueTestCertificate
-          (bootstrapVaultAddress config)
+          (bootstrapVaultAddress (envBootConfig env))
           token
           "prodbox-test"
           "prodbox-vault-test.internal"
@@ -1861,9 +3109,16 @@ bootstrapVaultPkiIssueTestCert config request = do
                 ]
             )
 
-bootstrapRootToken :: DaemonConfig -> Text.Text -> IO (Either BootstrapVaultEnsureError VaultToken)
-bootstrapRootToken config password = do
-  bundleResult <- readBootstrapBundle (bootstrapVaultObjectStoreConfig config) password
+bootstrapRootToken :: DaemonEnv -> Text.Text -> IO (Either BootstrapVaultEnsureError VaultToken)
+bootstrapRootToken env password = do
+  bundleResult <-
+    withGatewayChild
+      env
+      "vault-bootstrap-bundle-read"
+      ( readBootstrapBundle
+          (bootstrapVaultObjectStoreConfig (envBootConfig env))
+          password
+      )
   pure $ case bundleResult of
     Left err -> Left (BootstrapVaultEnsureBundleUnavailable err)
     Right bundle -> Right (VaultToken (unlockBundleInitialRootToken bundle))
@@ -1882,9 +3137,14 @@ bootstrapVaultObjectStoreConfig config =
 data PulumiObjectRequestError
   = PulumiObjectMethodNotAllowed String
   | PulumiObjectRequestTooLarge Int
+  | AuthorityObjectRequestTooLarge Int
   | PulumiObjectRequestEmpty
   | PulumiObjectRequestMalformed String
   | PulumiObjectStackInvalid String
+  | AuthorityObjectLogicalNameInvalid String
+  | AuthorityObjectExpectedVersionInvalid String
+  | AuthorityObjectLeaseGuardInvalid String
+  | AuthorityObjectPayloadInvalid AuthorityObjectPayloadError
   | PulumiObjectLoopbackUnverified
   deriving (Eq, Show)
 
@@ -1927,6 +3187,162 @@ decodePulumiObjectJson rawRequest
   method = operatorSecretRequestMethod rawRequest
   body = requestBodyBytes rawRequest
 
+decodeAuthorityObjectRequest
+  :: BS.ByteString -> Either PulumiObjectRequestError AuthorityObjectRequest
+decodeAuthorityObjectRequest rawRequest = do
+  request <- decodeAuthorityObjectJson rawRequest
+  logicalName <-
+    case validateAuthorityObjectLogicalName (authorityObjectLogicalName request) of
+      Left err -> Left (AuthorityObjectLogicalNameInvalid err)
+      Right validated -> Right validated
+  if authorityObjectLoopbackNodePortVerified request
+    then Right request {authorityObjectLogicalName = logicalName}
+    else Left PulumiObjectLoopbackUnverified
+
+decodeAuthorityObjectCasRequest
+  :: BS.ByteString -> Either PulumiObjectRequestError AuthorityObjectCasRequest
+decodeAuthorityObjectCasRequest rawRequest = do
+  request <- decodeAuthorityObjectJson rawRequest
+  logicalName <-
+    case validateAuthorityObjectLogicalName (authorityObjectCasLogicalName request) of
+      Left err -> Left (AuthorityObjectLogicalNameInvalid err)
+      Right validated -> Right validated
+  expectedVersion <- traverse validateExpectedVersion (authorityObjectCasExpectedVersion request)
+  leaseGuard <- traverse validateAuthorityLeaseGuard (authorityObjectCasLeaseGuard request)
+  case ("leases/" `Text.isPrefixOf` logicalName, leaseGuard) of
+    (True, Nothing) -> Right ()
+    (True, Just _) ->
+      Left
+        ( AuthorityObjectLeaseGuardInvalid
+            "lease projection acquire/release CAS must not carry a second lease guard"
+        )
+    (False, Nothing) ->
+      Left
+        ( AuthorityObjectLeaseGuardInvalid
+            "checkpoint, SMTP, and global-intent CAS requires a current lease guard"
+        )
+    (False, Just _) -> Right ()
+  case validateAuthorityObjectPayloadSize
+    logicalName
+    (authorityObjectCasPayload request) of
+    Left err -> Left (AuthorityObjectPayloadInvalid err)
+    Right () -> Right ()
+  if authorityObjectCasLoopbackNodePortVerified request
+    then
+      Right
+        request
+          { authorityObjectCasLogicalName = logicalName
+          , authorityObjectCasExpectedVersion = expectedVersion
+          , authorityObjectCasLeaseGuard = leaseGuard
+          }
+    else Left PulumiObjectLoopbackUnverified
+
+validateExpectedVersion
+  :: Text.Text -> Either PulumiObjectRequestError Text.Text
+validateExpectedVersion version
+  | Text.null stripped =
+      Left (AuthorityObjectExpectedVersionInvalid "expected_version must not be empty")
+  | Text.length stripped > 512 =
+      Left (AuthorityObjectExpectedVersionInvalid "expected_version must be 512 characters or fewer")
+  | otherwise = Right stripped
+ where
+  stripped = Text.strip version
+
+validateAuthorityLeaseGuard
+  :: AuthorityObjectLeaseGuard
+  -> Either PulumiObjectRequestError AuthorityObjectLeaseGuard
+validateAuthorityLeaseGuard guard = do
+  logicalName <-
+    case validateAuthorityObjectLogicalName (authorityLeaseGuardLogicalName guard) of
+      Left err -> Left (AuthorityObjectLogicalNameInvalid err)
+      Right validated
+        | "leases/" `Text.isPrefixOf` validated -> Right validated
+        | otherwise ->
+            Left
+              ( AuthorityObjectLogicalNameInvalid
+                  "lease_guard.logical_name must use the leases/ namespace"
+              )
+  expectedVersion <- validateExpectedVersion (authorityLeaseGuardExpectedVersion guard)
+  if Text.null (Text.strip (authorityLeaseGuardOwnerNonce guard))
+    then
+      Left
+        ( AuthorityObjectLeaseGuardInvalid
+            "lease_guard.owner_nonce must not be empty"
+        )
+    else
+      if authorityLeaseGuardFencingToken guard == 0
+        then
+          Left
+            ( AuthorityObjectLeaseGuardInvalid
+                "lease_guard.fencing_token must be positive"
+            )
+        else
+          Right
+            guard
+              { authorityLeaseGuardLogicalName = logicalName
+              , authorityLeaseGuardExpectedVersion = expectedVersion
+              , authorityLeaseGuardOwnerNonce =
+                  Text.strip (authorityLeaseGuardOwnerNonce guard)
+              }
+
+decodeAuthorityClockRequest
+  :: BS.ByteString -> Either PulumiObjectRequestError AuthorityClockRequest
+decodeAuthorityClockRequest rawRequest = do
+  request <- decodeAuthorityObjectJson rawRequest
+  if authorityClockLoopbackNodePortVerified request
+    then Right request
+    else Left PulumiObjectLoopbackUnverified
+
+decodeTargetSecretReadRequest
+  :: BS.ByteString
+  -> Either TargetSecret.TargetSecretRequestError TargetSecret.TargetSecretReadRequest
+decodeTargetSecretReadRequest rawRequest = do
+  request <- decodeTargetSecretJson rawRequest
+  TargetSecret.validateTargetSecretReadRequest request
+
+decodeTargetSecretCasRequest
+  :: BS.ByteString
+  -> Either TargetSecret.TargetSecretRequestError TargetSecret.TargetSecretCasRequest
+decodeTargetSecretCasRequest rawRequest = do
+  request <- decodeTargetSecretJson rawRequest
+  TargetSecret.validateTargetSecretCasRequest request
+
+decodeTargetSecretJson
+  :: (FromJSON value)
+  => BS.ByteString
+  -> Either TargetSecret.TargetSecretRequestError value
+decodeTargetSecretJson rawRequest
+  | method /= "POST" = Left (TargetSecret.TargetSecretMethodNotAllowed method)
+  | BS.length body > TargetSecret.targetSecretRequestMaxBytes =
+      Left
+        ( TargetSecret.TargetSecretRequestTooLarge
+            (BS.length body)
+            TargetSecret.targetSecretRequestMaxBytes
+        )
+  | BS.null (BS8.dropWhile isSpace body) = Left TargetSecret.TargetSecretRequestEmpty
+  | otherwise =
+      case eitherDecodeStrict' body of
+        Left err -> Left (TargetSecret.TargetSecretRequestMalformed err)
+        Right request -> Right request
+ where
+  method = operatorSecretRequestMethod rawRequest
+  body = requestBodyBytes rawRequest
+
+decodeAuthorityObjectJson
+  :: (FromJSON a) => BS.ByteString -> Either PulumiObjectRequestError a
+decodeAuthorityObjectJson rawRequest
+  | method /= "POST" = Left (PulumiObjectMethodNotAllowed method)
+  | BS.length body > authorityObjectRequestMaxBytes =
+      Left (AuthorityObjectRequestTooLarge (BS.length body))
+  | BS.null (BS8.dropWhile isSpace body) = Left PulumiObjectRequestEmpty
+  | otherwise =
+      case eitherDecodeStrict' body of
+        Left err -> Left (PulumiObjectRequestMalformed err)
+        Right request -> Right request
+ where
+  method = operatorSecretRequestMethod rawRequest
+  body = requestBodyBytes rawRequest
+
 renderPulumiObjectRequestError :: PulumiObjectRequestError -> String
 renderPulumiObjectRequestError err = case err of
   PulumiObjectMethodNotAllowed method ->
@@ -1936,12 +3352,30 @@ renderPulumiObjectRequestError err = case err of
       ++ show size
       ++ " bytes; maximum is "
       ++ show pulumiObjectRequestMaxBytes
+  AuthorityObjectRequestTooLarge size ->
+    "authority object-store request body is too large: "
+      ++ show size
+      ++ " bytes; maximum is "
+      ++ show authorityObjectRequestMaxBytes
   PulumiObjectRequestEmpty ->
     "empty request body; expected JSON object with stack and loopback_nodeport_verified"
   PulumiObjectRequestMalformed detail ->
     "invalid Pulumi object-store JSON body: " ++ detail
   PulumiObjectStackInvalid detail ->
     "invalid Pulumi stack name: " ++ detail
+  AuthorityObjectLogicalNameInvalid detail ->
+    "invalid authority logical name: " ++ detail
+  AuthorityObjectExpectedVersionInvalid detail ->
+    "invalid authority expected version: " ++ detail
+  AuthorityObjectLeaseGuardInvalid detail ->
+    "invalid authority lease guard: " ++ detail
+  AuthorityObjectPayloadInvalid payloadError ->
+    "authority object payload for `"
+      ++ Text.unpack (authorityPayloadLogicalName payloadError)
+      ++ "` is too large: "
+      ++ show (authorityPayloadObservedBytes payloadError)
+      ++ " bytes; maximum is "
+      ++ show (authorityPayloadMaximumBytes payloadError)
   PulumiObjectLoopbackUnverified ->
     "loopback NodePort restriction is not verified; refusing daemon Pulumi object-store route"
 
@@ -1999,6 +3433,228 @@ handlePulumiObjectDelete sock env rawRequest =
         Right () ->
           sendLazyHttpResponse sock 200 "application/json" (encode (object ["deleted" .= True]))
 
+handleAuthorityObjectGet :: Socket -> DaemonEnv -> BS.ByteString -> IO ()
+handleAuthorityObjectGet sock env rawRequest =
+  case decodeAuthorityObjectRequest rawRequest of
+    Left (PulumiObjectMethodNotAllowed _) ->
+      sendPulumiObjectRequestError
+        sock
+        405
+        (PulumiObjectMethodNotAllowed (operatorSecretRequestMethod rawRequest))
+    Left err -> sendPulumiObjectRequestError sock 400 err
+    Right request -> do
+      result <- readDaemonAuthorityObject env (authorityObjectLogicalName request)
+      case result of
+        Left err -> sendAuthorityObjectActionError sock err
+        Right observation ->
+          sendLazyHttpResponse sock 200 "application/json" (encode observation)
+
+handleAuthorityObjectCas :: Socket -> DaemonEnv -> BS.ByteString -> IO ()
+handleAuthorityObjectCas sock env rawRequest =
+  case decodeAuthorityObjectCasRequest rawRequest of
+    Left (PulumiObjectMethodNotAllowed _) ->
+      sendPulumiObjectRequestError
+        sock
+        405
+        (PulumiObjectMethodNotAllowed (operatorSecretRequestMethod rawRequest))
+    Left err -> sendPulumiObjectRequestError sock 400 err
+    Right request -> do
+      result <- compareAndSwapDaemonAuthorityObject env request
+      case result of
+        Left err -> sendAuthorityObjectActionError sock err
+        Right response ->
+          sendLazyHttpResponse sock 200 "application/json" (encode response)
+
+handleAuthorityClock :: Socket -> BS.ByteString -> IO ()
+handleAuthorityClock sock rawRequest =
+  case decodeAuthorityClockRequest rawRequest of
+    Left (PulumiObjectMethodNotAllowed _) ->
+      sendPulumiObjectRequestError
+        sock
+        405
+        (PulumiObjectMethodNotAllowed (operatorSecretRequestMethod rawRequest))
+    Left err -> sendPulumiObjectRequestError sock 400 err
+    Right _ -> do
+      now <- getCurrentTime
+      sendLazyHttpResponse
+        sock
+        200
+        "application/json"
+        (encode (AuthorityClockResponse (authorityMicrosFromUtc now)))
+
+authorityMicrosFromUtc :: UTCTime -> Natural
+authorityMicrosFromUtc now =
+  fromInteger
+    ( max
+        0
+        (floor (utcTimeToPOSIXSeconds now * 1000000) :: Integer)
+    )
+
+handleTargetSecretRead :: Socket -> DaemonEnv -> BS.ByteString -> IO ()
+handleTargetSecretRead sock env rawRequest =
+  case decodeTargetSecretReadRequest rawRequest of
+    Left (TargetSecret.TargetSecretMethodNotAllowed _) ->
+      sendTargetSecretRequestError sock 405 (TargetSecret.TargetSecretMethodNotAllowed method)
+    Left err -> sendTargetSecretRequestError sock 400 err
+    Right request -> do
+      result <-
+        readTargetSecret
+          env
+          (TargetSecret.targetSecretReadCoordinate request)
+      case result of
+        Left err -> sendTargetSecretActionError sock err
+        Right observation ->
+          sendLazyHttpResponse sock 200 "application/json" (encode observation)
+ where
+  method = operatorSecretRequestMethod rawRequest
+
+handleTargetSecretCas :: Socket -> DaemonEnv -> BS.ByteString -> IO ()
+handleTargetSecretCas sock env rawRequest =
+  case decodeTargetSecretCasRequest rawRequest of
+    Left (TargetSecret.TargetSecretMethodNotAllowed _) ->
+      sendTargetSecretRequestError sock 405 (TargetSecret.TargetSecretMethodNotAllowed method)
+    Left err -> sendTargetSecretRequestError sock 400 err
+    Right request -> do
+      result <- compareAndSwapTargetSecretVault env request
+      case result of
+        Left err -> sendTargetSecretActionError sock err
+        Right response ->
+          sendLazyHttpResponse sock 200 "application/json" (encode response)
+ where
+  method = operatorSecretRequestMethod rawRequest
+
+data TargetSecretActionError
+  = TargetSecretAuthUnavailable !String
+  | TargetSecretIdentityRefused !TargetSecret.TargetSecretRequestError
+  | TargetSecretVaultUnavailable !String
+  | TargetSecretStoredPayloadInvalid !TargetSecret.TargetSecretRequestError
+  deriving (Eq, Show)
+
+sendTargetSecretRequestError
+  :: Socket -> Int -> TargetSecret.TargetSecretRequestError -> IO ()
+sendTargetSecretRequestError sock status err =
+  sendHttpResponse sock status "text/plain" (show err ++ "\n")
+
+sendTargetSecretActionError :: Socket -> TargetSecretActionError -> IO ()
+sendTargetSecretActionError sock err = case err of
+  TargetSecretAuthUnavailable detail ->
+    sendHttpResponse sock 503 "text/plain" (detail ++ "\n")
+  TargetSecretIdentityRefused detail ->
+    sendHttpResponse sock 409 "text/plain" (show detail ++ "\n")
+  TargetSecretVaultUnavailable detail ->
+    sendHttpResponse sock 502 "text/plain" (detail ++ "\n")
+  TargetSecretStoredPayloadInvalid detail ->
+    sendHttpResponse
+      sock
+      502
+      "text/plain"
+      ("target-secret Vault payload is invalid: " ++ show detail ++ "\n")
+
+readTargetSecret
+  :: DaemonEnv
+  -> TargetSecret.TargetSecretCoordinate
+  -> IO (Either TargetSecretActionError TargetSecret.TargetSecretObservation)
+readTargetSecret env coordinate = do
+  identityResult <- attestTargetSecretCoordinate env coordinate
+  case identityResult of
+    Left err -> pure (Left err)
+    Right () -> do
+      tokenResult <- resolveTargetSecretVaultToken (envBootConfig env)
+      case tokenResult of
+        Left err -> pure (Left (TargetSecretAuthUnavailable err))
+        Right (address, token) ->
+          readTargetSecretWithToken address token coordinate
+
+readTargetSecretWithToken
+  :: VaultAddress
+  -> VaultToken
+  -> TargetSecret.TargetSecretCoordinate
+  -> IO (Either TargetSecretActionError TargetSecret.TargetSecretObservation)
+readTargetSecretWithToken address token coordinate = do
+  result <-
+    vaultKvReadVersionedV2
+      address
+      token
+      (TargetSecret.targetSecretCoordinateVaultMount coordinate)
+      (TargetSecret.targetSecretCoordinateKvPath coordinate)
+  pure $ case result of
+    Left (HttpStatus 404 _) -> Right TargetSecret.TargetSecretMissing
+    Left err ->
+      Left
+        ( TargetSecretVaultUnavailable
+            ("target-secret Vault read failed: " ++ renderHttpError err)
+        )
+    Right versioned ->
+      case TargetSecret.targetSecretRecordFromVaultFields
+        (kvV2VersionedSecretData versioned) of
+        Left err -> Left (TargetSecretStoredPayloadInvalid err)
+        Right record ->
+          Right
+            ( TargetSecret.TargetSecretObserved
+                (kvV2VersionedSecretVersion versioned)
+                record
+            )
+
+compareAndSwapTargetSecretVault
+  :: DaemonEnv
+  -> TargetSecret.TargetSecretCasRequest
+  -> IO (Either TargetSecretActionError TargetSecret.TargetSecretCasResponse)
+compareAndSwapTargetSecretVault env request = do
+  let coordinate = TargetSecret.targetSecretCasCoordinate request
+  identityResult <- attestTargetSecretCoordinate env coordinate
+  case identityResult of
+    Left err -> pure (Left err)
+    Right () -> do
+      tokenResult <- resolveTargetSecretVaultToken (envBootConfig env)
+      case tokenResult of
+        Left err -> pure (Left (TargetSecretAuthUnavailable err))
+        Right (address, token) ->
+          case TargetSecret.targetSecretRecordToVaultFields (TargetSecret.targetSecretCasRecord request) of
+            Left err -> pure (Left (TargetSecretStoredPayloadInvalid err))
+            Right fields -> do
+              result <-
+                vaultKvCasWriteV2
+                  address
+                  token
+                  (TargetSecret.targetSecretCoordinateVaultMount coordinate)
+                  (TargetSecret.targetSecretCoordinateKvPath coordinate)
+                  (KvV2Cas (TargetSecret.targetSecretCasExpectedVersion request))
+                  fields
+              case result of
+                Right version ->
+                  pure (Right (TargetSecret.TargetSecretCasApplied version))
+                Left err
+                  | vaultKvCasMismatch err -> do
+                      observed <- readTargetSecretWithToken address token coordinate
+                      pure (TargetSecret.TargetSecretCasConflict <$> observed)
+                  | otherwise ->
+                      pure
+                        ( Left
+                            ( TargetSecretVaultUnavailable
+                                ("target-secret Vault CAS failed: " ++ renderHttpError err)
+                            )
+                        )
+
+attestTargetSecretCoordinate
+  :: DaemonEnv
+  -> TargetSecret.TargetSecretCoordinate
+  -> IO (Either TargetSecretActionError ())
+attestTargetSecretCoordinate env coordinate = do
+  clusterResult <- loadDaemonClusterId (envConfigPath env)
+  pure $ case clusterResult of
+    Left err -> Left (TargetSecretAuthUnavailable err)
+    Right clusterId ->
+      case TargetSecret.validateTargetSecretIdentity clusterId coordinate of
+        Left refusal -> Left (TargetSecretIdentityRefused refusal)
+        Right () -> Right ()
+
+vaultKvCasMismatch :: HttpError -> Bool
+vaultKvCasMismatch err = case err of
+  HttpStatus 400 body ->
+    let normalized = map toLower body
+     in "check-and-set parameter did not match" `isInfixOf` normalized
+  _ -> False
+
 sendPulumiObjectRequestError :: Socket -> Int -> PulumiObjectRequestError -> IO ()
 sendPulumiObjectRequestError sock status err =
   sendHttpResponse sock status "text/plain" (renderPulumiObjectRequestError err ++ "\n")
@@ -2006,6 +3662,10 @@ sendPulumiObjectRequestError sock status err =
 sendPulumiObjectActionError :: Socket -> String -> IO ()
 sendPulumiObjectActionError sock detail =
   sendHttpResponse sock 503 "text/plain" ("Pulumi object-store unavailable: " ++ detail ++ "\n")
+
+sendAuthorityObjectActionError :: Socket -> String -> IO ()
+sendAuthorityObjectActionError sock detail =
+  sendHttpResponse sock 503 "text/plain" ("authority object-store unavailable: " ++ detail ++ "\n")
 
 data DaemonPulumiObjectMaterial = DaemonPulumiObjectMaterial
   { daemonPulumiObjectStore :: ObjectStoreConfig
@@ -2019,47 +3679,194 @@ readDaemonPulumiObject env stackName = do
   materialResult <- resolveDaemonPulumiObjectMaterial env
   case materialResult of
     Left err -> pure (Left err)
-    Right material -> do
-      result <-
-        getLogical
-          (daemonPulumiObjectStore material)
-          (daemonPulumiCipher material)
-          (daemonPulumiHmacKey material)
-          (daemonPulumiClusterId material)
-          (LogicalPulumiStack stackName)
-      pure $ case result of
-        Left (EncryptedObjectMissing _) -> Right Nothing
-        Left err -> Left (renderEncryptedObjectError err)
-        Right checkpoint -> Right (Just checkpoint)
+    Right material ->
+      withGatewayChild env "pulumi-object-get" $ do
+        result <-
+          getLogical
+            (daemonPulumiObjectStore material)
+            (daemonPulumiCipher material)
+            (daemonPulumiHmacKey material)
+            (daemonPulumiClusterId material)
+            (LogicalPulumiStack stackName)
+        pure $ case result of
+          Left (EncryptedObjectMissing _) -> Right Nothing
+          Left err -> Left (renderEncryptedObjectError err)
+          Right checkpoint -> Right (Just checkpoint)
 
 writeDaemonPulumiObject :: DaemonEnv -> Text.Text -> ByteString -> IO (Either String ())
 writeDaemonPulumiObject env stackName checkpoint = do
   materialResult <- resolveDaemonPulumiObjectMaterial env
   case materialResult of
     Left err -> pure (Left err)
-    Right material -> do
-      result <-
-        putLogical
-          (daemonPulumiObjectStore material)
-          (daemonPulumiCipher material)
-          (daemonPulumiHmacKey material)
-          (daemonPulumiClusterId material)
-          (LogicalPulumiStack stackName)
-          checkpoint
-      pure $ case result of
-        Left err -> Left (renderEncryptedObjectError err)
-        Right () -> Right ()
+    Right material ->
+      withGatewayChild env "pulumi-object-put" $ do
+        result <-
+          putLogical
+            (daemonPulumiObjectStore material)
+            (daemonPulumiCipher material)
+            (daemonPulumiHmacKey material)
+            (daemonPulumiClusterId material)
+            (LogicalPulumiStack stackName)
+            checkpoint
+        pure $ case result of
+          Left err -> Left (renderEncryptedObjectError err)
+          Right () -> Right ()
+
+readDaemonAuthorityObject
+  :: DaemonEnv -> Text.Text -> IO (Either String AuthorityObjectObservation)
+readDaemonAuthorityObject env logicalName = do
+  materialResult <- resolveDaemonPulumiObjectMaterial env
+  case materialResult of
+    Left err -> pure (Left err)
+    Right material ->
+      withGatewayChild env "authority-object-get" $ do
+        result <-
+          getLogicalVersioned
+            (daemonPulumiObjectStore material)
+            (daemonPulumiCipher material)
+            (daemonPulumiHmacKey material)
+            (daemonPulumiClusterId material)
+            (authorityLogicalObject logicalName)
+        pure $ case result of
+          Left err -> Left (renderEncryptedObjectError err)
+          Right Nothing -> Right AuthorityObjectMissing
+          Right (Just versioned) ->
+            Right
+              ( AuthorityObjectObserved
+                  (objectVersionEtag (versionedLogicalStoreVersion versioned))
+                  (versionedLogicalBytes versioned)
+              )
+
+compareAndSwapDaemonAuthorityObject
+  :: DaemonEnv
+  -> AuthorityObjectCasRequest
+  -> IO (Either String AuthorityObjectCasResponse)
+compareAndSwapDaemonAuthorityObject env request = do
+  materialResult <- resolveDaemonPulumiObjectMaterial env
+  case materialResult of
+    Left err -> pure (Left err)
+    Right material ->
+      withGatewayChild env "authority-object-cas" $ do
+        let logicalObject = authorityLogicalObject (authorityObjectCasLogicalName request)
+            store = daemonPulumiObjectStore material
+            cipher = daemonPulumiCipher material
+            hmacKey = daemonPulumiHmacKey material
+            clusterId = daemonPulumiClusterId material
+            payload = authorityObjectCasPayload request
+        guardResult <-
+          case authorityObjectCasLeaseGuard request of
+            Nothing -> pure (Right ())
+            Just guard -> validateDaemonAuthorityLeaseGuard material guard
+        case guardResult of
+          Left err -> pure (Left err)
+          Right () -> do
+            casResult <-
+              case authorityObjectCasExpectedVersion request of
+                Nothing -> putLogicalIfAbsent store cipher hmacKey clusterId logicalObject payload
+                Just version ->
+                  putLogicalIfVersion
+                    store
+                    cipher
+                    hmacKey
+                    clusterId
+                    logicalObject
+                    (ObjectVersion version)
+                    payload
+            case casResult of
+              Left err -> pure (Left (renderEncryptedObjectError err))
+              Right disposition -> do
+                observed <-
+                  getLogicalVersioned store cipher hmacKey clusterId logicalObject
+                pure $ case observed of
+                  Left err -> Left (renderEncryptedObjectError err)
+                  Right maybeVersioned -> do
+                    observation <- authorityObservationFromVersioned maybeVersioned
+                    case disposition of
+                      LogicalConditionalPutApplied ->
+                        case observation of
+                          AuthorityObjectMissing ->
+                            Left "authority CAS applied but mandatory re-observation was missing"
+                          AuthorityObjectObserved version _ ->
+                            Right (AuthorityObjectCasApplied version)
+                      LogicalConditionalPutConflict ->
+                        Right (AuthorityObjectCasConflict observation)
+
+validateDaemonAuthorityLeaseGuard
+  :: DaemonPulumiObjectMaterial
+  -> AuthorityObjectLeaseGuard
+  -> IO (Either String ())
+validateDaemonAuthorityLeaseGuard material guard = do
+  observed <-
+    getLogicalVersioned
+      (daemonPulumiObjectStore material)
+      (daemonPulumiCipher material)
+      (daemonPulumiHmacKey material)
+      (daemonPulumiClusterId material)
+      (authorityLogicalObject (authorityLeaseGuardLogicalName guard))
+  now <- getCurrentTime
+  pure $ case observed of
+    Left err -> Left ("lease guard observation failed: " ++ renderEncryptedObjectError err)
+    Right Nothing -> Left "lease guard rejected: lease projection is missing"
+    Right (Just versioned)
+      | objectVersionEtag (versionedLogicalStoreVersion versioned)
+          /= authorityLeaseGuardExpectedVersion guard ->
+          Left "lease guard rejected: lease object version changed"
+      | otherwise -> do
+          projection <-
+            case decodeLeaseProjection
+              defaultSesLeasePolicy
+              (versionedLogicalBytes versioned) of
+              Left err -> Left ("lease guard rejected: invalid lease projection: " ++ show err)
+              Right value -> Right value
+          grant <-
+            case leaseProjectionActiveGrant projection of
+              Nothing -> Left "lease guard rejected: lease has no active grant"
+              Just value -> Right value
+          if leaseLogicalName (leaseGrantKey grant) /= authorityLeaseGuardLogicalName guard
+            then Left "lease guard rejected: lease key does not match its object coordinate"
+            else
+              if ownerNonceText (leaseGrantOwnerNonce grant)
+                /= authorityLeaseGuardOwnerNonce guard
+                then Left "lease guard rejected: owner nonce changed"
+                else
+                  if fencingTokenValue (leaseGrantFencingToken grant)
+                    /= authorityLeaseGuardFencingToken guard
+                    then Left "lease guard rejected: fencing token changed"
+                    else
+                      if authorityTimeFromMicros (authorityMicrosFromUtc now)
+                        >= leaseGrantSafeUseDeadline grant
+                        then Left "lease guard rejected: lease safe-use deadline has expired"
+                        else Right ()
+
+authorityObservationFromVersioned
+  :: Maybe VersionedLogicalObject -> Either String AuthorityObjectObservation
+authorityObservationFromVersioned maybeVersioned =
+  case maybeVersioned of
+    Nothing -> Right AuthorityObjectMissing
+    Just versioned ->
+      Right
+        ( AuthorityObjectObserved
+            (objectVersionEtag (versionedLogicalStoreVersion versioned))
+            (versionedLogicalBytes versioned)
+        )
+
+authorityLogicalObject :: Text.Text -> LogicalObject
+authorityLogicalObject logicalName =
+  case Text.stripPrefix "pulumi-stack/" logicalName of
+    Just stackName -> LogicalPulumiStack stackName
+    Nothing -> LogicalLongLivedState logicalName
 
 deleteDaemonPulumiObject :: DaemonEnv -> Text.Text -> IO (Either String ())
 deleteDaemonPulumiObject env stackName = do
   materialResult <- resolveDaemonPulumiObjectMaterial env
   case materialResult of
     Left err -> pure (Left err)
-    Right material -> do
-      let key =
-            objectKeyForOpaqueId
-              (opaqueObjectId (daemonPulumiHmacKey material) (LogicalPulumiStack stackName))
-      deleteObject (daemonPulumiObjectStore material) key
+    Right material ->
+      withGatewayChild env "pulumi-object-delete" $ do
+        let key =
+              objectKeyForOpaqueId
+                (opaqueObjectId (daemonPulumiHmacKey material) (LogicalPulumiStack stackName))
+        deleteObject (daemonPulumiObjectStore material) key
 
 resolveDaemonPulumiObjectMaterial :: DaemonEnv -> IO (Either String DaemonPulumiObjectMaterial)
 resolveDaemonPulumiObjectMaterial env = go 0
@@ -2332,12 +4139,27 @@ readFederationChildBootstrap config childId = do
             Right credential -> Right credential
 
 resolveGatewayVaultToken :: DaemonConfig -> IO (Either String (VaultAddress, VaultToken))
-resolveGatewayVaultToken config =
+resolveGatewayVaultToken =
+  resolveGatewayVaultTokenFor "federation inventory unavailable"
+
+resolveTargetSecretVaultToken
+  :: DaemonConfig -> IO (Either String (VaultAddress, VaultToken))
+resolveTargetSecretVaultToken =
+  resolveGatewayVaultTokenFor "target-secret unavailable"
+
+resolveGatewayVaultTokenFor
+  :: String
+  -> DaemonConfig
+  -> IO (Either String (VaultAddress, VaultToken))
+resolveGatewayVaultTokenFor label config =
   case daemonVaultAuth config of
     Nothing ->
-      pure (Left "federation inventory unavailable: gateway Vault auth is not configured")
+      pure (Left (label ++ ": gateway Vault auth is not configured"))
     Just auth -> do
-      jwtResult <- readGatewayServiceAccountToken (gatewayVaultServiceAccountTokenFile auth)
+      jwtResult <-
+        readGatewayServiceAccountTokenFor
+          label
+          (gatewayVaultServiceAccountTokenFile auth)
       case jwtResult of
         Left err -> pure (Left err)
         Right jwt -> do
@@ -2349,32 +4171,39 @@ resolveGatewayVaultToken config =
               (Text.pack (gatewayVaultRole auth))
               jwt
           pure $ case loginResult of
-            Left err -> Left ("federation inventory unavailable: Vault Kubernetes auth failed: " ++ renderHttpError err)
+            Left err -> Left (label ++ ": Vault Kubernetes auth failed: " ++ renderHttpError err)
             Right token -> Right (address, token)
 
-readGatewayServiceAccountToken :: FilePath -> IO (Either String Text.Text)
-readGatewayServiceAccountToken path = do
+readGatewayServiceAccountTokenFor
+  :: String -> FilePath -> IO (Either String Text.Text)
+readGatewayServiceAccountTokenFor label path = do
   result <- try (TextIO.readFile path) :: IO (Either SomeException Text.Text)
   pure $ case result of
     Left exc ->
       Left
-        ( "federation inventory unavailable: failed to read gateway service-account token: "
+        ( label
+            ++ ": failed to read gateway service-account token: "
             ++ displayException exc
         )
     Right rawToken ->
       let token = Text.strip rawToken
        in if Text.null token
-            then Left "federation inventory unavailable: gateway service-account token is empty"
+            then Left (label ++ ": gateway service-account token is empty")
             else Right token
 
 renderMetricsText :: UTCTime -> DaemonEnv -> DaemonState -> String
 renderMetricsText now env state =
   unlines
-    [ "# TYPE prodbox_gateway_events_total counter"
-    , "prodbox_gateway_events_total{daemon=\""
+    [ "# TYPE prodbox_gateway_signed_replay_assertions gauge"
+    , "prodbox_gateway_signed_replay_assertions{daemon=\""
         ++ metricsDaemonName (envMetrics env)
         ++ "\"} "
-        ++ show (length (commitLogEvents (stateCommitLog state)))
+        ++ show (sum (map length (Map.elems (stateSignedReplay state))))
+    , "# TYPE prodbox_gateway_semantic_members gauge"
+    , "prodbox_gateway_semantic_members{daemon=\""
+        ++ metricsDaemonName (envMetrics env)
+        ++ "\"} "
+        ++ show (BoundedState.gatewayStateEmitterCount (stateBoundedGateway state))
     , "# TYPE prodbox_gateway_peer_connected gauge"
     ]
     ++ unlines
@@ -2405,17 +4234,20 @@ peerListenerLoop localPeer env = do
       port = peerSocketPort localPeer
   withListeningSocket "Peer events listener" host port $ \sock -> do
     logForEnv env Info "peer_listener_listening" [field "host" host, field "port" port]
-    acceptWhileServing False sock env (`handlePeerClient` env)
+    acceptWhileServing
+      (gatewayMaxInFlightFramesPerPeer (envGatewayBounds env))
+      False
+      sock
+      env
+      (`handlePeerClient` env)
 
 -- | Accept loop shared by both listeners (REST and peer-events). Sprint
--- 2.25: each accepted connection is served under its OWN 'withAsync' child
--- (never a raw unmanaged thread spawn) so a handler that throws or is
--- cancelled can never leak a thread, wedge the accept loop, or block sibling
--- connections. The accept
--- loop recurses inside the 'withAsync' continuation, so it keeps accepting
--- while in-flight connections run concurrently; when the loop finally returns
--- (drain, with @allowDuringDrain@ False), 'withAsync' deterministically
--- cancels any still-running child.
+-- 2.25: one accept producer feeds a fixed-size 'replicateConcurrently' worker
+-- pool. A separate slot queue bounds accepted plus active connections exactly
+-- at @maxConnections@; it also lets a peer listener waiting at capacity wake
+-- immediately when drain begins. 'race' gives the producer and pool one
+-- structured lifetime: when the producer returns for drain, every active
+-- handler is cancelled and awaited before the listener scope returns.
 --
 -- The handler ('handleClient') is responsible for applying the bounded
 -- per-connection read timeout to its socket read (see 'receiveAllWithin'),
@@ -2426,10 +4258,21 @@ peerListenerLoop localPeer env = do
 -- an ordinary, benign connection drop confined to that connection's socket;
 -- it never propagates into the accept loop and is never a 'Fatal' worker
 -- error (including during 'Draining').
-acceptWhileServing :: Bool -> Socket -> DaemonEnv -> (Socket -> IO ()) -> IO ()
-acceptWhileServing allowDuringDrain sock env handleClient = go
+acceptWhileServing :: Int -> Bool -> Socket -> DaemonEnv -> (Socket -> IO ()) -> IO ()
+acceptWhileServing maxConnections allowDuringDrain sock env handleClient = do
+  let workerCount = max 1 maxConnections
+  connectionQueue <- newTQueueIO
+  connectionSlots <- newTBQueueIO (fromIntegral workerCount)
+  atomically $
+    replicateM_ workerCount (writeTBQueue connectionSlots ())
+  void
+    ( race
+        (acceptConnections connectionQueue connectionSlots)
+        (void (replicateConcurrently workerCount (connectionWorker connectionQueue connectionSlots)))
+    )
+    `finally` closeQueuedConnections connectionQueue
  where
-  go = do
+  acceptConnections connectionQueue connectionSlots = do
     readiness <- readTVarIO (envReadiness env)
     case readiness of
       Draining
@@ -2437,28 +4280,80 @@ acceptWhileServing allowDuringDrain sock env handleClient = go
       _ -> do
         maybeReadable <- waitForSocketRead sock
         case maybeReadable of
-          Nothing -> go
+          Nothing -> acceptConnections connectionQueue connectionSlots
           Just () -> do
-            (clientSock, _) <- accept sock
-            -- Serve this connection in its own structured-concurrency child
-            -- (via 'withAsync', not a raw unmanaged thread spawn), so a handler
-            -- exception is confined to the child and the accept loop is never
-            -- killed by it. The child is
-            -- deterministically reaped via `waitCatch` (no leaked threads or
-            -- `Async` handles); because each handler bounds its own socket
-            -- read with the per-connection timeout, the join is itself bounded
-            -- by `liveConnectionReadTimeoutSeconds`, so a stalled peer can
-            -- delay the next accept by at most one timeout window rather than
-            -- wedging the loop forever. The `Left` arm captures any escaped
-            -- exception (handlers already self-`try`, so this is defensive)
-            -- without propagating it into the accept loop.
-            connOutcome <-
-              withAsync (handleClient clientSock) waitCatch
-            case connOutcome of
-              Right () -> pure ()
-              Left exc ->
-                logForEnv env Warn "connection_handler_error" [field "detail" (displayException exc)]
-            go
+            slotAcquired <- acquireConnectionSlot connectionSlots
+            if slotAcquired
+              then do
+                enqueueAcceptedConnection connectionQueue connectionSlots
+                acceptConnections connectionQueue connectionSlots
+              else pure ()
+
+  acquireConnectionSlot connectionSlots
+    | allowDuringDrain =
+        atomically (readTBQueue connectionSlots >> pure True)
+    | otherwise =
+        atomically (stopForDrain `orElse` acquireSlot)
+   where
+    stopForDrain = do
+      readiness <- readTVar (envReadiness env)
+      if readiness == Draining then pure False else retry
+    acquireSlot = readTBQueue connectionSlots >> pure True
+
+  enqueueAcceptedConnection connectionQueue connectionSlots =
+    bracketOnError
+      (pure ())
+      (const (releaseConnectionSlot connectionSlots))
+      (const acceptAndEnqueue)
+   where
+    acceptAndEnqueue =
+      bracketOnError
+        (fst <$> accept sock)
+        close
+        (atomically . writeTQueue connectionQueue)
+
+  connectionWorker connectionQueue connectionSlots = forever $ do
+    clientSock <- atomically (readTQueue connectionQueue)
+    serveConnection clientSock
+      `finally` releaseConnectionSlot connectionSlots
+
+  serveConnection clientSock = do
+    outcome <-
+      try
+        ( withFramePermit env (handleClient clientSock)
+            `finally` close clientSock
+        )
+        :: IO (Either SomeException ())
+    case outcome of
+      Right () -> pure ()
+      Left exc ->
+        case fromException exc :: Maybe SomeAsyncException of
+          Just _ -> throwIO exc
+          Nothing ->
+            logForEnv env Warn "connection_handler_error" [field "detail" (displayException exc)]
+
+  releaseConnectionSlot connectionSlots =
+    atomically (writeTBQueue connectionSlots ())
+
+  closeQueuedConnections connectionQueue = do
+    queued <- atomically (drainQueue connectionQueue)
+    mapM_ closeQuietly queued
+
+  drainQueue connectionQueue = do
+    maybeSocket <- tryReadTQueue connectionQueue
+    case maybeSocket of
+      Nothing -> pure []
+      Just queuedSocket -> (queuedSocket :) <$> drainQueue connectionQueue
+
+  closeQuietly queuedSocket = do
+    _ <- try (close queuedSocket) :: IO (Either IOException ())
+    pure ()
+
+withFramePermit :: DaemonEnv -> IO value -> IO value
+withFramePermit env =
+  bracket_
+    (atomically (readTBQueue (envFramePermits env)))
+    (atomically (writeTBQueue (envFramePermits env) ()))
 
 -- | Read an inbound request bounded by the configured per-connection read
 -- timeout. Returns the bytes read on success; returns 'Nothing' (a benign
@@ -2466,13 +4361,16 @@ acceptWhileServing allowDuringDrain sock env handleClient = go
 -- complete within 'liveConnectionReadTimeoutSeconds'. This is where the
 -- Sprint 2.25 bounded read timeout is actually enforced — at the socket read
 -- that a stalled peer would otherwise block forever.
-receiveAllWithin :: DaemonEnv -> Socket -> IO (Maybe BS.ByteString)
-receiveAllWithin env sock = do
+receiveAllWithin :: DaemonEnv -> Int -> Socket -> IO (Maybe BS.ByteString)
+receiveAllWithin env maxBodyBytes sock = do
   liveConfig <- readTVarIO (envLiveConfig env)
   let timeoutMicros = readTimeoutMicros (liveConnectionReadTimeoutSeconds liveConfig)
-  outcome <- timeout timeoutMicros (receiveAll sock)
+  outcome <- timeout timeoutMicros (receiveAllBounded maxBodyBytes sock)
   case outcome of
-    Just raw -> pure (Just raw)
+    Just (Right raw) -> pure (Just raw)
+    Just (Left err) -> do
+      logForEnv env Warn "connection_request_rejected" [field "detail" err]
+      pure Nothing
     Nothing -> do
       logForEnv env Warn "connection_read_timeout" []
       pure Nothing
@@ -2553,267 +4451,516 @@ handlePeerClient
   :: Socket
   -> DaemonEnv
   -> IO ()
-handlePeerClient sock env = do
-  _ <- try handleOne :: IO (Either SomeException ())
-  close sock
+handlePeerClient sock env =
+  ignoreSynchronousConnectionFailure handleOne
  where
   handleOne = do
     envOnPeerConnectionEstablished (envHooks env) "inbound"
-    maybeRaw <- receiveAllWithin env sock
+    maybeRaw <-
+      receiveAllWithin
+        env
+        (fromIntegral (gatewayMaxFrameBytes (envGatewayBounds env)))
+        sock
     for_ maybeRaw handleParsedPeerRequest
 
   handleParsedPeerRequest raw =
-    case parsePeerHttpRequest raw of
+    case parsePeerHttpRequest (envGatewayBounds env) raw of
       Left err -> do
-        let response = renderPeerHttpResponse (PeerResponseError err)
-        sendAll sock (BL.toStrict response)
-      Right (PeerPushEvents batch) -> do
-        response <- ingestPeerBatch env batch
-        sendAll sock (BL.toStrict response)
-      Right PeerPullEvents -> do
-        state <- readTVarIO (envState env)
-        let batch =
-              PeerEventBatch
-                (commitLogEvents (stateCommitLog state))
-                (stateOrdersVersionUtc state)
-            response = renderPeerHttpResponse (PeerResponseEventBatch batch)
-        sendAll sock (BL.toStrict response)
+        sendPeerTransportResponse sock env (peerErrorResponse err)
+      Right request -> do
+        now <- getCurrentTime
+        for_ (peerRequestOrdersVersion request) $ \observedVersion ->
+          atomically $ modifyTVar' (envState env) $ \state ->
+            state
+              { stateLatestObservedOrdersVersion =
+                  max
+                    (stateLatestObservedOrdersVersion state)
+                    ( if observedVersion > fromIntegral (maxBound :: Int)
+                        then maxBound
+                        else fromIntegral observedVersion
+                    )
+              }
+        liveConfig <- readTVarIO (envLiveConfig env)
+        let nowSeconds =
+              fromIntegral
+                (max 0 (floor (utcTimeToPOSIXSeconds now) :: Integer))
+                :: Word64
+            maximumSkew =
+              fromIntegral
+                (max 0 (floor (liveMaxClockSkewSeconds liveConfig) :: Integer))
+                :: Word64
+        case validatePeerRequestHeartbeatSkew nowSeconds maximumSkew request of
+          Left err ->
+            sendPeerTransportResponse sock env (peerErrorResponse err)
+          Right () -> do
+            (appliedCount, response) <- atomically $ do
+              before <- readTVar (envState env)
+              case handlePeerRequest
+                (envGatewayBounds env)
+                (gatewayEventKeyLookup env)
+                request
+                (stateBoundedGateway before) of
+                Left err -> pure (0, peerErrorResponse err)
+                Right (boundedAfter, acceptedResponse) -> do
+                  let applied =
+                        changedEmitterCount
+                          (envValidatedOrders env)
+                          (stateBoundedGateway before)
+                          boundedAfter
+                      withProjection =
+                        refreshBoundedPeerObservations
+                          env
+                          now
+                          (stateBoundedGateway before)
+                          boundedAfter
+                          before {stateBoundedGateway = boundedAfter}
+                      retainedAssertions =
+                        boundedSignedAssertionsToList
+                          (peerRequestSnapshotEvidence request)
+                          ++ boundedSignedAssertionsToList
+                            (peerRequestReplayAssertions request)
+                      withSnapshotPruned =
+                        case peerRequestSemanticSnapshot request of
+                          Nothing -> withProjection
+                          Just snapshot ->
+                            pruneSignedReplayAtCheckpoint
+                              env
+                              (Text.unpack (signedSemanticSnapshotEmitter snapshot))
+                              withProjection
+                      after
+                        | peerResponseAccepted acceptedResponse =
+                            retainSignedAssertions env retainedAssertions withSnapshotPruned
+                        | otherwise = withProjection
+                  writeTVar (envState env) after
+                  pure (applied, acceptedResponse)
+            envAfterPeerEventCommit (envHooks env) appliedCount
+            sendPeerTransportResponse sock env response
 
--- | Read the inbound request until the body matches the @Content-Length@
--- header.  GET requests with no body return after the header section.
-receiveAll :: Socket -> IO BS.ByteString
-receiveAll sock = loop BS.empty
+sendPeerTransportResponse
+  :: Socket
+  -> DaemonEnv
+  -> PeerTransportResponse
+  -> IO ()
+sendPeerTransportResponse sock env response =
+  case renderPeerHttpResponse (envGatewayBounds env) response of
+    Right bytes -> sendAll sock bytes
+    Left err ->
+      case renderPeerHttpResponse
+        (envGatewayBounds env)
+        (peerErrorResponse err) of
+        Right bytes -> sendAll sock bytes
+        Left _ ->
+          sendAll
+            sock
+            "HTTP/1.1 500 Internal Server Error\r\nContent-Length: 0\r\nConnection: close\r\n\r\n"
+
+-- | Read one HTTP request with fixed header and body ceilings.  The
+-- Content-Length value is checked as soon as the bounded header is complete,
+-- before any further body read or accumulation occurs.
+receiveAllBounded :: Int -> Socket -> IO (Either String BS.ByteString)
+receiveAllBounded maxBodyBytes sock = readHeaders BS.empty
  where
-  loop acc = do
-    chunk <- recv sock 16384
+  maxHeaderBytes = 16 * 1024
+
+  readHeaders accumulated = do
+    chunk <- recv sock 4096
     if BS.null chunk
-      then pure acc
-      else
-        let acc' = acc `BS.append` chunk
-         in if hasFullBody acc'
-              then pure acc'
-              else loop acc'
+      then pure (Left "connection closed before HTTP headers completed")
+      else do
+        let candidate = accumulated <> chunk
+        case splitHttpHeaders candidate of
+          Nothing
+            | BS.length candidate > maxHeaderBytes ->
+                pure (Left "HTTP request headers exceed 16384 bytes")
+            | otherwise -> readHeaders candidate
+          Just (headersWithDelimiter, initialBody) ->
+            case contentLengthFromHeaders headersWithDelimiter of
+              Left err -> pure (Left err)
+              Right Nothing
+                | BS.null initialBody -> pure (Right headersWithDelimiter)
+                | otherwise -> pure (Left "HTTP request without Content-Length carried a body")
+              Right (Just expected)
+                | expected > maxBodyBytes ->
+                    pure
+                      ( Left
+                          ( "HTTP Content-Length exceeds bound: "
+                              ++ show expected
+                              ++ " > "
+                              ++ show maxBodyBytes
+                          )
+                      )
+                | BS.length initialBody > expected ->
+                    pure (Left "HTTP request body exceeds declared Content-Length")
+                | otherwise ->
+                    readBody headersWithDelimiter expected [initialBody] (BS.length initialBody)
 
-  hasFullBody :: BS.ByteString -> Bool
-  hasFullBody bs =
-    let text = BS8.unpack bs
-        (header, body) = splitOnDoubleCrlf text
-     in case lookupContentLength header of
-          Just expected -> length body >= expected
-          Nothing -> not (null header) && doubleCrlfPresent text
+  readBody headers expected reversedChunks received
+    | received == expected =
+        pure (Right (headers <> BS.concat (reverse reversedChunks)))
+    | otherwise = do
+        chunk <- recv sock (min 16384 (expected - received))
+        if BS.null chunk
+          then pure (Left "connection closed before declared HTTP body completed")
+          else readBody headers expected (chunk : reversedChunks) (received + BS.length chunk)
 
-  doubleCrlfPresent :: String -> Bool
-  doubleCrlfPresent text = "\r\n\r\n" `isInfixOf'` text || "\n\n" `isInfixOf'` text
+splitHttpHeaders :: BS.ByteString -> Maybe (BS.ByteString, BS.ByteString)
+splitHttpHeaders input =
+  firstMatch "\r\n\r\n" `firstJust` firstMatch "\n\n"
+ where
+  firstMatch delimiter =
+    let marker = BS8.pack delimiter
+        (headers, rest) = BS.breakSubstring marker input
+     in if marker `BS.isPrefixOf` rest
+          then
+            Just
+              ( headers <> marker
+              , BS.drop (BS.length marker) rest
+              )
+          else Nothing
+  firstJust (Just value) _ = Just value
+  firstJust Nothing fallback = fallback
 
-  splitOnDoubleCrlf :: String -> (String, String)
-  splitOnDoubleCrlf = go []
-   where
-    go acc rest = case rest of
-      '\r' : '\n' : '\r' : '\n' : remainder -> (reverse acc, remainder)
-      '\n' : '\n' : remainder -> (reverse acc, remainder)
-      (c : remainder) -> go (c : acc) remainder
-      [] -> (reverse acc, "")
+contentLengthFromHeaders :: BS.ByteString -> Either String (Maybe Int)
+contentLengthFromHeaders raw =
+  case values of
+    [] -> Right Nothing
+    [value] ->
+      case reads value of
+        [(parsed, trailing)]
+          | all isSpace trailing && parsed >= 0 -> Right (Just parsed)
+        _ -> Left "invalid HTTP Content-Length"
+    _ -> Left "duplicate HTTP Content-Length headers"
+ where
+  values =
+    [ dropWhile isSpace (drop (length prefix) lowerLine)
+    | line <- lines (map replaceCr (BS8.unpack raw))
+    , let lowerLine = map toLower line
+    , prefix `isPrefixOf` lowerLine
+    ]
+  prefix = "content-length:"
+  replaceCr character = if character == '\r' then ' ' else character
 
-  lookupContentLength :: String -> Maybe Int
-  lookupContentLength text =
-    let headerLines = lines (replace '\r' ' ' text)
-        findHeader [] = Nothing
-        findHeader (h : rest) =
-          let lc = map toLower h
-           in if "content-length:" `isPrefixOf` lc
-                then case reads (drop (length ("content-length:" :: String)) lc) of
-                  ((n, _) : _) -> Just n
-                  _ -> findHeader rest
-                else findHeader rest
-     in findHeader headerLines
+changedEmitterCount
+  :: BoundedState.ValidatedOrders
+  -> BoundedState.GatewayState
+  -> BoundedState.GatewayState
+  -> Int
+changedEmitterCount orders before after =
+  length
+    [ ()
+    | emitter <- BoundedState.validatedOrdersMemberIds orders
+    , BoundedState.cursorVectorLookup emitter beforeCursor
+        /= BoundedState.cursorVectorLookup emitter afterCursor
+    ]
+ where
+  beforeCursor = BoundedState.gatewayStateCursorVector before
+  afterCursor = BoundedState.gatewayStateCursorVector after
 
-  replace c r = map (\x -> if x == c then r else x)
-
-  isInfixOf' :: String -> String -> Bool
-  isInfixOf' needle haystack = any (needle `isPrefixOf`) (tails haystack)
-
-  tails :: [a] -> [[a]]
-  tails [] = [[]]
-  tails xs@(_ : rest) = xs : tails rest
-
-ingestPeerBatch
+-- | Project the bounded semantic fold onto the daemon's operator-facing
+-- heartbeat/skew/link fields.  The traversal is exactly the validated Orders
+-- membership bound and never touches replay history.
+refreshBoundedPeerObservations
   :: DaemonEnv
-  -> PeerEventBatch
-  -> IO BL.ByteString
-ingestPeerBatch env batch = do
-  now <- getCurrentTime
-  liveConfig <- readTVarIO (envLiveConfig env)
-  let config = envBootConfig env
-      orders = envOrders env
-      stateVar = envState env
-      eventKeys = Map.fromList (daemonEventKeys config)
-      senderOrdersVersion = peerEventBatchSenderOrdersVersionUtc batch
-  state0 <- readTVarIO stateVar
-  let receiverOrdersVersion = stateOrdersVersionUtc state0
-  if senderOrdersVersion > 0 && senderOrdersVersion < receiverOrdersVersion
-    then
-      pure
-        ( renderPeerHttpResponse
-            (PeerResponseStaleOrders senderOrdersVersion receiverOrdersVersion)
-        )
-    else do
-      let nowIso = formatUtcIso now
-          knownEmitters = map peerNodeId (ordersNodes orders)
-          lookupKey = (`Map.lookup` eventKeys)
-          (accepted, rejected) =
-            handlePeerRequest
-              lookupKey
-              knownEmitters
-              (liveMaxClockSkewSeconds liveConfig)
-              nowIso
-              batch
-      appliedCount <- atomically $ do
-        s0 <- readTVar stateVar
-        let preCount = length (commitLogEvents (stateCommitLog s0))
-            updated =
-              applyAcceptedEvents now accepted s0
-                `noteSenderOrdersAdvert` senderOrdersVersion
-            postCount = length (commitLogEvents (stateCommitLog updated))
-        writeTVar stateVar updated
-        pure (postCount - preCount)
-      envAfterPeerEventCommit (envHooks env) appliedCount
-      pure (renderPeerHttpResponse (PeerResponseEventsAccepted appliedCount rejected))
+  -> UTCTime
+  -> BoundedState.GatewayState
+  -> BoundedState.GatewayState
+  -> DaemonState
+  -> DaemonState
+refreshBoundedPeerObservations env now before after initial =
+  Prelude.foldr refreshEmitter initial memberIds
+ where
+  refreshEmitter emitter state =
+    let emitterName = Text.unpack (BoundedState.nodeIdText emitter)
+        beforeCursor =
+          BoundedState.cursorVectorLookup
+            emitter
+            (BoundedState.gatewayStateCursorVector before)
+        afterCursor =
+          BoundedState.cursorVectorLookup
+            emitter
+            (BoundedState.gatewayStateCursorVector after)
+        changed = beforeCursor /= afterCursor
+        beforeHeartbeat = BoundedState.gatewayStateLatestHeartbeat emitter before
+        afterHeartbeat = BoundedState.gatewayStateLatestHeartbeat emitter after
+        withInbound
+          | changed && emitterName /= daemonNodeId (envBootConfig env) =
+              state
+                { statePeerHealth =
+                    Map.alter
+                      (markPeerHealthInbound now)
+                      emitterName
+                      (statePeerHealth state)
+                }
+          | otherwise = state
+     in case afterHeartbeat >>= heartbeatTimestamp of
+          Nothing -> withInbound
+          Just timestamp ->
+            let withHeartbeat =
+                  withInbound
+                    { stateLastHeartbeatTimes =
+                        Map.insertWith
+                          max
+                          emitterName
+                          timestamp
+                          (stateLastHeartbeatTimes withInbound)
+                    }
+             in if afterHeartbeat == beforeHeartbeat
+                  then withHeartbeat
+                  else
+                    let skew = abs (realToFrac (diffUTCTime now timestamp) :: Double)
+                     in withHeartbeat
+                          { stateMaxObservedSkewSeconds =
+                              Just
+                                ( maybe
+                                    skew
+                                    (max skew)
+                                    (stateMaxObservedSkewSeconds withHeartbeat)
+                                )
+                          }
 
-noteSenderOrdersAdvert :: DaemonState -> Int -> DaemonState
-noteSenderOrdersAdvert s senderVersion
-  | senderVersion > stateLatestObservedOrdersVersion s =
-      s {stateLatestObservedOrdersVersion = senderVersion}
-  | otherwise = s
+  heartbeatTimestamp assertion =
+    case BoundedState.assertionKind assertion of
+      BoundedState.HeartbeatAssertion timestamp ->
+        Just (posixSecondsToUTCTime (fromIntegral timestamp))
+      _ -> Nothing
 
--- | Apply a list of accepted peer events to the daemon state in one pass:
--- append to the commit log (idempotently), update last-heartbeat times,
--- record per-peer inbound delivery health, and refresh max-observed clock
--- skew.
---
--- Sprint 2.25 (doctrine D4): this no longer advances
--- 'stateLatestObservedOrdersVersion' from any in-process promotion event. The
--- highest observed Orders version is learned solely from the sender's
--- advertised @orders_version_utc@ via 'noteSenderOrdersAdvert' on the ingest
--- path; there is no @orders_promoted@ event class to fold over.
-applyAcceptedEvents :: UTCTime -> [SignedEvent] -> DaemonState -> DaemonState
-applyAcceptedEvents now events s0 =
-  let log0 = stateCommitLog s0
-      log' = foldl' appendIfNew log0 events
-      heartbeats0 = stateLastHeartbeatTimes s0
-      heartbeats' = foldl' updateHeartbeatFromEvent heartbeats0 events
-      peerHealth0 = statePeerHealth s0
-      peerHealth' = foldl' (updatePeerHealthFromEvent now) peerHealth0 events
-      skew0 = stateMaxObservedSkewSeconds s0
-      skew' = foldl' (updateSkewFromEvent now) skew0 events
-   in s0
-        { stateCommitLog = log'
-        , stateLastHeartbeatTimes = heartbeats'
-        , statePeerHealth = peerHealth'
-        , stateMaxObservedSkewSeconds = skew'
-        }
+  memberIds = BoundedState.validatedOrdersMemberIds (envValidatedOrders env)
 
-updateHeartbeatFromEvent :: Map String UTCTime -> SignedEvent -> Map String UTCTime
-updateHeartbeatFromEvent acc ev =
-  case eventTimestampUtc ev of
-    Just ts ->
-      Map.insertWith max (emitterNodeId ev) ts acc
-    Nothing -> acc
+markPeerHealthInbound :: UTCTime -> Maybe PeerHealth -> Maybe PeerHealth
+markPeerHealthInbound now maybeHealth =
+  case maybeHealth of
+    Nothing -> Just (PeerHealth (Just now) False Nothing)
+    Just health -> Just health {peerHealthLastInboundEvent = Just now}
 
--- | Record INBOUND delivery health: stamp the last-accepted-event time for
--- the emitting peer. This must touch only the inbound field — outbound dial
--- health is owned by the peer-dialer loop and reflects a different direction
--- of the link.
-updatePeerHealthFromEvent
-  :: UTCTime -> Map String PeerHealth -> SignedEvent -> Map String PeerHealth
-updatePeerHealthFromEvent now acc ev =
-  let baseline = PeerHealth (Just now) False Nothing
-      merge _new old =
-        old {peerHealthLastInboundEvent = Just now}
-   in Map.insertWith merge (emitterNodeId ev) baseline acc
-
-updateSkewFromEvent :: UTCTime -> Maybe Double -> SignedEvent -> Maybe Double
-updateSkewFromEvent now acc ev =
-  case eventTimestampUtc ev of
-    Just ts ->
-      let skew = abs (realToFrac (diffUTCTime now ts) :: Double)
-       in Just (maybe skew (max skew) acc)
-    Nothing -> acc
-
--- | Periodically push the local commit log to every other peer in the
--- mesh.  Each cycle marks unreachable peers as outbound-disconnected so
--- @/v1/state@ exposes per-peer OUTBOUND dial health (separate from the
--- inbound delivery health stamped by the peer-events listener).
+-- | Periodically exchange a bounded cursor and at most one bounded delta
+-- frame with every peer.  A complete append-only event log is never built or
+-- retransmitted.
 peerDialerLoop :: DaemonEnv -> IO ()
 peerDialerLoop env = forever $ do
   let config = envBootConfig env
       orders = envOrders env
-      stateVar = envState env
-  state <- readTVarIO stateVar
-  let nodeId = daemonNodeId config
+      nodeId = daemonNodeId config
       peers = [p | p <- ordersNodes orders, peerNodeId p /= nodeId]
-      events = commitLogEvents (stateCommitLog state)
-      batch = PeerEventBatch events (stateOrdersVersionUtc state)
-  mapM_ (pushToPeer stateVar batch) peers
+  mapM_ (pushToPeer env) peers
   liveConfig <- readTVarIO (envLiveConfig env)
   threadDelay (round (liveReconnectInterval liveConfig * 1000000))
 
-pushToPeer :: TVar DaemonState -> PeerEventBatch -> PeerEndpoint -> IO ()
-pushToPeer stateVar batch peer = do
+pushToPeer :: DaemonEnv -> PeerEndpoint -> IO ()
+pushToPeer env peer = do
   let host = peerDialSocketHost peer
       port = peerSocketPort peer
-      body = encodePeerEventBatch batch
-      request =
-        BL.toStrict $
-          BL.append
-            ( BL.fromStrict
-                ( BS8.pack
-                    ( "POST /v1/peer/events HTTP/1.1\r\n"
-                        ++ "Host: "
-                        ++ host
-                        ++ ":"
-                        ++ show port
-                        ++ "\r\n"
-                        ++ "Content-Type: application/cbor\r\n"
-                        ++ "Content-Length: "
-                        ++ show (BL.length body)
-                        ++ "\r\n"
-                        ++ "Connection: close\r\n"
-                        ++ "\r\n"
-                    )
-                )
-            )
-            body
-  result <-
-    try (dialAndSend host port request) :: IO (Either SomeException (Either String BS.ByteString))
+      peerHost = Text.pack (host ++ ":" ++ show port)
+      stateVar = envState env
+      bounds = envGatewayBounds env
+  cursorRequest <- pure (either (Left . show) Right (renderPeerCursorRequest peerHost))
+  cursorResult <-
+    case cursorRequest of
+      Left err -> pure (Left err)
+      Right request -> exchangePeerRequest env host port request
+  case cursorResult of
+    Left err -> markPeerError stateVar (peerNodeId peer) err
+    Right cursorResponse ->
+      case peerResponseCursorVector
+        bounds
+        (envValidatedOrders env)
+        cursorResponse of
+        Left err -> markPeerError stateVar (peerNodeId peer) (show err)
+        Right Nothing ->
+          markPeerError stateVar (peerNodeId peer) "peer cursor response omitted its cursor"
+        Right (Just peerCursor) -> do
+          atomically $ modifyTVar' stateVar $ \state ->
+            state
+              { statePeerCursors =
+                  Map.insert
+                    (peerNodeId peer)
+                    peerCursor
+                    (statePeerCursors state)
+              }
+          dispatchPeerCursor env peer peerHost peerCursor True
+
+dispatchPeerCursor
+  :: DaemonEnv
+  -> PeerEndpoint
+  -> Text.Text
+  -> BoundedState.CursorVector
+  -> Bool
+  -> IO ()
+dispatchPeerCursor env peer peerHost peerCursor allowRepair = do
+  state <- readTVarIO (envState env)
+  let bounds = envGatewayBounds env
+      orders = envValidatedOrders env
+      retained = concat (Map.elems (stateSignedReplay state))
+      stateVar = envState env
+  case selectSignedDelta bounds orders peerCursor retained of
+    Left (PeerSignedReplayUnavailable emitter _ _)
+      | allowRepair ->
+          sendPeerRepair
+            env
+            peer
+            peerHost
+            peerCursor
+            emitter
+            retained
+            state
+    Left err -> markPeerError stateVar (peerNodeId peer) (show err)
+    Right frame ->
+      case renderPeerDeltaRequest bounds peerHost frame of
+        Left err -> markPeerError stateVar (peerNodeId peer) (show err)
+        Right request -> do
+          result <-
+            exchangePeerRequest
+              env
+              (peerDialSocketHost peer)
+              (peerSocketPort peer)
+              request
+          recordPeerExchange env peer "bounded delta" result
+
+sendPeerRepair
+  :: DaemonEnv
+  -> PeerEndpoint
+  -> Text.Text
+  -> BoundedState.CursorVector
+  -> BoundedState.NodeId
+  -> [SignedAssertion]
+  -> DaemonState
+  -> IO ()
+sendPeerRepair env peer peerHost peerCursor emitter retained state =
+  case ( BoundedState.gatewayStateEmitterCheckpoint
+           emitter
+           (stateBoundedGateway state)
+       , gatewayEventKeyLookup env emitter
+       ) of
+    (Nothing, _) ->
+      markPeerError stateVar peerName "bounded emitter checkpoint is unavailable"
+    (_, Nothing) ->
+      markPeerError stateVar peerName "event-key authority is unavailable for checkpoint repair"
+    (Just checkpoint, Just eventKey) ->
+      let emitterName = Text.unpack (BoundedState.nodeIdText emitter)
+          heartbeat = Map.lookup emitterName (stateSignedCheckpointHeartbeat state)
+          ownership = Map.lookup emitterName (stateSignedCheckpointOwnership state)
+       in case selectSignedRepairFromCheckpoint
+            bounds
+            (envValidatedOrders env)
+            peerCursor
+            checkpoint
+            heartbeat
+            ownership
+            eventKey
+            retained of
+            Left err -> markPeerError stateVar peerName (show err)
+            Right repair ->
+              case renderPeerRepairRequest bounds peerHost repair of
+                Left err -> markPeerError stateVar peerName (show err)
+                Right request -> do
+                  result <-
+                    exchangePeerRequest
+                      env
+                      (peerDialSocketHost peer)
+                      (peerSocketPort peer)
+                      request
+                  case result of
+                    Left err -> markPeerError stateVar peerName err
+                    Right response -> do
+                      updatePeerCursorFromResponse env peer response
+                      if peerResponseAccepted response
+                        then case peerResponseCursorVector
+                          bounds
+                          (envValidatedOrders env)
+                          response of
+                          Right (Just repairedCursor) ->
+                            dispatchPeerCursor env peer peerHost repairedCursor False
+                          _ ->
+                            markPeerError
+                              stateVar
+                              peerName
+                              "peer repair response omitted its cursor"
+                        else markPeerError stateVar peerName "peer rejected bounded repair"
+ where
+  bounds = envGatewayBounds env
+  stateVar = envState env
+  peerName = peerNodeId peer
+
+recordPeerExchange
+  :: DaemonEnv
+  -> PeerEndpoint
+  -> String
+  -> Either String PeerTransportResponse
+  -> IO ()
+recordPeerExchange env peer frameLabel result =
   case result of
-    Left exc -> markPeerError stateVar (peerNodeId peer) (show exc)
-    Right (Left err) -> markPeerError stateVar (peerNodeId peer) err
-    Right (Right _resp) -> markPeerOk stateVar (peerNodeId peer)
+    Left err -> markPeerError stateVar peerName err
+    Right response -> do
+      updatePeerCursorFromResponse env peer response
+      if peerResponseAccepted response
+        then markPeerOk stateVar peerName
+        else markPeerError stateVar peerName ("peer rejected " ++ frameLabel)
+ where
+  stateVar = envState env
+  peerName = peerNodeId peer
 
-dialAndSend :: String -> Int -> BS.ByteString -> IO (Either String BS.ByteString)
-dialAndSend host port request = do
-  addrInfos <- getAddrInfo Nothing (Just host) (Just (show port))
-  case addrInfos of
-    [] -> pure (Left ("no address resolution for " ++ host))
-    (info : _) -> do
-      sock <- socket AF_INET Stream defaultProtocol
-      connectResult <- try (connect sock (addrAddress info)) :: IO (Either SomeException ())
-      case connectResult of
-        Left exc -> do
-          close sock
-          pure (Left (show exc))
-        Right () -> do
-          sendAll sock request
-          chunks <- readUntilClose sock []
-          close sock
-          pure (Right (BS.concat (reverse chunks)))
+updatePeerCursorFromResponse
+  :: DaemonEnv
+  -> PeerEndpoint
+  -> PeerTransportResponse
+  -> IO ()
+updatePeerCursorFromResponse env peer response =
+  case peerResponseCursorVector
+    (envGatewayBounds env)
+    (envValidatedOrders env)
+    response of
+    Right (Just cursor) ->
+      atomically $ modifyTVar' (envState env) $ \state ->
+        state
+          { statePeerCursors =
+              Map.insert
+                (peerNodeId peer)
+                cursor
+                (statePeerCursors state)
+          }
+    _ -> pure ()
 
-readUntilClose :: Socket -> [BS.ByteString] -> IO [BS.ByteString]
-readUntilClose sock acc = do
-  chunk <- recv sock 16384
-  if BS.null chunk
-    then pure acc
-    else readUntilClose sock (chunk : acc)
+exchangePeerRequest
+  :: DaemonEnv
+  -> String
+  -> Int
+  -> ByteString
+  -> IO (Either String PeerTransportResponse)
+exchangePeerRequest env host port request = do
+  rawResult <-
+    try (dialAndReceiveBounded env host port request)
+      :: IO (Either SomeException (Either String ByteString))
+  pure $ do
+    raw <- either (Left . displayException) id rawResult
+    either (Left . show) Right (parsePeerHttpResponse (envGatewayBounds env) raw)
+
+dialAndReceiveBounded
+  :: DaemonEnv
+  -> String
+  -> Int
+  -> ByteString
+  -> IO (Either String ByteString)
+dialAndReceiveBounded env host port request = do
+  liveConfig <- readTVarIO (envLiveConfig env)
+  outcome <-
+    timeout
+      (readTimeoutMicros (liveConnectionReadTimeoutSeconds liveConfig))
+      dial
+  pure (fromMaybe (Left "peer exchange timed out") outcome)
+ where
+  dial = do
+    addresses <- getAddrInfo Nothing (Just host) (Just (show port))
+    case addresses of
+      [] -> pure (Left ("no address resolution for " ++ host))
+      info : _ -> do
+        sock <- socket (addrFamily info) (addrSocketType info) (addrProtocol info)
+        ( do
+            connect sock (addrAddress info)
+            sendAll sock request
+            receiveAllBounded
+              (fromIntegral (gatewayMaxFrameBytes (envGatewayBounds env)))
+              sock
+          )
+          `finally` close sock
 
 markPeerError :: TVar DaemonState -> String -> String -> IO ()
 markPeerError stateVar peerId reason =
@@ -2862,22 +5009,62 @@ markPeerHealthOk mh =
           }
     Nothing -> Just (PeerHealth Nothing True Nothing)
 
-renderStateJson :: UTCTime -> DaemonConfig -> DaemonState -> BL.ByteString
-renderStateJson now config state =
+gatewayDnsWriteReady :: DaemonEnv -> DaemonState -> IO Bool
+gatewayDnsWriteReady env state =
+  case (daemonDnsWriteGate config, daemonAwsCreds config) of
+    (Just _, Just credentials) -> do
+      result <- dnsWriteAuthority env state credentials
+      pure (either (const False) (const True) result)
+    _ -> pure False
+ where
+  config = envBootConfig env
+
+readContinuityDiagnostic :: DaemonEnv -> IO ContinuityDiagnostic
+readContinuityDiagnostic env = do
+  runtime <- readTVarIO (envContinuity env)
+  case runtime of
+    Nothing -> pure ContinuityDiagnosticUnavailable
+    Just active -> do
+      current <- readTVarIO (continuityRuntimeCurrent active)
+      pure (ContinuityDiagnosticReady (Continuity.currentContinuityAnchor current))
+
+renderStateJson
+  :: UTCTime
+  -> DaemonEnv
+  -> Bool
+  -> ContinuityDiagnostic
+  -> DaemonState
+  -> BL.ByteString
+renderStateJson now env dnsReady continuityDiagnostic state =
   encode $
     object
       [ "node_id" .= daemonNodeId config
       , "gateway_owner" .= stateGatewayOwner state
       , "previous_owner" .= statePreviousOwner state
-      , "has_active_claim" .= (stateGatewayOwner state == Just (daemonNodeId config))
-      , "can_write_dns"
-          .= canWriteDns (daemonNodeId config) (stateGatewayOwner state) (stateCommitLog state)
+      , "has_active_claim"
+          .= ( stateGatewayOwner state == Just (daemonNodeId config)
+                 && boundedNodeDisposition env state (daemonNodeId config) == DispositionOwner
+             )
+      , "can_write_dns" .= dnsReady
       , "node_disposition"
-          .= renderDisposition (nodeDisposition (daemonNodeId config) (stateCommitLog state))
-      , "peer_dispositions" .= renderPeerDispositions state
+          .= renderDisposition (boundedNodeDisposition env state (daemonNodeId config))
+      , "peer_dispositions" .= renderPeerDispositions env state
       , "mesh_peers" .= stateMeshPeers state
-      , "event_count" .= length (commitLogEvents (stateCommitLog state))
-      , "event_hashes" .= renderRecentEventHashes (commitLogEvents (stateCommitLog state))
+      , "semantic_member_count"
+          .= BoundedState.gatewayStateEmitterCount (stateBoundedGateway state)
+      , "signed_replay_assertion_count"
+          .= sum (map length (Map.elems (stateSignedReplay state)))
+      , "retained_assertion_count" .= retainedAssertionCount state
+      , "retained_assertion_capacity"
+          .= ( BoundedState.validatedOrdersMemberCount (envValidatedOrders env)
+                 * (gatewayReplayPerEmitter (envGatewayBounds env) + 2)
+             )
+      , "recent_assertion_hashes"
+          .= map
+            (hexText . BoundedState.eventHashBytes)
+            (BoundedState.gatewayStateDiagnosticHashes (stateBoundedGateway state))
+      , "peer_receive_cursors" .= renderPeerReceiveCursors env state
+      , "continuity_authority" .= renderContinuityDiagnostic continuityDiagnostic
       , "last_public_ip_observed" .= stateLastPublicIp state
       , "last_dns_write_ip" .= stateLastDnsWriteIp state
       , "last_dns_write_at_utc" .= fmap formatUtcIso (stateLastDnsWriteTime state)
@@ -2890,13 +5077,63 @@ renderStateJson now config state =
       , "orders_version_utc" .= stateOrdersVersionUtc state
       , "latest_observed_orders_version_utc" .= stateLatestObservedOrdersVersion state
       ]
+ where
+  config = envBootConfig env
 
-gatewayStatusEventHashLimit :: Int
-gatewayStatusEventHashLimit = 64
+retainedAssertionCount :: DaemonState -> Int
+retainedAssertionCount state =
+  sum (map length (Map.elems (stateSignedReplay state)))
+    + Map.size (stateSignedCheckpointHeartbeat state)
+    + Map.size (stateSignedCheckpointOwnership state)
 
-renderRecentEventHashes :: [SignedEvent] -> [String]
-renderRecentEventHashes events =
-  reverse (take gatewayStatusEventHashLimit (reverse (map eventHash events)))
+renderPeerReceiveCursors :: DaemonEnv -> DaemonState -> Value
+renderPeerReceiveCursors env state =
+  Object $
+    KeyMap.fromList
+      [ (Key.fromString peerName, renderCursorVector cursor)
+      | (peerName, cursor) <- Map.toAscList (statePeerCursors state)
+      ]
+ where
+  renderCursorVector cursor =
+    Object $
+      KeyMap.fromList
+        [ ( Key.fromText (BoundedState.nodeIdText emitter)
+          , maybe Null renderEmitterCursor (BoundedState.cursorVectorLookup emitter cursor)
+          )
+        | emitter <- BoundedState.validatedOrdersMemberIds (envValidatedOrders env)
+        ]
+
+  renderEmitterCursor cursor =
+    object
+      [ "epoch"
+          .= BoundedState.emitterEpochValue
+            (BoundedState.emitterCursorEpoch cursor)
+      , "sequence"
+          .= BoundedState.emitterSequenceValue
+            (BoundedState.emitterCursorSequence cursor)
+      , "digest"
+          .= hexText
+            ( BoundedState.eventHashBytes
+                (BoundedState.emitterCursorHash cursor)
+            )
+      ]
+
+renderContinuityDiagnostic :: ContinuityDiagnostic -> Value
+renderContinuityDiagnostic diagnostic =
+  case diagnostic of
+    ContinuityDiagnosticUnavailable ->
+      object ["status" .= ("unavailable" :: Text.Text)]
+    ContinuityDiagnosticReady anchor ->
+      object
+        [ "status" .= ("ready" :: Text.Text)
+        , "epoch" .= Continuity.continuityAnchorEpoch anchor
+        , "sequence" .= Continuity.continuityAnchorSequence anchor
+        , "digest"
+            .= hexText
+              ( Continuity.continuityDigestBytes
+                  (Continuity.continuityAnchorPreviousDigest anchor)
+              )
+        ]
 
 renderDisposition :: Disposition -> Value
 renderDisposition d = case d of
@@ -2904,11 +5141,11 @@ renderDisposition d = case d of
   DispositionYielded -> String "yielded"
   DispositionUnknown -> String "unknown"
 
-renderPeerDispositions :: DaemonState -> Value
-renderPeerDispositions state =
+renderPeerDispositions :: DaemonEnv -> DaemonState -> Value
+renderPeerDispositions env state =
   Object $
     KeyMap.fromList
-      [ (Key.fromString peer, renderDisposition (nodeDisposition peer (stateCommitLog state)))
+      [ (Key.fromString peer, renderDisposition (boundedNodeDisposition env state peer))
       | peer <- stateMeshPeers state
       ]
 
@@ -2973,13 +5210,13 @@ fetchPublicIp = do
             then pure (Right ip)
             else pure (Left ("unexpected public IP: " ++ ip))
 
--- | Sprint 2.22: write a Route 53 A record. AWS credentials are now sourced
--- from the daemon's mounted Dhall config ('Maybe GatewayAwsCreds') rather
--- than inherited from the Pod's process environment. When no credentials
--- are bound the subprocess inherits the parent environment as a transitional
--- fallback during the chart-side env-var removal.
-writeDnsRecord :: Maybe GatewayAwsCreds -> DnsWriteGate -> String -> IO (Either String ())
-writeDnsRecord maybeAwsCreds gate ip = do
+-- | Interpret a Route 53 write only from the opaque credential/continuity/
+-- claim authority witness.  The child receives a sealed environment built
+-- from an empty base; ambient AWS profiles and metadata are unreachable.
+writeDnsRecord
+  :: DnsAuthority.DnsWriteAction
+  -> IO (Either String ())
+writeDnsRecord action = do
   let changeBatch =
         BL8.unpack $
           encode $
@@ -2989,50 +5226,43 @@ writeDnsRecord maybeAwsCreds gate ip = do
                          [ "Action" .= ("UPSERT" :: String)
                          , "ResourceRecordSet"
                              .= object
-                               [ "Name" .= dnsWriteGateFqdn gate
+                               [ "Name" .= DnsAuthority.dnsWriteActionFqdn action
                                , "Type" .= ("A" :: String)
-                               , "TTL" .= dnsWriteGateTtl gate
-                               , "ResourceRecords" .= [object ["Value" .= ip]]
+                               , "TTL" .= DnsAuthority.dnsWriteActionTtl action
+                               , "ResourceRecords"
+                                   .= [object ["Value" .= DnsAuthority.dnsWriteActionIpv4 action]]
                                ]
                          ]
                      ]
               ]
-      subprocessEnv = fmap awsCredsToSubprocessEnv maybeAwsCreds
-  result <-
-    captureSubprocessResult
-      Subprocess
-        { subprocessPath = "aws"
-        , subprocessArguments =
-            [ "route53"
-            , "change-resource-record-sets"
-            , "--hosted-zone-id"
-            , dnsWriteGateZoneId gate
-            , "--change-batch"
-            , changeBatch
-            , "--region"
-            , dnsWriteGateAwsRegion gate
-            ]
-        , subprocessEnvironment = subprocessEnv
-        , subprocessWorkingDirectory = Nothing
-        }
-  case result of
-    Failure err -> pure (Left ("aws cli failed: " ++ err))
-    Success output ->
-      case processExitCode output of
-        ExitSuccess -> pure (Right ())
-        ExitFailure _ -> pure (Left ("route53 update failed: " ++ trim (processStderr output)))
-
-awsCredsToSubprocessEnv :: GatewayAwsCreds -> [(String, String)]
-awsCredsToSubprocessEnv creds =
-  [ ("AWS_ACCESS_KEY_ID", gatewayAwsAccessKeyId creds)
-  , ("AWS_SECRET_ACCESS_KEY", gatewayAwsSecretAccessKey creds)
-  , ("AWS_DEFAULT_REGION", gatewayAwsRegion creds)
-  ]
-    ++ maybe [] (\t -> [("AWS_SESSION_TOKEN", t)]) (gatewayAwsSessionToken creds)
-
-createSignedEvent :: String -> String -> Value -> String -> UTCTime -> SignedEvent
-createSignedEvent nodeId evtType payload key now =
-  signEvent nodeId evtType (formatUtcIso now) (cborPayloadFromJsonValue payload) key
+      subprocessEnv = DnsAuthority.dnsWriteActionAwsEnvironment action
+  executable <- findExecutable "aws"
+  case executable of
+    Nothing -> pure (Left "aws cli executable is unavailable")
+    Just awsPath -> do
+      result <-
+        captureSubprocessResult
+          Subprocess
+            { subprocessPath = awsPath
+            , subprocessArguments =
+                [ "route53"
+                , "change-resource-record-sets"
+                , "--hosted-zone-id"
+                , Text.unpack (DnsAuthority.dnsWriteActionZoneId action)
+                , "--change-batch"
+                , changeBatch
+                , "--region"
+                , Text.unpack (DnsAuthority.dnsWriteActionRegion action)
+                ]
+            , subprocessEnvironment = Just subprocessEnv
+            , subprocessWorkingDirectory = Nothing
+            }
+      case result of
+        Failure err -> pure (Left ("aws cli failed: " ++ err))
+        Success output ->
+          case processExitCode output of
+            ExitSuccess -> pure (Right ())
+            ExitFailure _ -> pure (Left ("route53 update failed: " ++ trim (processStderr output)))
 
 formatUtcIso :: UTCTime -> String
 formatUtcIso = formatShow iso8601Format

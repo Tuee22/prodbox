@@ -16,6 +16,7 @@ module Prodbox.Lifecycle.ResourceRegistry
   , capacityScaledManagedResources
   , perRunManagedResources
   , longLivedManagedResources
+  , desiredPresentManagedResources
   , awsSesPulumiResource
   , pulsarTopicManagedResource
   , pairPerRunResidue
@@ -62,6 +63,8 @@ import System.Exit (ExitCode (..))
 data ManagedResource = ManagedResource
   { resourceName :: String
   , resourceClass :: LifecycleClass
+  , resourceEnsureCommand :: Maybe String
+  , resourceEnsurePresent :: Maybe (FilePath -> IO ExitCode)
   , resourceDestroyCommand :: String
   , resourceDestroy :: FilePath -> IO ExitCode
   }
@@ -85,18 +88,24 @@ perRunManagedResources =
   [ ManagedResource
       { resourceName = "aws-eks"
       , resourceClass = PerRun
+      , resourceEnsureCommand = Nothing
+      , resourceEnsurePresent = Nothing
       , resourceDestroyCommand = "prodbox aws stack eks destroy --yes"
       , resourceDestroy = \repoRoot -> runPulumiCommand repoRoot (PulumiEksDestroy True noPlan)
       }
   , ManagedResource
       { resourceName = "aws-eks-subzone"
       , resourceClass = PerRun
+      , resourceEnsureCommand = Nothing
+      , resourceEnsurePresent = Nothing
       , resourceDestroyCommand = "prodbox aws stack aws-subzone destroy --yes"
       , resourceDestroy = \repoRoot -> runPulumiCommand repoRoot (PulumiAwsSubzoneDestroy True noPlan)
       }
   , ManagedResource
       { resourceName = "aws-test"
       , resourceClass = PerRun
+      , resourceEnsureCommand = Nothing
+      , resourceEnsurePresent = Nothing
       , resourceDestroyCommand = "prodbox aws stack test destroy --yes"
       , resourceDestroy = \repoRoot -> runPulumiCommand repoRoot (PulumiTestDestroy True noPlan)
       }
@@ -118,6 +127,8 @@ longLivedManagedResources =
   [ ManagedResource
       { resourceName = publicEdgeTlsResourceName
       , resourceClass = LongLived
+      , resourceEnsureCommand = Nothing
+      , resourceEnsurePresent = Nothing
       , resourceDestroyCommand = "prodbox nuke"
       , resourceDestroy = destroyPublicEdgeTlsCertificate
       }
@@ -135,9 +146,22 @@ awsSesPulumiResource =
   ManagedResource
     { resourceName = "aws-ses"
     , resourceClass = LongLived
+    , resourceEnsureCommand = Just "prodbox aws stack aws-ses reconcile"
+    , resourceEnsurePresent =
+        Just
+          ( \repoRoot ->
+              runPulumiCommand repoRoot (PulumiAwsSesResources (PlanOptions False Nothing))
+          )
     , resourceDestroyCommand = "prodbox aws stack aws-ses destroy --yes"
     , resourceDestroy = \repoRoot -> runPulumiCommand repoRoot (PulumiAwsSesDestroy True (PlanOptions False Nothing))
     }
+
+-- | The registry projection that supports desired-present reconciliation.
+-- Long-lived classification controls ordinary cleanup; this independent
+-- projection controls capability-derived preparation. Today only the fixed
+-- account-scoped @aws-ses@ stack has a registered ensure action.
+desiredPresentManagedResources :: [ManagedResource]
+desiredPresentManagedResources = [awsSesPulumiResource]
 
 -- | Sprint 4.35: adapt a typed Pulsar topic into the managed-resource
 -- registry. Topics are dynamic broker resources, so the static
@@ -149,6 +173,8 @@ pulsarTopicManagedResource broker topic =
   ManagedResource
     { resourceName = managedTopicResourceName topic
     , resourceClass = managedTopicClass topic
+    , resourceEnsureCommand = Nothing
+    , resourceEnsurePresent = Nothing
     , resourceDestroyCommand =
         case managedTopicClass topic of
           PerRun -> "prodbox cluster delete --cascade"

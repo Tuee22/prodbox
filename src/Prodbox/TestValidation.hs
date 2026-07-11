@@ -2,6 +2,17 @@
 
 module Prodbox.TestValidation
   ( runNativeValidation
+  , runNativeValidationWithGatewayStability
+  , GatewayRuntimeStabilityRecorder
+  , GatewayRuntimeStabilityMonitor
+  , newGatewayRuntimeStabilityRecorder
+  , withGatewayRuntimeStabilityMonitor
+  , pauseGatewayRuntimeStabilityMonitor
+  , refreshGatewayRuntimeStabilityMonitor
+  , resumeGatewayRuntimeStabilityMonitor
+  , recordGatewayRuntimeStabilitySample
+  , resetGatewayRuntimeStabilityHealthyWindow
+  , runGatewayRuntimeStabilityGate
   , DaemonBootstrapAuditInput (..)
   , SealedVaultAuditInput (..)
   , VolumeRebindSnapshot (..)
@@ -21,7 +32,20 @@ module Prodbox.TestValidation
   )
 where
 
-import Control.Concurrent (threadDelay)
+import Control.Concurrent
+  ( MVar
+  , modifyMVar
+  , modifyMVar_
+  , newEmptyMVar
+  , newMVar
+  , putMVar
+  , readMVar
+  , takeMVar
+  , threadDelay
+  , tryPutMVar
+  , withMVar
+  )
+import Control.Concurrent.Async (link, withAsync)
 import Control.Exception
   ( IOException
   , SomeException
@@ -31,14 +55,15 @@ import Control.Exception
   , finally
   , try
   )
-import Control.Monad (foldM)
+import Control.Monad (foldM, void, when)
+import Crypto.Hash.SHA256 qualified as SHA256
 import Data.Aeson
   ( Value (..)
   , eitherDecode
-  , object
   )
 import Data.Aeson.Key qualified as Key
 import Data.Aeson.KeyMap qualified as KeyMap
+import Data.Bifunctor qualified as Bifunctor
 import Data.ByteString.Base64.URL qualified as Base64Url
 import Data.ByteString.Char8 qualified as BS8
 import Data.ByteString.Lazy qualified as BL
@@ -67,11 +92,13 @@ import Network.Socket
   )
 import Network.WebSockets qualified as WebSocket
 import Numeric (showHex)
+import Numeric.Natural (Natural)
 import Prodbox.Aws
   ( runAwsIamHarnessInspect
   )
 import Prodbox.AwsEnvironment
-  ( overlayAwsCredentials
+  ( awsCliSubprocessEnvironment
+  , overlayAwsCredentials
   )
 import Prodbox.BuildSupport
   ( canonicalOperatorBinaryPath
@@ -97,6 +124,7 @@ import Prodbox.Dns
   , queryRoute53Record
   )
 import Prodbox.Error (fatalError)
+import Prodbox.Gateway.Bounds qualified as GatewayBounds
 import Prodbox.Gateway.Daemon
   ( bootstrapVaultPath
   , bootstrapVaultPkiIssueTestCertPath
@@ -106,26 +134,12 @@ import Prodbox.Gateway.Daemon
   , bootstrapVaultSealPath
   , bootstrapVaultStatusPath
   )
-import Prodbox.Gateway.Peer
-  ( PeerEventBatch (..)
-  , handlePeerRequest
-  , signEvent
-  )
 import Prodbox.Gateway.Settings qualified as GatewaySettings
+import Prodbox.Gateway.State qualified as GatewayState
 import Prodbox.Gateway.Types
-  ( CommitLog (..)
-  , Disposition (..)
-  , GatewayRule (..)
+  ( GatewayRule (..)
   , Orders (..)
   , PeerEndpoint (..)
-  , appendIfNew
-  , canWriteDns
-  , cborPayloadFromJsonValue
-  , defaultMaxClockSkewSeconds
-  , emptyCommitLog
-  , eventTypeClaim
-  , eventTypeYield
-  , nodeDisposition
   )
 import Prodbox.Infra.AwsEksTestStack qualified as AwsEks
 import Prodbox.Infra.AwsTestStack qualified as AwsTest
@@ -198,6 +212,7 @@ import Prodbox.Result (Result (..))
 import Prodbox.Ses.Capture qualified
 import Prodbox.Settings
   ( AwsCredentialsRef (..)
+  , Credentials
   , DomainSection (..)
   , Route53Section (..)
   , ValidatedSettings (..)
@@ -219,6 +234,19 @@ import Prodbox.Subprocess
   , stopBackgroundProcess
   )
 import Prodbox.Substrate (Substrate (..), substrateId)
+import Prodbox.Test.GatewayRuntimeStability
+  ( GatewayPayloadSource (..)
+  , GatewayRuntimeStabilityReport (..)
+  , GatewayStabilityPolicy
+  , GatewayStabilityState
+  , beginPlannedGatewayRollout
+  , gatewayRuntimeStabilityReport
+  , initialGatewayStabilityState
+  , mkGatewayStabilityPolicy
+  , observeGatewayRuntimeFailure
+  , observeGatewayRuntimePayloads
+  , renderGatewayRuntimeStabilityReport
+  )
 import Prodbox.TestPlan
   ( NativeValidation (..)
   , nativeValidationId
@@ -499,9 +527,443 @@ gatewayStatusRetryAttempts = 12
 gatewayStatusRetryDelayMicroseconds :: Int
 gatewayStatusRetryDelayMicroseconds = 1000000
 
+data GatewayRuntimeStabilityRecorder = GatewayRuntimeStabilityRecorder
+  { gatewayRuntimeStabilityStateVar :: MVar GatewayStabilityState
+  , gatewayRuntimeObservationLock :: MVar ()
+  }
+
+-- | Structured-concurrency handle for the run-scoped observer.  The worker
+-- owns no independent evidence: every sample is folded into the shared
+-- recorder.  Planned rollouts pause observations only while the gateway is
+-- intentionally absent; pausing never clears the absorbing recorder state.
+data GatewayRuntimeStabilityMonitor = GatewayRuntimeStabilityMonitor
+  { gatewayRuntimeMonitorEnabled :: MVar Bool
+  , gatewayRuntimeMonitorRefreshRequest :: MVar (Maybe (MVar ()))
+  , gatewayRuntimeMonitorRefreshLock :: MVar ()
+  , gatewayRuntimeMonitorRecorder :: GatewayRuntimeStabilityRecorder
+  }
+
+data GatewayRuntimeKubectlContext = GatewayRuntimeKubectlContext
+  { gatewayRuntimeContextRepoRoot :: FilePath
+  , gatewayRuntimeContextEnvironment :: Maybe [(String, String)]
+  }
+
+gatewayRuntimeRequiredStableSamples :: Natural
+gatewayRuntimeRequiredStableSamples = 3
+
+gatewayRuntimeMaximumSampleAttempts :: Int
+gatewayRuntimeMaximumSampleAttempts = 6
+
+gatewayRuntimeSampleDelayMicroseconds :: Int
+gatewayRuntimeSampleDelayMicroseconds = 1000000
+
+gatewayRuntimeKubectlRequestTimeout :: String
+gatewayRuntimeKubectlRequestTimeout = "5s"
+
+gatewayRuntimeKubectlDeadlineMicroseconds :: Int
+gatewayRuntimeKubectlDeadlineMicroseconds = 15000000
+
+newGatewayRuntimeStabilityRecorder
+  :: FilePath -> IO (Either String GatewayRuntimeStabilityRecorder)
+newGatewayRuntimeStabilityRecorder repoRoot = do
+  settingsResult <- validateAndLoadSettings repoRoot
+  case settingsResult of
+    Left err -> pure (Left ("load settings for gateway runtime stability: " ++ err))
+    Right settings ->
+      case gatewayRuntimeStabilityPolicy settings of
+        Left err -> pure (Left err)
+        Right policy -> do
+          stateVar <- newMVar (initialGatewayStabilityState policy)
+          observationLock <- newMVar ()
+          pure
+            ( Right
+                GatewayRuntimeStabilityRecorder
+                  { gatewayRuntimeStabilityStateVar = stateVar
+                  , gatewayRuntimeObservationLock = observationLock
+                  }
+            )
+
+-- | Run a continuously sampled observer in a structured scope.  AWS uses a
+-- monitor-private kubeconfig and explicit subprocess environment, so the
+-- observer never races the parent process's ambient environment while other
+-- validations execute.
+withGatewayRuntimeStabilityMonitor
+  :: Substrate
+  -> FilePath
+  -> GatewayRuntimeStabilityRecorder
+  -> (GatewayRuntimeStabilityMonitor -> IO result)
+  -> IO (Either String result)
+withGatewayRuntimeStabilityMonitor substrate repoRoot recorder action =
+  case substrate of
+    SubstrateHomeLocal ->
+      Right
+        <$> runWithWorker
+          ( gatewayRuntimeHomeMonitorLoop
+              (GatewayRuntimeKubectlContext repoRoot Nothing)
+          )
+    SubstrateAws -> do
+      settingsResult <- validateAndLoadSettings repoRoot
+      case settingsResult of
+        Left err -> pure (Left err)
+        Right settings -> do
+          credentialsResult <-
+            resolveAwsCredentialsRefFromHostVault
+              repoRoot
+              "aws"
+              (aws (validatedConfig settings))
+          case credentialsResult of
+            Left err ->
+              pure (Left ("load operational AWS credentials from Vault: " ++ err))
+            Right credentials ->
+              Right <$> runWithWorker (gatewayRuntimeAwsMonitorLoop repoRoot credentials)
+ where
+  runWithWorker workerAction = do
+    enabled <- newMVar True
+    refreshRequest <- newMVar Nothing
+    refreshLock <- newMVar ()
+    firstObservationComplete <- newEmptyMVar
+    let monitor =
+          GatewayRuntimeStabilityMonitor
+            { gatewayRuntimeMonitorEnabled = enabled
+            , gatewayRuntimeMonitorRefreshRequest = refreshRequest
+            , gatewayRuntimeMonitorRefreshLock = refreshLock
+            , gatewayRuntimeMonitorRecorder = recorder
+            }
+    withAsync (workerAction monitor firstObservationComplete) $ \worker -> do
+      link worker
+      -- Do not let the observed suite outrun its monitor.  The explicit
+      -- baseline precedes this scope; this handshake proves the continuous
+      -- worker has taken over before any later action can mutate the gateway.
+      _ <- takeMVar firstObservationComplete
+      action monitor
+
+gatewayRuntimeHomeMonitorLoop
+  :: GatewayRuntimeKubectlContext
+  -> GatewayRuntimeStabilityMonitor
+  -> MVar ()
+  -> IO ()
+gatewayRuntimeHomeMonitorLoop context monitor firstObservationComplete =
+  go Nothing
+ where
+  go maybeRefreshAcknowledgement = do
+    mapM_ (`putMVar` ()) maybeRefreshAcknowledgement
+    nextRefreshAcknowledgement <-
+      gatewayRuntimeMonitorLoop context monitor firstObservationComplete
+    go nextRefreshAcknowledgement
+
+gatewayRuntimeAwsMonitorLoop
+  :: FilePath
+  -> Credentials
+  -> GatewayRuntimeStabilityMonitor
+  -> MVar ()
+  -> IO ()
+gatewayRuntimeAwsMonitorLoop repoRoot credentials monitor firstObservationComplete =
+  go Nothing
+ where
+  go maybeRefreshAcknowledgement = do
+    nextRefreshAcknowledgement <-
+      AwsEks.withEksKubeconfig repoRoot $ \kubeconfigPath -> do
+        baseEnvironment <- awsCliSubprocessEnvironment credentials
+        let monitorEnvironment =
+              ("KUBECONFIG", kubeconfigPath)
+                : filter ((/= "KUBECONFIG") . fst) baseEnvironment
+        mapM_ (`putMVar` ()) maybeRefreshAcknowledgement
+        gatewayRuntimeMonitorLoop
+          (GatewayRuntimeKubectlContext repoRoot (Just monitorEnvironment))
+          monitor
+          firstObservationComplete
+    go nextRefreshAcknowledgement
+
+gatewayRuntimeMonitorLoop
+  :: GatewayRuntimeKubectlContext
+  -> GatewayRuntimeStabilityMonitor
+  -> MVar ()
+  -> IO (Maybe (MVar ()))
+gatewayRuntimeMonitorLoop context monitor firstObservationComplete = do
+  maybeRefreshAcknowledgement <-
+    modifyMVar
+      (gatewayRuntimeMonitorRefreshRequest monitor)
+      (\request -> pure (Nothing, request))
+  case maybeRefreshAcknowledgement of
+    Just acknowledgement -> pure (Just acknowledgement)
+    Nothing -> do
+      observeWhenEnabled
+      void (tryPutMVar firstObservationComplete ())
+      threadDelay gatewayRuntimeSampleDelayMicroseconds
+      gatewayRuntimeMonitorLoop context monitor firstObservationComplete
+ where
+  observeWhenEnabled = do
+    let recorder = gatewayRuntimeMonitorRecorder monitor
+    withMVar (gatewayRuntimeObservationLock recorder) $ \() -> do
+      enabled <- readMVar (gatewayRuntimeMonitorEnabled monitor)
+      when enabled $ void (observeGatewayRuntimeStabilityUnlocked context recorder)
+
+pauseGatewayRuntimeStabilityMonitor
+  :: GatewayRuntimeStabilityMonitor -> IO ()
+pauseGatewayRuntimeStabilityMonitor monitor = do
+  modifyMVar_
+    (gatewayRuntimeMonitorEnabled monitor)
+    (const (pure False))
+  -- Wait for an observation already in flight.  The loop rechecks the flag
+  -- while holding this lock, so a queued sample cannot start after pause.
+  withMVar
+    (gatewayRuntimeObservationLock (gatewayRuntimeMonitorRecorder monitor))
+    (const (pure ()))
+
+-- | Request a fresh monitor observation context.  The worker checks this
+-- before every sample, leaves its current kubeconfig bracket without reading
+-- from it again, and (on AWS) materializes a new kubeconfig for the recreated
+-- EKS target.  Callers pause and drain first, then resume only after a fresh
+-- foreground sample has proved the replacement gateway observable.
+refreshGatewayRuntimeStabilityMonitor
+  :: GatewayRuntimeStabilityMonitor -> IO ()
+refreshGatewayRuntimeStabilityMonitor monitor =
+  withMVar (gatewayRuntimeMonitorRefreshLock monitor) $ \() -> do
+    acknowledgement <- newEmptyMVar
+    modifyMVar_
+      (gatewayRuntimeMonitorRefreshRequest monitor)
+      (const (pure (Just acknowledgement)))
+    takeMVar acknowledgement
+
+resumeGatewayRuntimeStabilityMonitor
+  :: GatewayRuntimeStabilityMonitor -> IO ()
+resumeGatewayRuntimeStabilityMonitor monitor =
+  modifyMVar_
+    (gatewayRuntimeMonitorEnabled monitor)
+    (const (pure True))
+
+gatewayRuntimeStabilityPolicy
+  :: ValidatedSettings
+  -> Either String GatewayStabilityPolicy
+gatewayRuntimeStabilityPolicy settings = do
+  let capacitySection =
+        Prodbox.Settings.capacity
+          (Prodbox.Settings.validatedConfig settings)
+  runtimePlan <- Capacity.runtimeMemoryPlanForProfile capacitySection "gateway"
+  expectedReplicas <- gatewayRuntimeExpectedReplicas (Capacity.resource_plan capacitySection)
+  Bifunctor.first
+    (("gateway runtime stability policy: " ++) . show)
+    ( mkGatewayStabilityPolicy
+        expectedReplicas
+        gatewayRuntimeRequiredStableSamples
+        runtimePlan
+    )
+
+gatewayRuntimeExpectedReplicas :: Capacity.ResourcePlan -> Either String Natural
+gatewayRuntimeExpectedReplicas resourcePlan =
+  case filter
+    ((== "gateway") . Capacity.profile_id)
+    (Capacity.workload_profiles resourcePlan) of
+    [profile] -> Right (Capacity.replicas profile)
+    [] -> Left "capacity.resource_plan is missing the gateway workload profile"
+    _ -> Left "capacity.resource_plan contains duplicate gateway workload profiles"
+
+resetGatewayRuntimeStabilityHealthyWindow
+  :: GatewayRuntimeStabilityRecorder -> IO ()
+resetGatewayRuntimeStabilityHealthyWindow recorder =
+  modifyMVar_
+    (gatewayRuntimeStabilityStateVar recorder)
+    (pure . beginPlannedGatewayRollout)
+
+recordGatewayRuntimeStabilitySample
+  :: Substrate
+  -> FilePath
+  -> GatewayRuntimeStabilityRecorder
+  -> IO ExitCode
+recordGatewayRuntimeStabilitySample substrate repoRoot recorder = do
+  scopedResult <-
+    withSubstrateKubeconfigResult
+      repoRoot
+      substrate
+      ( observeGatewayRuntimeStability
+          (GatewayRuntimeKubectlContext repoRoot Nothing)
+          recorder
+      )
+  case scopedResult of
+    Left err -> do
+      report <- recordGatewayRuntimeFailure recorder GatewayPodsPayload err
+      failWith (renderGatewayRuntimeStabilityReport report)
+    Right report -> gatewayRuntimeSampleExit report
+
+runGatewayRuntimeStabilityGate
+  :: Substrate
+  -> FilePath
+  -> GatewayRuntimeStabilityRecorder
+  -> IO ExitCode
+runGatewayRuntimeStabilityGate substrate repoRoot recorder = do
+  scopedResult <-
+    withSubstrateKubeconfigResult
+      repoRoot
+      substrate
+      ( runGatewayRuntimeStabilityGateInCurrentContext
+          (GatewayRuntimeKubectlContext repoRoot Nothing)
+          recorder
+      )
+  case scopedResult of
+    Left err -> do
+      report <- recordGatewayRuntimeFailure recorder GatewayPodsPayload err
+      failWith (renderGatewayRuntimeStabilityReport report)
+    Right exitCode -> pure exitCode
+
+runGatewayRuntimeStabilityGateInCurrentContext
+  :: GatewayRuntimeKubectlContext
+  -> GatewayRuntimeStabilityRecorder
+  -> IO ExitCode
+runGatewayRuntimeStabilityGateInCurrentContext context recorder =
+  go gatewayRuntimeMaximumSampleAttempts
+ where
+  go attemptsRemaining = do
+    report <- observeGatewayRuntimeStability context recorder
+    case report of
+      StableObserved samples -> do
+        writeOutput
+          ( unlines
+              [ "GATEWAY_RUNTIME_STABILITY_VALIDATION"
+              , "CLASSIFICATION=stable"
+              , "STABLE_SAMPLES=" ++ show samples
+              , renderGatewayRuntimeStabilityReport report
+              ]
+          )
+        pure ExitSuccess
+      NotStableYet _ _
+        | attemptsRemaining > 1 -> do
+            writeDiagnosticLine
+              ("Waiting for gateway runtime stability: " ++ renderGatewayRuntimeStabilityReport report)
+            threadDelay gatewayRuntimeSampleDelayMicroseconds
+            go (attemptsRemaining - 1)
+        | otherwise ->
+            failWith
+              ( "Gateway runtime stability window did not converge: "
+                  ++ renderGatewayRuntimeStabilityReport report
+              )
+      RuntimeUnhealthy _ ->
+        failWith
+          ("Gateway runtime is unhealthy: " ++ renderGatewayRuntimeStabilityReport report)
+      StabilityUnreachable _ ->
+        failWith
+          ("Gateway runtime stability is unobservable: " ++ renderGatewayRuntimeStabilityReport report)
+
+gatewayRuntimeSampleExit :: GatewayRuntimeStabilityReport -> IO ExitCode
+gatewayRuntimeSampleExit report =
+  case report of
+    RuntimeUnhealthy _ ->
+      failWith ("Gateway runtime is unhealthy: " ++ renderGatewayRuntimeStabilityReport report)
+    StabilityUnreachable _ ->
+      failWith
+        ("Gateway runtime stability is unobservable: " ++ renderGatewayRuntimeStabilityReport report)
+    StableObserved _ -> pure ExitSuccess
+    NotStableYet _ _ -> pure ExitSuccess
+
+observeGatewayRuntimeStability
+  :: GatewayRuntimeKubectlContext
+  -> GatewayRuntimeStabilityRecorder
+  -> IO GatewayRuntimeStabilityReport
+observeGatewayRuntimeStability context recorder =
+  withMVar (gatewayRuntimeObservationLock recorder) $ \() ->
+    observeGatewayRuntimeStabilityUnlocked context recorder
+
+observeGatewayRuntimeStabilityUnlocked
+  :: GatewayRuntimeKubectlContext
+  -> GatewayRuntimeStabilityRecorder
+  -> IO GatewayRuntimeStabilityReport
+observeGatewayRuntimeStabilityUnlocked context recorder = do
+  podsResult <-
+    gatewayRuntimeKubectlJson
+      context
+      ["get", "pods", "--namespace", gatewayValidationNamespace, "-o", "json"]
+  eventsResult <-
+    gatewayRuntimeKubectlJson
+      context
+      [ "get"
+      , "events"
+      , "--namespace"
+      , gatewayValidationNamespace
+      , "--field-selector"
+      , "involvedObject.kind=Pod"
+      , "-o"
+      , "json"
+      ]
+  metricsResult <-
+    gatewayRuntimeKubectlJson
+      context
+      [ "get"
+      , "--raw"
+      , "/apis/metrics.k8s.io/v1beta1/namespaces/gateway/pods"
+      ]
+  observedAt <- Text.pack . show <$> getPOSIXTime
+  case (podsResult, eventsResult, metricsResult) of
+    (Left err, _, _) -> recordGatewayRuntimeFailure recorder GatewayPodsPayload err
+    (_, Left err, _) -> recordGatewayRuntimeFailure recorder GatewayEventsPayload err
+    (_, _, Left err) -> recordGatewayRuntimeFailure recorder GatewayMetricsPayload err
+    (Right pods, Right events, Right metrics) ->
+      modifyGatewayRuntimeState
+        recorder
+        (observeGatewayRuntimePayloads observedAt pods events metrics)
+
+recordGatewayRuntimeFailure
+  :: GatewayRuntimeStabilityRecorder
+  -> GatewayPayloadSource
+  -> String
+  -> IO GatewayRuntimeStabilityReport
+recordGatewayRuntimeFailure recorder source detail = do
+  modifyGatewayRuntimeState
+    recorder
+    (observeGatewayRuntimeFailure source (Text.pack detail))
+
+modifyGatewayRuntimeState
+  :: GatewayRuntimeStabilityRecorder
+  -> (GatewayStabilityState -> GatewayStabilityState)
+  -> IO GatewayRuntimeStabilityReport
+modifyGatewayRuntimeState recorder transition =
+  modifyMVar (gatewayRuntimeStabilityStateVar recorder) $ \state -> do
+    let nextState = transition state
+    pure (nextState, gatewayRuntimeStabilityReport nextState)
+
+gatewayRuntimeKubectlJson
+  :: GatewayRuntimeKubectlContext -> [String] -> IO (Either String Value)
+gatewayRuntimeKubectlJson context arguments = do
+  let boundedArguments =
+        arguments ++ ["--request-timeout=" ++ gatewayRuntimeKubectlRequestTimeout]
+      spec =
+        Subprocess
+          { subprocessPath = "timeout"
+          , subprocessArguments =
+              ["--kill-after=2s", "12s", "kubectl"] ++ boundedArguments
+          , subprocessEnvironment = gatewayRuntimeContextEnvironment context
+          , subprocessWorkingDirectory = Just (gatewayRuntimeContextRepoRoot context)
+          }
+  deadlineResult <-
+    timeout
+      gatewayRuntimeKubectlDeadlineMicroseconds
+      (runJsonCommand spec)
+  pure $
+    case deadlineResult of
+      Nothing ->
+        Left
+          ( "`"
+              ++ commandDisplay spec
+              ++ "` exceeded the 15-second observation deadline"
+          )
+      Just result -> result
+
 runNativeValidation
   :: Substrate -> FilePath -> [(String, String)] -> NativeValidation -> IO ExitCode
-runNativeValidation substrate repoRoot environment validation = do
+runNativeValidation substrate repoRoot environment validation =
+  runNativeValidationWithGatewayStability
+    Nothing
+    substrate
+    repoRoot
+    environment
+    validation
+
+runNativeValidationWithGatewayStability
+  :: Maybe GatewayRuntimeStabilityRecorder
+  -> Substrate
+  -> FilePath
+  -> [(String, String)]
+  -> NativeValidation
+  -> IO ExitCode
+runNativeValidationWithGatewayStability maybeGatewayStability substrate repoRoot environment validation = do
   writeOutputLine
     ("Validation: " ++ nativeValidationId validation ++ " (substrate=" ++ substrateId substrate ++ ")")
   writeDiagnosticLine
@@ -557,16 +1019,10 @@ runNativeValidation substrate repoRoot environment validation = do
         runHaRke2AwsValidation repoRoot environment
       ValidationGatewayDaemon -> runGatewayDaemonValidation repoRoot environment
       ValidationGatewayPods ->
-        runSequentially
-          [ runNativeCliCommandForExitCode
-              repoRoot
-              environment
-              ["cluster", "wait", "--namespace", gatewayValidationNamespace]
-          , runNativeCliCommandForExitCode
-              repoRoot
-              environment
-              ["cluster", "workload-logs", "--namespace", gatewayValidationNamespace, "--tail", "20"]
-          ]
+        runGatewayPodsValidation
+          repoRoot
+          environment
+          maybeGatewayStability
       ValidationGatewayPartition -> runGatewayPartitionValidation
       ValidationChartsPlatform ->
         runSequentially
@@ -650,15 +1106,21 @@ runNativeValidation substrate repoRoot environment validation = do
 -- can both target the EKS substrate and successfully resolve the
 -- kubeconfig's `aws eks get-token` exec provider.
 withSubstrateKubeconfigEnv :: FilePath -> Substrate -> IO ExitCode -> IO ExitCode
-withSubstrateKubeconfigEnv repoRoot substrate action =
+withSubstrateKubeconfigEnv repoRoot substrate action = do
+  result <- withSubstrateKubeconfigResult repoRoot substrate action
+  case result of
+    Left err -> failWith err
+    Right exitCode -> pure exitCode
+
+withSubstrateKubeconfigResult
+  :: FilePath -> Substrate -> IO result -> IO (Either String result)
+withSubstrateKubeconfigResult repoRoot substrate action =
   case substrate of
-    SubstrateHomeLocal -> action
+    SubstrateHomeLocal -> Right <$> action
     SubstrateAws -> do
       settingsResult <- validateAndLoadSettings repoRoot
       case settingsResult of
-        Left err -> do
-          writeError (fatalError (Text.pack err))
-          pure (ExitFailure 1)
+        Left err -> pure (Left err)
         Right settings -> do
           credentialsResult <-
             resolveAwsCredentialsRefFromHostVault
@@ -666,17 +1128,17 @@ withSubstrateKubeconfigEnv repoRoot substrate action =
               "aws"
               (aws (validatedConfig settings))
           case credentialsResult of
-            Left err -> do
-              writeError (fatalError (Text.pack ("load operational AWS credentials from Vault: " ++ err)))
-              pure (ExitFailure 1)
+            Left err ->
+              pure (Left ("load operational AWS credentials from Vault: " ++ err))
             Right credentials ->
               AwsEks.withEksKubeconfig repoRoot $ \kubeconfigPath -> do
                 let envOverrides = overlayAwsCredentials [("KUBECONFIG", kubeconfigPath)] credentials
                 previousValues <- mapM (\(name, _) -> lookupEnv name) envOverrides
-                bracket_
-                  (mapM_ (\(name, value) -> setEnv name value) envOverrides)
-                  (mapM_ restoreOne (zip envOverrides previousValues))
-                  action
+                Right
+                  <$> bracket_
+                    (mapM_ (\(name, value) -> setEnv name value) envOverrides)
+                    (mapM_ restoreOne (zip envOverrides previousValues))
+                    action
  where
   restoreOne :: ((String, String), Maybe String) -> IO ()
   restoreOne ((name, _), Nothing) = unsetEnv name
@@ -1062,6 +1524,47 @@ sealedVaultHostDiskRoot repoRoot = do
           Just testRoot | not (null testRoot) -> testRoot
           _ -> repoRoot </> defaultChartDataRootRelative
   pure (manualPvRoot </> "prodbox" </> "minio" </> "0")
+
+runGatewayPodsValidation
+  :: FilePath
+  -> [(String, String)]
+  -> Maybe GatewayRuntimeStabilityRecorder
+  -> IO ExitCode
+runGatewayPodsValidation repoRoot environment maybeRecorder = do
+  readyExit <-
+    runNativeCliCommandForExitCode
+      repoRoot
+      environment
+      ["cluster", "wait", "--namespace", gatewayValidationNamespace]
+  case readyExit of
+    failure@(ExitFailure _) -> pure failure
+    ExitSuccess -> do
+      recorderResult <-
+        case maybeRecorder of
+          Just recorder -> pure (Right recorder)
+          Nothing -> newGatewayRuntimeStabilityRecorder repoRoot
+      case recorderResult of
+        Left err -> failWith err
+        Right recorder -> do
+          stabilityExit <-
+            runGatewayRuntimeStabilityGateInCurrentContext
+              (GatewayRuntimeKubectlContext repoRoot Nothing)
+              recorder
+          case stabilityExit of
+            failure@(ExitFailure _) -> pure failure
+            ExitSuccess ->
+              -- Logs remain a post-classification diagnostic. They are not an
+              -- input to the typed runtime-stability oracle.
+              runNativeCliCommandForExitCode
+                repoRoot
+                environment
+                [ "cluster"
+                , "workload-logs"
+                , "--namespace"
+                , gatewayValidationNamespace
+                , "--tail"
+                , "20"
+                ]
 
 resourceGuardrailRootNamespaces :: [String]
 resourceGuardrailRootNamespaces = ["keycloak", "vscode", "api", "websocket", "gateway"]
@@ -1558,6 +2061,14 @@ restartVolumeRebindSubstrate repoRoot environment substrate =
       runSequentially
         [ runNativeCliCommandForExitCode repoRoot environment ["aws", "stack", "eks", "destroy", "--yes"]
         , runNativeCliCommandForExitCode repoRoot environment ["aws", "stack", "eks", "reconcile"]
+        , -- Recreate the substrate platform, retained PV bindings, and the
+          -- observed gateway before the volume read-back and monitor handoff.
+          -- The chart command is the canonical AWS platform installer; a bare
+          -- Pulumi stack reconcile owns only the substrate resources.
+          runNativeCliCommandForExitCode
+            repoRoot
+            environment
+            ["charts", "reconcile", "gateway", "--substrate", "aws"]
         ]
 
 emitVolumeRebindReport
@@ -1763,86 +2274,177 @@ runGatewayPartitionValidation =
 
 gatewayPartitionValidationReport :: Either String String
 gatewayPartitionValidationReport = do
-  let eventKeys =
-        Map.fromList
-          [ ("node-a", "partition-key-a")
-          , ("node-b", "partition-key-b")
-          , ("node-c", "partition-key-c")
-          ]
-      knownNodes = Map.keys eventKeys
-      emptyPayload = cborPayloadFromJsonValue (object [])
-      claimA =
-        signEvent
-          "node-a"
-          eventTypeClaim
-          "2026-04-06T10:00:00Z"
-          emptyPayload
-          "partition-key-a"
-      claimB =
-        signEvent
-          "node-b"
-          eventTypeClaim
-          "2026-04-06T10:00:05Z"
-          emptyPayload
-          "partition-key-b"
-      yieldA =
-        signEvent
-          "node-a"
-          eventTypeYield
-          "2026-04-06T10:00:06Z"
-          emptyPayload
-          "partition-key-a"
-      initialLog = appendIfNew emptyCommitLog claimA
-      (acceptedTakeover, rejectedTakeover) =
-        handlePeerRequest
-          (`Map.lookup` eventKeys)
-          knownNodes
-          defaultMaxClockSkewSeconds
-          "2026-04-06T10:00:05Z"
-          (PeerEventBatch [claimB] 2)
-      takeoverLog = foldl appendIfNew initialLog acceptedTakeover
-      (acceptedHeal, rejectedHeal) =
-        handlePeerRequest
-          (`Map.lookup` eventKeys)
-          knownNodes
-          defaultMaxClockSkewSeconds
-          "2026-04-06T10:00:06Z"
-          (PeerEventBatch [yieldA] 2)
-      healedLog = foldl appendIfNew takeoverLog acceptedHeal
-      duplicateMergeLog = foldl appendIfNew healedLog acceptedTakeover
-      initialOwnerActive = canWriteDns "node-a" (Just "node-a") initialLog
+  memoryPlan <-
+    Capacity.runtimeMemoryPlanForProfile Capacity.defaultCapacitySection "gateway"
+  bounds <-
+    either
+      (Left . ("gateway bounds invalid: " ++) . show)
+      Right
+      (GatewayBounds.validateGatewayBounds memoryPlan GatewayBounds.defaultRawGatewayBounds)
+  orders <-
+    mapGatewayStateError
+      ( GatewayState.validateOrders
+          bounds
+          GatewayState.RawOrders
+            { GatewayState.rawOrdersDocument = "gateway-partition-v2"
+            , GatewayState.rawOrdersVersion = 2
+            , GatewayState.rawOrdersMembers =
+                [ rawMember "node-a" 0
+                , rawMember "node-b" 1
+                , rawMember "node-c" 2
+                ]
+            }
+      )
+  nodeA <- resolveNode orders "node-a"
+  nodeB <- resolveNode orders "node-b"
+  initial <- initializePartitionState bounds orders
+  claimA <-
+    nextOwnershipAssertion
+      bounds
+      orders
+      nodeA
+      initial
+      GatewayState.OwnershipClaim
+      "claim-a"
+  (claimAFrame, afterClaimA) <- applyPartitionAssertion bounds orders claimA initial
+  claimB <-
+    nextOwnershipAssertion
+      bounds
+      orders
+      nodeB
+      afterClaimA
+      GatewayState.OwnershipClaim
+      "claim-b"
+  (claimBFrame, afterTakeover) <- applyPartitionAssertion bounds orders claimB afterClaimA
+  yieldA <-
+    nextOwnershipAssertion
+      bounds
+      orders
+      nodeA
+      afterTakeover
+      GatewayState.OwnershipYield
+      "yield-a"
+  (_yieldFrame, healed) <- applyPartitionAssertion bounds orders yieldA afterTakeover
+  duplicate <- applyPartitionFrame claimBFrame healed
+  let initialOwnerActive = canNodeWrite "node-a" (Just "node-a") nodeA afterClaimA
       singleWriterAfterTakeover =
-        canWriteDns "node-b" (Just "node-b") takeoverLog
-          && not (canWriteDns "node-a" (Just "node-b") takeoverLog)
-      yieldPersisted = nodeDisposition "node-a" healedLog == DispositionYielded
-      idempotentMerge = length (commitLogEvents duplicateMergeLog) == length (commitLogEvents healedLog)
+        canNodeWrite "node-b" (Just "node-b") nodeB afterTakeover
+          && not (canNodeWrite "node-a" (Just "node-b") nodeA afterTakeover)
+      yieldPersisted =
+        ownershipDecision nodeA healed == Just GatewayState.OwnershipYield
+      idempotentMerge =
+        GatewayState.gatewayStateCursorVector duplicate
+          == GatewayState.gatewayStateCursorVector healed
+      boundedFrames =
+        GatewayState.deltaFrameAssertionCount claimAFrame == 1
+          && GatewayState.deltaFrameAssertionCount claimBFrame == 1
   ensurePartitionInvariant
     initialOwnerActive
     "initial claim did not activate DNS-write authority for node-a"
   ensurePartitionInvariant
-    (length acceptedTakeover == 1 && null rejectedTakeover)
-    "partition takeover batch did not accept the signed node-b claim event"
+    boundedFrames
+    "partition transitions did not use one-assertion bounded delta frames"
   ensurePartitionInvariant
     singleWriterAfterTakeover
     "partition takeover did not preserve the single-writer DNS surface"
-  ensurePartitionInvariant
-    (length acceptedHeal == 1 && null rejectedHeal)
-    "rejoin healing batch did not accept the signed node-a yield event"
   ensurePartitionInvariant yieldPersisted "node-a yield was not preserved after rejoin healing"
   ensurePartitionInvariant
     idempotentMerge
-    "append-only commit-log merge was not idempotent on repeated peer delivery"
+    "bounded semantic merge was not idempotent on repeated delta delivery"
   Right $
     unlines
       [ "GATEWAY_PARTITION_VALIDATION"
       , "FORMAL_MODEL_DELEGATED=false"
       , "INITIAL_OWNER_ACTIVE=true"
-      , "PARTITION_TAKEOVER_ACCEPTED=" ++ show (length acceptedTakeover)
-      , "PARTITION_TAKEOVER_REJECTED=" ++ show (length rejectedTakeover)
+      , "PARTITION_TAKEOVER_ACCEPTED=1"
+      , "PARTITION_TAKEOVER_REJECTED=0"
       , "SINGLE_WRITER_AFTER_TAKEOVER=true"
       , "REJOIN_YIELD_RECORDED=true"
-      , "COMMIT_LOG_IDEMPOTENT=true"
+      , "BOUNDED_DELTA_IDEMPOTENT=true"
       ]
+ where
+  rawMember nodeName rank =
+    GatewayState.RawGatewayMember
+      { GatewayState.rawMemberNodeId = Text.pack nodeName
+      , GatewayState.rawMemberEndpoint = Text.pack (nodeName ++ ".example.test:8444")
+      , GatewayState.rawMemberTrustKey = BS8.pack ("partition-key-" ++ nodeName)
+      , GatewayState.rawMemberRank = rank
+      }
+
+  resolveNode orders nodeName =
+    case filter
+      ((== Text.pack nodeName) . GatewayState.nodeIdText)
+      (GatewayState.validatedOrdersMemberIds orders) of
+      [nodeId] -> Right nodeId
+      _ -> Left ("partition Orders did not contain exactly one " ++ nodeName)
+
+  initializePartitionState bounds orders = do
+    seeds <-
+      traverse
+        ( \nodeId -> do
+            digest <- partitionEventHash (Text.unpack (GatewayState.nodeIdText nodeId) ++ "-genesis")
+            Right (nodeId, GatewayState.initialEmitterCursor 1 digest)
+        )
+        (GatewayState.validatedOrdersMemberIds orders)
+    mapGatewayStateError
+      (GatewayState.initializeGatewayState bounds orders (Map.fromList seeds))
+
+  nextOwnershipAssertion bounds orders emitter state decision label = do
+    previous <-
+      case GatewayState.cursorVectorLookup
+        emitter
+        (GatewayState.gatewayStateCursorVector state) of
+        Nothing -> Left "partition emitter cursor was absent"
+        Just cursor -> Right cursor
+    resultHash <- partitionEventHash label
+    mapGatewayStateError
+      ( GatewayState.mkNextAssertion
+          bounds
+          orders
+          emitter
+          previous
+          resultHash
+          256
+          (GatewayState.OwnershipAssertion decision)
+      )
+
+  applyPartitionAssertion bounds orders assertion state = do
+    frame <-
+      mapGatewayStateError
+        ( GatewayState.mkDeltaFrame
+            bounds
+            orders
+            (GatewayState.gatewayStateCursorVector state)
+            [assertion]
+        )
+    advanced <- applyPartitionFrame frame state
+    Right (frame, advanced)
+
+  applyPartitionFrame frame state =
+    case GatewayState.applyDelta frame state of
+      GatewayState.DeltaApplied advanced -> Right advanced
+      GatewayState.DeltaRejected _ err -> mapGatewayStateError (Left err)
+
+  ownershipDecision emitter state =
+    case GatewayState.assertionKind
+      <$> GatewayState.gatewayStateLatestOwnership emitter state of
+      Just (GatewayState.OwnershipAssertion decision) -> Just decision
+      _ -> Nothing
+
+  canNodeWrite
+    :: String
+    -> Maybe String
+    -> GatewayState.NodeId
+    -> GatewayState.GatewayState
+    -> Bool
+  canNodeWrite nodeName owner emitter state =
+    owner == Just nodeName
+      && ownershipDecision emitter state == Just GatewayState.OwnershipClaim
+
+  partitionEventHash label =
+    mapGatewayStateError (GatewayState.mkEventHash (SHA256.hash (BS8.pack label)))
+
+  mapGatewayStateError result = either (Left . show) Right result
 
 ensurePartitionInvariant :: Bool -> String -> Either String ()
 ensurePartitionInvariant condition err =

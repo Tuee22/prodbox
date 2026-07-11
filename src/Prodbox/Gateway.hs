@@ -275,7 +275,9 @@ renderGatewayStatusReport payload =
               , "GATEWAY_OWNER=" ++ fromMaybe "<unknown>" (lookupTextField "gateway_owner" obj)
               , "ACTIVE_CLAIM=" ++ boolText (lookupBoolField "has_active_claim" obj)
               , "MESH_PEERS=" ++ renderMeshPeers obj
-              , "EVENT_COUNT=" ++ renderEventCount obj
+              , "SEMANTIC_MEMBER_COUNT=" ++ renderCountField "semantic_member_count" obj
+              , "RETAINED_ASSERTION_COUNT=" ++ renderCountField "retained_assertion_count" obj
+              , "RETAINED_ASSERTION_CAPACITY=" ++ renderCountField "retained_assertion_capacity" obj
               , "LAST_PUBLIC_IP=" ++ fallback "<unknown>" (lookupTextField "last_public_ip_observed" obj)
               , "LAST_DNS_WRITE_IP=" ++ fallback "<none>" (lookupTextField "last_dns_write_ip" obj)
               , "LAST_DNS_WRITE_AT=" ++ fallback "<none>" (lookupTextField "last_dns_write_at_utc" obj)
@@ -399,9 +401,9 @@ renderMeshPeers obj =
     [] -> "<none>"
     peers -> intercalate "," peers
 
-renderEventCount :: KeyMap.KeyMap Value -> String
-renderEventCount obj =
-  case KeyMap.lookup (Key.fromString "event_count") obj of
+renderCountField :: String -> KeyMap.KeyMap Value -> String
+renderCountField fieldName obj =
+  case KeyMap.lookup (Key.fromString fieldName) obj of
     Just (Number value) -> renderIntegralText value
     Just (String value) -> Text.unpack value
     _ -> "0"

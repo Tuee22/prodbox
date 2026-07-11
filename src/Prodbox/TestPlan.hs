@@ -4,6 +4,7 @@ module Prodbox.TestPlan
   , TestExecutionMode (..)
   , TestExecutionPlan (..)
   , nativeValidationId
+  , retainedSesRequirementForValidations
   , validationInitialPrerequisites
   , validationDeferredPrerequisites
   , derivedManagedAwsHarnessPolicyTier
@@ -24,6 +25,9 @@ import Prodbox.PrerequisiteId
   , prerequisiteIdEngagesIamHarness
   )
 import Prodbox.Substrate (Substrate (..))
+import Prodbox.TestRestore
+  ( RetainedSesRequirement (..)
+  )
 
 data NativeValidation
   = ValidationChartsVscode
@@ -74,6 +78,14 @@ data TestExecutionPlan = TestExecutionPlan
   , testPlanExecutionMode :: TestExecutionMode
   }
   deriving (Eq, Show)
+
+-- | Derive retained SES preparation from the selected validation capability
+-- alone.  Membership makes duplicate invite selections naturally idempotent;
+-- bootstrap flags and substrate choice cannot affect this result.
+retainedSesRequirementForValidations :: [NativeValidation] -> RetainedSesRequirement
+retainedSesRequirementForValidations validations
+  | ValidationKeycloakInvite `elem` validations = SesRequired
+  | otherwise = SesNotRequired
 
 testExecutionPlan :: Substrate -> TestScope -> TestExecutionPlan
 testExecutionPlan substrate scope =
@@ -386,7 +398,6 @@ canonicalNativeValidations =
   , ValidationPulumi
   , ValidationHaRke2Aws
   , ValidationGatewayDaemon
-  , ValidationGatewayPods
   , ValidationGatewayPartition
   , ValidationChartsPlatform
   , ValidationResourceGuardrails
@@ -397,6 +408,7 @@ canonicalNativeValidations =
   , ValidationEksVolumeRebind
   , ValidationSealedVault
   , ValidationLifecycle
+  , ValidationGatewayPods
   ]
 
 -- | Sprint 5.6: the per-validation initial-gate prerequisites, typed and

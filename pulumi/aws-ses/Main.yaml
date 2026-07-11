@@ -29,6 +29,9 @@ variables:
   receiveRuleName: prodbox-capture-all-mail
   smtpUserName: prodbox-ses-smtp
   s3KeyPrefix: inbound/
+  captureReadinessKey: ${s3KeyPrefix}.prodbox-readiness-capability-probe
+  receiveMxPriority: "10"
+  receiveMxTarget: inbound-smtp.${awsRegion}.amazonaws.com
 
 resources:
   awsProvider:
@@ -69,6 +72,17 @@ resources:
                 Service: ses.amazonaws.com
               Action: s3:PutObject
               Resource: arn:aws:s3:::${captureBucket}/*
+
+  # Harness-owned read canary for the semantic capture-capability gate. The
+  # readiness observer only lists and gets this exact object; it never creates
+  # probe state outside the retained stack reconciler.
+  captureReadinessObject:
+    type: aws:s3:BucketObjectv2
+    properties:
+      bucket: ${captureBucketResource.id}
+      key: ${captureReadinessKey}
+      content: prodbox SES capture readiness
+      contentType: text/plain
 
   # SES domain identity for the configured sending domain. The operator-owned
   # parent Route 53 zone receives the DKIM CNAME records that prove ownership.
@@ -141,7 +155,7 @@ resources:
       ttl: 300
       allowOverwrite: true
       records:
-        - 10 inbound-smtp.${awsRegion}.amazonaws.com
+        - ${receiveMxPriority} ${receiveMxTarget}
 
   # Receive rule set holding the capture rule. Activated via the active
   # rule-set resource below.
@@ -177,10 +191,11 @@ resources:
     properties:
       ruleSetName: ${receiveRuleSet.ruleSetName}
 
-  # IAM user whose long-lived access key is used to derive SMTP credentials
-  # via the SES IAM-to-SMTP credentials algorithm. The Keycloak chart consumes
-  # the derived SMTP password from a K8s secret rendered by the prodbox chart
-  # platform.
+  # IAM user whose Haskell-managed access key is used to derive SMTP
+  # credentials via the SES IAM-to-SMTP credentials algorithm. Pulumi owns the
+  # user and its policy, while the fenced SMTP-key repair interpreter is the
+  # sole access-key creator. The selected target receives the derived SMTP
+  # material only through Vault KV `secret/keycloak/smtp`.
   smtpUser:
     type: aws:iam:User
     properties:
@@ -220,25 +235,22 @@ resources:
                 - s3:DeleteObject
               Resource: arn:aws:s3:::${captureBucket}/*
 
-  smtpUserAccessKey:
-    type: aws:iam:AccessKey
-    properties:
-      user: ${smtpUser.name}
-
 outputs:
   backend_bucket: prodbox-state
+  aws_region: ${awsRegion}
   sending_domain: ${sendingIdentity.domain}
   sending_identity_verification_token: ${sendingIdentity.verificationToken}
   dkim_tokens: ${sendingIdentityDkim.dkimTokens}
   receive_subdomain: ${receiveSubdomain}
   receive_subdomain_mx_fqdn: ${receiveSubdomainMx.fqdn}
+  receive_subdomain_mx_priority: ${receiveMxPriority}
+  receive_subdomain_mx_target: ${receiveMxTarget}
   receive_rule_set_name: ${receiveRuleSet.ruleSetName}
   receive_rule_name: ${receiveRule.name}
   capture_bucket_name: ${captureBucketResource.bucket}
   capture_bucket_arn: ${captureBucketResource.arn}
   capture_bucket_key_prefix: ${s3KeyPrefix}
+  capture_readiness_key: ${captureReadinessObject.key}
   smtp_iam_user_name: ${smtpUser.name}
   smtp_iam_user_arn: ${smtpUser.arn}
-  smtp_iam_access_key_id: ${smtpUserAccessKey.id}
-  smtp_iam_secret_access_key: ${smtpUserAccessKey.secret}
   smtp_endpoint: email-smtp.${awsRegion}.amazonaws.com

@@ -5,7 +5,7 @@
 **Referenced by**: [README.md](./README.md), [../../DEVELOPMENT_PLAN/phase-1-runtime-cli-aws-foundations.md](../../DEVELOPMENT_PLAN/phase-1-runtime-cli-aws-foundations.md), [../../DEVELOPMENT_PLAN/phase-5-canonical-test-suite.md](../../DEVELOPMENT_PLAN/phase-5-canonical-test-suite.md), [unit_testing_policy.md](./unit_testing_policy.md), [integration_fixture_doctrine.md](./integration_fixture_doctrine.md)
 **Generated sections**: none
 
-> **Purpose**: Single source of truth for the executable-sibling `prodbox.test.dhall` — the explicit, self-describing SSoT of one test run — and the `test init` / `test run` surface that stands each declared cluster variant up, asserts it, and always tears it down without ever touching production config, production `.data/`, or a long-lived resource.
+> **Purpose**: Single source of truth for the executable-sibling `prodbox.test.dhall` — the explicit, self-describing SSoT of one test run — and the `test init` / `test run` surface that stands each declared cluster variant up, asserts it, and always tears down per-run state without touching production config/`.data/` or destroying a long-lived resource.
 
 ## 1. A test run is fully described by its test Dhall
 
@@ -159,6 +159,15 @@ the per-run half**: the generated `.build/prodbox.dhall` and this run's `.test-d
 **retains** the authored `prodbox.test.dhall` and **every long-lived resource** — the `aws-ses`
 sending identity and the S3-backed `pulumi_state_backend` bucket, which take minutes to reprovision
 and are shared across runs.
+
+Retention is a cleanup rule, not an exclusion from preparation. This topology doctrine owns only
+the separation: a selected capability may add a visible desired-present action for a registered
+`LongLived` resource, while ordinary teardown still schedules no long-lived destroy. The
+capability projection is owned by
+[Integration Fixture Doctrine §2A](./integration_fixture_doctrine.md#2a-retained-desired-presence-preparation),
+and the authoritative retained-SES ordering, authorities, observations, and readiness contract are
+owned by
+[AWS Integration Environment Doctrine §4.6](./aws_integration_environment_doctrine.md#46-retained-ses-desired-presence-preparation).
 
 Teardown does not invent a parallel cleanup mechanism; it reuses the managed-resource registry.
 The `LifecycleClass PerRun | LongLived | Operational` partition

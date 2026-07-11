@@ -25,6 +25,10 @@ module Prodbox.Vault.Client
   , BootstrapAction (..)
   , KvV2WriteRequest (..)
   , KvV2ReadResponse (..)
+  , KvV2Cas (..)
+  , KvV2CasWriteRequest (..)
+  , KvV2VersionedSecret (..)
+  , KvV2WriteResponse (..)
   , VaultMountInfo (..)
   , VaultMountListing (..)
   , VaultAuthInfo (..)
@@ -54,6 +58,8 @@ module Prodbox.Vault.Client
   , vaultSubmitUnseal
   , vaultSeal
   , vaultKvReadV2
+  , vaultKvReadVersionedV2
+  , vaultKvCasWriteV2
   , vaultKvWriteV2
   , vaultListMounts
   , vaultEnableMount
@@ -319,6 +325,52 @@ instance FromJSON KvV2ReadResponse where
       outer <- o .: "data"
       KvV2ReadResponse <$> outer .: "data"
 
+-- | Vault KV v2 check-and-set version. Version @0@ means create only when the
+-- key is absent; a positive value means replace exactly that version.
+newtype KvV2Cas = KvV2Cas {kvV2CasVersion :: Natural}
+  deriving (Eq, Ord, Show)
+
+data KvV2CasWriteRequest = KvV2CasWriteRequest
+  { kvV2CasWriteData :: !(Map Text Text)
+  , kvV2CasWriteExpectedVersion :: !KvV2Cas
+  }
+  deriving (Eq, Show)
+
+instance ToJSON KvV2CasWriteRequest where
+  toJSON request =
+    object
+      [ "data" .= kvV2CasWriteData request
+      , "options"
+          .= object
+            [ "cas" .= kvV2CasVersion (kvV2CasWriteExpectedVersion request)
+            ]
+      ]
+
+data KvV2VersionedSecret = KvV2VersionedSecret
+  { kvV2VersionedSecretData :: !(Map Text Text)
+  , kvV2VersionedSecretVersion :: !Natural
+  }
+  deriving (Eq, Show)
+
+instance FromJSON KvV2VersionedSecret where
+  parseJSON =
+    withObject "KvV2VersionedSecret" $ \o -> do
+      outer <- o .: "data"
+      fields <- outer .: "data"
+      metadata <- outer .: "metadata"
+      KvV2VersionedSecret fields <$> metadata .: "version"
+
+newtype KvV2WriteResponse = KvV2WriteResponse
+  { kvV2WriteResponseVersion :: Natural
+  }
+  deriving (Eq, Show)
+
+instance FromJSON KvV2WriteResponse where
+  parseJSON =
+    withObject "KvV2WriteResponse" $ \o -> do
+      metadata <- o .: "data"
+      KvV2WriteResponse <$> metadata .: "version"
+
 -- | The @POST \/v1\/transit\/encrypt\/\<key\>@ request body. @plaintext@ is the
 -- base64-encoded plaintext.
 newtype TransitEncryptRequest = TransitEncryptRequest {transitEncryptPlaintextB64 :: Text}
@@ -406,6 +458,42 @@ vaultKvReadV2 address token mount path = do
       [vaultTokenHeader token]
       (vaultUrl address (kvV2DataPath mount path))
   pure (fmap kvV2ReadData result)
+
+-- | Version-preserving KV v2 read used by bounded target-secret readback.
+vaultKvReadVersionedV2
+  :: VaultAddress
+  -> VaultToken
+  -> Text
+  -> Text
+  -> IO (Either HttpError KvV2VersionedSecret)
+vaultKvReadVersionedV2 address token mount path =
+  httpGetJsonWithHeaders
+    defaultHttpConfig
+    [vaultTokenHeader token]
+    (vaultUrl address (kvV2DataPath mount path))
+
+-- | Perform exactly one KV v2 CAS attempt and preserve Vault's resulting
+-- version. A mismatch remains an 'HttpStatus'; the gateway route performs an
+-- authoritative readback and returns a conflict observation without retrying.
+vaultKvCasWriteV2
+  :: VaultAddress
+  -> VaultToken
+  -> Text
+  -> Text
+  -> KvV2Cas
+  -> Map Text Text
+  -> IO (Either HttpError Natural)
+vaultKvCasWriteV2 address token mount path expectedVersion fields = do
+  result <-
+    httpPostJsonWithHeaders
+      defaultHttpConfig
+      [vaultTokenHeader token]
+      (vaultUrl address (kvV2DataPath mount path))
+      KvV2CasWriteRequest
+        { kvV2CasWriteData = fields
+        , kvV2CasWriteExpectedVersion = expectedVersion
+        }
+  pure (kvV2WriteResponseVersion <$> (result :: Either HttpError KvV2WriteResponse))
 
 -- | @POST \/v1\/\<mount\>\/data\/\<path\>@ — write a KV v2 secret's field map.
 -- The 200 response carries version metadata, which is ignored.

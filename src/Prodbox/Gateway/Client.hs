@@ -8,13 +8,22 @@ module Prodbox.Gateway.Client
   , daemonRestartBridgeRetryPolicy
   , gatewayErrorIsTransient
   , retryGatewayTransient
+  , compareAndSwapAuthorityObject
+  , compareAndSwapAuthorityObjectGuarded
+  , getAuthorityClock
   , deletePulumiObject
   , bootstrapVaultUrl
   , childBootstrapUrl
   , childrenUrl
   , ensureVaultBootstrap
+  , getAuthorityObject
   , getPulumiObject
   , issueVaultPkiTestCert
+  , authorityObjectCasUrl
+  , authorityClockUrl
+  , authorityObjectGetUrl
+  , targetSecretCasUrl
+  , targetSecretReadUrl
   , pulumiObjectDeleteUrl
   , pulumiObjectGetUrl
   , pulumiObjectPutUrl
@@ -31,6 +40,10 @@ module Prodbox.Gateway.Client
   , renderGatewayError
   , hostLoopbackGatewayEndpoint
 
+    -- * Bounded target-secret Vault adapter
+  , compareAndSwapTargetSecret
+  , getTargetSecret
+
     -- * Sprint 1.44: operator-write secret endpoint
   , operatorSecretUrl
   , writeOperatorSecret
@@ -45,12 +58,30 @@ import Data.Text (Text)
 import Data.Text.Encoding qualified as TextEncoding
 import Network.HTTP.Types.Header (Header)
 import Prodbox.Gateway.ObjectStore
-  ( PulumiObjectGetResponse (..)
+  ( AuthorityClockRequest (..)
+  , AuthorityClockResponse (..)
+  , AuthorityObjectCasRequest (..)
+  , AuthorityObjectCasResponse
+  , AuthorityObjectLeaseGuard
+  , AuthorityObjectObservation
+  , AuthorityObjectRequest (..)
+  , PulumiObjectGetResponse (..)
   , PulumiObjectPutRequest (..)
   , PulumiObjectRequest (..)
+  , authorityClockPath
+  , authorityObjectCasPath
+  , authorityObjectGetPath
   , pulumiObjectDeletePath
   , pulumiObjectGetPath
   , pulumiObjectPutPath
+  )
+import Prodbox.Gateway.TargetSecret
+  ( TargetSecretCasRequest
+  , TargetSecretCasResponse
+  , TargetSecretObservation
+  , TargetSecretReadRequest
+  , targetSecretCasPath
+  , targetSecretReadPath
   )
 import Prodbox.Gateway.Types (PeerEndpoint (..), peerRestUrl)
 import Prodbox.Http.Client
@@ -184,6 +215,21 @@ pulumiObjectPutUrl endpoint = peerRestUrl endpoint ++ pulumiObjectPutPath
 pulumiObjectDeleteUrl :: PeerEndpoint -> String
 pulumiObjectDeleteUrl endpoint = peerRestUrl endpoint ++ pulumiObjectDeletePath
 
+authorityObjectGetUrl :: String -> String
+authorityObjectGetUrl endpoint = endpoint ++ authorityObjectGetPath
+
+authorityObjectCasUrl :: String -> String
+authorityObjectCasUrl endpoint = endpoint ++ authorityObjectCasPath
+
+authorityClockUrl :: String -> String
+authorityClockUrl endpoint = endpoint ++ authorityClockPath
+
+targetSecretReadUrl :: String -> String
+targetSecretReadUrl endpoint = endpoint ++ targetSecretReadPath
+
+targetSecretCasUrl :: String -> String
+targetSecretCasUrl endpoint = endpoint ++ targetSecretCasPath
+
 -- | Query the gateway daemon's @/v1/state@ endpoint over HTTP. Mirrors the
 -- 5-second timeout used by the legacy curl call site.
 queryState :: PeerEndpoint -> IO (Either GatewayError Value)
@@ -294,6 +340,100 @@ deletePulumiObject endpoint stackName = do
   pure $ case result of
     Left httpErr -> Left (GatewayTransport httpErr)
     Right () -> Right ()
+
+getAuthorityObject
+  :: String
+  -> Text
+  -> IO (Either GatewayError AuthorityObjectObservation)
+getAuthorityObject endpoint logicalName = do
+  let config = defaultHttpConfig {httpRequestTimeoutMicros = 30 * 1000 * 1000}
+      payload = AuthorityObjectRequest logicalName True
+  result <- httpPostJsonResponseJson config (authorityObjectGetUrl endpoint) payload
+  pure $ case result of
+    Left httpErr -> Left (GatewayTransport httpErr)
+    Right observation -> Right observation
+
+compareAndSwapAuthorityObject
+  :: String
+  -> Text
+  -> Maybe Text
+  -> ByteString
+  -> IO (Either GatewayError AuthorityObjectCasResponse)
+compareAndSwapAuthorityObject endpoint logicalName expectedVersion payloadBytes =
+  compareAndSwapAuthorityObjectWithGuard
+    endpoint
+    logicalName
+    expectedVersion
+    Nothing
+    payloadBytes
+
+compareAndSwapAuthorityObjectGuarded
+  :: String
+  -> Text
+  -> Maybe Text
+  -> AuthorityObjectLeaseGuard
+  -> ByteString
+  -> IO (Either GatewayError AuthorityObjectCasResponse)
+compareAndSwapAuthorityObjectGuarded endpoint logicalName expectedVersion guard payloadBytes =
+  compareAndSwapAuthorityObjectWithGuard
+    endpoint
+    logicalName
+    expectedVersion
+    (Just guard)
+    payloadBytes
+
+compareAndSwapAuthorityObjectWithGuard
+  :: String
+  -> Text
+  -> Maybe Text
+  -> Maybe AuthorityObjectLeaseGuard
+  -> ByteString
+  -> IO (Either GatewayError AuthorityObjectCasResponse)
+compareAndSwapAuthorityObjectWithGuard endpoint logicalName expectedVersion maybeGuard payloadBytes = do
+  let config = defaultHttpConfig {httpRequestTimeoutMicros = 30 * 1000 * 1000}
+      payload =
+        AuthorityObjectCasRequest
+          { authorityObjectCasLogicalName = logicalName
+          , authorityObjectCasExpectedVersion = expectedVersion
+          , authorityObjectCasLeaseGuard = maybeGuard
+          , authorityObjectCasPayload = payloadBytes
+          , authorityObjectCasLoopbackNodePortVerified = True
+          }
+  result <- httpPostJsonResponseJson config (authorityObjectCasUrl endpoint) payload
+  pure $ case result of
+    Left httpErr -> Left (GatewayTransport httpErr)
+    Right response -> Right response
+
+getAuthorityClock :: String -> IO (Either GatewayError AuthorityClockResponse)
+getAuthorityClock endpoint = do
+  let config = defaultHttpConfig {httpRequestTimeoutMicros = 5 * 1000 * 1000}
+      payload = AuthorityClockRequest True
+  result <- httpPostJsonResponseJson config (authorityClockUrl endpoint) payload
+  pure $ case result of
+    Left httpErr -> Left (GatewayTransport httpErr)
+    Right response -> Right response
+
+getTargetSecret
+  :: String
+  -> TargetSecretReadRequest
+  -> IO (Either GatewayError TargetSecretObservation)
+getTargetSecret endpoint request = do
+  let config = defaultHttpConfig {httpRequestTimeoutMicros = 30 * 1000 * 1000}
+  result <- httpPostJsonResponseJson config (targetSecretReadUrl endpoint) request
+  pure $ case result of
+    Left httpErr -> Left (GatewayTransport httpErr)
+    Right observation -> Right observation
+
+compareAndSwapTargetSecret
+  :: String
+  -> TargetSecretCasRequest
+  -> IO (Either GatewayError TargetSecretCasResponse)
+compareAndSwapTargetSecret endpoint request = do
+  let config = defaultHttpConfig {httpRequestTimeoutMicros = 30 * 1000 * 1000}
+  result <- httpPostJsonResponseJson config (targetSecretCasUrl endpoint) request
+  pure $ case result of
+    Left httpErr -> Left (GatewayTransport httpErr)
+    Right response -> Right response
 
 postBootstrapPasswordAction :: String -> Text -> IO (Either GatewayError Value)
 postBootstrapPasswordAction url unlockPassword =

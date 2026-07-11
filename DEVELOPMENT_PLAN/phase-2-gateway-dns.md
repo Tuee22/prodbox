@@ -4,7 +4,13 @@
 **Supersedes**: N/A
 **Referenced by**: [README.md](README.md), [00-overview.md](00-overview.md),
 [system-components.md](system-components.md), [the engineering doctrine docs](../documents/engineering/README.md),
-[pulsar_messaging_doctrine.md](../documents/engineering/pulsar_messaging_doctrine.md)
+[pulsar_messaging_doctrine.md](../documents/engineering/pulsar_messaging_doctrine.md),
+[chaos_hardening_doctrine.md](../documents/engineering/chaos_hardening_doctrine.md),
+[distributed_gateway_architecture.md](../documents/engineering/distributed_gateway_architecture.md),
+[pure_fp_standards.md](../documents/engineering/pure_fp_standards.md),
+[resource_scaling_doctrine.md](../documents/engineering/resource_scaling_doctrine.md),
+[streaming_doctrine.md](../documents/engineering/streaming_doctrine.md),
+[tla_modelling_assumptions.md](../documents/engineering/tla_modelling_assumptions.md)
 **Generated sections**: none
 
 > **Purpose**: Capture the Haskell gateway runtime, its formal verification path, the canonical
@@ -13,6 +19,25 @@
 > Binary](../documents/engineering/README.md).
 
 ## Phase Status
+
+✅ **Reclosed 2026-07-10 on bounded gateway execution.** Sprint `2.31` replaces the
+uptime-growing append-log/full-retransmission path with bounded semantic state, signed
+cursor/delta/checkpoint repair, fixed retention, early frame admission, process-wide frame permits,
+and a capacity-one child schedule. Per-emitter Model-B continuity stages and re-observes the exact
+signed assertion/next anchor before publication, while the durable Vault admission marker prevents
+lost continuity from resetting an emitter. `DnsWriteAction` binds validated record inputs, the
+current claim, deterministic credential generation, and a same-lease re-observed continuity fence
+inside a sealed AWS environment. Pure/property, Model-B, loopback daemon, native partition,
+profiling, and finite TLC proofs close the code-owned surface; the deployed restart-free soak stays
+the non-blocking Sprint `5.16` live-proof axis.
+
+**Reopen cause (2026-07-10).** The live suite falsified the implicit
+runtime-refinement assumption behind the current peer log: the three gateway containers repeatedly
+reached the enforced `512Mi` cgroup limit while their Deployments later returned to
+`Available=True`. The then-current daemon appended unique heartbeat events forever, retransmitted
+the full log to every peer, and admitted unbounded request/rejection materialization. Sprint `2.31`
+owns the bounded replacement above. Earlier gateway, DNS, CBOR, federation, and Vault-role closures
+remain valid.
 
 ✅ **Reclosed 2026-07-10 for the gateway-daemon Vault-role SSoT.** Sprint `2.30` is Done on its
 Phase-2-owned gateway/Vault-identity surface. `Prodbox.Vault.RoleId` owns the closed `VaultRoleId`
@@ -82,14 +107,15 @@ canonical base64url event-key encoding, a derive-context `decode . encode == id`
 **restart-based Orders promotion** with the dead `orders_promoted` machinery deleted (D4:
 `stateOrdersVersionUtc` never advances in-process; the refuse-to-reclaim-while-behind gate kept), the
 `markEventProcessed` IS-NULL guard restored, and the topology-honest fault-model reframe (home =
-single-host degenerate single-rank mesh under shared fate; partition tolerance is the AWS /
-future-multi-host capability). Validation at reclosure: `check-code` 0, `test unit` 760,
-`integration cli` 35, `prodbox-daemon-lifecycle` 14/14, `lint docs` 0, `docs check` 0; the live
-`gateway-daemon`/`gateway-pods`/`gateway-partition` integration validations remain operator-driven
-(running cluster required). **Prior closure preserved**: ✅ Done (Sprints `2.1`–`2.16` + `2.17` +
+three logical ranked peers on one physical host under shared fate; independent host-failure
+tolerance is the AWS / future-multi-host capability). Validation at reclosure: `check-code` 0, `test unit` 760,
+`integration cli` 35, `prodbox-daemon-lifecycle` 14/14, `lint docs` 0, `docs check` 0. At that
+reclosure the live `gateway-daemon`/`gateway-pods`/`gateway-partition` validations were still
+operator-driven; the 2026-06-26 run above subsequently proved them. **Prior closure preserved**: ✅
+Done (Sprints `2.1`–`2.16` + `2.17` +
 `2.18` + `2.19` + `2.20` + `2.21` + `2.22`, with Sprint `2.21` closed via the live home-substrate
-file-watch exercise 2026-06-02 — the drain-completion cancellation-propagation residual is deferred
-to a Sprint `2.23` follow-up). The prior closure detail below is retained verbatim.
+file-watch exercise 2026-06-02; Sprint `2.23` subsequently closed the drain-completion
+cancellation-propagation residual). The prior closure detail below is retained as history.
 
 ✅ **Done** — Sprints `2.1`–`2.8` remain `Done` on the gateway runtime, Route 53 ownership,
 peer-transport, claim/yield, time-base, Orders-promotion, and host-info cleanup surfaces. The
@@ -128,12 +154,17 @@ readiness, health, metrics, graceful drain, and forced drain behavior.
 This phase owns the Haskell gateway daemon, DNS inspection command, the pre-Vault daemon bootstrap
 REST surface, and related command surfaces, preserves the formal model entrypoint, and keeps Route
 53 write ownership inside the in-cluster gateway workload. It owns the gateway image packaging
-contract, Harbor-backed image delivery for the gateway workload, DNS inspection, and the TLA+
-entrypoint. The closed phase-owned surfaces
-include the daemon, `prodbox gateway status`, the implemented bounded HTTP `/v1/state` payload,
-Orders-backed interval validation, the runtime-to-model correspondence notes, the peer-transport
-gossip surface, runtime claim/yield emission under the `CanWriteDns` gate, operator-verifiable
-bounded-clock-skew enforcement, and atomic Orders-promotion coordination across the mesh. The
+contract, in-cluster-registry-backed image delivery for the gateway workload, DNS inspection, and the TLA+
+entrypoint. The landed phase-owned surfaces include the daemon, `prodbox gateway status`, bounded
+`/v1/state` diagnostics, bounded Orders admission, runtime-to-model correspondence notes,
+per-emitter cursor/delta transport with signed semantic repair, runtime claim/yield emission under
+`CanWriteDns`, bounded-clock-skew enforcement, and Orders-version coordination. The hot semantic
+projection, replay evidence, parser/frame admission, peer cursors, and diagnostic hashes all have
+finite limits independent of daemon uptime. A per-emitter retained Model-B continuity record
+write-ahead-stages the exact signed assertion and next fixed-width anchor before publication; the
+separate durable admission marker prevents missing retained state from being mistaken for a fresh
+member. Route 53 effects consume a typed credential-and-continuity-authorized action under the
+capacity-one child permit, with no ambient AWS authentication path. The
 gateway container doctrine is implemented on `ubuntu:24.04` with in-image `ghcup`, pinned GHC
 `9.12.4`, no symlinked Haskell tool shims, and the retained in-image AWS CLI bundle. Sprints
 `2.1` through `2.7` now remain closed on the gateway-daemon, native partition validation split,
@@ -147,14 +178,16 @@ API or Envoy Gateway public edge; those surfaces remain in Phases `1`, `3`, `4`,
 **Independent Validation** (Standard N — see
 [development_plan_standards.md](development_plan_standards.md) Standards N/O): this phase is
 validatable in full on its owned surface — the Haskell gateway daemon runtime, peer transport,
-DNS-write-gate logic, claim/yield protocol, Orders-promotion coordination, secret-derivation
+DNS-write-gate logic, claim/yield protocol, Orders-promotion coordination, Vault/object-store
 endpoints, and the formal TLA+ entrypoint — with no dependency on any later phase. The code-owned
 surface closes on local validation (`prodbox dev check`, `prodbox test unit`,
-`prodbox test integration cli`/`env`, the `prodbox-daemon-lifecycle` stanza, and `prodbox dev tla-check`);
+`prodbox test integration cli`/`env`, the `prodbox-daemon-lifecycle` stanza, and `prodbox dev tla-check`)
+for the previously landed surface; Sprint `2.31` adds its own bounded-state and transport proofs;
 where a validation would touch Route 53, a deployed cluster, an unsealed Vault, or running MinIO,
 it is exercised on the home/local substrate or against a stub, and the live-infrastructure exercise
 is tracked as a non-blocking `Live-proof: pending` note rather than as `⏸️ Blocked`. Live AWS or
-deployed-cluster proof never gates this phase's closure or reopens it.
+deployed-cluster proof never becomes a backward dependency; a demonstrated defect in this phase's
+own runtime, such as the July 10 unbounded-memory counterexample, does reopen the owned surface.
 
 ## Current Baseline In Worktree
 
@@ -168,27 +201,39 @@ deployed-cluster proof never gates this phase's closure or reopens it.
   `ghcup` in-image, pins GHC `9.12.4`, retains `tini` as PID 1 and the official AWS CLI bundle per
   native Debian host architecture, and does not depend on the old mounted `haskell:9.6.7-slim`
   toolchain context or symlinked GHC tool shims.
-- The in-cluster gateway steady state is repo-rootless: `app/prodbox/Main.hs` now permits
-  repo-rootless `gateway start|status`, and `charts/gateway/` injects AWS credentials through the
-  `gateway-aws-credentials` secret while probing `/v1/state` over HTTP on the in-pod REST port.
-- `src/Prodbox/Gateway.hs` now queries daemon state over the governed bounded HTTP `/v1/state`
-  observability surface, matching the chart probes and the in-pod REST listener in
-  `src/Prodbox/Gateway/Daemon.hs`.
-- `src/Prodbox/Gateway/Daemon.hs` now renders the documented bounded `/v1/state` payload fields
-  used for operator and integration observability, including a bounded recent `event_hashes` tail
-  and `heartbeat_age_seconds`.
+- The in-cluster gateway steady state is repo-rootless: `app/prodbox/Main.hs` permits repo-rootless
+  `gateway start|status`, and `charts/gateway/` supplies typed `SecretRef.Vault` references that the
+  daemon resolves through Vault Kubernetes auth. Sprint `3.25` subsequently bound chart liveness
+  to `/healthz` and readiness to `/readyz`; `/v1/state` remains operator diagnostics only.
+- `src/Prodbox/Gateway.hs` queries daemon state over `/v1/state`, matching the in-pod REST listener
+  in `src/Prodbox/Gateway/Daemon.hs`. The response exposes finite semantic/replay counts, a
+  fixed-capacity recent-assertion hash tail, bounded per-peer/per-emitter receive cursors, and the
+  already-observed continuity disposition. It does not expose a process-lifetime event total or
+  traverse an append-only history.
 - `src/Prodbox/Gateway/Types.hs` now enforces the documented cross-field interval relationships
   from `documents/engineering/distributed_gateway_architecture.md` against the Orders timeout.
 - `src/Prodbox/Gateway/Types.hs` parses certificate, key, CA, and socket metadata in the daemon
-  config and Orders document. `src/Prodbox/Gateway/Peer.hs` plus the `peerListenerLoop` and
-  `peerDialerLoop` threads in `src/Prodbox/Gateway/Daemon.hs` materialize peer transport over the
-  configured peer-events port: each daemon pushes its commit log to every other peer at the
-  reconnect interval, receivers ingest signed event batches via `appendIfNew`, update
-  `stateLastHeartbeatTimes` from inbound timestamps, and refuse events whose timestamps exceed
-  `daemonMaxClockSkewSeconds` or whose senders present an older Orders version. The daemon now
-  validates the retained certificate, key, and CA files at startup and binds the REST plus
-  peer-events listeners on the configured local Orders hosts instead of treating those values as
-  parsed metadata only.
+  config and Orders document. `src/Prodbox/Gateway/Bounds.hs`, `State.hs`, `Orders.hs`, and
+  `Peer.hs` admit only finite membership/field/frame inputs, fold signed assertions into keyed
+  latest-heartbeat/ownership state, and exchange bounded per-emitter deltas. A receiver that falls
+  behind the replay checkpoint receives a signed compact heartbeat/ownership snapshot plus a
+  bounded contiguous suffix; duplicates and reordering cannot grow the projection. The daemon
+  updates inbound heartbeat observations, rejects excessive clock skew or stale Orders, validates
+  retained certificate/key/CA material, and binds the REST and peer listeners on the configured
+  local Orders hosts.
+- `src/Prodbox/Gateway/Continuity.hs` and `ContinuityStore.hs` implement per-emitter Model-B
+  continuity at `continuity/<emitter>`. Each record contains one committed fixed-width
+  epoch/sequence/digest anchor and at most one exact staged signed assertion with its next anchor.
+  The retained record preserves safe emission continuity across total peer restart; current peer
+  semantic evidence is repaired by bounded peer snapshots after restart rather than claimed to be
+  persisted in the continuity record. Vault KV
+  `secret/prodbox/gateway/continuity-admission/<node>` records one-time admission, so a previously admitted
+  emitter with a missing, corrupt, or unobservable continuity object stays emission/claim/DNS
+  disabled.
+- `src/Prodbox/Gateway/DnsAuthority.hs` binds validated record inputs, the active claim,
+  deterministic credential generation, and the re-observed continuity fence into `DnsWriteAction`.
+  `src/Prodbox/Gateway/ChildSchedule.hs` serializes every gateway object-store, Vault, public-IP,
+  and Route 53 child through Sprint `1.60`'s capacity-one schedule and bounded deadline.
 - The Haskell `prodbox gateway ...` surface remains distinct from the Envoy Gateway public edge
   surface.
 - `src/Prodbox/Dns.hs` owns the public `prodbox dns check` surface. All Python DNS wrappers have
@@ -202,18 +247,21 @@ deployed-cluster proof never gates this phase's closure or reopens it.
   `prodbox dev tla-check`.
 - `src/Prodbox/TestPlan.hs` maps the gateway validation names into Haskell-owned validation
   entrypoints in `src/Prodbox/TestValidation.hs`, and `gateway-partition` now runs as a distinct
-  native partition scenario with explicit single-writer and commit-log report markers instead of
-  delegating to `tla-check`.
+  native partition scenario with explicit bounded-delta idempotency and single-writer/rejoin report
+  markers instead of delegating to `tla-check`.
 - `src/Prodbox/Host.hs` now accepts only the supported `System clock synchronized` timedatectl
   field in `parseTimedatectlNtpDisposition`, so the Phase `2` host-info path closes on the Ubuntu
   24.04 field format named by the current doctrine.
 - The canonical closure gates for this phase are `prodbox dns check`, the named gateway
   integration validations, and `prodbox dev tla-check`.
 
-## Sprint 2.1: Haskell Gateway Runtime and Command Surface ✅
+## Sprint 2.1: Haskell Gateway Runtime and Command Surface [✅ Done]
 
 **Status**: Done
 **Implementation**: `src/Prodbox/Dns.hs`, `src/Prodbox/Gateway.hs`, `src/Prodbox/Gateway/Daemon.hs`, `src/Prodbox/Gateway/Types.hs`, `charts/gateway/`, `docker/prodbox.Dockerfile`, `test/unit/Main.hs`, `test/integration/CliSuite.hs`
+**Independent Validation**: native parser/renderer and bounded daemon tests, the built CLI suite,
+and the home/local gateway validations exercise this command/runtime surface without any later
+phase; live infrastructure remains an orthogonal Standard-O axis.
 **Docs to update**: `documents/engineering/cli_command_surface.md`, `documents/engineering/dependency_management.md`, `documents/engineering/distributed_gateway_architecture.md`, `documents/engineering/local_registry_pipeline.md`, `documents/engineering/unit_testing_policy.md`
 
 ### Objective
@@ -228,12 +276,14 @@ while preserving the implemented runtime contract and container doctrine.
   image built from the union runtime `docker/prodbox.Dockerfile`, with in-image `ghcup` pinned to GHC `9.12.4`,
   no symlinked Haskell tool shims, and the official AWS CLI bundle per native Debian host
   architecture.
-- Gateway image delivery uses Harbor as the only supported cluster image source.
+- Gateway image delivery uses the single-binary in-cluster `registry:2` service as the only
+  supported steady-state cluster image source. Its retained namespace/front-door naming may still
+  say `harbor`, but no Harbor product or UI is present.
 - Gateway image publication follows the lifecycle-owned native-host-architecture doctrine:
   `amd64` hosts publish `amd64` images, and `arm64` hosts publish `arm64` images.
 - Gateway event-key continuity and state inspection move to Haskell-owned modules.
-- The daemon and `prodbox gateway status` close on the implemented bounded HTTP `/v1/state`
-  observability transport and payload.
+- The daemon and `prodbox gateway status` share one native `/v1/state` transport whose retained
+  state, computation, and output are bounded independently of uptime by Sprint `2.31`.
 - Native gateway config parsing enforces the documented cross-field gateway-interval relationships.
 - The target steady state remains the in-cluster gateway workload; no host-side daemon is revived.
 
@@ -246,8 +296,8 @@ while preserving the implemented runtime contract and container doctrine.
 5. `prodbox test integration gateway-pods`
 6. Gateway image proof: the union runtime `docker/prodbox.Dockerfile` is single-stage `ubuntu:24.04`, installs
    `ghcup`, pins GHC `9.12.4`, and does not create symlinked Haskell tool shims
-7. Harbor proof: the gateway image is available from Harbor for the native architecture of the
-   supported host and cluster
+7. Registry proof: the gateway image is available from the in-cluster `registry:2` service for the
+   native architecture of the supported host and cluster
 8. Aggregate reruns: `prodbox test integration all` and `prodbox test all`
 
 ### Current Validation State
@@ -257,19 +307,19 @@ while preserving the implemented runtime contract and container doctrine.
 - `src/Prodbox/Gateway.hs` owns the public `prodbox gateway start|status|config-gen` surfaces;
   `gateway start` runs through the native Haskell daemon runtime in
   `src/Prodbox/Gateway/Daemon.hs` using `runGatewayDaemon`.
-- `src/Prodbox/Gateway/Types.hs` provides core gateway types: `PeerEndpoint`, `GatewayRule`,
-  `Orders`, `SignedEvent`, `CommitLog`, `DaemonConfig`, `DnsWriteGate`, and config parsing.
-- The same parsing layer retains certificate, key, CA, and socket metadata in the current config
-  model and `src/Prodbox/Gateway/Peer.hs` plus the `peerListenerLoop` and `peerDialerLoop`
-  threads in `src/Prodbox/Gateway/Daemon.hs` materialize peer transport over the configured
-  peer-events port (Sprint `2.4`).
+- `src/Prodbox/Gateway/Types.hs` provides the daemon/config boundary, while `Bounds.hs`, `State.hs`,
+  and `Orders.hs` own the validated bounded protocol values and semantic projection.
+- The parsing layer retains certificate, key, CA, and socket metadata in the current config model;
+  `src/Prodbox/Gateway/Peer.hs` and the daemon materialize bounded cursor/delta/repair transport over
+  the configured peer-events port.
 - `src/Prodbox/Gateway/Daemon.hs` provides the daemon runtime: heartbeat loop, gateway ownership
-  loop, DNS write loop, HTTP REST server, and HMAC event signing. The state payload now exposes
-  total `event_count`, a bounded recent `event_hashes` tail, `heartbeat_age_seconds`, and the
-  DNS-write observability fields described by the gateway doctrine.
-- `src/Prodbox/Gateway.hs` now dials daemon state over the same bounded HTTP `/v1/state`
-  endpoint used by the in-cluster liveness and readiness probes, so the public status path and
-  the daemon listener close on one native transport contract.
+  loop, DNS write loop, HTTP REST server, and HMAC assertion signing. The state payload exposes
+  bounded semantic/replay counts, a fixed recent-assertion hash ring, bounded nested peer cursors,
+  `heartbeat_age_seconds`, and the DNS/continuity observability fields described by the gateway
+  doctrine.
+- `src/Prodbox/Gateway.hs` dials daemon state over `/v1/state`, so the public status path and daemon
+  listener share one native transport. The historical use of that diagnostic route for in-cluster
+  probes was removed by Sprint `3.25`.
 - `src/Prodbox/Gateway/Daemon.hs` now drains the inbound REST request before closing the socket,
   keeping loopback-restricted NodePort-backed `prodbox gateway status` and the corresponding
   `gateway-daemon` validation path on one complete-response HTTP contract.
@@ -288,21 +338,25 @@ while preserving the implemented runtime contract and container doctrine.
   GHC tool shims.
 - the union runtime `docker/prodbox.Dockerfile` installs the official AWS CLI bundle from the native Debian host
   architecture detected at build time.
-- `src/Prodbox/CLI/Rke2.hs` publishes the gateway image through Harbor-backed native-host-
-  architecture Docker build and push flows with no mounted `haskell-toolchain` context.
-- `src/Prodbox/Lib/ChartPlatform.hs` resolves the supported gateway chart image through Harbor.
-- `charts/gateway/` now keeps the pod contract repo-rootless by removing the stale
-  `prodbox-config.json` mount, rendering the `gateway-aws-credentials` secret, wiring AWS auth
-  through env vars, and probing the daemon's `/v1/state` health endpoint over HTTP.
+- `src/Prodbox/CLI/Rke2.hs` publishes the gateway image through native-host-architecture Docker
+  build and anonymous push flows into the in-cluster `registry:2` service, with no mounted
+  `haskell-toolchain` context.
+- `src/Prodbox/Lib/ChartPlatform.hs` resolves the supported gateway chart image through that
+  in-cluster registry.
+- `charts/gateway/` keeps the pod contract repo-rootless, supplies typed `SecretRef.Vault`
+  references resolved through Vault Kubernetes auth, and renders the Sprint `3.25` typed
+  `/healthz` liveness plus `/readyz` readiness bindings.
 
 ### Remaining Work
 
 None.
 
-## Sprint 2.2: Formal Verification Entrypoint and DNS-Write-Gate Contract ✅
+## Sprint 2.2: Formal Verification Entrypoint and DNS-Write-Gate Contract [✅ Done]
 
 **Status**: Done
 **Implementation**: `src/Prodbox/Tla.hs`, `documents/engineering/tla/`, `test/unit/Main.hs`, `src/Prodbox/TestPlan.hs`, `src/Prodbox/TestValidation.hs`
+**Independent Validation**: `prodbox dev tla-check`, the native partition fixture, and local parser
+tests exercise the formal entrypoint and model correspondence without a later phase or live AWS.
 **Docs to update**: `documents/engineering/cli_command_surface.md`, `documents/engineering/distributed_gateway_architecture.md`, `documents/engineering/tla/README.md`, `documents/engineering/tla_modelling_assumptions.md`
 
 ### Objective
@@ -342,10 +396,13 @@ gateway port.
 
 None.
 
-## Sprint 2.3: Single-Record Route 53 Ownership and Diagnostics ✅
+## Sprint 2.3: Single-Record Route 53 Ownership and Diagnostics [✅ Done]
 
 **Status**: Done
 **Implementation**: `src/Prodbox/Dns.hs`, `src/Prodbox/Gateway.hs`, `src/Prodbox/Gateway/Types.hs`, `src/Prodbox/TestPlan.hs`, `src/Prodbox/TestValidation.hs`, `documents/engineering/tla_modelling_assumptions.md`
+**Independent Validation**: pure DNS classification and generated-config tests plus the local TLA+
+and partition fixtures prove the one-record ownership contract; Route 53 observation is exercised
+on the home/local substrate and is not a later-phase dependency.
 **Docs to update**: `documents/engineering/cli_command_surface.md`, `documents/engineering/distributed_gateway_architecture.md`, `documents/engineering/tla/README.md`, `documents/engineering/tla_modelling_assumptions.md`
 
 ### Objective
@@ -388,16 +445,20 @@ single supported public record `test.resolvefintech.com`.
 
 None.
 
-## Sprint 2.4: Peer Heartbeat Transport and Commit-Log Gossip ✅
+## Sprint 2.4: Peer Heartbeat Transport and Commit-Log Gossip [✅ Done]
 
 **Status**: Done
 **Implementation**: `src/Prodbox/Gateway/Daemon.hs`, `src/Prodbox/Gateway/Types.hs`, `src/Prodbox/Gateway/Peer.hs`, `charts/gateway/`, `test/unit/Main.hs`
+**Independent Validation**: pure codec/signature/admission tests and the loopback daemon plus native
+partition fixtures validate peer transport locally. Sprint `2.31` supersedes the original batch/log
+shape without changing this sprint's independently proved listener/trust-material boundary.
 **Docs to update**: `documents/engineering/distributed_gateway_architecture.md`, `documents/engineering/tla_modelling_assumptions.md`
 
 ### Objective
 
-Materialize the documented peer-transport surface so each gateway daemon dials its mesh peers,
-exchanges signed heartbeats, and replicates the append-only commit log. The closed runtime
+Materialize the then-documented peer-transport surface so each gateway daemon dials its mesh peers,
+exchanges signed heartbeats, and replicates the append-only commit log. This is the historical
+Sprint-`2.4` delivery record; Sprint `2.31` supersedes the log/transport representation. The landed runtime
 maintains every node's view of every other node's last heartbeat from observed peer traffic
 rather than from local self-update only, closing the documented gap between the in-cluster
 runtime and the TLA+ model's peer-communication assumptions.
@@ -409,10 +470,12 @@ runtime and the TLA+ model's peer-communication assumptions.
   inbound heartbeats against the configured per-node HMAC keys in `daemonEventKeys`.
 - `stateLastHeartbeatTimes` is updated from inbound peer events rather than from the local
   heartbeat loop only.
-- The append-only commit log replicates between nodes as the canonical heartbeat-and-event
-  transport, with idempotent acceptance of repeated events through `appendIfNew`.
-- The HTTP `/v1/state` payload exposes per-peer transport health under `peer_transport`,
-  including connect state, last inbound event age, and last error.
+- At Sprint `2.4` closure, the append-only commit log replicated between nodes with idempotent
+  acceptance through `appendIfNew`; Sprint `2.31` replaces that now-unsupported representation
+  with bounded semantic state and per-emitter/vector-cursor deltas.
+- At Sprint `2.4` closure, `/v1/state` exposed per-peer transport health under `peer_transport`.
+  Sprint `2.25` replaced that field with bounded `peer_inbound_health` and
+  `peer_outbound_health`, and Sprint `2.31` added bounded nested receive cursors.
 - `charts/gateway/` keeps the per-pod peer endpoint and trust material in place so the in-cluster
   steady state opens the documented peer mesh.
 - `documents/engineering/tla_modelling_assumptions.md` records that peer transport is now
@@ -428,30 +491,32 @@ runtime and the TLA+ model's peer-communication assumptions.
 5. `prodbox test integration gateway-partition`
 6. `prodbox dev tla-check`
 
-### Current Validation State
+### Historical Validation State and Current Replacement
 
-- `src/Prodbox/Gateway/Peer.hs` defines the wire-level peer transport: HTTP framing parser,
-  signed event batch encoding, per-event HMAC verification, and the pure `handlePeerRequest`
-  helper that splits a batch into accepted/rejected lists with explicit reasons.
-- `src/Prodbox/Gateway/Daemon.hs` adds `peerListenerLoop` and `peerDialerLoop`, ingests inbound
-  events through one atomic STM transaction, refreshes per-peer health, and exposes the new
-  fields on `/v1/state`.
+- At Sprint `2.4` closure, `src/Prodbox/Gateway/Peer.hs` implemented the original signed-event batch
+  and pure acceptance/rejection boundary. Sprint `2.31` removes that batch and now uses bounded
+  canonical-CBOR cursor/delta/repair frames carrying `SignedAssertion` values.
+- `src/Prodbox/Gateway/Daemon.hs` retains the listener/dialer boundary, ingests bounded signed
+  assertions through atomic STM updates, and renders the split bounded health/cursor diagnostics.
 - The daemon now validates the retained certificate, key, and CA files before startup, resolves
   config-relative trust-material paths through `prodbox gateway start`, and binds the REST plus
   peer-events listeners on the configured local Orders hosts so the retained socket fields close
   on the authoritative runtime transport contract described by this sprint.
-- `test/unit/Main.hs` proves disposition computation, the runtime `canWriteDns` predicate, peer
-  batch round-trip, and rejection paths for unknown emitters, signature mismatches, and
-  excessive timestamp skew.
+- Current unit coverage proves disposition computation, the runtime DNS predicate, bounded
+  cursor/delta/repair round trips, and rejection paths for unknown emitters, signature mismatches,
+  stale Orders, excessive timestamp skew, and oversized frames.
 
 ### Remaining Work
 
 None.
 
-## Sprint 2.5: Runtime Claim/Yield Emission and DNS-Write Gating ✅
+## Sprint 2.5: Runtime Claim/Yield Emission and DNS-Write Gating [✅ Done]
 
 **Status**: Done
 **Implementation**: `src/Prodbox/Gateway/Daemon.hs`, `src/Prodbox/Gateway/Types.hs`, `test/unit/Main.hs`
+**Independent Validation**: pure ownership/DNS-authority tables, bounded state-fold tests, the
+native partition fixture, and the finite TLA+ model prove claim-before-write and yield-before-
+reclaim without a later phase or live Route 53 mutation.
 **Docs to update**: `documents/engineering/distributed_gateway_architecture.md`, `documents/engineering/tla_modelling_assumptions.md`
 
 ### Objective
@@ -463,13 +528,14 @@ partition heal that today is benign only because Route 53 UPSERT happens to be i
 
 ### Deliverables
 
-- `gatewayLoop` emits a signed `claim` event into the commit log on the non-owner-to-owner
-  transition and a signed `yield` event on the owner-to-non-owner transition.
+- `gatewayLoop` emits a signed bounded `OwnershipClaim` assertion on the non-owner-to-owner
+  transition and a signed bounded `OwnershipYield` assertion on the owner-to-non-owner transition;
+  Sprint `2.31` removes the historical commit-log carrier.
 - `dnsWriteLoop` writes the Route 53 record only when the local node is owner AND the most
   recent applicable claim event is the local node's claim AND no later yield from the local node
   is present, via the runtime `canWriteDns` predicate.
-- `ClaimPrecedesWrite` and `YieldPrecedesReclaim` from the TLA+ spec hold on the runtime event
-  log, not only on the model.
+- `ClaimPrecedesWrite` and `YieldPrecedesReclaim` from the TLA+ spec hold on the bounded semantic
+  ownership projection, not only on the model.
 - `/v1/state` exposes the current `node_disposition` and `peer_dispositions` plus `can_write_dns`.
 - A stale owner cannot reclaim DNS write authority without first observing its own yield being
   superseded by a fresh claim.
@@ -486,19 +552,23 @@ partition heal that today is benign only because Route 53 UPSERT happens to be i
 
 - `nodeDisposition` and `canWriteDns` in `src/Prodbox/Gateway/Types.hs` compute the runtime
   predicate without IO and are exercised in unit tests.
-- `gatewayLoop` records `statePreviousOwner` so transition detection is precise across cycles
-  and emits ownership events through the configured event key.
+- `gatewayLoop` records `statePreviousOwner` so transition detection is precise across cycles and
+  publishes continuity-staged ownership assertions through the configured event key.
 - `/v1/state` now renders `can_write_dns`, `node_disposition`, and `peer_dispositions`
-  alongside the historical owner and event-count fields.
+  alongside bounded semantic/replay/cursor and continuity diagnostics; it exposes no process-
+  lifetime event total.
 
 ### Remaining Work
 
 None.
 
-## Sprint 2.6: Operator Time-Base Discipline ✅
+## Sprint 2.6: Operator Time-Base Discipline [✅ Done]
 
 **Status**: Done
 **Implementation**: `src/Prodbox/Host.hs`, `src/Prodbox/Gateway/Daemon.hs`, `src/Prodbox/Gateway/Types.hs`, `src/Prodbox/Gateway/Peer.hs`, `test/unit/Main.hs`
+**Independent Validation**: pure `timedatectl` disposition and signed-assertion skew tables plus
+the local daemon fixture validate the time-base gate without a later phase; operator host
+observation is a direct Phase-2 check.
 **Docs to update**: `documents/engineering/distributed_gateway_architecture.md`, `documents/engineering/tla_modelling_assumptions.md`
 
 ### Objective
@@ -539,10 +609,13 @@ limit rather than to an implicit operator assumption.
 
 None.
 
-## Sprint 2.7: Orders-Promotion Coordination ✅
+## Sprint 2.7: Orders-Promotion Coordination [✅ Done]
 
 **Status**: Done
 **Implementation**: `src/Prodbox/Gateway/Daemon.hs`, `src/Prodbox/Gateway/Types.hs`, `src/Prodbox/Gateway/Peer.hs`, `test/unit/Main.hs`
+**Independent Validation**: pure Orders-version admission/state tests, the native partition fixture,
+and the finite TLA+ model validate the stale-node refusal and restart-based promotion contract
+without any later phase.
 **Docs to update**: `documents/engineering/distributed_gateway_architecture.md`, `documents/engineering/tla_modelling_assumptions.md`
 
 ### Objective
@@ -557,8 +630,8 @@ disagree with a peer's view of `RankOrder`.
 - Orders documents carry the existing monotonic `version_utc` field, peer push messages include
   the sender's `orders_version_utc`, and the receiver returns `409 Conflict` when the sender's
   view is older than the local view.
-- The daemon tracks the highest observed Orders version on `/v1/state` and propagates that
-  observation through commit-log gossip.
+- The daemon tracks the highest observed Orders version on `/v1/state`; bounded cursor/delta/repair
+  requests carry the sender Orders version and reject stale senders before semantic application.
 - A daemon rebooting against a stale Orders version refuses to claim ownership in `gatewayLoop`
   while `stateLatestObservedOrdersVersion > stateOrdersVersionUtc`.
 - `documents/engineering/tla_modelling_assumptions.md` records the Orders-version invariant and
@@ -574,8 +647,9 @@ disagree with a peer's view of `RankOrder`.
 
 ### Current Validation State
 
-- `PeerEventBatch` carries `sender_orders_version_utc` end to end in `src/Prodbox/Gateway/Peer.hs`,
-  and `ingestPeerBatch` returns `PeerResponseStaleOrders` when the sender's view is older.
+- Bounded peer cursor/delta/repair requests carry `sender_orders_version_utc` end to end in
+  `src/Prodbox/Gateway/Peer.hs`; stale sender Orders and a locally observed newer Orders version are
+  rejected before semantic application.
 - `gatewayLoop` blocks ownership claims while the latest observed Orders version is newer than
   the local one, and `/v1/state` reports both `orders_version_utc` and
   `latest_observed_orders_version_utc`.
@@ -584,10 +658,12 @@ disagree with a peer's view of `RankOrder`.
 
 None.
 
-## Sprint 2.8: Remove Legacy `timedatectl` NTP Field Fallback ✅
+## Sprint 2.8: Remove Legacy `timedatectl` NTP Field Fallback [✅ Done]
 
 **Status**: Done
 **Implementation**: `src/Prodbox/Host.hs`, `test/unit/Main.hs`, `DEVELOPMENT_PLAN/legacy-tracking-for-deletion.md`
+**Independent Validation**: pure parser tables and repository text search prove the unsupported
+fallback is absent; `prodbox host info` exercises the supported field directly with no later phase.
 **Docs to update**: `DEVELOPMENT_PLAN/README.md`, `DEVELOPMENT_PLAN/00-overview.md`, `DEVELOPMENT_PLAN/phase-2-gateway-dns.md`, `DEVELOPMENT_PLAN/phase-6-clean-room-handoff.md`, `DEVELOPMENT_PLAN/legacy-tracking-for-deletion.md`
 
 ### Objective
@@ -620,14 +696,14 @@ described by the current doctrine.
   returns `NtpUnknown` when only the legacy `NTP synchronized` field is present.
 - `test/unit/Main.hs` keeps the supported-field and legacy-field parsing outcomes explicit in the
   host NTP disposition suite.
-- [legacy-tracking-for-deletion.md](legacy-tracking-for-deletion.md) records the fallback removal
-  in `Completed`, and the pending-removal ledger is back at zero items.
+- [legacy-tracking-for-deletion.md](legacy-tracking-for-deletion.md) records the fallback removal in
+  `Completed`; at this sprint's closure the pending-removal ledger returned to zero.
 
 ### Remaining Work
 
 None.
 
-## Sprint 2.9: Explicit Daemon Lifecycle ✅
+## Sprint 2.9: Explicit Daemon Lifecycle [✅ Done]
 
 **Status**: Done (with May 24, 2026 revision note for the pure-Dhall config doctrine
 adoption — Sprint 0.8). Under
@@ -638,6 +714,9 @@ BootConfig diff, daemon drains, exits with `ExitSuccess`, and the kubelet restar
 Pod. No Sprint 2.9 deliverable regresses; the drain bracket gains a new caller in
 Sprint 2.21.
 **Implementation**: `src/Prodbox/Gateway/Daemon.hs`, `src/Prodbox/Gateway.hs`
+**Independent Validation**: the daemon-lifecycle process fixture and pure lifecycle/worker tests
+exercise acquire, serve, bounded drain, force-drain, and failure classification locally with fake
+prerequisites and no later-phase dependency.
 **Docs to update**: `documents/engineering/distributed_gateway_architecture.md`,
 `documents/engineering/effect_interpreter.md`
 
@@ -735,10 +814,13 @@ Adopt [distributed_gateway_architecture.md#daemon-lifecycle](../documents/engine
 
 None.
 
-## Sprint 2.10: /healthz, /readyz, /metrics Endpoints ✅
+## Sprint 2.10: /healthz, /readyz, /metrics Endpoints [✅ Done]
 
 **Status**: Done
 **Implementation**: `src/Prodbox/Gateway/Daemon.hs`, `src/Prodbox/CheckCode.hs`, `test/daemon-lifecycle/Main.hs`, `test/golden/daemon-health/`
+**Independent Validation**: real loopback daemon endpoint tests, response goldens, and source guards
+prove constant-time health/readiness plus the typed metrics registry without Kubernetes or a later
+phase.
 **Docs to update**: `documents/engineering/distributed_gateway_architecture.md`
 
 ### Objective
@@ -786,7 +868,7 @@ Adopt [distributed_gateway_architecture.md#daemon-lifecycle](../documents/engine
 
 None.
 
-## Sprint 2.11: BootConfig / LiveConfig Split with Mounted-Dhall File-Watch Reload ✅
+## Sprint 2.11: BootConfig / LiveConfig Split with Mounted-Dhall File-Watch Reload [✅ Done]
 
 **Status**: Done — implementation landed via Sprints 2.20 (daemon Dhall settings
 module) and 2.21 (file-watch trigger + drain-and-exit; live closure 2026-06-02).
@@ -798,6 +880,9 @@ Pod. The legacy SIGHUP handler, the `config_boot_changes_ignored` "ignore and
 continue" branch, and the JSON-flat-compat schema branch are removed; see
 [legacy-tracking-for-deletion.md](legacy-tracking-for-deletion.md).
 **Implementation**: `src/Prodbox/Gateway/Daemon.hs`, `src/Prodbox/Gateway/Types.hs`
+**Independent Validation**: pure boot/live diff classification, daemon-lifecycle reload/drain tests,
+and the recorded home file-watch exercise validate the mounted-Dhall contract on this phase's own
+surface; no later phase is required.
 **Docs to update**: `documents/engineering/distributed_gateway_architecture.md`,
 `documents/engineering/aws_integration_environment_doctrine.md`
 
@@ -898,7 +983,7 @@ Adopt [distributed_gateway_architecture.md#daemon-lifecycle](../documents/engine
 
 None.
 
-## Sprint 2.12: Structured JSON Logging via co-log ✅
+## Sprint 2.12: Structured JSON Logging via co-log [✅ Done]
 
 **Status**: Done (with May 24, 2026 revision note: the LiveConfig log-level refresh
 contract survives unchanged; the trigger relabels from "SIGHUP reload" to "file-watch
@@ -909,6 +994,8 @@ source changes from `installHandler sigHUP` to the file watcher in Sprint 2.21.
 **Implementation**: `src/Prodbox/Gateway/Logging.hs`, `src/Prodbox/Gateway/Daemon.hs`,
 `src/Prodbox/Workload.hs`, `src/Prodbox/CheckCode.hs`, `test/daemon-lifecycle/Main.hs`,
 `test/haskell-style/Main.hs`
+**Independent Validation**: pure severity/rendering tests, daemon-lifecycle stderr capture, and
+Haskell source guards prove structured logging and reload-sensitive filtering without a later phase.
 **Docs to update**: `documents/engineering/distributed_gateway_architecture.md`,
 `documents/engineering/code_quality.md`
 
@@ -974,7 +1061,7 @@ threshold for later calls. `prodbox-daemon-lifecycle` covers the stderr JSON env
 hot-reload log-level path, and `prodbox-haskell-style` / `prodbox dev check` guard the
 dependency boundary, direct terminal writes, and inline log-object construction.
 
-## Sprint 2.13: Test Hooks in Env, At-Least-Once Formalization ✅
+## Sprint 2.13: Test Hooks in Env, At-Least-Once Formalization [✅ Done]
 
 **Status**: Done (with May 24, 2026 revision note: the daemon `Env` hook contract is
 unchanged; the lifecycle test stanza extends in Sprint 2.21 to cover the new file-watch
@@ -982,6 +1069,9 @@ reload trigger as well as the SIGHUP-based reload trigger it supersedes, per
 [unit_testing_policy.md](../documents/engineering/unit_testing_policy.md) "Daemon
 lifecycle tests" row).
 **Implementation**: `src/Prodbox/Gateway/Daemon.hs`, `src/Prodbox/Daemon/Events.hs`
+**Independent Validation**: injected-hook unit/process tests and deterministic `Daemon.Events`
+record/process tables validate the test seam and durable at-least-once pattern without external
+services or a later phase.
 **Docs to update**: `documents/engineering/unit_testing_policy.md`,
 `documents/engineering/distributed_gateway_architecture.md`
 
@@ -996,8 +1086,10 @@ Adopt [distributed_gateway_architecture.md#test-hooks-in-env](../documents/engin
   (`envAfterPeerEventCommit`, `envBeforeOrdersAdoption`, `envOnPeerConnectionEstablished`,
   and any timing-sensitive points currently relying on `threadDelay`).
 - Replace `threadDelay`-based test waits with hook injection.
-- Make the commit log's at-least-once contract explicit: every persisted event carries a
-  processed marker, handlers are documented idempotent, and replay orders by `created_at ASC`.
+- Make the durable `Prodbox.Daemon.Events` at-least-once contract explicit: every persisted event
+  carries a processed marker, handlers are documented idempotent, and replay orders by
+  `created_at ASC`. Gateway peer anti-entropy is a separate bounded in-memory protocol under Sprint
+  `2.31`, not a durable event log.
 - Sprint 0.4 round-3 extension: bind the production-no-op / test-injected hook
   contract pattern explicitly per
   [distributed_gateway_architecture.md#daemon-lifecycle](../documents/engineering/distributed_gateway_architecture.md#daemon-lifecycle). Every hook field on the daemon `Env`
@@ -1033,10 +1125,13 @@ Adopt [distributed_gateway_architecture.md#test-hooks-in-env](../documents/engin
 
 None.
 
-## Sprint 2.14: prodbox-daemon-lifecycle Test Stanza ✅
+## Sprint 2.14: prodbox-daemon-lifecycle Test Stanza [✅ Done]
 
 **Status**: Done
 **Implementation**: `prodbox.cabal`, `test/daemon-lifecycle/Main.hs`, `src/Prodbox/Gateway.hs`, `src/Prodbox/Workload.hs`
+**Independent Validation**: the dedicated process stanza starts the real built daemon and proves
+health, readiness, metrics, graceful SIGTERM drain, and forced second-SIGTERM exit locally with no
+cluster or later-phase dependency.
 **Docs to update**: `documents/engineering/unit_testing_policy.md`
 
 ### Objective
@@ -1096,7 +1191,7 @@ Adopt [Daemon Lifecycle Tests](../documents/engineering/README.md) and
 
 None.
 
-## Sprint 2.15: Daemon CLI Plumbing — `--config <path>` Only ✅
+## Sprint 2.15: Daemon CLI Plumbing — `--config <path>` Only [✅ Done]
 
 **Status**: Done — implementing code work landed via Sprints 1.28 (env-var-read lint
 rule + `PRODBOX_LOG_LEVEL` / `PRODBOX_CONFIG_PATH` / `PRODBOX_PORT` removal from
@@ -1109,6 +1204,9 @@ and `--detach` flags are not supported; every value the daemon needs lives in th
 Dhall file. The legacy `PRODBOX_*` env-var precedence ladder is removed; see
 [legacy-tracking-for-deletion.md](legacy-tracking-for-deletion.md).
 **Implementation**: `src/Prodbox/CLI/Parser.hs`, `src/Prodbox/CLI/Spec.hs`, `src/Prodbox/Gateway.hs`, `src/Prodbox/Workload.hs`, `test/daemon-lifecycle/Main.hs`
+**Independent Validation**: parser-roundtrip and generated-help tests plus the daemon-lifecycle
+fixture prove `--config <path>` is the sole startup knob and rejected alternatives fail before
+execution; no later phase is involved.
 **Docs to update**: `documents/engineering/cli_command_surface.md`,
 `documents/engineering/distributed_gateway_architecture.md`,
 `documents/engineering/aws_integration_environment_doctrine.md`
@@ -1152,21 +1250,24 @@ doctrine's standard flag set with the prescribed startup-precedence rule.
 
 None.
 
-## Sprint 2.16: At-Least-Once Event-Processing Module ✅
+## Sprint 2.16: At-Least-Once Event-Processing Module [✅ Done]
 
 **Status**: Done
 **Implementation**: `src/Prodbox/Daemon/Events.hs`, `test/unit/Main.hs`
+**Independent Validation**: deterministic in-memory event-store tables and repeated
+`processEvents` properties prove record/fetch/first-mark/idempotent replay semantics without a
+database, live infrastructure, or a later phase.
 **Docs to update**: `documents/engineering/distributed_gateway_architecture.md`,
 `documents/engineering/effect_interpreter.md`, `documents/engineering/pure_fp_standards.md`,
 `documents/engineering/unit_testing_policy.md`
 
 ### Objective
 
-Formalize the at-least-once event-processing pattern from
-[streaming_doctrine.md#at-least-once-event-processing](../documents/engineering/streaming_doctrine.md#at-least-once-event-processing)so the gateway commit log and any future
-daemon event-consuming surface (workload runtime, future workers) share one canonical
-module rather than ad-hoc per-call-site patterns. Sprint 2.13 already names at-least-once
-formalization on the commit log; this sprint owns the module that backs it.
+Formalize the durable at-least-once event-processing pattern from
+[streaming_doctrine.md#at-least-once-event-processing](../documents/engineering/streaming_doctrine.md#at-least-once-event-processing)
+so daemon event-consuming surfaces share one canonical module rather than ad-hoc per-call-site
+patterns. Gateway peer anti-entropy deliberately remains a separate bounded in-memory semantic
+protocol; it does not adopt the durable processed-marker store.
 
 ### Deliverables
 
@@ -1179,12 +1280,9 @@ formalization on the commit log; this sprint owns the module that backs it.
   - `recordEvent`, `markEventProcessed`, `fetchUnprocessedEvents`, and a top-level
     `processEvents` consumer that fetches unprocessed events, invokes the handler, marks each
     `processed_at`, and returns the count processed.
-- `src/Prodbox/Gateway/Daemon.hs` peer-event ingestion in `peerListenerLoop` consumes the
-  new module (or records in `documents/engineering/distributed_gateway_architecture.md`
-  why the gateway intentionally uses the in-memory peer-gossip variant rather than the
-  database-backed `processed_at` form; both options are doctrine-legal, the outcome is
-  recorded in this sprint's deliverables and propagated to the doctrine correspondence
-  notes).
+- `documents/engineering/distributed_gateway_architecture.md` records why gateway peer-state
+  anti-entropy uses the bounded in-memory cursor/delta/repair protocol rather than the durable
+  database-backed `processed_at` form.
 - `documents/engineering/pure_fp_standards.md` cross-references
   `src/Prodbox/Daemon/Events.hs` as the canonical at-least-once pattern for any future
   daemon event-consumer.
@@ -1201,8 +1299,7 @@ formalization on the commit log; this sprint owns the module that backs it.
    of unprocessed events is a no-op on the second invocation (idempotent-replay
    contract).
 3. The `documents/engineering/distributed_gateway_architecture.md` correspondence section
-   names whether the gateway commit log adopts the module or intentionally keeps the
-   in-memory variant, with explicit doctrine-citation either way.
+   distinguishes the bounded gateway anti-entropy protocol from this durable event-store module.
 
 ### Current Validation State
 
@@ -1211,31 +1308,28 @@ formalization on the commit log; this sprint owns the module that backs it.
   `fetchUnprocessedEvents`, and `processEvents` over a deterministic in-memory `EventStore`.
 - `prodbox-unit` covers event recording, duplicate suppression by event id, processed-state
   filtering, chronological replay, and idempotent second `processEvents` runs.
-- `documents/engineering/distributed_gateway_architecture.md` records that the gateway commit log
-  intentionally remains the in-memory anti-entropy peer-gossip variant while future durable event
-  consumers use `Prodbox.Daemon.Events`.
+- `documents/engineering/distributed_gateway_architecture.md` records that gateway peer state uses
+  bounded in-memory cursor/delta/repair anti-entropy while durable event consumers use
+  `Prodbox.Daemon.Events`.
 
 ### Remaining Work
 
 None.
 
-## Sprint 2.17: Native Haskell HTTP Client Replaces curl Shell-outs ✅
+## Sprint 2.17: Native Haskell HTTP Client Replaces curl Shell-outs [✅ Done]
 
-**Status**: Done (May 23, 2026) on the foundational HTTP-client surface and the host-side curl callers that block the Sprint 2.19 secret-derivation service. The TestValidation-suite curl callers and the RKE2-installer download remain on the cleanup ledger as Sprint 4.18 follow-up.
+**Status**: Done (May 23, 2026) on the typed HTTP-client and Phase-2 gateway/DNS caller surface.
 **Implementation**: new `src/Prodbox/Http/Client.hs` (wrapping `Network.HTTP.Client` + `Network.HTTP.Client.TLS`); new `src/Prodbox/Gateway/Client.hs` (typed gateway calls reusing `PeerEndpoint`); rewrites in `src/Prodbox/Gateway.hs` (`queryGatewayState`), `src/Prodbox/Gateway/Daemon.hs` (`fetchPublicIp`), `src/Prodbox/Dns.hs` (`fetchPublicIp`), `src/Prodbox/Infra/AwsEksTestStack.hs` (`fetchPublicIpv4`), `src/Prodbox/Infra/AwsTestStack.hs` (`fetchPublicIpv4`); 10 new unit tests in `test/unit/Main.hs::"Sprint 2.17 Haskell HTTP client"`
+**Independent Validation**: pure request/error classification and fake HTTP-server tests plus the
+built CLI gateway/DNS paths validate the typed client and migrated Phase-2 callers without a later
+phase. Surviving non-Phase-2 host `curl` sites remain explicit ledger cleanup, not this sprint's work.
 **Docs to update**: `documents/engineering/secret_derivation_doctrine.md` (host↔cluster contract), `documents/engineering/cli_command_surface.md`, [legacy-tracking-for-deletion.md](legacy-tracking-for-deletion.md)
 
 ### Objective
 
-Remove every `curl` subprocess invocation from the production source tree and replace
-it with a native Haskell HTTP client built on the `http-client` + `http-client-tls`
-libraries already declared at `prodbox.cabal:105-120` but not yet imported. The shell-out
-pattern violates the doctrine of typed effects and forces a `curl` prerequisite on every
-host that runs the daemon or the validation suites. Sprint 2.17 is the foundational
-host↔cluster HTTP layer that Sprint 2.18 (NodePort enforcement) and Sprint 2.19
-(gateway as secret-derivation service) both build on. See
-[secret_derivation_doctrine.md §5](../documents/engineering/secret_derivation_doctrine.md)
-for the host↔cluster boundary contract.
+Introduce the native Haskell HTTP boundary and migrate the Phase-2 gateway, DNS, and public-IP
+callers away from host `curl` subprocesses. The repo-wide residual host-curl cleanup remains
+separately visible in the legacy ledger and does not expand this completed sprint's owned surface.
 
 ### Deliverables
 
@@ -1244,24 +1338,13 @@ for the host↔cluster boundary contract.
   `Network.HTTP.Client.Manager` reused across calls, and accepting per-call timeouts.
   Error ADT distinguishes `HttpConnectionRefused`, `HttpTimeout`,
   `HttpStatus Int`, and `HttpDecode String`.
-- New module `src/Prodbox/Gateway/Client.hs` exposing typed gateway calls reusing
-  `PeerEndpoint` from `src/Prodbox/Gateway/Types.hs:66-74` and the `peerRestUrl`
-  helper at lines 82-84. Initial surface:
-  `queryState :: PeerEndpoint -> IO (Either GatewayError GatewayState)` (replaces
-  `Prodbox.Gateway.queryGatewayState`). Stubs for the Sprint 2.19 endpoints
-  (`derive`, `ensureNamespace`) land in this module so the imports settle before the
-  endpoint bodies do.
+- New module `src/Prodbox/Gateway/Client.hs` exposes typed gateway calls reusing `PeerEndpoint` and
+  the shared REST URL construction. Historical secret-derivation RPC stubs were later removed by
+  the Vault-native Sprint `3.19` cleanup.
 - Curl call sites removed: `src/Prodbox/Gateway.hs:285-317`,
   `src/Prodbox/Gateway/Daemon.hs:1341-1360`, `src/Prodbox/Dns.hs:108-124`, and the
-  ten sites in `src/Prodbox/TestValidation.hs` enumerated in the legacy-removal
-  ledger.
-- `toolCurl` prerequisite registration removed from
-  `src/Prodbox/Prerequisite.hs`. Tests covering its absence land in
-  `test/unit/Main.hs`.
-- New `prodbox dev lint files` rule `forbidCurlInProductionSources` in
-  `src/Prodbox/CheckCode.hs` refuses any `curl` shell-out in source paths outside
-  `test/`. The rule's allowlist accepts test fixtures and integration validation
-  scripts only.
+  AWS public-IP helper callers named in `Implementation`. Remaining host call sites and
+  `ToolCurl` stay governed by the explicit pending ledger row.
 - 10+ unit tests in `test/unit/Main.hs::"Sprint 2.17 Haskell HTTP client"` covering
   the success path, 404, connection-refused, timeout, JSON-decode failure, manager
   reuse, and per-call timeout precedence.
@@ -1279,28 +1362,17 @@ for the host↔cluster boundary contract.
 
 ### Remaining Work
 
-The remaining `curl` subprocess invocations in `src/Prodbox/TestValidation.hs`
-(9 sites at lines 512, 863, 888, 910, 1216, 1261, 1270, 1334, 2140),
-`src/Prodbox/Workload.hs:1234`, and the RKE2 installer download at
-`src/Prodbox/CLI/Rke2.hs:733` were left in place. The first two carry
-orchestration-heavy patterns (waitForCommandOutputContainsAll with header
-dumps and redirect chains) that benefit from a dedicated migration pass;
-the installer download is a heavy binary fetch with redirect handling that
-remains reasonable as a curl invocation. The `forbidCurlInProductionSources`
-lint and the `toolCurl` prerequisite removal are deferred to Sprint 4.18,
-which owns the final repo-wide cleanup gate.
+- None. Sprint `2.17`'s typed client and Phase-2 caller surface is closed. The surviving repo-wide host
+  subprocess sites remain a separate `Pending Removal` ledger item; pod-internal curl images, when
+  required, are mirrored through the in-cluster `registry:2` service.
 
-The remaining pod-internal `curl` references are inside Kubernetes Job
-container specs or existing in-cluster containers and are not in scope for
-host-side replacement — they execute inside containers, not on the host.
-Where those Jobs need a curl image after Harbor is available, they use the
-canonical Harbor mirror `127.0.0.1:30080/prodbox/curl-mirror:8.11.0`.
+## Sprint 2.18: 127.0.0.1-Only NodePort Enforcement via Host Firewall [✅ Done]
 
-## Sprint 2.18: 127.0.0.1-Only NodePort Enforcement via host firewall ✅
-
-**Status**: Done (May 23, 2026) on the foundational host-side surface. The chart NodePort Service and the automatic reconcile/delete wiring land with Sprint 2.19 when the gateway secret-derivation endpoints exist and there is something operator-facing to restrict.
-**Blocked by**: 2.17
+**Status**: Done (May 23, 2026; full restrict/unrestrict and lifecycle wiring subsequently landed).
 **Implementation**: `src/Prodbox/Host.hs` (new pure helpers `gatewayNodePortFirewallRuleArgs`, `gatewayNodePortFirewallCheckArgs`, `FirewallRuleAction`, `renderFirewallRuleAction`; effectful `runHostFirewallGatewayRestrict` using `iptables -C` then `iptables -A`); `src/Prodbox/CLI/Command.hs` (new `HostFirewallGatewayRestrict Int` constructor); `src/Prodbox/CLI/Spec.hs` (`gatewayNodePortParser`, new `host firewall gateway-restrict` arm, `group`-promoted `firewall` CommandSpec); regenerated `share/man/man1/prodbox-host.1`, `share/completion/{bash,zsh,fish}/prodbox*`, `documents/cli/commands.md`
+**Independent Validation**: pure iptables argument/action tables and parser/generated-command tests
+prove idempotent restrict/unrestrict construction locally; the recorded home exercise proves the
+loopback-only NodePort boundary without a later-phase dependency.
 **Docs to update**: `documents/engineering/secret_derivation_doctrine.md`, `documents/engineering/distributed_gateway_architecture.md`, `documents/engineering/cli_command_surface.md`
 
 ### Objective
@@ -1349,64 +1421,35 @@ for the authoritative contract.
 
 ### Remaining Work
 
-The chart NodePort Service manifest landed in Sprint 2.19's chart-side
-scaffolding (May 23, 2026); the symmetric
-`runHostFirewallGatewayUnrestrict :: Int -> IO ExitCode` helper +
-`prodbox host firewall gateway-unrestrict --port PORT` subcommand also
-landed in Sprint 2.19's same-day push. The automatic reconcile/delete
-wiring (calling `runHostFirewallGatewayRestrict 30443` after the gateway
-chart deploys and `runHostFirewallGatewayUnrestrict 30443` on
-`prodbox rke2 delete --yes`) lands with Sprint 2.19's full closure
-alongside the live exercise on this host
-(NodePort exposed → rule installed → loopback-only access enforced →
-rule removed on delete). Reboot-persistence via `iptables-save` is
-operator-driven for now and tracked under that sprint.
+- None. The symmetric unrestrict command, lifecycle install/remove wiring, and home loopback-only
+  exercise landed; later daemon API changes do not alter this host firewall boundary.
 
-## Sprint 2.19: Gateway Daemon Becomes Secret-Derivation Service ✅
+## Sprint 2.19: Gateway Daemon Secret-Derivation Service (Historical) [✅ Done]
 
-**Status**: Done (2026-05-30) — live closure confirmed by `prodbox test all` run #6 on the
-home substrate. See the **2026-05-30 — live closure** paragraph at the end of this sprint for
-the final 3-part fix and the verification. Re-scoped May 24, 2026 under the pure-Dhall config
-doctrine (Sprint 0.8). Additional code-owned closure landed May 24, 2026 (later session):
-the daemon now retrieves the master seed at startup via
-`Prodbox.Gateway.Daemon.acquireInitialMasterSeed` when `daemonMinioCreds` is bound
-in the mounted Dhall config (Sprint 2.22 plumbed those credentials through the
-import chain). The cached seed lives in `envMasterSeed :: Maybe
-Prodbox.Secret.Derive.MasterSeed` on `DaemonEnv`. The `/v1/secret/derive?context=<ctx>`
-endpoint is now live-wired: when the seed is bound it composes
-`Prodbox.Secret.Derive.deriveBase64Url` against the requested context and returns a
-typed `DeriveResponse` per the wire contract; when the seed is `Nothing` it returns
-a structured 503 with a clear "master-seed unavailable" reason (the daemon logs
-`master_seed_unavailable` at startup with the source of the failure: no
-`minio_creds` bound, MinIO unreachable, or the read/create failed). Live verified
-on this host (without MinIO running): the daemon starts cleanly, logs
-`master_seed_unavailable`, and `curl /v1/secret/derive?context=test-context`
-returns the structured 503 response. The `/v1/secret/ensure-namespace` endpoint
-keeps its 503 placeholder pending the K8s-API materialization wiring.
-The code-owned surface (the derive / ensure-namespace endpoints, master-seed
-acquisition, and the structured 503 paths) closes on local validation. The
-end-to-end exercise with a running MinIO — master seed materializes,
-`/v1/secret/derive` returns deterministic values across cluster wipes, and
-`/v1/secret/ensure-namespace` writes the per-namespace data-bound Secrets via
-kubectl — is a `Live-proof: pending` note (Standard O) that was confirmed by the
-2026-05-30 live closure and never gated this sprint's code-owned closure.
-**Blocked by**: 2.17, 2.18 (earlier-or-same-phase prerequisites). The Dhall
-settings module (2.20), the file-watch trigger (2.21), and the chart-side
-credential plumbing (2.22) are forward BUILD-order composition that this sprint
-integrates, not blocking validation gates (Standard N).
+**Status**: Done (2026-05-30 historical delivery; superseded and removed by the Vault-root
+architecture in Sprints `3.18`/`3.19`).
 **Implementation**: new `src/Prodbox/Secret/Derive.hs`, new `src/Prodbox/Secret/MasterSeed.hs`, `src/Prodbox/Gateway/Daemon.hs` HTTP server extensions, MinIO IAM bootstrap (Pulumi or one-shot Job), `charts/gateway/` Secret + Deployment volume mount additions, `Prodbox.Gateway.Client` extensions, `prodbox.cabal` dep addition
+**Independent Validation**: the historical implementation passed its pure derivation, daemon RPC,
+and home live tests at closure; current unit/source-absence tests prove the master-seed modules,
+derive/ensure-namespace RPCs, and chart consumers stay removed, independently of later work.
 **Docs to update**: `documents/engineering/secret_derivation_doctrine.md` (new SSoT — already created by Part 1 doctrine work), `documents/engineering/distributed_gateway_architecture.md`, `documents/engineering/storage_lifecycle_doctrine.md`, `documents/engineering/helm_chart_platform_doctrine.md`
+
+> **Superseded architecture record.** Everything in this sprint's objective, deliverables,
+> validation, and historical closure evidence below describes the May 2026 master-seed design at
+> the time it was delivered. It is not the current gateway or secret architecture. Sprint `3.19`
+> removed `Prodbox.Secret.MasterSeed`, the derive/ensure-namespace RPCs, derived chart secrets, and
+> their callers; current secret authority is Vault KV through typed `SecretRef.Vault` values.
 
 ### Objective
 
-Make the in-cluster gateway daemon the sole owner of the master seed and the sole
-authority for deriving data-bound chart secrets. This is the architectural keystone
-that lets Sprint 3.13 eliminate the host-side chart-secret cache while preserving
-data-bound `.data/` content across cluster wipes. See
-[secret_derivation_doctrine.md](../documents/engineering/secret_derivation_doctrine.md)
-for the authoritative algorithm, endpoint contract, and bootstrap order.
+The historical objective was to make the in-cluster gateway daemon the sole owner of a master seed
+and the sole derivation authority for data-bound chart secrets. Sprint `3.19` supersedes this
+objective with Vault-native materialization; the bullets below are retained only as delivery
+evidence for the removed design.
 
 ### Deliverables
+
+The following deliverables are historical and no longer exist on the supported path:
 
 - New `Prodbox.Secret.Derive` (pure): `derive :: MasterSeed -> Text -> ByteString`
   (HMAC-SHA-256 with the context string as message). Typed context constructors
@@ -1453,7 +1496,7 @@ for the authoritative algorithm, endpoint contract, and bootstrap order.
    `prodbox rke2 delete --yes` + `prodbox rke2 reconcile` preserves the seed (same
    derived value as before).
 
-### Current Validation State
+### Historical Validation State (Superseded)
 
 - `src/Prodbox/Secret/Derive.hs` (pure HMAC-SHA-256 derivation) exposes
   `MasterSeed` smart-constructor + `masterSeed` validator (rejects
@@ -1532,7 +1575,7 @@ for the authoritative algorithm, endpoint contract, and bootstrap order.
   `host firewall gateway-unrestrict` subcommand added two auto-generated
   parser cases; 464 before Sprint 2.18 work).
 
-### Remaining Work
+### Historical Closure Evidence (Superseded)
 
 The pure derivation surface, the wire-contract layer, and the
 foundational `Prodbox.Secret.MasterSeed` MinIO read\/write module are
@@ -1763,35 +1806,22 @@ validation bodies exited Success. The aggregate `prodbox test all`
 roll-up: 16/17 green (only `keycloak-invite` failed, a known
 Sprint 8.5 operator-driven gap).
 
-## Sprint 2.20: Daemon Dhall Settings Module ✅
+### Remaining Work
 
-**Status**: Done (May 24, 2026 — full Sprint 2.20 closure: new
-`src/Prodbox/Gateway/Settings.hs` decodes the daemon config via
-`Dhall.inputFile auto` exclusively (the JSON-dispatch fallback arm is
-removed); `Prodbox.Gateway.Types.parseDaemonConfig` (and its
-structured/flat JSON branches) is **removed** from
-`src/Prodbox/Gateway/Types.hs`; `renderGatewayConfigTemplate` in
-`src/Prodbox/Gateway.hs` emits Dhall instead of JSON, so the operator-facing
-`prodbox gateway config-gen` produces a starter `.dhall` file; all JSON
-test fixtures across `test/unit/Main.hs`, `test/integration/CliSuite.hs`,
-and `test/daemon-lifecycle/Main.hs` migrate to Dhall fixtures; the
-`gateway-start.txt` golden is updated to reference the new `.dhall`
-extension. Validation: `prodbox dev check` exit 0; `prodbox test unit`
-543/543; `prodbox test integration cli` 28/28; `prodbox test integration
-env` 28/28; `prodbox-daemon-lifecycle` 14/14. Removal of the
-`--log-level` / `--port` / `--node-id` / `--foreground` daemon CLI flags
-stays pending — these flags are still used by the daemon-lifecycle test
-harness for port allocation and by the operator `gateway status` /
-`config-gen` commands; their removal is coupled with the live RKE2
-reconcile gate where the chart drops them from `args:` in `deployments.yaml`.)
-**Blocked by**: Sprint 0.8 ([config_doctrine.md](../documents/engineering/config_doctrine.md)) — resolved
+- None. The historical sprint closed in 2026-05; Sprint `3.19` subsequently removed the entire
+  master-seed/RPC design and current negative-space tests keep it absent.
+
+## Sprint 2.20: Daemon Dhall Settings Module [✅ Done]
+
+**Status**: Done (May 24, 2026; the later Sprint `2.24` flag cleanup is also complete).
 **Implementation**: new `src/Prodbox/Gateway/Settings.hs`, `src/Prodbox/Gateway/Types.hs`
 (remove `parseDaemonConfig` JSON path), `src/Prodbox/Gateway/Daemon.hs` (remove the
 JSON-flat-compat schema branch), `src/Prodbox/Gateway.hs` (remove `PRODBOX_*` env-var
 reads), `src/Prodbox/CLI/Spec.hs` and `src/Prodbox/CLI/Parser.hs` (remove `--log-level`,
-`--port`, `--node-id`, `--foreground` daemon flags), `prodbox-config-types.dhall`
-(extend with daemon BootConfig / LiveConfig record types if not already covered),
+`--port`, `--node-id`, `--foreground` daemon flags), the gateway Dhall decoder records,
 `test/unit/Main.hs` (extend with Dhall round-trip tests)
+**Independent Validation**: Dhall decode/error tables, generated `gateway.dhall` fixtures, parser
+tests, and the loopback daemon-lifecycle stanza validate the config path without a later phase.
 **Docs to update**: `documents/engineering/distributed_gateway_architecture.md`,
 `documents/engineering/cli_command_surface.md`,
 `DEVELOPMENT_PLAN/legacy-tracking-for-deletion.md`
@@ -1816,9 +1846,8 @@ authoritative decoder contract.
 - Removal of `PRODBOX_LOG_LEVEL`, `PRODBOX_CONFIG_PATH`, `PRODBOX_PORT` env-var reads in
   `src/Prodbox/Gateway.hs`. The `prodbox gateway start` / `prodbox workload start` parser
   spec accepts only `--config <path>`.
-- Extension of `prodbox-config-types.dhall` (or a new sibling `prodbox-gateway-types.dhall`)
-  with the daemon `BootConfig` and `LiveConfig` schema, so chart-rendered Dhall files have
-  a typed schema to validate against.
+- `Prodbox.Gateway.Settings` owns the typed Dhall decoder records used by chart-rendered gateway
+  config; no unresolved schema-file choice remains.
 - 20+ unit tests covering: happy-path Dhall decode, malformed-Dhall surface,
   schemaVersion-mismatch handling, BootConfig-vs-LiveConfig classifier purity.
 
@@ -1832,58 +1861,20 @@ authoritative decoder contract.
 
 ### Remaining Work
 
-- The implementing sprint chooses between extending `prodbox-config-types.dhall` and
-  creating a sibling daemon-only types file. The choice should follow whichever keeps
-  the Dhall import graph cleanest for the chart-rendered gateway config.
+- None.
 
-## Sprint 2.21: File-Watch Reload Trigger and Auto-Restart on BootConfig Change ✅
+## Sprint 2.21: File-Watch Reload Trigger and Auto-Restart on BootConfig Change [✅ Done]
 
-**Status**: Done (May 24, 2026 — code-owned surface landed: `fsnotify ^>=0.4`
-declared in `prodbox.cabal`; new `configFileWatchLoop` worker in
-`src/Prodbox/Gateway/Daemon.hs` subscribes to events on the parent directory
-of the daemon's `--config` path and feeds the existing `envReloadSignals`
-queue; the SIGHUP `installHandler sigHUP` arm was removed so SIGHUP returns
-to ordinary `drain + exit` semantics; `reloadLiveConfig` now detects
-BootConfig changes via `daemonBootFieldsChanged` and emits
-`config_reload_boot_change_detected` followed by an enqueue of `BeginDrain`
-onto `envDrainSignals` so the kubelet restarts the Pod against the new
-Dhall; the `reloadTriggerViolations` arm of `checkDaemonRuntimeImports` is
-removed and `checkHlintDoctrineCoverage` no longer requires
-`System.INotify` / `Linux.INotify` / `getModificationTime` markers (the
-surviving `System.FSNotify` marker now records the required-and-mentioned
-file-watch primitive); the SIGHUP-based test
-`refreshes log filtering from reloaded live config` is removed and replaced
-with a documentation comment naming the live operator exercise as the
-closure gate. Validation: `prodbox dev check` exit 0; `prodbox test unit`
-631/631; `cabal test prodbox-daemon-lifecycle` 14/14.
-**Live closure 2026-06-02** on the home substrate (chunks 47 + 48
-landed during the exercise): (1) the chart's daemon `--config`
-mount switched from `subPath` to a directory mount at
-`/etc/gateway/config/` (chunk 47) so the kubelet's atomic `..data`
-symlink swap on ConfigMap update fires fsnotify on the parent
-directory — a `subPath` mount silently breaks ConfigMap hot-reload,
-which was masking the file-watch behavior entirely; (2)
-`reloadLiveConfig` now reapplies the chunk-24 in-memory event-key
-derivation (`deriveHex`) to the freshly-decoded `DaemonConfig`
-before `daemonBootFieldsChanged` compares against `envBootConfig`
-(chunk 48), so the chart-rendered base64url `event_keys` (chunk 16's
-Helm `lookup`) no longer spuriously trip the boot-change classifier
-on every LiveConfig edit; (3) edit `log_level: info → debug` on the
-ConfigMap → daemon emits `config_reloaded` with the new level
-in-process, no Pod restart (LiveConfig reload verified); (4) edit
-`dns_write_gate.fqdn` on the ConfigMap → daemon emits
-`config_reload_boot_change_detected` + `config_boot_change_drain`
-+ `gateway_draining` and sets readiness to Draining (BootConfig
-drain initiated; the drain-completion → exit → kubelet-restart leg
-hits a separate `dnsWriteLoop` cancellation-propagation bug
-deferred to Sprint 2.23 follow-up — independent of Sprint 2.21's
-file-watch surface).)
-**Blocked by**: Sprint 2.20 — resolved
+**Status**: Done (May 24, 2026; live file-watch closure 2026-06-02). Sprint `2.23` closes
+the drain-completion cancellation residual found during that live exercise.
 **Implementation**: `src/Prodbox/Gateway/Daemon.hs` (remove SIGHUP handler, add
 file-watch worker, implement drain-and-exit on BootConfig change), `prodbox.cabal` (add
 `fsnotify` or equivalent dep), `src/Prodbox/CheckCode.hs` (remove `forbidFsnotify` /
 `forbidInotify` / forbid-mtime lint rules), `.hlint.yaml` (remove matching marker set),
 `test/daemon-lifecycle/Main.hs` (extend with file-watch reload + drain-and-exit goldens)
+**Independent Validation**: pure boot/live change classification, daemon-lifecycle file-watch and
+SIGTERM/drain tests, plus the recorded home ConfigMap exercise validate reload and restart behavior
+without a later phase.
 **Docs to update**: `documents/engineering/distributed_gateway_architecture.md`,
 `documents/engineering/unit_testing_policy.md`,
 `DEVELOPMENT_PLAN/legacy-tracking-for-deletion.md`
@@ -1930,75 +1921,38 @@ kubelet restarts the Pod with the new config. See
 
 ### Remaining Work
 
-None. The implementation chose `fsnotify`; the live home-substrate file-watch exercise
-landed on 2026-06-02. The drain-completion cancellation-propagation issue found during
-that exercise is independent follow-up work, not a Sprint `2.21` closure blocker.
+- None. The implementation uses `fsnotify`; the home file-watch exercise landed on 2026-06-02, and
+  Sprint `2.23` closes the separate cancellation residual it exposed.
 
-## Sprint 2.22: Chart-Side Dhall ConfigMap + Secret-Mounted Credentials ✅
+## Sprint 2.22: Chart-Side Dhall ConfigMap and Credential Migration (Historical) [✅ Done]
 
-**Status**: Done (May 24, 2026 — code-owned chart-side closure landed:
-`charts/gateway/templates/configmap-config.yaml` and
-`configmap-orders.yaml` render Dhall content;
-`charts/gateway/templates/secret-aws-credentials.yaml` and
-`secret-minio-creds.yaml` now ship Dhall fragments at
-`/etc/gateway/secrets/aws.dhall` and `/etc/gateway/secrets/minio.dhall`
-(stable across helm upgrades for MinIO via `lookup` + `randAlphaNum`);
-`deployments.yaml` removes `AWS_ACCESS_KEY_ID` /
-`AWS_SECRET_ACCESS_KEY` / `AWS_SESSION_TOKEN` / `MINIO_ACCESS_KEY_ID` /
-`MINIO_SECRET_ACCESS_KEY` / `GATEWAY_NODE_ID` env vars and mounts the new
-Dhall-fragment Secrets at the canonical paths;
-`charts/gateway/templates/_helpers.tpl` ships `gateway.dhallDouble`.
-`DaemonConfigDhall` extended with `aws_creds` / `minio_creds` Optional
-sub-records; `Prodbox.Gateway.Types.DaemonConfig` extended with
-`daemonAwsCreds :: Maybe GatewayAwsCreds` and
-`daemonMinioCreds :: Maybe GatewayMinioCreds`; `Prodbox.Gateway.Settings`
-exports `AwsCredsDhall` / `MinioCredsDhall` / `awsCredsFromConfig` /
-`minioCredsFromConfig`. `Prodbox.Gateway.Daemon.writeDnsRecord` now takes
-`Maybe GatewayAwsCreds` and projects them into the aws CLI subprocess
-environment via `awsCredsToSubprocessEnv` instead of inheriting the Pod's
-env. Validation: `helm template gateway charts/gateway` renders cleanly;
-standalone `./.build/prodbox gateway start --config <config>.dhall
---foreground` decodes `config.dhall` + transparent Dhall imports of
-`aws.dhall` / `minio.dhall` + `orders.dhall` and emits
-`gateway_starting` + `orders_loaded` end-to-end (decode-side
-credential binding verified live); `prodbox dev check` exit 0;
-`prodbox test unit` 543/543; `prodbox test integration cli` 28/28;
-`prodbox test integration env` 28/28; `prodbox-daemon-lifecycle` 14/14;
-all Dhall test fixtures across `test/unit/Main.hs`,
-`test/integration/CliSuite.hs`, `test/daemon-lifecycle/Main.hs` updated
-with the new boot record shape including `aws_creds = None ...` /
-`minio_creds = None ...`. **Live closure 2026-06-01:** `prodbox test
-all` retry 21 brought up the gateway daemon against the Dhall
-ConfigMap + Secret-mounted credentials and passed `gateway-daemon`
-(daemon `/healthz` returned 200), `gateway-pods` (all three nodes
-Running 1/1), `gateway-partition`, and `dns-aws` (DNS writes
-succeeded against real Route 53 using credentials sourced from the
-mounted `aws.dhall` Secret). Sprint 2.22 closure gate met
-alongside Sprint 2.19's live master-seed wiring.)
-**Blocked by**: Sprints 2.20, 2.21 — resolved
-**Implementation**: `charts/gateway/templates/configmap-config.yaml` (rewrite to render
-Dhall content), `charts/gateway/templates/configmap-orders.yaml` (rewrite to render
-Dhall content), `charts/gateway/templates/secret-aws-credentials.yaml` (replace with
-Dhall-content Secret), `charts/gateway/templates/secret-minio-creds.yaml` (replace with
-Dhall-content Secret), new `charts/gateway/templates/secret-secrets-aws.yaml` /
-`secret-secrets-minio.yaml` mounted at `/etc/gateway/secrets/`,
-`charts/gateway/templates/deployments.yaml` (remove `AWS_*`, `MINIO_*`,
-`GATEWAY_NODE_ID` env vars; mount the new Dhall ConfigMaps and Secrets at the canonical
-paths), `charts/gateway/values.yaml` (add/adjust knobs for the Dhall surface)
+**Status**: Done (May 24, 2026 historical migration; its Secret-mounted credential fragments were
+subsequently superseded and removed by Vault Kubernetes auth in Sprints `3.18`/`3.19`).
+**Implementation**: historical Dhall render/mount work in `charts/gateway/` and
+`src/Prodbox/Gateway/Settings.hs`; current replacement in `src/Prodbox/Settings.hs`,
+`src/Prodbox/Vault/Reconcile.hs`, `src/Prodbox/Secret/VaultInventory.hs`, and `charts/gateway/`
+**Independent Validation**: historical chart-render and home gateway/DNS tests proved the migration
+at closure; current chart/unit negative-space tests prove ambient credential env vars and
+Secret-mounted Dhall fragments remain absent while typed Vault references decode locally.
 **Docs to update**: `documents/engineering/helm_chart_platform_doctrine.md`,
 `documents/engineering/secret_derivation_doctrine.md`,
 `DEVELOPMENT_PLAN/legacy-tracking-for-deletion.md`
 
+> **Superseded architecture record.** The objective, deliverables, and validation below describe
+> the intermediate May 2026 Dhall-fragment Secret design. The supported gateway now resolves typed
+> `SecretRef.Vault` values through Vault Kubernetes auth; it does not mount AWS/MinIO credential
+> fragments or inherit ambient AWS authentication.
+
 ### Objective
 
-Replace the chart's JSON-rendering `configmap-config.yaml` and `configmap-orders.yaml`
-with Dhall-rendering templates, and replace env-var-sourced daemon credentials with
-Secret-mounted Dhall fragments imported by the main Dhall via Dhall's native import
-system. See
-[helm_chart_platform_doctrine.md "Daemon and workload config mount contract"](../documents/engineering/helm_chart_platform_doctrine.md)
-for the authoritative mount layout.
+The historical objective replaced JSON-rendered gateway config and ambient credential environment
+variables with Dhall-rendered config plus Secret-mounted Dhall fragments. Vault Kubernetes auth
+later superseded the credential half of that migration; the bullets below are historical evidence.
 
 ### Deliverables
+
+The following credential-fragment deliverables are historical; the ConfigMap/Dhall config boundary
+remains, while current secret values resolve from Vault:
 
 - Rewrite `charts/gateway/templates/configmap-config.yaml` to render Dhall content at
   `/etc/gateway/config.dhall`. **[Superseded by Sprint 2.21:** the ConfigMap is now a directory
@@ -2035,11 +1989,48 @@ for the authoritative mount layout.
 
 ### Remaining Work
 
-None. The chart-side migration uses Dhall-fragment Secrets mounted at the canonical
-paths, preserves MinIO credentials across upgrades with `lookup`, and was exercised live
-by `prodbox test all` retry 21 on 2026-06-01.
+- None. The intermediate chart migration was live-proven on 2026-06-01 and the later Vault-native
+  replacement is complete; no Secret-mounted credential fragment remains current work.
 
-## Sprint 2.24: Delete Daemon `--log-level` / `--port` / `--foreground` Override Flags ✅
+## Sprint 2.23: Drain-Cancellation Propagation [✅ Done]
+
+**Status**: Done
+**Implementation**: `src/Prodbox/Gateway/Daemon.hs`, `test/daemon-lifecycle/Main.hs`,
+`DEVELOPMENT_PLAN/legacy-tracking-for-deletion.md`
+**Independent Validation**: the real daemon-lifecycle process tests prove first-SIGTERM graceful
+exit and second-SIGTERM prompt force-drain; the pure control-flow audit proves both normal and
+exceptional worker completion return when readiness is `Draining`, with no cluster or later phase.
+**Docs to update**: `documents/engineering/distributed_gateway_architecture.md`,
+`documents/engineering/unit_testing_policy.md`, `DEVELOPMENT_PLAN/legacy-tracking-for-deletion.md`
+
+### Objective
+
+Ensure the drain coordinator's structured cancellation of `dnsWriteLoop` and its sibling workers is
+classified as intentional shutdown rather than retried or rethrown as a fatal worker failure.
+
+### Deliverables
+
+- `serveGatewayDaemon` races `drainCoordinator` against `daemonWorkers`, so drain completion cancels
+  the worker tree through structured concurrency.
+- `runWorkerWithRetry` observes readiness before classifying either a normal worker return or an
+  exception; `Draining` returns immediately in both cases, while non-draining asynchronous
+  cancellation remains fatal.
+- The first-/second-SIGTERM daemon-lifecycle cases pin graceful and forced drain completion.
+- The stale deferred-follow-up references are closed and the residual is recorded under
+  `Completed` in the cleanup ledger.
+
+### Validation
+
+1. `cabal test --builddir=.build prodbox-daemon-lifecycle --test-options=--hide-successes`
+2. Source correspondence: `serveGatewayDaemon` owns the drain/worker race and
+   `runWorkerWithRetry` handles `Draining` before retry/fatal classification.
+3. `prodbox dev check`
+
+### Remaining Work
+
+- None.
+
+## Sprint 2.24: Delete Daemon `--log-level` / `--port` / `--foreground` Override Flags [✅ Done]
 
 **Status**: Done (2026-06-09). The three runtime-override flags + `foregroundParser` were removed
 from both `daemonLaunchOptionsParser` and `workloadOptionsParser`, the matching
@@ -2055,6 +2046,9 @@ moved to Completed. The `Workload.hs` `PRODBOX_*` env ladder is intentionally re
 **Implementation**: `src/Prodbox/CLI/Spec.hs`, `src/Prodbox/CLI/Parser.hs`,
 `src/Prodbox/CLI/Command.hs`, `src/Prodbox/Gateway.hs`, `src/Prodbox/Workload.hs`,
 `test/daemon-lifecycle/Main.hs`, `DEVELOPMENT_PLAN/legacy-tracking-for-deletion.md` (recommended)
+**Independent Validation**: parser rejection/roundtrip tests, generated help/goldens, and the real
+daemon-lifecycle fixture prove the override flags and their threading are absent without a later
+phase.
 **Docs to update**: `documents/engineering/cli_command_surface.md`,
 `documents/engineering/config_doctrine.md`,
 `documents/engineering/distributed_gateway_architecture.md`,
@@ -2109,12 +2103,13 @@ flags and rewires those call sites onto the Dhall surface.
 
 ### Remaining Work
 
-None — closed 2026-06-09. Flags + threading removed, daemon sources port/log-level from
-Dhall/Orders, tests + matrix + goldens regenerated, ledger rows moved to Completed.
+- None. Flags and threading are removed; the daemon sources port/log-level from Dhall/Orders, and
+  tests, generated artifacts, and ledger history record the closure.
 
-## Sprint 2.25: Gateway Runtime Robustness and Topology-Honest Fault Model ✅
+## Sprint 2.25: Gateway Runtime Robustness and Topology-Honest Fault Model [✅ Done]
 
-**Status**: Done on the code-owned surface (2026-06-09). All six deliverables landed: per-connection
+**Status**: Done (2026-06-09; the home gateway validations were subsequently live-proven on
+2026-06-26). At closure, all six deliverables landed: per-connection
 `withAsync` + bounded `receiveAllWithin` read timeout (from `LiveConfig`, shutdown-aware) on both
 listeners; `/v1/state` splits `peer_transport` into `peer_inbound_health` + `peer_outbound_health`
 (`markPeerOk` no longer stamps the inbound field); one canonical base64url event-key encoding
@@ -2123,19 +2118,21 @@ false "agree by construction" comment removed); a typed `DeriveContext` with a `
 inverse + a `decode . encode == id` property (de-risks GET `/v1/secret/derive`, audit C82);
 restart-based Orders promotion (`eventTypeOrdersPromoted`/`extractOrdersVersionFromEvent`/
 `updateOrdersAdvert` deleted, the refuse-to-reclaim-while-behind gate kept); and the
-`markEventProcessed` IS-NULL first-write-wins guard in `Daemon/Events.hs` (the peer anti-entropy log
-left untouched). The D4 + topology-honest doctrine reframes were verified consistent (Sprint 0.9).
+`markEventProcessed` IS-NULL first-write-wins guard in `Daemon/Events.hs`. Sprint `2.31` subsequently
+replaced the then-current peer log with bounded semantic anti-entropy. The D4 + topology-honest
+doctrine reframes were verified consistent (Sprint 0.9).
 Validation green: `check-code` 0, `test unit` 760, `integration cli` 35, `prodbox-daemon-lifecycle`
-14/14, `lint docs` 0, `docs check` 0. The live `gateway-daemon`/`gateway-pods`/`gateway-partition`
-integration validations are operator-driven (require a running RKE2 cluster) and are the remaining
-live gate.
-**Behavior note:** retiring the chunk-48 overlay means a first-install empty `event_keys` ConfigMap
-now classifies as a boot change → drain-and-exit; the daemon re-derives identical base64url keys at
-restart and the populated ConfigMap then matches (the intended restart-contract behavior, not a
-regression).
+14/14, `lint docs` 0, `docs check` 0; the later home live run closed the infrastructure axis.
+**Historical behavior note (superseded by Sprint `3.19`):** at Sprint `2.25` closure, retiring the
+chunk-48 overlay made a first-install empty `event_keys` ConfigMap classify as a boot change and
+drain-and-exit. Vault-native event-key resolution removed that intermediate ConfigMap derivation
+path; this note is retained only as closure evidence.
 **Implementation**: `src/Prodbox/Gateway/Daemon.hs`, `src/Prodbox/Gateway/Types.hs`,
 `src/Prodbox/Gateway/Peer.hs`, `src/Prodbox/Daemon/Events.hs`, `test/unit/Main.hs`,
 `test/daemon-lifecycle/Main.hs` (recommended)
+**Independent Validation**: pure encoding/Orders/idempotency tests, real loopback connection and
+health-split tests, and the native partition fixture prove this runtime/fault-model surface without
+a later phase; the home live validations are also proven.
 **Docs to update**: `documents/engineering/distributed_gateway_architecture.md`,
 `documents/engineering/config_doctrine.md`,
 `documents/engineering/secret_derivation_doctrine.md`,
@@ -2146,9 +2143,9 @@ regression).
 
 Harden the gateway runtime's connection handling, peer-health accounting, event-key encoding, and
 Orders-promotion model, and reframe the gateway fault-model doctrine so it is topology-honest: the
-home substrate is a single-host degenerate single-rank mesh under shared fate, and partition
-tolerance is an AWS / future-multi-host capability rather than a property the home runtime
-exercises. This sprint also enacts doctrine change **D4** — Orders promotion is restart-based, not
+home substrate runs three logical ranked peers on one physical host under shared fate. Logical
+peer/network partitions remain exercisable, while independent physical-host failure tolerance is
+an AWS / future-multi-host capability. This sprint also enacts doctrine change **D4** — Orders promotion is restart-based, not
 an in-process version advance — across
 [distributed_gateway_architecture.md §7.5](../documents/engineering/distributed_gateway_architecture.md)
 and [tla_modelling_assumptions.md](../documents/engineering/tla_modelling_assumptions.md), per
@@ -2156,6 +2153,10 @@ and [tla_modelling_assumptions.md](../documents/engineering/tla_modelling_assump
 which already defines the restart contract.
 
 ### Deliverables
+
+The connection, health-split, restart-based Orders, durable-event idempotency, and topology
+deliverables remain current. The derive-context RPC and old peer-log references below are historical:
+Sprint `3.19` removed the derivation RPC, and Sprint `2.31` replaced the log transport.
 
 - Wrap each inbound connection on both the REST and peer-events listeners in its own `withAsync`
   with a bounded read timeout, so a slow or stuck peer cannot wedge the accept loop; the timeout
@@ -2192,11 +2193,10 @@ which already defines the restart contract.
 - Topology-honest fault-model reframe in
   [distributed_gateway_architecture.md](../documents/engineering/distributed_gateway_architecture.md)
   and [tla_modelling_assumptions.md](../documents/engineering/tla_modelling_assumptions.md): a
-  note recording that the home substrate is a single-host degenerate single-rank mesh (the three
-  gateway pods share host fate, so a host failure is not a partition the runtime survives), and
-  that partition tolerance — the claim/yield protocol, the bounded-skew gate, the
-  refuse-to-reclaim gate — is exercised only on the AWS / future-multi-host substrate. The
-  doctrine stops presenting the home runtime as partition-tolerant.
+  note recording that the home substrate is a three-logical-peer mesh on one physical host (the
+  gateway pods share host fate, so a host failure is not independently tolerated), while logical
+  peer/network partitions still exercise the claim/yield, bounded-skew, and refuse-to-reclaim
+  gates. Independent-host partition tolerance is the AWS / future-multi-host capability.
 
 ### Validation
 
@@ -2214,12 +2214,10 @@ which already defines the restart contract.
 
 ### Remaining Work
 
-Code-owned surface closed 2026-06-09 (all six deliverables + the D4 / topology-honest doctrine
-reframe verified). Remaining: the operator-driven live `gateway-daemon` / `gateway-pods` /
-`gateway-partition` integration validations against a running RKE2 cluster (cannot run in a
-non-cluster environment), matching the live-gate pattern the substrate sprints use.
+- None. The code-owned surface closed 2026-06-09 and the home `gateway-daemon`, `gateway-pods`, and
+  `gateway-partition` validations were live-proven on 2026-06-26.
 
-## Sprint 2.26: Cluster Federation Trust Topology and Downstream-Cluster Custody ✅
+## Sprint 2.26: Cluster Federation Trust Topology and Downstream-Cluster Custody [✅ Done]
 
 **Status**: Done
 **Implementation**: `src/Prodbox/Cluster/Federation.hs`, `src/Prodbox/CLI/Command.hs`,
@@ -2228,6 +2226,9 @@ non-cluster environment), matching the live-gate pattern the substrate sprints u
 `src/Prodbox/Gateway/Client.hs`, `test/unit/Main.hs`, `test/unit/Parser.hs`,
 `test/integration/CliSuite.hs`, `documents/cli/commands.md`, `share/completion/`,
 `share/man/man1/`
+**Independent Validation**: pure custody/path/redaction tables and fake Vault/kubectl CLI integration
+prove registration and gateway read behavior with sealed/unavailable refusal; no live child cluster
+or later phase is required for this sprint's owned surface.
 **Docs to update**: `documents/engineering/cluster_federation_doctrine.md`,
 `documents/engineering/vault_doctrine.md`,
 `documents/engineering/config_doctrine.md`,
@@ -2325,9 +2326,8 @@ parent's unsealed Vault KV.
 
 ### Remaining Work
 
-- None on Sprint `2.26`'s code-owned gateway/CLI custody surface. The opaque Kubernetes
-  namespace/log redaction enforcement is closed on the Haskell side by Sprint `4.33`; the live
-  two-cluster sealed-Vault proof remains Sprint `5.8`.
+- None. Sprint `2.26`'s gateway/CLI custody surface is closed; the Haskell redaction work and home
+  sealed-Vault proof subsequently landed under Sprints `4.33` and `5.8`.
 
 ### Current Validation State
 
@@ -2355,26 +2355,30 @@ parent's unsealed Vault KV.
 
 ## Sprint 2.27: Gateway Gossip + Orders to Canonical CBOR [✅ Done]
 
-**Status**: ✅ Done 2026-07-02
-**Implementation**: `src/Prodbox/Gateway/Peer.hs`, `src/Prodbox/Gateway/Types.hs`, `prodbox.cabal`
+**Status**: Done (2026-07-02)
+**Implementation**: `src/Prodbox/Gateway/Peer.hs`, `src/Prodbox/Gateway/State.hs`,
+`src/Prodbox/Gateway/Types.hs`, `prodbox.cabal`
 **Live-proof**: pending
-**Independent Validation**: unit + CLI/env integration on the home/local substrate — the peer-batch and `Orders` round-trip suites plus `prodbox test integration cli`/`env` prove the CBOR wire codec on the gateway's owned surface with no dependency on any later phase.
+**Independent Validation**: unit + CLI/env integration on the home/local substrate — `Orders`,
+signed assertion, cursor/delta, and repair round trips plus `prodbox test integration cli`/`env`
+prove the CBOR wire codec on the gateway's owned surface with no dependency on any later phase.
 **Docs to update**: `documents/engineering/pulsar_messaging_doctrine.md`, `documents/engineering/distributed_gateway_architecture.md`, `documents/engineering/code_quality.md`
 
 ### Objective
 
-Migrate the gateway anti-entropy gossip (`POST /v1/peer/events`) and the `Orders` serialized
-envelope from JSON to canonical CBOR so the mesh transport shares the one canonical binary codec
-that [pulsar_messaging_doctrine.md](../documents/engineering/pulsar_messaging_doctrine.md) makes
-project-wide. This supersedes the residual non-CBOR wire language in
+Keep the gateway anti-entropy protocol and the `Orders` serialized envelope on canonical CBOR so
+the mesh transport shares the one canonical binary codec that
+[pulsar_messaging_doctrine.md](../documents/engineering/pulsar_messaging_doctrine.md) makes
+project-wide. Sprint `2.27` performed the JSON-to-CBOR migration; Sprint `2.31` retains that codec
+while replacing the historical event-batch shape with bounded cursor/delta/repair frames. This supersedes the residual non-CBOR wire language in
 [distributed_gateway_architecture.md](../documents/engineering/distributed_gateway_architecture.md)
 and renames the `Lint.Proto` stanza to `Lint.Cbor` per
 [code_quality.md](../documents/engineering/code_quality.md).
 
 ### Deliverables
 
-- The peer event batch and the `Orders` document encode and decode through canonical CBOR
-  (`cborg` / `serialise`) instead of aeson JSON, with a `decode . encode == id` round-trip proof.
+- Signed assertions, cursor/delta/repair requests, and the `Orders` document encode and decode
+  through canonical CBOR (`cborg` / `serialise`), with `decode . encode == id` proofs.
 - `prodbox.cabal` gains the `cborg` / `serialise` dependencies on the library component.
 - `distributed_gateway_architecture.md` drops the superseded non-CBOR wire language in favor of the
   canonical-CBOR contract.
@@ -2384,7 +2388,8 @@ and renames the `Lint.Proto` stanza to `Lint.Cbor` per
 ### Validation
 
 1. `prodbox dev check` exit 0.
-2. `prodbox test unit` exit 0, including the peer-batch and `Orders` CBOR round-trip coverage.
+2. `prodbox test unit` exit 0, including signed assertion/cursor/delta/repair and `Orders` CBOR
+   round-trip coverage.
 3. `prodbox test integration cli` and `prodbox test integration env` exit 0 on the home/local
    substrate.
 4. Text-search proof shows no legacy non-CBOR wire language remains on the supported gateway path and the
@@ -2392,32 +2397,36 @@ and renames the `Lint.Proto` stanza to `Lint.Cbor` per
 
 ### Implementation Notes
 
-- `src/Prodbox/Gateway/Types.hs` imports the shared `CborPayload`, serializes `Orders`/`SignedEvent`
-  with `serialise`, and derives event hash/HMAC inputs from canonical CBOR unsigned payload bytes.
-- `src/Prodbox/Gateway/Peer.hs` serializes `PeerEventBatch`/peer responses through CBOR and parses
-  `POST /v1/peer/events` bodies as `application/cbor`.
-- `src/Prodbox/Gateway/Daemon.hs` now pushes peer batches as CBOR and signs the daemon's JSON-shaped
-  heartbeat/claim/yield values only after converting them to canonical CBOR payload bytes.
+- `src/Prodbox/Gateway/Types.hs` serializes `Orders`, while `State.hs` and `Peer.hs` derive signed
+  assertion digests/HMAC inputs and cursor/delta/repair wire values from canonical CBOR bytes.
+- `src/Prodbox/Gateway/Peer.hs` parses bounded `application/cbor` bodies for
+  `POST /v1/peer/delta` and `POST /v1/peer/repair`; cursor reads use the same typed codec.
+- `src/Prodbox/Gateway/Daemon.hs` signs canonical heartbeat/ownership/epoch-rotation assertions and
+  transports only the bounded CBOR protocol.
 - `prodbox.cabal` carries both `cborg` and `serialise` in the library component.
-- Unit coverage now includes `Orders`, `SignedEvent`, and `PeerEventBatch` `decode . encode == id`
-  proofs over the CBOR entrypoints.
+- Unit coverage includes `Orders`, signed assertion, cursor/delta, snapshot, and repair
+  `decode . encode == id` proofs over the CBOR entrypoints.
 
-### Validation
+### Closure Evidence
 
 - `cabal build --builddir=.build exe:prodbox` exits 0.
 - `cabal build --builddir=.build all --ghc-options=-Werror` exits 0.
-- `./.build/prodbox test unit` passes 1080/1080, including the gateway `Orders`, `SignedEvent`, and
-  peer-batch CBOR round-trip coverage.
+- At Sprint `2.27` closure, `./.build/prodbox test unit` passed 1080/1080 for the then-current
+  gateway CBOR surface; Sprint `2.31` replaces those transport fixtures with bounded signed
+  assertion/delta/repair round-trip coverage.
 - `./.build/prodbox test integration cli` passes 39/39.
 - `./.build/prodbox test integration env` passes 39/39.
 - Supported-gateway-path text search for legacy non-CBOR payload terms plus `payloadJson` and `payload_json`
   returns no matches.
 - `./.build/prodbox dev check` exits 0 as the canonical local quality gate.
 
+### Remaining Work
+
+- None.
+
 ## Sprint 2.28: At-Least-Once Event Store to CBOR [✅ Done]
 
-**Status**: ✅ Done 2026-07-02
-**Blocked by**: None — Sprint 2.27 landed the shared gateway CBOR codec.
+**Status**: Done (2026-07-02)
 **Implementation**: `src/Prodbox/Daemon/Events.hs`
 **Live-proof**: pending
 **Independent Validation**: unit + CLI/env integration on the home/local substrate — the event-store round-trip and `markEventProcessed` idempotency suites plus `prodbox test integration cli`/`env` prove the CBOR payload encoding on the event-store's owned surface with no dependency on any later phase.
@@ -2460,7 +2469,7 @@ at-least-once delivery and `markEventProcessed` IS-NULL guard contract from
 - Unit coverage now includes a durable `StoredEvent` `decode . encode == id` CBOR proof while the
   existing `markEventProcessed` first-write-wins test continues to pin the IS-NULL guard.
 
-### Validation
+### Closure Evidence
 
 - `cabal build --builddir=.build exe:prodbox` exits 0.
 - `cabal build --builddir=.build all --ghc-options=-Werror` exits 0.
@@ -2469,6 +2478,10 @@ at-least-once delivery and `markEventProcessed` IS-NULL guard contract from
 - `./.build/prodbox test integration cli` passes 39/39.
 - `./.build/prodbox test integration env` passes 39/39.
 - `./.build/prodbox dev check` exits 0 as the canonical local quality gate.
+
+### Remaining Work
+
+- None.
 
 ## Sprint 2.29: Pre-Vault Daemon Bootstrap Endpoint [✅ Done]
 
@@ -2519,8 +2532,8 @@ cluster, without holding standing unseal authority.
 
 ### Remaining Work
 
-None for Phase `2`. Sprint `4.42` consumes this endpoint from the lifecycle interpreter; Sprint
-`7.30` consumes the same daemon boundary for object-store/Pulumi backend access.
+- None for Phase `2`. Sprint `4.42` consumes this endpoint from the lifecycle interpreter; Sprint
+  `7.30` consumes the same daemon boundary for object-store/Pulumi backend access.
 
 ## Documentation Requirements
 
@@ -2546,11 +2559,11 @@ None for Phase `2`. Sprint `4.42` consumes this endpoint from the lifecycle inte
 - `documents/engineering/distributed_gateway_architecture.md` - Haskell gateway implementation,
   retained DNS ownership doctrine, the authoritative peer-transport plus REST surface, and the
   §7.5 restart-based Orders-promotion rewrite plus the topology-honest fault-model reframe
-  (home = single-host degenerate single-rank mesh; partition tolerance is the AWS / multi-host
-  capability) landing with Sprint 2.25 (doctrine D4); for Sprint `2.29`, the pre-Vault daemon
+  (home = three logical ranked peers on one physical host under shared fate; independent-host
+  tolerance is the AWS / multi-host capability) landing with Sprint 2.25 (doctrine D4); for Sprint `2.29`, the pre-Vault daemon
   bootstrap endpoint and loopback-NodePort boundary.
-- `documents/engineering/local_registry_pipeline.md` - gateway-container build, Harbor loading, and
-  native-host-architecture delivery doctrine.
+- `documents/engineering/local_registry_pipeline.md` - gateway-container build, in-cluster
+  `registry:2` loading, and native-host-architecture delivery doctrine.
 - `documents/engineering/pulsar_messaging_doctrine.md` - the canonical-CBOR wire codec that
   Sprint 2.27 adopts for peer gossip and the `Orders` envelope and that Sprint 2.28 adopts for the
   persisted at-least-once event payloads.
@@ -2640,6 +2653,144 @@ binding cannot drift into a 403.
 
 - Former ledger row E (hardcoded Vault-role literal) is recorded under `Completed` in
   `legacy-tracking-for-deletion.md` for Sprint `2.30`.
+
+## Sprint 2.31: Bounded Gateway State, Delta Gossip, and Credential-Gated DNS [✅ Done]
+
+**Status**: Done (2026-07-10)
+**Implementation**: `src/Prodbox/Gateway/Bounds.hs`, `State.hs`, `Orders.hs`, `Peer.hs`,
+`Continuity.hs`, `ContinuityStore.hs`, `DnsAuthority.hs`, `ChildSchedule.hs`, `Daemon.hs`,
+`Settings.hs`; versioned conditional Model-B operations in `src/Prodbox/Minio/`; the finite gateway
+TLA+ model; `test/unit/GatewayBounded.hs`, `GatewayAuthority.hs`, `GatewayContinuity.hs`; and
+`test/daemon-lifecycle/Main.hs`
+**Live-proof**: pending — the restart-free deployed-substrate soak longer than the July 10 failure
+interval is the non-blocking Standard-O axis owned by Sprint `5.16`; the profiling build and local
+restart-free daemon heap capture are code-local evidence, not a substitute for that live soak.
+**Independent Validation**: pure state-fold, delta/repair, frame-bound, continuity-crash, Orders,
+and credential-authority properties run without Kubernetes or AWS; a real loopback daemon exercises
+the bounded cursor endpoint and early oversized-frame rejection; the native partition fixture and
+finite TLC model cover convergence/fault behavior independently of later phases.
+**Docs to update**: `documents/engineering/distributed_gateway_architecture.md`,
+`documents/engineering/tla_modelling_assumptions.md`,
+`documents/engineering/resource_scaling_doctrine.md`,
+`documents/engineering/streaming_doctrine.md`,
+`documents/engineering/pulsar_messaging_doctrine.md`,
+`documents/engineering/pure_fp_standards.md`,
+`documents/engineering/haskell_code_guide.md`,
+`documents/engineering/chaos_hardening_doctrine.md`,
+`documents/engineering/README.md`
+
+### Objective
+
+The gateway's hot memory demand is finite by construction. Signed, idempotent ownership projection
+uses bounded semantic state, bounded deltas/repair, retained emitter continuity, and explicit DNS
+effect authority rather than an ever-growing heartbeat/event list or complete-log retransmission.
+
+### Deliverables
+
+- `GatewayState` retains keyed latest heartbeat and ownership evidence, one active Orders version
+  plus one staged promotion slot, fixed-width per-emitter cursors, bounded signed replay/checkpoint
+  evidence, and exactly 64 recent diagnostic hashes. There is no logical audit history and no raw
+  append-only compatibility projection; the default replay capacity is eight signed assertions per
+  emitter.
+- Signed per-emitter monotonic deltas advance a vector cursor. When replay continuity is unavailable,
+  a signed per-emitter semantic snapshot carries compacted heartbeat/ownership evidence plus a
+  contiguous bounded suffix. Each emitter links only its own prior digest. Frame bytes, assertions
+  per frame, parser input, rejection summaries, per-peer work, and process-wide in-flight frames
+  are bounded; an oversized `Content-Length` is rejected from the header before body accumulation.
+- One retained Model-B object per local emitter contains the Orders/emitter scope, committed
+  fixed-width epoch/sequence/digest anchor, and at most one exact staged signed assertion plus next
+  anchor. Publication is stage → durable acknowledgement/re-observation → publish → commit. Crash
+  recovery republishes the exact staged bytes; sequence exhaustion rotates only through a durably
+  staged signed invalidation and never wraps. Total peer restart recovers safe continuation anchors,
+  not discarded semantic history; subsequent bounded peer exchange and new assertions re-establish
+  the live semantic projection.
+- Vault KV `secret/prodbox/gateway/continuity-admission/<node>` independently records first
+  admission (policy path `secret/data/prodbox/gateway/continuity-admission/*`).
+  Marker absence permits one initialize-if-absent operation; marker presence plus missing,
+  corrupt, malformed, or unobservable authority refuses emission, claims, rotation, and DNS.
+- Validated Orders admission rejects raw bytes, member cardinality, duplicate identities/ranks,
+  node/endpoint/trust fields, encoded member contributions, and non-exact event-key membership before
+  runtime maps, peer tasks, snapshots, or memory inputs are built.
+- `DnsWriteAction` is constructible only from validated Route 53 inputs, the current local claim,
+  deterministic credential generation, and a matching continuity fence. The interpreter receives a
+  sealed AWS environment with metadata/profile discovery disabled. Generation change produces a
+  typed restart decision; continuity is re-observed inside the same capacity-one lease before any
+  public-IP or Route 53 child is constructed.
+- The shared process-wide frame queue and `GatewayChildSchedule` enforce Sprint `1.60`'s aggregate
+  scratch bound, capacity-one child peak, and deadline across peer/REST handlers, Model-B/MinIO,
+  Vault, public-IP, Pulumi-object, and Route 53 subprocesses.
+- `/healthz` and `/readyz` remain constant-time lifecycle-flag projections guarded against state
+  traversal. `/v1/state` reports only bounded semantic/replay counts, hash/cursor diagnostics, and
+  the already-observed local continuity disposition. Sprint `3.25` subsequently bound kubelet
+  probes exclusively to the constant-time routes.
+- The finite TLA+ model explores semantic kind/cursor agreement, overwriteable checkpoint repair,
+  memory-losing crash/recovery, Orders staging/promotion, ownership/DNS safety, and credential
+  readiness. Its finite model domains enable exhaustive TLC exploration and are abstraction bounds,
+  never runtime bounds; native tests cover byte bounds, signatures, exact generations/fences, and
+  concrete CBOR framing.
+
+### Validation
+
+1. `prodbox test unit` passes 1382/1382 and covers arbitrarily long/duplicate/reordered heartbeat histories,
+   two-emitter partition-heal convergence and cursor monotonicity, Orders churn and production
+   loader bounds, snapshot/repair tampering, epoch overflow, crash points, Model-B CAS/error
+   classification, total-peer restart anchors, DNS effect counters, and sealed AWS environments.
+2. `prodbox-daemon-lifecycle` passes 13/13 and exercises a real loopback cursor request, header-only oversized-frame
+   rejection, bounded `/v1/state` schema/capacity, constant-time health/readiness goldens, and
+   fail-closed continuity/DNS state.
+3. `prodbox test integration gateway-partition` exits 0 with bounded-delta idempotency and
+   single-writer/rejoin markers; CLI/env integration passes 45/45 and validates the generated
+   command/config surfaces.
+4. `cabal build --builddir=.build-profile --enable-profiling exe:prodbox` passes. A 61-second local
+   restart-free `-hT -i0.05` daemon run with 500 successful bounded-state requests plus 500 bounded
+   peer-listener requests records 16 samples and a 570,320-byte peak live heap against the generated
+   268,435,456-byte RTS ceiling. The one-member pre-Vault fixture is profiling-path evidence, not a
+   maximum-state or deployed stability claim; the deployed soak remains `Live-proof: pending` under
+   Sprint `5.16`.
+5. `prodbox dev tla-check` exhaustively checks all nine configured invariants: 606,637,449 states
+   generated, 51,491,308 distinct states, depth 44, and queue 0. The fresh state counts and finite-
+   domain abstraction boundary are recorded in
+   `documents/engineering/tla_modelling_assumptions.md`.
+6. `prodbox dev docs generate`, `docs check`, `lint docs`, and `prodbox dev check` pass; zero-residue
+   scans find no current Haskell append-log symbols or `gateway.json` CLI/docs example.
+
+### Remaining Work
+
+- None. The deployed restart-free stability soak is tracked only as the non-blocking `Live-proof:
+  pending` axis above and in Sprint `5.16`; it is not sprint-owned code work.
+
+## Documentation Requirements
+
+**Engineering docs to create/update:**
+
+- `documents/engineering/distributed_gateway_architecture.md` - bounded semantic state, delta
+  gossip, constant-time probes, and credential-gated DNS authority.
+- `documents/engineering/tla_modelling_assumptions.md` - finite-state correspondence and explicit
+  limits of tractability constraints.
+- `documents/engineering/resource_scaling_doctrine.md` - gateway consumption of Sprint `1.60`'s
+  runtime-memory plan.
+- `documents/engineering/streaming_doctrine.md` - distinguish bounded peer-state anti-entropy from
+  durable at-least-once event storage.
+- `documents/engineering/pulsar_messaging_doctrine.md` - canonical-CBOR bounded gateway assertion,
+  cursor/delta, and repair framing.
+- `documents/engineering/pure_fp_standards.md` - bounded semantic replica state and explicit
+  separation from durable event storage.
+- `documents/engineering/haskell_code_guide.md` - bounded parser/frame admission, structured
+  concurrency, and capacity-one child scheduling.
+- `documents/engineering/chaos_hardening_doctrine.md` - finite peer/runtime fault budgets and the
+  external stability-oracle handoff.
+- `documents/engineering/README.md` - doctrine index entries and Phase-2 correspondence.
+
+**Product docs to create/update:**
+
+- `README.md` - current bounded-gateway baseline, command examples, and remaining external
+  stability/probe ownership.
+
+**Cross-references to add:**
+
+- Sprint `3.25` consumes `/healthz` and `/readyz`; Sprint `5.16` separately supplies the external
+  runtime-stability oracle.
+- Keep `pure_fp_standards.md` and the other Sprint `2.31` doctrine pages linked back to this phase.
 
 ## Related Documents
 

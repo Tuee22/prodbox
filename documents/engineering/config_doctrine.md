@@ -500,6 +500,11 @@ sealed-startup structural proof; legacy derivation/removal remains open under Sp
 The gateway daemon's Tier-0 `prodbox.dhall` non-secret binary context (§0) reaches the daemon via
 the ConfigMap mount: the prodbox container ships a DEFAULT `prodbox.dhall`, and the chart OVERWRITES
 it from the `gateway-config-<nodeId>` ConfigMap — hostbootstrap's per-frame context-init pattern.
+The supported chart planner renders that document from `defaultDaemonProjectConfig` and changes
+only `context.cluster_id`: home-local takes the established identity from the binary-sibling Tier-0
+floor, while AWS takes the canonical EKS cluster name. Thus every target-secret request can attest
+the explicit sink identity against the daemon actually reached, and the two substrates cannot
+silently share the image-baked `prodbox-home` fallback.
 This is a directory mount (`/etc/gateway/config`) so the kubelet's atomic `..data` symlink swap
 fires the fsnotify reload (§7). The mount contract — directory layout, atomic swap, and the daemon's
 Vault Kubernetes-auth identity that resolves the Tier-2 `SecretRef.Vault` pointers at startup — is
@@ -510,7 +515,7 @@ file is materialized by the Helm chart as follows:
 
 | Mount source | Mount path | Content |
 |---|---|---|
-| `gateway-config-<nodeId>` ConfigMap | `/etc/gateway/config` (directory mount; the daemon reads `config.dhall` inside it) | per-node Dhall expression; imports `orders.dhall`, carries `SecretRef.Vault` references for credentials, and carries non-secret service endpoints (notably `boot.minio_endpoint_url`) inline |
+| `gateway-config-<nodeId>` ConfigMap | `/etc/gateway/config` (directory mount; the daemon reads `config.dhall` and its `prodbox.dhall` sibling) | substrate-specific non-secret daemon-frame Tier-0 document plus the per-node runtime Dhall expression; the latter imports `orders.dhall`, carries `SecretRef.Vault` references for credentials, and carries non-secret service endpoints (notably `boot.minio_endpoint_url`) inline |
 | `gateway-orders` ConfigMap | `/etc/gateway/orders.dhall` | cluster-wide ranked-node + timing Dhall expression |
 | `gateway-<nodeId>-tls` Secret | `/tls/` | cert-manager-issued per-node TLS keypair; referenced by file path from the Dhall config |
 | Cert-manager CA Secret | `/ca/` | trust anchor for peer mTLS; referenced by file path from the Dhall config |
@@ -536,10 +541,10 @@ parent-custodied child inventory from Vault KV, not from Dhall, Kubernetes Secre
 gateway-local files. Patroni role Secrets are materialized from Vault by a chart hook. The
 sealed-startup structural proof has landed; legacy derivation/removal remains Sprint 3.19. The
 operator-facing `gateway-config-<nodeId>` ConfigMap therefore contains no
-secret material — only `SecretRef` references plus non-secret service endpoints rendered
-inline. The cert-manager-issued TLS keypair and CA trust anchor remain ordinary k8s Secret
-mounts referenced by file path; they are cert material under Vault's PKI authority, not Dhall
-credential fragments.
+secret material — only the non-secret substrate-specific Tier-0 document, `SecretRef` references,
+and non-secret service endpoints rendered inline. The cert-manager-issued TLS keypair and CA trust
+anchor remain ordinary k8s Secret mounts referenced by file path; they are cert material under
+Vault's PKI authority, not Dhall credential fragments.
 
 ### Non-secret service-endpoint fields
 

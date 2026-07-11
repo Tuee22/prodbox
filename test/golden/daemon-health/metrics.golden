@@ -1,8 +1,9 @@
 status: 200
 body:
-# TYPE prodbox_gateway_events_total counter
-prodbox_gateway_events_total{daemon="gateway"} <number>
+# TYPE prodbox_gateway_signed_replay_assertions gauge
+prodbox_gateway_signed_replay_assertions{daemon="gateway"} <number>
+# TYPE prodbox_gateway_semantic_members gauge
+prodbox_gateway_semantic_members{daemon="gateway"} <number>
 # TYPE prodbox_gateway_peer_connected gauge
 # TYPE prodbox_gateway_heartbeat_age_seconds gauge
 prodbox_gateway_heartbeat_age_seconds{node="node-a"} <number>
-

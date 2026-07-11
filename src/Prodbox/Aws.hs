@@ -27,6 +27,8 @@ module Prodbox.Aws
   , awsErrorCodeIsTransient
   , awsSpotPriceHistoryArgs
   , buildIamPolicyDocument
+  , buildIamPolicyDocumentForAccount
+  , buildIamPolicyDocumentForAccountAndCaptureBucket
   , buildIamPolicyJson
   , checkPulumiResidueBeforeTeardown
   , harnessPostflightResiduePolicy
@@ -150,6 +152,7 @@ import Prodbox.Host (defaultGatewayNodePort)
 import Prodbox.Infra.AwsEksTestStack
   ( awsEksCanonicalClusterName
   )
+import Prodbox.Infra.AwsSesLeaseRole qualified as AwsSesLeaseRole
 import Prodbox.Infra.StackDescriptor
   ( perRunStackDescriptorNames
   )
@@ -561,6 +564,81 @@ buildIamPolicyDocument policyTier =
     , "Statement" .= (corePolicyStatements ++ extraPolicyStatements policyTier)
     ]
 
+-- | Build the policy that is actually installed on the operational IAM
+-- user. The account-qualified form keeps the SES transaction capability
+-- exact: it can assume only this account's fixed lease role and can perform
+-- only the two pre-lease observations against the fixed SMTP user. Compatible
+-- @"*"@-resource platform actions are grouped into one statement so the
+-- compact document remains below IAM's 2,048-byte inline-user-policy limit;
+-- grouping changes no effective permission.
+buildIamPolicyDocumentForAccount
+  :: Text -> PolicyTier -> Either AwsSesLeaseRole.AwsSesLeaseRoleValueError Value
+buildIamPolicyDocumentForAccount accountId =
+  buildIamPolicyDocumentForAccountAndCaptureBucket accountId Nothing
+
+-- | Account-qualified installed-policy builder with the configured SES
+-- capture bucket. @Nothing@ deliberately omits capture reads: an incomplete
+-- initial config may create operational credentials, but no SES transaction
+-- can start until its resource scope is authored and setup is rerun.
+buildIamPolicyDocumentForAccountAndCaptureBucket
+  :: Text
+  -> Maybe Text
+  -> PolicyTier
+  -> Either AwsSesLeaseRole.AwsSesLeaseRoleValueError Value
+buildIamPolicyDocumentForAccountAndCaptureBucket accountId maybeCaptureBucket policyTier = do
+  roleArn <- AwsSesLeaseRole.awsSesLeaseRoleArn accountId
+  operationalUserArn <- AwsSesLeaseRole.awsSesLeaseOperationalUserArn accountId
+  validatedCaptureBucket <- traverse (validateCaptureBucket accountId) maybeCaptureBucket
+  let accountScopedStatements =
+        case policyTier of
+          PolicyCore -> []
+          PolicyFull ->
+            [ statement
+                "AssumeSesRole"
+                ["sts:AssumeRole"]
+                (Text.unpack roleArn)
+            , statement
+                "ObserveSmtpUser"
+                ["iam:GetUser", "iam:ListAccessKeys"]
+                (Text.unpack (operationalUserArn <> "-ses-smtp"))
+            ]
+      installedExtraStatements =
+        case policyTier of
+          PolicyCore -> []
+          PolicyFull ->
+            statement
+              "PlatformLifecycle"
+              deploymentFullWildcardActions
+              "*"
+              : case validatedCaptureBucket of
+                Nothing -> []
+                Just bucket ->
+                  let bucketArn = "arn:aws:s3:::" ++ Text.unpack bucket
+                   in [ statementWithResources
+                          "CaptureRead"
+                          ["s3:GetBucketLocation", "s3:ListBucket", "s3:GetObject"]
+                          [bucketArn, bucketArn ++ "/*"]
+                      ]
+  pure
+    ( object
+        [ "Version" .= ("2012-10-17" :: String)
+        , "Statement"
+            .= ( corePolicyStatements
+                   ++ installedExtraStatements
+                   ++ accountScopedStatements
+               )
+        ]
+    )
+ where
+  validateCaptureBucket account bucket = do
+    _ <-
+      AwsSesLeaseRole.mkAwsSesLeaseRolePolicyScope
+        account
+        "PRODBOXVALIDATION"
+        bucket
+        Nothing
+    pure (Text.strip bucket)
+
 buildIamPolicyJson :: PolicyTier -> String
 buildIamPolicyJson policyTier =
   BL8.unpack (AesonPretty.encodePretty' prettyConfig (buildIamPolicyDocument policyTier)) ++ "\n"
@@ -575,7 +653,14 @@ buildFederatedSessionPolicyDocument policyTier =
   actions =
     case policyTier of
       PolicyCore -> ["sts:GetCallerIdentity", "route53:*"]
-      PolicyFull -> ["sts:GetCallerIdentity", "route53:*", "ec2:*", "eks:*", "iam:*"]
+      PolicyFull ->
+        [ "sts:GetCallerIdentity"
+        , "sts:AssumeRole"
+        , "route53:*"
+        , "ec2:*"
+        , "eks:*"
+        , "iam:*"
+        ]
 
 -- | Sprint 4.26: the operator @prodbox aws teardown@ preflight refuses on
 -- a live long-lived Pulumi stack ('aws-ses' / retained 'public-edge-tls')
@@ -786,12 +871,7 @@ extraPolicyStatements policyTier =
     PolicyFull ->
       [ statement
           "Route53HostedZoneLifecycle"
-          [ "route53:ChangeTagsForResource"
-          , "route53:CreateHostedZone"
-          , "route53:DeleteHostedZone"
-          , "route53:ListHostedZones"
-          , "route53:ListTagsForResource"
-          ]
+          route53HostedZoneLifecycleActions
           "*"
       , -- Sprint 7.5.c.v.d: compressed from explicit per-action list to
         -- service wildcard. The previous 24-action list pushed the
@@ -816,38 +896,7 @@ extraPolicyStatements policyTier =
         -- failed with AccessDenied on the `aws-eks` validation.
         statement
           "IamEksRoleLifecycle"
-          [ "iam:AttachRolePolicy"
-          , "iam:CreateOpenIDConnectProvider"
-          , "iam:CreatePolicy"
-          , "iam:CreatePolicyVersion"
-          , "iam:CreateRole"
-          , "iam:CreateServiceLinkedRole"
-          , "iam:DeleteOpenIDConnectProvider"
-          , "iam:DeletePolicy"
-          , "iam:DeletePolicyVersion"
-          , "iam:DeleteRole"
-          , "iam:DetachRolePolicy"
-          , "iam:GetOpenIDConnectProvider"
-          , "iam:GetPolicy"
-          , "iam:GetPolicyVersion"
-          , "iam:GetRole"
-          , "iam:GetRolePolicy"
-          , "iam:ListAttachedRolePolicies"
-          , "iam:ListEntitiesForPolicy"
-          , "iam:ListInstanceProfilesForRole"
-          , "iam:ListOpenIDConnectProviders"
-          , "iam:ListPolicyVersions"
-          , "iam:ListRolePolicies"
-          , "iam:ListRoleTags"
-          , "iam:PassRole"
-          , "iam:TagOpenIDConnectProvider"
-          , "iam:TagPolicy"
-          , "iam:TagRole"
-          , "iam:UntagOpenIDConnectProvider"
-          , "iam:UntagPolicy"
-          , "iam:UntagRole"
-          , "iam:UpdateOpenIDConnectProviderThumbprint"
-          ]
+          iamEksRoleLifecycleActions
           "*"
       , -- Sprint 7.5.c.v.d: compressed from explicit per-action list to
         -- service wildcard. Same rationale as Ec2TestStackLifecycle —
@@ -876,12 +925,64 @@ extraPolicyStatements policyTier =
         -- covering any future read-only SES prereq additions.
         statement
           "SesReadOnly"
-          [ "ses:Describe*"
-          , "ses:Get*"
-          , "ses:List*"
-          ]
+          sesReadOnlyActions
           "*"
       ]
+
+route53HostedZoneLifecycleActions :: [String]
+route53HostedZoneLifecycleActions =
+  [ "route53:ChangeTagsForResource"
+  , "route53:CreateHostedZone"
+  , "route53:DeleteHostedZone"
+  , "route53:ListHostedZones"
+  , "route53:ListTagsForResource"
+  ]
+
+iamEksRoleLifecycleActions :: [String]
+iamEksRoleLifecycleActions =
+  [ "iam:AttachRolePolicy"
+  , "iam:CreateOpenIDConnectProvider"
+  , "iam:CreatePolicy"
+  , "iam:CreatePolicyVersion"
+  , "iam:CreateRole"
+  , "iam:CreateServiceLinkedRole"
+  , "iam:DeleteOpenIDConnectProvider"
+  , "iam:DeletePolicy"
+  , "iam:DeletePolicyVersion"
+  , "iam:DeleteRole"
+  , "iam:DetachRolePolicy"
+  , "iam:GetOpenIDConnectProvider"
+  , "iam:GetPolicy"
+  , "iam:GetPolicyVersion"
+  , "iam:GetRole"
+  , "iam:GetRolePolicy"
+  , "iam:ListAttachedRolePolicies"
+  , "iam:ListEntitiesForPolicy"
+  , "iam:ListInstanceProfilesForRole"
+  , "iam:ListOpenIDConnectProviders"
+  , "iam:ListPolicyVersions"
+  , "iam:ListRolePolicies"
+  , "iam:ListRoleTags"
+  , "iam:PassRole"
+  , "iam:TagOpenIDConnectProvider"
+  , "iam:TagPolicy"
+  , "iam:TagRole"
+  , "iam:UntagOpenIDConnectProvider"
+  , "iam:UntagPolicy"
+  , "iam:UntagRole"
+  , "iam:UpdateOpenIDConnectProviderThumbprint"
+  ]
+
+sesReadOnlyActions :: [String]
+sesReadOnlyActions = ["ses:Describe*", "ses:Get*", "ses:List*"]
+
+deploymentFullWildcardActions :: [String]
+deploymentFullWildcardActions =
+  route53HostedZoneLifecycleActions
+    ++ ["ec2:*"]
+    ++ iamEksRoleLifecycleActions
+    ++ ["eks:*"]
+    ++ sesReadOnlyActions
 
 statement :: String -> [String] -> String -> Value
 statement sid actions resourceArn =
@@ -890,6 +991,15 @@ statement sid actions resourceArn =
     , "Effect" .= ("Allow" :: String)
     , "Action" .= actions
     , "Resource" .= resourceArn
+    ]
+
+statementWithResources :: String -> [String] -> [String] -> Value
+statementWithResources sid actions resourceArns =
+  object
+    [ "Sid" .= sid
+    , "Effect" .= ("Allow" :: String)
+    , "Action" .= actions
+    , "Resource" .= resourceArns
     ]
 
 prettyConfig :: AesonPretty.Config
@@ -1659,6 +1769,11 @@ applyAwsSetupWithFallbackMode allowFederatedFallback repoRoot input = do
   (newAccessKeyId, newSecretAccessKey, quotaStatuses) <-
     ensureOperationalIamUser repoRoot (awsSetupAdminCredentials input) (awsSetupPolicyTierInput input)
   currentConfig <- loadConfigForWrite repoRoot
+  ensureConfiguredAwsSesLeaseRole
+    repoRoot
+    (awsSetupAdminCredentials input)
+    (awsSetupPolicyTierInput input)
+    currentConfig
   (operationalCredentials, credentialSource) <-
     operationalCredentialsAfterReadiness
       allowFederatedFallback
@@ -1726,8 +1841,8 @@ applyAwsTeardown repoRoot input = do
  where
   adminCreds = awsTeardownAdminCredentials input
 
-  -- Sprint 7.8: reconcile the two 'Operational'-class managed resources
-  -- (the operational @prodbox@ IAM user and the operational @aws.*@ config
+  -- Reconcile the three 'Operational'-class managed resources (the SES lease
+  -- role, operational @prodbox@ IAM user, and operational @aws.*@ config
   -- block) toward absent through the managed-resource registry, instead of
   -- the previous inline delete sequence. Behavior is preserved for the
   -- present and already-absent cases (same keys + inline policy + user
@@ -1827,15 +1942,16 @@ operationalAwsConfigResidueFromKey accessKeyId
           , ResidueStatus.residueStackName = "operational-aws-config"
           }
 
--- | Sprint 7.8: the two 'Operational'-class managed resources, with
+-- | The three 'Operational'-class managed resources, with
 -- their idempotent destroy closures over the admin credentials. The
 -- canonical 'resourceName's MUST match the
 -- 'Prodbox.Lifecycle.ResourceClass' SSoT
--- (@operational-iam-user@, @operational-aws-config@). The destroy
--- actions are exactly the inline delete / clear logic that
--- @prodbox aws teardown@ ran before this sprint, so wiring them in is
--- behavior-preserving:
+-- (@operational-aws-ses-lease-role@, @operational-iam-user@,
+-- @operational-aws-config@). Registry order is dependency order:
+-- the lease role is deleted before its trusted operational user.
 --
+-- * @operational-aws-ses-lease-role@: delete the fixed role and inline
+--   policy through its typed, idempotent owner interpreter.
 -- * @operational-iam-user@: delete every operational access key, delete
 --   the inline user policy if present, then delete the user if present.
 -- * @operational-aws-config@: clear the operational @aws.*@ block in
@@ -1844,8 +1960,19 @@ operationalAwsConfigResidueFromKey accessKeyId
 operationalManagedResources :: Credentials -> [ManagedResource]
 operationalManagedResources adminCreds =
   [ ManagedResource
+      { resourceName = "operational-aws-ses-lease-role"
+      , resourceClass = ResourceClass.Operational
+      , resourceEnsureCommand = Just "prodbox aws setup"
+      , resourceEnsurePresent = Nothing
+      , resourceDestroyCommand = "prodbox aws teardown"
+      , resourceDestroy = \repoRoot ->
+          deleteAwsSesLeaseRoleForTeardown repoRoot adminCreds
+      }
+  , ManagedResource
       { resourceName = "operational-iam-user"
       , resourceClass = ResourceClass.Operational
+      , resourceEnsureCommand = Nothing
+      , resourceEnsurePresent = Nothing
       , resourceDestroyCommand = "prodbox aws teardown"
       , resourceDestroy = \repoRoot -> do
           _ <- deleteExistingOperationalKeys repoRoot adminCreds
@@ -1856,10 +1983,77 @@ operationalManagedResources adminCreds =
   , ManagedResource
       { resourceName = "operational-aws-config"
       , resourceClass = ResourceClass.Operational
+      , resourceEnsureCommand = Nothing
+      , resourceEnsurePresent = Nothing
       , resourceDestroyCommand = "prodbox aws teardown"
       , resourceDestroy = \repoRoot -> clearOperationalAwsConfig repoRoot adminCreds
       }
   ]
+
+-- | Load the best authoritative policy scope available for observing or
+-- deleting the fixed role. The resource identity (account + fixed role name)
+-- does not depend on the policy scope. When an initial or damaged config lacks
+-- the public zone/bucket fields, a valid sentinel scope lets the typed role
+-- interpreter authoritatively distinguish ABSENT from PRESENT/DRIFTED and
+-- delete the same fixed role; it is never used by the ensure path.
+loadAwsSesLeaseRoleObservationScope
+  :: FilePath
+  -> Credentials
+  -> IO AwsSesLeaseRole.AwsSesLeaseRolePolicyScope
+loadAwsSesLeaseRoleObservationScope repoRoot adminCreds = do
+  accountId <- awsCallerAccountId repoRoot adminCreds
+  configResult <- loadConfigFile repoRoot
+  case configResult of
+    Right config ->
+      case configuredAwsSesLeaseRoleScope accountId config of
+        Right (Just scope) -> pure scope
+        Right Nothing -> fallback accountId
+        Left _ -> fallback accountId
+    Left _ -> fallback accountId
+ where
+  fallback accountId =
+    case AwsSesLeaseRole.mkAwsSesLeaseRolePolicyScope
+      accountId
+      "PRODBOXOBSERVATION"
+      "prodbox-lease-observation"
+      Nothing of
+      Left err ->
+        throwAws
+          ( "Cannot build the bounded observation scope for the AWS SES lease role: "
+              ++ show err
+          )
+      Right scope -> pure scope
+
+deleteAwsSesLeaseRoleForTeardown :: FilePath -> Credentials -> IO ExitCode
+deleteAwsSesLeaseRoleForTeardown repoRoot adminCreds = do
+  scope <- loadAwsSesLeaseRoleObservationScope repoRoot adminCreds
+  result <- AwsSesLeaseRole.deleteAwsSesLeaseRole repoRoot adminCreds scope
+  case result of
+    Left err ->
+      throwAws
+        ( "Failed to delete the operational AWS SES lease role: "
+            ++ show err
+        )
+    Right () -> pure ExitSuccess
+
+awsSesLeaseRoleResidueFromObservation
+  :: AwsSesLeaseRole.AwsSesLeaseRoleObservation
+  -> ResidueStatus.ResidueStatus
+awsSesLeaseRoleResidueFromObservation observation = case observation of
+  AwsSesLeaseRole.AwsSesLeaseRoleAbsent -> ResidueStatus.ResidueAbsent
+  AwsSesLeaseRole.AwsSesLeaseRolePresent -> present "iam:get-role confirmed present"
+  AwsSesLeaseRole.AwsSesLeaseRoleDrifted drift ->
+    present ("iam:get-role confirmed drift: " ++ show drift)
+  AwsSesLeaseRole.AwsSesLeaseRoleUnobservable err ->
+    ResidueStatus.ResidueUnreachable
+      (ResidueStatus.ResidueQueryFailed (show err))
+ where
+  present evidence =
+    ResidueStatus.ResiduePresent
+      ResidueStatus.ResidueDetails
+        { ResidueStatus.residueEvidence = evidence
+        , ResidueStatus.residueStackName = "operational-aws-ses-lease-role"
+        }
 
 -- | Sprint 7.8: clear the operational @aws.*@ credential block in
 -- Vault (factored out of the previous inline
@@ -1894,8 +2088,9 @@ clearOperationalAwsConfig repoRoot adminCreds = do
   writeProjectConfigParameters repoRoot updatedConfig
   pure ExitSuccess
 
--- | Sprint 7.8: discover the live 'ResidueStatus' of each of the two
--- 'operationalManagedResources', paired in registry order. The IAM-user
+-- | Discover the live 'ResidueStatus' of all three
+-- 'operationalManagedResources', paired in dependency/registry order. The
+-- lease role is observed through its typed owner interpreter; the IAM-user
 -- status comes from 'operationalIamUserExists' piped through
 -- 'operationalIamUserResidueFromExists'; the @aws.*@-config status from
 -- the configured @aws.access_key_id@ via
@@ -1906,6 +2101,10 @@ clearOperationalAwsConfig repoRoot adminCreds = do
 discoverOperationalResidue
   :: FilePath -> Credentials -> IO [(ManagedResource, ResidueStatus.ResidueStatus)]
 discoverOperationalResidue repoRoot adminCreds = do
+  roleScope <- loadAwsSesLeaseRoleObservationScope repoRoot adminCreds
+  roleObservation <-
+    AwsSesLeaseRole.observeAwsSesLeaseRole repoRoot adminCreds roleScope
+  let roleStatus = awsSesLeaseRoleResidueFromObservation roleObservation
   iamUserExists <- operationalIamUserExists repoRoot adminCreds
   let iamUserStatus = operationalIamUserResidueFromExists iamUserExists
   configResult <- loadConfigFile repoRoot
@@ -1927,7 +2126,11 @@ discoverOperationalResidue repoRoot adminCreds = do
   -- it carries no stranding risk: refine it to Absent so a clean-machine
   -- preflight is not deadlocked on a Vault that only comes up later in the run.
   let awsConfigStatus = refineAwsConfigResidueAgainstIamUser iamUserStatus rawAwsConfigStatus
-  pure (zip (operationalManagedResources adminCreds) [iamUserStatus, awsConfigStatus])
+  pure
+    ( zip
+        (operationalManagedResources adminCreds)
+        [roleStatus, iamUserStatus, awsConfigStatus]
+    )
 
 -- | Sprint 7.8: read-only listing of the operational IAM user's
 -- access-key IDs, factored from 'deleteExistingOperationalKeys' so
@@ -2039,15 +2242,16 @@ renderResidueError residue =
       ]
 
 -- | Sprint 7.20: the EFFECTFUL wrapper of the teardown-completeness guard.
--- Runs AFTER 'applyAwsTeardown' destroys the operational IAM user + keys
--- and clears the Vault credential, then asserts the harness left NO
+-- Runs AFTER 'applyAwsTeardown' destroys the SES lease role, operational IAM
+-- user + keys, and clears the Vault credential, then asserts the harness left NO
 -- residue:
 --
---   (a) the operational @prodbox@ IAM user + its access keys are gone
+--   (a) the fixed SES lease role is gone from AWS;
+--   (b) the operational @prodbox@ IAM user + its access keys are gone
 --       from AWS — queried with the admin credentials through the same
 --       'operationalIamUserExists' / 'listOperationalAccessKeyIds' probes
 --       the destroy path used; and
---   (b) the Vault operational credential at @secret/gateway/gateway/aws@
+--   (c) the Vault operational credential at @secret/gateway/gateway/aws@
 --       is cleared, reusing 'operationalCredentialsCleared'.
 --
 -- The two observations are unified into one 'IamProbe' / 'VaultProbe'
@@ -2063,12 +2267,38 @@ renderResidueError residue =
 -- refinement and is intentionally NOT performed here.
 assertOperationalTeardownComplete :: FilePath -> Credentials -> IO ()
 assertOperationalTeardownComplete repoRoot adminCreds = do
+  assertAwsSesLeaseRoleAbsent repoRoot adminCreds
   iamProbe <- probeOperationalIamResidue repoRoot adminCreds
   configCleared <- operationalCredentialsCleared repoRoot
   let vaultProbe = if configCleared then VaultCredsCleared else VaultCredsPopulated
   case residueFromProbe iamProbe vaultProbe of
     Right () -> pure ()
     Left residue -> throwAws (renderResidueError residue)
+
+assertAwsSesLeaseRoleAbsent :: FilePath -> Credentials -> IO ()
+assertAwsSesLeaseRoleAbsent repoRoot adminCreds = do
+  scope <- loadAwsSesLeaseRoleObservationScope repoRoot adminCreds
+  observation <-
+    AwsSesLeaseRole.observeAwsSesLeaseRole repoRoot adminCreds scope
+  case observation of
+    AwsSesLeaseRole.AwsSesLeaseRoleAbsent -> pure ()
+    AwsSesLeaseRole.AwsSesLeaseRolePresent -> leaked "present"
+    AwsSesLeaseRole.AwsSesLeaseRoleDrifted drift ->
+      leaked ("present and drifted: " ++ show drift)
+    AwsSesLeaseRole.AwsSesLeaseRoleUnobservable err ->
+      throwAws
+        ( "AWS IAM harness teardown-completeness guard FAILED: cannot re-observe "
+            ++ "the operational AWS SES lease role after teardown: "
+            ++ show err
+        )
+ where
+  leaked detail =
+    throwAws
+      ( "AWS IAM harness teardown-completeness guard FAILED: the operational "
+          ++ "AWS SES lease role still exists after teardown ("
+          ++ detail
+          ++ "). Re-run `prodbox aws teardown`; its destroy path is idempotent."
+      )
 
 -- | Sprint 7.20: effectful adapter that turns the existing live IAM
 -- probes into a pure 'IamProbe'. Reuses 'operationalIamUserExists' for
@@ -2551,6 +2781,16 @@ applyConfigSetup repoRoot input = do
     (configSetupAcmeEabKeyIdInput input)
     (configSetupAcmeEabHmacKeyInput input)
   let updatedConfig = configFromSetupInput currentConfig input
+  installOperationalIamPolicyForConfig
+    repoRoot
+    adminCredentials
+    (configSetupPolicyTierInput input)
+    updatedConfig
+  ensureConfiguredAwsSesLeaseRole
+    repoRoot
+    adminCredentials
+    (configSetupPolicyTierInput input)
+    updatedConfig
   writeProjectConfigParameters repoRoot updatedConfig
   validationResult <- validateAndLoadSettings repoRoot
   case validationResult of
@@ -2566,6 +2806,58 @@ applyConfigSetup repoRoot input = do
           , configSetupQuotaStatuses = quotaStatuses
           , configSetupDhallPath = canonicalTier0ConfigDisplayPath repoRoot
           }
+
+-- | Ensure the fixed SES lease role only when its public resource scope is
+-- fully available. A freshly generated operator config intentionally starts
+-- with an empty hosted zone and SES capture bucket, so initial @aws setup@
+-- must remain usable and defer this role until @config setup@ (or a later
+-- idempotent @aws setup@) has supplied both identifiers.
+ensureConfiguredAwsSesLeaseRole
+  :: FilePath -> Credentials -> PolicyTier -> ConfigFile -> IO ()
+ensureConfiguredAwsSesLeaseRole repoRoot adminCredentials policyTier config =
+  case policyTier of
+    PolicyCore -> pure ()
+    PolicyFull -> do
+      accountId <- awsCallerAccountId repoRoot adminCredentials
+      maybeScope <-
+        either throwAws pure (configuredAwsSesLeaseRoleScope accountId config)
+      case maybeScope of
+        Nothing -> pure ()
+        Just scope -> do
+          result <-
+            AwsSesLeaseRole.ensureAwsSesLeaseRole
+              repoRoot
+              adminCredentials
+              scope
+          case result of
+            Left err ->
+              throwAws
+                ( "Failed to ensure the operational AWS SES lease role: "
+                    ++ show err
+                )
+            Right () -> pure ()
+
+configuredAwsSesLeaseRoleScope
+  :: Text
+  -> ConfigFile
+  -> Either String (Maybe AwsSesLeaseRole.AwsSesLeaseRolePolicyScope)
+configuredAwsSesLeaseRoleScope accountId config =
+  let hostedZoneId = Text.strip (zone_id (route53 config))
+      captureBucket = Text.strip (capture_bucket (ses config))
+      legacyStateBucket = nonEmptyText (psbBucketName (pulumi_state_backend config))
+   in if Text.null hostedZoneId || Text.null captureBucket
+        then Right Nothing
+        else case AwsSesLeaseRole.mkAwsSesLeaseRolePolicyScope
+          accountId
+          hostedZoneId
+          captureBucket
+          legacyStateBucket of
+          Left err ->
+            Left
+              ( "Invalid AWS SES lease-role policy scope in prodbox.dhall: "
+                  ++ show err
+              )
+          Right scope -> Right (Just scope)
 
 ensureOperationalIamUser :: FilePath -> Credentials -> PolicyTier -> IO (Text, Text, [QuotaStatus])
 ensureOperationalIamUser repoRoot adminCredentials policyTier = do
@@ -2584,27 +2876,15 @@ ensureOperationalIamUser repoRoot adminCredentials policyTier = do
     )
     $ throwAws ("aws iam create-user failed: " ++ errorDetail createUserOutput)
 
+  currentConfig <- loadConfigForWrite repoRoot
+  installOperationalIamPolicyForConfig
+    repoRoot
+    adminCredentials
+    policyTier
+    currentConfig
+
   accessKeys <- listOperationalAccessKeys repoRoot adminCredentials
   mapM_ (deleteOperationalAccessKey repoRoot adminCredentials) accessKeys
-
-  putUserPolicyOutput <-
-    runAwsCliCompleted
-      repoRoot
-      adminCredentials
-      [ "iam"
-      , "put-user-policy"
-      , "--user-name"
-      , Text.unpack prodboxIamUserName
-      , "--policy-name"
-      , Text.unpack prodboxIamInlinePolicyName
-      , "--policy-document"
-      , -- AWS inline user-policy documents are capped at 2048 bytes
-        -- including whitespace. Compact-encode to stay well under the
-        -- limit; the pretty form is reserved for operator-facing
-        -- `prodbox aws policy` rendering.
-        BL8.unpack (encode (buildIamPolicyDocument policyTier))
-      ]
-  _ <- liftAwsEither (requireCommandSuccess "aws iam put-user-policy" putUserPolicyOutput)
 
   createAccessKeyOutput <-
     runAwsCliCompleted
@@ -2626,6 +2906,45 @@ ensureOperationalIamUser repoRoot adminCredentials policyTier = do
   quotaStatuses <-
     mapM (\spec -> ensureServiceQuota repoRoot adminCredentials spec True) baselineQuotaSpecs
   pure (newAccessKeyId, newSecretKey, quotaStatuses)
+
+-- | Idempotently install the account/config-qualified operational policy
+-- without rotating access keys. @config setup@ calls this again after
+-- constructing its updated config so a newly supplied capture bucket is in
+-- force before the SES lease role becomes usable.
+installOperationalIamPolicyForConfig
+  :: FilePath -> Credentials -> PolicyTier -> ConfigFile -> IO ()
+installOperationalIamPolicyForConfig repoRoot adminCredentials policyTier config = do
+  accountId <- awsCallerAccountId repoRoot adminCredentials
+  let configuredCaptureBucket = nonEmptyText (capture_bucket (ses config))
+  installedPolicy <-
+    case buildIamPolicyDocumentForAccountAndCaptureBucket
+      accountId
+      configuredCaptureBucket
+      policyTier of
+      Left err ->
+        throwAws
+          ( "Cannot build the account-scoped operational IAM policy: "
+              ++ show err
+          )
+      Right policy -> pure policy
+  putUserPolicyOutput <-
+    runAwsCliCompleted
+      repoRoot
+      adminCredentials
+      [ "iam"
+      , "put-user-policy"
+      , "--user-name"
+      , Text.unpack prodboxIamUserName
+      , "--policy-name"
+      , Text.unpack prodboxIamInlinePolicyName
+      , "--policy-document"
+      , -- AWS inline user-policy documents are capped at 2,048 bytes.
+        BL8.unpack (encode installedPolicy)
+      ]
+  _ <-
+    liftAwsEither
+      (requireCommandSuccess "aws iam put-user-policy" putUserPolicyOutput)
+  pure ()
 
 waitForOperationalCredentialsReady :: FilePath -> Credentials -> Maybe Text -> Text -> Text -> IO ()
 waitForOperationalCredentialsReady repoRoot adminCredentials maybeRoute53ZoneId newAccessKeyId newSecretAccessKey =

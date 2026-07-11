@@ -48,6 +48,9 @@ spec:
             - start
             - --config
             - /etc/gateway/config/config.dhall
+            {{- range $.Values.runtime.rtsArguments }}
+            - {{ . | quote }}
+            {{- end }}
           ports:
             - name: rest
               containerPort: {{ $.Values.ports.rest }}
@@ -81,18 +84,24 @@ spec:
               readOnly: true
           livenessProbe:
             httpGet:
-              path: /v1/state
+              path: {{ $.Values.probes.liveness.path | quote }}
               port: rest
               scheme: HTTP
-            initialDelaySeconds: 10
-            periodSeconds: 15
+            initialDelaySeconds: {{ $.Values.probes.liveness.initialDelaySeconds }}
+            periodSeconds: {{ $.Values.probes.liveness.periodSeconds }}
+            timeoutSeconds: {{ $.Values.probes.liveness.timeoutSeconds }}
+            failureThreshold: {{ $.Values.probes.liveness.failureThreshold }}
+            successThreshold: {{ $.Values.probes.liveness.successThreshold }}
           readinessProbe:
             httpGet:
-              path: /v1/state
+              path: {{ $.Values.probes.readiness.path | quote }}
               port: rest
               scheme: HTTP
-            initialDelaySeconds: 5
-            periodSeconds: 10
+            initialDelaySeconds: {{ $.Values.probes.readiness.initialDelaySeconds }}
+            periodSeconds: {{ $.Values.probes.readiness.periodSeconds }}
+            timeoutSeconds: {{ $.Values.probes.readiness.timeoutSeconds }}
+            failureThreshold: {{ $.Values.probes.readiness.failureThreshold }}
+            successThreshold: {{ $.Values.probes.readiness.successThreshold }}
       volumes:
         - name: tls
           secret:

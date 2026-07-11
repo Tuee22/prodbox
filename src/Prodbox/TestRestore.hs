@@ -8,10 +8,19 @@ module Prodbox.TestRestore
   ( RestoreChart (..)
   , RestoreCyclePlan (..)
   , RestoreCycleStep (..)
-  , RestoreKeycloakSmtp (..)
+  , RetainedSesPreparationInterpreter (..)
+  , RetainedSesPreparationInputs (..)
+  , RetainedSesPreparationPlan
+  , RetainedSesPreparationPrecondition (..)
+  , RetainedSesPreparationStep (..)
+  , RetainedSesRequirement (..)
   , buildRestoreCyclePlan
   , gatewayDaemonLivenessPrecondition
+  , retainedSesPreparationPrecondition
+  , retainedSesPreparationTrace
   , restoreChartId
+  , restoreStepResetsGatewayHealthyWindow
+  , runRetainedSesPreparationWith
   )
 where
 
@@ -20,6 +29,10 @@ import Data.Text qualified as Text
 import Prodbox.Config.ComponentGraph
   ( ComponentId (..)
   , ReadinessProbe (..)
+  )
+import Prodbox.Lifecycle.CheckpointAuthority
+  ( LongLivedCheckpointAuthority
+  , TargetClusterSecretSink
   )
 import Prodbox.Lifecycle.Preconditions
   ( Precondition (..)
@@ -48,16 +61,97 @@ restoreChartId chart =
     RestoreChartApi -> "api"
     RestoreChartWebsocket -> "websocket"
 
-data RestoreKeycloakSmtp
-  = RestoreWithoutKeycloakSmtp
-  | RestoreWithKeycloakSmtp
+-- | A capability projected solely from the selected validation set.  It is
+-- deliberately independent of bootstrap flags and substrate selection.
+data RetainedSesRequirement
+  = SesNotRequired
+  | SesRequired
   deriving (Eq, Show)
+
+-- | The observable semantic stages of the one retained SES preparation
+-- transaction.  Acquire and release are part of the transaction contract;
+-- an interpreter must not flatten them into independently skippable restore
+-- actions.
+data RetainedSesPreparationStep
+  = RetainedSesAcquire
+  | RetainedSesReconcile
+  | RetainedSesAwaitReady
+  | RetainedSesSyncTarget
+  | RetainedSesRelease
+  deriving (Bounded, Enum, Eq, Show)
+
+-- | The target gateway must prove a real object-store round trip before the
+-- retained transaction may acquire its lease.  This is plan data rather than
+-- an ambient bootstrap convention, so every interpreter must account for it.
+data RetainedSesPreparationPrecondition
+  = RetainedSesGatewayObjectStoreReady
+  deriving (Eq, Show)
+
+-- | Opaque nested plan for the one registered retained-SES effect.  The
+-- semantic trace documents the Phase 4.47 bracket owned by the registered
+-- ensure operation; interpreters observe and validate it but never flatten
+-- those stages into independently skippable actions.
+data RetainedSesPreparationPlan = RetainedSesPreparationPlan
+  { retainedSesPreparationPrecondition :: !RetainedSesPreparationPrecondition
+  , retainedSesPreparationTrace :: ![RetainedSesPreparationStep]
+  }
+  deriving (Eq, Show)
+
+canonicalRetainedSesPreparationPlan :: RetainedSesPreparationPlan
+canonicalRetainedSesPreparationPlan =
+  RetainedSesPreparationPlan
+    { retainedSesPreparationPrecondition = RetainedSesGatewayObjectStoreReady
+    , retainedSesPreparationTrace = [minBound .. maxBound]
+    }
+
+-- | Explicit coordinates for retained control-plane authority and the
+-- independently selected workload-cluster secret sink.  The unrelated field
+-- types make ambient target inference and authority/target substitution
+-- unrepresentable at this planning boundary.
+data RetainedSesPreparationInputs = RetainedSesPreparationInputs
+  { retainedSesCheckpointAuthority :: !LongLivedCheckpointAuthority
+  , retainedSesTargetSecretSink :: !TargetClusterSecretSink
+  }
+  deriving (Eq, Show)
+
+-- | A small injected interpreter for the two plan-level effects: the typed
+-- target-readiness precondition and one registered atomic ensure.  The ensure
+-- implementation remains responsible for its own acquire/release bracket and
+-- internal transaction stages.
+data RetainedSesPreparationInterpreter action failure
+  = RetainedSesPreparationInterpreter
+  { checkRetainedSesPreparationPrecondition
+      :: RetainedSesPreparationPrecondition
+      -> RetainedSesPreparationInputs
+      -> action (Either failure ())
+  , runRegisteredRetainedSesEnsure
+      :: RetainedSesPreparationPlan
+      -> RetainedSesPreparationInputs
+      -> action (Either failure ())
+  }
+
+runRetainedSesPreparationWith
+  :: (Monad action)
+  => RetainedSesPreparationInterpreter action failure
+  -> RetainedSesPreparationPlan
+  -> RetainedSesPreparationInputs
+  -> action (Either failure ())
+runRetainedSesPreparationWith interpreter preparationPlan inputs = do
+  readinessResult <-
+    checkRetainedSesPreparationPrecondition
+      interpreter
+      (retainedSesPreparationPrecondition preparationPlan)
+      inputs
+  case readinessResult of
+    Left failure -> pure (Left failure)
+    Right () ->
+      runRegisteredRetainedSesEnsure interpreter preparationPlan inputs
 
 data RestoreCycleStep
   = RestoreDeleteChart !RestoreChart
   | RestoreEnsureGatewayMinioBootstrap
   | RestoreReconcileChart !RestoreChart
-  | RestoreSyncKeycloakSmtp
+  | RestorePrepareRetainedSes !RetainedSesPreparationPlan
   | RestoreWaitForPublicEdge
   deriving (Eq, Show)
 
@@ -67,11 +161,26 @@ data RestoreCyclePlan = RestoreCyclePlan
   }
   deriving (Eq, Show)
 
--- | The one canonical destructive restore core. The optional SMTP action is
--- the sole permitted projection difference and is deliberately anchored after
--- gateway reconciliation and before every dependent chart.
-buildRestoreCyclePlan :: Substrate -> RestoreKeycloakSmtp -> RestoreCyclePlan
-buildRestoreCyclePlan substrate restoreSmtp =
+-- | Only a gateway rollout explicitly present in the compiled restore plan
+-- may restart the runtime-stability success window.  The caller must preserve
+-- the run-wide absorbing unhealthy evidence when applying this decision.
+restoreStepResetsGatewayHealthyWindow :: RestoreCycleStep -> Bool
+restoreStepResetsGatewayHealthyWindow restoreStep =
+  case restoreStep of
+    RestoreDeleteChart RestoreChartGateway -> True
+    RestoreReconcileChart RestoreChartGateway -> True
+    RestoreDeleteChart _ -> False
+    RestoreReconcileChart _ -> False
+    RestoreEnsureGatewayMinioBootstrap -> False
+    RestorePrepareRetainedSes _ -> False
+    RestoreWaitForPublicEdge -> False
+
+-- | The one canonical destructive restore core.  The optional retained SES
+-- transaction is represented by one atomic marker: its bracketed five-stage
+-- interpretation is anchored after gateway reconciliation and before every
+-- dependent chart.
+buildRestoreCyclePlan :: Substrate -> RetainedSesRequirement -> RestoreCyclePlan
+buildRestoreCyclePlan substrate retainedSesRequirement =
   RestoreCyclePlan
     { restoreCycleSubstrate = substrate
     , restoreCycleSteps =
@@ -91,9 +200,9 @@ buildRestoreCyclePlan substrate restoreSmtp =
     }
  where
   smtpSteps =
-    case restoreSmtp of
-      RestoreWithoutKeycloakSmtp -> []
-      RestoreWithKeycloakSmtp -> [RestoreSyncKeycloakSmtp]
+    case retainedSesRequirement of
+      SesNotRequired -> []
+      SesRequired -> [RestorePrepareRetainedSes canonicalRetainedSesPreparationPlan]
 
 -- | Adapt one gateway object-store observation into a composable, bounded,
 -- fail-closed prerequisite. The caller supplies the real one-shot action and

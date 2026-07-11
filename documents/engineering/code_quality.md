@@ -422,12 +422,11 @@ registry above: a Haskell list, committed to source, consumed by
 newline, tracked-generated paths) with one more: refuse to allow any file
 matching a forbidden pattern.
 
-Default forbidden patterns every project rejects unless explicitly opted out:
+Forbidden patterns for this repository:
 
-- `.github/workflows/` — CI lives in `tool lint all` and `cabal test`, not
-  in a parallel CI surface. Projects that publish via GitHub Actions opt in
-  by registering a narrow exception (specific workflow files), not by
-  removing the default.
+- `.github/workflows/` — automated checks live in local CLI entrypoints and `cabal test`, not
+  in a parallel repository workflow. Prodbox has no GitHub Actions exception while the active-
+  development policy in §2A is in force.
 - `.husky/`, `.githooks/`, `.pre-commit-config.yaml`, `pre-commit-*.yaml`
   — Git hooks are not the canonical lint surface. Style enforcement lives
   in `tool lint haskell` and the `<project>-haskell-style` test-suite.

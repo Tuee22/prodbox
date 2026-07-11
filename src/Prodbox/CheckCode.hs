@@ -11,6 +11,7 @@ module Prodbox.CheckCode
   , extractStringLiterals
   , generatedSectionRules
   , generatedSectionsReconcilerViolations
+  , gatewayProbeViolations
   , haskellStyleViolations
   , iamCreateSiteViolations
   , iamCreateVerbs
@@ -69,6 +70,7 @@ import Prodbox.CLI.Output
   )
 import Prodbox.CLI.Spec (CommandSpec (..), commandRegistry)
 import Prodbox.Error (fatalError)
+import Prodbox.Gateway.Probe (renderGatewayProbeDefaultsYaml)
 import Prodbox.Infra.StackDescriptor
   ( renderStackCommandSurfaceMarkdown
   , stackDescriptors
@@ -170,6 +172,14 @@ generatedSectionRules =
       , generatedSectionEndMarker = "{{/* prodbox:route-registry:end */}}"
       , generatedSectionRender = const renderHelmRouteInventory
       , generatedSectionRendererSources = ["src/Prodbox/PublicEdge.hs"]
+      }
+  , GeneratedSectionRule
+      { generatedSectionKey = "gateway-probes.values"
+      , generatedSectionPath = "charts/gateway/values.yaml"
+      , generatedSectionStartMarker = "# prodbox:gateway-probes.values:start"
+      , generatedSectionEndMarker = "# prodbox:gateway-probes.values:end"
+      , generatedSectionRender = const renderGatewayProbeDefaultsYaml
+      , generatedSectionRendererSources = ["src/Prodbox/Gateway/Probe.hs"]
       }
   , -- Sprint 4.22: the managed-resource registry's lifecycle-class facts
     -- are rendered into substrates.md so `prodbox docs check` fails the
@@ -1991,8 +2001,13 @@ pulumiCreateSiteViolations registeredNames commandContents =
 -- managed resource). Generalizes the Sprint 4.22 IAM-only
 -- @iamCreateVerbs@ to every AWS-resource create call site:
 --
---   * @create-user@ \/ @create-access-key@ \/ @put-user-policy@ — the
---     @operational-iam-user@ owner module @src/Prodbox/Aws.hs@.
+--   * @create-user@ \/ @put-user-policy@ — the @operational-iam-user@
+--     owner module @src/Prodbox/Aws.hs@.
+--   * @create-role@ \/ @put-role-policy@ — the fixed operational SES
+--     lease-role owner @src/Prodbox/Infra/AwsSesLeaseRole.hs@.
+--   * @create-access-key@ — either that operational-user owner or the
+--     lease/fence-guarded SES SMTP-key owner
+--     @src/Prodbox/Infra/AwsSesSmtpKey.hs@.
 --   * @create-bucket@ — the long-lived @pulumi_state_backend@ bucket
 --     owner @src/Prodbox/Infra/LongLivedPulumiBackend.hs@, the
 --     in-cluster Pulumi MinIO backend bucket owner
@@ -2007,8 +2022,16 @@ pulumiCreateSiteViolations registeredNames commandContents =
 awsCreateVerbs :: [(String, [FilePath])]
 awsCreateVerbs =
   [ ("create-user", ["src/Prodbox/Aws.hs"])
-  , ("create-access-key", ["src/Prodbox/Aws.hs"])
+  ,
+    ( "create-access-key"
+    ,
+      [ "src/Prodbox/Aws.hs"
+      , "src/Prodbox/Infra/AwsSesSmtpKey.hs"
+      ]
+    )
   , ("put-user-policy", ["src/Prodbox/Aws.hs"])
+  , ("create-role", ["src/Prodbox/Infra/AwsSesLeaseRole.hs"])
+  , ("put-role-policy", ["src/Prodbox/Infra/AwsSesLeaseRole.hs"])
   ,
     ( "create-bucket"
     ,
@@ -2476,15 +2499,109 @@ chartViolationsFor repoRoot relativeChartPath = do
       else pure [helperPath ++ " is missing the shared label helper."]
   templateViolations <- chartTemplateResourceViolations chartDir
   guardrailViolations <- chartRootGuardrailViolations (takeFileName chartDir) chartDir
+  probeViolations <- gatewayProbeChartViolations (takeFileName chartDir) chartDir
   pure
     ( manifestViolations relativeChartPath chartContents
         ++ helperViolations
         ++ templateViolations
         ++ guardrailViolations
+        ++ probeViolations
     )
  where
   manifestViolations path contents =
     missingPrefixedFields path contents ["apiVersion: v2", "name:", "version:", "appVersion:"]
+
+gatewayProbeChartViolations :: String -> FilePath -> IO [String]
+gatewayProbeChartViolations chartName chartDir =
+  if chartName /= "gateway"
+    then pure []
+    else do
+      let templatePath = chartDir </> "templates" </> "deployments.yaml"
+          valuesPath = chartDir </> "values.yaml"
+      templateExists <- doesFileExist templatePath
+      valuesExists <- doesFileExist valuesPath
+      case (templateExists, valuesExists) of
+        (True, True) -> do
+          templateContents <- readFile templatePath
+          valuesContents <- readFile valuesPath
+          pure (gatewayProbeViolations templateContents valuesContents)
+        (False, False) ->
+          pure
+            [ templatePath ++ " is missing the gateway Deployment probe bindings."
+            , valuesPath ++ " is missing the typed gateway probe defaults."
+            ]
+        (False, True) ->
+          pure [templatePath ++ " is missing the gateway Deployment probe bindings."]
+        (True, False) ->
+          pure [valuesPath ++ " is missing the typed gateway probe defaults."]
+
+-- | Sprint 3.25: enforce the gateway lifecycle-probe boundary independently
+-- of Helm availability. The static defaults are generated from the same typed
+-- value used by the Haskell chart plan; the Deployment must consume every
+-- timing/threshold field from that value and must never use the diagnostic
+-- state projection as a kubelet probe.
+gatewayProbeViolations :: String -> String -> [String]
+gatewayProbeViolations deploymentTemplate valuesContents =
+  forbiddenStateProbeViolations
+    ++ missingBindingViolations
+    ++ generatedDefaultsViolations
+ where
+  forbiddenStateProbeViolations =
+    [ "charts/gateway "
+        ++ surface
+        ++ " uses forbidden kubelet probe path `/v1/state`; liveness must use `/healthz` and readiness must use `/readyz`."
+    | (surface, contents) <-
+        [ ("Deployment template", deploymentTemplate)
+        , ("values", valuesContents)
+        ]
+    , "/v1/state" `isInfixOf` contents
+    ]
+  missingBindingViolations =
+    [ "charts/gateway/templates/deployments.yaml must render the complete values-backed `"
+        ++ probeName
+        ++ "` stanza."
+    | (probeName, expectedBlock) <- gatewayProbeTemplateBlocks
+    , expectedBlock `notElemIn` deploymentTemplate
+    ]
+  generatedDefaultsViolations =
+    [ "charts/gateway/values.yaml must contain the generated typed gateway lifecycle-probe defaults."
+    | renderGatewayProbeDefaultsYaml `notElemIn` valuesContents
+    ]
+  needle `notElemIn` haystack = not (needle `isInfixOf` haystack)
+
+gatewayProbeTemplateBlocks :: [(String, String)]
+gatewayProbeTemplateBlocks =
+  [
+    ( "livenessProbe"
+    , unlines
+        [ "          livenessProbe:"
+        , "            httpGet:"
+        , "              path: {{ $.Values.probes.liveness.path | quote }}"
+        , "              port: rest"
+        , "              scheme: HTTP"
+        , "            initialDelaySeconds: {{ $.Values.probes.liveness.initialDelaySeconds }}"
+        , "            periodSeconds: {{ $.Values.probes.liveness.periodSeconds }}"
+        , "            timeoutSeconds: {{ $.Values.probes.liveness.timeoutSeconds }}"
+        , "            failureThreshold: {{ $.Values.probes.liveness.failureThreshold }}"
+        , "            successThreshold: {{ $.Values.probes.liveness.successThreshold }}"
+        ]
+    )
+  ,
+    ( "readinessProbe"
+    , unlines
+        [ "          readinessProbe:"
+        , "            httpGet:"
+        , "              path: {{ $.Values.probes.readiness.path | quote }}"
+        , "              port: rest"
+        , "              scheme: HTTP"
+        , "            initialDelaySeconds: {{ $.Values.probes.readiness.initialDelaySeconds }}"
+        , "            periodSeconds: {{ $.Values.probes.readiness.periodSeconds }}"
+        , "            timeoutSeconds: {{ $.Values.probes.readiness.timeoutSeconds }}"
+        , "            failureThreshold: {{ $.Values.probes.readiness.failureThreshold }}"
+        , "            successThreshold: {{ $.Values.probes.readiness.successThreshold }}"
+        ]
+    )
+  ]
 
 chartTemplateResourceViolations :: FilePath -> IO [String]
 chartTemplateResourceViolations chartDir = do

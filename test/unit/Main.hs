@@ -5,6 +5,10 @@
 
 module Main (main) where
 
+import AwsSesLeaseRole (awsSesLeaseRoleSuite)
+import AwsSesLifecycle (awsSesLifecycleSuite)
+import AwsSesReadiness (awsSesReadinessSuite)
+import AwsSesSmtpKey (awsSesSmtpKeySuite)
 import Control.Exception (finally)
 import Control.Monad (forM_, when)
 import Data.Aeson
@@ -42,7 +46,16 @@ import Data.Text.Encoding qualified as TextEncoding
 import Data.Time.Calendar (fromGregorian)
 import Data.Time.Clock (UTCTime (..), secondsToDiffTime)
 import Data.Vector qualified as Vector
+import DesiredPresentReconciliation (desiredPresentReconciliationSuite)
 import Dhall qualified
+import FencedCheckpoint (fencedCheckpointSuite)
+import GatewayAuthority (gatewayAuthoritySuite)
+import GatewayBounded (gatewayBoundedSuite)
+import GatewayContinuity (gatewayContinuitySuite)
+import GatewayProbe (gatewayProbeSuite)
+import GatewayRuntimeStability (gatewayRuntimeStabilitySuite)
+import LifecycleLease (lifecycleLeaseSuite)
+import Numeric.Natural (Natural)
 import Options.Applicative
   ( ParserResult (..)
   , defaultPrefs
@@ -70,6 +83,7 @@ import Prodbox.Aws
   , awsRegionQuotaPreflightFromStatuses
   , awsSpotPriceHistoryArgs
   , buildIamPolicyDocument
+  , buildIamPolicyDocumentForAccountAndCaptureBucket
   , configFromSetupInput
   , harnessPostflightResiduePolicy
   , longLivedResourceNames
@@ -230,6 +244,7 @@ import Prodbox.CLI.Vault
   , vaultLifecycleTransportDecision
   )
 import Prodbox.Capacity.Config qualified as Capacity
+import Prodbox.Capacity.RuntimeMemory qualified as RuntimeMemory
 import Prodbox.Capacity.Storage qualified as Storage
 import Prodbox.Cbor qualified as Cbor
 import Prodbox.CheckCode
@@ -451,39 +466,19 @@ import Prodbox.Gateway.ObjectStore
   , pulumiObjectRequestMaxBytes
   , validatePulumiObjectStackName
   )
-import Prodbox.Gateway.Peer
-  ( PeerEventBatch (..)
-  , PeerTransportRequest (..)
-  , encodePeerEventBatch
-  , handlePeerRequest
-  , parsePeerEventBatch
-  , parsePeerHttpRequest
-  )
-import Prodbox.Gateway.Peer qualified as Peer
 import Prodbox.Gateway.PortForward qualified as GatewayPortForward
+import Prodbox.Gateway.Probe qualified as GatewayProbe
 import Prodbox.Gateway.Settings qualified as GatewaySettings
 import Prodbox.Gateway.Types
   ( DaemonConfig (..)
-  , Disposition (..)
   , DnsWriteGate (..)
   , GatewayRule (..)
   , GatewayVaultAuth (..)
   , Orders (..)
   , PeerEndpoint (..)
-  , SignedEvent (..)
-  , appendIfNew
-  , canWriteDns
   , cborPayloadFromJsonValue
   , decodeOrdersCbor
-  , decodeSignedEventCbor
-  , defaultMaxClockSkewSeconds
-  , emptyCommitLog
   , encodeOrdersCbor
-  , encodeSignedEventCbor
-  , eventTypeClaim
-  , eventTypeHeartbeat
-  , eventTypeYield
-  , nodeDisposition
   , validateDaemonTimingAgainstOrders
   )
 import Prodbox.Host
@@ -780,6 +775,7 @@ import Prodbox.TestPlan
   , TestExecutionPlan (..)
   , derivedManagedAwsHarnessPolicyTier
   , nativeValidationId
+  , retainedSesRequirementForValidations
   , testExecutionPlan
   , validationDeferredPrerequisites
   , validationInitialPrerequisites
@@ -788,9 +784,10 @@ import Prodbox.TestRestore
   ( RestoreChart (..)
   , RestoreCyclePlan (..)
   , RestoreCycleStep (..)
-  , RestoreKeycloakSmtp (..)
+  , RetainedSesRequirement (..)
   , buildRestoreCyclePlan
   , gatewayDaemonLivenessPrecondition
+  , restoreStepResetsGatewayHealthyWindow
   )
 import Prodbox.TestRunner
   ( ClusterEvidence (..)
@@ -807,7 +804,6 @@ import Prodbox.TestRunner
   , integrationRunbookCommandArgs
   , publicEdgeCertificateReissueStatusPatch
   , renderTestRefusal
-  , supportedRuntimeBootstrapNeedsKeycloakSmtpSync
   , supportedRuntimeBootstrapNeedsReconcile
   , supportedRuntimeBootstrapRestorePlan
   , supportedRuntimePostflightRestorePlan
@@ -953,6 +949,9 @@ import Prodbox.Workload
   , workloadLiveConfigFromDhallWith
   )
 import Prodbox.Workload.Settings qualified as WorkloadSettings
+import RetainedSesPreparation (retainedSesPreparationSuite)
+import RetainedSesTargetRecovery (retainedSesTargetRecoverySuite)
+import SmtpKeyRepairInterpreter (smtpKeyRepairInterpreterSuite)
 import System.Directory
   ( Permissions (..)
   , copyFile
@@ -974,6 +973,7 @@ import System.Environment
 import System.Exit (ExitCode (..))
 import System.FilePath (takeDirectory, (</>))
 import System.IO.Temp (withSystemTempDirectory)
+import TargetCommitSmtp (targetCommitSmtpSuite)
 import TestSupport
 
 withBinarySiblingTier0 :: String -> IO a -> IO a
@@ -995,6 +995,37 @@ restoreBinarySiblingTier0 tier0Path previousContents =
     Nothing -> do
       currentExists <- doesFileExist tier0Path
       when currentExists (removeFile tier0Path)
+
+gatewayTier0DhallFromPlan :: ChartDeploymentPlan -> Either String String
+gatewayTier0DhallFromPlan plan =
+  case filter ((== "gateway") . chartReleasePlanReleaseName) (chartDeploymentPlanReleases plan) of
+    [release] -> do
+      values <- eitherDecode (BL8.pack (chartReleasePlanValuesJson release)) :: Either String Value
+      case values of
+        Object payload ->
+          case KeyMap.lookup (Key.fromString "tier0") payload of
+            Just (Object tier0Payload) ->
+              case KeyMap.lookup (Key.fromString "prodboxDhall") tier0Payload of
+                Just (String dhall) -> Right (Text.unpack dhall)
+                _ -> Left "gateway values tier0.prodboxDhall is missing or not text"
+            _ -> Left "gateway values tier0 object is missing"
+        _ -> Left "gateway values payload is not an object"
+    _ -> Left "deployment plan does not contain exactly one gateway release"
+
+assertMountedGatewayTier0Identity :: String -> Text.Text -> Expectation
+assertMountedGatewayTier0Identity rendered expectedIdentity =
+  withSystemTempDirectory "prodbox-gateway-mounted-tier0" $ \tmpDir -> do
+    let configMapDir = tmpDir </> "gateway-config"
+        absentContainerDefault = tmpDir </> "absent-container-default.dhall"
+    createDirectoryIfMissing True configMapDir
+    writeFile (daemonConfigMapTier0Path configMapDir) rendered
+    loaded <- loadDaemonBinaryContext configMapDir absentContainerDefault
+    case loaded of
+      Left err -> expectationFailure err
+      Right (source, projectConfig) -> do
+        source `shouldBe` Tier0FromConfigMap (daemonConfigMapTier0Path configMapDir)
+        Tier0.context_kind (Tier0.context projectConfig) `shouldBe` Daemon
+        Tier0.cluster_id (Tier0.context projectConfig) `shouldBe` expectedIdentity
 
 assertExactlyOne :: (Show a) => [a] -> (a -> Expectation) -> Expectation
 assertExactlyOne values assertion =
@@ -1149,9 +1180,65 @@ sampleTier0Child =
           }
     }
 
+runtimeMemoryTestBytes :: RuntimeMemory.MemoryTerm -> Natural -> RuntimeMemory.PositiveBytes
+runtimeMemoryTestBytes term value =
+  case RuntimeMemory.mkPositiveBytes term value of
+    Left err -> error ("invalid runtime-memory test fixture: " ++ show err)
+    Right validated -> validated
+
+runtimeMemoryTestInputs
+  :: Natural
+  -> Natural
+  -> RuntimeMemory.RawChildSchedule
+  -> RuntimeMemory.RuntimeMemoryInputs
+runtimeMemoryTestInputs heapCap containerLimit childSchedule =
+  RuntimeMemory.RuntimeMemoryInputs
+    { RuntimeMemory.runtimeBoundedApplicationState =
+        runtimeMemoryTestBytes RuntimeMemory.BoundedApplicationState 10
+    , RuntimeMemory.runtimeBoundedPendingPersistenceState =
+        runtimeMemoryTestBytes RuntimeMemory.BoundedPendingPersistenceState 20
+    , RuntimeMemory.runtimeInHeapTransportDecodeScratch =
+        runtimeMemoryTestBytes RuntimeMemory.InHeapTransportDecodeScratch 30
+    , RuntimeMemory.runtimeOtherHeapReserve =
+        runtimeMemoryTestBytes RuntimeMemory.OtherHeapReserve 40
+    , RuntimeMemory.runtimeHeapCap =
+        runtimeMemoryTestBytes RuntimeMemory.HeapCap heapCap
+    , RuntimeMemory.runtimeNativeNonHeapReserve =
+        runtimeMemoryTestBytes RuntimeMemory.NativeNonHeapReserve 15
+    , RuntimeMemory.runtimeRawChildSchedule = childSchedule
+    , RuntimeMemory.runtimeKernelCgroupReserve =
+        runtimeMemoryTestBytes RuntimeMemory.KernelCgroupReserve 10
+    , RuntimeMemory.runtimeSafetyMargin =
+        runtimeMemoryTestBytes RuntimeMemory.SafetyMargin 5
+    , RuntimeMemory.runtimeContainerMemoryLimit =
+        runtimeMemoryTestBytes RuntimeMemory.ContainerMemoryLimit containerLimit
+    }
+
+defaultGatewayRuntimeMemoryProfile :: Capacity.RuntimeMemoryProfile
+defaultGatewayRuntimeMemoryProfile =
+  case Capacity.defaultRuntimeMemoryProfiles of
+    [profile] -> profile
+    profiles -> error ("expected one default runtime-memory profile, got " ++ show profiles)
+
 main :: IO ()
 main = mainWithSuite "prodbox-unit" $ do
   parserSuite
+  awsSesLifecycleSuite
+  awsSesLeaseRoleSuite
+  awsSesReadinessSuite
+  awsSesSmtpKeySuite
+  desiredPresentReconciliationSuite
+  fencedCheckpointSuite
+  gatewayAuthoritySuite
+  gatewayBoundedSuite
+  gatewayContinuitySuite
+  gatewayProbeSuite
+  gatewayRuntimeStabilitySuite
+  lifecycleLeaseSuite
+  retainedSesPreparationSuite
+  retainedSesTargetRecoverySuite
+  smtpKeyRepairInterpreterSuite
+  targetCommitSmtpSuite
   describe "vault unlock bundle (Sprint 1.36)" $ do
     it "round-trips through encrypt/decrypt with the same password" $ do
       encrypted <- encryptUnlockBundle sampleUnlockBundlePassword sampleUnlockBundle
@@ -4376,6 +4463,39 @@ main = mainWithSuite "prodbox-unit" $ do
             _ -> expectationFailure "expected Statement array"
         _ -> expectationFailure "expected policy document object"
 
+    it "installs an account- and capture-qualified bounded SES pre-lease policy" $ do
+      let policyResult =
+            buildIamPolicyDocumentForAccountAndCaptureBucket
+              "123456789012"
+              (Just "configured-ses-capture")
+              PolicyFull
+      case policyResult of
+        Left err -> expectationFailure (show err)
+        Right policy -> do
+          let rendered = encode policy
+              renderedText = BL8.unpack rendered
+          BL.length rendered `shouldSatisfy` (<= 2048)
+          renderedText
+            `shouldContain` "arn:aws:iam::123456789012:role/prodbox-ses-lease-session"
+          renderedText
+            `shouldContain` "arn:aws:iam::123456789012:user/prodbox-ses-smtp"
+          renderedText
+            `shouldContain` "arn:aws:s3:::configured-ses-capture"
+          renderedText `shouldNotContain` "arn:aws:iam::*:role/prodbox-ses-lease-session"
+
+    it "omits capture reads until a valid configured bucket is available" $ do
+      case buildIamPolicyDocumentForAccountAndCaptureBucket
+        "123456789012"
+        Nothing
+        PolicyFull of
+        Left err -> expectationFailure (show err)
+        Right policy -> BL8.unpack (encode policy) `shouldNotContain` "SesCaptureRead"
+      buildIamPolicyDocumentForAccountAndCaptureBucket
+        "123456789012"
+        (Just "Bad_Bucket")
+        PolicyFull
+        `shouldSatisfy` isLeft
+
   describe "CLI generated output" $ do
     goldenTest
       "renders the command tree deterministically"
@@ -5254,7 +5374,6 @@ main = mainWithSuite "prodbox-unit" $ do
                            , "pulumi"
                            , "ha-rke2-aws"
                            , "gateway-daemon"
-                           , "gateway-pods"
                            , "gateway-partition"
                            , "charts-platform"
                            , "resource-guardrails"
@@ -5265,6 +5384,7 @@ main = mainWithSuite "prodbox-unit" $ do
                            , "eks-volume-rebind"
                            , "sealed-vault"
                            , "lifecycle"
+                           , "gateway-pods"
                            ]
             DelegatedSuite _ -> expectationFailure "expected native aggregate test plan"
 
@@ -5315,12 +5435,13 @@ main = mainWithSuite "prodbox-unit" $ do
                            , ValidationEksVolumeRebind
                            ]
               ValidationSealedVault `shouldSatisfy` (`elem` nativeValidations suitePlan)
-              last (nativeValidations suitePlan) `shouldBe` ValidationLifecycle
+              take 2 (reverse (nativeValidations suitePlan))
+                `shouldBe` [ValidationGatewayPods, ValidationLifecycle]
             DelegatedSuite _ -> expectationFailure "expected native integration-all plan"
 
     it "builds the canonical restore cycle in one exact order" $ do
       restoreCycleSteps
-        (buildRestoreCyclePlan SubstrateHomeLocal RestoreWithoutKeycloakSmtp)
+        (buildRestoreCyclePlan SubstrateHomeLocal SesNotRequired)
         `shouldBe` [ RestoreDeleteChart RestoreChartWebsocket
                    , RestoreDeleteChart RestoreChartApi
                    , RestoreDeleteChart RestoreChartVscode
@@ -5333,7 +5454,18 @@ main = mainWithSuite "prodbox-unit" $ do
                    , RestoreWaitForPublicEdge
                    ]
 
-    it "projects bootstrap and postflight from the shared restore builder modulo SMTP" $ do
+    it "marks only compiled gateway rollout steps as healthy-window resets" $ do
+      map
+        restoreStepResetsGatewayHealthyWindow
+        [ RestoreDeleteChart RestoreChartGateway
+        , RestoreReconcileChart RestoreChartGateway
+        , RestoreDeleteChart RestoreChartVscode
+        , RestoreEnsureGatewayMinioBootstrap
+        , RestoreWaitForPublicEdge
+        ]
+        `shouldBe` [True, True, False, False, False]
+
+    it "projects bootstrap and postflight from the shared restore builder modulo retained SES" $ do
       case testExecutionPlan SubstrateHomeLocal TestAll of
         testPlan ->
           case testPlanExecutionMode testPlan of
@@ -5343,13 +5475,14 @@ main = mainWithSuite "prodbox-unit" $ do
                   bootstrapSteps = restoreCycleSteps bootstrapPlan
                   postflightSteps = restoreCycleSteps postflightPlan
                   gatewayIndex = elemIndex (RestoreReconcileChart RestoreChartGateway) bootstrapSteps
-                  smtpIndex = elemIndex RestoreSyncKeycloakSmtp bootstrapSteps
+                  smtpIndex = elemIndex True (map isRetainedSesPreparationStep bootstrapSteps)
                   vscodeIndex = elemIndex (RestoreReconcileChart RestoreChartVscode) bootstrapSteps
               bootstrapPlan
-                `shouldBe` buildRestoreCyclePlan SubstrateHomeLocal RestoreWithKeycloakSmtp
+                `shouldBe` buildRestoreCyclePlan SubstrateHomeLocal SesRequired
               postflightPlan
-                `shouldBe` buildRestoreCyclePlan SubstrateHomeLocal RestoreWithoutKeycloakSmtp
-              filter (/= RestoreSyncKeycloakSmtp) bootstrapSteps `shouldBe` postflightSteps
+                `shouldBe` buildRestoreCyclePlan SubstrateHomeLocal SesNotRequired
+              filter (not . isRetainedSesPreparationStep) bootstrapSteps
+                `shouldBe` postflightSteps
               gatewayIndex `shouldSatisfy` (`indexPrecedes` smtpIndex)
               smtpIndex `shouldSatisfy` (`indexPrecedes` vscodeIndex)
             DelegatedSuite _ -> expectationFailure "expected native aggregate test plan"
@@ -5402,16 +5535,22 @@ main = mainWithSuite "prodbox-unit" $ do
         testPlan ->
           case testPlanExecutionMode testPlan of
             NativeSuite suitePlan -> do
-              awsSubstrateBootstrapRestorePlan
-                `shouldBe` buildRestoreCyclePlan SubstrateAws RestoreWithKeycloakSmtp
-              restoreCycleSubstrate awsSubstrateBootstrapRestorePlan `shouldBe` SubstrateAws
-              awsSubstrateBootstrapRestoreSteps
-                `shouldBe` [ RestoreReconcileChart RestoreChartGateway
-                           , RestoreSyncKeycloakSmtp
-                           , RestoreReconcileChart RestoreChartVscode
-                           , RestoreReconcileChart RestoreChartApi
-                           , RestoreReconcileChart RestoreChartWebsocket
-                           ]
+              supportedRuntimeBootstrapRestorePlan suitePlan
+                `shouldBe` buildRestoreCyclePlan SubstrateHomeLocal SesNotRequired
+              awsSubstrateBootstrapRestorePlan suitePlan
+                `shouldBe` buildRestoreCyclePlan SubstrateAws SesRequired
+              restoreCycleSubstrate (awsSubstrateBootstrapRestorePlan suitePlan)
+                `shouldBe` SubstrateAws
+              case awsSubstrateBootstrapRestoreSteps suitePlan of
+                [ RestoreReconcileChart RestoreChartGateway
+                  , RestorePrepareRetainedSes _
+                  , RestoreReconcileChart RestoreChartVscode
+                  , RestoreReconcileChart RestoreChartApi
+                  , RestoreReconcileChart RestoreChartWebsocket
+                  ] -> pure ()
+                observed ->
+                  expectationFailure
+                    ("unexpected AWS restore preparation order: " ++ show observed)
               awsSubstrateBootstrapCommandArgs suitePlan
                 `shouldBe` [ ["aws", "stack", "aws-subzone", "reconcile"]
                            , ["aws", "stack", "eks", "reconcile"]
@@ -5432,7 +5571,8 @@ main = mainWithSuite "prodbox-unit" $ do
               nativeManagedAwsHarnessPolicyTier suitePlan `shouldBe` Just PolicyFull
               nativeRequiresSupportedRuntimeBootstrap suitePlan `shouldBe` True
               nativeRequiresSupportedRuntimePostflight suitePlan `shouldBe` False
-              supportedRuntimeBootstrapNeedsKeycloakSmtpSync suitePlan `shouldBe` True
+              retainedSesRequirementForValidations (nativeValidations suitePlan)
+                `shouldBe` SesRequired
               integrationRunbookCommandArgs suitePlan `shouldBe` [["cluster", "reconcile", "--with-edge"]]
               awsPostflightDestroyCommandArgs suitePlan `shouldBe` []
             DelegatedSuite _ -> expectationFailure "expected native keycloak-invite plan"
@@ -5459,6 +5599,8 @@ main = mainWithSuite "prodbox-unit" $ do
             NativeSuite suitePlan -> do
               nativeSuiteId suitePlan `shouldBe` "integration-public-dns"
               nativeManagedAwsHarnessPolicyTier suitePlan `shouldBe` Just PolicyFull
+              awsSubstrateBootstrapRestorePlan suitePlan
+                `shouldBe` buildRestoreCyclePlan SubstrateAws SesNotRequired
               awsPostflightDestroyCommandArgs suitePlan `shouldBe` []
             DelegatedSuite _ -> expectationFailure "expected native public-dns plan"
 
@@ -6812,10 +6954,6 @@ main = mainWithSuite "prodbox-unit" $ do
       decodeOrdersCbor (encodeOrdersCbor sampleOrders)
         `shouldBe` Right sampleOrders
 
-    it "round-trips persisted signed gateway events through CBOR" $ do
-      decodeSignedEventCbor (encodeSignedEventCbor sampleSignedEvent)
-        `shouldBe` Right sampleSignedEvent
-
     -- Sprint 4.18: the on-disk snapshot cache is removed; the destroy,
     -- residue-assertion, and substrate-platform install paths now read
     -- the stack snapshot live from the Pulumi backend. These round-trips
@@ -7685,6 +7823,46 @@ main = mainWithSuite "prodbox-unit" $ do
                 Left err -> expectationFailure err
             _ -> expectationFailure "expected one gateway release"
 
+    it "renders distinct attested daemon Tier-0 identities for home and AWS gateways" $ do
+      let homeClusterId = "prodbox-home-target"
+          homeTier0 =
+            defaultProjectConfig
+              { context =
+                  (context defaultProjectConfig)
+                    { cluster_id = homeClusterId
+                    }
+              }
+      withBinarySiblingTier0 (Text.unpack (renderProjectConfigDhall homeTier0)) $ do
+        homeResult <-
+          buildChartDeploymentPlanForSubstrate
+            SubstrateHomeLocal
+            "/tmp/prodbox"
+            (testValidatedSettings "/tmp/prodbox/.data")
+            "gateway"
+            testChartSecrets
+            Map.empty
+        awsResult <-
+          buildChartDeploymentPlanForSubstrate
+            SubstrateAws
+            "/tmp/prodbox"
+            (testValidatedSettings "/tmp/prodbox/.data")
+            "gateway"
+            testChartSecrets
+            Map.empty
+        case (homeResult, awsResult) of
+          (Right homePlan, Right awsPlan) ->
+            case (gatewayTier0DhallFromPlan homePlan, gatewayTier0DhallFromPlan awsPlan) of
+              (Right homeDhall, Right awsDhall) -> do
+                homeDhall `shouldNotBe` awsDhall
+                assertMountedGatewayTier0Identity homeDhall homeClusterId
+                assertMountedGatewayTier0Identity
+                  awsDhall
+                  (Text.pack AwsEks.awsEksCanonicalClusterName)
+              (Left err, _) -> expectationFailure err
+              (_, Left err) -> expectationFailure err
+          (Left err, _) -> expectationFailure err
+          (_, Left err) -> expectationFailure err
+
     it "keeps the gateway values render free of a duplicated Vault-role literal" $ do
       repoRoot <- getCurrentDirectory
       chartPlatformSource <-
@@ -8209,7 +8387,10 @@ main = mainWithSuite "prodbox-unit" $ do
                   , (Key.fromString "gateway_owner", String "node-a")
                   , (Key.fromString "has_active_claim", Bool True)
                   , (Key.fromString "mesh_peers", Array (Vector.fromList [String "node-b"]))
-                  , (Key.fromString "event_count", Number 5)
+                  , (Key.fromString "semantic_member_count", Number 2)
+                  , (Key.fromString "signed_replay_assertion_count", Number 5)
+                  , (Key.fromString "retained_assertion_count", Number 7)
+                  , (Key.fromString "retained_assertion_capacity", Number 20)
                   , (Key.fromString "last_public_ip_observed", String "203.0.113.10")
                   , (Key.fromString "last_dns_write_ip", String "203.0.113.10")
                   , (Key.fromString "last_dns_write_at_utc", String "2026-04-06T10:00:00Z")
@@ -8887,8 +9068,8 @@ main = mainWithSuite "prodbox-unit" $ do
               )
       result <- GatewaySettings.decodeOrdersDhall dhallSrc
       case result of
-        Right _ -> expectationFailure "expected ranked_nodes subset failure"
-        Left err -> err `shouldContain` "must be a subset"
+        Right _ -> expectationFailure "expected ranked_nodes exact-membership failure"
+        Left err -> err `shouldContain` "unique exact permutation"
 
   describe "Sprint 3.14 workload Dhall settings" $ do
     it "decodes a happy-path api workload Dhall config" $ do
@@ -9449,6 +9630,8 @@ main = mainWithSuite "prodbox-unit" $ do
             ResourceRegistry.ManagedResource
               { ResourceRegistry.resourceName = name
               , ResourceRegistry.resourceClass = ResourceClass.PerRun
+              , ResourceRegistry.resourceEnsureCommand = Nothing
+              , ResourceRegistry.resourceEnsurePresent = Nothing
               , ResourceRegistry.resourceDestroyCommand = "prodbox aws stack " ++ name ++ " destroy --yes"
               , ResourceRegistry.resourceDestroy = \_ -> do
                   modifyIORef' destroyed (++ [name])
@@ -10186,9 +10369,12 @@ main = mainWithSuite "prodbox-unit" $ do
     it "operationalAwsConfigResidueFromKey treats whitespace-only as absent" $
       operationalAwsConfigResidueFromKey "   \t  " `shouldBe` Residue.ResidueAbsent
 
-    it "operationalManagedResources registers exactly the two operational resources" $
+    it "operationalManagedResources registers the lease role before its trusted user" $
       map ResourceRegistry.resourceName (operationalManagedResources sampleCreds)
-        `shouldBe` ["operational-iam-user", "operational-aws-config"]
+        `shouldBe` [ "operational-aws-ses-lease-role"
+                   , "operational-iam-user"
+                   , "operational-aws-config"
+                   ]
 
     -- Sprint 7.24: the preflight fail-closed-gate refinement.
     it "refine downgrades unreachable aws-config to absent when IAM user is absent" $
@@ -11498,112 +11684,6 @@ main = mainWithSuite "prodbox-unit" $ do
         Left message -> message `shouldBe` "boom"
         Right () -> expectationFailure "a loud-failure decision must render as Left"
 
-  describe "gateway commit-log dispositions" $ do
-    it "computes node disposition from claim/yield events in chronological order" $ do
-      let claimA = signedEventStub "node-a" eventTypeClaim "2026-04-06T10:00:00Z"
-          yieldA = signedEventStub "node-a" eventTypeYield "2026-04-06T10:00:01Z"
-          heartbeat = signedEventStub "node-b" eventTypeHeartbeat "2026-04-06T10:00:02Z"
-          claimAReclaim = signedEventStub "node-a" eventTypeClaim "2026-04-06T10:00:03Z"
-          logBefore = foldl appendIfNew emptyCommitLog [claimA, yieldA, heartbeat]
-          logReclaim = appendIfNew logBefore claimAReclaim
-      nodeDisposition "node-a" logBefore `shouldBe` DispositionYielded
-      nodeDisposition "node-a" logReclaim `shouldBe` DispositionOwner
-      nodeDisposition "node-b" logReclaim `shouldBe` DispositionUnknown
-
-    it "gates DNS writes on the runtime CanWriteDns predicate" $ do
-      let claim = signedEventStub "node-a" eventTypeClaim "2026-04-06T10:00:00Z"
-          yield = signedEventStub "node-a" eventTypeYield "2026-04-06T10:00:01Z"
-          logOwner = appendIfNew emptyCommitLog claim
-          logYielded = appendIfNew logOwner yield
-      canWriteDns "node-a" (Just "node-a") logOwner `shouldBe` True
-      canWriteDns "node-a" (Just "node-a") logYielded `shouldBe` False
-      canWriteDns "node-a" (Just "node-b") logOwner `shouldBe` False
-      canWriteDns "node-a" Nothing logOwner `shouldBe` False
-      canWriteDns "node-a" (Just "node-a") emptyCommitLog `shouldBe` False
-
-  describe "gateway peer transport" $ do
-    it "round-trips a peer event batch through encode and parse" $ do
-      let event = signedEventStub "node-a" eventTypeHeartbeat "2026-04-06T10:00:00Z"
-          batch = PeerEventBatch [event] 1700000000
-      case parsePeerEventBatch (encodePeerEventBatch batch) of
-        Left err -> expectationFailure err
-        Right parsed -> do
-          peerEventBatchSenderOrdersVersionUtc parsed `shouldBe` 1700000000
-          map eventHash (peerEventBatchEvents parsed) `shouldBe` [eventHash event]
-
-    it "rejects events whose HMAC signature does not match the configured key" $ do
-      let badEvent =
-            Peer.signEvent
-              "node-a"
-              eventTypeHeartbeat
-              "2026-04-06T10:00:00Z"
-              (cborPayloadFromJsonValue (object []))
-              "wrong-key"
-          eventKeys = Map.fromList [("node-a", "fake-key")]
-          batch = PeerEventBatch [badEvent] 1
-          (accepted, rejected) =
-            handlePeerRequest
-              (`Map.lookup` eventKeys)
-              ["node-a"]
-              defaultMaxClockSkewSeconds
-              "2026-04-06T10:00:00Z"
-              batch
-      accepted `shouldBe` []
-      length rejected `shouldBe` 1
-
-    it "rejects events from emitters that are not in the orders node set" $ do
-      let event = signedEventStub "stranger" eventTypeHeartbeat "2026-04-06T10:00:00Z"
-          eventKeys = Map.fromList [("node-a", "fake-key")]
-          batch = PeerEventBatch [event] 1
-          (accepted, rejected) =
-            handlePeerRequest
-              (`Map.lookup` eventKeys)
-              ["node-a", "node-b"]
-              defaultMaxClockSkewSeconds
-              "2026-04-06T10:00:00Z"
-              batch
-      accepted `shouldBe` []
-      map fst rejected `shouldBe` [eventHash event]
-
-    it "rejects events whose timestamp exceeds the configured skew bound" $ do
-      let event = signedEventStub "node-a" eventTypeHeartbeat "2026-04-06T10:00:00Z"
-          eventKeys = Map.fromList [("node-a", "fake-key")]
-          batch = PeerEventBatch [event] 1
-          (accepted, rejected) =
-            handlePeerRequest
-              (`Map.lookup` eventKeys)
-              ["node-a"]
-              5.0
-              "2026-04-06T10:01:00Z"
-              batch
-      accepted `shouldBe` []
-      length rejected `shouldBe` 1
-
-    it "parses an inbound peer push request body" $ do
-      let event = signedEventStub "node-a" eventTypeHeartbeat "2026-04-06T10:00:00Z"
-          batch = PeerEventBatch [event] 7
-          bodyBytes = BL.toStrict (encodePeerEventBatch batch)
-          request =
-            BS.concat
-              [ BS8.pack
-                  ( "POST /v1/peer/events HTTP/1.1\r\n"
-                      ++ "Host: example.test:8444\r\n"
-                      ++ "Content-Type: application/cbor\r\n"
-                      ++ "Content-Length: "
-                      ++ show (BS.length bodyBytes)
-                      ++ "\r\n"
-                      ++ "Connection: close\r\n"
-                      ++ "\r\n"
-                  )
-              , bodyBytes
-              ]
-      case parsePeerHttpRequest request of
-        Left err -> expectationFailure err
-        Right (PeerPushEvents parsed) -> do
-          peerEventBatchSenderOrdersVersionUtc parsed `shouldBe` 7
-          length (peerEventBatchEvents parsed) `shouldBe` 1
-        Right _ -> expectationFailure "expected PeerPushEvents"
-
   describe "host NTP disposition" $ do
     it "treats `System clock synchronized: yes` as healthy" $ do
       parseTimedatectlNtpDisposition
@@ -12584,9 +12664,12 @@ main = mainWithSuite "prodbox-unit" $ do
       $ ResourceClass.resourceNamesOfClass ResourceClass.LongLived
         `shouldBe` ["aws-ses", "aws-ebs-volumes", "public-edge-tls", "pulsar-topics-long-lived"]
 
-    it "the operational class registers the IAM user and the aws.* config block" $
+    it "the operational class registers the SES role, IAM user, and aws.* config block" $
       ResourceClass.resourceNamesOfClass ResourceClass.Operational
-        `shouldBe` ["operational-iam-user", "operational-aws-config"]
+        `shouldBe` [ "operational-aws-ses-lease-role"
+                   , "operational-iam-user"
+                   , "operational-aws-config"
+                   ]
 
     it "perRunStackNames is derived from the registry (matches the prior literal)" $
       perRunStackNames `shouldBe` ["aws-eks", "aws-eks-subzone", "aws-test"]
@@ -14220,6 +14303,208 @@ main = mainWithSuite "prodbox-unit" $ do
               ]
           )
 
+  describe "Sprint 1.60 runtime-memory decomposition and RTS policy" $ do
+    it "rejects zero for every positive byte term and preserves positive bytes" $ do
+      forM_ [minBound .. maxBound] $ \term -> do
+        RuntimeMemory.mkPositiveBytes term 0
+          `shouldBe` Left (RuntimeMemory.MemoryTermMustBePositive term)
+        fmap RuntimeMemory.positiveBytesValue (RuntimeMemory.mkPositiveBytes term 1)
+          `shouldBe` Right 1
+
+    it "rejects unbounded, zero-permit, missing-deadline, zero-deadline, and missing-peak schedules" $ do
+      RuntimeMemory.validateChildSchedule RuntimeMemory.UnboundedChildSchedule
+        `shouldBe` Left RuntimeMemory.ChildScheduleMustBeBounded
+      RuntimeMemory.validateChildSchedule (RuntimeMemory.BoundedChildSchedule 0 (Just 1000) [10])
+        `shouldBe` Left RuntimeMemory.ChildPermitCountMustBePositive
+      RuntimeMemory.validateChildSchedule (RuntimeMemory.BoundedChildSchedule 1 Nothing [10])
+        `shouldBe` Left RuntimeMemory.ChildDeadlineMissing
+      RuntimeMemory.validateChildSchedule (RuntimeMemory.BoundedChildSchedule 1 (Just 0) [10])
+        `shouldBe` Left RuntimeMemory.ChildDeadlineMustBePositive
+      RuntimeMemory.validateChildSchedule (RuntimeMemory.BoundedChildSchedule 1 (Just 1000) [])
+        `shouldBe` Left RuntimeMemory.ChildPeakListMustNotBeEmpty
+
+    it "rejects a zero child peak with its exact schedule index" $ do
+      RuntimeMemory.validateChildSchedule
+        (RuntimeMemory.BoundedChildSchedule 1 (Just 1000) [10, 0, 30])
+        `shouldBe` Left (RuntimeMemory.ChildPeakMustBePositive 1)
+
+    it "uses the maximum possible peak for a capacity-one serialized child schedule" $ do
+      case RuntimeMemory.validateChildSchedule
+        (RuntimeMemory.BoundedChildSchedule 1 (Just 30000000) [10, 30, 20]) of
+        Left err -> expectationFailure (show err)
+        Right budget -> do
+          RuntimeMemory.childProcessPermitCount budget `shouldBe` 1
+          RuntimeMemory.childProcessDeadlineMicros budget `shouldBe` 30000000
+          RuntimeMemory.positiveBytesValue
+            (RuntimeMemory.childProcessReservedPeakBytes budget)
+            `shouldBe` 30
+
+    it "sums concurrent child peaks and rejects a permit-to-peak count mismatch" $ do
+      case RuntimeMemory.validateChildSchedule
+        (RuntimeMemory.BoundedChildSchedule 3 (Just 1000) [10, 30, 20]) of
+        Left err -> expectationFailure (show err)
+        Right budget ->
+          RuntimeMemory.positiveBytesValue
+            (RuntimeMemory.childProcessReservedPeakBytes budget)
+            `shouldBe` 60
+      RuntimeMemory.validateChildSchedule
+        (RuntimeMemory.BoundedChildSchedule 2 (Just 1000) [10])
+        `shouldBe` Left (RuntimeMemory.ConcurrentChildPeakCountMismatch 2 1)
+
+    it "rejects an inner heap sum above the configured heap cap" $ do
+      RuntimeMemory.validateRuntimeMemoryPlan
+        ( runtimeMemoryTestInputs
+            99
+            200
+            (RuntimeMemory.BoundedChildSchedule 1 (Just 1000) [20])
+        )
+        `shouldBe` Left (RuntimeMemory.HeapBudgetExceedsCap 100 99)
+
+    it "rejects the heap cap plus headroom above the container limit" $ do
+      RuntimeMemory.validateRuntimeMemoryPlan
+        ( runtimeMemoryTestInputs
+            120
+            169
+            (RuntimeMemory.BoundedChildSchedule 1 (Just 1000) [20])
+        )
+        `shouldBe` Left (RuntimeMemory.RuntimeBudgetExceedsContainerLimit 170 169)
+
+    it "counts heap-resident terms once and derives the cgroup high-water threshold from safety" $ do
+      case RuntimeMemory.validateRuntimeMemoryPlan
+        ( runtimeMemoryTestInputs
+            120
+            200
+            (RuntimeMemory.BoundedChildSchedule 1 (Just 1000) [20])
+        ) of
+        Left err -> expectationFailure (show err)
+        Right plan -> do
+          RuntimeMemory.positiveBytesValue (RuntimeMemory.runtimeMemoryRetainedHeapBytes plan)
+            `shouldBe` 30
+          RuntimeMemory.positiveBytesValue (RuntimeMemory.runtimeMemoryScratchBytes plan)
+            `shouldBe` 30
+          RuntimeMemory.positiveBytesValue (RuntimeMemory.runtimeMemoryHeapRequiredBytes plan)
+            `shouldBe` 100
+          RuntimeMemory.positiveBytesValue (RuntimeMemory.runtimeMemoryHeapCapBytes plan)
+            `shouldBe` 120
+          -- Outer demand is heap_cap + 15 + 20 + 10 + 5 = 170. Adding
+          -- the 100-byte resident inner sum again would incorrectly yield 270.
+          RuntimeMemory.positiveBytesValue (RuntimeMemory.runtimeMemoryOuterRequiredBytes plan)
+            `shouldBe` 170
+          RuntimeMemory.positiveBytesValue (RuntimeMemory.runtimeMemoryContainerLimitBytes plan)
+            `shouldBe` 200
+          RuntimeMemory.positiveBytesValue (RuntimeMemory.runtimeMemorySafetyMarginBytes plan)
+            `shouldBe` 5
+          RuntimeMemory.positiveBytesValue (RuntimeMemory.runtimeMemoryHighWaterBytes plan)
+            `shouldBe` 195
+
+    it "rejects missing, duplicate, and unknown configured runtime-memory profiles" $ do
+      Capacity.validateCapacitySection
+        Capacity.defaultCapacitySection {Capacity.runtime_memory_profiles = []}
+        `shouldBe` Left "capacity.runtime_memory_profiles must not be empty"
+      Capacity.validateCapacitySection
+        Capacity.defaultCapacitySection
+          { Capacity.runtime_memory_profiles =
+              [defaultGatewayRuntimeMemoryProfile, defaultGatewayRuntimeMemoryProfile]
+          }
+        `shouldBe` Left "capacity.runtime_memory_profiles must have unique runtime_profile_id values"
+      Capacity.validateCapacitySection
+        Capacity.defaultCapacitySection
+          { Capacity.runtime_memory_profiles =
+              [ defaultGatewayRuntimeMemoryProfile
+                  { Capacity.runtime_profile_id = "unknown-runtime"
+                  }
+              ]
+          }
+        `shouldSatisfy` leftContains "references unknown workload profile"
+      Capacity.runtimeMemoryPlanForProfile Capacity.defaultCapacitySection "api"
+        `shouldSatisfy` leftContains "is missing profile `api`"
+
+    it "derives the runtime container ceiling from the matching ResourceEnvelope memory limit" $ do
+      let lowerGatewayLimit profile =
+            if Capacity.profile_id profile == "gateway"
+              then
+                let envelope = Capacity.resources profile
+                    oldLimit = Capacity.limit envelope
+                 in profile
+                      { Capacity.resources =
+                          envelope
+                            { Capacity.limit = oldLimit {Capacity.memory_mib = 500}
+                            }
+                      }
+              else profile
+          originalResourcePlan = Capacity.resource_plan Capacity.defaultCapacitySection
+          linkedResourcePlan =
+            originalResourcePlan
+              { Capacity.workload_profiles =
+                  map lowerGatewayLimit (Capacity.workload_profiles originalResourcePlan)
+              }
+          linkedCapacity =
+            Capacity.defaultCapacitySection
+              { Capacity.resource_plan = linkedResourcePlan
+              }
+      Capacity.validateCapacitySection linkedCapacity `shouldBe` Right ()
+      case Capacity.runtimeMemoryPlanForProfile linkedCapacity "gateway" of
+        Left err -> expectationFailure err
+        Right plan -> do
+          RuntimeMemory.positiveBytesValue
+            (RuntimeMemory.runtimeMemoryContainerLimitBytes plan)
+            `shouldBe` (500 * 1024 * 1024)
+          RuntimeMemory.positiveBytesValue
+            (RuntimeMemory.runtimeMemoryHighWaterBytes plan)
+            `shouldBe` ((500 - 64) * 1024 * 1024)
+
+    it "renders exact gateway RTS argv from the validated default capacity plan" $ do
+      case Capacity.runtimeMemoryPlanForProfile Capacity.defaultCapacitySection "gateway" of
+        Left err -> expectationFailure err
+        Right plan -> do
+          RuntimeMemory.runtimeMemoryRtsArguments plan
+            `shouldBe` ["+RTS", "-M268435456", "-RTS"]
+          RuntimeMemory.renderRuntimeMemoryRtsPolicy plan
+            `shouldBe` "+RTS -M268435456 -RTS"
+
+    goldenTest
+      "renders the gateway runtime-memory RTS policy solely from its validated plan"
+      "test/golden/plans/gateway-runtime-memory.txt"
+      $ case Capacity.runtimeMemoryPlanForProfile Capacity.defaultCapacitySection "gateway" of
+        Left err -> fail err
+        Right plan ->
+          pure (BL8.pack (RuntimeMemory.renderRuntimeMemoryRtsPolicy plan ++ "\n"))
+
+    it "injects generated runtime and lifecycle-probe values into the gateway chart plan" $ do
+      result <-
+        buildChartDeploymentPlanForSubstrate
+          SubstrateAws
+          "/tmp/prodbox"
+          (testValidatedSettings "/tmp/prodbox/.data")
+          "gateway"
+          testChartSecrets
+          Map.empty
+      case result of
+        Left err -> expectationFailure err
+        Right deploymentPlan ->
+          case filter ((== "gateway") . chartReleasePlanReleaseName) (chartDeploymentPlanReleases deploymentPlan) of
+            [release] ->
+              case eitherDecode (BL8.pack (chartReleasePlanValuesJson release)) :: Either String Value of
+                Left err -> expectationFailure err
+                Right (Object payload) -> do
+                  case KeyMap.lookup (Key.fromString "runtime") payload of
+                    Just (Object runtimePayload) ->
+                      KeyMap.lookup (Key.fromString "rtsArguments") runtimePayload
+                        `shouldBe` Just
+                          ( Array
+                              ( Vector.fromList
+                                  [ String "+RTS"
+                                  , String "-M268435456"
+                                  , String "-RTS"
+                                  ]
+                              )
+                          )
+                    _ -> expectationFailure "expected gateway runtime values"
+                  KeyMap.lookup (Key.fromString "probes") payload
+                    `shouldBe` Just GatewayProbe.gatewayLifecycleProbeValues
+                Right _ -> expectationFailure "expected gateway values object"
+            _ -> expectationFailure "expected one gateway release"
+
   describe "settings" $ do
     it "validates Dhall config and renders masked output without materializing JSON" $
       withSystemTempDirectory "prodbox-hs-unit" $ \tmpDir -> do
@@ -14446,13 +14731,6 @@ parseArgs argv =
            in Left message
         CompletionInvoked _ -> Left "shell completion requested"
 
--- | Build a 'SignedEvent' whose hash and HMAC signature match the
--- canonical CBOR unsigned-payload encoding the daemon uses.  Used by the
--- peer-transport tests to construct round-trippable batches.
-signedEventStub :: String -> String -> String -> SignedEvent
-signedEventStub nodeId evType ts =
-  Peer.signEvent nodeId evType ts (cborPayloadFromJsonValue (object [])) "fake-key"
-
 makeExecutable :: FilePath -> IO ()
 makeExecutable path = do
   permissions <- getPermissions path
@@ -14569,6 +14847,12 @@ consecutivePair args target = go args
 indexPrecedes :: Maybe Int -> Maybe Int -> Bool
 indexPrecedes (Just earlier) (Just later) = earlier < later
 indexPrecedes _ _ = False
+
+isRetainedSesPreparationStep :: RestoreCycleStep -> Bool
+isRetainedSesPreparationStep restoreStep =
+  case restoreStep of
+    RestorePrepareRetainedSes _ -> True
+    _ -> False
 
 fakeAwsTestSshScript :: [String]
 fakeAwsTestSshScript =
@@ -14911,8 +15195,13 @@ capacityDhallFragment =
     , ", workload_budget = { cpu = 4, memory = 8, storage = 40 }"
     , ", region_quota = { cpu = 32, memory = 64, storage = 500 }"
     , ", resource_plan = " ++ resourcePlanDhallFragment
+    , ", runtime_memory_profiles = " ++ runtimeMemoryProfilesDhallFragment
     , "}"
     ]
+
+runtimeMemoryProfilesDhallFragment :: String
+runtimeMemoryProfilesDhallFragment =
+  "[ { runtime_profile_id = \"gateway\", bounded_application_state_bytes = 67108864, bounded_pending_persistence_state_bytes = 16777216, bounded_in_heap_transport_decode_bytes = 67108864, other_heap_reserve_bytes = 50331648, heap_cap_bytes = 268435456, native_non_heap_reserve_bytes = 67108864, child_process_budget = { permit_capacity = Some 1, action_deadline_milliseconds = Some 30000, simultaneous_peak_bytes = [ 67108864 ] }, kernel_cgroup_reserve_bytes = 33554432, safety_margin_bytes = 67108864 } ]"
 
 resourcePlanDhallFragment :: String
 resourcePlanDhallFragment =
@@ -15462,10 +15751,6 @@ sampleOrders =
           , heartbeatTimeoutSeconds = 3
           }
     }
-
-sampleSignedEvent :: SignedEvent
-sampleSignedEvent =
-  signedEventStub "node-a" eventTypeHeartbeat "2026-04-06T10:00:00Z"
 
 storedDaemonEvent :: String -> Integer -> Maybe UTCTime -> DaemonEvents.StoredEvent
 storedDaemonEvent eventName createdSecond processedAt =

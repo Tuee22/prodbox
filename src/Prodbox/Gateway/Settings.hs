@@ -34,6 +34,8 @@ module Prodbox.Gateway.Settings
   , toDaemonConfigWith
   , toDaemonConfigPreVault
   , loadOrders
+  , loadOrdersBounded
+  , compileBoundedOrders
   , decodeOrdersDhall
   , OrdersDhall (..)
   , PeerEndpointDhall (..)
@@ -42,15 +44,32 @@ module Prodbox.Gateway.Settings
   )
 where
 
-import Control.Exception (SomeException, displayException, try)
-import Data.List (nub)
+import Control.Exception (IOException, SomeException, displayException, try)
+import Crypto.Hash.SHA256 qualified as SHA256
+import Data.ByteString qualified as BS
+import Data.ByteString.Lazy qualified as BL
+import Data.List (elemIndex, nub)
+import Data.Map.Strict qualified as Map
 import Data.Maybe (fromMaybe)
+import Data.Set qualified as Set
 import Data.Text (Text)
 import Data.Text qualified as Text
+import Data.Text.Encoding qualified as TextEncoding
 import Data.Text.IO qualified as TextIO
 import Dhall (FromDhall, auto, input, inputFile)
 import GHC.Generics (Generic)
 import Numeric.Natural (Natural)
+import Prodbox.Gateway.Bounds
+  ( GatewayBounds
+  , gatewayMaxEncodedMemberBytes
+  , gatewayMaxEndpointBytes
+  , gatewayMaxMembers
+  , gatewayMaxNodeIdBytes
+  , gatewayMaxOrdersBytes
+  , gatewayMaxTrustKeyBytes
+  )
+import Prodbox.Gateway.Orders qualified as BoundedOrders
+import Prodbox.Gateway.State qualified as BoundedState
 import Prodbox.Gateway.Types
   ( DaemonConfig (..)
   , DnsWriteGate (..)
@@ -60,6 +79,7 @@ import Prodbox.Gateway.Types
   , GatewayVaultAuth (..)
   , Orders (..)
   , PeerEndpoint (..)
+  , encodeOrdersCbor
   )
 import Prodbox.Http.Client (renderHttpError)
 import Prodbox.Settings.SecretRef
@@ -74,6 +94,7 @@ import Prodbox.Vault.Client
   ( VaultAddress (..)
   , vaultKubernetesLogin
   )
+import System.IO (IOMode (ReadMode), withBinaryFile)
 
 -- | Dhall-friendly DTO for the daemon config.
 --
@@ -659,45 +680,76 @@ data GatewayRuleDhall = GatewayRuleDhall
 -- being a subset of @nodes.node_id@.
 toOrders :: OrdersDhall -> Either String Orders
 toOrders dto = do
-  let nodeList = map toPeer (nodes dto)
-      nodeIds = map peerNodeId nodeList
+  version <- naturalToPositiveInt "orders.version_utc" (version_utc dto)
+  if null (nodes dto)
+    then Left "orders.nodes must not be empty"
+    else Right ()
+  nodeList <- traverse toPeerChecked (nodes dto)
+  let nodeIds = map peerNodeId nodeList
   if length (nub nodeIds) /= length nodeIds
     then Left "orders.nodes node_id values must be unique"
     else Right ()
   let ruleDto = gateway_rule dto
       rankedNodeIds = map Text.unpack (ranked_nodes ruleDto)
-  if all (`elem` nodeIds) rankedNodeIds
+  if length (nub rankedNodeIds) == length rankedNodeIds
+    && Set.fromList rankedNodeIds == Set.fromList nodeIds
     then Right ()
-    else Left "gateway_rule.ranked_nodes must be a subset of orders.nodes.node_id"
+    else Left "gateway_rule.ranked_nodes must be a unique exact permutation of orders.nodes.node_id"
+  heartbeatTimeout <-
+    naturalToPositiveInt
+      "gateway_rule.heartbeat_timeout_seconds"
+      (heartbeat_timeout_seconds ruleDto)
+  if heartbeatTimeout >= 3 && heartbeatTimeout <= 60
+    then Right ()
+    else Left "gateway_rule.heartbeat_timeout_seconds must be within [3, 60]"
   pure
     Orders
-      { ordersVersionUtc = fromIntegral (version_utc dto)
+      { ordersVersionUtc = version
       , ordersNodes = nodeList
       , ordersGatewayRule =
           GatewayRule
             { rankedNodes = rankedNodeIds
-            , heartbeatTimeoutSeconds = fromIntegral (heartbeat_timeout_seconds ruleDto)
+            , heartbeatTimeoutSeconds = heartbeatTimeout
             }
       }
 
-toPeer :: PeerEndpointDhall -> PeerEndpoint
-toPeer
+toPeerChecked :: PeerEndpointDhall -> Either String PeerEndpoint
+toPeerChecked
   PeerEndpointDhall
     { node_id = nodeIdText
     , stable_dns_name = stableDnsNameText
     , rest_host = restHostText
-    , rest_port = restPortNat
+    , rest_port = restPortNatural
     , socket_host = socketHostText
-    , socket_port = socketPortNat
-    } =
-    PeerEndpoint
-      { peerNodeId = Text.unpack nodeIdText
-      , peerStableDnsName = Text.unpack stableDnsNameText
-      , peerRestHost = Text.unpack restHostText
-      , peerRestPort = fromIntegral restPortNat
-      , peerSocketHost = Text.unpack socketHostText
-      , peerSocketPort = fromIntegral socketPortNat
-      }
+    , socket_port = socketPortNatural
+    } = do
+    requireNonEmpty "orders.nodes[].node_id" nodeIdText
+    requireNonEmpty "orders.nodes[].stable_dns_name" stableDnsNameText
+    requireNonEmpty "orders.nodes[].rest_host" restHostText
+    requireNonEmpty "orders.nodes[].socket_host" socketHostText
+    restPort <- naturalToPort "orders.nodes[].rest_port" restPortNatural
+    socketPort <- naturalToPort "orders.nodes[].socket_port" socketPortNatural
+    Right
+      PeerEndpoint
+        { peerNodeId = Text.unpack nodeIdText
+        , peerStableDnsName = Text.unpack stableDnsNameText
+        , peerRestHost = Text.unpack restHostText
+        , peerRestPort = restPort
+        , peerSocketHost = Text.unpack socketHostText
+        , peerSocketPort = socketPort
+        }
+
+naturalToPositiveInt :: String -> Natural -> Either String Int
+naturalToPositiveInt fieldName value
+  | value == 0 = Left (fieldName ++ " must be positive")
+  | value > fromIntegral (maxBound :: Int) =
+      Left (fieldName ++ " exceeds the supported integer range")
+  | otherwise = Right (fromIntegral value)
+
+naturalToPort :: String -> Natural -> Either String Int
+naturalToPort fieldName value
+  | value < 1 || value > 65535 = Left (fieldName ++ " must be within [1, 65535]")
+  | otherwise = Right (fromIntegral value)
 
 decodeOrdersDhall :: Text -> IO (Either String Orders)
 decodeOrdersDhall src = do
@@ -723,3 +775,146 @@ loadOrders path = do
             )
         )
     Right dto -> pure (toOrders dto)
+
+-- | Load Orders through the bounded production path.  The file handle reads
+-- at most @max + 1@ bytes, the literal-only source gate runs before generic
+-- Dhall decoding, and member/trust validation finishes before a semantic map
+-- or peer task is exposed.
+loadOrdersBounded
+  :: GatewayBounds
+  -> [(String, String)]
+  -> FilePath
+  -> IO (Either String (Orders, BoundedState.ValidatedOrders))
+loadOrdersBounded bounds eventKeys path = do
+  sourceResult <- readBoundedOrdersSource bounds path
+  case sourceResult of
+    Left err -> pure (Left err)
+    Right sourceBytes ->
+      case TextEncoding.decodeUtf8' sourceBytes of
+        Left decodeError ->
+          pure
+            ( Left
+                ( "gateway Orders is not valid UTF-8: "
+                    ++ show decodeError
+                )
+            )
+        Right source -> do
+          let limits =
+                BoundedOrders.OrdersLimits
+                  { BoundedOrders.ordersMaxRawBytes = gatewayMaxOrdersBytes bounds
+                  , BoundedOrders.ordersMaxMembers = fromIntegral (gatewayMaxMembers bounds)
+                  , BoundedOrders.ordersMaxNodeIdBytes = gatewayMaxNodeIdBytes bounds
+                  , BoundedOrders.ordersMaxEndpointBytes = gatewayMaxEndpointBytes bounds
+                  , BoundedOrders.ordersMaxTrustKeyBytes = gatewayMaxTrustKeyBytes bounds
+                  , BoundedOrders.ordersMaxEncodedStateBytes = gatewayMaxEncodedMemberBytes bounds
+                  }
+          case BoundedOrders.preflightOrdersSource limits source of
+            Left admissionError -> pure (Left ("gateway Orders admission failed: " ++ show admissionError))
+            Right _ -> do
+              decoded <- decodeOrdersDhall source
+              pure $ do
+                orders <- decoded
+                validated <- compileBoundedOrders bounds eventKeys sourceBytes orders
+                Right (orders, validated)
+
+readBoundedOrdersSource :: GatewayBounds -> FilePath -> IO (Either String BS.ByteString)
+readBoundedOrdersSource bounds path = do
+  let allowed = gatewayMaxOrdersBytes bounds
+      readLimit = fromIntegral allowed + 1
+  result <-
+    try
+      ( withBinaryFile path ReadMode $ \handle ->
+          BS.hGet handle readLimit
+      )
+      :: IO (Either IOException BS.ByteString)
+  pure $ case result of
+    Left err -> Left ("failed to read gateway Orders `" ++ path ++ "`: " ++ displayException err)
+    Right bytes
+      | fromIntegral (BS.length bytes) > allowed ->
+          Left
+            ( "gateway Orders exceeds raw byte bound: "
+                ++ show (BS.length bytes)
+                ++ " > "
+                ++ show allowed
+            )
+      | otherwise -> Right bytes
+
+-- | Compile the existing chart Orders and resolved per-node event keys into
+-- the opaque bounded semantic representation.  Exact key membership is
+-- checked before 'BoundedState.validateOrders' constructs its member map.
+compileBoundedOrders
+  :: GatewayBounds
+  -> [(String, String)]
+  -> BS.ByteString
+  -> Orders
+  -> Either String BoundedState.ValidatedOrders
+compileBoundedOrders bounds eventKeys _rawSource orders = do
+  let peers = ordersNodes orders
+      memberIds = map peerNodeId peers
+      keyNames = map fst eventKeys
+      memberSet = Set.fromList memberIds
+      keySet = Set.fromList keyNames
+      ranked = rankedNodes (ordersGatewayRule orders)
+  if length keyNames == Set.size keySet
+    then Right ()
+    else Left "gateway event_keys names must be unique"
+  if Set.null keySet || keySet == memberSet
+    then Right ()
+    else
+      Left
+        ( "gateway event_keys must match Orders membership exactly; missing="
+            ++ show (Set.toAscList (memberSet `Set.difference` keySet))
+            ++ ", extra="
+            ++ show (Set.toAscList (keySet `Set.difference` memberSet))
+        )
+  if length ranked == Set.size (Set.fromList ranked) && Set.fromList ranked == memberSet
+    then Right ()
+    else Left "gateway_rule.ranked_nodes must be a unique exact permutation of Orders membership"
+  let keyMap = Map.fromList eventKeys
+  rawMembers <- traverse (compileMember keyMap ranked) peers
+  let canonicalDocument = BL.toStrict (encodeOrdersCbor orders)
+  case BoundedState.validateOrders
+    bounds
+    BoundedState.RawOrders
+      { BoundedState.rawOrdersDocument = canonicalDocument
+      , BoundedState.rawOrdersVersion = ordersVersionUtc orders
+      , BoundedState.rawOrdersMembers = rawMembers
+      } of
+    Left err -> Left ("gateway bounded Orders validation failed: " ++ show err)
+    Right validated -> Right validated
+ where
+  compileMember keyMap ranked peer = do
+    trustKey <-
+      case Map.lookup (peerNodeId peer) keyMap of
+        Nothing
+          | Map.null keyMap ->
+              -- Pre-Vault bootstrap remains able to bind health/readiness,
+              -- but no signed assertion can be emitted or accepted.  This
+              -- non-secret sentinel is only a bounded membership anchor; it
+              -- is never an HMAC credential.
+              Right
+                (SHA256.hash (TextEncoding.encodeUtf8 (Text.pack ("unresolved:" ++ peerNodeId peer))))
+        Nothing -> Left ("gateway event key missing for " ++ peerNodeId peer)
+        Just value -> Right (TextEncoding.encodeUtf8 (Text.pack value))
+    rank <-
+      case elemIndex (peerNodeId peer) ranked of
+        Nothing -> Left ("gateway rank missing for " ++ peerNodeId peer)
+        Just value -> Right (fromIntegral value)
+    Right
+      BoundedState.RawGatewayMember
+        { BoundedState.rawMemberNodeId = Text.pack (peerNodeId peer)
+        , BoundedState.rawMemberEndpoint = canonicalPeerEndpoint peer
+        , BoundedState.rawMemberTrustKey = trustKey
+        , BoundedState.rawMemberRank = rank
+        }
+
+canonicalPeerEndpoint :: PeerEndpoint -> Text
+canonicalPeerEndpoint peer =
+  Text.intercalate
+    "|"
+    [ Text.pack (peerStableDnsName peer)
+    , Text.pack (peerRestHost peer)
+    , Text.pack (show (peerRestPort peer))
+    , Text.pack (peerSocketHost peer)
+    , Text.pack (show (peerSocketPort peer))
+    ]

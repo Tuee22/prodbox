@@ -34,40 +34,40 @@ cross-substrate shared infrastructure (see
 | [aws_test_environment.md](./aws_test_environment.md) | Shared AWS member-account, DNS, isolation, lifecycle, and auth doctrine for ephemeral multi-project testing |
 | [acme_provider_guide.md](./acme_provider_guide.md) | ZeroSSL ACME guidance for the interactive onboarding flow |
 | [chaos_hardening_doctrine.md](./chaos_hardening_doctrine.md) | Concurrency-hardening treatise & doctrine: the Extract → Model → Inject moves over the decision/protocol/runtime layers, the TLA+ and chaos-engineering traditions, the consistency-boundary second axis, and the proven/tested/assumed ledger |
-| [dependency_management.md](./dependency_management.md) | Cabal- and toolchain-level dependency doctrine |
+| [dependency_management.md](./dependency_management.md) | Cabal/toolchain dependency doctrine, including executable-only RTS parsing for generated heap policy without hard-coded caps |
 | [cli_command_surface.md](./cli_command_surface.md) | Canonical operator command matrix |
 | [config_doctrine.md](./config_doctrine.md) | The canonical three-tier config model (§0: Tier 0 the self-contained, generated, non-secret `prodbox.dhall` that is itself the sealed-Vault bootstrap floor — no separate JSON floor; Tier 1 password-gated bootstrap secret; Tier 2 Vault-gated operational secrets), the rule that all Dhall is generated or locally-authored and none is version-controlled, the seeded in-force MinIO SSoT and retired `prodbox-config.dhall` seed, pure-Dhall config sourcing, mount contract, file-watch reload, and forbidden surfaces for every `prodbox` binary instance |
 | [aws_integration_environment_doctrine.md](./aws_integration_environment_doctrine.md) | Real AWS integration environment creation, tagging, and cleanup doctrine |
-| [distributed_gateway_architecture.md](./distributed_gateway_architecture.md) | Multi-node gateway leadership and failover design |
+| [distributed_gateway_architecture.md](./distributed_gateway_architecture.md) | Multi-node gateway leadership/failover doctrine, including landed bounded semantic state, signed per-emitter delta/repair gossip, retained continuity, bounded transport, credential-gated DNS, and constant-time health projections |
 | [envoy_gateway_edge_doctrine.md](./envoy_gateway_edge_doctrine.md) | Canonical MetalLB + Envoy Gateway + Keycloak public-edge doctrine, including JWT, Redis, and WebSocket boundaries |
 | [effectful_dag_architecture.md](./effectful_dag_architecture.md) | Effect DAG system design |
 | [effect_interpreter.md](./effect_interpreter.md) | Interpreter runtime execution contract |
-| [haskell_code_guide.md](./haskell_code_guide.md) | Hard-gate Haskell quality doctrine and review-guidance split |
+| [haskell_code_guide.md](./haskell_code_guide.md) | Hard-gate Haskell quality doctrine, review-guidance split, and the landed opaque runtime-memory/generated RTS boundary |
 | [integration_fixture_doctrine.md](./integration_fixture_doctrine.md) | Cluster-backed integration setup and teardown doctrine |
-| [lifecycle_reconciliation_doctrine.md](./lifecycle_reconciliation_doctrine.md) | Reconciler-with-predicates pattern that every destructive lifecycle command composes; the typed managed-resource registry (§3.1) that makes the topology leak-proof and idempotent; AWS-resource leak classes and the state-lifetime rule (per-run MinIO backend vs long-lived S3 backend) |
+| [lifecycle_reconciliation_doctrine.md](./lifecycle_reconciliation_doctrine.md) | Reconciler-with-predicates pattern for desired absence and desired presence; typed external presence/checkpoint observations, fail-closed `Unobservable`, managed-resource lifecycle classes, retained-resource leases, gateway-backed opaque Model-B CAS, cross-authority target intents, and fenced SMTP-key repair |
 | [local_registry_pipeline.md](./local_registry_pipeline.md) | In-cluster registry (registry:2) workload sourcing, public-image reconcile, and native-host-architecture image publication |
 | [storage_lifecycle_doctrine.md](./storage_lifecycle_doctrine.md) | Unified block-storage doctrine: static `Retain` no-provisioner PVs on both substrates (home `hostPath`, EKS pre-created EBS) and deterministic PVC/PV rebinding |
 | [prerequisite_doctrine.md](./prerequisite_doctrine.md) | Fail-fast prerequisite philosophy and registry doctrine |
 | [prerequisite_dag_system.md](./prerequisite_dag_system.md) | Prerequisite DAG construction and reduction reference |
-| [bootstrap_readiness_doctrine.md](./bootstrap_readiness_doctrine.md) | The shallow-gate invariant that makes bootstrap readiness races unrepresentable: a step may run only behind a barrier that exercises the exact dependency call path it uses (not a `/v2/`-style proxy), with reconcile order lint-checked against a config-sourced component dependency/readiness graph today (foundation + deep registry→MinIO gate, Sprints 1.56/4.43) and full derivation-from-the-graph + two-phase split nodes + the `ReadinessObservation` seam scheduled (Sprints 1.58/1.59/4.45, reopened 2026-07-10) |
+| [bootstrap_readiness_doctrine.md](./bootstrap_readiness_doctrine.md) | Shallow dependency-readiness barriers over exact call paths, explicitly distinct from run-wide restart/OOM/high-water stability; includes the constant-time gateway probe contract |
 | [streaming_doctrine.md](./streaming_doctrine.md) | Streaming and terminal-record serialization invariants |
 | [tla/README.md](./tla/README.md) | TLA+ model index for formal safety properties |
 | [tla_modelling_assumptions.md](./tla_modelling_assumptions.md) | TLA+ formal model correspondence, divergences, and verification status |
 | [unit_testing_policy.md](./unit_testing_policy.md) | Test-runner doctrine and validation contract |
-| [pure_fp_standards.md](./pure_fp_standards.md) | Pure FP coding standards |
-| [code_quality.md](./code_quality.md) | Policy guardrails and the `check-code` gate |
+| [pure_fp_standards.md](./pure_fp_standards.md) | Pure FP coding standards, including opaque runtime-memory proof values kept separate from external observations |
+| [code_quality.md](./code_quality.md) | Policy guardrails and the `prodbox dev check` doctrine-alignment gate |
 | [refactoring_patterns.md](./refactoring_patterns.md) | Imperative to pure FP migration patterns |
-| [helm_chart_platform_doctrine.md](./helm_chart_platform_doctrine.md) | Singleton chart identity, namespace isolation, storage lifecycle, and delete semantics for `prodbox charts` |
-| [secret_derivation_doctrine.md](./secret_derivation_doctrine.md) | Master-seed derivation, host↔cluster secret boundary, and the gateway-as-secret-service contract |
+| [helm_chart_platform_doctrine.md](./helm_chart_platform_doctrine.md) | Singleton chart identity, namespace isolation, storage/delete lifecycle, and constant-time gateway probe-binding contract for `prodbox charts` |
+| [secret_derivation_doctrine.md](./secret_derivation_doctrine.md) | Vault-only secret storage and the host↔cluster access boundary; the filename is retained for link stability after retirement of master-seed derivation and gateway secret-service RPCs |
 | [vault_doctrine.md](./vault_doctrine.md) | Vault as the fail-closed secrets / KMS / PKI backend: the SecretRef config contract, the MinIO-resident password-AEAD unlock bundle and daemon-mediated bootstrap path (Tier 1), Vault Transit envelope encryption of MinIO and Pulumi state, the sealed-state invariant, and in-cluster Vault Kubernetes auth |
 | [cluster_federation_doctrine.md](./cluster_federation_doctrine.md) | Cluster federation: the root/child Vault transit-seal trust tree, parent custody of child init keys, downstream-cluster metadata as secret, the config SSoT inversion and root-token config authority, and the fail-closed unseal cascade |
 | [pulsar_messaging_doctrine.md](./pulsar_messaging_doctrine.md) | Self-maintained native-protocol Pulsar client and the project-wide CBOR-always payload rule (no codec-selection field — non-CBOR payloads unrepresentable), the derived `topicFor` topic algebra, and the `Work*` envelope family |
-| [resource_scaling_doctrine.md](./resource_scaling_doctrine.md) | prodbox-as-autoscaler and resource governor: explicit cpu/memory/ephemeral/durable budgets, host/RKE2 reservations, per-container request/limit envelopes, namespace quotas, capacity `fitsWithin` lemmas making over-committed hosts/clusters/regions unrepresentable, substrate-indexed scaling, fail-closed spot-price and region-quota gates, and federation-scoped placement |
+| [resource_scaling_doctrine.md](./resource_scaling_doctrine.md) | Resource governor separating authored admission/cgroup containment from runtime demand: capacity `fitsWithin` lemmas, the landed nested memory/RTS planner, forward-owned external stability evidence, substrate-indexed scaling, and fail-closed price/quota gates |
 | [pulsar_topic_lifecycle_doctrine.md](./pulsar_topic_lifecycle_doctrine.md) | Pulsar topics as first-class managed resources — typed three-valued broker discover, typed idempotent destroy, and a lifecycle class reconciled through the §3.1 registry; names from the topic algebra, retention drawn from the finite storage budget |
 | [tiered_storage_capacity_doctrine.md](./tiered_storage_capacity_doctrine.md) | Finite-budget durable-storage capacity DSL: no `Infinite` constructor, sizeless-claim and over-quota unrepresentable, MinIO "unlimited" only with an autoscaling witness, AWS region service-quota as the real cloud ceiling, mandatory ML JIT + model-cache budgets, and no durable-destruction primitive |
 | [host_platform_doctrine.md](./host_platform_doctrine.md) | Per-OS host-provider model mirrored in kind from hostbootstrap: the detected `HostSubstrate`, the closed `HostTool` enum, and the `LiftLayer` provider fold (Lima on Apple, WSL2 on Windows, Incus/native on Linux) with "everything Docker-inward is OS-agnostic Linux"; makes rke2-without-a-VM (Apple/Windows) and host-frame `docker` on Windows unrepresentable |
 | [cluster_topology_doctrine.md](./cluster_topology_doctrine.md) | The three explicit cluster types (`kind`/`rke2`/`eks`, never inferred), the substrate-indexed one-compute-worker-per-machine rule, and the type shapes that make ill-formed topologies (multi-node rke2 on one machine, cross-machine kind, wrong-substrate worker, mixed-substrate kind/eks) unrepresentable |
-| [test_topology_doctrine.md](./test_topology_doctrine.md) | The executable-sibling `prodbox.test.dhall` as the explicit SSoT of one test run, and the `test init` / `test run` surface that stands each HA/failover variant up on `.test-data/`, asserts it, and always tears down per-run artifacts — inverting production's fail-if-absent sibling-config contract and never touching production `.data/` or long-lived resources |
+| [test_topology_doctrine.md](./test_topology_doctrine.md) | The executable-sibling `prodbox.test.dhall` SSoT, `.test-data/` isolation, per-run teardown, and the rule that retaining long-lived resources during cleanup does not exclude capability-derived desired-present preparation |
 
 ## Quick Navigation
 
@@ -83,6 +83,8 @@ cross-substrate shared infrastructure (see
 ### Distributed Gateway
 
 - [Architecture](./distributed_gateway_architecture.md)
+- [Bounded Semantic State and Delta Replication](./distributed_gateway_architecture.md#72-bounded-delta-replication)
+- [Runtime Memory Contract](./distributed_gateway_architecture.md#123-runtime-memory-contract)
 - [Public Edge Doctrine](./envoy_gateway_edge_doctrine.md)
 - [Local Registry Pipeline](./local_registry_pipeline.md)
 - [Gateway Container Build Doctrine](./local_registry_pipeline.md#6-gateway-container-build-doctrine)
@@ -114,6 +116,7 @@ cross-substrate shared infrastructure (see
 - [Prerequisite DAG System](./prerequisite_dag_system.md)
 - [Bootstrap Readiness Doctrine](./bootstrap_readiness_doctrine.md)
 - [Shallow-Gate Invariant](./bootstrap_readiness_doctrine.md#0-canonical-doctrine-statements)
+- [Dependency Readiness vs Runtime Stability](./bootstrap_readiness_doctrine.md#21-dependency-readiness-vs-runtime-stability)
 
 ### Dependency Management
 
@@ -163,6 +166,7 @@ cross-substrate shared infrastructure (see
 - [Resource Scaling Doctrine](./resource_scaling_doctrine.md)
 - [Mandatory Resource Requirements](./resource_scaling_doctrine.md#2a-resource-requirements-are-mandatory-and-capped)
 - [Host, RKE2, Cluster, Namespace, and Pod Lemmas](./resource_scaling_doctrine.md#2b-host-rke2-cluster-namespace-and-pod-lemmas)
+- [Runtime Memory Decomposition and Observation](./resource_scaling_doctrine.md#2d-runtime-memory-decomposition-and-observation)
 - [Tiered Storage Capacity Doctrine](./tiered_storage_capacity_doctrine.md)
 
 ### Secrets and Vault

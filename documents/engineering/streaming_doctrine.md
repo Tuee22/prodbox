@@ -2,7 +2,7 @@
 
 **Status**: Authoritative source
 **Supersedes**: N/A
-**Referenced by**: documents/engineering/README.md, documents/engineering/effect_interpreter.md, documents/engineering/unit_testing_policy.md, documents/engineering/pulsar_messaging_doctrine.md
+**Referenced by**: DEVELOPMENT_PLAN/phase-2-gateway-dns.md, documents/engineering/README.md, documents/engineering/distributed_gateway_architecture.md, documents/engineering/effect_interpreter.md, documents/engineering/unit_testing_policy.md, documents/engineering/pulsar_messaging_doctrine.md
 **Generated sections**: none
 
 > **Purpose**: Define streaming and terminal-record invariants for supported `prodbox` command
@@ -189,13 +189,17 @@ tracking. Events are immutable records stored with timestamps; a
 at-least-once port: `recordEvent` is insert-once by `eventId`,
 `fetchUnprocessedEvents` returns the `processed_at IS NULL` set in
 `created_at ASC` order, and `markEventProcessed` is the first-write-wins
-marker. The gateway peer commit log (`src/Prodbox/Gateway/Peer.hs`) is a
-deliberately different, **non-durable anti-entropy** variant: peers
-periodically push their known commit log to one another to converge
-ownership claims; it is not the durable at-least-once store and does not
-carry the `processed_at` delivery guarantee. Do not conflate the two — the
-durable processing contract below applies to the `Daemon.Events` port, not
-to the anti-entropy gossip transport.
+marker. Gateway peer gossip (`src/Prodbox/Gateway/Peer.hs`) is a deliberately different,
+**non-durable bounded anti-entropy** protocol: peers exchange bounded cursor deltas and use a
+signed per-emitter semantic checkpoint plus bounded contiguous suffix when a cursor falls outside
+the replay window. Duplicate frames are absorbed by an idempotent semantic fold, but the gateway
+does not retain a durable work history or carry the `processed_at` delivery guarantee.
+
+Do not conflate the two. Durable consumers retain immutable records according to their topic/store
+retention policy and use explicit processing acknowledgements. The gateway retains only bounded hot
+coordination state and bounded replay/diagnostic windows; sending or retaining the complete
+process-lifetime peer history is not required by at-least-once delivery. Sprint `2.31` landed this
+bounded gateway protocol without changing the durable event-store contract.
 
 The durable event **payload** is canonical CBOR project-wide per
 [pulsar_messaging_doctrine.md](./pulsar_messaging_doctrine.md). The

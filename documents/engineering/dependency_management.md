@@ -72,6 +72,20 @@ prodbox dev check
 - Keep the executable and test-suite dependency lists minimal and scoped to the modules that need
   them.
 
+### GHC Runtime Option Ownership
+
+The runtime-memory policy introduces no second compiler, package manager, or chart-local tuning
+surface. The `prodbox` executable stanza alone enables GHC's `-rtsopts`, which is required for the
+generated `-M` argument; the library and test-suite stanzas retain their ordinary warning options.
+`Prodbox.Capacity.RuntimeMemory` derives the exact byte-valued heap argument from a validated
+`RuntimeMemoryPlan`, and `ChartPlatform` passes it only to the gateway role. `prodbox.cabal` carries
+no `-with-rtsopts` heap value, and Docker, `GHCRTS`, and Helm defaults carry none either.
+
+Profiling builds used to calibrate reserves remain diagnostic variants of the pinned GHC `9.12.4`
+toolchain, not a second supported runtime artifact. See
+[Resource Scaling Doctrine §2D](./resource_scaling_doctrine.md#2d-runtime-memory-decomposition-and-observation)
+and [Sprint 1.60](../../DEVELOPMENT_PLAN/phase-1-runtime-cli-aws-foundations.md) for ownership.
+
 ### External Tools
 
 - The supported operator toolchain must be documented in `README.md` and in the relevant doctrine
@@ -85,7 +99,9 @@ prodbox dev check
 ### Haskell Repository Surface
 
 - Core CLI and runtime: `base`, `text`, `bytestring`, `aeson`, `optparse-applicative`,
-  `typed-process`, `directory`, `filepath`, `transformers`
+  `typed-process`, `directory`, `filepath`, `transformers`; `exceptions` supplies the generic
+  `MonadMask` bracket used to delete a newly-created SMTP IAM key on synchronous/asynchronous
+  interruption before its guarded committed projection is confirmed.
 - Daemon structured logging: `co-log` / `co-log-core` through
   `src/Prodbox/Gateway/Logging.hs`, with gateway and workload daemon entrypoints writing JSON
   log lines to stderr.
@@ -150,7 +166,8 @@ Cabal 3.16.1.0
 
 These are not floors or recommendations. The `.cabal` file declares
 `tested-with: ghc ==9.12.4`. A `cabal.project` (or equivalent) pins
-`with-compiler: ghc-9.12.4`. CI uses the same versions. The
+`with-compiler: ghc-9.12.4`. Every supported local or externally-invoked automation run uses the
+same versions. The
 formatter-tools GHC under `.build/<project>-style-tools/` is a separate
 sandboxed install managed by the lint stack, but it is pinned to the
 *same* GHC `9.12.4` named here: the project runs one GHC version for
@@ -161,5 +178,6 @@ everything, including code checking. There is no second compiler version.
 - [CLI Command Surface](./cli_command_surface.md)
 - [Code Quality Doctrine](./code_quality.md)
 - [Haskell Code Guide](./haskell_code_guide.md)
+- [Resource Scaling Doctrine](./resource_scaling_doctrine.md)
 - [Unit Testing Policy](./unit_testing_policy.md)
 - [Development Plan](../../DEVELOPMENT_PLAN/README.md)

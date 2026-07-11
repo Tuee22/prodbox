@@ -372,19 +372,18 @@ gatewayDaemonAcquire =
     , effectNodeEffect = Noop
     }
 
--- Sprint 8.4 — Cross-substrate SES prerequisites. These nodes are deferred-prereqs of
--- `ValidationKeycloakInvite` (Sprint 8.5): substrate provisioning runs first, then the
--- canonical suite gates the invite validation on the shared SES infrastructure
--- (`pulumi/aws-ses/`) being live and reachable from the runner.
+-- Sprint 5.17 — Read-only SES observations.  The capability-derived retained
+-- SES preparation transaction runs first; these deferred prerequisite nodes
+-- only observe its result and never prescribe or perform a second reconcile.
 
 sesSendingIdentityVerified :: EffectNode
 sesSendingIdentityVerified =
   EffectNode
     { effectNodeId = SesSendingIdentityVerified
     , effectNodeDescription =
-        "Validate the SES domain identity for ses.sender_domain is in VerificationStatus=Success"
+        "Validate the exact SES sender identity is verified with successful, enabled DKIM signing"
     , effectNodeRemedyHint =
-        "Provision the shared SES infrastructure via `prodbox aws stack aws-ses reconcile` (Sprint 8.1); confirm DKIM CNAME records exist in the parent Route 53 zone and that SES has reported VerificationStatus=Success for ses.sender_domain."
+        "The retained SES preparation completed but the structured sender/DKIM observation is not Ready. Retry the same harness-owned validation after propagation; if it reports Failed or Unobservable, correct the declared configuration or observation access before retrying."
     , effectNodePrerequisites = [AwsCredentialsValid, Route53Accessible]
     , effectNodeEffect = Validate RequireSesSendingIdentityVerified
     }
@@ -394,9 +393,9 @@ sesReceiveRuleSetActive =
   EffectNode
     { effectNodeId = SesReceiveRuleSetActive
     , effectNodeDescription =
-        "Validate the SES receive rule set is active and captures mail for ses.receive_subdomain"
+        "Validate the exact regional MX record and active SES S3 capture rule"
     , effectNodeRemedyHint =
-        "Re-run `prodbox aws stack aws-ses reconcile` and confirm `aws ses describe-active-receipt-rule-set` reports the prodbox-receive-rule-set as active with an S3 action targeting ses.capture_bucket."
+        "The retained SES preparation completed but the structured MX/receipt-rule observation is not Ready. Retry the same harness-owned validation after propagation; if it reports Failed or Unobservable, correct the declared configuration or observation access before retrying."
     , effectNodePrerequisites = [AwsCredentialsValid, Route53Accessible]
     , effectNodeEffect = Validate RequireSesReceiveRuleSetActive
     }
@@ -406,9 +405,9 @@ sesReceiveBucketAccessible =
   EffectNode
     { effectNodeId = SesReceiveBucketAccessible
     , effectNodeDescription =
-        "Validate the SES capture S3 bucket is reachable for list and get operations"
+        "Validate operational-credential list/get access to the SES capture readiness object"
     , effectNodeRemedyHint =
-        "Confirm the SMTP IAM user from `prodbox aws stack aws-ses reconcile` retains `s3:ListBucket` and `s3:GetObject` on ses.capture_bucket; `aws s3api head-bucket --bucket <bucket>` must exit 0 from the runner."
+        "The retained SES preparation completed but the structured capture list/get observation is not Ready. Retry the same harness-owned validation after propagation; if it reports Failed or Unobservable, correct the harness-owned bucket policy or operational credential scope before retrying."
     , effectNodePrerequisites = [AwsCredentialsValid]
     , effectNodeEffect = Validate RequireSesReceiveBucketAccessible
     }

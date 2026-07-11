@@ -40,7 +40,8 @@ data LifecycleClass
     LongLived
   | -- | Ephemeral operational credentials created by @prodbox aws
     -- setup@ and cleared by @prodbox aws teardown@ (the operational
-    -- @prodbox@ IAM user and the operational @aws.*@ config block).
+    -- SES lease role, the @prodbox@ IAM user, and the operational
+    -- @aws.*@ config block).
     -- Not Pulumi-backed.
     Operational
   deriving (Eq, Show)
@@ -86,6 +87,7 @@ resourceLifecycleClasses =
     -- a single run. Destroyed only through explicit long-lived
     -- teardown.
     ("pulsar-topics-long-lived", LongLived)
+  , ("operational-aws-ses-lease-role", Operational)
   , ("operational-iam-user", Operational)
   , ("operational-aws-config", Operational)
   ]

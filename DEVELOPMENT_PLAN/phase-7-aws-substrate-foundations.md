@@ -349,7 +349,7 @@ subdomain, capture bucket, and the IAM policy granting the runner SES send and S
   `prodbox test integration <name> --substrate aws` validations,
   `prodbox test integration all`, and `prodbox test all`, then clears those credentials again
   even when later prerequisites fail.
-- The aggregate runner now reuses the canonical repo-backed Pulumi backend during deferred
+- The aggregate runner now reuses the canonical daemon-mediated encrypted Model-B Pulumi backend during deferred
   cluster-backed prerequisite checks, so the IAM scope stays isolated to AWS-user and config
   cleanup rather than to ambient host Pulumi login state.
 
@@ -605,10 +605,10 @@ provisioned.
 ### Objective (sprint-level, unchanged across the split)
 
 Bring the AWS substrate to behavioral parity with the home substrate for the canonical test
-suite. After this sprint's three sub-sprints close, every validation that runs on the home
-substrate today also runs on the AWS substrate when the AWS substrate is the active substrate
-for a suite run, and the substrate parity row in [substrates.md](substrates.md) for AWS
-becomes ✅ Full canonical suite.
+suite. At this sprint's historical closure checkpoint, every validation then running on the home
+substrate also ran on the AWS substrate when AWS was selected. Later canonical-suite additions are
+tracked independently in [substrates.md](substrates.md) and do not rewrite this completed Phase-7
+objective.
 
 ### Sprint-level Deliverables (allocated to sub-sprints below)
 

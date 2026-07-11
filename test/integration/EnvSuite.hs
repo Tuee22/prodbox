@@ -237,8 +237,13 @@ capacityWithResourcePlan resourcePlanFragment =
     , ", workload_budget = { cpu = 4, memory = 8, storage = 40 }"
     , ", region_quota = { cpu = 32, memory = 64, storage = 500 }"
     , ", resource_plan = " ++ resourcePlanFragment
+    , ", runtime_memory_profiles = " ++ runtimeMemoryProfilesDhallFragment
     , "}"
     ]
+
+runtimeMemoryProfilesDhallFragment :: String
+runtimeMemoryProfilesDhallFragment =
+  "[ { runtime_profile_id = \"gateway\", bounded_application_state_bytes = 67108864, bounded_pending_persistence_state_bytes = 16777216, bounded_in_heap_transport_decode_bytes = 67108864, other_heap_reserve_bytes = 50331648, heap_cap_bytes = 268435456, native_non_heap_reserve_bytes = 67108864, child_process_budget = { permit_capacity = Some 1, action_deadline_milliseconds = Some 30000, simultaneous_peak_bytes = [ 67108864 ] }, kernel_cgroup_reserve_bytes = 33554432, safety_margin_bytes = 67108864 } ]"
 
 resourcePlanDhallFragment :: String
 resourcePlanDhallFragment =

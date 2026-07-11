@@ -167,6 +167,19 @@ runHostCommand repoRoot command =
         Success () -> do
           writeOutputLine "All required host tools are available."
           pure ExitSuccess
+    HostCheckSesReadiness -> do
+      prerequisiteResult <-
+        runPrerequisites
+          repoRoot
+          [ SesSendingIdentityVerified
+          , SesReceiveRuleSetActive
+          , SesReceiveBucketAccessible
+          ]
+      case prerequisiteResult of
+        Failure err -> failWith err
+        Success () -> do
+          writeOutputLine "Retained SES semantic readiness: Ready"
+          pure ExitSuccess
     HostCheckPorts -> runHostCheckPorts
     HostInfo -> runHostInfo repoRoot
     HostFirewallGatewayRestrict port -> runHostFirewallGatewayRestrict port

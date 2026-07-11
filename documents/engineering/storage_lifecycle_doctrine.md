@@ -105,7 +105,7 @@ This doctrine governs:
 4. the `.data/` host root as the sole preserved operator-host directory, and the
    pin that MinIO's PV lives inside it
 5. MinIO persistence behavior on the supported single-node RKE2 machine
-6. deleted-export-mount repair for the repo-backed Pulumi backend
+6. deleted-export-mount repair for the daemon-mediated encrypted Model-B Pulumi checkpoint store
 7. the Vault-Transit-enveloped in-force cluster configuration and gateway state in MinIO,
    which live on MinIO's PV under `.data/prodbox/minio/0` and are therefore in scope of this
    doctrine for persistence (encryption, access control, and the in-force-config SSoT

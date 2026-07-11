@@ -15,6 +15,20 @@
 
 ## Phase Status
 
+✅ **Reclosed 2026-07-10 after desired-present long-lived reconciliation.** The lifecycle class of
+`aws-ses` correctly prevents automatic destruction, but the audited registry and suite integration
+mistook retention for ambient pre-existence: the managed-resource registry was effectively
+destroy-only, missing-state repair collapsed AWS errors to absence, and concurrent retained
+stack reconciles had no shared lease. Sprint `4.47` expands Phase `4`'s own reconciler surface to
+model desired presence as well as desired absence, fail closed on unobservable state, and serialize
+the retained SES repair/reconcile cycle. The supported `AwsSesStack` ensure composes those
+primitives through a retained-authority lease, fixed-role bounded STS sessions, fenced encrypted
+checkpoint, finite SMTP repair, and global target-intent materialization. The role is a registered
+`Operational` resource deleted and re-observed before its trusted user. Evidence is warning-clean
+build, focused lifecycle 78/78 plus role 9/9, full unit 1476/1476, and `prodbox dev check` exit 0.
+Earlier lifecycle, encrypted-backend, and cleanup closures remain valid; live AWS exercise is a
+non-blocking Standard-O axis.
+
 ✅ **Reclosed 2026-07-10 after the classifier follow-up** — Phase `4` expanded
 its **own** reconcile-driver + registry-config surface
 ([Standard A/N](development_plan_standards.md#n-phase-independence-no-backward-blocking)). Sprint `4.43`
@@ -191,12 +205,13 @@ the identical-rebinding validation is Phase 5 (Sprint `5.12`). All earlier Phase
 
 ## Phase Summary
 
-This phase closes the hard migration gap between parity and replacement. It owns the Harbor-first
-local lifecycle, the narrowed Harbor bootstrap doctrine, the public AWS-validation Pulumi surface,
+This phase closes the hard migration gap between parity and replacement. It owns the
+in-cluster-registry-first local lifecycle, the bounded public-image bootstrap doctrine, the public
+AWS-validation Pulumi surface,
 the non-Python Pulumi stack format, and the repository-wide Python removal that leaves the
 supported path Haskell-only. Sprints `4.2` and `4.3` remain closed on the AWS-validation Pulumi
-surface and repository-wide Python removal. Sprint `4.1` now also closes on the authoritative
-Harbor-plus-storage-backend bootstrap contract. The supported lifecycle and retained
+surface and repository-wide Python removal. Sprint `4.1`'s historical Harbor bootstrap was later
+superseded by the `registry:2` runtime recorded below. The supported lifecycle and retained
 AWS-validation stacks otherwise close on clean-room-only behavior, native-host-architecture Docker
 publication, one Route 53 record, and one listener certificate for `test.resolvefintech.com`.
 Sprint `4.8` closed the user-visible delete-output hardening: success is summary-owned by
@@ -207,7 +222,7 @@ reconciliation surface is unaffected by the new
 [config_doctrine.md](../documents/engineering/config_doctrine.md). One interaction is
 worth naming: under the new doctrine, daemon Pods auto-restart on boot-field config
 changes (the file-watch worker drains and exits with `ExitSuccess`; the kubelet restarts
-the Pod against the new Dhall). This means `prodbox rke2 reconcile` runs that re-render
+the Pod against the new Dhall). This means `prodbox cluster reconcile` runs that re-render
 the gateway or workload ConfigMaps trigger a Pod restart without operator action, by
 design — there is no separate "reload running daemons" step in the cascade. See
 [Sprint 2.21](phase-2-gateway-dns.md) for the implementation.
@@ -251,49 +266,32 @@ orthogonal and tracked only in [substrates.md](substrates.md)'s parity table.
 
 ## Current Baseline In Worktree
 
-- `src/Prodbox/CLI/Rke2.hs` owns the supported local lifecycle.
-- `src/Prodbox/CLI/Rke2.hs` keeps `prodbox rke2 delete --yes` hermetic on success through the
-  lifecycle-local `captureToolOutput` quiet path plus the expanded
-  `isIgnorableRke2DeleteNoiseLine` filter that classifies inotify warnings (`Failed to allocate
-  directory watch: Too many open files`), `Cannot find device`, `semodule: not found`, and
-  timestamped `Cleanup completed successfully` lines as benign noise. (The directory-watch warning
-  is usually emitted out-of-band by systemd/journald to the console rather than on the uninstaller's
-  captured fds, so the quiet path cannot hide it and it may still appear on a successful run; it is
-  benign — see streaming_doctrine.md §6.) Non-zero uninstall exits still surface actionable upstream
-  lines through `summarizeRke2DeleteFailure`.
-- `src/Prodbox/ContainerImage.hs` owns the canonical Harbor targets, required public-image
-  inventory, and ordered upstream-candidate lists used during Harbor publication.
-- `src/Prodbox/CLI/Rke2.hs` publishes frontend and gateway custom images through ordinary
-  host-native Docker build and push flows with no supported `buildx` dependency.
-- `src/Prodbox/CLI/Pulumi.hs` owns only the AWS substrate IaC commands:
-  `eks-resources|eks-destroy --yes|test-resources|test-destroy --yes`.
-- `pulumi/aws-eks/Pulumi.yaml` plus `pulumi/aws-eks/Main.yaml` and `pulumi/aws-test/Pulumi.yaml`
-  plus `pulumi/aws-test/Main.yaml` are the only supported public Pulumi stack programs; broad
-  local-cluster platform or application ownership no longer depends on Pulumi.
-- `src/Prodbox/Infra/AwsTestStack.hs` and `src/Prodbox/Infra/AwsEksTestStack.hs` generate and
-  retain AWS substrate stack snapshots under `.prodbox-state/aws-test/` and
-  `.prodbox-state/aws-eks-test/`, with the HA-RKE2 validation SSH key stored under
-  `.prodbox-state/aws-test/`; the HA-RKE2 validation destroys and recreates the retained
-  `aws-test` stack once when Pulumi reconcile succeeds but SSH validation fails, repairing stale
-  EC2 instances left by interrupted runs or operator network moves.
-- `src/Prodbox/CLI/Rke2.hs` retains lifecycle-owned bootstrap DNS reconcile through
-  `deployment.pulumi_enable_dns_bootstrap` plus ACME `ClusterIssuer` projection; these helpers do
-  not expand the public `prodbox pulumi ...` surface.
-- The authoritative lifecycle target keeps Harbor plus Harbor's storage backend as the only direct-
-  public bootstrap exception before later Harbor-backed workloads proceed. `runNativeInstall` now
-  installs MinIO first, bootstraps the Harbor registry bucket plus secret through the public
-  `quay.io/minio/*` storage-backend images, and then reconciles Harbor on S3-backed registry
-  storage before later Harbor image publication resumes.
-- The lifecycle-owned DNS and certificate helpers now close on the one-record or one-cert
-  doctrine for the shared public edge.
-- `src/Prodbox/CLI/Rke2.hs` closes the supported lifecycle on the clean-room Harbor, Envoy
-  Gateway, cert-manager, and Percona reconcile path with no retained Traefik or pre-Percona
-  operator cleanup shims.
-- `src/Prodbox/Infra/AwsTestStack.hs` and `src/Prodbox/Infra/AwsEksTestStack.hs` now sync only
-  the supported retained AWS-validation stack inputs with no legacy Pulumi provider-config
-  cleanup path.
-- Python source, Python tests, Python packaging, Python type stubs, Python Pulumi programs, and
-  Python bridge modules are removed from the repository.
+- The public local-lifecycle surface is `prodbox cluster ...`, implemented behind the retained
+  internal `src/Prodbox/CLI/Rke2.hs` module name. `cluster delete` is a pure local uninstall by
+  default; `cluster delete --cascade` drains Kubernetes, reconciles registered per-run resources
+  absent, uninstalls the cluster, and runs the postflight tag sweep.
+- `Prodbox.Lifecycle.ResourceRegistry` is the typed inventory for creatable resources and
+  `reconcileAbsent` owns idempotent teardown by lifecycle class. Sprint `4.47` implements the
+  independent `desiredPresentManagedResources` projection, registered ensure command/interpreter,
+  and `Prodbox.Lifecycle.DesiredPresence` planner/interpreter; the supported `aws-ses` path consumes
+  it through the bounded lease/session/intent/repair transaction.
+- The public IaC surface is `prodbox aws stack <stack> reconcile|destroy --yes`, implemented behind
+  the retained internal `src/Prodbox/CLI/Pulumi.hs` name. The four registered stack programs are
+  `aws-eks`, `aws-eks-subzone`, `aws-test`, and `aws-ses`; local cluster/platform ownership
+  does not use a root Pulumi project.
+- Main Pulumi checkpoint reads and writes use the encrypted Model-B wrapper and the daemon
+  object-store boundary. Stack outputs are observed authoritatively; EKS kubeconfig and HA-RKE2 SSH
+  material are bracketed in scoped temporary files. No supported stack snapshot, kubeconfig, SSH
+  key, or chart-secret path writes under `.prodbox-state/`.
+- The in-cluster registry is a single `registry:2` Deployment and NodePort Service in the
+  historically named `harbor` namespace. MinIO supplies its S3-compatible storage, and the
+  lifecycle preserves the bounded public-image bootstrap exception needed to establish that
+  registry before steady-state image publication.
+- AWS provider credentials resolve through typed Vault references; elevated/admin credentials enter
+  supported operator flows only through `SecretRef.Prompt`, with the test harness simulation
+  confined to `test-secrets.dhall`.
+- Python source, tests, packaging, type stubs, Pulumi programs, and bridge modules are absent from
+  the supported repository path.
 
 ## Sprint 4.1: Lifecycle Parity and Canonical-Path Closure on the Haskell Stack ✅
 
@@ -396,21 +394,20 @@ local-cluster supported ownership from the public Pulumi path.
 
 - Supported Pulumi stack programs are non-Python.
 - Haskell owns Pulumi stack selection, config rendering, output parsing, and failure reporting.
-- The AWS substrate paths continue to close through `prodbox pulumi ...`.
-- AWS substrate local state remains repo-local under `.prodbox-state/aws-test/` and
-  `.prodbox-state/aws-eks-test/`, with the HA-RKE2 validation SSH key stored under
-  `.prodbox-state/aws-test/`; the HA-RKE2 validation destroys and recreates the retained
-  `aws-test` stack once when Pulumi reconcile succeeds but SSH validation fails.
+- The AWS substrate paths close through `prodbox aws stack ...`.
+- Stack checkpoints use the encrypted Model-B object-store wrapper; EKS kubeconfig and HA-RKE2
+  SSH material use scoped temporary files. The HA-RKE2 validation destroys and recreates
+  `aws-test` once when Pulumi reconcile succeeds but SSH validation fails.
 - No supported root `Pulumi.yaml`, `pulumi/home`, or broad local-cluster public operator flow
   depends on Pulumi.
 - No supported Pulumi program depends on Python.
 
 ### Validation
 
-1. `prodbox pulumi eks-resources`
-2. `prodbox pulumi eks-destroy --yes`
-3. `prodbox pulumi test-resources`
-4. `prodbox pulumi test-destroy --yes`
+1. `prodbox aws stack eks reconcile`
+2. `prodbox aws stack eks destroy --yes`
+3. `prodbox aws stack test reconcile`
+4. `prodbox aws stack test destroy --yes`
 5. `prodbox test integration pulumi`
 6. `prodbox test integration aws-eks`
 7. `prodbox test integration ha-rke2-aws`
@@ -420,9 +417,9 @@ local-cluster supported ownership from the public Pulumi path.
 - `pulumi/aws-eks/Pulumi.yaml` plus `pulumi/aws-eks/Main.yaml` and `pulumi/aws-test/Pulumi.yaml`
   plus `pulumi/aws-test/Main.yaml` are the retained AWS IaC programs.
 - `src/Prodbox/CLI/Pulumi.hs` no longer exposes `up|preview|destroy|refresh|stack-init` for local
-  cluster ownership; the public Pulumi surface is AWS-validation-only.
+  cluster ownership; the public `aws stack` surface is AWS-validation-only.
 - `src/Prodbox/CLI/Rke2.hs` retains bootstrap DNS reconcile and ACME `ClusterIssuer` projection
-  on the lifecycle path rather than on the public `prodbox pulumi ...` surface.
+  on the lifecycle path rather than on the public `prodbox aws stack ...` surface.
 - The AWS substrate stack inputs are split by sensitivity: non-secret operator-CIDR and
   SSH-public-key values are synchronized through explicit Pulumi stack config written by the
   Haskell infra modules, while the generated operational `prodbox` IAM provider credential is
@@ -431,11 +428,10 @@ local-cluster supported ownership from the public Pulumi path.
   environment resolves that reference from Vault and projects the credential into Pulumi.
   (Original framing read the provider credential from a stored `prodbox-config.dhall` block;
   reframed per [Sprint 7.16](phase-7-aws-substrate-foundations.md).)
-- `src/Prodbox/Infra/AwsTestStack.hs` and `src/Prodbox/Infra/AwsEksTestStack.hs` retain stack
-  snapshots under `.prodbox-state/aws-test/` and `.prodbox-state/aws-eks-test/`, and the
-  HA-RKE2 validation SSH key stays under `.prodbox-state/aws-test/`; stale retained EC2 nodes are
-  repaired by one destroy-and-recreate retry when HA-RKE2 SSH validation fails after a successful
-  Pulumi reconcile.
+- `src/Prodbox/Infra/AwsTestStack.hs` and `src/Prodbox/Infra/AwsEksTestStack.hs` read authoritative
+  encrypted checkpoint outputs; the HA-RKE2 SSH key is bracketed in a scoped temporary file. Stale
+  retained EC2 nodes are repaired by one destroy-and-recreate retry when SSH validation fails after
+  a successful Pulumi reconcile.
 - The retained AWS substrate stack helpers now write only the supported operator-CIDR and
   SSH-public-key inputs and no longer remove older Pulumi provider-key layouts on the supported
   path.
@@ -1410,9 +1406,11 @@ the doctrine-violating piece that enables stale-state refusals. See
   Pure ADT with deriving `Eq`, `Show`, and structured-render helpers.
 - `<stack>ResidueStatus :: ... -> IO ResidueStatus` per stack in each of
   `src/Prodbox/Infra/AwsEksTestStack.hs`, `AwsEksSubzoneStack.hs`, `AwsTestStack.hs`,
-  `AwsSesStack.hs`. Per-run implementations open the MinIO port-forward + login +
-  `pulumi stack ls --json` to check for stack presence; long-lived
-  (`aws-ses`) implementation queries the S3 backend.
+  `AwsSesStack.hs`. At Sprint `4.16` closure, per-run implementations opened the MinIO
+  port-forward and the long-lived implementation queried S3. Sprint `7.14` superseded both main
+  paths with encrypted Model-B observations; Sprint `4.47` implements the retained control-plane
+  authority types and opaque-CAS adapter while keeping S3 only as TLS/legacy first-touch storage,
+  and composes the adapter into the supported fenced reconcile transaction.
 - Removal of `save<Stack>StackSnapshot`, `load<Stack>StackSnapshot`,
   `clear<Stack>StackSnapshot`, `<stack>StateDir`, `<stack>SnapshotPath`, and the
   `AwsXxxStackSnapshot` records' file-IO surface. Output cache replaced by
@@ -3918,9 +3916,198 @@ the remaining RKE2-owned inline retry lists and their transitional lint allowanc
   `7.32`; no classifier allowance remains. Sprint `1.57`'s base/lint and Phase-1 caller migration
   remain recorded separately.
 
+## Sprint 4.47: Desired-Present Long-Lived Reconciliation and Shared SES Lease [✅ Done]
+
+**Status**: Done (2026-07-10)
+**Implementation**: `src/Prodbox/Lifecycle/ResidueStatus.hs`,
+`src/Prodbox/Lifecycle/DesiredPresence.hs`, `src/Prodbox/Lifecycle/ResourceRegistry.hs`,
+`src/Prodbox/Lifecycle/CheckpointAuthority.hs`,
+`src/Prodbox/Lifecycle/CheckpointAuthorityStore.hs`, `src/Prodbox/Lifecycle/Lease.hs`,
+`src/Prodbox/Lifecycle/LeaseInterpreter.hs`, `src/Prodbox/Lifecycle/LeaseRuntime.hs`,
+`src/Prodbox/Lifecycle/TargetCommitIntent.hs`,
+`src/Prodbox/Lifecycle/TargetCommitInterpreter.hs`,
+`src/Prodbox/Lifecycle/SmtpKeyRepair.hs`,
+`src/Prodbox/Lifecycle/SmtpKeyRepairInterpreter.hs`,
+`src/Prodbox/Infra/AwsSesStack.hs`, `src/Prodbox/Infra/AwsSesLeaseRole.hs`,
+`src/Prodbox/Infra/AwsSesSmtpKey.hs`, `src/Prodbox/Ses/Readiness.hs`,
+`src/Prodbox/Aws.hs`, `pulumi/aws-ses/Main.yaml`,
+`src/Prodbox/Pulumi/EncryptedBackend.hs`, `src/Prodbox/Gateway/ObjectStore.hs`,
+`src/Prodbox/Gateway/Client.hs`, `src/Prodbox/Gateway/Daemon.hs`,
+`test/unit/DesiredPresentReconciliation.hs`, `test/unit/LifecycleLease.hs`,
+`test/unit/TargetCommitSmtp.hs`, `test/unit/SmtpKeyRepairInterpreter.hs`,
+`test/unit/AwsSesLeaseRole.hs`, `test/unit/AwsSesLifecycle.hs`, and `test/unit/Main.hs`
+**Independent Validation**: focused pure/fake suites exercise the full observe → pure plan → enact
+→ re-observe loop, unobservable-state refusal, lease ownership/expiry,
+provider-grace/quiescence recovery, bounded Model-B codecs, global target intents, SMTP-key repair,
+and retained cleanup policy without AWS, Kubernetes, or a later phase. Focused evidence is 78/78
+Sprint-`4.47` lifecycle cases plus 9/9 fixed-role cases; the warning-clean full unit suite is
+1476/1476 and `prodbox dev check` exits 0.
+**Docs to update**: `documents/engineering/lifecycle_reconciliation_doctrine.md`,
+`documents/engineering/aws_integration_environment_doctrine.md`,
+`documents/engineering/integration_fixture_doctrine.md`,
+`documents/engineering/pure_fp_standards.md`, `DEVELOPMENT_PLAN/README.md`,
+`DEVELOPMENT_PLAN/00-overview.md`, `DEVELOPMENT_PLAN/system-components.md`,
+`DEVELOPMENT_PLAN/substrates.md`, `DEVELOPMENT_PLAN/legacy-tracking-for-deletion.md`, and
+`README.md`
+
+### Objective
+
+Make `LongLived` mean "ensure when a selected workflow requires it, retain during ordinary
+postflight, destroy only through an explicit long-lived teardown." Extend the registry/reconciler
+model symmetrically so desired-present resources are planned from typed external observations and
+cannot be created from an unobservable state.
+
+### Current Implementation State
+
+- `PresenceObservation` and `CheckpointObservation` are separate flat exhaustive ADTs in
+  `Prodbox.Lifecycle.ResidueStatus`. `Prodbox.Lifecycle.DesiredPresence` owns the total six-action
+  presence × checkpoint plan, structured refusal values, caller-injected hooks, mandatory
+  post-enactment re-observation, and positive converged postcondition.
+- `ManagedResource` carries independent optional ensure command/interpreter fields;
+  `desiredPresentManagedResources` contains the registered `LongLived` `aws-ses` resource while
+  the existing destroy projections remain unchanged.
+- `LongLivedCheckpointAuthority` and `TargetClusterSecretSink` have unrelated opaque constructors.
+  `ModelBCasAdapter` exposes missing/observed/corrupt/unobservable reads plus initialize/replace
+  CAS requests over opaque object-store versions. `CheckpointAuthorityStore` binds that interface
+  to the retained authority endpoint.
+- The gateway exposes bounded `/v1/object-store/authority/get` and
+  `/v1/object-store/authority/cas` routes. Logical names remain under Model-B HMAC/encryption;
+  payloads are redacted in `Show`; absent initialization and expected-version replacement use the
+  object store's opaque version/ETag rather than a payload-derived fence.
+- `Lease` and `LeaseInterpreter` implement bounded non-renewable grants, safe-use arithmetic,
+  authority-clock expiry, monotonic fences, owner/fence commit and release, bounded child
+  cancellation, provider/target grace, stable quiescence, canonical bounded CBOR, and fresh
+  re-observation after CAS.
+- `TargetCommitIntent` implements a bounded registered-target projection and the
+  prepare → revalidate → sink CAS/read-back → complete/recover/compact fold.
+  `SmtpKeyRepair` implements finite authoritative inventory classification, committed-key reuse,
+  owned orphan deletion, stable-empty witnessing, single replacement creation, and fenced commit.
+- `SmtpKeyRepairInterpreter` loads the retained committed projection, executes every planned IAM
+  cleanup, waits for the bounded stable inventory, derives generation `1` or committed `N + 1`,
+  requests one fresh fenced permit, creates at most one key, guarded-CAS commits recoverable
+  material, and mandates re-observation. The created key is exception-bracketed and deleted when
+  commit is not applied; cleanup failures remain explicit. Pulumi retains ownership of the SMTP IAM
+  user/policy but no longer declares an `aws:iam:AccessKey` or exports key material.
+- `EncryptedBackend` exposes fenced conditional checkpoint writeback. The registered
+  `AwsSesStack` ensure acquires the account-scoped lease, drains predecessor provider/target
+  effects, runs reconcile/provider→semantic-readiness/SMTP stages under bounded credentials,
+  authorizes checkpoint persistence from a fresh fence, repairs the authoritative IAM-key
+  inventory, and materializes only through the target-intent protocol. The readiness stage first
+  proves the complete registered provider inventory, including the Pulumi-owned S3 canary, then
+  delegates exact sender/DKIM, MX/rule, and capture list/get classification to
+  `Prodbox.Ses.Readiness`. Control-plane probes use the lease-scoped role; capture probes use the
+  operational credential consumed by invite polling. Only `Ready` proceeds, propagation `Pending`
+  polls within the bounded window, and `Failed`/`Unobservable` terminate before SMTP mutation.
+  Voluntary release retains a v2 predecessor tombstone whose grace starts at release time; unsafe
+  v1 released projections fail closed.
+- `AwsSesLeaseRole` owns the exact same-account trust, one-hour maximum, config-bounded SES/S3/
+  Route53/SMTP-user policy, typed observation/reconcile/delete loop, and postcondition checks.
+  `Aws` installs the operational user's exact assume-role/pre-lease-read policy, registers the role
+  before its trusted user in teardown order, and re-observes absence after teardown.
+
+### Deliverables
+
+- Keep two flat exhaustive external observations: authoritative AWS presence
+  (`Absent | Present inventory | Unobservable`) and checkpoint state
+  (`Missing | Valid snapshot | Corrupt | Unobservable`). No GADT pretends an in-process transition
+  creates an external fact.
+- Add a pure desired-presence planner whose actions are explicit plan data. Missing/corrupt
+  checkpoint plus positively observed AWS resources plans import/repair; positively absent AWS may
+  plan create; any unobservable authoritative input refuses. Re-observation is mandatory after
+  enactment.
+- Register the canonical `aws-ses` ensure/reconcile action alongside its discover/destroy
+  ownership. Preserve the existing explicit destroy commands and the suite postflight exclusion.
+- Keep the former `awsCommandSucceeds :: ... -> IO Bool` state-repair helper removed and prove all
+  supported callers consume typed classification, so authorization, credential, throttling, and
+  network failures cannot masquerade as absence.
+- Serialize `aws-ses` repair/reconcile and encrypted-checkpoint writeback with a shared lease that
+  has an owner nonce, monotonic fencing token, authority-clock expiry, bounded acquisition, and
+  owner/fence-checked release/commit. A pure `LeasePolicy` proves one non-renewable grant outlives
+  every bounded reconcile/readiness/SMTP/cancellation step plus clock-skew and safety margins; a
+  lease-scoped AWS session expires no later than the grant. The lease prevents two current owners
+  from deliberately issuing new work and stale owners from committing checkpoint/SMTP CAS; it does
+  not revoke an AWS request or provider action accepted before session expiry. A successor waits
+  authority expiry plus declared clock-skew, cancellation, and conservative provider
+  in-flight/visibility grace, then proves a stable authoritative quiescence witness before
+  idempotently converging. Pending, unbounded, or unobservable provider state refuses.
+- Make non-idempotent SMTP access-key repair compare the authoritative finite IAM-key inventory with
+  the fenced committed key ID. Delete owned uncommitted or unrecoverable keys, wait and re-observe
+  their absence, and only then create and fence-commit one replacement. Never retry key creation
+  from an unobservable or over-bound inventory.
+- Separate typed coordinates for the retained home/control-plane
+  `LongLivedCheckpointAuthority` from the selected substrate's `TargetClusterSecretSink`. The
+  cross-substrate `aws-ses` checkpoint and lease always use the retained control-plane
+  `prodbox-state`/Vault keyspace; only SMTP KV materialization targets the selected cluster. No
+  ambient gateway endpoint may choose checkpoint authority.
+- Add a global `TargetCommitIntent` ledger at `LongLivedCheckpointAuthority`. Before a target Vault
+  write, CAS-record owner/fence, target identity, credential generation, digest, and deadline;
+  revalidate it, perform one bounded sink CAS with matching metadata, read back, and CAS-complete
+  the global intent. A successor waits target-write grace and resolves every outstanding intent,
+  including one for another substrate sink, before rotating credentials or committing anew.
+  The registered target set and per-target intent projection are finite, terminal history compacts,
+  and authoritative retirement removes the entry. Unobservable/unbounded target state refuses; do
+  not claim an atomic fence across two authorities.
+- Declare the current primary checkpoint path consistently: opaque Model-B state in MinIO for the
+  main `aws-ses` path; the configured long-lived S3 store retains public-edge TLS and is an optional
+  first-touch source for legacy SES checkpoints.
+
+### Validation
+
+1. Decision tables cover every desired-presence × AWS-presence × checkpoint-state case, prove
+   unobservable never lowers to create, and preserve import/repair for positively observed live
+   resources whose checkpoint is missing or corrupt.
+2. Lease tables cover contention, authority-clock expiry, safe-use deadline arithmetic, stale
+   fencing tokens, lost-lease cancellation, late checkpoint/SMTP commits, provider work accepted
+   before expiry and visible only after cancellation, clock-skew/cancellation/provider grace,
+   stable-quiescence witnessing, interruption, and retry convergence. Cross-authority tables cover
+   late target writes, read-back failure, different target sinks, unresolved global intents, and
+   bounded target churn/compaction and target retirement. The canonical 20-minute SES propagation
+   window fits inside the validated 30-minute readiness-work budget and transaction grant.
+3. Missing-state and SMTP-key-repair fixtures distinguish not-found from access denial and network
+   failure; compare committed/uncommitted/unrecoverable key IDs; require delete → wait → stable
+   re-observe → create → fenced commit; refuse unobservable/over-bound inventories; and propagate
+   cleanup failures.
+4. Retention tests prove success, failure, and interruption never schedule ordinary postflight
+   destruction of `aws-ses`.
+5. `prodbox dev check` is the code-owned closure gate.
+
+Closure evidence: focused lifecycle tables 78/78, focused role tables 9/9, full unit 1476/1476,
+warning-clean library/executable/unit builds, and `prodbox dev check` exit 0.
+
+### Remaining Work
+
+- None on the code-owned surface. Live AWS reconcile/concurrency exercise remains a non-blocking
+  Standard-O proof axis.
+
+## Documentation Requirements
+
+**Engineering docs to create/update:**
+
+- `documents/engineering/lifecycle_reconciliation_doctrine.md` - symmetric desired-present and
+  desired-absent planning over external observations.
+- `documents/engineering/aws_integration_environment_doctrine.md` - retained SES ensure/lease and
+  credential ownership.
+- `documents/engineering/integration_fixture_doctrine.md` - `EnsureRetained` versus
+  `DestroyPerRun` fixture semantics.
+- `documents/engineering/pure_fp_standards.md` - external observations remain flat ADTs feeding a
+  pure plan.
+
+**Product docs to create/update:**
+
+- `README.md` - identify the landed Sprint-`4.47` supported transaction and later phase ownership.
+
+**Cross-references to add:**
+
+- Sprint `5.17` consumes the registered ensure action; landed Sprint `8.10` supplies the typed
+  provider→semantic readiness fold after reconciliation and before SMTP materialization.
+- Keep `DEVELOPMENT_PLAN/README.md`, `00-overview.md`, `system-components.md`, `substrates.md`, and
+  `legacy-tracking-for-deletion.md` synchronized with the completed sprint.
+
 ## Related Documents
 
 - [README.md](README.md)
 - [00-overview.md](00-overview.md)
 - [legacy-tracking-for-deletion.md](legacy-tracking-for-deletion.md)
 - [system-components.md](system-components.md)
+- [Pure Functional Programming Standards](../documents/engineering/pure_fp_standards.md)
+- [Integration Fixture Doctrine](../documents/engineering/integration_fixture_doctrine.md)

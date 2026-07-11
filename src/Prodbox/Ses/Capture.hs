@@ -31,6 +31,7 @@ import Data.Text (Text)
 import Data.Text qualified as Text
 import Data.Vector qualified as Vector
 import Prodbox.Result (Result (..))
+import Prodbox.Ses.Readiness (sesCaptureKeyPrefix)
 import Prodbox.Settings
   ( SesSection (..)
   , ValidatedSettings (..)
@@ -147,7 +148,7 @@ listInboundKeys environment bucket = do
             , "--bucket"
             , bucket
             , "--prefix"
-            , "inbound/"
+            , sesCaptureKeyPrefix
             , "--max-items"
             , "100"
             , "--output"

@@ -102,6 +102,7 @@ data ChartsCommand
 
 data HostCommand
   = HostEnsureTools
+  | HostCheckSesReadiness
   | HostCheckPorts
   | HostInfo
   | HostFirewallGatewayRestrict Int

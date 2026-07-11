@@ -2,7 +2,7 @@
 
 **Status**: Authoritative source
 **Supersedes**: N/A
-**Referenced by**: documents/engineering/README.md, documents/engineering/cli_command_surface.md, documents/engineering/code_quality.md, documents/engineering/effectful_dag_architecture.md, documents/engineering/prerequisite_dag_system.md, documents/engineering/unit_testing_policy.md, documents/engineering/host_platform_doctrine.md, documents/engineering/bootstrap_readiness_doctrine.md
+**Referenced by**: documents/engineering/README.md, documents/engineering/aws_integration_environment_doctrine.md, documents/engineering/cli_command_surface.md, documents/engineering/code_quality.md, documents/engineering/effectful_dag_architecture.md, documents/engineering/integration_fixture_doctrine.md, documents/engineering/lifecycle_reconciliation_doctrine.md, documents/engineering/prerequisite_dag_system.md, documents/engineering/unit_testing_policy.md, documents/engineering/host_platform_doctrine.md, documents/engineering/bootstrap_readiness_doctrine.md, DEVELOPMENT_PLAN/phase-5-canonical-test-suite.md, DEVELOPMENT_PLAN/phase-8-email-invite-auth.md
 **Generated sections**: none
 
 > **Purpose**: Define the fail-fast prerequisite doctrine for supported `prodbox` command flows.
@@ -10,12 +10,17 @@
 ## 0. Canonical Doctrine Statements
 
 - Prerequisite nodes validate existence or readiness and fail fast with actionable fix hints.
-- Manual environment repair belongs in prerequisite failures unless the prerequisite owns a
-  bounded, visible self-heal for repository-managed local state and re-verifies readiness before
-  reporting success.
+- Manual environment repair belongs only to requirements outside prodbox's managed-resource
+  ownership. A doctrine-assigned bounded self-heal for repository-managed **local** state may be
+  visible and re-verified inside its existing gate; externally authoritative resource mutation is
+  instead a separate plan action (§4A).
 - The canonical prerequisite registry lives in `src/Prodbox/Prerequisite.hs`.
 - Runtime-stability waits that follow prerequisite success belong in explicit runbook or lifecycle
   steps, not in hidden prerequisite side effects.
+- External desired-state mutation is never a prerequisite side effect. When a selected validation
+  requires a registered retained resource, a read-only prerequisite gates a separately visible
+  preparation reconcile; absence is an input to that plan, not a prerequisite failure demanding
+  manual provisioning.
 - Substrate-required prerequisites are total. When a per-substrate canonical-suite run is
   selected via `--substrate {home-local|aws}`, every prerequisite that the active substrate
   requires must be satisfied for that substrate's real infrastructure; missing config or
@@ -104,6 +109,61 @@ Recommended patterns:
   exercise the **exact dependency call path** the next step uses (a front-door proxy such as
   `GET /v2/` does not prove the registry → MinIO S3 write edge)
 
+## 4A. Prerequisite/Preparation Boundary
+
+Prerequisites answer whether the command may safely begin a plan step; preparation reconcilers make
+the desired state true. The boundary is strict:
+
+1. An initial prerequisite may inspect tools, decoded configuration, credentials, gateway/Vault/
+   object-store reachability, or externally authoritative state. It does not create, import, update,
+   or delete a resource.
+2. The pure command/test planner derives required preparation actions from selected capabilities.
+3. The interpreter narrates and runs each mutating action through its canonical reconciler.
+4. A read-only postcondition or readiness observer rechecks the exact dependency edge before the
+   dependent action proceeds.
+
+Cross-substrate long-lived preparation supplies two explicit prerequisite targets. The read-only
+gate proves the retained home/control-plane `LongLivedCheckpointAuthority` (gateway, Vault/Transit,
+and `prodbox-state`) independently from the selected substrate's `TargetClusterSecretSink`. It must
+not obtain either target from ambient kubeconfig, current context, environment variables, or an
+active-gateway singleton.
+
+For an invite-capable suite, a missing `aws-ses` stack is therefore not a failed prerequisite with
+an operator-reconcile remedy. The nested preparation plan carries the exact selected target's typed
+gateway object-store read-only precondition followed by the visible bracketed
+`acquire -> reconcile -> await-ready -> sync-target -> release` trace before dependent-chart
+reconcile. The await uses `Prodbox.Ses.Readiness` inside the Phase-`4.47` lease. Every poll attempt
+first observes the complete registered provider inventory; only an affirmative inventory permits
+the sender/DKIM, exact MX, active receipt-rule, and capture-canary list/get observations. The
+deferred SES prerequisite nodes use the same semantic classifier to observe the prepared result and
+never prescribe or perform a second reconcile. The ordering is owned by
+[AWS Integration Environment Doctrine §4.6](./aws_integration_environment_doctrine.md#46-retained-ses-desired-presence-preparation);
+the capability-derived preparation projection is owned by
+[Integration Fixture Doctrine §2A](./integration_fixture_doctrine.md#2a-retained-desired-presence-preparation).
+
+Sprint `5.17` derives that nested plan solely from `ValidationKeycloakInvite`, projects it exactly once
+to the home restore or explicit EKS target restore, and passes the retained
+`LongLivedCheckpointAuthority` and selected `TargetClusterSecretSink` as distinct values. Its
+code-owned closure is 10/10 focused plan/recovery tests, 6/6 target-selection API tests, 12/12 global
+target-commit tests, and 1508/1508 full unit tests. Sprint `8.10` completes the semantic
+classification and bounded-propagation boundary without moving mutation into these nodes.
+
+`prodbox host check-ses-readiness` is the supported read-only diagnostic for this boundary. It runs
+the sending, receiving, and capture prerequisite scopes once and renders their structured current
+state. It does not poll, reconcile, import, or mutate AWS resources. Its remedies name the failed
+semantic observation and direct the caller to retry the same harness-owned validation rather than
+prescribing manual reconciliation or ad-hoc AWS mutation.
+
+Externally authoritative observations do not collapse uncertainty into absence. A check or
+postcondition uses the flat `Absent | Present | Unobservable` classification from
+[Lifecycle Reconciliation Doctrine §3.1](./lifecycle_reconciliation_doctrine.md#desired-present-reconciliation-for-long-lived-resources),
+with `Unobservable` gate-closed. Semantic readiness similarly distinguishes `Ready`, `Pending`,
+terminal `Failed`, and `Unobservable`. Only the explicit retained-preparation await retries
+`Pending`; `Failed` and `Unobservable` fail immediately, and timeout preserves the last Pending
+reason while leaving the long-lived resources retained for the next idempotent run. A prerequisite
+must not loop while secretly reconciling the resource it probes. Fresh-account propagation remains
+a distinct, non-blocking live-proof axis.
+
 ## 5. Anti-Patterns
 
 Avoid:
@@ -112,6 +172,10 @@ Avoid:
 - checking the same root condition in multiple disconnected code paths
 - hiding required manual fixes inside downstream command failures
 - inventing one-off prerequisite logic outside the registry
+- invoking `aws-ses reconcile`, `pulumi up`, resource import, or any other desired-state mutation
+  from a prerequisite check
+- reporting a missing registered long-lived resource as an operator repair when the selected suite
+  owns a desired-present preparation action
 
 ## 6. Error Messages
 
@@ -237,7 +301,8 @@ Where in the lifecycle:
 - Silent fallback when a prerequisite is unmet. The command refuses to
   proceed; it does not paper over the gap.
 - Checking prerequisites *after* a mutating step. The DAG is a gate, not a
-  postflight check.
+  postflight check. A separately declared read-only semantic postcondition after a visible
+  preparation action is a lifecycle/readiness gate, not hidden prerequisite mutation (§4A).
 
 This section composes with [Plan / Apply](./pure_fp_standards.md#plan--apply)
 above (prereqs gate `apply`) and
@@ -248,4 +313,7 @@ above (prereqs gate `apply`) and
 
 - [Prerequisite DAG System](./prerequisite_dag_system.md)
 - [Effectful DAG Architecture](./effectful_dag_architecture.md)
+- [AWS Integration Environment Doctrine](./aws_integration_environment_doctrine.md)
+- [Integration Fixture Doctrine](./integration_fixture_doctrine.md)
+- [Lifecycle Reconciliation Doctrine](./lifecycle_reconciliation_doctrine.md)
 - [Unit Testing Policy](./unit_testing_policy.md)

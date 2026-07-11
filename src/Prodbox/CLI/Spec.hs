@@ -318,6 +318,7 @@ parserForPath path =
           )
     ["help"] -> Just (ShowHelp <$> some (strArgument (metavar "COMMAND_PATH")))
     ["host", "ensure-tools"] -> Just (pure (RunNative (NativeHost HostEnsureTools)))
+    ["host", "check-ses-readiness"] -> Just (pure (RunNative (NativeHost HostCheckSesReadiness)))
     ["host", "check-ports"] -> Just (pure (RunNative (NativeHost HostCheckPorts)))
     ["host", "info"] -> Just (pure (RunNative (NativeHost HostInfo)))
     ["host", "firewall", "gateway-restrict"] ->
@@ -1145,6 +1146,12 @@ hostGroup =
         []
         [example ["host", "ensure-tools"] "Verify required host tools are installed."]
     , leaf
+        "check-ses-readiness"
+        "Check semantic SES readiness"
+        "Run the read-only sender, MX, receipt-rule, and capture list/get prerequisite observations without reconciling AWS resources."
+        []
+        [example ["host", "check-ses-readiness"] "Inspect the retained SES semantic readiness boundary."]
+    , leaf
         "check-ports"
         "Check required ports"
         "Check required host ports."
@@ -1237,7 +1244,7 @@ gatewayGroup =
         [argument "output-path" "OUTPUT_PATH" "Path to write the generated gateway config to"]
         [requiredOption "node-id" Nothing "NODE_ID" "Node ID for the generated config"]
         [ example
-            ["gateway", "config-gen", "gateway.json", "--node-id", "node-a"]
+            ["gateway", "config-gen", "gateway.dhall", "--node-id", "node-a"]
             "Generate a gateway config template."
         ]
     ]

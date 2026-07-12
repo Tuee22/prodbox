@@ -591,17 +591,13 @@ keeps these split rather than collapsing them into one loop:
 Both may share the `RetryPolicy` backoff schedule, but the poller is its own function. Folding
 "poll until ready" into the error retrier conflates a pending observation with a failure.
 
-Sprint `1.59` makes the readiness side three-valued without changing `PollOutcome`'s generic
-contract. A typed `ComponentReadinessTarget` carries one caller-injected action returning
-`Either Text ReadinessProbeResult`; it closes over caller-owned coordinates rather than introducing
-new endpoint/resource constants. `ReadinessProbePending` becomes `NotReadyYet`, while an action
-`Left` becomes `Unreachable`. Both are gate-closed and lower to bounded `PollPending` outcomes in
-`waitForComponentReadiness`; exhaustion returns the last detail. `PollFailed` remains the generic
-poller's immediate hard-failure arm and is **not** an alias for a temporarily unreachable declared
-probe. Structural target/probe mismatch is different again: the wait rejects it immediately before
-executing the incompatible action or entering the poll loop. Production bindings of existing
-rollout/operator/registry/gateway/systemd/Vault primitives remain Sprints
-`3.24`/`4.45`/`5.15`/`7.32`; the Phase-1 module wraps none of them.
+Sprint `1.59`'s three-valued observation remains useful historical groundwork, but its
+caller-injected `IO` target is superseded. Target code carries a pure
+`CapabilityRequirement`, resolves one opaque `CapabilityRef kind`, and passes that same reference
+to observation, admission, and the compatible `CapabilityProgram kind result` under one absolute
+deadline. `Pending` and `Unobservable` remain distinct gate-closed values. An arbitrary action,
+separately supplied endpoint, nested fresh timeout, or component label cannot authorize execution;
+see [Lifecycle Control-Plane Architecture](./lifecycle_control_plane_architecture.md).
 
 **Forbidden patterns:**
 

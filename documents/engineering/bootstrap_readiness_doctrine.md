@@ -2,412 +2,293 @@
 
 **Status**: Authoritative source
 **Supersedes**: N/A
-**Referenced by**: documents/engineering/README.md, documents/engineering/prerequisite_doctrine.md, documents/engineering/prerequisite_dag_system.md, documents/engineering/lifecycle_reconciliation_doctrine.md, documents/engineering/local_registry_pipeline.md, documents/engineering/config_doctrine.md, documents/engineering/pure_fp_standards.md, documents/engineering/helm_chart_platform_doctrine.md, documents/engineering/distributed_gateway_architecture.md, documents/engineering/resource_scaling_doctrine.md, documents/engineering/unit_testing_policy.md, README.md, DEVELOPMENT_PLAN/phase-1-runtime-cli-aws-foundations.md, DEVELOPMENT_PLAN/phase-3-chart-platform-vscode.md, DEVELOPMENT_PLAN/phase-4-lifecycle-canonical-paths.md, DEVELOPMENT_PLAN/phase-5-canonical-test-suite.md, DEVELOPMENT_PLAN/phase-7-aws-substrate-foundations.md
+**Referenced by**: README.md, documents/engineering/README.md,
+documents/engineering/prerequisite_doctrine.md,
+documents/engineering/prerequisite_dag_system.md,
+documents/engineering/lifecycle_reconciliation_doctrine.md,
+documents/engineering/lifecycle_control_plane_architecture.md,
+documents/engineering/local_registry_pipeline.md,
+documents/engineering/config_doctrine.md,
+documents/engineering/pure_fp_standards.md,
+documents/engineering/helm_chart_platform_doctrine.md,
+documents/engineering/distributed_gateway_architecture.md,
+documents/engineering/resource_scaling_doctrine.md,
+documents/engineering/unit_testing_policy.md,
+DEVELOPMENT_PLAN/phase-1-runtime-cli-aws-foundations.md,
+DEVELOPMENT_PLAN/phase-3-chart-platform-vscode.md,
+DEVELOPMENT_PLAN/phase-4-lifecycle-canonical-paths.md,
+DEVELOPMENT_PLAN/phase-5-canonical-test-suite.md,
+DEVELOPMENT_PLAN/phase-7-aws-substrate-foundations.md
 **Generated sections**: none
 
-> **Purpose**: Define the shallow-gate invariant that makes the class of bootstrap readiness races
-> unrepresentable — a consumer step may run only behind a barrier that exercises the exact
-> dependency call path it will use, with bootstrap ordering derived from a config-sourced,
-> pure-checked dependency/readiness graph rather than a hand-written sequence — and distinguish
-> that point-in-time dependency fact from time-windowed runtime stability.
+> **Purpose**: Define capability-exact bootstrap ordering and the distinct liveness, admission,
+> execution, and stability observations required before a consumer may use a dependency.
+
+Implementation status, counterexamples, and deployment-qualification evidence are owned only by
+the [Development Plan](../../DEVELOPMENT_PLAN/README.md). The physical control-plane split and
+operation-indexed capability types are owned by
+[Lifecycle Control-Plane Architecture](./lifecycle_control_plane_architecture.md).
 
 ## 0. Canonical Doctrine Statements
 
-1. **The shallow-gate invariant.** A bootstrap step that connects to, writes to, or otherwise
-   depends on component `A` may run only behind a readiness barrier that exercises the **specific
-   `A`-facing call path** the step will use. A proxy signal — a front-door HTTP probe, a
-   resource-exists check, or a probe issued from a different pod at a different time — does **not**
-   satisfy a deep dependency edge and is a doctrine violation when used as one.
-2. **A readiness race is unrepresentable, not merely avoided.** Bootstrap ordering is a pure
-   projection over a typed dependency/readiness graph, so a plan that schedules a consumer before
-   its dependency's real readiness is proven is not a well-formed value — it fails graph expansion,
-   not a live cluster. *(Adoption status in §3.1: the graph/tie-break foundation landed in Sprints
-   `1.56`/`1.58`, and Sprint `4.45` now derives the local reconcile order and rejects an invalid
-   expansion on the execution path. Status authority:
-   [DEVELOPMENT_PLAN/README.md](../../DEVELOPMENT_PLAN/README.md).)*
-3. **Readiness is externally-authoritative state.** The cluster is the source of truth for whether
-   a component is ready; readiness is therefore a flat, exhaustively-matched ADT computed by a pure
-   projection over observed state, **never** a GADT phantom-state command machine (see
-   [pure_fp_standards.md](./pure_fp_standards.md)). The "unrepresentable" guarantee lives in the
-   graph's *validity* (pure, expansion-time) and the observation *soundness* rule, not in
-   type-level readiness states.
-4. **Cannot-observe is never ready.** A readiness probe that cannot reach its target returns
-   `Unreachable`, and `Unreachable` gates closed. This is the `ResidueStatus` soundness rule of
-   [lifecycle_reconciliation_doctrine.md §3.1](./lifecycle_reconciliation_doctrine.md#31-the-managed-resource-registry-the-reconciler-substrate)
-   applied to bring-up.
-5. **Readiness is not stability.** A successful point-in-time readiness observation authorizes the
-   next dependency edge only. It does not prove that a pod remained restart-free, avoided OOM,
-   stayed below its high-water threshold, or remained healthy for a soak interval.
-6. **Constant-time lifecycle probes remain shallow by design.** Kubernetes `/healthz` and `/readyz`
-   inspect lifecycle flags only and must be constant-time. They satisfy process liveness/readiness
-   edges, not backend round-trip or runtime-stability edges; deeper facts use different typed probes.
+1. **A dependency is an operation-scoped capability.** A component name, backend label, URL,
+   rollout, or successful command exit is not a capability. The requirement identifies the exact
+   operation, service identity, authority scope, and latency budget the consumer needs.
+2. **Observation, admission, and execution use the same opaque reference.** A caller cannot probe
+   one endpoint and execute through another, nor attach arbitrary `IO` to a constructor carrying a
+   stronger label. The interpreter resolves one `CapabilityRef kind` and uses it for all three.
+   This is observation of that requested operation's service/session/queue capability; a separate
+   read-only domain observation never authorizes a mutation kind.
+3. **Ordering is derived from pure requirements.** The component graph contains capability
+   requirements as data. It contains no executable callback. A graph with no unique compatible
+   provider, a cycle, a dangling provider, a scope mismatch, or no production interpreter is not a
+   valid plan.
+4. **External state is observed, not commanded.** Liveness, admission, capability result, and
+   stability are flat exhaustive ADTs projected from authoritative observations. A GADT indexes
+   which operation a program may request; it does not claim that a remote transition occurred.
+5. **Cannot observe is never success.** Unreachable, malformed, stale, wrong-scope, and
+   deadline-expired observations keep the gate closed and retain their structured reason.
+6. **Point readiness is not durable authority.** A successful observation can authorize only the
+   bounded next action through the same reference. Long-running lifecycle work is submitted as a
+   durable idempotent operation whose admission, journal, execution, and result share one
+   authority identity.
+7. **Lifecycle probes are constant time.** `/healthz` proves process liveness. `/readyz` is a
+   cached admission projection. Neither performs backend I/O, serializes operational state, or
+   claims runtime stability.
+8. **Readiness includes service capacity.** Memory containment alone is insufficient. A capability
+   is not admissible when its bounded queue, measured service rate, CPU budget, or remaining
+   absolute deadline cannot support the request.
 
-## 1. The Failure Mode
+## 1. Failure Class
 
-The motivating defect: `cluster reconcile` mirrors container images into the in-cluster registry
-(`registry:2`, front-door namespace/Service `harbor`) by pushing to `127.0.0.1:30080`. The registry
-streams each pushed blob to its S3 storage backend, `minio.prodbox.svc.cluster.local`. Every barrier
-in front of the mirror step proved only that the registry front door served `GET /v2/` — which
-`registry:2` answers **without touching S3** — so the first operation that ever exercised the
-registry→MinIO write path was the mirror push itself, and a transient DNS/endpoint-programming gap
-surfaced there as `dial tcp: lookup minio.prodbox.svc.cluster.local: no such host`. The earlier
-"MinIO is serving" proof (the storage-bucket-init Job) had resolved that name from a **different,
-already-terminated pod at an earlier time**, so it did not bind the registry pod's live view.
+The original motivating race was registry publication through MinIO. `GET /v2/` proved that the
+registry front door answered, while the next image push required the registry's S3 write path. The
+first operation to exercise registry-to-MinIO DNS, credentials, and object writes therefore failed
+after the shallow gate passed.
 
-The gate was *shallow*: it proved a proxy (`/v2/`, a prior pod's DNS) rather than the exact edge the
-next step used (this registry pod writing a blob to MinIO now).
+The later gateway/lifecycle counterexample was stronger:
 
-## 2. The Class: GATED vs RACY
+- a gateway object GET for a deliberately absent key was labelled a backend round trip and counted
+  as ready even though it did not exercise conditional write, read-back, lease, checkpoint, or
+  target-delivery semantics;
+- the check and subsequent operation could use different gateway endpoints and failure domains;
+- all work shared a saturated gateway process, a capacity-one child-process permit, and a hard CPU
+  limit;
+- the server could wait for one timeout and then execute under another while the client's total
+  timeout was shorter than either composition; and
+- a successful point observation was used as evidence for a much longer synchronous transaction.
 
-A readiness barrier is **deep** (correct) when it exercises the same interface the guarded step
-will use, and **shallow** (racy) when it proves a strictly weaker resource. The supported bootstrap
-graph already contains ~15 deep edges — StatefulSet/Deployment rollout waits, `helm --wait` on the
-consuming pod, custom-resource `Ready` waits, Job `complete` on a Job that *is* the dependent work,
-and in-consumer retry loops. The motivating pre-remediation edges were those whose barrier was
-shallower than the guarded call path:
+These are one defect class: **a weaker or differently bound observation was promoted into
+authority for a stronger operation**. Longer polling, retries, or a broader “deep” label cannot
+repair that mismatch.
 
-| Consumer → dependency | Former shallow gate | Why it was shallow |
-|---|---|---|
-| image-mirror push → registry → MinIO S3 (home) | registry `GET /v2/` only | `/v2/` never touches the S3 driver |
-| runtime-image push → registry → MinIO S3 (home) | none of its own | relies on the shallow `/v2/` gate upstream |
-| EKS image-mirror Job → registry → MinIO S3 | Job `complete` (post-hoc) | proves the push finished/exhausted, not that S3 was reachable first |
-| EKS crane custom-image push → registry → MinIO S3 | none | same missing edge on the AWS substrate |
-| chart deploy → Patroni operator ready | operator Deployment *exists* | existence ≠ `Available`/reconciling |
+## 2. Four Independent Observations
 
-Sprints `3.23`, `4.43`, and `7.31` replace these proxy-only barriers on the supported paths. The
-discriminator remains uniform: **deep edges probe the exact call path; shallow edges probe a
-proxy.** The forbidden class is "any dependency edge guarded by a proxy signal."
+Do not collapse these axes into one Boolean or one `/readyz` result.
 
-### 2.1 Dependency Readiness vs Runtime Stability
+| Observation | Question | Scope |
+|-------------|----------|-------|
+| Process liveness | Is this process alive? | Constant-time current process fact |
+| Admission | Can this exact service lane accept this operation before its deadline? | Current queue/session/capacity fact |
+| Capability execution | Did this exact operation through this exact reference produce its typed result? | One bounded operation |
+| Runtime stability | Did the deployed component satisfy its service and resource contract over the required interval? | Time-windowed, absorbing evidence |
 
-A Deployment can report `Available=True` immediately after Kubernetes replaces a container that
-was OOM-killed. That fact is a valid point observation about the replacement replica and an invalid
-claim about the preceding interval. Reusing it as a stability proof creates a sampling race: one
-test catches the unavailable replacement window, while another samples after availability returns
-and passes despite the same repeated failure.
+### 2.1 Liveness and cached readiness
 
-The two observations therefore have different closed result types and different temporal scopes:
+`/healthz` returns success while the process can serve its lifecycle endpoint. `/readyz` projects
+only boundary-owned cached state: startup complete, not draining, required managed sessions
+available, and documented admission lanes open. Both must remain independent of backend latency,
+queue length scans, operational state rendering, and object-store or Vault calls.
 
-| Observation | Scope | Opens what gate |
-|---|---|---|
-| `ReadinessObservation` | One current dependency call path | The next bootstrap/reconcile edge |
-| `RuntimeStabilityObservation` | Run-wide absorbing unhealthy evidence plus a separately restartable healthy window | A sustained-runtime validation claim |
+A component may be live but not ready to admit work. Removing a saturated or degraded replica from
+a capability Service is correct; blocking an unbounded number of callers behind it is not.
 
-`Prodbox.Test.GatewayRuntimeStability` implements the classifier as a pure projection over Pod,
-Event, and metrics JSON. Its flat `GatewayPodHealthObservation` covers restart-free Ready, restart
-delta, OOM residue, warning/failure memory pressure, Pending, and unobservable without encoding an
-external lifecycle as a command-state machine. The aggregate state combines two pure folds. The
-first retains the first run-wide fatal result from pod UIDs, events/status, restart counts,
-current/last termination reasons, and working-set readings. Restart, OOM, failure-threshold
-high-water, and unobservable evidence are absorbing: no replacement pod, resync, or planned rollout
-can remove them. The second tracks consecutive healthy samples. Its thresholds are projected from
-the validated `RuntimeMemoryPlan`, and its baseline may restart only for a gateway rollout present
-in the compiled restore/lifecycle plan. Their exhaustive combined outcomes are:
+### 2.2 Admission
 
-- `StableObserved`: the absorbing unhealthy-evidence set is empty and the intended replica set
-  supplied the required healthy window below the warning threshold;
-- `NotStableYet`: the healthy window is incomplete, or an explicitly planned rollout restarted
-  only that success window;
-- `RuntimeUnhealthy`: the absorbing fold contains a restart delta, OOM residue, or
-  failure-threshold high-water breach;
-- `StabilityUnreachable`: the observer could not authoritatively read or decode required state.
+Admission uses the exhaustive `AdmissionObservation kind` owned by
+[Lifecycle Control-Plane Architecture §4](./lifecycle_control_plane_architecture.md#4-absolute-deadline-and-admission-algebra):
+open with a ticket, saturated, degraded, deadline-expired, or unobservable.
 
-Only `StableObserved` proves stability. `RuntimeUnhealthy` fails immediately;
-`StabilityUnreachable` refuses; `NotStableYet` remains bounded by the caller's window. Warning-level
-pressure, Pending, and a Pod UID replacement reset consecutive success without becoming healthy;
-UID replacement therefore cannot inherit the predecessor's window. The pure fold owns
-classification, while Kubernetes reads remain effect-boundary observations. Log text is diagnostic
-only and cannot select a verdict. Restarting the healthy window never clears an absorbing unhealthy
-or unreachable result.
+The ticket is bound to capability kind, service identity, authority scope, exact coordinate,
+capability-binding digest, canonical request digest, queue generation, and one monotonic absolute
+deadline. It is short-lived admission evidence, not a promise of future health. Admission and
+execution remain one private interpreter call, so a caller cannot pair a ticket with another
+request.
 
-`TestRunner` creates one concurrency-safe `gateway-pods` recorder before Phase `1.6/2`. A structured
-continuous observer and every explicit rollout-boundary/final observation serialize their
-Pod/Event/metrics folds through that recorder's observation lock. Home takes an explicit baseline,
-starts the observer before bootstrap, and waits until its first observation completes before the
-suite may continue. The AWS target's compiled gateway reconcile supplies the first point
-observation because that per-run target does not exist before bootstrap; immediately afterward the
-observer starts with a monitor-private EKS kubeconfig and explicit Vault-derived AWS/Kubernetes
-subprocess environment, and the same first-observation handoff gates SMTP synchronization,
-dependent chart reconciliation, and all later deferred work.
+### 2.3 Capability execution
 
-Only a planned home/target gateway rollout represented by the compiled restore/lifecycle
-path may pause and drain the observer. Draining waits for an in-flight observation before the
-gateway becomes intentionally absent; the healthy-window reset and post-reconcile sample occur
-inside that boundary, then continuous observation resumes. The absorbing fold is never reset.
-Every stability `kubectl` read has `--request-timeout=5s` and independent GNU `timeout` and
-`System.Timeout` wall-clock bounds, so the structured monitor cannot strand its enclosing suite.
+The result-indexed capability program defines what was exercised. For example, an object GET may
+prove only `LifecycleObserve`; it cannot satisfy `LifecycleCasReadBack`. The latter operation must
+perform the conditional mutation and authoritative read-back named by that program.
 
-An observed-cluster replacement such as `eks-volume-rebind` has a wider compiled boundary. The
-runner pauses and drains, takes a foreground pre-replacement sample, resets only the healthy
-window, and then recreates the target; AWS restoration includes the canonical gateway/platform
-reconcile. After recreation, a refresh request is acknowledged only after the monitor worker has
-left the old kubeconfig bracket and materialized a new kubeconfig. The runner takes another
-foreground sample while observation remains paused and resumes the monitor only after that sample
-succeeds. The absorbing fold remains unchanged across replacement and refresh.
+Canaries, where required, use a reserved coordinate and the same client, authentication identity,
+queue, transport, and interpreter as production execution. A canary through another Pod, a bare
+MinIO health endpoint, or an absent-object GET is not interchangeable evidence.
+
+Read-only prerequisites remain read-only. A mutating canary is a visible preparation or
+reconciliation step, not a hidden prerequisite effect. Long-running work does not run a canary and
+then open an unrelated transaction; it submits the idempotent durable operation directly.
+
+### 2.4 Dependency Readiness vs Runtime Stability
+
+Runtime stability combines run-wide absorbing failures with a bounded consecutive-success window.
+At minimum the authoritative samples cover:
+
+- restart and termination residue, including OOM;
+- memory working set and configured high-water evidence;
+- CPU usage and CFS throttling;
+- bounded-queue occupancy and saturation refusals;
+- queue-wait, service-time, and end-to-end latency distributions;
+- deadline misses and cancellation failures;
+- managed-session refresh failures; and
+- missing, malformed, or unreachable observations.
+
+Restart, OOM, failure-threshold resource breach, repeated deadline breach, and unobservable
+required evidence are absorbing for the run. A replacement Pod or later green sample cannot erase
+them. Warning evidence resets the consecutive-success window. Only an explicitly planned rollout
+may reset that success window, never the absorbing record.
+
+The old restart/OOM/memory-only classifier is a useful subset, not sufficient proof of capability
+stability. CPU throttling, queue pressure, and latency are mandatory because a memory-safe process
+can still be computationally unable to meet its contract.
 
 ## 3. Making the Class Unrepresentable
 
-Three mechanisms compose. Each honors Statement 3 (external state is projected, not commanded).
+### 3.1 M1 — Derive ordering
 
-### 3.1 M1 — Ordering is derived, not hand-written
+The plan compiler obtains dependencies-before-consumers order from a validated acyclic graph.
+Narration and execution consume the same compiled order. Hand-written order lists may implement a
+generic fold, but they are not an ordering authority.
 
-Bootstrap reconcile order is a pure topological projection over an `EffectDAG` of component nodes,
-reusing the existing pure acyclic expansion and missing-node rejection of the prerequisite DAG (see
-[prerequisite_dag_system.md](./prerequisite_dag_system.md)). Because order is computed from declared
-edges rather than list position, a consumer cannot be scheduled before its dependency by
-reordering — there is no hand-maintained sequence to reorder, and no parallel narration to fall out
-of sync. This retires the imperative `runSequentially` bring-up list and its hand-synced plan
-narration (owned for removal in the cleanup ledger).
+Clean bootstrap begins with `prodbox config setup` as a Tier-0 author/validator and optional
+read-only AWS discovery step. It cannot create IAM/S3/DNS state. `cluster reconcile` then exposes
+Vault init/unseal, `EstablishAuthorityBackup`, config seeding, and normal operator-material actions
+as ordered visible plan nodes. Before first `/sys/init`, the Broker must read back the
+password-AEAD `PreparedInitEnvelope` for the exact empty storage generation; a fingerprint alone
+does not satisfy that edge. A prompt, IAM create, S3 write, or TLS issuance hidden in a
+prerequisite/readiness observer is a graph violation.
 
-**Adoption (2026-07-10).** Sprint `4.43` single-sources STEP narration and execution onto the typed
-step projection. Sprint `4.45` completes M1: `nativeInstallStepOrder` is exactly
-`concatMap stepsForComponent (componentReconcileOrder dag)`. The plan compiler appends the
-separately-owned edge tail when edge reconcile is requested. `[minBound..maxBound]` remains only an
-inventory-coverage enumeration and has no ordering authority. `buildNativeInstallExecutionPlan`
-validates the component DAG once and stores that DAG and exact run order in `NativeInstallPayload`;
-narration and apply therefore consume the same compiled plan value. Invalid graph order, phase
-regression, edge placement, step inventory/anchoring, or readiness-target coverage returns a
-fail-closed `StructuredError` before mutation.
+Graph construction rejects cycles, dangling requirements, duplicate exclusive providers, scope
+mismatches, and missing interpreters before mutation. Substrate-specific capabilities name their
+substrate explicitly; there is no home/AWS fallback.
 
-Every ordering-critical native action is anchored. The former aggregate
-`ensureClusterPlatformRuntime` list is represented by first-class MetalLB, Envoy Gateway, and
-Percona step IDs, and bootstrap/steady executors match every step constructor explicitly. The
-redundant home MinIO steady-state token is gone because it performed no distinct mutation. These
-are intentional plan-surface changes: both reconcile goldens replace the aggregate platform token
-with three component steps and remove the redundant MinIO token. The generic sequential fold
-remains a total execution primitive; it is not an ordering authority.
+### 3.2 M2 — Store requirements, not probes
 
-### 3.2 M2 — The dependency/readiness graph is Dhall-sourced
+Tier-0 configuration declares which capability each component provides and requires. It does not
+select a probe implementation or carry an executable action. The canonical
+`CapabilityRequirement kind` includes the exact `CapabilityCoordinate kind`, and
+`SomeCapabilityRequirement` carries its singleton witness; both are owned by
+[Lifecycle Control-Plane Architecture §3.3](./lifecycle_control_plane_architecture.md#33-capability-requirements-in-the-component-graph).
 
-Every bootstrap component declares, in the Tier-0 configuration
-([config_doctrine.md](./config_doctrine.md)), its `depends_on` edges and a typed `readiness` probe.
-Graph validity — acyclicity, no dangling dependency id, and **every dependency edge carrying a
-readiness node** — is checked by the pure `EffectDAG` expansion when the config is projected. A
-configuration that expresses a consumer→dependency edge without a matching readiness barrier does
-not expand to a valid bring-up graph, so a bootstrap readiness race **cannot be represented by the
-Dhall** in the first place.
+Runtime reconnaissance resolves that value into an opaque `CapabilityRef kind`. Smart
+constructors validate the service identity, substrate, authority epoch, transport binding, and
+coordinate bounds. The graph cannot construct the reference and cannot smuggle `IO` into it.
 
-Sprint `1.58` (✅ Done 2026-07-10) makes the two bounded lifecycle cuts explicit without turning the
-graph into an open-ended state machine. Sprint `1.59`'s closure audit also assigns
-`ProbeServiceActive` to `ComponentClusterBase`. `ComponentVaultWorkload` (`ProbeRolloutComplete`) precedes
-`ComponentGatewayDaemonPreVault` (`ProbeRolloutComplete`), which depends on MinIO, cert-manager,
-the Vault workload, and the registry. Cert-manager also declares the registry edge. Because
-supported root bootstrap/unseal is daemon-mediated, both the Vault
-workload and pre-Vault daemon precede `ComponentVaultUnsealed` (`ProbeVaultUnsealed`).
-`ComponentGatewayDaemonFull` (`ProbeBackendRoundTrip ComponentMinio`) depends on the unsealed-Vault
-and pre-Vault-daemon nodes and carries a `BackendWriteEdge` to MinIO, so the declared edge kind
-matches the exact backend-round-trip probe. MetalLB, Envoy Gateway, and Percona declare both their
-registry and unsealed-Vault prerequisites, preventing their image/settings consumers from crossing
-either dependency. Every node carries exactly one probe. The Tier-0 schema generated from these
-IDs/probes remains git-ignored; Sprint `4.45` regenerated it and passed `prodbox config validate`
-while binding this graph to the local reconcile order.
+The former gateway-pre/gateway-full node split is superseded. The Bootstrap Broker is the
+pre-Vault component; the Gateway Runtime starts only after Vault and its identity-bound continuity
+journal are available. Lifecycle Authority, home Authority Backup Adapter, home Provider Worker,
+TLS Retention Adapter, and each Target Secret Agent are independent providers, not phases of
+gateway readiness. Normal Authority mutation additionally requires the exact fresh
+`AuthorityBackupCommitReadBack` provider/session; `GenesisFrozen` or `BackupRepairFrozen` cannot be
+reported ready for normal work. Credential Provisioner/Admin Action Runner readiness is permit-
+specific Pod UID/image/ServiceAccount attestation, never a standing component label.
 
-### 3.3 M3 — The readiness probe must match the edge kind
+Backup state is total: established/current may admit, positive permanent loss may select only the
+visible `BackupRepairFrozen` protocol, and temporary/unreachable/malformed/stale observation keeps
+the gate closed. TLS readiness is likewise operation-exact. Restore/retention resolves the TLS
+Retention Adapter plus the selected Agent's exact `TlsSecretObserve`/`TlsSecretSeal`/
+`TlsSecretMaterialize` lanes; home key exchange additionally resolves the home Agent's separate
+`TlsEnvelopeKeyExchange` lane. Positive absence or policy-valid expiry may select issuance, while
+corrupt, mismatched, rollback, or unobservable TLS state never becomes “missing.”
 
-`ReadinessProbe` is a closed ADT whose constructors are ranked by the interface they exercise;
-Sprint `1.58` adds the deep `ProbeVaultUnsealed` constructor used only by
-`ComponentVaultUnsealed`. A
-dependency edge that performs a backend write (for example, registry → MinIO S3) is satisfiable only
-by a probe constructor that performs a **real round-trip through the consumer's own interface** — a
-canary blob push through the registry, or the registry storagedriver health surface wired into
-readiness. Proxy constructors (front-door HTTP, resource-exists) are distinct, weaker values that
-cannot satisfy a backend-write edge; using one where a deep probe is required is a type mismatch,
-not a runtime surprise. Observation obeys Statement 4: a probe that cannot reach its target yields
-`Unreachable` and gates closed.
+### 3.3 M3 — Index programs by operation
 
-**Adoption (2026-07-10).** Sprint `1.59` completes the Phase-1 M3 seam without duplicating a
-production primitive. `ReadinessObservation = ReadyObserved | NotReadyYet Text | Unreachable Text`
-is the bring-up inverse-polarity twin of
-[lifecycle_reconciliation_doctrine.md §3.1](./lifecycle_reconciliation_doctrine.md#31-the-managed-resource-registry-the-reconciler-substrate)
-`ResidueStatus`; reachable actions report
-`ReadinessProbeResult = ReadinessProbeReady | ReadinessProbePending Text`. Each typed
-`ComponentReadinessTarget` constructor carries its component/backend identity plus one injected
-one-shot action, and `observeComponentReadiness` dispatches exhaustively over the closed
-`ReadinessProbe` ADT. The target action closes over caller-owned coordinates; this module owns no
-parallel endpoint, namespace, resource, repository-root, or credential literals.
+Capability programs are the closed GADT owned by
+[Lifecycle Control-Plane Architecture §3.2](./lifecycle_control_plane_architecture.md#32-programs-are-data).
+The target coordinate appears only in `CapabilityRef kind`; the program carries the canonical
+operation payload, and mutating internal programs additionally require the matching opaque writer
+permit or committed-intent reference.
 
-Only `ReadyObserved` opens the gate. A target/probe mismatch refuses immediately in
-`waitForComponentReadiness`, before the incompatible action or poll loop runs. A compatible action's
-pending result becomes `NotReadyYet`; an observation failure becomes `Unreachable`. Both lower to
-bounded `PollPending` readings and fail closed on exhaustion. Generic `PollFailed` remains
-`pollUntilReady`'s immediate hard-error arm; `Unreachable` is deliberately distinct and bounded.
+`runCapability` receives the resolved reference, absolute deadline, and compatible program. A
+target-secret reference cannot run a lifecycle CAS program; an observe-only reference cannot run a
+conditional write; and a probe endpoint cannot be supplied separately.
 
-Sprint `3.24` installs the first production consumer of this seam. ChartPlatform's
-`operatorAvailableTarget` registry matches every current `ComponentId`: Percona maps to an
-`OperatorAvailableTarget`, and every other current ID maps explicitly to a fail-closed unsupported
-result. The Percona action is a one-shot CRD-then-Deployment observer using `--ignore-not-found` for
-both queries and accepting only `Available=True`. Graph-projected operator gates route through
-`observeComponentReadiness`; `NotReadyYet` and `Unreachable` both close chart mutation. Exhaustive
-matching plus the warning-clean build forces a decision when a new constructor is added. Because
-configuration is data, however, selecting an already-existing unsupported ID remains a runtime
-fail-closed mismatch; the doctrine does not overstate that case as universally compile-time.
+The same index separation applies to private roles: `AuthorityBackupCommitReadBack` cannot execute
+TLS-prefix work; `TlsRetentionCommitReadBack` cannot address Authority backup; Provider apply cannot
+accept a genesis/repair/operator-material or admin-action permit; and Credential Provisioner cannot
+accept an Admin Action permit. Raw prompt/credential bytes travel over a separately authenticated
+linear ingress after attestation and therefore are not readiness inputs or serializable programs.
 
-Sprint `4.45` installs the local reconcile binding. Its total native target factory assigns a
-one-shot action to every non-chart component: systemd service state for cluster base; Kubernetes
-rollout/CRD observations for workloads and platform operators; daemon-mediated Vault seal status;
-and registry/gateway backend round-trips for the declared deep edges. In particular, the supported
-Vault action remains daemon-mediated gateway status reaching Vault `/v1/sys/seal-status`, not a new
-host `/sys/health` probe. After the final step in a component group, a bounded readiness gate polls
-that target's injected one-shot action; the registry's existing deep S3 barrier additionally remains
-immediately before the first image write. `NotReadyYet` and `Unreachable` keep the gate closed.
+`ReadinessObservation` remains a flat external projection. The GADT proves only that an attempted
+program is legal for the reference kind. The interpreter's typed result and fresh observations
+prove what the external system actually did.
 
-Sprint `5.15` installs the TestRunner restore binding. `Prodbox.TestRestore` owns one typed,
-substrate-aware `RestoreCyclePlan`; the bootstrap and postflight paths project its exact step list
-through one total interpreter and differ only when `RestoreWithKeycloakSmtp` inserts the optional
-SMTP step after gateway reconciliation and before the dependent charts. The home TestRunner
-projection remains explicitly `SubstrateHomeLocal`; Sprint `7.32` adds the explicit `SubstrateAws`
-projection rather than an implicit fallback.
+## 4. Absolute Deadlines, Retry, and Cancellation
 
-Before the optional SMTP step calls `syncKeycloakSmtpForSupportedRuntime`, TestRunner obtains the
-canonical loopback endpoint through `gatewayEndpointFromEnv` and composes
-`gatewayDaemonLivenessPrecondition` with the exported
-`observeGatewayBackendRoundTripOnce`. That adapter performs exactly one gateway object-store GET on
-each invocation: a credentialed present-or-absent response is ready, a degraded HTTP 503 is pending,
-and transport failure is unreachable. `waitForComponentReadiness` owns the only bounded retry loop
-over the `ComponentGatewayDaemonFull`/`ProbeBackendRoundTrip ComponentMinio` target. Exhaustion
-becomes a `Preconditions.StructuredError` naming the loopback endpoint and declaring that no SMTP
-sync started; the adapter does not nest RKE2's older `pollGatewayObjectStore` loop.
+One monotonic absolute deadline covers admission, queue wait, credential refresh, external I/O,
+read-back, result persistence, response serialization, and bounded cancellation. Every child
+receives the remaining budget; no nested relative timeout may restart the clock.
 
-Code-owned validation passes 1280/1280 unit tests for exact restore projection, SMTP anchoring, and
-ready/pending/unreachable precondition decisions. The targeted `resource-guardrails` built-frontend
-fixture also passes against fake gateway readiness as a general CLI regression check. Its named
-plan runs neither supported-runtime restore projection and does not select the SMTP step, so it is
-not evidence for the shared interpreter or the new gate end to end. A live home
-`prodbox test all` restore is retained as a non-blocking Standard-O proof.
+Retry is allowed only when:
 
-Sprint `5.16` adds separate post-refresh code-owned runtime-stability evidence: 17/17 focused unit
-tests over fake Pod/Event/metrics JSON and boundary projections, 2/2 built-frontend `gateway-pods`
-fixtures (healthy and a background-only OOM retained through later healthy samples), and 1494/1494
-full unit tests. The exact post-refresh full CLI integration suite passes 47/47;
-`prodbox dev check` passes as the final repository closure gate. The live
-multi-peer substrate soak remains a non-blocking Standard-O item and is not implied by those
-code-owned results.
+- the failure constructor is classified as transient;
+- the operation is idempotent or has a durable operation ID/fence;
+- the next attempt fits inside the original deadline; and
+- retry does not hide saturation that should produce a typed admission refusal.
 
-Sprint `7.32` installs the AWS production binding. `AwsSubstratePlatform` and the home RKE2 driver
-both compile substrate-owned closed step ADTs through `Prodbox.Lifecycle.AnchoredReconcile`; the
-validated configured DAG determines component order, while each substrate owns only stable
-within-component mutations and final readiness barriers. The AWS compiler refuses missing,
-duplicate, misanchored, phase-regressing, graph-inverted, readiness-less, or AWS-inapplicable
-dependency projections before stack-output reads or platform mutation. MetalLB is explicitly empty
-on AWS; AWS Load Balancer Controller belongs to cluster base. The edge-only ACME/admin-route tail is
-separate from graph components.
+A transport timeout is an ambiguous result, not proof of failure. Durable control-plane calls
+resolve ambiguity by operation ID and authority observation. Non-durable request work is canceled
+when its caller disappears; durable work may continue only after its intent was committed and can
+be observed independently of the original connection.
 
-AWS one-shot targets observe EKS nodes plus AWS Load Balancer Controller, MinIO and Vault rollouts,
-the containerd-mirror DaemonSet plus the registry→MinIO round trip, cert-manager/Envoy rollouts and
-CRDs, Percona `Available`, daemon-mediated Vault seal state, and gateway pre-/post-Vault state. A
-loopback gateway Service port-forward is bracketed, positively established through the daemon state
-endpoint, and supervised on one local port across Vault bootstrap and full-mode convergence; when
-the selected Pod rolls, the supervisor re-establishes `kubectl` and the bounded daemon retry bridges
-the reconnect gap. No home NodePort fallback or fixed readiness sleep is used. TestRunner projects
-Gateway → SMTP → VS Code → API → WebSocket from the same
-restore builder after the three AWS stack reconciles. Code-owned proof is unit 1286/1286 plus
-`prodbox dev check` exit 0; live AWS aggregate proof remains non-blocking Standard O.
+## 5. Verification Obligations
 
-Kubernetes probe binding is intentionally narrower than these dependency targets. The gateway
-chart uses constant-time `/healthz` for liveness and `/readyz` for process readiness; neither route
-serializes gateway state or performs a backend call. `ProbeBackendRoundTrip ComponentMinio` remains
-a separate explicit graph edge, and the runtime-stability fold in §2.1 remains a separate suite
-oracle. [Sprint 3.25](../../DEVELOPMENT_PLAN/phase-3-chart-platform-vscode.md) landed the typed,
-generated chart binding and the chart-lint/negative-fixture guard that rejects `/v1/state` as
-either kubelet probe.
+The capability/readiness design is incomplete without all of these layers:
 
-This is the deep-gate discipline that
-[prerequisite_doctrine.md §4](./prerequisite_doctrine.md#4-patterns) already gestures at when it
-exiles steady-state waits to explicit lifecycle steps — this doctrine makes "which steady-state,
-proving which edge" a typed obligation rather than an author's discretion, and
-[local_registry_pipeline.md §2.1](./local_registry_pipeline.md#21-registry-readiness-contract) is
-its first worked example (the `/v2/` front-door signal is explicitly *not* the registry→MinIO edge
-proof).
+1. **Pure tables and properties**: every capability kind/program match, graph rejection,
+   observation fold, admission decision, absolute-deadline calculation, retry classification, and
+   absorbing stability result.
+2. **Deterministic concurrency simulation**: queue saturation, cancellation, response loss,
+   restart, stale fence, and actor interleaving through `io-sim` or an equivalent scheduler.
+3. **Production-adapter composition**: real binary, native MinIO conditional write/read-back,
+   renewable Vault session, exact service identity, and actual configured cgroups.
+4. **Load qualification**: authored background rates plus burst, CPU throttling, queue wait,
+   deadline misses, and p95/p99 latency with declared headroom.
+5. **Chaos qualification**: restart or isolate Gateway Runtime, Lifecycle Authority, Backup/TLS
+   Adapters, Provider Worker, Credential Provisioner/Admin Action Runner, Target Secret Agent,
+   primary MinIO, backup S3, and Vault at every durable transition boundary; prove resume, frozen
+   repair, or typed refusal. Each has its own admission lane, managed-session, capacity, and
+   stability evidence; another component's green probe cannot substitute.
+6. **Cleanup qualification**: inject failure at every cleanup-DAG node and prove independent work
+   continues, root cause is retained, all cleanup failures aggregate, and residue is re-observed.
 
-## 4. Retry Posture Is Not a Substitute for a Deep Gate
+Passing unit tests or a point probe does not qualify a deployment revision. Current-revision
+deployment qualification and counterexample closure are governed by
+[Development Plan Standard P](../../DEVELOPMENT_PLAN/development_plan_standards.md#p-deployment-qualification-and-counterexample-closure).
 
-A retry loop that misclassifies the dependency's characteristic failure is a shallow gate wearing a
-retry's clothes. The Helm retry classifier omitted transient name-resolution failures
-(`no such host` / `dial tcp` / `lookup` / `name resolution`) and `connection refused` even though the
-registry-publication classifier retried them, so a Helm install could fail the whole bootstrap on
-first contact. Retry classifiers on a dependency edge must treat that edge's transient reachability
-failures as retryable; but retry is a robustness backstop, not the barrier — the deep readiness gate
-(M3) is what removes the race, and the corrected classifier only bounds residual jitter.
+## 6. Intent Ownership
 
-Sprint `1.57` establishes the shared classifier SSoT in `src/Prodbox/Service.hs`.
-`TransientFailureClass` owns the common name-resolution, connection, transient-HTTP, and timeout
-fragment groups, while `isRetryableTransientFailure :: [String] -> String -> Bool` adds only a
-caller's operation-specific fragments and normalizes casing at the shared boundary. The Phase-1
-`isRetryableAwsValidationFailure` caller delegates to it. Sprint `4.46` moved all three RKE2-owned
-callers — Route 53 credential propagation, Helm, and registry publication — onto the same base;
-Sprint `7.32` moves the EKS image-mirror caller onto that base as well.
+This document owns capability-exact bootstrap ordering and the distinctions among liveness,
+admission, execution, and runtime stability.
 
-`checkInlineRetrySubstringLists` enforces that a new top-level `isRetryable*` substring classifier
-delegates to this base. Its transitional exception is deliberately narrow: exact path-and-function
-pairs grandfathered the Route 53, Helm, Harbor, and EKS classifiers, rather than exempting whole
-modules. Sprint `4.46` removed all three RKE2 entries when those callers delegated, and Sprint
-`7.32` removed the final EKS entry. No legacy retry-classifier allowance remains.
+It does not own process topology, authority workflow, target-delivery protocol, exact resource
+thresholds, test-suite membership, sprint status, or deployment evidence. Those remain in their
+linked SSoTs.
 
-## 5. Intent Ownership
+## 7. Cross-References
 
-**Owned statement**: This document is the SSoT for the shallow-gate invariant, the GATED-vs-RACY
-discriminator, the separation of point-in-time dependency readiness from time-windowed runtime
-stability, and the M1/M2/M3 mechanisms that make bootstrap readiness races unrepresentable. The
-DAG mechanics, the fail-fast-vs-steady-state seam, the reconcile/soundness model, the config surface,
-the pure-FP external-state rule, the registry worked example, and chart dependency ordering each
-remain owned by their own SSoT and are linked, not restated.
-
-**Linked dependents**:
-- Source: `src/Prodbox/Config/ComponentGraph.hs` (the typed graph, the `ReadinessProbe` deep/proxy
-  ranking, and `validateComponentGraph` — the M2/M3 foundation, Sprint `1.56`; Sprint `1.58`'s
-  completed split is `ComponentVaultWorkload`/`ComponentVaultUnsealed` with
-  `ProbeRolloutComplete`/`ProbeVaultUnsealed`, plus `ComponentGatewayDaemonPreVault`/
-  `ComponentGatewayDaemonFull` with `ProbeRolloutComplete`/
-  `ProbeBackendRoundTrip ComponentMinio`, one probe per node), `src/Prodbox/EffectDAG.hs` (the shared
-  `acyclicTopologicalOrder` expansion reused by the graph — M1; Sprint `1.58` adds the caller tie-break
-  and `ComponentGraph` supplies `fromEnum`),
-  `src/Prodbox/Lifecycle/ReadinessObservation.hs` (Sprint `1.59`'s M3 seam —
-  `ReadinessObservation`, `ReadinessProbeResult`, typed `ComponentReadinessTarget`, exhaustive
-  `observeComponentReadiness`, and bounded `waitForComponentReadiness`),
-  `src/Prodbox/Prerequisite.hs`, `src/Prodbox/CLI/Rke2.hs`, `src/Prodbox/TestRestore.hs`,
-  `src/Prodbox/TestRunner.hs`,
-  `src/Prodbox/Lib/ChartPlatform.hs`, `src/Prodbox/Lib/AwsSubstratePlatform.hs`,
-  `src/Prodbox/Lib/EksImageMirror.hs`, `src/Prodbox/Config/Tier0.hs` (the `components` Tier-0 field).
-- Docs: [prerequisite_doctrine.md](./prerequisite_doctrine.md),
-  [prerequisite_dag_system.md](./prerequisite_dag_system.md),
-  [lifecycle_reconciliation_doctrine.md](./lifecycle_reconciliation_doctrine.md),
-  [local_registry_pipeline.md](./local_registry_pipeline.md),
-  [config_doctrine.md](./config_doctrine.md), [pure_fp_standards.md](./pure_fp_standards.md),
-  [helm_chart_platform_doctrine.md](./helm_chart_platform_doctrine.md).
-- Plan: Sprints `1.56` (config/DAG foundation), `3.23` (chart edges), `4.43` (narration
-  single-sourcing + deep registry→MinIO gate), and `7.31` (AWS deep-gate parity) landed the
-  **foundation**. Sprints `1.57`–`1.59` have since landed the retry-classifier SSoT, bounded
-  two-phase node split + caller-ranked `EffectDAG`, and injected-action readiness seam; Phase `1`
-  is reclosed. Sprint `2.30` closed the gateway-daemon Vault-role SSoT and Sprint `3.24` closed the
-  ChartPlatform operator-gate binding, reclosing Phases `2` and `3`. Sprints `4.44` and `4.45` have
-  since closed the typed registry backend and local graph-derived order/readiness binding. Sprint
-  `4.46` then closed all three RKE2 retry-classifier migrations and reclosed Phase `4`. Sprint
-  `5.15` closed the shared restore plan plus daemon-readiness precondition and reclosed Phase `5`.
-  Sprint `7.32` then closed the AWS graph/readiness, classifier, scoped-port-forward, and restore
-  projections and reclosed Phase `7`; all completion sprints in this refactor are Done.
-  Sprint `3.25` has since landed the constant-time chart binding and reclosed Phase `3`. Sprint
-  `5.16` has since landed the separate run-wide restart/OOM/high-water classifier,
-  concurrency-safe recorder, structured continuous monitor, and `gateway-pods` gate; its live
-  multi-peer soak remains non-blocking Standard-O evidence. Status remains plan-owned.
-
-## 6. Cross-References
-
-- [prerequisite_doctrine.md](./prerequisite_doctrine.md) — fail-fast prerequisite gate vs
-  steady-state runtime wait (§0/§4).
-- [prerequisite_dag_system.md](./prerequisite_dag_system.md) — pure DAG construction, acyclicity, and
-  missing-node rejection reused by M1/M2.
-- [lifecycle_reconciliation_doctrine.md §3.1](./lifecycle_reconciliation_doctrine.md#31-the-managed-resource-registry-the-reconciler-substrate)
-  — `ResidueStatus` three-valued observation and the `Unreachable → refuse` soundness rule.
-- [local_registry_pipeline.md §2.1](./local_registry_pipeline.md#21-registry-readiness-contract) —
-  the registry readiness contract and the `/v2/`-is-not-the-S3-edge worked example.
-- [config_doctrine.md](./config_doctrine.md) — Tier-0 config surface hosting the component
-  dependency/readiness graph.
-- [pure_fp_standards.md](./pure_fp_standards.md) — external-state-is-projected (not a GADT) rule.
-- [helm_chart_platform_doctrine.md](./helm_chart_platform_doctrine.md) — chart dependency edges and
-  the chart→operator `Available` gate.
-- [distributed_gateway_architecture.md](./distributed_gateway_architecture.md) — bounded gateway
-  state, constant-time lifecycle probes, and the runtime-memory contract.
-- [resource_scaling_doctrine.md](./resource_scaling_doctrine.md) — admission/containment proof
-  boundary and runtime memory decomposition.
-- [unit_testing_policy.md](./unit_testing_policy.md) — pure stability-oracle and live observation
-  coverage obligations.
+- [Lifecycle Control-Plane Architecture](./lifecycle_control_plane_architecture.md) — capability
+  GADT, same-reference rule, physical service split, deadlines, and durable operations.
+- [Pure FP Standards](./pure_fp_standards.md) — external `decide`/`evolve` folds and interpreter
+  boundaries.
+- [Resource Scaling Doctrine](./resource_scaling_doctrine.md) — CPU, service-rate, queue, memory,
+  and runtime-stability proof obligations.
+- [Unit Testing Policy](./unit_testing_policy.md) — composition, load, chaos, and cleanup-DAG test
+  requirements.
+- [Prerequisite Doctrine](./prerequisite_doctrine.md) — read-only prerequisite/preparation split.
+- [Lifecycle Reconciliation Doctrine](./lifecycle_reconciliation_doctrine.md) — external
+  observations and fail-closed reconciliation.
+- [Distributed Gateway Architecture](./distributed_gateway_architecture.md) — Gateway Runtime
+  scope and constant-time lifecycle endpoints.
+- [Local Registry Pipeline](./local_registry_pipeline.md) — registry-to-MinIO worked example.
+- [Development Plan](../../DEVELOPMENT_PLAN/README.md) — status and qualification evidence.

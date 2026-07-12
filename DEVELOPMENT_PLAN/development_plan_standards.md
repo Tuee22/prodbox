@@ -1,4 +1,3 @@
-# File: DEVELOPMENT_PLAN/development_plan_standards.md
 # Development Plan Standards
 
 **Status**: Authoritative source
@@ -20,6 +19,7 @@
 [../documents/engineering/aws_integration_environment_doctrine.md](../documents/engineering/aws_integration_environment_doctrine.md),
 [../documents/engineering/cli_command_surface.md](../documents/engineering/cli_command_surface.md),
 [../documents/engineering/integration_fixture_doctrine.md](../documents/engineering/integration_fixture_doctrine.md),
+[../documents/engineering/lifecycle_control_plane_architecture.md](../documents/engineering/lifecycle_control_plane_architecture.md),
 [../documents/engineering/prerequisite_doctrine.md](../documents/engineering/prerequisite_doctrine.md),
 [../documents/engineering/unit_testing_policy.md](../documents/engineering/unit_testing_policy.md),
 [the engineering doctrine docs](../documents/engineering/README.md)
@@ -84,6 +84,9 @@ Status must describe reality, not intent.
   `README.md` and `00-overview.md`. An earlier phase stays `Done` and independently validatable
   while later phases are incomplete (Standard N); a later phase's incompleteness never reopens or
   blocks it.
+- `Done` is not a synonym for deployment-qualified. Any claim that the current revision is
+  deployment-ready, supports a seamless aggregate suite, or has completed an operational cutover
+  is governed separately by Standard P.
 
 ### D. Declarative Plan Language
 
@@ -171,6 +174,8 @@ Every sprint should use the same basic structure:
 **Implementation**: `path/to/file` (required for Done, recommended otherwise)
 **Blocked by**: earlier-or-same-phase sprint id(s) or external prerequisite (required for Blocked); never a later phase or higher-numbered sprint (Standard N)
 **Live-proof**: pending | proven (optional; the non-blocking live-infra axis — Standard O)
+**Deployment qualification**: pending | proven (required when the sprint changes a Standard-P
+production-composition surface)
 **Independent Validation**: how this sprint/phase is validated on its owned surface with no dependency on a later phase (Standard N)
 **Docs to update**: `file.md`, `other.md`
 
@@ -344,6 +349,61 @@ A sprint has two independent completion axes; keep them distinct.
 - **Code-owned surface.** A sprint is `✅ Done` on its code-owned surface once it builds and passes local validation (`prodbox dev check`, `prodbox test unit`, `prodbox test integration cli` / `env`). This axis determines phase closure.
 - **Live-infra proof.** A proof that requires live infrastructure (live AWS spend, a deployed cluster, an unsealed Vault, an operator-supplied credential) is tracked as a distinct, **non-blocking** `Live-proof: pending` note on the sprint. A pending live-infra proof is **not** `⏸️ Blocked` and never gates an earlier phase or the sprint's code-owned closure.
 - **`⏸️ Blocked` is reserved** strictly for a genuine unmet **earlier-phase or external** prerequisite — never for a pending live-infra proof, and never pointing at a later phase.
+
+Standard O is deliberately narrow. It permits optional environmental evidence to remain pending;
+it does not authorize a deployment-qualified claim, an operational cutover, or removal of the old
+path when the missing proof could falsify process topology, capability binding, deadline algebra,
+resource sufficiency, persistence safety, lifecycle recovery, or cleanup behavior. Those claims are
+governed by Standard P.
+
+### P. Deployment Qualification and Counterexample Closure
+
+Deployment qualification is a separate, revision-specific axis over the composed running system.
+It prevents locally green planners, fake interpreters, or isolated unit tests from being promoted
+into an unexercised claim about the aggregate deployment.
+
+- **Qualification states.** The only states are `pending` and `proven`. `pending` does not mark a
+  phase `Blocked`, preserving Standards N/O, but the repository must not describe the current
+  revision as deployment-ready, seamless, fully closed, or operationally cut over.
+- **Surfaces that invalidate qualification.** A change to process topology, capability wiring,
+  absolute-deadline composition, queueing/admission, resource envelopes, persistence protocol,
+  lifecycle orchestration, destructive cleanup, or substrate routing invalidates prior
+  qualification.
+- **Required evidence.** `proven` records two complete identities: the frozen superseded identity
+  and the replacement identity. Each independently binds a `SourceIdentity` (Git HEAD, clean/dirty
+  flag, source-manifest policy identity, and deterministic source-manifest digest), secret-safe
+  generated-config identity, component-image, resolved topology/wiring, resource-envelope, and
+  authored-load digests. The record also names substrate, canonical commands, the normalized
+  old→new envelope mapping, production resource envelopes/load, counterexample results, complete
+  fault matrix, aggregate result, cleanup/residue result, start/completion timestamps, and evidence
+  digest. Historical runs remain evidence only for the complete identity they exercised.
+- **Source and evidence secrecy.** The source-manifest policy is an allowlist over repository code,
+  governed documentation, and non-secret schema/template inputs. Each frozen and replacement
+  `SourceIdentity` separately records the policy identifier, policy version, and digest of the
+  canonical policy as well as the resulting manifest digest. The manifest unconditionally excludes
+  `test-secrets.dhall`, all local or generated secret material, every configured secret root, and
+  every runtime or build root; relevant untracked files participate only when the allowlist admits
+  them. A generated-config identity digests only its canonical non-secret projection. Neither that
+  digest, the source manifest, nor the enclosing evidence digest may ingest or hash plaintext secret
+  bytes. A secret-dependent run is bound only by opaque Lifecycle Authority receipt/generation IDs
+  or by a keyed HMAC commitment produced under a Vault-held key; a public raw hash of secret
+  material is forbidden. A Git commit hash alone never identifies a dirty worktree.
+- **Counterexample rule.** Work opened by a live counterexample includes a stable named,
+  repository-owned reproducer. Its causal profile holds the background load, fault schedule, and
+  topology-normalized total CPU/memory/ephemeral/persistence budget constant; a split topology may
+  repartition but not increase that total. The artifact records the exact old→new envelope mapping,
+  expected failure against the frozen superseded implementation, and replacement pass. A separate
+  production profile then exercises the independently justified rendered envelopes. Both results
+  remain auditable after legacy code deletion; without them the replacement cannot be called
+  qualified.
+- **Cutover rule.** Operational legacy rows remain in `Pending Removal` until the replacement is the
+  sole supported writer/route, rollback is explicit, and current-revision deployment qualification
+  passes. A shadow reader may coexist during migration; dual writers may not.
+- **Aggregate rule.** A successful point probe or one successful aggregate run is insufficient for
+  a temporal or cleanup claim. The owning plan names the consecutive-run, saturation, restart,
+  cancellation, applied-but-response-lost, and residue checks appropriate to that surface.
+- **Status ownership.** `DEVELOPMENT_PLAN/README.md` is the sole deployment-qualification ledger.
+  Engineering docs describe invariants and proof boundaries but do not carry a competing status.
 
 ## Related Documents
 

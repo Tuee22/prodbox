@@ -4,13 +4,17 @@
 **Supersedes**: the prior Harbor-based local-registry doctrine (multi-pod Harbor Helm stack, Harbor
 projects REST API, and the `admin:Harbor12345` credential), retired when the in-cluster registry
 became a single-binary `registry:2`.
-**Referenced by**: README.md, documents/engineering/README.md, documents/engineering/distributed_gateway_architecture.md, documents/engineering/effectful_dag_architecture.md, documents/engineering/envoy_gateway_edge_doctrine.md, documents/engineering/helm_chart_platform_doctrine.md, documents/engineering/prerequisite_doctrine.md, documents/engineering/storage_lifecycle_doctrine.md, documents/engineering/host_platform_doctrine.md, documents/engineering/bootstrap_readiness_doctrine.md
+**Referenced by**: README.md, documents/engineering/README.md, documents/engineering/distributed_gateway_architecture.md, documents/engineering/effectful_dag_architecture.md, documents/engineering/envoy_gateway_edge_doctrine.md, documents/engineering/helm_chart_platform_doctrine.md, documents/engineering/lifecycle_control_plane_architecture.md, documents/engineering/prerequisite_doctrine.md, documents/engineering/storage_lifecycle_doctrine.md, documents/engineering/host_platform_doctrine.md, documents/engineering/bootstrap_readiness_doctrine.md
 **Generated sections**: none
 
 > **Purpose**: Define how `prodbox` provisions the in-cluster single-binary `registry:2` (CNCF
 > distribution) registry, bootstraps its MinIO/S3 storage-backend prerequisites, publishes
 > native-host-architecture custom images, mirrors required public images, and keeps later
 > supported workloads on registry-backed image refs.
+
+Implementation and deployment-qualification status live only in the
+[Development Plan](../../DEVELOPMENT_PLAN/README.md); dated sprint references below are historical
+provenance, not a parallel status ledger.
 
 > **Naming note**: for continuity and to minimize churn, the Kubernetes namespace and front-door
 > Service are still named `harbor`, and internal storage identifiers (the `harbor-registry-s3`
@@ -25,8 +29,8 @@ This document is the SSoT for the local image-registry doctrine:
 1. The `registry:2` registry is installed or reconciled during `prodbox cluster reconcile`. It is a
    single `registry:2` Deployment plus a NodePort Service (nodePort `30080`) plus a ConfigMap
    holding `registry:2`'s `config.yml`, all applied with `kubectl apply` — there is **no Helm
-   release** for the registry. On reconcile, any legacy Harbor Helm release is best-effort
-   `helm uninstall`ed first.
+   release** for the registry. A legacy Harbor Helm release is a registered managed resource whose
+   desired-absence plan runs before the conflicting registry apply and requires absence read-back.
 2. Direct public-registry pulls are permitted only for the registry itself and the current
    registry storage-backend bootstrap, presently MinIO, before the registry is healthy and
    serving.
@@ -40,20 +44,25 @@ This document is the SSoT for the local image-registry doctrine:
 
 Retained storage and MinIO persistence doctrine remain defined in
 [Storage Lifecycle Doctrine](./storage_lifecycle_doctrine.md). The same MinIO server hosts
-prodbox-owned object-store buckets; gateway object-store access uses the scoped
-`prodbox-gateway` MinIO IAM principal, while the registry stores its blobs in the MinIO-backed
+prodbox-owned object-store buckets. The Lifecycle Authority uses a dedicated MinIO IAM principal
+for its bounded aggregate and immutable checkpoint-blob namespace, while the registry stores its
+blobs in the MinIO-backed
 `prodbox-harbor-registry` bucket through its generated, persisted MinIO user rather than the root
 credential. Administrative bucket bootstrap reads the MinIO root credentials through Vault
-Kubernetes auth.
+Kubernetes auth. The Gateway Runtime has no registry-storage, lifecycle-CAS, or generic MinIO
+authority.
 
 ## 2. Runtime Contract
 
 The authoritative `prodbox cluster reconcile` contract is owned by
 `src/Prodbox/CLI/Rke2.hs`.
 
-The native Haskell lifecycle reconciles registry state in this order:
+The target native Haskell lifecycle reconciles registry state in this order:
 
-1. Best-effort `helm uninstall` of any legacy Harbor Helm release left by an older prodbox version.
+1. Observe the exact legacy Harbor release. If present, execute its committed
+   `ReconcileManagedResourceAbsent` intent and read back absence. Failure/unobservability is typed,
+   retained in the cleanup report, and blocks only the conflicting registry apply—not independent
+   always-run cleanup.
 2. Registry storage-backend bootstrap from public `quay.io/minio/*` image refs, including MinIO
    reconcile plus the `prodbox-harbor-registry` bucket and credential bootstrap. The bootstrap Job
    reads MinIO root credentials through the `minio` service account and Vault Kubernetes auth; the
@@ -73,7 +82,9 @@ The native Haskell lifecycle reconciles registry state in this order:
 9. `registries.yaml` reconcile and conditional RKE2 restart.
 10. Registry-backed platform-runtime install for MetalLB, Envoy Gateway, cert-manager, and the
     Percona PostgreSQL operator.
-11. Optional Route 53 bootstrap A-record reconcile.
+11. On home only, exact registered Gateway-DNS A-record reconcile through its bounded capability.
+    The current optional direct Route 53 bootstrap call is pre-cutover residue removed by Sprint
+    `4.50`; AWS-substrate A records are Lifecycle Authority provider intents owned by Sprint `7.33`.
 12. MinIO steady-state re-reconcile, kept on the **public** `quay.io/minio/minio` image (never
     the registry mirror): MinIO is the registry's own storage backend, so it cannot source its
     image from the registry — a circular dependency a non-surging single-replica StatefulSet
@@ -97,6 +108,14 @@ The critical split is:
 ### 2.1 Registry Readiness Contract
 
 `prodbox` owns the bootstrap readiness contract for the registry's external-serving NodePort.
+
+The registry dependency is represented by one operation-indexed `CapabilityRef`. Front-door
+observation, deep-edge admission, and the first image-write execution retain that exact reference,
+including service identity and backend coordinate; a probe result cannot be combined with another
+endpoint. All queue wait, probe, retry, and write/read-back work consumes one monotonic absolute
+deadline. This capability discipline and the dedicated Broker/Authority/Agent/Gateway boundaries
+are defined in
+[Lifecycle Control-Plane Architecture](./lifecycle_control_plane_architecture.md).
 
 Policy:
 
@@ -131,6 +150,11 @@ Policy:
    `redirect.disable: true`, and unit coverage pins the alternate `false` rendering (the dropped
    redirect line caused the 80a08e3 bring-up regression).
 
+**Historical pre-cutover implementation.** `ensureHarborRegistryRuntime` currently invokes
+`helm uninstall` as an always-success best-effort helper that discards failure. Sprint `4.50`
+replaces that helper with the registered absence program above; the current behavior is not target
+cleanup semantics and cannot satisfy deployment qualification.
+
    Registry credentials are unchanged: `REGISTRY_STORAGE_S3_ACCESSKEY` and
    `REGISTRY_STORAGE_S3_SECRETKEY` remain keys in the existing `harbor-registry-s3` Secret and enter
    the Deployment through `envFrom`; they are not fields of `RegistryStorageBackend` and do not
@@ -142,11 +166,12 @@ Policy:
    the home registry-publication caller onto that base, retaining only its PUT-status extension; the
    EKS edge caller joined the same base in Sprint `7.32`. The shared name-resolution, connection,
    transient-HTTP, and timeout classes therefore bound residual jitter on both substrates without
-   duplicating a per-path list. Sprint `1.59` also landed the typed `BackendRoundTripTarget` and fail-closed
-   `ReadinessObservation` seam. Sprint `4.45` bound the existing home one-shot registry→MinIO probe
-   to that target while deriving the reconcile order, and Sprint `7.32` applies the corresponding
-   AWS binding. The AWS substrate has
-   deep-gate parity (Sprint `7.31`):
+   duplicating a per-path list. The Sprint `1.59` `BackendRoundTripTarget` and injected one-shot
+   registry→MinIO bindings are historical pre-redesign behavior. The target resolves one
+   operation-indexed registry-publication `CapabilityRef`; observation, admission, blob
+   mutation/read-back, and the subsequent write share its service/storage identity and absolute
+   deadline. A front-door or separately bound backend probe cannot authorize publication. The AWS
+   substrate's historical deep-gate work (Sprint `7.31`) was:
    `ensureAwsSubstratePlatformRuntime` runs the same
    `ensureRegistryStorageBackendEdgeReady` gate before the EKS image-mirror Job and crane pushes, and
    `applyEksImageMirrorJob` re-applies the Job on an `isRetryableEksImageMirrorFailure`-matched
@@ -262,8 +287,10 @@ Container build requirements:
 7. use `tini` as PID 1 in the runtime image
 8. keep the `ENTRYPOINT` a bare `tini -- prodbox`; each chart selects its role through the pod
    `args:` (`gateway start` vs `workload start`)
-9. install the official AWS CLI bundle from the image's native Debian architecture so the in-pod
-   Route 53 subprocess path remains available (the gateway role uses it)
+9. the current union image may retain the official AWS CLI bundle for the fenced lifecycle-provider
+   worker during cutover, but target Gateway-DNS uses its bounded managed adapter and Gateway
+   Runtime cannot invoke `aws route53`; the direct in-pod Gateway subprocess path is Sprint `4.50`
+   removal residue
 
 ### 6.1 Host `docker` CLI auth isolation (registry push vs the operator's Docker Hub login)
 
@@ -331,4 +358,5 @@ against the registry-published image set produced by `prodbox cluster reconcile`
 - [Envoy Gateway Edge Doctrine](./envoy_gateway_edge_doctrine.md)
 - [Storage Lifecycle Doctrine](./storage_lifecycle_doctrine.md)
 - [Distributed Gateway Architecture](./distributed_gateway_architecture.md)
+- [Lifecycle Control-Plane Architecture](./lifecycle_control_plane_architecture.md)
 - [Documentation Standards](../documentation_standards.md)

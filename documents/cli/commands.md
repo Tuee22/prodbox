@@ -1,11 +1,17 @@
 # CLI Command Registry
 
-**Status**: Generated reference
+**Status**: Reference only
 **Supersedes**: N/A
-**Referenced by**: documents/engineering/cli_command_surface.md, DEVELOPMENT_PLAN/phase-1-runtime-cli-aws-foundations.md, documents/engineering/vault_doctrine.md
+**Referenced by**: documents/engineering/cli_command_surface.md, DEVELOPMENT_PLAN/phase-1-runtime-cli-aws-foundations.md
 **Generated sections**: `command-registry.markdown`
 
-> **Purpose**: Provide the generated leaf-command registry derived from `src/Prodbox/CLI/Spec.hs`.
+> **Purpose**: Provide the generated leaf-command registry derived from `src/Prodbox/CLI/Spec.hs`
+> plus a hand-maintained implementation-status note outside the generated marker.
+
+The generated summaries below describe the current pre-cutover binary. In particular, the one-
+user `aws setup|teardown` summaries and current Vault handler wiring are not target architecture.
+Their replacement/removal is tracked in the Development Plan; generated text changes only when the
+owning implementation change updates `CommandSpec` and regenerates this section.
 
 <!-- prodbox:command-registry.markdown:start -->
 | Command | Summary |
@@ -119,14 +125,17 @@
 
 ## `prodbox vault` command group
 
-The `prodbox vault` leaf commands are now in the generated registry above. `vault status` is fully
-wired — it probes the in-cluster Vault and reports initialized / sealed / unseal-progress, or that
-it is unreachable. The mutating subcommands (`init`, `unseal`, `seal`, `reconcile`,
-`rotate-unlock-bundle`, `rotate-transit-key`, `pki status`, `pki issue-test-cert`) are implemented
-through the Vault CLI handlers and authenticated Vault client/orchestration modules. The target
-post-bootstrap implementation routes them through the loopback-restricted daemon NodePort. The
+The `prodbox vault` leaf commands are in the generated registry above. In the current pre-cutover
+implementation, `vault status` probes the in-cluster Vault and the mutating subcommands route
+through existing Vault handlers and the combined gateway/host transport. The target architecture
+keeps the public command names, binds observation, initialize/unseal/seal/rotation, baseline, and
+PKI to their distinct operation-indexed Bootstrap Broker references, and deletes the daemon
+NodePort and host fallback; sequencing lives only in the
+[Development Plan](../../DEVELOPMENT_PLAN/README.md). The
 [unlock bundle](../engineering/vault_doctrine.md#6-the-unlock-bundle) lives in the durable MinIO
-bucket (host disk holds no unseal material) and recovers a torn-down cluster's Vault,
-and a sealed Vault fails closed; the model these commands operate against is owned by
+bucket (host disk holds no unseal material) and recovers a torn-down cluster's Vault. In the target,
+the initial root token is encrypted to a burn recipient and never usable; encrypted recovery-share
+receipt/custody precedes a separate short-lived baseline session. A sealed Vault fails closed; the
+model these commands operate against is owned by
 [`vault_doctrine.md`](../engineering/vault_doctrine.md) (see
 [§7 Vault lifecycle commands](../engineering/vault_doctrine.md#7-vault-lifecycle-commands)).

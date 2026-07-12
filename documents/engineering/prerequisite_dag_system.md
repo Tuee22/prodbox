@@ -75,16 +75,15 @@ same independent nodes oppositely. The result is still a pure function of the gr
 caller's explicit ordering projection. Phase `4` Sprint `4.45` remains the owner of reconcile-driver
 consumption; Sprint `1.58` changes only the pure DAG/config foundation.
 
-Sprint `1.59` closes Phase `1`'s separate steady-state observation seam. This does not turn
-readiness into another prerequisite DAG: each `ComponentReadinessTarget` carries one
-caller-injected observation action, and `waitForComponentReadiness` reuses the bounded
-`RetryPolicy` schedule through `pollUntilReady`. A target/probe mismatch is rejected immediately
-before the action or poll loop runs. For a compatible action, `ReadinessProbePending` projects to
-`NotReadyYet` and an observation `Left` projects to `Unreachable`; both lower to bounded
-`PollPending` outcomes and return their last detail on exhaustion. `PollFailed` retains its generic
-meaning as an immediate hard observation failure and is not the representation of a temporarily
-unreachable declared probe. Production action binding remains forward-owned by Sprints
-`3.24`/`4.45`/`5.15`/`7.32`.
+Sprint `1.59`'s caller-injected `ComponentReadinessTarget` is a historical observation seam, not
+the target graph contract. The replacement graph stores pure operation-indexed
+`CapabilityRequirement` values. Runtime reconnaissance resolves a unique opaque
+`CapabilityRef kind`, and observation, admission, and execution consume that same reference and
+absolute deadline. Pending and unobservable remain flat gate-closed observations; a separately
+injected action or endpoint cannot satisfy an edge. The concrete algebra and migration boundary
+are owned by
+[Lifecycle Control-Plane Architecture](./lifecycle_control_plane_architecture.md) and Sprint
+`1.61`.
 
 ## 4. Test Command Integration
 

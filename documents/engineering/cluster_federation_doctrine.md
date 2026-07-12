@@ -2,19 +2,24 @@
 
 **Status**: Authoritative source
 **Supersedes**: N/A
-**Referenced by**: [vault_doctrine.md](./vault_doctrine.md),
+**Referenced by**: [../../README.md](../../README.md),
+[README.md](./README.md),
+[vault_doctrine.md](./vault_doctrine.md),
 [config_doctrine.md](./config_doctrine.md),
 [distributed_gateway_architecture.md](./distributed_gateway_architecture.md),
 [storage_lifecycle_doctrine.md](./storage_lifecycle_doctrine.md),
 [../../DEVELOPMENT_PLAN/phase-7-aws-substrate-foundations.md](../../DEVELOPMENT_PLAN/phase-7-aws-substrate-foundations.md),
 [resource_scaling_doctrine.md](./resource_scaling_doctrine.md),
-[cluster_topology_doctrine.md](./cluster_topology_doctrine.md)
+[cluster_topology_doctrine.md](./cluster_topology_doctrine.md),
+[lifecycle_control_plane_architecture.md](./lifecycle_control_plane_architecture.md)
 **Generated sections**: none
 
 > **Purpose**: Single source of truth for prodbox cluster federation — the root/child Vault
-> transit-seal trust tree, per-cluster seal custody, parent custody of child init keys,
-> downstream-cluster metadata as secret data, the root-token config-write authority, and the
-> fail-closed unseal cascade.
+> transit-seal trust tree, per-cluster seal custody, parent custody of encrypted child recovery
+> material and revocation attestations,
+> downstream-cluster metadata as secret data, generation-CAS config authority, and the
+> fail-closed unseal cascade, interpreted through the separated lifecycle control-plane
+> authorities.
 
 ## 1. Why this doctrine exists
 
@@ -35,16 +40,19 @@ contract; this doctrine owns the cross-cluster trust tree, the per-tier seal mod
 SSoT inversion that makes downstream inventory unrecoverable from a sealed parent. The
 cluster-federation surface — child registration, init-key custody, and the federated unseal
 cascade — lands under Sprints `2.26`, `3.20`, `4.32`, and `1.38`; where this doctrine describes
-structure the worktree does not yet honor, it names the owning sprint, and until that sprint lands
-the statement is the intended end state, not a present-tense fact.
+structure the worktree does not yet honor, it names the owning sprint as a historical delivery
+record. Current implementation, cutover, and deployment-qualification status live only in the
+Development Plan.
 
 ## 2. The transit-seal trust tree
 
 Trust and unseal authority form a strict tree rooted at the root cluster. Each tier has exactly one
-Vault seal mode, exactly one unseal authority, and exactly one owner of its init keys (recovery
-keys + initial root token):
+Vault seal mode, exactly one unseal authority, and exactly one owner of its durable recovery
+material. Initial root tokens are encrypted to a pinned burn public key whose private key is never
+generated, stored, accepted, or available to `prodbox` and has no known holder; the encrypted token
+is never decrypted or used:
 
-| Tier | Vault seal mode | Who unseals it | Init keys owned by |
+| Tier | Vault seal mode | Who unseals it | Durable recovery material owned by |
 |------|-----------------|----------------|--------------------|
 | **Root cluster** | Shamir | The operator only, via the password-AEAD unlock bundle in durable MinIO, decrypted by a memorized password stored nowhere persistent (`test-secrets.dhall` simulates it in tests) | The operator (the password) |
 | **Child cluster** | `seal "transit"` pointed at the **parent** cluster's Vault | Auto-unseals against the parent — no human, no local unseal keys | The **parent** cluster's Vault KV |
@@ -52,9 +60,10 @@ keys + initial root token):
 The root cluster is the only tier a human ever unseals. Its Vault uses Shamir seal mode; its
 unseal/recovery keys live only inside the password-AEAD unlock bundle in the durable MinIO bucket,
 and the only secret the operator memorizes is the bundle password (see
-[vault_doctrine.md § 6](./vault_doctrine.md#6-the-unlock-bundle)). The target host path posts that
-password to the loopback-restricted daemon bootstrap endpoint; the daemon reads MinIO and unseals
-Vault in-cluster. The test harness simulates the operator at the unseal prompt by reading that
+[vault_doctrine.md § 6](./vault_doctrine.md#6-the-unlock-bundle)). The target host path submits the
+bounded unlock proof to Bootstrap Broker, the only pre-Vault process; the broker reads the bootstrap
+store and unseals Vault in-cluster. Gateway Runtime never receives the password or touches the
+unlock bundle. The test harness simulates the operator at the unseal prompt by reading that
 password from `test-secrets.dhall`; there is no production path that stores or logs it.
 
 A child cluster never holds its own unseal keys and never prompts a human. Its Vault is configured
@@ -88,25 +97,63 @@ Sprint `4.34` implements the pure trust-tree admission check in
 `Prodbox.Scaling.Autoscaler.clusterInTrustTree`; live multi-cluster placement remains a
 non-blocking proof axis.
 
-## 3. Parent custody of child init keys
+Federation does not collapse process authority:
 
-"Parents own the init keys for child clusters" is a hard custody rule, not a convenience.
+- Bootstrap Broker alone owns bounded Vault init/unlock/seal/rotation, including root Shamir and
+  child transit-seal bootstrap steps that must occur before the child Vault is usable.
+- Lifecycle Authority owns the durable, idempotent parent/child registration operation, operation
+  journal, fences, Model-B aggregate/checkpoint references, and delivery outbox.
+- The selected parent or child substrate's Target Secret Agent alone performs allowlisted,
+  generation-checked Vault KV read/CAS/read-back for custody material.
+- Gateway Runtime owns mesh/DNS and its local emitter journal only. It neither lists federation
+  custody nor returns bootstrap credentials.
+
+Each call is resolved from operation, service identity, and authority scope to one opaque
+`CapabilityRef kind`. Observation, admission, and execution reuse that same reference; a reachable
+gateway, component label, or separately supplied readiness endpoint is not federation capability
+evidence. The component topology is canonical in
+[Lifecycle Control-Plane Architecture](./lifecycle_control_plane_architecture.md).
+
+## 3. Parent custody of encrypted child recovery material
+
+Parents owning encrypted recovery material for child clusters is a hard custody rule, not a
+convenience. The target custody record never contains a reusable initial root token.
 
 At child cluster initialization (`vault init` running exactly once against an empty child Vault PV;
 see [storage_lifecycle_doctrine.md](./storage_lifecycle_doctrine.md) and
-[vault_doctrine.md § 5](./vault_doctrine.md#5-vault-deployment-model)), the child produces recovery
-keys and an initial root token. prodbox captures that material exactly once and writes it directly
-into the **parent's** Vault KV — never to the child's own host disk, never to a child unlock bundle,
-never to a Kubernetes Secret, never to logs (Sprint `2.26`, Sprint `3.20`):
+[vault_doctrine.md § 5](./vault_doctrine.md#5-vault-deployment-model)), Vault PGP-encrypts recovery
+shares to the prepared parent-custody recipient and encrypts the initial root token to the pinned
+burn public key. Its private key is never generated, stored, accepted, or available to `prodbox`, has
+no known holder, and the encrypted initial token is never decrypted or used. The child journals only
+the encrypted share receipt, delivers it
+to parent custody, and waits for exact generation read-back before deleting the local receipt. A
+separate short-lived generated root session performs/read-backs baseline and is accessor-revoked.
+Usable initial-token material and plaintext recovery shares never enter child host storage, a child
+unlock bundle, Kubernetes Secret, Lifecycle Authority, Gateway Runtime, or logs:
 
 ```text
 parent Vault KV
-  secret/data/clusters/<child-id>/init       recovery keys + initial root token (custodied for the child)
+  secret/data/clusters/<child-id>/recovery   encrypted share receipt + custody/root-session attestation
   secret/data/clusters/<child-id>/metadata   child identity, endpoints, kubeconfig, account id, stacks
   secret/data/clusters/<child-id>/bootstrap  child transit-seal bootstrap credential
-  secret/data/clusters/index                 parent child index for gateway listing
+  secret/data/clusters/index                 parent child index for federation inventory
 transit/<child-seal-key>              the child's transit-seal unseal authority
 ```
+
+The target registration is one durable Lifecycle Authority operation. Before any external write,
+the authority commits the operation and delivery intent. Bootstrap Broker performs only the
+bounded child Vault init/transit-seal/first-baseline work and never returns a usable root token or
+plaintext share.
+The parent Target Secret Agent conditionally writes the allowlisted
+metadata/bootstrap/index/recovery-custody objects with generation checks and exact read-back.
+Non-secret metadata and ciphertext may carry integrity digests; recovery-secret equality uses only
+the Agent's opaque, domain-separated Vault-HMAC commitment reference and never exposes a raw
+plaintext/share digest. Lifecycle Authority records delivery complete only after exact read-back and
+closes the operation after re-observing the child seal state. A lost response is recovered by
+`OperationId`; it is never retried as an untracked second registration. Scoped registration and
+break-glass credentials are held by the owning boundary session manager, not Gateway Runtime.
+
+#### Historical gateway-mediated implementation record (legacy cutover surface)
 
 Sprint `1.36`'s base `vault reconcile` plan creates the parent-side Transit foundation
 (`prodbox-downstream-cluster-config`) and federation-custody policy. The child registration
@@ -147,8 +194,11 @@ Consequences:
 - The child's unseal authority is the parent's Transit key; the child's recovery material and
   kubeconfig are in the parent's Vault KV, never in a k8s Secret. Both are unreachable while the
   parent is sealed.
-- Recovering, rotating, or re-keying a child cluster is a parent-side, root-token-gated operation
-  against the parent's Vault — it cannot be done from the child alone.
+- Recovering, rotating, or re-keying a child cluster is a parent-authorized one-time operation. The
+  parent agent reads only the registered custody generation and re-encrypts threshold shares to an
+  attested ephemeral child-Broker recipient. The child mints one short-lived root session, repairs,
+  reads back, revokes, proves accessor absence, and acknowledges the delivery nonce. It cannot be
+  done from the child alone and no reusable root token is custodied.
 - A child cluster that loses its Vault PV is re-provisioned with help from the parent's custodied
   init material; a child cannot self-recover its own root authority.
 
@@ -161,7 +211,8 @@ cluster a cluster manages are custodied only as Vault KV objects under
 `secret/data/clusters/<child-id>/*` (§3) and as Vault-Transit-enveloped MinIO objects
 ([vault_doctrine.md § 8–§9](./vault_doctrine.md#8-envelope-encryption-with-vault-transit)),
 encrypted under the `transit/prodbox-downstream-cluster-config` domain key and routed through the
-one generically-named object-store. The MinIO objects are HMAC-named `objects/<id>.enc`
+one generically-named object store owned through Lifecycle Authority, never a gateway proxy. The
+MinIO objects are HMAC-named `objects/<id>.enc`
 ciphertext with a Vault-encrypted index, so a sealed-Vault MinIO dump reveals only opaque object
 IDs at a decoy-padded constant count — never a downstream cluster's identity, never even how many
 children exist (Sprint `2.26`, Sprint `4.32`).
@@ -183,11 +234,12 @@ identifying messages; opaque IDs, not child names, are what may appear on a seal
 
 ## 5. Config SSoT inversion and the unencrypted basics
 
-The in-force cluster configuration is **not** a filesystem file — it is the
-Vault-Transit-enveloped object in MinIO under `transit/prodbox-active-config`, and that encrypted
-object is the source of truth ([config_doctrine.md](./config_doctrine.md), Sprint `1.38`). When a
-cluster's Vault is sealed, the in-force config is opaque ciphertext: nothing about the cluster's
-setup or its child clusters is determinable beyond the **unencrypted basics**.
+The in-force cluster configuration is **not** a filesystem file. The Lifecycle Authority
+aggregate's generation/digest/reference is the source of truth and selects one immutable
+Vault-Transit-enveloped MinIO blob; the blob alone is never current
+([config_doctrine.md](./config_doctrine.md)). When a cluster's Vault is sealed, the selected config
+is opaque ciphertext: nothing about the cluster's setup or children is determinable beyond the
+**unencrypted basics**.
 
 The unencrypted basics are the minimal, non-revealing bootstrap a cluster needs only to reach and
 unseal its own Vault — and nothing more:
@@ -218,18 +270,21 @@ the non-secret basics locate the parent Vault, and the orders themselves resolve
 unsealed Vault.
 
 The binary-sibling Tier-0 `prodbox.dhall` is a **seed/propose input only, not the SSoT**. On
-first-ever bring-up it seeds the encrypted MinIO SSoT; thereafter supplying a file is a *proposed
-update* applied through Vault, not a direct read of the in-force config. The host CLI reads the
-basics locally and fetches + decrypts the in-force config from MinIO via Vault; it does not read a
-repo-root Dhall file directly as the live config (Sprint `1.38`). The Sprint `1.38` local
+first-ever bring-up it submits the initial proposal; the Authority generation/digest/reference plus
+its immutable encrypted blob is authoritative. Thereafter supplying a file is a *proposed update*
+submitted as a durable Lifecycle Authority operation, not a direct read of the in-force
+config. The host CLI reads the basics locally and uses the operation-indexed Lifecycle Authority
+capability to fetch or propose the in-force config; it does not read a repo-root Dhall file directly
+as the live config or select a gateway/object-store endpoint (Sprint `1.38`). The Sprint `1.38` local
 foundations and global host-loader switch are landed; Sprint `1.42` retired the repo-root
 `prodbox-config.dhall` seed and moved the seed/propose payload into Tier-0 `prodbox.dhall`.
 
-## 6. Root-token config-write authority
+## 6. Generation-CAS config-write authority
 
 Reads of the basics are always free. Full reads of a cluster's in-force config require that
-cluster's Vault to be unsealed. **Writes to the root cluster's in-force config require the root
-Vault token** — which requires an unsealed root Vault (Sprint `1.38`, Sprint `4.32`).
+cluster's Vault to be unsealed. Writes require a short-lived config-admin TokenRequest proof, the
+exact Lifecycle Authority `ConfigProposeCas` capability, the expected authority epoch and config
+generation, and immutable-blob read-back. A Vault root token is not a config credential.
 
 The root config governs every downstream cluster — it is the keys to the kingdom — so mutating it
 is the most privileged operation in the fleet:
@@ -237,13 +292,19 @@ is the most privileged operation in the fleet:
 ```text
 read basics            -> always available (no Vault)
 read in-force config   -> requires this cluster's Vault unsealed
-write in-force config  -> requires this cluster's Vault unsealed AND the privileged root token
+write in-force config  -> config-admin proof + exact authority epoch/generation CAS + read-back
 ```
 
-A child cluster's in-force config is written under the privileged token custodied for it in its
-parent's Vault KV (§3); a child cannot rewrite its own governing config without the parent's
-custodied authority. This keeps the authority to reconfigure any cluster anchored in the parent
-chain, terminating at the operator who unseals the root.
+A child cluster's in-force config is accepted only by a parent-authorized durable operation whose
+target identity and expected generation are explicit. A child cannot rewrite its own governing
+config merely because it can reach its Vault. This keeps reconfiguration authority anchored in the
+parent chain without retaining a reusable root token.
+
+The config-admin proof authorizes a request, not a direct write. Lifecycle Authority validates the
+proposal purely, writes and reads back an immutable encrypted blob, and CAS-advances its bounded
+aggregate. Neither Target Secret Agent, Gateway Runtime, nor a host-direct fallback owns config
+authority. The same operation-indexed capability reference is used for observation, admission,
+mutation, and read-back.
 
 ## 7. The fail-closed unseal cascade
 
@@ -273,13 +334,19 @@ In-force config: unavailable; Vault sealed
 Downstream clusters: unavailable; Vault sealed
 ```
 
-Federated `cluster reconcile` honors the cascade: a child `prodbox cluster reconcile` checks parent
-Vault readiness before any secret-dependent reconcile step runs, requires the parent-provisioned
-transit-seal token Secret, renders the Vault chart with `seal "transit"`, and refuses to proceed —
-with a clear, safe error and no local unseal fallback — when the parent is sealed or unreachable
-(Sprint `4.32`). Init-once / unseal-on-rebuild holds per cluster: a child's Vault is initialized
-exactly once (the first time its PV is empty), writes its recovery shares and initial root token to
-the parent KV, and every subsequent reconcile only auto-unseals it against the parent (see
+Federated `cluster reconcile` honors the cascade by resolving the exact parent bootstrap operation
+to a Bootstrap Broker `CapabilityRef` and using that same reference for observation, admission, and
+execution. `VaultUninitialized`, `VaultSealed`, `VaultUnsealed`, and unobservable failure remain
+distinct; a ready Pod, reachable gateway, or nominal parent endpoint does not admit secret-dependent
+work. It requires the parent-provisioned transit-seal credential, renders the Vault chart with
+`seal "transit"`, and refuses—with no local unseal fallback—when the parent is sealed or
+unobservable.
+
+**Historical implementation record:** Sprint `4.32` implements the earlier direct parent-readiness
+and `cluster reconcile` binding. That pre-redesign implementation wrote recovery shares and an
+initial root token to parent KV; this is a deletion surface, not the target custody contract above.
+Init-once / unseal-on-rebuild still holds per cluster: a child's Vault is initialized exactly once
+against an empty PV and every subsequent reconcile only auto-unseals it against the parent (see
 [storage_lifecycle_doctrine.md](./storage_lifecycle_doctrine.md) and
 [vault_doctrine.md § 5](./vault_doctrine.md#5-vault-deployment-model)).
 
@@ -304,12 +371,16 @@ Vault:
 Everything else — the in-force config, the downstream-cluster inventory and identities, child
 init keys, every credential — is Vault-owned and unrecoverable from a sealed cluster.
 
-## 9. Owning sprints
+## 9. Historical Delivery Records
+
+The following rows preserve original implementation ownership. They do not override the target
+authority split above and do not claim current cutover or qualification status; the Development
+Plan owns both.
 
 | Sprint | Surface this doctrine prescribes |
 |--------|----------------------------------|
 | `1.38` | Config SSoT inversion: the Vault-Transit-enveloped MinIO object is the in-force config; filesystem Dhall is seed/propose only; the unencrypted-basics local surface; root-token-gated root-config writes (§5, §6). |
-| `2.26` | Cluster federation trust topology and downstream-cluster custody: the parent/child hierarchy; downstream-cluster config/identities as secret; the CLI/gateway surface to register a child cluster, custody its init keys, record full downstream inventory, and expose Vault-backed child-listing / bootstrap-reference endpoints (§2–§4). |
+| `2.26` | Cluster federation trust topology and downstream-cluster custody, including the historical CLI/gateway registration, child-listing, and bootstrap-reference routes retained only as legacy cutover surfaces (§2–§4). The target replaces those routes with Lifecycle Authority and Target Secret Agent capabilities. |
 | `3.20` | Vault transit-seal hierarchy and per-cluster seal custody: root Shamir + password-AEAD (Argon2id + ChaCha20-Poly1305) unlock bundle; child `seal "transit"` chart rendering against the parent; child recovery-key init request shape; child init keys mapped to parent-owned Vault KV; per-domain Transit keys + policies (§2, §3). |
 | `4.32` | Federated lifecycle reconcile and fail-closed unseal cascade: direct parent-side live child registration; child `cluster reconcile` auto-unseals from its parent; init-once/unseal-on-rebuild; the brick cascade when a parent is sealed/unreachable; lifecycle settings reload after Vault/MinIO uses the child root token custodied in the parent KV (§6, §7). |
 | `5.8` | Canonical sealed-Vault validation: `prodbox test integration sealed-vault` proves the deployed parent/child fail-closed cascade and cross-surface no-child-info invariant during the live red-team closure (§7). |
@@ -320,8 +391,11 @@ init keys, every credential — is Vault-owned and unrecoverable from a sealed c
   federation tree is built on
 - [config_doctrine.md](./config_doctrine.md) — the config SSoT inversion and the unencrypted-basics
   local surface
-- [distributed_gateway_architecture.md](./distributed_gateway_architecture.md) — the gateway daemon
-  whose downstream-cluster state is Vault-enveloped and parent-custodied
+- [distributed_gateway_architecture.md](./distributed_gateway_architecture.md) — Gateway Runtime,
+  which owns federation mesh/DNS projection only and does not custody or serve child secrets
+- [lifecycle_control_plane_architecture.md](./lifecycle_control_plane_architecture.md) — the
+  Bootstrap Broker, Lifecycle Authority, Target Secret Agent, and operation-indexed capability
+  boundaries used to interpret federation safely
 - [storage_lifecycle_doctrine.md](./storage_lifecycle_doctrine.md) — the retained per-cluster Vault
   PV and the init-once / unseal-on-rebuild durability that federation depends on
 - [../../DEVELOPMENT_PLAN/README.md](../../DEVELOPMENT_PLAN/README.md) — Closure Status and the

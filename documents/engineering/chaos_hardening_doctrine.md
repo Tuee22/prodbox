@@ -2,7 +2,7 @@
 
 **Status**: Authoritative source
 **Supersedes**: N/A
-**Referenced by**: DEVELOPMENT_PLAN/phase-2-gateway-dns.md, documents/engineering/README.md, CLAUDE.md, documents/engineering/distributed_gateway_architecture.md, documents/engineering/tla_modelling_assumptions.md
+**Referenced by**: DEVELOPMENT_PLAN/phase-2-gateway-dns.md, documents/engineering/README.md, CLAUDE.md, documents/engineering/distributed_gateway_architecture.md, documents/engineering/lifecycle_control_plane_architecture.md, documents/engineering/tla_modelling_assumptions.md
 **Generated sections**: none
 
 > **Purpose**: A treatise and working doctrine for hardening decisions made under concurrency — *Extract*
@@ -22,6 +22,12 @@ SSoT line, held throughout: the gateway's *formal model, invariant catalog, and 
 [tla_modelling_assumptions.md](./tla_modelling_assumptions.md) and
 [distributed_gateway_architecture.md](./distributed_gateway_architecture.md); this doctrine grounds its
 narrative in the gateway but never restates those as its own.
+
+The physical control-plane boundary is likewise owned by
+[Lifecycle Control-Plane Architecture](./lifecycle_control_plane_architecture.md). Examples here
+must not collapse Bootstrap Broker, Lifecycle Authority, Target Secret Agent, and Gateway Runtime
+into one daemon or transport. Implementation and deployment-qualification status belong only to
+the Development Plan.
 
 ---
 
@@ -515,12 +521,9 @@ io-sim was built and hardened for Cardano's `ouroboros-network` stack (IOG / Wel
 under IntersectMBO) — a production distributed system, the Haskell peer of FoundationDB's deterministic
 "Flow" and its descendants Antithesis and TigerBeetle.
 
-**Why it is the move that would close prodbox's real gap.** Recall Model's honest limit (§9): a green TLA+
-model does not prove the *code* refines it, and in prodbox that correspondence — between
-`gateway_orders_rule.tla` and the eight loops of `src/Prodbox/Gateway/Daemon.hs` — is maintained as prose
-(`tla_modelling_assumptions.md` §3), not executed. Today those loops race over shared `TVar`s only on the
-wall clock, and the gateway's `gatewayPartitionValidation` test exercises the *pure* decision functions,
-never the concurrent schedule. Lifting the daemon onto io-classes would let the **real loops** run under
+**Why this move matters to prodbox.** Recall Model's honest limit (§9): a green TLA+
+model does not prove the *code* refines it. Lifting the Gateway Runtime actor/loops onto io-classes lets
+the **real code** run under
 `IOSimPOR`, exercising interleavings that neither the TLA+ model nor the pure test can reach, and turning
 the model↔code correspondence from documentation into something a test executes. That is the unique value
 here: not a second protocol proof, but evidence that *this code* — not a model of it — survives the
@@ -537,15 +540,13 @@ production when they genuinely share *in-process* state. The gateway daemons do 
 through the network and replicated semantic state — so an `IOSim` run of one daemon rests on a hand-built stub of its
 peers, and the catastrophic *cross-actor* invariant (two writers) is still better served by the TLA+
 model. So Simulate stays the one technique the cadence keeps parenthetical: never a fourth move beside
-Extract, Model, and Inject, and **not adopted in prodbox today** — it is the gap-closer to reach for,
-scoped to one subsystem, after Extract, gated on evidence the tax is worth paying.
+Extract, Model, and Inject. Whether and where it is adopted is recorded in the Development Plan.
 
-**How you would know you'd done it (if adopted).** The same source runs unchanged in production (`IO`) and
+**Qualification shape.** The same source runs unchanged in production (`IO`) and
 under the simulator (`IOSim`); at least one QuickCheck property explores schedules over the real code with
 `IOSimPOR` and asserts the gateway invariant plus the absence of leaked or orphaned concurrency. Until
-then, the honest ledger entry (§12) reads: the gateway's concurrent *schedule* is **unverified** — proven
-pure at the decision layer, proven-for-the-model at the protocol layer, and not yet exercised under a
-controlled scheduler at all.
+that evidence exists, no document may claim the concurrent schedule is verified; the Development Plan
+owns the evidence state.
 
 ---
 
@@ -585,13 +586,12 @@ unconditional when the protocol claims unconditional safety, or conditional and 
 only honest invariant is "once views converge" plus a bounded, self-healing violation. A suite that only
 injects benign faults conforms to *"recovers from outages,"* not to this doctrine.
 
-**Where prodbox stands.** Be honest by the doctrine's own rule. The gateway's `gatewayPartitionValidation`
-is a *pure assertion test* over the decision functions — it folds claim/yield events and checks
-`canWriteDns` / `NoTugOfWar` / `NoSimultaneousDNSWriters` — which is real and valuable, but it is
-Extract-layer evidence, **not** live adversarial fault injection: no process is killed, no schedule is
-contended, no clock is skewed against a running daemon. The live `prodbox test integration
-gateway-partition` surface is partly still plan-owned. So the gateway's Inject tier is an **open
-conformance gap** — named here as the doctrine demands, not papered over.
+**Required prodbox campaign.** Inject faults at every durable authority CAS boundary, lose responses
+after an external effect applies, saturate Gateway Runtime while Lifecycle Authority continues, and
+restart the single gateway emitter actor between stage/fsync/publish/commit. Cleanup injection fails
+each node of the registered always-run DAG in turn and asserts every independent node still runs,
+credential teardown remains dependency-blocked, and the final report retains the original plus all
+cleanup failures. The Development Plan alone records which scenarios have deployment-qualified.
 
 **What this move cannot see.** It cannot prove soundness, and it cannot see the interleavings you did not
 inject. A green Inject run is the strongest *empirical* confidence you can buy and the weakest *logical*
@@ -625,12 +625,9 @@ assumed result and report it as proven. Keep this ledger explicitly:
 invariant-confluence classification — belong to systems that cross a storage boundary, and are recorded in
 §19 so the honesty discipline scales with the hardness.)
 
-Applied to prodbox today, the ledger is blunt and that is the point: **Extract** is *proven* (the gateway's
-pure decision functions, property-tested); **Model** is *proven-for-the-model* (the TLA+ check, ~4.4M
-states at scope 3); **Simulate** is *empty* (io-sim not adopted — the concurrent schedule is unexercised,
-§10); **Inject**'s live tier is *open* (the partition test is pure, not a fault drill, §11). That is the
-difference between claiming "the gateway is hardened" and stating exactly which layers carry evidence and
-which do not.
+The project-specific ledger, evidence hashes, open counterexamples, and qualification state live in
+the Development Plan. This document defines the strength labels and forbids any other document from
+turning a sampled test into a proof or maintaining a competing status count.
 
 The rule, stated once and meant absolutely: **never report a tested, assumed, or merely argued result as
 proven.** Type-checking, decision purity, and finite-and-exhausted decision properties can be *proven* at
@@ -654,7 +651,9 @@ and R9 is purely cross-boundary and lives there.)
   a split-brain waiting to happen, and it is invisible to Model. (A substrate's atomicity, ordering,
   and convergence hold only *within* one consistency boundary; across one, the substrate is
   asynchronous — the §16 axis. The classification rule that belongs to R1 in that world is stated in
-  §17.)
+  §17.) At a service boundary, observation, admission, and execution carry the same
+  operation-indexed `CapabilityRef`; permitting a separately supplied probe endpoint recreates the
+  time-of-check/time-of-use defect at the transport layer.
 - **R2 — Determinism in tests: inject time and scheduling; never assert on wall-clock.** Tests drive
   timing and ordering through injected hooks and seams, not real delays. Wall-clock tests are slow,
   flaky, and — fatally — cannot deterministically reproduce the interleaving that exposes a §3 defect.
@@ -663,7 +662,9 @@ and R9 is purely cross-boundary and lives there.)
   none double-applied under redelivery and crash-mid-acknowledge" as a first-class protocol invariant
   worth its own Model and its own Inject fault — not an implementation afterthought. The idempotency key
   must be a stable identity (content- or call-identity, not a local sequence number), because §18 will
-  ask it to survive replication.
+  ask it to survive replication. For lifecycle effects that identity is a durable operation ID: the
+  authority commits an outbox intent before the external effect, and an applied-but-response-lost
+  result is recovered by observing the operation/outbox rather than issuing a fresh mutation.
 - **R4 — Crash-only / fail-closed recovery.** On an unrecoverable fault, fail loudly and let a supervisor
   restart from clean state (negatively-acknowledge in-flight work, kill the child, exit non-zero) rather
   than attempting intricate in-process recovery. Crash-only paths have far smaller state spaces for Model
@@ -673,7 +674,10 @@ and R9 is purely cross-boundary and lives there.)
   explicitly finite. A cgroup limit contains an omitted bound; it does not supply one. Likewise, a
   point-in-time Ready result does not prove stability across a window. (This is Extract's "bound
   everything" sub-rule promoted system-wide: an unbounded effect is an instant no decision can reason
-  about and no model can scope.)
+  about and no model can scope.) A control-plane request creates one monotonic absolute deadline;
+  admission queueing, credential refresh, external I/O, read-back, and response serialization all
+  consume its remaining budget. Resetting a relative timeout at each layer silently removes the
+  authored bound.
 - **R6 — Structured concurrency only.** Coordination paths use scoped concurrency (spawn-within-a-scope,
   race, cancel-on-exit) — never unstructured fire-and-forget tasks or ad-hoc sleeps. Structured scopes
   make cancellation and async-exception safety analyzable; unstructured tasks leak and hide races. (The
@@ -1094,19 +1098,17 @@ Model → (Simulate) → extend-Inject is exactly the sequence that closes it.
 > [distributed_gateway_architecture.md](./distributed_gateway_architecture.md). Cite those when scheduling
 > or implementing gateway work; cite this appendix for the method it illustrates.
 
-> **Implementation-status note.** Sprint
-> [2.31](../../DEVELOPMENT_PLAN/phase-2-gateway-dns.md) landed the bounded
-> state/delta/per-emitter-repair and credential-gated effect shape used in this worked example.
-
 **The system.** A small fixed set of ranked daemons must keep exactly one public DNS A record pointing at
 whichever of them is the elected leader, so traffic always reaches a live owner. The daemons share no
 address-space state; they converge a **bounded signed semantic replica state**: latest heartbeat and
 ownership evidence per Orders member, bounded replay/diagnostic windows, and a monotonic
 receive-cursor vector keyed by emitter.
 Peers reconcile by idempotent bounded deltas or a signed per-emitter semantic checkpoint plus a
-bounded suffix. Each daemon separately retains only its own committed continuity anchor and at most
-one exact staged assertion; that authority prevents sequence reset across a total peer restart but
-does not preserve the discarded semantic history. The only externally-visible effect is the DNS
+bounded suffix. Each Gateway Runtime has one actor that exclusively owns its encrypted,
+identity-bound local journal and the complete `stage -> fsync -> publish -> commit -> fsync`
+transition. Other workers submit bounded intents; they cannot stage or commit continuity directly.
+The journal prevents sequence reset across a total peer restart but does not preserve discarded
+semantic history, and it is not a remote lifecycle CAS or generic object-store record. The only externally-visible effect is the DNS
 write. The invariant: **at most one daemon writes the DNS record —
 once the daemons' views have converged.** That conditional clause is deliberate and load-bearing (R7): the
 invariant is *not* absolute. It meets the §2 gate — decisions under concurrency (claim / yield / write),
@@ -1639,3 +1641,6 @@ post-failover replay, or duplicates re-corrupt the derived total.
 - [TLA+ Modelling Assumptions](./tla_modelling_assumptions.md) — SSoT for the formal model and invariant catalog of the gateway that Appendix B narrates.
 - [TLA+ Models index](./tla/README.md)
 - [Distributed Gateway Architecture](./distributed_gateway_architecture.md) — the gateway's leadership/failover design and §5 safety boundary.
+- [Lifecycle Control-Plane Architecture](./lifecycle_control_plane_architecture.md) — dedicated
+  control-plane components, operation-indexed capabilities, gateway local-journal actor, and
+  failure-domain isolation.

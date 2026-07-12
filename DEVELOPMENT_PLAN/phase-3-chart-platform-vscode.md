@@ -9,6 +9,7 @@
 [resource_scaling_doctrine.md](../documents/engineering/resource_scaling_doctrine.md),
 [bootstrap_readiness_doctrine.md](../documents/engineering/bootstrap_readiness_doctrine.md),
 [distributed_gateway_architecture.md](../documents/engineering/distributed_gateway_architecture.md),
+[lifecycle_control_plane_architecture.md](../documents/engineering/lifecycle_control_plane_architecture.md),
 [helm_chart_platform_doctrine.md](../documents/engineering/helm_chart_platform_doctrine.md),
 [unit_testing_policy.md](../documents/engineering/unit_testing_policy.md)
 **Generated sections**: none
@@ -18,6 +19,13 @@
 > orchestration with [the engineering doctrine docs](../documents/engineering/README.md).
 
 ## Phase Status
+
+⏸️ **Reopened and blocked by Sprint `2.33`.** Sprint `3.26` expands the chart platform's own
+surface with physically separate Bootstrap Broker, Lifecycle Authority, and Target Secret Agent
+workloads. Each receives a distinct ServiceAccount, Service, NetworkPolicy, resource envelope,
+probe contract, disruption budget, and generated values surface. Gateway pods no longer share a
+cgroup, identity, or lifecycle probe with retained-authority work. Earlier chart and probe sprints
+remain Done on their historical scope.
 
 ✅ **Reclosed 2026-07-10 for constant-time gateway probe binding.** Sprint `3.25` is Done on the
 Phase-3-owned chart surface. `Prodbox.Gateway.Probe` is the typed source for the liveness
@@ -298,6 +306,7 @@ supported platform doctrine.
   list|status|deploy|delete` behavior against fake `helm` and `kubectl`, including explicit
   failure guidance when operators try to address internal `keycloak-postgres` or `redis`
   dependency releases directly.
+
 ### Remaining Work
 
 None.
@@ -334,6 +343,7 @@ Harbor-first image doctrine.
 - `src/Prodbox/TestRunner.hs` waits for `prodbox host public-edge` to report
   `CLASSIFICATION=ready-for-external-proof` before the external `charts-vscode` curl proof
   continues.
+
 ### Remaining Work
 
 None.
@@ -404,6 +414,7 @@ Patroni HA surface.
   primary service endpoint.
 - `documents/engineering/helm_chart_platform_doctrine.md` and the linked chart-platform doctrine
   now match the authoritative three-replica synchronous-replication contract described here.
+
 ### Remaining Work
 
 None.
@@ -2508,6 +2519,128 @@ diagnostic state renderer every ten to fifteen seconds.
 
 - Link the landed chart binding to Sprint `2.31`'s endpoint contract and keep Sprint `5.16`'s
   runtime-stability observation explicitly separate.
+
+## Sprint 3.26: Physically Separated Control-Plane Workloads [⏸️ Blocked]
+
+**Status**: Blocked
+**Deployment qualification**: pending
+**Implementation**: planned chart templates and typed renderers in
+`src/Prodbox/Lib/ChartPlatform.hs`, `src/Prodbox/Secret/VaultInventory.hs`, `charts/gateway/`, and
+new broker/authority/target-agent chart surfaces with generated values and lint fixtures
+**Blocked by**: Sprint `2.33`
+**Independent Validation**: Helm rendering, typed-values goldens, resource-plan tables, route/RBAC
+negative fixtures, and chart lint validate the platform surface without a deployed cluster, AWS,
+or a later phase.
+**Docs to update**: `documents/engineering/lifecycle_control_plane_architecture.md`,
+`documents/engineering/helm_chart_platform_doctrine.md`,
+`documents/engineering/resource_scaling_doctrine.md`,
+`documents/engineering/vault_doctrine.md`,
+`documents/engineering/bootstrap_readiness_doctrine.md`, and
+`documents/engineering/unit_testing_policy.md`
+
+### Objective
+
+Render substrate-local Bootstrap Broker, Gateway Runtime, and Target Secret Agent workloads plus
+exactly one retained home/control-plane Lifecycle Authority and its physically separate backup
+adapter so identity, cgroup pressure,
+readiness, deployment cardinality, and failure domains match their typed authority boundaries.
+
+### Deliverables
+
+- Add separate Deployment/StatefulSet, Service, ServiceAccount, NetworkPolicy, PodDisruptionBudget,
+  resource envelope, and lifecycle probe values for every applicable role. AWS renders an
+  authority client reference, not another authority workload.
+- Render the Authority Backup Adapter only beside the retained home Authority, with its own
+  ServiceAccount/Vault role/network policy/queue/envelope. It accepts only closed backup prepare,
+  read-back, restore, GC, and decommission programs and alone reads
+  `secret/aws/authority-backup-store`; core Authority and provider worker cannot read that path.
+- Render a separate home TLS Retention Adapter with only
+  `secret/aws/tls-retention-store` and the registered `public-edge-tls/<substrate>/<fqdn>` S3
+  prefix. Give each Target Agent exact TLS-Secret observe/seal/materialize RBAC; only the home Agent
+  also gets the retained-home TLS Transit DEK-exchange policy plus closed schema-indexed SES-SMTP/
+  ACME-EAB custody/rewrap policy. Adapter/Authority never get Kubernetes TLS Secret, arbitrary
+  secret-export, or plaintext-key policy.
+- Render the normal fenced Provider Worker as another home-only private Deployment/ServiceAccount/
+  Vault role with its own queue/envelope; it alone reads `secret/aws/lifecycle-provider` and runs
+  normal Pulumi/AWS effects. Render the Credential Provisioner as an on-demand ephemeral Job whose
+  action is indexed by exactly one active signed `GenesisBackup`, `BackupRepair`, or
+  `OperatorMaterial` permit. First reconcile alone may retain the attested deadline-bounded prompt
+  session across backup genesis and a finite sequence of separately backup-receipted permits whose
+  exact ordered action/coordinate/count/deadline plan digest is bound into the Genesis permit, never
+  as batch authority; later actions render a fresh Job. It alone may use prompt bytes for identity
+  create/rotate/repair and is deleted/read back absent after the permitted session. Render a
+  separate External Material Ingress Job for one schema-indexed non-AWS permit (initially ACME EAB);
+  it cannot reuse the AWS-admin session/identity plan or expose arbitrary paths/bytes. Render the separate Admin Action Runner with the
+  same authenticated stdin mechanism but only for a backup-receipted destroy/migrate/compatibility/
+  quota permit. The post-export Decommission Runner uses its signed manifest plus fresh prompt
+  outside this live graph. None shares the Authority Pod, ServiceAccount, cgroup, queue, proof
+  family, or a generic provider/admin endpoint.
+- Render Gateway emitters as stable StatefulSet identities with one registered retained journal
+  each. EKS CSI EBS uses `ReadWriteOncePod`; home uses a node-pinned `hostPath`/local PV with an
+  exclusive OS lock. Readiness waits for exact identity/mount, the lock, Kubernetes Lease
+  incarnation, and persisted incarnation. A rolling update cannot overlap two admitted writers for
+  one emitter identity.
+- Deploy the Bootstrap Broker before Vault unseal, the Lifecycle Authority after Vault unseal, and
+  the Target Secret Agent before any target-secret delivery; gateway readiness is not an anchor for
+  either authority service.
+- Bind least-privilege Vault roles: broker bootstrap-only material, lifecycle authority Model-B/
+  Transit/operational control paths, target agent an allowlisted target KV path, and gateway only
+  mesh/DNS/event credentials.
+- Render separate Vault paths, SecretRefs, ServiceAccounts, and policies for Lifecycle-provider,
+  long-lived Authority-backup-store, Gateway-DNS, substrate-local cert-manager-DNS01, deterministic
+  `LongLived` SES-SMTP identities, and schema-bound non-recoverable-material custody. Chart/render fixtures for the
+  new roles reject `secret/gateway/gateway/aws`; the explicit pre-cutover legacy modules remain
+  narrowly allowlisted until Sprint `4.50` removes them, so this phase does not depend on a later
+  cutover to validate its owned surface.
+- Give each service constant-time liveness and cached admission-readiness endpoints. Deep
+  capability observations execute through the role-specific client, not kubelet probes.
+- Extend the typed capacity plan with independent CPU/memory/ephemeral-storage and queue limits;
+  no combined gateway envelope may hide control-plane demand.
+
+### Validation
+
+1. Helm renders the substrate-local public roles plus private Backup/TLS Adapters and Provider
+   Worker on the retained home/control-plane substrate with unique selectors,
+   Services, identities, policies, envelopes, and probe paths; AWS renders Broker, Target Agent,
+   Gateway, and an exact external authority reference while rejecting a second writer.
+2. Permit fixtures render the ephemeral Credential Provisioner only for a signed, unexpired permit
+   of the matching mode, the External Material Ingress only for its matching schema permit, and the
+   Admin Action Runner only for its closed action permit, reject
+   cross-mode dispatch, and prove neither receives a normal provider/outbox capability. First-
+   reconcile fixtures permit only plan-digest/member/count-bound, finite receipt-ordered permit
+   succession in the same attested session; a missing prior receipt, reordered/widened set, later
+   rotation, or expired attestation requires a fresh Job/prompt. Terminal cleanup observes each Job
+   absent.
+3. Negative fixtures reject shared ServiceAccounts, cross-role Vault/Kubernetes-Secret policy grants, gateway
+   lifecycle routes, missing limits, and deep work in kubelet probes.
+4. Generated values/docs round-trip from typed renderers with no hand-maintained duplicate.
+5. Resource-plan tests prove each role fits the home and AWS substrate budgets independently.
+6. Chart lint, unit/integration suites, and `prodbox dev check` pass.
+
+### Remaining Work
+
+- Blocked until Sprint `2.33` supplies the broker/runtime command roles and route boundary.
+- Phase 4 binds the rendered Lifecycle Authority and Target Secret Agent to their production
+  interpreters.
+
+## Documentation Requirements
+
+**Engineering docs to create/update:**
+
+- `documents/engineering/lifecycle_control_plane_architecture.md` - deployment topology.
+- `documents/engineering/helm_chart_platform_doctrine.md` - role-specific charts and probes.
+- `documents/engineering/resource_scaling_doctrine.md` - independent envelopes/queues.
+- `documents/engineering/vault_doctrine.md` - ServiceAccount and policy inventory.
+- `documents/engineering/bootstrap_readiness_doctrine.md` - component order and capability gates.
+- `documents/engineering/unit_testing_policy.md` - chart negative fixtures and goldens.
+
+**Product docs to create/update:**
+
+- `README.md` - deployed role topology.
+
+**Cross-references to add:**
+
+- Link each rendered role to its Phase-2 or Phase-4 behavior owner.
 
 ## Related Documents
 

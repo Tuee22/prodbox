@@ -86,7 +86,7 @@ Every document must include:
 |--------|---------|
 | `Authoritative source` | This is the SSoT for this topic |
 | `Reference only` | Points to authoritative sources |
-| `Generated reference` | Wholly code-generated reference artifact (e.g. `documents/cli/commands.md`); do not hand-edit |
+| `Generated reference` | Wholly code-generated reference artifact; do not hand-edit. A document such as `documents/cli/commands.md`, with one generated marker plus hand-maintained prose, is instead `Reference only`. |
 | `Deprecated` | Scheduled for removal |
 
 ### Generated sections metadata field

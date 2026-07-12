@@ -10,6 +10,7 @@
 [resource_scaling_doctrine.md](../documents/engineering/resource_scaling_doctrine.md),
 [bootstrap_readiness_doctrine.md](../documents/engineering/bootstrap_readiness_doctrine.md),
 [distributed_gateway_architecture.md](../documents/engineering/distributed_gateway_architecture.md),
+[lifecycle_control_plane_architecture.md](../documents/engineering/lifecycle_control_plane_architecture.md),
 [unit_testing_policy.md](../documents/engineering/unit_testing_policy.md)
 **Generated sections**: none
 
@@ -19,6 +20,14 @@
 > substrate-owning phase docs); this phase owns what the suite proves and how.
 
 ## Phase Status
+
+⏸️ **Reopened and blocked by Sprint `4.50`.** Sprint `5.18` makes restore and retained
+preparation consume the same exact capability references that execution uses and lowers cleanup to an
+always-run DAG, so an unrelated selected-target probe cannot authorize retained-authority work and
+one failure cannot skip independent restoration. Sprint `5.19`, blocked by `5.18`, adds temporal
+load/fault evidence for CPU throttling, admission queues, deadlines, cancellation, and cleanup.
+Earlier point-readiness and restart/OOM evidence remains useful but is not the expanded temporal
+qualification.
 
 ✅ **Reclosed 2026-07-10 after retained-resource preparation.** Sprint `5.16` supplies the typed
 restart/OOM/high-water stability oracle and run-scoped restore recorder. Sprint `5.17` now derives
@@ -311,6 +320,7 @@ Close the implemented public DNS and public-edge path on the Haskell runtime tha
   `src/Prodbox/TestValidation.hs`.
 - Environment-dependent public-edge success remains owned by those commands rather than asserted
   here as a fresh run result.
+
 ### Remaining Work
 
 None.
@@ -1398,6 +1408,213 @@ SMTP sync; unrelated suites do not touch SES, and ordinary postflight never dest
 
 - Link Sprint `5.16` to Sprints `1.60`/`2.31` and Sprint `5.17` to Sprints `4.47`/`8.10` without
   creating backward blockers.
+
+## Sprint 5.18: Capability-Bound Preparation and Always-Run Cleanup DAG [⏸️ Blocked]
+
+**Status**: Blocked
+**Deployment qualification**: pending
+**Implementation**: planned revisions to `src/Prodbox/TestRestore.hs`, `TestPlan.hs`,
+`TestRunner.hs`, `Prerequisite.hs`, a retained `CleanupRun` journal/client, the EffectDAG cleanup
+projection, installed-binary fixtures, and focused pure plan tests
+**Blocked by**: Sprint `4.50`
+**Independent Validation**: pure plan/property tests and fake capability clients prove exact-handle
+binding and always-run cleanup after every injected failure without a live cluster, AWS, or a later
+phase.
+**Docs to update**: `documents/engineering/lifecycle_control_plane_architecture.md`,
+`documents/engineering/prerequisite_doctrine.md`,
+`documents/engineering/bootstrap_readiness_doctrine.md`,
+`documents/engineering/integration_fixture_doctrine.md`,
+`documents/engineering/unit_testing_policy.md`, and
+`documents/engineering/effectful_dag_architecture.md`
+
+### Objective
+
+Make test preparation execute only through the exact capability references it observes and make every
+registered cleanup obligation run even when preparation, validation, restoration, or another
+cleanup node fails.
+
+### Deliverables
+
+- Replace separately supplied endpoint labels/probe actions with the canonical indexed references,
+  such as `CapabilityRef 'LifecycleSubmit`, `CapabilityRef 'TargetSecretCasReadBack`, and
+  `CapabilityRef 'GatewayPeerExchange`. Each requested program uses its one exact reference for
+  admission and execution; no parallel handle family exists.
+- Compile preparation from validation requirements into a typed DAG. Retained SES preparation
+  depends on Lifecycle Authority admission and the selected Target Secret Agent; it never depends
+  on the target gateway.
+- Before the first mutation, commit the complete cleanup DAG, canonical digest, and stable per-node
+  operation IDs to the Lifecycle Authority's primary-plus-backup-receipted `CleanupRun` namespace.
+  It durably records the primary suite outcome; owner-lease expiry records `RunnerLost` if no result
+  arrived. A fenced recovery worker scans/resumes every nonterminal run in the authority scope
+  before any new run can mutate. Node outcomes are CAS/idempotent; terminal runs compact only to a
+  primary+backup immutable report blob plus a non-reusable tombstone after the retention window,
+  while nonterminals are never evicted. An in-memory finalizer alone is not cleanup ownership.
+- Make EKS drain return its typed result to that DAG. AWS `DrainSkipped`/`DrainFailed` remains a
+  cleanup failure, while a `RequiresAttempt` edge still runs last-resort provider destroy; neither
+  outcome overwrites the other.
+- Preserve the primary suite failure while accumulating every cleanup/restoration failure in a
+  structured report. Cancellation begins cleanup under a bounded shield rather than skipping it.
+- Restore the canonical platform and all selected charts independently of retained-resource
+  operation outcome; destroy per-run AWS stacks/EBS and IAM in authority-safe order and re-observe
+  every owned resource class.
+- Model consumer lifetime in cleanup: home A record/Certificate plus home Gateway-DNS/DNS01 and TLS-
+  retention identities remain LongLived with the restored home edge; AWS A/Certificate/Challenge/
+  DNS01 are run-scoped. Exact TLS retention/restore read-back precedes any issuance, and ordinary
+  postflight cannot delete credentials or records required by live restored consumers.
+- Register the deterministic account/zone/FQDN/type intent for every cert-manager DNS01 Challenge
+  before issuance. Cleanup deletes Certificate/Challenge resources while cert-manager is live,
+  then observes every registered TXT coordinate absent; a tag/pattern sweep or unobservable record
+  cannot close the node.
+- Move the mutating Route 53 hosted-zone capability canary out of prerequisites into visible
+  preparation. Before create, register account/region/caller-reference/name/operation; recover a
+  lost response by caller reference, then CAS-enrich the AWS-assigned zone ID before dependent
+  mutation. Cleanup uses that exact ID, aggregates failure/cancellation, reads back deletion, and
+  removes the `awsCreateProbeVerbs` lint carve-out.
+
+### Validation
+
+1. Plan properties prove no execution coordinate exists outside its capability reference and an AWS
+   target cannot authorize a retained-home operation.
+2. Failure injection at every plan node plus runner SIGKILL/restart proves every eligible cleanup
+   operation converges exactly once by stable operation ID and failures accumulate deterministically.
+3. Cancellation/owner-expiry fixtures prove `RunnerLost`, preflight takeover before any successor
+   mutation, durable primary/failure aggregation, terminal report compaction, and no new foreground
+   work after cancellation.
+4. Installed-binary fake home/AWS traces prove identical suite content with substrate-specific
+   capability providers and no fallback.
+5. Unit/CLI/env integration suites and `prodbox dev check` pass.
+
+### Remaining Work
+
+- Blocked until Sprint `4.50` makes the new authority and target clients the sole supported path.
+- Sprint `5.19` adds temporal load and fault qualification over this plan.
+
+## Documentation Requirements
+
+**Engineering docs to create/update:**
+
+- `documents/engineering/lifecycle_control_plane_architecture.md` - suite capability composition
+  and cleanup topology.
+- `documents/engineering/prerequisite_doctrine.md` - exact-handle prerequisites.
+- `documents/engineering/bootstrap_readiness_doctrine.md` - capability admission versus component
+  liveness.
+- `documents/engineering/integration_fixture_doctrine.md` - failure-injection boundaries.
+- `documents/engineering/unit_testing_policy.md` - plan and cleanup property requirements.
+- `documents/engineering/effectful_dag_architecture.md` - always-run cleanup lowering.
+
+**Product docs to create/update:**
+
+- `README.md` - restoration and cleanup guarantee.
+
+**Cross-references to add:**
+
+- Link cleanup resource classes to the managed-resource registry and substrate inventory.
+
+## Sprint 5.19: Temporal Load, Fault, and Cleanup Qualification Oracle [⏸️ Blocked]
+
+**Status**: Blocked
+**Deployment qualification**: pending
+**Implementation**: planned `src/Prodbox/Test/TemporalQualification.hs`, extensions to
+`GatewayRuntimeStability.hs`, TestRunner structured observers, fake cgroup/metrics fixtures, and
+installed-binary fault scenarios, including named regression `LCPC-2026-07-11`
+**Blocked by**: Sprint `5.18`
+**Live-proof**: pending after code-local implementation; current-revision deployment
+qualification is tracked separately from phase status
+**Independent Validation**: deterministic metrics streams, fake Kubernetes/cgroup payloads,
+virtual clocks, and installed-binary fault fixtures validate the oracle without live
+infrastructure or a later phase.
+**Docs to update**: `documents/engineering/lifecycle_control_plane_architecture.md`,
+`documents/engineering/unit_testing_policy.md`,
+`documents/engineering/chaos_hardening_doctrine.md`,
+`documents/engineering/resource_scaling_doctrine.md`, and
+`documents/engineering/integration_fixture_doctrine.md`
+
+### Objective
+
+Observe temporal service health, not only point readiness or memory containment, and produce
+absorbing evidence for saturation, missed deadlines, authority loss, cancellation, and incomplete
+cleanup across the whole suite run.
+
+### Deliverables
+
+- Classify per-service CPU throttling, runnable saturation, queue depth/wait, admission rejection,
+  operation latency, p95/p99 budget, deadline miss, cancellation lag, session refresh failure,
+  restart/OOM, and unobservable telemetry through exhaustive typed observations.
+- Keep run-wide absorbing unhealthy evidence across Pod UID replacement and planned rollout;
+  maintain separate restartable recovery windows without erasing prior failure.
+- Record Lifecycle Authority operation/journal progress and Target Agent delivery convergence while
+  gateways are killed or saturated.
+- Add deterministic fault schedules for delayed MinIO/Vault, applied-but-response-lost CAS, client
+  cancellation, gateway loss during retained work, authority restart, and cleanup failure.
+- Add `prodbox test integration control-plane-counterexample` for counterexample
+  `LCPC-2026-07-11`. It consumes Sprint `4.50`'s frozen, digest-bound pre-cutover trace/simulator;
+  deleted production routes are never retained or re-enabled for the test. The causal profile
+  keeps the same authored load/fault schedule and the same topology-normalized total CPU/memory/
+  ephemeral/persistence budget: the superseded allocation includes the three 250m Gateway CPU
+  limits, while the separated roles only repartition that total. It exercises the absent-GET/
+  authority-CAS mismatch, CPU throttling/deadline overrun, AWS-target versus retained-home endpoint
+  mismatch, response-lost retained operation, and sibling-restore skip. A separate production
+  profile then validates the independently justified rendered envelopes. Both old/new results and
+  their separate complete identities remain after legacy code deletion.
+- Emit a typed qualification artifact containing distinct frozen-superseded and replacement
+  identities. Each binds `SourceIdentity`: Git HEAD, clean/dirty flag, a source-manifest policy
+  identifier/version/canonical-policy digest, and the resulting deterministic path/type/mode/content
+  manifest digest. The policy allowlists code, governed documentation, and non-secret schema/
+  template inputs, including relevant untracked inputs only when allowlisted; it unconditionally
+  excludes `test-secrets.dhall`, local/generated secret material, secret roots, and runtime/build
+  roots. Each identity also binds a canonical non-secret generated-config projection, component-image
+  digests, resolved topology/wiring digest, resource-envelope digest, and authored-load/fault digest.
+  Secret-dependent execution is represented only by opaque Authority receipt/generation IDs or
+  keyed HMAC commitments produced under a Vault-held key. No manifest, config digest, or evidence
+  digest ingests or publicly raw-hashes plaintext secrets. The artifact also contains substrate,
+  canonical commands, normalized old→new envelope mapping, production resource envelopes/load,
+  counterexample ID/results, complete fault matrix, aggregate results, cleanup/residue result,
+  start/completion timestamps, and an evidence digest over only the public/redacted fields. The
+  top-level deployment-qualification axis consumes it; phase `Done` never implies it.
+
+### Validation
+
+1. Table fixtures cover every observation and boundary threshold, including absent/unobservable
+   telemetry.
+2. Queue/latency streams prove transient recovery cannot erase an earlier temporal violation.
+3. The named counterexample verifies the frozen superseded signature and closes every signature
+   against the replacement under identical topology-normalized total budget/load, then passes the
+   production-envelope profile without substituting that result for causal equivalence.
+4. Installed-binary scenarios exercise each fault schedule and verify the exact operation outcome
+   plus cleanup report.
+5. The oracle refuses a missing/stale source manifest, exclusion-policy identifier/version/digest,
+   or field in either complete identity; a policy/manifest mismatch; a Git-HEAD-only dirty identity;
+   or an identity reused for both sides.
+6. Negative fixtures prove `test-secrets.dhall`, local/generated secret material, secret roots, and
+   runtime/build roots cannot enter either manifest or public evidence digest. They also reject a
+   plaintext-secret digest or public raw hash where an opaque Authority receipt/generation ID or
+   Vault-keyed HMAC commitment is required, plus missing old/new counterexample results or incomplete
+   substrate/fault/aggregate/cleanup/timestamp fields.
+7. Unit/CLI/env integration suites and `prodbox dev check` pass.
+
+### Remaining Work
+
+- Blocked until Sprint `5.18` supplies exact capability binding and always-run cleanup.
+- Live home/AWS campaigns remain a separate deployment-qualification axis after code closure.
+
+## Documentation Requirements
+
+**Engineering docs to create/update:**
+
+- `documents/engineering/lifecycle_control_plane_architecture.md` - qualification evidence model.
+- `documents/engineering/unit_testing_policy.md` - temporal/fault fixture requirements.
+- `documents/engineering/chaos_hardening_doctrine.md` - mandatory fault matrix.
+- `documents/engineering/resource_scaling_doctrine.md` - CPU/queue/latency SLO evidence.
+- `documents/engineering/integration_fixture_doctrine.md` - deterministic fault injection.
+
+**Product docs to create/update:**
+
+- `README.md` - deployment-qualification status and evidence command.
+
+**Cross-references to add:**
+
+- Link the qualification artifact to Standard O's scoped phase-completion rule and the separate
+  deployment-qualification standard.
 
 ## Related Documents
 

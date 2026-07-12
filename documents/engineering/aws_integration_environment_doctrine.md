@@ -2,7 +2,7 @@
 
 **Status**: Authoritative source
 **Supersedes**: N/A
-**Referenced by**: README.md, AGENTS.md, DEVELOPMENT_PLAN/README.md, DEVELOPMENT_PLAN/system-components.md, DEVELOPMENT_PLAN/legacy-tracking-for-deletion.md, DEVELOPMENT_PLAN/phase-0-planning-documentation.md, DEVELOPMENT_PLAN/phase-1-runtime-cli-aws-foundations.md, DEVELOPMENT_PLAN/phase-2-gateway-dns.md, DEVELOPMENT_PLAN/phase-4-lifecycle-canonical-paths.md, DEVELOPMENT_PLAN/phase-5-canonical-test-suite.md, DEVELOPMENT_PLAN/phase-7-aws-substrate-foundations.md, DEVELOPMENT_PLAN/phase-8-email-invite-auth.md, documents/documentation_standards.md, documents/engineering/README.md, documents/engineering/aws_account_setup_guide.md, documents/engineering/aws_admin_credentials.md, documents/engineering/aws_test_environment.md, documents/engineering/cli_command_surface.md, documents/engineering/integration_fixture_doctrine.md, documents/engineering/lifecycle_reconciliation_doctrine.md, documents/engineering/prerequisite_doctrine.md, documents/engineering/unit_testing_policy.md
+**Referenced by**: README.md, AGENTS.md, DEVELOPMENT_PLAN/README.md, DEVELOPMENT_PLAN/system-components.md, DEVELOPMENT_PLAN/legacy-tracking-for-deletion.md, DEVELOPMENT_PLAN/phase-0-planning-documentation.md, DEVELOPMENT_PLAN/phase-1-runtime-cli-aws-foundations.md, DEVELOPMENT_PLAN/phase-2-gateway-dns.md, DEVELOPMENT_PLAN/phase-4-lifecycle-canonical-paths.md, DEVELOPMENT_PLAN/phase-5-canonical-test-suite.md, DEVELOPMENT_PLAN/phase-7-aws-substrate-foundations.md, DEVELOPMENT_PLAN/phase-8-email-invite-auth.md, documents/documentation_standards.md, documents/engineering/README.md, documents/engineering/aws_account_setup_guide.md, documents/engineering/aws_admin_credentials.md, documents/engineering/aws_test_environment.md, documents/engineering/cli_command_surface.md, documents/engineering/integration_fixture_doctrine.md, documents/engineering/lifecycle_control_plane_architecture.md, documents/engineering/lifecycle_reconciliation_doctrine.md, documents/engineering/prerequisite_doctrine.md, documents/engineering/unit_testing_policy.md
 **Generated sections**: none
 
 > **Purpose**: Define how `prodbox` authenticates to AWS for integration work and how the
@@ -10,20 +10,27 @@
 
 ## 0. Canonical Doctrine Statements
 
-- Operational `prodbox` AWS authentication material in Tier-0 `prodbox.dhall`
-  is a `SecretRef.Vault` reference (the generated `aws.*` identity), never
-  a plaintext key; test-simulation credentials live in `test-secrets.dhall`, not in
-  `prodbox.dhall`. The SecretRef model, the config split, and the secret classification
+- Runtime AWS authentication is split across Operational Lifecycle-provider/AWS-DNS01 and
+  LongLived Authority-backup/TLS-retention/home Gateway-DNS/home-DNS01 identities, plus the
+  deterministic LongLived SMTP IAM identity/policy/bounded-key family and its retained-home
+  Transit-sealed source custody. Tier-0
+  `prodbox.dhall` carries only non-secret role coordinates, never plaintext, a plaintext-secret
+  hash, or a shared credential pointer; test-simulation credentials live in
+  `test-secrets.dhall`. The SecretRef model, config split, and secret classification
   are owned by [vault_doctrine.md §3, §4, §13](./vault_doctrine.md) — this document defers to that
   SSoT rather than restating it.
 - `prodbox` must not search upward from the current working directory or prefer alternate config
   files.
 - There is exactly one runtime path by which elevated/admin AWS power enters `prodbox`: the
-  interactive `SecretRef.Prompt`. Public setup/teardown, the native IAM harness, explicit
-  long-lived destroy/migration and retained-bucket compatibility, and `prodbox nuke` prompt for the
-  ephemeral temporary-admin AWS credential (historically called "elevated credentials"); none
-  reads a stored admin section from `prodbox.dhall`. Canonical `aws-ses reconcile` is not in this
-  prompt set: it uses operational `aws.*` only to assume its fixed role. A prompted credential is
+  interactive `SecretRef.Prompt` and its authenticated linear ingress. A mode-indexed Credential
+  Provisioner receives genesis/backup-repair/operator-material prompts; a separate Admin Action
+  Runner receives explicit long-lived destroy/migration, retained-store compatibility, or quota
+  prompts; and post-export `prodbox nuke` uses a standalone Decommission Runner. None reads a
+  stored admin section from `prodbox.dhall`, and the normal Provider Worker accepts none of those
+  permits. Canonical `aws-ses reconcile` does not send an admin prompt to Provider Worker: its
+  durable non-credential provider intent uses the Lifecycle-provider generation only to assume its
+  fixed role, while a separate backup-receipted `OperatorMaterialPermit` sends deterministic SMTP
+  IAM-family work only to Credential Provisioner. A prompted credential is
   held in memory for one command, used once, and discarded — never written to config or Vault.
 - `aws_admin_for_test_simulation.*` is a test-harness-only fixture that lives in `test-secrets.dhall`
   and exists solely to drive the interactive UI: it feeds the same temporary-admin prompt a real
@@ -32,9 +39,10 @@
   binary, and never stored in Vault. The block specifics are owned by
   [aws_admin_credentials.md](./aws_admin_credentials.md).
 - `prodbox test integration aws-iam`, `prodbox test integration <name> --substrate aws`,
-  `prodbox test integration all`, and `prodbox test all` share one suite-level IAM harness that
-  provisions operational `aws.*` before prerequisite-driven AWS validation begins and clears those
-  credentials again before the suite returns.
+  `prodbox test integration all`, and `prodbox test all` share one suite-level IAM harness. It
+  observes and retains LongLived identities, reconciles only required missing/explicitly rotating
+  material, and revokes Operational identities only after credential-dependent cleanup succeeds or
+  observes absence.
 - Stateful AWS validation uses explicit credentials rebuilt from decoded settings, not ambient host
   AWS CLI state or shared profile discovery.
 - Per-run validation resources are always newly allocated and owned by that run. Registered
@@ -42,9 +50,14 @@
   the harness reconciles its declared desired state through the canonical idempotent command and
   retains it after the run. Unregistered or merely discovered pre-existing resources are never
   valid mutation targets.
-- The local `prodbox` RKE2 cluster and its MinIO service must exist before any remote AWS test
-  stack is created because Pulumi state for those stacks lives only in
-  `prodbox-state`.
+- The retained home control plane—Vault, MinIO, Bootstrap Broker when unseal is required, home
+  Target Secret Agent, Lifecycle Authority, Authority Backup Adapter, and TLS Retention Adapter
+  when TLS custody is involved—must be available before a remote AWS lifecycle operation is
+  submitted. Normal Authority admission additionally requires fresh independent backup
+  commit/read-back evidence.
+  Pulumi checkpoint blobs live in `prodbox-state`, while the Lifecycle Authority aggregate owns
+  the operation/fence/outbox state and immutable checkpoint references. A ready gateway is not a
+  prerequisite for this capability.
 - AWS-substrate canonical-suite runs (`--substrate aws`) require the operator-supplied
   `aws_substrate.hosted_zone_id` and `aws_substrate.subzone_name` Dhall fields, populated by
   `prodbox aws stack aws-subzone reconcile` provisioning a per-substrate Route 53 subzone with NS
@@ -87,6 +100,14 @@
   `prodbox test all`) does not require separate user approval beyond the original request —
   live AWS spend and shared-infrastructure mutation are *expected* outcomes of asking the
   harness to provision the AWS substrate, not separate gates.
+
+### 0.1 Historical Implementation and Correction Record
+
+The dated Sprint and incident bullets below preserve the implemented path that produced the
+current migration inventory. Where they mention one operational IAM user, `aws.*`, gateway-backed
+state, or direct AWS CLI writers, that wording is historical and does not override the target
+identity, authority, DNS-owner, or cleanup boundaries above.
+
 - Two orphan-safety guards close the `prodbox aws teardown` / managed test postflight
   contract (Sprint `7.6`, May 19, 2026): (a) `prodbox aws teardown` **refuses** to delete
   the operational IAM user while any Pulumi-managed stack (`aws-eks`, `aws-eks-subzone`,
@@ -114,15 +135,18 @@
   with the postflight tag sweep as backstop); the deliberate gate-vs-cascade asymmetry is
   documented in
   [lifecycle_reconciliation_doctrine.md §3](lifecycle_reconciliation_doctrine.md).
-- The operational-credential lifecycle is brought under the managed-resource registry. The
-  operational `prodbox` IAM user and the operational `aws.*` Vault KV material referenced by
-  `prodbox.dhall`
-  are registered `Operational`-class resources (each with a `discover` + `destroy`), and
+- Historical Sprint target, superseded by the final lifecycle split: the credential lifecycle
+  moved under the managed-resource registry, but it is not true that every identity is
+  `Operational`. Each Lifecycle-provider, Authority-backup, TLS-retention, Gateway-DNS, and
+  cert-manager-DNS01 IAM identity, key, role, Vault generation, and physical-deletion receipt is separately
+  registered with exact observe/destroy/read-back. Lifecycle-provider/AWS-DNS01 are `Operational`;
+  Authority-backup/TLS-retention/home Gateway-DNS/home-DNS01 are `LongLived`. In that model,
   `prodbox aws setup`/`teardown` are expressed as `reconcileAbsent` reconciliations over the
-  registry — idempotent on re-run, `Unreachable`-fails-closed. This is the current enforced
-  structure and closes the coverage gap that previously let an interrupted run leak the
-  operational IAM user *and* leave its stale `aws.*` config entry behind (the 2026-05-28
-  incident). Doctrine:
+  appropriate lifecycle-class projection — idempotent on re-run, `Unreachable`-fails-closed. This
+  structure prevents an
+  interrupted run from leaking one role or deleting a credential needed by another cleanup node.
+  The then-current single-user/`aws.*` implementation and the 2026-05-28 incident described in
+  this historical section remain provenance, not evidence that the target is already cut over. Doctrine:
   [lifecycle_reconciliation_doctrine.md § 3.1](./lifecycle_reconciliation_doctrine.md);
   phase ownership:
   [DEVELOPMENT_PLAN/phase-7-aws-substrate-foundations.md](../../DEVELOPMENT_PLAN/phase-7-aws-substrate-foundations.md)
@@ -174,11 +198,18 @@
   Model-B backend. Sprint `7.14` made the main `aws-ses` reconcile/destroy/read paths use the same
   decrypt-to-scratch wrapper as the per-run stacks. Sprint `4.47` narrowed the canonical
   desired-present reconcile further: Vault-resolved operational `aws.*` may only assume the fixed
-  same-account `prodbox-ses-lease-session` role, and every lease stage uses a separately bounded
-  role session. Setup/admin credentials reconcile that role and the operational-user policy;
-  explicit destroy, migrate-backend, retained-bucket compatibility, and nuke remain admin-powered.
-  The `pulumi_state_backend` S3 bucket remains for retained public-edge TLS objects and as the
-  optional first-touch source for old `aws-ses` checkpoints; the `aws-ses migrate-backend`
+  same-account `prodbox-ses-lease-session` role, and every provider stage uses a separately bounded
+  role session. In the final ownership split Provider/Pulumi reconciles only non-credential
+  SES/S3/DNS resources. Credential Provisioner exclusively creates, rotates, remints, or performs
+  repair-time key deletion for the deterministic SMTP IAM family and commits its generation only
+  after retained-home source-custody read-back. Only Admin Action Runner under `DestroyAwsSes` may
+  delete/read back that entire family; explicit destroy, migrate-backend, retained-bucket
+  compatibility, and nuke remain separately admin-authorized.
+  That historical implementation used the `pulumi_state_backend` S3 bucket for retained
+  public-edge TLS objects and as the optional first-touch source for old `aws-ses` checkpoints.
+  In the final design the same long-lived bucket also carries mandatory independently credentialed
+  Authority ciphertext/receipt copies under a disjoint prefix; it is not the primary Pulumi
+  backend or a second Authority SSoT. The `aws-ses migrate-backend`
   compatibility command drives the encrypted wrapper instead of raw MinIO-to-S3 export/import.
   See [lifecycle_reconciliation_doctrine.md → §2 State-Lifetime Rule](lifecycle_reconciliation_doctrine.md).
 - **Sprints `4.47`, `5.17`, and `8.10`**: lifecycle class controls teardown, not
@@ -187,10 +218,17 @@
   invite-capable selected validation set and places it before dependent charts on the selected home
   or explicit EKS target. Sprint `8.10` completes exhaustive semantic SES readiness inside that
   bracketed await. Ordinary suite postflight never destroys `aws-ses`. See §4.6.
-- Cross-substrate retained state has an explicit authority split: `aws-ses` checkpoint and lease
-  operations always use the retained home/control-plane `LongLivedCheckpointAuthority`, while
-  derived SMTP KV is written only through the selected substrate's `TargetClusterSecretSink`. The
-  active target gateway is never an implicit checkpoint backend. See §4.5.
+- Cross-substrate retained state has an explicit authority split. Lifecycle Authority owns the
+  durable operation journal, authority epoch/time, narrow mutation fences, Model-B aggregate,
+  immutable checkpoint references, provider workflow, and delivery outbox. Its
+  `LongLivedCheckpointAuthority` identity contains no gateway URL. The retained-home Target Secret
+  Agent owns closed `SesSmtpSource` Transit-sealed custody/rewrap; the selected substrate's one-shot
+  Agent worker alone performs allowlisted generation-checked SMTP Vault KV CAS/read-back. Their
+  transfer is attestation-encrypted and exposes only ciphertext/typed receipts to Authority. Gateway
+  Runtime owns neither role. Observation, admission, and execution use the same operation-indexed
+  `CapabilityRef`; a target gateway or separately supplied probe endpoint cannot select authority.
+  See §4.5 and
+  [Lifecycle Control-Plane Architecture](./lifecycle_control_plane_architecture.md).
 - **Sprint `4.11`**: `prodbox cluster delete` carries a symmetric refuse-path
   scoped to per-run Pulumi stacks (`aws-eks`, `aws-eks-subzone`, `aws-test`). `aws-ses`
   is excluded because its `LongLived` cleanup class is outside cluster teardown. Its current
@@ -241,27 +279,35 @@ The public surfaces route through the native Haskell frontend and explicit AWS C
 environments. Admin-authorized setup and destructive/compatibility flows prompt for the ephemeral
 temporary-admin credential through the interactive `SecretRef.Prompt`; there is no production
 config-backed admin path. The test harness simulates that prompt from
-`aws_admin_for_test_simulation.*` in `test-secrets.dhall` when it mints/tears down operational
-identity. The canonical `prodbox aws stack aws-ses reconcile` is deliberately different: it
-resolves operational `aws.*` from Vault only to assume the exact fixed SES lease role and never
-loads or prompts for an admin credential.
+`aws_admin_for_test_simulation.*` in `test-secrets.dhall` when it reconciles and tears down the
+registered role-specific identities. The canonical `prodbox aws stack aws-ses reconcile` is
+deliberately split: Provider Worker resolves only the Lifecycle-provider generation to assume the
+exact fixed role for non-credential SES/S3/DNS work. Only when SMTP IAM install, rotation, or repair
+is required does a separate `OperatorMaterialPermit` route an admin prompt to Credential
+Provisioner; a converged family or target restore from retained-home custody requires no re-prompt.
 
 ## 2. Authentication Source And Storage Rules
 
 ### 2.1 Dhall Configuration Ownership
 
-Operational AWS authentication material referenced by `prodbox.dhall` is a
-`SecretRef.Vault` reference, not a plaintext key. The generated operational `prodbox` IAM
-identity is minted into Vault KV (`secret/gateway/gateway/aws`) the instant it is created;
-`prodbox.dhall` carries only the reference to it. The config-split and SecretRef model are
-owned by [vault_doctrine.md §3, §4](./vault_doctrine.md).
+Tier-0 `prodbox.dhall` carries non-secret account, region, zone, role, and capability coordinates.
+Generated provider/DNS AWS keys live only at the role-specific Vault generations
+`secret/aws/lifecycle-provider`, `secret/aws/authority-backup-store`,
+`secret/aws/tls-retention-store`, `secret/aws/gateway-dns`, and
+`secret/aws/cert-manager/<substrate>/dns01`. Lifecycle-provider/AWS-DNS01 are `Operational`;
+Authority-backup/TLS-retention/home Gateway-DNS/home-DNS01 are `LongLived`. Authority-backup
+genesis/repair uses its dedicated frozen protocol; each normal material generation is delivered by
+the Target Secret Agent after a durable backup-receipted `OperatorMaterialPermit`. The config-split and SecretRef model are owned by
+[vault_doctrine.md §3, §4](./vault_doctrine.md). The pre-cutover root `aws.*` fields and
+`secret/gateway/gateway/aws` path have no target consumer.
 
-Operational config fields (each a `SecretRef.Vault` reference, never plaintext):
-
-1. `aws.access_key_id`
-2. `aws.secret_access_key`
-3. `aws.region`
-4. `aws.session_token` (optional)
+Each IAM access-key create is a journaled non-idempotent Credential Provisioner action. Lifecycle
+Authority records the finite inventory and create intent first. If AWS applies the create but its
+one-time secret response is lost before retained-home sealing, only Credential Provisioner may
+delete the observed uncommitted or unrecoverable key during repair, wait for stable absence, and
+then remint. Blind create retry and an uncommitted surviving key are forbidden. `DestroyAwsSes` is
+the sole separate deletion authority: Admin Action Runner may delete/read back the exact entire
+registered SMTP IAM family, but cannot create, rotate, remint, or perform ordinary repair.
 
 Test-simulation admin fixture (in `test-secrets.dhall`, `TestPlaintext`-class — NOT in
 `prodbox.dhall`):
@@ -278,14 +324,19 @@ temporary-admin-credential prompt; it lives only in `test-secrets.dhall`, is nev
 `prodbox test integration aws-iam`, targeted `prodbox test integration <name> --substrate aws`
 validation, aggregate-harness execution of that suite, long-lived `aws-ses` / state-backend
 destroy/migration operations, and `prodbox nuke` non-interactively. Canonical `aws-ses reconcile`
-does not consume this fixture directly; it uses the operational identity minted by harness setup to
-assume its fixed role. The block specifics are owned by
+uses the fixture only when the harness must simulate an SMTP install/rotation/repair prompt for
+Credential Provisioner. Its Provider Worker never consumes the fixture and uses the
+Lifecycle-provider generation only to assume its fixed non-credential role. The block specifics are owned by
 [aws_admin_credentials.md](./aws_admin_credentials.md).
 
-Public `prodbox config setup`, `prodbox aws setup`/`teardown`, explicit long-lived
-destroy/migration, `prodbox nuke`, and every other admin-credentialed flow prompt for the ephemeral
-temporary-admin credential through `SecretRef.Prompt`; none reads a stored admin section from
-`prodbox.dhall`. Operational commands, including canonical `aws-ses reconcile`, do not prompt.
+`prodbox config setup` writes/validates Tier-0 and may prompt only for read-only AWS discovery; it
+performs no IAM/S3/DNS mutation. `prodbox aws setup`/`teardown`, explicit long-lived
+destroy/migration, `prodbox nuke`, and every other admin-credentialed mutation prompt for the
+ephemeral temporary-admin credential through `SecretRef.Prompt`; none reads a stored admin section
+from `prodbox.dhall`. The raw bytes go only to the permit-selected Credential Provisioner, Admin
+Action Runner, or Decommission Runner, never the normal Provider Worker. Canonical `aws-ses
+reconcile` prompts only when its distinct material program requires Credential Provisioner; a
+non-credential provider reconcile or target restore from retained custody does not.
 
 The harness simulates that prompt from `aws_admin_for_test_simulation.*` in `test-secrets.dhall`;
 a missing or partial fixture must fail fast with an actionable error rather than falling back to
@@ -295,14 +346,14 @@ Forbidden storage patterns:
 
 1. Repo-local shell snippets exporting AWS secrets
 2. Checked-in example files containing real AWS auth data
-3. Temporary credential dumps written into project directories outside the Dhall config
+3. Temporary credential dumps written into any project directory or config file
 4. Reliance on `~/.aws` shared config or cache as the auth source for supported `prodbox` flows
 5. `.env` files for AWS credentials
 
 ### 2.2 No Ambient Or Profile-Based AWS Auth
 
-The system-installed `aws` CLI may be used by validations, but only with subprocess auth rebuilt
-from decoded settings.
+The system-installed `aws` CLI may be used by boundary interpreters, but only with a short-lived
+subprocess environment built from the already admitted exact identity generation.
 
 Forbidden behavior:
 
@@ -327,16 +378,13 @@ The following variables are forbidden as ambient auth sources:
 10. `AWS_ROLE_ARN`
 11. `AWS_ROLE_SESSION_NAME`
 
-The same forbidden-env-var posture extends to the in-cluster gateway daemon: AWS
-credentials reach the daemon Pod from Vault KV, fetched at startup through Vault Kubernetes
-auth — there is no Secret-mounted `aws.dhall` fragment in the delivery path. The
-prodbox-created AWS identities are `SecretRef.Vault` references resolved against the
-in-cluster Vault per [config_doctrine.md](./config_doctrine.md) and
-[vault_doctrine.md §12](./vault_doctrine.md#12-in-cluster-service-auth). No `AWS_*`
-environment variable is read by supported daemon paths; the subprocess that calls
-`aws route53 ...` receives credentials through an explicit subprocess-environment overlay
-assembled from the Vault-resolved material, not from the Pod environment. A sealed Vault
-fails this credential fetch closed.
+The same forbidden-env-var posture extends in cluster. On home only, Gateway Runtime obtains the
+dedicated Gateway-DNS generation through its Kubernetes-auth role. EKS Gateway DNS mutation is
+disabled and receives no Gateway-DNS secret. The provider worker and cert-manager have different
+roles and paths. No `AWS_*` environment variable or Secret-mounted `aws.dhall` fragment
+selects identity. A boundary interpreter may construct a short-lived subprocess environment from
+the already admitted exact generation, but no daemon handler parses config or logs into Vault per
+request. A sealed Vault or stale generation fails closed.
 
 ## 3. Harness Preflight Contract
 
@@ -345,12 +393,13 @@ fails this credential fetch closed.
 Before an AWS-mutating validation runs, the harness must prove:
 
 1. the system `aws` CLI exists when direct AWS CLI operations are required
-2. decoded settings define usable AWS authentication for the identity the validation will run under
-3. that identity can perform the lifecycle the validation owns
+2. the exact operation resolves one current role-specific identity generation and authority scope
+3. that same identity can perform only the lifecycle the validation owns
 4. for managed suite-driven runs (`aws-iam`, aggregate suites, and targeted
    `prodbox test integration <name> --substrate aws` validations), the native IAM harness config
-   is complete enough to mint the generated operational `aws.*` identity (written straight into
-   Vault) from the harness-simulated temporary-admin prompt sourced from
+   is complete enough to reconcile, seal/read back each ordinary role-specific identity at its exact
+   consumer, retain/read back SMTP `SesSmtpSource` custody, and deliver selected-target generations
+   from the harness-simulated temporary-admin prompt sourced from
    `aws_admin_for_test_simulation.*` in `test-secrets.dhall`, without falling back to pre-existing
    operational credentials
 
@@ -364,8 +413,8 @@ gate. See [Prerequisite Doctrine §4A](./prerequisite_doctrine.md#4a-prerequisit
 The required checks map to:
 
 1. tool check: `aws` must be invokable
-2. config auth check: `aws sts get-caller-identity` must succeed with subprocess auth rebuilt from
-   decoded settings
+2. identity auth check: `aws sts get-caller-identity` must succeed with the exact admitted
+   generation, and the returned principal must match the capability reference
 3. lifecycle-capability check:
    Route 53 validations must be able to create and fully own a fresh hosted-zone lifecycle;
    Pulumi-backed validations must be able to drive the canonical `prodbox aws stack` command surface
@@ -391,18 +440,21 @@ fresh hosted-zone lifecycle using the canonical Route 53 command set.
 
 ### 3.5 Pulumi-Backed Stack Capability Proof Rule
 
-For `aws-eks`, `pulumi`, and `ha-rke2-aws`, permission sufficiency is proven only when the local
-host can reach its RKE2-backed MinIO backend and the relevant named `prodbox aws stack` surface can
-select, inspect, or create the canonical AWS test stack using settings-defined AWS auth.
+For `aws-eks`, `pulumi`, and `ha-rke2-aws`, permission sufficiency is proven only when the caller can
+resolve and use the exact Lifecycle Authority operation capability and the relevant named
+`prodbox aws stack` surface can select, inspect, or create the canonical AWS test stack using
+settings-defined AWS auth. A raw MinIO socket or ready gateway is not equivalent evidence.
 
 The supported path synchronizes only non-secret validation inputs such as operator-CIDR and
-SSH-public-key into the stack with `pulumi config set`. AWS provider credentials must remain in
-the binary-sibling `prodbox.dhall` (as `SecretRef.Vault` pointers) and be projected into Pulumi
-through the Haskell-owned subprocess environment, not copied into stack-local config files.
+SSH-public-key into the stack with `pulumi config set`. The fenced provider worker acquires the
+Lifecycle-provider generation through its own Vault role and projects only its bounded role session
+into Pulumi's subprocess environment; no AWS credential lives in Dhall or stack-local config.
 
-The prerequisite proof for that backend is a bounded `pulumi login ... --non-interactive` against
-a hydrated scratch backend after the Haskell helper confirms the daemon-mediated encrypted Model-B
-checkpoint authority is reachable and usable.
+The target prerequisite proof submits or observes through the same operation-indexed
+`CapabilityRef` used for execution; the provider worker may then run bounded
+`pulumi login ... --non-interactive` against its hydrated scratch backend. The historical helper
+first confirmed a gateway-mediated encrypted Model-B endpoint; that adapter is a legacy cutover surface and
+cannot define target readiness.
 If the running MinIO pod still points at a deleted retained host-path mount, the helper recreates
 the declared host path, reapplies the ownership and mode contract, restarts `statefulset/minio`,
 and then reruns the login proof before stack operations continue.
@@ -451,11 +503,11 @@ Minimum rule:
 4. `prodbox aws stack test reconcile` is the only supported surface for creating or inspecting the AWS
    HA stack
 5. `prodbox aws stack test destroy --yes` is the only supported surface for destroying that stack
-6. `prodbox cluster delete` opens with the Sprint `4.11` per-run refuse-path: it refuses when
-   any of `aws-eks`, `aws-eks-subzone`, `aws-test` reports live resources, naming each
-   stack and the canonical destroy command. The `--cascade` flag orchestrates K8s drain
-   (Sprint `4.12`) + per-run destroys + cluster uninstall + postflight tag sweep as one
-   atomic operator action — the canonical "wipe and rebuild" path. `aws-ses` is ignored
+6. Plain `prodbox cluster delete --yes` is a local-cluster uninstall and neither preflights nor
+   mutates AWS stacks. `prodbox cluster delete --cascade --yes` orchestrates typed K8s drain,
+   exact DNS cleanup, per-run destroys, cluster uninstall, and fail-closed postflight observation
+   as one always-run cleanup plan — the canonical whole-system "wipe and rebuild" path. `aws-ses`
+   is retained
    throughout because its `LongLived` cleanup class is retained across cluster teardown and may
    only be destroyed by `prodbox aws stack aws-ses destroy --yes` or `prodbox nuke`; its main
    checkpoint remains the encrypted Model-B object in MinIO described by §4.5
@@ -476,53 +528,95 @@ Minimum rule:
 
 The IAM lifecycle validation and long-lived teardown surfaces prompt for the ephemeral
 temporary-admin credential through `SecretRef.Prompt`; the test harness automates that prompt from
-a test-only fixture. The sequencing matters: Vault is brought up and unsealed first, then the
-ephemeral elevated credential is supplied (by an operator at the prompt, or by the harness
-simulating it), then `prodbox` mints the dedicated least-privilege `prodbox` IAM identity, writes
-the generated `aws.*` credential straight into Vault KV, installs its account-qualified policy,
-and reconciles the fixed `prodbox-ses-lease-session` role whenever the complete SES scope is
-configured. The prompted elevated credential is then discarded; it never transits cleartext
-storage. Config setup refreshes the user policy and role after configuration changes without
-rotating the access key.
+a test-only fixture. Vault and the dedicated control-plane services become available first. On a
+pristine authority, a `GenesisBackupPermit` admits only the mode-indexed Credential Provisioner to
+establish the deterministic backup identity/prefix; the separate Backup Adapter must read back the
+initial S3 copy before normal admission. Later `OperatorMaterialPermit`s admit the same Job role to
+create/rotate the remaining registered identities. For retained SES, it exclusively creates,
+rotates, or remints the deterministic SMTP IAM identity, least-privilege policy, and bounded key
+family and performs repair-time deletion of uncommitted/unrecoverable keys. In bounded memory it
+derives the region-bound closed `SesSmtpSource` from the one-time IAM secret, discards the raw AWS
+secret-access-key bytes, and requires a retained-home Transit-sealed source-custody receipt before
+committing that family generation. A distinct Admin Action Runner owns explicit SES destroy, legacy
+migration/retained-store compatibility, and quota request/status read-back. `DestroyAwsSes` may
+delete/read back the exact whole SMTP family only after consumers quiesce, but cannot create,
+rotate, remint, or perform ordinary repair. The fenced Provider Worker owns neither prompt nor
+identity provisioning. Ordinary generated keys travel only to their exact Agent/Vault consumer;
+SMTP target delivery instead uses attestation-encrypted one-shot home/selected Agent workers from
+retained custody. Prompted credentials are discarded and never become config, Authority, or disk
+state; no path exposes a generic secret export.
 
-The full ordered init → mint → write-to-Vault → postflight-delete-and-clear lifecycle the
-suite-level IAM harness drives (the harness drives `vault init` with the `test-secrets.dhall`
-operator password; the elevated `aws_admin_for_test_simulation.*` fixture mints the operational
-IAM user/keys; those keys are written directly to Vault at `secret/gateway/gateway/aws`, never to
-`prodbox.dhall`; and postflight deletes the IAM user/keys from AWS and clears the Vault
-creds on success/failure/Ctrl-C with preflight idempotency, the Vault clear being an empty-value
-write rather than a hard delete) is canonicalized in
+The full ordered init → durable setup → mint/seal/deliver → capability proof → dependency-ordered
+revoke lifecycle is canonicalized in
 [aws_admin_credentials.md §4.2](./aws_admin_credentials.md). This document defers to that SSoT for
 the lifecycle; the items below state the credential-boundary invariants the lifecycle obeys.
 
-1. `aws.*` remains the normal operational identity, minted into Vault KV and referenced from
-   `prodbox.dhall` as a `SecretRef.Vault` value
+1. runtime identity is split by operation; shared `aws.*` and `secret/gateway/gateway/aws` are
+   pre-cutover legacy
 2. `aws_admin_for_test_simulation.*` is the test-harness-only fixture in `test-secrets.dhall`
    (`TestPlaintext`-class) that simulates the ephemeral temporary-admin prompt the real flows
    answer interactively — driving `prodbox test integration aws-iam`,
-   `prodbox test integration <name> --substrate aws`, `prodbox test integration all`,
-   `prodbox test all`, long-lived `aws-ses` destroy/migration and state-backend operations, and
-   `prodbox nuke`; real ops of those admin-authorized surfaces prompt for the credential rather
-   than reading any stored section. Canonical `aws-ses reconcile` uses operational `aws.*` only to
-   assume the fixed role and does not consume the simulation fixture directly
+   `prodbox test integration <name> --substrate aws`, `prodbox test integration all`, and
+   `prodbox test all`; where a repository test owns long-lived destroy/migration, quota, or nuke,
+   it feeds the corresponding Admin Action/Decommission Runner prompt. Real operations prompt
+   rather than reading any stored section. Canonical `aws-ses reconcile` uses the
+   Lifecycle-provider generation only to assume the fixed non-credential role; it consumes the
+   simulation fixture solely when an install/rotation/repair `OperatorMaterialPermit` requires a
+   Credential Provisioner prompt, never for converged target restore from retained custody
 3. the validation must fail fast when the `aws_admin_for_test_simulation.*` fixture is missing or
    partial
-4. public setup/teardown and explicit admin-authorized destroy/migration commands use the same
-   interactive temporary-admin prompt; there is no production config-backed admin path
-5. the managed test harness proves that the temporary-admin test identity can mint an
-   STS-federated validation session, but it persists the dedicated IAM-user access key for
-   downstream runtime setup because the cert-manager Route 53 DNS01 solver has no
-   session-token field
-6. freshly-created operational IAM-user credentials are not released to downstream runtime setup
-   until both STS identity probing and repeated Route 53 hosted-zone probing succeed with that
-   access key; runtime Route 53 bootstrap changes also keep a bounded retry window for later IAM
-   propagation
-7. the installed operational-user policy permits only the exact same-account SES role assumption,
-   exact SMTP-user observation, and configured capture-bucket reads for the retained transaction;
-   the role trust names only `arn:aws:iam::<account>:user/prodbox`, and its maximum session duration
-   is 3,600 seconds
+4. public setup/teardown and explicit admin-authorized destroy/migration commands share the
+   interactive temporary-admin source but use disjoint permit/Job interpreters; there is no
+   production config-backed admin path
+5. every freshly created key remains unusable until its exact target/custody read-back and an
+   identity-specific STS/capability proof succeed; SMTP additionally requires retained-home
+   source-custody read-back before any selected-target materialization
+6. Lifecycle-provider, Authority-backup, TLS-retention, Gateway-DNS, cert-manager-DNS01, and SMTP IAM
+   policies, users/roles, Vault paths, and cleanup nodes are disjoint; a failed or missing role
+   cannot fall back to another
+7. IAM/key deletion precedes physical destruction of every owned Vault KV-v2 version plus
+   metadata deletion/read-back, and credential cleanup waits for every dependent provider/DNS/EBS
+   operation. Soft deletion or a new logical tombstone does not count; rotation retains the current
+   generation and destroys only dependency-free superseded versions
+8. ordinary suite postflight deletes only Operational Lifecycle-provider/AWS-DNS01 identities and
+   retains LongLived Authority-backup/TLS-retention/home Gateway-DNS/home-DNS01 identities plus the
+   SMTP IAM family and retained-home source custody
 
 ### 4.5 Pulumi State Backend Prerequisite
+
+Pulumi checkpoint state is owned through Lifecycle Authority, not a gateway endpoint. The
+authority's one bounded CAS aggregate contains the authority epoch, durable operation state,
+narrow mutation fence, provider revision/readiness, credential generation, target-delivery outbox,
+and references to immutable encrypted checkpoint blobs in `prodbox-state`. Checkpoint bytes are
+content-addressed blobs; ordinary workflow transitions update references rather than rewriting a
+large checkpoint inside every aggregate CAS.
+
+Every promoted Authority transition and referenced blob also has a mandatory exact ciphertext/
+receipt copy in the independently credentialed long-lived S3 backup prefix. The separate Authority
+Backup Adapter writes and reads back that copy; core Authority never receives its AWS credential,
+and the S3 copy is not a second current-state selector. The shared retained bucket also contains
+disjoint `public-edge-tls/<substrate>/<fqdn>` ciphertext prefixes owned only by the TLS Retention
+Adapter. TLS retention stores certificate ciphertext plus a retained-home-Transit-wrapped DEK;
+neither S3 lane is a raw Pulumi backend.
+
+`LongLivedCheckpointAuthority` is an authority identity and object namespace, never a transport URL.
+Runtime reconnaissance resolves the required observe/submit/CAS operation plus service identity and
+scope into one opaque `CapabilityRef kind`; observation, admission, and execution use that same
+reference under one absolute deadline. A separately injected health probe, current kube context,
+active gateway, or reachable nominal backend cannot redirect the operation. Target-secret custody
+uses different capability references: the retained-home Agent owns only the closed
+`SesSmtpSource` Transit-sealed source/rewrap lane, and a selected substrate's one-shot worker owns
+only closed-schema generation-checked SMTP Vault KV read/CAS/read-back. Authority transports only
+attestation-encrypted ciphertext and typed receipts between them; no gateway or generic export
+selects either endpoint.
+
+The Lifecycle Authority's fenced provider worker may hydrate an immutable checkpoint into a
+RAM-backed scratch backend and invoke the canonical Pulumi program. It commits the outbox intent
+before external work, records the observed provider revision afterward, and resolves a lost
+response by durable `OperationId`. Gateway Runtime has no MinIO/Pulumi checkpoint routes or
+permissions in the target topology.
+
+#### Historical gateway-backed implementation record (legacy cutover surface)
 
 Pulumi checkpoint state is a Vault-sealed Model-B object-store concern. Sprint `7.14` routes the
 main per-run stacks (`aws-eks`, `aws-eks-subzone`, `aws-test`) and the main long-lived
@@ -540,7 +634,7 @@ encrypted scratch-backend interposition.
 For a cross-substrate long-lived stack, “home substrate” is an explicit retained control-plane
 authority, not whichever target gateway is active. `LongLivedCheckpointAuthority` carries the
 decoded home/control-plane gateway endpoint, `prodbox-state` namespace, and Vault/Transit keyspace
-for checkpoint and lease operations. `TargetClusterSecretSink` separately carries the selected
+for checkpoint and lease operations. `TargetSecretSink` separately carries the selected
 home-or-AWS substrate gateway/Vault endpoint and the `secret/keycloak/smtp` KV destination. The
 first is used for `aws-ses` checkpoint hydration/writeback and lease ownership; the second is used
 only for the post-readiness SMTP commit. Neither may be inferred from ambient kubeconfig, current
@@ -554,27 +648,38 @@ put-if-absent; replacement carries the previously observed opaque object-store v
 return a new observation. Payload bytes remain Vault-enveloped under HMAC-derived object names, and
 the opaque storage version is not reused as a lifecycle fence.
 
+#### Lifecycle-class and substrate facts that remain in force
+
 The lifecycle class still matters, but it no longer means a separate raw Pulumi backend for
 `aws-ses`. Per-run stacks remain harness-owned and auto-destroyed by suite postflight; `aws-ses`
 remains long-lived and is destroyed only by an explicit long-lived teardown command. The dedicated
-`pulumi_state_backend` S3 bucket configured in `prodbox.dhall` remains supported for retained
-public-edge TLS material and as the optional first-touch source for old `aws-ses` checkpoints.
+`pulumi_state_backend` S3 bucket configured in `prodbox.dhall` remains the shared long-lived
+container for mandatory Authority backup copies and disjoint retained public-edge TLS envelopes,
+plus the optional first-touch source for old `aws-ses` checkpoints.
 
 Concretely, this means:
 
-1. For Pulumi stack operations, the home substrate must be running before any
-   `prodbox aws stack` call. Operator runs `prodbox cluster reconcile` once; the command is
-   idempotent and a no-op when the home substrate is already up.
+1. For Pulumi stack operations, the retained home control plane and Lifecycle Authority capability
+   must be available before any `prodbox aws stack` call. Operator runs `prodbox cluster reconcile`
+   once; the command is idempotent and a no-op when the home substrate is already up.
 2. The MinIO `prodbox-state` bucket must exist before the first stack is created. The reconcile
    contract ensures this — see § 0 above for the canonical statement.
 3. AWS-substrate work does not bootstrap an AWS-side Pulumi backend on the supported path; Pulumi
    sees only the scratch `file://` backend prepared by the encrypted backend wrapper.
 4. The long-lived `pulumi_state_backend` bucket is no longer the main `aws-ses` Pulumi checkpoint
-   backend. It remains the retained public-edge TLS store and an optional first-touch import source
-   for old `aws-ses` state while `prodbox aws stack aws-ses migrate-backend` exists.
-5. An AWS-targeted validation still reads and writes the `aws-ses` checkpoint through
-   `LongLivedCheckpointAuthority` on the retained home control plane. It never seeds long-lived
-   state into the per-run EKS gateway or that target cluster's object-store namespace.
+   backend. It carries mandatory independent Authority ciphertext/receipt copies and separately
+   registered public-edge TLS envelopes, and remains an optional first-touch import source for old
+   `aws-ses` state while `prodbox aws stack aws-ses migrate-backend` exists. Migration strips legacy
+   secret-bearing Pulumi outputs before the sanitized current checkpoint is committed/read back.
+   Once the Authority reference graph proves no operation/current-checkpoint/rollback reference and
+   the bounded rollback window expires, fenced GC deletes/read-backs the old immutable primary and
+   mandatory-backup blobs; they are never retained as a secret recovery/export surface.
+5. An AWS-targeted validation reads and writes the `aws-ses` aggregate and checkpoint references
+   through Lifecycle Authority on the retained home control plane. It never seeds long-lived state
+   into Gateway Runtime or the target cluster's object-store namespace.
+6. Deleting retained TLS means deleting/read-backing only its registered prefix objects/versions
+   and TLS identity/policy. The shared bucket is the last Authority-backup decommission node and may
+   be deleted only after every registered prefix is authoritatively absent.
 
 The per-run partition (`aws-eks`, `aws-eks-subzone`, `aws-test`) vs long-lived partition
 (`aws-ses` + the non-stack `public-edge-tls` cert) is fixed by `Prodbox.Aws.perRunStackNames` /
@@ -601,6 +706,75 @@ auto-managed lifecycle.
 
 ### 4.6 Retained SES Desired-Presence Preparation
 
+An invite-capable selected validation derives one durable idempotent SES operation request. The
+request is submitted to Lifecycle Authority with an `OperationId`, retained-home SMTP-custody
+identity, selected-target identity, exact non-credential provider intent, closed `SesSmtpSource`
+schema/generation coordinates, and one absolute deadline that includes queue wait, credential
+refresh, provider I/O, propagation observation, custody/target read-back, and response serialization.
+A retry with the same ID observes or resumes the same durable operation; a lost response is never
+guessed from a timeout.
+
+The target operation evolves through these durable stages:
+
+1. Resolve one `CapabilityRef 'LifecycleSubmit` for the retained Lifecycle Authority, one
+   operation-indexed retained-home custody-Agent reference, and one operation-indexed Target Secret
+   Agent reference for the explicitly selected substrate. For each capability, the same reference
+   used to observe admission is used to execute; no gateway URL, ambient kube context, or separate readiness
+   endpoint may be supplied.
+2. Commit `OperationStarted` and the non-credential provider-mutation outbox intent before provider
+   work begins. Acquire only the narrow provider-mutation permit and a bounded role session, run the
+   registered idempotent SES/S3/DNS reconciler, observe the exact provider revision, then commit that
+   revision. Provider/Pulumi never creates, imports, adopts, updates, or deletes SMTP IAM resources.
+   Release the mutation permit; provider propagation does not hold it.
+3. Observe semantic readiness for that committed revision under the remaining absolute deadline.
+   `Pending`, `Failed`, and `Unobservable` remain distinct exhaustive states; a ready Pod, reachable
+   endpoint, or nominal resource name is not semantic readiness.
+4. Under a separate backup-receipted `OperatorMaterialPermit`, Credential Provisioner exclusively
+   reconciles the deterministic SMTP IAM identity, least-privilege policy, and bounded key family.
+   It alone creates, rotates, or remints material and deletes an uncommitted or unrecoverable key
+   during repair. In bounded memory it derives the region-bound closed `SesSmtpSource` from the
+   one-time IAM secret and discards the raw AWS secret-access-key bytes; only `SesSmtpSource` crosses
+   authenticated linear ingress to a one-shot retained-home Agent worker. It commits the
+   credential-family generation only after a payload-specific Transit-sealed source-custody receipt.
+   A create with an ambiguous response
+   enters durable recovery rather than blind retry.
+5. Atomically commit one per-target delivery outbox intent in the authority aggregate. One-shot home
+   and selected-target Agent workers transfer the retained payload attestation-encrypted; Authority
+   and its outbox see only ciphertext and typed opaque receipts/commitments. Delivery is at least
+   once; the selected worker accepts an identical generation as a duplicate, rejects regression or
+   same-generation secret change, performs the closed-schema allowlisted Vault KV CAS, and mandates
+   read-back. No generic export exists, and a fresh AWS Vault needs neither an admin re-prompt nor
+   IAM-key rotation.
+6. Record delivery complete only after Lifecycle Authority re-observes the exact target generation
+   and version. Then close the operation cleanly after provider and target quiescence. Cancellation,
+   expiry, or ambiguity records an explicit recoverable disposition instead of releasing authority
+   based on an in-memory assumption.
+7. Reconcile dependent charts only after the durable operation reports target delivery complete.
+   Ordinary postflight retains `aws-ses`, the entire SMTP IAM identity/policy/key family, and
+   retained-home source custody; always-run cleanup observes and resolves nonterminal operations
+   without destroying them.
+
+Explicit `DestroyAwsSes` is a distinct backup-receipted `AdminActionPermit`. After consumers are
+quiescent, its attested Admin Action Runner is the sole exception to Credential Provisioner's
+deletion ownership: it deletes/read-backs the exact registered SMTP IAM key family, identity, and
+policy while Provider/Pulumi proves non-credential SES/S3/DNS absence. Only after external
+credential absence, and while both Agents remain live, the operation physically destroys every
+owned target/source-custody KV-v2 version, deletes/read-backs metadata, and proves absence. Soft
+delete or a new logical tombstone cannot close the transition. The runner cannot create, rotate, remint,
+or run ordinary repair, and neither it nor `nuke` exposes a generic secret export.
+
+Provider propagation polling and target delivery never hold one 70-minute account-wide lease.
+Correctness comes from the durable aggregate, narrow fences, committed outbox, generation checks,
+and re-observation. Implementation, epoch cutover, legacy removal, and deployment-qualification
+status is owned only by the Development Plan.
+
+#### Historical bracketed implementation record (legacy cutover surface)
+
+> The combined SES lease, operational-credential SMTP sessions, direct selected-target sealing, and
+> `SmtpKeyRepairInterpreter` binding below describe the pre-redesign implementation. They do not
+> override stages 1–7 above: the target separates non-credential Provider work, Credential
+> Provisioner ownership, retained-home `SesSmtpSource` custody, and attested Agent-to-Agent rewrap.
+
 `LongLived` specifies that ordinary suite cleanup retains `aws-ses`; it does not make live SES state
 an operator-prepared prerequisite. Sprint `5.17` makes the selected validation set the source of the
 requirement: any plan containing `ValidationKeycloakInvite` derives one visible nested atomic
@@ -617,7 +791,7 @@ The action executes in this order:
    reconcile, using a private EKS kubeconfig, an explicit Vault-derived AWS subprocess environment,
    and a scoped EKS gateway port-forward. Both projections place it before VS Code, API, and
    WebSocket reconcile.
-2. Resolve the explicit `LongLivedCheckpointAuthority` and `TargetClusterSecretSink`, and prove the
+2. Resolve the explicit `LongLivedCheckpointAuthority` and `TargetSecretSink`, and prove the
    exact selected target's gateway object-store round trip. On home, the target sink has the
    retained authority identity and endpoint but remains a separate typed value. On AWS, the target
    identity is canonical `aws-eks` and its endpoint is the scoped port-forward. No ambient
@@ -626,7 +800,7 @@ The action executes in this order:
    account, region, and the registered `aws-ses` resource name. The returned owner/fencing grant is
    non-renewable and its validated safe-use deadline covers bounded reconcile, provider-then-semantic
    observation, SMTP commit, cancellation, clock-skew, and safety margins.
-4. Invoke the same canonical idempotent reconciler as `prodbox aws stack aws-ses reconcile`, using
+4. Invoke the then-canonical idempotent reconciler as `prodbox aws stack aws-ses reconcile`, using
    the Vault-resolved operational `aws.*` credential solely to assume the exact same-account
    `prodbox-ses-lease-session` role. Reconcile, provider/semantic readiness, and SMTP
    repair/materialization each mint a separate session whose duration is at most 3,600 seconds and
@@ -647,10 +821,12 @@ The action executes in this order:
    `ses:GetEmailIdentity` permission; the capture canary is listed and fetched with the operational
    credential used by invite polling.
 6. While still holding the home/control-plane lease, CAS-record a global `TargetCommitIntent`
-   naming the selected `TargetClusterSecretSink`, credential generation, value digest, deadline,
-   owner, and fence. Revalidate the intent, perform one bounded target-Vault KV CAS carrying that
-   metadata, read it back, and mark the global intent committed by owner/fence CAS; then release.
-   A sink-local CAS is not represented as an atomic global fence.
+   naming the selected `TargetSecretSink`, credential generation, sealed receipt/opaque Agent-HMAC
+   commitment reference, deadline, owner, and fence. The pre-cutover `value digest` field is a
+   legacy deletion surface and must not contain or expose a raw plaintext/credential hash.
+   Revalidate the intent, perform one bounded target-Vault KV CAS carrying only safe metadata, read
+   it back, and mark the global intent committed by owner/fence CAS; then release. A sink-local CAS
+   is not represented as an atomic global fence.
 7. Reconcile dependent charts after target SMTP sync. Deferred SES prerequisite nodes remain
    read-only observations of the prepared result and never dispatch another reconcile. Ordinary
    postflight uses `SesNotRequired` and never schedules retained-SES destruction.
@@ -682,8 +858,8 @@ Access denial, throttling, malformed output, and transport failure are `Unobserv
 AWS absence or named present resources may drive create/import; either unobservable authority
 prevents mutation.
 
-The completed Sprint `4.47` implementation maps this doctrine to concrete modules without collapsing the
-roles: `ResidueStatus` supplies the flat observations; `DesiredPresence` supplies the total
+The completed pre-redesign Sprint `4.47` implementation mapped the then-current doctrine to concrete
+modules: `ResidueStatus` supplies the flat observations; `DesiredPresence` supplies the total
 six-action planner/interpreter and mandatory re-observation; `ResourceRegistry` registers
 `awsSesPulumiResource` in `desiredPresentManagedResources`; and `AwsSesStack` supplies typed AWS
 presence/checkpoint observers plus the registered ensure interpreter. `Lease` / `LeaseInterpreter`,
@@ -698,9 +874,11 @@ through the typed IAM and selected-sink adapters. Setup owns the registered fixe
 operational-user policy; teardown deletes the role before the trusted user. This is the Sprint
 `4.47` end-to-end completion claim. Sprint `5.17` now consumes
 that transaction through selected-suite plan placement; Sprint `8.10` completes its semantic
-readiness stage.
+readiness stage. The target cutover preserves its total observations, finite-inventory repair, and
+read-back properties while removing combined Provider/SMTP authority and direct target-only custody.
 
-SMTP access-key repair never treats create as retry-safe. The fenced committed state includes the
+The safety fold retained from that implementation never treats SMTP access-key create as retry-safe.
+In the target, Credential Provisioner alone interprets that repair fold. The committed state includes the
 IAM access-key ID. Repair compares the authoritative finite key inventory for the exact SMTP user
 with that committed ID, deletes owned uncommitted or unrecoverable keys, waits for deletion to become
 authoritatively visible, and re-observes before creating one replacement and committing its ID and
@@ -752,27 +930,38 @@ The same public CLI surfaces used by operators own the AWS test-stack lifecycles
 2. `prodbox aws stack eks destroy --yes`
 3. `prodbox aws stack test reconcile`
 4. `prodbox aws stack test destroy --yes`
-5. `prodbox cluster delete --yes` as the final automatic destroy path before backend teardown
+5. the suite's durable always-run cleanup plan, or operator
+   `prodbox cluster delete --cascade --yes`, as the whole-system destroy path before backend
+   teardown; plain `cluster delete --yes` is local-only
 
 ### 5.3 Cleanup Must Run After Validation Failure
 
 Cleanup must still run when a validation fails part-way through.
 
-Required patterns:
+Before each mutation, the runner registers its cleanup obligation in a pure validated cleanup DAG.
+The interpreter stops new suite operations, resolves nonterminal Lifecycle Authority operations,
+restores the retained home control plane/application charts, destroys per-run stacks and test EBS,
+removes each `Operational` role-specific IAM identity only after its credential-dependent cleanup,
+physically destroys each owned Vault KV-v2 version and deletes/read-backs its metadata, observes the
+`LongLived` backup/TLS/home DNS identities
+retained, then re-observes every owned
+lifecycle class. Every ready cleanup node runs even if an independent sibling fails; only a node
+whose dependency failed is skipped, with an explicit reason.
 
-1. Route 53 lifecycle code attempts teardown after mid-validation failure when safe
-2. Pulumi-backed validations use the public destroy surfaces
-3. Managed suite postflight repair is owned by the test runner for aggregate suites and targeted
-   `prodbox test integration <name> --substrate aws` validations
-4. The shared IAM harness still attempts teardown and `aws.*` clearing when prerequisite
-   validation fails after harness setup has already materialized operational credentials
+Route 53 and Pulumi cleanup still use the public command surfaces. Aggregate suites and targeted
+`prodbox test integration <name> --substrate aws` validations use the same plan. If prerequisite
+validation fails after IAM setup, every role-specific IAM/key/Vault-generation cleanup obligation
+remains registered with its lifecycle class: Operational deletion runs after all
+credential-dependent cleanup that can still be attempted, while LongLived obligations verify
+retention and current consumers rather than delete them.
 
 ### 5.4 Cleanup Failure Handling
 
-Cleanup must always be attempted. Warning-only teardown is prohibited.
-
-If validation-owned Route 53 cleanup or Pulumi-owned stack destroy fails, the suite must abort with
-explicit target and error text.
+Cleanup must always be attempted. Warning-only teardown is prohibited. The final report preserves
+the original suite failure and aggregates every cleanup failure; one failed destroy cannot suppress
+independent cleanup. Dependency-blocked nodes report the exact blocker. A Route 53 cleanup, Pulumi
+destroy, authority recovery, target read-back, or final residue observation failure therefore makes
+the suite fail with explicit target and error text.
 
 ### 5.5 Cascade Drain Phase Against EKS
 
@@ -831,6 +1020,11 @@ Route 53 lifecycle validation uses the canonical AWS CLI command family:
 4. `aws route53 list-resource-record-sets`
 5. `aws route53 delete-hosted-zone`
 
+These are provider-interpreter leaves, not prerequisite effects or operator runbook steps. The
+hosted-zone canary is a visible Sprint-`5.18` preparation resource registered before create with
+always-run delete/absence read-back; exact A/TXT record changes likewise execute only through their
+registered owner. The current `bracketOnError` canary carve-out is pre-cutover legacy.
+
 ### 6.3 Pulumi Validation Commands
 
 Pulumi-backed validations depend on:
@@ -849,51 +1043,65 @@ Pulumi-backed validations depend on:
 Per [`DEVELOPMENT_PLAN/phase-8-email-invite-auth.md`](../../DEVELOPMENT_PLAN/phase-8-email-invite-auth.md)
 and [`DEVELOPMENT_PLAN/substrates.md`](../../DEVELOPMENT_PLAN/substrates.md#cross-substrate-shared-resources),
 the AWS SES sending identity, receive subdomain MX records, receive rule set, S3 capture bucket,
-and SMTP IAM user are account-scoped resources shared across every substrate that runs
-`ValidationKeycloakInvite`. The supported provisioning entrypoints are
-`prodbox aws stack aws-ses reconcile` and `prodbox aws stack aws-ses destroy --yes`, sourced from
-`pulumi/aws-ses/` and operated through
-`src/Prodbox/Infra/AwsSesStack.hs`. The operator-supplied inputs are
+and deterministic SMTP IAM identity/policy/bounded-key family are account-scoped resources shared
+across every substrate that runs `ValidationKeycloakInvite`. Their ownership is deliberately split.
+The Provider/Pulumi program sourced from `pulumi/aws-ses/` owns only non-credential SES/S3/DNS
+resources; it must never declare, import, adopt, update, or delete the SMTP IAM family. Credential
+Provisioner exclusively installs, rotates, remints, and repair-deletes that family under
+`OperatorMaterialPermit`; Admin Action Runner may delete/read back the entire family only under
+`DestroyAwsSes`. The supported orchestration entrypoints remain `prodbox aws stack aws-ses
+reconcile` and `prodbox aws stack aws-ses destroy --yes`, operated through
+`src/Prodbox/Infra/AwsSesStack.hs`. The operator-supplied non-secret inputs are
 `ses.sender_domain`, `ses.receive_subdomain`, and `ses.capture_bucket` in
 `prodbox.dhall`; the parent Route 53 zone (`route53.zone_id`) carries the MX records for
 the receive subdomain.
 
 The suite preparation and retention contract is §4.6. In particular, invite-capable suites invoke
-the canonical reconcile themselves after the encrypted backend is ready; a missing stack is not an
-operator-repair prerequisite. The corresponding read-only prerequisites only validate tools,
-configuration, and observable readiness boundaries.
+the canonical durable lifecycle operation themselves after Lifecycle Authority and the selected
+Target Secret Agent capability are admissible; a missing stack is not an operator-repair
+prerequisite. The corresponding read-only prerequisites validate tools, configuration, and the
+exact operation-indexed capability references—not nominal endpoints or separately injected probes.
 
-Pulumi owns the SMTP IAM user and its policy, but `pulumi/aws-ses/Main.yaml` declares no
-`aws:iam:AccessKey` and exports no access-key ID or secret. Haskell is the sole key creator:
-`Prodbox.Lifecycle.SmtpKeyRepairInterpreter` loads the guarded Model-B committed projection,
-observes the exact user's bounded IAM inventory, performs every planned cleanup, proves stable
-expected inventory, derives generation `1` or committed `N + 1`, obtains one fresh fenced permit,
-and issues at most one create. It guarded-CAS commits the recoverable key material and mandates
-re-observation; a conflict, pre-apply failure, or interruption deletes the uncommitted created key,
-and every cleanup failure is propagated. The committed outcome supplies the SES
-IAM-to-SMTP-credentials derivation written through the selected target's Vault KV
-`secret/keycloak/smtp`. Because Keycloak's realm import does not update an
-already-created realm, `prodbox users invite` also patches the live realm's `smtpServer` from
-`secret/keycloak/smtp` before it sends an execute-actions email. If the long-lived stack state is
-missing while retained fixed-name SES/S3/IAM resources still exist, `aws-ses reconcile` repairs
-state by importing the retained capture bucket, SMTP IAM user, SES receipt rule set, and receipt
-rule, applying §4.6's fenced committed-key comparison and delete/wait/re-observe/create protocol so
-the Haskell interpreter owns at most one fresh retrievable secret, and reconciling
-overwrite-tolerant Route 53 verification/DKIM/MX records. The `ValidationKeycloakInvite`
-canonical-suite member (Sprint `8.5`) reads inbound capture from the S3 bucket via the same IAM
-user (`s3:ListBucket`, `s3:GetObject`, `s3:DeleteObject` on the bucket and its objects).
-In aggregate runs, `ValidationKeycloakInvite` must run before destructive
-`ValidationChartsStorage` and `ValidationLifecycle` so AWS-substrate invite proof still has
-the live `vscode` root chart/Keycloak deployment, a live EKS stack snapshot, and a live
-kubeconfig. The Keycloak chart's shared-host auth `HTTPRoute` must include `/auth/admin` because
-the operator-owned invite flow creates users through the Keycloak admin API after acquiring its
-token from `/auth/realms/master`. `ValidationLifecycle` remains the terminal destructive validation.
-The Pulumi program is the exclusive multi-resource stack provisioning surface; SMTP IAM access-key
-mutation is exclusively Haskell-interpreted through the harness. Ad-hoc `aws ses *`, `aws s3 *`,
-and `aws iam create-access-key|delete-access-key` mutations are not part of the supported path.
+In the target implementation Lifecycle Authority's pure `decide`/`evolve` aggregate commits the
+provider revision, semantic-readiness result, SMTP credential-family generation, retained-home
+source-custody receipt, and per-target delivery outbox. Its interpreters remain disjoint:
+
+- Provider Worker receives only the typed non-credential SES/S3/DNS intent and bounded role session.
+- Credential Provisioner receives only the exact SMTP-family `OperatorMaterialPermit` and admin
+  prompt. It derives the region-bound closed `SesSmtpSource` in bounded memory from the one-time IAM
+  secret, then discards the raw AWS secret-access-key bytes; the retained-home Agent receives and
+  Transit-seals only `SesSmtpSource`.
+- One-shot retained-home and selected-target Agent workers transfer that payload
+  attestation-encrypted. Authority/outbox sees only ciphertext and typed opaque receipts; the
+  selected worker alone materializes/read-backs `secret/keycloak/smtp`. A fresh AWS Vault therefore
+  needs neither an admin re-prompt nor IAM-key rotation, and no generic secret export exists.
+- After consumer quiescence, `DestroyAwsSes` deletes/read-backs the external SMTP key/identity/policy
+  and proves the non-credential family absent. Only then, while both Agents remain live, it
+  physically destroys every owned target/custody KV-v2 version, deletes/read-backs metadata, and
+  proves absence. Soft delete or a new logical tombstone is forbidden; rotation retains the current
+  generation and destroys only dependency-free superseded versions. `nuke` obeys the same external-first order through its signed decommission manifest.
+
+Destructive `ValidationLifecycle` remains terminal after invite proof. In aggregate runs,
+`ValidationKeycloakInvite` must precede `ValidationChartsStorage` and `ValidationLifecycle` so the
+selected Keycloak deployment and capture proof remain live. The shared-host auth `HTTPRoute`
+includes `/auth/admin` because the operator-owned invite flow creates users through the Keycloak
+admin API after acquiring its token from `/auth/realms/master`.
+
+#### Historical module binding (legacy cutover surface)
+
+The pre-redesign binding made Pulumi own/import the SMTP IAM user and policy, placed access-key
+repair in `Prodbox.Lifecycle.SmtpKeyRepairInterpreter` under the combined `AwsSesStack` lease, wrote
+the derived SMTP payload directly to the selected target, and reused that IAM user for capture
+bucket reads. Those are cutover/deletion surfaces, not target ownership. The replacement must retain
+the finite-inventory/delete-wait-reobserve safety fold while moving the entire SMTP identity,
+least-privilege policy, key family, and repair deletion behind Credential Provisioner and adding
+retained-home `SesSmtpSource` custody. Missing-checkpoint provider recovery imports only the
+registered non-credential capture bucket, SES identity/rules, and DNS records. Ad-hoc `aws ses *`,
+`aws s3 *`, and `aws iam create-access-key|delete-access-key` mutations remain unsupported.
 
 ## Cross-References
 
+- [Lifecycle Control-Plane Architecture](./lifecycle_control_plane_architecture.md)
 - [AWS Admin Credentials](./aws_admin_credentials.md)
 - [AWS Test Environment](./aws_test_environment.md)
 - [CLI Command Surface](./cli_command_surface.md)

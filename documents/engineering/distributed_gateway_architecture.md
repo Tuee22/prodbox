@@ -2,12 +2,12 @@
 
 **Status**: Authoritative source
 **Supersedes**: N/A
-**Referenced by**: README.md, AGENTS.md, CLAUDE.md, DEVELOPMENT_PLAN/README.md, DEVELOPMENT_PLAN/system-components.md, DEVELOPMENT_PLAN/legacy-tracking-for-deletion.md, DEVELOPMENT_PLAN/phase-0-planning-documentation.md, DEVELOPMENT_PLAN/phase-1-runtime-cli-aws-foundations.md, DEVELOPMENT_PLAN/phase-2-gateway-dns.md, DEVELOPMENT_PLAN/phase-3-chart-platform-vscode.md, DEVELOPMENT_PLAN/phase-5-canonical-test-suite.md, documents/documentation_standards.md, documents/engineering/README.md, documents/engineering/bootstrap_readiness_doctrine.md, documents/engineering/cluster_federation_doctrine.md, documents/engineering/envoy_gateway_edge_doctrine.md, documents/engineering/haskell_code_guide.md, documents/engineering/local_registry_pipeline.md, documents/engineering/prerequisite_doctrine.md, documents/engineering/pure_fp_standards.md, documents/engineering/secret_derivation_doctrine.md, documents/engineering/storage_lifecycle_doctrine.md, documents/engineering/streaming_doctrine.md, documents/engineering/tla/README.md, documents/engineering/tla_modelling_assumptions.md, documents/engineering/unit_testing_policy.md, documents/engineering/chaos_hardening_doctrine.md, documents/engineering/pulsar_messaging_doctrine.md, documents/engineering/resource_scaling_doctrine.md
+**Referenced by**: README.md, AGENTS.md, CLAUDE.md, DEVELOPMENT_PLAN/README.md, DEVELOPMENT_PLAN/system-components.md, DEVELOPMENT_PLAN/legacy-tracking-for-deletion.md, DEVELOPMENT_PLAN/phase-0-planning-documentation.md, DEVELOPMENT_PLAN/phase-1-runtime-cli-aws-foundations.md, DEVELOPMENT_PLAN/phase-2-gateway-dns.md, DEVELOPMENT_PLAN/phase-3-chart-platform-vscode.md, DEVELOPMENT_PLAN/phase-5-canonical-test-suite.md, documents/documentation_standards.md, documents/engineering/README.md, documents/engineering/bootstrap_readiness_doctrine.md, documents/engineering/cluster_federation_doctrine.md, documents/engineering/envoy_gateway_edge_doctrine.md, documents/engineering/haskell_code_guide.md, documents/engineering/lifecycle_control_plane_architecture.md, documents/engineering/local_registry_pipeline.md, documents/engineering/prerequisite_doctrine.md, documents/engineering/pure_fp_standards.md, documents/engineering/secret_derivation_doctrine.md, documents/engineering/storage_lifecycle_doctrine.md, documents/engineering/streaming_doctrine.md, documents/engineering/tla/README.md, documents/engineering/tla_modelling_assumptions.md, documents/engineering/unit_testing_policy.md, documents/engineering/chaos_hardening_doctrine.md, documents/engineering/pulsar_messaging_doctrine.md, documents/engineering/resource_scaling_doctrine.md
 **Generated sections**: none
 
 > **Purpose**: Define prodbox's peer-to-peer election/replication architecture using shared Orders,
-> bounded semantic replica state, signed delta/cursor anti-entropy, a mandatory retained continuity
-> authority, and formally constrained gateway leadership rules.
+> bounded semantic replica state, signed delta/cursor anti-entropy, an encrypted identity-bound
+> local emitter journal, and formally constrained gateway leadership rules.
 
 ---
 
@@ -35,40 +35,50 @@ emitter, with a bounded snapshot repair when a cursor component falls outside th
 window. Sending the complete
 historical event set on every interval is forbidden.
 
-Each emitter cursor is a fixed-width `(epoch, sequence)` value. For each daemon, a mandatory
-`GatewayContinuityAuthority` in the retained control plane durably owns one bounded record for its
-local emitter: the active Orders anchor, one committed epoch/sequence/previous-emitter-digest
-anchor, and at most one exact staged signed assertion with its next anchor. Before publishing any
-assertion, the emitter stages that exact assertion, conditionally persists the record, and
-re-observes the durable value; epoch rotation uses the same protocol with a signed invalidation.
+Each emitter cursor is a fixed-width `(epoch, sequence)` value. One actor per daemon exclusively
+owns the local emitter transition and an encrypted, identity-bound retained journal containing the
+admission/incarnation, active Orders anchor, committed epoch/sequence/previous-emitter-digest
+anchor, at most one exact staged assertion, at most one committed-but-unacknowledged assertion, and
+a bounded peer-ack/repair-floor projection. Before publishing any assertion, that actor
+performs `stage -> fsync -> publish -> commit -> fsync`; epoch rotation uses the same serialized
+protocol with a signed invalidation. Heartbeats never perform a shared remote Model-B transaction,
+call Vault, or call MinIO. A renewable Vault session supplies the journal key at startup, and
+plaintext exists only in bounded memory. Remote Model-B continuity is a migration adapter only.
 Peer state may repair bounded heartbeat/ownership projections, but it is never the source of an
 emitter's continuity coordinates. A simultaneous restart of every peer therefore recovers every
 emitter's safe continuation anchor, not the discarded semantic history.
-Missing, corrupt, or unobservable authority is fail closed — the daemon may serve diagnostics and
+Missing, corrupt, or unobservable journal state after admission is fail closed — the daemon may serve diagnostics and
 ingest bounded peer state, but it cannot initialize or advance an emitter, claim ownership, or
 write DNS. Sequence wrap is forbidden; failure to persist a pre-exhaustion rotation stops emission,
 never modularly resets the sequence.
 
+Gateway Runtime owns only mesh membership, bounded signed state, ownership projection, DNS, and
+its local journal. It does not bootstrap Vault, own lifecycle leases/checkpoints/outboxes, mutate
+target Vault KV, or proxy generic object-store operations. Those authorities and the pure
+operation-indexed capability design are owned by
+[Lifecycle Control-Plane Architecture](./lifecycle_control_plane_architecture.md).
+
 DNS mutation is credential-gated as well as ownership-gated: the interpreter may construct a Route
 53 effect only from an authorized plan containing current ownership evidence and an observed,
 usable credential generation. Missing or unobservable credentials refuse the effect before any
-AWS child process starts.
+native Route 53 request starts.
 
 Kubernetes `/healthz` and `/readyz` probes are constant-time projections over lifecycle flags.
 Restart/OOM/high-water stability is a separate, time-windowed external observation; a point-in-time
-`Deployment Available=True` result is not stability proof.
+`StatefulSet Ready=True` result is not stability proof.
 
 This doctrine covers the Haskell distributed gateway daemon only. The Kubernetes Gateway API
 public-edge controller target is owned separately by
 [Envoy Gateway Edge Doctrine](./envoy_gateway_edge_doctrine.md).
 
 The constant-time `/healthz` and `/readyz` endpoints have existed since Sprint `2.10`. Sprint
-`2.31` landed the bounded state, transport, continuity, memory-consumer, and credential-gated DNS
-contracts described here on top of Sprint `1.60`'s runtime-memory plan. Sprint `3.25` landed the
+`2.31` landed the bounded state, transport, remote Model-B continuity adapter, memory-consumer, and
+credential-gated DNS implementation on top of Sprint `1.60`'s runtime-memory plan. Sprint `3.25` landed the
 separate chart binding to those endpoints and forbids `/v1/state` as a kubelet probe. Sprint `5.16`
 landed the external restart/OOM/high-water stability classifier, concurrency-safe shared recorder,
-structured continuous monitor, and final `gateway-pods` gate. Delivery status remains owned by the
-development plan rather than this doctrine.
+structured continuous monitor, and final `gateway-pods` gate. Status for the local-journal actor
+cutover, legacy route removal, and deployment qualification is owned by the Development Plan, not
+this doctrine.
 
 ---
 
@@ -76,9 +86,9 @@ development plan rather than this doctrine.
 
 This design assumes:
 
-1. No centralized election coordinator (no DynamoDB lease or external owner oracle). The retained
-   continuity authority is mandatory write-ahead persistence for signed sequence/checkpoint state;
-   it does not choose the gateway owner.
+1. No centralized election coordinator (no DynamoDB lease or external owner oracle). The local
+   encrypted emitter journal is mandatory write-ahead persistence for signed continuity state; it
+   does not choose the gateway owner.
 2. All nodes are fully trusted mesh peers identified by Orders membership and per-node event
    keys; peer trust material remains part of the gateway config and chart contract.
 3. A typed global Orders document exists (Dhall-authored, CBOR-serialized on the wire — see
@@ -90,8 +100,8 @@ This design assumes:
 6. Only gateway owner updates the canonical public DNS record `test.resolvefintech.com`.
 7. The convergent, bounded semantic replica state is the runtime decision source of truth. Peers
    exchange bounded cursor deltas/snapshots, while mandatory emitter continuity survives total peer
-   restart in the explicit retained `GatewayContinuityAuthority`; peer recovery never substitutes
-   for that durable anchor.
+   restart in each node's retained identity-bound journal; peer recovery never substitutes for that
+   durable anchor.
 
 ---
 
@@ -167,7 +177,7 @@ The accepted runtime projection is finite:
 | Orders view | Active version plus at most one highest-observed/staged version needed by the restart gate |
 | Replay window | Bounded original signed assertions per emitter; the default capacity is eight |
 | Emitter continuity (hot) | Current fixed-width epoch/sequence and previous-emitter hash per Orders member; no historical epoch list |
-| Durable continuity anchor | One local-emitter record per daemon in `GatewayContinuityAuthority`: committed epoch/sequence/digest plus at most one exact staged signed assertion/next anchor |
+| Durable continuity anchor | One encrypted identity-bound retained journal per daemon: admission/incarnation, committed epoch/sequence/previous anchor, at most one staged assertion, at most one committed-unacknowledged assertion, and bounded peer-ack/repair-floor projection |
 | Diagnostic history | Exactly 64 recent assertion digests process-wide; no logical audit history is retained by the gateway |
 
 Replication is anti-entropy gossip over the stable peer endpoints carried in Orders. Each accepted
@@ -245,7 +255,7 @@ The schema can forbid ambiguous rule forms, but cannot bypass impossibility resu
 The two substrates differ in physical failure independence, not in the logical protocol:
 
 - **Home (single physical host)** — the chart runs three logical ranked peers (`node-a`, `node-b`,
-  and `node-c`) as separate Deployments on one physical host. Logical peer loss, one-way transport
+  and `node-c`) as separate stable StatefulSet identities on one physical host. Logical peer loss, one-way transport
   failure, and network-policy partitions remain meaningful protocol scenarios. A physical host
   failure is shared fate, however: all three peers and the cluster they gate disappear together, so
   the home topology cannot demonstrate independent-host failover.
@@ -265,12 +275,14 @@ the additional host-failure independence.
 
 When a silent node returns:
 
-1. It observes its local-emitter record through `GatewayContinuityAuthority`. The separate Vault
-   admission marker permits a conditional genesis write only for a never-admitted emitter;
-   marker-present plus missing, corrupt, or unreachable continuity refuses emission.
-2. It restores the local emitter cursor from the committed anchor. Committed continuity contains no
-   heartbeat/ownership history, so those semantic and replay slots start empty unless an exact
-   staged assertion must be republished after a crash.
+1. Its single emitter actor acquires the substrate-appropriate volume fence, OS lock, durable
+   incarnation, and Kubernetes Lease, then reconciles the journal/admission-marker transaction.
+   Genesis is `JournalPrepared -> EmitterAdmissionPrepared -> read back both -> JournalActive ->
+   EmitterAdmissionActive`. A matching prepared pair resumes; either half missing, corrupt, or
+   mismatched refuses emission and requires receipt-committed retirement plus a new identity.
+2. It restores the local emitter cursor, latest committed canonical signed assertion, previous
+   anchor, incarnation, and peer-ack projection. An unacknowledged committed assertion is
+   idempotently republished; a staged assertion resumes publication before commit.
 3. It reconnects via the stable peer endpoints carried in Orders and advertises its bounded receive
    cursor vector.
 4. A peer sends a contiguous bounded delta after that vector. If a component lies behind the replay
@@ -279,17 +291,18 @@ When a silent node returns:
 5. It validates Orders version, emitter identity, signature, sequence/cursor monotonicity, schema,
    and frame bounds before applying anything.
 6. It folds peer evidence into bounded hot state only when verification succeeds. Peer evidence does
-   not mutate the local emitter's retained authority; every later local assertion still follows the
-   persistence-first stage/re-observe/publish/commit protocol.
+   not mutate the local emitter journal; every later local assertion still follows the actor-owned
+   `stage -> fsync -> publish -> commit -> fsync` protocol.
 7. It promotes latest Orders by UTC version through the restart boundary.
 8. It recomputes gateway candidacy and either:
    - yields immediately, or
    - starts/continues gateway ownership actions if selected.
 
 This provides deterministic convergence without using peers as continuity authority. If every peer
-restarts together, each recovers its own safe emitter anchor and can resume without sequence reset or
-wrap. The retained records do not recover discarded heartbeat/ownership semantics by themselves;
-new assertions and subsequent bounded peer exchange re-establish the live semantic projection.
+restarts together, each recovers its own safe emitter anchor and any unacknowledged ownership
+transition, then resumes without sequence reset or wrap. Heartbeat semantics may be coalesced and
+later refreshed; claim/yield/rotation evidence is never discarded before peer acknowledgment or a
+signed repair-floor checkpoint.
 
 ---
 
@@ -313,7 +326,7 @@ new assertions and subsequent bounded peer exchange re-establish the live semant
 ### 7.1.1 Per-Connection Isolation Contract
 
 Both listeners — the peer cursor/delta/repair listener and the operator-facing REST surface
-(`/v1/state`, bootstrap/object-store/federation routes, and the health/metrics endpoints) — handle
+(`/v1/state` and the health/metrics endpoints) — handle
 each inbound connection in isolation so
 a slow, stuck, or malformed peer cannot wedge the daemon:
 
@@ -349,12 +362,13 @@ drop rather than a `Fatal` worker error, including during `Draining`.
   limits, not by daemon uptime.
 - Acceptance is idempotent: the receiver's pure fold advances only monotonic semantic keys and
   cursors. Repeated frames are acknowledged without changing retained cardinality.
-- Local publication is persistence-first: prepare and sign the next assertion, conditionally CAS
-  its exact bytes and next anchor into the staged continuity slot, re-observe the exact durable
-  stage, publish, then CAS the next anchor into the committed slot and clear the stage. A lost
-  conditional advance, unavailable observation, or durability failure emits nothing. This
-  serializes overlapping incarnations of one emitter without turning the authority into an election
-  oracle.
+- Local publication is persistence-first and single-owner: prepare and sign the next assertion,
+  stage its exact bytes and next anchor in the encrypted local journal, `fsync`, publish, promote
+  the stage to `committedUnacknowledged` with its exact bytes/previous anchor and `fsync` again.
+  Peer acknowledgments update the durable ack projection; only the compaction rule below may clear
+  the committed bytes. A journal conflict, unavailable observation,
+  or durability failure emits nothing. No independent continuity loop may stage or commit another
+  transition, and the heartbeat path does not call a remote Model-B authority.
 - Restart/overflow never resets a sequence in place. The emitter either resumes the recovered
   current epoch at `sequence + 1`, or conditionally persists a signed epoch-invalidation assertion
   to a fresh epoch before emitting. Frames from an invalidated epoch are rejected even if delayed past
@@ -523,18 +537,19 @@ predicate plus the interpreter's credential capability:
    corrupt, stale, or unobservable continuity refuses the effect.
 
 The pure DNS planner returns either a structured refusal or a `DnsWriteAuthorized` value carrying
-the owner evidence, deterministic credential generation, and continuity-anchor fence. A separate
-validated `DnsWriteRequest` binds the zone, FQDN, TTL, region, and IPv4 value; only their combination
-can construct the opaque `DnsWriteAction` consumed by the Route 53 interpreter. The daemon acquires
-the capacity-one child lease, re-observes continuity inside that same lease, refreshes the
-credential/claim/fence agreement, and only then constructs the AWS subprocess. Missing or
-unobservable authority therefore cannot reach the subprocess boundary.
+the owner evidence, committed journal transition, emitter incarnation, deterministic credential
+generation, and continuity-anchor fence. The registered account/zone/FQDN/type/ownership-epoch
+coordinate exists only in `CapabilityRef 'GatewayDnsReconcileReadBack`; `GatewayDnsIntent` carries
+only desired IP/TTL plus the opaque signed `CommittedIntentRef 'GatewayDnsMutation`. Admission,
+domain pre-observation, conditional change, and authoritative read-back execute through that same
+reference and its bounded native Route 53 client/session lane. There is no separately supplied
+endpoint or coordinate, capacity-one process lease, AWS subprocess, ambient profile, or credential
+fallback on the target path.
 
-The credential generation is derived deterministically from the exact access-key, secret-key,
-session-token, and region fields. A generation change is a typed boot-reload decision that drains
-and restarts the daemon. `DnsWriteAction` supplies a complete AWS environment built from an empty
-base and explicitly disables profile/config/metadata discovery, so ambient AWS state cannot confer
-authority.
+The role-scoped session manager projects only the committed Gateway-DNS credential generation. A
+generation change is a typed boot-reload decision that drains and restarts the daemon. Missing or
+unobservable ownership, journal, receipt, credential, or exact-record evidence therefore refuses
+before the native adapter receives an effect.
 
 Because the bounded semantic ownership view is replicated through anti-entropy gossip (see §7), a
 stale owner that has yielded cannot reclaim DNS write authority without first observing a fresh
@@ -620,29 +635,32 @@ verifies the stderr JSON envelope and the file-watch-driven log-level path.
 
 ### Route53DnsWriteClient
 
-The Haskell daemon wires DNS writes through native subprocess helpers:
-- `fetchPublicIp()` invokes `curl -s --max-time 10 https://api.ipify.org`
-- `writeDnsRecord()` invokes `aws route53 change-resource-record-sets` with an UPSERT batch
-- the helpers are interpreter leaves reachable only from `DnsWriteAuthorized`; gate configuration
-  alone is insufficient authority
-- the single union runtime image (`docker/prodbox.Dockerfile`) installs the official AWS CLI bundle
-  per target architecture so the Route 53 subprocess path remains available inside the runtime image
-- `charts/gateway/` renders Route 53 AWS credentials as `SecretRef.Vault` references, and the daemon
-  resolves them through Vault Kubernetes auth before projecting them only into the `aws` subprocess
-  environment
+The target home writer resolves `CapabilityRef 'GatewayDnsReconcileReadBack` for one registered
+account/zone/FQDN/type/ownership-epoch coordinate. The program carries only the desired IP/TTL plus
+current claim, emitter-incarnation, continuity, and Gateway-DNS credential-generation evidence;
+the coordinate cannot be supplied again or changed after admission. Its adapter observes the exact
+record, conditionally applies the change through the dedicated Gateway-DNS session, and reads back
+the authoritative record under the same request deadline. Desired absence uses the same reference.
+The EKS Gateway has no DNS-mutation capability; the AWS A record belongs to a Lifecycle Authority
+provider intent.
 
-AWS auth for gateway DNS writes is seeded into Vault from the Tier-0 `prodbox.dhall` parameters by
-`prodbox vault reconcile` and then read in-cluster through the gateway daemon's Vault role.
-`dns_write_gate` must not contain AWS access key, secret key, session token, or similar
-credential fields.
-
-The runtime-memory plan reserves the bounded peak of these children separately from the GHC heap.
-Serial child execution and a bounded timeout are part of that reserve; an unconstrained number of
-concurrent AWS/curl children is not admissible.
+**Historical pre-cutover implementation.** The current daemon still invokes `curl` for public-IP
+discovery and `aws route53 change-resource-record-sets` for direct UPSERT, with the shared
+`secret/gateway/gateway/aws` credential seeded by `vault reconcile`. Those children are bounded by
+the current runtime-memory plan, but they have no registered record epoch/read-back/tombstone and
+are not the target writer. Sprints `4.50`/`7.33` remove the direct subprocess paths, shared Vault
+coordinate, and EKS gateway fallback after exact-record cutover.
 
 ---
 
 ## 11. REST API
+
+The target Gateway Runtime surface is limited to the bounded peer protocol, read-only gateway
+state, constant-time health/readiness, and metrics described below. Bootstrap, lifecycle,
+object-store, federation-custody, and target-secret operations belong to their separately deployed
+services. The route descriptions explicitly marked historical in this section record the current
+implementation that must be removed during the plan-owned epoch cutover; they confer no target
+authority on Gateway Runtime.
 
 ### Peer cursor, delta, and repair routes
 
@@ -676,7 +694,7 @@ Returns current daemon state:
             "node-c": {"epoch": 1, "sequence": 88, "digest": "778899"}
         }
     },
-    "continuity_authority": {
+    "emitter_journal": {
         "status": "ready",
         "epoch": 4,
         "sequence": 1042,
@@ -717,9 +735,9 @@ Used by integration tests for observability and by `prodbox gateway status` CLI.
 
 `retained_assertion_count` is bounded by `retained_assertion_capacity`; it is not total assertions
 since process start. `semantic_member_count`, signed replay count, recent hashes, and the
-peer-by-emitter cursor vectors are bounded by validated Orders and gateway bounds. The continuity
+peer-by-emitter cursor vectors are bounded by validated Orders and gateway bounds. The journal
 projection reports the already-observed local committed anchor coordinates and digest, but never a
-signature, key, staged payload, or authority read performed during rendering. The state response
+signature, key, staged payload, or journal read performed during rendering. The state response
 never scans an uptime-proportional history. Fields from the former append-only representation are
 absent.
 
@@ -742,9 +760,10 @@ their owned roles/helpers. The deleted RPC family's history belongs only in
 [the cleanup ledger](../../DEVELOPMENT_PLAN/legacy-tracking-for-deletion.md), not in a current-path
 payload example.
 
-### Federation Read Endpoints
+### Historical Federation Read Endpoints (Legacy Cutover Surface)
 
-Sprint `2.26` adds the gateway-owned federation read surface:
+The following Sprint `2.26` gateway-mediated routes are an implementation record, not the target
+authority boundary:
 
 - `GET /v1/federation/children` logs in to Vault through the daemon's configured Kubernetes-auth
   block, reads `secret/data/clusters/index`, fetches each child metadata object, and returns
@@ -756,9 +775,12 @@ Sprint `2.26` adds the gateway-owned federation read surface:
 Both endpoints fail closed when Vault auth, Vault reachability, or KV decoding fails. They do not
 read child inventory from repository Dhall, Kubernetes Secrets, or gateway-local files.
 
-### Operator-Write Endpoint (`POST /v1/secret/<logical>`)
+### Historical Operator-Write Endpoint (`POST /v1/secret/<logical>`, Legacy Cutover Surface)
 
-Sprint `1.44` adds a single write-capable REST route so the host CLI (a real operator, or the
+The following Sprint `1.44` route is an implementation record, not a target Gateway Runtime
+capability. Target writes use the allowlisted, generation-checked Target Secret Agent through one
+operation-indexed `CapabilityRef`; observation, admission, CAS, and read-back cannot be rebound to
+a separately supplied endpoint. Historically the host CLI (a real operator, or the
 test harness simulating one) persists the two host-minted operator secrets through the in-cluster
 daemon over the loopback-restricted NodePort instead of a host root-token direct Vault write:
 
@@ -785,9 +807,12 @@ host root-token Vault write only when no operator service-account token can be m
 explicit unit/integration host-vault seam is active. Once the operator JWT exists, a daemon
 rejection or transport failure is authoritative and does not bypass to a host root-token write.
 
-### Pre-Vault Bootstrap Endpoint (`POST /v1/bootstrap/vault/ensure`)
+### Historical Pre-Vault Bootstrap Endpoint (`POST /v1/bootstrap/vault/ensure`, Legacy Cutover Surface)
 
-The daemon owns a deliberately small pre-Vault REST surface for the root-cluster bootstrap path. It
+This gateway route is a historical implementation record. In the target architecture the
+Bootstrap Broker is the only pre-Vault process and sole owner of bounded init/unlock/seal/rotation;
+Gateway Runtime never receives an unlock proof or calls the bootstrap object store. Historically,
+the daemon owns a deliberately small pre-Vault REST surface for the root-cluster bootstrap path. It
 exists so the host binary uses the Kubernetes control plane only for initial substrate bootstrap
 and daemon deployment; once MinIO, Vault, and the daemon NodePort are up, further host requests go
 through the daemon service.
@@ -819,18 +844,22 @@ The gateway REST listener also exposes daemon-health endpoints on the same in-po
 
 - `/healthz` is a constant-time read of the process-alive lifecycle flag and returns `200 ok` while
   the listener can serve.
-- `/readyz` is a constant-time read of the lifecycle-mode flag and returns `200 ready` only after
-  the daemon enters `serve`; after SIGTERM or SIGINT it returns `503 draining` during the bounded
+- `/readyz` is a constant-time cached admission projection and returns `200 ready` only after the
+  daemon enters `serve`, its managed gateway sessions and emitter actor are usable, and documented
+  queue lanes can admit work; after SIGTERM or SIGINT it returns `503 draining` during the bounded
   drain window.
 - `/metrics` emits Prometheus exposition text from `envMetrics`, including bounded signed-replay and
   semantic-member gauges plus peer-connectivity and heartbeat-age gauges.
 
 Neither health endpoint may inspect or sort semantic state, encode `/v1/state`, contact Vault,
-MinIO, Route 53, or peers, or spawn a subprocess. Deep dependency readiness uses its separately
-typed one-shot probe from
-[Bootstrap Readiness Doctrine](./bootstrap_readiness_doctrine.md), while sustained restart/OOM
-stability is observed by the test harness over a window. These are three different facts and must
-not share an implementation merely because all can be called "ready."
+MinIO, Route 53, or peers, or spawn a subprocess. `/readyz` is only a cached projection of the
+Gateway Runtime's managed sessions, emitter actor, and queue admission; it makes no nominal backend
+claim. A dependency requirement is resolved to an operation-indexed `CapabilityRef`, and that same
+opaque reference is used for observation, admission, and execution—never a separately injected
+probe endpoint. Sustained restart/OOM stability is observed by the test harness over a window.
+These are distinct facts; the capability and readiness algebra is owned by
+[Bootstrap Readiness Doctrine](./bootstrap_readiness_doctrine.md) and
+[Lifecycle Control-Plane Architecture](./lifecycle_control_plane_architecture.md).
 
 These constant-time endpoints landed in Sprint `2.10`; Sprint `2.31` preserved their independence
 and added a source regression guard proving that state traversal, sorting, or encoding cannot enter
@@ -855,20 +884,21 @@ typed/generated probe-values surface landed in
 
 The canonical steady state for the gateway daemon is the in-cluster
 `prodbox charts reconcile gateway` workload. The chart at `charts/gateway/` renders
-one Deployment per ranked node id, each backed by a per-node `gateway-<id>`
+one stable StatefulSet identity per ranked node id, each backed by a per-node `gateway-<id>`
 Service, an orders ConfigMap, a per-node config ConfigMap, a cert-manager-issued
-TLS material set, and the secret or config inputs required by the daemon at runtime.
+TLS material set, one identity-bound retained emitter-journal PVC, and the secret or config inputs
+required by the daemon at runtime.
 The daemon exposes `/healthz` and `/readyz` for liveness/readiness and keeps `/v1/state` as the
 operator-facing state surface consumed by `prodbox gateway status`. The chart renders both kubelet
 probes from the typed `GatewayProbeSpec` values: `/healthz` for liveness and `/readyz` for
 readiness. Sprint `3.25` changed only that chart binding and did not change the landed daemon
 endpoint contract.
 
-For the bootstrap path, the same binary must also be able to start in a pre-Vault mode: it binds the
-REST listener, serves health/readiness plus `POST /v1/bootstrap/vault/ensure`, and reports
-Vault-dependent steady-state routes unavailable until Vault is initialized, unsealed, and
-reconciled. Once Vault is ready, the normal SecretRef/Vault Kubernetes-auth config path becomes
-available and the daemon transitions to the full gateway runtime.
+Gateway Runtime has no pre-Vault mode in the target topology. Bootstrap Broker is a distinct
+Deployment, Service, ServiceAccount, Vault/MinIO policy, queue, resource envelope, and readiness
+identity; it alone accepts the bounded bootstrap requests needed before Vault is unsealed. The
+same-binary pre-Vault gateway mode and its route are historical implementation records. Their
+cutover and deletion status is owned by the Development Plan.
 
 `prodbox gateway start --config <path>` is the Haskell daemon entrypoint and remains the in-pod
 startup path invoked by the gateway chart's container. `prodbox gateway status --config <path>`
@@ -879,10 +909,10 @@ host-process invocation remains a development mode, not the supported steady sta
 Containerization is first-class for integration/runtime image publishing:
 
 - `prodbox cluster reconcile` builds the single union runtime image from `docker/prodbox.Dockerfile`
-  (the gateway runs it via `gateway start`); it deploys
-  the gateway chart only after the Vault-backed operational `aws.*` credential gate resolves, and a
-  bare local reconcile skips the chart cleanly when `secret/gateway/gateway/aws` has not yet been
-  materialized
+  (the gateway runs it via `gateway start`); it deploys the gateway chart only after the exact
+  Gateway-DNS credential generation, role-scoped config projection, and local journal capability
+  are admitted. A missing Gateway-DNS generation blocks only DNS mutation; it cannot silently
+  substitute the Lifecycle-provider or cert-manager identity
 - the publish path runs an ordinary host-native `docker build`, then pushes the resulting registry
   tags from the repo-owned single-stage `ubuntu:24.04` Dockerfile with in-image `ghcup` and
   pinned GHC `9.12.4`
@@ -918,10 +948,9 @@ access. The NodePort is restricted to `127.0.0.1` on the operator host via a hos
 iptables rule installed by `prodbox cluster reconcile` and removed by `prodbox cluster
 delete --yes`. External access (LAN, WAN) is dropped at the host firewall.
 
-The loopback restriction is a hard requirement for bootstrap endpoints. Password-bearing routes
-such as `POST /v1/bootstrap/vault/ensure` must refuse to be considered supported when the host
-firewall rule is absent or unverifiable; health and read-only status may still exist as
-diagnostics, but they do not weaken the bootstrap boundary.
+The loopback restriction remains a defense for host access to gateway diagnostics. Historically it
+also guarded the password-bearing gateway bootstrap route; the target Bootstrap Broker has its own
+bounded transport and identity and the gateway NodePort carries no unlock proof.
 
 The supported gateway host CLI calls the gateway exclusively through the native Haskell HTTP client in
 `Prodbox.Http.Client` and the typed gateway client in `Prodbox.Gateway.Client`. Some current
@@ -932,76 +961,48 @@ Authoritative contract and bootstrap order for secrets now live in
 [Secret Derivation Doctrine](./secret_derivation_doctrine.md), which describes the Vault-only
 model.
 
-### 12.2 MinIO Bucket Access for Gateway Objects
+### 12.2 Gateway Storage Boundary
 
-The gateway daemon has a scoped MinIO IAM principal for gateway-owned object-store access. There is
-no `master-seed` object in MinIO and no HMAC derivation path.
+Gateway Runtime has no generic MinIO principal, Pulumi checkpoint API, lifecycle Model-B API, or
+target-secret API in the target topology. Lifecycle Authority owns Model-B CAS, immutable
+checkpoint references, leases/fences, operation journals, provider workflow, and delivery outbox.
+Bootstrap Broker alone accesses the pre-Vault unlock-bundle store. Target Secret Agent alone owns
+allowlisted generation-checked target Vault CAS/read-back. Any gateway object-store routes or
+`prodbox-gateway` MinIO authority are historical migration surfaces; their removal status is owned
+by the Development Plan.
 
-| Element | Value |
-|---|---|
-| MinIO bucket | `prodbox-state` |
-| MinIO IAM principal | `prodbox-gateway` |
-| Policy actions on `prodbox-state/*` | `s3:GetObject`, `s3:PutObject`, `s3:ListBucket` |
-| Other principals (including MinIO root) | not used by the gateway daemon for supported object access |
-| Persistence | MinIO PV under `.data/prodbox/minio/0` per [Retained Storage Lifecycle Doctrine](./storage_lifecycle_doctrine.md) §1 |
+The gateway's only durable state-write authority is its own encrypted identity-bound emitter journal on
+an explicitly registered retained volume. Vault supplies a renewable journal-key session at
+startup; the heartbeat hot path performs no Vault or MinIO call. The journal is bound to one
+admitted emitter identity and contains exactly:
 
-Supported Pulumi checkpoints are opaque Model-B objects reached through the daemon object-store
-API; raw layouts are first-touch migration inputs only. The shared bucket is the generic
-`prodbox-state` bucket. The `prodbox-state` bucket and the
-`prodbox-gateway` user are bootstrapped by reconcile through the Vault-backed MinIO bootstrap Job
-before the gateway daemon starts.
+- the bounded emitter id, admission nonce/state, validated active Orders anchor, and current durable
+  `EmitterIncarnation`;
+- the committed fixed-width epoch/sequence/digest anchor and its previous anchor;
+- at most one staged assertion containing the transition kind, exact canonical signed bytes,
+  previous digest, and next anchor;
+- at most one latest committed-but-unacknowledged canonical signed assertion; and
+- a bounded current-peer acknowledgment projection plus signed repair-floor checkpoint reference.
 
-### 12.2.1 Retained Gateway Continuity Authority
+One actor exclusively owns `stage -> fsync -> publish -> commit -> fsync`. A crash before the first
+`fsync` publishes nothing. A crash after staging recovers and idempotently republishes the exact
+bytes before committing. A crash after commit but before peer response republishes the retained
+committed bytes. Claim/yield/rotation bytes compact only after every current peer acknowledges or a
+signed checkpoint includes them as the repair floor. Missing journal state after prior admission is
+recovery failure, never permission to reset the epoch.
 
-`GatewayContinuityAuthority` is an explicit typed capability rooted in the retained control-plane
-`prodbox-state` bucket and its Vault Transit/HMAC keyspace. The daemon consumes that capability
-through its in-process object-store interpreter, not by calling its own external gateway endpoint.
-It is never selected from an ambient kube context, an arbitrary peer endpoint, or the currently
-targeted workload substrate. Ordinary gateway Pod/chart replacement does not delete it.
+Cross-process exclusion is substrate-specific. EKS uses its static retained EBS CSI volume with
+`ReadWriteOncePod`, the OS lock, durable incarnation, and Kubernetes Lease. Home `hostPath`/local PV
+is CSI-free: the StatefulSet is pinned to the PV's node and relies on that node affinity plus the OS
+lock, durable incarnation, and Lease; it does not claim that `ReadWriteOncePod` protects hostPath.
+The actor publishes only while the cached lease remains inside its renewal deadline. First admission
+uses the recoverable journal/marker prepare-and-promote transaction in
+[Lifecycle Control-Plane Architecture §8](./lifecycle_control_plane_architecture.md#8-gateway-emitter-actor).
 
-Production constructs one `ContinuityScope` for the local admitted node and maps it to the opaque
-Model-B logical object `LogicalGatewayState ("continuity/" <> emitter)`. The authenticated
-`AuthorityRecord` contains exactly:
-
-- the bounded emitter id and validated active Orders anchor;
-- one committed fixed-width epoch/sequence/digest anchor; and
-- at most one `StagedAssertion` containing the transition kind, exact canonical signed bytes,
-  previous digest, and next anchor.
-
-The committed record deliberately contains no heartbeat/ownership semantic contribution and no
-assertion history. Semantic compaction checkpoints and their original signed evidence live only in
-the bounded hot peer-repair state. The runtime retains no logical audit tail; its replay and
-64-digest rings are bounded operational structures.
-
-The Model-B adapter obtains a versioned encrypted logical object, authenticates and decodes the
-record, and uses the backing object ETag only as the conditional-write token. Its logical `Word64`
-authority revision remains inside the authenticated body. Missing, corrupt, and unobservable reads
-are distinct fail-closed outcomes.
-
-First admission is independently fenced by the Vault KV marker
-`secret/prodbox/gateway/continuity-admission/<node>` (the KV-v2 policy path is
-`secret/data/prodbox/gateway/continuity-admission/*`). Marker absence permits one conditional genesis write;
-an initialization conflict recovers the already-created record. Once the marker exists, a missing
-continuity object is recovery failure rather than permission to reset the epoch. A malformed or
-unobservable marker also refuses initialization.
-
-Every local assertion uses write-ahead order: sign the exact successor, CAS a staged record from the
-expected revision, re-observe that exact staged record, publish the semantic assertion, then CAS the
-next anchor into the committed slot and clear the stage. A crash before the stage advances no
-authority and publishes nothing. A crash after staging retains the exact bytes, which startup
-verifies and idempotently republishes before committing. Different emitters use different logical
-objects and do not contend on one global sequence.
-
-A simultaneous restart of all peers therefore recovers safe per-emitter continuation anchors and
-any in-flight exact staged assertions. It does not recover discarded heartbeat/ownership semantics
-from retained authority. Those live facts are re-established by new local assertions and bounded
-peer convergence after restart.
-
-The daemon may bind its diagnostic/pre-Vault bootstrap listener while continuity is unavailable,
-but the emitter, ownership-claim, and DNS-effect capabilities remain disabled. `/healthz` and
-`/readyz` remain constant-time lifecycle projections for the routes that mode is allowed to serve;
-neither endpoint performs the authority read itself or claims that continuity is ready. The typed
-continuity disposition on `/v1/state` and the full-mode dependency gate carry that deeper fact.
+Remote Model-B continuity may exist only as an explicitly named adapter during the plan-owned
+migration. It cannot introduce a second transition owner, and it is removed after journal cutover.
+Implementation, cutover, legacy removal, and deployment-qualification status are recorded only in
+the Development Plan.
 
 ### 12.3 Runtime Memory Contract
 
@@ -1010,14 +1011,14 @@ daemon's arbitrary allocation behavior. The gateway has a separate validated run
 
 ```text
 bounded semantic state
-+ one bounded pending continuity checkpoint/assertion
++ one bounded staged and one bounded committed-unacknowledged local-journal assertion
 + bounded in-heap transport/decode/in-flight scratch
 + other Haskell heap reserve
 <= GHC heap cap
 
 GHC heap cap
 + native/non-heap and out-of-heap transport reserve
-+ maximum serialized child-process peak (from a capacity-one child permit)
++ bounded native TLS/socket/session-manager reserve
 + kernel/cgroup reserve
 + safety margin
 <= container memory limit
@@ -1029,11 +1030,10 @@ pure validator rejects a sub-budget that exceeds the heap or an outer plan that 
 container envelope; chart/runtime rendering derives the RTS heap policy and transport bounds from
 the validated plan. Orders `max_members` and its per-member bounds determine the semantic-state,
 signed replay, hot repair-checkpoint, and peer-cursor maxima; persistence-first publication permits
-at most one pending local continuity assertion. Gateway subprocess creation consumes one
-capacity-one child permit,
-so only one serialized child peak contributes at a time; a future concurrency greater than one
-must replace the maximum with a validated sum of simultaneous peaks. The RTS heap cap leaves
-headroom for non-heap memory and subprocesses; it does not replace semantic or transport bounds.
+at most one staged and one committed-unacknowledged local continuity assertion. Gateway Runtime
+spawns no operational subprocess on the target path; the native DNS/peer clients have fixed
+in-flight and buffer bounds included in the transport/session reserves. The RTS heap cap leaves
+headroom for non-heap memory and native client buffers; it does not replace semantic or transport bounds.
 Conversely, an authored `512Mi` cgroup limit does not prove that an unbounded list will remain below
 `512Mi`.
 
@@ -1044,7 +1044,7 @@ high-water pressure, and unobservable authoritative state are absorbing: once ob
 they cannot be cleared by replacement or planned rollout. Warning pressure, Pending, and Pod UID
 replacement reset consecutive success. The complete healthy-window baseline may otherwise reset
 only for a gateway rollout present in the compiled restore/lifecycle plan, and it cannot erase the
-absorbing result. A replacement Deployment being currently `Available` is therefore not evidence
+absorbing result. A replacement StatefulSet being currently `Ready` is therefore not evidence
 against an earlier fatal observation. The authoritative proof boundary and aggregate resource
 algebra are in
 [Resource Scaling Doctrine](./resource_scaling_doctrine.md); the time-windowed oracle is in
@@ -1441,6 +1441,7 @@ SIGTERM begins drain and a second SIGTERM (or timeout) forces exit.
 
 ## Cross-References
 
+- [Lifecycle Control-Plane Architecture](./lifecycle_control_plane_architecture.md)
 - [Effectful DAG Architecture](./effectful_dag_architecture.md)
 - [Prerequisite Doctrine](./prerequisite_doctrine.md)
 - [Unit Testing Policy](./unit_testing_policy.md)

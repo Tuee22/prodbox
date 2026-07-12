@@ -2,41 +2,23 @@
 
 **Status**: Authoritative source
 **Supersedes**: the scaling prose in [envoy_gateway_edge_doctrine.md § 8](./envoy_gateway_edge_doctrine.md#8-scaling-and-availability-doctrine) (Envoy / application / Keycloak / Redis "may scale horizontally" statements) — that section now points here for the typed capacity, policy, and placement model; it retains only per-component availability notes.
-**Referenced by**: [README.md](../../README.md), [documents/engineering/README.md](./README.md), [DEVELOPMENT_PLAN/00-overview.md](../../DEVELOPMENT_PLAN/00-overview.md), [DEVELOPMENT_PLAN/system-components.md](../../DEVELOPMENT_PLAN/system-components.md), [DEVELOPMENT_PLAN/phase-1-runtime-cli-aws-foundations.md](../../DEVELOPMENT_PLAN/phase-1-runtime-cli-aws-foundations.md), [DEVELOPMENT_PLAN/phase-2-gateway-dns.md](../../DEVELOPMENT_PLAN/phase-2-gateway-dns.md), [DEVELOPMENT_PLAN/phase-3-chart-platform-vscode.md](../../DEVELOPMENT_PLAN/phase-3-chart-platform-vscode.md), [DEVELOPMENT_PLAN/phase-4-lifecycle-canonical-paths.md](../../DEVELOPMENT_PLAN/phase-4-lifecycle-canonical-paths.md), [DEVELOPMENT_PLAN/phase-5-canonical-test-suite.md](../../DEVELOPMENT_PLAN/phase-5-canonical-test-suite.md), [DEVELOPMENT_PLAN/phase-7-aws-substrate-foundations.md](../../DEVELOPMENT_PLAN/phase-7-aws-substrate-foundations.md), [documents/engineering/bootstrap_readiness_doctrine.md](./bootstrap_readiness_doctrine.md), [documents/engineering/cluster_topology_doctrine.md](./cluster_topology_doctrine.md), [documents/engineering/dependency_management.md](./dependency_management.md), [documents/engineering/distributed_gateway_architecture.md](./distributed_gateway_architecture.md), [documents/engineering/haskell_code_guide.md](./haskell_code_guide.md), [documents/engineering/helm_chart_platform_doctrine.md](./helm_chart_platform_doctrine.md), [documents/engineering/host_platform_doctrine.md](./host_platform_doctrine.md), [documents/engineering/tiered_storage_capacity_doctrine.md](./tiered_storage_capacity_doctrine.md), [documents/engineering/unit_testing_policy.md](./unit_testing_policy.md)
+**Referenced by**: [README.md](../../README.md), [documents/engineering/README.md](./README.md), [DEVELOPMENT_PLAN/00-overview.md](../../DEVELOPMENT_PLAN/00-overview.md), [DEVELOPMENT_PLAN/system-components.md](../../DEVELOPMENT_PLAN/system-components.md), [DEVELOPMENT_PLAN/phase-1-runtime-cli-aws-foundations.md](../../DEVELOPMENT_PLAN/phase-1-runtime-cli-aws-foundations.md), [DEVELOPMENT_PLAN/phase-2-gateway-dns.md](../../DEVELOPMENT_PLAN/phase-2-gateway-dns.md), [DEVELOPMENT_PLAN/phase-3-chart-platform-vscode.md](../../DEVELOPMENT_PLAN/phase-3-chart-platform-vscode.md), [DEVELOPMENT_PLAN/phase-4-lifecycle-canonical-paths.md](../../DEVELOPMENT_PLAN/phase-4-lifecycle-canonical-paths.md), [DEVELOPMENT_PLAN/phase-5-canonical-test-suite.md](../../DEVELOPMENT_PLAN/phase-5-canonical-test-suite.md), [DEVELOPMENT_PLAN/phase-7-aws-substrate-foundations.md](../../DEVELOPMENT_PLAN/phase-7-aws-substrate-foundations.md), [documents/engineering/bootstrap_readiness_doctrine.md](./bootstrap_readiness_doctrine.md), [documents/engineering/cluster_federation_doctrine.md](./cluster_federation_doctrine.md), [documents/engineering/cluster_topology_doctrine.md](./cluster_topology_doctrine.md), [documents/engineering/dependency_management.md](./dependency_management.md), [documents/engineering/distributed_gateway_architecture.md](./distributed_gateway_architecture.md), [documents/engineering/haskell_code_guide.md](./haskell_code_guide.md), [documents/engineering/helm_chart_platform_doctrine.md](./helm_chart_platform_doctrine.md), [documents/engineering/host_platform_doctrine.md](./host_platform_doctrine.md), [documents/engineering/lifecycle_control_plane_architecture.md](./lifecycle_control_plane_architecture.md), [documents/engineering/tiered_storage_capacity_doctrine.md](./tiered_storage_capacity_doctrine.md), [documents/engineering/unit_testing_policy.md](./unit_testing_policy.md)
 **Generated sections**: none
 
 > **Purpose**: Single Source of Truth for how prodbox sizes, caps, scales, and places workloads
 > against typed cpu, memory, ephemeral-storage, and durable-storage budgets — the `fitsWithin`
 > lemmas that make over-committed **authored admission plans** for hosts, RKE2 clusters, pods,
-> namespaces, clusters, and AWS regions unrepresentable; the separate runtime-memory decomposition
-> and observation boundary; the substrate-indexed `ScalingPolicy`; the spot-price and region-quota
+> namespaces, clusters, and AWS regions unrepresentable; the separate memory, CPU, service-rate,
+> queue, deadline, and runtime-observation boundaries; the substrate-indexed `ScalingPolicy`; the spot-price and region-quota
 > gates; and federation-scoped placement — with prodbox acting as its own autoscaler and resource
 > governor.
 
-> **Scheduling honesty.** Everything here is written as present-tense doctrine per
-> [development_plan_standards § D](../../DEVELOPMENT_PLAN/README.md), but the capability is
-> split across sprints: the capacity/scaling Dhall schema and config surface landed in **Sprint
-> 1.51** (Phase 1), the pure autoscaler + federation-scoped placement planner landed in
-> **Sprint 4.34** (Phase 4), the storage/region-quota preflight adapter landed in **Sprint 4.36**
-> (Phase 4), and the spot-economics gate plus AWS observer surface landed in **Sprint 7.27**
-> (Phase 7). The resource-guardrail extension has landed its schema/config ring in **Sprint 1.55**,
-> chart-rendering ring in **Sprint 3.22**, host/RKE2 reconciliation ring in **Sprint 4.41**, and
-> canonical validation ring in **Sprint 5.13**. Together these turn the aggregate
-> budget into explicit host, RKE2, namespace, and per-container envelopes; render Kubernetes
-> `resources`, `LimitRange`, and `ResourceQuota`; and reconcile kubelet/systemd guardrails on the
-> host. Status is owned only by
-> [DEVELOPMENT_PLAN/README.md](../../DEVELOPMENT_PLAN/README.md); this doc never restates it.
-
-> **Runtime-memory adoption.** The authored-envelope rings above and Sprint `1.60`'s separate
-> runtime-memory planning ring have landed. `Prodbox.Capacity.RuntimeMemory` validates an opaque
-> nested heap/container plan, while `Prodbox.Capacity.Config` derives its container ceiling from
-> the matching workload profile rather than accepting a second authored limit. `ChartPlatform`
-> renders the gateway's GHC heap argument from that validated plan. Sprint `2.31` landed the
-> gateway's bounded state/transport consumer and capacity-one child-permit enforcement. Sprint
-> `5.16` landed the external restart/OOM/high-water classifier and its concurrency-safe shared
-> `gateway-pods` recorder, structured continuous monitor, and final gate. The live multi-peer
-> substrate soak remains non-blocking Standard-O evidence. Status and validation closure remain
-> owned by [DEVELOPMENT_PLAN/README.md](../../DEVELOPMENT_PLAN/README.md).
+Architecture doctrine is stated in target form. Implementation status, migration ownership, and
+current-revision deployment qualification are owned only by the
+[Development Plan](../../DEVELOPMENT_PLAN/README.md). The lifecycle services and their independent
+resource envelopes, queues, and admission lanes are defined by
+[Lifecycle Control-Plane Architecture](./lifecycle_control_plane_architecture.md); this document
+owns the capacity algebra they must satisfy.
 
 ## 1. Prodbox Is Its Own Autoscaler
 
@@ -222,11 +204,10 @@ behavior within the offending pod or service instead of allowing it to consume t
 OOM kill is therefore evidence that containment worked and the workload's runtime contract failed;
 it is never evidence that the authored limit proved sufficient.
 
-The July 10 counterexample illustrates the distinction: the same cgroup limit contained repeated
-OOMs from the former uptime-growing gateway representation, while a later restarted process could
-temporarily appear healthy. Sprint `2.31` removed that representation, but the lesson remains:
-variable time-to-threshold diagnoses runtime demand and never upgrades a containment limit into a
-sufficiency proof.
+A cgroup can correctly contain repeated OOMs while a replacement process later appears healthy.
+Likewise, a process can remain within its memory ceiling while a CPU cap prevents it from meeting
+its service deadline. Containment evidence never upgrades a resource limit into a sufficiency
+proof; runtime demand and service capacity require the separate obligations below.
 
 ## 2D. Runtime Memory Decomposition and Observation
 
@@ -271,110 +252,105 @@ defaults. The heap cap remains deliberately smaller than the cgroup limit becaus
 memory, linked libraries, thread stacks, kernel-accounted memory, and admitted subprocesses require
 explicit headroom.
 
-The child term requires a finite `ChildProcessBudget` witness. The pure validator rejects an
-unbounded schedule, a zero permit count, a missing or zero deadline, an empty or zero child-peak
-entry, and a concurrent peak list whose length does not match its permit count. A capacity-one
-schedule reserves the maximum of its serialized action peaks. A schedule with `n > 1` permits must
-provide exactly `n` simultaneous peaks, which the validator sums; it cannot reuse the serialized
-maximum.
+Every process enumerates its live state, pending intents, queue entries, decoded request scratch,
+managed-client pools, native runtime reserve, and any permitted child-process peak. The validator
+rejects an unbounded term, missing deadline, zero capacity, or concurrency declaration without a
+simultaneous-peak proof. A serialized maximum is valid only for a lane that is actually serialized;
+it cannot be reused as evidence for concurrent lanes.
 
-The default gateway profile carries the capacity-one planning witness.
-`Prodbox.Gateway.Bounds.validateGatewayBounds` consumes that opaque plan and refuses any gateway
-bounds unless the child permit count is exactly one and the calculated retained/scratch demand fits
-the plan. `Prodbox.Gateway.ChildSchedule` turns the deadline and peak into a capacity-one lease;
-retained-store, Vault/object-store, and Route 53 child actions acquire that lease and cannot overlap.
-Missing, zero, excessive, or mismatched peak/deadline/lease evidence refuses the action before its
-interpreter runs.
-
-The gateway retained calculation charges all live representations rather than only the pure fold:
-
-- active plus staged Orders bytes;
-- per-member semantic state, fixed cursor, latest heartbeat/ownership evidence, bounded replay,
-  original signed replay bytes, and original signed compacted heartbeat/ownership evidence;
-- the deliberate `max_members²` matrix of remote-peer receive-cursor vectors;
-- one local retained-continuity record and at most one exact staged assertion;
-- the fixed 64-digest diagnostic ring and bounded rejection samples; and
-- conservative map/sequence/projection overhead.
-
-The scratch calculation charges every process-wide in-flight frame for its maximum encoded frame
-and decoded assertion material. The daemon seeds one shared `envFramePermits` queue from that bound
-and uses it across both REST and peer listeners; the peer listener also applies its smaller
-connection cap. Default protocol bounds are 256 KiB raw Orders, 32 members, 64 KiB frames, 16
-assertions per frame, eight replay assertions per emitter, eight aggregate in-flight frames, two
-peer-listener connections, and 64 rejection samples. Every value is validated before use.
-
-`loadOrdersBounded` reads at most the raw limit plus one byte, rejects overflow before generic Dhall
-decoding, requires literal-only Dhall, validates member and field bounds, and checks exact event-key
-membership before maps, peer tasks, or snapshots become reachable. The planner itself remains
-gateway-agnostic; this consumer supplies the gateway-specific `max_members`, member bytes,
-fixed-width anchors, pending persistence, replay, frame, and in-flight values.
-
-The gateway's concrete bounded-state and delta-transport design is owned by
+Gateway state/transport bounds remain owned by
 [Distributed Gateway Architecture §3.2](./distributed_gateway_architecture.md#32-event-plane-source-of-truth).
-Other daemons must enumerate their own bounded consumers rather than copy gateway constants.
+Lifecycle-control-plane state, outbox, actor, and queue bounds remain owned by
+[Lifecycle Control-Plane Architecture](./lifecycle_control_plane_architecture.md). Each component
+has its own calculation and envelope. A shared gateway child permit is not a substitute for
+physical scheduling isolation between Gateway Runtime, Lifecycle Authority, Bootstrap Broker, and
+Target Secret Agent.
 
-The Sprint `2.31` code-local profiling gate built the complete executable with
-`cabal build --builddir=.build-profile --enable-profiling exe:prodbox`, then ran a profiled
-pre-Vault one-member daemon for 61 restart-free seconds while issuing 500 successful bounded
-`/v1/state` requests and 500 bounded peer-listener requests. GHC's `-hT -i0.05` capture produced
-16 live-heap samples with a peak of 570,320 bytes, compared with the generated 268,435,456-byte RTS
-heap ceiling. This is deliberately a local profiling-path and request-burst observation: the
-fixture has one member and no ready continuity/Vault/AWS capability, so it is not presented as a
-maximum-state measurement or as the deployed stability proof. Sprint `5.16` landed the absorbing
-restart/OOM/high-water classifier; its longer live three-peer substrate soak remains a non-blocking
-Standard-O proof item.
+Static validation ends at the rendered plan. A typed high-water threshold is a pure comparison
+input, not evidence that the process stayed below it. Live stability combines a run-wide absorbing
+failure fold with a consecutive-success window. At minimum the observer records restart/OOM and
+memory high-water evidence. The service-capacity extension in §2E is equally mandatory: a process
+that stays below its memory ceiling while being continuously CPU-throttled or queue-saturated has
+violated its runtime contract.
 
-Static validation ends at the rendered plan. The plan also exposes a typed high-water threshold as
-`container_memory_limit - safety_margin`; it is a pure comparison input, not evidence that a
-process stayed below it. `resource-guardrails` remains authored-plan-only: it proves requests,
-limits, quotas, and QoS, never runtime sufficiency. Sprint `5.16`'s
-`Prodbox.Test.GatewayRuntimeStability` parses Kubernetes Pod, Event, and metrics JSON into one flat
-exhaustive pod observation, then combines two pure folds:
+## 2E. CPU, Service-Rate, Queue, and Deadline Proof
 
-1. a run-wide outcome fold over pod UIDs, Kubernetes events/status, restart counts, and working-set
-   readings; restart, OOM, failure-threshold high-water, and unobservable evidence is absorbing and
-   never resets;
-2. a consecutive-success fold whose baseline resets on warning pressure, Pending, or Pod UID
-   replacement, and may be explicitly reset only for a gateway rollout in the compiled
-   restore/lifecycle plan.
+For each execution lane, the authored plan declares:
 
-Together they produce a closed result:
+```haskell
+-- Example: target shape for a pure service-capacity plan.
+data ServiceDemand = ServiceDemand
+  { arrivalRate :: Positive RequestsPerSecond
+  , burstSize :: Positive RequestCount
+  , cpuPerRequest :: Positive CpuTime
+  , serviceTime :: Positive Duration
+  , queueCapacity :: Positive RequestCount
+  , latencyBudget :: Positive Duration
+  , headroom :: Positive Ratio
+  }
+```
 
-- a restart-count increase is unstable;
-- `lastState.reason = OOMKilled` anywhere in the run-wide evidence is unhealthy even when the
-  replacement pod is Ready;
-- warning-threshold working-set pressure resets consecutive success, while a failure-threshold
-  breach is absorbing runtime failure;
-- an undecodable, incomplete, or unreachable authoritative observation is an absorbing refusal;
-- only a configured sequence of healthy samples across a stability window is stable, and only when
-  the absorbing unhealthy fold is empty.
+The exact validated representation may differ, but it must prove all of these propositions:
 
-The warning/failure thresholds are derived from the validated `RuntimeMemoryPlan`; the runtime
-observer does not author another memory ceiling. The pure classifier and effectful Kubernetes
-observer in `Prodbox.TestValidation` remain separate in accordance with
-[Unit Testing Policy](./unit_testing_policy.md). The effect boundary continuously collects the
-structured Pod/Event/metrics payloads and serializes both background and explicit samples through
-one run-scoped recorder. Its first-observation handoff prevents the suite from outrunning the
-monitor. AWS observation uses a monitor-private EKS kubeconfig plus an explicit Vault-derived
-subprocess environment rather than ambient mutation. AWS installs this handoff immediately after
-gateway reconcile and its point sample, before SMTP synchronization or dependent chart reconcile.
-A pause drains an in-flight observation and is legal only across a compiled planned home/target
-gateway rollout; it may reset the healthy window but cannot clear absorbing evidence. Every
-stability `kubectl` read combines
-`--request-timeout=5s` with GNU `timeout` and a `System.Timeout` wall-clock bound. Logs may add
-diagnostics but never supply health evidence. Dependency readiness remains separately owned by
-[Bootstrap Readiness Doctrine](./bootstrap_readiness_doctrine.md); it cannot substitute for this
-time-windowed stability proof. Sprint `1.60` owns the static plan, generated RTS policy, and typed
-high-water projection. Sprint `5.16` owns the landed external observation/classification surface,
-including a separate whole-cluster replacement boundary for `eks-volume-rebind`: pause/drain,
-pre-sample/reset, target recreation, canonical AWS gateway/platform reconcile, monitor refresh
-acknowledged only after the old kubeconfig bracket exits and a new one is materialized, foreground
-sample while paused, then resume. Absorbing evidence survives that sequence. Post-refresh evidence
-is 17/17 focused unit tests, 2/2 built-frontend `gateway-pods` fixtures (healthy and a
-background-only OOM retained through later healthy samples), 1494/1494 full unit tests, and the
-exact post-refresh full CLI integration suite at 47/47. `prodbox dev check` passes as the final repository
-closure gate. The live multi-peer substrate soak
-remains pending Standard-O evidence.
+```text
+steady_arrival_rate < measured_service_rate * (1 - headroom)
+
+burst_drain_time
++ maximum_admitted_queue_wait
++ credential_refresh_budget
++ external_io_budget
++ read_back_budget
++ response_budget
+<= end_to_end_latency_budget
+
+maximum_live_queue_bytes <= memory_plan.queue_reserve
+```
+
+The service rate is established from production-composition measurement under the same binary,
+workload mix, resource requests/limits, and background rates as the deployed component. It is not
+inferred from requested millicores. The authored CPU request reserves scheduler capacity; a hard
+CPU limit contains demand but can introduce CFS throttling and therefore does not prove latency.
+
+Every execution lane has a bounded queue and an explicit saturation result. Admission rejects
+immediately when the lane cannot meet the caller's monotonic absolute deadline. Queue wait,
+credential refresh, external I/O, read-back, and response serialization consume that one deadline;
+no nested timeout restarts it. Retry consumes remaining budget and cannot convert saturation into
+an unbounded waiter.
+
+Resource isolation is physical as well as algebraic. Gateway mesh/DNS, lifecycle authority and
+recovery, bootstrap, target-secret delivery, and provider workers have independent Deployments,
+Guaranteed-QoS envelopes, queues, ServiceAccounts, and metrics. Background heartbeat demand cannot
+consume lifecycle admission capacity, and a slow provider worker cannot block constant-time health
+or target-secret read-back.
+
+The runtime observation is a flat exhaustive fold over:
+
+- restarts, termination reasons, OOM, and memory working set;
+- CPU usage and CFS throttled periods/time;
+- queue occupancy, queue wait, saturation refusals, and reserved-lane starvation;
+- service time and end-to-end p50/p95/p99 latency;
+- deadline misses, cancellation overruns, and work continuing after caller cancellation;
+- managed-session refresh failures; and
+- missing, malformed, or unreachable required observations.
+
+Restart, OOM, failure-threshold memory or CPU breach, repeated deadline breach, lane starvation,
+and unobservable required evidence are absorbing for a deployment qualification run. Warning
+evidence resets the consecutive-success window. A replacement Pod or later quiet sample cannot
+erase absorbing evidence. Only an explicitly planned rollout may reset the success window, never
+the run-wide record.
+
+A topology split cannot claim causal readiness closure merely by adding resources. The named
+counterexample profile preserves one topology-normalized total CPU/memory/ephemeral/persistence
+budget and identical load/fault schedule; the replacement may repartition that budget across
+Gateway, Authority, Broker, and Agent but may not increase it. Qualification also runs a distinct
+production profile whose per-role envelopes satisfy the service-demand inequalities above. Both
+the normalized mapping and rendered production envelopes are evidence.
+
+The previous restart/OOM/memory-only stability surface is therefore an incomplete compatibility
+projection. It cannot qualify the redesigned control plane until CPU, service-rate, queue, deadline,
+and latency evidence is present. Qualification uses composition, load, and chaos tests described by
+[Unit Testing Policy](./unit_testing_policy.md) and the current-revision gate in
+[Development Plan Standard P](../../DEVELOPMENT_PLAN/development_plan_standards.md#p-deployment-qualification-and-counterexample-closure).
 
 ## 3. `ScalingPolicy` Indexed by Substrate Elasticity
 
@@ -472,7 +448,7 @@ to clusters **reachable in the federation trust tree**
   the placing cluster's own subtree projection. A child receives, by construction, `project(subtree)`
   — a typed spec with no field in which a sibling or ancestor-only cluster can appear — so directing a
   workload at a cluster outside that subtree is *unrepresentable*, exactly as a cross-tenant secret is
-  ([cluster_federation_doctrine.md § 3–§4](./cluster_federation_doctrine.md#3-parent-custody-of-child-init-keys)).
+  ([cluster_federation_doctrine.md § 3–§4](./cluster_federation_doctrine.md#3-parent-custody-of-encrypted-child-recovery-material)).
 - **Placement honors the fail-closed unseal cascade.** A target cluster whose Vault is sealed (or
   whose parent is sealed/unreachable) is *not* an eligible placement target: its capacity is opaque
   ciphertext behind a sealed Vault, so its `Budget` is `Unobservable → refuse`, never presumed
@@ -509,7 +485,7 @@ three-valued `discover` and a `reconcileAbsent`-style converge step:
 This is the data-oriented "make illegal authored states unrepresentable" answer, not a global
 scaling state machine: the budget lemmas (§2) forbid authored over-commit at typecheck, the
 resource-governor lemmas (§2A–§2C) forbid missing pod envelopes and over-reserved clusters, the
-runtime plan and observations (§2D) bound enumerated consumers and detect implementation breach,
+runtime plan and observations (§2D–§2E) bound memory and service demand and detect implementation breach,
 the substrate index (§3) forbids illegal elasticity, and the fail-closed gates (§4–§6) forbid
 acting on unobserved capacity.
 
@@ -520,8 +496,9 @@ This SSoT co-owns prodbox resource-scaling, resource-governance, and capacity-pl
 - **Owned statement**: prodbox is its own autoscaler and resource governor; over-committed authored
   host, RKE2, namespace, pod-envelope, cluster, and region plans are made unrepresentable by the
   `fitsWithin` budget lemmas; missing cpu/memory/ephemeral-storage envelopes are unrepresentable;
-  enumerated runtime consumers must fit a separate validated decomposition and remain healthy under
-  external observation; illegal elasticity is unrepresentable by the substrate-indexed
+  enumerated runtime consumers must fit separate validated memory and service-capacity
+  decompositions and remain healthy under external observation; every execution lane has a bounded
+  queue, one absolute deadline, and measured headroom; illegal elasticity is unrepresentable by the substrate-indexed
   `ScalingPolicy`; and every scaling or capacity-observation gate is `Unreachable -> refuse`.
 - **Linked dependents** (the modules Sprints 1.51 / 1.55 / 3.22 / 4.34 / 4.36 / 4.41 / 7.27
   implement this in):
@@ -538,8 +515,9 @@ This SSoT co-owns prodbox resource-scaling, resource-governance, and capacity-pl
   preflight), `src/Prodbox/AwsEnvironment.hs` (credential-region projection),
   `src/Prodbox/Lifecycle/ResidueStatus.hs` (the three-valued observation pattern the spot/quota gates
   mirror), `src/Prodbox/Lifecycle/ResourceRegistry.hs` (the `reconcileAbsent` substrate scaling
-  reuses), `src/Prodbox/Gateway/Bounds.hs` and `src/Prodbox/Gateway/ChildSchedule.hs` (the bounded
-  gateway memory consumer and capacity-one runtime lease), and `src/Prodbox/Gateway/Types.hs`
+  reuses), the capacity and admission modules owned by
+  [Lifecycle Control-Plane Architecture](./lifecycle_control_plane_architecture.md),
+  `src/Prodbox/Gateway/Bounds.hs` (the gateway-specific bounded memory projection), and `src/Prodbox/Gateway/Types.hs`
   (`Disposition` — leadership the scaler must not perturb).
 
 ## Cross-References
@@ -552,8 +530,10 @@ This SSoT co-owns prodbox resource-scaling, resource-governance, and capacity-pl
   peers, bounded gateway memory consumers, and the leadership set scaling must not perturb
 - [Bootstrap Readiness Doctrine](./bootstrap_readiness_doctrine.md) — point-in-time dependency
   readiness versus time-windowed runtime stability
-- [Unit Testing Policy](./unit_testing_policy.md) — pure stability classifier and effect-boundary
-  observation tests
+- [Lifecycle Control-Plane Architecture](./lifecycle_control_plane_architecture.md) — independently
+  resourced components, bounded lanes, admission, and absolute deadlines
+- [Unit Testing Policy](./unit_testing_policy.md) — pure capacity folds plus composition, load,
+  chaos, and deployment-qualification tests
 - [Pure FP Standards](./pure_fp_standards.md) — type-index "illegal states unrepresentable" + Plan/Apply
 - [Envoy Gateway Edge Doctrine § 8](./envoy_gateway_edge_doctrine.md#8-scaling-and-availability-doctrine)
   — the per-component availability notes this typed model supersedes

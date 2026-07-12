@@ -2,7 +2,7 @@
 
 **Status**: Authoritative source
 **Supersedes**: N/A
-**Referenced by**: documents/engineering/README.md, documents/engineering/aws_integration_environment_doctrine.md, documents/engineering/cli_command_surface.md, documents/engineering/code_quality.md, documents/engineering/effectful_dag_architecture.md, documents/engineering/integration_fixture_doctrine.md, documents/engineering/lifecycle_reconciliation_doctrine.md, documents/engineering/prerequisite_dag_system.md, documents/engineering/unit_testing_policy.md, documents/engineering/host_platform_doctrine.md, documents/engineering/bootstrap_readiness_doctrine.md, DEVELOPMENT_PLAN/phase-5-canonical-test-suite.md, DEVELOPMENT_PLAN/phase-8-email-invite-auth.md
+**Referenced by**: documents/engineering/README.md, documents/engineering/aws_integration_environment_doctrine.md, documents/engineering/cli_command_surface.md, documents/engineering/code_quality.md, documents/engineering/effectful_dag_architecture.md, documents/engineering/integration_fixture_doctrine.md, documents/engineering/lifecycle_reconciliation_doctrine.md, documents/engineering/lifecycle_control_plane_architecture.md, documents/engineering/prerequisite_dag_system.md, documents/engineering/unit_testing_policy.md, documents/engineering/host_platform_doctrine.md, documents/engineering/bootstrap_readiness_doctrine.md, DEVELOPMENT_PLAN/phase-5-canonical-test-suite.md, DEVELOPMENT_PLAN/phase-8-email-invite-auth.md
 **Generated sections**: none
 
 > **Purpose**: Define the fail-fast prerequisite doctrine for supported `prodbox` command flows.
@@ -50,7 +50,9 @@ Typical prerequisite categories include:
   `ssh`
 - repository configuration readiness through in-process decoding of executable-sibling
   `prodbox.dhall` by the native `dhall` Haskell library
-- cluster-backed runtime readiness
+- cluster-backed runtime readiness, including exact Bootstrap Broker, Lifecycle Authority,
+  Authority Backup Adapter, TLS Retention Adapter, fenced Provider Worker, Target Secret Agent,
+  and permit-bound one-shot Job capability references
 - AWS- and Route-53-backed readiness
 
 The Ubuntu-only host gate (`platform_linux` / `supported_ubuntu_2404`) is generalized to the
@@ -114,39 +116,64 @@ Recommended patterns:
 Prerequisites answer whether the command may safely begin a plan step; preparation reconcilers make
 the desired state true. The boundary is strict:
 
-1. An initial prerequisite may inspect tools, decoded configuration, credentials, gateway/Vault/
-   object-store reachability, or externally authoritative state. It does not create, import, update,
-   or delete a resource.
+1. An initial prerequisite may inspect tools, decoded configuration, credentials, an exact typed
+   capability, or externally authoritative state. It does not create, import, update, or delete a
+   resource.
 2. The pure command/test planner derives required preparation actions from selected capabilities.
 3. The interpreter narrates and runs each mutating action through its canonical reconciler.
 4. A read-only postcondition or readiness observer rechecks the exact dependency edge before the
    dependent action proceeds.
 
-Cross-substrate long-lived preparation supplies two explicit prerequisite targets. The read-only
-gate proves the retained home/control-plane `LongLivedCheckpointAuthority` (gateway, Vault/Transit,
-and `prodbox-state`) independently from the selected substrate's `TargetClusterSecretSink`. It must
-not obtain either target from ambient kubeconfig, current context, environment variables, or an
-active-gateway singleton.
+Clean first bring-up follows the same rule. Read-only prerequisites validate Tier-0 coordinates,
+host/cluster reachability, Vault/Broker state, and the exact frozen Authority/Backup-Adapter/Target-
+Agent identities. `BackupNotEstablished` is not repaired inside a check: the plan exposes
+`EstablishAuthorityBackup`, narrates the attested Credential-Provisioner prompt action, and requires
+target-generation plus S3 backup read-back before config seeding. A later positive backup loss
+similarly produces visible `BackupRepairFrozen`; unobservable S3/IAM state remains a refusal. No
+prerequisite creates a bucket/key or hides an admin prompt.
+
+`prodbox config setup` is limited to Tier-0 authoring/validation and optional read-only AWS
+discovery. Credential genesis/repair/rotation, explicit SES destroy, legacy backend
+migration/retained-store compatibility, and quota request/status read-back are separate visible actions executed by
+the permit-indexed Credential Provisioner or Admin Action Runner. The normal Provider Worker is not
+a fallback interpreter for either. Before first Vault `/sys/init`, the Broker's read-only gate must
+observe the password-AEAD `PreparedInitEnvelope` read back for the exact empty storage generation;
+writing it and invoking init are visible bootstrap actions, not prerequisite effects.
+
+TLS restore/issuance uses the same separation. Read-only observation resolves the TLS Retention
+Adapter, the selected Agent's exact TLS Secret lane, and the home Agent's distinct
+`TlsEnvelopeKeyExchange` lane. Positive absence or policy-valid expiry may select the subsequent
+issuance action; corrupt, identity-mismatched, rollback, or unobservable TLS/S3/Transit state keeps
+the gate closed and never masquerades as absence. TLS prefix deletion is likewise a registered
+decommission action, not a check, and cannot delete the shared bucket.
+
+Cross-substrate preparation supplies two caller-facing non-interchangeable capability references: the retained
+home/control-plane Lifecycle Authority and the selected substrate's Target Secret Agent. Each is an
+operation-indexed `CapabilityRef`; observation, admission, and execution use that same opaque value,
+including service identity, authority scope, and coordinate. A caller may not probe one endpoint and
+execute against another, nor resolve either from ambient kubeconfig, current context, environment
+variables, or an active-gateway singleton. The Gateway Runtime is not a prerequisite proxy for
+bootstrap, lifecycle CAS, or target-secret operations. Internally, normal Lifecycle Authority
+admission additionally requires the exact fresh Backup Adapter commit/read-back capability; its
+absence cannot be masked by either caller-facing reference.
 
 For an invite-capable suite, a missing `aws-ses` stack is therefore not a failed prerequisite with
-an operator-reconcile remedy. The nested preparation plan carries the exact selected target's typed
-gateway object-store read-only precondition followed by the visible bracketed
-`acquire -> reconcile -> await-ready -> sync-target -> release` trace before dependent-chart
-reconcile. The await uses `Prodbox.Ses.Readiness` inside the Phase-`4.47` lease. Every poll attempt
-first observes the complete registered provider inventory; only an affirmative inventory permits
-the sender/DKIM, exact MX, active receipt-rule, and capture-canary list/get observations. The
-deferred SES prerequisite nodes use the same semantic classifier to observe the prepared result and
-never prescribe or perform a second reconcile. The ordering is owned by
+an operator-reconcile remedy. The visible preparation step submits a durable operation ID through
+the exact Lifecycle Authority `CapabilityRef`; a lost response is recovered by observing that ID,
+not by submitting a new mutation. Provider propagation is asynchronous, holds no broad lease, and
+is observed under one absolute deadline that includes queue wait and every transport/read-back
+step. Only the authority's durable outbox may deliver a committed generation through the selected
+Target Secret Agent. Deferred prerequisite nodes use the same semantic classifier to observe the
+prepared result and never prescribe or perform a second reconcile. The lifecycle semantics are
+owned by [Lifecycle Reconciliation Doctrine](./lifecycle_reconciliation_doctrine.md), and physical
+capability ownership by
+[Lifecycle Control-Plane Architecture](./lifecycle_control_plane_architecture.md). Suite ordering is owned by
 [AWS Integration Environment Doctrine §4.6](./aws_integration_environment_doctrine.md#46-retained-ses-desired-presence-preparation);
 the capability-derived preparation projection is owned by
 [Integration Fixture Doctrine §2A](./integration_fixture_doctrine.md#2a-retained-desired-presence-preparation).
 
-Sprint `5.17` derives that nested plan solely from `ValidationKeycloakInvite`, projects it exactly once
-to the home restore or explicit EKS target restore, and passes the retained
-`LongLivedCheckpointAuthority` and selected `TargetClusterSecretSink` as distinct values. Its
-code-owned closure is 10/10 focused plan/recovery tests, 6/6 target-selection API tests, 12/12 global
-target-commit tests, and 1508/1508 full unit tests. Sprint `8.10` completes the semantic
-classification and bounded-propagation boundary without moving mutation into these nodes.
+Implementation and deployment-qualification status for this boundary live only in the
+[Development Plan](../../DEVELOPMENT_PLAN/README.md).
 
 `prodbox host check-ses-readiness` is the supported read-only diagnostic for this boundary. It runs
 the sending, receiving, and capture prerequisite scopes once and renders their structured current
@@ -159,10 +186,9 @@ postcondition uses the flat `Absent | Present | Unobservable` classification fro
 [Lifecycle Reconciliation Doctrine §3.1](./lifecycle_reconciliation_doctrine.md#desired-present-reconciliation-for-long-lived-resources),
 with `Unobservable` gate-closed. Semantic readiness similarly distinguishes `Ready`, `Pending`,
 terminal `Failed`, and `Unobservable`. Only the explicit retained-preparation await retries
-`Pending`; `Failed` and `Unobservable` fail immediately, and timeout preserves the last Pending
-reason while leaving the long-lived resources retained for the next idempotent run. A prerequisite
-must not loop while secretly reconciling the resource it probes. Fresh-account propagation remains
-a distinct, non-blocking live-proof axis.
+`Pending`; `Failed` and `Unobservable` fail immediately, and deadline exhaustion preserves the
+operation ID and last Pending reason while leaving long-lived state recoverable. A prerequisite
+must not loop while secretly reconciling the resource it probes.
 
 ## 5. Anti-Patterns
 
@@ -316,4 +342,5 @@ above (prereqs gate `apply`) and
 - [AWS Integration Environment Doctrine](./aws_integration_environment_doctrine.md)
 - [Integration Fixture Doctrine](./integration_fixture_doctrine.md)
 - [Lifecycle Reconciliation Doctrine](./lifecycle_reconciliation_doctrine.md)
+- [Lifecycle Control-Plane Architecture](./lifecycle_control_plane_architecture.md)
 - [Unit Testing Policy](./unit_testing_policy.md)

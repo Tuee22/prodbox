@@ -11,6 +11,7 @@
 [cluster_topology_doctrine.md](../documents/engineering/cluster_topology_doctrine.md),
 [test_topology_doctrine.md](../documents/engineering/test_topology_doctrine.md),
 [bootstrap_readiness_doctrine.md](../documents/engineering/bootstrap_readiness_doctrine.md),
+[lifecycle_control_plane_architecture.md](../documents/engineering/lifecycle_control_plane_architecture.md),
 [distributed_gateway_architecture.md](../documents/engineering/distributed_gateway_architecture.md),
 [pure_fp_standards.md](../documents/engineering/pure_fp_standards.md),
 [unit_testing_policy.md](../documents/engineering/unit_testing_policy.md)
@@ -22,6 +23,14 @@
 > [the engineering doctrine docs](../documents/engineering/README.md).
 
 ## Phase Status
+
+📋 **Reopened for capability and temporal-capacity foundations.** Sprint `1.61` is Planned and
+ready to start. It replaces nominal readiness labels plus caller-injected arbitrary actions with
+operation-indexed capability references whose observation, admission, and execution share one
+identity. Sprint `1.62` is blocked by `1.61` and adds absolute-deadline/service-capacity algebra,
+bounded admission, a native pooled Model-B object-store client, and renewable cached Vault
+sessions. The earlier graph, readiness, and memory work remains completed evidence for its stated
+scope; it is not treated as proof of the expanded control-plane contract.
 
 ✅ **Reclosed 2026-07-10 on runtime-memory representability.** Sprint `1.60` now separates authored
 admission/containment from bounded process demand. `capacity.runtime_memory_profiles` binds an
@@ -454,6 +463,7 @@ Keep the settings, interpreter, subprocess, and test contracts on Haskell-owned 
   remain the built-frontend proof surfaces for the Haskell-owned command surface.
 - The root guidance docs and governed docs listed in `Docs to update` now describe the Haskell-only
   repository, the current validation harness, and the implemented `check-code` doctrine gate.
+
 ### Remaining Work
 
 None.
@@ -520,6 +530,7 @@ the supported product scope.
   `prodbox test unit`, `prodbox test integration cli`, and `prodbox test integration env`.
 - Environment-dependent AWS proof for this phase is owned by the named `prodbox pulumi ...` and
   `prodbox test integration ...` commands rather than recorded here as a fresh run result.
+
 ### Remaining Work
 
 None.
@@ -3901,6 +3912,186 @@ must fit inside the authored container limit.
 
 - Sprint `2.31` consumes the validated runtime-memory inputs; Sprint `5.16` observes the resulting
   runtime without treating a static plan as proof of external behavior.
+
+## Sprint 1.61: Operation-Indexed Capabilities and Exact Readiness Evidence [📋 Planned]
+
+**Status**: Planned
+**Deployment qualification**: pending
+**Implementation**: planned modules under `src/Prodbox/ControlPlane/`, revisions to
+`src/Prodbox/Config/ComponentGraph.hs`, `src/Prodbox/Lifecycle/ReadinessObservation.hs`,
+`src/Prodbox/Effect.hs`, `src/Prodbox/EffectInterpreter.hs`, and focused property tests
+**Independent Validation**: pure constructor/property tables prove that a capability's identity,
+operation, observation, admission, and execution cannot be mixed with another endpoint or
+operation. Fakes exercise the interpreter boundary without Kubernetes, AWS, or a later phase.
+**Docs to update**: `documents/engineering/lifecycle_control_plane_architecture.md`,
+`documents/engineering/pure_fp_standards.md`,
+`documents/engineering/bootstrap_readiness_doctrine.md`,
+`documents/engineering/prerequisite_dag_system.md`, and
+`documents/engineering/haskell_code_guide.md`
+
+### Objective
+
+Replace nominal component readiness and caller-injected arbitrary `IO` actions with an indexed
+capability algebra in which the exact reference used to execute an operation also owns its observation
+and admission evidence.
+
+### Deliverables
+
+- Introduce opaque `CapabilityRef kind`, singleton operation witnesses, closed
+  `CapabilityProgram kind result` requests, and typed observations carrying service identity,
+  authority scope, generation, observation time, and freshness bound. A reference owns its exact
+  coordinate once; program payload carries no duplicate coordinate, and admission binds the
+  capability-binding plus canonical request digests.
+- Make the initial operation universe exhaustive for process/workload/operator availability,
+  Vault bootstrap/baseline/PKI, lifecycle observe/CAS/submit/cancel, authority-epoch cutover,
+  config observe/propose CAS, operator-material submission, target observe/seal/CAS, child custody/
+  one-time recovery delivery, Gateway peer/emitter-retire/DNS, registry publication, provider
+  apply/read-back, Authority-backup establish/commit-read-back/repair, credential-provision and
+  admin-action permits, decommission export, TLS Kubernetes-Secret observe/seal/materialize,
+  retained-home TLS DEK exchange, TLS-retention-store read/write/read-back, and managed-resource
+  observe/ensure/destroy/read-back. No generic transport escape kind is
+  permitted.
+- Require consumers to receive one handle rather than separately supplied probe and execution
+  coordinates; there is no conversion between retained authority, target-secret, gateway-mesh,
+  Vault, or object-store capabilities.
+- Replace `ProbeBackendRoundTrip`'s nominal ranking with operation-specific contracts such as
+  conditional put/read-back, authority CAS, target-secret CAS, and gateway-mesh admission.
+- Keep external observations flat and exhaustive. Pure classifiers decide `Ready`, `Pending`,
+  `Failed`, or `Unobservable`; only a matching fresh `Ready` value may produce an
+  `AdmissionTicket kind`.
+- Lower the component graph over required capabilities and supplied capability providers so a GET
+  for an absent object cannot satisfy a write/CAS dependency.
+- Keep raw external mutations unconstructable: internal authority CAS uses an opaque writer permit,
+  while provider/target/destroy programs require a signed committed-intent reference bound to
+  epoch, fence, binding/action digests, generation, and deadline.
+- Remove the unrestricted `config show --show-secrets` path. `ConfigObserve` returns only the
+  role-scoped projection encoded by its reference; the complete target algebra contains no generic
+  secret-reveal capability or flag alias.
+
+### Validation
+
+1. Constructor tests reject handle/operation, coordinate, binding/request digest, endpoint,
+   substrate, generation, genesis/repair/admin permit, TLS-KV-versus-Kubernetes-Secret kind,
+   decommission tag, committed-intent, and freshness mismatches before any effect runs.
+2. Property tests prove admitted execution uses the same opaque reference that produced evidence.
+3. Exhaustive graph tests reject missing providers, ambiguous providers, cycles, and weaker
+   capability substitution.
+4. Parser/output/source tests prove `--show-secrets` is absent and no `ConfigObserve` result can
+   carry a secret field outside its role projection.
+5. `prodbox test unit`, `prodbox test integration cli`, `prodbox test integration env`, and
+   `prodbox dev check` pass.
+
+### Remaining Work
+
+- Implement the indexed foundation and migrate the generic graph/interpreter seam.
+- Sprint `1.62` consumes the handle algebra for temporal admission and native client sessions.
+
+## Documentation Requirements
+
+**Engineering docs to create/update:**
+
+- `documents/engineering/lifecycle_control_plane_architecture.md` - capability and evidence
+  algebra.
+- `documents/engineering/pure_fp_standards.md` - indexed operations and flat external evidence.
+- `documents/engineering/bootstrap_readiness_doctrine.md` - exact-operation readiness rule.
+- `documents/engineering/prerequisite_dag_system.md` - capability-provider DAG lowering.
+- `documents/engineering/haskell_code_guide.md` - opaque references and interpreter discipline.
+
+**Product docs to create/update:**
+
+- None.
+
+**Cross-references to add:**
+
+- Link the new capability modules to their Phase-2, Phase-4, and Phase-5 consumers without
+  assigning those later implementations to Phase 1.
+
+## Sprint 1.62: Absolute Deadlines, Service-Capacity Algebra, and Native Sessions [⏸️ Blocked]
+
+**Status**: Blocked
+**Deployment qualification**: pending
+**Implementation**: planned `src/Prodbox/ControlPlane/Capacity.hs`,
+`src/Prodbox/ControlPlane/Deadline.hs`, a native `Prodbox.ObjectStore` interpreter, a managed
+`Prodbox.Vault.Session` interpreter, pinned native in-memory AWS IAM/S3/STS/Route53/
+ServiceQuotas clients, config/schema projections, and focused tests
+**Blocked by**: Sprint `1.61`
+**Independent Validation**: fake clocks, deterministic queue simulations, and in-process fake
+S3/Vault servers prove deadline, admission, pooling, and renewal behavior without a cluster, AWS,
+or a later phase.
+**Docs to update**: `documents/engineering/lifecycle_control_plane_architecture.md`,
+`documents/engineering/resource_scaling_doctrine.md`,
+`documents/engineering/haskell_code_guide.md`,
+`documents/engineering/vault_doctrine.md`, and
+`documents/engineering/dependency_management.md`
+
+### Objective
+
+Represent temporal capacity and session lifetime as validated data so queueing plus execution must
+fit one caller deadline, and remove Python/AWS-CLI process startup plus fresh Vault login from each
+Model-B request.
+
+### Deliverables
+
+- Add process-local monotonic `Deadline`, `RemainingBudget`, `AdmissionObservation`, and
+  cancellation propagation; nested interpreters may shorten but never reset a deadline. Separately
+  add serializable `AuthorityInstant`/clock observations, a durable high-water mark, skew/
+  regression refusal, and stored operation deadlines that survive restart without extension.
+- Add an opaque `ServiceCapacityPlan` covering arrival bound, service-time evidence, worker count,
+  queue capacity, utilization margin, and rejection threshold. Memory containment alone is not a
+  service-capacity proof.
+- Provide bounded FIFO admission with immediate structured overload rejection when work cannot
+  finish before its deadline; timed-out callers cancel queued or active work cooperatively.
+- Implement pooled native S3-compatible GET/PUT/conditional-write/delete/list operations for the
+  Model-B MinIO path with no temporary body files or `aws s3api` subprocess.
+- Implement a renewable cached Vault Kubernetes-auth session with explicit expiry, single-flight
+  refresh, sealed/revoked classification, and redacted in-memory credential custody.
+- Pin the required native Haskell AWS client/service packages and expose closed IAM/S3/STS/
+  Route53/ServiceQuotas interpreters that accept only a validated linear in-memory credential
+  handle. Credential Provisioner and quota actions never invoke `aws`, profiles, temp files, or Pod
+  credential env vars. Pulumi remains confined to the isolated Provider Worker for normal
+  provider intents and the Admin Action Runner for only its action-indexed exact permit; neither
+  proof converts to the other. Both construct an operation-scoped scrubbed child environment
+  rather than ambient daemon auth.
+
+### Validation
+
+1. Deadline properties prove no child can outlive or extend the parent budget; authority-clock
+   restart/regression/unobservability tables prove downtime cannot reset a durable deadline.
+2. Queue simulations cover saturation, fairness, cancellation, deadline expiry, and recovery.
+3. Native object-store contract tests cover ETag/version CAS, applied-but-response-lost outcomes,
+   read-back, and transport failure.
+4. Vault-session tests cover renewal, expiry, revocation, seal transitions, and concurrent refresh.
+5. Fake AWS protocol tests cover IAM create-response loss, S3 backup policy drift, STS scope,
+   Route53 exact records, quota request/status read-back, and absence of CLI/profile/env/temp-file
+   credential seams in native provisioners.
+6. Config generation/validation, unit/integration suites, and `prodbox dev check` pass.
+
+### Remaining Work
+
+- Blocked until Sprint `1.61` supplies the exact capability-handle foundation.
+- Phase 2 consumes these primitives in the gateway actor; Phase 4 consumes them in the Lifecycle
+  Authority.
+
+## Documentation Requirements
+
+**Engineering docs to create/update:**
+
+- `documents/engineering/lifecycle_control_plane_architecture.md` - deadline, capacity, native
+  object-store, and managed-session contracts.
+- `documents/engineering/resource_scaling_doctrine.md` - temporal service-capacity lemmas.
+- `documents/engineering/haskell_code_guide.md` - absolute deadlines, cancellation, pools, and
+  session managers.
+- `documents/engineering/vault_doctrine.md` - renewable Kubernetes-auth session custody.
+- `documents/engineering/dependency_management.md` - selected/pinned native S3 and AWS service
+  client packages.
+
+**Product docs to create/update:**
+
+- None.
+
+**Cross-references to add:**
+
+- Cross-link runtime memory and service capacity as separate necessary proofs.
 
 ## Related Documents
 

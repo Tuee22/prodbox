@@ -2,10 +2,12 @@
 
 **Status**: Authoritative source
 **Supersedes**: N/A
-**Referenced by**: [README.md](./README.md), [../../DEVELOPMENT_PLAN/phase-1-runtime-cli-aws-foundations.md](../../DEVELOPMENT_PLAN/phase-1-runtime-cli-aws-foundations.md), [../../DEVELOPMENT_PLAN/phase-5-canonical-test-suite.md](../../DEVELOPMENT_PLAN/phase-5-canonical-test-suite.md), [unit_testing_policy.md](./unit_testing_policy.md), [integration_fixture_doctrine.md](./integration_fixture_doctrine.md)
+**Referenced by**: [README.md](./README.md), [../../DEVELOPMENT_PLAN/phase-1-runtime-cli-aws-foundations.md](../../DEVELOPMENT_PLAN/phase-1-runtime-cli-aws-foundations.md), [../../DEVELOPMENT_PLAN/phase-5-canonical-test-suite.md](../../DEVELOPMENT_PLAN/phase-5-canonical-test-suite.md), [unit_testing_policy.md](./unit_testing_policy.md), [integration_fixture_doctrine.md](./integration_fixture_doctrine.md), [lifecycle_control_plane_architecture.md](./lifecycle_control_plane_architecture.md)
 **Generated sections**: none
 
-> **Purpose**: Single source of truth for the executable-sibling `prodbox.test.dhall` — the explicit, self-describing SSoT of one test run — and the `test init` / `test run` surface that stands each declared cluster variant up, asserts it, and always tears down per-run state without touching production config/`.data/` or destroying a long-lived resource.
+> **Purpose**: Single source of truth for the executable-sibling `prodbox.test.dhall`, generated
+> per-run config, `.test-data/` isolation, and the `test init` / `test run` surface. Real-resource
+> preparation and cleanup scheduling remain owned by Integration Fixture Doctrine.
 
 ## 1. A test run is fully described by its test Dhall
 
@@ -17,17 +19,11 @@ and that file **is** the run: the HA/failover cluster shape, the suite vocabular
 budgets, and the fixtures each suite needs. Nothing about a run is implicit in ambient machine
 state — the test Dhall is the audit trail of what will be stood up.
 
-This inverts today's transitional shape. Today the legacy harness still **regenerates the production
-binary-sibling `prodbox.dhall` in place** from `test-secrets.dhall` before validations run
-(`regenerateConfigFromTestSecrets`, `src/Prodbox/TestRunner.hs`; `src/Prodbox/Aws.hs`). Sprint
-`1.54` landed the distinct authored test-topology schema, Haskell mirror, executable-sibling
-decoder, and topology-mode sibling-Dhall fail-fast inversion in
-`dhall/TestTopologySchema.dhall`, `src/Prodbox/TestTopology.hs`, `src/Prodbox/Repo.hs`,
-`src/Prodbox/Settings.hs`, and `src/Prodbox/TestRunner.hs`. Sprint `5.11` landed the command
-surface: `test init` authors the topology file; `test run` generates a disposable per-variant
-Tier-0 `prodbox.dhall`, points storage at `.test-data/<case>/`, runs the existing deploy/assert
-path, and deletes the generated config plus this run's `.test-data` root in `finally` per
-[Phase 5 Sprint 5.11](../../DEVELOPMENT_PLAN/phase-5-canonical-test-suite.md).
+The supported topology never rewrites an operator-authored production config from
+`test-secrets.dhall`. `test init` authors the distinct topology file; `test run` generates a
+disposable per-variant Tier-0 `prodbox.dhall`, points storage at `.test-data/<case>/`, and registers
+both generated artifacts in the always-run cleanup DAG. Migration and qualification status live in
+the [Development Plan](../../DEVELOPMENT_PLAN/README.md).
 
 `prodbox.test.dhall` is the **authored** half of the per-run-vs-authored split. The **per-run**
 half is the binary-sibling `prodbox.dhall` the harness renders for each variant (§3) plus the
@@ -120,9 +116,8 @@ data TestRefusal
    **inversion** of production's contract: production resolves the executable-sibling
    `prodbox.dhall` (`resolveTier0ConfigPath`, `src/Prodbox/Repo.hs`) and **fails fast when it is
    absent** (`src/Prodbox/Settings.hs`); the topology-mode test surface **fails fast when it is
-   present**, so a run can never clobber a real operator config. Sprint `1.54` landed this
-   topology-mode gate for authored `prodbox.test.dhall` runs. Sprint `5.11` added the
-   topology-run command surface: the per-variant generated `prodbox.dhall` (§3) is written only
+   present**, so a run can never clobber a real operator config. The per-variant generated
+   `prodbox.dhall` (§3) is written only
    after this gate clears and is deleted on teardown (§5).
 2. **Refuse if a production cluster is running.** A test never mutates production cluster state.
 
@@ -150,12 +145,13 @@ guardTestDelete :: FilePath -> Either TestRefusal TestDeleteTarget  -- refuses a
 run's `PRODBOX_TEST_MANUAL_PV_HOST_ROOT` override when present, falling back to the production
 `.data/prodbox/minio/0` root for legacy named-validation commands.
 
-## 5. Teardown is finally-guaranteed and reuses the lifecycle classes
+## 5. Artifact teardown and lifecycle-class projection
 
-Teardown runs on **every** exit — success, failure, and Ctrl-C — via structured `finally`, exactly
-as [unit_testing_policy.md § Pulumi-Orchestrated Infrastructure Tests](./unit_testing_policy.md#pulumi-orchestrated-infrastructure-tests)
-and [integration_fixture_doctrine.md](./integration_fixture_doctrine.md) require. It deletes **only
-the per-run half**: the generated `.build/prodbox.dhall` and this run's `.test-data/`. It
+The topology runner registers deletion of its generated `.build/prodbox.dhall` and this run's
+`.test-data/` before creating them. Those artifact nodes participate in the always-run cleanup DAG
+owned by [Integration Fixture Doctrine §4](./integration_fixture_doctrine.md#4-cleanup-failure-handling),
+so they run on success, failure, deadline exhaustion, and interruption without becoming the cleanup
+mechanism for real infrastructure. Artifact cleanup deletes **only the per-run half**. It
 **retains** the authored `prodbox.test.dhall` and **every long-lived resource** — the `aws-ses`
 sending identity and the S3-backed `pulumi_state_backend` bucket, which take minutes to reprovision
 and are shared across runs.
@@ -169,13 +165,16 @@ and the authoritative retained-SES ordering, authorities, observations, and read
 owned by
 [AWS Integration Environment Doctrine §4.6](./aws_integration_environment_doctrine.md#46-retained-ses-desired-presence-preparation).
 
-Teardown does not invent a parallel cleanup mechanism; it reuses the managed-resource registry.
+The test topology does not invent a parallel cleanup scheduler. It projects artifact obligations and
+managed-resource lifecycle classes into the fixture-owned DAG.
 The `LifecycleClass PerRun | LongLived | Operational` partition
 (`src/Prodbox/Lifecycle/ResourceClass.hs`), `partitionResidueByLifecycle` (`src/Prodbox/Aws.hs`),
 and the `noLiveLongLivedPulumiStacks` gate (`src/Prodbox/Lifecycle/Preconditions.hs`) are the same
 values [lifecycle_reconciliation_doctrine.md §3.1](./lifecycle_reconciliation_doctrine.md#31-the-managed-resource-registry-the-reconciler-substrate)
-owns. Teardown reconciles the `PerRun` slice to absent and **gates** the `LongLived` slice so a test
-can never destroy it. The two symmetric illegal states are:
+owns. Real-resource cleanup reconciles the `PerRun` slice to absent and **gates** the `LongLived`
+slice so a test can never destroy it; independent cleanup nodes continue after sibling failure and
+the final report aggregates the original failure with every cleanup failure. The two symmetric
+illegal states are:
 
 - **Destroying a long-lived resource** — a test that tore down `aws-ses` or the state bucket. The
   `LongLived` gate refuses; `noLiveLongLivedPulumiStacks`'s `Unreachable → refuse` soundness rule
@@ -201,18 +200,18 @@ This SSoT owns the test-topology doctrine: the executable-sibling `prodbox.test.
 explicit, self-validating SSoT of one test run; the `test init` overwrite-refusal; the
 `test run <suite>|all` per-variant deploy-path reuse; the two fail-fast preconditions inverting the
 production sibling-config contract; `.test-data/` isolation with a never-touch-`.data/` delete
-guard; and finally-guaranteed teardown that retains long-lived resources by lifecycle class.
+guard; and artifact cleanup obligations that retain long-lived resources by lifecycle class.
 
 - Owned statement: a test run is fully described by its authored `prodbox.test.dhall`, drives the
   real deploy path across every declared variant, and always tears down its per-run artifacts
   without touching production config, production `.data/`, or a long-lived resource.
-- Linked dependents (Sprint `1.54` landed): `dhall/TestTopologySchema.dhall`,
+- Linked dependents: `dhall/TestTopologySchema.dhall`,
   `src/Prodbox/TestTopology.hs`, `src/Prodbox/Repo.hs` (test-Dhall sibling resolution),
   `src/Prodbox/Settings.hs` (test-Dhall decode/validation), and `src/Prodbox/TestRunner.hs`
   (topology-mode sibling-config preflight).
-- Linked dependents (Sprint `5.11` landed): `src/Prodbox/CLI/Command.hs` (the `test init` /
+- Command/cleanup dependents: `src/Prodbox/CLI/Command.hs` (the `test init` /
   `test run` surface extending `TestCommand` / `TestScope`), `src/Prodbox/TestRunner.hs`
-  (per-variant generate → reconcile → assert → `finally` teardown), `src/Prodbox/TestValidation.hs`
+  (per-variant generate → reconcile → assert plus registered cleanup-DAG nodes), `src/Prodbox/TestValidation.hs`
   (`.test-data/` repointing), `src/Prodbox/Lib/Storage.hs` (the `.test-data/`
   `manual_pv_host_root` override), `src/Prodbox/Lifecycle/ResourceClass.hs` + `src/Prodbox/Aws.hs` +
   `src/Prodbox/Lifecycle/Preconditions.hs` (the lifecycle-class teardown reuse).
@@ -221,8 +220,11 @@ guard; and finally-guaranteed teardown that retains long-lived resources by life
 
 - [config_doctrine.md](./config_doctrine.md) — the binary-sibling `prodbox.dhall` contract this doc inverts for tests.
 - [lifecycle_reconciliation_doctrine.md](./lifecycle_reconciliation_doctrine.md) — `LifecycleClass`, `partitionResidueByLifecycle`, the `Unreachable → refuse` soundness rule, and the postflight sweep the teardown reuses.
-- [unit_testing_policy.md](./unit_testing_policy.md) — interpreter-only mocking, the named-validation suite, and the `finally`/tagging infrastructure-test rules.
+- [unit_testing_policy.md](./unit_testing_policy.md) — interpreter-only mocking, named validations, and infrastructure-test proof requirements.
 - [integration_fixture_doctrine.md](./integration_fixture_doctrine.md) — fixture ownership, cleanup-failure-is-a-real-failure, and fixtures-vs-substrate-config.
+- [lifecycle_control_plane_architecture.md](./lifecycle_control_plane_architecture.md) — the
+  dedicated Bootstrap Broker, Lifecycle Authority, Target Secret Agent, and Gateway Runtime
+  boundaries used by real-system fixtures; this topology document does not redefine them.
 - [storage_lifecycle_doctrine.md](./storage_lifecycle_doctrine.md) — the `manual_pv_host_root` retained-root model that `.test-data/` overrides.
 - [pure_fp_standards.md](./pure_fp_standards.md) — closed ADTs, GADT-indexed / projection state, and the Dhall `assert` illegal-states-unrepresentable technique.
 - [vault_doctrine.md](./vault_doctrine.md) — the `SecretRef` model and the `test-secrets.dhall` `TestPlaintext` split.

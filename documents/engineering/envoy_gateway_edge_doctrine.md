@@ -199,35 +199,42 @@ repeatedly rebuilds the substrate, the issued certificate is retained and restor
 issuance (see below) so rebuilds do not re-order it and consume ZeroSSL issuance quota.
 
 The public-edge listener certificate is a **LongLived** managed resource, not disposable
-chart state. It is issued once, retained in the long-lived `pulumi_state_backend` S3 bucket
-under a substrate-scoped key, and registered in the managed-resource registry per
-[lifecycle_reconciliation_doctrine.md](./lifecycle_reconciliation_doctrine.md); it is removed
-only by `prodbox nuke`. Restore-before-issue and rebuild semantics are in §9. Scheduled for
-adoption in Sprints 4.24 / 7.11 / 8.7.
+chart state. It is issued once and retained as an Agent-encrypted envelope in the long-lived
+`pulumi_state_backend` S3 bucket under `public-edge-tls/<substrate>/<fqdn>`. The managed-resource
+registry binds the exact TLS Secret identity, object versions, TLS-retention identity/policy, and
+restore receipt per
+[lifecycle_reconciliation_doctrine.md](./lifecycle_reconciliation_doctrine.md). Explicit consumer
+decommission or `prodbox nuke` removes/read-backs the TLS prefix objects/versions and TLS identity;
+it never deletes the shared bucket. Restore-before-issue and rebuild semantics are in §9.
 
 #### TLS and ACME Material Under Vault
 
-The Vault refactor places the ACME and TLS key material beneath this issuer model as a
-fail-closed authority layer; it **extends** the single ZeroSSL issuer + S3 retain-restore
-behavior above and does not replace it. The retained-and-restored public-edge certificate
-contract (substrate-scoped S3 key, restore-before-issue, LongLived managed resource) is
-unchanged. Under the refactor:
+The Vault model places ACME and TLS key material beneath this issuer model as a fail-closed
+authority layer. It retains the single ZeroSSL issuer and S3 restore-before-issue behavior, but the
+S3 object is ciphertext rather than a directly materializable certificate. Under this contract:
 
-- **Landed (Sprint 7.15):** the ACME EAB material (the ZeroSSL external-account-binding key id
+- the ACME EAB material (the ZeroSSL external-account-binding key id
   and HMAC) lives in the `secret/acme/eab` Vault KV object and is referenced from
   `prodbox.dhall` by a typed `Optional SecretRef` (`SecretRef.Vault`) rather than carried
-  as plaintext. The non-secret key id is resolved host-side and rendered inline on the
-  `zerossl-dns01` `ClusterIssuer`; the HMAC key is materialized into the `cert-manager` namespace
-  as the `acme-eab-credentials` Secret by a Vault-login materializer Job (the same Sprint 3.18
-  chart-side pattern used for the `vscode` OIDC client Secret), never as inline plaintext.
+  as plaintext. Those references name a selected-target generation whose source is the retained
+  home Agent's payload-specific Transit-sealed `AcmeEabSource` custody. EAB values enter only through
+  their separately schema-indexed external linear ingress under `OperatorMaterialPermit`; `config
+  setup` remains Tier-0-only and the AWS admin prompt cannot supply them. Attested one-shot home and
+  selected-target workers rewrap the closed payload without exposing a generic export, so a fresh
+  AWS Vault needs no operator re-entry. After target read-back, the selected Agent returns a typed
+  generation-bound non-secret key-id projection to the issuer renderer; no host or Gateway process
+  reads the Vault object. The HMAC key is materialized into `cert-manager` as
+  `acme-eab-credentials` by a Vault-login materializer Job, never as inline plaintext.
   `prodbox config validate` rejects any plaintext EAB value.
-- New ZeroSSL issuance fails closed when Vault is sealed: the EAB key id cannot be resolved and
+- New ZeroSSL issuance fails closed when Vault is sealed: the typed EAB key-id projection is unavailable and
   the materializer Job cannot read the HMAC key, so the issuer cannot authenticate to ZeroSSL.
-  This is structurally guaranteed by the `SecretRef.Vault` resolver (a sealed Vault cannot
-  resolve the reference) and needs no separate enforcement.
-- The broader native-Vault-PKI internal-cert authority and the live "sealed Vault blocks
-  issuance" proof are a non-blocking `Live-proof: pending` axis (no new PKI subsystem was built
-  in 7.15); cert-manager remains the issuer.
+  Corrupt, mismatched, rollback, or unobservable source custody/target state fails the same way;
+  it cannot fall back to operator re-entry, another target, or config plaintext.
+- cert-manager/ZeroSSL remains the public-edge issuer and native Vault PKI owns internal certs. The
+  selected Target Secret Agent's one-shot worker reads/encrypts the exact TLS Secret; the retained
+  home Agent's dedicated `prodbox-tls-envelope` Transit lane wraps/unwraps the DEK; and the TLS
+  Retention Adapter sees only envelope ciphertext and validated metadata. Implementation and live
+  proof status remain solely in the Development Plan.
 
 See [vault_doctrine.md §11](./vault_doctrine.md#11-tls-and-pki-under-vault) and
 [acme_provider_guide.md](./acme_provider_guide.md).
@@ -417,7 +424,10 @@ The current worktree ships all three supported public-edge auth shapes:
   `SecurityPolicy`, public authorization redirects, and the shared internal Keycloak token
   endpoint for provider exchange. Its host, issuer, and redirect URL are substrate-aware:
   home local uses `domain.demo_fqdn`; AWS uses `aws_substrate.subzone_name`. The AWS substrate
-  platform applies these routes after gateway MinIO bootstrap.
+  platform currently applies these routes after the pre-cutover combined-gateway-mediated MinIO
+  bootstrap. In the target ordering, Bootstrap Broker establishes Vault, Lifecycle Authority owns
+  config/retained work, and Gateway Runtime has no MinIO/bootstrap authority; the edge route itself
+  is unchanged.
 - `websocket` uses workload-managed OIDC bootstrap and cookie-backed session ownership on
   `/ws/oidc`, then a JWT-protected `/ws` upgrade path plus Redis-backed shared state for upgraded
   connections; the current token exchange path uses private in-cluster access to the Keycloak
@@ -660,18 +670,20 @@ Lifecycle and chart implications:
    every reconcile; the `keycloak` chart `Certificate` for the shared listener references it, per
    [acme_provider_guide.md](./acme_provider_guide.md) and
    [helm_chart_platform_doctrine.md](./helm_chart_platform_doctrine.md). The high-churn
-   canonical validation loop relies on the retained-and-restored public-edge certificate so
-   rebuilds do not re-order it.
+   canonical validation loop first restores the closed `AcmeEabSource` from retained-home
+   Transit-sealed custody through attested one-shot home/selected Agent workers, then relies on the
+   retained-and-restored public-edge certificate. Authority sees ciphertext/typed receipts only;
+   neither restore exposes a generic export or requires operator re-entry on a fresh AWS Vault.
 8. The public-edge listener certificate is restored before issuance on every rebuild path
    (`prodbox cluster reconcile`, `prodbox charts reconcile`, and the substrate-platform installs):
-   the reconciler reads the retained certificate from the long-lived `pulumi_state_backend`
-   S3 bucket under its substrate-scoped key and re-materializes the cert-manager Secret before
-   any ZeroSSL ACME issuance is attempted, so a cluster wipe never triggers a re-order against
-   ZeroSSL. Because it lives in the long-lived bucket and is
-   registered as a LongLived managed resource, the public-edge certificate survives cluster
-   wipes (`prodbox cluster delete --cascade`) and is removed only by `prodbox nuke`, per
-   [lifecycle_reconciliation_doctrine.md](./lifecycle_reconciliation_doctrine.md). Scheduled
-   for adoption in Sprints 4.24 / 7.11 / 8.7.
+   Authority obtains the exact retained ciphertext/version through TLS Retention Adapter, routes it
+   to the selected Target Agent, and uses the retained home Agent's TLS-envelope Transit lane to
+   recover the DEK. Only the selected one-shot Agent worker re-materializes and reads back the exact
+   cert-manager Secret before any ZeroSSL issuance is attempted, so a cluster wipe never triggers a
+   re-order. As a registered LongLived resource the envelope survives
+   `prodbox cluster delete --cascade`; explicit consumer decommission or `prodbox nuke` removes the
+   TLS prefix/identity without the shared bucket, per
+   [lifecycle_reconciliation_doctrine.md](./lifecycle_reconciliation_doctrine.md).
 
 Typical WebSocket drain flow is:
 

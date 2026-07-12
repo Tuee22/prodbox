@@ -119,12 +119,15 @@ Current enforced quality surfaces:
   `operational-iam-user` owner `src/Prodbox/Aws.hs`, and `create-bucket` only in the long-lived
   `pulumi_state_backend` owner `src/Prodbox/Infra/LongLivedPulumiBackend.hs` and the in-cluster
   MinIO-backend owner `src/Prodbox/Infra/MinioBackend.hs`. The verb is matched in its quoted
-  subprocess-argument form so Haddock prose describing a verb is not a false positive. The Route 53
-  capability-probe verb `create-hosted-zone` is deliberately carved out (`awsCreateProbeVerbs`,
-  never in `awsCreateVerbs`): the probe creates a throwaway hosted zone and immediately deletes
-  it (now under `bracketOnError`, Sprint `4.27`), so it has no steady state to discover/reconcile
-  and is correctly **not** a registered `ManagedResource`. Together these make "a
-  creatable-but-undiscoverable resource" unrepresentable per
+  subprocess-argument form so Haddock prose describing a verb is not a false positive.
+  **Pre-cutover exception scheduled for removal:** current `awsCreateProbeVerbs` carves out the
+  mutating Route 53 `create-hosted-zone` capability probe and relies on `bracketOnError`. The live
+  counterexample showed why that is insufficient: cancellation/ordinary failure can bypass a local
+  bracket, and mutation without prior durable registration is not readiness. Sprint `5.18` makes
+  the canary a visible preparation node, registers its exact hosted-zone resource and always-run
+  cleanup before create, re-observes deletion, and then removes the carve-out. At target cutover,
+  every create call is registered or rejected, making “creatable but undiscoverable” genuinely
+  unrepresentable per
   [lifecycle_reconciliation_doctrine.md § 3.1](./lifecycle_reconciliation_doctrine.md)
 - destructive Plan / Apply totality (Sprint `4.26`): `checkPlanOptionsHonored` scans the
   destructive command-dispatch modules (`src/Prodbox/CLI/Rke2.hs`, `src/Prodbox/CLI/Nuke.hs`,

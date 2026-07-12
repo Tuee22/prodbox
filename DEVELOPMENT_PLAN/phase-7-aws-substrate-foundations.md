@@ -9,6 +9,7 @@
 [legacy-tracking-for-deletion.md](legacy-tracking-for-deletion.md),
 [the engineering doctrine docs](../documents/engineering/README.md),
 [vault_doctrine.md](../documents/engineering/vault_doctrine.md),
+[lifecycle_control_plane_architecture.md](../documents/engineering/lifecycle_control_plane_architecture.md),
 [resource_scaling_doctrine.md](../documents/engineering/resource_scaling_doctrine.md)
 **Generated sections**: none
 
@@ -18,6 +19,12 @@
 > the AWS substrate to canonical-suite parity with the home substrate.
 
 ## Phase Status
+
+⏸️ **Reopened and blocked by Sprint `6.4`.** Sprint `7.33` expands the AWS substrate's own
+platform surface with the Bootstrap Broker and Target Secret Agent, dedicated control-plane
+transport, independent resource/admission envelopes, and fault-injection parity. The EKS gateway
+Service is no longer the retained checkpoint authority or secret-delivery transport. Sprint
+`7.32` remains Done for its graph-derived AWS reconcile order and historical restore projection.
 
 ✅ **Reclosed 2026-07-10 after AWS-substrate reconcile parity** — Sprint `7.32` is Done on Phase
 `7`'s code-owned surface. `AwsSubstratePlatform` now compiles the configured component DAG through
@@ -316,7 +323,10 @@ the configured Route 53 hosted zone, and (in coordination with
 [phase-8-email-invite-auth.md](phase-8-email-invite-auth.md)) the SES sending identity, receive
 subdomain, capture bucket, and the IAM policy granting the runner SES send and S3 access.
 
-## Current Baseline In Worktree
+## Current Pre-Cutover Baseline In Worktree
+
+These bullets describe the active shared-credential/combined-daemon implementation retained only
+until Sprints `4.50` and `7.33` complete their respective cutovers.
 
 - The public onboarding and standalone AWS administration surfaces are Haskell-owned in
   `src/Prodbox/Aws.hs`, `src/Prodbox/CLI/Parser.hs`, and `src/Prodbox/Native.hs`. All Python
@@ -390,6 +400,7 @@ Make the Haskell stack own guided configuration authoring and policy generation.
 - `src/Prodbox/Aws.hs` now keeps the public `config setup` flow on prompt-driven temporary
   admin credentials only; stored `aws_admin_for_test_simulation.*` is not read on the
   supported public path.
+
 ### Remaining Work
 
 None.
@@ -435,6 +446,7 @@ supported contract.
 - `test/integration/CliSuite.hs` now proves the public `prodbox aws ...` commands ignore populated
   `aws_admin_for_test_simulation.*` config and use the interactively supplied temporary admin
   credential instead.
+
 ### Remaining Work
 
 None.
@@ -4653,6 +4665,117 @@ Bring the AWS substrate to full parity with the completed home-path readiness/or
 **Cross-references to add:**
 
 - Update [substrates.md](substrates.md) parity notes; ledger row D (AWS classifier) names Sprint `7.32`.
+
+## Sprint 7.33: AWS Control-Plane Isolation and Fault-Parity [⏸️ Blocked]
+
+**Status**: Blocked
+**Deployment qualification**: pending
+**Implementation**: planned revisions to `src/Prodbox/Lib/AwsSubstratePlatform.hs`, typed AWS
+component-step projections, role-specific port forwards/clients, chart values, IAM/Vault
+bindings, fake-command fixtures, and AWS fault scenarios
+**Blocked by**: Sprint `6.4`
+**Live-proof**: pending after code-local implementation; the full current-revision AWS aggregate
+and fault matrix are deployment-qualification evidence
+**Independent Validation**: pure AWS plan/order tables, rendered manifests, fake `kubectl`/AWS/
+authority clients, and installed-binary traces validate the substrate-owned surface without live
+AWS or a later phase.
+**Docs to update**: `documents/engineering/lifecycle_control_plane_architecture.md`,
+`documents/engineering/aws_integration_environment_doctrine.md`,
+`documents/engineering/bootstrap_readiness_doctrine.md`,
+`documents/engineering/vault_doctrine.md`,
+`documents/engineering/resource_scaling_doctrine.md`, `DEVELOPMENT_PLAN/substrates.md`, and
+`DEVELOPMENT_PLAN/system-components.md`
+
+### Objective
+
+Deploy the same isolated broker/gateway/target-agent capability set on EKS, connect retained work
+to the explicit control-plane Lifecycle Authority, and prove AWS-specific transport, capacity, and
+fault behavior without using the EKS gateway as an authority proxy.
+
+### Deliverables
+
+- Extend the AWS component projection with total anchors for Bootstrap Broker and Target Secret
+  Agent, plus the external retained Lifecycle Authority capability required by cross-substrate
+  workflows.
+- Establish and supervise role-specific Service transports. Gateway transport is used only for
+  mesh diagnostics; authority and target-secret operations use their own typed clients.
+- Render distinct IAM/Vault/ServiceAccount policy sets and independent resource/queue envelopes;
+  no gateway credential or cgroup authorizes lifecycle work.
+- Project Sprint `4.50`'s registered Lifecycle-provider through the retained authority and
+  reconcile only the AWS-substrate cert-manager-DNS01 identity/generation plus target-local trust.
+  The home Gateway-DNS identity is never mounted on EKS, and EKS Gateway DNS mutation stays
+  disabled. The AWS public A record is an exact registered provider resource; neither an EKS
+  gateway nor the shared legacy credential can mutate it.
+- Project the AWS Target Agent's exact TLS-Secret RBAC/attestation to the retained-home TLS DEK
+  exchange and TLS Retention Adapter. Destroy/recreate the AWS Vault/EBS/Agent, then restore the
+  retained ciphertext through the new attestation and read back the exact TLS Secret before
+  cert-manager may order or Envoy may serve it.
+- Project the retained-home Agent's closed non-recoverable-material custody/rewrap family to the AWS
+  Target Agent for the explicitly registered SES-SMTP and ACME-EAB schemas. The Authority carries
+  only ciphertext and receipts; no generic path/bytes export exists. Destroy/recreate the AWS
+  Vault/EBS/Agent, then rewrap, materialize, and read back the same registered generations before
+  Keycloak or cert-manager admission, without an admin prompt, SMTP key rotation, or EAB reset.
+- Replace provider-assigned EKS `clusterRole-*`/`nodeRole-*` IAM names with deterministic
+  run/cluster-scoped names and register them before provider mutation. Exact discover/destroy/
+  read-back must recover checkpoint-loss cases without a broad IAM scan or operator-only leak class.
+- Before enabling each LBC-owned Service/Ingress, register account/region/cluster plus deterministic
+  resource name/manifest digest and prodbox tags; create the owner inert so no controller mutation
+  can occur, observe/CAS-register its Kubernetes-assigned UID, then enable reconciliation.
+  CAS-enrich exact AWS ARNs after observation. Cleanup deletes the Kubernetes owner while live and
+  then provider-deletes/read-backs any survivor through that registered descriptor.
+- Project the shared restore/cleanup DAG after all three per-run stack reconciles and refresh every
+  role-specific client after EKS recreation.
+- Add AWS fault scenarios for gateway saturation/loss, target-agent restart, authority transport
+  interruption, EKS replacement, delayed Vault/MinIO, cancellation, and cleanup; verify per-run
+  stacks/EBS/IAM leave no residue while retained SES, Authority backup/TLS storage, and home
+  Gateway-DNS/DNS01 identities remain intentional and exact-consumer readable.
+- Run the AWS projection of `LCPC-2026-07-11` under rendered EKS cgroups and retain both the
+  superseded-wiring failure evidence and replacement result in the Standard-P artifact.
+
+### Validation
+
+1. Pure order tests prove every AWS mutation follows its exact capability provider and final
+   barrier.
+2. Rendered manifests/policies prove role isolation and substrate-equivalent service inventory.
+3. Fake-command traces reject gateway authority calls, stale kubeconfigs, ambient/shared AWS
+   credentials, direct unregistered Route 53 writes, and cross-substrate endpoint fallback.
+4. Installed-binary fault fixtures prove client refresh, operation resume, registered LBC-child
+   fallback deletion, deterministic-IAM checkpoint-loss recovery, and always-run cleanup. A fresh
+   AWS Vault/Agent restores the same SES-SMTP and ACME-EAB generations from the closed retained-home
+   custody family and rejects generic export, wrong schema/generation/target, or Authority plaintext.
+5. Unit/CLI/env integration suites and `prodbox dev check` pass.
+6. Interim AWS evidence runs the current-revision `prodbox test all --substrate aws` aggregate plus
+   the required fault matrix and binds the complete secret-safe replacement identity, including its
+   recorded/digested source-manifest exclusion-policy version and only opaque Authority receipt/
+   generation IDs or Vault-keyed HMAC commitments for secret-dependent inputs. It rejects public
+   raw secret hashes. Sprint `8.12` is the sole final both-substrate qualification owner after the
+   shared SES workflow changes.
+
+### Remaining Work
+
+- Blocked until Sprint `6.4` closes the home clean-room migration contract.
+- Live AWS evidence remains separate from Phase-7 code-local status and must bind the complete
+  replacement identity; final qualification remains Sprint `8.12`.
+
+## Documentation Requirements
+
+**Engineering docs to create/update:**
+
+- `documents/engineering/lifecycle_control_plane_architecture.md` - AWS topology and transport.
+- `documents/engineering/aws_integration_environment_doctrine.md` - retained authority versus
+  EKS target-agent ownership.
+- `documents/engineering/bootstrap_readiness_doctrine.md` - AWS capability-provider order.
+- `documents/engineering/vault_doctrine.md` - AWS role/session policy inventory.
+- `documents/engineering/resource_scaling_doctrine.md` - AWS per-role capacity envelopes.
+
+**Product docs to create/update:**
+
+- `README.md` - AWS qualification state and supported topology.
+
+**Cross-references to add:**
+
+- Update `substrates.md` and `system-components.md` with identical substrate services and the
+  external retained-authority boundary.
 
 ## Related Documents
 

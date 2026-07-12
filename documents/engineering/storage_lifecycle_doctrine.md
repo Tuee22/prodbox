@@ -2,11 +2,15 @@
 
 **Status**: Authoritative source
 **Supersedes**: N/A
-**Referenced by**: README.md, DEVELOPMENT_PLAN/README.md, DEVELOPMENT_PLAN/system-components.md, documents/engineering/README.md, documents/engineering/cluster_federation_doctrine.md, documents/engineering/effectful_dag_architecture.md, documents/engineering/integration_fixture_doctrine.md, documents/engineering/local_registry_pipeline.md, documents/engineering/prerequisite_dag_system.md, documents/engineering/prerequisite_doctrine.md, documents/engineering/helm_chart_platform_doctrine.md, documents/engineering/secret_derivation_doctrine.md, documents/engineering/lifecycle_reconciliation_doctrine.md, documents/engineering/vault_doctrine.md, documents/engineering/tiered_storage_capacity_doctrine.md, documents/engineering/pulsar_topic_lifecycle_doctrine.md, documents/engineering/cluster_topology_doctrine.md, documents/engineering/test_topology_doctrine.md
+**Referenced by**: README.md, DEVELOPMENT_PLAN/README.md, DEVELOPMENT_PLAN/system-components.md, documents/engineering/README.md, documents/engineering/cluster_federation_doctrine.md, documents/engineering/effectful_dag_architecture.md, documents/engineering/integration_fixture_doctrine.md, documents/engineering/lifecycle_control_plane_architecture.md, documents/engineering/local_registry_pipeline.md, documents/engineering/prerequisite_dag_system.md, documents/engineering/prerequisite_doctrine.md, documents/engineering/helm_chart_platform_doctrine.md, documents/engineering/secret_derivation_doctrine.md, documents/engineering/lifecycle_reconciliation_doctrine.md, documents/engineering/vault_doctrine.md, documents/engineering/tiered_storage_capacity_doctrine.md, documents/engineering/pulsar_topic_lifecycle_doctrine.md, documents/engineering/cluster_topology_doctrine.md, documents/engineering/test_topology_doctrine.md
 **Generated sections**: none
 
 > **Purpose**: Define deterministic retained-storage behavior for `prodbox` install/delete
 > lifecycles.
+
+Implementation and deployment-qualification status live only in the
+[Development Plan](../../DEVELOPMENT_PLAN/README.md); dated sprint references below are historical
+provenance, not a parallel status ledger.
 
 ## 1. Canonical Doctrine Statements
 
@@ -44,12 +48,8 @@
 - The manual PV host root stores PV contents and the per-cluster MinIO bucket files.
   MinIO's own PV lives under `.data/prodbox/minio/0`; therefore per-run Pulumi backend
   checkpoints and the Vault-Transit-enveloped in-force cluster configuration survive cluster wipes
-  whenever `.data/` is preserved. Sprint `4.30` collapses prodbox-owned MinIO state into the
-  generic `prodbox-state` bucket and routes the in-force config read through the Model-B opaque
-  object key. Sprint `7.14` routes main Pulumi stack cycles and production stack reads through the
-  same Model-B object envelope and imports legacy raw checkpoints on first touch. Sprint `4.33`
-  gates the Haskell-side residue/oracle/log surfaces behind Vault readiness, and Sprint `5.8` owns
-  the deployed on-disk/oracle/log proof. See
+  whenever `.data/` is preserved. Prodbox-owned MinIO state uses the generic `prodbox-state`
+  bucket and Model-B opaque object format; checkpoint and config access remains Vault-gated. See
   [vault_doctrine.md §9](./vault_doctrine.md#9-minio-as-a-ciphertext-store).
 - Vault runs in-cluster on a durable PV under `.data/vault/vault/0`, preserved across cluster
   wipes exactly like MinIO's PV; cluster teardown never destroys Vault state. The cluster is
@@ -61,13 +61,22 @@
 - Model-B MinIO logical objects in the generically-named bucket are stored as Vault-Transit
   ciphertext envelopes (`prodbox-envelope-v2`, hashed stored AAD) under the flat opaque-named
   layout (`objects/<opaque-id>.enc`; encrypted index payloads use the same envelope discipline),
-  per [vault_doctrine.md §9](./vault_doctrine.md#9-minio-as-a-ciphertext-store). Sprint `4.30`
-  implements the shared object layer and production in-force-config read. The current gateway
-  daemon has no durable MinIO state writer left after master-seed removal; any future durable
-  daemon object uses the same layer. Sprint `7.14` stores main Pulumi checkpoints through that
-  layer and imports legacy raw checkpoints on first touch. There is no master-seed object; the
-  HMAC-derivation model is retired and every secret is a Vault KV object. (Scheduled/landed across
-  Sprints `3.17`, `4.29`, `4.30`, `4.33`, and `7.14`.)
+  per [vault_doctrine.md §9](./vault_doctrine.md#9-minio-as-a-ciphertext-store). Sharing the codec
+  does not share authority: the Lifecycle Authority alone mutates its one bounded CAS aggregate and
+  writes immutable content-addressed checkpoint blobs; the Gateway Runtime exposes no lifecycle or
+  generic object-store writer. The Gateway Runtime instead persists its own encrypted,
+  identity-bound continuity journal on a registered retained volume and owns the complete
+  `stage -> fsync -> publish -> commit -> fsync` transition through one local actor. There is no
+  master-seed object; every persisted post-unseal operational-secret source of truth is a Vault
+  object. For cross-substrate SMTP and ACME EAB, that source is the retained home Agent's
+  payload-specific Transit-sealed `SesSmtpSource`/`AcmeEabSource` custody; a selected substrate Vault
+  holds only a bounded materialization restored by attestation-encrypted one-shot Agent rewrap.
+  Authority sees ciphertext/typed receipts only, a fresh AWS Vault needs no operator re-entry or
+  SMTP-key rotation, and no generic export exists. Exact cert-manager TLS Secrets are bounded
+  materializations, and retained public-edge TLS is Agent-encrypted ciphertext plus a
+  retained-home-Transit-wrapped DEK—not a second plaintext
+  secret store. The password-AEAD Tier-1 prepared/encrypted-response/final bootstrap envelopes are the deliberate
+  pre-unseal exception. Implementation and qualification status live only in the Development Plan.
 - Namespace-local Patroni PostgreSQL clusters created for Helm-managed application stacks
   use deterministic CLI-owned PVs rooted at
   `.data/<namespace>/prodbox-<root-chart>-pg/<ordinal>`.
@@ -105,10 +114,11 @@ This doctrine governs:
 4. the `.data/` host root as the sole preserved operator-host directory, and the
    pin that MinIO's PV lives inside it
 5. MinIO persistence behavior on the supported single-node RKE2 machine
-6. deleted-export-mount repair for the daemon-mediated encrypted Model-B Pulumi checkpoint store
-7. the Vault-Transit-enveloped in-force cluster configuration and gateway state in MinIO,
-   which live on MinIO's PV under `.data/prodbox/minio/0` and are therefore in scope of this
-   doctrine for persistence (encryption, access control, and the in-force-config SSoT
+6. deleted-export-mount repair for the Lifecycle Authority's encrypted aggregate/checkpoint store
+7. the Vault-Transit-enveloped in-force cluster configuration plus Lifecycle Authority aggregate
+   and immutable checkpoint blobs in MinIO, which live on MinIO's PV under
+   `.data/prodbox/minio/0` and are therefore in scope of this doctrine for persistence
+   (encryption, access control, and the in-force-config SSoT
    contract are governed by
    [vault_doctrine.md](./vault_doctrine.md) and
    [config_doctrine.md](./config_doctrine.md))
@@ -119,12 +129,16 @@ This doctrine governs:
 9. retained EBS-backed storage on the AWS/EKS substrate: pre-created EBS volumes lifted in as
    static `Retain` PVs (CSI `volumeHandle`, AZ affinity) and their deterministic rebinding
    across `prodbox aws stack eks destroy` plus `prodbox aws stack eks reconcile` (Sprint `7.28`)
-10. the production-retain / test-delete EBS lifecycle — EBS volumes are `Retain` and never
+10. retained-home payload-specific Transit-sealed `SesSmtpSource` and `AcmeEabSource` objects plus
+    their typed source receipts, and the bounded selected-target Vault generations restored from
+    them by attestation-encrypted one-shot Agent rewrap. These are operational-secret Vault objects,
+    not generic exports or a second plaintext store.
+11. the production-retain / test-delete EBS lifecycle — EBS volumes are `Retain` and never
     deleted by cluster/stack teardown; only the test-scoped EBS reaper paths delete test-scoped EBS
     at suite postflight, cascade teardown, or `prodbox aws ebs reap-test --yes` (Sprints `4.39`,
     `4.40`). The managed-resource registry entry, tag markers, and
     reaper are owned by [lifecycle_reconciliation_doctrine.md](./lifecycle_reconciliation_doctrine.md) § 1
-11. EKS VPC ownership visibility: the AWS substrate's dedicated, non-default VPC plus its IGW,
+12. EKS VPC ownership visibility: the AWS substrate's dedicated, non-default VPC plus its IGW,
     route table, and public subnets carry `prodbox.io/managed-by=prodbox` so the postflight tag
     sweep can surface escaped VPC-scoped residue after failed teardown (Sprint `7.29`)
 
@@ -138,6 +152,13 @@ lifecycle runtime. The registry portion of that lifecycle must reach a stable
 external-serving state before public-image mirror, custom-image publication, or
 registry-backed steady-state workload reconcile continues. The bootstrap MinIO install
 that establishes the local backend may pull its images from public registries first.
+
+Any control-plane consumer represented in this eDAG carries an operation-indexed
+`CapabilityRef`; readiness observation, admission, and execution use that same opaque reference.
+Each boundary call consumes the remaining budget from one absolute deadline, so a successful probe
+cannot be paired with a different service binding or a fresh execution timeout. Physical service
+ownership is defined in
+[Lifecycle Control-Plane Architecture](./lifecycle_control_plane_architecture.md).
 
 The retained-storage effect must reconcile:
 
@@ -154,15 +175,17 @@ The retained-storage effect must reconcile:
    `0` anchor comes up first, and follower ordinals `1` and `2` rejoin only after their
    retained roots are reset
 5. host storage directories rooted at `storage.manual_pv_host_root`
-6. registry external readiness plus a stable `GET /v2/` probe (expect 200/401) before image writes
-   and registry-backed steady-state workload reconcile continue
+6. registry publication admission through the exact operation-indexed capability used for image
+   writes, including storage-edge mutation/read-back and the front-door `GET /v2/` diagnostic;
+   the diagnostic alone cannot authorize publication
 7. deleted MinIO export-mount detection and a bounded recreate-plus-restart repair before
    MinIO-backed Pulumi validation continues
-8. MinIO IAM bootstrap (the single generically-named object-store bucket and the
-   `prodbox-gateway` user + policy) per
+8. MinIO IAM bootstrap (the single generically-named object-store bucket and separate
+   least-privilege principals, including the Lifecycle Authority principal) per
    [secret_derivation_doctrine.md](./secret_derivation_doctrine.md) §7 so supported object-store
-   access uses the same `prodbox-state` bucket. The host in-force-config read uses the Model-B
-   object key in Sprint `4.30`; any future durable gateway object uses the same object layer.
+   access uses the same `prodbox-state` bucket without a gateway-owned generic proxy. The authority
+   principal may reach only its aggregate and immutable blob namespace; registry storage retains
+   its distinct bucket/user.
 
 `rke2 delete` must preserve the configured manual PV host root and nothing else on the
 operator host.
@@ -218,11 +241,11 @@ The drain-before-destroy ordering is load-bearing: see
 the substrate-aware drain and the `DependencyViolation` failure mode that an inverted
 order produces on the AWS substrate.
 
-`prodbox cluster delete --yes` (without `--cascade`) preserves any Pulumi residue in MinIO
-when invoked with `--allow-pulumi-residue`; reconcile + per-stack destroy from the
-rebuilt cluster is the supported recovery path because MinIO's PV under `.data/` keeps
-the Pulumi state alive across the cluster cycle. Live AWS resources tracked in MinIO
-state remain reachable from any subsequent reconcile.
+`prodbox cluster delete --yes` (without `--cascade`) is local-only and unconditionally preserves
+Pulumi checkpoint blobs and any corresponding live AWS resources. Reconcile plus the exact
+per-stack destroy, or the durable always-run cleanup plan, is the supported recovery path because
+MinIO's PV under `.data/` keeps the encrypted state alive across the cluster cycle. There is no
+`cluster delete --allow-pulumi-residue` flag.
 
 Both `prodbox cluster delete --yes` and `prodbox cluster delete --cascade --yes` preserve
 the Vault PV (`.data/vault/vault/0`) just as they preserve `.data/` and the MinIO PV; cluster
@@ -238,10 +261,8 @@ cannot remove them. The K8s drain deletes only `Delete`-reclaim PVCs, so the `Re
 survive the drain untouched. Only the test-scoped EBS reaper paths delete EBS volumes: suite
 postflight, `cluster delete --cascade`, and `prodbox aws ebs reap-test --yes`. Each deletes only
 volumes tagged as test-scoped — production workflows never lose block storage, and test runs never
-leak it. Sprint `4.39` has landed the
-EBS managed-resource class (`aws-ebs-volumes`), typed `discover`/`destroy` EC2 boundary, retained
-vs test-scoped tag markers, and deterministic retained-inventory parity; Sprint `4.40` has landed
-the test-scoped reaper, cascade hook, standalone recovery entrypoint, and retain-safe drain guard. See
+leak it. The EBS managed-resource class (`aws-ebs-volumes`) owns typed `discover`/`destroy`,
+retained-vs-test-scoped tags, the test reaper, cascade hook, and retain-safe drain guard. See
 [lifecycle_reconciliation_doctrine.md](./lifecycle_reconciliation_doctrine.md) § 1.
 
 Both delete shapes preserve `.data/` and remove nothing else on the operator host. The
@@ -288,11 +309,18 @@ Lifecycle-oriented validation should prove:
 12. `prodbox test integration eks-volume-rebind` writes a sentinel through the retained
     MinIO workload PV, tears the cluster substrate down, brings it back, and verifies the
     same PV/PVC is `Bound`, the sentinel persists, and any EBS CSI `volumeHandle` is
-    identical before and after the cycle. The AWS live proof remains the non-blocking
-    parity axis for the Sprint `7.28` retained-EBS PV path on EKS.
+    identical before and after the cycle. Deployment-qualification evidence is recorded only in
+    the [Development Plan](../../DEVELOPMENT_PLAN/README.md).
+13. destructive AWS Vault/EBS rebuild qualification preserves/read-backs the retained-home SMTP/EAB
+    source receipts, recreates a fresh target Vault, materializes the exact generations through
+    attested home/selected Agent workers, and proves no admin re-prompt, EAB re-entry, SMTP-key
+    rotation, plaintext Authority/outbox field, or generic export path occurred.
 
 Cleanup ownership is defined in
-[Integration Fixture Doctrine](./integration_fixture_doctrine.md).
+[Integration Fixture Doctrine](./integration_fixture_doctrine.md). Test-scoped retained-volume
+deletion is a registered node in its always-run cleanup DAG; failure of one destroy does not prevent
+independent cleanup, and credential teardown remains dependency-blocked until credential-dependent
+storage cleanup has completed or authoritatively observed absence.
 
 ## 7. The Single Retained Operator-Host Root
 
@@ -303,7 +331,9 @@ Rules:
 1. `.data/` stores PV content. The MinIO PV at `.data/prodbox/minio/0` is the persistence
    anchor for the per-run Pulumi backend checkpoints and for the Vault-Transit-enveloped
    in-force cluster configuration, all held in the `prodbox-state` bucket. The Vault PV at
-   `.data/vault/vault/0` anchors the secret material itself (KV, Transit, PKI).
+   `.data/vault/vault/0` anchors the secret material itself (KV, Transit, PKI), including the
+   retained-home payload-specific SMTP/EAB custody objects and source receipts used to rebuild
+   selected-target generations.
    - **On-disk consequence (whole-system zero-child-info).** Sprint `4.30` ensures Model-B logical
      objects use `prodbox-envelope-v2` ciphertext stored under Vault-keyed-HMAC opaque IDs
      (`objects/<opaque-id>.enc`) in the single generic bucket, with the production in-force config
@@ -343,8 +373,10 @@ Rules:
     is first empty, and every later reconcile only unseals the existing data. Vault state is
     lost only when the operator deliberately wipes `.data/`, at which point the next reconcile
     inits a brand-new Vault from an empty anchor.
-12. The Vault recovery material — the unlock bundle — is password-AEAD-sealed and lives in the
-    durable MinIO bucket, not on host disk; see
+12. The root Vault bootstrap transaction lives only in durable MinIO, never host disk. Before first
+    `/sys/init`, the Broker writes/read-backs the password-AEAD `PreparedInitEnvelope`; after init it
+    persists/read-backs Vault's PGP-encrypted response, atomically promotes/read-backs the final
+    password-AEAD unlock bundle, and only then deletes/read-backs the prepared envelope. See
     [vault_doctrine.md §6](./vault_doctrine.md#6-the-unlock-bundle). The only related host-disk
     artifact is the non-secret `.cluster-established` marker.
 13. Test runs use a **separate `.test-data/` retained root**, never `.data/`. A `prodbox test`
@@ -371,6 +403,7 @@ Rules:
 - [Secret Derivation Doctrine](./secret_derivation_doctrine.md)
 - [Vault Secret-Management Doctrine](./vault_doctrine.md)
 - [Lifecycle Reconciliation Doctrine](./lifecycle_reconciliation_doctrine.md)
+- [Lifecycle Control-Plane Architecture](./lifecycle_control_plane_architecture.md)
 - [Prerequisite Doctrine](./prerequisite_doctrine.md)
 - [Effectful DAG Architecture](./effectful_dag_architecture.md)
 - [Local Registry Pipeline](./local_registry_pipeline.md)

@@ -5,10 +5,12 @@
 **Referenced by**: [README.md](./README.md),
 [../../README.md](../../README.md),
 [config_doctrine.md](./config_doctrine.md),
+[../cli/commands.md](../cli/commands.md),
 [secret_derivation_doctrine.md](./secret_derivation_doctrine.md),
 [cluster_federation_doctrine.md](./cluster_federation_doctrine.md),
 [storage_lifecycle_doctrine.md](./storage_lifecycle_doctrine.md),
 [lifecycle_reconciliation_doctrine.md](./lifecycle_reconciliation_doctrine.md),
+[lifecycle_control_plane_architecture.md](./lifecycle_control_plane_architecture.md),
 [envoy_gateway_edge_doctrine.md](./envoy_gateway_edge_doctrine.md),
 [helm_chart_platform_doctrine.md](./helm_chart_platform_doctrine.md),
 [acme_provider_guide.md](./acme_provider_guide.md),
@@ -35,10 +37,17 @@
 > **Purpose**: Single source of truth for Vault as the sole, fail-closed secrets,
 > key-management, encryption-as-a-service, and PKI root of every prodbox-managed cluster — the
 > SecretRef configuration contract, the password-AEAD-sealed unlock bundle in durable MinIO, the
-> daemon-mediated bootstrap path that reaches it before unseal, Vault Transit envelope encryption
+> dedicated Bootstrap Broker path that reaches it before unseal, Vault Transit envelope encryption
 > of MinIO and Pulumi state, the init-once / unseal-on-rebuild durability model, the
 > cluster-federation transit-seal trust tree, the sealed-state brick invariant, and in-cluster
 > Vault Kubernetes auth.
+
+This document owns secret custody, encryption, Vault policy, and sealed-state semantics. It does
+not assign those capabilities to the Gateway Runtime. Physical separation of the Bootstrap Broker,
+Lifecycle Authority, fenced Provider Worker, Authority Backup Adapter, TLS Retention Adapter,
+Target Secret Agent, on-demand Credential Provisioner/Admin Action Runner, and Gateway Runtime is
+canonical in
+[Lifecycle Control-Plane Architecture](./lifecycle_control_plane_architecture.md).
 
 ## 1. Why this doctrine exists
 
@@ -52,12 +61,17 @@ credential could read, with every per-namespace secret HMAC-derived from that se
 snapshot, a MinIO dump, or a Kubernetes Secret export revealed everything prodbox knows —
 including the inventory of any downstream cluster prodbox manages.
 
-**Vault is now the sole secrets root.** It is the only secrets/credential/key/cert backend the
-stack has: every such datum is a Vault object (KV v2 secret, Transit key, or PKI-issued cert).
-There is no second store and no plaintext fallback. Every secret-bearing artifact prodbox
-persists outside Vault — MinIO objects, the Pulumi backend state, the in-force cluster
-configuration — is stored only as a Vault-Transit envelope. The operator-authored Dhall holds
-**references** to secrets, never secret values.
+**Vault is now the sole post-unseal operational-secrets root.** Every steady-state operational
+secret source of truth is a Vault object (KV v2 secret, Transit key, or PKI-issued cert), with no
+plaintext fallback. Public-edge cert-manager TLS exists transiently in an exact Kubernetes Secret
+and durably only as Agent-encrypted S3 ciphertext with a home-Transit-wrapped DEK; neither is an
+alternate plaintext secrets root. Two bounded bootstrap exception classes are explicit: the root
+bootstrap envelope family (pre-init `PreparedInitEnvelope` and final unlock bundle) is
+password-AEAD ciphertext in MinIO so Vault can be safely initialized/opened, and the elevated operator
+credential is an ephemeral prompt that is never persisted. Authority config/checkpoint blobs use
+Vault-Transit envelopes; each Gateway continuity journal is separately encrypted by its identity-
+bound Vault-managed key on its local retained volume. The operator-authored Dhall holds
+**references** to operational secrets, never secret values.
 
 This doctrine is the SSoT for that finalized model. It **replaces — it does not extend** — the
 prior secret machinery:
@@ -71,8 +85,9 @@ prior secret machinery:
   object: generated once, persisted on Vault's durable storage, and fetched by each in-cluster
   consumer via Vault Kubernetes auth. There is no `master-seed` object in MinIO.
 - The **Tier-0 Dhall config contract** ([config_doctrine.md](./config_doctrine.md))
-  changes posture: the in-force cluster configuration is a Vault-Transit-enveloped MinIO object
-  (the SSoT), and the binary-sibling `prodbox.dhall` is the non-secret bootstrap floor plus
+  changes posture: the in-force cluster configuration is an immutable Vault-Transit-enveloped blob
+  referenced by generation/digest from the Lifecycle Authority aggregate, and the binary-sibling
+  `prodbox.dhall` is the non-secret bootstrap floor plus
   seed/propose payload. Its sensitive fields are typed `SecretRef.Vault` references — no plaintext
   secret value, and no `FileSecret` arm (§3, §4;
   [cluster_federation_doctrine.md](./cluster_federation_doctrine.md)). The retired
@@ -93,22 +108,12 @@ prior secret machinery:
   reconcile-time deploy/unseal and a preserved Vault PV on teardown.
 - **Cluster federation** ([cluster_federation_doctrine.md](./cluster_federation_doctrine.md))
   layers a Vault transit-seal trust tree over this root: a root cluster and zero or more child
-  clusters, where a child Vault auto-unseals against its parent and the parent owns the child's
-  init keys (§16).
+  clusters, where a child Vault auto-unseals against its parent and the parent owns encrypted child
+  recovery material plus revocation attestations, never a reusable initial root token (§16).
 
-The architecture below is the finalized target. Where this doctrine prescribes behavior the
-worktree does not yet honor, it names the owning sprint; until that sprint lands the statement is
-the intended structure, not a present-tense implementation fact. Adoption is **phase-independent**
-per the development-plan phase-independence doctrine (development_plan_standards.md Standards N /
-O): each surface's adoption closes on its **own** owned-surface sprint once that sprint builds and
-passes local validation (`prodbox dev check`, `test unit`, `test integration cli`/`env`); a proof
-that needs live infrastructure (live AWS spend, a deployed cluster, an unsealed Vault, an
-operator-supplied credential) is tracked separately as a non-blocking `Live-proof: pending` note
-and never gates a sprint's code-owned closure. No earlier phase is blocked by a later phase — a
-`Blocked by` may name only an earlier-or-same-phase sprint or an external prerequisite. See the
-[Development Plan](../../DEVELOPMENT_PLAN/README.md) Closure Status entry for the Vault-root
-finalization and the per-surface owning sprints (`0.13`, `0.14`, `0.15`, `1.35`–`1.38`, `2.26`,
-`3.17`–`3.20`, `4.29`–`4.33`, `5.8`, `7.14`–`7.16`, `8.9`).
+Implementation status, migration order, blockers, and deployment qualification are recorded only
+in the [Development Plan](../../DEVELOPMENT_PLAN/README.md). This doctrine states the required
+Vault contract without maintaining a parallel completion ledger.
 
 ## 2. The fail-closed invariant
 
@@ -120,9 +125,12 @@ The load-bearing requirement of the entire model: **a sealed Vault bricks the cl
 
 Stated as hard architectural invariants — not implementation preferences:
 
-1. **Sole-backend invariant.** Every secret/credential/key/cert is a Vault object. There is no
-   second store and no plaintext fallback. No secret reconstructs from any non-Vault source (§3,
-   §9).
+1. **Operational-backend invariant.** Every post-unseal operational secret source of truth is a
+   Vault object. There is no second plaintext operational store or fallback. Exact cert-manager TLS
+   Secrets are bounded materializations; retained public-edge TLS is Agent-encrypted ciphertext
+   whose DEK is wrapped by retained-home Transit. The password-AEAD Tier-1 prepared/final recovery
+   envelopes and memory-only operator prompt are the only bootstrap exceptions; no workload secret reconstructs
+   from either (§3, §6, §9, §11).
 2. **Dhall invariant.** `prodbox.dhall` never contains a plaintext secret value; sensitive
    fields are `SecretRef.Vault` references only (§3).
 3. **Cluster-metadata-is-secret invariant.** Downstream-cluster names, endpoints, kubeconfigs,
@@ -130,8 +138,10 @@ Stated as hard architectural invariants — not implementation preferences:
    sealed Vault makes them unrecoverable from MinIO, Kubernetes Secrets/ConfigMaps, Pulumi
    backends, logs, or generated files (§9, §13, §16).
 4. **Sealed-state invariant.** When Vault is sealed, no secret resolves, no cert issues, no MinIO
-   object decrypts, no Pulumi op runs, and the gateway daemon and Keycloak fail their readiness
-   gates (§15). There is no degraded mode that leaks.
+   object decrypts, no Pulumi op runs, and every secret-dependent component—including the
+   Lifecycle Authority, its Backup/TLS Adapters and Provider Worker, each Target Secret Agent,
+   Gateway Runtime, and Keycloak—fails its capability gate (§15). There is no degraded mode that
+   leaks.
 5. **MinIO object invariant.** prodbox-owned MinIO objects are ciphertext unless they are
    explicitly public, non-sensitive artifacts (§8, §9).
 6. **Pulumi invariant.** Pulumi cannot preview, update, destroy, or decrypt state while Vault is
@@ -263,11 +273,19 @@ Requirements:
 The cluster is ephemeral; its storage is **not**. Vault KV is therefore as durable across rebuilds
 as any retained PV:
 
-- `vault init` runs **exactly once, ever** — the first time the PV is empty. Root Shamir init uses
-  `secret_shares` / `secret_threshold` and writes the resulting unseal material to the
-  password-AEAD-sealed unlock bundle in the durable MinIO bucket (§6) — not to host disk. Child
-  Transit init uses `recovery_shares` / `recovery_threshold` and writes the resulting recovery keys
-  plus initial root token to the parent's Vault KV (§16). Init is never rerun against existing state.
+- `vault init` runs **exactly once, ever** — the first time the PV is empty. Before root Shamir
+  init, the Broker read-backs a password-AEAD-sealed `PreparedInitEnvelope` containing the generated
+  PGP recovery-recipient private key and exact transaction/storage-generation fingerprints (§6).
+  Root init then uses `secret_shares` / `secret_threshold`, persists and reads back Vault's
+  PGP-encrypted response, and atomically promotes the recovered shares into the final
+  password-AEAD-sealed unlock bundle in durable MinIO — never host disk. Child
+  Transit init uses `recovery_shares` / `recovery_threshold`; its recovery shares and a
+  custody receipt are generation-CAS delivered to the parent's Vault KV (§16). Vault encrypts the
+  initial root token to the compiled/pinned burn public key. Its fingerprint/provenance is audited;
+  prodbox never generates, stores, accepts, or has access to a corresponding private key and never
+  decrypts or uses the token ciphertext.
+  A separate short-lived generate-root session performs first baseline only after custody is durable.
+  Init is never rerun against existing state.
 - Every subsequent `cluster reconcile` redeploys the Vault chart against the existing data and
   only **unseals** it. No re-init, no key regeneration. **A cluster rebuild is not a fresh Vault.**
 
@@ -279,8 +297,8 @@ that cluster teardown never destroys Vault state and `init` never reruns.
 .data/
   prodbox/
     minio/0/                     durable MinIO StatefulSet PV — ciphertext objects only (§9),
-                                 incl. the password-AEAD-sealed unlock bundle at the fixed
-                                 bootstrap key — ROOT cluster only (§6, §6.1, §9)
+                                 incl. the bounded prepared/encrypted-response/final unlock
+                                 transaction — ROOT cluster only (§6, §6.1, §9)
   vault/
     vault/0/                     durable Vault StatefulSet PV, preserved across cluster wipe
 ```
@@ -293,18 +311,45 @@ moving the bundle into MinIO does not change the Vault PV's durability contract.
 ## 6. The unlock bundle (root cluster)
 
 > **Disk-free (in force, Sprint `7.25`).** The bundle lives ONLY in the durable MinIO bucket — host
-> disk holds no Vault recovery material. `vault init` writes it to MinIO (REQUIRED — init fails if the
-> write fails); `vault unseal` reads it from MinIO with no disk fallback; `rotate-unlock-bundle` rewrites
+> disk holds no Vault recovery material. The init transaction reads back its prepared envelope
+> before `/sys/init` and cannot report success until the final bundle is promoted/read back in MinIO;
+> `vault unseal` reads it from MinIO with no disk fallback; `rotate-unlock-bundle` rewrites
 > it in MinIO. A non-secret `.data/prodbox/.cluster-established` marker (not the bundle) is the only
 > on-disk artifact, used solely so the config loader can tell an established cluster from a
 > pre-establishment one without a MinIO read. The live wipe-rebuild proof of this path is a
 > non-blocking 🧪 axis ([DEVELOPMENT_PLAN](../../DEVELOPMENT_PLAN/README.md) Sprint `7.25`).
 
 The root cluster's Vault uses **Shamir** seal mode: the operator is the only one who can unseal
-it. Initialization happens once and produces unseal/recovery keys plus the initial root token.
-prodbox captures that material exactly once and immediately writes it to a password-AEAD-sealed
-**unlock bundle** stored in the **durable MinIO bucket** — not on host disk — then never prints raw
-keys or the root token to logs. (A child cluster's Vault uses `seal "transit"` against its parent
+it. Before initialization, the Broker must make the generated PGP recovery recipient itself
+crash-safe. It password-AEAD-seals a `PreparedInitEnvelope` containing the recipient private key,
+transaction ID, exact empty Vault storage generation/fingerprint, recipient public-key fingerprint,
+burn-recipient fingerprint, and format/version bounds into the bootstrap MinIO namespace. The
+Broker reads back and decrypt-verifies that envelope before it may call `/sys/init`; a public-key
+fingerprint without durable private-key custody is not sufficient preparation.
+
+The binding uses Vault's official init fields: [`pgp_keys`](https://developer.hashicorp.com/vault/api-docs/system/init)
+contains one public key per `secret_shares` output, and
+[`root_token_pgp_key`](https://developer.hashicorp.com/vault/api-docs/system/init) names the burn
+public key for the initial token. The prepared transaction commits the exact ordered public-key
+array and both fingerprints before the API call, so a restart cannot substitute a recipient.
+
+Vault PGP-encrypts every unseal share to that prepared recovery recipient and its initial root token
+to the compiled/pinned burn public key. The Broker verifies its audited fingerprint before init,
+and prodbox never generates, stores, accepts, or accesses a corresponding private key. Before decrypting any share, the Broker
+persists and byte/digest-read-backs the complete encrypted init response under the same transaction
+and storage-generation binding. It then decrypts the shares only in bounded memory, constructs the
+password-AEAD-sealed **unlock bundle**, writes and reads back the candidate, and atomically promotes
+that candidate as the fixed current bundle. Only after the promoted bundle is read back and
+decrypt-verified may the Broker delete the `PreparedInitEnvelope`; deletion itself requires
+authoritative absence read-back. The unusable initial-token ciphertext is never decrypted and may
+be retained only inside the encrypted init-response receipt until its separately fenced GC.
+
+A crash before `/sys/init` resumes the prepared transaction after the operator re-enters the
+password. A crash after a durably captured init response resumes decryption and final-bundle
+promotion from that response and the prepared envelope; it never reruns init. An init that may have
+applied but whose encrypted response was never durably captured is fail-closed ambiguity. It permits
+only the separately defined proven-pristine storage-generation reset path; absent that proof, no
+reset, re-init, or guessed recovery is allowed. (A child cluster's Vault uses `seal "transit"` against its parent
 instead and has no unlock bundle at all; its recovery keys live in the parent's Vault KV — see §16
 and [cluster_federation_doctrine.md](./cluster_federation_doctrine.md). The unlock bundle is
 Tier-1 bootstrap-secret material per [config_doctrine.md §0](./config_doctrine.md), and Tier 1 is
@@ -323,9 +368,11 @@ operator password
      (fixed bootstrap key, NOT a Vault-Transit envelope; §6.1, §9)
 ```
 
-The operator password is the **sole ephemeral secret**: it derives the AEAD key that seals the
-bundle body. The MinIO access credential that fetches the ciphertext is static (§6.1) and is not the
-security boundary. Nothing about the bundle touches host disk.
+The operator password is the **sole operator-memorized bootstrap secret**: it derives the AEAD key
+that seals prepared/final bootstrap bodies. Generated PGP private keys, shares, DEKs, and prompted
+AWS admin bytes may exist transiently only inside their separately bounded one-shot flows; none is
+another memorized or persisted plaintext root. The MinIO access credential that fetches ciphertext
+is static (§6.1) and is not the security boundary. Nothing about the bundle touches host disk.
 
 Conceptual plaintext (before encryption) — the stored bundle object is always ciphertext:
 
@@ -336,16 +383,20 @@ Conceptual plaintext (before encryption) — the stored bundle object is always 
   "created_at": "...",
   "unseal_keys": ["..."],
   "recovery_keys": ["..."],
-  "initial_root_token": "...",
   "format_version": 1
 }
 ```
 
-The bundle backend is pluggable behind a single interface (the password-AEAD-sealed MinIO object
-today; 1Password, pass/gopass, cloud KMS, YubiKey/age identity, or a TPM-backed host secret
-later). The initial root token is bootstrap-only: prodbox creates named admin roles/tokens and
-rotates or revokes the initial root token out of the steady-state admin path (an [open design
-decision](#18-open-design-decisions)).
+The unlock-bundle backend is the password-AEAD-sealed MinIO object. No initial root-token field
+exists. After the share receipt and bundle are durable, the Bootstrap Broker uses the shares to
+generate a distinct short-lived root session, inventories stale root-policy accessors, applies and
+reads back the allowlisted baseline, creates the dedicated Kubernetes-auth provisioner/PKI and
+token-accessor-auditor roles, revokes the session, and proves its accessor absent. Later baseline
+work uses the provisioner role; repair of that role uses the same exclusive generate-root/
+inventory/read-back/revoke protocol. Vault's
+[`operator generate-root`](https://developer.hashicorp.com/vault/docs/commands/operator/generate-root)
+flow encrypts the generated token to an operation-specific PGP recipient; the Broker never requests
+or emits an unprotected generated root token.
 
 ### The unlock chain
 
@@ -355,14 +406,19 @@ CLI unseal prompt, used in memory, and never persisted:
 
 ```text
 operator CLI password
-  -> host CLI posts a bounded bootstrap request to the loopback-restricted prodbox daemon NodePort
-  -> daemon uses the static bootstrap MinIO credential to fetch the password-AEAD-sealed unlock
-     bundle from the durable MinIO bucket over in-cluster Service DNS (fixed key; §6.1, §9)
-  -> daemon Argon2id + ChaCha20-Poly1305 decrypts the bundle body in memory
-  -> daemon recovers the root Vault's unseal/recovery keys (held only inside the bundle)
-  -> daemon submits the unseal keys to Vault over in-cluster Service DNS -> UNSEAL THE ROOT VAULT
-  -> the unsealed root Vault's Transit keys decrypt the in-force config envelope, the gateway
-     state, and the Pulumi backend (§8, §9, §10), and serve as the transit-seal authority that
+  -> host CLI submits secret-free request metadata to the loopback-restricted Broker controller
+  -> controller fences the storage generation and verifies a one-shot unseal worker
+  -> host CLI sends the password only to that Pod over authenticated exec/attach stdin
+  -> one-shot worker uses the static bootstrap MinIO credential to fetch the
+     password-AEAD-sealed unlock bundle over in-cluster Service DNS (fixed key; §6.1, §9)
+  -> worker performs Argon2id + ChaCha20-Poly1305 decryption in bounded memory
+  -> worker recovers the root Vault's unseal/recovery keys only for this request
+  -> worker submits the unseal keys to Vault over in-cluster Service DNS
+     -> UNSEAL THE ROOT VAULT
+  -> worker returns typed read-back, revokes/exits, and is observed absent
+  -> the unsealed root Vault's Transit keys decrypt the Lifecycle Authority's in-force config and
+     checkpoint envelopes and unwrap the Gateway Runtime's local journal key (§8, §9, §10), and
+     serve as the transit-seal authority that
      auto-unseals child clusters (§16)
 ```
 
@@ -370,8 +426,8 @@ The password therefore does **not** encrypt secrets directly — it decrypts the
 holds the root Vault's unseal keys, and an *unsealed Vault* is what decrypts and serves everything
 else. The consequences:
 
-- A **sealed Vault** — no operator password entered this boot — leaves the in-force config, the
-  gateway state, and the Pulumi backend as ciphertext, and leaves every child cluster unable to
+- A **sealed Vault** — no operator password entered this boot — leaves the in-force config,
+  lifecycle checkpoints, and Gateway journal key unavailable, and leaves every child cluster unable to
   auto-unseal, exactly per the fail-closed invariant (§2) and the federation cascade (§16).
 - The password is the only secret the operator memorizes; Vault's actual unseal keys are
   machine-generated and live only inside the encrypted bundle.
@@ -392,10 +448,10 @@ Because the unlock bundle lives in MinIO rather than on host disk (§6), prodbox
 object *before* Vault is unsealed. The credential it uses is the **static MinIO root credential**
 (`Prodbox.Minio.RootCredential`), NOT a password-derived value (operator decision 2026-06-22):
 
-- The MinIO access credential is **not** the security boundary. The daemon bootstrap path uses it
+- The MinIO access credential is **not** the security boundary. The Bootstrap Broker uses it
   from inside the cluster through the `minio.prodbox.svc.cluster.local` Service rather than from a
-  host-side `kubectl port-forward`. The unlock-bundle body is
-  **password-AEAD-sealed** (Argon2id + ChaCha20-Poly1305), so reading its ciphertext is useless
+  host-side `kubectl port-forward`. The prepared/final bootstrap bodies are
+  **password-AEAD-sealed** (Argon2id + ChaCha20-Poly1305), so reading their ciphertext is useless
   without the operator password; and every Tier-2 operational object is a **Vault-Transit envelope**,
   useless without an unsealed Vault. The access credential only gates ciphertext access; it does
   not grant unseal authority.
@@ -405,20 +461,20 @@ object *before* Vault is unsealed. The credential it uses is the **static MinIO 
 - Deriving a key-value pair from a human-memorized password (Argon2id) to gate that ciphertext access
   added machinery without adding real security, so it is removed.
 
-The operator password remains the sole ephemeral secret (§6): it is the AEAD key for the bundle body
-(the thing that actually protects the unseal material), nothing more.
+The operator password remains the sole operator-memorized bootstrap secret (§6): it is the AEAD key
+for prepared/final bootstrap bodies (the thing that actually protects the share-recipient and
+unseal material), nothing more.
 
 **Bootstrap reorder.** Reaching the bundle before unseal means **MinIO must be reachable before
 Vault unseal**, which inverts the historical `cluster reconcile` ordering (Vault first, then
 MinIO; §7). The reconcile sequence therefore brings MinIO up to a bootstrap-readable state ahead
-of the unseal step, then proceeds with Vault deploy → daemon deploy → init-if-empty →
-fetch+decrypt the unlock bundle → unseal. Sprint `2.29` implements the daemon-side endpoint that
-performs the fetch/decrypt/unseal/reconcile work inside the loopback-restricted `prodbox` daemon
-rather than requiring that work to run in the host process. Sprint `4.42` routes root `cluster
-reconcile` and post-bootstrap `prodbox vault ...` lifecycle leaves through that endpoint and its
-authenticated sibling routes. Remaining direct host transports are explicit test seams or Phase `7`
-object-store/Pulumi residue tracked under
-[DEVELOPMENT_PLAN/legacy-tracking-for-deletion.md](../../DEVELOPMENT_PLAN/legacy-tracking-for-deletion.md).
+of the unseal step, then proceeds with Vault deploy → Bootstrap Broker deploy → init-if-empty →
+prepare/read back init custody → capture/read back the encrypted init response → atomically promote
+the final unlock bundle → fetch/decrypt that bundle → unseal. The broker exposes only the bounded bootstrap request
+algebra; it is not a generic Vault, MinIO, lifecycle, target-secret, peer, or DNS proxy. Direct host
+bootstrap transport and Gateway Runtime bootstrap routes are unsupported fallbacks. Service
+identity, capability binding, and failure-domain ownership are canonical in
+[Lifecycle Control-Plane Architecture](./lifecycle_control_plane_architecture.md).
 
 **Child clusters take none of this.** A child Vault uses transit-seal and auto-unseals against its
 parent (§16); it has no unlock bundle, no bootstrap MinIO credential, and no password prompt — its
@@ -442,35 +498,47 @@ prodbox vault pki issue-test-cert
 ```
 
 - `vault init` is the operator-facing init-if-empty surface. The host CLI reaches the
-  loopback-restricted `prodbox` daemon NodePort; the daemon connects to Vault over in-cluster
-  Service DNS, returns success unchanged if already initialized (init-once; §5),
-  otherwise initializes Vault, captures unseal/recovery keys and the initial root token exactly
-  once, writes the encrypted unlock bundle (root) or stores them in the parent's Vault KV (child;
-  §16), and prints no raw key material (an optional `--show-sensitive-once` operator-confirmed flag
-  may display it once).
+  loopback-restricted Bootstrap Broker controller with secret-free metadata; the controller returns
+  success unchanged if already initialized (init-once; §5), otherwise fences and verifies a
+  one-shot initialization worker. The CLI sends the password directly to that Pod over
+  authenticated exec/attach stdin. The worker connects to Vault over in-cluster Service DNS and
+  runs the prepared-init/encrypted-receipt protocol: the initial token is encrypted to
+  the burn recipient, the password-AEAD `PreparedInitEnvelope` is read back before the init call,
+  Vault's PGP-encrypted response is durably read back, and the final password-AEAD unlock bundle is
+  atomically promoted/read back before the prepared envelope is deleted/read back absent (root).
+  Child recovery material is generation-CAS delivered to parent Vault KV (§16). Only then does a
+  separate PGP-protected short-lived root session establish/read back the baseline and revoke. It
+  prints no raw key material.
 - `vault unseal` is the operator-facing unseal surface. The host CLI prompts for the bundle password
-  unless the test harness supplies it, posts it to the daemon bootstrap endpoint over the
-  loopback-restricted NodePort, and the daemon reads the unlock bundle from MinIO via in-cluster
-  Service DNS, decrypts in memory, submits unseal keys to Vault via in-cluster Service DNS,
-  verifies Vault is unsealed, and clears sensitive material from process memory where practical.
-  Plaintext unseal keys are never persisted. A child cluster auto-unseals against its parent's
-  transit key with no human prompt (§16).
-- `vault reconcile` requires Vault initialized and unsealed, then idempotently reconciles auth
+  unless the test harness supplies it, submits secret-free metadata to the Broker controller, then
+  sends password bytes only to its newly verified one-shot unseal worker over authenticated
+  exec/attach stdin. The worker reads the unlock bundle from MinIO via in-cluster Service DNS,
+  decrypts in bounded memory, submits unseal keys to Vault via in-cluster Service DNS, verifies
+  Vault is unsealed, returns a typed receipt, revokes/exits, and is observed absent. The controller
+  never receives password/share bytes. Plaintext unseal keys are never persisted. A child cluster
+  auto-unseals against its parent's transit key with no human prompt (§16).
+- `vault reconcile` binds the exact Bootstrap Broker `VaultBaselineReconcile` capability. It
+  requires Vault initialized and unsealed, then idempotently reconciles auth
   mounts, policies, roles, KV mounts, Transit keys, PKI mounts and issuers, Kubernetes
   service-account auth for in-cluster workloads, the MinIO bucket encryption policy metadata, and
   the Pulumi encryption configuration. It is safe to run on every cluster spin-up.
-  The daemon-mediated native foundation applies the baseline `secret` KV v2 / Transit / PKI mounts,
-  Kubernetes auth, per-domain Transit keys, and baseline policies/roles through
-  `Prodbox.Vault.Reconcile`; it also wires unlock-bundle re-encryption, Transit-key rotation, PKI
-  mount status, and a PKI test-issue call against the later-configured `prodbox-test` role.
+  The bounded Vault reconciliation interpreter applies the baseline `secret` KV v2 / Transit / PKI
+  mounts, Kubernetes auth, per-domain Transit keys, and baseline policies/roles through
+  `Prodbox.Vault.Reconcile`. It is not a Gateway Runtime or host-root-token route. Normal runs use
+  the dedicated provisioner Kubernetes-auth role; generated first-baseline/break-glass root
+  sessions are bounded, stale-root accessors are reconciled first, and each current accessor is
+  revoked and observed absent inside the Broker transaction.
   Chart-by-chart Vault-auth adoption, PKI issuer generation, and child-custody workflows land in
   their owning later sprints (§12, §16, §18).
 
-Lifecycle integration into `prodbox cluster reconcile` is split by cluster role: Sprint `4.29`
+**Historical implementation record.** Lifecycle integration into `prodbox cluster reconcile` was
+split by cluster role: Sprint `4.29`
 lands the root/local deploy, init-if-empty, unseal, and policy reconcile sequence; Sprint `4.32`
 adds the child-cluster Transit-seal branch, parent-readiness fail-closed cascade, parent-custodied
 child init write, and post-MinIO settings reload through the child root token stored in the parent
-KV.
+KV. The target removes that stored-token reuse: initialization burns the initial token without ever
+decrypting it, parent custody retains encrypted recovery material only, config reads use Lifecycle
+Authority, and a separate inventoried short-lived root session exists only after durable custody.
 
 Because the root unseal step now fetches the unlock bundle from MinIO (§6, §6.1), MinIO must be
 bootstrap-readable **before** Vault unseal — the bootstrap reorder of §6.1, using the static MinIO
@@ -482,19 +550,34 @@ prodbox cluster reconcile
   -> reconcile RKE2 + retained PV layer
   -> deploy/rebind MinIO to a bootstrap-readable state (durable bucket present; §6.1)
   -> deploy/rebind Vault on its durable PV
-  -> deploy/rebind the prodbox daemon and its loopback-restricted NodePort in pre-Vault mode
-  -> host CLI posts one bootstrap request to the daemon
-  -> daemon performs vault init-if-empty (init-once; §5)
-  -> daemon performs vault unseal
+  -> deploy/rebind the Bootstrap Broker and its loopback-restricted capability
+  -> host CLI submits secret-free init metadata; controller fences/verifies one-shot init worker
+  -> host sends prompt directly to worker; worker performs vault init-if-empty (init-once; §5)
+       (root: read back PreparedInitEnvelope; call /sys/init with committed pgp_keys and
+        root_token_pgp_key; persist/read back encrypted response; atomically promote/read back
+        final bundle; delete/read back prepared envelope. child: parent-custodied init, §16)
+  -> controller fences/verifies a distinct one-shot unseal worker; host sends prompt directly
+  -> unseal worker performs vault unseal
        (root: fetch fixed-key unlock bundle from MinIO via Service DNS with the static bootstrap
         MinIO credential, password-AEAD-decrypt with the operator password, submit unseal keys to
         Vault via Service DNS; §6.1.
         child: auto-unseal from parent, §16)
-  -> daemon performs vault reconcile
+  -> workers revoke/exit and are observed absent; Broker runs bounded Vault baseline reconcile
   -> finish MinIO reconcile (steady-state root creds now resolvable; ensure the `prodbox-state`
      object-store bucket and its Vault-Transit encryption path)
-  -> fetch + decrypt the in-force config from the MinIO SSoT (or seed it on first bring-up; §16)
-  -> reconcile charts that depend on Vault
+  -> deploy home Target Secret Agent, Lifecycle Authority, Authority Backup Adapter, and the
+     physically separate Provider Worker; Authority starts GenesisFrozen on first bring-up
+  -> EstablishAuthorityBackup through signed GenesisBackupPermit, attested Credential Provisioner,
+     direct home-Agent seal/read-back, and Backup Adapter S3 copy/read-back
+  -> permanently disable genesis; retain the prompt session only under the exact AWS plan cursor;
+     open normal admission; accept one visible generation-CAS config seed proposal on first bring-up
+  -> issue schema-indexed AWS-admin OperatorMaterialPermits for remaining exact identities;
+     final plan receipt forces session revocation and Job/Pod absence
+  -> derive SMTP source in Provisioner memory and seal/read back retained-home custody; use a
+     separate external-EAB Job/frame to seal/read back EAB custody
+  -> deploy TLS Retention Adapter and each additional substrate Target Secret Agent; rewrap current
+     SMTP/EAB custody receipts to each selected target and read back its generation
+  -> deploy the Gateway Runtime and reconcile charts that depend on Vault
 ```
 
 A sealed or unreachable Vault is surfaced as a first-class cluster status, never hidden:
@@ -504,7 +587,9 @@ Vault: initialized, sealed
 MinIO: reachable, encrypted objects present
 In-force config: unavailable; Vault sealed
 Pulumi backend: unavailable; Vault sealed
-Gateway daemon: waiting for Vault
+Lifecycle Authority: blocked by Vault
+Target Secret Agent: blocked by Vault
+Gateway Runtime: blocked by Vault
 Keycloak: blocked by Vault
 Ingress TLS: blocked by Vault
 ```
@@ -549,15 +634,18 @@ Transit keys are split by blast-radius domain so a leaked decrypt grant is conta
 
 ```text
 transit/prodbox-active-config
-transit/prodbox-gateway-state
+transit/prodbox-gateway-journal-wrap
 transit/prodbox-pulumi-state
 transit/prodbox-minio-envelope
 transit/prodbox-downstream-cluster-config
 ```
 
-Least-privilege policy: the gateway daemon decrypts only the in-force config and gateway state it
-needs; the Pulumi runner decrypts only Pulumi backend state; the host CLI may reconcile and rotate
-keys; application workloads use only their assigned Transit keys. The
+Least-privilege policy: the Gateway Runtime may unwrap only its identity-bound local journal key
+and reads a role-scoped config projection from Lifecycle Authority; the Lifecycle Authority uses
+only active-config and lifecycle aggregate/checkpoint keys; the fenced provider worker receives no
+generic Transit grant; the Bootstrap Broker accepts only bounded key-rotation requests; application workloads use
+only their assigned Transit keys. The host CLI holds typed capability references and never receives
+a generic decrypt grant. The
 `prodbox-downstream-cluster-config` key and its policy gate a parent cluster's custody of child
 clusters (§16).
 
@@ -573,21 +661,23 @@ prodbox's MinIO store is a secret-bearing state store fronted by one application
 object-store** (the §8 envelope layer). MinIO itself is just object storage; its
 own root credentials come from Vault KV (§5, §13). Every prodbox-owned object is ciphertext (a §8
 envelope) unless it is an explicitly public, non-sensitive artifact. Secret-bearing objects
-include the in-force cluster configuration, the gateway state, downstream cluster configuration
+include the in-force cluster configuration, Lifecycle Authority state, downstream cluster configuration
 and custody material, Pulumi state and history, generated manifests carrying secret references
 plus sensitive topology, bootstrap records, and reconciliation checkpoints that reveal managed
-resources. There is **no `master-seed` object** — the HMAC-derivation model is retired (Sprint
+resources. Gateway emitter continuity is instead an encrypted identity-bound local journal and is
+not a MinIO object. There is **no `master-seed` object** — the HMAC-derivation model is retired (Sprint
 `3.19`; §1).
 
-The same durable bucket also holds the **root cluster's password-AEAD-sealed unlock bundle** (§6,
-§6.1). This object is the single, deliberate exception to the opaque-name + Vault-Transit rules
-below: it is the Tier-1 bootstrap secret that *unseals* Vault, so it cannot be a Vault-Transit
-Tier-2 envelope and cannot hide behind a Vault-keyed-HMAC name a sealed Vault could not compute.
-It is sealed under the operator password (Argon2id + ChaCha20-Poly1305; §6) and stored at a
-**fixed, well-known bootstrap key** so the §6.1 bootstrap credential can find it pre-unseal. Its
-discoverability and password-AEAD sealing are intentional and do not weaken the fail-closed
-invariant — its body still requires the operator password, and the operational Tier-2 objects
-below remain opaque-named and Vault-gated. Child clusters carry no such object (Tier 1 is
+The same durable bucket also holds the root cluster's **bounded bootstrap transaction** (§6,
+§6.1): the password-AEAD `PreparedInitEnvelope` while init is unfinished, Vault's PGP-encrypted init
+response receipt, and the promoted password-AEAD unlock bundle. These fixed bootstrap keys are the
+deliberate exception to the opaque-name + Vault-Transit rules below: Tier 1 establishes and
+*unseals* Vault, so it cannot be a Vault-Transit Tier-2 envelope or hide behind a Vault-keyed-HMAC
+name a sealed Vault could not compute. Secret-bearing prepared/final bodies are sealed under the
+operator password (Argon2id + ChaCha20-Poly1305; §6), and the response contains only Vault PGP/
+burn-recipient ciphertext. Their discoverability is intentional and does not weaken the fail-closed
+invariant; operational Tier-2 objects remain opaque-named and Vault-gated. Child clusters carry no
+such objects (Tier 1 is
 root-only; [config_doctrine.md §0](./config_doctrine.md)).
 
 The encryption strategy is **Model B**: a single prodbox application-level layer that envelopes
@@ -607,11 +697,11 @@ Sprint `4.30` implements the shared layer and routes the in-force config read th
    the object's logical name (deterministic, directly addressable, and index-loss tolerant); the
    MAC key lives in Vault KV, so a sealed Vault cannot recompute or invert the mapping from a
    logical name to its `objects/<id>.enc` path. The name therefore carries no signal — not the
-   object's role, not a downstream cluster, not a Pulumi stack identity. The **one exception** is
-   the root unlock bundle (§6.1): it sits at a fixed, well-known bootstrap key (not HMAC-opaque)
-   precisely because it must be findable while Vault is sealed — and it is decoy-padding-counted
-   as part of the constant-count pool (rule 5) so its presence reveals nothing beyond "this is the
-   root cluster".
+   object's role, not a downstream cluster, not a Pulumi stack identity. The bounded **root
+   bootstrap-key family** (§6.1) is the exception: its prepared/response/final coordinates are
+   fixed (not HMAC-opaque) because they must be findable while Vault is sealed. Those slots are
+   decoy-padding-counted as part of the constant-count pool (rule 5), so their presence reveals
+   nothing beyond "this is the root cluster" and cannot reveal whether initialization is unfinished.
 3. **Vault-encrypted indexes.** The id↔logical map lives in `indexes/*.enc`, themselves §8
    envelopes. A sealed Vault reveals only the opaque IDs; the logical meaning behind each ID is
    recoverable only once Vault is unsealed and policy allows the read.
@@ -643,42 +733,53 @@ Pulumi role. The registry's public image layers stay a separate, non-secret stor
 not enveloped. The Sprint `7.14` interposition makes Pulumi see only a scratch `file://` backend on
 main stack cycles; persistent checkpoints are opaque `objects/<id>.enc` Model-B objects.
 
-**One object-store, daemon-owned after bootstrap.** The pure envelope / HMAC-naming / index / decoy
-layer is **shared and identical** across accessors, but the target steady-state host boundary is the
-loopback-restricted daemon API. After the daemon is up, host operations ask the daemon to perform
-MinIO/Vault work in-cluster instead of opening ad-hoc host transports. The accessors differ only in
-how each binds its Vault-auth `DekCipher` and its MinIO transport:
+**One encrypted object format, capability-owned access.** The envelope, HMAC-naming, index, and
+decoy codec is shared pure code; it is not a generic network proxy and does not make one service
+authoritative for every object. Each independently deployed capability binds a native MinIO client
+and only the Vault policy, logical coordinates, and operations assigned to that service identity:
 
-- the **host CLI** is an operator UI and bootstrap launcher; Sprint `4.42` removed the supported
-  root-lifecycle direct transport after daemon bootstrap, and Sprint `7.30` removed the supported
-  Pulumi object-store direct transport. Any remaining direct root-token `DekCipher` plus MinIO
-  port-forward transport is explicit legacy/config/test seam residue tracked in the cleanup ledger.
-  Sprint `5.14` pins this boundary in the
-  canonical suite through `prodbox test integration daemon-bootstrap`, whose oracle rejects legacy
-  host MinIO port-forwards, direct host Vault NodePort calls, and host root-token fallback traces;
-- the **gateway daemon** binds a Transit `DekCipher` via Vault **Kubernetes auth** (scoped reads)
-  and reaches MinIO over the in-cluster MinIO Service DNS
-  (`minio.prodbox.svc.cluster.local`).
+- the **Bootstrap Broker** can access only the fixed bounded bootstrap transaction: prepared
+  password-AEAD init envelope, Vault-encrypted init response receipt, and current password-AEAD
+  unlock bundle. It exposes no Tier-2 object-store API;
+- the **Lifecycle Authority** owns the one bounded mutable authority/config CAS aggregate plus
+  immutable content-addressed config and checkpoint blobs. Its Transit/HMAC/MinIO identity cannot read gateway journals,
+  arbitrary Vault KV, or another substrate's target secrets;
+- the **fenced Provider Worker** opens only Authority-selected checkpoint blobs into RAM-tmpfs and
+  reads only `secret/aws/lifecycle-provider` for the exact committed provider intent. It cannot
+  use a backup/TLS/DNS credential or perform genesis/admin actions;
+- the **Authority Backup Adapter** has no MinIO authority and cannot decrypt logical state. It alone
+  reads `secret/aws/authority-backup-store` and writes/read-backs exact ciphertext copies at the
+  registered S3 coordinate, returning typed receipts to core Authority;
+- the **TLS Retention Adapter** receives only bounded TLS envelope ciphertext from Authority. It
+  alone reads `secret/aws/tls-retention-store` and may address only the registered
+  `public-edge-tls/<substrate>/<fqdn>` prefixes; it has no Transit, plaintext-TLS, provider, or
+  Authority-backup access;
+- the **Target Secret Agent** has no MinIO authority. It performs only allowlisted,
+  generation-checked Vault KV read/CAS/read-back for its substrate. Independently scoped one-shot
+  workers own any plaintext-bearing seal/materialize step and exact TLS Secret RBAC; only the home
+  Agent has the separately queued `transit/keys/prodbox-tls-envelope` lane;
+- the **Gateway Runtime** has no MinIO, lifecycle CAS, checkpoint, bootstrap, config-blob, or
+  target-secret authority. It consumes a role-scoped config projection and an encrypted local
+  identity-bound journal whose key-wrap policy cannot be used as a general object-store route;
+- the **host CLI** binds opaque typed clients to those capabilities. It does not recover a root
+  token, open a steady-state MinIO port-forward, or fall back to a Gateway Runtime route after a
+  capability failure.
 
-Post-`3.19` the master seed is gone and the current gateway daemon has no durable MinIO state
-writer left to migrate in Sprint `4.30`. A daemon-side durable read or write uses this same
-`Prodbox.Minio.EncryptedObject` layer. Either accessor recovers a logical object **only** when
-Vault is unsealed and policy allows it (Sprints `3.17`, `1.38`, `4.30`):
-authenticate to Vault, ask Transit to unwrap the DEK, decrypt. Sealed Vault therefore means
-nothing about the cluster's setup or its child clusters is determinable beyond the unencrypted
-basics (§16). The operator unlock-bundle password is the ephemeral root that gates all of this —
-see [The unlock chain](#the-unlock-chain).
+A permitted accessor recovers a logical Tier-2 object only while Vault is unsealed and its policy
+allows the exact coordinate: authenticate with the service identity, ask Transit to unwrap the DEK,
+then decrypt. Sealed Vault therefore reveals nothing about cluster setup or child clusters beyond
+the unencrypted basics (§16). The operator unlock-bundle password remains the ephemeral root that
+gates the pre-unseal exception; see [The unlock chain](#the-unlock-chain). Physical service,
+client-binding, and failure-domain ownership are defined in
+[Lifecycle Control-Plane Architecture](./lifecycle_control_plane_architecture.md).
 
 Two transit/residency hardening rules apply to secret-bearing transfers. **In transit:**
-secret-bearing transfers to and from MinIO use TLS; the daemon↔MinIO hop is plaintext HTTP today
-(`http://minio.prodbox.svc.cluster.local:9000`), so adding MinIO TLS is a scheduled hardening item
-(Sprint `3.17`). **At rest on the host:** no recovered plaintext secret lands on a
-physical-disk-backed file. Two rungs achieve this (Sprint `3.17`): minimally, the daemon's scratch
-file is backed by a RAM-only Kubernetes `emptyDir{medium: Memory}` tmpfs mount (e.g.
-`/run/prodbox-secret`, with a small `sizeLimit`) so the get/put transits RAM rather than the
-container overlay — valid as long as node swap is off, which the kubelet requires; ideally, the
-daemon drops the CLI file handoff for a native in-process S3 path that keeps recovered plaintext
-only in scrubbed memory (no file and no child process at all).
+secret-bearing transfers to and from MinIO use TLS; a service-to-MinIO plaintext HTTP hop such as
+`http://minio.prodbox.svc.cluster.local:9000` is nonconforming, even inside the cluster.
+**At rest on the host:** no recovered plaintext secret lands on a
+physical-disk-backed file. A boundary that must materialize bytes uses a small RAM-only Kubernetes
+`emptyDir{medium: Memory}` or equivalent tmpfs; native clients keep plaintext in bounded, scrubbed
+memory and never hand it through a physical-disk-backed file.
 
 ### Whole-system zero-child-info
 
@@ -742,8 +843,8 @@ Run: prodbox vault unseal
 ### Decrypt-to-scratch interposition
 
 The mechanism is **decrypt-to-scratch interposition**, applied uniformly to every Pulumi backend.
-Pulumi never touches MinIO directly. For each operation, prodbox brackets the run
-(`Prodbox.Pulumi.EncryptedBackend.withDecryptedStack`, Sprint `7.14`):
+Pulumi never touches MinIO directly. For one provider mutation, the fenced provider worker opens a
+bounded scratch scope (`Prodbox.Pulumi.EncryptedBackend.withDecryptedStack`):
 
 1. **Gate** on unsealed Vault (the readiness check above).
 2. **Decrypt** — `getLogical (LogicalPulumiStack <id>)` through the §9 object-store, hydrating the
@@ -755,6 +856,10 @@ Pulumi never touches MinIO directly. For each operation, prodbox brackets the ru
 4. **Re-envelope** — `putLogical` the resulting checkpoint back through the object-store, so it
    returns to MinIO as an opaque-named §8 envelope (`objects/<hmac>.enc`).
 5. **Shred** the scratch.
+
+This local scratch scope encloses only one provider invocation. It is not the lifecycle operation,
+does not remain open during semantic propagation or target delivery, and does not provide fencing
+outside the Lifecycle Authority aggregate.
 
 Because Pulumi only ever sees the RAM-tmpfs `file://` view, the MinIO PV holds opaque ciphertext
 **even mid-run** — there is no window in which a plaintext, stack-named, or unencrypted backend
@@ -777,56 +882,70 @@ Two distinct layers protect a Pulumi operation, and they are not the same concer
    `objects/<hmac>.enc` name via the shared object-store, so the stack identity and body are both
    sealed-opaque.
 
-Current Sprint `7.14` implementation status: the checkpoint layer is active for main per-run stack
-cycles (`aws-eks`, `aws-eks-subzone`, `aws-test`), the main long-lived `aws-ses` reconcile/destroy
-paths, and production stack residue/output reads. Runtime AWS provider credentials require the Vault
-KV object at `secret/gateway/gateway/aws` through `Prodbox.Infra.AwsProviderCredentials`; the
-Pulumi provider path has no raw config fallback. The generated operational `aws.*` schema field
-carries a mandatory `SecretRef.Vault` reference (never the plaintext key); the elevated/admin
-credential never enters config at all — it is supplied through the interactive `SecretRef.Prompt`
-arm and discarded after use (the test harness simulates that prompt from the
-`aws_admin_for_test_simulation.*` `TestPlaintext` fixture in `test-secrets.dhall`, not from a
-production config section). Setup/config-setup mint the dedicated least-privilege `prodbox`
-identity using the prompted elevated credential, install its account-qualified policy, reconcile
-the exact-trust `prodbox-ses-lease-session` role when the complete SES scope is configured, and
-write the generated operational provider keys straight into `secret/gateway/gateway/aws`.
-Teardown deletes the role before the trusted user and clears that Vault object without writing
-provider secrets to `prodbox.dhall`. For canonical `aws-ses reconcile`, the resolved operational
-credential is only an AssumeRole source: each lease stage receives a separately bounded fixed-role
-session, while explicit destroy/migration/nuke remain admin-authorized.
-First-touch deletion/import of pre-existing raw Pulumi checkpoint layouts is code-owned: the per-run raw
-backend environment is confined to `LegacyPulumiBackend` first-touch export/delete, while supported
-Pulumi actions receive provider-only input before `fileBackendEnvironment` rewrites the backend to
-scratch `file://`. Sprint `7.14` is closed on this supported wrapper path; any live legacy
-first-touch migration remains a non-blocking compatibility proof. The legacy
-`aws-ses migrate-backend` command is now wrapper-backed as well: it opens the encrypted scratch
-backend and relies on first-touch migration to import/delete the old long-lived S3 checkpoint when
-encrypted state is absent, instead of running raw MinIO-to-S3 `pulumi stack export` /
-`pulumi stack import`.
+Runtime AWS identities are split. The fenced provider worker reads only
+`secret/aws/lifecycle-provider` and may assume only the operation-specific role named by a
+committed intent. The separate Backup Adapter alone reads
+`secret/aws/authority-backup-store`; its LongLived identity reaches only the opaque backup prefix.
+The TLS Retention Adapter alone reads `secret/aws/tls-retention-store`; its LongLived identity
+reaches only exact registered TLS prefixes. Gateway DNS reads only `secret/aws/gateway-dns`, and
+cert-manager on each substrate reads only `secret/aws/cert-manager/<substrate>/dns01`. Authority
+backup, TLS retention, home Gateway-DNS, and home DNS01 are `LongLived`; Lifecycle-provider and AWS
+DNS01 are `Operational` and are removed only after their dependants are absent. These paths have
+distinct IAM resources, Vault policies, generations, consumers, and cleanup nodes. The shared
+operational `aws.*` field and `secret/gateway/gateway/aws` path are pre-cutover legacy and have no
+target consumer. There is no raw-config or cross-role fallback. Elevated/admin bytes enter a
+mode-indexed Credential Provisioner, an explicit Admin Action Runner, or the post-export
+Decommission Runner only through a separate linear `SecretRef.Prompt` ingress; they are never a
+capability-program field or persisted value. Tests may simulate that prompt only with
+`aws_admin_for_test_simulation.*` in `test-secrets.dhall`.
 
-The target treatment is still **uniform**: per-run backends and the long-lived `aws-ses` backend go
-through the same enveloped, opaque-named object-store. There is no AES256-SSE-only carve-out for the
+For canonical `aws-ses` work, the Lifecycle-provider bootstrap credential is only an AssumeRole source for
+the exact-trust `prodbox-ses-lease-session` role. The fenced provider worker receives a session
+bounded by one narrow non-credential SES identity/DKIM/receipt-rule/S3 provider mutation and the
+absolute operation deadline. It has no SMTP IAM identity/policy/key authority. Schema-indexed
+Credential Provisioner owns SMTP identity/policy/key install/rotate/remint and repair-time delete,
+derives `SesSmtpSource` from the one-time IAM secret in bounded memory, and sends only that closed
+source to retained-home custody. Semantic readiness and target delivery hold neither session.
+Exact `DestroyAwsSes` uses Admin Action Runner for registered terminal SES/S3 plus SMTP deletion;
+migration/nuke remain separately admin-authorized according to lifecycle doctrine.
+
+First-touch import of a legacy raw checkpoint is confined to a compatibility interpreter. After
+import, the provider worker sees only scratch `file://` state; it writes an immutable encrypted
+checkpoint blob, and the Lifecycle Authority makes that blob current only by CAS-committing its
+digest in the one authority aggregate. A lost response cannot make the scratch directory or blob
+authoritative: recovery observes the durable operation ID, aggregate version, referenced digest,
+and provider state before deciding whether to resume.
+
+SES cutover additionally renders a new non-credential-only checkpoint and commits its custody and
+target receipts before current projection drops all historical SMTP key outputs. Old immutable
+primary and backup checkpoint/history blobs become retired, not current. Fenced GC may destroy and
+read back both copies only after the rollback window and complete primary/backup no-reference scans;
+replacement or elapsed time alone is insufficient.
+
+The target treatment is still **uniform**: per-run and `aws-ses` checkpoints have primary opaque
+MinIO bytes and mandatory exact S3 backup copies read back before promotion. Optional S3 first-touch
+is legacy import only. There is no AES256-SSE-only carve-out for the
 long-lived backend — a sealed Vault yields opaque holds uniformly across every backend. The
 operator unlock-bundle password is the ephemeral root that gates the decrypt — see
 [The unlock chain](#the-unlock-chain).
 
-Uniform encryption does not mean ambient endpoint selection. The cross-substrate `aws-ses`
-checkpoint and its reconciliation lease are addressed through an explicit
-`LongLivedCheckpointAuthority`: the retained home/control-plane gateway, `prodbox-state`, and that
-control plane's Vault Transit/HMAC keyspace. A per-run EKS or other selected target gateway can
-never become the long-lived checkpoint authority merely because it is the active kube context or
-port-forward. SMTP materialization is a separate `TargetClusterSecretSink` effect: after the
-retained authority has reconciled/read the stack, the plan writes the resulting SMTP KV fields into
-the explicitly selected substrate's Vault. Sprint `4.47` completes the unrelated authority/sink
-coordinate types, retained-gateway opaque-CAS adapter, lease and successor recovery, fenced
-checkpoint, target intents, fixed-role stage sessions, and guarded SMTP materialization in the
-canonical reconcile command. Sprint `5.17` consumes that command in capability-derived preparation
-for the explicit home or EKS target. Sprint `8.10` inserts provider-then-semantic bounded readiness
-before target-Vault materialization: control-plane observations use the lease-scoped role, the
-capture-canary list/get uses the operational credential, and no SMTP KV write is admitted for
-Pending, Failed, Unobservable, or timeout. Timeout leaves the long-lived SES resources retained and
-the next idempotent run may continue convergence. See status in
-[the development plan](../../DEVELOPMENT_PLAN/README.md#current-plan-status).
+Uniform encryption does not mean ambient endpoint selection. The retained home/control-plane
+Lifecycle Authority owns the long-lived `aws-ses` aggregate and checkpoint-blob namespace in
+`prodbox-state`; no Gateway Runtime, active kube context, or port-forward can become that authority.
+The authority commits provider revision, semantic readiness, and the current retained-home SMTP
+custody receipt before it commits a bounded target-delivery outbox. A home one-shot custody worker
+rewraps only that exact receipt to a newly attested selected-Agent worker; the selected substrate's
+Agent alone may perform the allowlisted, generation-checked SMTP KV CAS and mandatory read-back. It
+has no checkpoint, provider, or global fence authority. The same closed flow restores SMTP into a
+fresh AWS Vault/EBS without IAM remint or admin re-prompt.
+
+Provider mutation and credential rotation use separate narrow fences; the 5–30 minute semantic
+readiness wait and target delivery hold neither fence. Operation state and outbox are durable and
+identified by `OperationId`, so applied-but-response-lost work is recovered by re-observation rather
+than a second synchronous bracket. Detailed lifecycle transitions belong to
+[Lifecycle Reconciliation Doctrine](./lifecycle_reconciliation_doctrine.md); physical component
+placement belongs to
+[Lifecycle Control-Plane Architecture](./lifecycle_control_plane_architecture.md).
 
 ## 11. TLS and PKI under Vault
 
@@ -835,7 +954,42 @@ keeping the single-issuer + S3 retain-restore contract of
 [acme_provider_guide.md](./acme_provider_guide.md) and
 [envoy_gateway_edge_doctrine.md](./envoy_gateway_edge_doctrine.md).
 
-**Landed (Sprint `7.15`, config-owned surface):**
+Public-edge issuance remains cert-manager/ZeroSSL-owned, but retention has an independent custody
+path. The selected substrate's Target Secret Agent starts a one-shot worker with RBAC for the exact
+TLS Secret, validates the certificate/key pair, and encrypts those bytes locally. A distinct
+one-shot lane in the retained home Agent obtains a fresh data key from the non-exportable
+`transit/keys/prodbox-tls-envelope` key and encrypts that data key to the selected worker's attested
+ephemeral public key. Authority transports only bounded ciphertext, the home-Transit-wrapped data
+key, validated metadata, and ciphertext digests. The TLS Retention Adapter writes/read-backs that
+exact envelope at `public-edge-tls/<substrate>/<fqdn>` and never sees certificate plaintext, private
+key plaintext, a plaintext DEK, or a Transit token. This retained-home wrapping lane is why an AWS
+Vault/EBS teardown does not destroy the ability to restore an AWS-substrate certificate.
+
+Restore precedes issuance. The Adapter returns only flat present/positively-absent/corrupt/digest-
+mismatch/unobservable observations; a pure decision classifies present validity against trusted
+Authority time and its uncertainty interval. Only positive absence or proven expiry may permit a
+separate issuance intent. Not-yet-valid, boundary-ambiguous, regressed/unobservable time, corrupt,
+identity-mismatched, rollback, or unobservable Secret/S3/Transit state fails closed and cannot be
+collapsed to absence. TLS-retention credentials and exact
+registered object versions are `LongLived`. Deleting TLS retention removes only those registered
+prefix objects/versions and the TLS identity/policy. It never deletes the shared bucket; bucket
+deletion is the final Authority-backup decommission tail after every registered prefix is proved
+absent. The complete state machine and one-shot-worker placement are owned by
+[Lifecycle Control-Plane Architecture](./lifecycle_control_plane_architecture.md).
+
+In the target path, ACME EAB install/rotation/revocation is an `OperatorMaterialRequest` whose
+`ExternalAcmeEabIngress` is distinct from AWS-admin input. The retained home Agent Transit-seals and
+reads back the closed EAB custody source; later one-shot workers rewrap that exact current receipt
+to each attested selected Agent, which performs the allowlisted `secret/acme/eab` generation CAS and
+read-back. Lifecycle Authority persists only custody/target ciphertext digests, opaque Agent/Vault
+keyed-HMAC commitment references, generations, and outbox state—never an unkeyed secret hash.
+cert-manager reads the HMAC only through its in-cluster role-specific materializer. The non-secret
+key ID reaches issuer reconcile only as a typed generation-bound Agent/`ConfigObserve` projection;
+no host Vault client reads it. Neither host nor Gateway reads EAB material or writes the
+cert-manager Secret directly. A fresh AWS Vault/EBS is repopulated from retained-home custody
+without EAB re-entry.
+
+**Historical implementation record (Sprint `7.15`, pre-cutover materialization):**
 
 - ACME EAB material moved from the plaintext `acme.eab_key_id` / `acme.eab_hmac_key` config fields
   into the `secret/acme/eab` Vault KV object (fields `key_id` / `hmac_key`), referenced by
@@ -848,87 +1002,110 @@ keeping the single-issuer + S3 retain-restore contract of
   role/policy `acme`, reads `secret/acme/eab#hmac_key`, the main container creates the Secret). The
   HMAC key never transits the operator host and is never rendered as inline plaintext.
 - ZeroSSL remains the sole public ACME provider; the single `zerossl-dns01` issuer and the S3 cert
-  retain-and-restore flow are unchanged — only the EAB / key material moves behind Vault.
+retain-and-restore flow are unchanged — only the EAB / key material moves behind Vault.
 
-**`Live-proof: pending` (Standard O — non-blocking, operator/live-driven):**
+The historical host-side key-ID resolution above is forbidden in the target architecture and is a
+cutover-deletion surface; it is not a supported fallback for the typed Agent/config projection.
 
-- The full native-Vault-PKI internal-cert issuance machinery (Vault PKI minting internal certs)
-  and live ZeroSSL issuance against the Vault-sourced EAB are not yet built — there is no new PKI
-  subsystem. The cert-manager-vs-native-Vault-PKI split is an [open design
-  decision](#18-open-design-decisions); cert-manager remains the issuer today and only the EAB /
-  key material is Vault-sourced.
+The required issuer split is recorded in [Vault design decisions](#18-vault-design-decisions):
+cert-manager remains the public issuer, Vault sources the EAB/key material, and native Vault PKI is
+the internal-cert authority. Implementation and live-issuance evidence belong only to the
+Development Plan.
 
-Sealed behavior: the EAB key ID cannot be resolved and the materializer Job cannot read the HMAC
-key, so new issuance fails closed rather than proceeding. This fail-closed property is structurally
-guaranteed by the `SecretRef.Vault` resolver — a sealed (or unreachable, or uninitialized) Vault
-cannot resolve the EAB reference — and needs no separate enforcement code. The live "sealed Vault
-blocks issuance" proof is operator-driven. This is an explicit availability/security trade-off.
+Sealed behavior: the typed key-ID projection is unavailable and the in-cluster materializer cannot
+read the HMAC, so new issuance fails closed rather than proceeding. A sealed, unreachable, or
+uninitialized selected Vault cannot produce the generation-bound projection/read-back; no host
+resolver or cached config substitutes for it. The live "sealed Vault blocks issuance" proof is
+operator-driven. This is an explicit availability/security trade-off.
 
 ## 12. In-cluster service auth
 
 Each in-cluster component that needs secrets or encryption-as-a-service uses Vault Kubernetes auth
 idiomatically: a Kubernetes service account; a Vault role bound to that namespace and service
 account; a least-privilege Vault policy; authentication with the service-account JWT; and access
-only to assigned KV paths or Transit keys. This is the **only** in-cluster secret-delivery path —
-there is no Secret-mounted plaintext Dhall fragment and no `FileSecret` reference (§3). Services
-that authenticate to Vault include the gateway daemon, the Keycloak init/reconcile path, the
-certificate reconciler, an in-cluster Pulumi runner if present, and any workload needing
-encryption-as-a-service. Long term, prefer the Vault Agent Injector, the CSI Secret Store Vault
-provider, or direct application-side Vault auth depending on chart ergonomics (Sprints `3.18`,
-`3.19`, `8.9`; see [helm_chart_platform_doctrine.md](./helm_chart_platform_doctrine.md)).
-The Sprint `3.18` foundation is active: `Prodbox.Secret.VaultInventory` enumerates chart-secret
-KV paths, policies, service accounts, and roles, `Prodbox.Vault.Reconcile` writes those policies
-and Kubernetes-auth roles, configures `auth/kubernetes/config` against
-`https://kubernetes.default.svc:443`, and the straightforward workload charts render explicit
-service accounts. The Vault chart binds its service account to `system:auth-delegator` for
-TokenReview. The same inventory defines the read-before-write KV seed-object bootstrap plan for
-generated/static/external fields, and `prodbox vault reconcile` now seeds the automatically managed
-generated/static KV objects with a 32-byte random, base64url-unpadded generator while excluding
-externally-owned objects from automatic writes. The `websocket` workload OIDC client-secret now
-uses direct app-side `SecretRef.Vault` resolution through Vault Kubernetes auth; the Keycloak and
-MinIO charts materialize their covered runtime fields through Vault-login init containers; and the
-MinIO admin bootstrap Jobs use the `minio` service account plus a Vault-login init container for
-root credential files. The VS Code Envoy `SecurityPolicy` client Secret is materialized from Vault
-by a chart Job using a dedicated materializer ServiceAccount. Gateway event keys plus Route 53 AWS
-and gateway MinIO credentials now resolve through Vault Kubernetes auth, including the
-`gateway-minio-bootstrap` materializer role. Patroni role Secrets are materialized from Vault by the
-`keycloak-postgres` pre-install hook using the `prodbox-<namespace>-pg` ServiceAccount; this is the
-least-privilege path for the pinned Percona CRD, which does not expose a generated-Pod
-`serviceAccountName` field. Externally-owned SMTP setup now writes `secret/keycloak/smtp`, and
-host/admin helpers read remaining admin, OIDC, demo-user, and SMTP material from Vault KV. Sprint
-`3.18` also pins the migrated chart materializers to fail closed on sealed or unreachable Vaults;
-the live whole-system sealed-Vault validation is Sprint `5.8`.
+only to assigned KV paths or Transit keys. This is the **only steady-state service secret-retrieval
+path**. The explicit Provisioner→Agent and TLS one-shot-worker linear ingresses carry bounded
+plaintext only during an attested permit and cannot become config/workload retrieval paths. There
+is no Secret-mounted plaintext Dhall fragment and no `FileSecret` reference (§3). Services
+that authenticate to Vault include the Lifecycle Authority, Authority Backup Adapter, TLS
+Retention Adapter, each Target Secret Agent, Gateway Runtime, Keycloak init/reconcile path,
+certificate reconcilers, the fenced Provider Worker, and workloads
+that need encryption-as-a-service. The Bootstrap Broker is the pre-unseal exception: it uses the
+static bootstrap MinIO credential and only the bounded Vault sys endpoints required by its closed
+request algebra. It receives no steady-state KV, generic Transit, lifecycle, or gateway policy.
+Workloads use the Vault Agent Injector, CSI Secret Store Vault provider, or direct application-side
+Vault auth according to chart ergonomics; see
+[Helm Chart Platform Doctrine](./helm_chart_platform_doctrine.md).
+`Prodbox.Secret.VaultInventory` is the policy/role inventory, and `Prodbox.Vault.Reconcile`
+materializes it through Kubernetes auth. The control-plane identities are disjoint:
 
-Sprint `1.44` adds one **operator-write** Kubernetes auth role, `prodbox-operator-write` (bound to
-the `prodbox-operator-write` service account in the `gateway` namespace), backed by a deliberately
-narrow policy with `create`/`update` on exactly two KV paths — `secret/data/acme/eab` and
-`secret/data/gateway/gateway/aws`. It exists so the gateway daemon's `POST /v1/secret/<logical>`
-endpoint can persist the two host-minted operator secrets routed through the daemon (the ACME EAB
-and the minted operational `aws.*`) on behalf of an operator-injected Kubernetes JWT, instead of a
-host root-token direct write. Once the operator JWT can be minted, a daemon rejection or transport
-failure is authoritative and does not bypass to a host root-token write; the host fallback remains
-only before that service account is available or in explicit test seams. The daemon never uses its
-own read-only `prodbox-gateway-daemon` identity for the write, and the role cannot reach the rest
-of the KV store, the Transit keys, or the federation custody tree. Sprint `2.30` makes this read-only
-role a typed cross-module identity: `Prodbox.Vault.RoleId` defines
-`VaultRoleGatewayDaemon :: VaultRoleId`, and `vaultRoleIdText` projects it to
-`prodbox-gateway-daemon`. Both `defaultVaultReconcilePlan`'s `VaultKubernetesRoleSpec` and the
-supported generated ChartPlatform gateway release values consume that projection. The role spec
-binds exactly `["prodbox-gateway", "gateway-gateway"]`: `prodbox-gateway` grants the object-store
-HMAC read and `prodbox-pulumi-state` Transit operations, while `gateway-gateway` grants the per-node
-event-key and gateway AWS/MinIO KV reads. Unit tests pin exactly those two policies, build and decode
-the actual generated AWS gateway release values to prove `vault.role` equals the typed projection,
-and scan `ChartPlatform.hs` to reject a duplicated role-name literal.
+- the Lifecycle Authority may use only its config/lifecycle aggregate/blob Transit and HMAC keys
+  plus its dedicated MinIO credential. It commits provider intents but cannot read an AWS secret;
+  the separately resourced fenced provider worker alone reads the Lifecycle-provider identity;
+- the separately deployed Authority Backup Adapter alone reads
+  `secret/aws/authority-backup-store` and may use only the exact backup-prefix session. It cannot
+  decrypt logical state, assume provider roles, or share the Authority/provider ServiceAccount;
+- the separately deployed TLS Retention Adapter alone reads `secret/aws/tls-retention-store` and
+  may use only exact registered `public-edge-tls/<substrate>/<fqdn>` sessions. It has no
+  Authority-backup prefix, target Secret, Transit, DNS, IAM, or provider permission;
+- a Target Secret Agent role is bound to one substrate and may read/CAS/read-back only its
+  allowlisted schema and path, including `secret/data/keycloak/smtp`. Its exact seal-receipt policy
+  may CAS/read receipts and invoke only the assigned Transit encrypt/decrypt key so it can resume
+  receipt-named materialization in bounded memory. Plaintext seal/materialize work runs in a
+  separately scoped one-shot worker; TLS Secret observe/seal/materialize uses exact Kubernetes RBAC,
+  not generic Vault KV. Only the home Agent has a separate
+  `transit/keys/prodbox-tls-envelope` generate/unwrap lane and a separately queued non-exportable
+  retained-material custody/rewrap Transit lane. The latter accepts only closed `SesSmtpMaterial`
+  and `AcmeEabMaterial` receipts and rewraps only to an attested selected Agent for exact
+  `secret/keycloak/smtp` or `secret/acme/eab` materialization. An Agent cannot read
+  provider/backup/TLS store credentials, lifecycle records, or arbitrary KV;
+- the Gateway Runtime role may read only gateway event, journal-key-wrap, role-scoped config, and
+  the dedicated Gateway-DNS generation. It
+  receives no bootstrap bundle, lifecycle aggregate, Pulumi checkpoint, operator-write, or target
+  secret policy;
+- chart materializers and workloads retain one role per workload purpose rather than borrowing a
+  control-plane role.
 
-The static `charts/gateway/values.yaml` file retains `prodbox-gateway-daemon` as the documented
-chart default. It is not the typed consumer asserted by Sprint `2.30`: the supported generated
-ChartPlatform values override the role from `VaultRoleId`. This closure therefore covers the
-gateway-daemon role identity on the supported generated-render and Vault-reconcile paths; it does
-not claim that every gateway configuration surface is single-sourced (see
-[helm_chart_platform_doctrine.md](./helm_chart_platform_doctrine.md)). The `vault_operator_password`
-(needed before Vault is unsealed) and the ephemeral `aws_admin_for_test_simulation` credential
-(never stored in Vault) stay host-side.
-See [distributed_gateway_architecture.md §11](./distributed_gateway_architecture.md#11-rest-api).
+The same inventory owns generated/static/external KV seed policy, TokenReview configuration, and
+the workload-specific Keycloak, MinIO, VS Code, Patroni, OIDC, certificate, and runtime roles.
+Every materializer fails closed on sealed or unreachable Vault; none may widen a control-plane
+role to solve a chart-delivery problem.
+
+Authority-backup genesis and repair are the only pre-normal backup exceptions. A mode-indexed
+Credential Provisioner accepts only a signed `GenesisBackupPermit`, `GenesisCleanupPermit`,
+`RepairPermit`, or normally backup-receipted schema-indexed `OperatorMaterialPermit`; a distinct Admin Action Runner accepts only a committed
+permit for explicit SES destroy, legacy backend migration/retained-store compatibility, or quota
+request/status read-back. Prompt bytes and newly returned credential bytes arrive through authenticated linear
+ingress, remain in bounded memory, and never enter a serializable program, Authority state, Vault,
+disk, or logs. AWS-admin and externally supplied EAB frames have different decoders and cannot
+share a Job/session. SMTP raw IAM-secret bytes remain only in Provisioner memory long enough to
+derive `SesSmtpSource`; only that derived source enters retained-home Transit custody. The normal
+Provider Worker accepts neither permit family.
+
+For target-local/remintable operator material, the selected Target Secret Agent seals the bounded
+payload and returns a receipt containing ciphertext plus an opaque Vault-keyed, domain-separated
+HMAC commitment reference. SMTP and ACME EAB instead first seal a closed retained-home custody
+source and rewrap it to selected Agents so a new target/Vault can be populated without re-prompt.
+Lifecycle Authority persists only ciphertext digest, generation, that opaque commitment reference,
+and outbox intent—never an unkeyed secret hash. Separate
+material classes cover Operational Lifecycle-provider, LongLived TLS-retention/home Gateway-DNS/
+home DNS01, Operational AWS DNS01, ACME EAB, and SMTP; Authority-backup installation remains on its
+dedicated genesis/repair protocol. Install, rotate, and revoke are explicit, response loss is
+resolved by operation ID/version, and IAM/key deletion precedes the Vault tombstone. The
+pre-cutover `prodbox-operator-write` policy, two-entry Gateway route, shared
+`secret/data/gateway/gateway/aws`, and host-root fallback are removed.
+
+Here a Vault tombstone is an Authority lifecycle state, not KV-v2 soft deletion. Revoke,
+supersession GC, `DestroyAwsSes`, and nuke enumerate the exact secret-bearing generation versions,
+use KV-v2 destroy (or delete the exact per-generation immutable path), delete metadata only after
+version destruction, and then prove metadata/version absence. Rotation may destroy only a
+superseded generation after the bounded no-dependants proof and retention grace; current or
+referenced target/custody generations fail closed.
+
+The `vault_operator_password` needed before unseal and the ephemeral
+`aws_admin_for_test_simulation` credential remain host-side and are never stored in Vault.
+Physical Deployment, ServiceAccount, and capability-client separation is owned by
+[Lifecycle Control-Plane Architecture](./lifecycle_control_plane_architecture.md).
 
 ## 13. Config and state classification
 
@@ -938,7 +1115,7 @@ Every prodbox datum is classified explicitly.
 |---|---|---|
 | **Public / non-secret** | Static chart names; non-cluster-revealing feature flags; public docs; non-sensitive local defaults; expected command topology; the unencrypted-basics bootstrap surface (§16) | May live in plain Dhall or logs |
 | **Sensitive topology** | Downstream cluster names/endpoints/accounts; Pulumi stack identities (`aws-eks`, `aws-ses`, …) and their existence; the logical names and the *count* of prodbox-owned MinIO objects; the in-force config; generated downstream manifests; resource-graph/checkpoint state | Encrypted at rest; opaque-named + decoy-count-padded in the §9 object-store; unavailable when Vault is sealed |
-| **Secret material** | Passwords; access keys; private keys; tokens; ACME EAB material; Keycloak client secrets; MinIO root credentials; Pulumi passphrases; child-cluster init keys (recovery keys + initial root token); unseal/recovery material | In Vault, or in a Vault-encrypted envelope; the root cluster's unseal/recovery material in the unlock bundle |
+| **Secret material** | Passwords; access keys; private keys; short-lived tokens; ACME EAB material; Keycloak client secrets; MinIO root credentials; Pulumi passphrases; child-cluster recovery shares; unseal/recovery material | In Vault, or in a Vault-encrypted envelope; retained public-edge TLS is ciphertext plus a retained-home-Transit-wrapped DEK in the exact S3 prefix. The root cluster's unseal/recovery material is in the unlock bundle. The initial root token is encrypted to the compiled/pinned, provenance-audited burn public key; prodbox has no corresponding private key and never decrypts/uses the ciphertext. Generated root sessions are memory-only and accessor-audited. |
 
 ## 14. Error model and logging
 
@@ -975,8 +1152,10 @@ sensitive. The redaction extends to the §9 object-store and the whole-system su
   `4.33` gates the Haskell residue/listing translators and the retained-object `NoSuchKey`
   classifier behind the Vault-readiness check before interpreting a present/absent result.
 - **Redacted `Show`.** Opaque-id and token types carry a redacted `Show` so an opaque ID or a
-  Vault token never reaches a log through an incidental `show` (Sprint `4.33`). The token-bearing
-  federation custody shapes redact their child/root tokens and recovery keys for the same reason.
+  Vault token never reaches a log through an incidental `show` (Sprint `4.33`). Target federation
+  custody shapes contain only encrypted recovery material plus non-secret generation/accessor
+  attestations, and redact those fields. Historical child/root-token-shaped records remain
+  migration residue; the target never creates or returns them.
 
 Prefer redacted structured logs:
 
@@ -995,30 +1174,20 @@ When Vault is sealed, each surface fails closed:
 
 | Surface | Sealed-Vault behavior |
 |---|---|
-| In-force config (MinIO envelope) | Unreadable; gateway daemon reports waiting-for-Vault; only the unencrypted basics remain legible (§16) |
+| In-force config (MinIO envelope) | Unreadable; Lifecycle Authority, Provider Worker, Backup Adapter transition lane, Target Secret Agent, and Gateway Runtime remain blocked; only the unencrypted basics remain legible (§16) |
 | Every previously-derived secret (now Vault KV) | Not resolvable; no secret can be produced from any non-Vault source |
 | Pulumi (`aws stack ...`) | Refuses before preview/update/destroy; no AWS mutation attempted |
 | AWS deployment credentials | Not obtainable |
 | Keycloak bootstrap / secret-dependent startup | Init/readiness fail closed; new Pods do not reconstruct secrets from k8s Secret plaintext |
-| Ingress/Envoy TLS | New issuance fails; restarts fail closed; no plaintext reconstruction |
+| Ingress/Envoy TLS | Retention/restore/home-DEK exchange and new issuance fail closed; TLS Adapter ciphertext alone cannot reconstruct plaintext |
 | Downstream-cluster inventory and custody | Not extractable from MinIO, ConfigMaps, Secrets, Pulumi backends, or logs |
 | Child clusters (federation) | Cannot auto-unseal against a sealed parent; the brick cascades down the tree (§16) |
 
-The sealed-Vault canonical validation (`prodbox test integration sealed-vault`, Sprint `5.8`) is
-active on its code-owned suite surface: `ValidationSealedVault` is wired into the native planner and
-parser, and `sealedVaultAuditReport` pins the forbidden-pattern oracle for the cross-surface
-red-team. Full live closure seals Vault after a full reconcile and asserts every row above fails
-closed without leaking metadata; that deployed assertion needs live infrastructure (an unsealed,
-then sealed, Vault behind a full reconcile against live AWS/Pulumi infrastructure) and is therefore
-recorded as a standalone non-blocking `Live-proof: pending` note (§1) that does not gate Sprint
-`5.8`'s code-owned closure or its phase.
-
-The daemon-bootstrap canonical validation (`prodbox test integration daemon-bootstrap`, Sprint
-`5.14`) is the companion post-bootstrap transport proof. It is code-owned and trace-driven: the
-oracle requires the daemon bootstrap/lifecycle route set, rejects legacy host MinIO/Vault/root-token
-fallback traces, and checks redaction. The live AWS/Pulumi object-store proof composes with the
-code-owned Phase 7 Sprint `7.30` daemon API and is tracked in the substrate parity table rather than
-blocking Phase 5.
+The sealed-Vault canonical validation seals Vault after a full reconcile and proves every row
+above fails closed without leaking metadata. The bootstrap-boundary validation additionally proves
+that only the Bootstrap Broker can perform pre-unseal requests and rejects Gateway Runtime,
+host-direct MinIO/Vault/root-token, lifecycle-CAS, and target-secret fallback traces. Evidence and
+deployment-qualification status are tracked only in the Development Plan.
 
 ## 16. Cluster federation: a Vault transit-seal trust tree
 
@@ -1030,7 +1199,7 @@ the auto-unseal mechanics, and the custody and config-authority flows.
 
 ### The transit-seal trust tree
 
-| Tier | Vault seal mode | Who unseals it | Init keys (recovery keys + initial root token) owned by |
+| Tier | Vault seal mode | Who unseals it | Durable recovery material owned by |
 |---|---|---|---|
 | **Root cluster** | Shamir | Operator only, via the password-AEAD-sealed unlock bundle in durable MinIO, decrypted by a memorized password stored nowhere persistent (`test-secrets.dhall` simulates it in tests; §4, §6, §6.1) | The operator (the password) |
 | **Child cluster** | `seal "transit"` pointed at the **parent** cluster's Vault | Auto-unseals against the parent — no human, no local unseal keys | The **parent** cluster's Vault KV |
@@ -1039,20 +1208,22 @@ the auto-unseal mechanics, and the custody and config-authority flows.
   sealed/unreachable, its children cannot unseal → the fail-closed brick cascades down from the
   root. Cluster liveness for the whole tree roots in one operator unsealing the root (§2,
   invariant 7).
-- **Parents own the init keys for child clusters.** At child init, the child's recovery keys and
-  initial root token are stored in the parent's Vault KV (under the
-  `transit/prodbox-downstream-cluster-config` blast-radius domain; §8); the parent's transit key
-  is the child's unseal authority. The root cluster's own init keys are the only ones held outside
+- **Parents own the recovery material for child clusters.** At child init, the child's recovery
+  shares and token-revocation attestation are delivered by generation CAS to the parent's Vault KV
+  (under the `transit/prodbox-downstream-cluster-config` blast-radius domain; §8); the initial root
+  token is revoked and never stored. The parent's transit key is the child's unseal authority. The
+  root cluster's own recovery shares are the only ones held outside
   Vault — in the password-AEAD-sealed unlock bundle in durable MinIO (§6, §6.1, the chicken-and-egg
   floor; §17).
 - A cluster's knowledge of its child clusters (their existence, identities, endpoints,
   kubeconfigs, account IDs, Pulumi stacks) is **secret data** — only legible behind an unsealed
   Vault (§13, sensitive topology).
 
-### Config SSoT inversion and root-token config authority
+### Config SSoT inversion and generation-CAS authority
 
-- The **in-force cluster configuration** is stored in MinIO as a Vault-Transit-enveloped object
-  (§9). **That encrypted object is the source of truth.** When Vault is sealed it is opaque
+- The **in-force cluster configuration** is stored in MinIO as an immutable
+  Vault-Transit-enveloped blob (§9). The Lifecycle Authority aggregate's
+  schema/generation/digest/reference plus that exact blob are the source of truth. When Vault is sealed it is opaque
   ciphertext: nothing about the cluster's setup or its child clusters is determinable beyond the
   unencrypted basics.
 - **Unencrypted basics** = the minimal, non-revealing bootstrap needed only to reach and unseal
@@ -1061,29 +1232,28 @@ the auto-unseal mechanics, and the custody and config-authority flows.
   credentials. The basics are the only thing legible from `prodbox.dhall` and from a
   sealed cluster.
 - The filesystem seed/propose role now lives in the binary-sibling `prodbox.dhall`, not the
-  retired repo-root `prodbox-config.dhall` (§4). On first-ever bring-up it seeds the encrypted
-  MinIO SSoT; thereafter supplying a file is a *proposed update*. The prior host-CLI model of
+  retired repo-root `prodbox-config.dhall` (§4). On first-ever bring-up it submits a visible
+  absent-generation proposal; thereafter supplying a file is a *proposed update*. The prior host-CLI model of
   reading repo-root `prodbox-config.dhall` directly as the live config is replaced by "read the
-  basics locally, fetch+decrypt the in-force config from MinIO via Vault" (Sprint `1.38`), with
+  basics locally, resolve Lifecycle Authority, and observe the role-scoped in-force config
+  generation" (the direct MinIO/Vault loader from Sprint `1.38` is pre-cutover legacy), with
   Sprint `1.42` moving the seed/propose payload into Tier-0 `prodbox.dhall`. The Sprint `1.38`
   local foundations and global host-loader switch are landed
   (`loadUnencryptedBasics`, `decodeConfigDhallBytes`, MinIO envelope get/put, injected
   fetch/open/decode + seal/store, and `loadConfigForSettingsWith`).
-- **Updating the root cluster's in-force config requires the root Vault token** (which requires an
-  unsealed root Vault). Root config governs every downstream cluster — it is the keys to the
-  kingdom. Reads of the basics are always free; full reads require unseal; writes require the
-  privileged root token.
+- Updating the root cluster's in-force config requires a short-lived `prodbox-config-admin`
+  TokenRequest proof, the exact Lifecycle Authority `ConfigProposeCas` reference, expected config
+  generation, and immutable encrypted blob read-back. Root config governs every downstream
+  cluster; no caller receives a root token or MinIO credential, and stale/corrupt/unobservable
+  state refuses.
 
-The CLI/gateway surface to register a child cluster and custody its init keys, and the
-parent-owns-child-init-keys contract, are closed on the code-owned surface by Sprint `2.26`; the
-transit-seal hierarchy and per-cluster seal custody model are implemented by Sprint `3.20`
-(`Prodbox.Vault.Seal`, the recovery-key init wire shape, and the Vault chart transit seal branch);
-the direct parent-side registration writer, live child auto-unseal, and fail-closed lifecycle
-cascade land in Sprint `4.32`. Sprint `2.26` also records full downstream inventory in parent Vault
-KV and exposes the gateway-mediated child listing / bootstrap-reference endpoints through the
-gateway daemon's Vault Kubernetes-auth login. Sprint `4.33` closes the Haskell-side opaque namespace
-audit and sealed-state gate/redaction surface; Sprint `5.8` owns the deployed sealed-federation
-red-team proof. See
+The typed parent-custody capability registers a child, stores its recovery material and
+revoked-token attestation, and reads the
+allowlisted bootstrap reference through a dedicated Vault Kubernetes-auth identity. The Gateway
+Runtime may consume only the bounded, redacted federation projection required for peer membership;
+it does not expose child-custody or generic Vault listing endpoints. The transit-seal hierarchy,
+direct parent-side writer, auto-unseal cascade, and sealed-state redaction must preserve this
+boundary. See
 [cluster_federation_doctrine.md](./cluster_federation_doctrine.md).
 
 ## 17. The chicken-and-egg floor
@@ -1093,38 +1263,43 @@ Vault may not own:
 
 1. RKE2's self-signed cluster CA + admin kubeconfig (Vault runs inside this cluster's PKI).
 2. The Vault PV binding itself.
-3. **Root cluster only:** the operator unseal-bundle password (the sole ephemeral secret, the key
-   that unseals the root Vault). The password-AEAD-sealed unlock bundle it decrypts lives in the
-   durable MinIO bucket, not on host disk (§6); it is not a Vault-owned object — it is what
-   *unseals* Vault. The bundle body is password-AEAD-sealed, so the password remains the genuine
-   off-box floor regardless of the (static) MinIO access credential that gates its ciphertext (§6.1).
+3. **Root cluster only:** the operator unseal-bundle password (the sole operator-memorized
+   bootstrap secret, and the key
+   that unseals the root Vault). The password-AEAD-sealed pre-init `PreparedInitEnvelope` and final
+   unlock bundle live in durable MinIO, not host disk (§6); they are not Vault-owned objects — they
+   establish and then *unseal* Vault. Their bodies are password-AEAD-sealed, so the password remains
+   the genuine off-box floor regardless of the static MinIO credential that gates their ciphertext
+   (§6.1).
 4. **Child cluster only:** the bootstrap reference + transit-seal credential the child uses to
    reach its parent's Vault to auto-unseal — itself provisioned and owned by the parent (§16).
 
 Everything else — MinIO root creds, all derived-then-now-KV secrets, ACME EAB, AWS creds, SES,
-OIDC, TLS, the in-force config, Pulumi state, and child-cluster custody — is Vault-owned.
+OIDC, the in-force config, Pulumi state, and child-cluster custody — is Vault-owned or
+Vault-enveloped. Public-edge TLS follows §11's exact-Secret/Agent encryption path and is retained
+only as ciphertext plus a retained-home-Transit-wrapped DEK.
 
-## 18. Open design decisions
+## 18. Vault design decisions
 
-The following choices are deliberately left open until the implementing sprints. Each is recorded
-here with its current lean and owning sprint so it is resolved on purpose, not by accident.
+These are doctrine contracts. Migration and verification status belong only to the Development
+Plan.
 
-| # | Decision | Current lean | Owning sprint |
-|---|----------|--------------|---------------|
-| 1 | Vault storage backend | Integrated storage on the retained `.data/vault/vault/0` PV (file storage acceptable for dev); the load-bearing property is only that teardown never destroys Vault state and `init` never reruns (§5). | `3.17` / `4.29` |
-| 2 | Initial root-token lifetime | Store unseal/recovery material in the unlock bundle (root) or the parent's Vault KV (child), create named admin roles/tokens, and rotate or revoke the initial root token out of the steady-state admin path after bootstrap (§6, §16). | `1.36` / `3.20` |
-| 3 | Opaque object names / indexes | **Resolved — Model B object-store** (§9): every prodbox-owned object goes through one application-level layer that envelopes via Vault Transit, names objects `objects/<vault-keyed-HMAC>.enc`, keeps a Vault-encrypted `indexes/*.enc` map, hashes the stored AAD (`prodbox-envelope-v2`), and decoy-pads to a constant object count + size buckets, in one generically-named bucket shared by the host CLI and the gateway daemon. | `4.30` |
-| 4 | Pulumi encrypted-backend approach | **Resolved — decrypt-to-scratch interposition** (§10): hydrate the stack into a RAM-tmpfs `file://` backend, run `pulumi` with no passphrase, re-envelope + opaque-name back through the §9 object-store. Pulumi's own secrets provider is dropped; applied uniformly to per-run and the long-lived `aws-ses` backend (no AES256-SSE carve-out). | `1.37` / `7.14` |
-| 5 | TLS private-key generation | **Lean (Sprint `7.15`): cert-manager remains the issuer; EAB / key material is Vault-sourced.** The ACME EAB key ID + HMAC key now live in `secret/acme/eab` referenced by `SecretRef.Vault` (key ID resolved host-side, HMAC materialized in-cluster via the Sprint `3.18` Vault-login Job pattern); cert-manager continues to drive ZeroSSL public-edge issuance and any internal certs. Native Vault PKI as the internal-cert authority remains a deferred, non-blocking `Live-proof: pending` option — not built in `7.15` (§11). | `7.15` |
-| 6 | Fail-closed strictness for running workloads | Already-running workloads continue only to the extent they need no new Vault operation; security-sensitive paths prefer explicit fail-closed readiness gates over silent degraded operation (§2). The exact per-component strictness (block new reads vs fail existing readiness) is pinned by the lifecycle and sealed-vault sprints. | `4.29` / `5.8` |
-| 7 | Federation depth + child-registration surface | Direct root-to-child registration, the gateway-mediated child listing/bootstrap surface, and the child lifecycle interpreter are live. Deeper parent-as-child registration is a future extension of the same parent-owned custody rules (§16). | `2.26` / `4.32` |
+| # | Decision | Contract |
+|---|----------|----------|
+| 1 | Vault storage backend | Integrated storage on the retained `.data/vault/vault/0` PV; file storage is acceptable for development. Teardown never destroys Vault state and `init` never reruns (§5). |
+| 2 | Init and root-session custody | Before `/sys/init`, read back a password-AEAD `PreparedInitEnvelope` containing the generated share-recipient private key and exact transaction/storage fingerprints. Persist/read back Vault's PGP-encrypted response, atomically promote the final unlock bundle, then delete/read back the prepared envelope. Encrypt Vault's initial root token to the compiled/pinned, provenance-audited burn public key; prodbox never generates, stores, accepts, or accesses its private key and never decrypts/uses the token ciphertext. Use only separately generated, operation-PGP-encrypted short-lived root sessions for baseline/break-glass; inventory stale accessors, repair/read back, revoke, and observe absence (§6, §16). |
+| 3 | Opaque object names / indexes | Model B encryption (§9): capability-owned accessors share one pure envelope codec, opaque `objects/<vault-keyed-HMAC>.enc` names, Vault-encrypted indexes, hashed stored AAD, decoy count, and size buckets. Sharing the format grants no cross-capability authority. |
+| 4 | Pulumi encrypted-backend approach | Decrypt-to-scratch interposition (§10): a fenced provider worker hydrates RAM-tmpfs `file://` state, runs Pulumi with no passphrase, writes an immutable encrypted blob, and commits its digest through the Lifecycle Authority aggregate. |
+| 5 | TLS private-key custody and retention | cert-manager remains the public-edge issuer. The selected Agent encrypts exact TLS Secret bytes locally with a DEK supplied through the retained home Agent's `prodbox-tls-envelope` Transit lane; the TLS Retention Adapter stores ciphertext only under exact registered prefixes. Native Vault PKI remains the internal-cert authority (§11). |
+| 6 | Fail-closed strictness for running workloads | Already-running workloads continue only while they need no new Vault operation; security-sensitive paths fail their capability/readiness gate rather than reconstructing a fallback (§2). |
+| 7 | Federation depth + child-registration surface | Parent custody uses a dedicated typed Vault capability. Gateway Runtime receives only the bounded peer projection and exposes no child-secret listing or bootstrap proxy (§16). |
+| 8 | In-force config ownership | Lifecycle Authority owns `ConfigObserve`/`ConfigProposeCas`, immutable encrypted config blobs, and the aggregate generation/digest/reference; host and Gateway direct object access is removed. |
+| 9 | AWS identity split | Operational Lifecycle-provider/AWS-DNS01 and LongLived Authority-backup, TLS-retention, home Gateway-DNS/home-DNS01 identities use separate IAM resources, Vault paths/policies/generations, consumers, and lifecycle-class-correct cleanup nodes. Provider Worker owns only non-credential SES/S3; Credential Provisioner owns SMTP desired-present/repair; exact `DestroyAwsSes` owns registered terminal SES+SMTP absence. Credential Provisioner, Admin Action Runner, Provider Worker, Backup Adapter, and TLS Adapter are physically and cryptographically disjoint. |
+| 10 | Retained cross-substrate operator material | The retained home Agent Transit-seals only the closed SMTP/EAB source schemas, then rewraps an exact current receipt to an attested selected Agent. Authority sees ciphertext/receipts only. AWS-admin and external-EAB ingress are distinct; raw IAM secret bytes never enter custody. Current receipts restore new targets/fresh AWS Vault, and target tombstones precede custody tombstones. |
 
 ## 19. Red-team checklist
 
-Before the Vault-root finalization is considered complete (each item tracked per its owning sprint
-on that phase's owned surface; live-infrastructure proofs are non-blocking `Live-proof: pending`
-notes that never gate an earlier phase or a sprint's code-owned closure — development_plan_standards.md
-Standards N / O):
+Deployment qualification must prove every item below. Evidence and closure status belong only to
+the Development Plan:
 
 - A repo grep finds no real secret in Dhall, and no `FileSecret` / Secret-mounted Dhall fragment
   consumer remains.
@@ -1135,11 +1310,12 @@ Standards N / O):
   §9 whole-system).
 - A MinIO bucket dump while Vault is sealed reveals no in-force-config or Pulumi plaintext, and no
   `master-seed` object exists at all.
-- The root unlock-bundle object — the one deliberately fixed-key, password-AEAD-sealed exception
-  in the bucket (§6.1, §9) — has a body that requires the operator password, not Vault; a
-  sealed-Vault bucket dump recovers no unseal key from it, and it is decoy-count-padded so its
-  presence reveals only "this is the root cluster", never a workload, downstream cluster, or count
-  signal. Child clusters have no such object at all.
+- The root bootstrap namespace contains only the bounded init transaction objects (§6): a
+  password-AEAD `PreparedInitEnvelope` while initialization is unfinished, Vault's PGP-encrypted
+  response receipt, and the promoted password-AEAD unlock bundle. A bucket dump recovers no
+  recipient private key or unseal share without the operator password, and the namespace is
+  decoy-count-padded so it reveals only “this is the root cluster,” never a workload, downstream
+  cluster, or count signal. Child clusters have no such objects.
 - A bucket-level `s3api ls` while Vault is sealed reveals one generically-named bucket — neither
   the retired `prodbox` nor `prodbox-test-pulumi-backends` role-revealing name survives (§9).
 - Object names and indexes reveal no downstream-cluster inventory: every object is
@@ -1151,25 +1327,52 @@ Standards N / O):
   "present" from "absent" (the exists-vs-`NoSuchKey`/`stackPresentInList` discriminator is gated
   behind the readiness check; §9, §14; the Haskell-side gate landed in Sprint `4.33`).
 - A raw host-disk walk of `.data/prodbox/minio/0` while Vault is sealed reveals only opaque-named
-  ciphertext at a constant count — no plaintext name, body, or count — save the single fixed-key,
-  password-AEAD-sealed unlock-bundle object on the root cluster, whose body is still password-gated
-  and whose presence is decoy-count-padded (§6.1, §9; Haskell-side gates landed in Sprint `4.33`;
-  deployed proof is Sprint `5.8`).
+  ciphertext at a constant count—no plaintext name, body, or count—save the bounded fixed bootstrap
+  keys for the root prepared/encrypted-response/final-bundle transaction, whose secret-bearing
+  bodies remain password-AEAD or PGP ciphertext and whose presence is decoy-count-padded (§6.1,
+  §9; Haskell-side gates landed in Sprint `4.33`; deployed proof is Sprint `5.8`).
 - The object body stores a **hashed** AAD (`prodbox-envelope-v2`, `base64(SHA256(aad))`); a sealed
   envelope never contains a cleartext binding such as `aws-eks` (§8, §9; Sprint `4.30`).
 - Sealed Vault blocks Pulumi before any preview/update/destroy starts.
-- Sealed Vault blocks gateway daemon config recovery, Keycloak bootstrap/recovery, and TLS
-  private-key reconstruction, and prevents every child cluster from auto-unsealing.
+- Sealed Vault blocks Lifecycle Authority, its Provider/Backup/TLS lanes, Target Secret Agent,
+  Gateway Runtime config recovery, Keycloak bootstrap/recovery, and TLS private-key reconstruction,
+  and prevents every child cluster from auto-unsealing.
 - A child cluster cannot unseal while its parent is sealed/unreachable.
 - Test-harness plaintext is isolated to `test-secrets.dhall` and never used by production paths.
 - The unlock-bundle password is handled by KDF + authenticated encryption, not raw SHA-256.
+- First init cannot run until the exact password-AEAD `PreparedInitEnvelope` and recipient/burn
+  fingerprints are read back. Crash after a captured PGP-encrypted init response resumes final
+  bundle promotion after re-prompt; crash with possible init but no durable response fails closed
+  except for the proven-pristine storage-generation reset path. The prepared envelope is deleted
+  and its absence read back only after the final bundle is promoted and decrypt-verified.
+- Init and unseal prompt bytes reach only their separately attested one-shot Broker worker over
+  authenticated exec/attach stdin; the controller sees metadata/receipts, and worker revocation,
+  exit, and Pod absence are read back after success or failure.
 - The unlock-bundle password is the only operator-memorized secret; its only cleartext home is
   `test-secrets.dhall`, and no production path stores or logs it.
-- No recovered plaintext secret lands on a physical-disk-backed path, and secret-bearing
-  daemon↔MinIO transfers use TLS.
-- The Vault root token is not the steady-state admin path; `vault init` never reruns against
-  existing state (init-once; §5).
-- Updating the root cluster's in-force config requires the root Vault token.
+- No recovered plaintext secret lands on a physical-disk-backed path, and every secret-bearing
+  service-to-MinIO transfer uses TLS.
+- The initial Vault root token is compiled/pinned burn-key ciphertext that prodbox never decrypts or
+  uses and for which it never generates, stores, accepts, or accesses a private key; every generated root session
+  is accessor-inventoried, revoked, and observed absent. `vault init` never reruns against
+  established state; an ambiguous reset is permitted only for the exact proven-pristine storage
+  generation with no durable init receipt or baseline (§5–§6).
+- Updating the in-force config requires a config-admin proof plus exact generation CAS/read-back;
+  no host or Gateway path receives a Vault root token or MinIO credential.
+- Provider, Authority-backup-store, TLS-retention-store, Gateway-DNS, and cert-manager-DNS01
+  credentials are distinct IAM/Vault generations with consumer-lifetime lifecycle classes; the
+  shared `secret/gateway/gateway/aws` path and cross-role fallback are absent. Ordinary suite
+  cleanup removes only Operational provider/AWS-DNS01 generations and retains the LongLived set.
+- No Authority record, receipt API, output, or log exposes an unkeyed secret hash.
+  Duplicate detection uses only opaque, domain-separated Agent/Vault keyed-HMAC commitment
+  references and performs equality inside the Agent receipt fold.
+- TLS restore survives AWS Vault/EBS recreation through the retained home Transit wrapping key;
+  the TLS Adapter sees ciphertext only, not-yet-valid/uncertain time fails closed, and TLS-prefix
+  deletion cannot delete the shared bucket.
+- Current retained-home SMTP and EAB custody receipts populate a newly introduced target and restore
+  fresh AWS Vault/EBS without remint/re-prompt; schema mismatch, missing/corrupt/unobservable source,
+  raw-IAM-secret custody, host-direct EAB key-ID reads, and custody tombstone before every target
+  tombstone are rejected.
 - Cluster teardown preserves the Vault and MinIO PVs; cluster recreate cannot recover secrets
   without unsealing Vault — and is not a fresh Vault (unseal-on-rebuild; §5).
 
@@ -1186,14 +1389,17 @@ Sprint `5.8` closure.
   doctrine the file is a seed/propose input carrying `SecretRef` values and the unencrypted
   basics, not the in-force SSoT
 - [cluster_federation_doctrine.md](./cluster_federation_doctrine.md) — the root/child transit-seal
-  trust tree, parent custody of child init keys, downstream-cluster metadata as secret, and the
-  root-token config authority
+  trust tree, parent custody of encrypted child recovery material plus revocation attestations,
+  downstream-cluster metadata as secret, and the generation-CAS config authority
 - [secret_derivation_doctrine.md](./secret_derivation_doctrine.md) — the retired master-seed HMAC
   derivation model, repurposed to map each secret to its Vault KV/PKI/Transit path
 - [storage_lifecycle_doctrine.md](./storage_lifecycle_doctrine.md) — the retained `.data/` PV
   layer that holds the durable Vault PV; init-once / unseal-on-rebuild
 - [lifecycle_reconciliation_doctrine.md](./lifecycle_reconciliation_doctrine.md) — cluster
   reconcile/teardown integration and the sealed-state readiness gates
+- [lifecycle_control_plane_architecture.md](./lifecycle_control_plane_architecture.md) — physical
+  Bootstrap Broker, Lifecycle Authority, Provider Worker, Backup/TLS Adapters, Target Secret Agent,
+  one-shot Credential Provisioner/Admin Action Runner, and Gateway Runtime boundaries
 - [envoy_gateway_edge_doctrine.md](./envoy_gateway_edge_doctrine.md) — the public-edge TLS path
   that fails closed under a sealed Vault
 - [helm_chart_platform_doctrine.md](./helm_chart_platform_doctrine.md) — chart-secret consumption
@@ -1205,8 +1411,8 @@ Sprint `5.8` closure.
 - [aws_integration_environment_doctrine.md](./aws_integration_environment_doctrine.md) — the AWS
   substrate environment whose prodbox-created identities resolve via `SecretRef.Vault`
 - [cli_command_surface.md](./cli_command_surface.md) — the `prodbox vault` command group
-- [../../DEVELOPMENT_PLAN/README.md](../../DEVELOPMENT_PLAN/README.md) — Closure Status and the
-  per-surface adoption sprints
+- [../../DEVELOPMENT_PLAN/README.md](../../DEVELOPMENT_PLAN/README.md) — implementation status,
+  migration order, and deployment-qualification evidence
 - [../../DEVELOPMENT_PLAN/legacy-tracking-for-deletion.md](../../DEVELOPMENT_PLAN/legacy-tracking-for-deletion.md)
   — removal ledger for the retired master-seed derivation model, the removed FileSecret /
   Secret-mounted Dhall path, the host-CLI direct-config-read model, and the folded-in

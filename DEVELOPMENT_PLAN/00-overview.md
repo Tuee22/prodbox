@@ -16,6 +16,7 @@
 [phase-7-aws-substrate-foundations.md](phase-7-aws-substrate-foundations.md),
 [phase-8-email-invite-auth.md](phase-8-email-invite-auth.md),
 [the engineering doctrine docs](../documents/engineering/README.md),
+[lifecycle_control_plane_architecture.md](../documents/engineering/lifecycle_control_plane_architecture.md),
 [vault_doctrine.md](../documents/engineering/vault_doctrine.md)
 **Generated sections**: none
 
@@ -70,10 +71,11 @@ Build a clean-room Haskell `prodbox` repository with:
     [host_platform_doctrine.md](../documents/engineering/host_platform_doctrine.md) (Sprint `1.52`
     config/detection surface landed; Sprint `4.37` provider decisions and Linux-frame dispatch
     landed).
-13. One local-cluster-first Pulumi backend model: the local RKE2 cluster runs MinIO and stores AWS
-    test-stack state in the generic `prodbox-state` bucket; Sprint `7.14` now routes main Pulumi
-    stack cycles and production residue/output reads through the decrypt-to-scratch Model-B
-    interposition, including first-touch raw checkpoint migration into the encrypted object-store.
+13. One retained Lifecycle Authority in the home control plane: it journals idempotent operations,
+    fences separately resourced provider workers, and atomically publishes references to immutable
+    encrypted Pulumi checkpoint blobs in the generic `prodbox-state` bucket. The AWS substrate
+    receives a typed authority client, never a second writer; target Vault delivery uses each
+    substrate's separate Target Secret Agent.
 14. One in-cluster Haskell gateway runtime with config generation, bounded semantic ownership
     state, bounded HTTP diagnostics, constant-time `/healthz` and `/readyz`, latest-heartbeat
     projection, DNS-write gating, Orders-backed interval validation, HMAC-signed per-emitter
@@ -81,11 +83,10 @@ Build a clean-room Haskell `prodbox` repository with:
     runtime claim/yield emission under the `CanWriteDns` gate,
     operator-verifiable bounded-clock-skew enforcement through the supported-host NTP gate and
     `/v1/state` skew reporting, and atomic Orders-promotion coordination keyed off the monotonic
-    `orders_version_utc` field. The same daemon is the post-bootstrap host↔cluster control boundary:
-    after the host has deployed the cluster services and the loopback-restricted daemon NodePort,
-    root Vault lifecycle requests go through the daemon rather than direct host Vault/MinIO
-    transports; Sprint `7.30` finishes the same boundary for object-store-backed Pulumi/residue
-    operations.
+    `orders_version_utc` field. One actor and encrypted identity-bound local journal own every
+    emitter transition. The gateway has no bootstrap, lifecycle, provider, object-store, or
+    target-secret authority; the minimal Bootstrap Broker, retained Lifecycle Authority, and
+    per-substrate Target Secret Agent are separate processes and failure domains.
 15. One self-managed public-edge doctrine where MetalLB exposes Envoy Gateway, Kubernetes Gateway
     API owns Layer 7 routes, cert-manager owns listener TLS through one ZeroSSL ACME
     `ClusterIssuer` whose issued certificate is a `LongLived`, registry-managed resource retained
@@ -114,7 +115,8 @@ Build a clean-room Haskell `prodbox` repository with:
     material all live inside the cluster (k8s Secrets fetched from Vault KV via Vault
     Kubernetes auth, or Pulumi stack outputs read on demand). The legacy
     `.prodbox-state/` repo-local cache is removed. In-cluster Vault on its durable PV
-    under `.data/vault/vault/0` is the persistence anchor for every secret; its KV store
+    under `.data/vault/vault/0` is the persistence anchor for every post-unseal operational secret;
+    the password-sealed Tier-1 recovery bundle is the explicit pre-unseal exception. Its KV store
     survives cluster wipes (init-once / unseal-on-rebuild) because the Vault PV is
     retained alongside MinIO's PV under `.data/prodbox/minio/0`. The master-seed
     derivation model is retired — there is no `master-seed` object in MinIO. See
@@ -152,10 +154,11 @@ Build a clean-room Haskell `prodbox` repository with:
 27. Pulumi retained for true IaC surfaces such as AWS substrate resources, with no supported
     Python Pulumi program and no supported local-cluster public operator flow.
 28. One retained-resource preparation rule: lifecycle class controls cleanup, while selected
-    capabilities control desired presence. Invite-capable suites reconcile `aws-ses` through the
-    retained home/control-plane Model-B checkpoint authority, await semantic SES readiness, and
-    then materialize SMTP KV into the selected target cluster; ordinary postflight never destroys
-    the long-lived stack.
+    capabilities control desired presence. Invite-capable suites submit one revisioned durable
+    `aws-ses` operation to the retained Lifecycle Authority, await exact semantic convergence, and
+    deliver the committed SMTP generation through retained-home schema-bound custody and the
+    selected substrate's Target Secret Agent; ordinary postflight never destroys the long-lived
+    provider stack, SMTP identity/generations, or custody receipt.
 
 > **Scheduled doctrine generalizations (2026-07-01 batch — partly implemented).** Structured
 > payloads unify on canonical **CBOR** project-wide (the older
@@ -258,40 +261,29 @@ Build a clean-room Haskell `prodbox` repository with:
 > each phase's own owned surface (no
 > new phase, Standards A/E/N preserved).
 
-Vault is the **sole, finalized** secrets / KMS / encryption-as-a-service / PKI root of every
-prodbox-managed cluster — there is no transitional or bridge pattern. Every secret, credential, key,
-and certificate the stack uses is a Vault object (a KV v2 secret, a Transit key, or a PKI-issued
-cert), with no second store and no plaintext fallback; **a sealed (or unreachable / uninitialized)
-Vault bricks the cluster** (hard fail-closed). Vault runs in-cluster on a durable `.data/`-backed PV
-(`.data/vault/vault/0`), preserved across cluster wipes exactly like MinIO's PV, and is **init-once
-/ unseal-on-rebuild** — `vault init` runs exactly once ever (the first time the PV is empty) and
-every subsequent `cluster reconcile` only unseals it, so Vault KV is as durable across rebuilds as
-any retained PV. The binary-sibling Tier-0 `prodbox.dhall` carries the operator-authored
-non-secret parameters and only typed `SecretRef.Vault` references for operational credentials
-(never plaintext secrets); the in-force cluster configuration is itself a
-Vault-Transit-enveloped MinIO object that is the **config SSoT**. The former filesystem
-`prodbox-config.dhall` seed/propose file is retired and survives only as a legacy payload shape for
-decode/import/migration tests; every prodbox-owned MinIO object, the Pulumi backend state, and the
-active daemon Dhall are
-stored only as Vault-Transit envelopes (**Model B**: prodbox's own application-level envelope per
-object, not MinIO bucket SSE) through one shared object-store that names objects
-`objects/<vault-keyed-HMAC>.enc` under one flat prefix in **one generically-named bucket** (the
-role-revealing names `prodbox` + `prodbox-test-pulumi-backends` are retired), keeps a Vault-encrypted
-index, hashes the stored AAD (`prodbox-envelope-v2`), and decoy-pads to a constant object count — so
-a sealed Vault leaks no information about a cluster's children (existence, count, location, or name);
-Pulumi runs through a decrypt-to-scratch RAM-tmpfs interposition (its own secrets provider is
+The target Vault boundary is the fail-closed KMS/PKI and post-unseal operational-secret root. Its
+two explicit non-Vault exceptions are the password-AEAD-sealed Tier-1 recovery bundle needed before
+unseal and an ephemeral operator prompt that is never persisted. The initial root token is burned
+unused; accessor-audited generated root sessions are short-lived. The Lifecycle Authority
+aggregate's generation/digest/reference—not a MinIO blob by itself—is the in-force config SSoT and
+selects immutable Transit-enveloped config/checkpoint blobs. Gateway continuity is instead an
+encrypted identity-bound local journal and Gateway has no generic object-store authority. The
+complete config, Vault, storage, and federation contracts remain in their linked engineering SSoTs;
+this plan records only migration ownership and qualification status. Pulumi runs through a
+decrypt-to-scratch RAM-tmpfs interposition (its own secrets provider is
 dropped) and the long-lived `aws-ses` backend is enveloped uniformly; and the TLS, Keycloak, Pulumi,
 and AWS-credential paths fail closed when Vault is sealed. The master-seed HMAC derivation model and its daemon-only seed boundary are
 **retired, not wrapped** — `Prodbox.Secret.{Derive,MasterSeed,Inventory}`, the daemon
 `/v1/secret/*` RPC, the daemon-only-seed lint, and `selfBootstrapOwnSecrets` are removed, there is
-no `master-seed` object in MinIO, and every previously-derived or chart-generated secret becomes a
+no `master-seed` object in MinIO, and every previously-derived or chart-generated operational secret becomes a
 Vault KV object fetched via Vault Kubernetes auth; `FileSecret` / Secret-mounted plaintext Dhall is
 **removed, not bridged**. The retained `.data/` PV model, the single ZeroSSL ACME issuer + S3
 retain-restore (with key material now Vault-protected), and the managed-resource-registry teardown
-all stay. Cluster federation adds a **Vault transit-seal trust tree**: a root cluster (Shamir seal,
-operator-unsealed via the `.age` unlock bundle) and zero or more child clusters
-(`seal "transit"` against the parent), where each parent's Vault KV owns its children's init keys
-and a cluster's downstream-cluster inventory is itself secret behind an unsealed Vault — so the
+all stay. Cluster federation adds a **Vault transit-seal trust tree**: a root cluster whose
+password-sealed recovery bundle is consumed only by Bootstrap Broker and zero or more child clusters
+(`seal "transit"` against the parent), where each parent owns encrypted child recovery receipts and
+revocation attestations—never reusable initial root tokens—and a cluster's downstream inventory is
+secret behind an unsealed Vault, so the
 fail-closed brick cascades down the tree from the root. The load-bearing invariant: a sealed Vault
 reduces prodbox to an opaque durable-data pile — PVs and MinIO objects may still exist, but they
 reveal no secrets, no active Dhall, no Pulumi state, and no downstream-cluster inventory until Vault
@@ -362,6 +354,12 @@ that needs the IAM harness simulating the elevated-credential prompt from `test-
 Raw backend env is now confined to `LegacyPulumiBackend` first-touch
 import/delete, while supported Pulumi actions receive provider-only input before the scratch
 `file://` rewrite.
+Those Sprint `7.14` paragraphs preserve the pre-cutover implementation record. The target deletes
+the shared `aws.*` path: Lifecycle-provider, Authority-backup, TLS-retention, Gateway-DNS,
+per-substrate cert-manager-DNS01, and deterministic `LongLived` SES-SMTP use separate identities
+and Target-Agent-delivered generations under Sprints `3.26`, `4.49`, `4.50`, `7.33`, and `8.11`.
+The Credential Provisioner derives the region-bound SMTP payload before raw AWS key disposal;
+retained-home Agent custody/rewrap restores it cross-substrate without a generic export.
 Sprint `5.8` now has the
 code-owned `sealed-vault` validation surface, pure audit oracle, and generated Dhall/config
 SecretRef sweep closed on its home substrate; the live whole-system sealed-state proof on the AWS
@@ -401,10 +399,10 @@ or destroys. The authoritative AWS resource inventory and per-resource lifecycle
 retained by design) live in
 [substrates.md → Resource Lifecycle Classes](substrates.md#resource-lifecycle-classes).
 
-| Substrate | Provision | Teardown | Suite parity today |
-|-----------|-----------|----------|--------------------|
-| Home local | `prodbox cluster reconcile` + `prodbox charts reconcile ...` | `prodbox cluster delete --yes` (`--cascade` also destroys per-run AWS stacks) | 🧪 Code-owned current membership is closed, including bounded gateway runtime, the absorbing stability oracle, desired-present retained-SES preparation, and exact semantic readiness. Prior ZeroSSL/OIDC/WebSocket/public-edge proofs remain historical evidence; a fresh deployed home invite aggregate through the new gate is `Live-proof: pending`. |
-| AWS | `prodbox aws stack eks reconcile` + `prodbox aws stack aws-subzone reconcile` + `prodbox aws stack test reconcile` | `prodbox aws stack aws-subzone destroy --yes` + `prodbox aws stack eks destroy --yes` + `prodbox aws stack test destroy --yes` | 🧪 The Phase-7 substrate foundation and then-canonical June slice remain proven, and the July code-owned additions are closed. Fresh AWS identity/DKIM/MX/rule propagation and the deployed AWS invite aggregate are non-blocking `Live-proof: pending` axes. Current validation-by-substrate status lives in [substrates.md](substrates.md). |
+| Substrate | Provision | Teardown | Status authority |
+|-----------|-----------|----------|------------------|
+| Home local | `prodbox cluster reconcile` + `prodbox charts reconcile ...` | Restore the selected home platform/charts after the run; explicit `prodbox cluster delete --yes` preserves LongLived roots (`--cascade` also destroys per-run AWS stacks) | Current parity and deployment qualification live only in [README.md → Substrate Parity](README.md#substrate-parity) and [Deployment Qualification](README.md#deployment-qualification). |
+| AWS | `prodbox aws stack eks reconcile` + `prodbox aws stack aws-subzone reconcile` + `prodbox aws stack test reconcile` | `prodbox aws stack aws-subzone destroy --yes` + `prodbox aws stack eks destroy --yes` + `prodbox aws stack test destroy --yes`; LongLived shared/home resources remain | Current parity and deployment qualification live only in [README.md → Substrate Parity](README.md#substrate-parity) and [Deployment Qualification](README.md#deployment-qualification). |
 
 Phase ownership separates suite content (which lives in
 [phase-5-canonical-test-suite.md](phase-5-canonical-test-suite.md)) from substrate
@@ -427,17 +425,17 @@ would touch a dependency owned by another phase it is exercised against the home
 fake, or a stub; AWS-substrate coverage of suite content is orthogonal and tracked only in
 [substrates.md](substrates.md)'s parity table.
 
-| Phase | Focus | Closure Result | Independent Validation |
+| Phase | Focus | Current result | Independent validation |
 |-------|-------|----------------|------------------------|
-| 0 | Planning and Documentation Topology for Haskell Rewrite | The plan suite is rewritten around the Haskell end state | Validated by `prodbox dev lint docs` / `docs check` over the governed plan suite and doctrine docs; no later-phase dependency |
-| 1 | Haskell Runtime, CLI, Config, and Pulumi Foundations | ✅ Reclosed on Sprint `1.60`: the opaque nested runtime-memory plan derives its cgroup authority from the workload envelope, validates finite child-schedule evidence, exposes typed scratch/high-water projections, and generates the gateway RTS argv without a Cabal/Docker/Helm heap constant. | Pure constructor tables, the RTS golden, generated chart values, unit 1299/1299, CLI/env integration 45/45, and `prodbox dev check`; no cluster or later phase. |
-| 2 | Haskell Gateway Runtime and DNS Ownership | ✅ Reclosed on Sprint `2.31`: bounded semantic state, signed per-emitter sequence/vector-cursor delta/repair gossip, bounded Orders/transport/parser/process-wide allocation, retained continuity, serialized children, and credential/claim/continuity-gated DNS replace the unbounded hot full-log path. | Pure convergence/bound/crash properties, daemon-lifecycle and native partition tests, a profiling build/local heap capture, and `prodbox dev tla-check`; the restart-free live soak remains a non-blocking proof. |
-| 3 | Haskell Chart Platform and Public Workload Delivery | ✅ Reclosed on Sprint `3.25`: the gateway chart renders kubelet liveness/readiness from the typed/generated `/healthz` and `/readyz` surface, and chart lint rejects `/v1/state` as a probe. Prior chart/operator closures are preserved. | Warning-clean build, unit 1386/1386, focused probe suite 4/4, generated-values golden/drift check, separate negative fixtures, chart/Haskell lint, Helm rendering, and `prodbox dev check`; no live cluster or later phase. |
-| 4 | Lifecycle Hardening, Pulumi Decoupling, and Python Removal | ✅ Reclosed on Sprint `4.47`: the registered desired-present `aws-ses` path composes separate AWS/checkpoint observations with the retained-authority lease, bounded fixed-role STS sessions, fenced encrypted checkpoint, finite SMTP repair, and global target-intent protocol. The fixed role is an `Operational` registered resource and teardown re-observes its absence. | Focused lifecycle/role tables 87/87, warning-clean build, full unit 1476/1476, and `prodbox dev check`; no live AWS or later phase required. |
-| 5 | Canonical Test Suite | ✅ Reclosed on Sprints `5.16`/`5.17`: a structured continuous restart/OOM/high-water observer feeds an absorbing run-scoped recorder with a separately restartable healthy window; invite-capable plans now carry one nested target-readiness plus registered retained-SES ensure, while non-invite/postflight plans contain none. | Sprint `5.16`: fake Kubernetes tables 17/17, installed-binary fixtures 2/2, unit 1494/1494, CLI integration 47/47, and `prodbox dev check`. Sprint `5.17`: focused plan/recovery 10/10, target API 6/6, global target-commit 12/12, unit 1508/1508, CLI/env integration 47/47 each, and `prodbox dev check`; live home/AWS runs remain separate proof axes. |
-| 6 | Final Clean-Room Rerun and Zero-Python Handoff | The destructive rerun contract closes against every declared substrate in [substrates.md](substrates.md) with no supported Python dependency and no surviving single-host public-edge cleanup in the ledger | Validated locally by `config show`/`config validate`, `edge status`, and the repository review gates for placeholder-domain and Python residue, plus the home-substrate destructive rerun; AWS-substrate rerun coverage is orthogonal (substrates.md parity table) |
-| 7 | AWS Substrate Foundations | AWS substrate provisioning/teardown, AWS IAM and quota foundations, interactive onboarding, and the AWS-substrate parity sprint that brings the AWS substrate to canonical-suite parity with the home substrate close on Haskell-only paths; all elevated/admin AWS power enters prodbox through one interactive `SecretRef.Prompt`, and the test-harness-only `test-secrets.dhall` fixture `aws_admin_for_test_simulation.*` simulates that prompt for suite-driven destructive validation, long-lived stack, and `prodbox nuke` flows. **✅ Reclosed 2026-07-10**: Sprint `7.32` compiles the configured AWS DAG through the shared anchored-order engine before mutation, installs final EKS-owned readiness barriers and a scoped gateway Service port-forward across the Vault transition, removes the redundant MinIO reinstall, delegates EKS retry classification to the shared base with no lint allowance, and projects AWS restore from the shared builder after all three stacks (unit 1286/1286; `dev check` exit 0). Live `--substrate aws` is the non-blocking Standard O axis. Prior closure preserved. | Code-owned surface validated locally by `prodbox dev check`, unit tests, and `prodbox test integration cli`/`env` (decrypt-to-scratch wrapper, residue/output reads, credential-class wiring); live AWS proofs are non-blocking Live-proof-pending, no earlier-phase reopen |
-| 8 | Operator-Invited Email Authentication via Keycloak + AWS SES | ✅ Reclosed 2026-07-11 on Sprint `8.10`: `Prodbox.Ses.Readiness` classifies exact sender/DKIM/MX/active receipt-rule/action and Pulumi-owned capture-canary list/get semantics, the provider-first transaction polls only `Pending`, and `prodbox host check-ses-readiness` exposes the read-only diagnostic. | Focused readiness 23/23, SES transaction 8/8, lease-role 9/9, built-frontend fixtures 2/2, unit 1535/1535, CLI/env integration 49/49 each, warning-clean build, and Fourmolu check. Fresh AWS propagation and deployed home/AWS invite aggregates are non-blocking live proofs. |
+| 0 | Planning and Documentation Topology | ✅ Reclosed on `0.16`: Standard P, the control-plane SSoT, reopened status chain, and cleanup ownership are aligned. | Documentation lint/check and canonical quality gate; no runtime dependency. |
+| 1 | Runtime, CLI, Config, and Pulumi Foundations | 📋 `1.61` Planned; `1.62` blocked by `1.61`. | Pure capability-kind, graph, deadline, capacity, object-store protocol, and Vault-session properties. |
+| 2 | Gateway Runtime and DNS Ownership | ⏸️ `2.32` blocked by `1.62`; `2.33` blocked by `2.32`. | Actor/interleaving simulation, journal crash tests, daemon lifecycle, partition validation, and revised TLA model. |
+| 3 | Chart Platform and Public Workload Delivery | ⏸️ `3.26` blocked by `2.33`. | Deterministic chart rendering, identity/policy/resource/probe lint, negative topology fixtures, and retained-volume plans. |
+| 4 | Lifecycle Hardening and Pulumi Decoupling | ⏸️ `4.48`–`4.50` form the durable authority/outbox/cutover chain after `3.26`. | Pure decide/evolve tables, CAS conflict/response-loss simulation, native MinIO/Vault integration, restart/resume, and cutover properties. |
+| 5 | Canonical Test Suite | ⏸️ `5.18`–`5.19` follow `4.50`. | Capability-bound restore plans, cleanup-DAG fault tables, installed-binary load/fault fixtures, and temporal CPU/queue/deadline oracle. |
+| 6 | Final Clean-Room Rerun and Handoff | ⏸️ `6.4` blocked by `5.19`. | Home cutover/rollback plus two consecutive destructive aggregates with canonical restoration and zero residue. |
+| 7 | AWS Substrate Foundations | ⏸️ `7.33` blocked by `6.4`. | AWS topology rendering/fakes followed by the current-revision AWS isolation and cleanup campaign. |
+| 8 | Invited Email Authentication | ⏸️ `8.11`–`8.12` follow `7.33`. | SES workflow decision tables, provider/target fault injection, and current-revision invite aggregates. |
 
 ## Alignment Status
 
@@ -446,30 +444,24 @@ history is consolidated in [README.md → Closure Status](README.md#closure-stat
 and per-sprint detail lives in the phase documents ([phase-0](phase-0-planning-documentation.md) …
 [phase-8](phase-8-email-invite-auth.md)) — this section is not a per-sprint changelog (Standard D).
 
-**Current head state (2026-07-11 — all declared phase-owned code surfaces are closed):**
-the July 10 live home canonical-suite run supplied two counterexamples to the previous closure
-narrative. All gateway replicas repeatedly hit the exact enforced memory cgroup limit, but
-instantaneous Deployment readiness later observed them available; therefore authored capacity and
-shallow dependency readiness were incorrectly being treated as runtime-stability proof. Separately,
-invite-capable preparation synced from an assumed retained `aws-ses` stack, and SES prerequisites
-accepted exit success without proving returned identity/rule state.
+**Current head state (2026-07-11 — lifecycle-control-plane redesign opened):**
 
-The correction is deliberately split by authority: landed Sprint `1.60` owns generic runtime
-memory planning; landed Sprint `2.31` owns bounded gateway state/transport and credentialed DNS;
-landed Sprint `3.25` owns constant-time chart probes; completed Sprint `4.47` owns the registered
-desired-present retained-reconciliation, typed AWS/checkpoint observations, explicit long-lived
-checkpoint authority/target sink, gateway CAS, bounded role session, lease, target-intent, and
-SMTP-repair transaction; completed `5.16` owns the external gateway
-stability oracle; completed `5.17` owns capability-derived retained SES preparation; and completed
-`8.10` owns semantic SES readiness. The retained home/control-plane `prodbox-state` plus its Vault keyspace owns the SES
-checkpoint and lease; the selected substrate is only the target for SMTP KV materialization.
+The current revision is not deployment-qualified. The aggregate suite demonstrated that nominal
+readiness could pass or eventually return while the gateway's shared CPU/child lane could not meet
+the client deadline, that the AWS precondition and retained home authority were different failure
+domains, that continuity workers could interleave one logical transition, and that a retained SES
+failure could skip independent local restoration.
 
-All previously completed sprint work remains preserved. Phases `6` and `7` stay closed because the
-new work does not expand their owned surfaces, per Standard N. The June 26 and June 5–9 live runs
-remain historical evidence for their then-implemented paths, not proof of the newly specified
-bounded-runtime and clean-state preparation requirements. Current phase status is the table above;
-cleanup of superseded paths is owned only by
-[legacy-tracking-for-deletion.md](legacy-tracking-for-deletion.md).
+The target correction is physical and type-directed: Bootstrap Broker, Lifecycle Authority, Target
+Secret Agent, and Gateway Runtime are separate workloads; operation-indexed `CapabilityRef`s bind
+observation/admission/execution; the authority uses a durable decide/evolve journal and outbox;
+gateway emitters use single-writer identity-bound journals; one absolute deadline spans each call;
+and cleanup is an always-run DAG.
+
+Sprint `0.16` owns this doctrine/plan correction. Phases `1`–`8` are reopened through Sprints
+`1.61`–`8.12`. Earlier completed sprints remain historical evidence for their stated surfaces,
+not evidence that the current topology is qualified. Deployment qualification status and evidence
+live only in [DEVELOPMENT_PLAN/README.md](README.md#deployment-qualification).
 
 ## Architecture Summary
 
@@ -481,18 +473,28 @@ cleanup of superseded paths is owned only by
 | Supported host runtime | `Ubuntu 24.04 LTS` with systemd | `prodbox` supported-host gate |
 | Configuration | Binary-sibling Tier-0 `prodbox.dhall` decoded directly into Haskell types through its `parameters` payload, with generated `prodbox-config-types.dhall` / `test-secrets-types.dhall` schemas and no supported `prodbox-config.json` artifact | Executable sibling plus Haskell schema renderer |
 | Host diagnostics | `prodbox host ensure-tools|check-ports|info|firewall ...` | Haskell CLI |
-| Local RKE2 lifecycle | `prodbox cluster reconcile|delete --yes|status|health|wait|start|stop|restart|logs|workload-logs` | Haskell CLI; reconcile compiles the validated component DAG into component-owned steps plus an explicit edge tail, carries that order in the Plan payload, and polls one-shot readiness observations within bounded fail-closed barriers before dependants. Delete retains hermetic success reporting and actionable non-zero uninstall summaries. |
+| Local RKE2 lifecycle | `prodbox cluster reconcile|delete --yes|status|health|wait|start|stop|restart|logs|workload-logs` | Haskell CLI; reconcile compiles exact capability requirements into component-owned steps. Observation, admission, and execution resolve through the same operation-indexed `CapabilityRef`; delete and suite cleanup use typed always-run obligations rather than a first-failure list. |
 | Registry and image reconcile | Single-binary in-cluster `registry:2` with MinIO storage, a bounded storage-bootstrap exception, idempotent public/custom-image population, alternate-source retry, and native-host-architecture publication for the Envoy Gateway edge and chart workloads | Haskell lifecycle runtime |
 | Kubernetes utilities | `prodbox cluster health|wait|logs|workload-logs` | Haskell CLI |
 | AWS substrate provision/teardown (EKS) | `prodbox aws stack eks reconcile|destroy --yes` | Haskell orchestration plus Pulumi; provisions the `aws-eks` registry stack (Pulumi stack id `aws-eks-test`) for the AWS substrate. The `aws-eks` canonical suite validation runs against it. |
 | AWS substrate provision/teardown (Route 53 subzone) | `prodbox aws stack aws-subzone reconcile|destroy --yes` | Haskell orchestration plus Pulumi; provisions the delegated AWS-substrate hosted zone used by public-edge proofs. |
 | AWS substrate provision/teardown (HA RKE2) | `prodbox aws stack test reconcile|destroy --yes` | Haskell orchestration plus Pulumi; provisions the EC2 portion of the AWS substrate. The `ha-rke2-aws` canonical suite validation runs against it. |
-| Pulumi backend state | MinIO bucket `prodbox-state` on the local cluster; Sprint `7.14` hydrates each stack into a RAM-backed `file://` scratch backend and stores the checkpoint back through the opaque Model-B object store | Local cluster bootstrap plus bounded backend validation, Vault readiness, and encrypted object-store access |
+| Pulumi backend state | Immutable encrypted checkpoint blobs: primary bytes in MinIO `prodbox-state` plus mandatory receipt-committed exact copies at the independent long-lived S3 coordinate, referenced atomically from a versioned Lifecycle Authority record and hydrated only into bounded RAM-backed scratch | Lifecycle Authority plus separate Backup Adapter and fenced provider worker; gateway and host-direct transports have no post-cutover authority |
 | Per-run Pulumi state (MinIO-backed; survives cluster wipes via MinIO's PV under `.data/prodbox/minio/0`) | Opaque `objects/<id>.enc` Model-B objects produced by `Prodbox.Pulumi.EncryptedBackend`; first-touch raw checkpoint migration imports legacy backend state before supported writes continue encrypted | Haskell Pulumi orchestration and AWS substrate helpers |
-| Gateway-owned secret-derivation MinIO bucket — **retired** | Historical `s3://prodbox?endpoint=127.0.0.1:39000` / `prodbox/master-seed`; the master-seed derivation model is retired (Sprint `3.19`) and gateway object-store access now targets the generic `prodbox-state` bucket (Sprint `4.30`) | Gateway daemon (`prodbox-gateway` MinIO principal) |
-| Gateway runtime operations | `prodbox gateway start --config <path>|status --config <path>|config-gen <output-path> --node-id <node-id>` | Haskell gateway runtime |
+| Gateway-owned secret-derivation MinIO bucket — **retired** | Historical `s3://prodbox?endpoint=127.0.0.1:39000` / `prodbox/master-seed`; the master-seed derivation model is retired (Sprint `3.19`). The pre-cutover gateway generic-object route is also scheduled for deletion; the target Gateway has no MinIO principal. | No target authority; history is retained only in the cleanup ledger |
+| Bootstrap Broker | Same-binary dedicated pre-Vault daemon command and internal Service | Sole bounded Vault initialize/unseal/status/rotation boundary; no mesh, lifecycle, provider, or target-secret API |
+| Lifecycle Authority | Same-binary retained control-plane daemon and internal Service | Authority epoch/time, operation journal, fences, checkpoint references, provider revisions, credential generations, and delivery outbox |
+| Target Secret Agent | Same-binary per-substrate internal daemon and Service | Allowlisted generation-checked Vault KV seal/CAS/read-back for that substrate plus an exact Kubernetes TLS-Secret lane; only the retained home Agent owns TLS DEK Transit exchange |
+| Authority Backup Adapter | Separate retained-home private Deployment and ServiceAccount | Closed mandatory independent-S3 backup/read-back/restore/GC programs; sole reader of the backup-store generation |
+| TLS Retention Adapter | Separate retained-home private Deployment and ServiceAccount | Closed ciphertext-only public-edge TLS retain/read-back/restore-receipt programs; never sees certificate/key plaintext |
+| Fenced Provider Worker | Separate retained-home private Deployment and ServiceAccount | Normal committed Pulumi/AWS provider intents only; sole reader of the Lifecycle-provider generation. Its SES inventory is sending identity/DKIM/MX/rules/capture only and has no IAM credential constructor. |
+| Credential Provisioner | On-demand ephemeral attested Job | One active mode-indexed genesis-backup, backup-repair, or operator-material permit at a time plus authenticated AWS-admin prompt ingress and direct Target-Agent handoff. The bounded first-reconcile session may process only the receipt-ordered identity members of its Genesis-bound plan digest and is absent after the session; every later action uses a fresh Job/prompt. It owns SES-SMTP create/rotate/remint, repair-time key deletion, and in-memory region-bound SMTP derivation, but not explicit `DestroyAwsSes`. |
+| External Material Ingress | On-demand ephemeral attested Job | Exactly one schema-indexed non-AWS material permit, initially ACME EAB; direct closed-payload handoff to retained-home Agent custody. It cannot reuse the AWS-admin session/identity plan, expose arbitrary paths/bytes, or make `config setup` secret-bearing. |
+| Admin Action Runner | On-demand ephemeral attested Job | Exactly one backup-receipted `DestroyAwsSes`, backend migrate/compatibility, or quota request/status permit. `DestroyAwsSes` proves consumers quiescent, waits for the Provider Worker's provider-stack absence receipt, deletes/read-backs external SMTP IAM, then tombstones target/custody Vault state while Agents live; all failures aggregate. Its action-indexed interpreter is not a normal provider-intent or credential capability. |
+| Decommission Runner | Standalone post-export process | Verifies and executes only a signed external decommission manifest after Authority permanent stop |
+| Gateway runtime operations | `prodbox gateway start --config <path>|status --config <path>|config-gen <output-path> --node-id <node-id>` | Haskell gateway mesh/DNS runtime with one actor and encrypted identity-bound retained journal per emitter; no lifecycle/bootstrap/object-store/target-secret proxy |
 | Public workload runtime | `prodbox workload start --config <path>` | Haskell runtime selected only through the `workload.mode = Api \| Websocket` field of the mounted Dhall config per [config_doctrine.md](../documents/engineering/config_doctrine.md); Sprint `3.14` removed the legacy env-var selector |
-| Gateway DNS writes | `dns_write_gate` on home local; `prodbox edge reconcile` on AWS | In-cluster Haskell gateway ownership for the home public record; AWS-substrate Route 53 A records point at the Envoy NLB targets and are reconciled by the explicit edge command |
+| Public A-record writes | Home `CapabilityRef 'GatewayDnsReconcileReadBack`; AWS registered Lifecycle Authority provider intent | Home Gateway-DNS owns only the exact home record. EKS Gateway DNS is disabled; the AWS A record points at Envoy NLB targets and is observed/ensured/deleted/read back by the retained authority's narrow AWS-edge worker. |
 | DNS check | `prodbox dns check` | Haskell CLI |
 | Shared public-edge route catalog | `src/Prodbox/PublicEdge.hs` | Haskell-owned shared-host path catalog and issuer derivation for application and admin routes |
 | Chart delivery | `prodbox charts list|status <chart>|reconcile <chart> [--dry-run] [--plan-file <path>]|delete <chart> [--yes] [--dry-run] [--plan-file <path>]` | Haskell chart platform over the supported `gateway`, `keycloak`, `vscode`, `api`, and `websocket` chart surfaces, with `gateway` kept separate from the Envoy public edge and the shared-host browser, API, WebSocket, and admin paths delivered behind Envoy |
@@ -500,30 +502,27 @@ cleanup of superseded paths is owned only by
 | Public-edge auth model | Envoy-enforced Keycloak JWT auth and RBAC on the shared hostname, with explicit bearer-token carriers, browser return paths, and JWKS metadata ownership | Keycloak issuer plus Envoy policy |
 | Public-edge transport boundary | Public listener TLS terminates at Envoy on the supported path; backend HTTP remains the current workload default and backend TLS or mTLS requires later explicit doctrine ownership | Haskell lifecycle plus chart doctrine |
 | Optional realtime-state model | Redis-backed shared state for supported WebSocket workloads today and any later explicit external rate-limit service | Haskell chart platform plus application workload doctrine |
-| Interactive onboarding | `prodbox config setup` | Haskell CLI plus prompt-driven temporary admin AWS credentials and AWS CLI subprocesses |
-| AWS IAM, quota, and EBS maintenance | `prodbox aws policy|setup|teardown|quotas check|quotas request|ebs reap-test --yes` | Haskell CLI plus AWS CLI subprocesses; `aws teardown` carries the Sprint `7.6`/`7.7` `PulumiResiduePolicy` contract (default refuse, `--destroy-pulumi-residue` to destroy live stacks first, `--allow-pulumi-residue` operator-acknowledged orphan escape; mutually exclusive at parse time). `aws setup` auto-detects `AKIA…` vs `ASIA…` access keys to conditionally prompt for the session token (Sprint `7.7`). `aws ebs reap-test --yes` deletes only test-scoped EBS volumes for the canonical AWS EKS test cluster using operational `aws.*` loaded from Vault/config. |
-| AWS IAM validation harness | `prodbox test integration aws-iam`, targeted `prodbox test integration <name> --substrate aws` validations, `prodbox test integration all`, `prodbox test all` | Shared Haskell validation harness with idempotent IAM-user and Vault/config cleanup. Sprint `7.6` orphan-safety guards: the harness postflight auto-destroys per-run Pulumi stacks (`aws-eks`, `aws-eks-subzone`, `aws-test`) on success / failure / Ctrl-C when a managed suite may provision them. Sprint `7.10` (2026-05-29): the operational-credential teardown (clearing operational `aws.*` + deleting the operational `prodbox` IAM user) runs **only when the per-run destroy succeeded** (pure `clearOperationalCredsAfterPostflight`); on a per-run destroy failure it is **held** so the orphaned per-run stacks keep the operational creds needed to destroy them on retry. The per-run EKS destroy itself now drains the cluster's AWS-affecting K8s resources before `pulumi destroy` (Sprint `4.23`), closing the May 28/29 `DependencyViolation` root cause. Sprint `7.9` (2026-05-29): the harness postflight teardown (`runAwsIamHarnessTeardown`) no longer refuses on long-lived `aws-ses` residue. The Sprint `7.7` `BypassPerRunResidueOnly` refusal was correct only pre-Sprint-4.10, when `aws-ses` was operationally credentialed; post-4.10 `aws-ses` ops acquire admin power through the interactive `SecretRef.Prompt` (the harness simulating it from the `test-secrets.dhall` fixture `aws_admin_for_test_simulation.*`, not a production-config block), so clearing operational `aws.*` cannot strand it. The postflight now uses `BypassAllResidueForHarnessRefresh`, matching the preflight (Sprint `7.5.c.v.c`), so an `aws-ses`-live run no longer strands the freshly-created operational `prodbox` IAM user. |
-| Leak-proof resource lifecycle | `Prodbox.Lifecycle.ResourceClass`, `Prodbox.Lifecycle.ResourceRegistry`, and typed resource modules such as `Prodbox.Lifecycle.EbsVolume` | Typed managed-resource registry — the SSoT for every AWS/cluster resource prodbox can create and how to `discover`/`destroy` it. Teardown (`cluster delete`, `aws teardown`, `nuke`) composes idempotent typed reconcilers with `Unreachable` never silently passing; `prodbox dev check` makes a creatable-but-undiscoverable resource unrepresentable. Sprint `4.39` extends the class table with `aws-ebs-volumes`, typed EC2 `describe-volumes`/`delete-volume`, and retain/test-scoped tag partitioning; Sprint `4.40` adds the test-scoped EBS reaper in suite postflight, `cluster delete --cascade`, and `aws ebs reap-test --yes`, plus the retain-safe `Delete`-only drain guard. Doctrine: [lifecycle_reconciliation_doctrine.md § 3.1](../documents/engineering/lifecycle_reconciliation_doctrine.md). |
+| Interactive onboarding | `prodbox config setup` | Haskell CLI authors and validates Tier-0 boot/proposal coordinates only; credentialed effects use their explicit command and permit path |
+| AWS IAM, quota, and EBS maintenance | `prodbox aws policy|setup|teardown|quotas check|quotas request|ebs reap-test --yes` | The public names remain Haskell CLI surfaces. Identity setup/rotation/repair uses a mode-indexed Credential Provisioner; it is the sole SES-SMTP create/rotate/remint and repair-key-delete owner and derives the SMTP payload before handing only `SesSmtpSource` to home custody. `DestroyAwsSes`/migrate/compatibility/quota actions use the separate Admin Action Runner; normal EBS/provider work uses the fenced Provider Worker, whose SES program cannot represent IAM credentials. Teardown follows lifecycle-class-correct dependency cleanup; `nuke` runs only from an externally exported manifest and retires TLS prefixes before the final shared backup-store/bucket node. |
+| AWS IAM validation harness | `prodbox test integration aws-iam`, targeted `prodbox test integration <name> --substrate aws` validations, `prodbox test integration all`, `prodbox test all` | The harness submits the same role-specific durable setup operation as the public flow and registers cleanup before mutation. It deletes/re-observes and tombstones only Operational Lifecycle-provider/AWS-run DNS01 resources after dependants; it exact-consumer-read-backs retained backup/TLS/home-DNS/SES-SMTP generations and custody receipts. The current one-user/shared-`aws.*` and Pulumi-owned SMTP implementations are pre-cutover history owned by Sprints `4.50`/`7.33`/`8.11`, not this target row. |
+| Leak-proof resource lifecycle | `Prodbox.Lifecycle.ResourceClass`, `Prodbox.Lifecycle.ResourceRegistry`, and typed resource modules such as `Prodbox.Lifecycle.EbsVolume` | Pure data-only registry plus committed desired-absence programs cover every creatable stack, retained/test EBS, controller resource, exact A/TXT record, operational IAM/key, retained bucket/object, and mutating canary. Teardown uses an always-run DAG; `Unobservable` never means absent, and no create-call lint carve-out bypasses registration. Doctrine: [lifecycle_reconciliation_doctrine.md § 3.1](../documents/engineering/lifecycle_reconciliation_doctrine.md). |
 | Formal verification | `prodbox dev tla-check` | Haskell CLI invoking the TLA+ toolchain |
 | Code quality gate | `prodbox dev check` | Haskell CLI plus governed doctrine-alignment enforcement |
 | Status and blockers | `DEVELOPMENT_PLAN/` | This plan suite |
 
 ## Current Repository State
 
-The Haskell-only baseline remains implemented, and the bounded-gateway, constant-time chart-probe,
-retained-preparation, and exact semantic SES-readiness contracts are now implemented. Phases
-`0`–`8` are closed on their owned surfaces, with no `Active`, `Planned`, or `Blocked` phase-owned
-sprint. The previous graph-derived reconcile, shallow readiness, Vault-root, Model-B encryption,
-chart, cleanup, and substrate foundations remain implemented and were not rolled back by the July
-reopen.
+The Haskell-only baseline remains implemented, but its gateway-backed lifecycle authority,
+nominal deep-readiness target, subprocess object-store path, synchronous retained SES bracket, and
+first-failure restore sequence are superseded. Phase `0` is reclosed on the corrected doctrine;
+Phases `1`–`8` are reopened through the forward dependency chain in the Clean-Room Sequence.
 
-There is no remaining declared phase-owned code gap. Sprints `1.60`, `2.31`, `3.25`, `4.47`,
-`5.16`, `5.17`, and `8.10` are complete. Fresh AWS identity/DKIM/MX/rule propagation and deployed
-home/AWS invite aggregates remain non-blocking `Live-proof: pending` axes. The supported
+Sprints `1.60`, `2.31`, `3.25`, `4.47`, `5.16`, `5.17`, and `8.10` remain complete historical work
+for their stated surfaces. They do not qualify the expanded process topology. The supported
 operator surface remains `prodbox`; configuration remains direct `Dhall -> Haskell types` rooted at
 the binary-sibling Tier-0 `prodbox.dhall`; test-only plaintext remains isolated to
-`test-secrets.dhall`; build roots remain `.build/prodbox` and `/opt/build`; and the unsupported
-Python runtime/tooling surfaces remain removed.
+`test-secrets.dhall`; build roots remain `.build/prodbox` and `/opt/build`; and unsupported Python
+runtime/tooling surfaces remain removed.
 The supported public edge uses MetalLB, Envoy Gateway, Gateway API, cert-manager, and
 Keycloak on the single public hostname `test.resolvefintech.com`. Every externally reachable
 application or operational dashboard routes through explicit shared-host paths such as `/auth`,
@@ -535,9 +534,9 @@ on a true `/ws` upgrade with Redis-backed shared state and readiness-based drain
 terminates at Envoy while backend TLS or mTLS remains outside the supported chart-workload
 contract.
 
-Root guidance and the governed public-edge, gateway, chart-platform, registry, SES-readiness, and
-testing docs agree on the Haskell-only baseline, the closed code-owned phase surfaces, and the
-separate non-blocking live-proof axes.
+Root guidance and governed doctrine agree on the target Bootstrap Broker, Lifecycle Authority,
+Target Secret Agent, and Gateway Runtime split. Current implementation and qualification status
+remain plan-owned rather than duplicated in engineering docs.
 
 The authoritative lifecycle target uses a single in-cluster `registry:2` with MinIO storage and
 native-architecture-only publication: every later Helm deployment pulls through that registry,
@@ -572,13 +571,14 @@ than restated here as a fresh rerun log.
   the governed doctrine-alignment contract described by
   `documents/engineering/code_quality.md`. The repo-owned policy scan excludes generated or
   retained runtime roots such as `.build/`, `dist-newstyle/`, and `.data/`.
-- `src/Prodbox/Aws.hs` owns both the public onboarding flow and the standalone AWS administration
-  command family. Elevated/admin AWS power enters through one runtime path — the interactive
-  `SecretRef.Prompt` — for `prodbox config setup`, `prodbox aws setup`, the native IAM harness,
-  `aws-ses` stack ops, and `prodbox nuke`. The ephemeral prompted credential is held in memory for
-  one command, used once to mint the dedicated least-privilege `prodbox` identity, then discarded
-  (never written as plaintext to Tier-0 Dhall, never stored in Vault). The test harness automates that
-  prompt by feeding the `TestPlaintext` `aws_admin_for_test_simulation.*` fixture from
+- `src/Prodbox/Aws.hs` owns the standalone AWS administration command family. Elevated/admin AWS
+  power enters through `SecretRef.Prompt` only after a signed permit selects an attested ephemeral
+  Credential Provisioner or Admin Action Runner. Prompt bytes travel only over authenticated
+  process stdin, are never argv/environment/Kubernetes-object/disk/log/Authority/Provider/Gateway
+  data, and are discarded after one closed action. `prodbox config setup` authors Tier-0
+  coordinates and does not perform credentialed effects. Total `nuke` instead uses the distinct
+  post-export Decommission Runner. The test harness automates the permitted prompt by feeding the
+  `TestPlaintext` `aws_admin_for_test_simulation.*` fixture from
   `test-secrets.dhall` for suite-driven destructive validation, long-lived stack, and `prodbox nuke`
   flows.
 - `src/Prodbox/TestPlan.hs`, `src/Prodbox/TestRunner.hs`, and `src/Prodbox/TestValidation.hs`
@@ -586,15 +586,17 @@ than restated here as a fresh rerun log.
   `prodbox test integration <name> --substrate aws` validations,
   `prodbox test integration all`, and `prodbox test all` through one suite-level Haskell IAM
   harness.
-- That shared harness now deletes any pre-existing dedicated `prodbox` IAM user and that user's
-  access keys before provisioning, uses any pre-existing `aws.*` only to discover and delete the
-  IAM user associated with those credentials, proves STS-federated operational credentials with a
-  compact AWS-validation session policy, waits for the dedicated IAM-user credentials to pass STS
-  and repeated Route 53 hosted-zone probes, mints the IAM-user operational `aws.*` into Vault KV
-  after Vault is unsealed by simulating the elevated-credential prompt from the `test-secrets.dhall`
-  fixture `aws_admin_for_test_simulation.*` (cert-manager Route 53 DNS01 credentials do not support
-  an STS session-token field), and clears the generated operational `aws.*` from Vault KV before
-  returning even when later prerequisites fail.
+- The target harness reconciles separate Lifecycle-provider, long-lived Authority-backup,
+  TLS-retention, Gateway-DNS, per-substrate cert-manager-DNS01, and deterministic `LongLived`
+  SES-SMTP IAM resources, target-seals and generation-CAS delivers every key, and proves each exact
+  capability independently. The retained-home Agent keeps only closed schema-bound SES-SMTP/ACME-
+  EAB custody and can rewrap the same generation to a fresh AWS Agent/Vault; Authority never sees
+  plaintext. Ordinary suite cleanup revokes/tombstones only Operational identities; backup/TLS/
+  home-DNS/SES-SMTP generations and custody remain with their live exact consumers. Explicit
+  `DestroyAwsSes` removes external SMTP IAM before target/custody tombstones; explicit consumer
+  decommission may remove TLS/home-DNS, while backup is nuke-only. The current shared-user,
+  selected-target-only materialization, and Pulumi-owned SMTP implementations are pre-cutover legacy
+  owned by Sprints `4.50`, `7.33`, and `8.11`.
 - Phase `7` keeps `pulumi_logged_in` behind the visible local runbook on aggregate and
   cluster-backed suite paths.
 - `src/Prodbox/AwsEnvironment.hs` now isolates supported AWS subprocesses from ambient host AWS
@@ -699,12 +701,13 @@ than restated here as a fresh rerun log.
 
 ### Interpretation
 
-The supported architecture closes on the Haskell-only clean-room lifecycle, the AWS substrate
-`prodbox aws stack ...` surface, the in-cluster `registry:2` doctrine, and the Percona-backed
-Patroni application-database path. Compatibility-cleanup history now lives only in
+The unaffected baseline remains Haskell-only and retains the AWS stack surface, in-cluster
+`registry:2`, and Percona-backed Patroni path. The combined gateway lifecycle/config/credential
+implementation in the table below is historical pre-cutover inventory, not the target authority
+model. Replacement and removal ownership live in the reopened phases and
 [legacy-tracking-for-deletion.md](legacy-tracking-for-deletion.md).
 
-## Haskell-Only Architecture by Surface
+## Historical Implemented Baseline by Surface
 
 | Surface | Implementation | Completed In |
 |---------|----------------|--------------|
@@ -725,10 +728,10 @@ Patroni application-database path. Compatibility-cleanup history now lives only 
 
 ## Current Execution State
 
-As of the July 11 Sprint `8.10` closure, all declared phase-owned code surfaces are closed; no
-phase-owned sprint is `Active`, `Planned`, or `Blocked`. Fresh AWS propagation and deployed
-home/AWS invite aggregates remain non-blocking live-proof axes. The historical narrative below
-remains closure history for earlier work; it is not the current status ledger. Current status is
+As of the July 11 lifecycle-control-plane correction, Phase `0` is reclosed, Sprint `1.61` is
+Planned, and every later implementation sprint is blocked by its earlier owner. Deployment
+qualification is pending on both substrates. The historical narrative below remains closure
+history for earlier work; it is not the current status ledger. Current status is
 [Alignment Status](#alignment-status) and
 [DEVELOPMENT_PLAN/README.md](README.md#current-plan-status).
 
@@ -765,7 +768,9 @@ the two-issuer model these sprints first added was reverted 2026-06-07); Phase `
 that checkpoint for Sprints `8.7`/`8.8` and the live `8.5`/`8.6` proofs, all of which later closed.
 
 - Phase 0 defines the canonical plan suite and cleanup ledger.
-- Phase 1 owns the CLI, direct-Dhall config contract, `.build/prodbox` artifact contract, the
+- Phase 1 owns the operation-indexed capability graph, opaque references, absolute-deadline and
+  service-capacity algebra, native object-store protocol, managed Vault-session boundary, the CLI,
+  direct-Dhall config contract, `.build/prodbox` artifact contract, the
   Haskell test and quality framework, the local edge foundations, the one-host config contract,
   and config-selected MetalLB BGP support. The Phase `1` doctrine-adoption reopen covers
   Sprints 1.6–1.27, including `CommandSpec`, Plan / Apply, Subprocess ADT, prerequisite
@@ -796,7 +801,8 @@ that checkpoint for Sprints `8.7`/`8.8` and the live `8.5`/`8.6` proofs, all of 
   `PgError`), the `AppError` record shape (`errorKind`, `errorMsg`, `errorCause :: Maybe
   SomeException`), the naming-helper signatures with DNS-1123 / 63-character constraints,
   and the enumerated forbidden renderer inputs.
-- Phase 2 owns the gateway runtime, DNS inspection surface, the single-record Route 53 doctrine,
+- Phase 2 owns the single-writer emitter actor/journal, Bootstrap Broker extraction, gateway scope
+  reduction, the gateway runtime, DNS inspection surface, the single-record Route 53 doctrine,
   and the TLA+ validation entrypoint. Sprint `2.31` replaces the uptime-growing hot log/transport,
   proves `/v1/state` is bounded independently of uptime, and recloses Phase `2`. Its
   retained surfaces include the native `gateway-partition` validation path, peer-transport
@@ -837,7 +843,11 @@ that checkpoint for Sprints `8.7`/`8.8` and the live `8.5`/`8.6` proofs, all of 
   production-no-op / test-injected hook contract pattern (Sprint 2.13); and the
   `/healthz` / `/readyz` / `/metrics` response shapes captured as golden tests inside the
   lifecycle stanza (Sprint 2.14).
-- Phase 3 owns the chart platform, retained state model, supported public workload delivery, and
+- Phase 3 owns the separately resourced Bootstrap Broker, Lifecycle Authority, Target Secret Agent,
+  Authority Backup and TLS Retention Adapters, fenced Provider Worker, permit-created Credential
+  Provisioner/External Material Ingress/Admin Action Runner, and identity-bound emitter-journal workloads plus the chart
+  platform, retained state model,
+  supported public workload delivery, and
   the Percona-operator-backed Patroni PostgreSQL doctrine for Helm-managed workloads. The Phase
   `3` surfaces include the root-chart-only public `prodbox charts ...` surface, the JWT-protected
   API route, the Redis-backed
@@ -854,7 +864,9 @@ that checkpoint for Sprints `8.7`/`8.8` and the live `8.5`/`8.6` proofs, all of 
   artifacts via the `generatedSectionRule` registry. Sprint 0.4 extends Sprint 3.10 with
   the named forbidden reconciler flags `--force` and `--reinstall` plus the forbidden
   sister commands `install`, `upgrade`, `repair`, and `force-install` on the chart surface.
-- Phase 4 owns in-cluster `registry:2` lifecycle hardening, the bounded MinIO/storage bootstrap
+- Phase 4 owns the durable Lifecycle Authority aggregate, operation journal/outbox, immutable
+  checkpoint references, target delivery, authority-epoch cutover, in-cluster `registry:2`
+  lifecycle hardening, the bounded MinIO/storage bootstrap
   exception, the public AWS-validation Pulumi surface, lifecycle-owned bootstrap DNS
   and ACME projection, Python removal, and the native-host-architecture container-build doctrine.
   The Phase `4` lifecycle bootstraps the registry's MinIO storage, reconciles the single-binary
@@ -863,17 +875,26 @@ that checkpoint for Sprints `8.7`/`8.8` and the live `8.5`/`8.6` proofs, all of 
   Sprint 4.5 with the same forbidden-flag and sister-command discipline on the lifecycle
   reconciler; the one-cycle `install` alias has been retired, and `install`, `upgrade`,
   `repair`, and `force-install` are rejected at parse time.
-- Phase 5 owns public-edge diagnostics and external proof on Route 53, Envoy Gateway, Gateway
+- Phase 5 owns capability-bound preparation, the always-run cleanup DAG, the temporal
+  CPU/queue/deadline/fault oracle, public-edge diagnostics, and external proof on Route 53, Envoy
+  Gateway, Gateway
   API, certificate readiness, and external browser validation. It includes API, WebSocket,
   MinIO route classification plus named external proofs for those workloads. Sprint
   `5.5` closes this phase's redirect-only port `80` handling and proof while preserving HTTPS as
   the only application-traffic route.
-- Phase 6 owns the destructive clean-room rerun and zero-Python repository handoff criteria,
-  closed through the aggregate rerun, postflight restore, `config show`, `config validate`,
+- Phase 6 owns home-substrate cutover/rollback and prerequisite qualification evidence, the destructive
+  clean-room rerun and zero-Python repository handoff criteria, proved through consecutive
+  aggregates, always-run postflight restore, `config show`, `config validate`,
   `edge status`, and supported-path repository review gates for placeholder-domain and Python
-  residue.
-- Phase 7 owns interactive onboarding, IAM automation, quota management, and the temporary-admin
-  credential proof harness on one canonical public hostname with no placeholder-domain residue.
+  residue. Sprint `8.12` is the sole final deployment-qualification owner for both substrates after
+  the later shared SES workflow revision.
+- Phase 7 owns AWS Broker/Target-Agent/Gateway parity, exact transport to the single retained home
+  Lifecycle Authority, and deployment qualification, interactive
+  onboarding, IAM automation, quota management, and the temporary-admin credential proof harness
+  on one canonical public hostname with no placeholder-domain residue.
+- Phase 8 owns the durable SES specialization over the generic Lifecycle Authority: provider
+  revision, narrow mutation fence, semantic convergence, SMTP generation, target-delivery outbox,
+  and invite-flow fault campaign.
 
 ## Hard Constraints
 
@@ -895,18 +916,20 @@ that checkpoint for Sprints `8.7`/`8.8` and the live `8.5`/`8.6` proofs, all of 
 - When the pinned Haskell toolchain changes, `prodbox.cabal`, `cabal.project`, and the canonical
   build/test surfaces must be explicitly upgraded in the same change, including any required
   cabal-bound changes and full canonical validation reruns.
-- The executable-sibling Tier-0 `prodbox.dhall` is the supported host configuration source and
-  sealed-Vault bootstrap floor; once established, the in-force config SSoT is the
-  Vault-Transit-enveloped MinIO object.
+- The executable-sibling Tier-0 `prodbox.dhall` is the supported host seed/bootstrap source. Once
+  established, the Lifecycle Authority generation/digest/reference is the in-force config SSoT and
+  selects one immutable Vault-Transit-enveloped MinIO blob; a blob alone is never current.
 - The supported configuration handoff is direct `Dhall -> Haskell types`; no supported command or
   validation path may create `prodbox-config.json`, and `prodbox config compile` is not part of
   the target command surface.
-- There is exactly one runtime path by which elevated/admin AWS power enters prodbox: the
-  interactive `SecretRef.Prompt`. `prodbox config setup`, `prodbox aws ...`, the native IAM
-  harness, `aws-ses` stack ops, and `prodbox nuke` all prompt the operator for one ephemeral
-  elevated credential set, hold it in memory for one command, use it once to mint the dedicated
-  least-privilege `prodbox` identity, then discard it — it is never written to
-  `prodbox.dhall`, never stored in Vault, never persisted to disk.
+- There is exactly one runtime ingress by which elevated/admin AWS bytes enter prodbox: an
+  authenticated `SecretRef.Prompt` stdin stream with exactly three disjoint consumers: the
+  permit-selected Credential Provisioner for identity work, the permit-selected Admin Action
+  Runner for its one closed action, and the post-export Decommission Runner for a signed manifest.
+  `prodbox config setup` is not credentialed, normal provider work consumes an already sealed
+  Lifecycle-provider generation, and `prodbox nuke` derives authority only from its external
+  manifest while the prompt supplies transport credentials. Prompt bytes are never written to
+  `prodbox.dhall`, Vault, authority state, Kubernetes objects, argv/environment, logs, or disk.
 - Stored admin credentials are disallowed in `prodbox.dhall`; there is no production
   config-backed admin path. The only admin credential outside the prompt is the test-harness-only
   `TestPlaintext` fixture `aws_admin_for_test_simulation.*`, which lives in `test-secrets.dhall`
@@ -915,16 +938,12 @@ that checkpoint for Sprints `8.7`/`8.8` and the live `8.5`/`8.6` proofs, all of 
   flows non-interactively. See
   [vault_doctrine.md §§3/4/13](../documents/engineering/vault_doctrine.md) for the `SecretRef`
   model, config split, and classification.
-- The named and aggregate IAM validation surfaces share one joint idempotent harness that deletes
-  any pre-existing dedicated `prodbox` IAM user and all of that user's access keys before
-  provisioning, uses any pre-existing `aws.*` only to discover and delete the IAM user associated
-  with those credentials, proves STS-federated operational credentials with a compact
-  AWS-validation session policy, waits for the dedicated IAM-user credentials to pass STS and
-  repeated Route 53 hosted-zone probes, mints the IAM-user operational `aws.*` into Vault KV (after
-  Vault is unsealed) by simulating the interactive elevated-credential prompt from the
-  `test-secrets.dhall` fixture `aws_admin_for_test_simulation.*` (cert-manager Route 53 DNS01
-  credentials do not support an STS session-token field), and clears the generated operational
-  `aws.*` from Vault KV before returning.
+- The named and aggregate IAM validation surfaces share one joint idempotent harness that drives
+  the same durable setup operation from `aws_admin_for_test_simulation.*`, registers cleanup before
+  mutation, proves each role-specific generation, and deletes/tombstones Operational generations
+  on every exit. LongLived Authority-backup, TLS-retention, Gateway-DNS, home-DNS01, and SES-SMTP
+  generations plus schema-bound custody receipts are retained and verified, not deleted.
+  No role can authorize or stand in for another.
 - Full cluster delete preserves the configured manual PV root, including the durable Vault PV under
   `.data/vault/vault/0` and the MinIO PV under `.data/prodbox/minio/0`; chart secrets are
   Vault-backed and the master-seed derivation baseline has been removed.

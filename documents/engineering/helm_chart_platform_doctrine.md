@@ -20,7 +20,8 @@
 [storage_lifecycle_doctrine.md](./storage_lifecycle_doctrine.md),
 [unit_testing_policy.md](./unit_testing_policy.md),
 [vault_doctrine.md](./vault_doctrine.md),
-[bootstrap_readiness_doctrine.md](./bootstrap_readiness_doctrine.md)
+[bootstrap_readiness_doctrine.md](./bootstrap_readiness_doctrine.md),
+[lifecycle_control_plane_architecture.md](./lifecycle_control_plane_architecture.md)
 **Generated sections**: none
 
 > **Purpose**: Define the singleton chart identity, shared public-edge attachment model, external Patroni
@@ -87,6 +88,18 @@ The supported chart doctrine is:
     operator diagnostic and is forbidden as either lifecycle probe. Sprint `3.25` binds the
     existing endpoints through the typed `GatewayProbeSpec` source, generated chart defaults, and
     a negative chart-lint guard.
+16. The lifecycle control plane renders Bootstrap Broker, Lifecycle Authority, fenced Provider
+    Worker, Authority Backup Adapter, TLS Retention Adapter, Target Secret Agent, and Gateway Runtime
+    as separately scheduled steady workloads with distinct Services, ServiceAccounts, policies,
+    resource envelopes, bounded queues, and readiness identities. Credential Provisioner and Admin
+    Action Runner are disjoint on-demand one-shot Job/ServiceAccount roles. A shared image does not
+    collapse these authority or scheduling boundaries. Public root-chart names remain unchanged;
+    these platform/control-plane workloads are owned by reconcile, not additional
+    operator-selected application chart names.
+17. Each Gateway emitter is a stable one-replica StatefulSet identity. EKS journals use static
+    retained CSI volumes with `ReadWriteOncePod`; home journals use node-affined local/`hostPath`
+    PVs and do not claim CSI enforcement. Both substrates require the OS filesystem lock, durable
+    incarnation, Kubernetes Lease, and journal/admission-marker read-back before readiness.
 
 ## 1A. Chart Lint and Route Inventory Generation
 
@@ -128,6 +141,65 @@ future template edit cannot accidentally omit the values-backed resource stanza;
 `BestEffort`/QoS proof is owned by the canonical `resource-guardrails` validation. Namespace
 `ResourceQuota` and `LimitRange` manifests are rendered from the same profile set, making quota and
 container limits agree by construction.
+
+## 1C. Lifecycle Control-Plane Workload Rendering
+
+The target renderer projects the topology from
+[Lifecycle Control-Plane Architecture](./lifecycle_control_plane_architecture.md):
+
+| Workload | Sole authority | Required isolation |
+|---|---|---|
+| Bootstrap Broker | bounded Vault init, unlock, baseline, exact genesis-signing/TLS-envelope/retained-material key trust, seal status, and key rotation before Vault is usable | dedicated secret-free controller Service/SA/bootstrap-store policy plus isolated one-shot init and unseal secret workers for password/recovery-key/share handling, bounded queues/envelopes, and readiness identity |
+| Lifecycle Authority | authority epoch/time, durable operation journal, leases/fences, primary Model-B CAS, immutable checkpoint references, provider workflow, TLS/secret outboxes, and signed permit projection | dedicated Service/SA/Vault+primary-MinIO policy, typed Adapter/Worker clients only, recovery-reserved queue, and readiness identity; no AWS secret, prompt, plaintext credential, or S3 client |
+| Credential Provisioner | one active indexed `GenesisBackupPermit` / `GenesisCleanupPermit` / `RepairPermit` / schema-indexed `OperatorMaterialPermit` identity/store program and direct linear handoff to the named Agent; the retained first-reconcile session may receipt-order only AWS-admin members of the Genesis-bound exact plan | on-demand one-shot Job, dedicated SA/NetworkPolicy/resource envelope, verified Pod UID/image digest/permit/plan/next-member/prior-receipt/deadline/heartbeat binding, authenticated exec/attach stdin, no steady Service/PVC, and deletion read-back; EAB uses a separate schema-bound Job/frame and later actions use a fresh Job/prompt |
+| Admin Action Runner | closed `AdminActionPermit` exact SES+SMTP destroy/migrate/compatibility/quota program with stable read-back | distinct on-demand one-shot Job/SA/NetworkPolicy/resource envelope; `DestroyAwsSes` binds consumer, non-credential SES/S3, SMTP IAM, target-generation, and custody absence stages; no credential-provision, provider, or decommission program |
+| Fenced Provider Worker | closed normal provider intents, including non-credential SES/S3, and bounded scratch checkpoint execution/read-back | dedicated Deployment/Service/SA/queue/scratch budget and lifecycle-provider-only Vault role; no SMTP IAM identity/policy/key, prompt, credential permit, backup/TLS, or Authority-state policy |
+| Authority Backup Adapter | closed Authority prepare/blob/receipt/restore/GC protocol against the exact long-lived S3 prefix | dedicated Deployment/Service/SA/NetworkPolicy, `secret/aws/authority-backup-store`-only Vault role, managed session, bounded queue/resource envelope, and no provider/target/Gateway API |
+| TLS Retention Adapter | ciphertext/wrapped-DEK retain/read-back and restore-byte protocol for exact `public-edge-tls/<substrate>/<fqdn>` versions | dedicated Deployment/Service/SA/NetworkPolicy, `secret/aws/tls-retention-store`-only Vault role, bounded queue/resource envelope, and no plaintext/backup/provider/target policy |
+| Target Secret Agent | durable receipt sealing/continuation, allowlisted generation-checked Vault KV, opaque HMAC commitments, dedicated TLS Kubernetes-Secret capabilities, and on home the TLS-envelope plus closed SMTP/EAB custody/rewrap Transit lanes | one controller identity per substrate plus isolated one-shot secret-worker SA/session; exact receipt/target-KV and `prodbox-target-secret-commitment-<substrate>` HMAC-only policy, exact TLS Secret RBAC, and home-only non-exportable TLS/custody Transit policies; separately bounded normal, custody/rewrap, and selected-target materialization queues/envelopes |
+| Gateway Runtime | mesh membership, bounded signed state, ownership projection, DNS, and one encrypted identity-bound local emitter journal per node | stable per-emitter StatefulSet, Service/SA, registered journal PVC, OS lock/incarnation/Lease, bounded emitter mailbox and transport queues, gateway-only Vault policy, and readiness identity |
+
+No ServiceAccount may combine these policies. No Service selector may route one capability to a
+Pod that owns another. Gateway Runtime receives no generic MinIO, Pulumi, lifecycle, bootstrap, or
+target-Vault permission; its retained journal key is acquired through a managed renewable Vault
+session and heartbeat writes remain local. Gateway outage, restart, or queue saturation therefore
+cannot consume Lifecycle Authority admission capacity or prevent a durable operation from being
+observed, resumed, or closed.
+
+Graph reconnaissance resolves each operation/service/scope requirement to one opaque
+`CapabilityRef kind`. The chart supplies the service identity and coordinate for that reference;
+it does not inject a separate readiness/probe endpoint. Observation, admission, and execution use
+the same reference, and Kubernetes `/readyz` is only a cached admission projection for that
+workload's documented capability. A reachable Service, ready Pod, or nominal backend label alone
+is not capability evidence.
+
+No Job or Agent plaintext is rendered into argv, environment, ConfigMap, Kubernetes Secret,
+filesystem, PVC, event, status, or log. Prompt bytes reach a verified Job only through authenticated
+`pods/exec` stdin or attach after Pod UID, immutable image digest, ServiceAccount, permit binding,
+absolute deadline, and host heartbeat validation. Secret-bearing workers disable swap/core dumps,
+use bounded lifetime/memory, revoke sessions, terminate, and are deletion-read-back. They
+best-effort zeroize only owned mutable/mlocked buffers; rendering and qualification make no claim
+that Haskell immutable values, TLS/SDK libraries, or GC copies were byte-erased.
+
+AWS-admin and external-EAB ingress are different rendered permit schemas and linear frame decoders.
+The first-reconcile session can retain only its bounded AWS-admin frame; it cannot accept EAB bytes
+or switch schema. Credential Provisioner derives region-bound `SesSmtpSource` before home-custody
+handoff, so neither the home Agent nor any ConfigMap/Secret receives raw IAM secret-access-key bytes.
+
+TLS worker RBAC is generated from the exact `(substrate, FQDN, namespace, Secret name)` catalog.
+Observe/seal and materialize/read-back are distinct capability kinds and neither admits arbitrary
+Secret list/watch. Restore startup is ordered before cert-manager issuance: Authority names the
+receipt-committed immutable TLS-retention version, the Adapter returns bounded ciphertext/wrapped-
+DEK bytes, retained-home Agent rewraps the DEK to the newly attested selected worker, and that worker
+CAS-applies/read-backs the exact Secret. Corrupt, digest-mismatched, unobservable, not-yet-valid, or
+Authority-time-uncertain state blocks issuance; only positive absence or expiry proven by the pure
+trusted-Authority-time fold may lead to a separately committed issuance plan. AWS qualification
+deletes/recreates AWS Vault and EBS and proves this restore path before issuance.
+
+The former same-binary gateway pre-Vault mode, gateway object-store/federation/target-secret routes,
+and gateway-held lifecycle permissions are historical implementation surfaces retained only for
+the plan-owned epoch cutover. Implementation and deployment-qualification status remain exclusively in
+the Development Plan.
 
 ## 2. Singleton Chart Identity Rule
 
@@ -314,9 +386,13 @@ Rules:
    lifted in as static `Retain` PVs (CSI `volumeHandle`, AZ affinity) — no dynamic
    provisioning. See [storage_lifecycle_doctrine.md § 1](./storage_lifecycle_doctrine.md)
    (Sprint `7.28`).
-5. Every retained workload — `minio`, the Patroni PostgreSQL cluster, `vscode`, and
-   `vault` — is a StatefulSet; `minio`, `vscode`, and `vault` are single-replica and the
-   Patroni cluster is three-replica, so each contributes one PV per ordinal.
+5. Retained application/platform data workloads — `minio`, the Patroni PostgreSQL cluster,
+   `vscode`, and `vault` — are StatefulSets; `minio`, `vscode`, and `vault` are single-replica and
+   the Patroni cluster is three-replica, so each contributes one PV per ordinal. Each Gateway
+   emitter is also a stable one-replica StatefulSet identity and binds one separately registered
+   identity-bound emitter-journal PVC. On EKS that static EBS CSI claim is
+   `ReadWriteOncePod`; on home the local/`hostPath` PV is node-affined and exclusion instead composes
+   node pinning, the OS lock, durable incarnation, and Kubernetes Lease.
 6. The MinIO PV at `.data/prodbox/minio/0` holds the generic `prodbox-state` bucket. Sprint `4.30`
    routes Model-B logical objects, including the production in-force config read, through
    `prodbox-envelope-v2` Vault-Transit envelopes stored under Vault-keyed-HMAC opaque IDs
@@ -328,7 +404,10 @@ Rules:
    and the on-disk persistence statement by
    [storage_lifecycle_doctrine.md](./storage_lifecycle_doctrine.md).
 
-All non-PV chart state lives inside the cluster as native k8s Secrets and ConfigMaps.
+All non-PV chart state lives inside the cluster as native k8s Secrets and ConfigMaps. Gateway
+emitter continuity is PV state by design: each admitted node has one encrypted identity-bound
+retained journal volume registered in the lifecycle inventory; it is never reconstructed from peer
+state or stored in a generic gateway Model-B object.
 No `prodbox` command writes to `.prodbox-state/`; the directory is removed from the
 supported architecture and the `forbidDotProdboxState` lint in `prodbox dev check`
 enforces this. Every chart secret — Patroni roles, Keycloak admin, OIDC client
@@ -346,14 +425,18 @@ seed-bootstrap foundation. The websocket OIDC client-secret resolves directly vi
 `SecretRef.Vault`, the Keycloak and MinIO charts materialize their covered runtime secrets through
 Vault-login init containers, and MinIO admin bootstrap Jobs read root credentials through the same
 Vault-auth pattern. The VS Code Envoy `SecurityPolicy` client Secret is materialized from Vault by
-a chart Job, gateway event/AWS/MinIO credentials resolve through Vault Kubernetes auth, and Patroni
+a chart Job, Gateway event and dedicated Gateway-DNS credentials resolve through the Gateway role
+(never the Lifecycle-provider or cert-manager paths), and the current
+gateway MinIO credential is historical cutover residue, while Patroni
   role Secrets are materialized from Vault by the `keycloak-postgres` pre-install hook. Setup/admin
   helper reads, the sealed-startup structural proof, and the Sprint 3.19 legacy derivation/RPC
   removal have landed.)
 
 ### Daemon and workload config mount contract
 
-Every `prodbox`-launched in-cluster process (gateway daemon, workload Pods) takes its
+Every `prodbox`-launched in-cluster process (Bootstrap Broker controller/worker, Lifecycle Authority, Provider Worker,
+Authority Backup Adapter, TLS Retention Adapter, Target Secret Agent controller/worker, Credential
+Provisioner Job, Admin Action Runner Job, Gateway Runtime, and workload Pods) takes its
 runtime configuration from exactly one Dhall file at `--config`, per
 [config_doctrine.md](./config_doctrine.md). The chart-side rendering of that surface
 follows a uniform mount layout:
@@ -375,12 +458,46 @@ name). The empty default values omit that sibling for generic chart linting; pro
 values always supply it. See
 [config_doctrine.md §6-§7](./config_doctrine.md#6-cluster-mount-contract).
 
+Bootstrap Broker, Lifecycle Authority, Provider Worker, Authority Backup Adapter, TLS Retention
+Adapter, and Target Secret Agent use separate directory-mounted ConfigMaps under
+`/etc/<component>/config`, with distinct ServiceAccounts and policies matching §1C. Substrate
+identity and target KV allowlist live only in the Target Secret Agent document; that document also
+fixes the exact seal-receipt KV prefix, bounded secret-worker limits, receipt-retention/GC window,
+enumerated TLS Kubernetes Secret identities, and (home only) the `prodbox-tls-envelope` Transit
+lane plus the closed SMTP/EAB retained-material custody/rewrap lane and exact receipt catalog. Each
+substrate role also gets HMAC-only access to its exact
+`prodbox-target-secret-commitment-<substrate>` key, with no key export/list. Vault-KV, commitment
+HMAC, TLS-Secret RBAC, TLS-envelope, retained-material custody, and selected-target materialization
+capabilities have distinct references and policy documents. Custody/rewrap and target
+materialization have separate bounded worker counts, envelope-size limits, Transit/Vault latency
+budgets, attestation bounds, deadlines, and retry-after policies, so neither can starve ordinary
+Target-Agent or Authority work.
+
+Primary Model-B/provider/outbox coordinates and typed Worker/Adapter references live only in
+Lifecycle Authority. `secret/aws/lifecycle-provider` lives only in Provider Worker config/policy;
+the exact Authority-backup prefix and `secret/aws/authority-backup-store` live only in Authority
+Backup Adapter; exact `public-edge-tls/<substrate>/<fqdn>` prefixes and
+`secret/aws/tls-retention-store` live only in TLS Retention Adapter; pre-Vault and exact
+genesis-signing/TLS-envelope-key specifications live only in Bootstrap Broker. Gateway config
+carries none of those coordinates.
+
+Credential Provisioner and Admin Action Runner Jobs receive role/bounds/trust-only Dhall configs;
+they fetch the already committed signed permit through their authenticated Authority channel after
+attestation. The Credential Job additionally fixes exactly one ingress schema; it cannot decode an
+AWS-admin frame as EAB or vice versa. No prompt or created credential is a config value. The two Jobs use different
+ServiceAccounts, NetworkPolicies, program-tag allowlists, and permit decoders; Provider Worker and
+Decommission Runner use neither.
+
 The operator-facing ConfigMap holds no secret material — sensitive fields are typed
 `SecretRef.Vault` references that each consumer resolves against Vault at runtime.
 There is no Secret-mounted plaintext Dhall fragment and no `as Text` credential
 import: in-cluster consumers authenticate to Vault directly via Vault Kubernetes auth
 (a workload service account, a namespace + SA-bound Vault role, and a least-privilege
-policy), per [vault_doctrine.md §12](./vault_doctrine.md#12-in-cluster-service-auth). Sprint `2.30`
+policy), per [vault_doctrine.md §12](./vault_doctrine.md#12-in-cluster-service-auth). The target
+Gateway Runtime policy is limited to peer/DNS material and renewable local-journal key access; it
+cannot read bootstrap, Model-B, Pulumi, lifecycle, or target-secret data.
+
+**Historical implementation record (legacy cutover surface):** Sprint `2.30`
 single-sources the gateway-daemon role on the supported generated-render path:
 `Prodbox.Vault.RoleId` defines `VaultRoleGatewayDaemon :: VaultRoleId`, and `vaultRoleIdText`
 projects it to `prodbox-gateway-daemon`. Both the generated gateway release values in
@@ -403,7 +520,8 @@ binary does not read for config. (Vault Kubernetes auth delivery of credential m
 has an active Sprint 3.18 policy/role/service-account, auth-config, and seed-bootstrap foundation;
 the websocket OIDC SecretRef consumer, Keycloak / MinIO Vault-login init consumers, and MinIO admin
 bootstrap Job Vault-init consumers have landed; the VS Code Envoy `SecurityPolicy` client Secret is
-Vault-materialized by a chart Job; gateway event/AWS/MinIO Vault consumption has landed; Patroni
+Vault-materialized by a chart Job; gateway event/AWS/MinIO Vault consumption has landed in the
+historical combined gateway role, whose MinIO authority is a legacy cutover surface; Patroni
 role Secret materialization has landed; host/admin helper reads and AWS SES SMTP Vault writes have
 landed; sealed-startup structural proof landed.)
 
@@ -412,16 +530,19 @@ landed; sealed-startup structural proof landed.)
 The gateway chart renders liveness and readiness from one typed/defaulted probe configuration in
 `Prodbox.Gateway.Probe`: liveness targets the daemon's constant-time `/healthz` projection and
 readiness targets its constant-time `/readyz` lifecycle projection. `ChartPlatform` emits the same
-typed value used to generate the `gateway-probes.values` defaults, and the Deployment renders the
+typed value used to generate the `gateway-probes.values` defaults, and the StatefulSet renders the
 path, initial delay, period, timeout, failure threshold, and success threshold from those values.
 Neither probe may call `/v1/state`, sort or encode gateway semantic state, or perform a
-backend/AWS/Vault check; deep dependency readiness and run-wide runtime stability are separate
-observers.
+backend/AWS/Vault check. `/readyz` is a cached projection of managed gateway sessions, emitter
+actor state, and queue admission; it does not make a nominal backend claim. Deep capability
+observation uses the same operation-indexed `CapabilityRef` later used for admission and execution,
+never a separately injected probe endpoint. Run-wide runtime stability remains a separate
+time-windowed observer.
 
 Sprint `3.25` landed this chart binding over the constant-time endpoints from Sprint `2.10`.
 `prodbox dev lint chart` rejects `/v1/state` in either probe, independent liveness/readiness
 negative fixtures pin that refusal, and a golden pins the typed generated defaults. See
-[Bootstrap Readiness Doctrine §2.1](./bootstrap_readiness_doctrine.md#21-dependency-readiness-vs-runtime-stability)
+[Bootstrap Readiness Doctrine §2.4](./bootstrap_readiness_doctrine.md#24-dependency-readiness-vs-runtime-stability)
 and [Distributed Gateway Architecture §11](./distributed_gateway_architecture.md#11-rest-api).
 
 ## 7. Delete Semantics
@@ -454,7 +575,7 @@ chart names.
 | `vscode` | root | `keycloak` | none beyond dependency chain | 50Gi | yes |
 | `api` | root | none | shared `vscode`-anchored public edge plus shared Keycloak contract | none | yes |
 | `websocket` | root | `redis` | shared `vscode`-anchored public edge plus shared Keycloak contract | none | yes |
-| `gateway` | root | none | none | none | yes |
+| `gateway` | root | none | none | one retained encrypted emitter-journal PVC per admitted node | yes |
 
 Root charts:
 
@@ -505,8 +626,13 @@ The current implementation boundary is:
 - Chart reset must not treat production ACME issuance as disposable chart state. The public-edge
   **production** TLS certificate is reclassified from disposable PerRun chart state to a
   rate-limit-safe `LongLived` resource (Sprints 4.24/7.11/8.7). Its material is retained in the
-  long-lived `pulumi_state_backend` S3 bucket under the substrate-scoped key
-  `public-edge-tls/<substrate>/<fqdn>`, and restored before every issuance on **all** rebuild
+  long-lived `pulumi_state_backend` S3 bucket by the separately credentialed TLS Retention Adapter
+  under the substrate-scoped key `public-edge-tls/<substrate>/<fqdn>`. The Adapter receives only
+  ciphertext, retained-home-Transit-wrapped DEK bytes, public certificate metadata, and digests;
+  it has no Authority-backup/provider credential or plaintext path. The per-substrate/FQDN
+  Authority fold serializes immutable versions and promotes only a source-Secret-reobserved,
+  Adapter-read-back current ref. Restore always names that committed ref, never S3 latest. Material
+  is restored before every issuance on **all** rebuild
   paths — including a fresh cluster after `prodbox cluster delete`, not only the
   chart-delete→redeploy path that the superseded `vscode/public-edge-tls` →
   `prodbox/public-edge-tls-retained` in-cluster Secret copy covered. The
@@ -519,7 +645,10 @@ The current implementation boundary is:
   [acme_provider_guide.md](./acme_provider_guide.md#2-zerossl) for the ZeroSSL ACME provider and the
   single-issuer rebuild-safe certificate retention model, and
   [../../DEVELOPMENT_PLAN/substrates.md → Resource Lifecycle Classes](../../DEVELOPMENT_PLAN/substrates.md#resource-lifecycle-classes)
-  for the lifecycle-class registration; the certificate is removed only by `prodbox nuke`.
+  for the lifecycle-class registration; retained material is removed only by explicit public-edge
+  consumer decommission or `prodbox nuke`. Because TLS and Authority backup share the bucket, TLS
+  decommission deletes exact prefix versions and its identity but never the bucket; the final
+  Authority-backup nuke node proves every prefix absent before bucket deletion.
 - Public API and WebSocket workloads still follow the same public-edge doctrine and do not add
   chart-local auth proxies, extra public `Gateway` resources, or a parallel ingress model.
 
@@ -563,8 +692,10 @@ Vault is sealed, none of these secrets resolve and secret-dependent startup fail
 inventory and chart ServiceAccounts; the websocket root chart now reads its OIDC client secret
 through direct app-side SecretRef resolution, while Keycloak and MinIO materialize their covered
 runtime fields through Vault-login init containers, and the VS Code Envoy `SecurityPolicy` client
-Secret is materialized from Vault by a chart Job. Gateway event/AWS/MinIO credentials now resolve
-from Vault; Patroni role Secrets are materialized from Vault by the `keycloak-postgres` hook;
+Secret is materialized from Vault by a chart Job. Gateway event and dedicated Gateway-DNS
+credentials resolve from the Gateway role; provider and cert-manager credentials do not;
+the current gateway MinIO credential is historical cutover residue. Patroni role Secrets are
+materialized from Vault by the `keycloak-postgres` hook;
 host/admin helper reads, AWS SES SMTP Vault writes, sealed-startup structural proof, and Sprint
 3.19 legacy derivation/RPC removal have landed.)
 
@@ -577,12 +708,26 @@ separately deployed API/WebSocket) rather than depending on a second public iden
 public-load-balancer hairpin behavior. The host-side MinIO console admin route uses the same
 public-edge rule: substrate-aware public issuer and redirect URLs, plus the shared internal
 Keycloak token endpoint for Envoy's provider exchange. The AWS substrate platform installs those
-admin routes after gateway MinIO bootstrap.
+admin routes after the platform MinIO bootstrap.
 
 The gateway chart emits Namespace resources for cross-namespace RBAC targets such as `keycloak`
-and `vscode`. SMTP sync no longer pre-creates namespace-local SMTP Secrets; it writes the
-externally-owned `secret/keycloak/smtp` Vault KV object after reading the retained `aws-ses` outputs
-and deriving the SES SMTP password. Existing Keycloak realms are still patched by
+and `vscode`. SMTP sync no longer pre-creates namespace-local SMTP Secrets. In the target flow,
+Credential Provisioner derives region-bound `SesSmtpSource` from the one-time IAM response and the
+retained-home Agent Transit-seals/reads back its closed custody receipt. Lifecycle Authority durably
+commits that current receipt, credential generation, and per-target outbox intent. A selected
+substrate worker contributes an attested ephemeral public key; a home custody worker decrypts only
+the exact current receipt and re-encrypts it to that worker. The selected Agent then starts its
+isolated one-shot materializer, decrypts only into bounded memory, performs the
+allowlisted generation-checked `secret/keycloak/smtp` Vault KV CAS and mandatory version/opaque-
+commitment read-back, best-effort zeroizes owned mutable buffers, revokes the session, exits, and is
+deletion-read-back. ACME EAB uses the same closed custody/rewrap shape for `secret/acme/eab` but a
+separate external-EAB ingress Job/frame; it never reuses AWS-admin bytes. Its non-secret key ID is
+rendered to issuer reconcile only from a typed generation-bound Agent/`ConfigObserve` projection,
+while the HMAC is materialized in-cluster; no host Vault client exists. No unkeyed secret hash or
+raw IAM secret is persisted or exposed. A source receipt is retained through every target delivery,
+rebuild, and supersession/idempotency window and garbage-collected only from a committed intent with
+absence read-back. Gateway Runtime is not involved.
+Existing Keycloak realms are still patched by
 `prodbox users invite` before invite sends because realm import is first-create only, but the helper
 now reads the SMTP map from the same Vault KV object the Keycloak chart materializes through its
 Vault-login init container.
@@ -614,8 +759,9 @@ model; the statements below are the chart-platform-side summary.
   3.18 foundation now has the typed chart-secret inventory, generated Vault policies/roles, and
   explicit ServiceAccounts for the straightforward chart controllers, and `vault reconcile` seeds
   generated/static KV objects after configuring the Kubernetes auth backend. The `websocket`
-  workload uses this path today for its OIDC client secret; Keycloak, MinIO, VS Code, gateway,
-  Patroni, and host/admin flows also use Vault-backed materialization or direct Vault reads. The
+  workload uses this path today for its OIDC client secret; Keycloak, MinIO, VS Code, Gateway
+  Runtime, Bootstrap Broker, Lifecycle Authority, Target Secret Agent, Patroni, and host/admin
+  flows use separate Vault-backed materialization or direct Vault reads under distinct roles. The
   Vault chart binds its own ServiceAccount to `system:auth-delegator` for TokenReview. Sprint
   3.19 removed the old derivation and generated-secret paths around this model. See
   [vault_doctrine.md §12](./vault_doctrine.md#12-in-cluster-service-auth).
@@ -634,6 +780,7 @@ Delivery sequencing, completion status, remaining work, and cleanup ownership ar
 
 ## Cross-References
 
+- [Lifecycle Control-Plane Architecture](./lifecycle_control_plane_architecture.md)
 - [CLI Command Surface](./cli_command_surface.md)
 - [Envoy Gateway Edge Doctrine](./envoy_gateway_edge_doctrine.md)
 - [Storage Lifecycle Doctrine](./storage_lifecycle_doctrine.md)

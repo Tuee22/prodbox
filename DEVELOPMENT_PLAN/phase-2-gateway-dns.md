@@ -7,6 +7,7 @@
 [pulsar_messaging_doctrine.md](../documents/engineering/pulsar_messaging_doctrine.md),
 [chaos_hardening_doctrine.md](../documents/engineering/chaos_hardening_doctrine.md),
 [distributed_gateway_architecture.md](../documents/engineering/distributed_gateway_architecture.md),
+[lifecycle_control_plane_architecture.md](../documents/engineering/lifecycle_control_plane_architecture.md),
 [pure_fp_standards.md](../documents/engineering/pure_fp_standards.md),
 [resource_scaling_doctrine.md](../documents/engineering/resource_scaling_doctrine.md),
 [streaming_doctrine.md](../documents/engineering/streaming_doctrine.md),
@@ -19,6 +20,14 @@
 > Binary](../documents/engineering/README.md).
 
 ## Phase Status
+
+⏸️ **Reopened and blocked by Sprint `1.62`.** Sprint `2.32` replaces the global child-process
+permit and interleavable continuity loops with one bounded single-writer emitter actor that owns an
+entire durable transition under one absolute deadline. Sprint `2.33`, blocked by `2.32`, extracts
+pre-Vault recovery into a minimal Bootstrap Broker and leaves the Gateway Runtime responsible only
+for mesh, ownership, DNS, and peer-state behavior. Historical Sprint `2.31` remains Done for its
+bounded-state result; the new work removes the runtime coupling that its capacity-one scheduler
+introduced.
 
 ✅ **Reclosed 2026-07-10 on bounded gateway execution.** Sprint `2.31` replaces the
 uptime-growing append-log/full-retransmission path with bounded semantic state, signed
@@ -2791,6 +2800,184 @@ effect authority rather than an ever-growing heartbeat/event list or complete-lo
 - Sprint `3.25` consumes `/healthz` and `/readyz`; Sprint `5.16` separately supplies the external
   runtime-stability oracle.
 - Keep `pure_fp_standards.md` and the other Sprint `2.31` doctrine pages linked back to this phase.
+
+## Sprint 2.32: Single-Writer Emitter Actor and Whole-Transition Admission [⏸️ Blocked]
+
+**Status**: Blocked
+**Deployment qualification**: pending
+**Implementation**: planned modules under `src/Prodbox/Gateway/Emitter/`, revisions to
+`Gateway/Daemon.hs`, `Gateway/Emitter/Journal.hs`, `Continuity.hs`, `ChildSchedule.hs`, the gateway TLA+
+model, daemon-lifecycle tests, and fault/property suites
+**Blocked by**: Sprint `1.62`
+**Independent Validation**: a pure transition kernel, deterministic actor simulator, property
+tests, loopback daemon fixture, and finite TLA+ exploration prove single-writer ordering and crash
+recovery without Kubernetes, AWS, or a later phase.
+**Docs to update**: `documents/engineering/lifecycle_control_plane_architecture.md`,
+`documents/engineering/distributed_gateway_architecture.md`,
+`documents/engineering/tla_modelling_assumptions.md`,
+`documents/engineering/resource_scaling_doctrine.md`, and
+`documents/engineering/chaos_hardening_doctrine.md`
+
+### Objective
+
+Make one actor the sole owner of each local emitter's continuity state and serialize an entire
+`stage -> fsync -> publish -> commit -> fsync` transition, eliminating races between heartbeat and continuity
+loops and the overloaded global child-process permit.
+
+### Deliverables
+
+- Define pure `EmitterState`, `EmitterIntent`, `EmitterDecision`, and `EmitterEffect` ADTs; only the
+  actor interpreter mutates the current state.
+- Route heartbeat, ownership, rotation, and recovery requests through a bounded typed mailbox.
+  Coalesce superseded heartbeat intents but never ownership or epoch transitions.
+- Hold one `AdmissionTicket kind` and absolute deadline across the whole logical transition; no phase may
+  release and reacquire a global permit.
+- Use a dedicated encrypted identity-bound local journal/fsync interpreter; the heartbeat path has
+  no MinIO, generic object-store, Vault-login, or subprocess client. Remove the gateway-wide
+  capacity-one subprocess scheduler from continuity and REST work.
+- Enforce one actor across process incarnations with stable StatefulSet identity and a substrate-
+  exact journal binding. EKS CSI EBS uses `ReadWriteOncePod`; home uses a node-pinned retained
+  `hostPath`/local PV because that access mode is CSI-only. Exact mount, exclusive OS filesystem
+  lock, Kubernetes Lease/incarnation witness, and fsynced monotonically increasing emitter
+  incarnation are all required before readiness/publish; the Lease is not the sole fence and peers
+  reject stale incarnations. Missing-journal recovery requires the explicit indexed emitter-
+  retirement program.
+- Retain the latest signed assertion/previous anchor and peer-ack projection. Restart republishes
+  unacknowledged state; ownership transitions compact only after every current peer acknowledges or
+  a signed checkpoint makes the transition part of the bounded repair floor.
+- Revise the continuity protocol/model so crash points around
+  `stage -> fsync -> publish -> commit -> fsync`, replay, and restart recovery are explicit and
+  model-checked.
+
+### Validation
+
+1. State-machine properties prove one writer, monotonic sequence/fence, idempotent replay, and
+   crash-resume convergence; overlapping-Pod fixtures prove lock/incarnation exclusion.
+2. Deterministic schedules reproduce and then reject the former re-observation mismatch race.
+3. Saturation tests prove bounded mailbox memory, heartbeat coalescing, ownership preservation,
+   prompt overload rejection, and deadline propagation.
+4. Daemon-lifecycle and gateway-partition suites cover commit-before-peer-response, restart
+   republish, peer acknowledgments, checkpoint compaction, offline repair, and emitter retirement.
+5. `prodbox dev tla-check` and `prodbox dev check` pass with recorded fresh state counts.
+
+### Remaining Work
+
+- Blocked until Sprint `1.62` lands temporal capacity and native session primitives.
+- Sprint `2.33` then separates bootstrap authority from the gateway process.
+
+## Documentation Requirements
+
+**Engineering docs to create/update:**
+
+- `documents/engineering/distributed_gateway_architecture.md` - single-writer actor and bounded
+  mailbox.
+- `documents/engineering/tla_modelling_assumptions.md` - actor/protocol correspondence.
+- `documents/engineering/resource_scaling_doctrine.md` - gateway service-rate evidence.
+- `documents/engineering/chaos_hardening_doctrine.md` - actor crash and saturation matrix.
+- `documents/engineering/lifecycle_control_plane_architecture.md` - gateway responsibility
+  boundary.
+
+**Product docs to create/update:**
+
+- `README.md` - gateway role after lifecycle extraction.
+
+**Cross-references to add:**
+
+- Link the actor to Sprint `1.62` capacity evidence and Sprint `5.19` temporal qualification.
+
+## Sprint 2.33: Minimal Bootstrap Broker and Gateway Scope Cut [⏸️ Blocked]
+
+**Status**: Blocked
+**Deployment qualification**: pending
+**Implementation**: planned `src/Prodbox/Bootstrap/Broker/`, a typed executable dispatch mode, removal of
+pre-Vault handlers from `Gateway/Daemon.hs` and `Gateway/Client.hs`, config/schema changes, and
+loopback lifecycle fixtures
+**Blocked by**: Sprint `2.32`
+**Independent Validation**: a loopback Bootstrap Broker with fake MinIO/Vault interpreters proves
+init/unseal/baseline/PKI/status/rotation behavior and gateway route absence without Kubernetes, AWS, or a later
+phase.
+**Docs to update**: `documents/engineering/lifecycle_control_plane_architecture.md`,
+`documents/engineering/vault_doctrine.md`,
+`documents/engineering/distributed_gateway_architecture.md`,
+`documents/engineering/bootstrap_readiness_doctrine.md`, and
+`documents/engineering/config_doctrine.md`
+
+### Objective
+
+Extract the irreducible pre-Vault recovery capability into a small broker whose dependency set is
+MinIO plus static bootstrap material, leaving gateway mesh availability irrelevant to Vault
+initialization or unseal.
+
+### Deliverables
+
+- Add a closed `RuntimeRole`/command selection for `BootstrapBroker` distinct from
+  `GatewayRuntime`; each role decodes only its own Dhall configuration.
+- Limit the broker API to bootstrap status, initialize/unseal/seal, unlock-bundle/key rotation,
+  allowlisted Vault baseline reconciliation, and bounded PKI status/test issuance. It owns no
+  generic KV, mesh, DNS, Pulumi, SES, authority CAS, or target-secret route.
+- Before first init, bind the exact empty Vault storage generation and transaction ID. Generate the
+  PGP recovery-recipient keypair, password-AEAD-seal its private key plus the recovery/burn public-
+  key fingerprints into a `PreparedInitEnvelope` in bootstrap MinIO, and read it back before
+  `/sys/init`; the pinned/audited burn public key's private key is never generated, stored,
+  accepted, or available to prodbox and has no known holder, and prodbox never decrypts or uses the
+  initial token. Persist/read-back Vault's PGP-encrypted share
+  response, decrypt it only through the prepared recipient, atomically promote the final password-
+  AEAD unlock bundle, then delete/read-back the prepared private-key envelope. A crash re-prompts
+  and resumes that transaction. Never decrypt or use the burn-encrypted initial token. An init that
+  applied but yielded no durable encrypted response is explicit ambiguity; only a confirmed reset
+  of that proven-pristine generation may retry.
+- Generate a separate short-lived root session only after recovery custody is durable. Serialize
+  these sessions, journal non-secret accessors, remove stale root-policy accessors before work,
+  read back the allowlisted baseline, revoke, and prove accessor absence through the broker-only
+  auditor. Later normal reconcile uses the dedicated Kubernetes-auth provisioner role.
+- Apply the same protocol to child Vaults: journal PGP-encrypted shares locally, generation-CAS
+  deliver them to parent custody, and delete the local receipt only after exact acknowledgment.
+  Later recovery is a one-time parent-to-attested-child encrypted delivery. No usable initial root
+  token is serialized anywhere. Root unseal shares exist only inside the password-AEAD final unlock
+  bundle; child recovery shares remain encrypted in parent custody; no plaintext share appears in
+  config, authority state, logs, or an unencrypted receipt.
+- Authenticate and bind the broker to a loopback-restricted Service surface with bounded request
+  bodies, absolute deadlines, idempotency keys, redaction, and explicit draining.
+- Remove pre-Vault lifecycle endpoints and static MinIO bootstrap credentials from gateway pods.
+- Make post-unseal handoff an observed state transition; the broker does not become the
+  post-Vault Lifecycle Authority.
+
+### Validation
+
+1. Exhaustive role-dispatch tests prove each binary role exposes only its allowed routes and
+   configuration fields.
+2. Broker fixtures cover empty, initialized-sealed, unsealed, corrupt bundle, unavailable MinIO,
+   every crash before/after prepared-recipient read-back, init request, encrypted-response receipt,
+   final-bundle promotion, prepared-envelope deletion, custody acknowledgment, generate-root,
+   accessor/baseline/revoke/absence read-back, applied-without-response pristine reset,
+   established-Vault reset refusal,
+   normal provisioner login, orphan-root cleanup, PKI role bounds, burn-recipient initial-token
+   non-use, cancellation, and restart.
+3. Negative source/route lint proves gateway code carries no bootstrap credential or endpoint.
+4. Daemon lifecycle, CLI/env integration, and `prodbox dev check` pass.
+
+### Remaining Work
+
+- Blocked until Sprint `2.32` establishes the final gateway actor/runtime boundary.
+- Sprint `3.26` renders the broker and the later control-plane roles as separate workloads.
+
+## Documentation Requirements
+
+**Engineering docs to create/update:**
+
+- `documents/engineering/lifecycle_control_plane_architecture.md` - bootstrap role and handoff.
+- `documents/engineering/vault_doctrine.md` - pre-Vault broker authority and credentials.
+- `documents/engineering/distributed_gateway_architecture.md` - removed bootstrap scope.
+- `documents/engineering/bootstrap_readiness_doctrine.md` - MinIO→broker→Vault ordering.
+- `documents/engineering/config_doctrine.md` - role-indexed mounted Dhall configuration.
+
+**Product docs to create/update:**
+
+- `README.md` - bootstrap and gateway process boundaries.
+
+**Cross-references to add:**
+
+- Link Sprint `3.26` as chart rendering adoption without making this phase depend on Phase 3.
 
 ## Related Documents
 

@@ -6,6 +6,7 @@
 [legacy-tracking-for-deletion.md](legacy-tracking-for-deletion.md),
 [system-components.md](system-components.md), [the engineering doctrine docs](../documents/engineering/README.md),
 [vault_doctrine.md](../documents/engineering/vault_doctrine.md),
+[lifecycle_control_plane_architecture.md](../documents/engineering/lifecycle_control_plane_architecture.md),
 [resource_scaling_doctrine.md](../documents/engineering/resource_scaling_doctrine.md)
 **Generated sections**: none
 
@@ -14,6 +15,13 @@
 > validation surfaces in line with [> Reconcilers](../documents/engineering/README.md) and `Test Organization`.
 
 ## Phase Status
+
+⏸️ **Reopened and blocked by Sprint `3.26`.** Sprint `4.48` introduces the retained Lifecycle
+Authority as a restart-resumable durable operation interpreter. Sprint `4.49` adds a fenced target
+outbox and substrate-local Target Secret Agent. Sprint `4.50` performs a versioned authority-epoch
+cutover and removes the gateway-backed authority routes and host-direct fallback. These are
+forward-only lifecycle expansions; Sprint `4.47` remains historical proof of the pure lease and
+intent rules it actually implemented, not proof that its gateway transport was available.
 
 ✅ **Reclosed 2026-07-10 after desired-present long-lived reconciliation.** The lifecycle class of
 `aws-ses` correctly prevents automatic destruction, but the audited registry and suite integration
@@ -232,7 +240,8 @@ The multi-pod Harbor Helm stack (core/nginx/portal/jobservice/bundled-postgres/b
 installed via `helm upgrade --install harbor harbor/harbor`) is replaced by one `registry:2`
 (CNCF distribution) Deployment plus a NodePort Service (nodePort `30080`) plus a `config.yml`
 ConfigMap, all applied with `kubectl apply` (no Helm); on reconcile any legacy Harbor Helm
-release is best-effort `helm uninstall`ed first. The durable MinIO/S3 storage backend is
+release was best-effort `helm uninstall`ed first at that revision. Reopened Sprint `4.50` replaces
+that always-success compatibility helper with registered absence/read-back. The durable MinIO/S3 storage backend is
 **retained unchanged** — the registry keeps blobs in the existing `prodbox-harbor-registry`
 bucket via `registry:2`'s native S3 driver + the `harbor-registry-s3` Secret (`envFrom`), and
 the MinIO→registry circular-dependency ordering (MinIO public bootstrap → registry → mirror →
@@ -264,7 +273,10 @@ cluster, or an unsealed Vault are tracked as non-blocking `Live-proof: pending` 
 never gate this phase or an earlier one. AWS-substrate coverage of the same validations is
 orthogonal and tracked only in [substrates.md](substrates.md)'s parity table.
 
-## Current Baseline In Worktree
+## Current Pre-Cutover Baseline In Worktree
+
+These bullets describe the active implementation that the reopened sprints migrate. In particular,
+daemon object-store authority is not target architecture.
 
 - The public local-lifecycle surface is `prodbox cluster ...`, implemented behind the retained
   internal `src/Prodbox/CLI/Rke2.hs` module name. `cluster delete` is a pure local uninstall by
@@ -2025,6 +2037,11 @@ of still-live AWS resources and orphaning them permanently. The defect: the gate
 *unreadable state* with *no resources*.
 
 ### Deliverables
+
+> **Historical behavior:** the cascade exception recorded below is superseded by the reopened
+> always-run cleanup design. Target cleanup may continue independent backstops after an
+> unobservable checkpoint, but it retains a failed/unresolved outcome and never recodes it as
+> absent; Sprints `4.48`, `5.18`, and `5.19` own that replacement and proof.
 
 - The per-run delete gate (`noLivePerRunPulumiStacks`, used by `prodbox rke2 delete`
   default and `prodbox aws teardown`) **fails closed on `ResidueUnreachable`** with a
@@ -3988,6 +4005,12 @@ cannot be created from an unobservable state.
   material, and mandates re-observation. The created key is exception-bracketed and deleted when
   commit is not applied; cleanup failures remain explicit. Pulumi retains ownership of the SMTP IAM
   user/policy but no longer declares an `aws:iam:AccessKey` or exports key material.
+- **Superseded ownership boundary, history preserved:** the preceding sentence records the
+  completed Sprint-`4.47` implementation and evidence; it is not the target ownership model.
+  Sprint `8.11` freezes that legacy Pulumi writer, migrates the deterministic `LongLived` SMTP
+  principal/policy/finite key family to the `OperatorMaterialPermit`-selected Credential
+  Provisioner, and removes every SMTP IAM resource/output from the provider program without a
+  dual-write interval.
 - `EncryptedBackend` exposes fenced conditional checkpoint writeback. The registered
   `AwsSesStack` ensure acquires the account-scoped lease, drains predecessor provider/target
   effects, runs reconcile/provider→semantic-readiness/SMTP stages under bounded credentials,
@@ -4102,6 +4125,488 @@ warning-clean library/executable/unit builds, and `prodbox dev check` exit 0.
   provider→semantic readiness fold after reconciliation and before SMTP materialization.
 - Keep `DEVELOPMENT_PLAN/README.md`, `00-overview.md`, `system-components.md`, `substrates.md`, and
   `legacy-tracking-for-deletion.md` synchronized with the completed sprint.
+
+## Sprint 4.48: Retained Lifecycle Authority and Durable Operation Journal [⏸️ Blocked]
+
+**Status**: Blocked
+**Deployment qualification**: pending
+**Implementation**: planned `src/Prodbox/Lifecycle/Authority/` and
+`src/Prodbox/Lifecycle/AuthorityBackup/`, `src/Prodbox/Lifecycle/TlsRetention/`,
+`src/Prodbox/Lifecycle/ProviderWorker/`, `src/Prodbox/Lifecycle/CredentialProvisioner/`,
+`src/Prodbox/Lifecycle/AdminAction/`, and `src/Prodbox/Lifecycle/Decommission/` modules, separate
+runtime-role dispatch/clients, versioned
+journal/genesis codecs, native primary/backup/Vault interpreters, and deterministic simulator tests;
+migrations from existing `Lease*`, `CheckpointAuthority*`, and `TargetCommit*` modules
+**Blocked by**: Sprint `3.26`
+**Independent Validation**: pure transition tables and a deterministic crash/restart interpreter
+exercise every journal boundary with fake object-store, Vault, clock, and provider capabilities;
+no AWS, Kubernetes, or later phase is required.
+**Docs to update**: `documents/engineering/lifecycle_control_plane_architecture.md`,
+`documents/engineering/lifecycle_reconciliation_doctrine.md`,
+`documents/engineering/pure_fp_standards.md`,
+`documents/engineering/vault_doctrine.md`,
+`documents/engineering/haskell_code_guide.md`, and
+`documents/engineering/chaos_hardening_doctrine.md`
+
+### Objective
+
+Make retained lifecycle work a durable asynchronous operation owned by a dedicated authority
+process, rather than a long host HTTP request whose correctness depends on gateway availability and
+a best-effort release response.
+
+### Deliverables
+
+- Define pure `AuthorityState`, `AuthorityCommand`, and `AuthorityEvent` ADTs with total
+  `decide`/`evolve` folds plus a versioned `OperationRecord`; interpreters execute only durably
+  committed outbox intents and feed authoritative observations back as commands.
+- Define `GenesisFrozen -> EstablishAuthorityBackup -> BackupEstablished` as the only pre-normal-
+  admission fold. It primary-journals deterministic S3/IAM intent, recovers applied/lost key create
+  by finite inventory delete/remint, seals the credential, writes/read-backs the complete initial
+  envelope/blob set through the physically separate Backup Adapter, and opens normal admission only
+  after the home Target Agent generation and backup receipt are both read back. No provider/DNS/
+  suite effect is legal in genesis; primary loss can leave only the registered deterministic
+  backup resources, removable/read-backable with a fresh admin prompt before retry.
+- Have Broker baseline create the exact Transit genesis-signing trust. Authority issues a one-time
+  signed `GenesisPermit` bound to service/signing generation, target/path, primary storage
+  generation, nonce/intent digest, deterministic AWS/adapter coordinates, and expiry. Only the
+  mode-indexed Credential Provisioner holds prompt bytes; core Authority receives typed
+  observations/receipts. The home Agent CAS-records permit consumption/disablement and refuses
+  replay, forged transport, opaque-commitment/path drift, or expiry.
+- Stream prompt bytes only after Pod-UID/image/ServiceAccount/permit attestation over authenticated
+  bounded Job stdin/attach; never argv, env, ConfigMap, Secret, disk, or logs. The Provisioner
+  bounds and mlocks owned mutable buffers, disables core dumps, best-effort zeroizes only those
+  buffers, revokes its session, and is deletion-read-back; process/Pod termination is the
+  enforceable boundary and no byte-erasure claim is made for runtime/library copies. It returns a
+  typed signed receipt. Disconnect/restart requires re-prompt but resumes the same permit and
+  deterministic key inventory, never a blind new create.
+- For first reconcile, compile a bounded secret-free provisioning plan from Tier-0 and the managed
+  identity registry; bind its exact ordered action/coordinate/count/deadline digest into the Genesis
+  permit and Job attestation. The retained prompt session may accept only the next unconsumed member
+  after its predecessor receipt and a separate backup-receipted permit. The plan is not batch
+  authority; drift, reordering, widening, or a later rotation requires a fresh Job/prompt.
+- Define `BackupRepairFrozen` as the only post-genesis primary-only fold. Temporary/unobservable
+  backup failure keeps admission frozen and waits; positively absent key/bucket or proven policy
+  drift primary-journals a signed one-time repair permit. The mode-indexed Credential Provisioner
+  creates/rotates deterministic resources, the Agent delivers the next LongLived generation, the Adapter full-
+  copies/read-backs every current envelope/blob and commits the first new receipt, and Authority
+  reopens only under a greater epoch. No normal external effect runs during repair.
+- Define the disjoint `AdminActionPermit action` family and a separate attested Admin Action Runner
+  for one receipt-committed `DestroyAwsSes`, legacy-backend migrate/retained-store compatibility,
+  or quota reconcile-and-status action. `DestroyAwsSes` is a closed always-run dependency program:
+  it first proves target consumers quiescent and commits the non-credential provider desired-absence
+  sub-intent to the Provider Worker. Only after that worker's stack-absence receipt may the Admin
+  Action Runner delete/read back the registered SMTP key family, least-privilege policy, and
+  principal. While Target Agents remain live it finally tombstones/read-backs target generations
+  and retained-home custody; every attempted-node failure is aggregated. Stable operation/
+  provider-request identity and authoritative read-back make response loss resumable. It cannot
+  create/deliver credentials, accept a normal provider intent, widen coordinates, or perform
+  decommission; the Provider Worker and Credential Provisioner cannot accept its permit.
+- Accept idempotent operation submission and return an `OperationId`; expose status/watch/cancel
+  separately. Bind the ID to epoch/client/durable client sequence/request digest; retain per-client
+  sequence floors, nonterminals, and bounded terminal request/result tombstones for a configured
+  idempotency window. Refuse when capacity is full and return `OperationIdExpired` below the
+  compacted floor rather than treating an old ID as new. A client disconnect never determines
+  operation outcome.
+- Journal intent before provider effects and journal observed/committed outcomes afterward. On
+  restart, replay every nonterminal record and decide resume, compensate, wait, or refuse.
+- Own validated serializable authority-clock observations/high-water, monotonic fence allocation,
+  lease acquisition/renewal, Model-B checkpoint CAS, Pulumi operation serialization, and operation-
+  result lookup inside this one service. Process-local monotonic deadlines are never persisted;
+  clock regression/unobservability refuses time-sensitive mutation after failover.
+- Publish checkpoint/config blobs through aggregate `PendingBlobRef` → write/read-back → CAS-
+  promote. GC holds its own fence and deletes only blobs absent from pending/current/retained sets
+  across two scans separated by grace. Every authority transition writes a digest-verified
+  encrypted backup prepare containing the canonical evolved envelope bytes plus verified backup-
+  blob references, CASes the primary, and read-backs a backup commit receipt before any external
+  effect. Primary retained MinIO and the independently credentialed long-lived S3 backup coordinate
+  may not alias a bucket/device/failure domain. Blob ciphertext is written/read back in both before
+  promotion; store-loss restore accepts only receipt-committed transitions, restores every
+  referenced byte, freezes writers, and increments epoch.
+- Own `ConfigObserve`/`ConfigProposeCas`: validate and encrypt immutable in-force-config blobs,
+  CAS their schema/generation/digest/reference in the aggregate, and serve role-scoped projections
+  while starting only from the bounded Tier-0 authority boot projection.
+- Own a versioned TLS-retention fold/outbox serialized by substrate/FQDN. One fenced candidate binds
+  Kubernetes Secret UID/resourceVersion, certificate serial/validity/SPKI, ciphertext/wrapped-DEK
+  digests, immutable S3 object version, and target read-back. Only exact source re-observation plus
+  Adapter byte read-back may CAS-promote the Authority's current reference; stale/out-of-order
+  receipts or an unapproved key/validity regression refuse, and response loss recovers the same
+  immutable version. Restore names that committed reference, never S3 latest/list order. A total
+  restore ADT permits issuance only after positive authoritative absence or trusted-time-validated
+  expiry; corrupt, digest-mismatched, or unobservable state fails closed. The separate TLS Adapter
+  stores ciphertext only; the retained home TLS Transit generation is referenced, not copied into
+  ephemeral AWS Vault.
+- Use Sprint `1.62` native object-store and renewable Vault sessions; no `aws s3api`, temporary
+  object bodies, per-request login, or gateway route is part of authority storage.
+- Keep provider truth external: all decisions consume typed observations and mandate positive
+  postconditions; an unobservable result never lowers to absence or success.
+
+### Validation
+
+1. Exhaustive transition tables cover submission, deduplication window/saturation/expiry,
+   contention, renewal, cancellation, clock restart/regression/unobservability, every crash
+   boundary, stale fences, and terminal result lookup.
+2. Applied-but-response-lost cases converge by re-observation and operation ID rather than becoming
+   unknowable.
+3. Journal codec properties prove versioning, bounded size, redaction, and decode/encode round trip.
+4. Deterministic clean-install/crash simulations cover every genesis boundary, prompt attach/
+   disconnect/Job restart, session revocation, owned-buffer best-effort zeroization, process/Pod
+   absence, first-reconcile plan-digest/member/count enforcement, finite permit succession, missing
+   prior receipt, later-action fresh-prompt enforcement, forged/replayed permit, response loss,
+   exact registered residue cleanup, and refusal of normal
+   admission before `BackupEstablished`.
+5. Backup-repair tables cover temporary outage, positive key/bucket absence, policy drift,
+   unobservability, permit replay, response loss, crash at every copy boundary, old-generation
+   revocation, exact residue cleanup, and greater-epoch reopen.
+6. Admin-action tables reject cross-action/cross-role permits and recover quota/destroy/migration
+   response loss through stable identity and authoritative status/read-back.
+7. TLS tables cover concurrent/out-of-order renewal, stale Secret versions, key/validity regression,
+   applied-response-lost put, immutable-current restore, positive absence/expiry issuance, and
+   corrupt/digest-mismatch/unobservable refusal.
+8. Deterministic multi-controller simulations prove one active fence and stale-writer refusal;
+   pending-blob/GC interleavings cannot create a dangling reference, and primary-loss restore from
+   the independent backup reconstructs exact envelope/blob bytes before activating a greater epoch.
+7. Unit/integration suites, warning-clean build, and `prodbox dev check` pass.
+
+### Remaining Work
+
+- Blocked until Sprint `3.26` renders the dedicated role and identity.
+- Sprint `4.49` adds target delivery; Sprint `4.50` performs the production cutover.
+
+## Documentation Requirements
+
+**Engineering docs to create/update:**
+
+- `documents/engineering/lifecycle_control_plane_architecture.md` - authority state machine,
+  journal, API, and persistence.
+- `documents/engineering/lifecycle_reconciliation_doctrine.md` - asynchronous desired-state
+  operations and authority ownership.
+- `documents/engineering/pure_fp_standards.md` - pure transition kernel/effect data.
+- `documents/engineering/vault_doctrine.md` - authority session and keyspace custody.
+- `documents/engineering/haskell_code_guide.md` - durable actor/interpreter lifecycle.
+- `documents/engineering/chaos_hardening_doctrine.md` - journal crash matrix.
+
+**Product docs to create/update:**
+
+- `README.md` - retained authority role and operation-status workflow.
+
+**Cross-references to add:**
+
+- Link the managed-resource registry and Pulumi wrappers to the authority operation API.
+
+## Sprint 4.49: Fenced Target Outbox and Target Secret Agent [⏸️ Blocked]
+
+**Status**: Blocked
+**Deployment qualification**: pending
+**Implementation**: planned authority outbox modules under `src/Prodbox/Lifecycle/Authority/`, a
+`src/Prodbox/TargetSecret/` runtime/client, revisions to `TargetCommitIntent*` and
+`TargetSecretStore.hs`, schema-indexed non-recoverable-material custody/rewrap plus External
+Material Ingress, and simulator/loopback tests
+**Blocked by**: Sprint `4.48`
+**Independent Validation**: pure outbox folds and loopback agents with fake Vault interpreters
+cover cross-target delivery, restart, duplicate requests, and read-back without live substrates or
+a later phase.
+**Docs to update**: `documents/engineering/lifecycle_control_plane_architecture.md`,
+`documents/engineering/lifecycle_reconciliation_doctrine.md`,
+`documents/engineering/vault_doctrine.md`,
+`documents/engineering/integration_fixture_doctrine.md`, and
+`documents/engineering/pure_fp_standards.md`
+
+### Objective
+
+Turn cross-substrate secret materialization into a durable, independently retryable delivery whose
+target identity and fencing metadata are explicit, while keeping target Vault authority local to
+the selected substrate.
+
+### Deliverables
+
+- Define bounded versioned `DeliveryIntent`, `DeliveryState`, `DeliveryDecision`, and
+  `DeliveryEffect` types under the authority journal.
+- Add a closed `OperatorMaterialRequest` install/rotate/revoke flow. It includes the deterministic
+  `LongLived` SES-SMTP principal, least-privilege send policy, finite access-key family, and
+  per-target derived generation. The `OperatorMaterialPermit`-selected Credential Provisioner is
+  the sole create/rotate/remint and repair-time key-delete interpreter; Pulumi/Provider Worker has
+  no constructor for that identity. The Authority asks the target agent to seal the bounded
+  payload, commits only ciphertext/generation/opaque Agent-HMAC commitment/outbox state, and never
+  persists plaintext provider, Authority-backup, TLS-retention, Gateway-DNS, cert-manager-DNS01,
+  SES-SMTP, or ACME EAB material.
+- Add a retained-home Agent custody/rewrap lane whose request family is closed over each explicitly
+  registered non-recoverable cross-substrate payload, initially `SesSmtpSource` and `AcmeEabSource`;
+  there is no arbitrary path, byte-export, or generic decrypt constructor. Initial material enters
+  once through a schema-indexed ingress: direct Credential-Provisioner-to-home-Agent handoff for
+  identity-derived SMTP material, and a distinct attested external-material ingress/permit for ACME
+  EAB. EAB bytes never reuse the AWS-admin prompt/session or its Genesis-bound identity plan, and
+  `config setup` remains Tier-0-only. The schema-specific ingress derives where required before
+  handoff—the Credential Provisioner alone constructs the SMTP payload in bounded memory (username
+  from access-key ID; password derived from the one-time secret plus region) and discards the raw
+  IAM secret—then the Agent Transit-seals only the closed
+  generation-bound source and returns an opaque one-shot source-ingest receipt. For a committed
+  target intent it rewraps only that registered payload to the attested destination Agent. The Authority
+  transports ciphertext and receipts only, so a fresh AWS Agent/Vault can restore the same SMTP
+  generation without an admin re-prompt or access-key rotation.
+- Represent that lane as a schema-indexed payload/command/event/effect family with total pure
+  ingest/rewrap/retire folds. `SesSmtpSource` can contain only the derived region-bound SMTP
+  username/password plus generation metadata; `AcmeEabSource` can contain only its distinct EAB
+  schema. Neither can carry a raw IAM secret, arbitrary Vault path, or generic bytes, and their
+  interpreters are disjoint.
+- Add a genesis-only exact-path arm on the home Target Agent for
+  `secret/aws/authority-backup-store`. It accepts only the signed `EstablishAuthorityBackup`
+  genesis intent, CAS-seals/delivers one LongLived generation, and is permanently disabled for
+  genesis after `BackupEstablished`; later rotation uses ordinary backup-receipted outbox intent.
+- Add the same signed one-time proof discipline for `BackupRepairFrozen`: CAS-consume the repair
+  permit, deliver only the next backup generation, and disable it after the new receipt/greater-
+  epoch activation. A normal outbox or forged transport cannot invoke this exceptional arm.
+- Make sealing idempotent by operation ID and a domain-separated Agent/Vault-HMAC commitment: the
+  agent CAS-stores and reads back only the ciphertext/key-version receipt before replying. A lost
+  seal response is re-observed without retaining plaintext; same-ID/different-commitment refuses.
+  No raw hash of plaintext or low-entropy credential material crosses the Agent boundary.
+- Deliver child recovery-share custody through the same parent-target sealing/outbox discipline.
+  The payload includes the encrypted init receipt, burn-recipient evidence, custody generation,
+  and later short-lived-root accessor-revocation attestation; it can never contain a usable initial
+  root token or plaintext recovery share.
+- Add dedicated TLS Kubernetes-Secret capability kinds. The selected Agent alone reads the exact
+  issued Secret, uses an attestation-bound DEK from the retained home Agent, exports digest-bound
+  ciphertext/wrapped-DEK bytes, and on restore decrypts/applies/read-backs that exact Secret before
+  issuance. Authority/Adapter see ciphertext only; bounded plaintext is process-local.
+- Commit an outbox intent before contacting a target; include operation ID, target identity,
+  generation, digest, authority epoch/fence, deadline, and idempotency key.
+- Make the mutation constructor an opaque signed `CommittedIntentRef` bound to target/action
+  digests. The agent verifies issuer, current epoch/fence, target binding, generation, and deadline
+  server-side; transport access alone cannot authorize a write.
+- Expose a narrow Target Secret Agent API for allowlisted CAS/read-back only. The agent owns its
+  substrate-local Vault session. It may transiently seal/materialize the allowlisted credential
+  payload named by a committed outbox proof, but cannot use that credential against provider APIs,
+  return plaintext, access authority checkpoints, or read arbitrary target paths.
+- Make duplicate delivery idempotent, stale fence/generation terminal, transport failure retryable
+  within policy, and ambiguous responses recoverable by exact read-back.
+- Resume incomplete deliveries after either service restarts; compact only terminal deliveries
+  whose provider revision and target generation remain durably referenced.
+- Retain every non-recoverable source receipt while any target generation or dependant is live.
+  Explicit resource teardown tombstones the source only after all target retirements are read back;
+  ordinary postflight cannot delete it.
+- Give `TargetGenerationRetired` and `CustodySourceRetired` physical Vault KV-v2 semantics. Rotation
+  may `destroy` only the exact superseded secret-bearing versions after the Authority proves no
+  dependant/outbox/rollback reference remains; it preserves the current version and metadata. Full
+  revocation must destroy every exact secret-bearing version, delete the path metadata, and read back
+  version/data/metadata absence before the terminal event. KV-v2 soft delete, a logical Authority
+  tombstone, or an unverified metadata delete is never sufficient.
+
+### Validation
+
+1. Decision tables cover genesis-only delivery, new, duplicate, stale, conflicting, applied-response-lost, unavailable,
+   retired-target, child-recovery-custody, and forbidden-root-token cases.
+2. Cross-substrate simulations prove a home authority cannot silently redirect an AWS delivery or
+   substitute one target's evidence for another.
+3. Agent route/policy tests reject arbitrary Vault paths and all authority/provider operations.
+4. Fresh-destination simulations destroy the AWS Vault/Agent, restore the same SMTP and ACME EAB
+   generations from retained-home custody, and prove no prompt, key rotation, generic export, or
+   Authority plaintext occurs.
+5. Fake-Vault rotation/revocation tables prove superseded KV-v2 versions are physically destroyed
+   only after their final reference, full revocation destroys all exact versions plus metadata and
+   reads back absence, and soft delete or partial/unobservable destruction cannot commit retirement.
+6. Bounded journal/compaction properties and loopback protocol tests pass.
+7. Unit/integration suites and `prodbox dev check` pass.
+
+### Remaining Work
+
+- Blocked until Sprint `4.48` provides the operation journal and authority epoch.
+- Sprint `4.50` cuts production callers over and removes gateway-backed target delivery.
+
+## Documentation Requirements
+
+**Engineering docs to create/update:**
+
+- `documents/engineering/lifecycle_control_plane_architecture.md` - target agent and outbox.
+- `documents/engineering/lifecycle_reconciliation_doctrine.md` - durable cross-authority effects.
+- `documents/engineering/vault_doctrine.md` - target-local Vault authority and least privilege.
+- `documents/engineering/integration_fixture_doctrine.md` - fake target-agent boundaries.
+- `documents/engineering/pure_fp_standards.md` - pure delivery transition model.
+
+**Product docs to create/update:**
+
+- None.
+
+**Cross-references to add:**
+
+- Link selected-substrate resolution to `TargetIdentity`, never a gateway URL.
+
+## Sprint 4.50: Authority-Epoch Cutover and Legacy Transport Removal [⏸️ Blocked]
+
+**Status**: Blocked
+**Deployment qualification**: pending
+**Implementation**: planned versioned migration/cutover modules, revisions to
+`CheckpointAuthority.hs`, `AuthorityConfig.hs`, `EncryptedBackend.hs`, `LiveResidue.hs`,
+`AwsSesStack.hs`, gateway client/daemon routes, source lints, and migration fixtures
+**Blocked by**: Sprint `4.49`
+**Independent Validation**: a deterministic migration simulator and v1/v2/v3 fixture matrix prove
+shadow-read comparison, quiescence, single-writer cutover, restart, rollback refusal, and legacy
+route absence without live AWS or a later phase.
+**Docs to update**: `documents/engineering/lifecycle_control_plane_architecture.md`,
+`documents/engineering/lifecycle_reconciliation_doctrine.md`,
+`documents/engineering/vault_doctrine.md`, `documents/engineering/code_quality.md`,
+`DEVELOPMENT_PLAN/legacy-tracking-for-deletion.md`, and `DEVELOPMENT_PLAN/substrates.md`
+
+### Objective
+
+Move every supported Model-B lifecycle caller to the dedicated authority/agent topology under one
+versioned authority epoch, then delete the gateway-backed and host-direct paths instead of keeping
+an indefinite dual-write or fallback regime.
+
+### Deliverables
+
+- Add a migration plan with observe→shadow-read/compare→freeze→prepare all bindings→atomic
+  authority activation→re-observe. Upgrade prodbox-owned old writers so each mutation checks the
+  durable freeze/epoch record; model external controllers that cannot do so as explicit suspend,
+  credential-revoke, lifetime-drain, and read-back nodes. Prepare Target Agents, config, split
+  credentials, DNS owners, and backend issuer bindings while both writer sets are frozen. Open new
+  admission only after one CAS activates the fully read-back topology; dual-write and a partially
+  wired active epoch are forbidden.
+- Import existing lease/checkpoint/target-intent/SMTP projections through bounded versioned codecs;
+  preserve fences and refuse corrupt, ambiguous, or concurrent-writer state.
+- Route Pulumi checkpoint hydrate/store/delete, residue, stack-output, lease, authority time, and
+  target delivery through indexed Lifecycle Authority/Target Agent clients.
+- Add closed resource/program types for exact Route 53 account/zone/name/type/owner-epoch
+  coordinates and cut home public-record writes to Gateway-DNS with ensure/delete/read-back and no
+  alternate writer. Sprint `7.33` alone cuts the AWS A-record call sites to the authority provider
+  projection; Sprint `4.50` does not claim that AWS production cutover.
+- Add the closed cert-manager DNS01 Challenge/TXT descriptor and program variants. Sprint `5.18`
+  alone owns run-time pre-issuance registration, always-run Challenge deletion, and exact TXT
+  absence observation.
+- Cut config readers/writers to authority-owned config generations. Reconcile and register the
+  Operational Lifecycle-provider plus LongLived Authority-backup, TLS-retention, Gateway-DNS,
+  home cert-manager-DNS01, and SES-SMTP IAM/key/Vault resources, Target-Agent generations,
+  non-recoverable-material custody receipts, and dependency-ordered cleanup nodes; revoke the shared
+  `secret/gateway/gateway/aws` identity only after every consumer is re-observed. Sprint `7.33`
+  owns only the AWS-target projection and its substrate-local DNS01 identity. This sprint establishes
+  the SES-SMTP descriptor/protocol and excludes it from generic provider authority; Sprint `8.11`
+  alone freezes and migrates the live legacy Pulumi-owned principal/policy/key family, with no
+  dual-write state.
+- Cut public-edge TLS retain/restore from direct long-lived-bucket/admin helpers to the durable
+  Authority → selected Target Agent ↔ retained-home TLS-DEK lane → TLS Retention Adapter workflow.
+  Register the LongLived TLS-store identity/prefix; no Lifecycle-provider, backup, Gateway-DNS, or
+  ephemeral substrate Vault key may substitute.
+- Make target `config setup` Tier-0 authoring/validation only. First `cluster reconcile` deploys
+  MinIO/Vault/Broker, unseals/baselines, starts the home Target Agent plus frozen Authority/Backup
+  Adapter, performs the visible `EstablishAuthorityBackup` action under one ephemeral admin prompt,
+  then submits the Tier-0 config proposal and remaining identity setup after admission opens. No
+  clean install calls a normal Authority operation before its backup exists.
+- On later reconcile, distinguish backup temporary unavailability from positive loss/policy drift.
+  The former remains frozen; the latter visibly invokes the signed `BackupRepairFrozen` prompt/
+  repair path and cannot fall back to normal provider mutation or silently disable backup.
+- For each role key, commit create intent before AWS, seal before generation commit, and recover a
+  lost one-time create response by finite-inventory delete/stable-absence/remint. Blind create retry
+  and an uncommitted surviving key are forbidden.
+- Migrate child custody to encrypted recovery-share receipts plus burn-recipient initial-token
+  evidence. Reject legacy custody records containing a reusable initial root token and delete all
+  later child-root-token reads.
+- During shadow mode, while the old writer is still the sole writer and before the freeze, capture
+  a frozen, digest-bound `LCPC-2026-07-11` superseded-composition trace and pure simulator under the
+  normalized resource/load profile. Its identity separately binds old Git HEAD, dirty flag,
+  the recorded identifier/version/digest of Standard P's source-manifest exclusion policy, the
+  resulting allowlisted code/docs/non-secret-schema/template manifest digest, secret-safe
+  generated-config identity, component-image digests, topology/wiring digest, resource-envelope
+  digest, and authored-load/fault-schedule digest. The manifest excludes `test-secrets.dhall`,
+  local/generated secret material, secret roots, and runtime/build roots. Secret-dependent fixture
+  bindings use only opaque Authority receipt/generation IDs or Vault-keyed HMAC commitments, never
+  public raw hashes of plaintext secrets. The fixture is test-only, cannot satisfy a production
+  interpreter registry, and remains auditable after route deletion for Sprint `5.19`.
+- Delete `gatewayModelBCasAdapter`, gateway authority/object-store/target-secret routes, authority
+  coordinates carrying gateway endpoints, direct Route 53/bootstrap calls, generic operator-write
+  routes, direct config transports, and `Pulumi.HostDirectObjectStore` fallback callers.
+- Replace the always-success legacy Harbor uninstall helper with a registered desired-absence
+  program and authoritative Helm-release absence read-back before the conflicting registry apply;
+  failure remains aggregated instead of being discarded.
+- Replace process-local total teardown with an explicit decommission protocol. While backup
+  receipts still exist, freeze admission and receipt-commit a signed deterministic inventory/plan.
+  Before Authority permanent stop, export the exact manifest-verifier/Decommission-Runner build
+  artifact and its dependency/build metadata to an operator/harness-owned durable coordinate outside
+  every cluster, Vault, object-store, AWS account resource, path, or bucket named by the deletion
+  graph. Bind the artifact digest plus manifest-schema/interpreter-registry version and digest into
+  the signed manifest and receipt header; fsync the artifact and metadata files plus parent
+  directory, reopen/read back every byte, verify digests, and run the pinned verifier's compatibility
+  self-check. Authority shutdown and the point-of-no-return receipt are illegal until that preflight
+  succeeds. Resume always executes the exported pinned artifact and rejects a missing, changed, or
+  newly built runner, dependency closure, manifest schema, or interpreter registry instead of
+  silently upgrading mid-teardown. Require `nuke` to create and acknowledge an operator/harness-
+  owned non-secret external receipt
+  before the point of no return. Encode it as bounded length-delimited canonical frames carrying a
+  version, manifest digest, monotonically increasing frame index, stable node ID, stable attempt ID,
+  previous-frame digest, payload checksum, and typed intent/observation/result. Every initial create/
+  rename and appended committed frame requires file fsync plus parent-directory fsync before the
+  corresponding external effect or acknowledgement. A standalone idempotent decommission runner
+  reopens and validates the manifest signature/digest, frame lengths/checksums, complete hash chain,
+  indices, and node/attempt IDs before resuming from that receipt plus a fresh admin prompt. It may
+  discard only an incomplete final frame and must truncate/fsync the file and directory back to the
+  last complete valid frame; interior corruption, a complete invalid tail, chain/index drift, or a
+  conflicting reused ID refuses. After any crash or missing response it re-observes the exact
+  external node before retrying the same durably recorded attempt ID, so a torn receipt can never
+  authorize duplicate mutation. It journals exact delete/read-back outcomes. Its SES subgraph first proves
+  consumers quiescent, destroys/read-backs the provider stack and external SMTP IAM family, then
+  uses still-live Target Agents to tombstone/read-back target generations and retained-home custody;
+  every attempted-node failure is aggregated. Because TLS retention and
+  Authority backup use disjoint prefixes in the shared bucket, it deletes TLS objects/versions and
+  identity first without deleting the bucket; the final backup node proves every registered prefix
+  absent, then deletes backup objects/identity and the shared bucket last. It appends terminal
+  absence evidence. Normal Authority queryability ends at the exported manifest; it never claims a
+  backup receipt after deleting the backup.
+- Add negative source/route/config lints that make those transports unable to return unnoticed.
+
+### Validation
+
+1. Migration fixtures cover missing, valid legacy, staged, released predecessor, corrupt,
+   concurrent, interrupted-before-epoch, and interrupted-after-epoch states.
+2. Exactly one writer exists at every reachable state; direct rollback after epoch activation
+   refuses rather than resurrecting a stale gateway writer, an old process restarting after the
+   freeze cannot mutate, and any recovery is a forward migration to a strictly greater epoch.
+3. Production-route and source scans prove no supported gateway/host-direct lifecycle transport.
+4. Config generation/CAS/projection, operator-material sealing/generation/revoke, split-credential,
+   retained-home non-recoverable-material custody/rewrap, burn-recipient initial-token non-use/
+   encrypted-share recovery, and exact A/TXT DNS owner/delete/read-back fixtures pass without a
+   generic transport. SES-SMTP provider construction is unrepresentable and its live ownership
+   migration remains explicitly assigned to Sprint `8.11`.
+5. The frozen counterexample fixture matches every separately captured HEAD/dirty/source-policy/
+   source-manifest/config/image/topology-wiring/envelope/load/fault-schedule identity, refuses an
+   incomplete or reused identity, rejects every excluded secret/runtime/build-root input and public
+   raw secret hash, and has no route into the production capability registry.
+6. Pulumi/lifecycle/cleanup fake-boundary integration suites pass through the new clients.
+7. Decommission crash fixtures at every node resume from the same exported manifest; no run crosses
+   the point of no return without a matching frame whose file and parent directory are fsynced.
+   Preflight fixtures prove the exact verifier/runner artifact and dependency metadata live outside
+   every deletion target, are file/directory-fsynced and byte-for-byte read back, and are digest/
+   schema/interpreter-registry-pinned before Authority stop. Missing/lost artifacts, binary upgrades,
+   dependency drift, or schema/registry mismatch refuse before further mutation; only the pinned
+   exported build may resume after a crash.
+   Reopen fixtures validate the signed manifest binding and longest complete length-delimited,
+   checksummed hash-chain prefix; byte-boundary torn tails recover only by truncating/fsyncing to the
+   prior valid frame, while interior corruption, complete-invalid tails, chain/index drift, and
+   conflicting node/attempt IDs refuse. Crash-before/after every intent/effect/result boundary
+   preserves stable node/attempt IDs and authoritatively re-observes before retry. TLS-prefix
+   deletion cannot delete the shared bucket, the SES subgraph deletes/read-backs external IAM before
+   live-Agent target/custody tombstones and aggregates all failures, and the backup/all-prefix/
+   shared-bucket node is last.
+8. `prodbox dev check` and all local test suites pass.
+
+### Remaining Work
+
+- Blocked until Sprint `4.49` provides durable target delivery.
+- Sprint `5.18` migrates test restore/preparation and verifies always-run cleanup composition.
+
+## Documentation Requirements
+
+**Engineering docs to create/update:**
+
+- `documents/engineering/lifecycle_control_plane_architecture.md` - migration and deletion gates.
+- `documents/engineering/lifecycle_reconciliation_doctrine.md` - sole supported authority path.
+- `documents/engineering/vault_doctrine.md` - new state/session authority and removed transports.
+- `documents/engineering/code_quality.md` - forbidden legacy routes/fallbacks.
+
+**Product docs to create/update:**
+
+- `README.md` - cutover state and supported diagnostic path.
+
+**Cross-references to add:**
+
+- Keep the pending-removal ledger authoritative until both code removal and revision-scoped
+  deployment qualification are recorded.
 
 ## Related Documents
 

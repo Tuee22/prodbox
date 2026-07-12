@@ -6,609 +6,482 @@
 DEVELOPMENT_PLAN/system-components.md, DEVELOPMENT_PLAN/legacy-tracking-for-deletion.md,
 DEVELOPMENT_PLAN/phase-0-planning-documentation.md,
 DEVELOPMENT_PLAN/phase-1-runtime-cli-aws-foundations.md,
-DEVELOPMENT_PLAN/phase-2-gateway-dns.md, DEVELOPMENT_PLAN/phase-3-chart-platform-vscode.md,
+DEVELOPMENT_PLAN/phase-2-gateway-dns.md,
+DEVELOPMENT_PLAN/phase-3-chart-platform-vscode.md,
 DEVELOPMENT_PLAN/phase-4-lifecycle-canonical-paths.md,
 DEVELOPMENT_PLAN/phase-5-canonical-test-suite.md,
 DEVELOPMENT_PLAN/phase-6-clean-room-handoff.md,
 DEVELOPMENT_PLAN/phase-7-aws-substrate-foundations.md,
 DEVELOPMENT_PLAN/phase-8-email-invite-auth.md,
-documents/engineering/README.md, documents/engineering/aws_integration_environment_doctrine.md,
-documents/engineering/aws_test_environment.md, documents/engineering/cli_command_surface.md,
-documents/engineering/code_quality.md, documents/engineering/dependency_management.md,
+documents/engineering/README.md,
+documents/engineering/aws_integration_environment_doctrine.md,
+documents/engineering/aws_test_environment.md,
+documents/engineering/cli_command_surface.md,
+documents/engineering/code_quality.md,
+documents/engineering/dependency_management.md,
 documents/engineering/distributed_gateway_architecture.md,
 documents/engineering/effectful_dag_architecture.md,
 documents/engineering/effect_interpreter.md,
 documents/engineering/envoy_gateway_edge_doctrine.md,
 documents/engineering/helm_chart_platform_doctrine.md,
 documents/engineering/integration_fixture_doctrine.md,
+documents/engineering/lifecycle_control_plane_architecture.md,
 documents/engineering/lifecycle_reconciliation_doctrine.md,
-documents/engineering/prerequisite_dag_system.md, documents/engineering/prerequisite_doctrine.md,
-documents/engineering/pure_fp_standards.md, documents/engineering/refactoring_patterns.md,
+documents/engineering/prerequisite_dag_system.md,
+documents/engineering/prerequisite_doctrine.md,
+documents/engineering/pure_fp_standards.md,
+documents/engineering/refactoring_patterns.md,
 documents/engineering/bootstrap_readiness_doctrine.md,
 documents/engineering/resource_scaling_doctrine.md,
-documents/engineering/streaming_doctrine.md, documents/engineering/test_topology_doctrine.md
+documents/engineering/streaming_doctrine.md,
+documents/engineering/test_topology_doctrine.md
 **Generated sections**: none
 
-> **Purpose**: Define the interpreter-only mocking doctrine, pure runtime-stability oracle boundary,
-> and public test-runner contract for `prodbox`.
+> **Purpose**: Define interpreter-only mocking, pure/model/property testing, production-adapter
+> composition, load and chaos qualification, and the public `prodbox test` contract.
 
-## 0. Canonical Skip Policy Statement
+Test topology and `.test-data/` isolation are owned by
+[Test Topology Doctrine](./test_topology_doctrine.md). Physical control-plane topology and its
+capability invariants are owned by
+[Lifecycle Control-Plane Architecture](./lifecycle_control_plane_architecture.md). Suite status and
+current-revision deployment evidence are owned only by the
+[Development Plan](../../DEVELOPMENT_PLAN/README.md).
 
-Skip/xfail is prohibited by default; missing prerequisites must fail fast with actionable errors.
+## 0. Canonical Statements
 
-The public `prodbox test` surface uses a two-stage model:
-
-- Phase `1/2`: prerequisite validation
-- optional Phase `1.5/2` or `1.6/2`: runbook and supported-runtime preparation
-- Phase `2/2`: Haskell test suites and named validation payloads
-
-This document defines testing doctrine only. Sequencing, completion status, and cleanup ownership
-are owned by [DEVELOPMENT_PLAN/README.md](../../DEVELOPMENT_PLAN/README.md). The test-run topology,
-the executable-sibling `prodbox.test.dhall` SSoT, `.test-data/` isolation, and the two fail-fast
-preconditions are owned by [test_topology_doctrine.md](./test_topology_doctrine.md).
-The `prodbox test init` / `prodbox test run <suite>|all` topology surface now uses that SSoT:
-each variant gets a generated binary-sibling `prodbox.dhall`, a `.test-data/<case>/`
-`storage.manual_pv_host_root`, and finally-guaranteed cleanup of only the per-run half.
+1. Skip/xfail is prohibited by default. Missing prerequisites fail fast with an actionable typed
+   error.
+2. Pure code never touches a mock. Fakes and injected failures exist only at subprocess, client, or
+   interpreter boundaries.
+3. A fake proves the pure decision and boundary mapping it exercises; it does not qualify the real
+   adapter, service identity, resource envelope, or deployment topology.
+4. Operation-indexed capability tests must use the same opaque reference for observation,
+   admission, and execution. Tests that inject an arbitrary `IO` action behind a capability label
+   are forbidden.
+5. Every durable external transition is tested as `observe -> decide -> commit/effect ->
+   re-observe`, including conflict, cancellation, restart, and applied-but-response-lost paths.
+6. One monotonic absolute deadline covers queue wait, auth refresh, external I/O, read-back,
+   persistence, response, retry delay, and cancellation.
+7. Memory-only stability is insufficient. Deployment qualification includes CPU throttling,
+   service rate, queue occupancy/wait, saturation, deadline misses, and latency.
+8. Cleanup obligations are registered before mutation and interpreted as an always-run DAG.
+   Failure injection must prove that independent cleanup continues and all outcomes aggregate.
+9. A revision that changes deployment behavior is not closed by unit/fake evidence alone. It must
+   satisfy [Development Plan Standard P](../../DEVELOPMENT_PLAN/development_plan_standards.md#p-deployment-qualification-and-counterexample-closure).
 
 ## 1. The Interpreter-Only Mocking Doctrine
 
-### Core Rule
+### 1.1 Core rule
 
-**Pure code never touches mocks. All mocking happens at the subprocess or interpreter boundary.**
+Pure helpers, graph construction, codecs, renderers, decision tables, `decide`/`evolve`, resource
+algebra, and cleanup scheduling are tested using concrete values. They do not import mock APIs or
+effect classes solely for test control.
 
-In the current repository:
+Boundary substitutions are appropriate for:
 
-- pure helpers, DAG logic, renderers, and validation helpers should be testable without mocks
-- subprocess fakes belong in the built-frontend integration suite under `test/integration/`
-- prerequisite and runtime orchestration belong in native Haskell modules under `src/Prodbox/`
+- subprocess execution;
+- HTTP, Vault, S3/MinIO, Kubernetes, DNS, and AWS clients;
+- monotonic clock and random/nonce generation;
+- durable CAS and journal storage;
+- bounded queue and provider-worker interpretation; and
+- retained-home material custody Transit seal/rewrap plus selected-target materialization; and
+- process lifecycle and fault injection.
+
+A boundary fake returns the same typed observation/result as production. Tests must not add a
+test-only Boolean success path that production cannot produce.
+
+### 1.2 Test hooks
+
+Long-running daemons may expose boundary-owned no-op production hooks for deterministic lifecycle
+coordination. Hooks may observe scheduling points or block an interpreter at a named boundary; they
+must not change domain decisions. Direct `threadDelay` for race coordination is forbidden.
 
 ## 2. Unit vs Integration Tests
 
-| Aspect | Unit Test | Integration Test |
-|--------|-----------|------------------|
-| External systems | Faked or avoided | Real or built-frontend |
-| Speed | Fast | Slower |
-| Dependencies | Minimal | Tooling, cluster, AWS, or DNS as required |
-| Where mocks live | Boundary only | N/A or fake-tool harness |
-
 ### Test Categories
 
-| Category | What Gets Tested | Location |
-|----------|------------------|----------|
-| Pure helper tests | Parsing, rendering, ADTs, DAG logic, validation helpers | `test/unit/Main.hs` |
-| Parser tests | `argv -> Command` coverage through `execParserPure`, including happy-path and unhappy-path leaf-command cases | `test/unit/Parser.hs` via `prodbox-unit` |
-| Built-frontend integration tests | CLI routing, fake-tool subprocess behavior, and direct-Dhall config masking or validation behavior | `test/integration/Main.hs`, `test/integration/CliSuite.hs`, `test/integration/EnvSuite.hs` via `cabal test prodbox-integration` |
-| Canonical test suite (named validations) | `charts-vscode`, `charts-api`, `charts-websocket`, `admin-routes`, `public-dns`, `dns-aws`, `aws-iam`, `aws-eks`, `pulumi`, `ha-rke2-aws`, `gateway-daemon`, `gateway-pods`, `gateway-partition`, `charts-platform`, `resource-guardrails`, `daemon-bootstrap`, `pulsar-broker`, `keycloak-invite`, `charts-storage`, `eks-volume-rebind`, `sealed-vault`, and `lifecycle`. The suite content is substrate-agnostic (no substrate-conditional branches in validation logic), but the suite as a whole is composed of per-substrate runs against both supported substrates; per [`DEVELOPMENT_PLAN/development_plan_standards.md` § M — Substrate coverage and independence (no fallback)](../../DEVELOPMENT_PLAN/development_plan_standards.md#substrate-coverage-and-independence-no-fallback) and [`DEVELOPMENT_PLAN/substrates.md`](../../DEVELOPMENT_PLAN/substrates.md), each per-substrate run is substrate-locked and fails fast on missing per-substrate config — there is no silent fallback from one substrate to the other, and a complete canonical-suite proof requires both the home local and AWS substrate runs to land independently. | `src/Prodbox/TestValidation.hs` via `prodbox test integration ...` |
-| Daemon lifecycle tests | Daemon startup and reload coverage per [config_doctrine.md](../../documents/engineering/config_doctrine.md): the `--config <path>` Dhall-load contract, file-watch reload trigger (write a new Dhall to the watched path and assert the daemon picks up the change), boot-vs-live classification (boot-field change drains and exits with `ExitSuccess`; live-field change atomic-swaps `envLiveConfig`), real process startup through the repository subprocess boundary, `/readyz` waits through the shared retry helper, SIGTERM drain, second-SIGTERM forced-exit assertions, and daemon health endpoint goldens | `test/daemon-lifecycle/Main.hs` via `cabal test prodbox-daemon-lifecycle` |
-| Pulumi harness tests | Ephemeral stack-state ownership, typed output handoff, and forced-failure cleanup around the AWS substrate's Pulumi provisioning helpers | `test/pulumi/Main.hs` via `cabal test prodbox-pulumi` |
-| Golden tests | `/healthz`, `/readyz`, and `/metrics` response shapes; CLI `--help`, `commands --tree`, `commands --json` output; rendered Plans; generated docs | `test/golden/` via `prodbox-unit` |
+| Category | What it proves | Canonical location |
+|----------|----------------|--------------------|
+| Pure unit tables | Parsing, validation, ADTs, graph rejection, `decide`/`evolve`, admission, deadline, cleanup scheduling | `test/unit/` |
+| Parser tests | `argv -> Command` via `execParserPure`, including rejection | `test/unit/Parser.hs` |
+| Property tests | Codec/replay/idempotency/monotonicity/bounds/deadline laws | `prodbox-unit` |
+| Deterministic concurrency simulation | Actor interleavings, saturation, cancellation, restart, response loss | dedicated pure/simulation test module |
+| Built-frontend integration | Real binary routing and fake boundary behavior | `test/integration/` |
+| Daemon lifecycle | Real process/config/health/admission/drain/restart contract | `test/daemon-lifecycle/` |
+| Production-adapter composition | Real binary with native MinIO/Vault/CAS clients and exact identity binding | named integration validation |
+| Load qualification | Authored steady rate plus burst under exact cgroups | named integration validation |
+| Chaos qualification | Kill/isolate/restart at every durable transition boundary | named integration validation |
+| Pulumi infrastructure | Provision, assert, always-run cleanup, residue re-observation | `test/pulumi/` and named validations |
+| Golden tests | CLI, plans, health/ready/metrics, generated docs | `test/golden/` |
 
-Gateway bounded-runtime coverage crosses these verification surfaces without crossing their effect
-boundary:
+The canonical named-validation inventory is defined in `src/Prodbox/TestValidation.hs`; phase and
+substrate coverage are defined by `TestPlan` and
+[DEVELOPMENT_PLAN/substrates.md](../../DEVELOPMENT_PLAN/substrates.md), not duplicated here.
 
-- pure unit/property tests generate duplicate, reordered, lagged, and snapshot-repaired peer deltas
-  and prove semantic convergence plus every cardinality/byte bound;
-- daemon lifecycle tests prove that `/healthz` and `/readyz` remain constant-time lifecycle
-  projections and never call the state renderer or an external backend;
-- chart-probe tests pin the typed/generated values golden, the complete values-backed Deployment
-  binding, and independent liveness/readiness fixtures that must reject `/v1/state`;
-- `gateway-pods` runs a structured continuous Kubernetes Pod/Event/metrics observer plus explicit
-  rollout-boundary/final samples. Every observation is serialized through one concurrency-safe,
-  run-scoped recorder before the pure time-windowed stability oracle in
-  `Prodbox.Test.GatewayRuntimeStability` classifies it.
+## 3. Pure and Property Tests
 
-The bounded/probe bullets are implemented by Sprints `2.31` and `3.25`. Sprint `5.16` implements
-the `gateway-pods` runtime-stability classifier, payload projection, shared run-wide recorder,
-continuous monitor, and final gate described below.
+### 3.1 Exhaustive tables
 
-Daemon lifecycle and golden treatment of health-endpoint responses are owned by
-Sprints `2.10`, `2.14`, and `2.16` per
-[Daemon Lifecycle Tests](../../documents/engineering/README.md)
-and `Test Categories → Daemon Lifecycle Tests` §2252–2254. Filesystem readiness markers,
-`sd_notify(READY=1)`, and `threadDelay`-based readiness probes are explicitly forbidden;
-`/readyz` is the only supported readiness signal, and lifecycle waits use the shared retry helper
-rather than direct sleeps. The lifecycle stanza covers the real process and signal contract,
-captures `/healthz`, `/readyz`, and `/metrics` response shapes under
-`test/golden/daemon-health/`, and the style suite rejects direct `threadDelay` plus raw
-`terminateProcess` in the stanza.
+Every closed observation, command, event, decision, and failure ADT has a table covering every
+constructor. Required control-plane tables include:
 
-### Integration Execution Policy (Fail-Fast)
+- capability kind/program acceptance and mismatch rejection;
+- service identity, substrate, authority scope, and epoch validation;
+- admission open/saturated/degraded/expired/unobservable;
+- authority `decide` and `evolve` commands/events;
+- closed `RetainedMaterialSchema` SMTP/EAB permit matching, flat custody observations, and every
+  pending/current/per-target/superseded/tombstone transition;
+- target generation duplicate/regression/digest conflict;
+- retry classification and remaining-deadline refusal;
+- stability warning/failure/absorbing transitions; and
+- cleanup `RequiresAttempt`/`RequiresSuccess` scheduling and aggregation.
 
-- Integration selections must fail fast when prerequisites are missing.
-- Platform and environment gating belongs in prerequisite validation, not in skips.
-- Use `prodbox test unit` when integration prerequisites are unavailable.
+### 3.2 Properties
 
-### Two-Phase Test Command Doctrine
+Use `tasty-quickcheck` for, at minimum:
 
-Integration-selected `prodbox test` commands execute in two phases:
+- `decode . encode == id` for bounded valid values;
+- deterministic render and event replay;
+- duplicate command/event idempotency;
+- stale authority epoch/fence/revision/generation rejection;
+- monotonic operation and target generations;
+- retained-material delivery never starts without the exact current source receipt, schema or
+  target mismatch never materializes, and a referenced source never becomes tombstoned;
+- selected-worker loss/nonce/attestation/deadline mismatch discards its target envelope and returns
+  to the committed rewrap intent, while supersession deadline without complete target/consumer
+  retirement evidence never authorizes source GC;
+- KV-v2 soft deletion never satisfies target/custody physical version+metadata absence, and
+  superseded checkpoint/custody GC never deletes while either primary/backup or a dependant refers;
+- CAS conflict re-decision from the newly observed state;
+- no queue, map, journal, outbox, replay window, or diagnostic projection exceeds its validated
+  bound;
+- one absolute deadline never increases as work descends through interpreters;
+- retry plus delay never runs beyond the original deadline;
+- heartbeat coalescing does not remove claim/yield/rotation intents;
+- cleanup never skips an independent ready node because a sibling failed; and
+- cleanup reporting retains both the primary failure and every cleanup failure.
 
-1. **Phase 1 - prerequisite gate**: validate integration prerequisites before deeper work starts.
-   Suites may split this gate into an initial fail-fast prerequisite pass plus a deferred
-   cluster-backed backend proof when the deferred proof depends on a visible runbook-created local
-   runtime such as the RKE2-backed MinIO Pulumi backend.
-2. **Phase 1.5 - integration runbook gate**: cluster-backed suites may enforce
-   `prodbox cluster reconcile`.
-3. **Phase 1.6 - supported runtime bootstrap**: aggregate or destructive flows may repair the
-   supported runtime before validation. When Phase 1.5 already ran the runbook reconcile,
-   Phase 1.6 reuses that reconciled local runtime and performs the chart reset/deploy work
-   without repeating the full `prodbox cluster reconcile` image-publication path.
-4. **Phase 2 - test execution**: run Haskell suites and named validation payloads only after the
-   earlier phases succeed.
+Happy-path chronological generators alone are insufficient. Generate duplicate, reordered,
+conflicting, stale, truncated, malformed, unobservable, and response-lost cases.
 
-When Phase `1.6/2` restores a cluster-backed supported runtime for external proof, it may wait for
-`prodbox edge status` to report `CLASSIFICATION=ready-for-external-proof` before the payload
-starts. That readiness is derived from Gateway API, Envoy Gateway, Route 53, and certificate
-state.
+### 3.3 Deterministic concurrency simulation
 
-When a Phase `1/2` prerequisite owns a deterministic local backend proof, it may perform a
-visible, bounded repair of repository-managed state before re-running the same readiness check. The
-canonical current example is the MinIO-backed Pulumi prerequisite recreating a deleted retained
-export host path and restarting `statefulset/minio` before retrying backend login.
+Use `io-sim` or an equivalent deterministic scheduler for actor and authority concurrency. The
+simulation controls clock, queue, cancellation, client disconnect, storage response, and worker
+restart. Cover every crash point around:
 
-The retained-volume rebinding validation keeps its live cluster mutation thin around a pure
-oracle: `VolumeRebindSnapshot` parses Kubernetes PV JSON, and `volumeRebindReport` checks same
-PV/PVC, `Bound` before and after, same EBS `volumeHandle` when present, and sentinel preservation.
-Unit coverage must pin those invariants separately from the destructive live
-`eks-volume-rebind` run.
+```text
+observe -> decide -> CAS intent -> external effect -> read-back -> CAS completion
+```
 
-The resource-guardrails validation follows the same boundary split: the live command gathers
-Kubernetes pod, `ResourceQuota`, and `LimitRange` JSON through `kubectl`, while the pure
-`resourceGuardrailReport` oracle checks non-`BestEffort` QoS, explicit cpu/memory/ephemeral-storage
-requests and limits for every checked container/init container, and root-chart namespace guardrail
-objects matching the validated `capacity.resource_plan`. Unit tests pin the oracle; built-frontend
-integration fakes only the subprocess boundary.
+For gateway emission, cover every point around:
 
-The gateway runtime-stability validation is deliberately not part of
-`resourceGuardrailReport`. Resource guardrails prove the authored plan's requests, limits, quotas,
-and QoS; they do not prove that a process stayed below its limit. The effect boundary gathers
-Kubernetes Pod, Event, and metrics JSON. `Prodbox.Test.GatewayRuntimeStability` parses those payloads
-and projects each gateway Pod into one flat exhaustive observation: restart-free Ready, restart
-delta, OOM residue, warning/failure memory pressure, Pending, or unobservable. Its warning and
-failure thresholds come from the validated `RuntimeMemoryPlan`, not separately authored constants.
+```text
+stage -> fsync -> publish -> commit -> fsync
+```
 
-The run-wide fold is fail-closed:
+The oracle proves one local transition owner, no stale-fence publication, deterministic staged
+recovery, and no second actor interleaving with an incomplete transition.
 
-- the first restart delta, OOM residue, or failure-threshold high-water observation is an absorbing
-  `RuntimeUnhealthy` result;
-- the first missing, unreachable, or undecodable authoritative observation is an absorbing
-  `StabilityUnreachable` result;
-- warning-threshold pressure and Pending observations reset the consecutive-success count without
-  manufacturing fatal evidence;
-- a Pod UID replacement resets the healthy window, so a replacement becoming Ready cannot inherit
-  its predecessor's success samples; and
-- only the required consecutive complete-replica snapshots of restart-free Ready Pods can produce
-  `StableObserved` while the absorbing result remains empty.
+## 4. Capability and Readiness Tests
 
-`TestRunner` creates the shared recorder before Phase `1.6/2` whenever `gateway-pods` is selected.
-On home it takes an explicit baseline and then starts the structured monitor before bootstrap. On
-AWS the compiled target gateway reconcile supplies the first point observation because the per-run
-target does not exist earlier; the monitor starts immediately afterward with a monitor-private EKS
-kubeconfig and an explicit Vault-derived AWS/Kubernetes subprocess environment. In both cases the
-runner waits for the monitor's first-observation handoff before allowing the remaining suite to
-proceed. On AWS this handoff occurs before SMTP synchronization or any dependent VS Code/API/
-WebSocket chart reconcile. Background observations, rollout-boundary samples, and the final gate
-share both the same state cell and an observation lock, so concurrent reads cannot lose or
-overwrite evidence.
+### 4.1 Same-reference invariant
 
-The monitor may be paused and drained only across a planned home/target gateway rollout in
-the compiled restore/lifecycle path. Pause waits for any observation already in flight, a planned
-reset clears only the healthy window, and the monitor resumes only after the post-reconcile point
-sample. No reset or pause clears an absorbing result. Every stability `kubectl` read carries
-`--request-timeout=5s` and is additionally bounded by GNU `timeout` plus a `System.Timeout`
-wall-clock deadline. Log text may enrich diagnostics only; it is never health evidence. Failure
-diagnostics retain pod name/UID, restart delta, termination reason/time, current limit, sampled
-high-water, both thresholds, and observation time.
+A production capability test resolves one opaque reference from service identity, authority scope,
+substrate, and transport binding. That value supplies observation, admission, and execution. The
+test must fail if any adapter attempts to substitute another endpoint or active kube context.
 
-Whole observed-cluster replacement is a distinct boundary used by `eks-volume-rebind`. The runner
-pauses and drains, takes the pre-replacement sample, and resets only the healthy window before the
-validation recreates the target. AWS then uses the canonical
-`charts reconcile gateway --substrate aws` path to restore the substrate platform and gateway.
-After recreation, a refresh request/acknowledgement makes the monitor worker leave the old
-kubeconfig bracket and materialize a new one. A foreground sample must succeed while the monitor is
-still paused; only then does background observation resume. Absorbing evidence survives the entire
-replacement and context refresh.
+An observe-only operation cannot satisfy a conditional-CAS/read-back requirement. In particular:
 
-Sprint `5.16` post-refresh code-owned evidence is 17/17 focused unit tests, 2/2 built-frontend
-`gateway-pods` fixtures (healthy and a background-only OOM that remains absorbing through later
-healthy samples), 1494/1494 full unit tests, and the exact post-refresh full CLI integration suite
-at 47/47. `prodbox dev check` passes as the final repository closure gate. The live multi-peer substrate
-soak remains a non-blocking Standard-O validation
-item; these passing code-owned gates do not claim that soak ran.
+- an absent-object GET is not a lifecycle CAS proof;
+- `/healthz`, `/readyz`, rollout, or resource existence is not backend capability proof;
+- a target gateway/agent observation is not retained-authority evidence; and
+- a successful command exit with discarded output is not semantic readiness.
 
-The `daemon-bootstrap` validation is code-owned transport proof for the post-bootstrap daemon
-boundary. Its pure `daemonBootstrapAuditReport` oracle requires the daemon bootstrap/lifecycle route
-set, rejects observed host MinIO port-forwarding, direct host Vault NodePort use, and host
-root-token fallback traces, and checks that request/response/log samples do not expose secret
-values. Built-frontend integration feeds a passing trace and a legacy-transport trace through the
-public `prodbox test integration daemon-bootstrap` command. Sprint `7.30` adds the code-owned
-daemon object-store API for Pulumi backend/residue paths; live AWS/Pulumi object-store parity is
-tracked separately in `DEVELOPMENT_PLAN/substrates.md`.
+### 4.2 Four observation axes
 
-If Phase 1 fails, Phase 2 is not started. This is an all-or-nothing gate, not a skip.
+Test process liveness, cached admission readiness, capability execution, and runtime stability
+separately. `/healthz` and `/readyz` tests inject slow/unavailable backends and saturated operational
+state and prove the endpoints remain constant time. Deep execution tests use a reserved coordinate
+through the production client and mandatory authoritative read-back.
+
+Mutating canaries are visible preparation actions, not hidden read-only prerequisites. A
+long-running lifecycle flow submits a durable idempotent operation directly and observes its
+operation ID; it does not use a point probe as a permit for a later unrelated transaction.
+
+## 5. Production-Adapter Composition
+
+Pure/fake proof is necessary and insufficient for a changed runtime boundary. Composition tests use:
+
+- the built `prodbox` binary;
+- the same daemon command and config shape as the chart;
+- the production native S3-compatible conditional-write/read-back adapter;
+- the production renewable Vault-session adapter;
+- actual Service/ServiceAccount/Vault-role identity;
+- the production serialization and envelope codecs;
+- bounded queues and absolute deadlines; and
+- the exact configured resource requests and limits.
+
+Required scenarios include missing/corrupt/unobservable data, CAS conflict, applied-but-response-
+lost, expired session refresh, auth denial, wrong service identity, wrong substrate, wrong
+authority epoch, and client cancellation. The test observes the durable operation by ID after every
+ambiguous response.
+
+Retained-material composition additionally proves region-bound SMTP derivation occurs before
+custody, raw IAM secret bytes never reach the home Agent, AWS-admin and external-EAB frames cannot
+cross-decode, and current SMTP/EAB receipts repopulate a newly introduced target and a fresh AWS
+Vault/EBS without remint or re-prompt.
+
+A fake `aws`, `kubectl`, or HTTP trace proves only frontend mapping. It cannot be cited as evidence
+that the production native client, port binding, Vault policy, or cgroup service capacity works.
+
+## 6. Load and Runtime-Stability Qualification
+
+### 6.1 Authored load
+
+Each component declares steady background arrival rate, burst, queue capacity, CPU demand,
+service-time budget, latency budget, and headroom in its validated service-capacity plan. The load
+test applies that workload plus the documented concurrent control-plane operations.
+
+It runs under the same CPU/memory/ephemeral-storage requests and limits as the rendered chart. A
+host run without the production CPU limit is a profiling aid, not deployment qualification.
+
+### 6.2 Required observations
+
+The run-wide recorder captures:
+
+- Pod UID, restart delta, current/last termination state, OOM, and memory working set;
+- CPU usage plus CFS throttled periods/time;
+- queue capacity, occupancy, wait, saturation refusals, and reserved-lane starvation;
+- service time and end-to-end p50/p95/p99 latency;
+- absolute-deadline misses and cancellation overrun;
+- session refresh failures and external I/O latency; and
+- missing, malformed, or unreachable samples.
+
+Restart, OOM, failure-threshold resource breach, repeated deadline breach, starvation, and
+unobservable required evidence are absorbing. Warning evidence resets only the consecutive-success
+window. A replacement Pod or later idle sample cannot erase the run-wide record. Only an explicitly
+compiled planned rollout may reset the success window.
+
+The historical restart/OOM/memory-only gateway fold is an incomplete compatibility projection. It
+does not qualify the redesigned services without CPU, queue, deadline, and latency evidence.
+
+### 6.3 Isolation proof
+
+Load Gateway Runtime while submitting and observing Lifecycle Authority work; lifecycle admission
+and status must stay within budget. Load or stall the provider worker while gateway mesh, Bootstrap
+Broker health, and Target Secret Agent read-back remain within their independent budgets. This
+proves physical scheduling isolation rather than merely separate Haskell constructors.
+Load home custody/rewrap and selected-target materialization concurrently and prove their separate
+worker/session budgets cannot starve normal Target-Agent delivery or Authority recovery.
+
+## 7. Chaos and Recovery Qualification
+
+Fault injection terminates, pauses, partitions, or makes unobservable each of:
+
+- Gateway Runtime and emitter journal;
+- overlapping Gateway Pods around journal lock/incarnation plus every emitter stage/peer-ack
+  boundary;
+- Bootstrap Broker before/after init request, encrypted receipt, custody acknowledgment,
+  generate-root accessor, baseline read-back, revoke, and accessor-absence read-back;
+- Lifecycle Authority before/after each aggregate CAS;
+- authority clock regression/unobservability, terminal-ID compaction, and pending-blob/GC scans;
+- provider worker before/after the external provider accepts an action;
+- every AWS `CreateAccessKey` response, target-sealing response, delete, and stable-absence read;
+- retained-material custody seal, current promotion, target rewrap/materialization, supersession,
+  target tombstone, and source-custody tombstone on both sides of every read-back;
+- Target Secret Agent before/after seal-receipt CAS, target Vault CAS, and each read-back;
+- MinIO and Vault during session refresh and durable transition; and
+- the client connection before receiving each response.
+
+Every injected point must produce one of:
+
+- deterministic resume from committed intent;
+- idempotent already-applied success after read-back;
+- typed fail-closed refusal with queryable operation state; or
+- explicit ambiguous/recovery state that blocks a successor until resolved.
+
+It must never produce dual authority, stale-fence commit, generation regression, a guessed timeout
+outcome, an unbounded waiter, or success without re-observation.
+
+The stable repository-owned reproducer for the July 11 failure class is
+`LCPC-2026-07-11`, exposed as
+`prodbox test integration control-plane-counterexample`. It has two required profiles. The causal
+profile holds the authored background load, fault schedule, and topology-normalized total control-
+plane CPU/memory/ephemeral/persistence budget constant: the old allocation includes the three
+250m Gateway CPU limits, while the replacement repartitions—without increasing—the same total
+budget across Gateway, Authority, Broker, and Agent roles. The production profile then exercises
+the independently justified rendered envelopes and capacity inequalities. A frozen, digest-bound
+pre-cutover trace/simulator retained by Sprint `4.50` supplies the superseded result after its
+production routes are deleted; it is test-only and cannot be selected as an interpreter. The
+artifact must show the expected absent-GET-vs-CAS binding, deadline/throttling, wrong-endpoint,
+applied-response-lost, and sibling-cleanup-skip signatures, then show every signature closed by the
+replacement. Old/new result, normalized-envelope mapping, source, and wiring digests survive
+legacy deletion; a reproducer weakened or resourced upward between runs is invalid evidence.
+
+## Two-Phase Test Command Doctrine
+
+### Fail-fast and preparation phases
+
+Integration selections fail fast on missing prerequisites. The public runner uses visible phases:
+
+1. prerequisite validation;
+2. optional runbook and supported-runtime preparation;
+3. test suites and named validation payloads; and
+4. always-run postflight/cleanup reporting.
+
+Prerequisites are read-only. Reconcile, canary mutation, long-lived desired presence, and runtime
+restoration are visible Plan/Apply steps. A preparation failure prevents dependent payload work but
+does not suppress registered independent cleanup.
 
 ### Phase Banner Rendering Contract
 
-`prodbox test` phase banners are operator-facing progress records. Their visible order is part of
-the command contract.
-
-1. Visible banner order is exact: `Phase 1/2`, optional `Phase 1.5/2`, optional `Phase 1.6/2`,
-   then `Phase 2/2`.
-2. Each phase banner is emitted as its own stdout line.
-3. Deferred Phase `1/2` checks may run after Phase `1.5/2` or `1.6/2`, but `Phase 2/2` is
-   emitted only after every Phase `1` gate succeeds.
-4. Post-test repair banners are also part of the visible contract when aggregate runtime repair is
-   required.
+Phase banners are operator-facing records. They are separate stdout lines, appear in actual
+execution order, and never announce payload execution before all its prerequisite/preparation
+gates succeed. Postflight banners remain visible even after a body failure.
 
 ### Command-Scope Prerequisite Aggregation
 
-`prodbox test` applies prerequisite gates at command scope:
+The selected validation set determines its exact typed prerequisite and preparation roots. Unit-only
+scope bypasses integration prerequisites. Substrate config is locked to the selected substrate;
+there is no fallback. Aggregate ordering is defined by `TestPlan`.
 
-1. The selected suite determines the root prerequisite set.
-2. Unit-only scope bypasses integration gates.
-3. Cluster-backed suites may keep initial host, tool, config, and AWS checks in the front half of
-   Phase `1/2`, then defer cluster-backed backend proofs such as `pulumi_logged_in` until after
-   the visible runbook has created or repaired the local runtime they depend on.
-4. `charts-vscode`, `charts-api`, and `charts-websocket` are supported-runtime cluster-backed
-   suites and therefore enforce the cluster runbook plus supported-runtime bootstrap before their
-   external proof, and that bootstrap waits for `prodbox edge status` readiness rather than
-   using a one-shot assertion. Public-host suites such as `public-dns` may avoid the cluster
-   runbook only when their test plan does not require it, but still prove the external port `80`
-   HTTP-to-HTTPS redirect after DNS records resolve to the configured public address.
-5. The sealed-Vault suite (`prodbox test integration sealed-vault`, Sprint `5.8`) is a
-   cluster-backed named validation. `ValidationSealedVault` and the pure
-   `sealedVaultAuditReport` forbidden-pattern oracle are code-owned, and the home live proof passed
-   with the encrypted Pulumi checkpoint interposition in place. AWS and parent/child federation
-   variants remain non-blocking substrate proof axes.
-6. Aggregate suites use the canonical validation ordering defined in `src/Prodbox/TestPlan.hs`.
+Session-style hidden setup is forbidden. Resource allocation, durable operation submission, and
+cleanup ownership are represented in the native plan and runner.
 
-Retained SES preparation follows the same interpreter-only boundary, with coverage split across
-Sprints `4.47`/`5.17`/`8.10`. Sprint `4.47`'s focused pure/fake suites exercise the
-desired-present, lease, Model-B intent, and SMTP-repair primitives. Sprint `5.17` adds the
-capability-derived plan and target-selection boundary:
+## 9. Absolute Deadline Testing
 
-- pure plan tables prove that validation sets containing `ValidationKeycloakInvite` select exactly
-  one opaque nested plan on the chosen substrate, with a typed target object-store precondition and
-  acquire/reconcile/await-ready/sync/release trace, while other sets select none;
-- the injected plan-interpreter tests prove target readiness precedes exactly one registered atomic
-  ensure, readiness/ensure failure blocks dependent charts, authority and sink stay distinct, and
-  no ordinary exit schedules `aws-ses` destroy;
-- Sprint `4.47`'s lease/desired-presence/SMTP interpreter tables prove acquire failure stops
-  immediately, every post-acquire failure or interruption releases, release failure remains
-  visible, and provider-presence waiting is bounded;
-- target-selection tables accept only the exact retained-home sink or canonical `aws-eks` identity
-  and SMTP coordinate, rejecting endpoint or identity substitution before mutation; and
-- the focused Sprint `5.17` recovery tests compose the real Phase-`4.47` target-commit interpreters
-  and prove stable predecessor read-back/global resolution before a different sink admits a new
-  generation or write; unobservable predecessor state fails closed.
+Tests construct one monotonic absolute deadline at the outer boundary and record it at every nested
+interpreter. Assert that:
 
-Sprint `5.17` closure evidence is 10/10 focused plan/recovery tests, 6/6 SES
-target-selection API tests, 12/12 global target-commit tests, and 1508/1508 full unit tests. Sprint
-`8.10` adds `Prodbox.Ses.Readiness` and keeps its proof at the same interpreter boundary:
+- remaining budget never increases;
+- admission refuses when predicted queue/service time cannot fit;
+- retry delay and the next attempt fit before retry begins;
+- queue wait, auth refresh, I/O, read-back, response persistence, and cancellation are all charged;
+- a client timeout cannot leave non-durable server work running; and
+- durable work continues after disconnect only when its intent is committed and observable by
+  operation ID.
 
-- captured-output tables exhaust domain identity type, sender verification, DKIM status/signing,
-  exact MX priority/target, active rule-set identity, enabled exact-recipient S3 action, and exact
-  bucket/prefix cases without spawning AWS;
-- capture tables prove that `head-bucket` is insufficient: the operational credential must list and
-  fetch the exact `inbound/.prodbox-readiness-capability-probe` object;
-- pure fold and bounded-poll tables distinguish `AwsSesReady`, retryable `AwsSesPending`, terminal
-  `AwsSesFailed`, and fail-closed `AwsSesUnobservable`, stop immediately on terminal states, and
-  preserve the final Pending reason on timeout;
-- transaction tests prove that every attempt observes complete provider presence before semantic
-  state, that SMTP materialization does not begin before Ready, and that timeout leaves long-lived
-  SES resources retained; and
-- built-frontend fixtures exercise the read-only `prodbox host check-ses-readiness` diagnostic and
-  its structured retry-the-same-harness remedy without permitting reconcile or ad-hoc AWS mutation.
+Independent relative 30-second client, queue, and action timers that can compose beyond the caller
+deadline are forbidden test and production shapes.
 
-Fresh-account propagation and the real invite run remain a separate, non-blocking live-proof axis
-after these code-owned classifications pass.
+## 10. Always-Run Cleanup Validation
 
-The prerequisite fixtures remain read-only. They may open the visible preparation gate, but they
-must not provision SES or encode a manual pre-provisioning assumption. See
-[Lifecycle Reconciliation Doctrine §3.1](./lifecycle_reconciliation_doctrine.md#desired-present-reconciliation-for-long-lived-resources)
-and [AWS Integration Environment Doctrine §4.6](./aws_integration_environment_doctrine.md#46-retained-ses-desired-presence-preparation).
+Cleanup tests compile a DAG whose edges distinguish `RequiresAttempt` from `RequiresSuccess`.
+Before the first mutation, the scope must already hold every cleanup obligation known at that
+point. Inject failure and cancellation at every body and cleanup node.
 
-Sprint `5.6` makes this prerequisite surface **typed and minimal-and-precise**:
+The assertions are:
 
-- Prerequisite identifiers are a typed `PrerequisiteId` ADT
-  (`src/Prodbox/PrerequisiteId.hs`) that keys the registry
-  (`src/Prodbox/Prerequisite.hs`) and threads through `EffectDAG` /
-  `EffectInterpreter` and the `TestPlan` declarations — exhaustively matched,
-  not string-compared.
-- Each validation declares **exactly** the typed prerequisites it consumes
-  (`validationInitialPrerequisites` / `validationDeferredPrerequisites` in
-  `src/Prodbox/TestPlan.hs`) — no over-broad inherited bundle.
-- `infra_ready` is split into `infra_ready` (cluster + AWS credentials) and a
-  new declared `public_edge_ready` node that depends only on cluster +
-  chart-platform readiness (`k8s_ready`), **not** on AWS credentials.
-  `charts-vscode`, `charts-api`, `charts-websocket`, and `admin-routes` gate on
-  `public_edge_ready` + `tool_curl` so they require an AWS-credential-free
-  readiness rather than re-acquiring the full `infra_ready` capability set.
-- The managed AWS IAM-harness tier is **derived from declared capabilities**
-  (`derivedManagedAwsHarnessPolicyTier`), not from a `substrate=aws` blanket
-  override. A credential-free validation (e.g. `gateway-partition`) never
-  acquires the harness merely because the active substrate is AWS.
+- every independent ready node runs after a sibling failure;
+- dependency-blocked nodes report an explicit skip reason;
+- lifecycle operations are observed/resolved before dependent authority teardown;
+- home control plane/application restoration is attempted independently of per-run AWS cleanup;
+- credential-dependent cleanup precedes removal of each role-specific IAM/key resource;
+- an identity generation remains available when required dependent cleanup failed;
+- every owned lifecycle class is re-observed;
+- the primary body error remains primary; and
+- all cleanup failures are retained in the final report.
 
-Supported WebSocket validations must prove shared-host Keycloak issuer and redirect alignment when
-the workload owns direct OIDC bootstrap on the shared host under `/ws/oidc`, connection-time auth,
-real `/ws` upgrade, reconnect-safe or
-restart-safe shared state, cross-replica behavior, revocation or forced-reconnect handling,
-readiness-based drain, token-expiry expectations when the workload requires them, and any
-required shared-state backend assumptions.
-
-Supported public API routes that rely on Envoy JWT validation must prove unauthenticated
-rejection, wrong-claim rejection, the shared-host Keycloak issuer plus JWKS contract, and the
-intended issuer, audience, and claim-enforcement contract for the selected token transport.
-
-### Session Fixtures vs Test DAG (SSoT)
-
-Session-style hidden setup is not the supported orchestration model for command-level prerequisites.
-
-- prerequisite behavior belongs in the native DAG and runner
-- resource setup and cleanup ownership for real validations belongs in
-  `src/Prodbox/TestValidation.hs` and the relevant infrastructure modules
-- the suite-level managed IAM credential harness for `prodbox test integration aws-iam`,
-  targeted `prodbox test integration <name> --substrate aws` validations,
-  `prodbox test integration all`, and `prodbox test all` belongs in
-  `src/Prodbox/TestRunner.hs` plus `src/Prodbox/Aws.hs`
-- cleanup doctrine is defined by [Integration Fixture Doctrine](./integration_fixture_doctrine.md)
-
-### Timeout Budget Separation
-
-Prerequisite and runtime-preparation time should not be confused with payload execution time.
-
-- earlier phases own readiness checks and runbook work
-- Phase 2 owns Haskell suites and named validation payloads
+For destructive lifecycle commands, dry-run goldens derive their resource steps from the managed
+resource registry. Integration success requires empty per-run residue and a successful fail-closed
+postflight observation. `prodbox nuke` remains an explicit opt-in validation because it destroys
+long-lived resources.
 
 ## 3. Forbidden Patterns
 
-Avoid:
-
-- silent `skip` or `xfail` behavior for missing prerequisites
-- hidden prerequisite setup outside the supported test runner
-- mocking deep inside pure planning code
-- raw ad-hoc file selectors as the public test interface
-- undocumented destructive setup or teardown in named validations
+- silent skip/xfail for a required prerequisite;
+- arbitrary `IO` stored in a capability/readiness target;
+- probing one endpoint and executing through another;
+- mocks inside pure decision code;
+- `threadDelay` for concurrency coordination;
+- timeout tests that omit queue and cancellation time;
+- memory-only stability claimed as service-capacity proof;
+- fake-tool success claimed as production-adapter qualification;
+- cleanup that stops after its first independent failure; and
+- current-revision closure claimed without the Standard-P qualification evidence.
 
 ## 4. Allowed Patterns
 
-Allowed patterns include:
-
-- pure helper tests in `test/unit/Main.hs`
-- fake-tool built-frontend proof in `test/integration/CliSuite.hs`
-- repository-local config proof in `test/integration/EnvSuite.hs`
-- real named validation flows behind `prodbox test integration ...`
-- explicit prerequisite and cleanup ownership in native Haskell modules
-
-## 5. Test Data vs Mocks
-
-Prefer concrete test data over mocks when the code under test is pure.
-
-- use real ADT values for parsing and rendering tests
-- use fake tool binaries or controlled subprocess environments for built-frontend proof
-- reserve mocking-style indirection for true effect boundaries
-
-## 6. pytest-subprocess Usage
-
-The repository no longer uses a Python pytest harness on the supported path.
-
-The equivalent doctrine in the current Haskell repository is:
-
-- keep subprocess faking at the boundary
-- test built-frontend command behavior through dedicated Haskell integration suites
-- keep pure logic free of subprocess concerns
-
-## 7. Coverage Targets
-
-Coverage remains a repository expectation, but the supported local closure gate is the Haskell
-build-plus-suite contract:
-
-- `prodbox dev check`
-- `prodbox test unit`
-- `prodbox test integration cli`
-- `prodbox test integration env`
-
-Named real-world validation commands provide operational proof rather than synthetic line coverage.
-
-## 7A. Destroy-Path Validation
-
-Every destructive lifecycle command carries explicit unit and integration test
-obligations.
-
-- **Unit tests of preflight predicates.** The `Precondition` library at
-  `src/Prodbox/Lifecycle/Preconditions.hs` (planned in Sprint `4.11`) must be
-  pure-testable: each predicate's diff and rendering logic is exercised in
-  `test/unit/` with synthetic stack snapshots, no AWS, no kubectl. See
-  [lifecycle_reconciliation_doctrine.md → §4 Predicate Library Inventory](./lifecycle_reconciliation_doctrine.md).
-- **Postflight tag-sweep assertion.** Every destructive lifecycle integration
-  test (`prodbox cluster delete`, `prodbox aws teardown`, `prodbox aws stack
-  <stack> destroy`, `prodbox nuke`) must assert that the postflight tag sweep
-  returns empty after success. A non-empty sweep is a hard test failure with
-  the leak list in the failure record.
-- **`--dry-run` golden snapshots.** `prodbox cluster delete --dry-run`,
-  `prodbox cluster delete --cascade --dry-run`, and `prodbox nuke --dry-run`
-  outputs are captured as golden tests so changes to the plan rendering
-  require an explicit golden update. Sprint `5.6` lands these three goldens
-  under `test/golden/destructive/` (rendered from the pure plan renderers
-  `renderNativeDeletePlan` / `Nuke.renderNukePlan` in `test/unit/Main.hs`),
-  proving each destructive path's planned step list **without executing it**
-  (the audit V80 found these missing; they validate Sprint `4.26`'s dry-run
-  fix). The goldens are **registry-generated**: the per-run, `aws-ses`, and
-  long-lived destroy lines are derived from the managed-resource registry /
-  `StackDescriptor` SSoT (Sprints `4.26`/`4.27`), and a drift guard fails if
-  a registered resource is added without regenerating the golden.
-- **`prodbox nuke` opt-in suite.** Because `prodbox nuke` destroys long-lived
-  shared infrastructure (`aws-ses`, the long-lived `pulumi_state_backend`
-  bucket), its end-to-end integration test is **not** part of the default
-  canonical suite. It is gated behind an explicit nuke-validation suite
-  invocation and runs only on explicit operator request.
-
-## 8. Intent Ownership
-
-This SSoT co-owns the public testing doctrine.
-
-- Owned statement: `prodbox test` is a prerequisite-aware, phase-bannered Haskell test runner with
-  explicit named validation ownership.
-- Linked dependents: `src/Prodbox/TestPlan.hs`, `src/Prodbox/TestRunner.hs`,
-  `src/Prodbox/TestValidation.hs`, `test/unit/Main.hs`, `test/integration/Main.hs`,
-  `test/integration/CliSuite.hs`, `test/integration/EnvSuite.hs`.
+- concrete ADT values and captured payloads in pure unit tables;
+- fake tools and fake clients at the interpreter boundary;
+- deterministic simulated clocks, queues, storage, and process faults;
+- real binary composition against local isolated MinIO/Vault services;
+- real named validations against harness-owned infrastructure; and
+- no-op production test hooks used only to expose deterministic scheduling boundaries.
 
 ## Testing Doctrine
 
-The canonical developer-facing test command is `prodbox test all`. The
-canonical package-level test command is `cabal test`. `prodbox test all`
-delegates to `cabal test` via subprocess execution. There must not be
-multiple independent test systems; the CLI-level test command is a
-convenience and orchestration layer over Cabal rather than a replacement.
-
-The complete test suite includes pure logic tests, parser tests, property
-tests, golden tests, local integration tests, Pulumi-orchestrated
-infrastructure tests, and lint and style checks (per-artifact lints plus
-the Haskell-style suite). There is no separate developer workflow for
-cloud-backed tests.
-
-Lint and style checks are part of the canonical test suite rather than a
-parallel workflow. The `<project>-haskell-style` `test-suite` stanza makes
-`cabal test` self-sufficient for style enforcement, so contributors and local
-automation run the same command and fail in the same way.
-
 ### Standard Testing Stack
 
-```text
-Cabal
-+ exitcode-stdio-1.0
-+ tasty
-+ tasty-hunit
-+ tasty-quickcheck
-+ tasty-golden
-+ typed-process
-+ temporary
-+ Pulumi
-+ fourmolu
-+ hlint
-+ cabal format
-```
+The standard stack is Cabal, `tasty`, `tasty-hunit`, `tasty-quickcheck`, `tasty-golden`,
+`typed-process`, `temporary`, Pulumi, Fourmolu, HLint, and `cabal format`; deterministic concurrency
+uses `io-sim` or an equivalent repository-approved simulator.
 
-Responsibilities:
+### Parser Tests
 
-| Component | Responsibility |
-|---|---|
-| Cabal | Build and execute test suites |
-| exitcode-stdio-1.0 | Standard test process interface |
-| tasty | Unified test runner and organization |
-| tasty-hunit | Assertions |
-| tasty-quickcheck | Property testing |
-| tasty-golden | Golden/snapshot testing |
-| typed-process | CLI subprocess execution |
-| temporary | Temporary directories/files |
-| Pulumi | Infrastructure orchestration and teardown |
-| fourmolu | Haskell source formatter |
-| hlint | Haskell linter |
-| cabal format | Cabal manifest formatter |
+Parser tests exercise `argv -> Command` through `execParserPure`; they cover accepted and rejected
+leaf-command shapes without spawning the binary.
 
-### Test Categories
+### Pulumi-Orchestrated Infrastructure Tests
 
-#### Pure Logic Tests
-
-Pure business logic should be tested directly, avoiding IO whenever
-possible. Targets: configuration merging, command planning, rendering
-logic, validation rules, serialization behavior.
-
-#### Parser Tests
-
-Parser tests verify `argv -> Command ADT`. The parser layer is real
-application logic and should be tested explicitly. Use `execParserPure`
-or equivalent parser-level APIs rather than spawning subprocesses.
-
-#### Property Tests
-
-Use `tasty-quickcheck` for property testing. Appropriate for parsers,
-serialization, normalization, transformations, formatting invariants.
-Example properties: `decode . encode == id`, render is deterministic,
-parser roundtrips. Bounded gateway protocol properties additionally cover duplicate/reordered delta
-idempotence, cursor monotonicity, snapshot/delta semantic equivalence, and retained
-cardinality/byte bounds; generating only happy-path chronological batches is insufficient.
-
-#### Golden Tests
-
-Golden tests compare current output against committed reference output.
-Especially valuable for CLI tooling because CLIs generate large amounts of
-structured text. Typical targets: `tool --help`, `tool users --help`,
-`tool commands --tree`, `tool commands --json`, generated Markdown docs,
-generated manpages.
-
-Golden outputs must be deterministic. Avoid embedding timestamps, random
-IDs, nondeterministic ordering, or terminal-width-dependent wrapping.
-
-#### Integration Tests
-
-Integration tests execute the real CLI binary as a subprocess. Use
-`typed-process` for subprocess management. Typical targets: stdin/stdout
-behavior, filesystem interactions, config loading, subprocess execution,
-exit codes, JSON output behavior.
-
-#### Pulumi-Orchestrated Infrastructure Tests
-
-Infrastructure tests provision real infrastructure using Pulumi, execute
-tests against deployed systems, then destroy all resources. Pulumi owns
-infrastructure lifecycle management. These tests must use isolated
-ephemeral stacks, generate unique stack names per run, aggressively tag
-all infrastructure, always perform teardown, and use `bracket`, `finally`,
-or equivalent structured cleanup.
-
-#### Daemon Lifecycle Tests
-
-When the binary hosts a long-running daemon, lifecycle tests live in their
-own `test-suite <project>-daemon-lifecycle` stanza. Each test spawns the
-daemon as a subprocess via `typed-process`, polls `/readyz` until ready,
-exercises the protocol surface, sends SIGTERM, asserts graceful shutdown
-within the configured drain deadline, and asserts exit code 0.
-
-Health-endpoint response shapes (`/healthz`, `/readyz`, `/metrics`) belong
-in the golden-test category. Shutdown signal tests assert that a single
-SIGTERM begins drain and a second SIGTERM (or timeout) forces exit.
-
-Lifecycle tests also assert that `/healthz` and `/readyz` are independent of event/state
-cardinality and injected backend latency. Full `/v1/state` rendering and deep backend readiness are
-tested separately; neither may be called from a Kubernetes lifecycle probe.
-
-Forbidden test patterns: `terminateProcess` without first attempting
-graceful shutdown, `threadDelay`-based readiness probes, polling for
-filesystem readiness markers when `/readyz` exists.
-
-See
-[distributed_gateway_architecture.md → Daemon Lifecycle](./distributed_gateway_architecture.md#daemon-lifecycle)
-for the lifecycle these tests validate.
+Pulumi-backed tests provision harness-owned infrastructure, execute the assertion, and register
+their cleanup DAG before mutation. They use isolated stacks, ownership tags, bounded deadlines,
+and fail-closed residue re-observation.
 
 ### Test Organization
 
-Each test tier is a separate Cabal `test-suite` stanza with
-`type: exitcode-stdio-1.0`:
+Each tier remains a separate Cabal test stanza:
 
 ```text
-test-suite <project>-unit
-test-suite <project>-integration
-test-suite <project>-haskell-style
-test-suite <project>-daemon-lifecycle  (when the binary hosts a daemon)
-test-suite <project>-pulumi            (when infrastructure tests apply)
+test-suite prodbox-unit
+test-suite prodbox-integration
+test-suite prodbox-haskell-style
+test-suite prodbox-daemon-lifecycle
+test-suite prodbox-pulumi
 ```
 
-`cabal test` runs every stanza. A single `tasty` tree spanning all tiers
-is forbidden: separate stanzas give Cabal-native parallelism, let developers
-and local automation target one tier (`cabal test <project>-unit`), and isolate
-dependency creep so heavy integration deps do not leak into the unit
-suite.
+`cabal test` runs the package suites. `prodbox test all` is the developer-facing orchestration
+entrypoint and composes package tests with named validations; it is not a second independent test
+system.
 
-Each stanza's `main-is` is a small `Main.hs` that calls into a library
-module where the actual tests live; tasty (or HUnit / QuickCheck used
-directly) builds the in-stanza test tree.
+## 13. Coverage and Qualification
+
+The local code-quality baseline remains:
+
+- `prodbox dev check`;
+- `prodbox test unit`;
+- `prodbox test integration cli`; and
+- `prodbox test integration env`.
+
+Those commands prove the code-owned surfaces they actually exercise. They do not, by themselves,
+qualify a changed deployed topology. A runtime-affecting revision additionally needs the exact
+composition, load, chaos, cleanup, and consecutive aggregate evidence required by
+[Development Plan Standard P](../../DEVELOPMENT_PLAN/development_plan_standards.md#p-deployment-qualification-and-counterexample-closure).
+
+The typed evidence artifact records source revision, generated-config digest, every component image
+digest, resolved topology/wiring digest, substrate, canonical commands, normalized old→new envelope
+mapping, production resource envelopes, authored load profile, counterexample ID and old/new
+results, complete fault matrix, operation IDs, consecutive aggregate results, cleanup/residue
+result, start/completion timestamps, and evidence digest. Missing or stale fields refuse
+qualification. Evidence from an older revision or a weaker topology cannot close the current
+counterexample.
+
+## Intent Ownership
+
+This document owns testing-layer boundaries, interpreter-only mocking, deadline/load/chaos proof
+requirements, and the public runner contract. It does not own suite status, process topology,
+business semantics, substrate inventory, or cleanup implementation details.
 
 ## Cross-References
 
-- [CLI Command Surface](./cli_command_surface.md)
-- [Code Quality Doctrine](./code_quality.md)
-- [Envoy Gateway Edge Doctrine](./envoy_gateway_edge_doctrine.md)
-- [Integration Fixture Doctrine](./integration_fixture_doctrine.md)
-- [Streaming Doctrine](./streaming_doctrine.md)
-- [Distributed Gateway Architecture](./distributed_gateway_architecture.md)
-- [Resource Scaling Doctrine](./resource_scaling_doctrine.md)
+- [Lifecycle Control-Plane Architecture](./lifecycle_control_plane_architecture.md)
+- [Pure Functional Programming Standards](./pure_fp_standards.md)
 - [Bootstrap Readiness Doctrine](./bootstrap_readiness_doctrine.md)
+- [Resource Scaling Doctrine](./resource_scaling_doctrine.md)
+- [Integration Fixture Doctrine](./integration_fixture_doctrine.md)
+- [Test Topology Doctrine](./test_topology_doctrine.md)
+- [Lifecycle Reconciliation Doctrine](./lifecycle_reconciliation_doctrine.md)
+- [Distributed Gateway Architecture](./distributed_gateway_architecture.md)
+- [Code Quality Doctrine](./code_quality.md)
+- [Development Plan](../../DEVELOPMENT_PLAN/README.md)

@@ -5,6 +5,7 @@
 **Referenced by**: [README.md](README.md), [00-overview.md](00-overview.md),
 [substrates.md](substrates.md),
 [the engineering doctrine docs](../documents/engineering/README.md),
+[lifecycle_control_plane_architecture.md](../documents/engineering/lifecycle_control_plane_architecture.md),
 [vault_doctrine.md](../documents/engineering/vault_doctrine.md)
 **Generated sections**: none
 
@@ -12,6 +13,14 @@
 > Python-removal work, and CLI doctrine adoption have one canonical home.
 
 ## Phase Status
+
+✅ **Reclosed on its documentation/governance surface in Sprint `0.16` (2026-07-11).** The July 11 full-suite
+counterexample showed that code-local readiness closure had been reported as deployment
+qualification without exercising the exact production composition. Sprint `0.16` defines the
+pure lifecycle-control-plane target, reopens every phase whose own surface expands, and separates
+phase completion from revision-scoped deployment qualification. The root documentation, generated-
+section, diff, warning-clean build, and mechanical status gates passed on 2026-07-11; no
+implementation sprint or deployment qualification is claimed by this plan-only closure.
 
 ✅ **Done on owned surface 2026-06-16** — Phase 0 owns the docs / plan-only Sprint `0.15`
 (Phase-Independence Doctrine Adoption), which lands the phase-independence doctrine into
@@ -1455,6 +1464,109 @@ validation stays exactly the same.
 ### Remaining Work
 
 None.
+
+## Sprint 0.16: Lifecycle-Control-Plane Architecture and Deployment Qualification ✅
+
+**Status**: Done (2026-07-11; documentation/governance surface)
+**Deployment qualification**: pending
+**Implementation**: `documents/engineering/lifecycle_control_plane_architecture.md`,
+`DEVELOPMENT_PLAN/development_plan_standards.md`, the development-plan control documents, all
+phase documents, `README.md`, and the governed readiness, lifecycle, config, Vault, gateway,
+testing, AWS, storage, chart, prerequisite, and pure-FP doctrines linked by the architecture SSoT
+**Independent Validation**: documentation lint, governed-link validation, generated-section drift
+checks, and a mechanical sprint-status audit validate this plan-only surface without any later
+phase or live infrastructure.
+**Docs to update**: `README.md`, `documents/engineering/lifecycle_control_plane_architecture.md`,
+`documents/engineering/README.md`, `documents/engineering/pure_fp_standards.md`,
+`documents/engineering/bootstrap_readiness_doctrine.md`,
+`documents/engineering/lifecycle_reconciliation_doctrine.md`,
+`documents/engineering/config_doctrine.md`, `documents/engineering/vault_doctrine.md`,
+`documents/engineering/distributed_gateway_architecture.md`,
+`documents/engineering/integration_fixture_doctrine.md`,
+`documents/engineering/unit_testing_policy.md`,
+`documents/engineering/aws_admin_credentials.md`,
+`documents/engineering/aws_account_setup_guide.md`,
+`documents/engineering/aws_integration_environment_doctrine.md`,
+`DEVELOPMENT_PLAN/development_plan_standards.md`, `DEVELOPMENT_PLAN/README.md`,
+`DEVELOPMENT_PLAN/00-overview.md`, `DEVELOPMENT_PLAN/system-components.md`,
+`DEVELOPMENT_PLAN/substrates.md`, and `DEVELOPMENT_PLAN/legacy-tracking-for-deletion.md`
+
+### Objective
+
+Define one pure functional target architecture that removes lifecycle authority from the gateway,
+makes readiness evidence operation-indexed, and prevents code-local completion from being reported
+as current-revision deployment qualification.
+
+### Deliverables
+
+- Define the physical boundaries: minimal pre-Vault Bootstrap Broker, mesh/DNS-only Gateway
+  Runtime, retained post-Vault Lifecycle Authority, substrate-local Target Secret Agent, separate
+  Authority Backup/TLS Retention Adapters and fenced Provider Worker, permit-created Credential
+  Provisioner/Admin Action Runner Jobs, and post-export Decommission Runner.
+- Define pure plans and state transitions separately from effect interpreters: typed external
+  observations feed total planners; interpreters enact explicit operations and must re-observe
+  their postconditions.
+- Define the complete initial operation-kind universe, authority-owned config generations, separate
+  Lifecycle-provider/Authority-backup/TLS-retention/Gateway-DNS/cert-manager identities, exact
+  registered DNS resources, and the
+  crash-recoverable encrypted-share/burn-recipient Vault initialization protocol so no unowned
+  escape hatch remains in the target.
+- Reopen Phases `1`–`8` only on their own expanded surfaces, preserve historical completed
+  sprints, and assign the forward-only sprint chain `1.61`–`8.12`.
+- Amend the plan doctrine so Standard O remains the phase-completion rule while revision-scoped
+  deployment qualification separately gates claims such as "deployment-ready" or "seamless full
+  suite."
+- Require the stable `LCPC-2026-07-11` frozen old/new reproducer, normalized old→new total-envelope
+  mapping, separate production-envelope profile, and secret-safe source/config/image/topology/
+  evidence identities before current-composition qualification.
+- Record every superseded transport, scheduler, probe binding, synchronous transaction, and
+  cleanup path in the legacy-removal ledger with one owning sprint.
+
+### Validation
+
+1. `prodbox dev lint docs` validates governed metadata, links, vocabulary, and Mermaid syntax.
+2. `prodbox dev docs check` proves generated documentation is current.
+3. `prodbox dev check` is the repository closure gate.
+4. A status audit proves `1.61` is the only initially Planned implementation sprint and every
+   downstream `Blocked by` points to an earlier phase or lower-numbered same-phase sprint.
+
+### Validation Record (2026-07-11)
+
+- `./.build/prodbox dev lint docs` — exit `0`.
+- `./.build/prodbox dev docs check` — exit `0`.
+- `./.build/prodbox dev check` — exit `0`, including policy, formatter, linter, and warning-clean
+  GHC `9.12.4` build.
+- `git diff --check` — exit `0`.
+- The mechanical status scan found exactly one `**Status**: Planned` implementation sprint
+  (`1.61`) and the complete forward chain `1.61 -> 1.62 -> 2.32 -> 2.33 -> 3.26 -> 4.48 ->
+  4.49 -> 4.50 -> 5.18 -> 5.19 -> 6.4 -> 7.33 -> 8.11 -> 8.12`, with every downstream sprint
+  `Blocked` by its immediate earlier owner.
+
+### Remaining Work
+
+None on Sprint `0.16`'s plan-owned surface. Implementation begins in Sprint `1.61`; deployment
+qualification cannot be claimed by this documentation sprint.
+
+## Documentation Requirements
+
+**Engineering docs to create/update:**
+
+- `documents/engineering/lifecycle_control_plane_architecture.md` - authoritative process,
+  capability, state-machine, persistence, deadline, migration, and qualification architecture.
+- `documents/engineering/pure_fp_standards.md` - indexed capability operations, pure transition
+  kernels, and effect-interpreter boundaries.
+- `documents/engineering/bootstrap_readiness_doctrine.md` - exact capability evidence and the
+  Bootstrap Broker/Vault/Lifecycle Authority dependency chain.
+
+**Product docs to create/update:**
+
+- `README.md` - current architecture, reopened implementation state, and deployment-qualification
+  status.
+
+**Cross-references to add:**
+
+- Link every reopened phase and the development-plan control documents to
+  `lifecycle_control_plane_architecture.md`.
 
 ## Related Documents
 

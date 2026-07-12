@@ -5,7 +5,8 @@
 **Referenced by**: [README.md](README.md), [00-overview.md](00-overview.md),
 [substrates.md](substrates.md),
 [legacy-tracking-for-deletion.md](legacy-tracking-for-deletion.md),
-[the engineering doctrine docs](../documents/engineering/README.md)
+[the engineering doctrine docs](../documents/engineering/README.md),
+[lifecycle_control_plane_architecture.md](../documents/engineering/lifecycle_control_plane_architecture.md)
 **Generated sections**: none
 
 > **Purpose**: Capture the zero-Python handoff criteria: a full clean-room rerun through the
@@ -13,6 +14,12 @@
 > owned by its originating phase.
 
 ## Phase Status
+
+⏸️ **Reopened and blocked by Sprint `5.19`.** Sprint `6.4` expands the clean-room handoff's
+own surface to cover the authority-epoch migration, restart-resume behavior, rollback refusal after
+cutover, complete home restoration, and zero surviving legacy gateway authority routes. The June
+26 run remains historical proof of the then-current topology; it is not current-revision
+qualification for the new process boundary.
 
 ✅ **Live-proven 2026-06-26 (home substrate) — the destructive rerun contract holds under the green
 `test all`.** The green home `prodbox test all` (2026-06-26, 18/18; see [00-overview.md](00-overview.md)
@@ -22,20 +29,20 @@ exit with no leaked AWS spend, home-substrate-proving Phase 6's destructive-reru
 contract. The `--substrate aws` rerun coverage remains the orthogonal, non-blocking axis
 ([substrates.md](substrates.md)).
 
-✅ **Done on owned surfaces** — Sprints `6.1`–`6.3` remain closed on the destructive rerun
+✅ **Historical narrower surfaces remain done** — Sprints `6.1`–`6.3` remain closed on the destructive rerun
 contract and zero-Python handoff surfaces. Per
 [development_plan_standards.md](development_plan_standards.md) standards rules E and N, Phase 6
-stays `Done` on its owned scope independently of any other phase's completion state; it is never
-reopened or gated by an incomplete later phase. The doctrine-adoption rows once held against
-Phases `1`–`4` are closed, and final handoff closure follows from Phase 6's own owned-surface
-validation rather than from a later phase.
+retains those results independently of later phases. They do not prevent the phase from being
+reopened when Sprint `6.4` explicitly expands Phase 6's own authority-migration and clean-room
+surface; its current blocked status is caused only by the earlier Sprint `5.19` dependency.
 
 **Independent Validation** (Standard N): Phase 6 is validatable on its owned surface — the
 destructive clean-room rerun contract, the zero-Python repository handoff, and the single-host
 handoff criteria — with no dependency on a later phase. The owned-surface proof runs on the
 home/local substrate through `prodbox test all`, `prodbox config show`, `prodbox config validate`,
 and `prodbox edge status`, plus `prodbox dev check` and `prodbox test unit` and the
-repository artifact/text-search closures; where the rerun composes deliverables owned by earlier
+repository artifact/text-search closures plus Sprint `6.4`'s versioned fake migration/cutover,
+interruption, rollback-refusal, and route-absence fixtures; where the rerun composes deliverables owned by earlier
 phases it exercises them against the home/local substrate. AWS-substrate coverage of the rerun is
 tracked in [substrates.md](substrates.md)'s parity table, and any proof needing live
 infrastructure (live AWS spend, deployed cluster, unsealed Vault, operator-supplied credential) is
@@ -48,13 +55,13 @@ repository. It owns the destructive rerun contract, the final zero-Python handof
 the forward build-order composition of those surfaces over the earlier lifecycle, gateway, chart,
 and AWS phase deliverables. Build order is not a validation gate (Standard N): Phase 6's owned
 surfaces are validatable on the home/local substrate independently of any other phase's completion
-state, and an incomplete later phase never blocks, gates, or reopens this phase.
+state. Sprint `6.4` is nevertheless new Phase-6-owned work and legitimately reopens this phase.
 The supported repository surfaces are Haskell-only, and the single-host doctrine is implemented.
 Sprint `6.1`, Sprint `6.2`, and Sprint `6.3` remain closed on their repository-owned rerun
 orchestration, zero-Python baseline, and single-host handoff surfaces. The cleanup ledger remains
 clear on Python-removal and single-host handoff residue, and the non-Python doctrine-adoption rows
-owned by reopened Phases `1`–`4` are now closed. The Phase `6` rerun and
-Python-removal surfaces retain no open work. The Phase `6` doc-harmony
+owned by reopened Phases `1`–`4` are now closed. The historical Python-removal surface retains no
+open work; authority migration and current clean-room proof remain open under Sprint `6.4`. The Phase `6` doc-harmony
 follow-up to the `METALLB_ENVOY_KEYCLOAK_REDIS_WEBSOCKETS.md` planning-doc deletion is closed in
 [legacy-tracking-for-deletion.md](legacy-tracking-for-deletion.md).
 
@@ -131,6 +138,7 @@ in the executable-sibling Tier-0 `prodbox.dhall` on the Haskell stack.
   tears down the AWS substrate's Pulumi stacks.
 - Environment-dependent rerun success for this phase remains owned by the named `prodbox`
   commands rather than restated here as a fresh execution log.
+
 ### Remaining Work
 
 None.
@@ -185,6 +193,7 @@ is never gated on Phase `7` completing.
 - Repository artifact and text-search closure remain explicit repo-review gates alongside the
   Haskell command-surface validations, and Sprint `6.1` continues to own the destructive rerun
   contract.
+
 ### Remaining Work
 
 None.
@@ -304,6 +313,85 @@ None.
 - Keep the phase-independence framing deferred to the SSoT,
   [development_plan_standards.md](development_plan_standards.md) Standards N (Phase Independence)
   and O (Code-Local vs Live-Infra Proof), rather than restating the doctrine here.
+
+## Sprint 6.4: Clean-Room Authority Migration and Rollback Proof [⏸️ Blocked]
+
+**Status**: Blocked
+**Deployment qualification**: pending
+**Implementation**: planned clean-room migration fixtures, installed-binary lifecycle traces,
+repository absence guards, and handoff evidence under `test/` and `src/Prodbox/TestRunner.hs`
+**Blocked by**: Sprint `5.19`
+**Live-proof**: pending after code-local preparation; the current-revision home clean-room run is a
+deployment-qualification axis rather than phase-status evidence
+**Independent Validation**: versioned migration fixtures, dry-run plans, source/route absence
+checks, and fake installed-binary traces validate the handoff contract without AWS or a later
+phase.
+**Docs to update**: `documents/engineering/lifecycle_control_plane_architecture.md`,
+`documents/engineering/integration_fixture_doctrine.md`,
+`documents/engineering/unit_testing_policy.md`, `DEVELOPMENT_PLAN/legacy-tracking-for-deletion.md`,
+and `README.md`
+
+### Objective
+
+Prove that an empty-checkout home deployment can migrate retained state exactly once, survive
+interruption, restore the complete supported platform, and contain no surviving legacy lifecycle
+transport before handoff.
+
+### Deliverables
+
+- Add a clean-room scenario that starts from supported legacy retained fixtures, performs the
+  authority-epoch cutover, interrupts at every migration boundary, and resumes to one converged
+  writer.
+- Prove a post-cutover rollback refuses before mutation and an interrupted pre-cutover run can
+  safely retry the old observation phase without dual-write.
+- Exercise cluster delete/reconcile, Vault sealed/unsealed transitions, broker handoff, Lifecycle
+  Authority journal replay, gateway restoration, target-agent restoration, charts, and always-run
+  cleanup through the installed binary.
+- Add zero-residue guards for gateway authority/bootstrap/target routes, host-direct object store,
+  obsolete ServiceAccounts/RBAC, duplicated endpoints, and stale config fields.
+- Run `LCPC-2026-07-11` plus two consecutive home aggregates under the exact rendered envelopes;
+  populate the exact typed qualification artifact defined by Sprint `5.19` rather than a local
+  subset, including separate complete superseded/replacement secret-safe source/config/image/
+  topology-wiring/envelope/load identities, each source-manifest exclusion-policy identifier/
+  version/digest, commands, counterexample results, full fault matrix, aggregate outcomes, cleanup/
+  residue, timestamps, and evidence digest. Secret-dependent inputs use only opaque Authority
+  receipt/generation IDs or Vault-keyed HMAC commitments; no public evidence hashes plaintext
+  secrets. This is prerequisite evidence; Sprint `8.12` reruns and owns final both-substrate
+  qualification after the shared SES changes.
+
+### Validation
+
+1. All migration interruption fixtures converge or fail closed with one authoritative remedy.
+2. Dry-run plans expose migration/cutover/cleanup order without mutation.
+3. Installed-binary fake traces cover success, failure, cancellation, and restart.
+4. Repository and rendered-chart scans prove zero legacy transport/config/RBAC residue.
+5. Qualification fixtures reject excluded secret/runtime/build-root manifest members, missing or
+   drifted source-manifest policy identities, and public raw hashes of secret-dependent inputs.
+6. `prodbox config generate`, `config validate`, local suites, docs checks, and `prodbox dev check`
+   pass.
+
+### Remaining Work
+
+- Blocked until Sprint `5.19` supplies the temporal qualification and cleanup recorder.
+- The real home clean-room run remains deployment qualification; Sprint `7.33` owns AWS parity.
+
+## Documentation Requirements
+
+**Engineering docs to create/update:**
+
+- `documents/engineering/lifecycle_control_plane_architecture.md` - clean-room migration and
+  rollback contract.
+- `documents/engineering/integration_fixture_doctrine.md` - retained-state migration fixtures.
+- `documents/engineering/unit_testing_policy.md` - installed-binary interruption matrix.
+
+**Product docs to create/update:**
+
+- `README.md` - handoff and qualification status.
+
+**Cross-references to add:**
+
+- Move legacy rows to Completed only after removal and current-revision qualification satisfy the
+  new governance rule.
 
 ## Related Documents
 

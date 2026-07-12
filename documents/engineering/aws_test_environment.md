@@ -2,7 +2,7 @@
 
 **Status**: Authoritative source
 **Supersedes**: N/A
-**Referenced by**: DEVELOPMENT_PLAN/README.md, documents/engineering/README.md, documents/engineering/aws_integration_environment_doctrine.md
+**Referenced by**: DEVELOPMENT_PLAN/README.md, documents/engineering/README.md, documents/engineering/aws_integration_environment_doctrine.md, documents/engineering/lifecycle_control_plane_architecture.md
 **Generated sections**: none
 
 > **Purpose**: Define the canonical shared AWS account, DNS, isolation, lifecycle, and
@@ -28,7 +28,7 @@ retained resource has a separate explicit destroy owner and is excluded from ord
 
 No test may mutate, depend on, or clean up resources owned by a different project or run. A suite may
 reconcile its own registered retained resource across runs only through the declared canonical
-reconciler and shared-lease contract in §3.3.
+durable-operation and narrow-fence contract in §3.3.
 
 Shared-account baseline human and automation access must use temporary credentials.
 Project-specific exceptions for repo-local operator workflows or harness-owned credential storage
@@ -161,8 +161,9 @@ following are true:
 2. `Unobservable` external state fails closed; errors are never treated as proof of absence.
 3. Ordinary suite cleanup always retains the resource, while a selected suite capability may run a
    visible desired-present reconcile.
-4. Concurrent reconciliation is serialized by a shared cross-process lease when the AWS service has
-   account-scoped or fixed-name state.
+4. Account-scoped or fixed-name mutation is serialized by a durable authority operation and a
+   narrow fence around each non-idempotent provider mutation. Propagation waiting and target
+   delivery do not hold an account-wide lease.
 5. The resource is tagged/namespaced to one project and no other project may adopt, mutate, or delete
    it.
 
@@ -175,7 +176,8 @@ For `prodbox`, the exact exception inventory is the generated
 not a prose list in this shared-account document. The invite-capable suite contract for its
 registered `aws-ses` resource is
 [AWS Integration Environment Doctrine §4.6](./aws_integration_environment_doctrine.md#46-retained-ses-desired-presence-preparation):
-the harness ensures it when required, holds the shared lease, and never auto-destroys it.
+the harness submits a durable operation when required, recovers lost responses by operation ID,
+and never auto-destroys it.
 
 ### 3.4 Root Credential Policy
 
@@ -550,12 +552,14 @@ Test failure does not justify leaving resources behind.
 
 Required behavior:
 
-1. cleanup runs in `finally` or equivalent teardown logic
-2. cleanup attempts every per-run owned resource even after partial failures
+1. cleanup obligations are registered before mutation and interpreted as an always-run DAG
+2. cleanup attempts every ready per-run node even after partial failures; one failure blocks only
+   descendants that require its postcondition, while independent siblings continue
 3. setup paths that fail before fixture yield or workload execution still roll back already-created
    per-run resources from that attempt; partial retained reconciliation remains retained and is
    repaired by the next idempotent run
-4. cleanup reports explicit failures with enough information to repair them safely
+4. cleanup reports the original failure plus every cleanup failure and dependency-blocked node with
+   enough information to repair them safely
 
 ### 7.4 Expiry And Harness Reclaim Model
 
@@ -580,12 +584,19 @@ ephemeral stack-state harness, typed-output handoff, and forced-failure cleanup 
 per-run stack flows, while the live AWS provisioning paths are covered by the named integration
 validations and aggregate suite.
 
-The registered long-lived exception is prepared independently of that per-run cleanup: a selected
-invite-capable suite visibly and idempotently reconciles `aws-ses` through the retained-home
-`LongLivedCheckpointAuthority`, serializes the transaction with the shared lease, and retains it in
-every ordinary postflight. The selected cluster's `TargetClusterSecretSink` receives SMTP material
-but never owns the checkpoint. This is not permission to reuse arbitrary existing AWS state; only
-registry entries in the project SSoT receive the exception.
+The registered long-lived exception is prepared independently of that per-run cleanup. A selected
+invite-capable suite uses one operation-indexed `CapabilityRef` unchanged for Lifecycle Authority
+observation, admission, and durable operation submission. One absolute deadline includes queue,
+transport, provider, and read-back time; a lost response is recovered by operation ID. The
+authority commits a target outbox only after non-credential SES/S3/DNS readiness and a retained-home
+Transit-sealed `SesSmtpSource` custody receipt. Attested one-shot home/selected Agent workers then
+rewrap that closed payload and the selected worker performs generation-CAS delivery; Authority sees
+only ciphertext/typed receipts. Recreating the AWS Vault therefore needs no simulated admin
+re-prompt or IAM-key rotation. Gateway Runtime owns neither checkpoint nor target secret. Ordinary
+postflight retains the non-credential provider resources, SMTP IAM family, and source custody while
+resolving any suite-owned mutation to a safe durable disposition. This
+is not permission to reuse arbitrary existing AWS state; only registry entries in the project SSoT
+receive the exception.
 
 ---
 
@@ -640,8 +651,10 @@ For `prodbox`:
 1. host-side AWS CLI credential-source restrictions, binary-sibling `prodbox.dhall`
    credential ownership, and AWS suite ownership are defined in
    [AWS Integration Environment Doctrine](./aws_integration_environment_doctrine.md)
-2. bootstrap and steady-state `aws.*` credential handoff for `prodbox config setup` is defined in
-   [AWS Account Setup Guide](./aws_account_setup_guide.md)
+2. `prodbox config setup` performs only Tier-0 authoring/validation and optional read-only AWS
+   discovery. Post-unseal role-specific identity provisioning uses the permit-indexed Credential
+   Provisioner; there is no bootstrap or steady-state shared `aws.*` handoff. Operator onboarding is
+   defined in [AWS Account Setup Guide](./aws_account_setup_guide.md)
 3. the supported remote AWS stacks are one ephemeral Pulumi-managed EKS cluster plus exactly three
    Pulumi-managed Ubuntu 24.04 EC2 instances in separate availability zones for the HA RKE2 path,
    both backed by Pulumi state stored in the local-cluster MinIO bucket
@@ -680,6 +693,7 @@ Official AWS documentation that informs this doctrine:
 
 - [AWS Integration Environment Doctrine](./aws_integration_environment_doctrine.md)
 - [Integration Fixture Doctrine](./integration_fixture_doctrine.md)
+- [Lifecycle Control-Plane Architecture](./lifecycle_control_plane_architecture.md)
 - [Unit Testing Policy](./unit_testing_policy.md)
 - [Engineering docs index](./README.md)
 - [Documentation Standards](../documentation_standards.md)

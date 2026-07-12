@@ -37,11 +37,13 @@
 [code_quality.md](./code_quality.md),
 [local_registry_pipeline.md](./local_registry_pipeline.md),
 [tla_modelling_assumptions.md](./tla_modelling_assumptions.md),
-[bootstrap_readiness_doctrine.md](./bootstrap_readiness_doctrine.md)
+[bootstrap_readiness_doctrine.md](./bootstrap_readiness_doctrine.md),
+[lifecycle_control_plane_architecture.md](./lifecycle_control_plane_architecture.md)
 **Generated sections**: none
 
-> **Purpose**: Single source of truth for how every `prodbox` binary instance — host CLI and
-> in-cluster gateway daemon — sources, parses, watches, and reloads its configuration.
+> **Purpose**: Single source of truth for how every `prodbox` binary instance — host CLI,
+> lifecycle control-plane services, gateway runtime, and workloads — sources, parses, watches, and
+> reloads its configuration.
 
 ## 0. Three-Tier Config Model
 
@@ -71,17 +73,26 @@ trust state required to read it.
   by running the binary (`config generate` / `config setup`) or by the test harness. IN-CLUSTER:
   there is **no committed or COPY-ed container default** — the image build, after building and
   installing the binary, **runs the binary** to generate a binary-sibling `prodbox.dhall` that
-  serves ephemeral in-container CLI commands. The long-running cluster gateway daemon is configured
-  by the `gateway-config-<nodeId>` ConfigMap override (mounted at `/etc/gateway/config`,
-  directory-mount so kubelet's atomic `..data` swap fires the fsnotify reload) — unchanged, and
-  independent of the build-time binary-sibling default.
-- **TIER 1 — BOOTSTRAP SECRET (PASSWORD-GATED).** The Vault unlock material (Shamir unseal keys,
-  recovery keys, initial root token) is password-AEAD-sealed (Argon2id + ChaCha20-Poly1305) and
+  serves ephemeral in-container CLI commands. Long-running cluster services are configured by
+  their own ConfigMap-mounted `--config` document, Service identity, and authority scope,
+  independently of the build-time binary-sibling default. Gateway Runtime retains its per-node
+  directory-mount shape so kubelet's atomic `..data` swap fires fsnotify; Bootstrap Broker,
+  Lifecycle Authority, Authority Backup Adapter, TLS Retention Adapter, Provider Worker, and each
+  Target Secret Agent have separate mounts and identities. The mode-indexed Credential Provisioner
+  and Admin Action Runner are separately configured, attested one-shot Jobs; neither borrows a
+  steady workload's mount or identity.
+- **TIER 1 — BOOTSTRAP SECRET (PASSWORD-GATED).** The Vault unlock material (Shamir unseal or
+  recovery shares) is password-AEAD-sealed (Argon2id + ChaCha20-Poly1305) and
   lives in the DURABLE MinIO bucket — NOT on host disk, and NOT a Vault-Transit envelope (it is
-  what UNSEALS Vault, so it cannot depend on an unsealed Vault). It is read via the **static** MinIO
+  what UNSEALS Vault, so it cannot depend on an unsealed Vault). Before first `/sys/init`, the same
+  Tier owns a temporary password-AEAD `PreparedInitEnvelope` containing the generated PGP
+  share-recipient private key plus exact transaction/storage/fingerprint binding. It is read back
+  before init and deleted/read-back absent only after Vault's encrypted response is durable and the
+  final unlock bundle is atomically promoted/read-back. It is read via the **static** MinIO
   root credential (`Prodbox.Minio.RootCredential`; operator decision 2026-06-22 — the access
   credential is not the security boundary, so password-deriving it was theatre). The operator
-  password is the sole ephemeral secret (the bundle-body AEAD key). A static MinIO credential is
+  password is the sole operator-memorized bootstrap secret (the prepared/final-body AEAD key). A
+  static MinIO credential is
   stable across rebuilds (a retained MinIO PV always matches Vault) and is one MinIO accepts (the
   bundle round-trips through MinIO, no `InvalidAccessKeyId`). **Disk-free (in force, Sprint `7.25`):**
   the bundle lives ONLY in MinIO — host disk holds no unseal material — and MinIO is reordered before
@@ -89,9 +100,24 @@ trust state required to read it.
   `.cluster-established` marker (not the bundle). Child clusters use transit-seal (no bundle; recovery
   keys in the parent's KV) —
   Tier 1 is root-cluster-only.
-- **TIER 2 — OPERATIONAL SECRETS (VAULT-GATED).** All other secrets are opaque-named,
-  Vault-Transit-enveloped LogicalObjects in the SAME durable MinIO bucket (in-force config, gateway
-  state, Pulumi checkpoints, downstream-cluster orders), decryptable only with an UNSEALED Vault.
+- **TIER 2 — OPERATIONAL SECRETS AND ENCRYPTED STATE (VAULT-GATED).** Operational secrets live in
+  allowlisted Vault KV/Transit/PKI paths. Authority config/checkpoint/index state is stored as
+  opaque Vault-Transit-enveloped objects: primary bytes in retained MinIO plus mandatory exact
+  ciphertext copies/read-back at the independently credentialed S3 backup coordinate. The
+  Lifecycle Authority generation/reference alone makes one config blob current; the backup copy is
+  not another config SSoT. Public-edge TLS retention is a second, disjoint S3 prefix protocol:
+  exact certificate/key ciphertext plus a retained-home-Transit-wrapped DEK is written/read back by
+  the TLS Retention Adapter, while plaintext exists only in selected/home Target Agent one-shot
+  workers. The shared S3 bucket is not TLS-owned: TLS deletion removes only registered TLS prefix
+  objects/versions and identity, while final bucket deletion belongs to the Authority-backup
+  decommission tail after every registered prefix is absent. Closed SMTP and ACME-EAB source
+  payloads use a third retained-home Agent protocol: payload-specific Transit-sealed custody plus
+  attestation-encrypted one-shot rewrap to an allowlisted selected-target schema. Authority/outbox
+  sees only ciphertext and typed receipts; a rebuilt AWS Vault requires neither secret re-entry nor
+  SMTP key rotation, and no generic export exists. Gateway emitter continuity is the
+  deliberate storage exception:
+  it is an encrypted identity-bound retained local journal, keyed by a managed Vault session, not a
+  shared Model-B object rewritten on every heartbeat.
   Config carries only `SecretRef.Vault` POINTERS (non-secret coordinates) that resolve here at use
   time.
 
@@ -143,27 +169,30 @@ managed AWS IAM harness validates the bootstrap config (`validateAwsBootstrapCon
 operator ids (`aws_substrate.*`, `ses.*`, `pulumi_state_backend.*`) extend the same way when a run
 needs them.
 
-### The in-force config SSoT is seeded, then the seed is retired
+### The in-force config authority is seeded, then the seed is retired
 
-The **in-force config** is an encrypted MinIO SSoT object (Tier 2), SEEDED from the operator
-config on first-ever bring-up. Sprint `1.42` wires `storeInForceConfigWith` (the twin of the
-floor-write gap — it has zero production callers today) so first bring-up envelopes the operator
-config into the encrypted MinIO SSoT under an opaque Vault-keyed name. Once seeded, the cluster
-reads its config from the SSoT, not from the filesystem seed-fallback. The seed source is now the
+The **in-force config** is an immutable encrypted blob whose schema, digest, reference, and
+generation are current only when the Lifecycle Authority aggregate names them. On first bring-up,
+the operator-authored Tier-0 payload is submitted as a visible `ConfigProposeCas` seed operation;
+it is never written directly to MinIO. Once accepted, every component reads a role-scoped
+projection through Lifecycle Authority, not from the filesystem seed or object store.
+The seed source is now the
 binary-generated Tier-0 `prodbox.dhall` `parameters` (Sprint `1.42`, 2026-06-19 — the standalone
 `prodbox-config.dhall` seed file is RETIRED). `Settings.loadConfigFile` decodes
 `( prodbox.dhall ).parameters` (a Dhall field-projection, keeping `Settings` free of the
-`Tier0`↔`Settings` import cycle); `config setup` / `aws setup` / `vault init` author the operator's
-non-secret config (route53 zone, SES domains, ACME email, Pulumi bucket) into `prodbox.dhall`'s
-`parameters`, preserving the established `context`/`witness`. The non-secret config carries no
-plaintext secrets — only `SecretRef.Vault` pointers (`aws.*` → `secret/gateway/gateway/aws`,
-`acme.eab_*` → `secret/acme/eab`).
+`Tier0`↔`Settings` import cycle); `config generate` / `config setup` author the operator's non-secret
+config (Route 53 zones, SES domains, ACME email, shared retained-bucket coordinates) into
+`prodbox.dhall`'s `parameters`, preserving the established `context`/`witness`. `aws setup` and
+`vault init` consume this Tier-0 surface; they do not become alternate config authors. The
+non-secret seed carries no plaintext secrets or plaintext-secret hash. Role-specific credential
+coordinates point to distinct Operational Lifecycle-provider/AWS-DNS01 and LongLived
+Authority-backup-store/TLS-retention-store/home Gateway-DNS/home-DNS01 generations, plus ACME-EAB;
+the shared `aws.*` pointer is a pre-cutover legacy shape.
 
-**Establishment + no fallback (operator decision 2026-06-19):** the cluster reads the in-force SSoT
-when it is *established* — signalled by the Vault unlock bundle's presence — and reads the
-`prodbox.dhall` `parameters` before establishment (first bring-up + host tests). A sealed or
-unreachable Vault on an established cluster is NOT a fail-closed brick that falls back to
-`parameters`: the cluster keeps running and simply cannot read its config (no fallback).
+**Establishment + no fallback:** Lifecycle Authority reports config absent, observed, corrupt, or
+unobservable. Only `absent` permits a visible seed proposal; an unlock bundle is not config-presence
+evidence. A sealed or unreachable Vault, corrupt aggregate, or failed blob read-back never falls
+back to `prodbox.dhall` parameters.
 
 ### The balance principle
 
@@ -200,7 +229,7 @@ every profile has positive replicas, and each `ResourceEnvelope` has positive bo
 limits. The older `node_budget` / `workload_budget` / `region_quota` fields remain as
 compatibility projections for callers not yet migrated to the resource plan.
 
-Sprint `1.56` extends the Tier-0 `parameters` with a typed **component dependency/readiness graph**
+**Historical implementation record.** Sprint `1.56` extended the Tier-0 `parameters` with a typed **component dependency/readiness graph**
 (`depends_on` edges plus a `ReadinessProbe` per component), owned by
 [bootstrap_readiness_doctrine.md](./bootstrap_readiness_doctrine.md) and not restated here. The graph
 is non-secret operator/generated Dhall; its validity (acyclic, no dangling id, and every dependency
@@ -232,6 +261,28 @@ The generated-artifact discipline remains owned by
 [code_quality.md](./code_quality.md#generated-artifacts). Phase `4` Sprint `4.45`, not this config
 sprint, owns reconcile-driver consumption of the graph-derived order.
 
+**Target graph contract.** The graph carries pure `CapabilityRequirement` values, never probe
+closures or arbitrary `IO`. Each requirement names the exact operation kind, service identity,
+authority scope, and latency budget. Runtime reconnaissance resolves it to one opaque
+`CapabilityRef kind`; observation, admission, and execution all use that same reference, so config
+cannot inject a nominal probe endpoint separately from the execution coordinate. The target graph
+has distinct service identities for Bootstrap Broker, Lifecycle Authority, home Authority Backup
+Adapter, TLS Retention Adapter, home Provider Worker, each substrate's Target Secret Agent, and
+Gateway Runtime. It also represents permit-bound on-demand Credential Provisioner and Admin Action
+Runner jobs without pretending either is a standing Service. The historical
+`ComponentGatewayDaemonPreVault` /
+`ComponentGatewayDaemonFull` split is superseded: Gateway Runtime has no pre-Vault authority, and
+Bootstrap Broker alone owns bounded Vault init/unlock/seal/rotation. Target topology and type shape
+are canonical in
+[Lifecycle Control-Plane Architecture](./lifecycle_control_plane_architecture.md); implementation,
+cutover, and qualification status remain solely in the Development Plan.
+
+The post-export Decommission Runner is intentionally absent from the live component graph and
+cluster mount inventory. It starts only after Authority exports a signed manifest plus durable
+external receipt and permanently stops. Its non-secret inputs are that verified manifest/receipt,
+the compiled closed action-tag verifier, and Tier-0 trust coordinates; its fresh admin prompt uses
+separate linear ingress and never becomes Dhall or target-cluster state.
+
 ## 1. Why this doctrine exists
 
 Every `prodbox` process needs configuration: hostnames, AWS coordinates, ports, ranked-node
@@ -246,9 +297,11 @@ again — SIGHUP on the daemon, full process restart on the host, no live reload
 workloads.
 
 That mix is no longer the supported architecture. Every `prodbox` binary takes its
-configuration from exactly one Dhall file. The in-cluster binaries — the gateway daemon and
-the workload Pods — name that file with a `--config <path>` flag (the chart passes the
-mounted ConfigMap path). The **host CLI** reads the executable-sibling Tier-0 `prodbox.dhall`
+configuration from exactly one Dhall file. The in-cluster binaries — Bootstrap Broker, Lifecycle
+Authority, Authority Backup Adapter, TLS Retention Adapter, Provider Worker, Target Secret Agent,
+Gateway Runtime, permit-bound Credential Provisioner/Admin Action Runner Jobs, and workload Pods —
+name that file with a
+`--config <path>` flag (the renderer passes the mounted ConfigMap path). The **host CLI** reads the executable-sibling Tier-0 `prodbox.dhall`
 as a *seed/propose input only* — never as the in-force source of truth.
 Either way the rule is one Dhall file per process and nothing else, and that file carries no
 secret material. Sensitive fields are typed `SecretRef` values, never inline plaintext: the
@@ -264,19 +317,24 @@ Pod) or a LiveConfig change (atomic STM swap, no restart), and acts accordingly.
 longer the canonical reload trigger.
 
 One further inversion governs *what the file means*. The in-force cluster configuration is not
-the on-disk Dhall — it is a Vault-Transit-enveloped object in MinIO. The filesystem
-`prodbox.dhall` is the Tier-0 seed/propose input that bootstraps or proposes an update to that
-encrypted source of truth; the binary reads only the unencrypted basics locally and fetches +
-decrypts the in-force config through Vault. Section 1a states this inversion in full; the
+the on-disk Dhall — it is the immutable Vault-Transit-enveloped blob named by schema, digest,
+reference, and generation in the Lifecycle Authority aggregate. The filesystem `prodbox.dhall` is
+the Tier-0 seed/propose input that submits a visible update to that source of truth; the binary reads
+only the unencrypted basics locally and observes a role-scoped config projection through the exact
+Lifecycle Authority capability. Section
+1a states this inversion in full; the
 SecretRef union (Section 6.2), the import rules (Section 5), and the cluster mount contract
 (Section 6) are all expressed against it.
 
-## 1a. The in-force config lives encrypted in MinIO
+## 1a. The in-force config is an authority-referenced encrypted blob
 
 The **in-force cluster configuration** is stored as a prodbox object-level Vault-Transit
-envelope, and that encrypted object is the single source of truth. It is not a distinct
-mechanism: the in-force config is one logical object routed through the same §9 object-store
-every prodbox-owned secret-bearing object uses. It lands as an opaque, HMAC-named
+envelope, but the blob is current only when the bounded Lifecycle Authority aggregate names its
+schema, digest, reference, and generation. The aggregate plus referenced immutable blob form the
+source of truth. This is not a distinct
+mechanism: the in-force config is one logical object routed through the shared Tier-2 Model-B
+object store used by other Vault-gated config/checkpoint blobs. The Tier-1 unlock bundle and
+Gateway's identity-bound local journal have different bounded owners. The config blob lands as an opaque, HMAC-named
 `objects/<id>.enc` ciphertext in the one generically-named bucket — **never** under a literal,
 role-revealing `in-force-config` key. The id↔logical map lives only in the Vault-encrypted
 index, so a sealed-Vault MinIO listing exposes only opaque object IDs at a decoy-padded constant
@@ -287,19 +345,40 @@ prodbox-owned MinIO object obeys — a sealed Vault reduces prodbox to an opaque
 pile. See [vault_doctrine.md §9](./vault_doctrine.md#9-minio-as-a-ciphertext-store) and
 [cluster_federation_doctrine.md](./cluster_federation_doctrine.md).
 
-**One object-store, daemon-owned after bootstrap.** The same object-store — one envelope,
-HMAC-naming, and index discipline — is shared by host and daemon code, but the target supported
-runtime boundary is daemon-mediated. The host binary uses Kubernetes directly only to bootstrap the
-cluster and deploy the daemon; after that, host requests go through the loopback-restricted daemon
-NodePort and the daemon reaches MinIO through in-cluster Service DNS. Sprint `4.42` removed the
-supported root-lifecycle direct Vault/MinIO transport after daemon bootstrap; Sprint `7.30` removed
-the supported Pulumi object-store direct transport. Any remaining direct host-root-token `DekCipher`
-plus host MinIO port-forward transport is explicit legacy/config/test seam residue tracked in the
-cleanup ledger. A daemon-side durable read or write
-uses the same
-`Prodbox.Minio.EncryptedObject` layer and recovers a logical object only while Vault is unsealed and
-its policy permits the Transit unwrap. See
-[vault_doctrine.md §9](./vault_doctrine.md#9-minio-as-a-ciphertext-store).
+**Primary plus independent backup, authority-owned by capability.** The envelope, HMAC-naming, and index
+discipline are shared, but no generic daemon proxy owns them. Bootstrap Broker alone accesses the
+bounded pre-Vault prepared/encrypted-response/final-bundle transaction. Lifecycle Authority alone
+owns the in-force config
+generation/blob reference, durable operation records, leases/fences, Model-B CAS, immutable checkpoint references, provider workflow, and delivery
+outbox. Each Target Secret Agent owns its substrate-attested allowlisted generation-checked Vault KV
+read/CAS/read-back. The retained-home Agent additionally owns payload-specific Transit custody and
+rewrap for the closed `SesSmtpSource` and `AcmeEabSource` schemas; attested selected-target one-shot
+workers alone materialize them. Gateway Runtime owns mesh/DNS and its encrypted identity-bound local
+emitter journal only; it has no generic MinIO, lifecycle, Pulumi, bootstrap, federation-custody, or
+target-secret authority. Host and suite callers resolve an operation-indexed `CapabilityRef` to the
+owning service, and use that same reference for observation, admission, and execution.
+
+The Authority Backup Adapter is a separate home workload whose config carries only the exact
+backup coordinate and `secret/aws/authority-backup-store`. The TLS Retention Adapter is another
+separate workload whose config carries only exact registered `public-edge-tls` coordinates and
+`secret/aws/tls-retention-store`; it cannot decrypt TLS bytes or address the Authority-backup
+prefix. The Provider Worker has only Lifecycle-provider coordinates. Credential Provisioner and
+Admin Action Runner configs contain secret-free permit/attestation bounds; raw prompt and newly
+returned secret bytes arrive over separate authenticated, schema-indexed linear ingress and never
+enter Dhall. The AWS admin prompt cannot satisfy the externally supplied EAB ingress, and `config
+setup` authors neither input.
+
+**Historical implementation record (legacy cutover surface).** Sprints `4.42` and `7.30` routed supported
+root-lifecycle and Pulumi object-store traffic through a loopback-restricted gateway daemon
+NodePort. Remaining gateway object-store routes, direct host-root-token `DekCipher` plus host MinIO
+port-forward transports, and endpoint-inferred authority are migration residue tracked in the
+cleanup ledger. They are not target authority. The underlying
+`Prodbox.Minio.EncryptedObject` envelope remains valid behind Bootstrap Broker or Lifecycle
+Authority according to operation and policy. The separate Backup Adapter stores/read-backs the
+same ciphertext bytes at its S3 coordinate; it cannot decrypt config or make a reference current.
+See
+[vault_doctrine.md §9](./vault_doctrine.md#9-minio-as-a-ciphertext-store) and
+[Lifecycle Control-Plane Architecture](./lifecycle_control_plane_architecture.md).
 
 **The bootstrap floor is the Tier-0 `prodbox.dhall`.** The basics are the minimal, non-revealing
 bootstrap needed only to reach and unseal Vault: the cluster id, this cluster's Vault address, the
@@ -316,12 +395,14 @@ surface AND the derived `prodbox-basics.json` projection are both ELIMINATED: th
 directly from `prodbox.dhall` (Sprint `1.41`; see §0).
 
 **Filesystem Dhall is seed/propose, not SSoT.** A filesystem `prodbox.dhall` is a Tier-0
-seed/propose input only. On first-ever bring-up its `parameters` seed the encrypted MinIO source
-of truth; thereafter supplying or updating that file is a *proposed update*, reconciled into the
+seed/propose input only. On first-ever bring-up its `parameters` are a visible proposal to the
+Lifecycle Authority; thereafter supplying or updating that file is a *proposed update*, reconciled into the
 in-force config rather than read as the live config. The prior host-CLI model — read the repo-root
 `prodbox-config.dhall` directly as the live config — is retired and survives only as a legacy
-payload/temp-decode shape. Supported reads are "read the basics locally, fetch and decrypt the
-in-force config from MinIO via Vault." The Sprint `1.38` foundation has
+payload/temp-decode shape. Target reads are "read the basics locally, then use the exact Lifecycle
+Authority capability to fetch and decrypt the in-force config."
+
+**Historical direct-loader implementation record (legacy cutover surface).** The Sprint `1.38` foundation has
 landed the Dhall-payload decoder (`decodeConfigDhallBytes`) and the injected
 `fetchInForceConfigWith` / `storeInForceConfigWith` composition. Sprint `4.30` routes the
 production MinIO read through `Prodbox.Minio.EncryptedObject` / `ObjectStore`: `Settings` reads
@@ -338,11 +419,15 @@ Sprint `1.42` wires the first-bring-up seed so the cluster reads the in-force co
 seeded SSoT rather than the seed-fallback (Sprint `1.39`'s `inForceConfigObjectAbsent` fallback is
 the interim), after which the legacy `prodbox-config.dhall` seed is retired (§0).
 
-**Root-token-gated config writes.** Updating the *root cluster's* in-force config requires the
-root Vault token, which in turn requires an unsealed root Vault. Root config governs every
-downstream cluster — it is the keys to the kingdom. The authority ladder is: reads of the basics
-are free; a full read of the in-force config requires an unsealed Vault; a write to the root
-cluster's in-force config requires the privileged root token. The root/child trust tree, the
+**Generation-CAS config proposals.** Updating the root cluster's in-force config is a typed
+Lifecycle Authority operation, never a root-token or direct MinIO write. The host obtains a
+short-lived `prodbox-config-admin` TokenRequest proof, submits the expected generation plus
+validated proposal digest through `ConfigProposeCas`, and uses the same authority reference for
+admission and result observation. The Authority writes and reads back a new immutable encrypted
+blob, then CAS-advances the config generation/reference. The caller never receives a Vault root
+token or object-store credential. Root config governs every downstream cluster, so stale
+generation, wrong authority epoch, corrupt current state, or unobservable read-back refuses. The
+root/child trust tree, the
 transit-seal auto-unseal, and downstream-cluster custody are owned by
 [cluster_federation_doctrine.md](./cluster_federation_doctrine.md). (The local basics and
 in-force-config foundation are in Sprint `1.38`; the federation surface is in Sprint `2.26`; the
@@ -356,7 +441,7 @@ Each `prodbox` binary instance sources configuration from exactly one Dhall file
 in-cluster binaries name that file with a CLI flag:
 
 ```
-prodbox <gateway|workload subcommand> --config <path-to-dhall-file>
+prodbox <in-cluster service subcommand> --config <path-to-dhall-file>
 ```
 
 The host CLI takes no `--config` flag at all. It resolves its **binary-sibling**
@@ -394,8 +479,16 @@ import syntax (Section 5).
 
 | Binary instance | Canonical Dhall path | Resolution |
 |---|---|---|
-| Host CLI (`prodbox` on the operator host) | Tier-0 **binary-sibling** `prodbox.dhall` — the file beside the executable (`.build/prodbox.dhall`), not the repo root (GENERATED, self-contained non-secret binary context AND sealed-Vault bootstrap floor AND the operator seed config in its `parameters`). The standalone `./prodbox-config.dhall` seed file is RETIRED (Sprint `1.42`). | `src/Prodbox/Repo.hs::resolveTier0ConfigPath` (resolved via `takeDirectory getExecutablePath`) + `src/Prodbox/Settings.hs::loadConfigForSettingsWith`; the binary reads the sibling `prodbox.dhall`, projects the basics via `projectBasics`, and decodes `( prodbox.dhall ).parameters` (`loadConfigFile`) as the seed; before establishment (no unlock bundle) it uses those `parameters`, and once established it fetches/decrypts the in-force MinIO envelope (Tier 2) via Vault |
+| Host CLI (`prodbox` on the operator host) | Tier-0 **binary-sibling** `prodbox.dhall` — the file beside the executable (`.build/prodbox.dhall`), not the repo root (GENERATED, self-contained non-secret binary context AND sealed-Vault bootstrap floor AND the operator seed config in its `parameters`). The standalone `./prodbox-config.dhall` seed file is RETIRED (Sprint `1.42`). | the binary reads the sibling `prodbox.dhall`, projects the basics via `projectBasics`, and decodes `( prodbox.dhall ).parameters` as the seed; before establishment it uses those parameters, and once established it resolves the exact Lifecycle Authority capability for in-force reads/proposals |
 | In-cluster ephemeral CLI (`prodbox …` run inside the container) | Tier-0 **binary-sibling** `prodbox.dhall` (beside the in-container binary) | NO committed or COPY-ed container default. The image build, after installing the binary, **runs the binary** (`prodbox config generate`) to write the binary-sibling `prodbox.dhall`; same resolution as the host CLI (Sprint `1.49`) |
+| In-cluster Bootstrap Broker | `/etc/bootstrap-broker/config/config.dhall` | distinct ConfigMap directory mount; carries only bounded pre-Vault coordinates and no gateway, lifecycle, provider, or target-secret authority |
+| In-cluster Lifecycle Authority | `/etc/lifecycle-authority/config/config.dhall` | distinct ConfigMap directory mount; carries Lifecycle Authority identity/scope and `SecretRef` coordinates for its managed sessions, Model-B aggregate/blob store, provider worker, and outbox |
+| In-cluster Authority Backup Adapter | `/etc/authority-backup/config/config.dhall` | home-only mount carrying exact Authority identity, S3 backup coordinate, and `secret/aws/authority-backup-store`; no provider/target/DNS coordinate |
+| In-cluster TLS Retention Adapter | `/etc/tls-retention/config/config.dhall` | home-control-plane mount carrying exact registered TLS prefixes and `secret/aws/tls-retention-store`; no backup/provider/Transit/plaintext-TLS coordinate |
+| In-cluster Provider Worker | `/etc/provider-worker/config/config.dhall` | home-only mount carrying exact provider binding and `secret/aws/lifecycle-provider`; no authority-writer or backup credential |
+| One-shot Credential Provisioner | `/etc/credential-provisioner/config/config.dhall` | one active mode-indexed `GenesisBackupPermit`, `RepairPermit`, or `OperatorMaterialPermit` plus deterministic coordinates and Job attestation; the bounded first-reconcile session also binds the secret-free ordered action/coordinate/count/deadline plan digest and may receive only the next separately signed permit after the previous receipt, never batch authority; no prompt or persisted admin secret |
+| One-shot Admin Action Runner | `/etc/admin-action-runner/config/config.dhall` | one backup-receipted permit for explicit SES destroy, legacy backend migration/retained-store compatibility, or quota request/status read-back; no normal provider/provisioning authority or prompt bytes in config |
+| In-cluster Target Secret Agent | `/etc/target-secret-agent/config/config.dhall` | per-substrate mount carrying substrate attestation, fixed closed payload-schema/KV/receipt allowlist, one-shot secret-worker binding, and exact TLS Secret RBAC; home alone also carries payload-specific SMTP/EAB custody/rewrap and `prodbox-tls-envelope` Transit lanes, none of which is a generic export |
 | In-cluster gateway daemon | `/etc/gateway/config/config.dhall` (Tier-0 `prodbox.dhall`, the `config.dhall` file inside the directory-mounted `/etc/gateway/config`) | the long-running daemon is configured by the chart-side `gateway-config-<nodeId>` ConfigMap mount (unchanged), independent of the build-time binary-sibling default; see [helm_chart_platform_doctrine.md](./helm_chart_platform_doctrine.md) and [distributed_gateway_architecture.md](./distributed_gateway_architecture.md) |
 | In-cluster workload Pods (`api`, `websocket`) | `/etc/workload/config.dhall` | chart-side ConfigMap mount on the owning workload chart |
 
@@ -455,7 +548,7 @@ the newer GHC. The specific `allow-newer` set is owned by
 
 The Dhall expression at the `--config` path is free to compose itself from sibling files
 using Dhall's native import system. It imports only non-secret parts — types, cluster topology,
-and `SecretRef` references — never a secret value:
+and role-scoped capability coordinates — never another role's secret reference:
 
 ```dhall
 -- /etc/gateway/config/config.dhall (rendered into the gateway-config-<nodeId> ConfigMap)
@@ -463,13 +556,19 @@ let types  = ./types.dhall
 let orders = ./orders.dhall                          -- separate ConfigMap mount
 in  types.BootConfig::{ node_id   = "node-a"
                       , orders    = orders
-                      -- credentials are SecretRef.Vault references, resolved at runtime
-                      -- through Vault Kubernetes auth — never imported as a value here
-                      , aws_creds = types.SecretRef.Vault { mount = "kv", path = "aws/route53", field = "creds" }
-                      , minio     = types.SecretRef.Vault { mount = "kv", path = "minio/root", field = "creds" }
+                      -- home only: exact non-secret Gateway-DNS capability coordinate;
+                      -- EKS renders this field absent
+                      , dns_capability = Some types.GatewayDnsCoordinate::{ … }
                       , …
                       }
 ```
+
+**Historical pre-cutover shape.** The current `BootConfig` still carries shared Route 53 AWS and
+MinIO-root `SecretRef.Vault` fields. They are active compatibility fields, not the target example:
+Gateway MinIO/object-store access and the shared `aws.*` coordinate are deleted at authority-epoch
+cutover. The target Gateway projection contains mesh/journal configuration and, on home only, the
+exact Gateway-DNS coordinate; credentials are acquired by its boundary-owned role session and are
+never copied into another role's projection.
 
 The binary reads one file. That file imports the parts that have independent lifecycles —
 Orders (cluster topology, monotonically versioned per Sprint 2.7) and the operator-authored
@@ -489,33 +588,41 @@ foundation is active under Sprint 3.18. The `websocket` workload config now carr
 the Keycloak and MinIO charts materialize their covered runtime fields through Vault-login init
 containers, and MinIO admin bootstrap Jobs read root credentials through the same init-container
 pattern. The VS Code Envoy `SecurityPolicy` client Secret is materialized from Vault by a chart
-Job, and gateway event keys plus Route 53 AWS and gateway MinIO credentials now resolve through
-Vault Kubernetes auth. Patroni role Secrets are materialized from Vault by the `keycloak-postgres`
+Job, and gateway event keys plus the pre-cutover shared Route 53 AWS credentials currently resolve
+through Vault Kubernetes auth. The gateway MinIO/AWS fields are historical implementation fields
+retained only for the plan-owned lifecycle-control-plane cutover. Patroni role Secrets are materialized from Vault by the `keycloak-postgres`
 pre-install hook. Host/admin helpers and the AWS SES SMTP setup flow now read/write their remaining
-Keycloak admin, OIDC, demo-user, and SMTP material through Vault KV. Sprint 3.18 also pins the
-sealed-startup structural proof; legacy derivation/removal remains open under Sprint 3.19.
+Keycloak admin, OIDC, demo-user, and SMTP material through Vault KV. The Sprint 3.18 sealed-startup
+foundation and Sprint 3.19 legacy derivation/RPC removal are historical milestones; current
+implementation and qualification status live only in the Development Plan.
 
 ## 6. Cluster mount contract
 
-The gateway daemon's Tier-0 `prodbox.dhall` non-secret binary context (§0) reaches the daemon via
-the ConfigMap mount: the prodbox container ships a DEFAULT `prodbox.dhall`, and the chart OVERWRITES
-it from the `gateway-config-<nodeId>` ConfigMap — hostbootstrap's per-frame context-init pattern.
-The supported chart planner renders that document from `defaultDaemonProjectConfig` and changes
-only `context.cluster_id`: home-local takes the established identity from the binary-sibling Tier-0
-floor, while AWS takes the canonical EKS cluster name. Thus every target-secret request can attest
-the explicit sink identity against the daemon actually reached, and the two substrates cannot
-silently share the image-baked `prodbox-home` fallback.
-This is a directory mount (`/etc/gateway/config`) so the kubelet's atomic `..data` symlink swap
-fires the fsnotify reload (§7). The mount contract — directory layout, atomic swap, and the daemon's
-Vault Kubernetes-auth identity that resolves the Tier-2 `SecretRef.Vault` pointers at startup — is
-owned by [distributed_gateway_architecture.md](./distributed_gateway_architecture.md); the Helm
-materialization layout is owned by
-[helm_chart_platform_doctrine.md](./helm_chart_platform_doctrine.md). The gateway daemon's Dhall
-file is materialized by the Helm chart as follows:
+Every long-running control-plane process receives its own generated non-secret ConfigMap directory
+mount. Service identity, authority scope, substrate binding, and `SecretRef` coordinates are
+validated together; a shared image default or component label cannot substitute for that identity.
+Target-secret attestation belongs to the Target Secret Agent config, not the Gateway Runtime
+config. The kubelet's atomic `..data` symlink swap drives fsnotify reload (§7).
+
+| Process | Config mount | Authority-bearing config boundary |
+|---|---|---|
+| Bootstrap Broker | `/etc/bootstrap-broker/config` | bounded pre-Vault request surface and bootstrap-store coordinate only |
+| Lifecycle Authority | `/etc/lifecycle-authority/config` | authority identity/epoch scope, aggregate/blob store, provider-worker and outbox coordinates |
+| Authority Backup Adapter | `/etc/authority-backup/config` | exact authority binding, S3 backup coordinate, and sole backup-store SecretRef |
+| TLS Retention Adapter | `/etc/tls-retention/config` | exact Authority binding, registered TLS prefixes, and sole TLS-retention-store SecretRef; ciphertext only |
+| Provider Worker | `/etc/provider-worker/config` | exact authority/provider binding and sole Lifecycle-provider SecretRef |
+| Credential Provisioner | `/etc/credential-provisioner/config` | one active mode-indexed signed permit, deterministic identity/store coordinates, and Job attestation; first-reconcile permit succession is authenticated and receipt-ordered, while prompt input remains separate linear memory-only ingress |
+| Admin Action Runner | `/etc/admin-action-runner/config` | one closed admin-action permit and exact registered coordinates; prompt input is separate linear memory-only ingress |
+| Target Secret Agent | `/etc/target-secret-agent/config` | one substrate identity, Vault/one-shot-worker roles, fixed KV allowlist/closed payload schemas, and exact TLS Secret lanes; home alone has payload-specific SMTP/EAB custody/rewrap plus TLS-envelope Transit lanes, never generic export authority |
+| Gateway Runtime | `/etc/gateway/config` | Orders/peer/DNS config, journal-volume identity and renewable journal-key `SecretRef` only |
+
+The Helm materialization layout is owned by
+[helm_chart_platform_doctrine.md](./helm_chart_platform_doctrine.md). The Gateway Runtime's
+directory is materialized as follows:
 
 | Mount source | Mount path | Content |
 |---|---|---|
-| `gateway-config-<nodeId>` ConfigMap | `/etc/gateway/config` (directory mount; the daemon reads `config.dhall` and its `prodbox.dhall` sibling) | substrate-specific non-secret daemon-frame Tier-0 document plus the per-node runtime Dhall expression; the latter imports `orders.dhall`, carries `SecretRef.Vault` references for credentials, and carries non-secret service endpoints (notably `boot.minio_endpoint_url`) inline |
+| `gateway-config-<nodeId>` ConfigMap | `/etc/gateway/config` (directory mount; the daemon reads `config.dhall` and its `prodbox.dhall` sibling) | substrate-specific non-secret daemon-frame Tier-0 document plus the per-node runtime Dhall expression; the latter imports `orders.dhall` and carries only gateway-owned `SecretRef.Vault` references and coordinates |
 | `gateway-orders` ConfigMap | `/etc/gateway/orders.dhall` | cluster-wide ranked-node + timing Dhall expression |
 | `gateway-<nodeId>-tls` Secret | `/tls/` | cert-manager-issued per-node TLS keypair; referenced by file path from the Dhall config |
 | Cert-manager CA Secret | `/ca/` | trust anchor for peer mTLS; referenced by file path from the Dhall config |
@@ -533,13 +640,15 @@ generated/static seed KV objects for this model, and the websocket workload now 
 client secret through that SecretRef path; Keycloak and MinIO materialize their covered runtime
 fields through Vault-login init containers, and MinIO admin bootstrap Jobs read root credentials
 through the same init-container pattern. The VS Code Envoy `SecurityPolicy` client Secret is
-materialized from Vault by a chart Job, and gateway event/AWS/MinIO credentials are resolved from
-Vault by the daemon and gateway MinIO bootstrap Job. Sprint `2.26` also uses the same non-secret
+materialized from Vault by a chart Job, and gateway event/Route 53 credentials are resolved from
+Vault by the daemon. **Historical implementation record (legacy cutover surface):** gateway MinIO
+credentials are still resolved by the daemon and bootstrap Job, and Sprint `2.26` also uses the same non-secret
 gateway Vault Kubernetes-auth coordinates at runtime for the gateway federation read endpoints
 (`/v1/federation/children` and `/v1/federation/children/<child>/bootstrap`); the endpoints read
 parent-custodied child inventory from Vault KV, not from Dhall, Kubernetes Secrets, or
 gateway-local files. Patroni role Secrets are materialized from Vault by a chart hook. The
-sealed-startup structural proof has landed; legacy derivation/removal remains Sprint 3.19. The
+sealed-startup and legacy-derivation removal statements above are historical implementation
+records; current status lives only in the Development Plan. The
 operator-facing `gateway-config-<nodeId>` ConfigMap therefore contains no
 secret material — only the non-secret substrate-specific Tier-0 document, `SecretRef` references,
 and non-secret service endpoints rendered inline. The cert-manager-issued TLS keypair and CA trust
@@ -548,11 +657,18 @@ Vault's PKI authority, not Dhall credential fragments.
 
 ### Non-secret service-endpoint fields
 
-Service endpoints the daemon must reach (currently: the MinIO endpoint URL used to fetch the
-Vault-Transit-enveloped in-force config and gateway state) live as fields on the
-chart-rendered `boot` record rather than in Secrets. The endpoint is not credential material;
-placing it in a Secret would unnecessarily restrict who can read it. Today the only such field
-is:
+An endpoint is non-secret, but it is still authority-sensitive. Target config validates service
+identity, authority scope, and operation coordinate together and resolves them to one opaque
+operation-indexed `CapabilityRef`; it cannot accept one endpoint for a readiness probe and another
+for execution. Lifecycle Authority owns the primary MinIO/Model-B reference; Backup Adapter owns
+only the S3 Authority-ciphertext-copy endpoint; TLS Retention Adapter owns only exact TLS-ciphertext
+prefix operations; Provider Worker owns only normal provider execution. Bootstrap Broker owns its
+bounded bootstrap-store endpoint. Target Secret Agent owns its substrate-local Vault/Secret lanes,
+with a distinct home-only TLS-envelope Transit lane. Credential Provisioner and Admin Action Runner
+receive permit-bound Job bindings, not reusable service endpoints. Gateway Runtime has no MinIO,
+lifecycle, backup, TLS-retention, or target-Vault endpoint.
+
+**Historical implementation record (legacy cutover surface).** The current gateway config carries:
 
 | Field | Type | Source | Canonical value |
 |---|---|---|---|
@@ -565,7 +681,8 @@ closed — serving the documented unavailable response — when the field is `No
 the Vault unseal the decrypt depends on) is unreachable. The MinIO objects are
 Vault-Transit-enveloped, so a sealed Vault leaves the daemon with opaque ciphertext regardless
 of MinIO reachability; see Section 1a and
-[vault_doctrine.md §9](./vault_doctrine.md#9-minio-as-a-ciphertext-store).
+[vault_doctrine.md §9](./vault_doctrine.md#9-minio-as-a-ciphertext-store). This field is removed
+from Gateway Runtime after Lifecycle Authority and Bootstrap Broker cutover.
 
 ConfigMap and Secret volume updates land in the Pod via the kubelet's atomic `..data`
 symlink swap. The file-watch reload trigger (Section 7) follows that symlink swap rather
@@ -599,10 +716,16 @@ references into the `secret/acme/eab` Vault KV object (fields `key_id` / `hmac_k
 plaintext `Optional Text`. `validateAcmeBinding` rejects a plaintext (non-`Vault`) EAB reference
 through the same `validateVaultRef` discipline used for `aws.*` (the rejection reads
 `acme.eab_* must be a SecretRef.Vault reference`), so `prodbox config validate` fails fast on any
-plaintext EAB value. The non-secret key ID is resolved host-side and rendered inline into the
-issuer; the HMAC key is materialized in-cluster by a Vault-login Job and never appears in the
-config or as inline plaintext. The field names and their required-for-ZeroSSL semantics are
-unchanged; only their at-rest carrier moved behind Vault. See
+plaintext EAB value. In that pre-cutover path the non-secret key ID was resolved host-side and
+rendered inline, while the HMAC key was materialized by a Vault-login Job. The final design removes
+the host Vault read: after target generation read-back, the selected Agent returns a typed
+generation-bound key-ID projection to the issuer renderer; the HMAC remains in-cluster. The field
+names and required-for-ZeroSSL semantics are unchanged. The final design also keeps `config setup`
+Tier-0-only: a separately schema-indexed external linear ingress under its own
+`OperatorMaterialPermit` supplies closed `AcmeEabSource` to the retained-home Agent's
+payload-specific Transit custody. Attested one-shot home/selected workers restore the exact target
+generation without operator re-entry; Authority sees ciphertext/typed receipts only, and no direct
+host Vault read/write or generic export path exists. See
 [vault_doctrine.md §11](./vault_doctrine.md#11-tls-and-pki-under-vault) and
 [acme_provider_guide.md](./acme_provider_guide.md).
 
@@ -618,6 +741,13 @@ elevated material, and `TestPlaintext` is accepted only by the test harness from
 seam (`resolveSecretRefWithVault` / `resolveSecretRefFromVault`) are implemented under Sprint
 1.35; migrating the sensitive repo config fields onto that contract is scheduled under Sprint
 1.38.
+
+`Prompt` names an interaction purpose; its bytes are not part of the decoded Dhall value or any
+serializable capability program. For Credential Provisioner, Admin Action Runner, and post-export
+decommission, raw bytes arrive only after permit and Job attestation over a separate linear ingress,
+remain bounded in memory, and are discarded. Config and Authority records may carry only opaque
+Agent/Vault keyed-HMAC commitment references for equality recovery, never raw plaintext or
+credential hashes.
 
 - `prodbox config validate` rejects any plaintext secret value in production config and rejects
   `TestPlaintext` outside the test harness.
@@ -690,18 +820,18 @@ job, not the binary's.
 The host CLI applies the same contract with two simplifications: it has no `--config` flag
 (it resolves the binary-sibling `prodbox.dhall`, §1–§3), and the host binary is not
 long-running, so file watching is unnecessary. `prodbox` resolves the executable-sibling path, then
-`loadConfigForSettingsWith` either reads the binary-sibling `prodbox.dhall` `parameters` as
-first-bring-up seed input when unencrypted basics are absent, or reads the basics and loads the
-in-force MinIO envelope via Vault when basics exist. There is no env-var precedence ladder on the host — the
-on-disk file is only a seed/propose Dhall surface, never the live SSoT after basics exist. Lifecycle
-reconcile is the bootstrap exception: it validates the file for the RKE2/Vault/MinIO bring-up
-steps that precede the in-force object-store read, then reloads through Vault/MinIO before
-secret-dependent chart and edge reconciliation.
+reads the binary-sibling `prodbox.dhall` `parameters` as first-bring-up seed input when unencrypted
+basics are absent. Once established, it resolves the operation-indexed Lifecycle Authority
+capability and uses that same reference for observation, admission, and the in-force read or
+proposal. There is no env-var precedence ladder on the host; the on-disk file is only a
+seed/propose Dhall surface, never the live SSoT after basics exist. Lifecycle reconcile validates
+the file only for the RKE2/MinIO/Vault/Bootstrap-Broker steps that precede authority availability,
+then obtains settings through Lifecycle Authority before secret-dependent chart and edge work.
 
-The on-disk file is the seed/propose input, not the in-force config. The host reads the
-unencrypted basics locally and fetches + decrypts the in-force config from MinIO via Vault
-(§1a); supplying a file is a proposed update, and a write to the root cluster's in-force config
-requires the root Vault token. The local decoding/fetch/store foundations landed in Sprint
+The on-disk file is the seed/propose input, not the in-force config. Supplying a file is a proposed
+update, and a write to the root cluster's in-force config requires a short-lived config-admin proof
+plus expected-generation CAS inside the durable authority operation. **Historical direct-loader implementation record:** the local
+decoding/fetch/store foundations landed in Sprint
 `1.38`; the global host-loader flip now lands there too. Without basics, `loadConfigFile`
 remains only the first-bring-up seed path.
 
@@ -735,13 +865,21 @@ so the prohibition is the intended end state rather than a present-tense fact:
   any other `PRODBOX_*` env-var precedence rule. Neither the host CLI nor the workload carries any
   of these; the workload's former `PRODBOX_*` ladder was retired by Sprint `3.15` (see §9 and the
   first bullet above).
-- `MINIO_ENDPOINT_URL` env var on the gateway Pod (the attempted addition rolled back
-  May 24, 2026). The MinIO endpoint reaches the daemon via the `boot.minio_endpoint_url`
-  field of the mounted Dhall config; see §6 "Non-secret service-endpoint fields".
+- `MINIO_ENDPOINT_URL` env var on any control-plane Pod (the attempted gateway addition rolled back
+  May 24, 2026). Bootstrap Broker and Lifecycle Authority receive their validated store coordinates
+  through their own mounted config; Gateway Runtime receives none in the target topology. The
+  historical gateway `boot.minio_endpoint_url` field is a legacy cutover surface; see §6
+  "Non-secret service-endpoint fields".
 - Host-side post-bootstrap MinIO port-forwarding and direct host Vault NodePort access. After the
-  daemon NodePort exists, supported Vault lifecycle and Pulumi object-store operations route through
-  the daemon service; surviving host transports are legacy/config/test implementation residue tracked in
+  owning services exist, supported bootstrap, lifecycle/Model-B, provider, and target-secret
+  operations route through their exact operation-indexed `CapabilityRef`. Surviving gateway proxy
+  routes and host transports are legacy/config/test implementation residue tracked in
   [DEVELOPMENT_PLAN/legacy-tracking-for-deletion.md](../../DEVELOPMENT_PLAN/legacy-tracking-for-deletion.md).
+- A separately supplied probe/readiness endpoint for a capability execution reference. The
+  component graph carries pure operation/service/scope requirements; reconnaissance yields one
+  opaque `CapabilityRef kind`, and observation, admission, and execution all use it. A component
+  label, reachable socket, nominal backend name, or healthy unrelated route is not capability
+  evidence.
 - SIGHUP-driven reload. The signal handler is removed; SIGHUP becomes a process-level
   terminate signal again with the supported behavior `drain + exit`.
 - ConfigMap-rendered credentials, and Secret-mounted Dhall credential fragments (any
@@ -749,9 +887,10 @@ so the prohibition is the intended end state rather than a present-tense fact:
   `SecretRef.Vault` references resolved at runtime through Vault Kubernetes auth, not mounted
   Dhall values (foundation active under Sprint 3.18; websocket OIDC SecretRef consumer landed;
   Keycloak and MinIO Vault-init consumers landed; the VS Code Envoy `SecurityPolicy` client Secret
-  is Vault-materialized by a chart Job; gateway event/AWS/MinIO Vault consumption landed; Patroni
+  is Vault-materialized by a chart Job; gateway event/AWS Vault consumption landed, while gateway
+  MinIO consumption is a historical cutover surface; Patroni
   role Secret materialization landed; host/admin helper and AWS SES SMTP Vault reads/writes landed;
-  sealed-startup structural proof landed; legacy derivation/removal remains Sprint 3.19; see §5,
+  sealed-startup and Sprint 3.19 legacy derivation/RPC removal are historical milestones; see §5,
   §6, and [vault_doctrine.md §12](./vault_doctrine.md#12-in-cluster-service-auth)).
 - Plaintext secret values in `prodbox.dhall` or in ConfigMap-rendered Dhall. Sensitive
   fields carry `SecretRef` references instead. The FileSecret-free `SecretRef` contract is Sprint
@@ -773,12 +912,17 @@ so the prohibition is the intended end state rather than a present-tense fact:
   `1.49`).
 - Treating any Tier-0 surface as the in-force config SSoT. Tier 0 is a **read-only, non-secret
   bootstrap input**: the host reads `prodbox.dhall` locally to reach and unseal Vault, and its
-  `parameters` propose updates. The in-force config SSoT is the Tier-2
-  Vault-Transit-enveloped MinIO object, never an on-disk or ConfigMap-mounted Dhall file (Sprints
-  `1.38` / `1.42`; see §0 and §1a).
+  `parameters` propose updates. The in-force config SSoT is the Lifecycle Authority aggregate's
+  generation/digest/reference; it selects one immutable Tier-2 Vault-Transit-enveloped MinIO blob.
+  A blob alone is never current, and no on-disk or ConfigMap-mounted Dhall file is authoritative
+  (the historical storage inversion began in Sprints `1.38` / `1.42`; see §0 and §1a).
 
 ## 11. Cross-references
 
+- [lifecycle_control_plane_architecture.md](./lifecycle_control_plane_architecture.md) — the
+  operation-indexed capability references and separate Bootstrap Broker, Lifecycle Authority,
+  Provider Worker, Backup/TLS Adapters, Target Secret Agent, one-shot Credential Provisioner/Admin
+  Action Runner, and Gateway Runtime config identities.
 - [cli_command_surface.md](./cli_command_surface.md) — CLI flag inventory; defers
   startup-config sourcing rules to this doctrine.
 - [distributed_gateway_architecture.md](./distributed_gateway_architecture.md) — daemon
@@ -796,8 +940,8 @@ so the prohibition is the intended end state rather than a present-tense fact:
   contract, the production references vs. `test-secrets.dhall` plaintext split, MinIO as a
   ciphertext store, and in-cluster Vault Kubernetes auth.
 - [cluster_federation_doctrine.md](./cluster_federation_doctrine.md) — the root/child trust
-  tree, transit-seal auto-unseal, parent custody of child init keys, and the
-  root-token-gated config-write authority that governs §1a.
+  tree, transit-seal auto-unseal, parent custody of child recovery material, and the
+  generation-CAS config-write authority that governs §1a.
 - [unit_testing_policy.md](./unit_testing_policy.md) — file-watch reload test stanza.
 - [../../DEVELOPMENT_PLAN/README.md](../../DEVELOPMENT_PLAN/README.md) — sprint status and
   adoption schedule for this doctrine.

@@ -33,8 +33,10 @@ Clean-room sequencing, completion status, remaining work, and cleanup ownership 
   selects its role through the pod `args:` (`gateway start` vs `workload start`); the image's
   `ENTRYPOINT` is bare `tini -- prodbox`. The image follows the single-stage `ubuntu:24.04`
   doctrine with in-image `ghcup`, pinned GHC `9.12.4`, no symlinked Haskell tool shims, `tini` as
-  PID 1, and the official AWS CLI bundle from the image's native Debian architecture (the gateway
-  daemon shells out to `aws route53 ...` for DNS writes). The supported custom-image publish path
+  PID 1. The current pre-cutover image includes the official AWS CLI bundle; target Gateway Runtime
+  and Credential Provisioner never shell out to it. Provider/Admin Action workers may retain only
+  operation-scoped Pulumi child use; native home DNS and IAM/S3/STS/Route53/ServiceQuotas adapters
+  do not depend on the CLI. The supported custom-image publish path
   uses ordinary host-native `docker build` plus `docker push` to the canonical in-cluster registry endpoint (`127.0.0.1:30080`).
 - The build uses **basic `docker` commands only** with the daemon's default builder. There is no
   supported `docker buildx`, no `docker-container`-driver builder, and no multi-arch publication
@@ -122,6 +124,16 @@ The scheduled project-wide CBOR migration adds the `cborg` / `serialise` depende
 [pulsar_messaging_doctrine.md](./pulsar_messaging_doctrine.md), and multi-OS host support is
 mirrored in-kind from `hostbootstrap` (no code dependency) per
 [host_platform_doctrine.md](./host_platform_doctrine.md).
+
+### Native AWS client boundary
+
+Sprint `1.62` pins the selected `amazonka` core and exact IAM, S3, STS, Route 53, and Service
+Quotas service packages in `cabal.project`/`prodbox.cabal`. Credential Provisioner and native
+admin actions use those typed clients with a linear in-memory credential handle supplied outside
+the serializable program algebra. They do not invoke `aws`, consult profiles/instance metadata, or
+write credential files/Pod environment. Pulumi remains a separately isolated child-process
+boundary in Provider/Admin Action workers; any operation-scoped child environment is constructed
+only after permit validation and is never ambient daemon authentication.
 
 ### External Command Dependencies
 

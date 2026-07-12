@@ -8,6 +8,7 @@
 [phase-7-aws-substrate-foundations.md](phase-7-aws-substrate-foundations.md),
 [legacy-tracking-for-deletion.md](legacy-tracking-for-deletion.md),
 [the engineering doctrine docs](../documents/engineering/README.md),
+[lifecycle_control_plane_architecture.md](../documents/engineering/lifecycle_control_plane_architecture.md),
 [vault_doctrine.md](../documents/engineering/vault_doctrine.md)
 **Generated sections**: none
 
@@ -18,6 +19,13 @@
 > proves the flow end-to-end on every substrate.
 
 ## Phase Status
+
+⏸️ **Reopened and blocked by Sprint `7.33`.** Sprint `8.11` replaces the long synchronous SES
+lease bracket with a revisioned, restart-resumable provider workflow whose mutation lease covers
+only non-idempotent provider work and whose target deliveries flow through a durable outbox.
+Sprint `8.12`, blocked by `8.11`, owns the invite-specific crash/fault campaign and records the
+current-revision deployment-qualification evidence. Sprint `8.10` remains Done for exact semantic
+SES classification; its classifier becomes one stage of the new workflow.
 
 ✅ **Reclosed 2026-07-11 on semantic SES readiness.** Sprint `8.10` replaces the
 output-discarding prerequisite effects with `Prodbox.Ses.Readiness`: exact configured
@@ -1489,6 +1497,271 @@ path is ready. Command exit success proves only that AWS answered; it is not the
 
 - The readiness classifier links to Sprint `5.17`'s visible await-ready plan step and Sprint
   `4.47`'s desired-present reconciler.
+
+## Sprint 8.11: Revisioned SES Workflow and Durable Target Delivery [⏸️ Blocked]
+
+**Status**: Blocked
+**Deployment qualification**: pending
+**Implementation**: planned SES workflow/credential-ownership modules under
+`src/Prodbox/Ses/Workflow/`, migration of `src/Prodbox/Infra/AwsSesStack.hs` and
+`pulumi/aws-ses/Main.yaml`, closed `SesSmtpSource` custody/rewrap integration with the Lifecycle
+Authority/Target Agents, and pure/fake AWS workflow tests
+**Blocked by**: Sprint `7.33`
+**Independent Validation**: pure workflow transitions and fake AWS/authority/target clients cover
+provider mutation, propagation, credential generation, delivery, crash, and resume without live
+AWS or a later phase.
+**Docs to update**: `documents/engineering/lifecycle_control_plane_architecture.md`,
+`documents/engineering/aws_integration_environment_doctrine.md`,
+`documents/engineering/lifecycle_reconciliation_doctrine.md`,
+`documents/engineering/pure_fp_standards.md`,
+`documents/engineering/prerequisite_doctrine.md`, and
+`documents/engineering/vault_doctrine.md`
+
+### Objective
+
+Specialize the Lifecycle Authority's durable operation model for SES so provider mutation,
+semantic convergence, SMTP generation, and per-target delivery are revisioned resumable stages,
+and no 70-minute synchronous HTTP bracket or release response is a correctness boundary.
+
+### Deliverables
+
+- Define `SesWorkflowState`, `SesWorkflowCommand`, and `SesWorkflowEvent` with total
+  `decide`/`evolve` folds; committed events derive explicit intents to observe, reconcile provider,
+  await semantic revision, repair SMTP generation, enqueue target delivery, verify convergence,
+  and complete.
+- Make credential ownership a sum type carried by that fold—`LegacyPulumiWriter`,
+  `CredentialMigrationFrozen`, or `ProvisionerWriter`—whose constructors retain the exact epoch,
+  resource coordinates, observation digests, and required receipts. No constructor contains two
+  active writers. Compile decisions to disjoint data-only effect families for non-credential
+  provider work, operator-material identity work, schema-bound custody/target delivery, and explicit
+  admin teardown; interpreters cannot accept another family's constructor.
+- Bind every operation to a desired-contract digest and monotonically increasing provider revision;
+  Sprint `8.10`'s exact semantic classifier evaluates that revision.
+- Compile the `aws-ses` Provider-Worker program from a closed non-credential resource inventory:
+  sending identity, DKIM, MX, receive rule set/rules, and capture bucket only. Its Pulumi schema,
+  checkpoint projection, outputs, and provider capability have no constructor for an SMTP IAM
+  principal, policy, access key, key family, or credential bytes.
+- Hold only the exact narrow provider mutation permit while the fenced Provider Worker changes that
+  inventory. Semantic propagation polling and target delivery occur after journaled provider commit
+  without retaining that permit. SMTP identity/key create, rotate, remint, and repair-time key
+  deletion are not Provider-Worker actions: the Authority receipt-commits an
+  `OperatorMaterialPermit`, the mode-indexed Credential Provisioner reconciles one deterministic
+  `LongLived` principal, the least-privilege SES-send policy, and its finite access-key family under
+  the prompt. It derives the region-bound SMTP payload in bounded memory, discards the raw AWS
+  secret-access-key bytes after retained-home custody read-back, and selected Target Agents
+  materialize only attestation-rewrapped generations from that custody before commit.
+- Migrate the completed Sprint-`4.47` Pulumi-owned principal/policy with an explicit versioned
+  ownership state, never a best-effort resource move. Freeze SES mutation admission while the
+  legacy Pulumi writer remains the sole writer; snapshot/read back its checkpoint and the exact AWS
+  principal/policy/key inventory; establish and read back retained-home SMTP custody and every
+  current target generation; then receipt-commit adoption of the same deterministic identity by the
+  Credential Provisioner. A fenced legacy-checkpoint migration releases the IAM resources without
+  deleting them and removes their URNs/outputs before the Authority activates the Provisioner-owned
+  epoch. Any old writer restart, ambiguous checkpoint, coordinate/policy drift, missing custody
+  receipt, or evidence of both writer epochs refuses. There is no state in which Pulumi and the
+  Credential Provisioner may both mutate the identity, and rollback is forward migration to a
+  greater epoch.
+- Remove every SMTP access-key output from the newly committed current checkpoint immediately; an
+  encrypted historical blob is still secret-bearing history, not acceptable indefinite retention.
+  Track the exact legacy primary and mandatory-backup immutable blob/version set in the migration
+  state during the bounded rollback window. After the new non-credential checkpoint, retained-home
+  custody source, and all current target generations are committed/read back and the rollback window
+  closes, acquire a dedicated GC fence, prove no pending/current/retained/operation/rollback reference
+  reaches any legacy secret-bearing version, delete every exact primary and backup copy/version, and
+  read back absence before committing the GC receipt. A dangling reference, unobservable copy, or
+  partial primary/backup deletion keeps migration nonterminal and cannot reopen provider admission.
+- Treat the one-time IAM secret as non-recoverable input, not reconstructible state. On a new key,
+  the Provisioner constructs the SMTP payload in bounded memory (username from access-key ID;
+  password derived from the one-time secret plus region), discards the raw AWS secret, and hands
+  only that closed payload to the retained-home Target Agent. The Agent
+  Transit-seals the generation-bound `SesSmtpSource` and returns only an opaque one-shot source-
+  ingest receipt. During legacy migration, the home Agent may ingest the already committed
+  home SMTP generation under the same migration-bound constructor; if that exact source is absent,
+  migration must visibly rotate through a new `OperatorMaterialPermit` rather than inventing or
+  exporting material.
+- Restore/deliver through the closed retained-home non-recoverable-material custody family shared
+  with the explicitly registered ACME-EAB case, never through a generic secret-export API. For a
+  committed target intent the home Agent rewraps only the registered `SesSmtpSource` to the attested
+  destination Agent; the Authority transports ciphertext and receipts only. A fresh AWS Agent/Vault
+  can therefore materialize and read back the same `secret/keycloak/smtp` generation after EKS
+  replacement without an admin re-prompt or key rotation.
+- Define the custody family as a schema-indexed ADT whose SMTP constructor contains only the
+  region-bound SMTP username/password payload and generation metadata, never a raw IAM key or an
+  arbitrary Vault path. Pure ingest/rewrap/retire decisions require matching source generation,
+  target attestation, committed intent, and receipt; same-ID/different-schema or payload refuses.
+- Renew the short mutation lease inside the authority, fence all commits, and recover an ambiguous
+  provider response by authoritative re-observation. Voluntary release is an optimization; expiry
+  plus fencing preserves safety.
+- Journal the SMTP credential generation before enqueuing one delivery per selected target and
+  declare completion only after exact agent read-back. Restart resumes the first incomplete stage.
+- Define `AdminActionPermit 'DestroyAwsSes` as the only explicit live-control-plane teardown for the
+  retained SES aggregate. Its closed always-run DAG first requires every invite/Keycloak consumer
+  quiescent/read back, then commits the non-credential desired-absence intent and waits for the
+  Provider Worker's authoritative stack-absence receipt. The Admin Action Runner then deletes/read-
+  backs every registered SMTP key, policy attachment/policy, and principal. While the Target Agents
+  remain live it finally physically retires target generations and retained-home custody: destroy
+  every exact secret-bearing KV-v2 version, delete metadata, and read back data/version/metadata
+  absence. A soft delete or logical tombstone cannot satisfy this edge;
+  external deletion therefore cannot lose the material
+  needed to finish cleanup, and every attempted-node failure is aggregated. Ordinary suite
+  postflight, `aws teardown`, and `cluster delete` retain the provider stack, identity, target
+  generations, and custody receipt. The exported-manifest `nuke` program preserves the same
+  dependency order and keeps the required Agents alive through tombstoning after Authority stop.
+
+### Validation
+
+1. Transition tables cover existing-ready, create, repair, propagation, terminal drift,
+   unobservable provider, contention, renewal loss, and every crash boundary.
+2. Migration tables cover legacy-only, freeze requested, frozen/observed, custody prepared,
+   adopted, checkpoint released, target epoch active, and every ambiguous/corrupt/interrupted
+   variant. Every reachable state has exactly one IAM writer; old-writer restart and all dual-write
+   evidence refuse. Secret-bearing-checkpoint fixtures prove outputs disappear from current state at
+   cutover and fenced GC deletes/read-backs every unreferenced primary/backup immutable version after
+   the rollback window, while dangling references, unobservable copies, and partial deletion refuse.
+3. Applied-but-response-lost provider and Credential-Provisioner SMTP-key cases converge without
+   duplicate key creation, cross-role permit use, or unknowable mutation ownership. Repair-time key
+   deletion remains Provisioner-owned; explicit teardown deletion remains `DestroyAwsSes`-owned.
+4. Fresh-AWS-Vault tests delete the destination Vault/Agent and restore the same SMTP generation
+   from retained-home custody without prompt, rotation, generic export, or Authority plaintext;
+   missing/corrupt/wrong-generation custody fails closed.
+5. Tests prove long propagation never holds the mutation lease and gateway loss cannot affect the
+   workflow.
+6. Cross-target delivery tests prove independent retry/convergence and no credential-generation
+   advance while an older outbox entry is unresolved.
+7. Teardown crash tables prove consumer quiescence and the Provider Worker's provider-stack absence
+   receipt precede Admin-Action-Runner IAM deletion, custody is tombstoned last while Agents remain
+   live, every failure aggregates, and ordinary postflight retains every `LongLived` SES node.
+   Fake-Vault evidence proves full revocation physically destroys every exact target/custody KV-v2
+   version plus metadata and reads back absence; rotation destroys only unreferenced superseded
+   versions, and soft delete/partial destruction refuses.
+8. Unit/CLI/env integration suites and `prodbox dev check` pass.
+
+### Remaining Work
+
+- Blocked until Sprint `7.33` provides AWS role/transport parity.
+- Sprint `8.12` supplies invite-specific fault and aggregate qualification.
+
+## Documentation Requirements
+
+**Engineering docs to create/update:**
+
+- `documents/engineering/lifecycle_control_plane_architecture.md` - SES worked state machine.
+- `documents/engineering/aws_integration_environment_doctrine.md` - provider revision and lease
+  scope.
+- `documents/engineering/lifecycle_reconciliation_doctrine.md` - durable SES operation.
+- `documents/engineering/pure_fp_standards.md` - pure workflow transition/effect algebra.
+- `documents/engineering/prerequisite_doctrine.md` - visible semantic convergence evidence.
+- `documents/engineering/vault_doctrine.md` - SMTP generation and target delivery custody.
+
+**Product docs to create/update:**
+
+- `README.md` - retained SES workflow ownership.
+
+**Cross-references to add:**
+
+- Link Sprint `8.10` as the semantic classifier consumed by the revisioned workflow, not as a
+  transaction/availability proof.
+
+## Sprint 8.12: Invite Fault Campaign and Current-Revision Qualification [⏸️ Blocked]
+
+**Status**: Blocked
+**Deployment qualification**: pending
+**Implementation**: planned invite-flow fault scenarios, qualification matrix/recorder integration,
+installed-binary aggregate fixtures, and governed evidence output
+**Blocked by**: Sprint `8.11`
+**Live-proof**: pending after code-local implementation; both current-revision substrate aggregates
+and the required fault campaign must pass before deployment-qualified claims
+**Independent Validation**: deterministic fake SES, Keycloak, authority, target-agent, Kubernetes,
+and cgroup scenarios validate the qualification logic without live infrastructure.
+**Docs to update**: `documents/engineering/lifecycle_control_plane_architecture.md`,
+`documents/engineering/unit_testing_policy.md`,
+`documents/engineering/chaos_hardening_doctrine.md`,
+`documents/engineering/aws_integration_environment_doctrine.md`,
+`documents/engineering/integration_fixture_doctrine.md`, `DEVELOPMENT_PLAN/substrates.md`, and
+`README.md`
+
+### Objective
+
+Demonstrate that the complete invite workflow and suite deployment remain convergent under the
+failure modes that defeated the prior readiness refactor, and bind any deployment-qualified claim
+to exact current-revision evidence.
+
+### Deliverables
+
+- Run deterministic scenarios that saturate/kill every gateway during SES work, restart the
+  Lifecycle Authority before and after every journal/CAS boundary, restart Target Secret Agents,
+  the Authority Backup/TLS Retention Adapters, and the fenced Provider Worker, and interrupt each
+  mode-indexed Credential Provisioner/Admin Action Runner at every prompt/effect/read-back boundary.
+  Delay Vault/MinIO/S3/AWS, reject an unavailable/corrupt backup before effects, permanently delete
+  a backup key/bucket or drift its policy and prove frozen repair/greatest-epoch reopen, destroy primary
+  authority bytes and restore exact envelope/blob bytes before a greater epoch, destroy/recreate
+  AWS Vault/EBS and restore retained TLS plus the same schema-bound SES-SMTP and ACME-EAB
+  generations through a new attested Agent before Keycloak/cert-manager admission, lose applied
+  responses, kill the cleanup owner/TestRunner, resume the same `CleanupRun`, cancel clients, and
+  fail restoration/cleanup. The restore campaign must prove no admin re-prompt, SMTP key rotation,
+  EAB reset, generic secret export, or Authority plaintext path.
+- Bind the invite specialization to counterexample `LCPC-2026-07-11`; the artifact must show the
+  frozen superseded topology's retained-authority/restore failure and the replacement's
+  convergence under the identical topology-normalized total budget/load, followed by the separate
+  production-envelope profile.
+- Require invite send, capture, link follow, OIDC claim assertion, target convergence, operation
+  completion, platform restoration, and zero per-run residue under the same qualification record.
+- Run the canonical home and AWS aggregate commands independently against their own configuration;
+  neither substrate may substitute endpoints, credentials, DNS, or evidence from the other.
+- Extend the exact Sprint-`5.19` typed qualification artifact—never a partial local schema—with the
+  invite assertions and authority epoch. It retains separate complete frozen-superseded and
+  replacement secret-safe source/config/image/topology-wiring/envelope/load identities, including
+  each source-manifest exclusion-policy identifier/version/digest, normalized mapping and production
+  profile, substrate, commands, counterexample/fault matrix, aggregate and cleanup/residue results,
+  timestamps, and evidence digest. Invite assertions that depend on secret material bind only
+  opaque Authority receipt/generation IDs or keyed HMAC commitments produced under a Vault-held key;
+  neither identity nor the evidence digest ingests or publicly raw-hashes plaintext secrets. Sprint
+  `8.12` is the sole final qualification owner for both substrates; `6.4` and `7.33` evidence is
+  prerequisite/interim.
+- Invalidate qualification after any change to process topology, capability wiring, deadline/
+  resource envelope, persistence/workflow protocol, or suite cleanup orchestration.
+
+### Validation
+
+1. Fake scenario tables reject missing backup-before-effect/primary-loss/cleanup-owner-takeover
+   faults, missing substrate rows, stale revision/config, a missing/drifted source-manifest
+   exclusion-policy identity, any excluded secret/runtime/build-root manifest member, a public raw
+   hash of secret material, partial cleanup, or an invite success that lacks authority/target
+   convergence. They also reject missing/wrong-generation retained-home custody, schema confusion,
+   target-attestation substitution, premature custody tombstones, and a fresh-AWS-Vault path that
+   requires prompt/rotation or exposes plaintext to Authority.
+2. Installed-binary fixtures prove qualification remains Pending after code-local tests alone.
+3. `prodbox dev check`, unit/CLI/env integration, daemon lifecycle, and all named local fixtures
+   pass before live execution.
+4. Deployment qualification then requires green current-revision home and AWS aggregates plus all
+   mandatory faults, exact-byte backup restore/greatest-epoch evidence, `RunnerLost` takeover, and
+   authoritative cleanup re-observation, including live fresh-AWS-Vault restoration of the same
+   SES-SMTP and ACME-EAB generations from the closed retained-home custody family.
+
+### Remaining Work
+
+- Blocked until Sprint `8.11` lands the revisioned SES workflow.
+- Live qualification remains Pending until both substrate campaigns and the full fault matrix are
+  recorded; it does not change phase status but does gate deployment-ready/seamless claims.
+
+## Documentation Requirements
+
+**Engineering docs to create/update:**
+
+- `documents/engineering/lifecycle_control_plane_architecture.md` - mandatory acceptance matrix.
+- `documents/engineering/unit_testing_policy.md` - qualification recorder and fake scenarios.
+- `documents/engineering/chaos_hardening_doctrine.md` - required process/storage/network faults.
+- `documents/engineering/aws_integration_environment_doctrine.md` - live AWS invite evidence.
+- `documents/engineering/integration_fixture_doctrine.md` - deterministic qualification fixtures.
+
+**Product docs to create/update:**
+
+- `README.md` - current deployment-qualification state and evidence.
+
+**Cross-references to add:**
+
+- Link the qualification artifact to the development-plan deployment-qualification standard and
+  both substrate parity rows.
 
 ## Related Documents
 

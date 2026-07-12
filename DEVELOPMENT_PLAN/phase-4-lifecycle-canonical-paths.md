@@ -23,6 +23,23 @@ cutover and removes the gateway-backed authority routes and host-direct fallback
 forward-only lifecycle expansions; Sprint `4.47` remains historical proof of the pure lease and
 intent rules it actually implemented, not proof that its gateway transport was available.
 
+📋 **Expanded 2026-07-12 with Sprint `4.51` (Foundation Epoch).** Counterexample
+`LCPC-2026-07-11` ([phase-5-canonical-test-suite.md](phase-5-canonical-test-suite.md)) froze the
+`F-SES` mechanism on this phase's retained-authority surface: the retained SES authority's Model-B
+CAS objects (lease, intent, SMTP projection, fenced checkpoint) are custodied through the
+gateway-backed adapter whose chart the restore cycle deletes before the SES preparation step, and a
+seventy-minute account-wide lease is held across a synchronous HTTP bracket. Sprint `4.51` closes
+the storage half of that class with durability-indexed coordinates and adapters, a host-direct
+`ClusterRetained` retained authority store over the same sealed envelopes, and an `OperationRecord`
+intent that makes lease release idempotent; the policy half (the harness postflight residue bypass)
+is narrowed by Sprint `7.34` on the Phase `7` surface. Sprint `4.51` is the retained-SES subset of
+the Sprint `4.50` gateway-route removal landing early — Sprint `4.50` still owns the full removal
+— and it adds no `Blocked by` edge onto the `4.48` → `4.50` chain. The Foundation Epoch (Sprints
+`1.63`–`1.66`, `2.34`, `4.51`, `5.20`, `5.21`, and `7.34`), adopted by Sprint `0.17`, is the
+active work front and is executed before Sprints `1.61` and `1.62` as an execution-priority
+decision; it introduces no `Blocked by` edge onto the existing `1.61` → `8.12` chain, which
+resumes unchanged once the epoch closes ([README.md](README.md)).
+
 ✅ **Reclosed 2026-07-10 after desired-present long-lived reconciliation.** The lifecycle class of
 `aws-ses` correctly prevents automatic destruction, but the audited registry and suite integration
 mistook retention for ambient pre-existence: the managed-resource registry was effectively
@@ -4607,6 +4624,82 @@ an indefinite dual-write or fallback regime.
 
 - Keep the pending-removal ledger authoritative until both code removal and revision-scoped
   deployment qualification are recorded.
+
+## Sprint 4.51: Durability-Indexed Retained Authority Storage [📋 Planned]
+
+**Status**: Planned
+**Deployment qualification**: pending
+**Implementation**: planned `src/Prodbox/Lifecycle/StoreLifetime.hs`,
+`src/Prodbox/Lifecycle/RetainedAuthorityStore.hs`, and `src/Prodbox/Lifecycle/OperationRecord.hs`;
+revisions to `src/Prodbox/Lifecycle/CheckpointAuthority.hs`,
+`src/Prodbox/Lifecycle/CheckpointAuthorityStore.hs`, and `src/Prodbox/TestRunner.hs`
+**Independent Validation**: compile-witness (the chart-lifetime write path for retained coordinates
+no longer typechecks), CAS taxonomy tables against an in-memory fake, and operation-record
+crash/replay tables; no cluster required.
+**Docs to update**: `documents/engineering/lifecycle_control_plane_architecture.md`,
+`documents/engineering/lifecycle_reconciliation_doctrine.md`, and
+`documents/engineering/pure_fp_standards.md`
+
+### Objective
+
+Close the storage half of the `F-SES` class frozen by counterexample `LCPC-2026-07-11`: make
+retained authority state unrepresentable through a chart-lifetime transport by indexing every
+Model-B coordinate and adapter with its storage lifetime, and make the retained SES lease release
+idempotent by recording operation intent durably instead of holding correctness open across a
+synchronous HTTP bracket.
+
+### Deliverables
+
+- Define `StoreLifetime = ChartLifetime | ClusterRetained | CrossClusterDurable` as a phantom index
+  on **both** the Model-B object coordinate and the CAS adapter, with smart constructors that
+  partition the object namespace; storing retained state through an ephemeral transport becomes a
+  type error. The gateway-backed adapter is retyped `ChartLifetime`.
+- Add a host-direct `ClusterRetained` adapter over the same sealed envelopes (byte-compatible;
+  transport-only cutover). This is the Lifecycle Authority primary MinIO namespace of the
+  control-plane architecture, reached host-direct until the Authority Pod exists. The retained SES
+  lease/intent/projection/checkpoint coordinates flip to `ClusterRetained`.
+- Add `OperationRecord` — an operation-ID intent CAS-written to the retained store before the
+  external SES effect and resolved by re-observation, making lease release idempotent and removing
+  the seventy-minute-synchronous-bracket correctness boundary.
+- Relation to Sprint `4.50`: this sprint is the retained-SES subset of the gateway-route removal
+  landing early; Sprint `4.50` still owns the full removal.
+
+### Validation
+
+1. A compile witness proves the chart-lifetime write path for retained coordinates no longer
+   typechecks.
+2. CAS taxonomy tables against an in-memory fake prove the `ClusterRetained` adapter preserves the
+   existing conditional-put semantics over the same sealed envelope bytes.
+3. Operation-record crash/replay tables prove lease release converges by re-observation at every
+   crash boundary instead of depending on a best-effort release response.
+4. Unit suites, warning-clean build, and `prodbox dev check` pass; no cluster is required.
+
+### Remaining Work
+
+- Full sprint scope; registered 2026-07-12 as part of the Foundation Epoch (Sprint `0.17`) and not
+  started.
+- Sprint `5.20` derives restore/cleanup edges from the storage-lifetime facts this sprint
+  registers; Sprint `4.50` deletes the legacy transports.
+
+## Documentation Requirements
+
+**Engineering docs to create/update:**
+
+- `documents/engineering/lifecycle_control_plane_architecture.md` - durability-indexed
+  authority-namespace coordinates and the host-direct retained authority store.
+- `documents/engineering/lifecycle_reconciliation_doctrine.md` - storage-lifetime classes and
+  retained-custody rules in the registry doctrine.
+- `documents/engineering/pure_fp_standards.md` - durability-indexed coordinates as a phantom-index
+  pattern.
+
+**Product docs to create/update:**
+
+- None.
+
+**Cross-references to add:**
+
+- Link the [legacy-tracking-for-deletion.md](legacy-tracking-for-deletion.md) row for
+  chart-lifetime custody of retained SES authority CAS objects to this sprint.
 
 ## Related Documents
 

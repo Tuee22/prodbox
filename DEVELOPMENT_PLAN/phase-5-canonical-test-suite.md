@@ -21,6 +21,21 @@
 
 ## Phase Status
 
+📋 **Expanded 2026-07-12 for the Foundation Epoch.** Counterexample `LCPC-2026-07-11` froze four
+aggregate-suite failure mechanisms; this phase gains the two suite-side structural owners, adopted
+by governance Sprint `0.17` ([phase-0-planning-documentation.md](phase-0-planning-documentation.md)).
+Sprint `5.20` (📋 Planned) closes the `F-RESTORE` class: restore/cleanup becomes a graph whose
+`RequiresSuccess`/`RequiresAttempt` edges are derived from chart-dependency and storage-lifetime
+fact tables, executed by a total executor that aggregates every failure and never silently discards
+an independent restoration. Sprint `5.21` (⏸️ Blocked by Sprint `1.65`) closes the measurement
+loop: a `--record-profile` mode of the gateway-runtime-stability suite writes the committed
+`MeasuredResourceProfile` artifact from a healthy run, and the first committed gateway profile
+activates the Sprint `1.65` certification check. The Foundation Epoch (Sprints `1.63`–`1.66`,
+`2.34`, `4.51`, `5.20`, `5.21`, and `7.34`) is the active work front and is executed before Sprints
+`1.61` and `1.62` as an execution-priority decision; it introduces no `Blocked by` edge onto the
+existing `1.61` → `8.12` chain, which resumes unchanged once the epoch closes. Sprints
+`5.18`/`5.19` remain blocked exactly as recorded below.
+
 ⏸️ **Reopened and blocked by Sprint `4.50`.** Sprint `5.18` makes restore and retained
 preparation consume the same exact capability references that execution uses and lowers cleanup to an
 always-run DAG, so an unrelated selected-target probe cannot authorize retained-authority work and
@@ -1615,6 +1630,128 @@ cleanup across the whole suite run.
 
 - Link the qualification artifact to Standard O's scoped phase-completion rule and the separate
   deployment-qualification standard.
+
+## Sprint 5.20: Derived Restore Graph and Total Executor [📋 Planned]
+
+**Status**: Planned
+**Deployment qualification**: pending
+**Implementation**: planned `src/Prodbox/Lifecycle/RestoreGraph.hs`; revisions to
+`src/Prodbox/TestRestore.hs` and `src/Prodbox/TestRunner.hs`
+**Independent Validation**: pure coverage/independence/orphan-scan suites that fail against the
+current flat-list wiring and pass against the derived graph; executor totality property with a fake
+interpreter; all pre-cluster.
+**Docs to update**: `documents/engineering/lifecycle_reconciliation_doctrine.md`,
+`documents/engineering/integration_fixture_doctrine.md`, and
+`documents/engineering/unit_testing_policy.md`
+
+### Objective
+
+Close the `F-RESTORE` class of counterexample `LCPC-2026-07-11` structurally. The restore cycle is
+today a flat ordered step list executed by a fail-fast fold: the first failure silently discards
+every later step, including chart restorations wholly independent of the failed sibling, and
+independence exists only as a comment. Dependency structure must be derived data, not list
+position.
+
+### Deliverables
+
+- Represent restore/cleanup as a graph of nodes whose `RequiresSuccess`/`RequiresAttempt` edges are
+  derived from chart-dependency and storage-lifetime fact tables rather than authored per-site.
+- Replace the fail-fast fold with a total executor that runs every node whose dependencies are
+  satisfiable, records `NodeBlocked` with the offending ids otherwise, aggregates all failures into
+  one structured report, and never silently discards a step.
+- Prove the totality obligations as pure checks: node-set coverage equals the derived expectation
+  for every input; no `RequiresSuccess` path exists from the independent chart restorations to the
+  retained-SES node; and an orphan scan proves no node reads retained-or-stronger state through a
+  chart-lifetime transport that the same graph deletes.
+
+### Validation
+
+1. Pure coverage/independence/orphan-scan suites fail against the current flat-list wiring and pass
+   against the derived graph.
+2. An executor-totality property with a fake interpreter proves every satisfiable node runs and
+   every failure lands in the aggregate report.
+3. All proofs run pre-cluster; unit/CLI/env integration suites and `prodbox dev check` pass.
+
+### Remaining Work
+
+- Implementation is planned; the code-owned closure needs no live cluster (Standard O).
+- Sprint `5.18` remains separately blocked by Sprint `4.50` and later composes its capability-bound
+  cleanup DAG over the same restore surface; the Foundation Epoch introduces no `Blocked by` edge
+  between them.
+
+## Documentation Requirements
+
+**Engineering docs to create/update:**
+
+- `documents/engineering/lifecycle_reconciliation_doctrine.md` - derived restore/cleanup edges,
+  total-executor doctrine, and lifecycle-class verb obligations.
+- `documents/engineering/integration_fixture_doctrine.md` - fixtures for graph coverage,
+  independence, and orphan scans.
+- `documents/engineering/unit_testing_policy.md` - restore-graph totality suites in the
+  conformance tier.
+
+**Product docs to create/update:**
+
+- `README.md` - restoration runs as a derived total graph with an aggregate failure report.
+
+**Cross-references to add:**
+
+- Link the derived fact tables to the managed-resource registry lifecycle classes and the
+  storage-lifetime index owned by Sprint `4.51` (no `Blocked by` edge).
+
+## Sprint 5.21: Measured Resource Profile Recorder [⏸️ Blocked]
+
+**Status**: Blocked
+**Blocked by**: Sprint `1.65`
+**Deployment qualification**: pending
+**Implementation**: planned recorder extension of `src/Prodbox/Test/GatewayRuntimeStability.hs` and
+the `gateway-runtime-stability` integration surface
+**Independent Validation**: recorder refusal tables (unhealthy run, short window) with fixture
+payloads; artifact golden; pre-cluster.
+**Docs to update**: `documents/engineering/resource_scaling_doctrine.md`
+
+### Objective
+
+Close the measurement loop opened by Sprint `1.65`: authored Guaranteed-QoS envelopes are certified
+against committed measured profiles, and this sprint produces those profile artifacts from real
+healthy suite runs. The recorded profile also evidences the hot-path CPU reduction delivered by
+Sprints `1.64` and `1.66`.
+
+### Deliverables
+
+- A `--record-profile` mode of the gateway-runtime-stability suite that writes the committed
+  `MeasuredResourceProfile` artifact only from a healthy run with at least a thirty-minute steady
+  window.
+- The first committed gateway profile, which activates the Sprint `1.65` certification check.
+
+### Validation
+
+1. Recorder refusal tables with fixture payloads prove an unhealthy run or a short window cannot
+   write a profile artifact.
+2. An artifact golden pins the committed profile shape.
+3. All proofs run pre-cluster; unit/CLI/env integration suites and `prodbox dev check` pass.
+
+### Remaining Work
+
+- Blocked until Sprint `1.65` lands the `MeasuredResourceProfile` type and certification check.
+- Recording the first committed gateway profile requires a healthy live run; until it lands, the
+  interim authored gateway envelope remains uncertified-until-first-profile.
+
+## Documentation Requirements
+
+**Engineering docs to create/update:**
+
+- `documents/engineering/resource_scaling_doctrine.md` - recorder gate (healthy run, thirty-minute
+  steady window) and the bootstrap rule for the first committed profile.
+
+**Product docs to create/update:**
+
+- `README.md` - note when the first committed gateway profile activates capacity certification.
+
+**Cross-references to add:**
+
+- Link the recorder to Sprint `1.65`'s certification check and the `dhall/capacity/measured/`
+  artifact home ([phase-1-runtime-cli-aws-foundations.md](phase-1-runtime-cli-aws-foundations.md)).
 
 ## Related Documents
 

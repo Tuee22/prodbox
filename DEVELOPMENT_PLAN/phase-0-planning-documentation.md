@@ -14,6 +14,17 @@
 
 ## Phase Status
 
+✅ **Reclosed on its documentation/governance surface in Sprint `0.17` (2026-07-12).** Sprint `0.17`
+adopts the Foundation Epoch sequencing correction for counterexample `LCPC-2026-07-11`: Standard P
+gains the interim escape-path guard, Sprints `1.61` / `1.62` are shrink-rescoped, Sprints
+`1.63`–`1.66`, `2.34`, `4.51`, `5.20`, `5.21`, and `7.34` are registered with their deletion-ledger
+rows, and the compiled-boundary, durability-index, derived-restore, and measured-capacity doctrine
+is encoded in the governed engineering docs. The Foundation Epoch (Sprints `1.63`–`1.66`, `2.34`,
+`4.51`, `5.20`, `5.21`, and `7.34`) is the active work front and is executed before Sprints `1.61`
+and `1.62` as an execution-priority decision; it introduces no `Blocked by` edge onto the existing
+`1.61` → `8.12` chain, which resumes unchanged once the epoch closes. No implementation sprint or
+deployment qualification is claimed by this plan-only reclosure.
+
 ✅ **Reclosed on its documentation/governance surface in Sprint `0.16` (2026-07-11).** The July 11 full-suite
 counterexample showed that code-local readiness closure had been reported as deployment
 qualification without exercising the exact production composition. Sprint `0.16` defines the
@@ -1567,6 +1578,131 @@ qualification cannot be claimed by this documentation sprint.
 
 - Link every reopened phase and the development-plan control documents to
   `lifecycle_control_plane_architecture.md`.
+
+## Sprint 0.17: Foundation Epoch Adoption and Escape-Path Guard ✅
+
+**Status**: Done (2026-07-12; documentation/governance surface)
+**Deployment qualification**: pending
+**Implementation**: this documentation change — `DEVELOPMENT_PLAN/README.md`,
+`DEVELOPMENT_PLAN/development_plan_standards.md` (Standard P), the phase documents for Phases
+`1` / `2` / `4` / `5` / `7`, `DEVELOPMENT_PLAN/legacy-tracking-for-deletion.md`, and the governed
+engineering docs
+**Independent Validation**: documentation-only surface; `prodbox dev check`,
+`prodbox dev lint docs`, and `prodbox dev docs check` pass; sprint-status and cross-reference
+audits confirm Standard H / N / J compliance.
+**Docs to update**: `documents/engineering/lifecycle_control_plane_architecture.md`,
+`documents/engineering/resource_scaling_doctrine.md`,
+`documents/engineering/helm_chart_platform_doctrine.md`,
+`documents/engineering/lifecycle_reconciliation_doctrine.md`,
+`documents/engineering/pure_fp_standards.md`, `documents/engineering/unit_testing_policy.md`,
+`documents/engineering/code_quality.md`, `documents/engineering/README.md`,
+`documents/engineering/distributed_gateway_architecture.md`,
+`documents/engineering/vault_doctrine.md`,
+`documents/engineering/bootstrap_readiness_doctrine.md`, and
+`documents/engineering/haskell_code_guide.md`
+
+### Objective
+
+Adopt the Foundation Epoch sequencing correction for counterexample `LCPC-2026-07-11`: amend
+Standard P with the interim escape-path guard, shrink-rescope Sprints `1.61` / `1.62`, register
+Sprints `1.63`–`1.66`, `2.34`, `4.51`, `5.20`, `5.21`, and `7.34` and their deletion-ledger rows,
+and encode the compiled-boundary, durability-index, derived-restore, and measured-capacity
+doctrine in the governed engineering docs. The four frozen failure mechanisms live at
+cross-artifact seams that pure-functional rigor inside one compiled program did not reach; the
+corrective doctrine is one typed model, many generated projections. The Foundation Epoch (Sprints
+`1.63`–`1.66`, `2.34`, `4.51`, `5.20`, `5.21`, and `7.34`) is the active work front and is
+executed before Sprints `1.61` and `1.62` as an execution-priority decision; it introduces no
+`Blocked by` edge onto the existing `1.61` → `8.12` chain, which resumes unchanged once the epoch
+closes.
+
+### Deliverables
+
+- [development_plan_standards.md](development_plan_standards.md) Standard P gains the interim
+  escape-path guard: while operational legacy rows remain in `Pending Removal`, every legacy
+  escape call site must be enumerated in a machine-readable registry consumed by
+  `prodbox dev check`; an unregistered new call site, or a registry entry with no surviving call
+  site, fails the build. Qualification remains non-blocking; escape-path drift is not. Registry
+  implementation is owned by Sprint `1.63`.
+- The Foundation Epoch sprints are registered with full Standard H blocks: Sprints `1.63`
+  (conformance tier + legacy escape registry), `1.64` (shared TLS manager + cached Vault
+  session), `1.65` (measured capacity certification), and `1.66` (native S3 object-store client,
+  Blocked by Sprint `1.64`) in
+  [phase-1-runtime-cli-aws-foundations.md](phase-1-runtime-cli-aws-foundations.md); Sprint `2.34`
+  (compiled service boundary + latched readiness) in
+  [phase-2-gateway-dns.md](phase-2-gateway-dns.md); Sprint `4.51` (durability-indexed retained
+  authority storage) in
+  [phase-4-lifecycle-canonical-paths.md](phase-4-lifecycle-canonical-paths.md); Sprints `5.20`
+  (derived restore graph + total executor) and `5.21` (measured resource profile recorder,
+  Blocked by Sprint `1.65`) in
+  [phase-5-canonical-test-suite.md](phase-5-canonical-test-suite.md); and Sprint `7.34` (per-run
+  postflight residue narrowing) in
+  [phase-7-aws-substrate-foundations.md](phase-7-aws-substrate-foundations.md).
+- Sprints `1.61` / `1.62` are shrink-rescoped with titles and anchors unchanged: the
+  exact-readiness-evidence deliverable moves from Sprint `1.61` to Sprint `2.34`, and the pooled
+  native S3 client and the renewable cached Vault session move from Sprint `1.62` to Sprints
+  `1.66` and `1.64` respectively.
+- [legacy-tracking-for-deletion.md](legacy-tracking-for-deletion.md) gains one Pending Removal
+  row per superseded surface, splits the former combined Sprint `1.62` row across the new owners,
+  and withdraws the Sprint `7.9` pending removal of the per-run residue constructor (operator
+  decision 2026-07-12; `LCPC-2026-07-11` forensics).
+- The governed engineering docs encode the corrective doctrine: one typed model / many generated
+  projections, durability-indexed coordinates, the derived restore graph and total executor,
+  measured capacity certification (Guaranteed QoS retained; honesty by measured-profile
+  certification, not limit removal), and the conformance tier joining the canonical quality gate.
+- The Deployment Qualification ledger is unchanged — both rows remain pending; nothing in this
+  sprint claims qualification.
+
+### Validation
+
+1. `prodbox dev check` exit 0.
+2. `prodbox dev lint docs` exit 0.
+3. `prodbox dev docs check` exit 0.
+4. Sprint-status and cross-reference audits confirm Standard H / N / J compliance: the only new
+   `Blocked by` edges are Sprint `1.66` → Sprint `1.64` and Sprint `5.21` → Sprint `1.65`, and no
+   `Blocked by` names a higher-numbered sprint or later phase.
+
+### Remaining Work
+
+None on this surface — implementation is owned by the registered sprints, and the `1.61` → `8.12`
+chain resumes unchanged once the epoch closes.
+
+## Documentation Requirements
+
+**Engineering docs to create/update:**
+
+- `documents/engineering/lifecycle_control_plane_architecture.md` - measured-profile
+  certification of authored envelopes, the Compiled Service Boundary section, durability-indexed
+  authority custody, derived cleanup/restore edges, and the conformance-obligation additions.
+- `documents/engineering/resource_scaling_doctrine.md` - the Measured Resource Profiles section
+  and the explicit throttling-tension resolution (Guaranteed QoS retained; honesty by measured
+  certification).
+- `documents/engineering/helm_chart_platform_doctrine.md` - the probe/route single-source rule
+  and the forbidden-literal chart lint.
+- `documents/engineering/lifecycle_reconciliation_doctrine.md` - lifecycle-class total verb
+  obligations, the derived restore graph and total executor, and the per-run-only postflight
+  residue bypass.
+- `documents/engineering/pure_fp_standards.md` - the one-typed-model / generated-projections and
+  durability-indexed-coordinate patterns.
+- `documents/engineering/unit_testing_policy.md` - the conformance-tier definition and the
+  planned suite names.
+- `documents/engineering/code_quality.md` - the new check families joining the canonical quality
+  gate.
+- `documents/engineering/README.md` - index and backlink updates for the added sections.
+- Conditional harmonizations where prior text contradicted the new doctrine:
+  `documents/engineering/distributed_gateway_architecture.md` (latched readiness),
+  `documents/engineering/vault_doctrine.md` (cached renewable Kubernetes-auth session),
+  `documents/engineering/bootstrap_readiness_doctrine.md` (readiness-evidence rescope pointer),
+  and `documents/engineering/haskell_code_guide.md` (shared HTTP manager).
+
+**Product docs to create/update:**
+
+- `README.md` - the Foundation Epoch as the corrective work front, plus the
+  measured-certification, latched-readiness, and derived-restoration wording.
+
+**Cross-references to add:**
+
+- Engineering docs name owning sprints sparingly and link the Development Plan; sprint status
+  lives only in the plan suite.
 
 ## Related Documents
 

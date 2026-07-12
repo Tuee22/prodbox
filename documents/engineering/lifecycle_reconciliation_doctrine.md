@@ -6,6 +6,7 @@
 [../../README.md](../../README.md), [the engineering doctrine docs](../../documents/engineering/README.md),
 [acme_provider_guide.md](acme_provider_guide.md),
 [../../DEVELOPMENT_PLAN/phase-4-lifecycle-canonical-paths.md](../../DEVELOPMENT_PLAN/phase-4-lifecycle-canonical-paths.md),
+[../../DEVELOPMENT_PLAN/phase-5-canonical-test-suite.md](../../DEVELOPMENT_PLAN/phase-5-canonical-test-suite.md),
 [../../DEVELOPMENT_PLAN/phase-7-aws-substrate-foundations.md](../../DEVELOPMENT_PLAN/phase-7-aws-substrate-foundations.md),
 [../../DEVELOPMENT_PLAN/substrates.md](../../DEVELOPMENT_PLAN/substrates.md),
 [../../DEVELOPMENT_PLAN/system-components.md](../../DEVELOPMENT_PLAN/system-components.md),
@@ -557,7 +558,7 @@ declare-and-interpret shape of the Effect DAG. The per-class name lists
 include non-stack resources such as `aws-ebs-volumes` and the `public-edge-tls` cert)
 cannot drift from their sources.
 
-Four invariants make the topology leak-proof and idempotent:
+Five invariants make the topology leak-proof and idempotent:
 
 1. **Totality.** No prodbox code path may directly create, or create a Kubernetes/controller owner
    that indirectly creates, an AWS or cluster resource not represented by a singleton/family entry
@@ -607,6 +608,16 @@ Four invariants make the topology leak-proof and idempotent:
    never omit a per-run stack. The gate's `(stack, destroy-command)` list
    and the destroy actions share one registry-derived source
    (`pairPerRunResidue` / `pairAwsSesResidue` + `residueGateRefusalList`).
+
+5. **Lifecycle-class total verb obligations.** A registry entry's `LifecycleClass` obliges it
+   to a total verb in the derived restore/cleanup graph (§3.3): every `LongLived` entry must
+   have a restore/ensure node, and every `PerRun` entry must have a destroy node. Coverage is a
+   pure fold over the closed registry, checked pre-cluster, so "a long-lived resource with no
+   restoration" and "a per-run resource with no destroy" are made unrepresentable — the same
+   way invariant 1 makes "creatable-but-undiscoverable" unrepresentable. The invariant 2
+   soundness rule carries into this projection unchanged: "cannot observe" is never "absent"
+   for a restore/ensure node any more than for a destroy node; an unobservable resource blocks
+   its node with a recorded refusal, never a silent skip.
 
 The `Operational` projection registers Lifecycle-provider and AWS cert-manager-DNS01
 IAM/key/role/Vault generations. Lifecycle-provider is removed only after every exact provider
@@ -953,6 +964,43 @@ to live AWS resources — use `destroy` for that) or an unobservable backend
 (fail-closed). Per-run stacks only; a corrupt long-lived `aws-ses` checkpoint
 always refuses.
 
+### 3.3 The derived restore/cleanup graph and total executor
+
+Restore and cleanup are one graph of nodes, not a flat ordered step list. Each node names a
+registered managed resource (or a registered restoration such as a chart re-reconcile), and its
+`RequiresSuccess` / `RequiresAttempt` edges are **derived** from registered fact tables —
+chart-dependency facts and storage-lifetime facts — never authored per call site. A dependency
+that exists only as a comment, or only as a position in a list, is a defect: list position is
+not dependency structure. The §5b/§5c drain-before-destroy `RequiresAttempt` edge is the worked
+instance of the same edge algebra.
+
+The executor over that graph is total:
+
+- every node whose dependencies are satisfiable runs; a first failure never discards later
+  independent nodes — a fail-fast fold that silently drops restorations independent of the
+  failed sibling is a defect, not an acceptable simplification;
+- a node whose dependencies cannot be satisfied is recorded as `NodeBlocked` with the offending
+  dependency ids; blocked is an explicit outcome, never a silent omission;
+- all failures aggregate into one report, the always-run cleanup fold of
+  [Integration Fixture Doctrine §4](./integration_fixture_doctrine.md#4-cleanup-failure-handling).
+
+Three totality obligations are pure checks that run pre-cluster:
+
+1. **Coverage.** The graph's node set equals the expectation derived from the registry under
+   §3.1 invariant 5 — every `LongLived` entry a restore/ensure node, every `PerRun` entry a
+   destroy node — for every input.
+2. **Independence.** No `RequiresSuccess` path runs from the independent chart restorations to
+   the retained-SES node; a restoration that merely shares a substrate with a failed sibling
+   still runs.
+3. **No orphaned retained reads.** No node reads retained-or-stronger state through a
+   chart-lifetime transport that the same graph deletes; the storage-lifetime classes are owned
+   by [Lifecycle Control-Plane Architecture](./lifecycle_control_plane_architecture.md).
+
+Implementation is owned by Sprint `5.20` in
+[phase-5-canonical-test-suite.md](../../DEVELOPMENT_PLAN/phase-5-canonical-test-suite.md). This
+document owns what the edges and obligations mean; fixture doctrine owns cleanup scheduling,
+dependency blocking, and failure aggregation.
+
 ## 4. Predicate Library Inventory
 
 Named `Precondition` values every destructive lifecycle command may
@@ -1232,6 +1280,24 @@ ordinary Vault tombstone; all independent cleanup still runs. The exported `nuke
 home Agent/Vault alive through retained-generation tombstones and receipts every later admin-side
 deletion externally.
 
+### 5e. Harness Residue Bypass Is Per-Run Only (Sprint 7.34)
+
+The harness preflight/postflight residue policy bypasses **per-run** residue only
+(`BypassPerRunResidueForHarnessRefresh`): the refresh clears operational `aws.*` and per-run
+stacks unconditionally, but the long-lived `aws-ses` and `public-edge-tls` residue protection of
+the lifecycle preconditions is never bypassed by automation. The broader
+`BypassAllResidueForHarnessRefresh` arm conflated destroyability with should-destroy — it can
+destroy the retained long-lived stack the preconditions otherwise protect — and is superseded by
+the narrowed policy. Long-lived destruction remains explicit and operator-driven (§7):
+`prodbox aws stack aws-ses destroy --yes` for the `aws-ses` stack, and `prodbox nuke` as the only
+total-teardown path; no harness or automation surface acquires that authority through a residue
+policy. This narrowing reverses the residue half of the Sprint `7.9` decision recorded in §5d;
+the §5d per-run credential-hold rule (Sprint `7.10`) stands unchanged. The narrowing is owned by
+Sprint `7.34` in
+[phase-7-aws-substrate-foundations.md](../../DEVELOPMENT_PLAN/phase-7-aws-substrate-foundations.md);
+the policy history lives in
+[aws_integration_environment_doctrine.md](./aws_integration_environment_doctrine.md).
+
 ## 6. Scoped Mandatory Postflight Tag Sweep
 
 The command matrix in §5 assigns a mandatory cluster-tag sweep only to
@@ -1407,6 +1473,7 @@ section records only how the lifecycle commands integrate it. See
 - [../documentation_standards.md](../documentation_standards.md)
 - [../../DEVELOPMENT_PLAN/substrates.md](../../DEVELOPMENT_PLAN/substrates.md)
 - [../../DEVELOPMENT_PLAN/phase-4-lifecycle-canonical-paths.md](../../DEVELOPMENT_PLAN/phase-4-lifecycle-canonical-paths.md)
+- [../../DEVELOPMENT_PLAN/phase-5-canonical-test-suite.md](../../DEVELOPMENT_PLAN/phase-5-canonical-test-suite.md)
 - [../../DEVELOPMENT_PLAN/phase-7-aws-substrate-foundations.md](../../DEVELOPMENT_PLAN/phase-7-aws-substrate-foundations.md)
 - [the engineering doctrine docs](../../documents/engineering/README.md)
 - [../../CLAUDE.md](../../CLAUDE.md)

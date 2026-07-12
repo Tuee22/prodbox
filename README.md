@@ -32,7 +32,8 @@ validation environments.
   application environment in `haskell_code_guide.md`; generated artifacts and lint stack
   in `code_quality.md`; output rules and at-least-once event processing in
   `streaming_doctrine.md`; prerequisites as typed effects in `prerequisite_doctrine.md`;
-  operation-indexed readiness and admission in `bootstrap_readiness_doctrine.md`; the physical
+  operation-indexed readiness and latched kubelet-facing admission in
+  `bootstrap_readiness_doctrine.md`; the physical
   Bootstrap Broker, Lifecycle Authority, Target Secret Agent, and gateway isolation boundary in
   `lifecycle_control_plane_architecture.md`;
   daemon lifecycle in `distributed_gateway_architecture.md`; unified block storage —
@@ -99,7 +100,11 @@ validation environments.
   working set. Sprint `1.60` adds a validated nested runtime-memory plan (bounded heap state/scratch
   within an RTS heap cap, then heap cap plus native/subprocess/kernel reserves and margin within the
   profile-derived cgroup limit) and generates the gateway RTS argv. Sprint `5.16` now feeds that
-  plan's thresholds into the run-scoped restart/OOM/high-water oracle used by `gateway-pods`. See
+  plan's thresholds into the run-scoped restart/OOM/high-water oracle used by `gateway-pods`.
+  Sprint `1.65` certifies authored envelopes against committed measured resource profiles (recorded
+  by Sprint `5.21`), so an uncertified zero-headroom CPU number fails the canonical quality gate;
+  see
+  [Measured Resource Profiles](./documents/engineering/resource_scaling_doctrine.md#measured-resource-profiles). See
   [documents/engineering/resource_scaling_doctrine.md](./documents/engineering/resource_scaling_doctrine.md).
 - A `LongLived` lifecycle class controls cleanup, not desired presence. When an invite-capable suite
   is selected, the target plan visibly reconciles the registered `aws-ses` stack through the
@@ -272,7 +277,11 @@ finally guaranteed after a retained-resource failure.
 The repository therefore does not currently claim deployment qualification or seamless aggregate
 suite execution. Historical sprint results remain recorded in the development plan, while the
 reopened phase chain owns capability indexing, native clients, process isolation, durable workflow,
-always-run cleanup, and current-revision home/AWS qualification.
+always-run cleanup, and current-revision home/AWS qualification. The Foundation Epoch (see
+[DEVELOPMENT_PLAN/README.md](./DEVELOPMENT_PLAN/README.md)) is the corrective work front for those
+failure mechanisms: a compiled service boundary, durability-indexed retained storage, derived
+restoration, measured capacity certification, and elimination of the hot-path per-request Vault
+login and subprocess object-store client.
 
 ## Install And Build
 
@@ -627,7 +636,10 @@ Generate a gateway config and inspect a daemon:
 ./.build/prodbox gateway status --config gateway.dhall
 ```
 
-`gateway status` queries the daemon's HTTP `/v1/state` endpoint on the configured REST port.
+`gateway status` queries the daemon's HTTP `/v1/state` endpoint on the configured REST port. The
+state route is the deep-diagnostics surface: under Sprint `2.34`, kubelet-facing readiness is a
+separate latched projection that admits on the first proven object-store round trip since boot and
+does not flap on later transient backend degradation.
 This `gateway` command group refers to the Haskell distributed gateway daemon, not the Kubernetes
 Gateway API or Envoy Gateway edge controller.
 
@@ -782,6 +794,10 @@ Run the aggregate suites only when you want the full repository proof:
 - run public-edge and certificate convergence checks
 - run the supported local-runtime postflight; current-revision always-run restoration remains part
   of the reopened deployment-qualification work
+
+Once Sprint `5.20` lands, that restoration runs as a derived total graph: independent restorations
+are always attempted and failures aggregate into one report rather than being discarded by a
+fail-fast fold (see [DEVELOPMENT_PLAN/README.md](./DEVELOPMENT_PLAN/README.md)).
 
 These suites require the real tools, credentials, cluster state, DNS state, or AWS resources named
 by their prerequisite contracts. A green current-revision aggregate is necessary but insufficient:

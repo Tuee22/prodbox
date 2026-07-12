@@ -1445,6 +1445,11 @@ uses the agent's durable sealed receipt. If the declared reconstruction source i
 unobservable after a crash, promotion refuses with a typed nonterminal recovery state. It never
 manufactures a reference to missing bytes.
 
+Every authority-namespace object coordinate and CAS adapter is durability-indexed by
+`StoreLifetime` — `ChartLifetime`, `ClusterRetained`, or `CrossClusterDurable` — and smart
+constructors partition the object namespaces by lifetime class. A retained-or-stronger object
+addressed through a chart-lifetime transport is unrepresentable rather than merely forbidden.
+
 Garbage collection persists its candidate set and both complete scan receipts in the aggregate.
 Its GC fence is mutually exclusive with `RecordPendingBlob` and promotion. After the declared grace,
 the interpreter re-observes the current aggregate and latest receipt-committed backup envelope under
@@ -1714,6 +1719,12 @@ Transit-encrypts the source, and generation-CAS stores and reads back a cipherte
 receipt. Authority receives only `RetainedMaterialReceiptRef`, ciphertext digest,
 `SecretCommitmentRef`, and typed read-back. The raw IAM secret, derived SMTP password, and EAB HMAC
 never enter Authority, MinIO, a checkpoint, a serialized program, or a generic Vault path.
+
+Retained custody storage is durability-indexed. Every receipt, ledger, and custody object in this
+lane is addressable only through a coordinate and adapter carrying the `ClusterRetained` or
+`CrossClusterDurable` lifetime index; the smart constructors that partition the custody namespaces
+refuse a `ChartLifetime` coordinate. A retained receipt reachable through a chart-lifetime
+transport — a custodian deleted and recreated with the charts it serves — is unrepresentable.
 
 Delivery always begins from the receipt-committed current source. A newly attested selected-Agent
 worker contributes an ephemeral public key; a home one-shot worker Transit-decrypts only that exact
@@ -2101,6 +2112,14 @@ The pure capacity validator proves the authored service-demand inequality with h
 runtime stability fold proves that deployed behavior remained inside it. The exact algebra and
 threshold ownership belong to [Resource Scaling Doctrine](./resource_scaling_doctrine.md).
 
+Every authored envelope is additionally certified against the committed `MeasuredResourceProfile`
+for its profile id: authored CPU must sit at or above measured p99 × 4/3, throttle observations
+must sit at or below 20000 parts per million while any CPU cap is authored, and a stale profile —
+a hot-path source-digest mismatch or a profile older than 30 days — fails the canonical quality
+gate. Guaranteed QoS remains mandated; an uncertified authored number is the defect. Profile
+artifact shape, certification thresholds, and the recorder gate belong to
+[Resource Scaling Doctrine](./resource_scaling_doctrine.md) (§ Measured Resource Profiles).
+
 Health handling is isolated from deep work. Process liveness remains constant time. Operational
 readiness is a cached projection of managed sessions, actor state, and queue admission; a replica
 that cannot admit its documented capability leaves the corresponding Service endpoints.
@@ -2142,6 +2161,23 @@ it does not switch writers. Direct `aws route53` bootstrap calls, content-only d
 sweep as the sole ownership record are pre-cutover legacy. Cutover registers the exact records
 before those call sites are deleted.
 
+### 10.2 Compiled Service Boundary
+
+Every kubelet-facing or cross-artifact service contract of a control-plane component — HTTP route
+paths and methods, probe endpoints and their semantics class, service ports, and ServiceAccount and
+Vault-role identities — exists exactly once, as a compiled closed registry value. The server
+dispatcher, client URL construction, chart probe/statics rendering, and response goldens are
+projections of that registry. A hand-authored duplicate of a registry value in a template, values
+file, or client is a defect caught by the conformance tier of the canonical quality gate, not a
+convention.
+
+Readiness is one pure latched projection. Admission requires the first proven object-store round
+trip since boot and thereafter does not flap on later transient backend degradation; deep
+diagnostics remain a separate route. The scope claim is honest: the kubelet can never hold a
+`CapabilityRef`, so Invariant 2 (§2) cannot reach it. Deriving the probe endpoint from the same
+compiled registry as the execution handlers is the strongest coupling reachable across the YAML
+boundary, and the lifecycle gate retains the capability-scoped deep probe.
+
 ## 11. Always-Run Cleanup
 
 Before a suite mutation can obtain its `CommittedIntentRef`, the pure builder CAS-registers its
@@ -2158,6 +2194,13 @@ canonical cleanup order, resume rules, and aggregate result are owned only by
 This architecture requires that every ready node continues after sibling failure, credential nodes
 remain blocked while their exact dependants need them, and the durable final report retains the
 primary suite result plus every cleanup failure and dependency-blocked reason.
+
+Restore and cleanup dependency edges are derived, not authored per-site: the
+`RequiresSuccess`/`RequiresAttempt` structure is computed from registered chart-dependency and
+storage-lifetime facts, so an independence claim cannot exist only as a comment. The totality
+obligations — every long-lived registry entry has a restore node, every per-run entry has a
+destroy node, and no node reads retained-or-stronger state through a chart-lifetime transport that
+the same graph deletes — are pure checks that run pre-cluster.
 
 ### 11.1 Total decommission and the final backup deletion
 
@@ -2372,6 +2415,10 @@ Pure and model-based validation includes:
   rejection, stable-attempt re-observation, home-control-plane-live target plus
   SMTP/EAB custody tombstones, TLS prefix deletion without shared-bucket deletion, final all-prefix
   absence, backup/shared-bucket deletion last, and external-receipt resume;
+- route-registry non-overlap and round-trip tables;
+- deployed-helm-values-versus-compiled-registry/statics equality;
+- restore-graph coverage, independence, and orphan-scan tables;
+- authored-envelope-versus-measured-profile certification tables;
 - updated finite TLA models for continuity and authority cutover.
 
 Deployment qualification additionally exercises the real binary and component topology under the

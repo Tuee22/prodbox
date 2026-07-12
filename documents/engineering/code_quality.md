@@ -2,7 +2,7 @@
 
 **Status**: Authoritative source
 **Supersedes**: N/A
-**Referenced by**: README.md, AGENTS.md, CLAUDE.md, documents/engineering/README.md, documents/engineering/cli_command_surface.md, documents/engineering/haskell_code_guide.md, documents/engineering/prerequisite_doctrine.md, documents/engineering/pure_fp_standards.md, documents/engineering/unit_testing_policy.md, documents/engineering/pulsar_messaging_doctrine.md
+**Referenced by**: README.md, AGENTS.md, CLAUDE.md, DEVELOPMENT_PLAN/phase-1-runtime-cli-aws-foundations.md, documents/engineering/README.md, documents/engineering/cli_command_surface.md, documents/engineering/haskell_code_guide.md, documents/engineering/prerequisite_doctrine.md, documents/engineering/pure_fp_standards.md, documents/engineering/unit_testing_policy.md, documents/engineering/pulsar_messaging_doctrine.md
 **Generated sections**: none
 
 > **Purpose**: Define policy guardrails and enforcement flow for `prodbox dev check`.
@@ -158,6 +158,38 @@ registry:
   `[GeneratedSectionRule]` also fails;
 - a **relative-link check** asserting that in-repo relative links (with anchors) in governed
   docs resolve to an existing target file (and, where checkable, anchor).
+
+Three further check families join the canonical quality gate under the Foundation Epoch
+(implementation owned by Sprints `1.63`, `1.65`, and `2.34`; see the
+[Development Plan](../../DEVELOPMENT_PLAN/README.md)):
+
+- the **chart forbidden-literal lint** (Sprint `2.34`): chart-rendered probe paths, service
+  ports, NodePort, ServiceAccount, and Vault-role values must be projections of the compiled
+  gateway route registry and chart statics; a hand-authored raw literal for any of these in a
+  template or values file is a lint failure. The single-source rule lives in
+  [helm_chart_platform_doctrine.md](./helm_chart_platform_doctrine.md).
+- the **legacy escape registry bijection check** (Sprint `1.63`): every legacy escape call site
+  (gateway-hosted authority routes, the shared operational AWS credential, host-direct
+  Vault/MinIO seams, `aws` CLI subprocess object-store sites, per-request Vault logins) is
+  enumerated in the machine-readable registry `src/Prodbox/Legacy/EscapeRegistry.hs`, and a
+  source scan must match that registry bijectively: an unregistered new call site fails the
+  build, and a registry entry with no surviving call site fails the build. This implements the
+  Standard P interim escape-path guard
+  ([development_plan_standards.md](../../DEVELOPMENT_PLAN/development_plan_standards.md)).
+- the **measured-profile conformance check** (Sprint `1.65`): authored Guaranteed-QoS envelopes
+  are certified against the committed `MeasuredResourceProfile` artifacts under
+  `dhall/capacity/measured/`; the check fails when an authored CPU value is below measured
+  p99 × 4/3 headroom, when `throttled_periods_ppm` exceeds 20000 while a CPU cap is authored,
+  or when the profile is stale (hot-path source digest mismatch or older than 30 days).
+  Comparisons are one-sided, so measured improvement never fails the check; the check activates
+  once the first committed profile exists for a profile id (recorder owned by Sprint `5.21`).
+  Certification rules are owned by
+  [resource_scaling_doctrine.md § 2F](./resource_scaling_doctrine.md#2f-measured-resource-profiles).
+
+All three families run inside `prodbox dev check` on the seconds-fast lint surface and follow
+the same registry discipline as the generated-section and forbidden-path registries: the
+in-code registries and committed artifacts remain the SSoT, and this doctrine names the check
+families without duplicating their entry tables.
 
 Phase 2 closes the daemon structured-logging surface on the supported gateway and workload
 entrypoints. Direct terminal writes outside the logging boundary are part of the enforced

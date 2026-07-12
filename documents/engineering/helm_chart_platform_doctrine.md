@@ -545,6 +545,27 @@ negative fixtures pin that refusal, and a golden pins the typed generated defaul
 [Bootstrap Readiness Doctrine §2.4](./bootstrap_readiness_doctrine.md#24-dependency-readiness-vs-runtime-stability)
 and [Distributed Gateway Architecture §11](./distributed_gateway_architecture.md#11-rest-api).
 
+### Probe and route single-source rule
+
+Chart-rendered probe paths, service ports, and identity values are projections of compiled
+values, never independently authored strings. Every daemon route path exists once, in the
+compiled closed route registry (`GatewayRoute`), and every gateway port, NodePort,
+ServiceAccount, and Vault-role value exists once, in the compiled chart statics
+(`GatewayChartStatics`); the server dispatcher, client URL construction, and chart
+probe/statics rendering all project those same values. A hand-authored probe path string in a
+chart template or values file is a defect, as is a hand-mirrored port or identity literal. The
+forbidden-literal chart lint enforces the template side: `prodbox dev lint chart` fails closed
+on the raw literals in hand-written templates. The in-code generated-section registry remains
+the single source of truth for generated-section keys; this document does not enumerate them.
+This rule supersedes substring-lint coupling between the daemon route table and chart probe
+paths — the registry, not a string scan, makes the rendered probe path and the served route the
+same compiled value, and a kubelet probe bound to a non-probe route is unbuildable by smart
+constructor. The typed probe configuration in the
+[gateway lifecycle probe contract](#gateway-lifecycle-probe-contract) above becomes a
+projection of the same registry. Implementation is owned by Sprint `2.34`; see the
+[Development Plan](../../DEVELOPMENT_PLAN/README.md) and
+[Lifecycle Control-Plane Architecture §10.2](./lifecycle_control_plane_architecture.md).
+
 ## 7. Delete Semantics
 
 `prodbox charts delete <chart>`:

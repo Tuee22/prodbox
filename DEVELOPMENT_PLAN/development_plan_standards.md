@@ -399,6 +399,13 @@ into an unexercised claim about the aggregate deployment.
 - **Cutover rule.** Operational legacy rows remain in `Pending Removal` until the replacement is the
   sole supported writer/route, rollback is explicit, and current-revision deployment qualification
   passes. A shadow reader may coexist during migration; dual writers may not.
+- **Interim escape-path guard.** While operational legacy rows remain in `Pending Removal`, every
+  legacy escape call site — gateway-hosted authority routes, the shared operational AWS credential,
+  host-direct Vault/MinIO seams, and the subprocess object-store and per-request login paths — must
+  be enumerated in a machine-readable registry consumed by `prodbox dev check`; an unregistered new
+  call site, or a registry entry with no surviving call site, fails the build. Qualification
+  remains non-blocking; escape-path drift is not. The registry implementation is owned by
+  Sprint `1.63`.
 - **Aggregate rule.** A successful point probe or one successful aggregate run is insufficient for
   a temporal or cleanup claim. The owning plan names the consecutive-run, saturation, restart,
   cancellation, applied-but-response-lost, and residue checks appropriate to that surface.

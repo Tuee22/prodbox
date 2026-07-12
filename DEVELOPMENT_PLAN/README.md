@@ -59,6 +59,17 @@ Planned; `1.62`, `2.32`–`2.33`, `3.26`, `4.48`–`4.50`, `5.18`–`5.19`, `6.4
 `7.33`, and `8.11`–`8.12` are blocked only by the earlier sprint chain recorded in their phase
 documents.
 
+**Foundation Epoch (2026-07-12).** Governance Sprint `0.17` recloses Phase `0` a second time on
+the `LCPC-2026-07-11` structural correction: cross-boundary contracts become compiled values with
+generated projections, retained custody becomes durability-indexed, restoration becomes a derived
+total graph, and authored capacity becomes measured-certified. The Foundation Epoch (Sprints
+`1.63`–`1.66`, `2.34`, `4.51`, `5.20`, `5.21`, and `7.34`) is the active work front and is
+executed before Sprints `1.61` and `1.62` as an execution-priority decision; it introduces no
+`Blocked by` edge onto the existing `1.61` → `8.12` chain, which resumes unchanged once the epoch
+closes. Sprints `1.61`/`1.62` are shrink-rescoped with titles and anchors unchanged (readiness
+evidence to Sprint `2.34`; the cached Vault session to Sprint `1.64` and the native S3
+object-store client to Sprint `1.66`).
+
 The target replacement is the pure-functional
 [Lifecycle Control-Plane Architecture](../documents/engineering/lifecycle_control_plane_architecture.md):
 a minimal Bootstrap Broker, a retained Lifecycle Authority, substrate-local Target Secret Agents,
@@ -140,6 +151,7 @@ Each row is one dated reopen/closure milestone; the owning phase doc carries the
 
 | Date | Milestone |
 |------|-----------|
+| 2026-07-12 | Sprint `0.17` ✅ **Done; Foundation Epoch adopted, Phase 0 reclosed** — the four `LCPC-2026-07-11` failure mechanisms receive structural owners: Sprint `2.34` (compiled service boundary and latched readiness), Sprints `4.51`/`5.20` (durability-indexed retained custody and the derived total restore graph), Sprints `1.64`/`1.65`/`1.66` (gateway hot-path session/native-client elimination and measured capacity certification), and Sprint `7.34` (per-run postflight residue narrowing). Standard P gains the interim escape-path guard, whose registry is owned by Sprint `1.63`; Sprints `1.61`/`1.62` are shrink-rescoped with titles and anchors unchanged. The epoch executes before Sprints `1.61`/`1.62` as an execution-priority decision and introduces no `Blocked by` edge onto the `1.61` → `8.12` chain; the Deployment Qualification rows remain pending. |
 | 2026-07-11 | Sprint `0.16` ✅ **Done; Phases 1–8 reopened on expanded owned surfaces** — two current full-suite attempts disproved the nominal deep-readiness, gateway service-capacity, retained-authority isolation, endpoint-binding, and finally-restored-suite claims. The authoritative target now separates Bootstrap Broker, Lifecycle Authority, Target Secret Agent, and Gateway Runtime; capability operations are type-indexed and share observation/admission/execution identity; lifecycle work is durable and resumable; cleanup is an always-run DAG. Standard P makes deployment qualification revision-specific and prevents historical or point-probe evidence from authorizing a seamless/current-architecture claim. Implementation is scheduled in Sprints `1.61`–`8.12`; operational legacy rows remain Pending Removal until single-writer cutover and current-revision qualification. |
 | 2026-07-11 | Sprint `8.10` ✅ **Done; Phase 8 reclosed** — `Prodbox.Ses.Readiness` classifies the exact configured sender identity, DKIM signing state, inbound MX, active/enabled receipt rule and S3 action, and Pulumi-owned capture canary list/get capability as `Ready`, retryable `Pending`, terminal `Failed`, or `Unobservable`. The registered `aws-ses` transaction runs provider reconciliation before the bounded semantic poll and cannot reach SMTP mutation after timeout or terminal evidence; `prodbox host check-ses-readiness` exposes the same read-only prerequisite surface. Evidence: warning-clean build, Fourmolu check, focused readiness 23/23, SES transaction 8/8, lease-role 9/9, built-frontend SES fixtures 2/2, full unit 1535/1535, and CLI/env integration 49/49 each. Fresh AWS identity/DKIM/MX/rule propagation and deployed home/AWS invite aggregates remain a non-blocking Standard-O `Live-proof: pending` axis. |
 | 2026-07-10 | Sprint `5.17` ✅ **Done; Phase 5 reclosed** — `ValidationKeycloakInvite` alone derives one opaque nested retained-SES preparation plan. Its typed selected-target gateway object-store precondition precedes the exact acquire/reconcile/bounded provider-presence await/target-sync/release trace, interpreted through one call to Sprint `4.47`'s registered ensure. Home and AWS project only their selected sink; non-invite and postflight plans contain no SES mutation. Explicit authority/target coordinates, scoped EKS transport, real different-sink predecessor recovery, read-only deferred prerequisites, and retained cleanup are pinned by focused plan/recovery 10/10, target API 6/6, global target-commit 12/12, full unit 1508/1508, CLI/env integration 47/47 each, and `dev check` 0. Clean-state deployed invite runs remain a non-blocking Standard-O axis; semantic SES readiness was still assigned to Sprint `8.10` at this checkpoint and closed on 2026-07-11. |
@@ -233,14 +245,14 @@ Standard-P axis.
 
 | Phase | Name | Current status | New owner |
 |-------|------|----------------|-----------|
-| 0 | Planning and Documentation Topology for Haskell Rewrite | ✅ **Reclosed on Sprint `0.16`** after defining the physical control-plane SSoT and deployment-qualification governance. | Documentation topology and Standard P |
-| 1 | Haskell Runtime, CLI, Config, and Pulumi Foundations | 📋 **Reopened; Sprint `1.61` Planned.** Sprint `1.62` is blocked by `1.61`. | Operation-indexed capabilities, exact graph requirements, absolute deadlines, service-capacity algebra, native object-store and managed Vault-session boundaries |
-| 2 | Haskell Gateway Runtime and DNS Ownership | ⏸️ **Reopened; Sprint `2.32` blocked by `1.62`; `2.33` blocked by `2.32`.** | Single-writer emitter actor/journal, whole-transition ownership, Bootstrap Broker extraction, gateway scope reduction |
+| 0 | Planning and Documentation Topology for Haskell Rewrite | ✅ **Reclosed on Sprint `0.17`** after adopting the Foundation Epoch and the Standard P interim escape-path guard (previously reclosed on Sprint `0.16` for the physical control-plane SSoT and deployment-qualification governance). | Documentation topology and Standard P |
+| 1 | Haskell Runtime, CLI, Config, and Pulumi Foundations | 📋 **Reopened; Foundation Epoch Sprints `1.63`–`1.65` Planned; `1.66` blocked by `1.64`.** Sprint `1.61` remains Planned (shrink-rescoped); `1.62` is blocked by `1.61`. | Operation-indexed capabilities, exact graph requirements, absolute deadlines, service-capacity algebra, native object-store and managed Vault-session boundaries, conformance tier and legacy escape registry, measured capacity certification |
+| 2 | Haskell Gateway Runtime and DNS Ownership | 📋 **Reopened; Foundation Epoch Sprint `2.34` Planned.** Sprint `2.32` is blocked by `1.62`; `2.33` by `2.32`. | Single-writer emitter actor/journal, whole-transition ownership, Bootstrap Broker extraction, gateway scope reduction, compiled service boundary and latched readiness |
 | 3 | Haskell Chart Platform and Public Workload Delivery | ⏸️ **Reopened; Sprint `3.26` blocked by `2.33`.** | Separate broker/authority/agent workloads, identities, policies, probes, retained journals, and resource envelopes |
-| 4 | Lifecycle Hardening, Pulumi Decoupling, and Python Removal | ⏸️ **Reopened; Sprints `4.48`–`4.50` follow `3.26`.** | Durable Lifecycle Authority, immutable checkpoints, operation journal/outbox, target delivery, authority-epoch cutover, removal of gateway/host-direct authority |
-| 5 | Canonical Test Suite | ⏸️ **Reopened; Sprints `5.18`–`5.19` follow `4.50`.** | Capability-bound preparation, always-run cleanup DAG, CPU/queue/deadline/fault oracle |
+| 4 | Lifecycle Hardening, Pulumi Decoupling, and Python Removal | 📋 **Reopened; Foundation Epoch Sprint `4.51` Planned.** Sprints `4.48`–`4.50` follow `3.26`. | Durable Lifecycle Authority, immutable checkpoints, operation journal/outbox, target delivery, authority-epoch cutover, removal of gateway/host-direct authority, durability-indexed retained authority storage |
+| 5 | Canonical Test Suite | 📋 **Reopened; Foundation Epoch Sprint `5.20` Planned; `5.21` blocked by `1.65`.** Sprints `5.18`–`5.19` follow `4.50`. | Capability-bound preparation, always-run cleanup DAG, CPU/queue/deadline/fault oracle, derived restore graph and total executor, measured-profile recorder |
 | 6 | Final Clean-Room Rerun and Zero-Python Handoff | ⏸️ **Reopened; Sprint `6.4` blocked by `5.19`.** | Home clean-room cutover, rollback, consecutive aggregate, and zero-residue prerequisite evidence |
-| 7 | AWS Substrate Foundations | ⏸️ **Reopened; Sprint `7.33` blocked by `6.4`.** | AWS Broker/Target-Agent/Gateway parity, exact client transport to the single retained home authority, resource isolation, and prerequisite fault evidence |
+| 7 | AWS Substrate Foundations | 📋 **Reopened; Foundation Epoch Sprint `7.34` Planned.** Sprint `7.33` is blocked by `6.4`. | AWS Broker/Target-Agent/Gateway parity, exact client transport to the single retained home authority, resource isolation, prerequisite fault evidence, and per-run postflight residue narrowing |
 | 8 | Operator-Invited Email Authentication via Keycloak + AWS SES | ⏸️ **Reopened; Sprints `8.11`–`8.12` follow `7.33`.** | Durable SES provider revision, narrow mutation fence, credential generation/outbox, and invite fault campaign |
 
 Per-sprint Independent Validation, blockers, deliverables, and Documentation Requirements are
@@ -287,10 +299,13 @@ persistence, lifecycle orchestration, or cleanup invalidates a prior `proven` ro
 
 ## Current Plan Status
 
-Phase `0` is reclosed on Sprint `0.16`; Phases `1`–`8` are reopened on expanded owned surfaces.
-Sprint `1.61` is the only Planned implementation sprint because it has no unmet implementation
-dependency. Every downstream sprint is honestly Blocked by an earlier owner, never by a later
-phase. The exact chain is summarized in the Phase Overview and defined in the phase files.
+Phase `0` is reclosed on Sprint `0.17` (previously on Sprint `0.16`); Phases `1`–`8` are reopened
+on expanded owned surfaces. The Planned implementation sprints are the Foundation Epoch sprints
+(`1.63`–`1.65`, `2.34`, `4.51`, `5.20`, `7.34`) plus the shrink-rescoped Sprint `1.61`; Sprint
+`1.66` is blocked by `1.64` and `5.21` by `1.65`. Every downstream sprint is honestly Blocked by
+an earlier owner, never by a later phase. The exact chain is summarized in the Phase Overview and
+defined in the phase files, and the epoch's execution ordering is stated in the
+[Foundation Epoch](#foundation-epoch) subsection below.
 
 The current gateway-backed lifecycle implementation remains available only as the pre-cutover
 baseline. It is scheduled for removal, not extension. The target has one retained Lifecycle
@@ -481,6 +496,42 @@ marked affected are retained only to name their cutover owner:
   identity, fail-fast restore, and memory-only stability residue. Sprints `7.33` and `8.11` are the
   single removal owners for the custody cutover and credential-ownership migration respectively;
   prior completed rows are not revived.
+
+### Foundation Epoch
+
+Counterexample `LCPC-2026-07-11` froze four failure mechanisms that live at cross-artifact seams
+(Haskell ↔ chart YAML ↔ kubelet, authored numbers ↔ physics, chart-lifetime storage ↔ retained
+state, list position ↔ dependency structure) rather than inside one compiled program. Governance
+Sprint `0.17` adopts the corrective doctrine — one typed model, many generated projections — and
+registers the structural owners:
+
+- Sprint `2.34` makes hand-authored daemon route, probe, and chart-identity literals
+  unrepresentable behind one compiled route registry and chart statics, and makes readiness one
+  pure latched projection that admits only after the first proven object-store round trip.
+- Sprint `4.51` makes retained SES authority state stored through a chart-lifetime transport a
+  type error via durability-indexed coordinates and adapters, with a host-direct retained store
+  and idempotent operation records.
+- Sprint `5.20` derives restore/cleanup edges from registered chart-dependency and
+  storage-lifetime facts and replaces the fail-fast fold with a total aggregate-report executor,
+  so a sibling failure can never silently discard independent restoration.
+- Sprints `1.65` and `5.21` make authored Guaranteed-QoS envelopes measured rather than asserted:
+  committed measured-profile artifacts certify authored CPU headroom, throttle exposure, and
+  staleness inside the canonical quality gate.
+- Sprints `1.64` and `1.66` remove the gateway hot-path CPU drivers (per-call TLS manager,
+  per-request Vault login, subprocess object store) behind a shared manager, a cached
+  single-flight Vault session, and a native SigV4 client.
+- Sprint `1.63` derives the conformance tier and the machine-readable legacy escape registry so
+  cross-artifact drift and unregistered escape call sites fail `prodbox dev check` in seconds
+  (the Standard P interim escape-path guard).
+- Sprint `7.34` narrows the harness postflight residue bypass back to per-run, restoring the
+  long-lived aws-ses/public-edge-tls protection of the lifecycle preconditions.
+
+The Foundation Epoch (Sprints `1.63`–`1.66`, `2.34`, `4.51`, `5.20`, `5.21`, and `7.34`) is the
+active work front and is executed before Sprints `1.61` and `1.62` as an execution-priority
+decision; it introduces no `Blocked by` edge onto the existing `1.61` → `8.12` chain, which
+resumes unchanged once the epoch closes. The
+[Deployment Qualification](#deployment-qualification) ledger is unchanged by this adoption: both
+substrate rows remain **pending**, and nothing in the epoch claims qualification.
 
 ## Exit Definition
 

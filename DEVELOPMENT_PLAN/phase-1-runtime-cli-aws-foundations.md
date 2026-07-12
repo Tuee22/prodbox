@@ -24,13 +24,31 @@
 
 ## Phase Status
 
-📋 **Reopened for capability and temporal-capacity foundations.** Sprint `1.61` is Planned and
-ready to start. It replaces nominal readiness labels plus caller-injected arbitrary actions with
-operation-indexed capability references whose observation, admission, and execution share one
-identity. Sprint `1.62` is blocked by `1.61` and adds absolute-deadline/service-capacity algebra,
-bounded admission, a native pooled Model-B object-store client, and renewable cached Vault
-sessions. The earlier graph, readiness, and memory work remains completed evidence for its stated
-scope; it is not treated as proof of the expanded control-plane contract.
+📋 **Expanded 2026-07-12 for the Foundation Epoch (Sprints `1.63`–`1.66`).** Counterexample
+`LCPC-2026-07-11` (see [phase-5-canonical-test-suite.md](phase-5-canonical-test-suite.md)) traced
+the aggregate-suite failure mechanisms to cross-artifact seams, and governance Sprint `0.17`
+([phase-0-planning-documentation.md](phase-0-planning-documentation.md)) adopted the corrective
+epoch. Phase `1` gains four sprints: Sprint `1.63` (conformance tier and legacy escape registry —
+the Standard P interim escape-path guard), Sprint `1.64` (shared TLS manager and cached Vault
+session), Sprint `1.65` (measured capacity certification), and Sprint `1.66` (native S3
+object-store client, blocked by `1.64`). Sprints `1.61`/`1.62` are shrink-rescoped on the same
+date: the exact-readiness-evidence deliverable moves to Sprint `2.34`
+([phase-2-gateway-dns.md](phase-2-gateway-dns.md)), and the native object-store and cached
+Vault-session deliverables move to Sprints `1.66` and `1.64`. The Foundation Epoch (Sprints
+`1.63`–`1.66`, `2.34`, `4.51`, `5.20`, `5.21`, and `7.34`) is the active work front and is
+executed before Sprints `1.61` and `1.62` as an execution-priority decision; it introduces no
+`Blocked by` edge onto the existing `1.61` → `8.12` chain, which resumes unchanged once the epoch
+closes.
+
+📋 **Reopened for capability and temporal-capacity foundations.** Sprint `1.61` is Planned. It
+replaces caller-injected arbitrary actions with operation-indexed capability references whose
+observation, admission, and execution share one identity; its exact-readiness-evidence deliverable
+is rescoped to Sprint `2.34` (2026-07-12). Sprint `1.62` is blocked by `1.61` and adds
+absolute-deadline/service-capacity algebra, bounded admission, and pinned closed native
+IAM/STS/Route53/ServiceQuotas clients; its native object-store and cached Vault-session
+deliverables are rescoped to Sprints `1.66` and `1.64` (2026-07-12). The earlier graph, readiness,
+and memory work remains completed evidence for its stated scope; it is not treated as proof of the
+expanded control-plane contract.
 
 ✅ **Reclosed 2026-07-10 on runtime-memory representability.** Sprint `1.60` now separates authored
 admission/containment from bounded process demand. `capacity.runtime_memory_profiles` binds an
@@ -3929,6 +3947,13 @@ operation. Fakes exercise the interpreter boundary without Kubernetes, AWS, or a
 `documents/engineering/prerequisite_dag_system.md`, and
 `documents/engineering/haskell_code_guide.md`
 
+> **Scope note (2026-07-12)**: the exact-readiness-evidence deliverable — replacing
+> `ProbeBackendRoundTrip`'s nominal ranking with operation-specific contracts and readiness-evidence
+> classification for the kubelet-facing surface — is rescoped to Sprint `2.34`
+> ([phase-2-gateway-dns.md](phase-2-gateway-dns.md)). Sprint `1.61` retains the operation-indexed
+> capability universe, admission tickets, component-graph lowering, writer permits/committed
+> intents, and the `--show-secrets` removal.
+
 ### Objective
 
 Replace nominal component readiness and caller-injected arbitrary `IO` actions with an indexed
@@ -3954,8 +3979,6 @@ and admission evidence.
 - Require consumers to receive one handle rather than separately supplied probe and execution
   coordinates; there is no conversion between retained authority, target-secret, gateway-mesh,
   Vault, or object-store capabilities.
-- Replace `ProbeBackendRoundTrip`'s nominal ranking with operation-specific contracts such as
-  conditional put/read-back, authority CAS, target-secret CAS, and gateway-mesh admission.
 - Keep external observations flat and exhaustive. Pure classifiers decide `Ready`, `Pending`,
   `Failed`, or `Unobservable`; only a matching fresh `Ready` value may produce an
   `AdmissionTicket kind`.
@@ -3984,7 +4007,8 @@ and admission evidence.
 ### Remaining Work
 
 - Implement the indexed foundation and migrate the generic graph/interpreter seam.
-- Sprint `1.62` consumes the handle algebra for temporal admission and native client sessions.
+- Sprint `1.62` consumes the handle algebra for temporal admission; Sprints `1.64` and `1.66`
+  consume it for the cached Vault session and the native object-store client.
 
 ## Documentation Requirements
 
@@ -4011,24 +4035,27 @@ and admission evidence.
 **Status**: Blocked
 **Deployment qualification**: pending
 **Implementation**: planned `src/Prodbox/ControlPlane/Capacity.hs`,
-`src/Prodbox/ControlPlane/Deadline.hs`, a native `Prodbox.ObjectStore` interpreter, a managed
-`Prodbox.Vault.Session` interpreter, pinned native in-memory AWS IAM/S3/STS/Route53/
+`src/Prodbox/ControlPlane/Deadline.hs`, pinned native in-memory AWS IAM/STS/Route53/
 ServiceQuotas clients, config/schema projections, and focused tests
 **Blocked by**: Sprint `1.61`
-**Independent Validation**: fake clocks, deterministic queue simulations, and in-process fake
-S3/Vault servers prove deadline, admission, pooling, and renewal behavior without a cluster, AWS,
-or a later phase.
+**Independent Validation**: fake clocks, deterministic queue simulations, and fake AWS protocol
+servers prove deadline, admission, and native-client behavior without a cluster, AWS, or a later
+phase.
 **Docs to update**: `documents/engineering/lifecycle_control_plane_architecture.md`,
 `documents/engineering/resource_scaling_doctrine.md`,
-`documents/engineering/haskell_code_guide.md`,
-`documents/engineering/vault_doctrine.md`, and
+`documents/engineering/haskell_code_guide.md`, and
 `documents/engineering/dependency_management.md`
+
+> **Scope note (2026-07-12)**: the pooled native S3 object-store client deliverable is rescoped to
+> Sprint `1.66` and the renewable cached Vault Kubernetes-auth session deliverable to Sprint
+> `1.64`. Sprint `1.62` retains the absolute deadline algebra, `ServiceCapacityPlan`, bounded FIFO
+> admission, native IAM/STS/Route53/ServiceQuotas client pinning, and Pulumi confinement.
 
 ### Objective
 
-Represent temporal capacity and session lifetime as validated data so queueing plus execution must
-fit one caller deadline, and remove Python/AWS-CLI process startup plus fresh Vault login from each
-Model-B request.
+Represent temporal capacity as validated data so queueing plus execution must fit one caller
+deadline, and pin closed native AWS service clients so credential-provisioning and quota actions
+never invoke the `aws` CLI.
 
 ### Deliverables
 
@@ -4041,11 +4068,7 @@ Model-B request.
   service-capacity proof.
 - Provide bounded FIFO admission with immediate structured overload rejection when work cannot
   finish before its deadline; timed-out callers cancel queued or active work cooperatively.
-- Implement pooled native S3-compatible GET/PUT/conditional-write/delete/list operations for the
-  Model-B MinIO path with no temporary body files or `aws s3api` subprocess.
-- Implement a renewable cached Vault Kubernetes-auth session with explicit expiry, single-flight
-  refresh, sealed/revoked classification, and redacted in-memory credential custody.
-- Pin the required native Haskell AWS client/service packages and expose closed IAM/S3/STS/
+- Pin the required native Haskell AWS client/service packages and expose closed IAM/STS/
   Route53/ServiceQuotas interpreters that accept only a validated linear in-memory credential
   handle. Credential Provisioner and quota actions never invoke `aws`, profiles, temp files, or Pod
   credential env vars. Pulumi remains confined to the isolated Provider Worker for normal
@@ -4058,13 +4081,10 @@ Model-B request.
 1. Deadline properties prove no child can outlive or extend the parent budget; authority-clock
    restart/regression/unobservability tables prove downtime cannot reset a durable deadline.
 2. Queue simulations cover saturation, fairness, cancellation, deadline expiry, and recovery.
-3. Native object-store contract tests cover ETag/version CAS, applied-but-response-lost outcomes,
-   read-back, and transport failure.
-4. Vault-session tests cover renewal, expiry, revocation, seal transitions, and concurrent refresh.
-5. Fake AWS protocol tests cover IAM create-response loss, S3 backup policy drift, STS scope,
-   Route53 exact records, quota request/status read-back, and absence of CLI/profile/env/temp-file
-   credential seams in native provisioners.
-6. Config generation/validation, unit/integration suites, and `prodbox dev check` pass.
+3. Fake AWS protocol tests cover IAM create-response loss, STS scope, Route53 exact records,
+   quota request/status read-back, and absence of CLI/profile/env/temp-file credential seams in
+   native provisioners.
+4. Config generation/validation, unit/integration suites, and `prodbox dev check` pass.
 
 ### Remaining Work
 
@@ -4076,14 +4096,13 @@ Model-B request.
 
 **Engineering docs to create/update:**
 
-- `documents/engineering/lifecycle_control_plane_architecture.md` - deadline, capacity, native
-  object-store, and managed-session contracts.
+- `documents/engineering/lifecycle_control_plane_architecture.md` - deadline and capacity
+  contracts.
 - `documents/engineering/resource_scaling_doctrine.md` - temporal service-capacity lemmas.
-- `documents/engineering/haskell_code_guide.md` - absolute deadlines, cancellation, pools, and
-  session managers.
-- `documents/engineering/vault_doctrine.md` - renewable Kubernetes-auth session custody.
-- `documents/engineering/dependency_management.md` - selected/pinned native S3 and AWS service
-  client packages.
+- `documents/engineering/haskell_code_guide.md` - absolute deadlines, cancellation, and bounded
+  admission.
+- `documents/engineering/dependency_management.md` - selected/pinned native AWS service client
+  packages.
 
 **Product docs to create/update:**
 
@@ -4092,6 +4111,253 @@ Model-B request.
 **Cross-references to add:**
 
 - Cross-link runtime memory and service capacity as separate necessary proofs.
+
+## Sprint 1.63: Conformance Tier and Legacy Escape Registry [📋 Planned]
+
+**Status**: Planned
+**Deployment qualification**: pending
+**Implementation**: planned `src/Prodbox/Legacy/EscapeRegistry.hs`, conformance-tier wiring in
+`src/Prodbox/CheckCode.hs`
+**Independent Validation**: pure registry↔source bijection tables and unit tests; no cluster, no
+later-phase dependency.
+**Docs to update**: `documents/engineering/code_quality.md`,
+`documents/engineering/unit_testing_policy.md`
+
+### Objective
+
+Make cross-artifact drift fail `prodbox dev check` in seconds rather than surfacing in the
+multi-hour aggregate suite, and enumerate every legacy escape call site in a machine-readable
+registry so escape-path drift fails the build.
+
+### Deliverables
+
+- Add the conformance-tier check family surface in `CheckCode.hs` under the canonical quality
+  gate: pre-cluster, seconds-fast suites proving cross-artifact agreement run as part of
+  `prodbox dev check`.
+- Add `src/Prodbox/Legacy/EscapeRegistry.hs` — a machine-readable registry of every legacy escape
+  call site (gateway-hosted authority routes, the shared operational AWS credential, host-direct
+  Vault/MinIO seams, `aws` CLI subprocess object-store sites, per-request Vault logins) with a
+  source scan that must match the registry bijectively: an unregistered new call site fails the
+  build, and a registry entry with no surviving call site fails the build.
+- Implement the [Standard P](development_plan_standards.md) interim escape-path guard: while
+  operational legacy rows remain in `Pending Removal`, the registry is consumed by
+  `prodbox dev check`; qualification remains non-blocking, escape-path drift is not.
+
+### Validation
+
+1. Pure unit tables prove the registry↔source bijection in both directions (an unregistered new
+   call site fails; a registry entry with no surviving call site fails).
+2. Seeding the registry from the current call sites leaves `prodbox dev check` green.
+3. `prodbox test unit` and `prodbox dev check` pass.
+
+### Remaining Work
+
+- Implement the conformance tier and seed the registry from the current call sites.
+- Later Foundation Epoch sprints (`2.34`, `4.51`, `5.20`) add their conformance suites under this
+  tier as they land.
+
+## Documentation Requirements
+
+**Engineering docs to create/update:**
+
+- `documents/engineering/code_quality.md` - the escape-registry bijection check and
+  conformance-tier check families under "Generated Artifacts" and "Forbidden Surfaces"; the
+  in-code registries remain the SSoT.
+- `documents/engineering/unit_testing_policy.md` - the pre-cluster, seconds-fast conformance
+  tier.
+
+**Product docs to create/update:**
+
+- None.
+
+**Cross-references to add:**
+
+- [development_plan_standards.md](development_plan_standards.md) Standard P (interim escape-path
+  guard) names Sprint `1.63` as the registry owner; adoption is governed by Sprint `0.17`
+  ([phase-0-planning-documentation.md](phase-0-planning-documentation.md)).
+
+## Sprint 1.64: Shared TLS Manager and Cached Vault Session [📋 Planned]
+
+**Status**: Planned
+**Deployment qualification**: pending
+**Implementation**: planned revisions to `src/Prodbox/Http/Client.hs`; planned
+`src/Prodbox/Vault/Session.hs`; `resolveGatewayVaultTokenFor` wiring in
+`src/Prodbox/Gateway/Daemon.hs`
+**Independent Validation**: unit tests for single-flight refresh, monotonic expiry,
+sealed/revoked classification, and 403 invalidate-and-relogin against a fake Vault boundary; no
+cluster required.
+**Docs to update**: `documents/engineering/haskell_code_guide.md`,
+`documents/engineering/vault_doctrine.md`
+
+### Objective
+
+Remove two of the three gateway hot-path CPU drivers behind counterexample `LCPC-2026-07-11`: the
+new TLS manager constructed per HTTP call and the fresh Vault Kubernetes login performed per
+request.
+
+### Deliverables
+
+- One shared TLS `Manager` as a module-local singleton; the per-call `newManager` construction is
+  deleted.
+- A cached renewable Vault Kubernetes-auth session: the token is held with monotonic expiry,
+  renewed at two-thirds TTL, refreshed single-flight, sealed/revoked outcomes are classified as
+  structured errors, and a 403 triggers exactly one invalidate-and-relogin. The daemon consults
+  the session through `resolveGatewayVaultTokenFor` instead of performing a fresh login per
+  request.
+- Scope moved here from Sprint `1.62`, which retains the deadline and service-capacity algebra.
+
+### Validation
+
+1. Unit suites cover single-flight refresh, monotonic expiry, sealed/revoked classification, and
+   the single 403 invalidate-and-relogin against a fake Vault boundary.
+2. `prodbox test unit` and `prodbox dev check` pass.
+3. The measured CPU reduction is recorded later by Sprint `5.21`
+   ([phase-5-canonical-test-suite.md](phase-5-canonical-test-suite.md)); it is not a closure gate
+   for this sprint.
+
+### Remaining Work
+
+- Implement the shared manager and the cached session.
+- Sprint `1.66` builds the native object-store client over the shared manager.
+
+## Documentation Requirements
+
+**Engineering docs to create/update:**
+
+- `documents/engineering/haskell_code_guide.md` - the shared singleton HTTP manager replacing
+  per-call construction.
+- `documents/engineering/vault_doctrine.md` - the cached renewable Kubernetes-auth session
+  (single-flight refresh, sealed/revoked classification).
+
+**Product docs to create/update:**
+
+- None.
+
+**Cross-references to add:**
+
+- [legacy-tracking-for-deletion.md](legacy-tracking-for-deletion.md) Pending Removal rows for the
+  per-call TLS manager construction and the per-request Vault login name Sprint `1.64` as owner.
+
+## Sprint 1.65: Measured Capacity Certification [📋 Planned]
+
+**Status**: Planned
+**Deployment qualification**: pending
+**Implementation**: planned `src/Prodbox/Capacity/MeasuredProfile.hs`, additions to
+`dhall/capacity/Schema.dhall` and `src/Prodbox/Capacity/Config.hs`, interim gateway envelope
+revision in the generated config schema surface
+**Independent Validation**: pure decode/validation tables for the profile algebra; check behavior
+proven with fixture profiles; no cluster required.
+**Docs to update**: `documents/engineering/resource_scaling_doctrine.md`
+
+### Objective
+
+Make authored Guaranteed-QoS envelopes honest by certifying them against measured demand.
+Guaranteed QoS is retained per operator decision (2026-07-12); authored `request == limit`
+equality remains valid — zero-headroom authoring without certification is the defect being
+removed.
+
+### Deliverables
+
+- A `MeasuredResourceProfile` Dhall type (all-Natural fields; ratios in parts per million) with
+  committed artifacts under `dhall/capacity/measured/<profile>.dhall`.
+- A pure reader/validator wired into `prodbox dev check` that fails when an authored CPU value is
+  below measured p99 × 4/3 headroom, when `throttled_periods_ppm` exceeds 20000 while a CPU cap
+  is authored, or when the profile is stale (hot-path source digest mismatch or older than 30
+  days). Comparisons are one-sided, so measured improvement never fails the check.
+- An interim authored gateway envelope revision from 250m to 750m (request == limit; Guaranteed
+  QoS retained) until the first committed profile activates the check.
+
+### Validation
+
+1. Pure decode/validation tables cover the profile algebra and every certification rule
+   (headroom, throttle ppm ceiling, staleness digest/age) with fixture profiles.
+2. One-sided comparison tables prove a measured improvement never fails the check.
+3. `prodbox config generate`/`config validate`, `prodbox test unit`, and `prodbox dev check`
+   pass.
+
+### Remaining Work
+
+- Implement the profile algebra, the certification check, and the interim 750m envelope revision.
+- The recorder and the first committed gateway profile — which activates this certification
+  check — are owned by Sprint `5.21`
+  ([phase-5-canonical-test-suite.md](phase-5-canonical-test-suite.md)).
+
+## Documentation Requirements
+
+**Engineering docs to create/update:**
+
+- `documents/engineering/resource_scaling_doctrine.md` - the "Measured Resource Profiles"
+  section: artifact home, all-Natural fields, certification rules, staleness and one-sided
+  comparison semantics, recorder gate, and the uncertified-until-first-profile bootstrap rule.
+
+**Product docs to create/update:**
+
+- None.
+
+**Cross-references to add:**
+
+- Sprint `5.21` records the first committed profile; the equality-permitting-validation deletion
+  row in [legacy-tracking-for-deletion.md](legacy-tracking-for-deletion.md) names Sprint `1.65`
+  as owner.
+
+## Sprint 1.66: Native S3 Object-Store Client [⏸️ Blocked]
+
+**Status**: Blocked
+**Blocked by**: Sprint `1.64`
+**Deployment qualification**: pending
+**Implementation**: planned `src/Prodbox/Aws/SigV4.hs` and
+`src/Prodbox/Minio/ObjectStoreNative.hs`
+**Independent Validation**: SigV4 property tests against published AWS test vectors; contract
+tests running the native and subprocess paths against the MinIO fixture and requiring identical
+taxonomies (absence, conditional-put conflict); no cluster required.
+**Docs to update**: `documents/engineering/haskell_code_guide.md`
+
+### Objective
+
+Remove the third gateway hot-path CPU driver behind counterexample `LCPC-2026-07-11`: the `aws`
+CLI subprocess (and its per-operation temp-file bodies) under every Model-B object-store
+operation.
+
+### Deliverables
+
+- Pure SigV4 signing in `src/Prodbox/Aws/SigV4.hs`.
+- Native get/put/conditional-put/list in `src/Prodbox/Minio/ObjectStoreNative.hs` over the shared
+  `Manager` from Sprint `1.64` (hence the block), with in-memory bodies and no temporary body
+  files.
+- ETag conditional semantics preserved (`If-Match`/`If-None-Match`).
+- The subprocess path stays config-selectable for one release as rollback, then flows through the
+  deletion ledger.
+- Scope moved here from Sprint `1.62`. No new dependencies: the repository already ships
+  `http-client-tls`, `tls`, `crypton`, and `cryptohash-sha256`.
+
+### Validation
+
+1. SigV4 property tests pass against the published AWS test vectors.
+2. Contract tests run the native and subprocess paths against the MinIO fixture and require
+   identical outcome taxonomies (absence, conditional-put conflict).
+3. `prodbox test unit` and `prodbox dev check` pass.
+
+### Remaining Work
+
+- Blocked until Sprint `1.64` supplies the shared TLS `Manager`.
+- After one release with the config-selectable subprocess fallback, the fallback's removal flows
+  through [legacy-tracking-for-deletion.md](legacy-tracking-for-deletion.md).
+
+## Documentation Requirements
+
+**Engineering docs to create/update:**
+
+- `documents/engineering/haskell_code_guide.md` - the native SigV4 object-store client over the
+  shared manager and the in-memory body discipline.
+
+**Product docs to create/update:**
+
+- None.
+
+**Cross-references to add:**
+
+- [legacy-tracking-for-deletion.md](legacy-tracking-for-deletion.md) Pending Removal row for the
+  `aws` CLI subprocess object-store path names Sprint `1.66` as owner.
 
 ## Related Documents
 

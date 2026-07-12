@@ -107,6 +107,21 @@ Forbidden program shapes include:
 - a free-form operation name interpreted by string comparison; and
 - a program whose interpreter may execute effects not represented by its constructors.
 
+### 1.4 One typed model, many generated projections
+
+A contract that crosses a compilation or serialization boundary — a chart YAML value, a Dhall
+mirror, an HTTP route path, a probe endpoint, an object name — is single-sourced in one compiled
+value and generated outward. The server dispatcher, client URL construction, chart probe and
+statics rendering, and response goldens are projections of that value, not independent authors of
+it. Where a consumer cannot yet be generated, a seconds-fast conformance check proves the
+hand-authored copy equal to the compiled source before any cluster work runs; those suites belong
+to the conformance tier of the [Unit Testing Policy](./unit_testing_policy.md).
+
+An invariant that exists only as prose is a defect. A comment asserting that two artifacts agree,
+a substring lint coupling a server route table to a chart probe path, or a hand-maintained mirror
+of a compiled registry provides no proof and drifts silently; each is replaced by generation from
+the single typed model or by a conformance check that fails the canonical quality gate.
+
 ## 2. Domain Modeling
 
 ### 2.1 Prefer ADTs over strings
@@ -145,6 +160,32 @@ renderLifecycleAction action =
 - Text, JSON, CBOR, HTTP, and subprocess output are decoded once into typed observations.
 - Execution receives validated identities and coordinates rather than checking raw strings again.
 - Invalid, corrupt, missing, and unobservable are distinct when they imply different decisions.
+
+### 2.4 Durability-indexed coordinates
+
+When stored objects outlive different scopes — a chart release, the cluster, the fleet — the
+lifetime class is a phantom index on both the storage coordinate and the adapter that reaches it:
+
+```haskell
+-- Example: lifetime index shared by coordinate and adapter; the exemplar is `StoreLifetime`.
+data StoreLifetime = ChartLifetime | ClusterRetained | CrossClusterDurable
+
+putIfVersion
+  :: StoreAdapter lifetime m
+  -> ObjectCoordinate lifetime
+  -> ObjectVersion
+  -> ByteString
+  -> m (Either StoreFailure ConditionalWriteResult)
+```
+
+Smart constructors partition the object namespace by lifetime, so one coordinate cannot be minted
+in two classes. An adapter carries the lifetime it honestly provides: a transport that dies with a
+chart release is `ChartLifetime`, and storing retained-or-stronger state through it is a type
+error rather than a runtime review finding. The concrete instance indexes the Model-B object
+coordinates and CAS adapters; the retained-custody topology is owned by
+[Lifecycle Control-Plane Architecture](./lifecycle_control_plane_architecture.md), and
+implementation is owned by the [Development Plan](../../DEVELOPMENT_PLAN/README.md)
+(Sprint `4.51`).
 
 ## 3. State, Decisions, and Evolution
 

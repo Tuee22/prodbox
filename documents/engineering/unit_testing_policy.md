@@ -103,6 +103,7 @@ must not change domain decisions. Direct `threadDelay` for race coordination is 
 | Category | What it proves | Canonical location |
 |----------|----------------|--------------------|
 | Pure unit tables | Parsing, validation, ADTs, graph rejection, `decide`/`evolve`, admission, deadline, cleanup scheduling | `test/unit/` |
+| Conformance tier | Cross-artifact agreement between compiled registries and their projections | `prodbox-unit` plus the canonical quality gate |
 | Parser tests | `argv -> Command` via `execParserPure`, including rejection | `test/unit/Parser.hs` |
 | Property tests | Codec/replay/idempotency/monotonicity/bounds/deadline laws | `prodbox-unit` |
 | Deterministic concurrency simulation | Actor interleavings, saturation, cancellation, restart, response loss | dedicated pure/simulation test module |
@@ -117,6 +118,30 @@ must not change domain decisions. Direct `threadDelay` for race coordination is 
 The canonical named-validation inventory is defined in `src/Prodbox/TestValidation.hs`; phase and
 substrate coverage are defined by `TestPlan` and
 [DEVELOPMENT_PLAN/substrates.md](../../DEVELOPMENT_PLAN/substrates.md), not duplicated here.
+
+## The Conformance Tier
+
+The conformance tier is the pre-cluster, seconds-fast suite family that proves cross-artifact
+agreement. A contract that crosses a compilation or serialization boundary — an HTTP route path, a
+chart probe or values projection, a restore-graph edge, a residue policy, a resource envelope — is
+single-sourced in a compiled value; the conformance tier proves every projection of that value
+still agrees with its source. Cross-artifact drift fails the canonical quality gate
+(`prodbox dev check`) in seconds; it is not deferred to the multi-hour aggregate suite.
+
+Conformance suites use only pure values and interpreter-boundary fakes. They prove, at minimum:
+
+- route-registry non-overlap and route round-trip;
+- deployed chart values versus compiled statics equality;
+- restore-graph coverage, independence, and orphan scans;
+- durable CAS taxonomy against in-memory fakes;
+- operation-record crash/replay resolution;
+- residue-policy decision tables; and
+- measured-profile certification against fixture profiles.
+
+The planned suites are `GatewayBoundarySpec`, `RestoreGraphTotality`, `StoreLifetimePartition`,
+`RetainedAuthorityStoreCas`, `OperationRecordResolution`, and `HarnessResiduePolicy`. Suite
+ownership and status live in the [Development Plan](../../DEVELOPMENT_PLAN/README.md) (Sprints
+`1.63`, `2.34`, `4.51`, `5.20`, and `7.34`).
 
 ## 3. Pure and Property Tests
 

@@ -64,8 +64,12 @@ usable credential generation. Missing or unobservable credentials refuse the eff
 native Route 53 request starts.
 
 Kubernetes `/healthz` and `/readyz` probes are constant-time projections over lifecycle flags.
-Restart/OOM/high-water stability is a separate, time-windowed external observation; a point-in-time
-`StatefulSet Ready=True` result is not stability proof.
+Kubelet-facing readiness is one pure latched projection over phase, object-store-session, and
+worker inputs: it admits only after the first proven object-store round trip since boot, the proof
+is latched by the continuity loop rather than performed in the probe handler, and a later transient
+backend degradation does not clear the latch. An unconditional serve-start readiness write is a
+superseded defect. Restart/OOM/high-water stability is a separate, time-windowed external
+observation; a point-in-time `StatefulSet Ready=True` result is not stability proof.
 
 This doctrine covers the Haskell distributed gateway daemon only. The Kubernetes Gateway API
 public-edge controller target is owned separately by
@@ -844,17 +848,20 @@ The gateway REST listener also exposes daemon-health endpoints on the same in-po
 
 - `/healthz` is a constant-time read of the process-alive lifecycle flag and returns `200 ok` while
   the listener can serve.
-- `/readyz` is a constant-time cached admission projection and returns `200 ready` only after the
-  daemon enters `serve`, its managed gateway sessions and emitter actor are usable, and documented
-  queue lanes can admit work; after SIGTERM or SIGINT it returns `503 draining` during the bounded
+- `/readyz` is a constant-time read of one pure latched readiness projection and returns
+  `200 ready` only after the daemon enters `serve`, its managed gateway sessions and emitter actor
+  are usable, documented queue lanes can admit work, and the first object-store round trip since
+  boot has been proven and latched by the continuity loop; a later transient backend degradation
+  does not clear the latch. After SIGTERM or SIGINT it returns `503 draining` during the bounded
   drain window.
 - `/metrics` emits Prometheus exposition text from `envMetrics`, including bounded signed-replay and
   semantic-member gauges plus peer-connectivity and heartbeat-age gauges.
 
 Neither health endpoint may inspect or sort semantic state, encode `/v1/state`, contact Vault,
-MinIO, Route 53, or peers, or spawn a subprocess. `/readyz` is only a cached projection of the
-Gateway Runtime's managed sessions, emitter actor, and queue admission; it makes no nominal backend
-claim. A dependency requirement is resolved to an operation-indexed `CapabilityRef`, and that same
+MinIO, Route 53, or peers, or spawn a subprocess. `/readyz` is only a cached read of the latched
+readiness projection over the Gateway Runtime's phase, object-store-session, and worker inputs;
+the round-trip proof is latched outside the handler, and deep diagnostics stay on the state
+route. A dependency requirement is resolved to an operation-indexed `CapabilityRef`, and that same
 opaque reference is used for observation, admission, and execution—never a separately injected
 probe endpoint. Sustained restart/OOM stability is observed by the test harness over a window.
 These are distinct facts; the capability and readiness algebra is owned by
@@ -864,6 +871,12 @@ These are distinct facts; the capability and readiness algebra is owned by
 These constant-time endpoints landed in Sprint `2.10`; Sprint `2.31` preserved their independence
 and added a source regression guard proving that state traversal, sorting, or encoding cannot enter
 either route.
+
+The latched readiness projection supersedes the earlier unconditional serve-start readiness write.
+Readiness is computed as one pure projection over phase, object-store-session, and worker inputs;
+the lifecycle gate keeps its end-to-end object-store round trip and gains a `/readyz` precheck, so
+lifecycle-ready implies kubelet-ready by construction. Implementation is owned by Sprint `2.34` in
+the [Development Plan](../../DEVELOPMENT_PLAN/README.md).
 
 Filesystem readiness markers and `sd_notify` are not supported readiness signals. The
 `prodbox-daemon-lifecycle` Cabal stanza starts the real `prodbox gateway start` process, waits on
@@ -1188,7 +1201,10 @@ and `withAsync`:
   side effects — DB connections, file locks, message-broker consumer
   registrations — are released even on crash.
 - **Readiness signaling** is HTTP `/readyz`. Every daemon exposes it; it
-  returns 200 once startup completes and 503 during startup or drain.
+  returns 200 only while the daemon's readiness projection admits —
+  startup complete plus any latched backend proof the daemon's doctrine
+  requires (the gateway latches the first proven object-store round trip
+  since boot) — and 503 during startup or drain.
   Filesystem readiness markers and `sd_notify(READY=1)` are forbidden.
   `threadDelay` "wait long enough" probes are forbidden. Polling logs for
   a ready string is forbidden.
@@ -1251,7 +1267,7 @@ the top-level supervisor, which begins drain and exits.
   without rethreading.
 - Health endpoints. Every daemon exposes both:
   - `/healthz` (liveness) — 200 when the process is alive.
-  - `/readyz` (readiness) — 200 only after startup completes; 503 during drain.
+  - `/readyz` (readiness) — 200 only while the readiness projection admits; 503 during drain.
 - Metrics. Every daemon exposes `/metrics` in Prometheus exposition format.
 
 ### Structured logging field helpers

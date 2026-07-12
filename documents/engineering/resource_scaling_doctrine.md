@@ -311,6 +311,13 @@ workload mix, resource requests/limits, and background rates as the deployed com
 inferred from requested millicores. The authored CPU request reserves scheduler capacity; a hard
 CPU limit contains demand but can introduce CFS throttling and therefore does not prove latency.
 
+That throttling acknowledgment and the Guaranteed-QoS mandate below are reconciled explicitly, by
+operator decision (2026-07-12): Guaranteed QoS is retained — the answer to CFS-throttling risk is
+never CPU-limit removal. Honesty comes from measured certification instead: an authored CPU value
+under a hard cap must be certified against the committed measured profile for its workload (§2F).
+Equality `request == limit` remains valid; zero-headroom authoring without certification is the
+defect.
+
 Every execution lane has a bounded queue and an explicit saturation result. Admission rejects
 immediately when the lane cannot meet the caller's monotonic absolute deadline. Queue wait,
 credential refresh, external I/O, read-back, and response serialization consume that one deadline;
@@ -351,6 +358,46 @@ projection. It cannot qualify the redesigned control plane until CPU, service-ra
 and latency evidence is present. Qualification uses composition, load, and chaos tests described by
 [Unit Testing Policy](./unit_testing_policy.md) and the current-revision gate in
 [Development Plan Standard P](../../DEVELOPMENT_PLAN/development_plan_standards.md#p-deployment-qualification-and-counterexample-closure).
+
+## 2F. Measured Resource Profiles
+
+Authored Guaranteed-QoS envelopes are certified against **measured demand**, not trusted on
+authorship. The committed measurement artifact is a `MeasuredResourceProfile`, one per profile id,
+living at `dhall/capacity/measured/<profile>.dhall`. Every field is a `Natural` (ratios are
+parts-per-million), so certification stays inside the same all-Natural comparison algebra as §2:
+
+- identity and provenance: `profile_id`, `recorded_at`, `hot_path_digest`
+- sampling evidence: `sample_window_seconds`, `sample_count`
+- CPU demand: `cpu_p95_milli`, `cpu_p99_milli`, `throttled_periods_ppm`
+- memory demand: `rss_high_water_mib`, `heap_high_water_bytes`
+- backend latency: `object_store_op_p99_millis`
+
+**Certification rules.** A pure reader/validator wired into `prodbox dev check` fails the canonical
+quality gate when, for a workload whose profile id has a committed profile:
+
+- the authored CPU value is below measured `cpu_p99_milli` × 4/3 headroom;
+- `throttled_periods_ppm` exceeds 20000 while any CPU cap is authored; or
+- the measured memory high-water × 4/3 exceeds the authored memory limit.
+
+**Staleness.** A profile whose `hot_path_digest` no longer matches the hot-path source, or whose
+`recorded_at` is older than 30 days, fails certification. The remedy the failure names is
+re-recording the profile from a fresh qualifying run — never hand-editing the committed artifact.
+
+**One-sided comparisons.** Every comparison is one-sided against authored generosity: a measured
+improvement (lower p99, less throttle, a lower high-water mark) never fails the check. Shrinking
+an envelope toward better measurements is an authored decision, not an automatic obligation.
+
+**Recorder gate.** A profile artifact is written only by the recorder, and only from a healthy
+run: the run-wide absorbing failure fold of §2D–§2E clean, a steady window of at least thirty
+minutes, and at least 300 samples. An unhealthy run or a short window refuses to record.
+
+**Bootstrap rule.** The certification check activates for a profile id when the first profile for
+that id is committed. Until the first committed gateway profile lands, the interim authored
+gateway envelope (750m, `request == limit`, Guaranteed QoS retained) is recorded as
+uncertified-until-first-profile — an explicitly tracked interim value, not a certified one.
+
+Implementation is owned by Sprints `1.65` and `5.21`; status lives in the
+[Development Plan](../../DEVELOPMENT_PLAN/README.md).
 
 ## 3. `ScalingPolicy` Indexed by Substrate Elasticity
 
@@ -486,6 +533,7 @@ This is the data-oriented "make illegal authored states unrepresentable" answer,
 scaling state machine: the budget lemmas (§2) forbid authored over-commit at typecheck, the
 resource-governor lemmas (§2A–§2C) forbid missing pod envelopes and over-reserved clusters, the
 runtime plan and observations (§2D–§2E) bound memory and service demand and detect implementation breach,
+the measured profiles (§2F) certify authored Guaranteed-QoS envelopes against recorded demand,
 the substrate index (§3) forbids illegal elasticity, and the fail-closed gates (§4–§6) forbid
 acting on unobserved capacity.
 

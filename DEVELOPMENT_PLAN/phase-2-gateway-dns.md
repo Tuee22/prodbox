@@ -21,6 +21,21 @@
 
 ## Phase Status
 
+📋 **Expanded 2026-07-12 with the Foundation Epoch's phase-2 slice.** Sprint `2.34` (Planned;
+registered by governance Sprint `0.17` in
+[phase-0-planning-documentation.md](phase-0-planning-documentation.md) for counterexample
+`LCPC-2026-07-11`, mechanism `F-READY`) adds the compiled service boundary and latched readiness
+surface: a closed `GatewayRoute` registry as the one place any daemon path string exists, with the
+dispatcher, clients, and chart probe rendering as projections; one pure latched readiness
+projection whose admission requires the first proven object-store round trip since boot; and a
+`GatewayChartStatics` record feeding the deployed values and generated port/identity sections. It
+absorbs the exact-readiness-evidence deliverable rescoped out of Sprint `1.61` (see
+[phase-1-runtime-cli-aws-foundations.md](phase-1-runtime-cli-aws-foundations.md)). The Foundation
+Epoch (Sprints `1.63`–`1.66`, `2.34`, `4.51`, `5.20`, `5.21`, and `7.34`) is the active work front
+and is executed before Sprints `1.61` and `1.62` as an execution-priority decision; it introduces
+no `Blocked by` edge onto the existing `1.61` → `8.12` chain, which resumes unchanged once the
+epoch closes. Sprints `2.32`/`2.33` and their `Blocked by` edges are unchanged.
+
 ⏸️ **Reopened and blocked by Sprint `1.62`.** Sprint `2.32` replaces the global child-process
 permit and interleavable continuity loops with one bounded single-writer emitter actor that owns an
 entire durable transition under one absolute deadline. Sprint `2.33`, blocked by `2.32`, extracts
@@ -2978,6 +2993,89 @@ initialization or unseal.
 **Cross-references to add:**
 
 - Link Sprint `3.26` as chart rendering adoption without making this phase depend on Phase 3.
+
+## Sprint 2.34: Compiled Service Boundary and Latched Readiness [📋 Planned]
+
+**Status**: Planned
+**Deployment qualification**: pending
+**Implementation**: planned `src/Prodbox/Gateway/Routes.hs`, `src/Prodbox/Gateway/Readiness.hs`,
+`src/Prodbox/Gateway/ChartStatics.hs`; revisions to `src/Prodbox/Gateway/Daemon.hs`,
+`src/Prodbox/Gateway/Probe.hs`, `src/Prodbox/Gateway/Client.hs`,
+`src/Prodbox/Lib/ChartPlatform.hs`, `src/Prodbox/CheckCode.hs`, and `src/Prodbox/TestRestore.hs`
+**Independent Validation**: pure route-registry non-overlap/round-trip tables; a conformance spec
+proving deployed helm values equal the compiled registry/statics projections; readiness projection
+tables; all pre-cluster.
+**Docs to update**: `documents/engineering/lifecycle_control_plane_architecture.md`,
+`documents/engineering/helm_chart_platform_doctrine.md`,
+`documents/engineering/distributed_gateway_architecture.md`, and
+`documents/engineering/bootstrap_readiness_doctrine.md`
+
+### Objective
+
+Close the `F-READY` mechanism of counterexample `LCPC-2026-07-11` structurally: make every
+kubelet-facing gateway service contract a projection of one compiled route registry, and collapse
+the divergent readiness notions into a single pure latched projection.
+
+### Deliverables
+
+- Define a closed `GatewayRoute` ADT (`Enum`/`Bounded`); `routePattern` is the one place any daemon
+  path string exists, and `routeClass` distinguishes liveness, readiness, diagnostic, and RPC
+  routes. The daemon dispatcher becomes a total case over the registry, so a registered route
+  without a handler is a compile error under `-Werror`; clients and chart probe rendering are
+  projections of the same registry; the `GatewayProbeEndpoint` enum is deleted; a kubelet probe
+  bound to a non-probe route is unbuildable by smart constructor.
+- Make readiness one pure latched projection: `computeReadiness` over phase, object-store-session,
+  and worker inputs. `Admitting` requires the first proven object-store round trip since boot and
+  does not flap on later transient degradation; deep diagnostics stay on the state route. The
+  unconditional serve-start `Ready` write is deleted; the continuity loop latches the proof. The
+  lifecycle gate keeps its end-to-end round trip and gains a `/readyz` precheck, so lifecycle-ready
+  implies kubelet-ready by construction; the readiness probe `failureThreshold` rises 3 → 6.
+- Introduce a `GatewayChartStatics` record feeding both the deployed values JSON and new generated
+  sections for ports, NodePort, ServiceAccount, and Vault-role identities; a chart lint forbids the
+  raw literals in hand-written templates.
+- Absorb the exact-readiness-evidence deliverable rescoped out of Sprint `1.61` (see the 2026-07-12
+  scope note in [phase-1-runtime-cli-aws-foundations.md](phase-1-runtime-cli-aws-foundations.md)).
+
+### Validation
+
+1. Pure route-registry tables prove non-overlap and pattern round-trip over the closed registry.
+2. A conformance spec proves the deployed helm values equal the compiled registry/statics
+   projections.
+3. Readiness projection tables prove the latch: no admission before the first proven object-store
+   round trip since boot, and no flap on later transient backend degradation.
+4. All of the above run pre-cluster; `prodbox dev check` and `prodbox test unit` pass.
+
+### Remaining Work
+
+- All deliverables. The Foundation Epoch (Sprints `1.63`–`1.66`, `2.34`, `4.51`, `5.20`, `5.21`,
+  and `7.34`) is the active work front and is executed before Sprints `1.61` and `1.62` as an
+  execution-priority decision; it introduces no `Blocked by` edge onto the existing `1.61` → `8.12`
+  chain, which resumes unchanged once the epoch closes. Sprints `2.32` and `2.33` retain their
+  existing `Blocked by` edges.
+
+## Documentation Requirements
+
+**Engineering docs to create/update:**
+
+- `documents/engineering/lifecycle_control_plane_architecture.md` - compiled service boundary and
+  latched readiness projection.
+- `documents/engineering/helm_chart_platform_doctrine.md` - probe/route single-source rule and the
+  forbidden-literal chart lint.
+- `documents/engineering/distributed_gateway_architecture.md` - latched readiness semantics
+  superseding the unconditional serve-start readiness write.
+- `documents/engineering/bootstrap_readiness_doctrine.md` - readiness-evidence rescope pointer
+  (Sprint `1.61` → Sprint `2.34`).
+
+**Product docs to create/update:**
+
+- `README.md` - readiness wording aligned with the latched single-projection doctrine.
+
+**Cross-references to add:**
+
+- Link the Sprint `1.61` scope note in
+  [phase-1-runtime-cli-aws-foundations.md](phase-1-runtime-cli-aws-foundations.md) and the
+  deletion-ledger rows owned by this sprint in
+  [legacy-tracking-for-deletion.md](legacy-tracking-for-deletion.md).
 
 ## Related Documents
 

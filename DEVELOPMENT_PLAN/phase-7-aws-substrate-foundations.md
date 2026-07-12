@@ -26,6 +26,16 @@ transport, independent resource/admission envelopes, and fault-injection parity.
 Service is no longer the retained checkpoint authority or secret-delivery transport. Sprint
 `7.32` remains Done for its graph-derived AWS reconcile order and historical restore projection.
 
+📋 **Expanded 2026-07-12 by the Foundation Epoch adoption (Sprint `0.17`; counterexample
+`LCPC-2026-07-11`)** — Sprint `7.34` (📋 Planned) is registered on Phase `7`'s owned
+harness-postflight surface: the postflight residue bypass narrows from
+`BypassAllResidueForHarnessRefresh` to `BypassPerRunResidueForHarnessRefresh`, restoring the
+long-lived `aws-ses`/public-edge-tls protection of the lifecycle preconditions and reversing the
+Sprint `7.9` all-residue decision (see the Sprint `7.34` block below). The Foundation Epoch is an
+execution-priority decision narrated in [README.md → Closure Status](README.md); it adds no
+`Blocked by` edge onto Sprint `7.33` or the existing `1.61` → `8.12` chain, and this phase remains
+⏸️ blocked by Sprint `6.4` on the Sprint `7.33` surface.
+
 ✅ **Reclosed 2026-07-10 after AWS-substrate reconcile parity** — Sprint `7.32` is Done on Phase
 `7`'s code-owned surface. `AwsSubstratePlatform` now compiles the configured component DAG through
 the shared `Prodbox.Lifecycle.AnchoredReconcile` engine before reading stack outputs or invoking any
@@ -4776,6 +4786,83 @@ fault behavior without using the EKS gateway as an authority proxy.
 
 - Update `substrates.md` and `system-components.md` with identical substrate services and the
   external retained-authority boundary.
+
+## Sprint 7.34: Per-Run Postflight Residue Narrowing [📋 Planned]
+
+**Status**: Planned
+**Deployment qualification**: pending
+**Implementation**: planned `PulumiResiduePolicy` revision in `src/Prodbox/Aws.hs` and
+policy unit coverage
+**Independent Validation**: policy unit table proving the harness postflight clears
+operational `aws.*` and per-run residue while long-lived aws-ses/public-edge-tls
+residue is refused; pre-cluster.
+**Docs to update**: `documents/engineering/lifecycle_reconciliation_doctrine.md`,
+`documents/engineering/aws_integration_environment_doctrine.md`
+
+### Objective
+
+Close the policy half of the `F-SES` class from counterexample `LCPC-2026-07-11`: the harness
+postflight must be structurally unable to destroy the retained long-lived `aws-ses` stack while
+still clearing operational `aws.*` and per-run residue unconditionally.
+
+### Deliverables
+
+- A `BypassPerRunResidueForHarnessRefresh` policy replacing the harness postflight's
+  `BypassAllResidueForHarnessRefresh` — the refresh still clears operational `aws.*` and per-run
+  stacks unconditionally, but the long-lived `aws-ses` and public-edge-tls protection of the
+  lifecycle preconditions is restored.
+- Policy unit coverage over the narrowed postflight choice (the pure
+  `harnessPostflightResiduePolicy` SSoT helper from Sprint `7.9` keeps the decision testable
+  without IO).
+
+### Reversal of the Sprint `7.9` decision
+
+Sprint `7.9` switched the postflight to `BypassAllResidueForHarnessRefresh` to close a real
+operational-user stranding bug, on the (still-true) post-Sprint-`4.10` premise that clearing
+operational `aws.*` cannot strand the admin-managed `aws-ses` stack. That reasoning conflated
+destroyability with should-destroy: the `LCPC-2026-07-11` forensics show the all-residue bypass
+can destroy the long-lived `aws-ses` stack that the lifecycle preconditions otherwise protect.
+The 2026-07-12 operator decision narrows the bypass back to per-run scope. The Sprint `7.9`
+stranding fix is retained — operational `aws.*` and per-run residue are still cleared
+unconditionally; only the long-lived residue protection returns. The Sprint `7.9` pending removal
+of the per-run constructor in
+[legacy-tracking-for-deletion.md](legacy-tracking-for-deletion.md) is withdrawn by the same
+decision; the narrowing row owned by this sprint carries the withdrawal.
+
+### Validation
+
+1. Policy unit table proving the harness postflight clears operational `aws.*` and per-run
+   residue while long-lived `aws-ses`/public-edge-tls residue is refused; pre-cluster, no live
+   AWS.
+2. `prodbox dev check`, `prodbox test unit`, and `prodbox test integration cli`/`env` pass on the
+   code-owned surface.
+
+### Remaining Work
+
+- All deliverables — this sprint is 📋 Planned, registered by the Foundation Epoch adoption
+  (Sprint `0.17`) with no `Blocked by` edge.
+- Live confirmation that a harness run with `aws-ses` live still ends with operational `aws.*`
+  cleared while the retained stack is untouched remains the non-blocking Standard O axis.
+
+## Documentation Requirements
+
+**Engineering docs to create/update:**
+
+- `documents/engineering/lifecycle_reconciliation_doctrine.md` - the harness postflight bypasses
+  per-run residue only; long-lived `aws-ses`/public-edge-tls residue protection is never bypassed
+  by automation.
+- `documents/engineering/aws_integration_environment_doctrine.md` - the narrowed harness
+  postflight residue policy.
+
+**Product docs to create/update:**
+
+- None.
+
+**Cross-references to add:**
+
+- Update [legacy-tracking-for-deletion.md](legacy-tracking-for-deletion.md): the
+  `BypassAllResidueForHarnessRefresh` narrowing row (Sprint `7.34`) carries the withdrawal of the
+  Sprint `7.9` pending removal of the per-run constructor.
 
 ## Related Documents
 

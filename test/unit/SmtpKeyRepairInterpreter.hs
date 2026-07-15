@@ -1,3 +1,4 @@
+{-# LANGUAGE DataKinds #-}
 {-# LANGUAGE OverloadedStrings #-}
 
 module SmtpKeyRepairInterpreter
@@ -32,8 +33,9 @@ import Prodbox.Lifecycle.CheckpointAuthority
   , ModelBObjectCoordinate
   , ModelBObjectVersion
   , ModelBObservation (..)
+  , StoreLifetime (ClusterRetained)
+  , mkClusterRetainedCoordinate
   , mkLongLivedCheckpointAuthority
-  , mkModelBObjectCoordinate
   , mkModelBObjectVersion
   )
 import Prodbox.Lifecycle.Lease
@@ -376,7 +378,7 @@ fakeInterpreter stateRef =
 
 fakeModelB
   :: IORef FakeState
-  -> ModelBCasAdapter IO SmtpCommittedProjection
+  -> ModelBCasAdapter 'ClusterRetained IO SmtpCommittedProjection
 fakeModelB stateRef =
   ModelBCasAdapter
     { modelBObserve = \_ -> do
@@ -437,13 +439,13 @@ authority =
 leaseKey :: LeaseKey
 leaseKey = expectRight (mkLeaseKey "123456789012" "ca-central-1" "aws-ses")
 
-leaseCoordinate :: ModelBObjectCoordinate
+leaseCoordinate :: ModelBObjectCoordinate 'ClusterRetained
 leaseCoordinate = expectRight (leaseObjectCoordinate authority leaseKey)
 
-smtpProjectionCoordinate :: ModelBObjectCoordinate
+smtpProjectionCoordinate :: ModelBObjectCoordinate 'ClusterRetained
 smtpProjectionCoordinate =
   expectRight
-    ( mkModelBObjectCoordinate
+    ( mkClusterRetainedCoordinate
         authority
         "smtp-commit/123456789012/ca-central-1/aws-ses"
     )

@@ -6,12 +6,15 @@ module Prodbox.CheckCode
   , awsCreateVerbs
   , checkCreateCallSiteCoverage
   , checkForbidDotProdboxState
+  , checkLegacyEscapeRegistry
   , doctrineViolationsInPaths
   , extractMarkdownLinkTargets
   , extractStringLiterals
   , generatedSectionRules
   , generatedSectionsReconcilerViolations
   , gatewayProbeViolations
+  , gatewayChartStaticViolations
+  , gatewayChartStaticsConformanceViolations
   , haskellStyleViolations
   , iamCreateSiteViolations
   , iamCreateVerbs
@@ -46,6 +49,8 @@ import Control.Monad (forM)
 import Data.Char (isAlphaNum, isDigit, toLower)
 import Data.List (intercalate, isInfixOf, isPrefixOf, isSuffixOf, sort, tails)
 import Data.Text qualified as Text
+import Data.Time.Clock.POSIX (getPOSIXTime)
+import Numeric.Natural (Natural)
 import Prodbox.BuildSupport
   ( addBuildSupportEnvironment
   , syncBuiltOperatorBinary
@@ -69,11 +74,18 @@ import Prodbox.CLI.Output
   , writeOutputLine
   )
 import Prodbox.CLI.Spec (CommandSpec (..), commandRegistry)
+import Prodbox.Capacity.Config (defaultResourcePlan)
+import Prodbox.Capacity.MeasuredProfile (certifyMeasuredProfiles)
 import Prodbox.Error (fatalError)
+import Prodbox.Gateway.ChartStatics qualified as ChartStatics
 import Prodbox.Gateway.Probe (renderGatewayProbeDefaultsYaml)
 import Prodbox.Infra.StackDescriptor
   ( renderStackCommandSurfaceMarkdown
   , stackDescriptors
+  )
+import Prodbox.Legacy.EscapeRegistry
+  ( escapeRegistryViolations
+  , isLegacyEscapeScanFile
   )
 import Prodbox.Lifecycle.ResourceClass
   ( LifecycleClass (..)
@@ -180,6 +192,17 @@ generatedSectionRules =
       , generatedSectionEndMarker = "# prodbox:gateway-probes.values:end"
       , generatedSectionRender = const renderGatewayProbeDefaultsYaml
       , generatedSectionRendererSources = ["src/Prodbox/Gateway/Probe.hs"]
+      }
+  , -- Sprint 2.34: the gateway chart's static ports / NodePort / ServiceAccount
+    -- defaults are generated from the one compiled Prodbox.Gateway.ChartStatics
+    -- source of truth, so the committed values.yaml cannot drift from the code.
+    GeneratedSectionRule
+      { generatedSectionKey = "gateway-chart-statics.values"
+      , generatedSectionPath = "charts/gateway/values.yaml"
+      , generatedSectionStartMarker = "# prodbox:gateway-chart-statics.values:start"
+      , generatedSectionEndMarker = "# prodbox:gateway-chart-statics.values:end"
+      , generatedSectionRender = const ChartStatics.renderGatewayChartStaticsYaml
+      , generatedSectionRendererSources = ["src/Prodbox/Gateway/ChartStatics.hs"]
       }
   , -- Sprint 4.22: the managed-resource registry's lifecycle-class facts
     -- are rendered into substrates.md so `prodbox docs check` fails the
@@ -362,7 +385,11 @@ runFileLint repoRoot = do
       thinMainResult <- verifyThinMainEntrypoint repoRoot
       case thinMainResult of
         Left err -> failWith err
-        Right () -> runTrackedGeneratedPathLint repoRoot
+        Right () -> do
+          trackedExit <- runTrackedGeneratedPathLint repoRoot
+          case trackedExit of
+            ExitFailure _ -> pure trackedExit
+            ExitSuccess -> runConformanceTier repoRoot
 
 runGeneratedArtifactLint :: FilePath -> Bool -> IO ExitCode
 runGeneratedArtifactLint repoRoot writeEnabled = do
@@ -401,6 +428,123 @@ runTrackedGeneratedPathLint repoRoot = do
   case firstLeft results of
     Just err -> failWith err
     Nothing -> pure ExitSuccess
+
+-- | Sprint 1.63: the conformance tier — the pre-cluster, seconds-fast check
+-- family that proves cross-artifact agreement between compiled registries and
+-- their projections (see @unit_testing_policy.md § The Conformance Tier@ and
+-- @code_quality.md § 3@). It runs inside the fast file-lint phase of
+-- @prodbox dev check@, before the warning-clean build, so cross-artifact drift
+-- fails in seconds rather than surfacing in the multi-hour aggregate suite.
+--
+-- Today it hosts the legacy-escape registry bijection (the
+-- [Standard P](../../DEVELOPMENT_PLAN/development_plan_standards.md) interim
+-- escape-path guard); later Foundation Epoch sprints (@2.34@, @4.51@, @5.20@,
+-- @7.34@) add their own conformance suites under this same surface.
+runConformanceTier :: FilePath -> IO ExitCode
+runConformanceTier repoRoot = do
+  escapeViolations <- checkLegacyEscapeRegistry repoRoot
+  case escapeViolations of
+    (_ : _) ->
+      failWith
+        ( unlines
+            ( ( "Legacy escape-registry bijection failed. The compiled registry "
+                  ++ "src/Prodbox/Legacy/EscapeRegistry.hs must match the escape "
+                  ++ "markers in source one-to-one (see code_quality.md § 3):"
+              )
+                : map ("- " ++) escapeViolations
+                ++ ["Rerun `./.build/prodbox dev check` after reconciling the registry and markers."]
+            )
+        )
+    [] -> do
+      measuredViolations <- checkMeasuredCapacityProfiles repoRoot
+      case measuredViolations of
+        (_ : _) ->
+          failWith
+            ( unlines
+                ( ( "Measured-capacity certification failed. Authored Guaranteed-QoS "
+                      ++ "envelopes must be justified by their committed measured profiles "
+                      ++ "under dhall/capacity/measured/ (see resource_scaling_doctrine.md § 2F):"
+                  )
+                    : map ("- " ++) measuredViolations
+                    ++ ["Recapture the profile (Sprint 5.21 recorder) or correct the authored envelope."]
+                )
+            )
+        [] -> do
+          staticsViolations <- checkGatewayChartStatics repoRoot
+          case staticsViolations of
+            [] -> pure ExitSuccess
+            violations ->
+              failWith
+                ( unlines
+                    ( ( "Gateway chart-statics conformance failed. The committed "
+                          ++ "charts/gateway/values.yaml defaults must equal the compiled "
+                          ++ "Prodbox.Gateway.ChartStatics projection (Sprint 2.34):"
+                      )
+                        : map ("- " ++) violations
+                        ++ ["Run `./.build/prodbox dev docs generate` and reconcile the raw values.yaml literals."]
+                    )
+                )
+
+-- | Certify that the committed @charts/gateway/values.yaml@ static defaults
+-- equal the compiled 'ChartStatics.gatewayChartStatics' projection. Reads the
+-- values file and delegates to the pure 'gatewayChartStaticsConformanceViolations'.
+checkGatewayChartStatics :: FilePath -> IO [String]
+checkGatewayChartStatics repoRoot = do
+  let valuesPath = repoRoot </> "charts" </> "gateway" </> "values.yaml"
+  exists <- doesFileExist valuesPath
+  if not exists
+    then pure ["charts/gateway/values.yaml is missing the gateway chart-statics defaults."]
+    else do
+      valuesContents <- readFile valuesPath
+      pure (gatewayChartStaticsConformanceViolations valuesContents)
+
+-- | Sprint 2.34 (pure). Prove the deployed helm values equal the compiled
+-- 'ChartStatics.gatewayChartStatics' projection: every static identity — ports,
+-- NodePort, ServiceAccount name, and Vault role — must appear verbatim in
+-- @values.yaml@. Exposed for the conformance unit suite.
+gatewayChartStaticsConformanceViolations :: String -> [String]
+gatewayChartStaticsConformanceViolations valuesContents =
+  [ "charts/gateway/values.yaml drifted from the compiled GatewayChartStatics `"
+      ++ field
+      ++ "` (expected `"
+      ++ expected
+      ++ "`)."
+  | (field, expected) <- expectedStatics
+  , not (expected `isInfixOf` valuesContents)
+  ]
+ where
+  statics = ChartStatics.gatewayChartStatics
+  expectedStatics =
+    [ ("ports.rest", "rest: " ++ show (ChartStatics.gatewayStaticRestPort statics))
+    , ("ports.events", "events: " ++ show (ChartStatics.gatewayStaticEventsPort statics))
+    , ("nodePort.rest", "rest: " ++ show (ChartStatics.gatewayStaticNodePort statics))
+    , ("serviceAccount.name", "name: " ++ Text.unpack (ChartStatics.gatewayStaticServiceAccount statics))
+    , ("vault.role", "role: " ++ Text.unpack (ChartStatics.gatewayStaticVaultRole statics))
+    ]
+
+-- | Certify every committed measured-capacity profile against the authored
+-- default resource plan. Inert until a profile is committed under
+-- @dhall/capacity/measured/@ (Sprint 1.65).
+checkMeasuredCapacityProfiles :: FilePath -> IO [String]
+checkMeasuredCapacityProfiles repoRoot = do
+  posixNow <- getPOSIXTime
+  let now = fromIntegral (floor posixNow :: Integer) :: Natural
+  certifyMeasuredProfiles repoRoot now defaultResourcePlan
+
+-- | Effectful half of the legacy-escape bijection check: read every scanned
+-- source file and delegate to the pure 'escapeRegistryViolations'. Exposed for
+-- the conformance-tier unit suite.
+checkLegacyEscapeRegistry :: FilePath -> IO [String]
+checkLegacyEscapeRegistry repoRoot = do
+  repoPaths <- listRepoOwnedPaths repoRoot
+  scanned <-
+    forM
+      (filter isLegacyEscapeScanFile repoPaths)
+      ( \relativePath -> do
+          contents <- readFile (repoRoot </> relativePath)
+          pure (relativePath, contents)
+      )
+  pure (escapeRegistryViolations scanned)
 
 runHaskellLint :: FilePath -> [(String, String)] -> Bool -> IO ExitCode
 runHaskellLint repoRoot environment writeEnabled = do
@@ -2500,12 +2644,14 @@ chartViolationsFor repoRoot relativeChartPath = do
   templateViolations <- chartTemplateResourceViolations chartDir
   guardrailViolations <- chartRootGuardrailViolations (takeFileName chartDir) chartDir
   probeViolations <- gatewayProbeChartViolations (takeFileName chartDir) chartDir
+  staticsViolations <- gatewayStaticsChartViolations (takeFileName chartDir) chartDir
   pure
     ( manifestViolations relativeChartPath chartContents
         ++ helperViolations
         ++ templateViolations
         ++ guardrailViolations
         ++ probeViolations
+        ++ staticsViolations
     )
  where
   manifestViolations path contents =
@@ -2568,6 +2714,58 @@ gatewayProbeViolations deploymentTemplate valuesContents =
     | renderGatewayProbeDefaultsYaml `notElemIn` valuesContents
     ]
   needle `notElemIn` haystack = not (needle `isInfixOf` haystack)
+
+-- | Sprint 2.34: enforce that the gateway chart's static identities flow from
+-- the one compiled 'ChartStatics.gatewayChartStatics' rather than raw literals.
+-- The hand-written ServiceAccount name must be @.Values@-driven and the
+-- @values.yaml@ defaults must carry the generated statics block.
+gatewayStaticsChartViolations :: String -> FilePath -> IO [String]
+gatewayStaticsChartViolations chartName chartDir =
+  if chartName /= "gateway"
+    then pure []
+    else do
+      let serviceAccountPath = chartDir </> "templates" </> "serviceaccount.yaml"
+          deploymentPath = chartDir </> "templates" </> "deployments.yaml"
+          valuesPath = chartDir </> "values.yaml"
+      serviceAccountContents <- readFileIfExists serviceAccountPath
+      deploymentContents <- readFileIfExists deploymentPath
+      valuesContents <- readFileIfExists valuesPath
+      pure
+        ( gatewayChartStaticViolations
+            serviceAccountContents
+            deploymentContents
+            valuesContents
+        )
+ where
+  readFileIfExists path = do
+    exists <- doesFileExist path
+    if exists then readFile path else pure ""
+
+-- | Sprint 2.34 (pure). The gateway chart's ServiceAccount identity must render
+-- @{{ .Values.serviceAccount.name }}@ from 'ChartStatics.gatewayChartStatics',
+-- never the raw role literal, and @values.yaml@ must carry the generated
+-- statics defaults. Exposed for the conformance unit suite.
+gatewayChartStaticViolations :: String -> String -> String -> [String]
+gatewayChartStaticViolations serviceAccountTemplate deploymentTemplate valuesContents =
+  serviceAccountLiteralViolations ++ generatedStaticsViolations
+ where
+  serviceAccountName = Text.unpack (ChartStatics.gatewayStaticServiceAccount ChartStatics.gatewayChartStatics)
+  serviceAccountLiteralViolations =
+    [ "charts/gateway/templates/"
+        ++ file
+        ++ " hard-codes the ServiceAccount identity `"
+        ++ serviceAccountName
+        ++ "`; render `{{ .Values.serviceAccount.name }}` from GatewayChartStatics instead."
+    | (file, contents, needle) <-
+        [ ("serviceaccount.yaml", serviceAccountTemplate, "name: " ++ serviceAccountName)
+        , ("deployments.yaml", deploymentTemplate, "serviceAccountName: " ++ serviceAccountName)
+        ]
+    , needle `isInfixOf` contents
+    ]
+  generatedStaticsViolations =
+    [ "charts/gateway/values.yaml must contain the generated GatewayChartStatics defaults (ports/nodePort/serviceAccount)."
+    | not (ChartStatics.renderGatewayChartStaticsYaml `isInfixOf` valuesContents)
+    ]
 
 gatewayProbeTemplateBlocks :: [(String, String)]
 gatewayProbeTemplateBlocks =

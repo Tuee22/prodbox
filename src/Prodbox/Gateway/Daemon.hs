@@ -222,13 +222,7 @@ import Prodbox.Gateway.ObjectStore
   , PulumiObjectGetResponse (..)
   , PulumiObjectPutRequest (..)
   , PulumiObjectRequest (..)
-  , authorityClockPath
-  , authorityObjectCasPath
-  , authorityObjectGetPath
   , authorityObjectRequestMaxBytes
-  , pulumiObjectDeletePath
-  , pulumiObjectGetPath
-  , pulumiObjectPutPath
   , pulumiObjectRequestMaxBytes
   , validateAuthorityObjectLogicalName
   , validateAuthorityObjectPayloadSize
@@ -268,6 +262,22 @@ import Prodbox.Gateway.Peer
   , signedSemanticSnapshotEmitter
   , validatePeerRequestHeartbeatSkew
   , verifySignedAssertion
+  )
+import Prodbox.Gateway.Readiness
+  ( DrainPhase (..)
+  , ObjectStoreProof (..)
+  , ReadinessInputs (..)
+  , ReadinessState (..)
+  , WorkersStatus (..)
+  , computeReadiness
+  )
+import Prodbox.Gateway.Routes
+  ( GatewayRoute (..)
+  , federationChildBootstrapSuffix
+  , federationChildPathPrefix
+  , operatorSecretPathPrefix
+  , routeForPath
+  , routePattern
   )
 import Prodbox.Gateway.Settings qualified as GatewaySettings
 import Prodbox.Gateway.State qualified as BoundedState
@@ -348,12 +358,14 @@ import Prodbox.Vault.Client
   , KvV2VersionedSecret (..)
   , SealStatus (..)
   , VaultAddress (..)
+  , VaultKubernetesLoginResult (..)
   , VaultToken (..)
   , bootstrapAction
   , defaultInitRequest
   , initResponseToUnlockBundle
   , vaultInit
   , vaultKubernetesLogin
+  , vaultKubernetesLoginWithLease
   , vaultKvCasWriteV2
   , vaultKvReadV2
   , vaultKvReadVersionedV2
@@ -377,6 +389,20 @@ import Prodbox.Vault.Reconcile
   , renderVaultReconcileError
   , runVaultReconcile
   )
+import Prodbox.Vault.Session
+  ( GatewaySessionKey (..)
+  , LoginLease (..)
+  , VaultSession
+  , VaultSessionError (..)
+  , httpErrorToSessionError
+  , newVaultSession
+  , realSessionClock
+  , renderVaultSessionError
+  , resolveSharedSession
+  , sessionAddress
+  , sessionToken
+  , withSessionToken
+  )
 import Prodbox.Vault.TransitCipher (vaultTransitDekCipher)
 import Prodbox.Vault.UnlockBundle
   ( UnlockBundle (..)
@@ -385,6 +411,7 @@ import Prodbox.Vault.UnlockBundle
   , renderUnlockBundleError
   )
 import System.Directory (doesFileExist, findExecutable)
+import System.Environment (lookupEnv)
 import System.Exit (ExitCode (..))
 import System.FSNotify
   ( Event (..)
@@ -423,12 +450,6 @@ data DaemonState = DaemonState
   , stateOrdersVersionUtc :: Int
   , stateLatestObservedOrdersVersion :: Int
   }
-
-data ReadinessState
-  = Starting
-  | Ready
-  | Draining
-  deriving (Eq, Show)
 
 data LiveConfig = LiveConfig
   { liveLogLevel :: String
@@ -476,7 +497,13 @@ data DaemonEnv = DaemonEnv
   , envFramePermits :: TBQueue ()
   , envContinuity :: TVar (Maybe ContinuityRuntime)
   , envState :: TVar DaemonState
-  , envReadiness :: TVar ReadinessState
+  , -- Sprint 2.34: readiness is no longer one cached three-state TVar written
+    -- unconditionally at serve-start. It is a pure projection
+    -- ('computeReadiness') over three orthogonal monotone boundary facts, so a
+    -- flapping backend signal can never be folded into @/readyz@.
+    envDrainPhase :: TVar DrainPhase
+  , envObjectStoreProof :: TVar ObjectStoreProof
+  , envWorkersStatus :: TVar WorkersStatus
   , envLiveConfig :: TVar LiveConfig
   , envLiveConfigReloads :: TChan LiveConfig
   , envMetrics :: MetricsRegistry
@@ -604,7 +631,24 @@ runGatewayDaemon maybeConfigPath config = withSocketsDo $ do
                                     [(p, PeerHealth Nothing False Nothing) | p <- meshPeers]
                               }
                       stateVar <- newTVarIO initialDaemonState
-                      readinessVar <- newTVarIO Starting
+                      drainPhaseVar <- newTVarIO PhaseServing
+                      -- Sprint 2.34: 'PRODBOX_TEST_OBJECT_STORE_PROOF_LATCH' is a
+                      -- sanctioned, in-memory, read-once, test-only seed for the
+                      -- object-store proof latch. It does NOT participate in
+                      -- config resolution (config still comes from the mounted
+                      -- @--config@ Dhall) and is never set by any production
+                      -- path, so production defaults to 'ObjectStoreUnproven'
+                      -- and the readiness gate stays fail-closed. It lets the
+                      -- 'prodbox-daemon-lifecycle' suite — which runs with no
+                      -- Vault and no MinIO — exercise the real projection and
+                      -- @/readyz@ handler without a live round trip.
+                      objectStoreProofSeed <-
+                        maybe
+                          ObjectStoreUnproven
+                          (\value -> if value == "1" then ObjectStoreProven else ObjectStoreUnproven)
+                          <$> lookupEnv "PRODBOX_TEST_OBJECT_STORE_PROOF_LATCH"
+                      objectStoreProofVar <- newTVarIO objectStoreProofSeed
+                      workersStatusVar <- newTVarIO WorkersPending
                       liveConfigVar <- newTVarIO (liveConfigFromDaemonConfig logLevel config)
                       reloadBroadcast <- newTChanIO
                       drainSignals <- newTQueueIO
@@ -632,7 +676,9 @@ runGatewayDaemon maybeConfigPath config = withSocketsDo $ do
                               , envFramePermits = framePermits
                               , envContinuity = continuityVar
                               , envState = stateVar
-                              , envReadiness = readinessVar
+                              , envDrainPhase = drainPhaseVar
+                              , envObjectStoreProof = objectStoreProofVar
+                              , envWorkersStatus = workersStatusVar
                               , envLiveConfig = liveConfigVar
                               , envLiveConfigReloads = reloadBroadcast
                               , envMetrics = MetricsRegistry "gateway"
@@ -967,11 +1013,17 @@ installContinuityRecovery env localNode continuityBounds authority recovery =
  where
   installRuntime current = do
     currentVar <- newTVarIO current
-    atomically
-      ( writeTVar
-          (envContinuity env)
-          (Just (ContinuityRuntime authority currentVar))
-      )
+    -- Sprint 2.34: latch the object-store proof in the SAME STM transaction
+    -- that publishes the continuity runtime. Reaching here means a validated
+    -- 'StartupRecovery' (a real read-back or CAS write — never a bare
+    -- absent-object GET) has been decoded, restored, and is being installed as
+    -- the live authority, so kubelet readiness can never be reported before a
+    -- proven durable-authority round trip. Written 'ObjectStoreProven' only,
+    -- never cleared: a later transient object-store blip that resets
+    -- 'envContinuity' does not un-ready the Pod (monotone latch).
+    atomically $ do
+      writeTVar (envContinuity env) (Just (ContinuityRuntime authority currentVar))
+      writeTVar (envObjectStoreProof env) ObjectStoreProven
     pure (Right ())
 
   restoreCommittedAnchor current = do
@@ -1613,7 +1665,7 @@ installDaemonSignalHandlers env signalCount = do
             previousCount <- updateSignalCount
             if previousCount == 0
               then do
-                atomically (writeTVar (envReadiness env) Draining)
+                atomically (writeTVar (envDrainPhase env) PhaseDraining)
                 pure ()
               else pure ()
   _ <- installHandler sigTERM drainHandler Nothing
@@ -1630,14 +1682,22 @@ installDaemonSignalHandlers env signalCount = do
           else ForceDrain
       pure previousCount
 
+-- | Sprint 2.34: the unconditional serve-start @Ready@ write is gone. Kubelet
+-- readiness is now a pure projection of the drain phase, the object-store
+-- proof latch (set once by the continuity worker on the first validated
+-- @StartupRecovery@ install), and the workers-started fact — so @/readyz@
+-- cannot report ready before a proven durable-authority round trip.
 serveGatewayDaemon :: PeerEndpoint -> DaemonEnv -> IO ()
-serveGatewayDaemon localPeer env = do
-  atomically (writeTVar (envReadiness env) Ready)
+serveGatewayDaemon localPeer env =
   race (drainCoordinator env) (daemonWorkers localPeer env)
     >>= either pure pure
 
 daemonWorkers :: PeerEndpoint -> DaemonEnv -> IO ()
-daemonWorkers localPeer env =
+daemonWorkers localPeer env = do
+  -- Monotone worker-started latch: recorded before the REST listener that
+  -- serves @/readyz@ is spawned, so an observable ready projection structurally
+  -- implies the workers are up.
+  atomically (writeTVar (envWorkersStatus env) WorkersStarted)
   withAsync (worker "continuity" (continuityLoop env)) $ \_ ->
     withAsync (worker "heartbeat" (heartbeatLoop env)) $ \_ ->
       withAsync (worker "gateway_ownership" (gatewayLoop env)) $ \_ ->
@@ -1691,7 +1751,7 @@ drainCoordinator env = do
     ForceDrain -> logForEnv env Warn "gateway_force_draining" []
     BeginDrain -> do
       liveConfig <- readTVarIO (envLiveConfig env)
-      atomically (writeTVar (envReadiness env) Draining)
+      atomically (writeTVar (envDrainPhase env) PhaseDraining)
       logForEnv
         env
         Info
@@ -1715,16 +1775,16 @@ runWorkerWithRetry env workerName action = go 0
     result <- try action :: IO (Either SomeException ())
     case result of
       Right () -> do
-        readiness <- readTVarIO (envReadiness env)
-        if readiness == Draining
+        drainPhase <- readTVarIO (envDrainPhase env)
+        if drainPhase == PhaseDraining
           then pure ()
           else do
             logForEnv env Warn "daemon_worker_returned" [field "worker" workerName]
             go 0
       Left exc ->
         do
-          readiness <- readTVarIO (envReadiness env)
-          if readiness == Draining
+          drainPhase <- readTVarIO (envDrainPhase env)
+          if drainPhase == PhaseDraining
             then pure ()
             else case classifyWorkerFailure attemptIndex exc of
               AppError {errorKind = Recoverable} -> do
@@ -2265,79 +2325,96 @@ handleRestClient sock env =
 
   handleParsedRequest rawRequest = do
     now <- getCurrentTime
-    case requestPath rawRequest of
-      path
-        | path == bootstrapVaultPath -> handleBootstrapVaultEnsure sock env rawRequest
-        | path == bootstrapVaultStatusPath -> handleBootstrapVaultStatus sock env rawRequest
-        | path == bootstrapVaultSealPath -> handleBootstrapVaultSeal sock env rawRequest
-        | path == bootstrapVaultRotateUnlockBundlePath ->
-            handleBootstrapVaultRotateUnlockBundle sock env rawRequest
-        | path == bootstrapVaultRotateTransitKeyPath ->
-            handleBootstrapVaultRotateTransitKey sock env rawRequest
-        | path == bootstrapVaultPkiStatusPath -> handleBootstrapVaultPkiStatus sock env rawRequest
-        | path == bootstrapVaultPkiIssueTestCertPath ->
-            handleBootstrapVaultPkiIssueTestCert sock env rawRequest
-        | path == pulumiObjectGetPath -> handlePulumiObjectGet sock env rawRequest
-        | path == pulumiObjectPutPath -> handlePulumiObjectPut sock env rawRequest
-        | path == pulumiObjectDeletePath -> handlePulumiObjectDelete sock env rawRequest
-        | path == authorityObjectGetPath -> handleAuthorityObjectGet sock env rawRequest
-        | path == authorityObjectCasPath -> handleAuthorityObjectCas sock env rawRequest
-        | path == authorityClockPath -> handleAuthorityClock sock rawRequest
-        | path == TargetSecret.targetSecretReadPath ->
-            handleTargetSecretRead sock env rawRequest
-        | path == TargetSecret.targetSecretCasPath ->
-            handleTargetSecretCas sock env rawRequest
-        | otherwise ->
-            case operatorSecretLogicalPath path of
-              Just logical
-                | operatorSecretRequestMethod rawRequest == "POST" ->
-                    handleOperatorSecretWrite sock env rawRequest logical
-                | otherwise ->
-                    -- The write endpoint exists only for POST; a GET/PUT/etc. against
-                    -- it is a client error, never a Vault read (the secrets it owns are
-                    -- read in-cluster via Vault Kubernetes auth, never echoed back).
-                    sendHttpResponse sock 405 "text/plain" "method not allowed\n"
-              Nothing -> handleReadRequest sock env now rawRequest
+    let path = requestPath rawRequest
+    case routeForPath path of
+      Just route -> dispatchGatewayRoute sock env now rawRequest route
+      Nothing -> dispatchPatternRoute sock env rawRequest path
 
--- | The read-only REST dispatch (health, readiness, metrics, state, and the
--- federation inventory/bootstrap endpoints). Split out of 'handleRestClient'
--- (Sprint 1.44) so the operator-write @POST /v1/secret/<logical>@ route can be
--- handled ahead of it without re-indenting this block.
-handleReadRequest :: Socket -> DaemonEnv -> UTCTime -> BS.ByteString -> IO ()
-handleReadRequest sock env now rawRequest =
-  case requestPath rawRequest of
-    "/healthz" ->
-      sendHttpResponse sock 200 "text/plain" "ok\n"
-    "/readyz" -> do
-      readiness <- readTVarIO (envReadiness env)
-      case readiness of
-        Ready -> sendHttpResponse sock 200 "text/plain" "ready\n"
-        Draining -> sendHttpResponse sock 503 "text/plain" "draining\n"
-        Starting -> sendHttpResponse sock 503 "text/plain" "starting\n"
-    "/metrics" -> do
-      state <- readTVarIO (envState env)
-      sendHttpResponse sock 200 "text/plain" (renderMetricsText now env state)
-    "/v1/state" -> do
-      state <- readTVarIO (envState env)
-      dnsReady <- gatewayDnsWriteReady env state
-      continuityDiagnostic <- readContinuityDiagnostic env
-      sendLazyHttpResponse
-        sock
-        200
-        "application/json"
-        (renderStateJson now env dnsReady continuityDiagnostic state)
-    "/v1/federation/children" -> do
-      childrenResult <- readFederationChildren (envBootConfig env)
-      case childrenResult of
-        Left err -> sendHttpResponse sock 503 "text/plain" (err ++ "\n")
-        Right children ->
-          sendLazyHttpResponse
-            sock
-            200
-            "application/json"
-            (encode (object ["children" .= children]))
-    _ ->
-      case federationBootstrapChildId (requestPath rawRequest) of
+-- | Sprint 2.34: the daemon request dispatcher as one total @case@ over the
+-- compiled 'GatewayRoute' registry ("Prodbox.Gateway.Routes"). Every path string
+-- is a projection of @routePattern@; a registered route with no arm here is a
+-- @-Werror@ compile error, so the daemon, the client, and the chart probe
+-- rendering cannot drift.
+--
+-- LEGACY-ESCAPE[gateway-hosted-authority-routes]: the gateway daemon hosts the
+-- bootstrap-Vault, Pulumi/authority object-store, lifecycle authority CAS/clock,
+-- and target-secret authority routes below (plus the operator-secret route in
+-- 'dispatchPatternRoute'). Registered in Prodbox.Legacy.EscapeRegistry; these
+-- routes leave the gateway for the Bootstrap Broker / Lifecycle Authority /
+-- Target Secret Agent under Sprints 2.33/4.50.
+dispatchGatewayRoute :: Socket -> DaemonEnv -> UTCTime -> BS.ByteString -> GatewayRoute -> IO ()
+dispatchGatewayRoute sock env now rawRequest route = case route of
+  RouteHealthz ->
+    sendHttpResponse sock 200 "text/plain" "ok\n"
+  RouteReadyz -> do
+    -- Constant-time projection: a consistent single-transaction snapshot of the
+    -- three cached monotone facts, folded by the pure 'computeReadiness'. No
+    -- backend I/O (bootstrap_readiness_doctrine §0.7 / §2.1).
+    inputs <-
+      atomically $
+        ReadinessInputs
+          <$> readTVar (envDrainPhase env)
+          <*> readTVar (envObjectStoreProof env)
+          <*> readTVar (envWorkersStatus env)
+    case computeReadiness inputs of
+      Ready -> sendHttpResponse sock 200 "text/plain" "ready\n"
+      Draining -> sendHttpResponse sock 503 "text/plain" "draining\n"
+      Starting -> sendHttpResponse sock 503 "text/plain" "starting\n"
+  RouteMetrics -> do
+    state <- readTVarIO (envState env)
+    sendHttpResponse sock 200 "text/plain" (renderMetricsText now env state)
+  RouteState -> do
+    state <- readTVarIO (envState env)
+    dnsReady <- gatewayDnsWriteReady env state
+    continuityDiagnostic <- readContinuityDiagnostic env
+    sendLazyHttpResponse
+      sock
+      200
+      "application/json"
+      (renderStateJson now env dnsReady continuityDiagnostic state)
+  RouteFederationChildren -> do
+    childrenResult <- readFederationChildren (envBootConfig env)
+    case childrenResult of
+      Left err -> sendHttpResponse sock 503 "text/plain" (err ++ "\n")
+      Right children ->
+        sendLazyHttpResponse
+          sock
+          200
+          "application/json"
+          (encode (object ["children" .= children]))
+  RouteBootstrapVaultEnsure -> handleBootstrapVaultEnsure sock env rawRequest
+  RouteBootstrapVaultStatus -> handleBootstrapVaultStatus sock env rawRequest
+  RouteBootstrapVaultSeal -> handleBootstrapVaultSeal sock env rawRequest
+  RouteBootstrapVaultRotateUnlockBundle -> handleBootstrapVaultRotateUnlockBundle sock env rawRequest
+  RouteBootstrapVaultRotateTransitKey -> handleBootstrapVaultRotateTransitKey sock env rawRequest
+  RouteBootstrapVaultPkiStatus -> handleBootstrapVaultPkiStatus sock env rawRequest
+  RouteBootstrapVaultPkiIssueTestCert -> handleBootstrapVaultPkiIssueTestCert sock env rawRequest
+  RoutePulumiObjectGet -> handlePulumiObjectGet sock env rawRequest
+  RoutePulumiObjectPut -> handlePulumiObjectPut sock env rawRequest
+  RoutePulumiObjectDelete -> handlePulumiObjectDelete sock env rawRequest
+  RouteAuthorityObjectGet -> handleAuthorityObjectGet sock env rawRequest
+  RouteAuthorityObjectCas -> handleAuthorityObjectCas sock env rawRequest
+  RouteAuthorityClock -> handleAuthorityClock sock rawRequest
+  RouteTargetSecretRead -> handleTargetSecretRead sock env rawRequest
+  RouteTargetSecretCas -> handleTargetSecretCas sock env rawRequest
+
+-- | The two variable-suffix pattern routes (operator-secret write, federation
+-- child bootstrap) and the 404 fallthrough — the paths that are prefixes, not
+-- fixed 'GatewayRoute' strings. Reached only when 'routeForPath' finds no fixed
+-- route, preserving the pre-Sprint-2.34 precedence (fixed routes first).
+dispatchPatternRoute :: Socket -> DaemonEnv -> BS.ByteString -> String -> IO ()
+dispatchPatternRoute sock env rawRequest path =
+  case operatorSecretLogicalPath path of
+    Just logical
+      | operatorSecretRequestMethod rawRequest == "POST" ->
+          handleOperatorSecretWrite sock env rawRequest logical
+      | otherwise ->
+          -- The write endpoint exists only for POST; a GET/PUT/etc. against
+          -- it is a client error, never a Vault read (the secrets it owns are
+          -- read in-cluster via Vault Kubernetes auth, never echoed back).
+          sendHttpResponse sock 405 "text/plain" "method not allowed\n"
+    Nothing ->
+      case federationBootstrapChildId path of
         Just childId -> do
           bootstrapResult <- readFederationChildBootstrap (envBootConfig env) (Text.pack childId)
           case bootstrapResult of
@@ -2426,7 +2503,7 @@ operatorJwtHeaderName = "x-prodbox-operator-jwt"
 -- so the read dispatch handles everything else unchanged.
 operatorSecretLogicalPath :: String -> Maybe String
 operatorSecretLogicalPath path = do
-  logical <- stripPrefix "/v1/secret/" path
+  logical <- stripPrefix operatorSecretPathPrefix path
   if logical `elem` allowedOperatorSecretPaths
     then Just logical
     else Nothing
@@ -2477,26 +2554,29 @@ decodeOperatorSecretFields body
 -- Sprint 2.29: pre-Vault bootstrap route. The password-bearing request is
 -- accepted only through the loopback-restricted daemon NodePort and is never
 -- logged or echoed.
+-- Sprint 2.34: these are projections of the compiled route registry
+-- ("Prodbox.Gateway.Routes"), not independent literals, so the daemon's own
+-- diagnostics cannot drift from the dispatcher and client.
 bootstrapVaultPath :: String
-bootstrapVaultPath = "/v1/bootstrap/vault/ensure"
+bootstrapVaultPath = routePattern RouteBootstrapVaultEnsure
 
 bootstrapVaultStatusPath :: String
-bootstrapVaultStatusPath = "/v1/bootstrap/vault/status"
+bootstrapVaultStatusPath = routePattern RouteBootstrapVaultStatus
 
 bootstrapVaultSealPath :: String
-bootstrapVaultSealPath = "/v1/bootstrap/vault/seal"
+bootstrapVaultSealPath = routePattern RouteBootstrapVaultSeal
 
 bootstrapVaultRotateUnlockBundlePath :: String
-bootstrapVaultRotateUnlockBundlePath = "/v1/bootstrap/vault/rotate-unlock-bundle"
+bootstrapVaultRotateUnlockBundlePath = routePattern RouteBootstrapVaultRotateUnlockBundle
 
 bootstrapVaultRotateTransitKeyPath :: String
-bootstrapVaultRotateTransitKeyPath = "/v1/bootstrap/vault/rotate-transit-key"
+bootstrapVaultRotateTransitKeyPath = routePattern RouteBootstrapVaultRotateTransitKey
 
 bootstrapVaultPkiStatusPath :: String
-bootstrapVaultPkiStatusPath = "/v1/bootstrap/vault/pki/status"
+bootstrapVaultPkiStatusPath = routePattern RouteBootstrapVaultPkiStatus
 
 bootstrapVaultPkiIssueTestCertPath :: String
-bootstrapVaultPkiIssueTestCertPath = "/v1/bootstrap/vault/pki/issue-test-cert"
+bootstrapVaultPkiIssueTestCertPath = routePattern RouteBootstrapVaultPkiIssueTestCert
 
 bootstrapVaultRequestMaxBytes :: Int
 bootstrapVaultRequestMaxBytes = 64 * 1024
@@ -3559,41 +3639,63 @@ readTargetSecret env coordinate = do
   case identityResult of
     Left err -> pure (Left err)
     Right () -> do
-      tokenResult <- resolveTargetSecretVaultToken (envBootConfig env)
-      case tokenResult of
+      sessionResult <- resolveTargetSecretVaultSession (envBootConfig env)
+      case sessionResult of
         Left err -> pure (Left (TargetSecretAuthUnavailable err))
-        Right (address, token) ->
-          readTargetSecretWithToken address token coordinate
+        Right session -> do
+          -- Sprint 1.64: route the read through the cached session so a stale
+          -- cached token that draws a 403 triggers exactly one
+          -- invalidate-and-relogin before the read is reinterpreted.
+          result <-
+            withSessionToken session $ \token ->
+              rawTargetSecretVersionedRead (sessionAddress session) token coordinate
+          pure (interpretTargetSecretRead result)
 
+-- | The raw versioned read, surfacing the 'HttpError' so a caller (via
+-- 'withSessionToken') can react to a 403.
+rawTargetSecretVersionedRead
+  :: VaultAddress
+  -> VaultToken
+  -> TargetSecret.TargetSecretCoordinate
+  -> IO (Either HttpError KvV2VersionedSecret)
+rawTargetSecretVersionedRead address token coordinate =
+  vaultKvReadVersionedV2
+    address
+    token
+    (TargetSecret.targetSecretCoordinateVaultMount coordinate)
+    (TargetSecret.targetSecretCoordinateKvPath coordinate)
+
+-- | Pure interpretation of a versioned target-secret read.
+interpretTargetSecretRead
+  :: Either HttpError KvV2VersionedSecret
+  -> Either TargetSecretActionError TargetSecret.TargetSecretObservation
+interpretTargetSecretRead result = case result of
+  Left (HttpStatus 404 _) -> Right TargetSecret.TargetSecretMissing
+  Left err ->
+    Left
+      ( TargetSecretVaultUnavailable
+          ("target-secret Vault read failed: " ++ renderHttpError err)
+      )
+  Right versioned ->
+    case TargetSecret.targetSecretRecordFromVaultFields
+      (kvV2VersionedSecretData versioned) of
+      Left err -> Left (TargetSecretStoredPayloadInvalid err)
+      Right record ->
+        Right
+          ( TargetSecret.TargetSecretObserved
+              (kvV2VersionedSecretVersion versioned)
+              record
+          )
+
+-- | Post-write re-read used by 'compareAndSwapTargetSecretVault', which already
+-- holds the token from its guarded write.
 readTargetSecretWithToken
   :: VaultAddress
   -> VaultToken
   -> TargetSecret.TargetSecretCoordinate
   -> IO (Either TargetSecretActionError TargetSecret.TargetSecretObservation)
-readTargetSecretWithToken address token coordinate = do
-  result <-
-    vaultKvReadVersionedV2
-      address
-      token
-      (TargetSecret.targetSecretCoordinateVaultMount coordinate)
-      (TargetSecret.targetSecretCoordinateKvPath coordinate)
-  pure $ case result of
-    Left (HttpStatus 404 _) -> Right TargetSecret.TargetSecretMissing
-    Left err ->
-      Left
-        ( TargetSecretVaultUnavailable
-            ("target-secret Vault read failed: " ++ renderHttpError err)
-        )
-    Right versioned ->
-      case TargetSecret.targetSecretRecordFromVaultFields
-        (kvV2VersionedSecretData versioned) of
-        Left err -> Left (TargetSecretStoredPayloadInvalid err)
-        Right record ->
-          Right
-            ( TargetSecret.TargetSecretObserved
-                (kvV2VersionedSecretVersion versioned)
-                record
-            )
+readTargetSecretWithToken address token coordinate =
+  interpretTargetSecretRead <$> rawTargetSecretVersionedRead address token coordinate
 
 compareAndSwapTargetSecretVault
   :: DaemonEnv
@@ -4039,6 +4141,11 @@ handleOperatorSecretWrite sock env rawRequest logical =
 
 -- | Exchange the operator JWT for a Vault token under the operator-write role
 -- and write the KV v2 object at @secret/<logical>@.
+--
+-- LEGACY-ESCAPE[per-request-operator-secret-vault-login]: a second gateway
+-- fresh Vault Kubernetes-auth login, distinct from resolveGatewayVaultTokenFor,
+-- performed on every operator-secret write. Registered in
+-- Prodbox.Legacy.EscapeRegistry; folded onto the cached session in Sprint 1.64.
 writeOperatorSecret
   :: DaemonConfig
   -> Text.Text
@@ -4080,8 +4187,8 @@ data FederationChildBootstrapError
 
 federationBootstrapChildId :: String -> Maybe String
 federationBootstrapChildId path = do
-  rest <- stripPrefix "/v1/federation/children/" path
-  let suffix = "/bootstrap"
+  rest <- stripPrefix federationChildPathPrefix path
+  let suffix = federationChildBootstrapSuffix
   if suffix `isSuffixOf` rest
     then
       let childId = take (length rest - length suffix) rest
@@ -4147,32 +4254,74 @@ resolveTargetSecretVaultToken
 resolveTargetSecretVaultToken =
   resolveGatewayVaultTokenFor "target-secret unavailable"
 
+resolveTargetSecretVaultSession :: DaemonConfig -> IO (Either String VaultSession)
+resolveTargetSecretVaultSession =
+  resolveGatewayVaultSessionFor "target-secret unavailable"
+
+-- | Sprint 1.64: the gateway daemon's own service-account Vault token is now
+-- served from the shared cached renewable session in "Prodbox.Vault.Session"
+-- rather than a fresh Kubernetes login on every request (counterexample
+-- @LCPC-2026-07-11@'s gateway hot-path CPU driver). The session caches the
+-- token, renews it single-flight at two-thirds of the lease, and — through
+-- 'withSessionToken' — reacts to a @403@ with one invalidate-and-relogin.
 resolveGatewayVaultTokenFor
   :: String
   -> DaemonConfig
   -> IO (Either String (VaultAddress, VaultToken))
-resolveGatewayVaultTokenFor label config =
+resolveGatewayVaultTokenFor label config = do
+  sessionResult <- resolveGatewayVaultSessionFor label config
+  case sessionResult of
+    Left err -> pure (Left err)
+    Right session -> do
+      tokenResult <- sessionToken session
+      pure $ case tokenResult of
+        Left sessionErr ->
+          Left (label ++ ": Vault Kubernetes auth failed: " ++ renderVaultSessionError sessionErr)
+        Right token -> Right (sessionAddress session, token)
+
+-- | Look up (or lazily create) the shared cached session for the gateway
+-- daemon's own service-account role. The login effect re-reads the current
+-- service-account JWT on every refresh, so token rotation is honored.
+resolveGatewayVaultSessionFor
+  :: String -> DaemonConfig -> IO (Either String VaultSession)
+resolveGatewayVaultSessionFor label config =
   case daemonVaultAuth config of
     Nothing ->
       pure (Left (label ++ ": gateway Vault auth is not configured"))
     Just auth -> do
-      jwtResult <-
-        readGatewayServiceAccountTokenFor
-          label
-          (gatewayVaultServiceAccountTokenFile auth)
-      case jwtResult of
-        Left err -> pure (Left err)
-        Right jwt -> do
-          let address = VaultAddress (Text.pack (gatewayVaultAddress auth))
-          loginResult <-
-            vaultKubernetesLogin
-              address
-              (Text.pack (gatewayVaultAuthPath auth))
-              (Text.pack (gatewayVaultRole auth))
-              jwt
-          pure $ case loginResult of
-            Left err -> Left (label ++ ": Vault Kubernetes auth failed: " ++ renderHttpError err)
-            Right token -> Right (address, token)
+      let address = VaultAddress (Text.pack (gatewayVaultAddress auth))
+          key =
+            GatewaySessionKey
+              { gatewaySessionAddress = gatewayVaultAddress auth
+              , gatewaySessionAuthPath = gatewayVaultAuthPath auth
+              , gatewaySessionRole = gatewayVaultRole auth
+              }
+          login = do
+            jwtResult <-
+              readGatewayServiceAccountTokenFor
+                label
+                (gatewayVaultServiceAccountTokenFile auth)
+            case jwtResult of
+              Left err -> pure (Left (VaultSessionUnavailable err))
+              Right jwt -> do
+                loginResult <-
+                  vaultKubernetesLoginWithLease
+                    address
+                    (Text.pack (gatewayVaultAuthPath auth))
+                    (Text.pack (gatewayVaultRole auth))
+                    jwt
+                pure $ case loginResult of
+                  Left httpErr -> Left (httpErrorToSessionError httpErr)
+                  Right result ->
+                    Right
+                      LoginLease
+                        { loginLeaseToken = vaultLoginToken result
+                        , loginLeaseSeconds = vaultLoginLeaseSeconds result
+                        , loginLeaseRenewable = vaultLoginRenewable result
+                        }
+      session <-
+        resolveSharedSession key (\_ -> newVaultSession address realSessionClock login)
+      pure (Right session)
 
 readGatewayServiceAccountTokenFor
   :: String -> FilePath -> IO (Either String Text.Text)
@@ -4273,9 +4422,9 @@ acceptWhileServing maxConnections allowDuringDrain sock env handleClient = do
     `finally` closeQueuedConnections connectionQueue
  where
   acceptConnections connectionQueue connectionSlots = do
-    readiness <- readTVarIO (envReadiness env)
-    case readiness of
-      Draining
+    drainPhase <- readTVarIO (envDrainPhase env)
+    case drainPhase of
+      PhaseDraining
         | not allowDuringDrain -> pure ()
       _ -> do
         maybeReadable <- waitForSocketRead sock
@@ -4296,8 +4445,8 @@ acceptWhileServing maxConnections allowDuringDrain sock env handleClient = do
         atomically (stopForDrain `orElse` acquireSlot)
    where
     stopForDrain = do
-      readiness <- readTVar (envReadiness env)
-      if readiness == Draining then pure False else retry
+      drainPhase <- readTVar (envDrainPhase env)
+      if drainPhase == PhaseDraining then pure False else retry
     acquireSlot = readTBQueue connectionSlots >> pure True
 
   enqueueAcceptedConnection connectionQueue connectionSlots =

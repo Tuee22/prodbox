@@ -1,3 +1,4 @@
+{-# LANGUAGE DataKinds #-}
 {-# LANGUAGE OverloadedStrings #-}
 {-# LANGUAGE ScopedTypeVariables #-}
 
@@ -57,6 +58,7 @@ import Prodbox.Lifecycle.CheckpointAuthority
   , ModelBObjectCoordinate
   , ModelBObjectVersion
   , ModelBObservation (..)
+  , StoreLifetime (ChartLifetime, ClusterRetained)
   )
 import Prodbox.Lifecycle.Lease
   ( FencedCommitPermit
@@ -259,9 +261,9 @@ withDecryptedStackEnvironment repoRoot stackRef environment action =
 -- caller revalidates current lease ownership; a stale writer therefore cannot
 -- commit over a successor's checkpoint version.
 withFencedDecryptedStackEnvironment
-  :: ModelBCasAdapter IO ByteString
-  -> ModelBObjectCoordinate
-  -> ModelBObjectCoordinate
+  :: ModelBCasAdapter 'ChartLifetime IO ByteString
+  -> ModelBObjectCoordinate 'ChartLifetime
+  -> ModelBObjectCoordinate 'ClusterRetained
   -> Maybe LegacyPulumiBackend
   -> PulumiStackRef
   -> [(String, String)]
@@ -355,8 +357,8 @@ data FencedLoadedCheckpoint = FencedLoadedCheckpoint
   }
 
 loadFencedCheckpoint
-  :: ModelBCasAdapter IO ByteString
-  -> ModelBObjectCoordinate
+  :: ModelBCasAdapter 'ChartLifetime IO ByteString
+  -> ModelBObjectCoordinate 'ChartLifetime
   -> Maybe LegacyPulumiBackend
   -> PulumiStackRef
   -> IO (Either String FencedLoadedCheckpoint)

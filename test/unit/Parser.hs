@@ -178,7 +178,7 @@ commandPathOfRequest request =
           "config"
             : case configCommand of
               ConfigSetup _ -> ["setup"]
-              ConfigShow _ -> ["show"]
+              ConfigShow -> ["show"]
               ConfigValidate -> ["validate"]
               ConfigSchema -> ["schema"]
               ConfigGenerate -> ["generate"]

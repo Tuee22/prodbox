@@ -161,6 +161,10 @@ withHostDirectPulumiPortForward material action =
 -- 'Prodbox.Gateway.Daemon.readDaemonPulumiObject': an absent object OR absent
 -- bucket ('EncryptedObjectMissing') is @Right Nothing@ (positively absent);
 -- every other failure stays @Left@ (failure-to-observe is not absence).
+-- LEGACY-ESCAPE[host-direct-object-store]: hostDirectGet/Put/DeletePulumiObject
+-- let the host CLI read and write the Model-B object store directly instead of
+-- through the Lifecycle Authority / Target Secret Agent. Registered in
+-- Prodbox.Legacy.EscapeRegistry; removed by Sprint 4.50.
 hostDirectGetPulumiObject :: HostDirectPulumiHandle -> Text -> IO (Either String (Maybe ByteString))
 hostDirectGetPulumiObject handle stackName = do
   result <-

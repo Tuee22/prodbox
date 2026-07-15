@@ -21,20 +21,38 @@
 
 ## Phase Status
 
-📋 **Expanded 2026-07-12 with the Foundation Epoch's phase-2 slice.** Sprint `2.34` (Planned;
+✅ **Expanded 2026-07-12 with the Foundation Epoch's phase-2 slice; Sprint `2.34` landed
+2026-07-12.** Sprint `2.34` (Done;
 registered by governance Sprint `0.17` in
 [phase-0-planning-documentation.md](phase-0-planning-documentation.md) for counterexample
-`LCPC-2026-07-11`, mechanism `F-READY`) adds the compiled service boundary and latched readiness
+`LCPC-2026-07-11`, mechanism `F-READY`) added the compiled service boundary and latched readiness
 surface: a closed `GatewayRoute` registry as the one place any daemon path string exists, with the
-dispatcher, clients, and chart probe rendering as projections; one pure latched readiness
-projection whose admission requires the first proven object-store round trip since boot; and a
-`GatewayChartStatics` record feeding the deployed values and generated port/identity sections. It
-absorbs the exact-readiness-evidence deliverable rescoped out of Sprint `1.61` (see
+dispatcher, clients, chart probe rendering, and the `ObjectStore`/`TargetSecret` wire paths as
+projections; one pure latched readiness projection (`computeReadiness`) whose admission requires the
+first proven object-store round trip since boot and does not flap; and a `GatewayChartStatics` record
+feeding the deployed values and the generated port/identity sections with a forbidden-literal chart
+lint and a deployed-values-equal-compiled conformance gate. It absorbs the exact-readiness-evidence
+deliverable rescoped out of Sprint `1.61` (see
 [phase-1-runtime-cli-aws-foundations.md](phase-1-runtime-cli-aws-foundations.md)). The Foundation
 Epoch (Sprints `1.63`–`1.66`, `2.34`, `4.51`, `5.20`, `5.21`, and `7.34`) is the active work front
 and is executed before Sprints `1.61` and `1.62` as an execution-priority decision; it introduces
 no `Blocked by` edge onto the existing `1.61` → `8.12` chain, which resumes unchanged once the
 epoch closes. Sprints `2.32`/`2.33` and their `Blocked by` edges are unchanged.
+
+⏸️ **Expanded 2026-07-12 with the certificate-scope tail (Sprint `2.35`, Blocked by `2.34`).**
+Governance Sprint `0.18` in
+[phase-0-planning-documentation.md](phase-0-planning-documentation.md) registered Sprint `2.35`
+(Configurable Certificate Scope Algebra and Derived Edge Projections): a pure `CertScope` algebra
+plus a Tier-0 scope-set config with fail-fast validation makes a served hostname not covered by the
+configured scope set — and a wildcard anchored at a zone the operator has not delegated in config —
+unrepresentable on the prodbox-managed side, and derives the certificate `dnsNames`, the Gateway
+listener hostnames, the served-FQDN list, and the `public-edge-tls/<substrate>/<fqdn>` retention key
+as total projections of that one configured scope set. It reuses Sprint `2.34`'s compiled-projection
+/ generated-section machinery (hence the `Blocked by` edge onto `2.34`) and adds the `edge status`
+`certificate-renew-due`/`certificate-expired` rungs, observed fail-closed from cert-manager
+`status.renewalTime`/`notAfter` with no repo-side renewal-window recompute. Live serving proof is
+owned by Sprint `5.22` in [phase-5-canonical-test-suite.md](phase-5-canonical-test-suite.md). This
+introduces no `Blocked by` edge onto the existing `1.61` → `8.12` chain.
 
 ⏸️ **Reopened and blocked by Sprint `1.62`.** Sprint `2.32` replaces the global child-process
 permit and interleavable continuity loops with one bounded single-writer emitter actor that owns an
@@ -2994,21 +3012,47 @@ initialization or unseal.
 
 - Link Sprint `3.26` as chart rendering adoption without making this phase depend on Phase 3.
 
-## Sprint 2.34: Compiled Service Boundary and Latched Readiness [📋 Planned]
+## Sprint 2.34: Compiled Service Boundary and Latched Readiness [✅ Done]
 
-**Status**: Planned
-**Deployment qualification**: pending
-**Implementation**: planned `src/Prodbox/Gateway/Routes.hs`, `src/Prodbox/Gateway/Readiness.hs`,
-`src/Prodbox/Gateway/ChartStatics.hs`; revisions to `src/Prodbox/Gateway/Daemon.hs`,
-`src/Prodbox/Gateway/Probe.hs`, `src/Prodbox/Gateway/Client.hs`,
-`src/Prodbox/Lib/ChartPlatform.hs`, `src/Prodbox/CheckCode.hs`, and `src/Prodbox/TestRestore.hs`
-**Independent Validation**: pure route-registry non-overlap/round-trip tables; a conformance spec
-proving deployed helm values equal the compiled registry/statics projections; readiness projection
-tables; all pre-cluster.
-**Docs to update**: `documents/engineering/lifecycle_control_plane_architecture.md`,
-`documents/engineering/helm_chart_platform_doctrine.md`,
-`documents/engineering/distributed_gateway_architecture.md`, and
-`documents/engineering/bootstrap_readiness_doctrine.md`
+**Status**: Done
+**Deployment qualification**: The code-owned deliverables are landed and proven pre-cluster (see
+Independent Validation). Standard O: the readiness projection, the monotone proof latch, the deleted
+serve-start write, and the `/readyz` precheck are proven by pure projection tables, the real daemon
+`prodbox-daemon-lifecycle` suite, and the CLI integration suite — but the "earn the latch via a live
+Vault-enveloped MinIO round trip" step is *seeded* in those no-Vault/no-MinIO harnesses
+(`PRODBOX_TEST_OBJECT_STORE_PROOF_LATCH`) and is only exercised for real against live infrastructure
+by the AWS/chaos integration validations, so it cannot silently regress unobserved there.
+**Implementation**: ✅ **Fully landed.** Compiled service boundary — `src/Prodbox/Gateway/Routes.hs`
+(closed `GatewayRoute` registry), the total-case dispatcher `dispatchGatewayRoute`/`dispatchPatternRoute`
+in `src/Prodbox/Gateway/Daemon.hs`, the client URL projections in `src/Prodbox/Gateway/Client.hs`, the
+probe projection + `GatewayProbeEndpoint` deletion in `src/Prodbox/Gateway/Probe.hs`, and the
+`ObjectStore`/`TargetSecret` path constants now projected from `routePattern`. Latched readiness —
+`src/Prodbox/Gateway/Readiness.hs` (`computeReadiness` over drain-phase / object-store-proof /
+workers-started), the deleted unconditional serve-start `Ready` write, the `envReadiness` split into
+three monotone `TVar`s, the proof latch set in `installRuntime`'s continuity-publish STM transaction,
+the `/readyz` precheck on the lifecycle-restore gate (`TestRestore.hs` + `queryReadyz` in
+`Gateway/Client.hs`), the readiness `failureThreshold` 3 → 6, and the `PRODBOX_TEST_OBJECT_STORE_PROOF_LATCH`
+harness seed. Chart statics — `src/Prodbox/Gateway/ChartStatics.hs`, the `valuesForGateway` +
+`values.yaml` `gateway-chart-statics.values` generated section, the `.Values.serviceAccount.name`
+template binding, the forbidden-raw-literal chart lint, and the deployed-values-equal-compiled
+conformance gate in `runConformanceTier`. Unit suites `test/unit/GatewayReadiness.hs` and
+`test/unit/GatewayChartStatics.hs`.
+**Independent Validation**: ✅ pure route-registry non-overlap/round-trip tables
+(`test/unit/GatewayRoutes.hs`); ✅ readiness projection tables proving no admission before the first
+proven round trip and no flap on later degradation (`test/unit/GatewayReadiness.hs`); ✅ a conformance
+spec proving deployed helm values equal the compiled statics projection
+(`test/unit/GatewayChartStatics.hs` + the `runConformanceTier` gate); ✅ the lifecycle-gate `/readyz`
+precheck composition proof (fail-closed, round trip not attempted while `/readyz` unready). Evidence:
+warning-clean `-Werror` build, fourmolu/hlint clean, unit 1610/1610, `prodbox-daemon-lifecycle` 13/13
+(real daemon `/healthz`/`/readyz` ready + SIGTERM drain to 503 + the pre-Vault invariant), CLI+env
+integration 49/49, and `prodbox dev check` exit 0 (env-read lint scope, generated-section drift, chart
+lint, conformance tier). All pre-cluster.
+**Docs updated**: `documents/engineering/lifecycle_control_plane_architecture.md` (§10.2, already
+aligned), `documents/engineering/helm_chart_platform_doctrine.md` (§1A chart lint + gateway
+chart-statics contract), `documents/engineering/distributed_gateway_architecture.md` (already
+aligned), `documents/engineering/bootstrap_readiness_doctrine.md` (§2.1 latched-readiness note +
+Sprint `1.61` rescope pointer), and `documents/engineering/config_doctrine.md` (§10
+`PRODBOX_TEST_OBJECT_STORE_PROOF_LATCH` sanctioned test hook).
 
 ### Objective
 
@@ -3045,10 +3089,47 @@ the divergent readiness notions into a single pure latched projection.
    round trip since boot, and no flap on later transient backend degradation.
 4. All of the above run pre-cluster; `prodbox dev check` and `prodbox test unit` pass.
 
+### Current Validation State
+
+All three deliverable groups are ✅ landed and validated pre-cluster.
+
+- **Compiled service boundary**: the closed `GatewayRoute` registry (`Enum`/`Bounded`,
+  `routePattern`/`routeClass`/`routeForPath` and the `kubeletProbeRoute` smart constructor) is the
+  single source of every daemon path string; the daemon dispatcher is a total `case` over it (a
+  registered route without an arm is a `-Werror` compile error); the daemon diagnostics, the gateway
+  client (`Prodbox.Gateway.Client`), the chart probe paths (`Prodbox.Gateway.Probe`,
+  `GatewayProbeEndpoint` deleted), and the `ObjectStore`/`TargetSecret` wire-path constants are all
+  projections of `routePattern`.
+- **Latched readiness**: `computeReadiness` (`src/Prodbox/Gateway/Readiness.hs`) folds three monotone
+  cached facts (drain phase, object-store proof, workers-started) with zero I/O; the unconditional
+  serve-start `Ready` write is deleted and `envReadiness` is split into three `TVar`s; the proof latch
+  is set once in `installRuntime`'s continuity-publish STM transaction on the first validated
+  `StartupRecovery`; the lifecycle-restore gate gains a `/readyz` precheck (lifecycle-ready ⟹
+  kubelet-ready); the readiness `failureThreshold` is 3 → 6. The `prodbox-daemon-lifecycle` and CLI
+  integration harnesses seed the proof via `PRODBOX_TEST_OBJECT_STORE_PROOF_LATCH` (no live
+  Vault/MinIO). This absorbs the exact-readiness-evidence deliverable rescoped from Sprint `1.61`.
+- **Chart statics**: `Prodbox.Gateway.ChartStatics` is the one source for ports / NodePort /
+  ServiceAccount / Vault-role; `valuesForGateway` and the generated `gateway-chart-statics.values`
+  section project from it, the templates render `{{ .Values.serviceAccount.name }}`, a chart lint
+  forbids the raw literal, and a `runConformanceTier` gate proves the committed `values.yaml` equals
+  the compiled projection.
+
+Evidence: warning-clean `-Werror` build, fourmolu/hlint clean, unit 1610/1610 (incl.
+`test/unit/GatewayRoutes.hs`, `GatewayReadiness.hs`, `GatewayChartStatics.hs`),
+`prodbox-daemon-lifecycle` 13/13 (real daemon `/healthz`/`/readyz` ready + SIGTERM drain to 503 + the
+pre-Vault invariant), CLI+env integration 49/49, and `prodbox dev check` exit 0 (env-read lint scope,
+generated-section drift, chart lint, conformance tier).
+
+Standard O: the "earn the latch via a live Vault-enveloped MinIO round trip" step is *seeded* in the
+no-Vault/no-MinIO harnesses and is only exercised for real against live infrastructure by the
+AWS/chaos integration validations.
+
 ### Remaining Work
 
-- All deliverables. The Foundation Epoch (Sprints `1.63`–`1.66`, `2.34`, `4.51`, `5.20`, `5.21`,
-  and `7.34`) is the active work front and is executed before Sprints `1.61` and `1.62` as an
+- None (code-owned). The live round-trip readiness gate is proven only against live infrastructure
+  by the AWS/chaos integration validations, per the Standard O note above.
+- Foundation Epoch context: the Foundation Epoch (Sprints `1.63`–`1.66`, `2.34`, `4.51`, `5.20`,
+  `5.21`, and `7.34`) is the active work front, executed before Sprints `1.61` and `1.62` as an
   execution-priority decision; it introduces no `Blocked by` edge onto the existing `1.61` → `8.12`
   chain, which resumes unchanged once the epoch closes. Sprints `2.32` and `2.33` retain their
   existing `Blocked by` edges.
@@ -3076,6 +3157,104 @@ the divergent readiness notions into a single pure latched projection.
   [phase-1-runtime-cli-aws-foundations.md](phase-1-runtime-cli-aws-foundations.md) and the
   deletion-ledger rows owned by this sprint in
   [legacy-tracking-for-deletion.md](legacy-tracking-for-deletion.md).
+
+## Sprint 2.35: Configurable Certificate Scope Algebra and Derived Edge Projections [⏸️ Blocked]
+
+**Status**: Blocked
+**Blocked by**: Sprint `2.34`
+**Deployment qualification**: pending
+**Implementation**: planned `src/Prodbox/Tls/CertScope.hs`, Tier-0 scope-set config +
+validation in the config schema surface, derived-`dnsNames` generated section for
+`charts/keycloak/templates/gateway.yaml` and `charts/gateway/templates/certificates.yaml`,
+retention re-key in `src/Prodbox/PublicEdge.hs` / `src/Prodbox/Lifecycle/LiveResidue.hs`,
+`validateSupportedPublicHost` pin replacement in `src/Prodbox/Settings.hs`, and the
+`edge status` expiry observer
+**Independent Validation**: pure property tests (partial-order laws for `impliedBy`,
+`covers` totality, `mkScopeSet` rejection of undeclared-zone wildcards and `bindListener`
+rejection of uncovered hosts, coverage-preservation of restore-vs-reissue) with generators
+spanning disjoint, non-covering, apex, multi-label, and single-label boundary scopes; no
+cluster required.
+**Docs to update**: `documents/engineering/acme_provider_guide.md`,
+`documents/engineering/envoy_gateway_edge_doctrine.md`,
+`documents/engineering/lifecycle_control_plane_architecture.md`
+
+### Objective
+
+Make certificate scope operator-configurable with illegal states unrepresentable on the
+prodbox-managed side, and derive every edge projection from the one configured scope set, so the
+drift that produced the orphan dashboard certificate cannot recur on the managed side.
+
+### Deliverables
+
+- Define the pure `CertScope` algebra in `src/Prodbox/Tls/CertScope.hs`: smart-constructed `Fqdn`,
+  `CertScope` (`ScopeExact`/`ScopeWildcard DelegatedZone`), a canonical (deduped, ordered)
+  `CertScopeSet`, total `covers`, the narrower-or-equal partial order `impliedBy`, `mkScopeSet`
+  (rejecting wildcards anchored at an undeclared zone), and `bindListener` (rejecting an uncovered
+  host). `DelegatedZone` is anchored in Tier-0 config — the home parent zone and
+  `aws_substrate.subzone_name` — not the Public Suffix List. A wildcard never matches the apex or
+  more than one label, so apex coverage requires an explicit exact scope.
+- Add the Tier-0 scope-set config field plus fail-fast validation so a served hostname with no
+  covering configured scope, and a wildcard anchored at a zone the operator has not delegated in
+  config, are unrepresentable on the prodbox-managed side. The default configured scope set is
+  today's exact served hosts, so there is no behavior change until an operator widens scope.
+- Derive both hand-authored `dnsNames` sites — `charts/keycloak/templates/gateway.yaml` and
+  `charts/gateway/templates/certificates.yaml` — from the scope set via a generated section,
+  reusing Sprint `2.34`'s chart-statics / route-registry generated-section machinery, so the
+  certificate `dnsNames`, listener hostnames, and served-FQDN list are total projections of one set.
+- Re-key retention by the canonical scope-set serialization, generalizing the
+  `public-edge-tls/<substrate>/<fqdn>` coordinate, with restore-before-issue decided by `impliedBy`:
+  reuse retained material when the configured scope set is `impliedBy` the retained certificate's
+  scope (narrower-or-equal), and trigger one quota-conscious fresh ACME order on widening.
+- Replace the `validateSupportedPublicHost` hard-pinned single public-host literal in
+  `src/Prodbox/Settings.hs` with scope-set coverage: a served hostname is admissible iff the
+  configured scope set covers it.
+- Add the `edge status` `certificate-renew-due`/`certificate-expired` rungs, observed fail-closed
+  from cert-manager `status.renewalTime` (absent ⇒ `certificate-unobservable`) and `notAfter`, with
+  no repo-side renewal-window recompute (which would drift from the chart `renewBefore: 720h`).
+  Renewal stays cert-manager's / ZeroSSL's alone; prodbox observes expiry and never drives ACME
+  renewal from the daemon.
+
+### Validation
+
+1. Pure property tests prove the partial-order laws for `impliedBy`, the totality of `covers`,
+   `mkScopeSet` rejection of undeclared-zone wildcards, and `bindListener` rejection of uncovered
+   hosts.
+2. Coverage / narrowing tables reproduce the boundary cases — a wildcard covers a single label but
+   neither the apex nor a deeper `a.b.z`, and `*.a.z` is not `impliedBy` `*.z` — with generators
+   spanning disjoint, non-covering, apex, multi-label, and single-label boundary scopes.
+3. A conformance check proves both generated `dnsNames` sites equal the scope-set projection, and a
+   restore-vs-reissue table proves narrower-or-equal reuses retained material while widening orders
+   once.
+4. All of the above run pre-cluster; `prodbox dev check` and `prodbox test unit` pass.
+
+### Remaining Work
+
+- All deliverables. Blocked by Sprint `2.34` because it reuses that sprint's
+  compiled-projection / generated-section machinery. Live serving proof — a real TLS handshake
+  against every scope-covered hostname with a real ZeroSSL DNS-01 certificate — is owned by Sprint
+  `5.22` in [phase-5-canonical-test-suite.md](phase-5-canonical-test-suite.md).
+
+## Documentation Requirements
+
+**Engineering docs to create/update:**
+
+- `documents/engineering/acme_provider_guide.md` - configurable certificate scope, the
+  coverage/narrowing semantics, and the scope-change restore-vs-reissue rule keyed by `impliedBy`.
+- `documents/engineering/envoy_gateway_edge_doctrine.md` - served-FQDN set and listener hostnames as
+  projections of the configured `CertScopeSet`, and the `edge status` `certificate-renew-due` /
+  `certificate-expired` rungs.
+- `documents/engineering/lifecycle_control_plane_architecture.md` - retention re-key to the
+  canonical scope-set serialization and the closed certificate-material custody boundary.
+
+**Product docs to create/update:**
+
+- `README.md` - certificate-scope wording aligned with the configurable scope-set doctrine.
+
+**Cross-references to add:**
+
+- Link the serving-validation owner Sprint `5.22` in
+  [phase-5-canonical-test-suite.md](phase-5-canonical-test-suite.md) and the deletion-ledger rows
+  owned by this sprint in [legacy-tracking-for-deletion.md](legacy-tracking-for-deletion.md).
 
 ## Related Documents
 

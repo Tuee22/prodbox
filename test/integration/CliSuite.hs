@@ -356,6 +356,15 @@ integrationCliSuite = do
           writeFile ordersPath (gatewayOrdersAtPorts restPort socketPort)
           writeFile configPath (gatewayStartConfig vaultPort tokenPath ordersPath certPath keyPath caPath)
 
+          -- Sprint 2.34: this test exercises the daemon's federation endpoints
+          -- with a fake Vault and no MinIO, so the object-store proof latch can
+          -- never flip from a live round trip and /readyz would stay 503
+          -- "starting". Seed the latch via the sanctioned in-memory, read-once,
+          -- test-only PRODBOX_TEST_OBJECT_STORE_PROOF_LATCH hook so the daemon
+          -- reaches ready without a live round trip (the genuine gate is covered
+          -- by the AWS/chaos integration validations).
+          gatewayProofEnvironment <-
+            (++ [("PRODBOX_TEST_OBJECT_STORE_PROOF_LATCH", "1")]) <$> getEnvironment
           (_, _, _, processHandle) <-
             createProcess
               ( proc
@@ -370,6 +379,7 @@ integrationCliSuite = do
                   ]
               )
                 { cwd = Just tmpDir
+                , env = Just gatewayProofEnvironment
                 }
           let stopGateway = do
                 terminateProcess processHandle

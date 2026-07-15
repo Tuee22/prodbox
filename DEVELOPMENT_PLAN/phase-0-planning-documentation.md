@@ -14,6 +14,19 @@
 
 ## Phase Status
 
+✅ **Sprint `0.18` (2026-07-12) adds an operator-configurable certificate-scope governance policy on
+the same already-reclosed Phase 0 documentation/governance surface** — it neither re-closes nor
+reopens the phase (Sprint `0.17`'s reclosure below stands unchanged). Sprint `0.18` adopts a
+Tier-0-configurable certificate-scope policy that makes an unmanaged or uncovered served hostname
+unrepresentable on the prodbox-managed side, records the orphan ZeroSSL dashboard-certificate
+incident disposition (VS Code stays served at `https://test.resolvefintech.com/vscode` on the shared
+public host under the auto-renewing `zerossl-dns01` certificate; the operator revokes the orphan and
+unsubscribes from its click-to-renew mail — a manual ZeroSSL-console action), rejects parent→child
+certificate-material handoff in favor of delivered `AcmeEabMaterial` self-issuance, registers
+implementation Sprints `2.35` (Phase 2) and `5.22` (Phase 5), and retires the root
+`ZEROSSL_POLICY.md` into the governed engineering docs. No implementation sprint or deployment
+qualification is claimed by this plan-only governance addition.
+
 ✅ **Reclosed on its documentation/governance surface in Sprint `0.17` (2026-07-12).** Sprint `0.17`
 adopts the Foundation Epoch sequencing correction for counterexample `LCPC-2026-07-11`: Standard P
 gains the interim escape-path guard, Sprints `1.61` / `1.62` are shrink-rescoped, Sprints
@@ -1703,6 +1716,125 @@ chain resumes unchanged once the epoch closes.
 
 - Engineering docs name owning sprints sparingly and link the Development Plan; sprint status
   lives only in the plan suite.
+
+## Sprint 0.18: Certificate Scope Policy Adoption ✅
+
+**Status**: Done (2026-07-12; documentation/governance surface)
+**Deployment qualification**: pending
+**Implementation**: this documentation change — `documents/engineering/acme_provider_guide.md`,
+`documents/engineering/envoy_gateway_edge_doctrine.md`,
+`documents/engineering/lifecycle_control_plane_architecture.md`,
+`documents/engineering/cluster_federation_doctrine.md`, and
+`documents/engineering/README.md`; the `DEVELOPMENT_PLAN` phase-2 / phase-5 sprint registrations
+plus `README.md` / `00-overview.md` / `system-components.md` / `legacy-tracking-for-deletion.md`;
+and deletion of the root `ZEROSSL_POLICY.md`
+**Independent Validation**: documentation-only surface; `prodbox dev check`,
+`prodbox dev lint docs`, and `prodbox dev docs check` pass; sprint-status and cross-reference audits
+confirm Standard H / N / J compliance.
+**Docs to update**: `documents/engineering/acme_provider_guide.md`,
+`documents/engineering/envoy_gateway_edge_doctrine.md`,
+`documents/engineering/lifecycle_control_plane_architecture.md`,
+`documents/engineering/cluster_federation_doctrine.md`, `documents/engineering/README.md`
+
+### Objective
+
+Adopt an operator-configurable certificate-scope policy that makes an unmanaged or uncovered served
+hostname unrepresentable on the prodbox-managed side, and dispose of the orphan ZeroSSL dashboard
+(portal) certificate for `vscode.resolvefintech.com` as redundant drift rather than an automation
+gap. Certificate scope becomes a Tier-0-configured scope set (exact + wildcard scopes) rather than a
+hardcoded wildcard anchor; the Certificate `dnsNames`, Gateway listener hostnames, served-FQDN list,
+and the `public-edge-tls/<substrate>/<fqdn>` retention key are total projections of that one set, so
+the drift that produced the orphan certificate cannot recur on the prodbox-managed side. This is a
+plan-only governance addition on Phase 0's already-reclosed surface: it registers implementation
+Sprints `2.35` (Phase 2) and `5.22` (Phase 5) and claims no implementation sprint or deployment
+qualification.
+
+### Deliverables
+
+- The orphan-dashboard-certificate incident disposition is recorded: VS Code stays served at
+  `https://test.resolvefintech.com/vscode` on the shared public host under the cert-manager
+  `zerossl-dns01` (ZeroSSL ACME over DNS-01 / Route 53) certificate that auto-renews silently and is
+  retained across rebuilds as a Vault-Transit-wrapped envelope under
+  `public-edge-tls/<substrate>/<fqdn>`; the operator revokes the orphan certificate and unsubscribes
+  from its click-to-renew mail — a manual ZeroSSL-console action outside the prodbox-managed surface.
+- The target-shape doctrine is encoded in the governed engineering docs: certificate scope is an
+  operator-configurable `CertScopeSet`, illegal states (a served hostname not covered by the
+  configured scope set; a wildcard anchored at a zone the operator has not delegated in config) are
+  made unrepresentable by smart constructors plus fail-fast config validation, wildcard scopes are
+  supported only when anchored at a config-declared delegated zone (org-apex wildcards discouraged on
+  blast-radius grounds), and the apex requires an explicit exact scope because a wildcard never
+  matches the apex or more than one label. Retained restore-vs-reissue is keyed by the narrowing
+  partial order `impliedBy` over a canonical scope-set serialization (reuse on narrower-or-equal, one
+  fresh ACME order on widening).
+- Parent→child certificate-material handoff is rejected in favor of delivered `AcmeEabMaterial`
+  self-issuance: child clusters self-issue in their own delegated zone and a parent never copies a
+  certificate private key into a routinely-destroyed test substrate; certificate material is not a
+  member of the closed `RetainedMaterialSchema`.
+- Expiry is observed, never driven: `edge status` gains `certificate-renew-due` /
+  `certificate-expired` rungs read from cert-manager `status.renewalTime` / `notAfter` (fail-closed
+  `certificate-unobservable` when `renewalTime` is absent), with no repo-side renewal-window
+  recompute; cert-manager / ZeroSSL own renewal. The CA-layer mitigation (CAA plus RFC 8657
+  `accounturi` binding, effective only if the CA enforces `accounturi` — unverified for
+  ZeroSSL / Sectigo, and plain CAA does not block same-CA dashboard issuance — with CT-log
+  observation as a detection backstop) is recorded as an investigation note, not a shipped or
+  guaranteed mechanism.
+- Implementation Sprints `2.35` (configurable certificate-scope algebra and derived edge
+  projections) and `5.22` (certificate-scope serving validation) are registered with their
+  deletion-ledger rows; the root `ZEROSSL_POLICY.md` is retired into the governed engineering docs
+  (its ALL-CAPS root name violated documentation_standards §2 and the SSoT topology, and its content
+  now lives in the governed docs and the plan suite).
+
+### Validation
+
+1. `prodbox dev check` exit 0.
+2. `prodbox dev lint docs` exit 0.
+3. `prodbox dev docs check` exit 0.
+4. Sprint-status and cross-reference audits confirm Standard H / N / J compliance: the new
+   `Blocked by` edges are Sprint `2.35` → Sprint `2.34` and Sprint `5.22` → Sprint `2.35`, and no
+   `Blocked by` names a higher-numbered sprint or later phase.
+
+### Remaining Work
+
+None on this surface — implementation is owned by Sprints `2.35` and `5.22`.
+
+## Documentation Requirements
+
+**Engineering docs to create/update:**
+
+- `documents/engineering/acme_provider_guide.md` — a new "Configurable Certificate Scope" section:
+  the certificate `dnsNames`, listener hostnames, served-FQDN list, and
+  `public-edge-tls/<substrate>/<fqdn>` retention key as total projections of one configured
+  `CertScopeSet`; the coverage / narrowing truth table; wildcard DNS-01 issuance over Route 53
+  (existing solver unchanged); the restore-vs-reissue rule keyed by `impliedBy`; the standing
+  ZeroSSL-sole-provider and dashboard-cert-is-drift rules; and the CA-layer investigation note.
+  Implementation owned by Sprints `2.35` / `5.22`.
+- `documents/engineering/envoy_gateway_edge_doctrine.md` — canonical statement 11 rewritten so
+  supported public routing serves hostnames that are total projections of the configured scope set
+  (wildcards allowed only when anchored at a config-declared delegated zone; org-apex wildcards
+  discouraged), the served-FQDN / listener projection paragraph in the traffic and hostname model,
+  and the `edge status` `certificate-renew-due` / `certificate-expired` rungs.
+- `documents/engineering/lifecycle_control_plane_architecture.md` — §5.4 retention-key
+  generalization to a canonical scope-set serialization key; §5.5 exclusion of certificate-material
+  handoff from the closed `RetainedMaterialSchema`; §13 scope-coverage / narrowing and
+  restore-vs-reissue verification-boundary tables.
+- `documents/engineering/cluster_federation_doctrine.md` — child-cluster public-edge TLS is per-zone
+  self-issuance with delivered `AcmeEabMaterial`; a parent never hands a child certificate
+  private-key material.
+- `documents/engineering/README.md` — index-line updates for the four docs above.
+
+**Product docs to create/update:**
+
+- None. The root `ZEROSSL_POLICY.md` is retired (its content now lives in the governed engineering
+  docs and the plan suite); the retirement itself is performed outside this phase document.
+
+**Cross-references to add:**
+
+- `documents/engineering/acme_provider_guide.md` gains
+  [phase-2-gateway-dns.md](phase-2-gateway-dns.md) and
+  [phase-5-canonical-test-suite.md](phase-5-canonical-test-suite.md) referrers;
+  `documents/engineering/envoy_gateway_edge_doctrine.md` gains a
+  [phase-2-gateway-dns.md](phase-2-gateway-dns.md) referrer. Engineering docs name owning sprints
+  sparingly and link the Development Plan; sprint status lives only in the plan suite.
 
 ## Related Documents
 

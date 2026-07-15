@@ -173,7 +173,7 @@ data K8sCommand
 
 data ConfigCommand
   = ConfigSetup PlanOptions
-  | ConfigShow Bool
+  | ConfigShow
   | ConfigValidate
   | -- | Sprint 7.17: regenerate the committed Dhall schema files
     -- (@prodbox-config-types.dhall@ + @test-secrets-types.dhall@) from the
@@ -252,12 +252,24 @@ data AwsTeardownFlags = AwsTeardownFlags
 --   neither per-run nor long-lived residue strands anything. Refusal
 --   on long-lived residue here would block every test-harness run
 --   because @aws-ses@ is the intended steady state.
+-- * 'BypassPerRunResidueForHarnessRefresh' — Sprint 7.34, harness-internal
+--   only, never CLI-settable. End-of-run @runAwsIamHarnessTeardown@ postflight
+--   semantics: it clears operational @aws.*@ unconditionally (per-run residue
+--   is destroyed separately by @awsPostflightDestroyActions@ and never strands
+--   @aws.*@ — the Sprint 7.9 stranding fix is retained), but it is
+--   PER-RUN-SCOPED: unlike 'BypassAllResidueForHarnessRefresh' it does not
+--   authorize destroying long-lived cross-substrate residue (@aws-ses@ / the
+--   retained @public-edge-tls@ certificate), restoring the long-lived
+--   protection ('residuePolicyProtectsLongLived'). This closes the policy half
+--   of the @F-SES@ class from @LCPC-2026-07-11@: the postflight is structurally
+--   unable to destroy the retained @aws-ses@ stack.
 data PulumiResiduePolicy
   = RefuseOnAnyResidue
   | DestroyPulumiResidueFirst
   | AcceptOrphanResidue
   | BypassPerRunResidueOnly
   | BypassAllResidueForHarnessRefresh
+  | BypassPerRunResidueForHarnessRefresh
   deriving (Eq, Show)
 
 data PulumiCommand

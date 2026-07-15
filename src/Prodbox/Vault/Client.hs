@@ -72,6 +72,8 @@ module Prodbox.Vault.Client
   , vaultPkiIssueTestCertificate
   , vaultWriteKubernetesAuthConfig
   , vaultKubernetesLogin
+  , vaultKubernetesLoginWithLease
+  , VaultKubernetesLoginResult (..)
   , vaultWriteKubernetesRole
   , vaultCreateToken
   , vaultTransitEncrypt
@@ -86,6 +88,7 @@ import Data.Aeson
   , Value
   , object
   , withObject
+  , (.!=)
   , (.:)
   , (.:?)
   , (.=)
@@ -217,9 +220,14 @@ instance ToJSON KubernetesLoginRequest where
       , "jwt" .= kubernetesLoginRequestJwt req
       ]
 
--- | The decoded token-bearing response from Vault Kubernetes auth.
-newtype KubernetesLoginResponse = KubernetesLoginResponse
+-- | The decoded token-bearing response from Vault Kubernetes auth. The
+-- @lease_duration@ (seconds) and @renewable@ fields are captured so a cached
+-- session can schedule renewal at a fraction of the TTL (Sprint 1.64); older
+-- callers that only need the token use 'vaultKubernetesLogin'.
+data KubernetesLoginResponse = KubernetesLoginResponse
   { kubernetesLoginResponseClientToken :: Text
+  , kubernetesLoginResponseLeaseSeconds :: Int
+  , kubernetesLoginResponseRenewable :: Bool
   }
   deriving (Eq, Show)
 
@@ -227,7 +235,19 @@ instance FromJSON KubernetesLoginResponse where
   parseJSON =
     withObject "KubernetesLoginResponse" $ \o -> do
       auth <- o .: "auth"
-      KubernetesLoginResponse <$> auth .: "client_token"
+      KubernetesLoginResponse
+        <$> auth .: "client_token"
+        <*> auth .:? "lease_duration" .!= 0
+        <*> auth .:? "renewable" .!= False
+
+-- | A Vault Kubernetes-auth login result carrying the lease evidence a cached
+-- session needs to schedule renewal (Sprint 1.64).
+data VaultKubernetesLoginResult = VaultKubernetesLoginResult
+  { vaultLoginToken :: VaultToken
+  , vaultLoginLeaseSeconds :: Int
+  , vaultLoginRenewable :: Bool
+  }
+  deriving (Eq, Show)
 
 -- | The @POST \/v1\/sys\/unseal@ request body (one key share per call).
 newtype UnsealRequest = UnsealRequest Text
@@ -806,13 +826,32 @@ vaultWriteKubernetesAuthConfig address token authPath kubernetesHost =
 -- JWT for a Vault token bound to a configured Vault role.
 vaultKubernetesLogin
   :: VaultAddress -> Text -> Text -> Text -> IO (Either HttpError VaultToken)
-vaultKubernetesLogin address authPath role jwt = do
+vaultKubernetesLogin address authPath role jwt =
+  fmap (fmap vaultLoginToken) (vaultKubernetesLoginWithLease address authPath role jwt)
+
+-- | @POST \/v1\/auth\/\<path\>\/login@ returning the full lease evidence (token,
+-- @lease_duration@ seconds, @renewable@) the cached session in
+-- 'Prodbox.Vault.Session' needs to schedule renewal (Sprint 1.64).
+vaultKubernetesLoginWithLease
+  :: VaultAddress
+  -> Text
+  -> Text
+  -> Text
+  -> IO (Either HttpError VaultKubernetesLoginResult)
+vaultKubernetesLoginWithLease address authPath role jwt = do
   result <-
     httpPostJsonResponseJson
       defaultHttpConfig
       (vaultUrl address ("/v1/auth/" ++ Text.unpack authPath ++ "/login"))
       (KubernetesLoginRequest role jwt)
-  pure (VaultToken . kubernetesLoginResponseClientToken <$> result)
+  pure (toLoginResult <$> result)
+ where
+  toLoginResult resp =
+    VaultKubernetesLoginResult
+      { vaultLoginToken = VaultToken (kubernetesLoginResponseClientToken resp)
+      , vaultLoginLeaseSeconds = kubernetesLoginResponseLeaseSeconds resp
+      , vaultLoginRenewable = kubernetesLoginResponseRenewable resp
+      }
 
 -- | @POST \/v1\/auth\/kubernetes\/role\/\<role\>@ — create or replace a
 -- Kubernetes auth role.

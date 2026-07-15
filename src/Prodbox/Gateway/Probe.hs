@@ -1,8 +1,7 @@
 {-# LANGUAGE OverloadedStrings #-}
 
 module Prodbox.Gateway.Probe
-  ( GatewayProbeEndpoint (..)
-  , GatewayProbeSpec (..)
+  ( GatewayProbeSpec (..)
   , gatewayLifecycleProbeValues
   , gatewayLivenessProbe
   , gatewayProbeEndpointPath
@@ -16,17 +15,20 @@ import Data.Aeson
   , object
   , (.=)
   )
+import Prodbox.Gateway.Routes
+  ( KubeletProbeRoute
+  , healthzProbeRoute
+  , kubeletProbeRoutePattern
+  , readyzProbeRoute
+  )
 
--- | The closed set of constant-time lifecycle projections exposed by the
--- gateway daemon. Operational diagnostics such as @/v1/state@ deliberately
--- have no constructor here.
-data GatewayProbeEndpoint
-  = GatewayHealthz
-  | GatewayReadyz
-  deriving (Eq, Show)
-
+-- | Sprint 2.34: a kubelet probe's endpoint is a 'KubeletProbeRoute' — a
+-- liveness or readiness route drawn from the compiled route registry
+-- ("Prodbox.Gateway.Routes"). The old @GatewayProbeEndpoint@ enum (which held
+-- the @/healthz@ / @/readyz@ literals independently) is deleted; a probe bound to
+-- a diagnostic or RPC route is unbuildable by the registry smart constructor.
 data GatewayProbeSpec = GatewayProbeSpec
-  { gatewayProbeEndpoint :: GatewayProbeEndpoint
+  { gatewayProbeEndpoint :: KubeletProbeRoute
   , gatewayProbeInitialDelaySeconds :: Int
   , gatewayProbePeriodSeconds :: Int
   , gatewayProbeTimeoutSeconds :: Int
@@ -38,7 +40,7 @@ data GatewayProbeSpec = GatewayProbeSpec
 gatewayLivenessProbe :: GatewayProbeSpec
 gatewayLivenessProbe =
   GatewayProbeSpec
-    { gatewayProbeEndpoint = GatewayHealthz
+    { gatewayProbeEndpoint = healthzProbeRoute
     , gatewayProbeInitialDelaySeconds = 10
     , gatewayProbePeriodSeconds = 15
     , gatewayProbeTimeoutSeconds = 1
@@ -49,19 +51,21 @@ gatewayLivenessProbe =
 gatewayReadinessProbe :: GatewayProbeSpec
 gatewayReadinessProbe =
   GatewayProbeSpec
-    { gatewayProbeEndpoint = GatewayReadyz
+    { gatewayProbeEndpoint = readyzProbeRoute
     , gatewayProbeInitialDelaySeconds = 5
     , gatewayProbePeriodSeconds = 10
     , gatewayProbeTimeoutSeconds = 1
-    , gatewayProbeFailureThreshold = 3
+    , -- Sprint 2.34: readiness now latches on the first proven object-store
+      -- round trip since boot, so first-ready may lag process start by several
+      -- reconnect intervals. The threshold rises 3 -> 6 to give that
+      -- durable-authority proof grace before the kubelet pulls the Pod from its
+      -- Service endpoints. Liveness stays at 3 (process health is immediate).
+      gatewayProbeFailureThreshold = 6
     , gatewayProbeSuccessThreshold = 1
     }
 
-gatewayProbeEndpointPath :: GatewayProbeEndpoint -> String
-gatewayProbeEndpointPath endpoint =
-  case endpoint of
-    GatewayHealthz -> "/healthz"
-    GatewayReadyz -> "/readyz"
+gatewayProbeEndpointPath :: KubeletProbeRoute -> String
+gatewayProbeEndpointPath = kubeletProbeRoutePattern
 
 gatewayLifecycleProbeValues :: Value
 gatewayLifecycleProbeValues =

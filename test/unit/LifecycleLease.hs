@@ -1,3 +1,4 @@
+{-# LANGUAGE DataKinds #-}
 {-# LANGUAGE OverloadedStrings #-}
 
 module LifecycleLease
@@ -36,9 +37,10 @@ import Prodbox.Lifecycle.CheckpointAuthority
   , ModelBCasResult (..)
   , ModelBLeaseGuard (..)
   , ModelBObservation (..)
+  , StoreLifetime (ClusterRetained)
   , checkpointAuthorityClusterId
+  , mkClusterRetainedCoordinate
   , mkLongLivedCheckpointAuthority
-  , mkModelBObjectCoordinate
   , mkModelBObjectVersion
   , mkTargetClusterSecretSink
   , modelBObjectAuthority
@@ -779,7 +781,7 @@ lifecycleLeaseSuite =
       checkpointAuthorityClusterId authority `shouldBe` "home-control"
       targetSecretSinkIdentity targetSink `shouldBe` "aws-eks"
       targetSecretSinkKvPath targetSink `shouldBe` "keycloak/smtp"
-      let checkpoint = expectRight (mkModelBObjectCoordinate authority "checkpoints/aws-ses")
+      let checkpoint = expectRight (mkClusterRetainedCoordinate authority "checkpoints/aws-ses")
       modelBObjectAuthority checkpoint `shouldBe` authority
       modelBObjectLogicalName checkpoint `shouldBe` "checkpoints/aws-ses"
       mkLongLivedCheckpointAuthority
@@ -793,7 +795,7 @@ lifecycleLeaseSuite =
     it "refuses a failed Model-B encoding before transport" $ do
       let coordinate =
             expectRight
-              (mkModelBObjectCoordinate authority "target-commit/aws-ses")
+              (mkClusterRetainedCoordinate authority "target-commit/aws-ses")
           adapter =
             gatewayModelBCasAdapter
               authority
@@ -1153,7 +1155,7 @@ fakeLeaseInterpreter stateRef =
 
 fakeLeaseAdapter
   :: IORef FakeLeaseState
-  -> ModelBCasAdapter IO Prodbox.Lifecycle.Lease.LeaseProjection
+  -> ModelBCasAdapter 'ClusterRetained IO Prodbox.Lifecycle.Lease.LeaseProjection
 fakeLeaseAdapter stateRef =
   ModelBCasAdapter
     { modelBObserve = \_ -> fakeLeaseObservation <$> readIORef stateRef
@@ -1187,7 +1189,7 @@ fakeLeaseAdapter stateRef =
     }
 
 fakeCasDesired
-  :: ModelBCasRequest value
+  :: ModelBCasRequest l value
   -> ModelBObservation current
   -> Maybe value
 fakeCasDesired request observation =

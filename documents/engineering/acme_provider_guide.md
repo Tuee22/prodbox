@@ -2,7 +2,7 @@
 
 **Status**: Authoritative source
 **Supersedes**: N/A
-**Referenced by**: README.md, DEVELOPMENT_PLAN/phase-7-aws-substrate-foundations.md, DEVELOPMENT_PLAN/phase-8-email-invite-auth.md, documents/engineering/README.md, documents/engineering/aws_account_setup_guide.md, documents/engineering/envoy_gateway_edge_doctrine.md, documents/engineering/config_doctrine.md, documents/engineering/helm_chart_platform_doctrine.md, documents/engineering/lifecycle_reconciliation_doctrine.md, documents/engineering/vault_doctrine.md
+**Referenced by**: README.md, DEVELOPMENT_PLAN/phase-2-gateway-dns.md, DEVELOPMENT_PLAN/phase-5-canonical-test-suite.md, DEVELOPMENT_PLAN/phase-7-aws-substrate-foundations.md, DEVELOPMENT_PLAN/phase-8-email-invite-auth.md, documents/engineering/README.md, documents/engineering/aws_account_setup_guide.md, documents/engineering/envoy_gateway_edge_doctrine.md, documents/engineering/config_doctrine.md, documents/engineering/helm_chart_platform_doctrine.md, documents/engineering/lifecycle_reconciliation_doctrine.md, documents/engineering/vault_doctrine.md
 **Generated sections**: none
 
 > **Purpose**: Define the supported ACME provider, Tier-0 coordinates, and retained EAB/TLS custody.
@@ -126,7 +126,12 @@ The prodbox canonical test suite repeatedly tears down and rebuilds the substrat
 fresh certificate for the same FQDN on every rebuild would consume ZeroSSL issuance quota
 needlessly. Instead, the issued public-edge certificate is retained once as a `LongLived` managed
 resource as ciphertext in the long-lived `pulumi_state_backend` S3 bucket under the
-substrate-scoped key `public-edge-tls/<substrate>/<fqdn>`. The selected Target Secret Agent encrypts
+substrate-scoped key `public-edge-tls/<substrate>/<fqdn>`. Once configurable certificate scope
+sets land (Sprint `2.35`), the `<fqdn>` component generalizes to a canonical scope-set
+serialization key, so retention is keyed by `(substrate, canonical scope-set)` rather than a
+single FQDN (see
+[lifecycle_control_plane_architecture.md §5.4](./lifecycle_control_plane_architecture.md#54-retained-tls-envelope-workflow)).
+The selected Target Secret Agent encrypts
 the exact cert-manager TLS Secret locally; the retained home Agent's
 `transit/keys/prodbox-tls-envelope` lane wraps its DEK; and the separately credentialed TLS
 Retention Adapter stores/read-backs only that envelope. Restore follows the reverse Agent-mediated
@@ -145,6 +150,79 @@ and
 Explicit TLS consumer decommission deletes/read-backs the registered TLS prefix objects/versions
 and TLS identity/policy only. It never deletes the shared bucket; final bucket deletion belongs to
 the Authority-backup decommission tail after every registered prefix is absent.
+
+## 5. Configurable Certificate Scope
+
+The public-edge certificate scope is operator-configurable: a Tier-0 `CertScopeSet` of exact and
+wildcard scopes, not a hardcoded wildcard anchor. The certificate `dnsNames`, the Gateway listener
+hostnames, the served-FQDN list, and the `public-edge-tls/<substrate>/<fqdn>` retention key are
+total projections of that one configured set — so the drift that produced the orphan, unmanaged
+dashboard certificate cannot recur on the prodbox-managed side. Illegal states are unrepresentable
+there: a served hostname with no covering configured scope, or a wildcard anchored at a zone the
+operator has not delegated in config, is rejected by smart constructors plus fail-fast config
+validation. The default configured scope set is today's exact served hosts, so there is no behavior
+change until an operator widens scope.
+
+### Coverage and narrowing semantics
+
+A wildcard scope must be anchored at a config-declared delegated zone (the home parent zone or
+`aws_substrate.subzone_name`), never the Public Suffix List, and apex coverage requires an explicit
+exact scope because a wildcard never matches the apex or more than one label. Coverage (`covers`)
+and the narrower-or-equal partial order (`impliedBy`) are RFC-6125-correct:
+
+| relation | result | why |
+|---|---|---|
+| `Wildcard z` covers `x.z` | yes | one label under the delegated zone `z` |
+| `Wildcard z` covers apex `z` | no | a wildcard never matches the apex — apex needs its own exact scope |
+| `Wildcard z` covers `a.b.z` | no | a wildcard matches exactly one label |
+| `Exact x.z` impliedBy `Wildcard z` | yes | an exact host reuses the wildcard material |
+| `Wildcard a.z` impliedBy `Wildcard z` | no | `*.z` covers `a.z` but not `foo.a.z`; a child wildcard needs its own order |
+
+Doctrine advises delegated-zone anchoring and discourages org-apex wildcards: an org-apex wildcard
+key sitting in a home-cluster Secret can silently impersonate every org subdomain, covers
+non-prodbox services, and cannot even cover the AWS substrate's `aws.test.resolvefintech.com` host
+since a wildcard matches exactly one label.
+
+### Wildcard DNS-01 issuance
+
+Wildcard scopes need no new solver. ZeroSSL over ACME DNS-01 / Route 53 already issues wildcard
+certificates, and the existing `zerossl-dns01` DNS-01 solver is unchanged (zero solver change). No
+repo-documented ZeroSSL wildcard prohibition exists.
+
+### Scope-change: restore-vs-reissue
+
+Restore-before-issue reuses retained material iff the configured scope set is `impliedBy` the
+retained certificate's scope: a narrower-or-equal change reuses the retained envelope, and only a
+widening change triggers one fresh, quota-conscious ACME order. A canonical (deduped, ordered)
+scope-set serialization keys retention deterministically, generalizing the `<fqdn>` key of
+[§ 4](#4-single-issuer-and-rebuild-safe-certificate-retention).
+
+### Standing rules
+
+- ZeroSSL is the sole ACME provider; certificates are issued only through the `zerossl-dns01`
+  `ClusterIssuer` over DNS-01 / Route 53.
+- Dashboard, portal, and click-to-renew certificates are **not** part of the supported model. Any
+  that exist are drift and must be revoked on sight — the configured scope set removes the motive
+  by covering plausible siblings on the prodbox-managed side.
+- Renewal is cert-manager's alone. prodbox observes expiry fail-closed (`edge status`
+  `certificate-renew-due` / `certificate-expired`, with an absent cert-manager `status.renewalTime`
+  treated as `certificate-unobservable`, never as "not due") and never drives ACME renewal from the
+  Gateway daemon.
+- Every served public hostname is a total projection of the configured scope set; a hostname with
+  no covering scope is unrepresentable (bind-time `Left` plus config fail-fast).
+
+### CA-layer investigation note
+
+"Unrepresentable" is scoped honestly to the prodbox-managed side. A human dashboard-issuing an
+orphan certificate is a CA/human-layer event no type can prevent. Under investigation as a
+detection backstop — not a shipped or guaranteed mechanism — are CAA restriction plus RFC 8657
+`accounturi` binding (effective only if the CA enforces `accounturi`, which is unverified for
+ZeroSSL/Sectigo; plain CAA does not block same-CA dashboard issuance) together with CT-log
+observation. These are recorded as investigation, not a shipped control.
+
+Implementation of the scope algebra and its derived edge projections is owned by Sprint
+[`2.35`](../../DEVELOPMENT_PLAN/phase-2-gateway-dns.md), with serving-level validation owned by
+Sprint [`5.22`](../../DEVELOPMENT_PLAN/phase-5-canonical-test-suite.md).
 
 ## ACME credentials and TLS key material under Vault
 

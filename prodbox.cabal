@@ -12,9 +12,11 @@ library
         Prodbox.App
         Prodbox.Aws
         Prodbox.Aws.AdminCredentials
+        Prodbox.Aws.SigV4
         Prodbox.AwsEnvironment
         Prodbox.BuildSupport
         Prodbox.Capacity.Config
+        Prodbox.Capacity.MeasuredProfile
         Prodbox.Capacity.RuntimeMemory
         Prodbox.Capacity.Storage
         Prodbox.CheckCode
@@ -44,6 +46,13 @@ library
         Prodbox.Config.InForce
         Prodbox.Config.InForce.Core
         Prodbox.ContainerImage
+        Prodbox.ControlPlane
+        Prodbox.ControlPlane.CapabilityKind
+        Prodbox.ControlPlane.CapabilityRef
+        Prodbox.ControlPlane.Coordinate
+        Prodbox.ControlPlane.Observation
+        Prodbox.ControlPlane.Permit
+        Prodbox.ControlPlane.Program
         Prodbox.Daemon.Events
         Prodbox.Crypto.Envelope
         Prodbox.Dns
@@ -54,6 +63,7 @@ library
         Prodbox.EffectInterpreter
         Prodbox.Gateway
         Prodbox.Gateway.Bounds
+        Prodbox.Gateway.ChartStatics
         Prodbox.Gateway.ChildSchedule
         Prodbox.Gateway.Client
         Prodbox.Gateway.Continuity
@@ -66,6 +76,8 @@ library
         Prodbox.Gateway.Peer
         Prodbox.Gateway.PortForward
         Prodbox.Gateway.Probe
+        Prodbox.Gateway.Readiness
+        Prodbox.Gateway.Routes
         Prodbox.Gateway.Settings
         Prodbox.Gateway.State
         Prodbox.Gateway.TargetSecret
@@ -90,8 +102,10 @@ library
         Prodbox.Infra.StackOutputs
         Prodbox.Infra.SubstrateKubectl
         Prodbox.CLI.Nuke
+        Prodbox.Legacy.EscapeRegistry
         Prodbox.Lifecycle.EbsVolume
         Prodbox.Lifecycle.AnchoredReconcile
+        Prodbox.Lifecycle.StoreLifetime
         Prodbox.Lifecycle.CheckpointAuthority
         Prodbox.Lifecycle.CheckpointAuthorityStore
         Prodbox.Lifecycle.AuthorityConfig
@@ -132,6 +146,8 @@ library
         Prodbox.Lint
         Prodbox.Minio.EncryptedObject
         Prodbox.Minio.ObjectStore
+        Prodbox.Minio.ObjectStoreNative
+        Prodbox.Minio.ObjectStoreTypes
         Prodbox.Minio.RootCredential
         Prodbox.Naming
         Prodbox.Native
@@ -174,6 +190,7 @@ library
         Prodbox.Vault.Reconcile
         Prodbox.Vault.RoleId
         Prodbox.Vault.Seal
+        Prodbox.Vault.Session
         Prodbox.Vault.Status
         Prodbox.Vault.TransitCipher
         Prodbox.Vault.UnlockBundle
@@ -248,20 +265,30 @@ test-suite prodbox-unit
         AwsSesLeaseRole
         AwsSesReadiness
         AwsSesSmtpKey
+        ControlPlaneCapability
         DesiredPresentReconciliation
+        EscapeRegistry
         FencedCheckpoint
         GatewayAuthority
         GatewayBounded
+        GatewayChartStatics
         GatewayContinuity
         GatewayProbe
+        GatewayReadiness
+        GatewayRoutes
         GatewayRuntimeStability
         LifecycleLease
+        MeasuredProfile
+        ObjectStoreNative
         Parser
         RetainedSesPreparation
         RetainedSesTargetRecovery
+        SigV4
         SmtpKeyRepairInterpreter
+        StoreLifetimeWitness
         TargetCommitSmtp
         TestSupport
+        VaultSession
 
     default-language: GHC2021
     ghc-options:      -Wall

@@ -1107,6 +1107,28 @@ The `vault_operator_password` needed before unseal and the ephemeral
 Physical Deployment, ServiceAccount, and capability-client separation is owned by
 [Lifecycle Control-Plane Architecture](./lifecycle_control_plane_architecture.md).
 
+### 12.1 Cached renewable Kubernetes-auth session (Sprint 1.64)
+
+A component's own service-account Kubernetes-auth token is obtained through a **cached renewable
+session** (`src/Prodbox/Vault/Session.hs`), not a fresh login per request. Counterexample
+`LCPC-2026-07-11` traced a gateway hot-path CPU driver to exactly that per-request login. The
+session:
+
+- holds the token with a monotonic-clock expiry and **renews it single-flight at two-thirds of the
+  lease**, so concurrent callers coalesce onto one login rather than stampeding Vault;
+- re-reads the current service-account JWT on every refresh, so token/JWT rotation is honored;
+- classifies outcomes as structured errors — `503` → sealed, `403` → forbidden/revoked, everything
+  else → unavailable — and never widens a fail-closed state into fail-open;
+- reacts to a downstream `403` (a server-side-revoked cached token while Vault stays unsealed) with
+  **exactly one invalidate-and-relogin** via `withSessionToken`; a burst of concurrent `403`s on the
+  same token still produces one relogin.
+
+The token is never `Show`n and the session's diagnostics carry only the non-secret lease shape. This
+is a runtime-transport optimization of the Kubernetes-auth path in §12; it changes neither the role
+bindings, policies, nor the fail-closed invariant. An operator's per-request JWT exchange (for
+example the operator-secret write route) is **not** cached — it is inherently per-request and leaves
+the gateway with its authority route, not through this session.
+
 ## 13. Config and state classification
 
 Every prodbox datum is classified explicitly.

@@ -170,12 +170,12 @@ runConfigCommand repoRoot configCommand =
       -- `config setup` authors (and re-decodes) `prodbox.dhall`.
       materializeSchemaFilesIfStale repoRoot
       runInteractiveConfigSetupWithPlan repoRoot planOptions
-    ConfigShow showSecrets -> do
+    ConfigShow -> do
       result <- validateAndLoadSettings repoRoot
       case result of
         Left err -> failWith err
         Right settings -> do
-          writeOutput (renderSettingsDisplay showSecrets settings)
+          writeOutput (renderSettingsDisplay settings)
           pure ExitSuccess
     ConfigValidate -> do
       -- Materialize the schema first so a config that imports it can decode

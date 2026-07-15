@@ -4625,17 +4625,47 @@ an indefinite dual-write or fallback regime.
 - Keep the pending-removal ledger authoritative until both code removal and revision-scoped
   deployment qualification are recorded.
 
-## Sprint 4.51: Durability-Indexed Retained Authority Storage [📋 Planned]
+## Sprint 4.51: Durability-Indexed Retained Authority Storage [🔄 Active]
 
-**Status**: Planned
+**Status**: Active — the byte-safe **type foundation (Increment A)** landed and is fully validated
+2026-07-14: the `StoreLifetime` phantom index, its typed namespace-partitioning constructors, the
+guard/object split resolution, and the compile + byte-erasure witness. The byte-compat-critical
+**production cutover (Increment B)** — the host-direct `'ClusterRetained` adapter, the gateway
+retype, the live-transaction cutover, and `OperationRecord` — is deferred to a dedicated pass
+(cluster-adjacent; end-to-end byte-compat is Standard-O).
 **Deployment qualification**: pending
-**Implementation**: planned `src/Prodbox/Lifecycle/StoreLifetime.hs`,
-`src/Prodbox/Lifecycle/RetainedAuthorityStore.hs`, and `src/Prodbox/Lifecycle/OperationRecord.hs`;
-revisions to `src/Prodbox/Lifecycle/CheckpointAuthority.hs`,
-`src/Prodbox/Lifecycle/CheckpointAuthorityStore.hs`, and `src/Prodbox/TestRunner.hs`
-**Independent Validation**: compile-witness (the chart-lifetime write path for retained coordinates
-no longer typechecks), CAS taxonomy tables against an in-memory fake, and operation-record
-crash/replay tables; no cluster required.
+**Implementation**: ✅ **Increment A landed** — `src/Prodbox/Lifecycle/StoreLifetime.hs` defines the
+DataKinds-promoted `StoreLifetime = ChartLifetime | ClusterRetained | CrossClusterDurable`.
+`src/Prodbox/Lifecycle/CheckpointAuthority.hs` now carries it as a fully-erased phantom on
+`ModelBObjectCoordinate (l :: StoreLifetime)` (with a load-bearing `type role … nominal` that blocks
+`coerce` tag-laundering), `ModelBCasRequest (l :: StoreLifetime) value` (phantom before value so the
+derived `Functor` still targets the payload), and `ModelBCasAdapter (l :: StoreLifetime) m value`;
+the un-exported polymorphic `unsafeCoordinate` is fronted by the full-name-tagging constructors
+`mkClusterRetainedCoordinate` / `mkChartLifetimeCoordinate` / `mkCrossClusterDurableCoordinate`
+(each passes the byte-identical full logical name — no prefix-splitting), and `ModelBCodec` is lifted
+in so the future host-direct adapter can share it without a cycle. **Design refinement (vs. the
+original plan): `ModelBLeaseGuard` is NOT phantom-indexed** — a lease is always retained authority
+state, so its coordinate is monomorphically `'ClusterRetained`; this cleanly lets a `'ChartLifetime'`
+Pulumi checkpoint object be guarded by a retained lease (the real
+`EncryptedBackend.withFencedDecryptedStackEnvironment` case) without a second lifetime parameter. The
+phantom is threaded through the full 16-file consumer cascade (retained lease / target-intent /
+SMTP coordinates → `'ClusterRetained'`; the `pulumi-stack/aws-ses` checkpoint → `'ChartLifetime'`;
+`gatewayModelBCasAdapter` left polymorphic in `l`). 🔄 **Increment B (deferred)**: retype the gateway
+transport to `'ChartLifetime'`-only, add the host-direct byte-compatible `'ClusterRetained'` adapter
+(a port of the daemon CAS over `HostDirectPulumiHandle` sharing a lifted `authorityLogicalObject`),
+cut `productionLeaseInterpreter` + the `AwsSesStack` transaction over to it, and add `OperationRecord`.
+**Discovery**: Increment B's transport cutover and `OperationRecord` are MORE coupled than first
+scoped — a host-direct adapter would hold a MinIO port-forward across the entire ~70-minute lease
+bracket, so the bracket removal must land WITH the transport cutover, not after it.
+**Independent Validation**: ✅ compile witness — the 16-file production cascade typechecks under the
+phantom index, and `test/unit/StoreLifetimeWitness.hs` positively exercises well-typed
+`'ClusterRetained'` and `'ChartLifetime'` round trips and documents the two cross-lifetime
+expressions GHC rejects. ✅ byte-erasure pin (the top-risk mitigation) — the witness asserts
+`mkClusterRetainedCoordinate` and `mkChartLifetimeCoordinate` yield byte-identical authority + logical
+name for the same input, so re-tagging never drifts sealed-envelope bytes. Full pre-cluster gate
+green 2026-07-14: unit PASS, `prodbox dev check` exit 0 (`-Werror`). 🔄 the CAS taxonomy tables vs. an
+in-memory fake and the operation-record crash/replay tables land with Increment B (they validate the
+host-direct adapter + `OperationRecord`, which Increment A does not introduce).
 **Docs to update**: `documents/engineering/lifecycle_control_plane_architecture.md`,
 `documents/engineering/lifecycle_reconciliation_doctrine.md`, and
 `documents/engineering/pure_fp_standards.md`
@@ -4676,10 +4706,17 @@ synchronous HTTP bracket.
 
 ### Remaining Work
 
-- Full sprint scope; registered 2026-07-12 as part of the Foundation Epoch (Sprint `0.17`) and not
-  started.
-- Sprint `5.20` derives restore/cleanup edges from the storage-lifetime facts this sprint
-  registers; Sprint `4.50` deletes the legacy transports.
+- ✅ Increment A (the `StoreLifetime` phantom index, typed constructors, guard/object split
+  resolution, 16-file consumer cascade, and the compile + byte-erasure witness) landed and validated
+  2026-07-14.
+- 🔄 Increment B (dedicated pass, cluster-adjacent): the host-direct byte-compatible `'ClusterRetained'`
+  adapter, the gateway-transport retype to `'ChartLifetime'`, the `productionLeaseInterpreter` +
+  `AwsSesStack` transaction cutover, `OperationRecord`, the CAS taxonomy tables vs. an in-memory fake,
+  and the operation-record crash/replay tables. End-to-end host-PUT/daemon-GET byte-compat is
+  Standard-O; the pre-cluster half is pinned by a byte-compat taxonomy fixture.
+- Sprint `5.20` derives restore/cleanup edges from the storage-lifetime facts Increment A already
+  registers; Sprint `4.50` deletes the legacy transports (and Increment B's gateway retype is the
+  retained-SES subset of that removal landing early).
 
 ## Documentation Requirements
 

@@ -49,26 +49,30 @@ import Data.Text (Text)
 import Data.Text qualified as Text
 import Data.Text.Encoding qualified as TextEncoding
 import Numeric.Natural (Natural)
+import Prodbox.Gateway.Routes (GatewayRoute (..), routePattern)
 
+-- Sprint 2.34: the object-store wire paths are projections of the one compiled
+-- route registry ("Prodbox.Gateway.Routes"), so this contract cannot drift from
+-- the daemon dispatcher or the gateway client.
 pulumiObjectGetPath :: String
-pulumiObjectGetPath = "/v1/object-store/pulumi/get"
+pulumiObjectGetPath = routePattern RoutePulumiObjectGet
 
 pulumiObjectPutPath :: String
-pulumiObjectPutPath = "/v1/object-store/pulumi/put"
+pulumiObjectPutPath = routePattern RoutePulumiObjectPut
 
 pulumiObjectDeletePath :: String
-pulumiObjectDeletePath = "/v1/object-store/pulumi/delete"
+pulumiObjectDeletePath = routePattern RoutePulumiObjectDelete
 
 authorityObjectGetPath :: String
-authorityObjectGetPath = "/v1/object-store/authority/get"
+authorityObjectGetPath = routePattern RouteAuthorityObjectGet
 
 authorityObjectCasPath :: String
-authorityObjectCasPath = "/v1/object-store/authority/cas"
+authorityObjectCasPath = routePattern RouteAuthorityObjectCas
 
 -- | The same retained gateway that owns Model-B CAS supplies the transaction
 -- clock.  Callers must never substitute their process wall clock.
 authorityClockPath :: String
-authorityClockPath = "/v1/object-store/authority/time"
+authorityClockPath = routePattern RouteAuthorityClock
 
 pulumiObjectRequestMaxBytes :: Int
 pulumiObjectRequestMaxBytes = 64 * 1024 * 1024

@@ -427,12 +427,12 @@ fake, or a stub; AWS-substrate coverage of suite content is orthogonal and track
 
 | Phase | Focus | Current result | Independent validation |
 |-------|-------|----------------|------------------------|
-| 0 | Planning and Documentation Topology | ✅ Reclosed on `0.17`: the Foundation Epoch is adopted on top of the `0.16` control-plane correction, Standard P carries the interim escape-path guard, and Sprints `1.61`/`1.62` are shrink-rescoped. | Documentation lint/check and canonical quality gate; no runtime dependency. |
-| 1 | Runtime, CLI, Config, and Pulumi Foundations | 📋 Foundation Epoch Sprints `1.63`–`1.65` Planned and `1.66` blocked by `1.64`; `1.61` Planned (shrink-rescoped) and `1.62` blocked by `1.61` behind the epoch. | Pure capability-kind, graph, deadline, capacity, object-store protocol, and Vault-session properties. |
-| 2 | Gateway Runtime and DNS Ownership | 📋 Foundation Epoch Sprint `2.34` Planned; `2.32` blocked by `1.62`; `2.33` blocked by `2.32`. | Actor/interleaving simulation, journal crash tests, daemon lifecycle, partition validation, and revised TLA model. |
+| 0 | Planning and Documentation Topology | ✅ Reclosed on `0.17`: the Foundation Epoch is adopted on top of the `0.16` control-plane correction, Standard P carries the interim escape-path guard, and Sprints `1.61`/`1.62` are shrink-rescoped. Sprint `0.18` adds the configurable certificate-scope governance surface on that same documentation surface (an additional governance sprint, no further reclose). | Documentation lint/check and canonical quality gate; no runtime dependency. |
+| 1 | Runtime, CLI, Config, and Pulumi Foundations | 📋 Foundation Epoch Phase-1 sprints `1.63`–`1.66` ✅ Done; `1.61` Planned (shrink-rescoped) and `1.62` blocked by `1.61` behind the epoch. | Pure capability-kind, graph, deadline, capacity, object-store protocol, and Vault-session properties. |
+| 2 | Gateway Runtime and DNS Ownership | 📋 Foundation Epoch Sprint `2.34` ✅ Done (compiled service boundary + latched readiness projection + `GatewayChartStatics` all landed and validated pre-cluster); `2.32` blocked by `1.62`; `2.33` blocked by `2.32`; `2.35` (configurable certificate-scope algebra and derived edge projections) blocked by `2.34`. | Actor/interleaving simulation, journal crash tests, daemon lifecycle, partition validation, and revised TLA model. |
 | 3 | Chart Platform and Public Workload Delivery | ⏸️ `3.26` blocked by `2.33`. | Deterministic chart rendering, identity/policy/resource/probe lint, negative topology fixtures, and retained-volume plans. |
-| 4 | Lifecycle Hardening and Pulumi Decoupling | 📋 Foundation Epoch Sprint `4.51` Planned; `4.48`–`4.50` form the durable authority/outbox/cutover chain after `3.26`. | Pure decide/evolve tables, CAS conflict/response-loss simulation, native MinIO/Vault integration, restart/resume, and cutover properties. |
-| 5 | Canonical Test Suite | 📋 Foundation Epoch Sprint `5.20` Planned and `5.21` blocked by `1.65`; `5.18`–`5.19` follow `4.50`. | Capability-bound restore plans, cleanup-DAG fault tables, installed-binary load/fault fixtures, and temporal CPU/queue/deadline oracle. |
+| 4 | Lifecycle Hardening and Pulumi Decoupling | 🔄 Foundation Epoch Sprint `4.51` Active (Increment A — the `StoreLifetime` phantom-index type foundation — landed + validated 2026-07-14; Increment B cutover deferred); `4.48`–`4.50` form the durable authority/outbox/cutover chain after `3.26`. | Pure decide/evolve tables, CAS conflict/response-loss simulation, native MinIO/Vault integration, restart/resume, and cutover properties. |
+| 5 | Canonical Test Suite | 📋 Foundation Epoch Sprint `5.20` Planned and `5.21` blocked by `1.65`; `5.18`–`5.19` follow `4.50`; `5.22` (certificate-scope serving validation) blocked by `2.35`. | Capability-bound restore plans, cleanup-DAG fault tables, installed-binary load/fault fixtures, and temporal CPU/queue/deadline oracle. |
 | 6 | Final Clean-Room Rerun and Handoff | ⏸️ `6.4` blocked by `5.19`. | Home cutover/rollback plus two consecutive destructive aggregates with canonical restoration and zero residue. |
 | 7 | AWS Substrate Foundations | 📋 Foundation Epoch Sprint `7.34` Planned; `7.33` blocked by `6.4`. | AWS topology rendering/fakes followed by the current-revision AWS isolation and cleanup campaign. |
 | 8 | Invited Email Authentication | ⏸️ `8.11`–`8.12` follow `7.33`. | SES workflow decision tables, provider/target fault injection, and current-revision invite aggregates. |
@@ -482,7 +482,14 @@ session to Sprint `1.64`; the native S3 client to Sprint `1.66`), Standard P gai
 escape-path guard (registry owned by Sprint `1.63`), Guaranteed QoS is retained with honesty coming
 from measured-profile certification, and the harness postflight residue bypass narrows back to
 per-run under Sprint `7.34`, reversing part of Sprint `7.9`. The Deployment Qualification ledger is
-unchanged — both rows remain pending; nothing in the epoch adoption claims qualification. The dated
+unchanged — both rows remain pending; nothing in the epoch adoption claims qualification. Governance
+Sprint `0.18` (2026-07-12) adopts the operator-configurable certificate-scope policy on the same
+documentation surface: an unmanaged or uncovered served hostname is unrepresentable on the
+prodbox-managed side, the orphan dashboard-cert incident is dispositioned, and parent→child
+certificate-material handoff is rejected in favor of delivered `AcmeEabMaterial` self-issuance —
+implementation Sprints `2.35`/`5.22` join the post-`2.34` tail as the certificate-scope work, Phase
+`0` gains an additional governance sprint without a second reclose, and the Deployment Qualification
+ledger is unchanged. The dated
 adoption entry and live status live in [README.md → Closure Status](README.md#closure-status).
 
 ## Architecture Summary
@@ -752,8 +759,9 @@ model. Replacement and removal ownership live in the reopened phases and
 
 As of the July 11 lifecycle-control-plane correction and the July 12 Foundation Epoch adoption
 (Sprint `0.17`), Phase `0` is reclosed and the Foundation Epoch Sprints `1.63`–`1.66`, `2.34`,
-`4.51`, `5.20`, `5.21`, and `7.34` are the active work front — Planned, except `1.66` blocked by
-`1.64` and `5.21` blocked by `1.65` — executed before the shrink-rescoped Sprints `1.61`/`1.62`,
+`4.51`, `5.20`, `5.21`, and `7.34` are the active work front — the four Phase-1 sprints
+`1.63`–`1.66` are ✅ Done, the rest Planned, except `5.21` blocked by `1.65` — executed
+before the shrink-rescoped Sprints `1.61`/`1.62`,
 after which every later implementation sprint remains blocked by its earlier owner. Deployment
 qualification is pending on both substrates. The historical narrative below remains closure
 history for earlier work; it is not the current status ledger. Current status is

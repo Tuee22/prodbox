@@ -1,3 +1,4 @@
+{-# LANGUAGE DataKinds #-}
 {-# LANGUAGE ImportQualifiedPost #-}
 {-# LANGUAGE OverloadedStrings #-}
 
@@ -21,8 +22,9 @@ import Prodbox.Lifecycle.CheckpointAuthority
   , ModelBCasResult (..)
   , ModelBObjectCoordinate
   , ModelBObservation (..)
+  , StoreLifetime (ChartLifetime, ClusterRetained)
+  , mkChartLifetimeCoordinate
   , mkLongLivedCheckpointAuthority
-  , mkModelBObjectCoordinate
   , mkModelBObjectVersion
   )
 import Prodbox.Lifecycle.Lease
@@ -143,7 +145,7 @@ newStore observation forceConflict =
       , fakeCheckpointForceConflict = forceConflict
       }
 
-fakeAdapter :: IORef FakeCheckpointStore -> ModelBCasAdapter IO BS.ByteString
+fakeAdapter :: IORef FakeCheckpointStore -> ModelBCasAdapter 'ChartLifetime IO BS.ByteString
 fakeAdapter stateRef =
   ModelBCasAdapter
     { modelBObserve = const (fakeCheckpointObservation <$> readIORef stateRef)
@@ -171,15 +173,15 @@ fakeAdapter stateRef =
             pure (ModelBCasApplied version bytes)
     }
 
-checkpointCoordinate :: ModelBObjectCoordinate
+checkpointCoordinate :: ModelBObjectCoordinate 'ChartLifetime
 checkpointCoordinate =
   expectRight
-    ( mkModelBObjectCoordinate
+    ( mkChartLifetimeCoordinate
         authority
         "pulumi-stack/aws-ses"
     )
 
-leaseCoordinate :: ModelBObjectCoordinate
+leaseCoordinate :: ModelBObjectCoordinate 'ClusterRetained
 leaseCoordinate = expectRight (leaseObjectCoordinate authority leaseKey)
 
 leaseKey :: LeaseKey

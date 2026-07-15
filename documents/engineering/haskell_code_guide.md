@@ -374,6 +374,37 @@ retrying with bounded backoff; `Fatal` propagates to the top-level supervisor,
 which begins drain. See
 [distributed_gateway_architecture.md → Daemon Lifecycle → Error handling: recoverable vs fatal](./distributed_gateway_architecture.md#daemon-lifecycle).
 
+## Shared HTTP Client Manager (Sprint 1.64)
+
+`Prodbox.Http.Client` owns **one** process-wide TLS `Manager` (`sharedTlsManager`), constructed
+exactly once through the `unsafePerformIO` + `{-# NOINLINE #-}` idiom. `http-client` `Manager`s are
+designed for concurrent reuse and pool connections per host, so a single shared manager is both
+correct and the point: counterexample `LCPC-2026-07-11` traced a gateway hot-path CPU driver to the
+old per-call `newManager` construction (a fresh TLS context and connection pool on every request).
+Never construct a `Manager` per call. This singleton lives only in `Prodbox.Http.Client`, outside
+every daemon-runtime module (where module-level mutable state is forbidden), and the manager is
+immutable after construction. The cached renewable Vault Kubernetes-auth session
+(`Prodbox.Vault.Session`) rides on the same shared manager and is documented in
+[vault_doctrine.md § 12.1](./vault_doctrine.md).
+
+### Native SigV4 object-store client (Sprint 1.66)
+
+`Prodbox.Aws.SigV4` implements the pure, byte-exact AWS Signature Version 4 algorithm (canonical
+request, string-to-sign, HMAC signing-key chain, and authorization header), unit-tested against
+published AWS vectors. `Prodbox.Minio.ObjectStoreNative` builds on it and the shared TLS `Manager`
+to perform every Model-B object-store operation (get/put/conditional-put/list/head/create/delete)
+as an in-memory, SigV4-signed S3 request — **no `aws` CLI subprocess and no per-operation temp-file
+bodies** (the third gateway hot-path CPU driver from counterexample `LCPC-2026-07-11`). Bodies are
+held in memory as strict `ByteString`s; the `x-amz-content-sha256` header binds the exact body, and
+ETag conditional semantics (`If-Match`/`If-None-Match`) preserve the compare-and-swap outcome
+taxonomy (`ConditionalPutConflict` on a `412`, positive absence on a `404`).
+
+The native and subprocess clients are drop-in interchangeable through the `ObjectStoreBackend`
+selector in `Prodbox.Minio.ObjectStore` (`objectStoreBackend`); the subprocess path remains the
+default and config-selectable rollback until the native client's live-MinIO parity is proven, then
+it is deleted through the legacy ledger. The signing algebra is pure and testable; the live parity is
+a Standard-O live-proof axis.
+
 ## Capability Classes and Service Errors
 
 Subsystem boundaries (object storage, cache, database) are abstracted through *argv-shaped*

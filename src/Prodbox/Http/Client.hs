@@ -7,6 +7,7 @@
 module Prodbox.Http.Client
   ( HttpError (..)
   , HttpConfig (..)
+  , sharedTlsManager
   , defaultHttpConfig
   , httpGetText
   , httpGetJson
@@ -45,6 +46,7 @@ import Network.HTTP.Client.TLS (tlsManagerSettings)
 import Network.HTTP.Types.Header (Header)
 import Network.HTTP.Types.Method (Method)
 import Network.HTTP.Types.Status (statusCode)
+import System.IO.Unsafe (unsafePerformIO)
 
 -- | Errors that surface from an HTTP request through this module.
 data HttpError
@@ -83,19 +85,23 @@ renderHttpError httpErr = case httpErr of
     | length body > 200 = take 200 body ++ "…"
     | otherwise = body
 
--- | Internal manager shared across calls. Created on first use. The
--- module-local 'IORef' is intentional and limited to this module so the
--- manager-singleton pattern remains the only allowed use of mutable
--- state under @src/Prodbox/Http/@.
+-- | The one process-wide TLS 'Manager', constructed exactly once (Sprint
+-- 1.64). @http-client@ 'Manager's are designed for concurrent reuse and pool
+-- connections per host, so a single shared manager is both correct and the
+-- point of this singleton: counterexample @LCPC-2026-07-11@ traced a gateway
+-- hot-path CPU driver to the per-call @newManager@ construction (a fresh TLS
+-- context and connection pool on every request). The @unsafePerformIO@ +
+-- @NOINLINE@ idiom is the standard way to create such a value once; it lives
+-- only here, outside every daemon-runtime module, and the shared @Manager@ is
+-- immutable after construction.
+{-# NOINLINE sharedTlsManager #-}
+sharedTlsManager :: Manager
+sharedTlsManager = unsafePerformIO (newManager tlsManagerSettings)
+
+-- | Run an action against the shared TLS 'Manager'. The TLS manager handles
+-- both @http://@ and @https://@ URLs and reuses connections per host.
 withManager :: (Manager -> IO a) -> IO a
-withManager action = do
-  -- The TLS manager handles both http:// and https:// URLs and reuses
-  -- connections per-host. Construction is cheap enough to do per call;
-  -- the per-call cost is dwarfed by the network round-trip. If profiling
-  -- shows manager-construction in the hot path, lift to a shared
-  -- IORef-cached singleton at that point.
-  manager <- newManager tlsManagerSettings
-  action manager
+withManager action = action sharedTlsManager
 
 -- | Execute an HTTP request and return the parsed 'Response', translating
 -- exceptions into 'HttpError'.

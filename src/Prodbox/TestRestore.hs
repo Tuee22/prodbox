@@ -205,30 +205,67 @@ buildRestoreCyclePlan substrate retainedSesRequirement =
       SesRequired -> [RestorePrepareRetainedSes canonicalRetainedSesPreparationPlan]
 
 -- | Adapt one gateway object-store observation into a composable, bounded,
--- fail-closed prerequisite. The caller supplies the real one-shot action and
+-- fail-closed prerequisite. The caller supplies the real one-shot actions and
 -- loopback NodePort label; this module owns neither transport coordinates nor
 -- a second polling loop.
+--
+-- Sprint 2.34: the gate gains a kubelet @/readyz@ PRECHECK ('observeReadyzOnce')
+-- ordered before the object-store round trip. The daemon's @/readyz@ now
+-- latches only on the first proven object-store round trip since boot, so
+-- requiring @/readyz@ ready before this lifecycle round trip makes
+-- lifecycle-ready imply kubelet-ready by construction: the lifecycle gate can
+-- never admit dependent work through a daemon the kubelet would still pull from
+-- its Service endpoints.
 gatewayDaemonLivenessPrecondition
   :: RetryPolicy
   -> String
   -> IO (Either Text ReadinessProbeResult)
+  -> IO (Either Text ReadinessProbeResult)
   -> Precondition
-gatewayDaemonLivenessPrecondition policy endpointLabel observeOnce =
+gatewayDaemonLivenessPrecondition policy endpointLabel observeReadyzOnce observeRoundTripOnce =
   Precondition
     { preconditionLabel = gatewayDaemonLivenessLabel
     , preconditionCheck = do
-        result <-
+        readyzResult <-
           waitForComponentReadiness
             policy
-            ( BackendRoundTripTarget
-                ComponentGatewayDaemonFull
-                ComponentMinio
-                observeOnce
-            )
-            (ProbeBackendRoundTrip ComponentMinio)
-        pure (either (Left . readinessError) Right result)
+            (FrontDoorHttpTarget ComponentGatewayDaemonFull observeReadyzOnce)
+            ProbeFrontDoorHttp
+        case readyzResult of
+          Left reason -> pure (Left (readyzError reason))
+          Right () -> do
+            result <-
+              waitForComponentReadiness
+                policy
+                ( BackendRoundTripTarget
+                    ComponentGatewayDaemonFull
+                    ComponentMinio
+                    observeRoundTripOnce
+                )
+                (ProbeBackendRoundTrip ComponentMinio)
+            pure (either (Left . readinessError) Right result)
     }
  where
+  readyzError reason =
+    StructuredError
+      { errorPreconditionLabel = gatewayDaemonLivenessLabel
+      , errorSummaryLine =
+          "Gateway daemon kubelet readiness (/readyz) was not observed at "
+            ++ endpointLabel
+            ++ "."
+      , errorOffendingItems =
+          [(endpointLabel, "prodbox charts reconcile gateway")]
+      , errorNarrative =
+          unlines
+            [ "Refused: gateway daemon /readyz did not report ready at "
+                ++ endpointLabel
+                ++ "."
+            , "Observation: " ++ Text.unpack reason
+            , "No object-store round trip was attempted."
+            , "No Keycloak SMTP sync was started."
+            , "Run `prodbox charts reconcile gateway`, confirm the daemon NodePort reports /readyz ready, then retry."
+            ]
+      }
   readinessError reason =
     StructuredError
       { errorPreconditionLabel = gatewayDaemonLivenessLabel

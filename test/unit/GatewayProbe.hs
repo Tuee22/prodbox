@@ -30,7 +30,7 @@ gatewayProbeSuite =
       gatewayProbeInitialDelaySeconds gatewayReadinessProbe `shouldBe` 5
       gatewayProbePeriodSeconds gatewayReadinessProbe `shouldBe` 10
       gatewayProbeTimeoutSeconds gatewayReadinessProbe `shouldBe` 1
-      gatewayProbeFailureThreshold gatewayReadinessProbe `shouldBe` 3
+      gatewayProbeFailureThreshold gatewayReadinessProbe `shouldBe` 6
       gatewayProbeSuccessThreshold gatewayReadinessProbe `shouldBe` 1
 
     goldenTest

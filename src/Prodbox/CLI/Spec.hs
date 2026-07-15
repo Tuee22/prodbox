@@ -274,14 +274,7 @@ parserForPath path =
     ["config", "setup"] ->
       Just (fmap (RunNative . NativeConfig . ConfigSetup) planOptionsParser)
     ["config", "show"] ->
-      Just $
-        fmap
-          (\showSecrets -> RunNative (NativeConfig (ConfigShow showSecrets)))
-          ( switch
-              ( long "show-secrets"
-                  <> help "Show full secret values"
-              )
-          )
+      Just (pure (RunNative (NativeConfig ConfigShow)))
     ["config", "validate"] -> Just (pure (RunNative (NativeConfig ConfigValidate)))
     ["config", "schema"] -> Just (pure (RunNative (NativeConfig ConfigSchema)))
     ["config", "generate"] -> Just (pure (RunNative (NativeConfig ConfigGenerate)))
@@ -1026,8 +1019,8 @@ configGroup =
     , leaf
         "show"
         "Display current config"
-        "Render the decoded config with secrets masked by default."
-        [flagOption "show-secrets" Nothing Nothing "Show full secret values"]
+        "Render the decoded config with secrets always masked."
+        []
         [example ["config", "show"] "Render the current config with secrets masked."]
     , leaf
         "validate"

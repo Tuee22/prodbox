@@ -1,3 +1,4 @@
+{-# LANGUAGE DataKinds #-}
 {-# LANGUAGE ImportQualifiedPost #-}
 {-# LANGUAGE OverloadedStrings #-}
 
@@ -39,7 +40,8 @@ import Prodbox.Lifecycle.CheckpointAuthority
   ( AuthorityCoordinateError
   , LongLivedCheckpointAuthority
   , ModelBObjectCoordinate
-  , mkModelBObjectCoordinate
+  , StoreLifetime (ClusterRetained)
+  , mkClusterRetainedCoordinate
   )
 import Prodbox.Lifecycle.Lease
   ( LeaseKey
@@ -80,9 +82,9 @@ sesSmtpUserName = "prodbox-ses-smtp"
 awsSesSmtpCommitCoordinate
   :: LongLivedCheckpointAuthority
   -> LeaseKey
-  -> Either AuthorityCoordinateError ModelBObjectCoordinate
+  -> Either AuthorityCoordinateError (ModelBObjectCoordinate 'ClusterRetained)
 awsSesSmtpCommitCoordinate authority key =
-  mkModelBObjectCoordinate
+  mkClusterRetainedCoordinate
     authority
     ( Text.intercalate
         "/"

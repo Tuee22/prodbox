@@ -10,7 +10,6 @@ module Prodbox.Lifecycle.CheckpointAuthorityStore
   )
 where
 
-import Data.ByteString (ByteString)
 import Data.Text qualified as Text
 import Prodbox.Gateway.Client qualified as GatewayClient
 import Prodbox.Gateway.ObjectStore
@@ -23,6 +22,7 @@ import Prodbox.Lifecycle.CheckpointAuthority
   , ModelBCasAdapter (..)
   , ModelBCasRequest (..)
   , ModelBCasResult (..)
+  , ModelBCodec (..)
   , ModelBLeaseGuard (..)
   , ModelBObjectCoordinate
   , ModelBObservation (..)
@@ -33,17 +33,13 @@ import Prodbox.Lifecycle.CheckpointAuthority
   , modelBObjectVersionText
   )
 
--- | Payload codec supplied by the state-machine owner. Decode failures are
--- corruption evidence; transport/CAS failures remain unobservable.
-data ModelBCodec value = ModelBCodec
-  { encodeModelBValue :: value -> Either String ByteString
-  , decodeModelBValue :: ByteString -> Either String value
-  }
-
+-- | The gateway daemon object-store transport is polymorphic in the storage
+-- lifetime it carries: it validates the coordinate's authority and logical name
+-- only, so it serves any lifetime the caller demands.
 gatewayModelBCasAdapter
   :: LongLivedCheckpointAuthority
   -> ModelBCodec value
-  -> ModelBCasAdapter IO value
+  -> ModelBCasAdapter l IO value
 gatewayModelBCasAdapter authority codec =
   ModelBCasAdapter
     { modelBObserve = observe
@@ -131,7 +127,7 @@ authorityObjectLeaseGuard guard =
 
 coordinateEndpoint
   :: LongLivedCheckpointAuthority
-  -> ModelBObjectCoordinate
+  -> ModelBObjectCoordinate l
   -> Either String String
 coordinateEndpoint expected coordinate
   | modelBObjectAuthority coordinate /= expected =

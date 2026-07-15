@@ -1,3 +1,4 @@
+{-# LANGUAGE DataKinds #-}
 {-# LANGUAGE DeriveGeneric #-}
 {-# LANGUAGE NamedFieldPuns #-}
 {-# LANGUAGE OverloadedStrings #-}
@@ -134,7 +135,8 @@ import Prodbox.Lifecycle.CheckpointAuthority
   , ModelBObjectCoordinate
   , ModelBObjectVersion
   , ModelBObservation (..)
-  , mkModelBObjectCoordinate
+  , StoreLifetime (ClusterRetained)
+  , mkClusterRetainedCoordinate
   , modelBObjectLogicalName
   )
 
@@ -232,9 +234,9 @@ leaseKeyResource = internalLeaseKeyResource
 leaseObjectCoordinate
   :: LongLivedCheckpointAuthority
   -> LeaseKey
-  -> Either AuthorityCoordinateError ModelBObjectCoordinate
+  -> Either AuthorityCoordinateError (ModelBObjectCoordinate 'ClusterRetained)
 leaseObjectCoordinate authority key =
-  mkModelBObjectCoordinate authority (leaseLogicalName key)
+  mkClusterRetainedCoordinate authority (leaseLogicalName key)
 
 leaseLogicalName :: LeaseKey -> Text
 leaseLogicalName key =
@@ -820,7 +822,7 @@ leaseRecoveryNotBefore :: LeaseRecoveryPredecessor -> AuthorityTime
 leaseRecoveryNotBefore = internalLeaseRecoveryNotBefore
 
 data LeaseAcquireRequest = LeaseAcquireRequest
-  { internalLeaseAcquireCoordinate :: !ModelBObjectCoordinate
+  { internalLeaseAcquireCoordinate :: !(ModelBObjectCoordinate 'ClusterRetained)
   , internalLeaseAcquireKey :: !LeaseKey
   , internalLeaseAcquireOwnerNonce :: !OwnerNonce
   , internalLeaseAcquireStartedAt :: !AuthorityTime
@@ -850,7 +852,7 @@ beginLeaseAcquire policy authority key owner startedAt = do
 leaseAcquireOwnerNonce :: LeaseAcquireRequest -> OwnerNonce
 leaseAcquireOwnerNonce = internalLeaseAcquireOwnerNonce
 
-leaseAcquireCoordinate :: LeaseAcquireRequest -> ModelBObjectCoordinate
+leaseAcquireCoordinate :: LeaseAcquireRequest -> ModelBObjectCoordinate 'ClusterRetained
 leaseAcquireCoordinate = internalLeaseAcquireCoordinate
 
 leaseAcquireDeadline :: LeaseAcquireRequest -> AuthorityTime
@@ -877,7 +879,7 @@ data LeaseRefusal
   deriving (Eq, Show)
 
 data LeaseAcquireDecision
-  = LeaseAcquireCompareAndSwap !(ModelBCasRequest LeaseProjection)
+  = LeaseAcquireCompareAndSwap !(ModelBCasRequest 'ClusterRetained LeaseProjection)
   | LeaseAcquireAlreadyOwned !LeaseGrant
   | LeaseAcquireContended !LeaseGrant
   | LeaseAcquireRecoveryRequired !AuthorityTime
@@ -987,14 +989,14 @@ confirmLeaseAcquired policy now request observation = do
   pure grant
 
 data LeaseReleaseDecision
-  = LeaseReleaseCompareAndSwap !(ModelBCasRequest LeaseProjection)
+  = LeaseReleaseCompareAndSwap !(ModelBCasRequest 'ClusterRetained LeaseProjection)
   | LeaseReleaseAlreadyApplied
   | LeaseReleaseRefused !LeaseRefusal
   deriving (Eq, Show)
 
 decideLeaseRelease
   :: AuthorityTime
-  -> ModelBObjectCoordinate
+  -> ModelBObjectCoordinate 'ClusterRetained
   -> LeaseGrant
   -> ModelBObservation LeaseProjection
   -> LeaseReleaseDecision
@@ -1177,7 +1179,7 @@ fencedCommitExpectedLeaseVersion :: FencedCommitPermit -> ModelBObjectVersion
 fencedCommitExpectedLeaseVersion = internalFencedCommitExpectedLeaseVersion
 
 modelBLeaseGuardFromPermit
-  :: ModelBObjectCoordinate -> FencedCommitPermit -> ModelBLeaseGuard
+  :: ModelBObjectCoordinate 'ClusterRetained -> FencedCommitPermit -> ModelBLeaseGuard
 modelBLeaseGuardFromPermit coordinate permit =
   ModelBLeaseGuard
     { modelBLeaseGuardCoordinate = coordinate
@@ -1512,7 +1514,7 @@ validateGrantAgainstPolicy policy grant = do
     )
 
 validateCoordinateForKey
-  :: ModelBObjectCoordinate -> LeaseKey -> Either LeaseRefusal ()
+  :: ModelBObjectCoordinate l -> LeaseKey -> Either LeaseRefusal ()
 validateCoordinateForKey coordinate key =
   unless
     (modelBObjectLogicalName coordinate == expected)

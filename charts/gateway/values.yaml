@@ -33,10 +33,21 @@ image:
 runtime:
   rtsArguments: []
 
-# REST/event ports the daemon binds inside each pod.
+# Static gateway chart identities — REST/event container ports, the host-facing
+# NodePort, and the Pod ServiceAccount name — generated from the one compiled
+# `Prodbox.Gateway.ChartStatics` source of truth. The NodePort default matches
+# the port the iptables rule installed by `prodbox host firewall
+# gateway-restrict` restricts to loopback ingress, and the ServiceAccount name
+# is the Vault Kubernetes-auth role identity (`VaultRoleGatewayDaemon`).
+# prodbox:gateway-chart-statics.values:start
 ports:
   rest: 8443
   events: 8444
+nodePort:
+  rest: 30443
+serviceAccount:
+  name: prodbox-gateway-daemon
+# prodbox:gateway-chart-statics.values:end
 
 # prodbox:gateway-probes.values:start
 probes:
@@ -52,15 +63,9 @@ probes:
     initialDelaySeconds: 5
     periodSeconds: 10
     timeoutSeconds: 1
-    failureThreshold: 3
+    failureThreshold: 6
     successThreshold: 1
 # prodbox:gateway-probes.values:end
-
-# NodePort exposed by the gateway-nodeport Service for host-CLI access.
-# The default matches the port the iptables rule installed by
-# `prodbox host firewall gateway-restrict` restricts to loopback ingress.
-nodePort:
-  rest: 30443
 
 # Daemon timing knobs. The defaults align with the in-pod test suite.
 timing:

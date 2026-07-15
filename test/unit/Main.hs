@@ -11,6 +11,7 @@ import AwsSesReadiness (awsSesReadinessSuite)
 import AwsSesSmtpKey (awsSesSmtpKeySuite)
 import Control.Exception (finally)
 import Control.Monad (forM_, when)
+import ControlPlaneCapability (controlPlaneCapabilitySuite)
 import Data.Aeson
   ( Value (..)
   , eitherDecode
@@ -48,14 +49,20 @@ import Data.Time.Clock (UTCTime (..), secondsToDiffTime)
 import Data.Vector qualified as Vector
 import DesiredPresentReconciliation (desiredPresentReconciliationSuite)
 import Dhall qualified
+import EscapeRegistry (escapeRegistrySuite)
 import FencedCheckpoint (fencedCheckpointSuite)
 import GatewayAuthority (gatewayAuthoritySuite)
 import GatewayBounded (gatewayBoundedSuite)
+import GatewayChartStatics (gatewayChartStaticsSuite)
 import GatewayContinuity (gatewayContinuitySuite)
 import GatewayProbe (gatewayProbeSuite)
+import GatewayReadiness (gatewayReadinessSuite)
+import GatewayRoutes (gatewayRoutesSuite)
 import GatewayRuntimeStability (gatewayRuntimeStabilitySuite)
 import LifecycleLease (lifecycleLeaseSuite)
+import MeasuredProfile (measuredProfileSuite)
 import Numeric.Natural (Natural)
+import ObjectStoreNative (objectStoreNativeSuite)
 import Options.Applicative
   ( ParserResult (..)
   , defaultPrefs
@@ -103,6 +110,7 @@ import Prodbox.Aws
   , renderPulumiResidueRefusal
   , renderResidueError
   , residueFromProbe
+  , residuePolicyBypassesLongLivedProtection
   , sessionTokenPromptShape
   , spotObservationFromAwsSpotPriceHistory
   , spotObservationFromAwsSpotPriceOutput
@@ -951,7 +959,9 @@ import Prodbox.Workload
 import Prodbox.Workload.Settings qualified as WorkloadSettings
 import RetainedSesPreparation (retainedSesPreparationSuite)
 import RetainedSesTargetRecovery (retainedSesTargetRecoverySuite)
+import SigV4 (sigV4Suite)
 import SmtpKeyRepairInterpreter (smtpKeyRepairInterpreterSuite)
+import StoreLifetimeWitness (storeLifetimeWitnessSuite)
 import System.Directory
   ( Permissions (..)
   , copyFile
@@ -975,6 +985,7 @@ import System.FilePath (takeDirectory, (</>))
 import System.IO.Temp (withSystemTempDirectory)
 import TargetCommitSmtp (targetCommitSmtpSuite)
 import TestSupport
+import VaultSession (vaultSessionSuite)
 
 withBinarySiblingTier0 :: String -> IO a -> IO a
 withBinarySiblingTier0 contents action = do
@@ -1227,18 +1238,28 @@ main = mainWithSuite "prodbox-unit" $ do
   awsSesLeaseRoleSuite
   awsSesReadinessSuite
   awsSesSmtpKeySuite
+  controlPlaneCapabilitySuite
   desiredPresentReconciliationSuite
+  escapeRegistrySuite
   fencedCheckpointSuite
   gatewayAuthoritySuite
   gatewayBoundedSuite
+  gatewayChartStaticsSuite
   gatewayContinuitySuite
   gatewayProbeSuite
+  gatewayReadinessSuite
+  gatewayRoutesSuite
   gatewayRuntimeStabilitySuite
   lifecycleLeaseSuite
+  measuredProfileSuite
+  objectStoreNativeSuite
+  sigV4Suite
   retainedSesPreparationSuite
   retainedSesTargetRecoverySuite
   smtpKeyRepairInterpreterSuite
+  storeLifetimeWitnessSuite
   targetCommitSmtpSuite
+  vaultSessionSuite
   describe "vault unlock bundle (Sprint 1.36)" $ do
     it "round-trips through encrypt/decrypt with the same password" $ do
       encrypted <- encryptUnlockBundle sampleUnlockBundlePassword sampleUnlockBundle
@@ -4125,8 +4146,16 @@ main = mainWithSuite "prodbox-unit" $ do
       dekUnwrap cipher "vault:v1:sample-dek" `shouldReturn` Right "sample-dek"
   describe "CLI parser" $ do
     it "routes config show to the native Haskell command" $ do
-      parseArgs ["config", "show", "--show-secrets"]
-        `shouldBe` Right (Options False (RunNative (NativeConfig (ConfigShow True))))
+      parseArgs ["config", "show"]
+        `shouldBe` Right (Options False (RunNative (NativeConfig ConfigShow)))
+
+    it "Sprint 1.61: the config show --show-secrets reveal flag is removed" $
+      -- The unrestricted secret-reveal path is gone; the flag is no longer a
+      -- known option, so it is rejected at parse time rather than revealing
+      -- full secret values.
+      case parseArgs ["config", "show", "--show-secrets"] of
+        Left _ -> pure ()
+        Right _ -> expectationFailure "expected `config show --show-secrets` to be rejected"
 
     it "routes native host commands through the Haskell runtime" $ do
       parseArgs ["host", "info"]
@@ -5042,11 +5071,16 @@ main = mainWithSuite "prodbox-unit" $ do
       repoRoot <- getCurrentDirectory
       let chartServiceAccounts =
             [ ("api", "deployment.yaml", "api", "serviceAccountName: api")
-            ,
+            , -- Sprint 2.34: the gateway ServiceAccount name is projected from
+              -- the compiled GatewayChartStatics through @.Values.serviceAccount.name@
+              -- (the `prodbox-gateway-daemon` value is pinned by the
+              -- GatewayChartStatics conformance suite), so it is bound but no
+              -- longer a raw template literal.
+
               ( "gateway"
               , "deployments.yaml"
-              , "prodbox-gateway-daemon"
-              , "serviceAccountName: prodbox-gateway-daemon"
+              , "{{ .Values.serviceAccount.name }}"
+              , "serviceAccountName: {{ $.Values.serviceAccount.name }}"
               )
             , ("keycloak", "deployment.yaml", "keycloak", "serviceAccountName: keycloak")
             , ("minio", "statefulset.yaml", "minio", "serviceAccountName: minio")
@@ -5500,6 +5534,7 @@ main = mainWithSuite "prodbox-unit" $ do
               policy
               "127.0.0.1:31234"
               (pure (Right ReadinessProbeReady))
+              (pure (Right ReadinessProbeReady))
       Preconditions.preconditionCheck precondition `shouldReturn` Right ()
 
     it "returns a bounded structured SMTP refusal for pending or unreachable daemon observations" $ do
@@ -5518,7 +5553,11 @@ main = mainWithSuite "prodbox-unit" $ do
         attemptsRef <- newIORef (0 :: Int)
         let observeOnce = modifyIORef' attemptsRef (+ 1) >> pure observation
             precondition =
-              gatewayDaemonLivenessPrecondition policy "127.0.0.1:31234" observeOnce
+              gatewayDaemonLivenessPrecondition
+                policy
+                "127.0.0.1:31234"
+                (pure (Right ReadinessProbeReady))
+                observeOnce
         result <- Preconditions.preconditionCheck precondition
         readIORef attemptsRef `shouldReturn` 1
         case result of
@@ -5528,7 +5567,41 @@ main = mainWithSuite "prodbox-unit" $ do
             Preconditions.errorSummaryLine err `shouldContain` "127.0.0.1:31234"
             Preconditions.errorOffendingItems err
               `shouldBe` [("127.0.0.1:31234", "prodbox charts reconcile gateway")]
-            Preconditions.errorNarrative err `shouldContain` "No Keycloak SMTP sync was started."
+
+    it
+      "fails the gateway-daemon precondition closed on an unready /readyz precheck, without attempting the round trip"
+      $ do
+        let policy =
+              RetryPolicy
+                { retryPolicyMaxAttempts = 1
+                , retryPolicyBaseDelayMicros = 0
+                , retryPolicyMultiplier = 1
+                , retryPolicyMaxDelayMicros = 0
+                }
+            readyzObservations =
+              [ Right (ReadinessProbePending "gateway /readyz reported HTTP 503: starting")
+              , Left "Connection refused"
+              ]
+        forM_ readyzObservations $ \readyzObservation -> do
+          roundTripRef <- newIORef (0 :: Int)
+          let observeRoundTrip = modifyIORef' roundTripRef (+ 1) >> pure (Right ReadinessProbeReady)
+              precondition =
+                gatewayDaemonLivenessPrecondition
+                  policy
+                  "127.0.0.1:31234"
+                  (pure readyzObservation)
+                  observeRoundTrip
+          result <- Preconditions.preconditionCheck precondition
+          -- lifecycle-ready implies kubelet-ready: the object-store round trip is
+          -- never attempted while /readyz is unready.
+          readIORef roundTripRef `shouldReturn` 0
+          case result of
+            Right () -> expectationFailure "expected the /readyz precheck to fail closed"
+            Left err -> do
+              Preconditions.errorPreconditionLabel err `shouldBe` "gatewayDaemonObjectStoreReady"
+              Preconditions.errorSummaryLine err `shouldContain` "/readyz"
+              Preconditions.errorSummaryLine err `shouldContain` "127.0.0.1:31234"
+              Preconditions.errorNarrative err `shouldContain` "No Keycloak SMTP sync was started."
 
     it "bootstraps the AWS substrate by provisioning per-run stacks before deploying the AWS chart set" $ do
       case testExecutionPlan SubstrateAws TestAll of
@@ -13861,42 +13934,47 @@ main = mainWithSuite "prodbox-unit" $ do
         awsTeardownResiduePolicy (teardownInputWith BypassAllResidueForHarnessRefresh)
           `shouldBe` BypassAllResidueForHarnessRefresh
 
-  describe "Sprint 7.9 harness postflight no longer gates on admin-managed aws-ses" $ do
-    let sesOnlyResidue =
-          categorizePulumiResidue
-            absentPerRunStatuses
-            (residuePresentFor "aws-ses")
-    it
-      "harnessPostflightResiduePolicy is BypassAllResidueForHarnessRefresh (was BypassPerRunResidueOnly in Sprint 7.7)"
-      $ harnessPostflightResiduePolicy `shouldBe` BypassAllResidueForHarnessRefresh
-    it
-      "the postflight policy matches the preflight policy (both bypass all residue post-Sprint-4.10)"
-      $ harnessPostflightResiduePolicy `shouldBe` BypassAllResidueForHarnessRefresh
-    it
-      "the postflight policy is NOT the old Sprint 7.7 BypassPerRunResidueOnly (which still refuses on aws-ses)"
-      $ (harnessPostflightResiduePolicy == BypassPerRunResidueOnly) `shouldBe` False
-    it
-      "with aws-ses live, the postflight policy proceeds rather than refusing (no operational-user stranding)"
-      $ do
-        -- aws-ses live is the retained-by-design steady state; the
-        -- Sprint 7.7 BypassPerRunResidueOnly path would refuse here
-        -- (renderPulumiResidueLongLivedRefusal names aws-ses-destroy),
-        -- stranding the freshly-created operational prodbox IAM user.
-        -- The Sprint 7.9 postflight policy proceeds: aws-ses is
-        -- admin-managed post-4.10, so clearing operational aws.* cannot
-        -- strand it.
-        let (_, longLived) = partitionResidueByLifecycle sesOnlyResidue
-        map fst longLived `shouldBe` ["aws-ses"]
-        -- The old policy would have produced a long-lived refusal here:
-        renderPulumiResidueLongLivedRefusal longLived
-          `shouldContain` "aws-ses → prodbox aws stack aws-ses destroy --yes"
-        -- The postflight policy is one of the two proceed-on-everything
-        -- policies (BypassAllResidueForHarnessRefresh / AcceptOrphanResidue),
-        -- so applyAwsTeardown short-circuits past that refusal.
-        ( harnessPostflightResiduePolicy
-            `elem` [BypassAllResidueForHarnessRefresh, AcceptOrphanResidue]
-          )
-          `shouldBe` True
+  describe
+    "Sprint 7.34 harness postflight residue scope narrowed to per-run (aws-ses structurally protected)"
+    $ do
+      let sesOnlyResidue =
+            categorizePulumiResidue
+              absentPerRunStatuses
+              (residuePresentFor "aws-ses")
+      it
+        "harnessPostflightResiduePolicy is BypassPerRunResidueForHarnessRefresh (narrowed from Sprint 7.9's BypassAllResidueForHarnessRefresh)"
+        $ harnessPostflightResiduePolicy `shouldBe` BypassPerRunResidueForHarnessRefresh
+      it
+        "the postflight policy is no longer the all-residue bypass"
+        $ (harnessPostflightResiduePolicy == BypassAllResidueForHarnessRefresh) `shouldBe` False
+      it
+        "the narrowed postflight policy no longer bypasses the long-lived protection (only the superseded all-residue policy did)"
+        $ do
+          residuePolicyBypassesLongLivedProtection harnessPostflightResiduePolicy `shouldBe` False
+          residuePolicyBypassesLongLivedProtection BypassAllResidueForHarnessRefresh `shouldBe` True
+          map
+            residuePolicyBypassesLongLivedProtection
+            [RefuseOnAnyResidue, DestroyPulumiResidueFirst, AcceptOrphanResidue, BypassPerRunResidueOnly]
+            `shouldBe` [False, False, False, False]
+      it
+        "with aws-ses live, the postflight still clears aws.* unconditionally (Sprint 7.9 stranding fix retained) but does not bypass long-lived protection"
+        $ do
+          -- aws-ses live is the retained-by-design steady state; the Sprint 7.7
+          -- BypassPerRunResidueOnly path would refuse here (naming aws-ses-destroy),
+          -- stranding the freshly-created operational prodbox IAM user. The Sprint
+          -- 7.34 postflight policy proceeds (clears aws.*), because aws-ses is
+          -- admin-managed post-4.10 — but unlike the superseded all-residue bypass
+          -- it does NOT authorize destroying the retained aws-ses stack.
+          let (_, longLived) = partitionResidueByLifecycle sesOnlyResidue
+          map fst longLived `shouldBe` ["aws-ses"]
+          renderPulumiResidueLongLivedRefusal longLived
+            `shouldContain` "aws-ses → prodbox aws stack aws-ses destroy --yes"
+          -- applyAwsTeardown proceeds (clears aws.*) under the postflight policy
+          -- with aws-ses present (it is not a refusing policy), yet the policy
+          -- does not bypass the long-lived protection.
+          harnessPostflightResiduePolicy `shouldBe` BypassPerRunResidueForHarnessRefresh
+          residuePolicyBypassesLongLivedProtection harnessPostflightResiduePolicy
+            `shouldBe` False
 
   describe "Sprint 7.10 harness preserves creds on per-run destroy failure" $ do
     it
@@ -14515,14 +14593,14 @@ main = mainWithSuite "prodbox-unit" $ do
         case result of
           Left err -> expectationFailure err
           Right settings -> do
-            renderSettingsDisplay False settings
+            renderSettingsDisplay settings
               `shouldContain` "aws.access_key_id=Vault:secret/gateway/gateway/aws#access_key_id"
-            renderSettingsDisplay False settings `shouldContain` "acme.email=****.com"
-            renderSettingsDisplay True settings
-              `shouldContain` "aws.access_key_id=Vault:secret/gateway/gateway/aws#access_key_id"
-            renderSettingsDisplay False settings
+            -- Sprint 1.61: sensitive fields are ALWAYS masked; the former
+            -- --show-secrets unmasked reveal mode is removed.
+            renderSettingsDisplay settings `shouldContain` "acme.email=****.com"
+            renderSettingsDisplay settings
               `shouldContain` ("storage.manual_pv_host_root=" ++ (tmpDir </> ".data"))
-            renderSettingsDisplay False settings
+            renderSettingsDisplay settings
               `shouldContain` "cluster_topology.type=rke2"
             doesFileExist (tmpDir </> "prodbox-config.json") `shouldReturn` False
 
@@ -15435,10 +15513,10 @@ resourceGuardrailQuotaFixture =
         .= Array
           ( Vector.fromList
               [ resourceGuardrailQuota "keycloak" "2025m" "4448Mi" "12000Mi" "61440Mi"
-              , resourceGuardrailQuota "vscode" "2425m" "5216Mi" "10944Mi" "112640Mi"
+              , resourceGuardrailQuota "vscode" "1400m" "5216Mi" "10944Mi" "112640Mi"
               , resourceGuardrailQuota "api" "500m" "768Mi" "2000Mi" "1000Mi"
               , resourceGuardrailQuota "websocket" "500m" "768Mi" "3000Mi" "1000Mi"
-              , resourceGuardrailQuota "gateway" "1250m" "3584Mi" "6000Mi" "20480Mi"
+              , resourceGuardrailQuota "gateway" "2750m" "3584Mi" "6000Mi" "20480Mi"
               ]
           )
     ]
@@ -15450,10 +15528,10 @@ resourceGuardrailCanonicalQuotaFixture =
         .= Array
           ( Vector.fromList
               [ resourceGuardrailQuota "keycloak" "2025m" "4448Mi" "12000Mi" "60Gi"
-              , resourceGuardrailQuota "vscode" "2425m" "5216Mi" "10944Mi" "110Gi"
+              , resourceGuardrailQuota "vscode" "1400m" "5216Mi" "10944Mi" "110Gi"
               , resourceGuardrailQuota "api" "500m" "768Mi" "2000Mi" "1000Mi"
               , resourceGuardrailQuota "websocket" "500m" "768Mi" "3000Mi" "1000Mi"
-              , resourceGuardrailQuota "gateway" "1250m" "3584Mi" "6000Mi" "20Gi"
+              , resourceGuardrailQuota "gateway" "2750m" "3584Mi" "6000Mi" "20Gi"
               ]
           )
     ]
@@ -15487,7 +15565,7 @@ resourceGuardrailLimitRangeFixture =
               , resourceGuardrailLimitRange "vscode" "500m" "1024Mi" "1024Mi" "600m" "1280Mi" "2048Mi"
               , resourceGuardrailLimitRange "api" "250m" "256Mi" "512Mi" "250m" "384Mi" "512Mi"
               , resourceGuardrailLimitRange "websocket" "100m" "256Mi" "512Mi" "150m" "256Mi" "512Mi"
-              , resourceGuardrailLimitRange "gateway" "250m" "256Mi" "512Mi" "250m" "512Mi" "512Mi"
+              , resourceGuardrailLimitRange "gateway" "750m" "256Mi" "512Mi" "750m" "512Mi" "512Mi"
               ]
           )
     ]
@@ -15502,7 +15580,7 @@ resourceGuardrailCanonicalLimitRangeFixture =
               , resourceGuardrailLimitRange "vscode" "500m" "1Gi" "1Gi" "600m" "1280Mi" "2Gi"
               , resourceGuardrailLimitRange "api" "250m" "256Mi" "512Mi" "250m" "384Mi" "512Mi"
               , resourceGuardrailLimitRange "websocket" "100m" "256Mi" "512Mi" "150m" "256Mi" "512Mi"
-              , resourceGuardrailLimitRange "gateway" "250m" "256Mi" "512Mi" "250m" "512Mi" "512Mi"
+              , resourceGuardrailLimitRange "gateway" "750m" "256Mi" "512Mi" "750m" "512Mi" "512Mi"
               ]
           )
     ]

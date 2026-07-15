@@ -855,7 +855,15 @@ so the prohibition is the intended end state rather than a present-tense fact:
   `Workload.hs` to the env-var-read lint scope (`checkEnvVarConfigReads.scopedPaths`), so no
   supported binary sources configuration from an env var. The k8s Pod environment may still carry
   runtime metadata (Pod name, namespace) that the binary does not read; the lint rule is scoped to
-  the config-loading paths.
+  the config-loading paths. The narrow, sanctioned exception is the documented **test-only** hook
+  class — environment variables prefixed `PRODBOX_TEST_*` (and `PRODBOX_ALLOW_NON_TTY_INTERACTIVE`).
+  These are read once, in memory, outside the config-loading lint scope; they never participate in
+  config resolution and are never set by any production path. Sprint `2.34` added
+  `PRODBOX_TEST_OBJECT_STORE_PROOF_LATCH`, read once at gateway-daemon env construction to seed the
+  readiness object-store proof latch so the `prodbox-daemon-lifecycle` and CLI integration harnesses
+  (which run with no Vault and no MinIO) can reach `/readyz` ready without a live round trip.
+  Production never sets it, so the latch defaults to unproven and the readiness gate stays
+  fail-closed.
 - Materializing `prodbox-config.json` (or any other JSON projection of the Dhall) on a
   supported path. `prodbox config compile` is not a supported subcommand.
 - `--log-level`, `--port`, `--node-id`, `--foreground`, `--config-path`, and any other

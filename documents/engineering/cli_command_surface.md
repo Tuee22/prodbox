@@ -220,7 +220,7 @@ The per-group command matrix (generated; do not edit by hand):
 | Command | Arguments | Options |
 |---------|-----------|---------|
 | `prodbox config setup` | none | `--dry-run`, `--plan-file` |
-| `prodbox config show` | none | `--show-secrets` |
+| `prodbox config show` | none | none |
 | `prodbox config validate` | none | none |
 | `prodbox config schema` | none | none |
 | `prodbox config generate` | none | none |
@@ -402,10 +402,11 @@ command contract.
 ### `prodbox config` notes
 
 `src/Prodbox/Aws.hs` owns `config setup`. `src/Prodbox/Settings.hs` owns `config show` and
-`config validate`. `prodbox config compile` is not part of the supported command surface. The
-current generated registry still exposes `config show --show-secrets`; that unrestricted reveal
-flag is pre-cutover legacy and Sprint `1.61` removes it. Target `ConfigObserve` returns only a
-validated role-scoped projection and defines no generic secret-reveal operation. Target
+`config validate`. `prodbox config compile` is not part of the supported command surface. Sprint
+`1.61` removed the `config show --show-secrets` unrestricted-reveal flag: `config show` now always
+masks sensitive fields and there is no generic secret-reveal capability or flag alias. Target
+`ConfigObserve` returns only a validated role-scoped projection and defines no generic secret-reveal
+operation. Target
 `config setup` writes/validates non-secret Tier 0 only; an optional prompt may support read-only AWS
 discovery but cannot mutate or persist a credential. First `cluster reconcile` performs the visible
 `GenesisFrozen -> EstablishAuthorityBackup -> BackupEstablished` action, then uses normal durable

@@ -3931,16 +3931,59 @@ must fit inside the authored container limit.
 - Sprint `2.31` consumes the validated runtime-memory inputs; Sprint `5.16` observes the resulting
   runtime without treating a static plan as proof of external behavior.
 
-## Sprint 1.61: Operation-Indexed Capabilities and Exact Readiness Evidence [📋 Planned]
+## Sprint 1.61: Operation-Indexed Capabilities and Exact Readiness Evidence [🔄 Active]
 
-**Status**: Planned
+**Status**: Active — the self-contained `--show-secrets` removal (2026-07-14) and the **additive
+operation-indexed capability-algebra foundation** (the pure module set + its opacity/evidence
+invariants, 2026-07-14) both landed and are fully validated. What remains is the graph/interpreter
+seam migration and consumer cutover — the cluster-touching part that lowers the generic
+`ComponentGraph`/`Effect` seam over the algebra and routes live consumers through single handles.
 **Deployment qualification**: pending
-**Implementation**: planned modules under `src/Prodbox/ControlPlane/`, revisions to
-`src/Prodbox/Config/ComponentGraph.hs`, `src/Prodbox/Lifecycle/ReadinessObservation.hs`,
-`src/Prodbox/Effect.hs`, `src/Prodbox/EffectInterpreter.hs`, and focused property tests
-**Independent Validation**: pure constructor/property tables prove that a capability's identity,
-operation, observation, admission, and execution cannot be mixed with another endpoint or
-operation. Fakes exercise the interpreter boundary without Kubernetes, AWS, or a later phase.
+**Implementation**: ✅ **`config show --show-secrets` removed** — the `ConfigShow Bool` command is
+now flagless `ConfigShow`, `renderSensitive`/`renderSettingsDisplay` always mask (no unmasked reveal
+mode), and the parser/spec/goldens/generated `command-surface-matrix` no longer carry the flag
+(`src/Prodbox/CLI/Command.hs`, `CLI/Spec.hs`, `Native.hs`, `Settings.hs`; goldens
+`test/golden/cli/*`; `documents/engineering/cli_command_surface.md`). ✅ **additive capability
+algebra landed** as seven pure modules under `src/Prodbox/ControlPlane/` (umbrella
+`src/Prodbox/ControlPlane.hs`, registered in `prodbox.cabal`):
+  - `CapabilityKind.hs` — the exhaustive `CapabilityKind` universe (~39 constructors across three
+    tiers: observe-only, internal-CAS, external-intent), its `CapabilityOp` value mirror, the
+    `KnownCapability` singleton-witness class (`capabilityOp @k`), the closed marker classes
+    `MutatingKind`/`InternalCasKind`/`ExternalIntentKind`, and the `PermitTier` +
+    `isMutating`/`requiresRoundTripEvidence` derivations. No generic transport escape kind exists.
+  - `Coordinate.hs` — smart-constructed coordinate fields, `CapabilityCoordinate` (a field on
+    exactly one type), and `CoordinateDigest` as a SHA-256 over an injective NUL-join, reusing the
+    live `sha256TargetValueDigest` discipline so the control plane speaks the retained-authority
+    binding language.
+  - `CapabilityRef.hs` — the opaque `CapabilityRef (k :: CapabilityKind)` with `type role … nominal`
+    and an unexported constructor, so `coerce` cannot launder one operation's handle into another.
+  - `Observation.hs` — flat exhaustive `ExternalEvidence` keeping read-shaped `EvidencePresentReady`
+    DISTINCT from write-shaped `EvidenceRoundTripConfirmed`; `classifyEvidence` (a mutating op's GET
+    is `Pending`, never `Ready`); the opaque `CapabilityObservation k`; and `AdmissionTicket k` whose
+    SOLE producer `classifyObservation` fails closed on staleness/mismatch.
+  - `Permit.hs` — the opaque `WriterPermit k` minted only by `authorizeInternalCas` from a
+    fresh-`Ready` ticket whose coordinate matches the lease fence, plus the signed
+    `UnsignedIntent`/`CommittedIntent`/`VerifiedIntent` chain (`prepareIntent`/`signIntent`/
+    `verifyIntent`, HMAC-SHA256) so raw external mutations are unconstructable.
+  - `Program.hs` — the closed `CapabilityProgram (k :: CapabilityKind) result` GADT (Observe /
+    InternalCas / ExternalCommit) requiring the matching permit/intent evidence at each mutating arm.
+
+  🔄 **Remaining (the graph/interpreter migration)**: lower the generic graph/interpreter seam
+  (`ComponentGraph.hs`, `ReadinessObservation.hs`, `Effect.hs`, `EffectInterpreter.hs`) over the
+  capability providers, and migrate live consumers to receive one handle rather than separate probe
+  and execution coordinates. This is the larger, cluster-touching cutover (comparable to the
+  reverted Sprint 4.51 cascade) and is scheduled as a dedicated follow-up pass; the foundation above
+  is additive and changes no existing behaviour.
+**Independent Validation**: ✅ the `--show-secrets` removal — the parser rejects the removed flag,
+`config show` routes to `ConfigShow`, and `renderSettingsDisplay` masks unconditionally
+(`test/unit/Main.hs`, `test/unit/Parser.hs`). ✅ the capability-algebra constructor/opacity/evidence
+tables (`test/unit/ControlPlaneCapability.hs`, T1–T7): the coordinate digest is injective and
+matches across refs; `classifyEvidence` refuses a bare GET for a round-trip-required op; the ticket
+producer fails closed; the writer permit and committed-intent chain reject fence/coordinate/deadline/
+generation/signature mismatches. Full pre-cluster gate green on 2026-07-14: unit **1640/1640**,
+`prodbox dev check` exit 0 (`-Werror`), `prodbox test integration cli` PASS, `prodbox test
+integration env` **49/49**. 🔄 the exhaustive graph-lowering tables (missing/ambiguous providers,
+cycles, weaker-capability substitution) land with the graph/interpreter migration.
 **Docs to update**: `documents/engineering/lifecycle_control_plane_architecture.md`,
 `documents/engineering/pure_fp_standards.md`,
 `documents/engineering/bootstrap_readiness_doctrine.md`,
@@ -4006,7 +4049,12 @@ and admission evidence.
 
 ### Remaining Work
 
-- Implement the indexed foundation and migrate the generic graph/interpreter seam.
+- ✅ The additive indexed foundation (`src/Prodbox/ControlPlane/`: `CapabilityKind`, `Coordinate`,
+  `CapabilityRef`, `Observation`, `Permit`, `Program`, umbrella) landed 2026-07-14 with its
+  constructor/opacity/evidence tables.
+- 🔄 Migrate the generic graph/interpreter seam (`ComponentGraph.hs`, `ReadinessObservation.hs`,
+  `Effect.hs`, `EffectInterpreter.hs`) over the capability providers, and cut live consumers to
+  single handles — the cluster-touching follow-up pass.
 - Sprint `1.62` consumes the handle algebra for temporal admission; Sprints `1.64` and `1.66`
   consume it for the cached Vault session and the native object-store client.
 
@@ -4112,12 +4160,16 @@ never invoke the `aws` CLI.
 
 - Cross-link runtime memory and service capacity as separate necessary proofs.
 
-## Sprint 1.63: Conformance Tier and Legacy Escape Registry [📋 Planned]
+## Sprint 1.63: Conformance Tier and Legacy Escape Registry [✅ Done]
 
-**Status**: Planned
+**Status**: Done
 **Deployment qualification**: pending
-**Implementation**: planned `src/Prodbox/Legacy/EscapeRegistry.hs`, conformance-tier wiring in
-`src/Prodbox/CheckCode.hs`
+**Implementation**: `src/Prodbox/Legacy/EscapeRegistry.hs` (the compiled registry + pure
+`escapeRegistryViolations` bijection), conformance-tier wiring `runConformanceTier` /
+`checkLegacyEscapeRegistry` in `src/Prodbox/CheckCode.hs`, unit suite `test/unit/EscapeRegistry.hs`,
+and the eight `LEGACY-ESCAPE[…]` markers seeded at the current call sites in
+`src/Prodbox/Gateway/Daemon.hs`, `src/Prodbox/Aws.hs`, `src/Prodbox/Pulumi/HostDirectObjectStore.hs`,
+`src/Prodbox/Vault/Host.hs`, and `src/Prodbox/Minio/ObjectStore.hs`
 **Independent Validation**: pure registry↔source bijection tables and unit tests; no cluster, no
 later-phase dependency.
 **Docs to update**: `documents/engineering/code_quality.md`,
@@ -4146,15 +4198,25 @@ registry so escape-path drift fails the build.
 ### Validation
 
 1. Pure unit tables prove the registry↔source bijection in both directions (an unregistered new
-   call site fails; a registry entry with no surviving call site fails).
-2. Seeding the registry from the current call sites leaves `prodbox dev check` green.
-3. `prodbox test unit` and `prodbox dev check` pass.
+   call site fails; a registry entry with no surviving call site fails; a marker in the wrong file
+   fails; a duplicated marker fails). ✅ `test/unit/EscapeRegistry.hs`.
+2. Seeding the registry from the current call sites leaves `prodbox dev check` green — the eight
+   registered markers match the source one-to-one. ✅
+3. `prodbox test unit` (1541/1541) and `prodbox dev check` (exit 0) pass. ✅
+
+### Current Validation State
+
+`runConformanceTier` runs inside the fast, pre-build file-lint phase of `prodbox dev check`, so a
+registry↔marker mismatch fails in seconds. The registry currently hosts the legacy-escape bijection
+only; the later Foundation Epoch conformance suites (`2.34`, `4.51`, `5.20`, `7.34`) add their
+cross-artifact checks under the same `runConformanceTier` surface as they land. Warning-clean build
+under `-Werror`, unit 1541/1541, `prodbox dev check` exit 0.
 
 ### Remaining Work
 
-- Implement the conformance tier and seed the registry from the current call sites.
-- Later Foundation Epoch sprints (`2.34`, `4.51`, `5.20`) add their conformance suites under this
-  tier as they land.
+- None. Later Foundation Epoch sprints (`2.34`, `4.51`, `5.20`, `7.34`) extend the conformance tier
+  under `runConformanceTier`; the escape-registry entries are removed by their cutover sprints
+  (`1.64`, `1.66`, `2.33`, `4.49`, `4.50`, `8.11`) as each seam is eliminated.
 
 ## Documentation Requirements
 
@@ -4176,13 +4238,17 @@ registry so escape-path drift fails the build.
   guard) names Sprint `1.63` as the registry owner; adoption is governed by Sprint `0.17`
   ([phase-0-planning-documentation.md](phase-0-planning-documentation.md)).
 
-## Sprint 1.64: Shared TLS Manager and Cached Vault Session [📋 Planned]
+## Sprint 1.64: Shared TLS Manager and Cached Vault Session [✅ Done]
 
-**Status**: Planned
+**Status**: Done
 **Deployment qualification**: pending
-**Implementation**: planned revisions to `src/Prodbox/Http/Client.hs`; planned
-`src/Prodbox/Vault/Session.hs`; `resolveGatewayVaultTokenFor` wiring in
-`src/Prodbox/Gateway/Daemon.hs`
+**Live-proof**: pending (the measured gateway CPU reduction is recorded by Sprint `5.21`; non-blocking)
+**Implementation**: `src/Prodbox/Http/Client.hs` (`sharedTlsManager` singleton replaces the per-call
+`newManager`); `src/Prodbox/Vault/Session.hs` (the cached renewable session + `withSessionToken`);
+`src/Prodbox/Vault/Client.hs` (`vaultKubernetesLoginWithLease` / `VaultKubernetesLoginResult`);
+`resolveGatewayVaultTokenFor` / `resolveGatewayVaultSessionFor` wiring plus the target-secret
+`withSessionToken` adoption in `src/Prodbox/Gateway/Daemon.hs`; unit suite
+`test/unit/VaultSession.hs`
 **Independent Validation**: unit tests for single-flight refresh, monotonic expiry,
 sealed/revoked classification, and 403 invalidate-and-relogin against a fake Vault boundary; no
 cluster required.
@@ -4209,16 +4275,28 @@ request.
 ### Validation
 
 1. Unit suites cover single-flight refresh, monotonic expiry, sealed/revoked classification, and
-   the single 403 invalidate-and-relogin against a fake Vault boundary.
-2. `prodbox test unit` and `prodbox dev check` pass.
+   the single 403 invalidate-and-relogin against a fake Vault boundary. ✅ `test/unit/VaultSession.hs`
+   (including a deterministic concurrent single-flight test).
+2. `prodbox test unit` (1552/1552) and `prodbox dev check` (exit 0) pass. ✅
 3. The measured CPU reduction is recorded later by Sprint `5.21`
    ([phase-5-canonical-test-suite.md](phase-5-canonical-test-suite.md)); it is not a closure gate
    for this sprint.
 
+### Current Validation State
+
+The shared `sharedTlsManager` singleton replaces the per-call `newManager`, and
+`resolveGatewayVaultTokenFor` now serves the daemon's own service-account token from the cached
+renewable session (federation, target-secret, and object-store-material handlers all benefit).
+`withSessionToken` — the 403-invalidate-relogin-once combinator — is unit-proven and wired at the
+target-secret read. The escape registry's `per-request-vault-login` seam is retired and the
+`per-call TLS manager` / gateway-service-account-login ledger rows moved to Completed; the surviving
+operator-secret operator-JWT exchange is reclassified under Sprint `2.33`/`4.50`. Warning-clean
+`-Werror` build, unit 1552/1552, `prodbox dev check` exit 0.
+
 ### Remaining Work
 
-- Implement the shared manager and the cached session.
-- Sprint `1.66` builds the native object-store client over the shared manager.
+- None on the code-owned surface. Sprint `1.66` builds the native object-store client over the same
+  shared manager; the gateway CPU-reduction measurement is the Sprint `5.21` axis.
 
 ## Documentation Requirements
 
@@ -4238,13 +4316,17 @@ request.
 - [legacy-tracking-for-deletion.md](legacy-tracking-for-deletion.md) Pending Removal rows for the
   per-call TLS manager construction and the per-request Vault login name Sprint `1.64` as owner.
 
-## Sprint 1.65: Measured Capacity Certification [📋 Planned]
+## Sprint 1.65: Measured Capacity Certification [✅ Done]
 
-**Status**: Planned
+**Status**: Done
 **Deployment qualification**: pending
-**Implementation**: planned `src/Prodbox/Capacity/MeasuredProfile.hs`, additions to
-`dhall/capacity/Schema.dhall` and `src/Prodbox/Capacity/Config.hs`, interim gateway envelope
-revision in the generated config schema surface
+**Live-proof**: pending (the check activates when Sprint `5.21` commits the first gateway profile; non-blocking)
+**Implementation**: `src/Prodbox/Capacity/MeasuredProfile.hs` (the `MeasuredResourceProfile` type +
+pure certification rules), `dhall/capacity/measured/Schema.dhall` (the committed profile type),
+the `runConformanceTier`/`checkMeasuredCapacityProfiles` wiring in `src/Prodbox/CheckCode.hs`, the
+interim gateway CPU bump + vscode/gateway quota rebalance in `src/Prodbox/Capacity/Config.hs`
+(`defaultResourcePlan`), the regenerated `prodbox-config-types.dhall`, and unit suite
+`test/unit/MeasuredProfile.hs`
 **Independent Validation**: pure decode/validation tables for the profile algebra; check behavior
 proven with fixture profiles; no cluster required.
 **Docs to update**: `documents/engineering/resource_scaling_doctrine.md`
@@ -4270,16 +4352,29 @@ removed.
 ### Validation
 
 1. Pure decode/validation tables cover the profile algebra and every certification rule
-   (headroom, throttle ppm ceiling, staleness digest/age) with fixture profiles.
-2. One-sided comparison tables prove a measured improvement never fails the check.
-3. `prodbox config generate`/`config validate`, `prodbox test unit`, and `prodbox dev check`
-   pass.
+   (CPU p99 × 4/3 headroom, memory high-water × 4/3, throttle ppm ceiling, staleness digest/age)
+   with fixture profiles. ✅ `test/unit/MeasuredProfile.hs`.
+2. One-sided comparison tables prove a measured CPU/memory improvement never fails the check. ✅
+3. `prodbox config schema`/`config validate`, `prodbox test unit` (1566/1566), and
+   `prodbox dev check` (exit 0) pass. ✅
+
+### Current Validation State
+
+The field set and every certification rule mirror
+[resource_scaling_doctrine.md § 2F](../documents/engineering/resource_scaling_doctrine.md) exactly
+(including the memory high-water rule). `checkMeasuredCapacityProfiles` runs inside
+`runConformanceTier` and is inert until Sprint `5.21` commits the first profile under
+`dhall/capacity/measured/`. The interim gateway envelope is 750m (`request == limit`, Guaranteed
+QoS); to fit the single-node 6500m allocatable (host 8000m − rke2 1000m − eviction 500m) the gateway
+namespace quota rose to 2750m and the over-provisioned vscode quota ceiling dropped to 1400m (its
+pods still draw 800m, so none is starved) — the operator-approved accommodation of the CPU bump.
+`prodbox-config-types.dhall` was regenerated. Warning-clean `-Werror` build, unit 1566/1566,
+`prodbox dev check` exit 0.
 
 ### Remaining Work
 
-- Implement the profile algebra, the certification check, and the interim 750m envelope revision.
-- The recorder and the first committed gateway profile — which activates this certification
-  check — are owned by Sprint `5.21`
+- None on the code-owned surface. The recorder and the first committed gateway profile — which
+  activate this certification check — are owned by Sprint `5.21`
   ([phase-5-canonical-test-suite.md](phase-5-canonical-test-suite.md)).
 
 ## Documentation Requirements
@@ -4300,16 +4395,21 @@ removed.
   row in [legacy-tracking-for-deletion.md](legacy-tracking-for-deletion.md) names Sprint `1.65`
   as owner.
 
-## Sprint 1.66: Native S3 Object-Store Client [⏸️ Blocked]
+## Sprint 1.66: Native S3 Object-Store Client [✅ Done]
 
-**Status**: Blocked
-**Blocked by**: Sprint `1.64`
+**Status**: Done
 **Deployment qualification**: pending
-**Implementation**: planned `src/Prodbox/Aws/SigV4.hs` and
-`src/Prodbox/Minio/ObjectStoreNative.hs`
-**Independent Validation**: SigV4 property tests against published AWS test vectors; contract
-tests running the native and subprocess paths against the MinIO fixture and requiring identical
-taxonomies (absence, conditional-put conflict); no cluster required.
+**Live-proof**: pending (native-vs-subprocess parity against a real MinIO endpoint; non-blocking Standard-O axis)
+**Implementation**: `src/Prodbox/Aws/SigV4.hs` (pure byte-exact SigV4),
+`src/Prodbox/Minio/ObjectStoreNative.hs` (native client over the shared TLS manager),
+`src/Prodbox/Minio/ObjectStoreTypes.hs` (shared types, extracted to break the import cycle), the
+`ObjectStoreBackend` selector + dispatch in `src/Prodbox/Minio/ObjectStore.hs`, and unit suites
+`test/unit/SigV4.hs` + `test/unit/ObjectStoreNative.hs`
+**Independent Validation**: SigV4 property tests against published AWS test vectors (empty-payload
+SHA-256, the AWS-documented signing-key derivation, and the get-vanilla canonical request/signature);
+native request-construction tests (payload-hash binding, credential scope, sorted signed-header
+list). The native-vs-subprocess contract test against a real MinIO endpoint is a Standard-O
+live-proof axis (no in-repo MinIO fixture exists); no cluster required for the code-owned surface.
 **Docs to update**: `documents/engineering/haskell_code_guide.md`
 
 ### Objective
@@ -4332,14 +4432,28 @@ operation.
 
 ### Validation
 
-1. SigV4 property tests pass against the published AWS test vectors.
-2. Contract tests run the native and subprocess paths against the MinIO fixture and require
-   identical outcome taxonomies (absence, conditional-put conflict).
-3. `prodbox test unit` and `prodbox dev check` pass.
+1. SigV4 property tests pass against the published AWS test vectors (empty-payload SHA-256,
+   AWS-documented signing-key derivation, get-vanilla canonical request and signature). ✅
+   `test/unit/SigV4.hs`.
+2. Native request-construction tests prove the payload-hash body binding, ETag conditional
+   headers, credential scope, and sorted signed-header list. ✅ `test/unit/ObjectStoreNative.hs`.
+   The native-vs-subprocess parity against a real MinIO endpoint is the Standard-O live-proof axis.
+3. `prodbox test unit` and `prodbox dev check` pass. ✅
+
+### Current Validation State
+
+`Prodbox.Aws.SigV4` is byte-exact (verified against the authoritative AWS signing-key vector and the
+get-vanilla canonical request), and `Prodbox.Minio.ObjectStoreNative` performs every Model-B
+object-store operation in memory over the shared TLS manager with no `aws` CLI subprocess and no
+temp-file bodies — the third `LCPC-2026-07-11` gateway CPU driver. The subprocess path stays the
+default and config-selectable rollback (`objectStoreBackend`) until live-MinIO parity is proven,
+then it is retired through the ledger. Warning-clean `-Werror` build, unit green (SigV4 + native
+suites), `prodbox dev check` exit 0.
 
 ### Remaining Work
 
-- Blocked until Sprint `1.64` supplies the shared TLS `Manager`.
+- None on the code-owned surface. The native-vs-subprocess live-MinIO parity (then flipping the
+  default to native and deleting the `*Subprocess` path) is the non-blocking Standard-O follow-up.
 - After one release with the config-selectable subprocess fallback, the fallback's removal flows
   through [legacy-tracking-for-deletion.md](legacy-tracking-for-deletion.md).
 

@@ -1,3 +1,4 @@
+{-# LANGUAGE DataKinds #-}
 {-# LANGUAGE OverloadedStrings #-}
 
 module RetainedSesTargetRecovery
@@ -25,6 +26,7 @@ import Prodbox.Lifecycle.CheckpointAuthority
   , ModelBCasResult (..)
   , ModelBLeaseGuard (..)
   , ModelBObservation (..)
+  , StoreLifetime (ClusterRetained)
   , TargetClusterSecretSink
   , mkLongLivedCheckpointAuthority
   , mkModelBObjectVersion
@@ -282,7 +284,7 @@ fakeInterpreter state permit currentTime =
     , targetCommitDigestPayload = payloadDigest
     }
 
-fakeGlobalAdapter :: FakeState -> ModelBCasAdapter IO TargetIntentProjection
+fakeGlobalAdapter :: FakeState -> ModelBCasAdapter 'ClusterRetained IO TargetIntentProjection
 fakeGlobalAdapter state =
   ModelBCasAdapter
     { modelBObserve = \_ -> do
@@ -305,7 +307,7 @@ fakeGlobalAdapter state =
 
 admissibleGlobalRequest
   :: ModelBObservation TargetIntentProjection
-  -> ModelBCasRequest TargetIntentProjection
+  -> ModelBCasRequest 'ClusterRetained TargetIntentProjection
   -> Maybe (ModelBLeaseGuard, TargetIntentProjection)
 admissibleGlobalRequest current request = case (current, request) of
   (ModelBMissing, ModelBInitializeGuarded _ guard projection)

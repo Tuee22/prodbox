@@ -53,6 +53,7 @@ module Prodbox.CLI.Rke2
   , ensureRegistryStorageBackendEdgeReady
   , observeGatewayBackendRoundTripOnce
   , observeGatewayBackendRoundTripOnceAt
+  , observeGatewayReadyzOnceAt
   , observeKubernetesReadinessOnce
   , observeRegistryBackendRoundTripOnce
   , observeVaultUnsealedOnceAt
@@ -2129,6 +2130,25 @@ observeGatewayBackendRoundTripOnceAt endpoint = do
       GatewayObjectStoreDegraded503 detail ->
         Right (ReadinessProbePending (Text.pack ("gateway object store is degraded: " ++ detail)))
       GatewayObjectStoreTransient detail -> Left (Text.pack detail)
+
+-- | Sprint 2.34: observe the daemon's kubelet @/readyz@ once, as the lifecycle
+-- gate's precheck. A 200 is ready; a 503 (@draining@/@starting@) is
+-- not-ready-yet with the body; a transport failure is unreachable (fail
+-- closed). Pairs with 'observeGatewayBackendRoundTripOnceAt' so lifecycle-ready
+-- implies kubelet-ready by construction.
+observeGatewayReadyzOnceAt
+  :: PeerEndpoint -> IO (Either Text.Text ReadinessProbeResult)
+observeGatewayReadyzOnceAt endpoint = do
+  probe <- GatewayClient.queryReadyz endpoint
+  pure $
+    case probe of
+      GatewayClient.GatewayReadyzReady -> Right ReadinessProbeReady
+      GatewayClient.GatewayReadyzNotReady code body ->
+        Right
+          ( ReadinessProbePending
+              (Text.pack ("gateway /readyz reported HTTP " ++ show code ++ ": " ++ takeWhile (/= '\n') body))
+          )
+      GatewayClient.GatewayReadyzUnreachable detail -> Left (Text.pack detail)
 
 loadPostMinioLifecycleSettings
   :: FilePath -> ValidatedSettings -> IO (Either String ValidatedSettings)

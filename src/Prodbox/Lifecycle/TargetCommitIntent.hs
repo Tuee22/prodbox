@@ -1,3 +1,4 @@
+{-# LANGUAGE DataKinds #-}
 {-# LANGUAGE NamedFieldPuns #-}
 {-# LANGUAGE OverloadedStrings #-}
 
@@ -107,8 +108,9 @@ import Prodbox.Lifecycle.CheckpointAuthority
   , ModelBCasRequest (..)
   , ModelBObjectCoordinate
   , ModelBObservation (..)
+  , StoreLifetime (ClusterRetained)
   , TargetClusterSecretSink
-  , mkModelBObjectCoordinate
+  , mkClusterRetainedCoordinate
   , targetSecretSinkGatewayEndpoint
   , targetSecretSinkIdentity
   , targetSecretSinkKvPath
@@ -288,8 +290,8 @@ registeredTargetByIdentity registered identity =
   Map.lookup identity (internalRegisteredTargets registered)
 
 data TargetIntentCoordinate = TargetIntentCoordinate
-  { internalTargetIntentCoordinateObject :: !ModelBObjectCoordinate
-  , internalTargetIntentCoordinateLeaseObject :: !ModelBObjectCoordinate
+  { internalTargetIntentCoordinateObject :: !(ModelBObjectCoordinate 'ClusterRetained)
+  , internalTargetIntentCoordinateLeaseObject :: !(ModelBObjectCoordinate 'ClusterRetained)
   }
   deriving (Eq, Show)
 
@@ -299,7 +301,7 @@ mkTargetIntentCoordinate
   -> Either AuthorityCoordinateError TargetIntentCoordinate
 mkTargetIntentCoordinate authority leaseKey =
   TargetIntentCoordinate
-    <$> mkModelBObjectCoordinate
+    <$> mkClusterRetainedCoordinate
       authority
       ( Text.intercalate
           "/"
@@ -311,10 +313,11 @@ mkTargetIntentCoordinate authority leaseKey =
       )
     <*> leaseObjectCoordinate authority leaseKey
 
-targetIntentCoordinateObject :: TargetIntentCoordinate -> ModelBObjectCoordinate
+targetIntentCoordinateObject :: TargetIntentCoordinate -> ModelBObjectCoordinate 'ClusterRetained
 targetIntentCoordinateObject = internalTargetIntentCoordinateObject
 
-targetIntentCoordinateLeaseObject :: TargetIntentCoordinate -> ModelBObjectCoordinate
+targetIntentCoordinateLeaseObject
+  :: TargetIntentCoordinate -> ModelBObjectCoordinate 'ClusterRetained
 targetIntentCoordinateLeaseObject = internalTargetIntentCoordinateLeaseObject
 
 data TargetCommitDisposition
@@ -654,7 +657,7 @@ mapCodecProjection =
 
 data TargetCommitPrepareDecision
   = TargetCommitPrepareCompareAndSwap
-      !(ModelBCasRequest TargetIntentProjection)
+      !(ModelBCasRequest 'ClusterRetained TargetIntentProjection)
       !TargetCommitIntent
   | TargetCommitPrepareAlreadyCommitted !CommittedTargetValue
   | TargetCommitPrepareRefused !TargetCommitRefusal
@@ -984,7 +987,7 @@ confirmTargetSinkReadback digestPayload permit observation =
   intent = internalPreparedTargetWriteIntent permit
 
 data TargetCommitCompleteDecision
-  = TargetCommitCompleteCompareAndSwap !(ModelBCasRequest TargetIntentProjection)
+  = TargetCommitCompleteCompareAndSwap !(ModelBCasRequest 'ClusterRetained TargetIntentProjection)
   | TargetCommitCompleteAlreadyApplied
   | TargetCommitCompleteRefused !TargetCommitRefusal
   deriving (Eq, Show)
@@ -1139,7 +1142,7 @@ proveStableTargetReadbackAfter notBefore digestPayload registered policy intent 
           }
 
 data TargetRecoveryDecision
-  = TargetRecoveryCompareAndSwap !(ModelBCasRequest TargetIntentProjection)
+  = TargetRecoveryCompareAndSwap !(ModelBCasRequest 'ClusterRetained TargetIntentProjection)
   | TargetRecoveryAlreadyResolved
   | TargetRecoveryRefused !TargetCommitRefusal
   deriving (Eq, Show)
@@ -1188,7 +1191,7 @@ decideResolveOutstandingTargets registered coordinate successorPermit witnesses 
                               )
 
 data TargetIntentCompactDecision
-  = TargetIntentCompactCompareAndSwap !(ModelBCasRequest TargetIntentProjection)
+  = TargetIntentCompactCompareAndSwap !(ModelBCasRequest 'ClusterRetained TargetIntentProjection)
   | TargetIntentCompactAlreadyApplied
   | TargetIntentCompactRefused !TargetCommitRefusal
   deriving (Eq, Show)

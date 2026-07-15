@@ -5,6 +5,9 @@
 -- Sprint 2.17.
 module Prodbox.Gateway.Client
   ( GatewayError (..)
+  , GatewayReadyzProbe (..)
+  , queryReadyz
+  , readyzUrl
   , daemonRestartBridgeRetryPolicy
   , gatewayErrorIsTransient
   , retryGatewayTransient
@@ -68,20 +71,19 @@ import Prodbox.Gateway.ObjectStore
   , PulumiObjectGetResponse (..)
   , PulumiObjectPutRequest (..)
   , PulumiObjectRequest (..)
-  , authorityClockPath
-  , authorityObjectCasPath
-  , authorityObjectGetPath
-  , pulumiObjectDeletePath
-  , pulumiObjectGetPath
-  , pulumiObjectPutPath
+  )
+import Prodbox.Gateway.Routes
+  ( GatewayRoute (..)
+  , federationChildBootstrapSuffix
+  , federationChildPathPrefix
+  , operatorSecretPathPrefix
+  , routePattern
   )
 import Prodbox.Gateway.TargetSecret
   ( TargetSecretCasRequest
   , TargetSecretCasResponse
   , TargetSecretObservation
   , TargetSecretReadRequest
-  , targetSecretCasPath
-  , targetSecretReadPath
   )
 import Prodbox.Gateway.Types (PeerEndpoint (..), peerRestUrl)
 import Prodbox.Http.Client
@@ -89,6 +91,7 @@ import Prodbox.Http.Client
   , HttpError (..)
   , defaultHttpConfig
   , httpGetJson
+  , httpGetText
   , httpPostJsonNoResponse
   , httpPostJsonResponseJson
   , renderHttpError
@@ -172,63 +175,94 @@ hostLoopbackGatewayEndpoint gatewayNodePort =
 
 -- | Canonical URL for the gateway daemon's @/v1/state@ observability
 -- endpoint.
+-- Sprint 2.34: every gateway client URL is a projection of the compiled route
+-- registry ("Prodbox.Gateway.Routes"), so the client cannot drift from the
+-- daemon dispatcher.
 statusUrl :: PeerEndpoint -> String
-statusUrl endpoint = peerRestUrl endpoint ++ "/v1/state"
+statusUrl endpoint = peerRestUrl endpoint ++ routePattern RouteState
+
+-- | Canonical URL for the daemon's kubelet @/readyz@ readiness endpoint,
+-- projected from the same compiled route registry the daemon dispatcher uses.
+readyzUrl :: PeerEndpoint -> String
+readyzUrl endpoint = peerRestUrl endpoint ++ routePattern RouteReadyz
 
 childrenUrl :: PeerEndpoint -> String
-childrenUrl endpoint = peerRestUrl endpoint ++ "/v1/federation/children"
+childrenUrl endpoint = peerRestUrl endpoint ++ routePattern RouteFederationChildren
 
 childBootstrapUrl :: PeerEndpoint -> String -> String
 childBootstrapUrl endpoint childId =
-  peerRestUrl endpoint ++ "/v1/federation/children/" ++ childId ++ "/bootstrap"
+  peerRestUrl endpoint ++ federationChildPathPrefix ++ childId ++ federationChildBootstrapSuffix
 
 bootstrapVaultUrl :: PeerEndpoint -> String
-bootstrapVaultUrl endpoint = peerRestUrl endpoint ++ "/v1/bootstrap/vault/ensure"
+bootstrapVaultUrl endpoint = peerRestUrl endpoint ++ routePattern RouteBootstrapVaultEnsure
 
 bootstrapVaultStatusUrl :: PeerEndpoint -> String
-bootstrapVaultStatusUrl endpoint = peerRestUrl endpoint ++ "/v1/bootstrap/vault/status"
+bootstrapVaultStatusUrl endpoint = peerRestUrl endpoint ++ routePattern RouteBootstrapVaultStatus
 
 bootstrapVaultSealUrl :: PeerEndpoint -> String
-bootstrapVaultSealUrl endpoint = peerRestUrl endpoint ++ "/v1/bootstrap/vault/seal"
+bootstrapVaultSealUrl endpoint = peerRestUrl endpoint ++ routePattern RouteBootstrapVaultSeal
 
 bootstrapVaultRotateUnlockBundleUrl :: PeerEndpoint -> String
 bootstrapVaultRotateUnlockBundleUrl endpoint =
-  peerRestUrl endpoint ++ "/v1/bootstrap/vault/rotate-unlock-bundle"
+  peerRestUrl endpoint ++ routePattern RouteBootstrapVaultRotateUnlockBundle
 
 bootstrapVaultRotateTransitKeyUrl :: PeerEndpoint -> String
 bootstrapVaultRotateTransitKeyUrl endpoint =
-  peerRestUrl endpoint ++ "/v1/bootstrap/vault/rotate-transit-key"
+  peerRestUrl endpoint ++ routePattern RouteBootstrapVaultRotateTransitKey
 
 bootstrapVaultPkiStatusUrl :: PeerEndpoint -> String
-bootstrapVaultPkiStatusUrl endpoint = peerRestUrl endpoint ++ "/v1/bootstrap/vault/pki/status"
+bootstrapVaultPkiStatusUrl endpoint = peerRestUrl endpoint ++ routePattern RouteBootstrapVaultPkiStatus
 
 bootstrapVaultPkiIssueTestCertUrl :: PeerEndpoint -> String
 bootstrapVaultPkiIssueTestCertUrl endpoint =
-  peerRestUrl endpoint ++ "/v1/bootstrap/vault/pki/issue-test-cert"
+  peerRestUrl endpoint ++ routePattern RouteBootstrapVaultPkiIssueTestCert
 
 pulumiObjectGetUrl :: PeerEndpoint -> String
-pulumiObjectGetUrl endpoint = peerRestUrl endpoint ++ pulumiObjectGetPath
+pulumiObjectGetUrl endpoint = peerRestUrl endpoint ++ routePattern RoutePulumiObjectGet
 
 pulumiObjectPutUrl :: PeerEndpoint -> String
-pulumiObjectPutUrl endpoint = peerRestUrl endpoint ++ pulumiObjectPutPath
+pulumiObjectPutUrl endpoint = peerRestUrl endpoint ++ routePattern RoutePulumiObjectPut
 
 pulumiObjectDeleteUrl :: PeerEndpoint -> String
-pulumiObjectDeleteUrl endpoint = peerRestUrl endpoint ++ pulumiObjectDeletePath
+pulumiObjectDeleteUrl endpoint = peerRestUrl endpoint ++ routePattern RoutePulumiObjectDelete
 
 authorityObjectGetUrl :: String -> String
-authorityObjectGetUrl endpoint = endpoint ++ authorityObjectGetPath
+authorityObjectGetUrl endpoint = endpoint ++ routePattern RouteAuthorityObjectGet
 
 authorityObjectCasUrl :: String -> String
-authorityObjectCasUrl endpoint = endpoint ++ authorityObjectCasPath
+authorityObjectCasUrl endpoint = endpoint ++ routePattern RouteAuthorityObjectCas
 
 authorityClockUrl :: String -> String
-authorityClockUrl endpoint = endpoint ++ authorityClockPath
+authorityClockUrl endpoint = endpoint ++ routePattern RouteAuthorityClock
 
 targetSecretReadUrl :: String -> String
-targetSecretReadUrl endpoint = endpoint ++ targetSecretReadPath
+targetSecretReadUrl endpoint = endpoint ++ routePattern RouteTargetSecretRead
 
 targetSecretCasUrl :: String -> String
-targetSecretCasUrl endpoint = endpoint ++ targetSecretCasPath
+targetSecretCasUrl endpoint = endpoint ++ routePattern RouteTargetSecretCas
+
+-- | Sprint 2.34: the kubelet readiness a host-side observer sees when it GETs
+-- the daemon's @/readyz@ — a 200 (ready), a definite HTTP status such as 503
+-- (@draining@/@starting@; not yet ready) with the body detail, or a transport
+-- failure (unreachable). This lets the lifecycle gate add a @/readyz@ precheck
+-- so lifecycle-ready implies kubelet-ready by construction.
+data GatewayReadyzProbe
+  = GatewayReadyzReady
+  | GatewayReadyzNotReady Int String
+  | GatewayReadyzUnreachable String
+  deriving (Eq, Show)
+
+-- | Probe the daemon's @/readyz@ once. 'httpGetText' returns @Right body@ only
+-- for a 2xx, so a 200 maps to ready; a definite non-2xx status (503) maps to
+-- not-ready-yet with the body; a transport error maps to unreachable.
+queryReadyz :: PeerEndpoint -> IO GatewayReadyzProbe
+queryReadyz endpoint = do
+  let config = defaultHttpConfig {httpRequestTimeoutMicros = 5 * 1000 * 1000}
+  result <- httpGetText config (readyzUrl endpoint)
+  pure $ case result of
+    Right _body -> GatewayReadyzReady
+    Left (HttpStatus code body) -> GatewayReadyzNotReady code body
+    Left httpErr -> GatewayReadyzUnreachable (renderHttpError httpErr)
 
 -- | Query the gateway daemon's @/v1/state@ endpoint over HTTP. Mirrors the
 -- 5-second timeout used by the legacy curl call site.
@@ -457,7 +491,7 @@ postBootstrapJsonAction url payload = do
 -- | Sprint 1.44: the gateway daemon's operator-write endpoint for a given KV
 -- logical path (e.g. @acme/eab@ or @gateway/gateway/aws@).
 operatorSecretUrl :: PeerEndpoint -> String -> String
-operatorSecretUrl endpoint logical = peerRestUrl endpoint ++ "/v1/secret/" ++ logical
+operatorSecretUrl endpoint logical = peerRestUrl endpoint ++ operatorSecretPathPrefix ++ logical
 
 -- | Write an operator-minted secret through the in-cluster gateway daemon,
 -- presenting an operator-injected Kubernetes JWT (the daemon exchanges it for a

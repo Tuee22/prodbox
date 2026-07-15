@@ -375,10 +375,7 @@ Examples:
 ## prodbox config show
 prodbox config show - Display current config
 
-Render the decoded config with secrets masked by default.
-Options:
-- --show-secrets - Show full secret values
-
+Render the decoded config with secrets always masked.
 Examples:
 - prodbox config show  # Render the current config with secrets masked.
 

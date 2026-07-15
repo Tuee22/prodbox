@@ -206,10 +206,16 @@ defaultResourcePlan =
     , eviction_floor = ResourceVector 500 1024 10240 1024
     , namespace_quotas =
         [ NamespaceQuota "keycloak" (ResourceVector 2025 4448 12000 61440)
-        , NamespaceQuota "vscode" (ResourceVector 2425 5216 10944 112640)
+        , -- Sprint 1.65: vscode CPU ceiling trimmed 2425m -> 1400m (draw is 800m)
+          -- to keep the concurrent-quota sum within allocatable (host 8000m -
+          -- rke2_reserved 1000m - eviction_floor 500m = 6500m) after the gateway
+          -- CPU bump; only the ceiling drops, no vscode pod is starved
+          -- (concurrent CPU sum = 1400+500+500+2750+1000+300 = 6450 <= 6500).
+          NamespaceQuota "vscode" (ResourceVector 1400 5216 10944 112640)
         , NamespaceQuota "api" (ResourceVector 500 768 2000 1000)
         , NamespaceQuota "websocket" (ResourceVector 500 768 3000 1000)
-        , NamespaceQuota "gateway" (ResourceVector 1250 3584 6000 20480)
+        , -- Sprint 1.65: gateway CPU quota 1250m -> 2750m for the 750m x3 bump.
+          NamespaceQuota "gateway" (ResourceVector 2750 3584 6000 20480)
         , NamespaceQuota "prodbox" (ResourceVector 1000 1792 5000 20480)
         , NamespaceQuota "vault" (ResourceVector 300 512 2000 1024)
         ]
@@ -266,7 +272,14 @@ defaultResourcePlan =
         , workload "api" "api" 2 (ResourceVector 250 256 512 1) (ResourceVector 250 384 512 1)
         , workload "websocket" "websocket" 2 (ResourceVector 100 256 512 1) (ResourceVector 150 256 512 1)
         , workload "redis" "websocket" 1 (ResourceVector 100 256 512 1) (ResourceVector 150 256 512 1)
-        , workload "gateway" "gateway" 3 (ResourceVector 250 256 512 1) (ResourceVector 250 512 512 1)
+        , -- Sprint 1.65: interim authored gateway CPU bump 250m -> 750m
+          -- (request == limit; Guaranteed QoS retained) to give the throttled
+          -- gateway hot path (`LCPC-2026-07-11`: 96-99% cgroup throttle at 250m)
+          -- ~3x headroom until the first committed measured profile activates the
+          -- certification check. The gateway namespace quota rises to 2750m and
+          -- the over-provisioned vscode quota ceiling drops to 1500m (draw stays
+          -- 800m) to keep the single-node concurrent-quota sum within allocatable.
+          workload "gateway" "gateway" 3 (ResourceVector 750 256 512 1) (ResourceVector 750 512 512 1)
         , workload "pulsar" "gateway" 1 (ResourceVector 250 1024 1024 1) (ResourceVector 500 2048 4096 1)
         , workload
             "minio"

@@ -202,6 +202,28 @@ Consequences:
 - A child cluster that loses its Vault PV is re-provisioned with help from the parent's custodied
   init material; a child cannot self-recover its own root authority.
 
+#### Public-edge TLS is not a custody payload
+
+A child cluster's public-edge TLS is **per-zone self-issuance**, not custodied material a parent
+hands down. A parent never delivers a child's certificate private key; a child issues its own
+public-edge certificates in its own delegated subzone (`aws_substrate.subzone_name`) through the
+`zerossl-dns01` ClusterIssuer over DNS-01, using the delivered `AcmeEabMaterial` — which
+repopulates a fresh AWS Vault without operator re-prompt or key rotation. This keeps one TLS
+custody model and never copies a parent private key into a routinely-destroyed test substrate.
+
+The child-custody record above (`secret/data/clusters/<child-id>/*`) is exhaustive:
+certificate-material handoff is **not** a member of the closed `RetainedMaterialSchema`
+([lifecycle_control_plane_architecture.md § 5.5](./lifecycle_control_plane_architecture.md#55-retained-operator-material-custody)),
+whose only classes are `SesSmtpMaterial` and `AcmeEabMaterial` — there is no arbitrary
+`secret/data/clusters/<child-id>/tls` custody path, and adding one would require a new schema
+constructor, not a new KV write. The cross-substrate TLS movement that does exist is owned entirely
+by the retained TLS envelope workflow
+([lifecycle_control_plane_architecture.md § 5.4](./lifecycle_control_plane_architecture.md#54-retained-tls-envelope-workflow)),
+never by federation custody. A child self-issues in its delegated subzone in any case: a parent
+wildcard is anchored at the parent's own delegated zone and cannot cover a child's deeper labels
+(`*.z` matches exactly one label, so it never covers `*.child.z`), so there is no certificate a
+parent could usefully hand down even if the schema admitted the class.
+
 ## 4. Downstream-cluster metadata is secret
 
 A cluster's knowledge of its children is secret data, not topology that may live in plaintext

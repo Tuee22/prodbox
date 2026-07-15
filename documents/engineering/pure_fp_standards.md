@@ -187,6 +187,17 @@ coordinates and CAS adapters; the retained-custody topology is owned by
 implementation is owned by the [Development Plan](../../DEVELOPMENT_PLAN/README.md)
 (Sprint `4.51`).
 
+> **Implementation status (2026-07-14, Sprint `4.51` Increment A)**: the phantom index landed on the
+> real `Prodbox.Lifecycle.CheckpointAuthority` Model-B types (`ModelBObjectCoordinate l`,
+> `ModelBCasRequest l value`, `ModelBCasAdapter l m value`) with a `nominal` role and the
+> full-name-tagging constructors `mkClusterRetainedCoordinate` / `mkChartLifetimeCoordinate` /
+> `mkCrossClusterDurableCoordinate`. One refinement over the sketch above: a **lease guard is not
+> lifetime-indexed** — a lease is always retained, so `ModelBLeaseGuard`'s coordinate is
+> monomorphically `'ClusterRetained'`, which lets a `'ChartLifetime'` object be guarded by a retained
+> lease under the request's single `l`. The gateway transport is still polymorphic in `l`;
+> retyping it to `'ChartLifetime'`-only and adding the host-direct `'ClusterRetained'` adapter (so
+> the "type error, not review finding" property holds in production) is Increment B.
+
 ## 3. State, Decisions, and Evolution
 
 ### 3.1 No hidden mutable control flow

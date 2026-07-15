@@ -257,6 +257,18 @@ tombstone. Gateway and host-direct generic secret-write routes are absent.
 
 ## 3. Pure Capability Algebra
 
+> **Implementation status (2026-07-14, Sprint `1.61`)**: the pure foundation of this algebra has
+> landed additively as `src/Prodbox/ControlPlane/{CapabilityKind,Coordinate,CapabilityRef,
+> Observation,Permit,Program}.hs` (umbrella `src/Prodbox/ControlPlane.hs`). The landed layout
+> refines the illustrative `Capability.hs`/`Program.hs`/`Interpreter.hs` target shapes below:
+> `CapabilityKind.hs` owns the kind universe, `CapabilityOp` value mirror, `KnownCapability`
+> witnesses, and the `MutatingKind`/`InternalCasKind`/`ExternalIntentKind` markers; `Coordinate.hs`
+> the coordinate + digest; `CapabilityRef.hs` the nominal-role opaque reference; `Observation.hs`
+> the flat evidence, `classifyEvidence`, and the fail-closed `AdmissionTicket`; `Permit.hs` the
+> opaque `WriterPermit` and the signed committed-intent chain; `Program.hs` the closed
+> `CapabilityProgram` GADT. The interpreter (§3 below) and the component-graph lowering remain a
+> scheduled follow-up cutover; the shapes below are the target the migration lands against.
+
 ### 3.1 Operation-indexed references
 
 The operation kind is promoted to the type level. A reference capable only of observing an object
@@ -1450,6 +1462,14 @@ Every authority-namespace object coordinate and CAS adapter is durability-indexe
 constructors partition the object namespaces by lifetime class. A retained-or-stronger object
 addressed through a chart-lifetime transport is unrepresentable rather than merely forbidden.
 
+> **Implementation status (2026-07-14, Sprint `4.51`)**: Increment A landed the phantom
+> `StoreLifetime` index on the Model-B coordinate / request / adapter types with a `nominal` role and
+> the full-name-tagging constructors, plus the compile + byte-erasure witness. A lease guard is
+> monomorphically `'ClusterRetained'` (not lifetime-indexed) — a lease is always retained — which
+> lets a `'ChartLifetime'` checkpoint be guarded by a retained lease. The clause above becomes true in
+> production once Increment B retypes the gateway transport to `'ChartLifetime'`-only and cuts the
+> retained consumers over to the host-direct `'ClusterRetained'` adapter.
+
 Garbage collection persists its candidate set and both complete scan receipts in the aggregate.
 Its GC fence is mutually exclusive with `RecordPendingBlob` and promotion. After the declared grace,
 the interpreter re-observes the current aggregate and latest receipt-committed backup envelope under
@@ -1620,6 +1640,13 @@ For retention after issuance or renewal:
    receives those exact bounded envelope bytes from Authority, writes that exact object/version,
    reads back bytes and digest, and returns a typed receipt before Authority closes the transition.
 
+Once operator-configurable certificate scope sets land (Sprint
+[`2.35`](../../DEVELOPMENT_PLAN/phase-2-gateway-dns.md)), the
+`public-edge-tls/<substrate>/<fqdn>` coordinate generalizes to a canonical scope-set
+serialization key: the exact-prefix TLS-retention IAM contract and per-`(substrate, scope-key)`
+serialization are restated over that canonical key, so the retained coordinate stays a total
+projection of the one configured scope set rather than a hand-chosen FQDN.
+
 Retention is serialized by the exact `(substrate, FQDN)` key in the Authority aggregate. One
 fenced candidate at a time binds the Secret UID/resourceVersion, certificate serial,
 `notBefore`/`notAfter`, public-key SPKI fingerprint, selected-Agent attestation, ciphertext digest,
@@ -1703,7 +1730,10 @@ Non-recoverable cross-substrate operator material has one retained-home source o
 schema is the closed `RetainedMaterialSchema` sum: `SesSmtpMaterial` targets only
 `secret/keycloak/smtp`, and `AcmeEabMaterial` targets only `secret/acme/eab`. Adding another class
 requires a new constructor, singleton, exact codec/path mapping, Vault policy, program cases,
-destruction case, and qualification proof; no arbitrary secret/path API exists.
+destruction case, and qualification proof; no arbitrary secret/path API exists. Retained-material
+delivery never includes public-edge certificate private keys — certificate-material handoff is not
+a member of the closed `RetainedMaterialSchema`; child clusters self-issue in their own delegated
+zone from delivered `AcmeEabMaterial`, and §5.4 owns all cross-substrate certificate movement.
 
 Bootstrap baseline creates a non-exportable retained-home Transit custody key available only to the
 home Target Secret Agent's dedicated one-shot custody/rewrap workers. For SMTP, Credential
@@ -2404,6 +2434,13 @@ Pure and model-based validation includes:
   decisions, and positive absence/validated-expiry issuance authorization;
 - AWS Vault/EBS destroy-recreate followed by retained-home-Transit TLS restore and exact Secret
   read-back before issuance, with Gateway-route absence;
+- certificate scope-coverage and narrowing tables — `covers` totality across the apex boundary (a
+  wildcard never matches the apex), the multi-label boundary (a wildcard matches exactly one label),
+  and the `*.a.z ⋢ *.z` child-wildcard trap, with `mkScopeSet` rejection of undeclared-zone
+  wildcards and `bindListener` rejection of uncovered served hosts;
+- restore-vs-reissue decision tables keyed by the `impliedBy` narrowing partial order — narrower-or-
+  equal reuses retained material, widening triggers one fresh ACME order — under the canonical
+  (deduped, ordered) scope-set serialization key;
 - IAM create-key applied-response-lost, finite-inventory delete/remint, and no-uncommitted-key
   tables;
 - exact DNS owner/epoch, ensure/delete/read-back, owner-unavailable, and no-writer-fallback tables;

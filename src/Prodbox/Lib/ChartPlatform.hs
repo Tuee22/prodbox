@@ -105,6 +105,7 @@ import Prodbox.Config.ComponentGraph
 import Prodbox.Config.FloorDhall (loadUnencryptedBasics)
 import Prodbox.Config.Tier0 qualified as Tier0
 import Prodbox.ContainerImage qualified as ContainerImage
+import Prodbox.Gateway.ChartStatics qualified as ChartStatics
 import Prodbox.Gateway.Probe qualified as GatewayProbe
 import Prodbox.Infra.AwsEksTestStack qualified as AwsEks
 import Prodbox.Infra.LongLivedPulumiBackend
@@ -192,10 +193,6 @@ import Prodbox.Subprocess
   )
 import Prodbox.Substrate (Substrate (..), replicasForSubstrate, substrateId)
 import Prodbox.Vault.Host (readHostVaultKvField, writeHostVaultKvObject)
-import Prodbox.Vault.RoleId
-  ( VaultRoleId (VaultRoleGatewayDaemon)
-  , vaultRoleIdText
-  )
 import System.Directory
   ( createDirectoryIfMissing
   , doesDirectoryExist
@@ -298,8 +295,11 @@ gatewayNodeIds = ["node-a", "node-b", "node-c"]
 gatewayRestServiceName :: String
 gatewayRestServiceName = "gateway"
 
+-- | Sprint 2.34: a projection of the one compiled 'ChartStatics.gatewayChartStatics'
+-- REST port, so this exported constant and the deployed values / generated
+-- @values.yaml@ section share a single source of truth.
 gatewayRestServicePort :: Int
-gatewayRestServicePort = 8443
+gatewayRestServicePort = ChartStatics.gatewayStaticRestPort ChartStatics.gatewayChartStatics
 
 machineIdPath :: FilePath
 machineIdPath = "/etc/machine-id"
@@ -2474,11 +2474,13 @@ valuesForGateway substrate namespace rootChart settings _gatewayEventKeys shared
               [ "rtsArguments"
                   .= RuntimeMemory.runtimeMemoryRtsArguments runtimeMemoryPlan
               ]
-        , "ports"
-            .= object
-              [ "rest" .= gatewayRestServicePort
-              , "events" .= (8444 :: Int)
-              ]
+        , -- Sprint 2.34: ports / NodePort / ServiceAccount are projections of
+          -- the one compiled 'ChartStatics.gatewayChartStatics', so the deployed
+          -- values, the generated @values.yaml@ section, and the hand-written
+          -- templates cannot diverge.
+          "ports" .= ChartStatics.gatewayChartStaticsPortsValue
+        , "nodePort" .= ChartStatics.gatewayChartStaticsNodePortValue
+        , "serviceAccount" .= ChartStatics.gatewayChartStaticsServiceAccountValue
         , "probes" .= GatewayProbe.gatewayLifecycleProbeValues
         , "timing"
             .= object
@@ -2497,7 +2499,8 @@ valuesForGateway substrate namespace rootChart settings _gatewayEventKeys shared
               , -- The shared typed role is bound to both the object-store /
                 -- Transit policy and the event-key / AWS / MinIO KV policy in
                 -- Vault.Reconcile. Either grant missing here produces a 403.
-                "role" .= vaultRoleIdText VaultRoleGatewayDaemon
+                -- Sprint 2.34: projected from the one compiled GatewayChartStatics.
+                "role" .= ChartStatics.gatewayStaticVaultRole ChartStatics.gatewayChartStatics
               , "serviceAccountTokenFile"
                   .= ("/var/run/secrets/kubernetes.io/serviceaccount/token" :: String)
               , "paths"

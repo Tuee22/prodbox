@@ -9,6 +9,7 @@
 [../../DEVELOPMENT_PLAN/system-components.md](../../DEVELOPMENT_PLAN/system-components.md),
 [../../DEVELOPMENT_PLAN/legacy-tracking-for-deletion.md](../../DEVELOPMENT_PLAN/legacy-tracking-for-deletion.md),
 [../../DEVELOPMENT_PLAN/phase-1-runtime-cli-aws-foundations.md](../../DEVELOPMENT_PLAN/phase-1-runtime-cli-aws-foundations.md),
+[../../DEVELOPMENT_PLAN/phase-2-gateway-dns.md](../../DEVELOPMENT_PLAN/phase-2-gateway-dns.md),
 [../../DEVELOPMENT_PLAN/phase-3-chart-platform-vscode.md](../../DEVELOPMENT_PLAN/phase-3-chart-platform-vscode.md),
 [../../DEVELOPMENT_PLAN/phase-4-lifecycle-canonical-paths.md](../../DEVELOPMENT_PLAN/phase-4-lifecycle-canonical-paths.md),
 [../../DEVELOPMENT_PLAN/phase-5-canonical-test-suite.md](../../DEVELOPMENT_PLAN/phase-5-canonical-test-suite.md),
@@ -43,9 +44,13 @@ The target public-edge doctrine for self-managed `prodbox` clusters is:
 9. Redis is optional shared application infrastructure for realtime or rate-limit workloads only.
 10. WebSocket authorization happens at connection setup time, while message-level authorization
     remains application-owned.
-11. Supported public routing uses one shared public hostname with explicit path prefixes for
-    identity, application, and admin surfaces; wildcard public DNS is not part of the supported
-    architecture.
+11. Supported public routing serves hostnames that are total projections of the configured
+    certificate scope set; the default supported shape remains one shared public hostname with
+    explicit path prefixes for identity, application, and admin surfaces. Wildcard public DNS is
+    supported only when the wildcard is anchored at a config-declared delegated zone (org-apex
+    wildcards are discouraged — an org-apex wildcard's blast radius covers every org subdomain and
+    non-prodbox services, and cannot even cover the AWS substrate's deeper-labelled host); path
+    routing is preserved.
 12. The Haskell distributed gateway daemon documented in
     [distributed_gateway_architecture.md](./distributed_gateway_architecture.md) is distinct from
     the Envoy Gateway public edge.
@@ -297,6 +302,14 @@ The supported route model is explicit:
 - browser workloads on explicit path prefixes such as `/vscode`
 - API and WebSocket workloads on explicit path prefixes such as `/api` and `/ws`
 - the MinIO console admin surface on the explicit `/minio` path prefix
+
+The served-FQDN set and the Gateway listener hostnames are total projections of the configured
+`CertScopeSet` in Tier-0 config; `test.resolvefintech.com` is the default exact scope, so today's
+single-hostname shape is unchanged until an operator widens scope. A served hostname with no
+covering configured scope is unrepresentable on the prodbox-managed side — `bindListener` returns a
+`Left` at bind time and config validation fails fast — so the drift that produced an unmanaged
+orphan certificate cannot recur through this edge. See
+[acme_provider_guide.md](./acme_provider_guide.md) for the scope algebra and coverage semantics.
 
 Example hostname routing inside this model may look like:
 
@@ -751,9 +764,17 @@ The supported public-edge diagnostic surface classifies:
 7. cert-manager certificate readiness
 8. `LoadBalancer` IP agreement
 9. external HTTPS reachability
+10. the `certificate-renew-due` rung observed from cert-manager `status.renewalTime`
+11. the `certificate-expired` rung observed from cert-manager `notAfter`
 
 The supported success state for `prodbox edge status` is
 `CLASSIFICATION=ready-for-external-proof`.
+
+The `certificate-renew-due` and `certificate-expired` rungs are purely observational: prodbox reads
+cert-manager's `status.renewalTime` (renew-due) and `notAfter` (expired) and never recomputes a
+repo-side renewal window, which would drift from the chart `renewBefore: 720h`. cert-manager and
+ZeroSSL own renewal; prodbox only observes it. When `status.renewalTime` is absent the rung is
+unobservable and fails closed as `certificate-unobservable` rather than reporting a healthy state.
 
 Current named validation implications:
 

@@ -59,7 +59,8 @@ import Prodbox.Subprocess
   )
 import System.Directory (getCurrentDirectory)
 import System.Environment
-  ( lookupEnv
+  ( getEnvironment
+  , lookupEnv
   , setEnv
   , unsetEnv
   )
@@ -376,12 +377,23 @@ startGatewayProcess
   -> (Int -> Maybe String -> IO ())
   -> IO RunningGatewayDaemon
 startGatewayProcess binary workingDir configPath restPort peerPort writeConfig = do
+  -- Sprint 2.34: this suite runs the daemon with no Vault and no MinIO, so the
+  -- object-store proof latch can never flip from a live round trip and /readyz
+  -- would stay 503 "starting" forever. Seed the latch via the sanctioned
+  -- in-memory, read-once, test-only PRODBOX_TEST_OBJECT_STORE_PROOF_LATCH hook,
+  -- scoped to the spawned daemon subprocess only (the test-runner's own process
+  -- env is never mutated). Every daemon spawn — every it-block, every golden
+  -- renderer, and the pre-Vault test — routes through here, so this one seat
+  -- covers the whole suite. The genuine "earn the latch via a live round trip"
+  -- gate is exercised by the AWS/chaos integration validations, not here.
+  parentEnv <- getEnvironment
   startResult <-
     startBackgroundProcess
       Subprocess
         { subprocessPath = binary
         , subprocessArguments = ["gateway", "start", "--config", configPath]
-        , subprocessEnvironment = Nothing
+        , subprocessEnvironment =
+            Just (parentEnv ++ [("PRODBOX_TEST_OBJECT_STORE_PROOF_LATCH", "1")])
         , subprocessWorkingDirectory = Just workingDir
         }
   case startResult of

@@ -90,6 +90,11 @@ resolveHostVaultAddress = do
   override <- lookupEnv "PRODBOX_TEST_HOST_VAULT_ADDR"
   pure (VaultAddress (Text.pack (maybe "http://127.0.0.1:31820" id override)))
 
+-- LEGACY-ESCAPE[host-direct-vault-root-token]: the host CLI loads the Vault
+-- root token directly (to build AWS provider credentials and drive host-side
+-- Vault lifecycle) rather than obtaining a role-scoped projection from the
+-- Lifecycle Authority. Registered in Prodbox.Legacy.EscapeRegistry; removed when
+-- the Authority owns credential provisioning (Sprints 4.49/4.50).
 loadReadyVaultRootToken :: FilePath -> VaultAddress -> IO (Either String VaultToken)
 loadReadyVaultRootToken repoRoot address = do
   readiness <- requireReadyVault address
@@ -155,6 +160,9 @@ testHostVaultObjectDir :: FilePath -> Text -> Text -> FilePath
 testHostVaultObjectDir kvRoot mount path =
   kvRoot </> Text.unpack mount </> Text.unpack path
 
+-- LEGACY-ESCAPE[host-direct-vault-kv]: the host CLI reads Vault KV directly
+-- here to resolve credentials, bypassing the Lifecycle Authority's role-scoped
+-- projection. Registered in Prodbox.Legacy.EscapeRegistry; removed by Sprint 4.49.
 readHostVaultKvField
   :: FilePath -> Text -> Text -> Text -> IO (Either String Text)
 readHostVaultKvField repoRoot mount path field = do

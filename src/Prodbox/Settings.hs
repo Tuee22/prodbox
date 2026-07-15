@@ -797,8 +797,8 @@ resolveAwsCredentialsRefFromHostVault repoRoot label refs = do
               )
           )
 
-renderSettingsDisplay :: Bool -> ValidatedSettings -> String
-renderSettingsDisplay showSecrets settings =
+renderSettingsDisplay :: ValidatedSettings -> String
+renderSettingsDisplay settings =
   unlines
     [ "aws.region=" ++ renderText (awsCredentialRegion (aws config))
     , "aws.access_key_id=" ++ renderSecretRefDisplay (awsCredentialAccessKeyId (aws config))
@@ -812,7 +812,7 @@ renderSettingsDisplay showSecrets settings =
     , "ses.capture_bucket=" ++ renderText (capture_bucket (ses config))
     , "domain.demo_fqdn=" ++ renderText (demo_fqdn (domain config))
     , "domain.demo_ttl=" ++ show (demo_ttl (domain config))
-    , "acme.email=" ++ renderSensitive showSecrets (email (acme config))
+    , "acme.email=" ++ renderSensitive (email (acme config))
     , "acme.server=" ++ renderText (server (acme config))
     , "acme.eab_key_id=" ++ renderMaybeSecretRefDisplay (eab_key_id (acme config))
     , "acme.eab_hmac_key=" ++ renderMaybeSecretRefDisplay (eab_hmac_key (acme config))
@@ -1229,12 +1229,15 @@ hasExactlyOne left right =
     (Nothing, Just _) -> True
     _ -> False
 
-renderSensitive :: Bool -> Text -> String
-renderSensitive showSecrets value =
+-- | Sprint 1.61: a sensitive field is ALWAYS masked. The former
+-- @config show --show-secrets@ unrestricted secret-reveal path is removed;
+-- @config show@ has no generic secret-reveal capability or flag alias.
+renderSensitive :: Text -> String
+renderSensitive value =
   renderMaybeText $
     if Text.strip value == ""
       then Nothing
-      else Just (if showSecrets then value else maskSecret value)
+      else Just (maskSecret value)
 
 renderMaybeText :: Maybe Text -> String
 renderMaybeText maybeValue =

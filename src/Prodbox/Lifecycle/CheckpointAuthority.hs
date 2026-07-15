@@ -1,16 +1,30 @@
+{-# LANGUAGE DataKinds #-}
 {-# LANGUAGE DeriveFunctor #-}
 {-# LANGUAGE OverloadedStrings #-}
+{-# LANGUAGE RoleAnnotations #-}
 
 -- | Typed coordinates and compare-and-swap boundary for retained Model-B
 -- state.  The retained checkpoint authority and a selected workload-cluster
 -- secret sink deliberately have unrelated constructors: a target endpoint can
 -- never be substituted for the authority that owns the lease/checkpoint.
+--
+-- Sprint 4.51: every Model-B coordinate, request, lease guard, and CAS adapter
+-- carries a fully-erased 'StoreLifetime' PHANTOM index. A coordinate for
+-- retained control-plane authority state is @'ClusterRetained'@; a per-run /
+-- chart-scoped object is @'ChartLifetime'@. Because the index is a pure phantom
+-- it would default to a phantom role and 'Data.Coerce.coerce' could relabel the
+-- tag, so 'ModelBObjectCoordinate' carries a load-bearing @type role … nominal@
+-- (the other three infer @nominal@ through the coordinate they embed). Storing
+-- retained state through a chart-lifetime transport is then a compile-time type
+-- error, with zero runtime cost and byte-identical sealed envelopes.
 module Prodbox.Lifecycle.CheckpointAuthority
   ( AuthorityCoordinateError (..)
+  , StoreLifetime (..)
   , LongLivedCheckpointAuthority
   , ModelBCasAdapter (..)
   , ModelBCasRequest (..)
   , ModelBCasResult (..)
+  , ModelBCodec (..)
   , ModelBLeaseGuard (..)
   , ModelBObjectCoordinate
   , ModelBObjectVersion
@@ -21,8 +35,10 @@ module Prodbox.Lifecycle.CheckpointAuthority
   , checkpointAuthorityObjectBucket
   , checkpointAuthorityObjectNamespace
   , checkpointAuthorityVaultKeyspace
+  , mkChartLifetimeCoordinate
+  , mkClusterRetainedCoordinate
+  , mkCrossClusterDurableCoordinate
   , mkLongLivedCheckpointAuthority
-  , mkModelBObjectCoordinate
   , mkModelBObjectVersion
   , mkTargetClusterSecretSink
   , modelBObjectAuthority
@@ -35,10 +51,12 @@ module Prodbox.Lifecycle.CheckpointAuthority
   )
 where
 
+import Data.ByteString (ByteString)
 import Data.Char (isControl, isSpace)
 import Data.Text (Text)
 import Data.Text qualified as Text
 import Numeric.Natural (Natural)
+import Prodbox.Lifecycle.StoreLifetime (StoreLifetime (..))
 
 -- | A validation failure in decoded authority coordinates.  Empty, control,
 -- and over-bound fields are rejected before an external adapter is selected.
@@ -127,27 +145,61 @@ targetSecretSinkVaultMount = internalTargetSecretSinkVaultMount
 targetSecretSinkKvPath :: TargetClusterSecretSink -> Text
 targetSecretSinkKvPath = internalTargetSecretSinkKvPath
 
--- | A logical Model-B object rooted at the retained authority.  The logical
--- name is still fed through the encrypted-object/HMAC layer by the production
--- adapter; it is not a raw MinIO key.
-data ModelBObjectCoordinate = ModelBObjectCoordinate
+-- | A logical Model-B object rooted at the retained authority, tagged with its
+-- storage lifetime @l@.  The logical name is still fed through the
+-- encrypted-object/HMAC layer by the production adapter; it is not a raw MinIO
+-- key.  The @l@ index is a fully-erased phantom, so it would default to a
+-- phantom role and 'Data.Coerce.coerce' could relabel the lifetime; the explicit
+-- @nominal@ role below forbids that (the sibling request/guard/adapter types
+-- infer @nominal@ through the coordinate they embed).
+type role ModelBObjectCoordinate nominal
+
+data ModelBObjectCoordinate (l :: StoreLifetime) = ModelBObjectCoordinate
   { internalModelBObjectAuthority :: !LongLivedCheckpointAuthority
   , internalModelBObjectLogicalName :: !Text
   }
   deriving (Eq, Show)
 
-mkModelBObjectCoordinate
+-- | Un-exported polymorphic builder.  The exported lifetime-tagging
+-- constructors below each fix @l@, so no code path can construct a
+-- lifetime-ambiguous or mis-tagged coordinate, and every constructor passes the
+-- byte-identical full logical name (no prefix-splitting) so the sealed-envelope
+-- bytes never drift.
+unsafeCoordinate
   :: LongLivedCheckpointAuthority
   -> Text
-  -> Either AuthorityCoordinateError ModelBObjectCoordinate
-mkModelBObjectCoordinate authority logicalName =
+  -> Either AuthorityCoordinateError (ModelBObjectCoordinate l)
+unsafeCoordinate authority logicalName =
   ModelBObjectCoordinate authority
     <$> validateCoordinate "model_b_logical_name" 512 logicalName
 
-modelBObjectAuthority :: ModelBObjectCoordinate -> LongLivedCheckpointAuthority
+-- | Build a coordinate for retained control-plane authority state — the lease,
+-- target-commit intent, SMTP projection, and retained checkpoint that outlive a
+-- run.
+mkClusterRetainedCoordinate
+  :: LongLivedCheckpointAuthority
+  -> Text
+  -> Either AuthorityCoordinateError (ModelBObjectCoordinate 'ClusterRetained)
+mkClusterRetainedCoordinate = unsafeCoordinate
+
+-- | Build a coordinate for chart-scoped / per-run Pulumi stack state.
+mkChartLifetimeCoordinate
+  :: LongLivedCheckpointAuthority
+  -> Text
+  -> Either AuthorityCoordinateError (ModelBObjectCoordinate 'ChartLifetime)
+mkChartLifetimeCoordinate = unsafeCoordinate
+
+-- | Build a coordinate for cross-cluster durable backup state.
+mkCrossClusterDurableCoordinate
+  :: LongLivedCheckpointAuthority
+  -> Text
+  -> Either AuthorityCoordinateError (ModelBObjectCoordinate 'CrossClusterDurable)
+mkCrossClusterDurableCoordinate = unsafeCoordinate
+
+modelBObjectAuthority :: ModelBObjectCoordinate l -> LongLivedCheckpointAuthority
 modelBObjectAuthority = internalModelBObjectAuthority
 
-modelBObjectLogicalName :: ModelBObjectCoordinate -> Text
+modelBObjectLogicalName :: ModelBObjectCoordinate l -> Text
 modelBObjectLogicalName = internalModelBObjectLogicalName
 
 -- | Opaque version supplied by the object store (for example its ETag).  It is
@@ -174,18 +226,24 @@ data ModelBObservation value
   | ModelBUnobservable !Text
   deriving (Eq, Functor, Show)
 
-data ModelBCasRequest value
-  = ModelBInitialize !ModelBObjectCoordinate !value
+-- | A conditional Model-B write, indexed by the storage lifetime @l@ of the
+-- object it targets.  The phantom @l@ precedes @value@ so the derived 'Functor'
+-- still maps over the payload.  The guarded constructors carry a
+-- 'ModelBLeaseGuard', which is monomorphically @'ClusterRetained'@ (a lease is
+-- always retained authority state), so a @'ChartLifetime'@ object may be guarded
+-- by a retained lease without a second lifetime parameter.
+data ModelBCasRequest (l :: StoreLifetime) value
+  = ModelBInitialize !(ModelBObjectCoordinate l) !value
   | ModelBReplace
-      !ModelBObjectCoordinate
+      !(ModelBObjectCoordinate l)
       !ModelBObjectVersion
       !value
   | ModelBInitializeGuarded
-      !ModelBObjectCoordinate
+      !(ModelBObjectCoordinate l)
       !ModelBLeaseGuard
       !value
   | ModelBReplaceGuarded
-      !ModelBObjectCoordinate
+      !(ModelBObjectCoordinate l)
       !ModelBObjectVersion
       !ModelBLeaseGuard
       !value
@@ -195,8 +253,12 @@ data ModelBCasRequest value
 -- daemon re-observes this exact lease object/version and validates the decoded
 -- owner/fence/expiry immediately before accepting the target-object write.
 -- It remains a cross-object guard, not a claim of multi-object atomicity.
+--
+-- A lease is always retained control-plane authority state, so the guarded lease
+-- coordinate is fixed to @'ClusterRetained'@; 'ModelBLeaseGuard' therefore
+-- carries no lifetime index of its own.
 data ModelBLeaseGuard = ModelBLeaseGuard
-  { modelBLeaseGuardCoordinate :: !ModelBObjectCoordinate
+  { modelBLeaseGuardCoordinate :: !(ModelBObjectCoordinate 'ClusterRetained)
   , modelBLeaseGuardExpectedVersion :: !ModelBObjectVersion
   , modelBLeaseGuardOwnerNonceText :: !Text
   , modelBLeaseGuardFencingTokenValue :: !Natural
@@ -210,16 +272,29 @@ data ModelBCasResult value
   | ModelBCasUnobservable !Text
   deriving (Eq, Functor, Show)
 
--- | Injected production boundary.  Model-B payload encoding/encryption and
--- object-store conditional writes live behind these two operations; pure
--- lease/intent planners consume only the observations and requests above.
-data ModelBCasAdapter m value = ModelBCasAdapter
+-- | Injected production boundary, indexed by the storage lifetime @l@ it is
+-- authorised to reach.  Model-B payload encoding/encryption and object-store
+-- conditional writes live behind these two operations; pure lease/intent
+-- planners consume only the observations and requests above.  A
+-- @'ChartLifetime'@ adapter cannot observe or write a @'ClusterRetained'@
+-- coordinate, and vice-versa.
+data ModelBCasAdapter (l :: StoreLifetime) m value = ModelBCasAdapter
   { modelBObserve
-      :: ModelBObjectCoordinate
+      :: ModelBObjectCoordinate l
       -> m (ModelBObservation value)
   , modelBCompareAndSwap
-      :: ModelBCasRequest value
+      :: ModelBCasRequest l value
       -> m (ModelBCasResult value)
+  }
+
+-- | Payload codec supplied by the state-machine owner.  Decode failures are
+-- corruption evidence; transport/CAS failures remain unobservable.  Lifted from
+-- 'Prodbox.Lifecycle.CheckpointAuthorityStore' in Sprint 4.51 so the
+-- gateway-backed and (future) host-direct adapters share it without a module
+-- cycle.  It is payload-only and carries no storage-lifetime index.
+data ModelBCodec value = ModelBCodec
+  { encodeModelBValue :: value -> Either String ByteString
+  , decodeModelBValue :: ByteString -> Either String value
   }
 
 validateCoordinate :: Text -> Int -> Text -> Either AuthorityCoordinateError Text

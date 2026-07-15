@@ -36,6 +36,17 @@ activates the Sprint `1.65` certification check. The Foundation Epoch (Sprints `
 existing `1.61` → `8.12` chain, which resumes unchanged once the epoch closes. Sprints
 `5.18`/`5.19` remain blocked exactly as recorded below.
 
+⏸️ **Certificate-scope serving validation added 2026-07-12.** Sprint `5.22` (⏸️ Blocked by
+Sprint `2.35`) adds a named integration validation that proves serving rather than assertion — a real
+TLS handshake against every hostname the configured `CertScopeSet` covers (each exact scope and, when
+a wildcard scope is configured, a wildcard-covered sibling plus the apex through its explicit exact
+scope), against harness-owned infrastructure with a real ZeroSSL DNS-01 certificate, plus a retained
+restore-vs-reissue proof (widening orders once; narrower-or-equal reuses). It is the canonical-suite
+consumer of the configurable-certificate-scope policy adopted by governance Sprint `0.18`
+([phase-0-planning-documentation.md](phase-0-planning-documentation.md)) and the scope algebra owned
+by Sprint `2.35` ([phase-2-gateway-dns.md](phase-2-gateway-dns.md)); it is not part of the Foundation
+Epoch and introduces no `Blocked by` edge onto the existing `1.61` → `8.12` chain.
+
 ⏸️ **Reopened and blocked by Sprint `4.50`.** Sprint `5.18` makes restore and retained
 preparation consume the same exact capability references that execution uses and lowers cleanup to an
 always-run DAG, so an unrelated selected-target probe cannot authorize retained-authority work and
@@ -1699,15 +1710,26 @@ position.
 - Link the derived fact tables to the managed-resource registry lifecycle classes and the
   storage-lifetime index owned by Sprint `4.51` (no `Blocked by` edge).
 
-## Sprint 5.21: Measured Resource Profile Recorder [⏸️ Blocked]
+## Sprint 5.21: Measured Resource Profile Recorder [🔄 Active]
 
-**Status**: Blocked
-**Blocked by**: Sprint `1.65`
-**Deployment qualification**: pending
-**Implementation**: planned recorder extension of `src/Prodbox/Test/GatewayRuntimeStability.hs` and
-the `gateway-runtime-stability` integration surface
-**Independent Validation**: recorder refusal tables (unhealthy run, short window) with fixture
-payloads; artifact golden; pre-cluster.
+**Status**: Active (Sprint `1.65` unblocked; the pure recorder gate landed 2026-07-12, the live
+metric sampling + first committed profile remain)
+**Deployment qualification**: The pure recorder gate is landed and unit-proven pre-cluster.
+Standard O: recording the first committed gateway profile requires a healthy live ≥30-minute run
+(and extending the gateway-runtime-stability observer to sample CPU/throttle/heap/object-store
+demand), so the live `--record-profile` wiring + the first artifact are the non-blocking live axis.
+**Implementation**: ✅ **Recorder gate landed** — `recordMeasuredProfile` (the pure health +
+30-minute-steady-window gate over a `MeasuredProfileRecorderInput`, refusing an unhealthy run or a
+short window), `recorderMinimumWindowSeconds`, `renderMeasuredResourceProfileDhall` (the committed
+`dhall/capacity/measured/` artifact literal that round-trips back through the generic
+`Dhall.FromDhall` the Sprint 1.65 check reads), and the `MeasuredProfileRecorderRefusal` taxonomy,
+all in `src/Prodbox/Capacity/MeasuredProfile.hs`. 🔄 **Remaining**: the live `--record-profile`
+metric collection (extending `src/Prodbox/Test/GatewayRuntimeStability.hs` to sample the demand the
+profile carries) and committing the first gateway profile from a healthy live run.
+**Independent Validation**: ✅ recorder refusal tables (unhealthy run, short window) and a Dhall
+round-trip proving the recorded artifact is exactly what the certification check consumes
+(`test/unit/MeasuredProfile.hs`, "Sprint 5.21 measured profile recorder gate"); pre-cluster. The
+first committed profile activates the Sprint 1.65 certification for `gateway`.
 **Docs to update**: `documents/engineering/resource_scaling_doctrine.md`
 
 ### Objective
@@ -1752,6 +1774,75 @@ Sprints `1.64` and `1.66`.
 
 - Link the recorder to Sprint `1.65`'s certification check and the `dhall/capacity/measured/`
   artifact home ([phase-1-runtime-cli-aws-foundations.md](phase-1-runtime-cli-aws-foundations.md)).
+
+## Sprint 5.22: Certificate Scope Serving Validation [⏸️ Blocked]
+
+**Status**: Blocked
+**Blocked by**: Sprint `2.35`
+**Deployment qualification**: pending
+**Implementation**: planned named integration validation exercising real TLS handshakes
+against every scope-covered hostname
+**Independent Validation**: the validation runs on the home substrate with harness-owned
+infrastructure and a real ZeroSSL DNS-01 certificate; AWS-substrate coverage is tracked in
+substrates.md parity (Standards N/O). Ready-condition alone is not accepted as proof.
+**Docs to update**: `documents/engineering/acme_provider_guide.md`
+
+### Objective
+
+Prove serving, not assertion. A named validation opens a real TLS handshake against every hostname
+the configured `CertScopeSet` covers — each exact scope and, when a wildcard scope is configured, a
+wildcard-covered sibling plus the apex through its explicit exact scope — against harness-owned
+infrastructure with a real ZeroSSL DNS-01 certificate, and adds a retained restore-vs-reissue proof
+(widening triggers one fresh ACME order; a narrower-or-equal scope reuses the retained material). A
+cert-manager Ready condition alone is not accepted as proof.
+
+### Deliverables
+
+- A named integration validation that curls every hostname the configured scope set covers over TLS
+  (exact scopes always; wildcard-covered siblings and the apex when a wildcard scope is configured)
+  and fails if any covered host does not serve the scope certificate.
+- A retained restore-vs-reissue proof keyed by `impliedBy` and the canonical scope-set
+  serialization: widening the configured scope orders once, and a narrower-or-equal scope reuses the
+  retained material.
+- Home-substrate serving proof against harness-owned infrastructure with a real ZeroSSL DNS-01
+  certificate; AWS-substrate parity tracked as the non-blocking axis in
+  [substrates.md](substrates.md).
+
+### Validation
+
+1. The named validation performs a real TLS handshake against every scope-covered hostname and fails
+   if any covered host does not serve the scope certificate — the cert-manager Ready condition alone
+   is not accepted.
+2. The restore-vs-reissue proof shows a widening scope orders exactly once and a narrower-or-equal
+   scope reuses retained material.
+3. The home-substrate run uses harness-owned infrastructure and a real ZeroSSL DNS-01 certificate;
+   AWS-substrate coverage is the non-blocking parity axis in [substrates.md](substrates.md)
+   (Standards N/O).
+
+### Remaining Work
+
+- Blocked until Sprint `2.35` lands the `CertScope` algebra, the Tier-0 scope-set config, and the
+  derived edge projections it validates.
+- The live AWS-substrate serving proof is the non-blocking substrate-parity axis tracked in
+  [substrates.md](substrates.md); it is not a `5.22` blocker (Standards N/O).
+
+## Documentation Requirements
+
+**Engineering docs to create/update:**
+
+- `documents/engineering/acme_provider_guide.md` - the certificate-scope serving validation and its
+  retained restore-vs-reissue proof as the canonical-suite consumer of the configured `CertScopeSet`.
+
+**Product docs to create/update:**
+
+- `README.md` - note that the canonical suite proves serving on every hostname the configured
+  certificate scope covers.
+
+**Cross-references to add:**
+
+- Link the serving validation to the `CertScope` algebra owned by Sprint `2.35`
+  ([phase-2-gateway-dns.md](phase-2-gateway-dns.md)) and the AWS-substrate parity axis in
+  [substrates.md](substrates.md).
 
 ## Related Documents
 

@@ -109,8 +109,11 @@ The supported chart-maintenance surface is split between `prodbox dev lint chart
 - `prodbox dev lint chart` validates every chart under `charts/` for the canonical
   `Chart.yaml` metadata fields (`apiVersion: v2`, `name`, `version`, `appVersion`), the
   required chart-label helper lines, values-backed `resources` stanzas on every template
-  `containers:` / `initContainers:` item, root-chart `ResourceQuota`/`LimitRange` manifests, and
-  drift on the generated `route-registry` sections.
+  `containers:` / `initContainers:` item, root-chart `ResourceQuota`/`LimitRange` manifests,
+  drift on the generated `route-registry` sections, and (Sprint `2.34`) the gateway
+  chart-statics single-source rule: the gateway `serviceaccount.yaml`/`deployments.yaml` must
+  render `{{ .Values.serviceAccount.name }}` rather than the raw `prodbox-gateway-daemon`
+  literal, and `values.yaml` must carry the generated `gateway-chart-statics.values` defaults.
 - `prodbox dev docs generate` refreshes the marker-delimited route inventory consumed by:
   - `charts/keycloak/templates/gateway.yaml`
   - `charts/vscode/templates/http-route.yaml`
@@ -544,6 +547,24 @@ Sprint `3.25` landed this chart binding over the constant-time endpoints from Sp
 negative fixtures pin that refusal, and a golden pins the typed generated defaults. See
 [Bootstrap Readiness Doctrine §2.4](./bootstrap_readiness_doctrine.md#24-dependency-readiness-vs-runtime-stability)
 and [Distributed Gateway Architecture §11](./distributed_gateway_architecture.md#11-rest-api).
+Sprint `2.34` raised the readiness probe `failureThreshold` 3 → 6 (liveness stays at 3) so the
+now-latched readiness has grace to earn its first proven object-store round trip before the kubelet
+pulls the Pod from its Service endpoints.
+
+### Gateway chart-statics single source
+
+The gateway chart's static identities — the REST/event container ports, the host-facing NodePort,
+and the Pod ServiceAccount name (which is the same identity as the Vault Kubernetes-auth role) — are
+one compiled source of truth in `Prodbox.Gateway.ChartStatics`, reading the NodePort from
+`Prodbox.Host.defaultGatewayNodePort` and the ServiceAccount/role from
+`Prodbox.Vault.RoleId.VaultRoleGatewayDaemon`. `ChartPlatform.valuesForGateway` emits these into the
+deployed values JSON, and the same typed projection generates the `gateway-chart-statics.values`
+section of `charts/gateway/values.yaml`. The hand-written `serviceaccount.yaml`/`deployments.yaml`
+render `{{ .Values.serviceAccount.name }}` rather than the raw literal, a chart lint forbids the raw
+literal on those fields, and a `runConformanceTier` gate proves the committed `values.yaml` defaults
+equal the compiled projection. This closes the sibling of the `F-READY` divergence class: ports,
+NodePort, ServiceAccount, and Vault-role identities can no longer drift between the code, the chart
+defaults, and the hand-written templates (Sprint `2.34`).
 
 ### Probe and route single-source rule
 

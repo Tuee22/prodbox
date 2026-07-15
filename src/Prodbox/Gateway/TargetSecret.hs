@@ -42,13 +42,17 @@ import Data.Text (Text)
 import Data.Text qualified as Text
 import Data.Text.Encoding qualified as TextEncoding
 import Numeric.Natural (Natural)
+import Prodbox.Gateway.Routes (GatewayRoute (..), routePattern)
 import Text.Read (readMaybe)
 
+-- Sprint 2.34: the target-secret wire paths are projections of the one compiled
+-- route registry ("Prodbox.Gateway.Routes"), so this contract cannot drift from
+-- the daemon dispatcher or the gateway client.
 targetSecretReadPath :: String
-targetSecretReadPath = "/v1/target-secret/read"
+targetSecretReadPath = routePattern RouteTargetSecretRead
 
 targetSecretCasPath :: String
-targetSecretCasPath = "/v1/target-secret/cas"
+targetSecretCasPath = routePattern RouteTargetSecretCas
 
 targetSecretRequestMaxBytes :: Int
 targetSecretRequestMaxBytes = 64 * 1024

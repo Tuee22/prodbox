@@ -5,9 +5,11 @@
 -- module only moves opaque object bytes.
 module Prodbox.Minio.ObjectStore
   ( ObjectStoreConfig (..)
+  , ObjectStoreBackend (..)
   , ConditionalPutResult (..)
   , ObjectVersion (..)
   , VersionedObject (..)
+  , objectStoreBackend
   , defaultObjectStoreBucket
   , deleteObject
   , ensureObjectStoreBucket
@@ -44,6 +46,15 @@ import Prodbox.Infra.MinioBackend
   , minioGetObjectArgs
   , minioPutObjectArgs
   )
+import Prodbox.Minio.ObjectStoreNative qualified as Native
+import Prodbox.Minio.ObjectStoreTypes
+  ( ConditionalPutResult (..)
+  , ObjectStoreBackend (..)
+  , ObjectStoreConfig (..)
+  , ObjectVersion (..)
+  , VersionedObject (..)
+  , defaultObjectStoreBucket
+  )
 import Prodbox.Service
   ( AsServiceError
   , runMinIOWithEnv
@@ -55,36 +66,37 @@ import System.Exit (ExitCode (..))
 import System.FilePath ((</>))
 import System.IO.Temp (withSystemTempDirectory)
 
-data ObjectStoreConfig = ObjectStoreConfig
-  { objectStoreEndpoint :: String
-  , objectStoreBucket :: String
-  , objectStoreAccessKey :: String
-  , objectStoreSecretKey :: String
-  }
-  deriving (Eq, Show)
+-- | Sprint 1.66: which client performs Model-B object-store operations. The
+-- @aws@ CLI subprocess remains the default and the config-selectable rollback
+-- until the native SigV4 client's live-MinIO parity is proven (a Standard-O
+-- live-proof axis); flipping this to 'ObjectStoreNative' selects the native
+-- client, after which the subprocess path is retired through the deletion
+-- ledger. The public operations below dispatch on it; the @*Subprocess@
+-- implementations are the surviving @aws@ CLI escape (see
+-- "Prodbox.Legacy.EscapeRegistry").
+objectStoreBackend :: ObjectStoreBackend
+objectStoreBackend = ObjectStoreSubprocess
 
--- | Opaque object generation returned by the S3-compatible store.  Callers
--- may compare or feed it back to 'putIfVersion', but cannot manufacture a
--- generation from untrusted payload data.
-newtype ObjectVersion = ObjectVersion {objectVersionEtag :: Text}
-  deriving (Eq, Ord, Show)
-
-data VersionedObject = VersionedObject
-  { versionedObjectBytes :: ByteString
-  , versionedObjectVersion :: ObjectVersion
-  }
-  deriving (Eq, Show)
-
-data ConditionalPutResult
-  = ConditionalPutApplied
-  | ConditionalPutConflict
-  deriving (Eq, Show)
-
-defaultObjectStoreBucket :: String
-defaultObjectStoreBucket = "prodbox-state"
+dispatchBackend :: IO a -> IO a -> IO a
+dispatchBackend subprocessAction nativeAction =
+  case objectStoreBackend of
+    ObjectStoreSubprocess -> subprocessAction
+    ObjectStoreNative -> nativeAction
 
 getObject :: ObjectStoreConfig -> Text -> IO (Either String (Maybe ByteString))
 getObject config key =
+  dispatchBackend (getObjectSubprocess config key) (Native.getObject config key)
+
+-- LEGACY-ESCAPE[aws-cli-object-store-subprocess]: every @*Subprocess@ Model-B
+-- object-store operation in this module (get/put/conditional-put/list/head/
+-- create/delete) shells out to the aws CLI s3api verbs through
+-- 'runMinIOWithEnv', staging per-operation bodies in temp files. Registered in
+-- Prodbox.Legacy.EscapeRegistry. Sprint 1.66 added the native SigV4 replacement
+-- ("Prodbox.Minio.ObjectStoreNative"); this subprocess path remains the default
+-- and config-selectable rollback ('objectStoreBackend') until native live-MinIO
+-- parity is proven, then it is deleted through the ledger.
+getObjectSubprocess :: ObjectStoreConfig -> Text -> IO (Either String (Maybe ByteString))
+getObjectSubprocess config key =
   withSystemTempDirectory "prodbox-object-store" $ \tmpDir -> do
     let outputPath = tmpDir </> "object.enc"
     result <-
@@ -120,11 +132,15 @@ getObject config key =
 
 -- | Fetch an object together with the store generation used for a subsequent
 -- compare-and-swap.  Failure to observe is never collapsed into absence.
-getObjectVersioned
+getObjectVersioned :: ObjectStoreConfig -> Text -> IO (Either String (Maybe VersionedObject))
+getObjectVersioned config key =
+  dispatchBackend (getObjectVersionedSubprocess config key) (Native.getObjectVersioned config key)
+
+getObjectVersionedSubprocess
   :: ObjectStoreConfig
   -> Text
   -> IO (Either String (Maybe VersionedObject))
-getObjectVersioned config key =
+getObjectVersionedSubprocess config key =
   withSystemTempDirectory "prodbox-object-store-versioned" $ \tmpDir -> do
     let outputPath = tmpDir </> "object.enc"
     result <-
@@ -156,11 +172,13 @@ getObjectVersioned config key =
 
 putObject :: ObjectStoreConfig -> Text -> ByteString -> IO (Either String ())
 putObject config key bytes =
-  putObjectWithArgs config key bytes id
+  dispatchBackend (putObjectWithArgs config key bytes id) (Native.putObject config key bytes)
 
 putIfAbsent :: ObjectStoreConfig -> Text -> ByteString -> IO (Either String ())
 putIfAbsent config key bytes =
-  putObjectWithArgs config key bytes (++ ["--if-none-match", "*"])
+  dispatchBackend
+    (putObjectWithArgs config key bytes (++ ["--if-none-match", "*"]))
+    (Native.putIfAbsent config key bytes)
 
 putIfAbsentObserved
   :: ObjectStoreConfig
@@ -168,7 +186,9 @@ putIfAbsentObserved
   -> ByteString
   -> IO (Either String ConditionalPutResult)
 putIfAbsentObserved config key bytes =
-  putObjectConditional config key bytes (++ ["--if-none-match", "*"])
+  dispatchBackend
+    (putObjectConditional config key bytes (++ ["--if-none-match", "*"]))
+    (Native.putIfAbsentObserved config key bytes)
 
 -- | Replace an object only when its current store generation is the one the
 -- caller observed.  A conflict is returned as a structured 'Left'; callers
@@ -180,11 +200,14 @@ putIfVersion
   -> ByteString
   -> IO (Either String ())
 putIfVersion config key version bytes =
-  putObjectWithArgs
-    config
-    key
-    bytes
-    (++ ["--if-match", Text.unpack (objectVersionEtag version)])
+  dispatchBackend
+    ( putObjectWithArgs
+        config
+        key
+        bytes
+        (++ ["--if-match", Text.unpack (objectVersionEtag version)])
+    )
+    (Native.putIfVersion config key version bytes)
 
 putIfVersionObserved
   :: ObjectStoreConfig
@@ -193,11 +216,14 @@ putIfVersionObserved
   -> ByteString
   -> IO (Either String ConditionalPutResult)
 putIfVersionObserved config key version bytes =
-  putObjectConditional
-    config
-    key
-    bytes
-    (++ ["--if-match", Text.unpack (objectVersionEtag version)])
+  dispatchBackend
+    ( putObjectConditional
+        config
+        key
+        bytes
+        (++ ["--if-match", Text.unpack (objectVersionEtag version)])
+    )
+    (Native.putIfVersionObserved config key version bytes)
 
 putObjectConditional
   :: ObjectStoreConfig
@@ -206,7 +232,7 @@ putObjectConditional
   -> ([String] -> [String])
   -> IO (Either String ConditionalPutResult)
 putObjectConditional config key bytes adjustArgs = do
-  bucketResult <- ensureObjectStoreBucket config
+  bucketResult <- ensureObjectStoreBucketSubprocess config
   case bucketResult of
     Left err -> pure (Left err)
     Right () ->
@@ -245,7 +271,7 @@ putObjectWithArgs
   -> IO (Either String ())
 putObjectWithArgs config key bytes adjustArgs =
   do
-    bucketResult <- ensureObjectStoreBucket config
+    bucketResult <- ensureObjectStoreBucketSubprocess config
     case bucketResult of
       Left err -> pure (Left err)
       Right () ->
@@ -274,7 +300,11 @@ putObjectWithArgs config key bytes adjustArgs =
                     ExitSuccess -> Right ()
 
 ensureObjectStoreBucket :: ObjectStoreConfig -> IO (Either String ())
-ensureObjectStoreBucket config = do
+ensureObjectStoreBucket config =
+  dispatchBackend (ensureObjectStoreBucketSubprocess config) (Native.ensureObjectStoreBucket config)
+
+ensureObjectStoreBucketSubprocess :: ObjectStoreConfig -> IO (Either String ())
+ensureObjectStoreBucketSubprocess config = do
   let environment = objectStoreEnv config
       endpoint = objectStoreEndpoint config
       bucket = objectStoreBucket config
@@ -318,7 +348,11 @@ verifyObjectStoreBucketListable config = do
           ExitSuccess -> Right ()
 
 listKeys :: ObjectStoreConfig -> IO (Either String [Text])
-listKeys config = do
+listKeys config =
+  dispatchBackend (listKeysSubprocess config) (Native.listKeys config)
+
+listKeysSubprocess :: ObjectStoreConfig -> IO (Either String [Text])
+listKeysSubprocess config = do
   result <-
     runMinIOWithEnv
       (Just (objectStoreEnv config))
@@ -331,7 +365,11 @@ listKeys config = do
         ExitSuccess -> parseListObjectsKeys (processStdout output)
 
 deleteObject :: ObjectStoreConfig -> Text -> IO (Either String ())
-deleteObject config key = do
+deleteObject config key =
+  dispatchBackend (deleteObjectSubprocess config key) (Native.deleteObject config key)
+
+deleteObjectSubprocess :: ObjectStoreConfig -> Text -> IO (Either String ())
+deleteObjectSubprocess config key = do
   result <-
     runMinIOWithEnv
       (Just (objectStoreEnv config))

@@ -176,16 +176,19 @@ gatewayBoundedSuite =
           cases
 
     it "keeps health and readiness branches structurally independent of operational state" $ do
+      -- Sprint 2.34: the dispatcher is now a total case over the compiled
+      -- GatewayRoute registry; the health/readiness arms still touch no
+      -- operational bounded state.
       repoRoot <- getCurrentDirectory
       daemonSource <-
         readFile (repoRoot </> "src" </> "Prodbox" </> "Gateway" </> "Daemon.hs")
       let probeSurface =
             sourceBetween
-              "handleReadRequest sock env now rawRequest ="
-              "    \"/metrics\" -> do"
+              "dispatchGatewayRoute sock env now rawRequest route = case route of"
+              "  RouteMetrics -> do"
               daemonSource
-      probeSurface `shouldContain` "\"/healthz\""
-      probeSurface `shouldContain` "\"/readyz\""
+      probeSurface `shouldContain` "RouteHealthz"
+      probeSurface `shouldContain` "RouteReadyz"
       probeSurface `shouldNotContain` "envState"
       probeSurface `shouldNotContain` "stateBoundedGateway"
       probeSurface `shouldNotContain` "sortOn"

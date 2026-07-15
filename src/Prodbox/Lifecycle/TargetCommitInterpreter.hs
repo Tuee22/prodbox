@@ -1,3 +1,4 @@
+{-# LANGUAGE DataKinds #-}
 {-# LANGUAGE NamedFieldPuns #-}
 
 -- | Generic effectful interpreter for the bounded cross-authority target
@@ -20,6 +21,7 @@ import Data.Text (Text)
 import Prodbox.Lifecycle.CheckpointAuthority
   ( ModelBCasAdapter (..)
   , ModelBObservation (..)
+  , StoreLifetime (ClusterRetained)
   , TargetClusterSecretSink
   , targetSecretSinkIdentity
   )
@@ -74,7 +76,7 @@ import Prodbox.Lifecycle.TargetCommitIntent
   )
 
 data TargetCommitInterpreter m payload = TargetCommitInterpreter
-  { targetCommitGlobalAdapter :: !(ModelBCasAdapter m TargetIntentProjection)
+  { targetCommitGlobalAdapter :: !(ModelBCasAdapter 'ClusterRetained m TargetIntentProjection)
   , targetCommitSinkAdapter :: !(TargetSinkCasAdapter m payload)
   , targetCommitCurrentPermit :: !(m (Either Text FencedCommitPermit))
   , targetCommitCurrentAuthorityTime :: !(m (Either Text AuthorityTime))

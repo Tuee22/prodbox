@@ -1,3 +1,4 @@
+{-# LANGUAGE DataKinds #-}
 {-# LANGUAGE OverloadedStrings #-}
 
 module Prodbox.Infra.AwsSesStack
@@ -100,10 +101,11 @@ import Prodbox.Lifecycle.CheckpointAuthority
   , ModelBCasAdapter (..)
   , ModelBObjectCoordinate
   , ModelBObservation (..)
+  , StoreLifetime (ChartLifetime, ClusterRetained)
   , TargetClusterSecretSink
   , checkpointAuthorityClusterId
   , checkpointAuthorityGatewayEndpoint
-  , mkModelBObjectCoordinate
+  , mkChartLifetimeCoordinate
   , mkTargetClusterSecretSink
   , targetSecretSinkGatewayEndpoint
   , targetSecretSinkIdentity
@@ -701,8 +703,8 @@ observeAwsSesCheckpoint repoRoot = do
             coordinate
 
 observeAwsSesCheckpointWith
-  :: ModelBCasAdapter IO ByteString
-  -> ModelBObjectCoordinate
+  :: ModelBCasAdapter 'ChartLifetime IO ByteString
+  -> ModelBObjectCoordinate 'ChartLifetime
   -> IO (ResidueStatus.CheckpointObservation AwsSesCheckpointSnapshot)
 observeAwsSesCheckpointWith adapter coordinate = do
   observed <- modelBObserve adapter coordinate
@@ -723,9 +725,9 @@ observeAwsSesCheckpointWith adapter coordinate = do
               }
 
 awsSesCheckpointCoordinate
-  :: LongLivedCheckpointAuthority -> Either String ModelBObjectCoordinate
+  :: LongLivedCheckpointAuthority -> Either String (ModelBObjectCoordinate 'ChartLifetime)
 awsSesCheckpointCoordinate authority =
-  case mkModelBObjectCoordinate authority "pulumi-stack/aws-ses" of
+  case mkChartLifetimeCoordinate authority "pulumi-stack/aws-ses" of
     Left err -> Left (show err)
     Right coordinate -> Right coordinate
 
@@ -1254,7 +1256,7 @@ data AwsSesLeaseTransaction = AwsSesLeaseTransaction
   { awsSesTransactionRepoRoot :: !FilePath
   , awsSesTransactionAuthority :: !LongLivedCheckpointAuthority
   , awsSesTransactionPolicy :: !LeasePolicy
-  , awsSesTransactionLeaseCoordinate :: !ModelBObjectCoordinate
+  , awsSesTransactionLeaseCoordinate :: !(ModelBObjectCoordinate 'ClusterRetained)
   , awsSesTransactionLeaseKey :: !LeaseKey
   , awsSesTransactionTargetCoordinate :: !TargetIntentCoordinate
   , awsSesTransactionInterpreter :: !(LeaseInterpreter IO (Maybe AwsSesPresenceInventory))
@@ -1393,7 +1395,7 @@ runAwsSesLeaseTransaction repoRoot authority operationalCredentials selection ac
 runAcquiredLease
   :: LeaseInterpreter IO inventory
   -> LeasePolicy
-  -> ModelBObjectCoordinate
+  -> ModelBObjectCoordinate 'ClusterRetained
   -> LeaseGrant
   -> IO (Either String value)
   -> IO (Either String value)
@@ -1446,7 +1448,7 @@ recoverAwsSesTargetIntents
   :: LongLivedCheckpointAuthority
   -> LeaseInterpreter IO inventory
   -> LeasePolicy
-  -> ModelBObjectCoordinate
+  -> ModelBObjectCoordinate 'ClusterRetained
   -> LeaseGrant
   -> Maybe LeaseRecoveryPredecessor
   -> AwsSesTargetSelection
@@ -1494,7 +1496,7 @@ waitForAuthorityDuration authority duration = do
 targetCommitInterpreterFor
   :: LongLivedCheckpointAuthority
   -> LeaseInterpreter IO inventory
-  -> ModelBObjectCoordinate
+  -> ModelBObjectCoordinate 'ClusterRetained
   -> LeaseGrant
   -> AwsSesTargetSelection
   -> TargetCommitInterpreter IO (Map Text.Text Text.Text)
@@ -1581,7 +1583,7 @@ observeCommittedSmtpProjection transaction = do
 runLeaseWorkAsString
   :: LeaseInterpreter IO inventory
   -> LeasePolicy
-  -> ModelBObjectCoordinate
+  -> ModelBObjectCoordinate 'ClusterRetained
   -> LeaseWork
   -> LeaseGrant
   -> (LeaseUsePermit -> IO (Either Text.Text value))

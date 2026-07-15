@@ -75,7 +75,14 @@ This doctrine covers the Haskell distributed gateway daemon only. The Kubernetes
 public-edge controller target is owned separately by
 [Envoy Gateway Edge Doctrine](./envoy_gateway_edge_doctrine.md).
 
-The constant-time `/healthz` and `/readyz` endpoints have existed since Sprint `2.10`. Sprint
+Every gateway daemon HTTP path string is a projection of one compiled route registry
+(`Prodbox.Gateway.Routes`, Sprint `2.34`): the closed `GatewayRoute` ADT (`Enum`/`Bounded`) is the
+single place any path exists, `routeClass` distinguishes liveness/readiness/diagnostic/RPC, the
+daemon dispatcher is a total `case` over the registry (a registered route with no handler is a
+`-Werror` compile error), and the gateway client and chart kubelet-probe paths are projections of
+the same `routePattern`. A kubelet probe cannot be built from a diagnostic or RPC route (the
+`kubeletProbeRoute` smart constructor). The constant-time `/healthz` and `/readyz` endpoints have
+existed since Sprint `2.10`. Sprint
 `2.31` landed the bounded state, transport, remote Model-B continuity adapter, memory-consumer, and
 credential-gated DNS implementation on top of Sprint `1.60`'s runtime-memory plan. Sprint `3.25` landed the
 separate chart binding to those endpoints and forbids `/v1/state` as a kubelet probe. Sprint `5.16`

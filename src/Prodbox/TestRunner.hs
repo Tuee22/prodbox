@@ -82,6 +82,7 @@ import Prodbox.CLI.Rke2
   ( ensureGatewayMinioBootstrap
   , gatewayNamespace
   , observeGatewayBackendRoundTripOnceAt
+  , observeGatewayReadyzOnceAt
   , rke2InstallPresent
   )
 import Prodbox.CheckCode (runCheckCode)
@@ -1640,6 +1641,7 @@ prepareRetainedSesAtTarget repoRoot endpoint preparationPlan inputs = do
               gatewayDaemonLivenessPrecondition
                 GatewayClient.daemonRestartBridgeRetryPolicy
                 (peerRestUrl endpoint)
+                (observeGatewayReadyzOnceAt endpoint)
                 (observeGatewayBackendRoundTripOnceAt endpoint)
         preconditionResult <- checkAll [daemonPrecondition]
         case preconditionResult of

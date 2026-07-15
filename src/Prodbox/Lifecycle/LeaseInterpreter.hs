@@ -1,3 +1,4 @@
+{-# LANGUAGE DataKinds #-}
 {-# LANGUAGE OverloadedStrings #-}
 {-# LANGUAGE RankNTypes #-}
 
@@ -25,6 +26,7 @@ import Prodbox.Lifecycle.CheckpointAuthority
   , ModelBCasResult (..)
   , ModelBObjectCoordinate
   , ModelBObservation (..)
+  , StoreLifetime (ClusterRetained)
   )
 import Prodbox.Lifecycle.Lease
   ( AuthorityTime
@@ -101,7 +103,7 @@ leaseAcquisitionRecoveredPredecessor =
   fmap leaseRecoveryGrant . leaseAcquisitionRecoveryPredecessor
 
 data LeaseInterpreter m inventory = LeaseInterpreter
-  { leaseInterpreterModelB :: !(ModelBCasAdapter m LeaseProjection)
+  { leaseInterpreterModelB :: !(ModelBCasAdapter 'ClusterRetained m LeaseProjection)
   , leaseInterpreterAuthorityNow :: !(m (Either Text AuthorityTime))
   , leaseInterpreterWaitUntil :: !(AuthorityTime -> m (Either Text ()))
   , leaseInterpreterRecoverQuiescence
@@ -222,7 +224,7 @@ runLeaseWorkWith
   :: (Monad m)
   => LeaseInterpreter m inventory
   -> LeasePolicy
-  -> ModelBObjectCoordinate
+  -> ModelBObjectCoordinate 'ClusterRetained
   -> LeaseWork
   -> LeaseGrant
   -> (LeaseUsePermit -> m (Either Text result))
@@ -276,7 +278,7 @@ runLeaseWorkWith interpreter policy coordinate work grant action = do
 fencedCommitPermitWith
   :: (Monad m)
   => LeaseInterpreter m inventory
-  -> ModelBObjectCoordinate
+  -> ModelBObjectCoordinate 'ClusterRetained
   -> LeaseGrant
   -> m (Either LeaseExecutionError FencedCommitPermit)
 fencedCommitPermitWith interpreter coordinate grant = do
@@ -293,7 +295,7 @@ releaseLeaseWith
   :: (Monad m)
   => LeaseInterpreter m inventory
   -> LeasePolicy
-  -> ModelBObjectCoordinate
+  -> ModelBObjectCoordinate 'ClusterRetained
   -> LeaseGrant
   -> m (Either LeaseExecutionError ())
 releaseLeaseWith interpreter policy coordinate grant = do

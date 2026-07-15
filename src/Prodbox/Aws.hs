@@ -32,6 +32,7 @@ module Prodbox.Aws
   , buildIamPolicyJson
   , checkPulumiResidueBeforeTeardown
   , harnessPostflightResiduePolicy
+  , residuePolicyBypassesLongLivedProtection
   , longLivedResourceNames
   , operationalAwsConfigResidueFromKey
   , operationalBootstrapDnsRecordExists
@@ -448,17 +449,36 @@ partitionResidueByLifecycle = partition (\(name, _) -> name `elem` perRunStackNa
 -- single source of truth so the postflight's policy choice is testable
 -- without exercising IO.
 --
--- It is 'BypassAllResidueForHarnessRefresh' (not the Sprint 7.7
--- 'BypassPerRunResidueOnly'): post-Sprint-4.10 the long-lived @aws-ses@
--- stack is admin-credentialed (@aws_admin_for_test_simulation.*@ + the
--- long-lived S3 state backend), so clearing operational @aws.*@ cannot
--- strand it from its destroy surface. The postflight therefore bypasses
--- both per-run AND long-lived residue and clears @aws.*@ unconditionally,
--- matching the preflight ('runAwsIamHarnessSetup', Sprint 7.5.c.v.c).
--- This supersedes the Sprint 7.7 postflight refusal and the Sprint
--- 7.5.c.v.c decision to keep the postflight on 'BypassPerRunResidueOnly'.
+-- Sprint 7.34: it is 'BypassPerRunResidueForHarnessRefresh' (narrowed from the
+-- Sprint 7.9 'BypassAllResidueForHarnessRefresh'). The Sprint 7.9 stranding fix
+-- is retained — clearing operational @aws.*@ still cannot strand @aws-ses@
+-- (which is admin-credentialed post-Sprint-4.10) and proceeds unconditionally
+-- (per-run residue is destroyed separately by 'awsPostflightDestroyActions').
+-- But the all-residue bypass conflated destroyability with should-destroy: the
+-- @LCPC-2026-07-11@ forensics show the all-residue scope structurally bypasses
+-- the long-lived protection that the lifecycle preconditions otherwise enforce.
+-- The narrowed per-run scope restores that protection
+-- ('residuePolicyBypassesLongLivedProtection' is 'False'), so the postflight is
+-- structurally unable to authorize destroying the retained @aws-ses@ /
+-- @public-edge-tls@ stacks while still clearing @aws.*@ + per-run residue.
 harnessPostflightResiduePolicy :: PulumiResiduePolicy
-harnessPostflightResiduePolicy = BypassAllResidueForHarnessRefresh
+harnessPostflightResiduePolicy = BypassPerRunResidueForHarnessRefresh
+
+-- | Sprint 7.34: whether a residue policy bypasses the long-lived
+-- cross-substrate protection — i.e. whether it authorizes proceeding without
+-- refusing/protecting the retained @aws-ses@ and @public-edge-tls@ stacks. Only
+-- the superseded 'BypassAllResidueForHarnessRefresh' does; every other policy
+-- (including the narrowed 'BypassPerRunResidueForHarnessRefresh' now used by the
+-- postflight) keeps the long-lived protection intact. Pure SSoT so the
+-- structural narrowing is unit-testable without IO.
+residuePolicyBypassesLongLivedProtection :: PulumiResiduePolicy -> Bool
+residuePolicyBypassesLongLivedProtection policy = case policy of
+  BypassAllResidueForHarnessRefresh -> True
+  RefuseOnAnyResidue -> False
+  DestroyPulumiResidueFirst -> False
+  AcceptOrphanResidue -> False
+  BypassPerRunResidueOnly -> False
+  BypassPerRunResidueForHarnessRefresh -> False
 
 -- | Sprint 7.7 — canonical destroy order for
 -- 'DestroyPulumiResidueFirst'. Mirrors 'awsPostflightDestroyActions':
@@ -1417,24 +1437,18 @@ runAwsIamHarnessTeardown repoRoot = do
       repoRoot
       AwsTeardownInput
         { awsTeardownAdminCredentials = credentials
-        , -- Sprint 7.9: BypassAllResidueForHarnessRefresh (was
-          -- BypassPerRunResidueOnly from Sprint 7.7). Post-Sprint-4.10,
-          -- the long-lived aws-ses stack is admin-managed: its resources
-          -- (ensureAwsSesStackResources / destroyAwsSesStackStatus)
-          -- authenticate via pulumiSesAdminBaseEnv / loadAdminAwsCredentials
-          -- (aws_admin_for_test_simulation.*) against the long-lived S3
-          -- state backend, never operational aws.*. So clearing operational
-          -- aws.* here can no longer strand aws-ses from its destroy
-          -- surface, and the old long-lived refusal (correct pre-4.10, when
-          -- aws-ses was operationally credentialed) is now stale. Per-run
-          -- stacks are destroyed separately by awsPostflightDestroyActions
-          -- before this teardown runs. Therefore the postflight bypasses
-          -- ALL residue and clears aws.* unconditionally, matching the
-          -- preflight (Sprint 7.5.c.v.c). This supersedes the Sprint 7.7
-          -- postflight refusal and the Sprint 7.5.c.v.c decision to keep
-          -- the postflight on BypassPerRunResidueOnly. The policy is named
-          -- in 'harnessPostflightResiduePolicy' as a pure SSoT so the
-          -- choice is unit-testable without IO.
+        , -- Sprint 7.34: BypassPerRunResidueForHarnessRefresh (narrowed from
+          -- Sprint 7.9's BypassAllResidueForHarnessRefresh). Clearing
+          -- operational aws.* still cannot strand aws-ses (admin-credentialed
+          -- against the long-lived S3 backend post-Sprint-4.10) and proceeds
+          -- unconditionally; per-run stacks are destroyed separately by
+          -- awsPostflightDestroyActions (which retains aws-ses). The 7.9 fix is
+          -- retained, but the all-residue scope structurally bypassed the
+          -- long-lived protection; the per-run scope restores it, so the
+          -- postflight is structurally unable to authorize destroying aws-ses /
+          -- public-edge-tls. The choice is the pure
+          -- 'harnessPostflightResiduePolicy' SSoT so it is unit-testable
+          -- without IO.
           awsTeardownResiduePolicy = harnessPostflightResiduePolicy
         }
   result <- case teardownResult of
@@ -1824,6 +1838,16 @@ applyAwsTeardown repoRoot input = do
   case awsTeardownResiduePolicy input of
     AcceptOrphanResidue -> runTeardown
     BypassAllResidueForHarnessRefresh -> runTeardown
+    -- Sprint 7.34: the narrowed postflight policy clears operational @aws.*@
+    -- unconditionally (per-run residue is destroyed separately by
+    -- 'awsPostflightDestroyActions', so it never strands @aws.*@ — the Sprint
+    -- 7.9 stranding fix is retained). It is behaviourally identical to
+    -- 'BypassAllResidueForHarnessRefresh' for the @aws.*@ clear, but it is
+    -- PER-RUN-SCOPED: it does not bypass the long-lived protection
+    -- ('residuePolicyBypassesLongLivedProtection' is 'False'), so the postflight
+    -- is structurally unable to authorize destroying the retained @aws-ses@ /
+    -- @public-edge-tls@ stacks.
+    BypassPerRunResidueForHarnessRefresh -> runTeardown
     RefuseOnAnyResidue
       | null residue -> runTeardown
       | otherwise -> pure (Left (renderPulumiResidueRefusal residue))
@@ -4209,6 +4233,11 @@ writeProjectConfigParameters repoRoot config = do
 adminAwsEnvironment :: Credentials -> IO [(String, String)]
 adminAwsEnvironment = awsCliSubprocessEnvironment
 
+-- LEGACY-ESCAPE[shared-operational-aws-credential]: the single shared
+-- operational aws.* identity minted by the suite-level IAM harness is projected
+-- into every AWS subprocess environment through this seam. Registered in
+-- Prodbox.Legacy.EscapeRegistry; replaced by per-role IAM/Vault generations
+-- (Sprints 3.26/4.49/8.11).
 operationalAwsEnvironment :: Credentials -> IO [(String, String)]
 operationalAwsEnvironment = adminAwsEnvironment
 

@@ -103,6 +103,24 @@ queue length scans, operational state rendering, and object-store or Vault calls
 A component may be live but not ready to admit work. Removing a saturated or degraded replica from
 a capability Service is correct; blocking an unbounded number of callers behind it is not.
 
+Sprint `2.34` makes the gateway daemon's readiness one pure latched projection,
+`Prodbox.Gateway.Readiness.computeReadiness`, over three orthogonal MONOTONE boundary facts: the
+drain phase, an object-store proof latch, and a workers-started latch. `/readyz` is a constant-time
+single-transaction snapshot of those three cached `TVar`s folded by the pure projection — no backend
+I/O. The former unconditional serve-start `Ready` write is deleted; the proof latch is set exactly
+once, in the same STM transaction that publishes the continuity runtime, on the continuity worker's
+first validated `StartupRecovery` install (a real conditional-write/read-back on the first-admission
+path or an authoritative validated GET-and-restore on the previously-admitted path — never the
+absent-object GET §2.3 forbids). Because every input is monotone, a later transient object-store
+degradation cannot un-ready the Pod: the observable `/readyz` sequence is
+`Starting* → Ready* → Draining*`. The production gate is unconditional/fail-closed; the sanctioned
+`PRODBOX_TEST_OBJECT_STORE_PROOF_LATCH` test-only seed lets the no-Vault/no-MinIO harnesses reach
+ready without a live round trip (the genuine gate is exercised by the live AWS/chaos validations).
+The lifecycle-restore gate additionally gains a `/readyz` precheck before its end-to-end
+object-store round trip, so lifecycle-ready implies kubelet-ready by construction. This closes the
+`F-READY` mechanism of counterexample `LCPC-2026-07-11` and absorbs the exact-readiness-evidence
+deliverable rescoped from Sprint `1.61`.
+
 ### 2.2 Admission
 
 Admission uses the exhaustive `AdmissionObservation kind` owned by

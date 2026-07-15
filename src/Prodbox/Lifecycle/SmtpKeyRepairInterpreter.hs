@@ -1,3 +1,4 @@
+{-# LANGUAGE DataKinds #-}
 {-# LANGUAGE TupleSections #-}
 
 -- | Effectful, exception-safe interpreter around the pure SMTP IAM-key repair
@@ -31,6 +32,7 @@ import Prodbox.Lifecycle.CheckpointAuthority
   , ModelBObjectCoordinate
   , ModelBObjectVersion
   , ModelBObservation (..)
+  , StoreLifetime (ClusterRetained)
   )
 import Prodbox.Lifecycle.Lease
   ( AuthorityDuration
@@ -79,7 +81,7 @@ import Prodbox.Lifecycle.TargetCommitIntent
   )
 
 data SmtpKeyRepairInterpreter m = SmtpKeyRepairInterpreter
-  { smtpKeyRepairModelB :: !(ModelBCasAdapter m SmtpCommittedProjection)
+  { smtpKeyRepairModelB :: !(ModelBCasAdapter 'ClusterRetained m SmtpCommittedProjection)
   , smtpKeyRepairAuthorityNow :: !(m (Either Text AuthorityTime))
   , smtpKeyRepairWaitUntil :: !(AuthorityTime -> m (Either Text ()))
   , smtpKeyRepairObserveInventory :: !(m SmtpKeyInventoryObservation)
@@ -93,8 +95,8 @@ data SmtpKeyRepairInterpreter m = SmtpKeyRepairInterpreter
   }
 
 data SmtpKeyRepairRequest = SmtpKeyRepairRequest
-  { smtpKeyRepairProjectionCoordinate :: !ModelBObjectCoordinate
-  , smtpKeyRepairLeaseCoordinate :: !ModelBObjectCoordinate
+  { smtpKeyRepairProjectionCoordinate :: !(ModelBObjectCoordinate 'ClusterRetained)
+  , smtpKeyRepairLeaseCoordinate :: !(ModelBObjectCoordinate 'ClusterRetained)
   , smtpKeyRepairInventoryBound :: !SmtpKeyInventoryBound
   , smtpKeyRepairLeasePolicy :: !LeasePolicy
   }
@@ -510,11 +512,11 @@ commitCreatedKey interpreter request loaded permit createAction acquired =
                 )
 
 committedProjectionCasRequest
-  :: ModelBObjectCoordinate
+  :: ModelBObjectCoordinate 'ClusterRetained
   -> ModelBLeaseGuard
   -> LoadedSmtpProjection
   -> SmtpCommittedProjection
-  -> ModelBCasRequest SmtpCommittedProjection
+  -> ModelBCasRequest 'ClusterRetained SmtpCommittedProjection
 committedProjectionCasRequest coordinate guard loaded committed = case loaded of
   LoadedSmtpProjectionMissing ->
     ModelBInitializeGuarded coordinate guard committed

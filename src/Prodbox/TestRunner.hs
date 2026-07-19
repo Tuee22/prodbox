@@ -46,7 +46,7 @@ import Control.Monad (foldM, unless)
 import Data.Aeson (encode, object, (.=))
 import Data.ByteString.Lazy.Char8 qualified as BL8
 import Data.Char qualified as Char
-import Data.List (dropWhileEnd, isInfixOf, isPrefixOf)
+import Data.List (dropWhileEnd, find, isInfixOf, isPrefixOf)
 import Data.Text qualified as Text
 import Data.Time.Clock (getCurrentTime)
 import Data.Time.Format (defaultTimeLocale, formatTime)
@@ -132,6 +132,16 @@ import Prodbox.Lifecycle.Preconditions
   , renderPreconditionFailures
   )
 import Prodbox.Lifecycle.ResourceClass qualified as ResourceClass
+import Prodbox.Lifecycle.RestoreGraph
+  ( RestoreNodeResult (..)
+  , RestoreOutcome (..)
+  , RestoreReport (..)
+  , buildRestoreGraphForPlan
+  , restoreCycleStepNodeId
+  , restoreReportBlocked
+  , restoreReportFailed
+  , runRestoreGraphWith
+  )
 import Prodbox.Prerequisite
   ( prerequisiteRegistry
   )
@@ -1237,16 +1247,90 @@ restoreCycleActions
   -> Maybe GatewayRuntimeStabilityMonitor
   -> [IO ExitCode]
 restoreCycleActions repoRoot environment restorePlan observedSubstrate maybeGatewayStability maybeGatewayMonitor =
-  map
-    ( restoreCycleStepActionWithGatewayStability
-        repoRoot
-        environment
-        (restoreCycleSubstrate restorePlan)
-        observedSubstrate
-        maybeGatewayStability
-        maybeGatewayMonitor
+  [ runDerivedRestoreGraph
+      repoRoot
+      environment
+      restorePlan
+      observedSubstrate
+      maybeGatewayStability
+      maybeGatewayMonitor
+  ]
+
+-- | Sprint 5.20: drive the restore cycle from the derived 'RestoreGraph' total
+-- executor instead of a fail-fast fold over the flat step list. Every node whose
+-- dependencies are satisfiable runs; a node whose @RequiresSuccess@ dependency
+-- failed is recorded as blocked rather than silently discarding every later step.
+-- The @F-RESTORE@ fix is structural: each app-chart restoration @RequiresSuccess@
+-- only the gateway restoration (never the retained-SES node), so a retained-SES
+-- failure can no longer take an independent chart down with it. The whole cycle
+-- is one action so that the surrounding suite fold still fails fast AFTER a failed
+-- restore, while the restore INTERNALLY runs to completion and reports the
+-- aggregate. The per-node dispatch reuses 'restoreCycleStepActionWithGatewayStability'
+-- verbatim, preserving the runtime-stability recorder bracketing around the
+-- gateway delete/reconcile nodes.
+runDerivedRestoreGraph
+  :: FilePath
+  -> [(String, String)]
+  -> RestoreCyclePlan
+  -> Substrate
+  -> Maybe GatewayRuntimeStabilityRecorder
+  -> Maybe GatewayRuntimeStabilityMonitor
+  -> IO ExitCode
+runDerivedRestoreGraph repoRoot environment restorePlan observedSubstrate maybeGatewayStability maybeGatewayMonitor = do
+  report <- runRestoreGraphWith runNode graph
+  projectRestoreReport report
+ where
+  graph = buildRestoreGraphForPlan restorePlan
+  runNode nodeId =
+    case find ((== nodeId) . restoreCycleStepNodeId) (restoreCycleSteps restorePlan) of
+      -- Coverage is a proven bijection (RestoreGraphSuite: the plan's step
+      -- node-ids equal the graph's node ids), so a miss is a construction bug,
+      -- surfaced as an explicit failure rather than a silently skipped node.
+      Nothing -> pure (Left (ExitFailure 3))
+      Just restoreStep -> do
+        code <-
+          restoreCycleStepActionWithGatewayStability
+            repoRoot
+            environment
+            (restoreCycleSubstrate restorePlan)
+            observedSubstrate
+            maybeGatewayStability
+            maybeGatewayMonitor
+            restoreStep
+        pure $ case code of
+          ExitSuccess -> Right ()
+          failure@(ExitFailure _) -> Left failure
+
+-- | Project the aggregate 'RestoreReport' into one suite exit code. On any
+-- failed or blocked node, the full per-node outcome table is written so the
+-- aggregate failure (primary failure plus every independent node that still ran)
+-- is visible, and the first node failure's exit code is returned.
+projectRestoreReport :: RestoreReport ExitCode -> IO ExitCode
+projectRestoreReport report
+  | null (restoreReportFailed report) && null (restoreReportBlocked report) =
+      pure ExitSuccess
+  | otherwise = do
+      writeOutputLine (renderRestoreReportSummary report)
+      pure (aggregateRestoreExit report)
+
+renderRestoreReportSummary :: RestoreReport ExitCode -> String
+renderRestoreReportSummary report =
+  unlines
+    ( "Restore graph aggregate report (total executor; no step silently discarded):"
+        : [ "  " ++ show (restoreResultNode result) ++ " -> " ++ describe (restoreResultOutcome result)
+          | result <- restoreReportResults report
+          ]
     )
-    (restoreCycleSteps restorePlan)
+ where
+  describe NodeSucceeded = "succeeded"
+  describe (NodeFailed code) = "FAILED (" ++ show code ++ ")"
+  describe (NodeBlocked blockers) = "BLOCKED by " ++ show blockers
+
+aggregateRestoreExit :: RestoreReport ExitCode -> ExitCode
+aggregateRestoreExit report =
+  case [code | result <- restoreReportResults report, NodeFailed code <- [restoreResultOutcome result]] of
+    (code : _) -> code
+    [] -> if null (restoreReportBlocked report) then ExitSuccess else ExitFailure 1
 
 restoreCycleStepActionWithGatewayStability
   :: FilePath

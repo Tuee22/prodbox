@@ -184,6 +184,7 @@ import Prodbox.Settings
   , DeploymentSection (..)
   , Route53Section (..)
   , ValidatedSettings (..)
+  , certDnsNamesForServedHost
   , validateAndLoadSettings
   )
 import Prodbox.Subprocess
@@ -2181,6 +2182,15 @@ valuesForKeycloak namespace rootChart settings _chartSecrets sharedHostFqdn = do
   -- namespace-scoped KV paths used by the transitive vscode deployment.
   let keycloakVaultRole =
         if namespace == "keycloak" then "keycloak" else namespace ++ "-keycloak"
+  -- Sprint 2.35: the public-edge Certificate dnsNames are a projection of the one
+  -- configured certificate scope set, keyed on this substrate's served host. Empty
+  -- @cert_scopes@ yields exactly @[sharedHostFqdn]@, so the rendered dnsNames are
+  -- behavior-identical to the prior single-host list until an operator widens scope.
+  certDnsNames <-
+    certDnsNamesForServedHost
+      (domain (validatedConfig settings))
+      (aws_substrate (validatedConfig settings))
+      (Text.pack sharedHostFqdn)
   pure
     ( object
         [ "replicaCount" .= (1 :: Int)
@@ -2242,6 +2252,7 @@ valuesForKeycloak namespace rootChart settings _chartSecrets sharedHostFqdn = do
               , "tlsSecretName" .= publicEdgeTlsSecretName
               , "clusterIssuer" .= publicEdgeClusterIssuerName
               , "host" .= sharedHostFqdn
+              , "certDnsNames" .= certDnsNames
               , "authPathPrefix" .= authPathPrefix
               , "vscodePathPrefix" .= vscodePathPrefix
               , "apiPathPrefix" .= apiPathPrefix

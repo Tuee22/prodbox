@@ -23,6 +23,12 @@ gateway:
   # the single ZeroSSL ClusterIssuer (Prodbox.PublicEdge.publicEdgeClusterIssuerName).
   clusterIssuer: zerossl-dns01
   host: test.resolvefintech.com
+  # Deploy-time default; set by Prodbox.Lib.ChartPlatform.valuesForKeycloak to the
+  # certificate dnsNames projected from the configured CertScopeSet
+  # (Prodbox.Settings.certDnsNamesForServedHost / Prodbox.Tls.CertScope). Empty
+  # cert_scopes yields exactly the served host, so this default matches `host`.
+  certDnsNames:
+    - test.resolvefintech.com
   authPathPrefix: /auth
   vscodePathPrefix: /vscode
   apiPathPrefix: /api

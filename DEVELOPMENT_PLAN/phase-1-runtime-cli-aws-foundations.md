@@ -3931,14 +3931,24 @@ must fit inside the authored container limit.
 - Sprint `2.31` consumes the validated runtime-memory inputs; Sprint `5.16` observes the resulting
   runtime without treating a static plan as proof of external behavior.
 
-## Sprint 1.61: Operation-Indexed Capabilities and Exact Readiness Evidence [🔄 Active]
+## Sprint 1.61: Operation-Indexed Capabilities and Exact Readiness Evidence [✅ Done]
 
-**Status**: Active — the self-contained `--show-secrets` removal (2026-07-14) and the **additive
-operation-indexed capability-algebra foundation** (the pure module set + its opacity/evidence
-invariants, 2026-07-14) both landed and are fully validated. What remains is the graph/interpreter
-seam migration and consumer cutover — the cluster-touching part that lowers the generic
-`ComponentGraph`/`Effect` seam over the algebra and routes live consumers through single handles.
-**Deployment qualification**: pending
+**Status**: Done — the `--show-secrets` removal (2026-07-14), the operation-indexed
+capability-algebra foundation + the capability-lowered component graph (2026-07-14/15), the
+`runCapability` boundary interpreter (2026-07-16), and the **reconcile-driver cutover**
+(2026-07-18) all landed and are validated. The single capability handle now DRIVES the live
+reconcile-barrier observation through `runCapability`, proven by a clean `prodbox cluster reconcile`
+(exit 0, no readiness-barrier failure across every component including the two round-trip ops). A
+small, explicitly-scoped set of secondary consumers (the chart operator-gate, the two-observation
+`TestRestore` liveness precondition, the orthogonal `EffectInterpreter.runValidation` prerequisite
+universe) and the eventual `ReadinessObservation.hs` deletion + `CapabilityRequirementSpec`→Dhall-wire
+migration are deferred follow-ups that do not affect the core "one handle drives the observation"
+property.
+**Deployment qualification**: ✅ **live-validated 2026-07-18** — `prodbox cluster reconcile` on the
+home RKE2 cluster drove every component's readiness barrier through the new
+`requireNativeComponentReadiness` → `observeReadinessThroughCapability` → `runCapability` path and
+completed (exit 0) with no barrier failure; the AWS driver shares the identical routing (AWS live
+proof via `test all --substrate aws` optional).
 **Implementation**: ✅ **`config show --show-secrets` removed** — the `ConfigShow Bool` command is
 now flagless `ConfigShow`, `renderSensitive`/`renderSettingsDisplay` always mask (no unmasked reveal
 mode), and the parser/spec/goldens/generated `command-surface-matrix` no longer carry the flag
@@ -3968,12 +3978,53 @@ algebra landed** as seven pure modules under `src/Prodbox/ControlPlane/` (umbrel
   - `Program.hs` — the closed `CapabilityProgram (k :: CapabilityKind) result` GADT (Observe /
     InternalCas / ExternalCommit) requiring the matching permit/intent evidence at each mutating arm.
 
-  🔄 **Remaining (the graph/interpreter migration)**: lower the generic graph/interpreter seam
-  (`ComponentGraph.hs`, `ReadinessObservation.hs`, `Effect.hs`, `EffectInterpreter.hs`) over the
-  capability providers, and migrate live consumers to receive one handle rather than separate probe
-  and execution coordinates. This is the larger, cluster-touching cutover (comparable to the
-  reverted Sprint 4.51 cascade) and is scheduled as a dedicated follow-up pass; the foundation above
-  is additive and changes no existing behaviour.
+  ✅ **Increment B MVP landed (2026-07-15) — the capability-lowered graph, additive & pre-cluster.**
+  New pure modules `src/Prodbox/ControlPlane/SCapability.hs` (a 39-kind singleton GADT +
+  `withKnownCapability` recovering the `KnownCapability` dictionary across an existential — the gap
+  Increment A intentionally left) and `src/Prodbox/ControlPlane/CapabilityRequirement.hs`
+  (`CapabilityRequirement kind` / `SomeCapabilityRequirement` / `CapabilityProvision` + the flat
+  `CapabilityRequirementSpec` and `resolveRequirement` that validate every coordinate/generation
+  before any effect). `src/Prodbox/Config/ComponentGraph.hs` is **lowered over capabilities without
+  touching the Tier-0 wire type**: a closed-`ComponentId` requirement/provision side table, a
+  `ComponentDag` extended with `componentDagRequirements` (the single handle per component),
+  `validateComponentGraph` now additionally rejecting missing / ambiguous-exclusive / scope-mismatch
+  / weaker-capability providers via a provider index (running in parallel with the existing nominal
+  checks so behaviour is unchanged), and `edgeKindOf` deriving the backend-write vs ordering edge from
+  `requiresRoundTripEvidence` (no second authored source). The F-class ("a GET cannot satisfy a
+  write/CAS dependency") is now closed structurally at three layers — graph validation (author-time),
+  `classifyEvidence` (observe-time, Increment A), and the `CapabilityProgram` mutation-arm typing
+  (compile-time, Increment A).
+
+  ✅ **runCapability interpreter landed (additive, 2026-07-16)**: `src/Prodbox/ControlPlane/Deadline.hs`
+  (a fully-pure process-local MONOTONIC absolute deadline — `MonotonicInstant`/`Deadline`/
+  `RemainingDuration`/`RetryAfter`/`DeadlineObservation`, all-`Natural` micros, deliberately disjoint
+  from durable `AuthorityTime`) and `src/Prodbox/ControlPlane/Interpreter.hs` (`runCapability ::
+  CapabilityClient -> CapabilityRef k -> Deadline -> CapabilityProgram k result -> IO (Either
+  CapabilityFailure result)` + a boundary `CapabilityClient` that holds the opaque current generation
+  ONCE and three plain-data-in/out service lanes). It runs a program against the SAME reference that
+  observed and admitted it — the Observe arm stamps the coordinate via `observationFromRef ref`, the
+  mutation arms refuse a permit/intent whose digest differs from the reference's (`FailureRefused`),
+  the deadline is checked fail-closed before any lane touch, and a lost-response mutation maps to
+  `FailureAmbiguous` (resolve by read-back), never a retryable "did-not-run". Validation #2 landed as
+  `ControlPlaneCapability.hs` T9 (one `CapabilityRef` threads observe→admit→execute, every digest ==
+  its `refCoordinateDigest`; the negative case proves the cross-coordinate guard fires; the deadline
+  case proves zero lane side effects). ✅ **driver cutover landed + live-validated (2026-07-18)**: the
+  new `src/Prodbox/Lifecycle/CapabilityReadinessBarrier.hs` (`newReadinessObservationClient` +
+  `observeReadinessThroughCapability`) drives a component's readiness barrier through the single
+  capability handle and `runCapability` — it REUSES the existing `observeComponentReadiness` probe
+  I/O verbatim and only changes the ROUTING (ref → `runCapability` → `classifyObservation`), so it is
+  behaviour-preserving for every reachable reading (a byte-identical-`PollOutcome` proof table). The
+  two reconcile-driver barriers (`requireNativeComponentReadiness` in `CLI/Rke2.hs`,
+  `requireAwsComponentReadiness` in `Lib/AwsSubstratePlatform.hs`) now resolve
+  `componentCapabilityRequirement component dag` → a `CapabilityRef` → `runCapability (Observe …)` →
+  `classifyObservation`, within the same bounded `componentReadinessRetryPolicy`; their signatures and
+  `AnchoredReconcile.runAnchoredStepOrder` are untouched. Turned out to be a routing change, NOT the
+  reverted-4.51-scale rewrite that was feared. **Scoped-out (deferred, not required for the handle to
+  drive the barrier):** the chart operator-gate + two-observation `TestRestore` liveness fold-in, the
+  orthogonal `EffectInterpreter.runValidation` migration, the `ReadinessObservation.hs` deletion (it
+  is a LIVE dependency of the new lane — do not retire it), and the `CapabilityRequirementSpec`→Dhall
+  migration + a real (Vault-session) `newCapabilityClient` (the Observe path reads none of the mutation
+  lanes / generation-fetch, so the readiness-only client is an honest stub).
 **Independent Validation**: ✅ the `--show-secrets` removal — the parser rejects the removed flag,
 `config show` routes to `ConfigShow`, and `renderSettingsDisplay` masks unconditionally
 (`test/unit/Main.hs`, `test/unit/Parser.hs`). ✅ the capability-algebra constructor/opacity/evidence
@@ -3982,8 +4033,21 @@ matches across refs; `classifyEvidence` refuses a bare GET for a round-trip-requ
 producer fails closed; the writer permit and committed-intent chain reject fence/coordinate/deadline/
 generation/signature mismatches. Full pre-cluster gate green on 2026-07-14: unit **1640/1640**,
 `prodbox dev check` exit 0 (`-Werror`), `prodbox test integration cli` PASS, `prodbox test
-integration env` **49/49**. 🔄 the exhaustive graph-lowering tables (missing/ambiguous providers,
-cycles, weaker-capability substitution) land with the graph/interpreter migration.
+integration env` **49/49**. ✅ **Increment B MVP validated 2026-07-15**: `ControlPlaneCapability.hs`
+T8 (39-kind `SCapability` round-trip + tier agreement + `resolveRequirement` rejections + provider
+matching) and the `Main.hs` "capability lowering" block (single handle per default-graph node, the
+`edgeKindOf` derivation, and one rejection test each for missing / ambiguous / scope-mismatch /
+weaker-capability providers — Validation #3); `prodbox dev check` exit 0, unit PASS. ✅ **runCapability
+interpreter validated 2026-07-16**: `ControlPlaneCapability.hs` T9 (Validation #2 — one reference
+threads observe→admit→execute with every digest bound to it; the cross-coordinate `FailureRefused`
+guard; the fail-closed expired-deadline path touches no lane) + T10 (all six `CapabilityFailure` arms,
+incl. the load-bearing ambiguous-vs-did-not-run mutation mapping); a 3-agent adversarial review found
+no defects. ✅ **driver cutover validated 2026-07-18**: `CapabilityReadinessBarrierSuite.hs` (a fake
+probe proves the routing opens on availability/round-trip ready readings, stays closed fail-closed on
+pending/unreachable, and pins the exact round-trip component set); `prodbox dev check` exit 0, unit
+PASS; and the **live** `prodbox cluster reconcile` (exit 0, every readiness barrier driven through
+`runCapability`, no failure). `prodbox test integration cli`/`env` re-run pending (the 2 known
+cluster-dependent flakes now pass with the cluster up).
 **Docs to update**: `documents/engineering/lifecycle_control_plane_architecture.md`,
 `documents/engineering/pure_fp_standards.md`,
 `documents/engineering/bootstrap_readiness_doctrine.md`,
@@ -4052,11 +4116,24 @@ and admission evidence.
 - ✅ The additive indexed foundation (`src/Prodbox/ControlPlane/`: `CapabilityKind`, `Coordinate`,
   `CapabilityRef`, `Observation`, `Permit`, `Program`, umbrella) landed 2026-07-14 with its
   constructor/opacity/evidence tables.
-- 🔄 Migrate the generic graph/interpreter seam (`ComponentGraph.hs`, `ReadinessObservation.hs`,
-  `Effect.hs`, `EffectInterpreter.hs`) over the capability providers, and cut live consumers to
-  single handles — the cluster-touching follow-up pass.
-- Sprint `1.62` consumes the handle algebra for temporal admission; Sprints `1.64` and `1.66`
-  consume it for the cached Vault session and the native object-store client.
+- ✅ Increment B MVP (2026-07-15): `ComponentGraph.hs` lowered over capabilities additively
+  (`SCapability`, `CapabilityRequirement`, the closed-`ComponentId` requirement/provision table,
+  `componentDagRequirements`, provider-uniqueness/scope/weaker rejections, `edgeKindOf`) — no wire-type
+  change, fully pre-cluster validated.
+- ✅ runCapability interpreter (2026-07-16): additive `ControlPlane/Deadline.hs` (pure monotonic
+  deadline) + `ControlPlane/Interpreter.hs` (`runCapability` + `CapabilityClient`, same-reference
+  guard, fail-closed deadline, ambiguous-vs-did-not-run mutation mapping) + the Validation-#2 T9 test.
+  Fully pre-cluster validated.
+- ✅ Driver cutover (2026-07-18, marks Sprint 1.61 Done): `CapabilityReadinessBarrier.hs` + the two
+  reconcile-driver barriers routed through `runCapability`, behaviour-preserving, live-validated by
+  `cluster reconcile`.
+- 🔄 Deferred follow-ups (do NOT block 1.61 Done or 1.62): fold the chart operator-gate + two-observation
+  `TestRestore` liveness precondition onto the handle; migrate `EffectInterpreter.runValidation`
+  (orthogonal prerequisite universe); build the real Vault-session `newCapabilityClient`; move
+  `CapabilityRequirementSpec` into the Dhall wire; only THEN retire `ReadinessObservation.hs` (it is a
+  live dependency of the barrier lane until every consumer is migrated).
+- Sprint `1.62` (now unblocked) consumes the handle algebra for temporal admission; Sprints `1.64` and
+  `1.66` consume it for the cached Vault session and the native object-store client.
 
 ## Documentation Requirements
 
@@ -4078,17 +4155,43 @@ and admission evidence.
 - Link the new capability modules to their Phase-2, Phase-4, and Phase-5 consumers without
   assigning those later implementations to Phase 1.
 
-## Sprint 1.62: Absolute Deadlines, Service-Capacity Algebra, and Native Sessions [⏸️ Blocked]
+## Sprint 1.62: Absolute Deadlines, Service-Capacity Algebra, and Native Sessions [✅ Done]
 
-**Status**: Blocked
-**Deployment qualification**: pending
-**Implementation**: planned `src/Prodbox/ControlPlane/Capacity.hs`,
-`src/Prodbox/ControlPlane/Deadline.hs`, pinned native in-memory AWS IAM/STS/Route53/
-ServiceQuotas clients, config/schema projections, and focused tests
-**Blocked by**: Sprint `1.61`
+**Status**: Done — the pure temporal-capacity core and the native AWS service clients both landed
+and are validated pre-cluster (2026-07-18, UNCOMMITTED). Downstream consumption of these
+primitives (the gateway actor and Lifecycle Authority migrating off the `aws` CLI onto the native
+clients) is Phase 2 / Phase 4 work and is not assigned here.
+**Deployment qualification**: pending — every deliverable is pure/pre-cluster and proven with fake
+clocks, deterministic queue simulations, and fake AWS protocol servers; live SigV4 parity against
+real AWS is a Standard-O axis carried by the Phase 2/4 consumers (mirroring `ObjectStoreNative`'s
+live-MinIO-parity status).
+**Implementation** (landed): `src/Prodbox/ControlPlane/Deadline.hs` (extended with `WorkEstimate`,
+the `DeadlineAdmission` feasibility fold, `tightenDeadline`, and the opaque `DeadlineScope`
+tighten-only cancellation scope that makes deadline extension unrepresentable);
+`src/Prodbox/ControlPlane/AuthorityClock.hs` (serializable `AuthorityInstant` over
+`Lease.AuthorityTime`, a monotone durable high-water mark, a fail-closed
+`classifyAuthorityClock` refusing regression/skew/unobservability, and a stored `OperationDeadline`
+that survives restart without extension via `deriveAttemptDeadline`);
+`src/Prodbox/ControlPlane/Capacity.hs` (opaque `ServiceCapacityPlan` whose smart constructor
+rejects an over-committed lane — ρ ≥ 1 or ρ ≥ 1 − headroom — so memory containment alone is not a
+capacity proof, plus a bounded FIFO `AdmissionQueue` pure decide/evolve machine with structured
+saturation and deadline-unmeetable rejection and cooperative cancellation);
+`src/Prodbox/Aws/CredentialHandle.hs` (a validated, linear, phantom-origin-indexed in-memory
+credential handle that is unserializable, redacts every secret on `Show`, and has no exported
+base→session widening); and the four closed native interpreters
+`src/Prodbox/Aws/Native/{Xml,Wire,Sts,Iam,Route53,ServiceQuotas}.hs` over the in-tree SigV4 +
+`http-client` stack (the `ObjectStoreNative` pattern; **no `amazonka`, zero new dependencies**),
+each taking only the validated handle and an injected `NativeAwsSender` and never touching the
+`aws` CLI, profiles, temp files, or Pod credential env. Tests:
+`test/unit/ControlPlaneDeadline.hs`, `test/unit/ControlPlaneAuthorityClock.hs`,
+`test/unit/ControlPlaneCapacity.hs`, and `test/unit/AwsNativeClients.hs`.
+**Blocked by**: Sprint `1.61` (satisfied — `1.61` is Done).
 **Independent Validation**: fake clocks, deterministic queue simulations, and fake AWS protocol
 servers prove deadline, admission, and native-client behavior without a cluster, AWS, or a later
-phase.
+phase. Validated 2026-07-18: `prodbox dev check` exit 0 (`-Werror` + fourmolu + hlint), the full
+unit suite 1784/1784 (including 71 temporal-capacity and 29 native-client cases — the headline being
+that `iam:CreateAccessKey` can never falsely read as "created": a lost ACK or an unparsable
+one-time secret both become an ambiguous outcome), and `prodbox test integration cli`/`env` exit 0.
 **Docs to update**: `documents/engineering/lifecycle_control_plane_architecture.md`,
 `documents/engineering/resource_scaling_doctrine.md`,
 `documents/engineering/haskell_code_guide.md`, and
@@ -4136,9 +4239,19 @@ never invoke the `aws` CLI.
 
 ### Remaining Work
 
-- Blocked until Sprint `1.61` supplies the exact capability-handle foundation.
-- Phase 2 consumes these primitives in the gateway actor; Phase 4 consumes them in the Lifecycle
-  Authority.
+- Code-owned closure landed and validated pre-cluster (2026-07-18, UNCOMMITTED). What remains is
+  **downstream consumption**, owned by later phases (NOT this sprint):
+  - Phase 2 consumes the deadline/capacity primitives in the gateway actor; Phase 4 consumes them
+    in the Lifecycle Authority.
+  - Migrating the ~143 existing `aws`-CLI call sites onto the four native interpreters is a
+    per-phase adoption task (STS → `LeaseRuntime` assume-role/get-caller-identity; IAM →
+    `Aws.hs` user/access-key/policy sites; Route 53 → `Dns.hs` record-set/`wait` sites;
+    ServiceQuotas → `Aws.hs` `ensureServiceQuota`). 1.62 delivered the primitives + proved them
+    against fakes; it did not migrate the call sites.
+  - The Pulumi-confinement provider-lane↔admin-permit-lane non-convertibility is a separate future
+    index (a `Lane` phantom or a permit token threaded into `mk*Client`) added when the Pulumi env
+    sites migrate; the base↔session credential non-convertibility (the first index) landed here.
+  - Live SigV4 parity against real AWS (Standard-O) rides with the Phase 2/4 consumers.
 
 ## Documentation Requirements
 

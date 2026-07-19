@@ -12,6 +12,13 @@ library
         Prodbox.App
         Prodbox.Aws
         Prodbox.Aws.AdminCredentials
+        Prodbox.Aws.CredentialHandle
+        Prodbox.Aws.Native.Xml
+        Prodbox.Aws.Native.Wire
+        Prodbox.Aws.Native.Sts
+        Prodbox.Aws.Native.Iam
+        Prodbox.Aws.Native.Route53
+        Prodbox.Aws.Native.ServiceQuotas
         Prodbox.Aws.SigV4
         Prodbox.AwsEnvironment
         Prodbox.BuildSupport
@@ -19,6 +26,7 @@ library
         Prodbox.Capacity.MeasuredProfile
         Prodbox.Capacity.RuntimeMemory
         Prodbox.Capacity.Storage
+        Prodbox.Tls.CertScope
         Prodbox.CheckCode
         Prodbox.CLI.Charts
         Prodbox.CLI.Command
@@ -53,6 +61,12 @@ library
         Prodbox.ControlPlane.Observation
         Prodbox.ControlPlane.Permit
         Prodbox.ControlPlane.Program
+        Prodbox.ControlPlane.SCapability
+        Prodbox.ControlPlane.CapabilityRequirement
+        Prodbox.ControlPlane.Deadline
+        Prodbox.ControlPlane.AuthorityClock
+        Prodbox.ControlPlane.Capacity
+        Prodbox.ControlPlane.Interpreter
         Prodbox.Daemon.Events
         Prodbox.Crypto.Envelope
         Prodbox.Dns
@@ -70,6 +84,8 @@ library
         Prodbox.Gateway.ContinuityStore
         Prodbox.Gateway.Daemon
         Prodbox.Gateway.DnsAuthority
+        Prodbox.Gateway.Emitter.Kernel
+        Prodbox.Gateway.Emitter.Mailbox
         Prodbox.Gateway.Logging
         Prodbox.Gateway.ObjectStore
         Prodbox.Gateway.Orders
@@ -105,7 +121,9 @@ library
         Prodbox.Legacy.EscapeRegistry
         Prodbox.Lifecycle.EbsVolume
         Prodbox.Lifecycle.AnchoredReconcile
+        Prodbox.Lifecycle.CapabilityReadinessBarrier
         Prodbox.Lifecycle.StoreLifetime
+        Prodbox.Lifecycle.AuthorityObjectCore
         Prodbox.Lifecycle.CheckpointAuthority
         Prodbox.Lifecycle.CheckpointAuthorityStore
         Prodbox.Lifecycle.AuthorityConfig
@@ -118,6 +136,7 @@ library
         Prodbox.Lifecycle.LiveResidue
         Prodbox.Lifecycle.Preconditions
         Prodbox.Lifecycle.ReadinessObservation
+        Prodbox.Lifecycle.RestoreGraph
         Prodbox.Lifecycle.ResidueStatus
         Prodbox.Lifecycle.ResourceClass
         Prodbox.Lifecycle.ResourceRegistry
@@ -261,11 +280,18 @@ test-suite prodbox-unit
     main-is:          Main.hs
     hs-source-dirs:   test/unit test/support
     other-modules:
+        AwsNativeClients
         AwsSesLifecycle
         AwsSesLeaseRole
         AwsSesReadiness
         AwsSesSmtpKey
+        AuthorityLogicalObjectTaxonomy
+        CapabilityReadinessBarrierSuite
+        ControlPlaneAuthorityClock
         ControlPlaneCapability
+        ControlPlaneCapacity
+        ControlPlaneDeadline
+        CertScopeSuite
         DesiredPresentReconciliation
         EscapeRegistry
         FencedCheckpoint
@@ -273,15 +299,18 @@ test-suite prodbox-unit
         GatewayBounded
         GatewayChartStatics
         GatewayContinuity
+        GatewayEmitterKernel
         GatewayProbe
         GatewayReadiness
         GatewayRoutes
         GatewayRuntimeStability
+        HostDirectAuthorityCas
         LifecycleLease
         MeasuredProfile
         ObjectStoreNative
         Parser
         RetainedSesPreparation
+        RestoreGraphSuite
         RetainedSesTargetRecovery
         SigV4
         SmtpKeyRepairInterpreter

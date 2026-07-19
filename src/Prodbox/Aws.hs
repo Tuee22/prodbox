@@ -2627,6 +2627,9 @@ configFromSetupInput currentConfig input =
         DomainSection
           { demo_fqdn = configSetupDemoFqdnInput input
           , demo_ttl = configSetupDemoTtlInput input
+          , -- Sprint 2.35: `config setup` does not prompt for cert scopes; preserve
+            -- whatever the operator already configured (empty = just the served host).
+            cert_scopes = cert_scopes (domain currentConfig)
           }
     , acme =
         (acme currentConfig)

@@ -127,13 +127,23 @@ mirrored in-kind from `hostbootstrap` (no code dependency) per
 
 ### Native AWS client boundary
 
-Sprint `1.62` pins the selected `amazonka` core and exact IAM, S3, STS, Route 53, and Service
-Quotas service packages in `cabal.project`/`prodbox.cabal`. Credential Provisioner and native
-admin actions use those typed clients with a linear in-memory credential handle supplied outside
-the serializable program algebra. They do not invoke `aws`, consult profiles/instance metadata, or
-write credential files/Pod environment. Pulumi remains a separately isolated child-process
-boundary in Provider/Admin Action workers; any operation-scoped child environment is constructed
-only after permit validation and is never ambient daemon authentication.
+Sprint `1.62` (landed 2026-07-18) supplies native IAM, STS, Route 53, and Service Quotas clients —
+and Sprint `1.66` the native S3 object-store client — built on the **already-pinned** SigV4 +
+`http-client`/`crypton`/`aeson` stack (`src/Prodbox/Aws/SigV4.hs` + `src/Prodbox/Minio/ObjectStoreNative.hs`
++ `src/Prodbox/Aws/Native/*`), adding **zero new dependencies**. `amazonka` is explicitly rejected:
+it would pull a large transitive tree inconsistent with the in-tree hand-rolled signer, and the
+existing native object-store client already establishes the pattern (pure sign/encode + a thin
+`http-client` send + hand-rolled substring XML / `aeson` JSON decode). Any future addition of a
+native AWS service package must clear § 5 and justify why the SigV4 + `http-client` pattern does not
+suffice. Credential Provisioner and native admin actions use these typed clients with a validated,
+linear in-memory credential handle (`src/Prodbox/Aws/CredentialHandle.hs`) supplied outside the
+serializable program algebra: the handle is unserializable, redacts every secret on `Show`, and has
+no base→session widening. They do not invoke `aws`, consult profiles/instance metadata, or write
+credential files/Pod environment — a source-scan unit test
+(`test/unit/AwsNativeClients.hs`) enforces the absence of every such seam across the native modules.
+Pulumi remains a separately isolated child-process boundary in Provider/Admin Action workers; any
+operation-scoped child environment is constructed only after permit validation and is never ambient
+daemon authentication.
 
 ### External Command Dependencies
 

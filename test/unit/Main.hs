@@ -5,13 +5,20 @@
 
 module Main (main) where
 
+import AuthorityLogicalObjectTaxonomy (authorityLogicalObjectTaxonomySuite)
+import AwsNativeClients (awsNativeClientsSuite)
 import AwsSesLeaseRole (awsSesLeaseRoleSuite)
 import AwsSesLifecycle (awsSesLifecycleSuite)
 import AwsSesReadiness (awsSesReadinessSuite)
 import AwsSesSmtpKey (awsSesSmtpKeySuite)
+import CapabilityReadinessBarrierSuite (capabilityReadinessBarrierSuite)
+import CertScopeSuite (certScopeSuite)
 import Control.Exception (finally)
 import Control.Monad (forM_, when)
+import ControlPlaneAuthorityClock (controlPlaneAuthorityClockSuite)
 import ControlPlaneCapability (controlPlaneCapabilitySuite)
+import ControlPlaneCapacity (controlPlaneCapacitySuite)
+import ControlPlaneDeadline (controlPlaneDeadlineSuite)
 import Data.Aeson
   ( Value (..)
   , eitherDecode
@@ -55,10 +62,12 @@ import GatewayAuthority (gatewayAuthoritySuite)
 import GatewayBounded (gatewayBoundedSuite)
 import GatewayChartStatics (gatewayChartStaticsSuite)
 import GatewayContinuity (gatewayContinuitySuite)
+import GatewayEmitterKernel (gatewayEmitterKernelSuite)
 import GatewayProbe (gatewayProbeSuite)
 import GatewayReadiness (gatewayReadinessSuite)
 import GatewayRoutes (gatewayRoutesSuite)
 import GatewayRuntimeStability (gatewayRuntimeStabilitySuite)
+import HostDirectAuthorityCas (hostDirectAuthorityCasSuite)
 import LifecycleLease (lifecycleLeaseSuite)
 import MeasuredProfile (measuredProfileSuite)
 import Numeric.Natural (Natural)
@@ -341,14 +350,18 @@ import Prodbox.Config.ComponentGraph
   , EdgeKind (..)
   , ProbeDepth (..)
   , ReadinessProbe (..)
+  , componentCapabilityRequirement
   , componentDagOrder
+  , componentDagRequirements
   , componentDependencyIds
   , componentReconcileOrder
   , defaultComponentGraph
+  , edgeKindOf
   , lookupComponentNode
   , operatorAvailableGates
   , probeDepth
   , probeSatisfiesBackendWrite
+  , resolveCapabilityProviders
   , validateComponentGraph
   )
 import Prodbox.Config.InForce
@@ -392,6 +405,13 @@ import Prodbox.Config.Tier0
   )
 import Prodbox.Config.Tier0 qualified as Tier0
 import Prodbox.ContainerImage qualified as ContainerImage
+import Prodbox.ControlPlane.CapabilityKind (CapabilityOp (..))
+import Prodbox.ControlPlane.CapabilityRequirement
+  ( CapabilityProvisionSpec (..)
+  , CapabilityRequirementSpec (..)
+  , resolveProvision
+  , resolveRequirement
+  )
 import Prodbox.Crypto.Envelope
   ( DekCipher (..)
   , EnvelopeError (..)
@@ -490,9 +510,12 @@ import Prodbox.Gateway.Types
   , validateDaemonTimingAgainstOrders
   )
 import Prodbox.Host
-  ( FirewallRuleAction (..)
+  ( CertExpiryRung (..)
+  , FirewallRuleAction (..)
   , NtpDisposition (..)
   , PortStatus (..)
+  , certExpiryRungText
+  , classifyCertificateExpiry
   , gatewayNodePortFirewallCheckArgs
   , gatewayNodePortFirewallRuleArgs
   , parseTimedatectlNtpDisposition
@@ -739,6 +762,7 @@ import Prodbox.Settings
   , TestTopology (..)
   , TestTopologyError (..)
   , ValidatedSettings (..)
+  , certDnsNamesForServedHost
   , decodeConfigDhallBytes
   , defaultConfigFile
   , defaultTestTopology
@@ -751,6 +775,7 @@ import Prodbox.Settings
   , renderSettingsDisplay
   , validateAndLoadSettingsAtPath
   , validateAwsBootstrapConfig
+  , validateConfiguredCertScope
   , validatePublicEdgeDeployment
   , validateTestTopology
   )
@@ -957,6 +982,7 @@ import Prodbox.Workload
   , workloadLiveConfigFromDhallWith
   )
 import Prodbox.Workload.Settings qualified as WorkloadSettings
+import RestoreGraphSuite (restoreGraphSuite)
 import RetainedSesPreparation (retainedSesPreparationSuite)
 import RetainedSesTargetRecovery (retainedSesTargetRecoverySuite)
 import SigV4 (sigV4Suite)
@@ -1238,7 +1264,14 @@ main = mainWithSuite "prodbox-unit" $ do
   awsSesLeaseRoleSuite
   awsSesReadinessSuite
   awsSesSmtpKeySuite
+  authorityLogicalObjectTaxonomySuite
+  awsNativeClientsSuite
+  capabilityReadinessBarrierSuite
+  certScopeSuite
+  controlPlaneAuthorityClockSuite
   controlPlaneCapabilitySuite
+  controlPlaneCapacitySuite
+  controlPlaneDeadlineSuite
   desiredPresentReconciliationSuite
   escapeRegistrySuite
   fencedCheckpointSuite
@@ -1246,14 +1279,17 @@ main = mainWithSuite "prodbox-unit" $ do
   gatewayBoundedSuite
   gatewayChartStaticsSuite
   gatewayContinuitySuite
+  gatewayEmitterKernelSuite
   gatewayProbeSuite
   gatewayReadinessSuite
   gatewayRoutesSuite
   gatewayRuntimeStabilitySuite
+  hostDirectAuthorityCasSuite
   lifecycleLeaseSuite
   measuredProfileSuite
   objectStoreNativeSuite
   sigV4Suite
+  restoreGraphSuite
   retainedSesPreparationSuite
   retainedSesTargetRecoverySuite
   smtpKeyRepairInterpreterSuite
@@ -2431,6 +2467,75 @@ main = mainWithSuite "prodbox-unit" $ do
       case acyclicTopologicalOrder show id adjacency [1] of
         Left _ -> pure ()
         Right order -> expectationFailure ("expected a cycle rejection, got " ++ show order)
+    describe "capability lowering (Sprint 1.61 Increment B)" $ do
+      let requireAt op service scope endpoint =
+            either
+              (error . show)
+              id
+              ( resolveRequirement
+                  CapabilityRequirementSpec
+                    { specRequireCapability = op
+                    , specRequireService = service
+                    , specRequireScope = scope
+                    , specRequireEndpoint = endpoint
+                    , specRequireLogical = "readiness"
+                    , specRequireGeneration = 1
+                    , specRequireLatencyMicros = 1000
+                    }
+              )
+          provideAt op service scope endpoint =
+            either
+              (error . show)
+              id
+              ( resolveProvision
+                  CapabilityProvisionSpec
+                    { specProvideCapability = op
+                    , specProvideService = service
+                    , specProvideScope = scope
+                    , specProvideEndpoint = endpoint
+                    , specProvideLogical = "readiness"
+                    , specProvideGeneration = 1
+                    }
+              )
+      it "resolves every default-graph node to a single capability handle" $
+        case validateComponentGraph defaultComponentGraph of
+          Left err -> expectationFailure ("default component graph is invalid: " ++ show err)
+          Right dag -> do
+            Map.size (componentDagRequirements dag) `shouldBe` length defaultComponentGraph
+            (componentCapabilityRequirement ComponentRegistry dag == Nothing) `shouldBe` False
+            (componentCapabilityRequirement ComponentGatewayDaemonFull dag == Nothing) `shouldBe` False
+      it "derives a backend-write edge for a round-trip op and an ordering edge otherwise" $ do
+        edgeKindOf (requireAt OpRegistryPublication "registry" "home/prodbox" "component/registry")
+          `shouldBe` BackendWriteEdge
+        edgeKindOf (requireAt OpLifecycleCas "gateway_daemon_full" "home/prodbox" "component/gateway")
+          `shouldBe` BackendWriteEdge
+        edgeKindOf (requireAt OpManagedObserve "minio" "home/prodbox" "component/minio")
+          `shouldBe` OrderingEdge
+      it "rejects a requirement with no provider" $
+        resolveCapabilityProviders [] [(ComponentRegistry, requireAt OpManagedObserve "svc" "sc" "e1")]
+          `shouldBe` Left (ComponentGraphNoProvider ComponentRegistry OpManagedObserve)
+      it "rejects two providers of the same capability at one service and scope" $
+        resolveCapabilityProviders
+          [ (ComponentMinio, provideAt OpManagedObserve "svc" "sc" "e1")
+          , (ComponentRegistry, provideAt OpManagedObserve "svc" "sc" "e2")
+          ]
+          [(ComponentChartApi, requireAt OpManagedObserve "svc" "sc" "e1")]
+          `shouldBe` Left (ComponentGraphAmbiguousProvider ComponentChartApi OpManagedObserve)
+      it "rejects a lone provider at a different coordinate (scope mismatch)" $
+        resolveCapabilityProviders
+          [(ComponentMinio, provideAt OpManagedObserve "svc" "sc" "e2")]
+          [(ComponentChartApi, requireAt OpManagedObserve "svc" "sc" "e1")]
+          `shouldBe` Left (ComponentGraphScopeMismatch ComponentChartApi OpManagedObserve)
+      it "rejects a weaker capability offered where a write/CAS is required" $
+        resolveCapabilityProviders
+          [(ComponentMinio, provideAt OpManagedObserve "svc" "sc" "e1")]
+          [(ComponentGatewayDaemonFull, requireAt OpLifecycleCas "svc" "sc" "e1")]
+          `shouldBe` Left (ComponentGraphWeakerCapability ComponentGatewayDaemonFull OpLifecycleCas)
+      it "accepts an exact same-operation same-coordinate provider" $
+        resolveCapabilityProviders
+          [(ComponentMinio, provideAt OpManagedObserve "svc" "sc" "e1")]
+          [(ComponentChartApi, requireAt OpManagedObserve "svc" "sc" "e1")]
+          `shouldSatisfy` isRight
   describe "component readiness observation seam (Sprint 1.59)" $ do
     it "opens the gate only for an affirmative readiness observation" $
       map
@@ -11797,6 +11902,38 @@ main = mainWithSuite "prodbox-unit" $ do
           , "NTP_DETAIL=system clock is synchronized to a time source"
           ]
 
+  describe "certificate expiry rung (Sprint 2.35)" $ do
+    let now = UTCTime (fromGregorian 2026 8 1) (secondsToDiffTime 0)
+        cert pairs = Just (object ["status" .= object pairs])
+    it "reports certificate-current before the renewal time" $
+      classifyCertificateExpiry
+        now
+        (cert ["renewalTime" .= String "2026-09-01T00:00:00Z", "notAfter" .= String "2026-10-01T00:00:00Z"])
+        `shouldBe` CertExpiryCurrent
+    it "reports certificate-renew-due at or after the renewal time" $
+      classifyCertificateExpiry
+        now
+        (cert ["renewalTime" .= String "2026-07-15T00:00:00Z", "notAfter" .= String "2026-10-01T00:00:00Z"])
+        `shouldBe` CertExpiryRenewDue
+    it "reports certificate-expired at or after notAfter (expiry takes priority)" $
+      classifyCertificateExpiry
+        now
+        (cert ["renewalTime" .= String "2026-07-15T00:00:00Z", "notAfter" .= String "2026-07-01T00:00:00Z"])
+        `shouldBe` CertExpiryExpired
+    it "is unobservable when renewalTime is absent (fail-closed)" $
+      classifyCertificateExpiry now (cert ["notAfter" .= String "2026-10-01T00:00:00Z"])
+        `shouldBe` CertExpiryUnobservable
+    it "is unobservable when notAfter is absent (fail-closed)" $
+      classifyCertificateExpiry now (cert ["renewalTime" .= String "2026-09-01T00:00:00Z"])
+        `shouldBe` CertExpiryUnobservable
+    it "is unobservable when the certificate document is missing" $
+      classifyCertificateExpiry now Nothing `shouldBe` CertExpiryUnobservable
+    it "renders the fail-closed report tokens" $ do
+      certExpiryRungText CertExpiryCurrent `shouldBe` "certificate-current"
+      certExpiryRungText CertExpiryRenewDue `shouldBe` "certificate-renew-due"
+      certExpiryRungText CertExpiryExpired `shouldBe` "certificate-expired"
+      certExpiryRungText CertExpiryUnobservable `shouldBe` "certificate-unobservable"
+
   describe "native host and k8s helpers" $ do
     it "renders deterministic host port availability output" $ do
       renderPortAvailabilityReport
@@ -14628,6 +14765,80 @@ main = mainWithSuite "prodbox-unit" $ do
           }
         `shouldBe` Left "deployment.public_edge_bgp_peers[1].peer_address must be a valid IP address when set"
 
+    it "Sprint 2.35: accepts the default scope set (empty cert_scopes covers the served host)" $
+      validateConfiguredCertScope
+        (DomainSection {demo_fqdn = "test.resolvefintech.com", demo_ttl = 60, cert_scopes = []})
+        (AwsSubstrateSection {hosted_zone_id = "", subzone_name = ""})
+        `shouldBe` Right ()
+
+    it "Sprint 2.35: accepts a delegated wildcard that covers the served host" $
+      validateConfiguredCertScope
+        ( DomainSection
+            { demo_fqdn = "test.resolvefintech.com"
+            , demo_ttl = 60
+            , cert_scopes = ["*.resolvefintech.com"]
+            }
+        )
+        (AwsSubstrateSection {hosted_zone_id = "", subzone_name = ""})
+        `shouldBe` Right ()
+
+    it "Sprint 2.35: rejects an empty served host" $
+      validateConfiguredCertScope
+        (DomainSection {demo_fqdn = "", demo_ttl = 60, cert_scopes = []})
+        (AwsSubstrateSection {hosted_zone_id = "", subzone_name = ""})
+        `shouldBe` Left "domain.demo_fqdn must not be empty"
+
+    it "Sprint 2.35: rejects a wildcard anchored at an undelegated zone" $
+      validateConfiguredCertScope
+        ( DomainSection
+            { demo_fqdn = "test.resolvefintech.com"
+            , demo_ttl = 60
+            , cert_scopes = ["*.notdelegated.example"]
+            }
+        )
+        (AwsSubstrateSection {hosted_zone_id = "", subzone_name = ""})
+        `shouldSatisfy` isCertScopeError "not delegated"
+
+    it "Sprint 2.35: rejects a configured scope set that does not cover the served host" $
+      validateConfiguredCertScope
+        ( DomainSection
+            { demo_fqdn = "test.resolvefintech.com"
+            , demo_ttl = 60
+            , cert_scopes = ["other.resolvefintech.com"]
+            }
+        )
+        (AwsSubstrateSection {hosted_zone_id = "", subzone_name = ""})
+        `shouldSatisfy` isCertScopeError "not covered"
+
+    it "Sprint 2.35: certDnsNamesForServedHost defaults to the served host (behavior-identical)" $
+      certDnsNamesForServedHost
+        (DomainSection {demo_fqdn = "test.resolvefintech.com", demo_ttl = 60, cert_scopes = []})
+        (AwsSubstrateSection {hosted_zone_id = "", subzone_name = ""})
+        "test.resolvefintech.com"
+        `shouldBe` Right ["test.resolvefintech.com"]
+
+    it "Sprint 2.35: certDnsNamesForServedHost projects a configured wildcard scope" $
+      certDnsNamesForServedHost
+        ( DomainSection
+            { demo_fqdn = "test.resolvefintech.com"
+            , demo_ttl = 60
+            , cert_scopes = ["*.resolvefintech.com"]
+            }
+        )
+        (AwsSubstrateSection {hosted_zone_id = "", subzone_name = ""})
+        "test.resolvefintech.com"
+        `shouldBe` Right ["*.resolvefintech.com"]
+
+    it "Sprint 2.35: certDnsNamesForServedHost keys on the AWS-subzone served host" $
+      -- On the AWS substrate the served host is the subzone, so the default
+      -- certificate covers exactly the subzone FQDN (behavior-identical to the
+      -- prior single `.Values.gateway.host` on that substrate).
+      certDnsNamesForServedHost
+        (DomainSection {demo_fqdn = "test.resolvefintech.com", demo_ttl = 60, cert_scopes = []})
+        (AwsSubstrateSection {hosted_zone_id = "Z123", subzone_name = "aws.test.resolvefintech.com"})
+        "aws.test.resolvefintech.com"
+        `shouldBe` Right ["aws.test.resolvefintech.com"]
+
     it "accepts IPv6 literals for the supported public-edge settings" $
       validatePublicEdgeDeployment
         validDeploymentSection
@@ -15056,7 +15267,7 @@ validConfig =
     , ", route53 = { zone_id = \"Z1234567890ABC\" }"
     , ", aws_substrate = { hosted_zone_id = \"\", subzone_name = \"\" }"
     , ", ses = { sender_domain = \"\", receive_subdomain = \"\", capture_bucket = \"\" }"
-    , ", domain = { demo_fqdn = \"test.resolvefintech.com\", demo_ttl = 60 }"
+    , ", domain = { demo_fqdn = \"test.resolvefintech.com\", demo_ttl = 60, cert_scopes = ([] : List Text) }"
     , ", acme = " ++ acmeSectionDhall (eabRefDhall "key_id") (eabRefDhall "hmac_key")
     , ", deployment = " ++ deploymentDhallFragment
     , ", capacity = " ++ capacityDhallFragment
@@ -15073,7 +15284,7 @@ invalidZeroSslConfig =
     , ", route53 = { zone_id = \"Z1234567890ABC\" }"
     , ", aws_substrate = { hosted_zone_id = \"\", subzone_name = \"\" }"
     , ", ses = { sender_domain = \"\", receive_subdomain = \"\", capture_bucket = \"\" }"
-    , ", domain = { demo_fqdn = \"test.resolvefintech.com\", demo_ttl = 60 }"
+    , ", domain = { demo_fqdn = \"test.resolvefintech.com\", demo_ttl = 60, cert_scopes = ([] : List Text) }"
     , ", acme = "
         ++ acmeSectionDhall
           ("None (" ++ secretRefTypeDhall ++ ")")
@@ -15097,7 +15308,7 @@ plaintextEabZeroSslConfig =
     , ", route53 = { zone_id = \"Z1234567890ABC\" }"
     , ", aws_substrate = { hosted_zone_id = \"\", subzone_name = \"\" }"
     , ", ses = { sender_domain = \"\", receive_subdomain = \"\", capture_bucket = \"\" }"
-    , ", domain = { demo_fqdn = \"test.resolvefintech.com\", demo_ttl = 60 }"
+    , ", domain = { demo_fqdn = \"test.resolvefintech.com\", demo_ttl = 60, cert_scopes = ([] : List Text) }"
     , ", acme = "
         ++ acmeSectionDhall
           ("Some (" ++ secretRefTypeDhall ++ ".TestPlaintext \"test-eab-key-id\")")
@@ -15605,6 +15816,13 @@ resourceGuardrailLimitRange namespace reqCpu reqMemory reqEphemeral limitCpu lim
           ]
     ]
 
+-- | Sprint 2.35: a cert-scope validation result is the expected fail-closed error
+-- when it is a @Left@ whose message contains the given needle.
+isCertScopeError :: String -> Either String () -> Bool
+isCertScopeError needle result = case result of
+  Left message -> needle `isInfixOf` message
+  Right () -> False
+
 validDeploymentSection :: DeploymentSection
 validDeploymentSection =
   DeploymentSection
@@ -15710,6 +15928,7 @@ testValidatedSettings manualRoot =
               DomainSection
                 { demo_fqdn = "test.resolvefintech.com"
                 , demo_ttl = 60
+                , cert_scopes = []
                 }
           , deployment = validDeploymentSection
           , storage = StorageSection {manual_pv_host_root = ".data"}
@@ -15788,6 +16007,7 @@ roundTripConfigFile =
         DomainSection
           { demo_fqdn = "test.resolvefintech.com"
           , demo_ttl = 60
+          , cert_scopes = []
           }
     , deployment =
         validDeploymentSection

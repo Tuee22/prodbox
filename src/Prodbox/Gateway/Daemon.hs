@@ -303,24 +303,14 @@ import Prodbox.Http.Client
   , httpGetText
   , renderHttpError
   )
-import Prodbox.Lifecycle.Lease
-  ( authorityTimeFromMicros
-  , decodeLeaseProjection
-  , defaultSesLeasePolicy
-  , fencingTokenValue
-  , leaseGrantFencingToken
-  , leaseGrantKey
-  , leaseGrantOwnerNonce
-  , leaseGrantSafeUseDeadline
-  , leaseLogicalName
-  , leaseProjectionActiveGrant
-  , ownerNonceText
+import Prodbox.Lifecycle.AuthorityObjectCore
+  ( AuthorityCore (..)
+  , compareAndSwapAuthorityObjectCore
+  , readAuthorityObjectCore
   )
 import Prodbox.Minio.EncryptedObject
   ( EncryptedObjectError (..)
-  , LogicalConditionalPutResult (..)
-  , LogicalObject (LogicalLongLivedState, LogicalPulumiStack)
-  , VersionedLogicalObject (..)
+  , LogicalObject (LogicalPulumiStack)
   , getLogical
   , getLogicalVersioned
   , objectKeyForOpaqueId
@@ -332,7 +322,6 @@ import Prodbox.Minio.EncryptedObject
   )
 import Prodbox.Minio.ObjectStore
   ( ObjectStoreConfig (..)
-  , ObjectVersion (..)
   , defaultObjectStoreBucket
   , deleteObject
   )
@@ -3814,6 +3803,24 @@ writeDaemonPulumiObject env stackName checkpoint = do
           Left err -> Left (renderEncryptedObjectError err)
           Right () -> Right ()
 
+-- | The daemon's authority-object I/O seam: partial applications of the shared
+-- encrypted-object primitives over the daemon's resolved Pulumi material. The
+-- host-direct CLI builds the identical seam over its own handle, so the
+-- envelopes are byte-identical (see "Prodbox.Lifecycle.AuthorityObjectCore").
+daemonAuthorityCore :: DaemonPulumiObjectMaterial -> AuthorityCore IO
+daemonAuthorityCore material =
+  AuthorityCore
+    { authGetVersioned = getLogicalVersioned store cipher hmacKey clusterId
+    , authPutIfAbsent = putLogicalIfAbsent store cipher hmacKey clusterId
+    , authPutIfVersion = putLogicalIfVersion store cipher hmacKey clusterId
+    , authNow = getCurrentTime
+    }
+ where
+  store = daemonPulumiObjectStore material
+  cipher = daemonPulumiCipher material
+  hmacKey = daemonPulumiHmacKey material
+  clusterId = daemonPulumiClusterId material
+
 readDaemonAuthorityObject
   :: DaemonEnv -> Text.Text -> IO (Either String AuthorityObjectObservation)
 readDaemonAuthorityObject env logicalName = do
@@ -3821,23 +3828,8 @@ readDaemonAuthorityObject env logicalName = do
   case materialResult of
     Left err -> pure (Left err)
     Right material ->
-      withGatewayChild env "authority-object-get" $ do
-        result <-
-          getLogicalVersioned
-            (daemonPulumiObjectStore material)
-            (daemonPulumiCipher material)
-            (daemonPulumiHmacKey material)
-            (daemonPulumiClusterId material)
-            (authorityLogicalObject logicalName)
-        pure $ case result of
-          Left err -> Left (renderEncryptedObjectError err)
-          Right Nothing -> Right AuthorityObjectMissing
-          Right (Just versioned) ->
-            Right
-              ( AuthorityObjectObserved
-                  (objectVersionEtag (versionedLogicalStoreVersion versioned))
-                  (versionedLogicalBytes versioned)
-              )
+      withGatewayChild env "authority-object-get" $
+        readAuthorityObjectCore (daemonAuthorityCore material) logicalName
 
 compareAndSwapDaemonAuthorityObject
   :: DaemonEnv
@@ -3848,115 +3840,8 @@ compareAndSwapDaemonAuthorityObject env request = do
   case materialResult of
     Left err -> pure (Left err)
     Right material ->
-      withGatewayChild env "authority-object-cas" $ do
-        let logicalObject = authorityLogicalObject (authorityObjectCasLogicalName request)
-            store = daemonPulumiObjectStore material
-            cipher = daemonPulumiCipher material
-            hmacKey = daemonPulumiHmacKey material
-            clusterId = daemonPulumiClusterId material
-            payload = authorityObjectCasPayload request
-        guardResult <-
-          case authorityObjectCasLeaseGuard request of
-            Nothing -> pure (Right ())
-            Just guard -> validateDaemonAuthorityLeaseGuard material guard
-        case guardResult of
-          Left err -> pure (Left err)
-          Right () -> do
-            casResult <-
-              case authorityObjectCasExpectedVersion request of
-                Nothing -> putLogicalIfAbsent store cipher hmacKey clusterId logicalObject payload
-                Just version ->
-                  putLogicalIfVersion
-                    store
-                    cipher
-                    hmacKey
-                    clusterId
-                    logicalObject
-                    (ObjectVersion version)
-                    payload
-            case casResult of
-              Left err -> pure (Left (renderEncryptedObjectError err))
-              Right disposition -> do
-                observed <-
-                  getLogicalVersioned store cipher hmacKey clusterId logicalObject
-                pure $ case observed of
-                  Left err -> Left (renderEncryptedObjectError err)
-                  Right maybeVersioned -> do
-                    observation <- authorityObservationFromVersioned maybeVersioned
-                    case disposition of
-                      LogicalConditionalPutApplied ->
-                        case observation of
-                          AuthorityObjectMissing ->
-                            Left "authority CAS applied but mandatory re-observation was missing"
-                          AuthorityObjectObserved version _ ->
-                            Right (AuthorityObjectCasApplied version)
-                      LogicalConditionalPutConflict ->
-                        Right (AuthorityObjectCasConflict observation)
-
-validateDaemonAuthorityLeaseGuard
-  :: DaemonPulumiObjectMaterial
-  -> AuthorityObjectLeaseGuard
-  -> IO (Either String ())
-validateDaemonAuthorityLeaseGuard material guard = do
-  observed <-
-    getLogicalVersioned
-      (daemonPulumiObjectStore material)
-      (daemonPulumiCipher material)
-      (daemonPulumiHmacKey material)
-      (daemonPulumiClusterId material)
-      (authorityLogicalObject (authorityLeaseGuardLogicalName guard))
-  now <- getCurrentTime
-  pure $ case observed of
-    Left err -> Left ("lease guard observation failed: " ++ renderEncryptedObjectError err)
-    Right Nothing -> Left "lease guard rejected: lease projection is missing"
-    Right (Just versioned)
-      | objectVersionEtag (versionedLogicalStoreVersion versioned)
-          /= authorityLeaseGuardExpectedVersion guard ->
-          Left "lease guard rejected: lease object version changed"
-      | otherwise -> do
-          projection <-
-            case decodeLeaseProjection
-              defaultSesLeasePolicy
-              (versionedLogicalBytes versioned) of
-              Left err -> Left ("lease guard rejected: invalid lease projection: " ++ show err)
-              Right value -> Right value
-          grant <-
-            case leaseProjectionActiveGrant projection of
-              Nothing -> Left "lease guard rejected: lease has no active grant"
-              Just value -> Right value
-          if leaseLogicalName (leaseGrantKey grant) /= authorityLeaseGuardLogicalName guard
-            then Left "lease guard rejected: lease key does not match its object coordinate"
-            else
-              if ownerNonceText (leaseGrantOwnerNonce grant)
-                /= authorityLeaseGuardOwnerNonce guard
-                then Left "lease guard rejected: owner nonce changed"
-                else
-                  if fencingTokenValue (leaseGrantFencingToken grant)
-                    /= authorityLeaseGuardFencingToken guard
-                    then Left "lease guard rejected: fencing token changed"
-                    else
-                      if authorityTimeFromMicros (authorityMicrosFromUtc now)
-                        >= leaseGrantSafeUseDeadline grant
-                        then Left "lease guard rejected: lease safe-use deadline has expired"
-                        else Right ()
-
-authorityObservationFromVersioned
-  :: Maybe VersionedLogicalObject -> Either String AuthorityObjectObservation
-authorityObservationFromVersioned maybeVersioned =
-  case maybeVersioned of
-    Nothing -> Right AuthorityObjectMissing
-    Just versioned ->
-      Right
-        ( AuthorityObjectObserved
-            (objectVersionEtag (versionedLogicalStoreVersion versioned))
-            (versionedLogicalBytes versioned)
-        )
-
-authorityLogicalObject :: Text.Text -> LogicalObject
-authorityLogicalObject logicalName =
-  case Text.stripPrefix "pulumi-stack/" logicalName of
-    Just stackName -> LogicalPulumiStack stackName
-    Nothing -> LogicalLongLivedState logicalName
+      withGatewayChild env "authority-object-cas" $
+        compareAndSwapAuthorityObjectCore (daemonAuthorityCore material) request
 
 deleteDaemonPulumiObject :: DaemonEnv -> Text.Text -> IO (Either String ())
 deleteDaemonPulumiObject env stackName = do

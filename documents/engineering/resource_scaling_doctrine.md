@@ -359,6 +359,19 @@ and latency evidence is present. Qualification uses composition, load, and chaos
 [Unit Testing Policy](./unit_testing_policy.md) and the current-revision gate in
 [Development Plan Standard P](../../DEVELOPMENT_PLAN/development_plan_standards.md#p-deployment-qualification-and-counterexample-closure).
 
+**Landed (Sprint `1.62`, 2026-07-18).** The pure temporal-capacity algebra of this section is
+`src/Prodbox/ControlPlane/Capacity.hs`: an opaque `ServiceCapacityPlan` whose smart constructor
+rejects an over-committed lane with exact `Natural` cross-multiplication — utilization ρ ≥ 1
+(`ServiceCapacityOverCommitted`) or ρ ≥ 1 − headroom (`ServiceCapacityInsufficientHeadroom`), where
+ρ_ppm = arrival × service ÷ workers — so a tiny bounded queue cannot rescue an over-committed lane
+("memory containment alone is not a service-capacity proof" is structural, not a runtime check).
+Bounded admission is a pure `decide`/`evolve` FIFO `AdmissionQueue`: it rejects immediately with a
+structured reason when the lane is at its rejection threshold (`RejectedSaturated` + `RetryAfter`)
+or when queue-wait-plus-service cannot fit the caller's remaining monotonic budget
+(`RejectedDeadlineUnmeetable`, strict boundary via `deadlineAdmission`), and a timed-out caller
+cooperatively frees a queued or in-service slot. Deterministic queue simulations (saturation,
+FIFO fairness, cancellation, deadline expiry, recovery) live in `test/unit/ControlPlaneCapacity.hs`.
+
 ## 2F. Measured Resource Profiles
 
 Authored Guaranteed-QoS envelopes are certified against **measured demand**, not trusted on

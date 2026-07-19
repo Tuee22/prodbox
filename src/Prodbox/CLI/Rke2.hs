@@ -174,6 +174,7 @@ import Prodbox.Config.ComponentGraph
   ( ComponentDag
   , ComponentId (..)
   , ComponentNode (..)
+  , componentCapabilityRequirement
   , componentIdText
   , componentReconcileOrder
   , lookupComponentNode
@@ -184,6 +185,8 @@ import Prodbox.Config.Tier0
   , ensureChildBasicsFloor
   )
 import Prodbox.ContainerImage qualified as ContainerImage
+import Prodbox.ControlPlane.CapabilityRequirement (requirementCoordinate')
+import Prodbox.ControlPlane.Coordinate (coordGeneration)
 import Prodbox.Dns (fetchPublicIp)
 import Prodbox.Dns qualified as Dns
 import Prodbox.DockerConfig (withEphemeralDockerConfig)
@@ -230,6 +233,10 @@ import Prodbox.Lifecycle.AnchoredReconcile
   , compileAnchoredOrder
   , runAnchoredStepOrder
   )
+import Prodbox.Lifecycle.CapabilityReadinessBarrier
+  ( newReadinessObservationClient
+  , observeReadinessThroughCapability
+  )
 import Prodbox.Lifecycle.EbsVolume qualified as EbsVolume
 import Prodbox.Lifecycle.FederatedVault
   ( FederatedVaultLifecycle (..)
@@ -251,7 +258,6 @@ import Prodbox.Lifecycle.ReadinessObservation
   ( ComponentReadinessTarget (..)
   , ReadinessProbeResult (..)
   , componentReadinessRetryPolicy
-  , waitForComponentReadiness
   )
 import Prodbox.Lifecycle.ResidueStatus qualified as ResidueStatus
 import Prodbox.Lifecycle.ResourceRegistry qualified as ResourceRegistry
@@ -1815,22 +1821,35 @@ runAnchoredReconcileSteps repoRoot settings dag runStep =
 requireNativeComponentReadiness
   :: FilePath -> ValidatedSettings -> ComponentDag -> ComponentId -> IO ExitCode
 requireNativeComponentReadiness repoRoot settings dag component =
-  case lookupComponentNode component dag of
-    Nothing ->
+  case (lookupComponentNode component dag, componentCapabilityRequirement component dag) of
+    (Nothing, _) ->
       failWith
         ( "Native reconcile readiness has no graph node for component `"
             ++ componentIdText component
             ++ "`."
         )
-    Just node ->
+    (_, Nothing) ->
+      failWith
+        ( "Native reconcile readiness has no capability requirement for component `"
+            ++ componentIdText component
+            ++ "`."
+        )
+    (Just node, Just requirement) ->
       case nativeComponentReadinessTarget repoRoot settings component of
         Left reason -> failWith (Text.unpack reason)
         Right target -> do
+          -- Sprint 1.61: drive the barrier through the single capability handle
+          -- and the shared runCapability boundary. The actual probe I/O
+          -- ('nativeComponentReadinessTarget' + its observe*Once actions) is
+          -- unchanged; only the routing (ref -> runCapability -> classifyObservation)
+          -- is new, and it is behaviour-preserving for every reachable reading.
+          let client =
+                newReadinessObservationClient
+                  (coordGeneration (requirementCoordinate' requirement))
+                  (readiness node)
+                  target
           readinessResult <-
-            waitForComponentReadiness
-              componentReadinessRetryPolicy
-              target
-              (readiness node)
+            observeReadinessThroughCapability componentReadinessRetryPolicy client requirement
           case readinessResult of
             Right () -> pure ExitSuccess
             Left detail ->

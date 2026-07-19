@@ -1,6 +1,7 @@
 {-# LANGUAGE DeriveAnyClass #-}
 {-# LANGUAGE DeriveGeneric #-}
 {-# LANGUAGE LambdaCase #-}
+{-# LANGUAGE OverloadedStrings #-}
 
 -- | Sprint 1.56: the typed component dependency/readiness graph that makes the
 -- class of bootstrap readiness races __unrepresentable__
@@ -71,6 +72,15 @@ module Prodbox.Config.ComponentGraph
   , directChartDependencies
   , operatorAvailableGates
 
+    -- * Capability lowering (Sprint 1.61 Increment B)
+  , componentDagRequirements
+  , componentCapabilityRequirement
+  , componentCapabilityOp
+  , componentRequirementSpec
+  , componentProvisionSpec
+  , resolveCapabilityProviders
+  , edgeKindOf
+
     -- * The default bootstrap graph
   , defaultComponentGraph
   )
@@ -78,8 +88,38 @@ where
 
 import Data.Map.Strict (Map)
 import Data.Map.Strict qualified as Map
+import Data.Text (Text)
+import Data.Text qualified as Text
 import Dhall (FromDhall, ToDhall)
 import GHC.Generics (Generic)
+import Prodbox.ControlPlane.CapabilityKind
+  ( CapabilityOp (..)
+  , PermitTier (..)
+  , permitTier
+  , requiresRoundTripEvidence
+  )
+import Prodbox.ControlPlane.CapabilityRequirement
+  ( CapabilityProvisionSpec (..)
+  , CapabilityRequirementSpec (..)
+  , SomeCapabilityProvision
+  , SomeCapabilityRequirement
+  , matchesProvision
+  , provisionCoordinate'
+  , provisionOp
+  , renderRequirementError
+  , requirementCoordinate'
+  , requirementOp
+  , requirementTier
+  , resolveProvision
+  , resolveRequirement
+  )
+import Prodbox.ControlPlane.Coordinate
+  ( CapabilityCoordinate
+  , authorityScopeText
+  , coordAuthority
+  , coordService
+  , serviceIdentityText
+  )
 import Prodbox.EffectDAG (acyclicTopologicalOrder)
 
 -- | Every bootstrap/platform component the dependency/readiness graph can name.
@@ -272,6 +312,24 @@ data ComponentGraphError
     -- "edge without a readiness node" rejection. The consumer's probe must be a
     -- deep round-trip through the named dependency.
     ComponentGraphBackendEdgeWithoutDeepReadiness ComponentId ComponentId ReadinessProbe
+  | -- | A component's capability requirement or provision spec did not resolve
+    -- (an invalid coordinate field or generation). Cannot occur for the default
+    -- table; kept for totality (Sprint 1.61 Increment B).
+    ComponentGraphRequirementInvalid ComponentId String
+  | -- | No component provides the capability a consumer requires at its service
+    -- and scope (Validation #3: missing provider).
+    ComponentGraphNoProvider ComponentId CapabilityOp
+  | -- | More than one component provides the same capability at one service and
+    -- scope (Validation #3: duplicate exclusive provider).
+    ComponentGraphAmbiguousProvider ComponentId CapabilityOp
+  | -- | The lone provider of the required operation is at a different coordinate
+    -- (endpoint / logical name / generation), so its digest does not reconcile
+    -- (Validation #3: scope mismatch).
+    ComponentGraphScopeMismatch ComponentId CapabilityOp
+  | -- | No provider offers the required operation, but a strictly weaker-tier
+    -- capability is offered at the same service and scope — a GET where a write
+    -- is required (Validation #3: weaker capability substitution).
+    ComponentGraphWeakerCapability ComponentId CapabilityOp
   deriving (Eq, Show)
 
 renderComponentGraphError :: ComponentGraphError -> String
@@ -297,6 +355,33 @@ renderComponentGraphError = \case
       ++ "`. A backend-write edge is satisfiable only by "
       ++ "ProbeBackendRoundTrip through that exact dependency "
       ++ "(bootstrap_readiness_doctrine.md M3)."
+  ComponentGraphRequirementInvalid cid detail ->
+    "Component `" ++ componentIdText cid ++ "` capability spec is invalid: " ++ detail
+  ComponentGraphNoProvider consumer op ->
+    "Component `"
+      ++ componentIdText consumer
+      ++ "` requires "
+      ++ show op
+      ++ " but no component provides it at that service and scope."
+  ComponentGraphAmbiguousProvider consumer op ->
+    "Component `"
+      ++ componentIdText consumer
+      ++ "` requires "
+      ++ show op
+      ++ " but more than one component provides it at that service and scope."
+  ComponentGraphScopeMismatch consumer op ->
+    "Component `"
+      ++ componentIdText consumer
+      ++ "` requires "
+      ++ show op
+      ++ " but the sole provider is at a different coordinate (scope mismatch)."
+  ComponentGraphWeakerCapability consumer op ->
+    "Component `"
+      ++ componentIdText consumer
+      ++ "` requires "
+      ++ show op
+      ++ " but only a strictly weaker capability is offered at that service and scope "
+      ++ "(a read cannot satisfy a write/CAS requirement)."
 
 -- | A validated component graph: the node map plus the derived
 -- dependencies-before-dependents reconcile order. Construct it only through
@@ -305,8 +390,19 @@ renderComponentGraphError = \case
 data ComponentDag = ComponentDag
   { componentDagNodes :: Map ComponentId ComponentNode
   , componentDagOrder :: [ComponentId]
+  , componentDagRequirements :: Map ComponentId SomeCapabilityRequirement
+  -- ^ Sprint 1.61 Increment B: the single resolved capability requirement each
+  -- node's readiness barrier observes — the "one handle" a consumer receives
+  -- instead of separately supplied probe and execution coordinates. Populated
+  -- by 'validateComponentGraph' after every node's requirement resolves to a
+  -- unique provider.
   }
   deriving (Eq, Show)
+
+-- | The resolved capability requirement whose Ready observation proves the given
+-- component ready (its "one handle").
+componentCapabilityRequirement :: ComponentId -> ComponentDag -> Maybe SomeCapabilityRequirement
+componentCapabilityRequirement cid = Map.lookup cid . componentDagRequirements
 
 lookupComponentNode :: ComponentId -> ComponentDag -> Maybe ComponentNode
 lookupComponentNode cid = Map.lookup cid . componentDagNodes
@@ -336,7 +432,19 @@ validateComponentGraph nodes = do
   nodeMap <- buildNodeMap nodes
   mapM_ (checkNodeEdges nodeMap) nodes
   order <- topologicalOrderOf nodeMap
-  pure ComponentDag {componentDagNodes = nodeMap, componentDagOrder = order}
+  -- Sprint 1.61 Increment B: lower the graph over capabilities, in parallel with
+  -- the nominal readiness/edge checks above. Each node resolves to one requirement
+  -- backed by a unique provider; the nominal ordering is unaffected.
+  let cids = Map.keys nodeMap
+  provisions <- mapM resolveComponentProvision cids
+  requirements <- mapM resolveComponentRequirement cids
+  resolvedRequirements <- resolveCapabilityProviders provisions requirements
+  pure
+    ComponentDag
+      { componentDagNodes = nodeMap
+      , componentDagOrder = order
+      , componentDagRequirements = resolvedRequirements
+      }
 
 -- | Build the id→node map, rejecting duplicate ids.
 buildNodeMap :: [ComponentNode] -> Either ComponentGraphError (Map ComponentId ComponentNode)
@@ -394,6 +502,152 @@ topologicalOrderOf nodeMap =
 -- reconcile driver from and Sprint `3.23` filters for chart ordering.
 componentReconcileOrder :: ComponentDag -> [ComponentId]
 componentReconcileOrder = componentDagOrder
+
+-- Sprint 1.61 Increment B: capability lowering --------------------------------
+
+-- | The single capability whose Ready observation proves each component ready. A
+-- closed-'ComponentId' table (a new id fails the warning-clean build), decoupled
+-- from the nominal 'readiness' probe so the Tier-0 wire config is untouched. The
+-- two components that prove readiness by a backend round trip map to a mutating
+-- operation, so 'edgeKindOf' derives their 'BackendWriteEdge' from the tier.
+componentCapabilityOp :: ComponentId -> CapabilityOp
+componentCapabilityOp = \case
+  ComponentClusterBase -> OpProcessAvailability
+  ComponentMinio -> OpManagedObserve
+  ComponentVaultWorkload -> OpWorkloadAvailability
+  ComponentVaultUnsealed -> OpVaultBaseline
+  ComponentRegistry -> OpRegistryPublication
+  ComponentMetalLB -> OpOperatorAvailability
+  ComponentEnvoyGateway -> OpOperatorAvailability
+  ComponentCertManager -> OpOperatorAvailability
+  ComponentPerconaPostgresOperator -> OpOperatorAvailability
+  ComponentGatewayDaemonPreVault -> OpGatewayFrontDoor
+  ComponentGatewayDaemonFull -> OpLifecycleCas
+  ComponentChartPulsar -> OpWorkloadAvailability
+  ComponentChartRedis -> OpWorkloadAvailability
+  ComponentChartKeycloakPostgres -> OpWorkloadAvailability
+  ComponentChartKeycloak -> OpWorkloadAvailability
+  ComponentChartVscode -> OpWorkloadAvailability
+  ComponentChartApi -> OpWorkloadAvailability
+  ComponentChartWebsocket -> OpWorkloadAvailability
+  ComponentChartGateway -> OpGatewayFrontDoor
+
+componentServiceText :: ComponentId -> Text
+componentServiceText = Text.pack . componentIdText
+
+-- | A component's readiness endpoint text, unique per component so each
+-- component self-provides at a distinct coordinate.
+componentEndpointText :: ComponentId -> Text
+componentEndpointText cid = Text.pack ("component/" <> componentIdText cid)
+
+-- | The single scope every home-substrate component is addressed in. Substrate
+-- scoping is a later increment; the graph is single-scope today.
+componentScopeText :: Text
+componentScopeText = "home/prodbox"
+
+-- | The flat requirement spec for a component's readiness capability.
+componentRequirementSpec :: ComponentId -> CapabilityRequirementSpec
+componentRequirementSpec cid =
+  CapabilityRequirementSpec
+    { specRequireCapability = componentCapabilityOp cid
+    , specRequireService = componentServiceText cid
+    , specRequireScope = componentScopeText
+    , specRequireEndpoint = componentEndpointText cid
+    , specRequireLogical = "readiness"
+    , specRequireGeneration = 1
+    , specRequireLatencyMicros = 30_000_000
+    }
+
+-- | The flat provision spec for a component's readiness capability — each
+-- component self-provides its readiness at its own coordinate.
+componentProvisionSpec :: ComponentId -> CapabilityProvisionSpec
+componentProvisionSpec cid =
+  CapabilityProvisionSpec
+    { specProvideCapability = componentCapabilityOp cid
+    , specProvideService = componentServiceText cid
+    , specProvideScope = componentScopeText
+    , specProvideEndpoint = componentEndpointText cid
+    , specProvideLogical = "readiness"
+    , specProvideGeneration = 1
+    }
+
+resolveComponentRequirement
+  :: ComponentId -> Either ComponentGraphError (ComponentId, SomeCapabilityRequirement)
+resolveComponentRequirement cid =
+  case resolveRequirement (componentRequirementSpec cid) of
+    Left err -> Left (ComponentGraphRequirementInvalid cid (renderRequirementError err))
+    Right requirement -> Right (cid, requirement)
+
+resolveComponentProvision
+  :: ComponentId -> Either ComponentGraphError (ComponentId, SomeCapabilityProvision)
+resolveComponentProvision cid =
+  case resolveProvision (componentProvisionSpec cid) of
+    Left err -> Left (ComponentGraphRequirementInvalid cid (renderRequirementError err))
+    Right provision -> Right (cid, provision)
+
+-- | The 'EdgeKind' a requirement implies: a round-trip-evidence operation is a
+-- backend-write edge, everything else an ordering edge. Derived from the operation
+-- tier, so there is no second authored source to drift from the operation kind.
+edgeKindOf :: SomeCapabilityRequirement -> EdgeKind
+edgeKindOf requirement
+  | requiresRoundTripEvidence (requirementOp requirement) = BackendWriteEdge
+  | otherwise = OrderingEdge
+
+coordinateServiceScope :: CapabilityCoordinate -> (Text, Text)
+coordinateServiceScope coordinate =
+  ( serviceIdentityText (coordService coordinate)
+  , authorityScopeText (coordAuthority coordinate)
+  )
+
+requirementServiceScope :: SomeCapabilityRequirement -> (Text, Text)
+requirementServiceScope = coordinateServiceScope . requirementCoordinate'
+
+provisionServiceScope :: SomeCapabilityProvision -> (Text, Text)
+provisionServiceScope = coordinateServiceScope . provisionCoordinate'
+
+-- | Resolve every requirement to a unique, exact-coordinate provider, or reject
+-- with the first violation. Exposed so the graph tests exercise each rejection
+-- directly with constructed provision/requirement sets.
+resolveCapabilityProviders
+  :: [(ComponentId, SomeCapabilityProvision)]
+  -> [(ComponentId, SomeCapabilityRequirement)]
+  -> Either ComponentGraphError (Map ComponentId SomeCapabilityRequirement)
+resolveCapabilityProviders provisions requirements = do
+  let index = foldr indexProvision Map.empty provisions
+  mapM_ (checkRequirementProvider index) requirements
+  pure (Map.fromList requirements)
+ where
+  indexProvision entry@(_, provision) =
+    Map.insertWith (++) (provisionServiceScope provision) [entry]
+
+checkRequirementProvider
+  :: Map (Text, Text) [(ComponentId, SomeCapabilityProvision)]
+  -> (ComponentId, SomeCapabilityRequirement)
+  -> Either ComponentGraphError ()
+checkRequirementProvider index (consumer, requirement) =
+  case sameOperationProviders of
+    [(_, provision)]
+      | matchesProvision requirement provision -> Right ()
+      | otherwise -> Left (ComponentGraphScopeMismatch consumer requiredOp)
+    [] ->
+      if any (provisionWeakerThanRequirement requirement . snd) candidates
+        then Left (ComponentGraphWeakerCapability consumer requiredOp)
+        else Left (ComponentGraphNoProvider consumer requiredOp)
+    _ -> Left (ComponentGraphAmbiguousProvider consumer requiredOp)
+ where
+  requiredOp = requirementOp requirement
+  candidates = Map.findWithDefault [] (requirementServiceScope requirement) index
+  sameOperationProviders = filter ((== requiredOp) . provisionOp . snd) candidates
+
+provisionWeakerThanRequirement :: SomeCapabilityRequirement -> SomeCapabilityProvision -> Bool
+provisionWeakerThanRequirement requirement provision =
+  tierRank (permitTier (provisionOp provision)) < tierRank (requirementTier requirement)
+
+tierRank :: PermitTier -> Int
+tierRank tier = case tier of
+  TierObserveOnly -> 0
+  TierInternalCas -> 1
+  TierExternalIntent -> 2
 
 -- | Sprint 3.23: the chart-only deploy order (dependencies-before-dependents)
 -- reachable from a given chart component, sourced from the validated graph but

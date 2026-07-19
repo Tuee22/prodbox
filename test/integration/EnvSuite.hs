@@ -176,7 +176,9 @@ configWithDomainAndCapacity domainName capacityFragment =
     , ", route53 = { zone_id = \"Z1234567890ABC\" }"
     , ", aws_substrate = { hosted_zone_id = \"\", subzone_name = \"\" }"
     , ", ses = { sender_domain = \"\", receive_subdomain = \"\", capture_bucket = \"\" }"
-    , ", domain = { demo_fqdn = " ++ show domainName ++ ", demo_ttl = 60 }"
+    , ", domain = { demo_fqdn = "
+        ++ show domainName
+        ++ ", demo_ttl = 60, cert_scopes = ([] : List Text) }"
     , ", acme = { email = \"test@resolvefintech.com\", server = \"https://acme.zerossl.com/v2/DV90\", eab_key_id = "
         ++ eabVaultRefDhall "key_id"
         ++ ", eab_hmac_key = "

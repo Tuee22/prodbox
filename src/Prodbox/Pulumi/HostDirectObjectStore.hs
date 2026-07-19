@@ -38,6 +38,9 @@ module Prodbox.Pulumi.HostDirectObjectStore
   , hostDirectGetPulumiObject
   , hostDirectPutPulumiObject
   , hostDirectDeletePulumiObject
+  , hostDirectReadAuthorityObject
+  , hostDirectCompareAndSwapAuthorityObject
+  , hostDirectValidateAuthorityLeaseGuard
   )
 where
 
@@ -47,21 +50,37 @@ import Data.Map.Strict qualified as Map
 import Data.Text (Text)
 import Data.Text qualified as Text
 import Data.Text.Encoding qualified as TextEncoding
+import Data.Time.Clock (getCurrentTime)
 import Prodbox.Config.Basics
   ( basicsClusterId
   , basicsVaultAddress
   )
 import Prodbox.Config.FloorDhall (loadUnencryptedBasics)
 import Prodbox.Crypto.Envelope (DekCipher)
+import Prodbox.Gateway.ObjectStore
+  ( AuthorityObjectCasRequest
+  , AuthorityObjectCasResponse
+  , AuthorityObjectLeaseGuard
+  , AuthorityObjectObservation
+  )
 import Prodbox.Http.Client (renderHttpError)
 import Prodbox.Infra.MinioBackend (withMinioPortForward)
+import Prodbox.Lifecycle.AuthorityObjectCore
+  ( AuthorityCore (..)
+  , compareAndSwapAuthorityObjectCore
+  , readAuthorityObjectCore
+  , validateAuthorityLeaseGuardCore
+  )
 import Prodbox.Minio.EncryptedObject
   ( EncryptedObjectError (EncryptedObjectMissing)
   , LogicalObject (LogicalPulumiStack)
   , getLogical
+  , getLogicalVersioned
   , objectKeyForOpaqueId
   , opaqueObjectId
   , putLogical
+  , putLogicalIfAbsent
+  , putLogicalIfVersion
   , renderEncryptedObjectError
   )
 import Prodbox.Minio.ObjectStore
@@ -203,6 +222,49 @@ hostDirectDeletePulumiObject handle stackName =
   deleteObject
     (hdhStore handle)
     (objectKeyForOpaqueId (opaqueObjectId (hdhHmacKey handle) (LogicalPulumiStack stackName)))
+
+-- | The host-direct authority-object I/O seam: partial applications of the SAME
+-- shared encrypted-object primitives the daemon uses
+-- ('Prodbox.Gateway.Daemon.daemonAuthorityCore'), over this handle's material.
+-- Because both build 'AuthorityCore' from the identical @getLogicalVersioned@ /
+-- @putLogicalIfAbsent@ / @putLogicalIfVersion@ + object-store config + DEK cipher
+-- + HMAC key + cluster id, the retained-authority envelopes a host-direct write
+-- seals are byte-identical to what a daemon read opens, and vice-versa.
+-- LEGACY-ESCAPE: see the 'hostDirectGetPulumiObject' marker; this shares that
+-- sanctioned host-direct object-store seam.
+hostDirectAuthorityCore :: HostDirectPulumiHandle -> AuthorityCore IO
+hostDirectAuthorityCore handle =
+  AuthorityCore
+    { authGetVersioned = getLogicalVersioned store cipher hmacKey clusterId
+    , authPutIfAbsent = putLogicalIfAbsent store cipher hmacKey clusterId
+    , authPutIfVersion = putLogicalIfVersion store cipher hmacKey clusterId
+    , authNow = getCurrentTime
+    }
+ where
+  store = hdhStore handle
+  cipher = hdhCipher handle
+  hmacKey = hdhHmacKey handle
+  clusterId = hdhClusterId handle
+
+-- | Host-direct read of a retained authority object (lease / target-commit-intent
+-- / smtp-commit / pulumi-stack), routed through the shared authority core.
+hostDirectReadAuthorityObject
+  :: HostDirectPulumiHandle -> Text -> IO (Either String AuthorityObjectObservation)
+hostDirectReadAuthorityObject handle =
+  readAuthorityObjectCore (hostDirectAuthorityCore handle)
+
+-- | Host-direct conditional compare-and-swap of a retained authority object,
+-- byte-identical to the daemon's CAS.
+hostDirectCompareAndSwapAuthorityObject
+  :: HostDirectPulumiHandle -> AuthorityObjectCasRequest -> IO (Either String AuthorityObjectCasResponse)
+hostDirectCompareAndSwapAuthorityObject handle =
+  compareAndSwapAuthorityObjectCore (hostDirectAuthorityCore handle)
+
+-- | Host-direct lease-guard validation, byte-identical to the daemon's.
+hostDirectValidateAuthorityLeaseGuard
+  :: HostDirectPulumiHandle -> AuthorityObjectLeaseGuard -> IO (Either String ())
+hostDirectValidateAuthorityLeaseGuard handle =
+  validateAuthorityLeaseGuardCore (hostDirectAuthorityCore handle)
 
 -- | Local copy of the @secret/minio/root@ reader (see module note). Mirrors
 -- 'Prodbox.Settings.readMinioRootCredentials'.

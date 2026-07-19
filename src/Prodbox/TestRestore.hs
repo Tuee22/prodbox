@@ -51,7 +51,7 @@ data RestoreChart
   | RestoreChartVscode
   | RestoreChartApi
   | RestoreChartWebsocket
-  deriving (Bounded, Enum, Eq, Show)
+  deriving (Bounded, Enum, Eq, Ord, Show)
 
 restoreChartId :: RestoreChart -> String
 restoreChartId chart =

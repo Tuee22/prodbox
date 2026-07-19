@@ -1000,6 +1000,22 @@ deriveAttemptDeadline
 bound. This makes the comparison between serialized authority time and process-local monotonic time
 an explicit, conservative boundary rather than an implicit comparison between unlike clocks.
 
+**Landed (Sprint `1.62`, 2026-07-18).** This algebra is realized across two disjoint modules. The
+process-local monotonic layer is `src/Prodbox/ControlPlane/Deadline.hs`: `Deadline` is opaque and
+its only builder consumes a raw monotonic instant plus a budget, `tightenDeadline` is `min`, and
+child scopes are minted only through the opaque `DeadlineScope` (`narrowScope`/`narrowScopeToBudget`,
+both `min`-against-parent) — so a child can never outlive or extend its parent; deadline extension is
+unrepresentable, not merely discouraged. The durable, serializable layer is
+`src/Prodbox/ControlPlane/AuthorityClock.hs`: `AuthorityInstant` reuses `Lease.AuthorityTime`
+(serialized through its `Natural` projection, no orphan instance); a monotone `AuthorityClockHighWater`
+only ever advances; `classifyAuthorityClock` is fail-closed (a reading below the high-water mark is
+`AuthorityTimeRegressed`, one wider than the skew bound is `AuthorityTimeUnobservable`); and a stored
+`OperationDeadline` is an absolute authority instant whose reload is the identity, so
+`deriveAttemptDeadline` charges downtime against the same absolute deadline (remaining = deadline −
+(now + uncertainty), only ever shrinking) and cannot be reset by a restart or a rolled-back clock.
+The refusal/regression/restart tables are in `test/unit/ControlPlaneAuthorityClock.hs` and the
+tighten-only cancellation properties in `test/unit/ControlPlaneDeadline.hs`.
+
 ## 5. Lifecycle Authority Aggregate
 
 ### 5.0 Closing the backup bootstrap cycle

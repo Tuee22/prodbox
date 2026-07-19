@@ -41,6 +41,7 @@ module Prodbox.Gateway.Continuity
   , encodeVersionedAuthorityRecord
   , decodeVersionedAuthorityRecord
   , StagedTransition (..)
+  , nextAnchorFor
   , StagedAssertion
   , stagedAssertionTransition
   , stagedAssertionSignedBytes

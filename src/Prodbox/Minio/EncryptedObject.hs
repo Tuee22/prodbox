@@ -7,6 +7,7 @@ module Prodbox.Minio.EncryptedObject
   , LogicalConditionalPutResult (..)
   , LogicalObject (..)
   , VersionedLogicalObject (..)
+  , authorityLogicalObject
   , decoyObjectKeys
   , decodeIndex
   , encodeIndex
@@ -100,6 +101,21 @@ logicalObjectName object = case object of
   LogicalPulumiStack stackId -> "pulumi-stack/" <> Text.strip stackId
   LogicalLongLivedState name -> "long-lived-state/" <> Text.strip name
   LogicalDownstreamCluster childId -> "downstream-cluster/" <> Text.strip childId
+
+-- | The byte-compat SSoT (Sprint 4.51) mapping a retained-authority logical name
+-- to its 'LogicalObject'. A @pulumi-stack/<name>@ authority object is a
+-- 'LogicalPulumiStack'; every other authority name (leases, target-commit
+-- intents, SMTP projections, checkpoints) is a 'LogicalLongLivedState' — the
+-- object store then keys it under @long-lived-state/<name>@ via
+-- 'logicalObjectName'. The in-cluster gateway daemon and the host-direct
+-- 'ClusterRetained' adapter MUST both route through this one function so a
+-- host-direct GET opens the exact envelope a daemon PUT sealed (and vice-versa);
+-- a one-character drift here silently orphans every retained object.
+authorityLogicalObject :: Text -> LogicalObject
+authorityLogicalObject logicalName =
+  case Text.stripPrefix "pulumi-stack/" logicalName of
+    Just stackName -> LogicalPulumiStack stackName
+    Nothing -> LogicalLongLivedState logicalName
 
 logicalObjectAad :: Text -> LogicalObject -> ByteString
 logicalObjectAad clusterId object =

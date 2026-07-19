@@ -4650,13 +4650,43 @@ Pulumi checkpoint object be guarded by a retained lease (the real
 `EncryptedBackend.withFencedDecryptedStackEnvironment` case) without a second lifetime parameter. The
 phantom is threaded through the full 16-file consumer cascade (retained lease / target-intent /
 SMTP coordinates → `'ClusterRetained'`; the `pulumi-stack/aws-ses` checkpoint → `'ChartLifetime'`;
-`gatewayModelBCasAdapter` left polymorphic in `l`). 🔄 **Increment B (deferred)**: retype the gateway
-transport to `'ChartLifetime'`-only, add the host-direct byte-compatible `'ClusterRetained'` adapter
-(a port of the daemon CAS over `HostDirectPulumiHandle` sharing a lifted `authorityLogicalObject`),
-cut `productionLeaseInterpreter` + the `AwsSesStack` transaction over to it, and add `OperationRecord`.
+`gatewayModelBCasAdapter` left polymorphic in `l`).
+✅ **Increment B byte-compat de-risk landed (2026-07-16)**: `authorityLogicalObject` — the single
+function mapping a retained-authority logical name to its `LogicalObject` (`pulumi-stack/*` →
+`LogicalPulumiStack`, else → `LogicalLongLivedState`) — is lifted from `Gateway/Daemon.hs` into the
+shared SSoT `Prodbox.Minio.EncryptedObject`, so the daemon and the future host-direct adapter route
+through ONE function and their sealed envelopes are byte-identical by construction (not merely "looks
+compatible"). `test/unit/AuthorityLogicalObjectTaxonomy.hs` pins the exact stored-key namespace
+(`long-lived-state/…` for lease / target-commit-intent / SMTP families; `pulumi-stack/…` for the
+checkpoint), the AAD (`clusterId|<stored-key>`), and the opaque-key HMAC derivation, so any drift
+that would silently orphan retained objects fails the build pre-cluster. 🔄 **Increment B remaining
+(indivisible, cluster-adjacent)**: retype the gateway transport to `'ChartLifetime'`-only, add the
+host-direct `'ClusterRetained'` adapter (a port of the daemon CAS over `HostDirectPulumiHandle`,
+now reusing the shared `authorityLogicalObject`), cut `productionLeaseInterpreter` + the `AwsSesStack`
+transaction over to it, and add `OperationRecord`.
 **Discovery**: Increment B's transport cutover and `OperationRecord` are MORE coupled than first
 scoped — a host-direct adapter would hold a MinIO port-forward across the entire ~70-minute lease
 bracket, so the bracket removal must land WITH the transport cutover, not after it.
+**Grounded + adversarially-verified Stage B–E plan (2026-07-18)**: an 8-agent design workflow
+deep-read every cutover site and produced a staged plan whose byte-compat hazards are
+*verified-mitigated*. The recommended shape adds a shared `src/Prodbox/Lifecycle/ModelBCasTransport.hs`
+seam (`modelBCasAdapterOverTransport`) that BOTH `gatewayModelBCasAdapter` and the new host-direct
+adapter delegate to — extending Stage A's structural byte-compat one level up (no second hand-maintained
+ModelB↔AuthorityObject translation copy). Stage B (host-direct adapter + suite) and Stage C
+(`OperationRecord` decide/evolve + canonical CBOR + suite) are additive and build green pre-cluster;
+Stage D is the ATOMIC retype of `gatewayModelBCasAdapter → 'ChartLifetime` breaking exactly seven
+sites (four move to host-direct: `LeaseRuntime` productionLeaseInterpreter + `AwsSesStack` target-commit
+/ smtp-observe / smtp-repair; two keep the `pulumi-stack/aws-ses` checkpoint on the retyped gateway
+adapter; one test) with GHC's type errors as the checklist. **The adversarial pass found a MATERIAL
+FLAW in the bracket-dissolution design**: `productionLeaseInterpreter` still needs a *reachable gateway
+daemon* for the authority-clock / wait-until / quiescence / lease acquire-release, so replacing the
+gateway port-forward with host-direct MinIO windows would fail lease acquisition — each window must
+keep the gateway forward open (nested) or reroute the authority clock host-direct. **Stage D's
+functional correctness (no double `CreateAccessKey` across a Window1↔Window2 interruption;
+cannot-observe → Ambiguous never re-fires) is Standard-O — provable only by a live
+`prodbox test all --substrate aws`.** Because Stage D is genuinely cluster-adjacent and the prior pass
+deliberately declined to land an unused byte-compat-critical adapter, Increment B remains a dedicated
+pass, now starting from this verified, flaw-corrected plan.
 **Independent Validation**: ✅ compile witness — the 16-file production cascade typechecks under the
 phantom index, and `test/unit/StoreLifetimeWitness.hs` positively exercises well-typed
 `'ClusterRetained'` and `'ChartLifetime'` round trips and documents the two cross-lifetime
@@ -4709,11 +4739,16 @@ synchronous HTTP bracket.
 - ✅ Increment A (the `StoreLifetime` phantom index, typed constructors, guard/object split
   resolution, 16-file consumer cascade, and the compile + byte-erasure witness) landed and validated
   2026-07-14.
-- 🔄 Increment B (dedicated pass, cluster-adjacent): the host-direct byte-compatible `'ClusterRetained'`
-  adapter, the gateway-transport retype to `'ChartLifetime'`, the `productionLeaseInterpreter` +
-  `AwsSesStack` transaction cutover, `OperationRecord`, the CAS taxonomy tables vs. an in-memory fake,
-  and the operation-record crash/replay tables. End-to-end host-PUT/daemon-GET byte-compat is
-  Standard-O; the pre-cluster half is pinned by a byte-compat taxonomy fixture.
+- ✅ Increment B byte-compat de-risk (2026-07-16): `authorityLogicalObject` lifted to the shared
+  `Prodbox.Minio.EncryptedObject` SSoT (daemon + future host-direct adapter share one function →
+  byte-identical envelopes by construction) + `AuthorityLogicalObjectTaxonomy.hs` pinning the exact
+  `long-lived-state/`/`pulumi-stack/` stored-key namespace, AAD, and opaque-key derivation. dev check
+  exit 0, unit PASS.
+- 🔄 Increment B remaining (indivisible, cluster-adjacent): the host-direct `'ClusterRetained'`
+  adapter (reusing the shared `authorityLogicalObject`), the gateway-transport retype to
+  `'ChartLifetime'`, the `productionLeaseInterpreter` + `AwsSesStack` transaction cutover,
+  `OperationRecord`, the CAS taxonomy tables vs. an in-memory fake, and the operation-record
+  crash/replay tables. End-to-end host-PUT/daemon-GET byte-compat is Standard-O.
 - Sprint `5.20` derives restore/cleanup edges from the storage-lifetime facts Increment A already
   registers; Sprint `4.50` deletes the legacy transports (and Increment B's gateway retype is the
   retained-SES subset of that removal landing early).

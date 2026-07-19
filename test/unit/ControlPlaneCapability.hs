@@ -12,9 +12,49 @@ module ControlPlaneCapability
   )
 where
 
+import Data.IORef (IORef, modifyIORef', newIORef, readIORef)
 import Data.Text (Text)
 import Numeric.Natural (Natural)
 import Prodbox.ControlPlane
+import Prodbox.ControlPlane.CapabilityRequirement
+  ( CapabilityProvisionSpec (..)
+  , CapabilityRequirementSpec (..)
+  , RequirementError (..)
+  , matchesProvision
+  , requirementOp
+  , resolveProvision
+  , resolveRequirement
+  )
+import Prodbox.ControlPlane.Deadline
+  ( Deadline
+  , RemainingDuration (RemainingDuration)
+  , RetryAfter (RetryAfter)
+  , deadlineAtOffset
+  , deadlineFromInstant
+  , monotonicInstantFromMicros
+  )
+import Prodbox.ControlPlane.Interpreter
+  ( CapabilityClient (..)
+  , CapabilityFailure
+    ( FailureAmbiguous
+    , FailureDeadlineExpired
+    , FailureRefused
+    , FailureSaturated
+    , FailureUnavailable
+    , FailureUnobservable
+    )
+  , CasRequest (casCoordinateDigest)
+  , LaneFault (LaneAmbiguous, LaneUnavailable)
+  , ObservedReading (..)
+  , QueueAdmission (Admitted, Saturated)
+  , runCapability
+  )
+import Prodbox.ControlPlane.SCapability
+  ( SomeSCapability (SomeSCapability)
+  , opToSCapability
+  , sCapabilityOp
+  , sCapabilityTier
+  )
 import Prodbox.Lifecycle.CheckpointAuthority (ModelBObjectVersion, mkModelBObjectVersion)
 import Prodbox.Lifecycle.Lease
   ( AuthorityTime
@@ -288,6 +328,318 @@ controlPlaneCapabilitySuite =
               binding
               `shouldSatisfy` isLeft
           other -> expectationFailure ("expected Ready, got " ++ verdictTag other)
+
+    describe "T8: SCapability singleton and requirement resolution" $ do
+      it "round-trips every operation through its singleton (39-kind consistency)" $
+        mapM_ singletonRoundTripsOp [minBound .. maxBound]
+
+      it "keeps the singleton tier in agreement with permitTier over the whole universe" $
+        mapM_ singletonTierAgreesWithPermitTier [minBound .. maxBound]
+
+      it "resolves a well-formed requirement spec to its operation" $
+        case resolveRequirement (requireSpec OpLifecycleCas "leases/aws-ses" 1) of
+          Right requirement -> requirementOp requirement `shouldBe` OpLifecycleCas
+          Left err -> expectationFailure ("unexpected requirement error: " ++ show err)
+
+      it "rejects a requirement whose coordinate field is empty (before any effect)" $
+        resolveRequirement (requireSpec OpLifecycleObserve "" 1) `shouldSatisfy` isCoordinateError
+
+      it "rejects a requirement whose generation is zero (before any effect)" $
+        resolveRequirement (requireSpec OpLifecycleObserve "leases/aws-ses" 0)
+          `shouldSatisfy` isGenerationError
+
+      it "matches a provision iff it answers the same operation at the same coordinate" $ do
+        let requirement = expectRight (resolveRequirement (requireSpec OpLifecycleCas "leases/aws-ses" 1))
+            sameProvision = expectRight (resolveProvision (provideSpec OpLifecycleCas "leases/aws-ses" 1))
+            otherLogical = expectRight (resolveProvision (provideSpec OpLifecycleCas "leases/aws-eks" 1))
+            otherOperation = expectRight (resolveProvision (provideSpec OpLifecycleObserve "leases/aws-ses" 1))
+        matchesProvision requirement sameProvision `shouldBe` True
+        matchesProvision requirement otherLogical `shouldBe` False
+        matchesProvision requirement otherOperation `shouldBe` False
+
+    describe "T9 (Validation #2): observe -> admit -> execute threads ONE reference" $ do
+      it "admitted execution uses the same opaque reference that produced the evidence" $ do
+        seen <- newIORef []
+        let client = fakeClient seen
+            expected = expectedAuthorityFromRef casRef
+            matchingFence =
+              FenceEvidence
+                { fenceOwner = expectRight (mkOwnerNonce "owner-1")
+                , fenceToken = expectRight (mkFencingToken 7)
+                , fenceVersion = ver "lease-etag"
+                , fenceDigest = refCoordinateDigest casRef
+                }
+        observeResult <-
+          runCapability client casRef openDeadline (Observe (FreshnessWindow 300))
+        case observeResult of
+          Left failure -> expectationFailure ("observe failed: " ++ show failure)
+          Right obs -> do
+            obsCoordinateDigest obs `shouldBe` refCoordinateDigest casRef
+            case classifyObservation freshNow expected obs of
+              VerdictReady ticket -> do
+                admissionCoordinateDigest ticket `shouldBe` refCoordinateDigest casRef
+                case authorizeInternalCas (gen 1) ticket matchingFence of
+                  Left refusal -> expectationFailure ("permit refused: " ++ show refusal)
+                  Right permit -> do
+                    permitCoordinateDigest permit `shouldBe` refCoordinateDigest casRef
+                    execResult <-
+                      runCapability
+                        client
+                        casRef
+                        openDeadline
+                        ( InternalCas
+                            permit
+                            (ExpectedVersion (ver "prev-etag"))
+                            (PayloadDigest (sha256TargetValueDigest "payload"))
+                        )
+                    case execResult of
+                      Left failure -> expectationFailure ("execute failed: " ++ show failure)
+                      Right outcome -> outcome `shouldBe` CasApplied (ver "cas-applied-1")
+                    laneDigests <- readIORef seen
+                    laneDigests
+                      `shouldBe` [refCoordinateDigest casRef, refCoordinateDigest casRef]
+              other -> expectationFailure ("expected Ready, got " ++ verdictTag other)
+
+      it "refuses to execute a permit not bound to the execution reference" $ do
+        seen <- newIORef []
+        let client = fakeClient seen
+            otherRef = mkCapabilityRef otherCoordinate :: CapabilityRef 'LifecycleCas
+            expectedOther = expectedAuthorityFromRef otherRef
+            otherFence =
+              FenceEvidence
+                { fenceOwner = expectRight (mkOwnerNonce "owner-1")
+                , fenceToken = expectRight (mkFencingToken 7)
+                , fenceVersion = ver "lease-etag"
+                , fenceDigest = refCoordinateDigest otherRef
+                }
+        observeResult <-
+          runCapability client otherRef openDeadline (Observe (FreshnessWindow 300))
+        case observeResult of
+          Left failure -> expectationFailure ("observe failed: " ++ show failure)
+          Right obs ->
+            case classifyObservation freshNow expectedOther obs of
+              VerdictReady ticket ->
+                case authorizeInternalCas (gen 1) ticket otherFence of
+                  Left refusal -> expectationFailure ("permit refused: " ++ show refusal)
+                  Right permit -> do
+                    execResult <-
+                      runCapability
+                        client
+                        casRef
+                        openDeadline
+                        ( InternalCas
+                            permit
+                            (ExpectedVersion (ver "prev-etag"))
+                            (PayloadDigest (sha256TargetValueDigest "payload"))
+                        )
+                    case execResult of
+                      Left (FailureRefused _) -> pure ()
+                      Left other -> expectationFailure ("expected FailureRefused, got " ++ show other)
+                      Right outcome -> expectationFailure ("expected FailureRefused, got " ++ show outcome)
+              other -> expectationFailure ("expected Ready, got " ++ verdictTag other)
+
+      it "fails closed on an expired monotonic deadline before touching any lane" $ do
+        seen <- newIORef []
+        let client = fakeClient seen
+            expiredDeadline = deadlineFromInstant (monotonicInstantFromMicros 0)
+        expiredResult <-
+          runCapability client casRef expiredDeadline (Observe (FreshnessWindow 300))
+        case expiredResult of
+          Left FailureDeadlineExpired -> do
+            laneDigests <- readIORef seen
+            laneDigests `shouldBe` []
+          Left other -> expectationFailure ("expected FailureDeadlineExpired, got " ++ show other)
+          Right obs ->
+            expectationFailure
+              ("expected FailureDeadlineExpired, got observation " ++ show (obsCoordinateDigest obs))
+
+    describe "T10: interpreter failure-arm mapping (regression guard for ambiguous-vs-did-not-run)" $ do
+      it "refuses admission fast with FailureSaturated" $ do
+        result <-
+          runCapability
+            (faultClient (Saturated (RetryAfter 1000)) (Right observedFixture) unusedCas)
+            casRef
+            openDeadline
+            (Observe (FreshnessWindow 300))
+        case result of
+          Left (FailureSaturated _) -> pure ()
+          Left other -> expectationFailure ("expected FailureSaturated, got " ++ show other)
+          Right _ -> expectationFailure "expected FailureSaturated, got an observation"
+
+      it "folds an observe lane fault to FailureUnobservable (fail-closed), both variants" $ do
+        unavailable <-
+          runCapability
+            (faultClient Admitted (Left (LaneUnavailable "down")) unusedCas)
+            casRef
+            openDeadline
+            (Observe (FreshnessWindow 300))
+        ambiguous <-
+          runCapability
+            (faultClient Admitted (Left (LaneAmbiguous "lost")) unusedCas)
+            casRef
+            openDeadline
+            (Observe (FreshnessWindow 300))
+        assertUnobservable unavailable
+        assertUnobservable ambiguous
+
+      it "maps a CAS lane 'never left' to FailureUnavailable (safe to retry)" $ do
+        result <-
+          runCapability
+            (faultClient Admitted (Right observedFixture) (Left (LaneUnavailable "connection refused")))
+            casRef
+            openDeadline
+            ( InternalCas
+                mintedCasPermit
+                (ExpectedVersion (ver "prev-etag"))
+                (PayloadDigest (sha256TargetValueDigest "payload"))
+            )
+        case result of
+          Left (FailureUnavailable _) -> pure ()
+          other -> expectationFailure ("expected FailureUnavailable, got " ++ show other)
+
+      it "maps a CAS lost response to FailureAmbiguous (indeterminate, never retryable-as-did-not-run)" $ do
+        result <-
+          runCapability
+            (faultClient Admitted (Right observedFixture) (Left (LaneAmbiguous "response lost")))
+            casRef
+            openDeadline
+            ( InternalCas
+                mintedCasPermit
+                (ExpectedVersion (ver "prev-etag"))
+                (PayloadDigest (sha256TargetValueDigest "payload"))
+            )
+        case result of
+          Left (FailureAmbiguous _) -> pure ()
+          other -> expectationFailure ("expected FailureAmbiguous, got " ++ show other)
+
+observedFixture :: ObservedReading
+observedFixture =
+  ObservedReading
+    { observedService = field mkServiceIdentity "lifecycle-authority"
+    , observedAuthority = field mkAuthorityScope "home/prodbox"
+    , observedGeneration = gen 1
+    , observedAt = t0
+    , observedEvidence = roundTripEvidence
+    }
+
+fakeClient :: IORef [CoordinateDigest] -> CapabilityClient
+fakeClient seen =
+  CapabilityClient
+    { clientCurrentGeneration = gen 1
+    , clientMonotonicNow = pure (monotonicInstantFromMicros 0)
+    , clientAdmit = const (pure Admitted)
+    , clientObserve = \_op coordinate _freshness _remaining -> do
+        modifyIORef' seen (coordinateDigest coordinate :)
+        pure (Right observedFixture)
+    , clientInternalCas = \_op _coordinate request -> do
+        modifyIORef' seen (casCoordinateDigest request :)
+        pure (Right (CasApplied (ver "cas-applied-1")))
+    , clientExternalCommit = \_op _coordinate _request ->
+        pure (Right (CommitApplied "unused"))
+    }
+
+openDeadline :: Deadline
+openDeadline = deadlineAtOffset (monotonicInstantFromMicros 0) (RemainingDuration 5_000_000)
+
+-- | A fault-injecting client for the failure-arm regression tests: fixed
+-- monotonic clock at 0, injected admission + observe/CAS lane results.
+faultClient
+  :: QueueAdmission
+  -> Either LaneFault ObservedReading
+  -> Either LaneFault CasOutcome
+  -> CapabilityClient
+faultClient admission observeResult casResult =
+  CapabilityClient
+    { clientCurrentGeneration = gen 1
+    , clientMonotonicNow = pure (monotonicInstantFromMicros 0)
+    , clientAdmit = const (pure admission)
+    , clientObserve = \_op _coordinate _freshness _remaining -> pure observeResult
+    , clientInternalCas = \_op _coordinate _request -> pure casResult
+    , clientExternalCommit = \_op _coordinate _request -> pure (Right (CommitApplied "unused"))
+    }
+
+-- | A CAS lane result used where the observe path is the subject (never reached).
+unusedCas :: Either LaneFault CasOutcome
+unusedCas = Right (CasApplied (ver "unused"))
+
+assertUnobservable :: Either CapabilityFailure a -> Expectation
+assertUnobservable (Left (FailureUnobservable _)) = pure ()
+assertUnobservable (Left other) = expectationFailure ("expected FailureUnobservable, got " ++ show other)
+assertUnobservable (Right _) = expectationFailure "expected FailureUnobservable, got a success"
+
+-- | A writer permit validly minted for 'casRef' (via the real observe -> admit ->
+-- authorize chain), so the CAS failure-arm tests exercise the LANE mapping, not
+-- the same-reference guard.
+mintedCasPermit :: WriterPermit 'LifecycleCas
+mintedCasPermit =
+  case classifyObservation
+    freshNow
+    (expectedAuthorityFromRef casRef)
+    (observationFromRef casRef readingForCasRef) of
+    VerdictReady ticket ->
+      case authorizeInternalCas (gen 1) ticket casFenceForCasRef of
+        Right permit -> permit
+        Left refusal -> error ("mintedCasPermit: unexpected refusal " ++ show refusal)
+    other -> error ("mintedCasPermit: expected Ready, got " ++ verdictTag other)
+
+casFenceForCasRef :: FenceEvidence
+casFenceForCasRef =
+  FenceEvidence
+    { fenceOwner = expectRight (mkOwnerNonce "owner-1")
+    , fenceToken = expectRight (mkFencingToken 7)
+    , fenceVersion = ver "lease-etag"
+    , fenceDigest = refCoordinateDigest casRef
+    }
+
+readingForCasRef :: ObservationReading
+readingForCasRef =
+  ObservationReading
+    { readingService = field mkServiceIdentity "lifecycle-authority"
+    , readingAuthority = field mkAuthorityScope "home/prodbox"
+    , readingGeneration = gen 1
+    , readingObservedAt = t0
+    , readingFreshnessBound = FreshnessWindow 300
+    , readingEvidence = roundTripEvidence
+    }
+
+singletonRoundTripsOp :: CapabilityOp -> Expectation
+singletonRoundTripsOp op = case opToSCapability op of
+  SomeSCapability singleton -> sCapabilityOp singleton `shouldBe` op
+
+singletonTierAgreesWithPermitTier :: CapabilityOp -> Expectation
+singletonTierAgreesWithPermitTier op = case opToSCapability op of
+  SomeSCapability singleton -> sCapabilityTier singleton `shouldBe` permitTier op
+
+requireSpec :: CapabilityOp -> Text -> Natural -> CapabilityRequirementSpec
+requireSpec op logical generation =
+  CapabilityRequirementSpec
+    { specRequireCapability = op
+    , specRequireService = "lifecycle-authority"
+    , specRequireScope = "home/prodbox"
+    , specRequireEndpoint = "127.0.0.1:30443"
+    , specRequireLogical = logical
+    , specRequireGeneration = generation
+    , specRequireLatencyMicros = 5_000_000
+    }
+
+provideSpec :: CapabilityOp -> Text -> Natural -> CapabilityProvisionSpec
+provideSpec op logical generation =
+  CapabilityProvisionSpec
+    { specProvideCapability = op
+    , specProvideService = "lifecycle-authority"
+    , specProvideScope = "home/prodbox"
+    , specProvideEndpoint = "127.0.0.1:30443"
+    , specProvideLogical = logical
+    , specProvideGeneration = generation
+    }
+
+isCoordinateError :: Either RequirementError a -> Bool
+isCoordinateError (Left (RequirementCoordinateInvalid _)) = True
+isCoordinateError _ = False
+
+isGenerationError :: Either RequirementError a -> Bool
+isGenerationError (Left (RequirementGenerationInvalid _)) = True
+isGenerationError _ = False
 
 isLeft :: Either a b -> Bool
 isLeft = either (const True) (const False)

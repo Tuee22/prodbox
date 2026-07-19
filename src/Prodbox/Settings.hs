@@ -53,6 +53,9 @@ module Prodbox.Settings
   , validateAndLoadSettingsAtPath
   , validateAndLoadBootstrapSettings
   , validateAndLoadSettingsWithVaultToken
+  , certDnsNamesForServedHost
+  , certScopeSetForServedHost
+  , validateConfiguredCertScope
   , validateOperationalAwsCredentials
   , validatePublicEdgeDeployment
   , validateTestTopology
@@ -64,6 +67,7 @@ import Data.ByteString (ByteString)
 import Data.ByteString qualified as BS
 import Data.Char (isDigit, isHexDigit, toLower)
 import Data.Char qualified as Char
+import Data.List (intercalate)
 import Data.Map.Strict qualified as Map
 import Data.Text (Text)
 import Data.Text qualified as Text
@@ -164,6 +168,16 @@ import Prodbox.TestTopology
   , renderTestTopologyError
   , validateTestTopology
   )
+import Prodbox.Tls.CertScope
+  ( CertScope (..)
+  , CertScopeSet
+  , bindListener
+  , certScopeSetDnsNames
+  , mkDelegatedZone
+  , mkFqdn
+  , mkScopeSet
+  , renderScopeError
+  )
 import Prodbox.Vault.Client
   ( VaultAddress (..)
   , VaultToken
@@ -244,6 +258,13 @@ data SesSection = SesSection
 data DomainSection = DomainSection
   { demo_fqdn :: Text
   , demo_ttl :: Natural
+  , cert_scopes :: [Text]
+  -- ^ Sprint 2.35: the operator-configured certificate scope set, each entry an
+  -- exact host (@vscode.example.com@) or a single-label wildcard (@*.example.com@)
+  -- anchored at a delegated zone. Empty means "just the served host"
+  -- ('demo_fqdn') — today's behavior — so widening scope is opt-in. Validated
+  -- fail-closed by 'validateConfiguredCertScope': an uncovered served host or a
+  -- wildcard at an undelegated zone is unrepresentable on the managed side.
   }
   deriving (Eq, Show, Generic, FromDhall, ToDhall)
 
@@ -1011,7 +1032,7 @@ validateConfig repoRoot config = do
 -- block still decodes config for every local cluster command.
 validateLocalConfig :: ConfigFile -> Either String ()
 validateLocalConfig config = do
-  validateSupportedPublicHost (demo_fqdn (domain config))
+  validateConfiguredCertScope (domain config) (aws_substrate config)
   validateDemoTtl (demo_ttl (domain config))
   validateAwsCredentialsRef "aws" (aws config)
   validatePublicEdgeDeployment (deployment config)
@@ -1160,18 +1181,85 @@ ipv6GroupWidth :: [Text] -> Int
 ipv6GroupWidth =
   sum . map (\group -> if isValidIpv4Literal group then 2 else 1)
 
-validateSupportedPublicHost :: Text -> Either String ()
-validateSupportedPublicHost value
-  | normalized == "" = Left "domain.demo_fqdn must not be empty"
-  | lowerValue /= Text.toLower supportedPublicHostname =
-      Left
-        ( "domain.demo_fqdn must be "
-            ++ Text.unpack supportedPublicHostname
-        )
-  | otherwise = Right ()
+-- | Sprint 2.35: the served host must be covered by the configured certificate
+-- scope set, and every configured scope must be well-formed — a wildcard only at
+-- a delegated zone. Empty @cert_scopes@ means "just the served host", so the
+-- default is behavior-identical to the pre-2.35 single-host pin (which is why no
+-- widening happens until an operator adds a scope). Illegal states — an uncovered
+-- served host, a malformed name, a wildcard at an undelegated zone — are rejected
+-- fail-closed at config-validation time.
+validateConfiguredCertScope :: DomainSection -> AwsSubstrateSection -> Either String ()
+validateConfiguredCertScope domainSection awsSection
+  | Text.null (Text.strip (demo_fqdn domainSection)) =
+      Left "domain.demo_fqdn must not be empty"
+  | otherwise = do
+      servedHost <-
+        mapLeft (\e -> "domain.demo_fqdn: " ++ renderScopeError e) (mkFqdn (demo_fqdn domainSection))
+      scopeSet <- configuredCertScopeSet domainSection awsSection
+      mapLeft (\e -> "domain.cert_scopes: " ++ renderScopeError e) (bindListener scopeSet servedHost)
+
+-- | Build the configured 'CertScopeSet' from Tier-0 config. Delegated zones are
+-- config-anchored (the served host's parent zone and, when set, the AWS subzone
+-- plus its parent) — never the Public Suffix List. Empty @cert_scopes@ defaults
+-- to the single exact served host.
+configuredCertScopeSet :: DomainSection -> AwsSubstrateSection -> Either String CertScopeSet
+configuredCertScopeSet domainSection awsSection =
+  certScopeSetForServedHost domainSection awsSection (demo_fqdn domainSection)
+
+-- | The configured 'CertScopeSet' as seen from a specific served host (the home
+-- served host on the home substrate, the AWS subzone on the AWS substrate). The
+-- delegated-zone anchors are the same config-declared set; only the empty-scope
+-- default changes — an empty @cert_scopes@ means "just this served host", so
+-- each substrate's certificate defaults to exactly its own served FQDN and there
+-- is no behavior change until an operator widens scope. Sprint 2.35.
+certScopeSetForServedHost
+  :: DomainSection -> AwsSubstrateSection -> Text -> Either String CertScopeSet
+certScopeSetForServedHost domainSection awsSection servedHost = do
+  zones <- traverse parseZone (configuredDelegatedZoneNames domainSection awsSection)
+  scopes <- traverse parseScope rawScopeNames
+  mapLeft renderScopeError (mkScopeSet zones scopes)
  where
-  normalized = Text.unpack (Text.strip value)
-  lowerValue = Text.toLower (Text.strip value)
+  rawScopeNames =
+    case filter (not . Text.null . Text.strip) (cert_scopes domainSection) of
+      [] -> [servedHost]
+      configured -> configured
+  parseZone name =
+    mapLeft (\e -> "cert-scope delegated zone: " ++ renderScopeError e) (mkDelegatedZone name)
+  parseScope raw =
+    case Text.stripPrefix "*." (Text.strip raw) of
+      Just zoneName ->
+        mapLeft
+          (\e -> "domain.cert_scopes wildcard: " ++ renderScopeError e)
+          (ScopeWildcard <$> mkDelegatedZone zoneName)
+      Nothing ->
+        mapLeft
+          (\e -> "domain.cert_scopes: " ++ renderScopeError e)
+          (ScopeExact <$> mkFqdn (Text.strip raw))
+
+-- | The certificate @dnsNames@ list a served host projects to under the
+-- configured scope set — the single source the keycloak public-edge Certificate
+-- template derives from (Sprint 2.35). Empty @cert_scopes@ yields exactly the
+-- served host, so the rendered dnsNames are behavior-identical until an operator
+-- widens scope.
+certDnsNamesForServedHost
+  :: DomainSection -> AwsSubstrateSection -> Text -> Either String [Text]
+certDnsNamesForServedHost domainSection awsSection servedHost =
+  certScopeSetDnsNames <$> certScopeSetForServedHost domainSection awsSection servedHost
+
+-- | The delegated zones the configured wildcards may anchor at: the served
+-- host's parent zone, plus (on the AWS substrate) the subzone and its parent.
+configuredDelegatedZoneNames :: DomainSection -> AwsSubstrateSection -> [Text]
+configuredDelegatedZoneNames domainSection awsSection =
+  filter (not . Text.null) $
+    parentZoneName (demo_fqdn domainSection)
+      : ( let subzone = Text.strip (subzone_name awsSection)
+           in if Text.null subzone then [] else [subzone, parentZoneName subzone]
+        )
+
+-- | The parent zone of a name — everything after the first label; empty when the
+-- name has fewer than two labels.
+parentZoneName :: Text -> Text
+parentZoneName name = Text.drop 1 (Text.dropWhile (/= '.') (Text.strip name))
 
 validateDemoTtl :: Natural -> Either String ()
 validateDemoTtl ttl
@@ -1409,6 +1497,7 @@ defaultConfigFile =
         DomainSection
           { demo_fqdn = supportedPublicHostname
           , demo_ttl = 60
+          , cert_scopes = []
           }
     , acme =
         AcmeSection
@@ -1466,6 +1555,7 @@ renderConfigDhall config =
     , "    , domain = Config.default.domain // {"
     , "        , demo_fqdn = " ++ dhallText (demo_fqdn (domain config))
     , "        , demo_ttl = " ++ show (demo_ttl (domain config))
+    , "        , cert_scopes = " ++ dhallTextList (cert_scopes (domain config))
     , "        }"
     , "    , acme = Config.default.acme // {"
     , "        , email = " ++ dhallText (email (acme config))
@@ -1514,6 +1604,11 @@ renderConfigDhall config =
 
 dhallText :: Text -> String
 dhallText = show . Text.unpack
+
+-- | Render a @List Text@ Dhall literal; an empty list needs its type annotation.
+dhallTextList :: [Text] -> String
+dhallTextList [] = "([] : List Text)"
+dhallTextList values = "[ " ++ intercalate ", " (map dhallText values) ++ " ]"
 
 dhallOptionalText :: Maybe Text -> String
 dhallOptionalText maybeValue =

@@ -109,6 +109,7 @@ import Prodbox.CLI.Vault (runVaultBootstrapViaDaemonAt)
 import Prodbox.Config.ComponentGraph
   ( ComponentDag
   , ComponentId (..)
+  , componentCapabilityRequirement
   , componentDagEdges
   , componentIdText
   , defaultComponentGraph
@@ -116,6 +117,8 @@ import Prodbox.Config.ComponentGraph
   , readiness
   )
 import Prodbox.ContainerImage qualified as ContainerImage
+import Prodbox.ControlPlane.CapabilityRequirement (requirementCoordinate')
+import Prodbox.ControlPlane.Coordinate (coordGeneration)
 import Prodbox.Error (fatalError)
 import Prodbox.Gateway.PortForward
   ( GatewayServicePortForward (..)
@@ -158,6 +161,10 @@ import Prodbox.Lifecycle.AnchoredReconcile
   , compileAnchoredOrder
   , runAnchoredStepOrder
   )
+import Prodbox.Lifecycle.CapabilityReadinessBarrier
+  ( newReadinessObservationClient
+  , observeReadinessThroughCapability
+  )
 import Prodbox.Lifecycle.EbsVolume qualified as EbsVolume
 import Prodbox.Lifecycle.LiveResidue
   ( awsEksTestStackName
@@ -167,7 +174,6 @@ import Prodbox.Lifecycle.ReadinessObservation
   ( ComponentReadinessTarget (..)
   , ReadinessProbeResult (..)
   , componentReadinessRetryPolicy
-  , waitForComponentReadiness
   )
 import Prodbox.PublicEdge (publicEdgeClusterIssuerName, resolveSubstrateHostedZoneId)
 import Prodbox.Result (Result (..))
@@ -1226,22 +1232,33 @@ requireAwsComponentReadiness
   -> ComponentId
   -> IO ExitCode
 requireAwsComponentReadiness repoRoot dag endpoint component =
-  case lookupComponentNode component dag of
-    Nothing ->
+  case (lookupComponentNode component dag, componentCapabilityRequirement component dag) of
+    (Nothing, _) ->
       failWith
         ( "AWS-substrate readiness has no graph node for component `"
             ++ componentIdText component
             ++ "`."
         )
-    Just node ->
+    (_, Nothing) ->
+      failWith
+        ( "AWS-substrate readiness has no capability requirement for component `"
+            ++ componentIdText component
+            ++ "`."
+        )
+    (Just node, Just requirement) ->
       case awsComponentReadinessTarget repoRoot endpoint component of
         Left reason -> failWith (Text.unpack reason)
         Right target -> do
+          -- Sprint 1.61: same shared capability-handle routing as the native
+          -- driver (see 'Prodbox.CLI.Rke2.requireNativeComponentReadiness'); the
+          -- AWS probe I/O ('awsComponentReadinessTarget') is unchanged.
+          let client =
+                newReadinessObservationClient
+                  (coordGeneration (requirementCoordinate' requirement))
+                  (readiness node)
+                  target
           result <-
-            waitForComponentReadiness
-              componentReadinessRetryPolicy
-              target
-              (readiness node)
+            observeReadinessThroughCapability componentReadinessRetryPolicy client requirement
           case result of
             Right () -> pure ExitSuccess
             Left detail ->

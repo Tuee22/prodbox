@@ -5,6 +5,9 @@ module Prodbox.Host
   , PortStatus (..)
   , NtpDisposition (..)
   , FirewallRuleAction (..)
+  , CertExpiryRung (..)
+  , certExpiryRungText
+  , classifyCertificateExpiry
   , detectLanAddressing
   , renderPortAvailabilityReport
   , parseTimedatectlNtpDisposition
@@ -33,6 +36,8 @@ import Data.Maybe (mapMaybe)
 import Data.Set (Set)
 import Data.Set qualified as Set
 import Data.Text qualified as Text
+import Data.Time.Clock (UTCTime, getCurrentTime)
+import Data.Time.Format.ISO8601 (iso8601ParseM)
 import Data.Vector qualified as Vector
 import Network.Socket
   ( AddrInfo (..)
@@ -134,6 +139,7 @@ data EdgeRuntime = EdgeRuntime
   , edgeHarborSecurityPolicyAttached :: Bool
   , edgeMinioSecurityPolicyAttached :: Bool
   , edgeCertificateReady :: String
+  , edgeCertificateExpiry :: String
   }
   deriving (Eq, Show)
 
@@ -382,6 +388,7 @@ runHostPublicEdge repoRoot substrate = do
                       case reconciledRoute53RecordIpsResult of
                         Left err -> failWith err
                         Right reconciledRoute53RecordIps -> do
+                          now <- getCurrentTime
                           let runtime =
                                 EdgeRuntime
                                   { edgeSubstrate = substrate
@@ -416,6 +423,8 @@ runHostPublicEdge repoRoot substrate = do
                                   , edgeHarborSecurityPolicyAttached = securityPolicyAttached "harbor-ui" harborSecurityPolicyDoc
                                   , edgeMinioSecurityPolicyAttached = securityPolicyAttached "minio-console" minioSecurityPolicyDoc
                                   , edgeCertificateReady = certificateReady certificateDoc
+                                  , edgeCertificateExpiry =
+                                      certExpiryRungText (classifyCertificateExpiry now certificateDoc)
                                   }
                           writeOutput (renderPublicEdgeReport runtime)
                           (vaultLine, _vaultExit) <- probeVaultStatusLine hostVaultAddress
@@ -481,6 +490,7 @@ renderPublicEdgeReport runtime =
     , "HARBOR_SECURITY_POLICY_ATTACHED=" ++ boolText (edgeHarborSecurityPolicyAttached runtime)
     , "MINIO_SECURITY_POLICY_ATTACHED=" ++ boolText (edgeMinioSecurityPolicyAttached runtime)
     , "CERTIFICATE_READY=" ++ edgeCertificateReady runtime
+    , "CERTIFICATE_EXPIRY=" ++ edgeCertificateExpiry runtime
     , "PRIVATE_EDGE_READY=" ++ boolText privateEdgeReady
     , "CLASSIFICATION=" ++ classification
     ]
@@ -1021,6 +1031,62 @@ certificateReady maybeValue =
             _ -> "unknown"
         _ -> "unknown"
     _ -> "unknown"
+
+-- | Sprint 2.35: the observed certificate-expiry rung for the public-edge
+-- certificate. Fail-closed: an absent/unparseable @status.notAfter@ or
+-- @status.renewalTime@ is 'CertExpiryUnobservable', not "current". prodbox
+-- never recomputes the renewal window (that would drift from the chart's
+-- @renewBefore@ and from cert-manager's own decision) — it reads cert-manager's
+-- committed @status.renewalTime@ / @status.notAfter@ and only compares them to
+-- now. Renewal itself stays cert-manager's / ZeroSSL's alone.
+data CertExpiryRung
+  = -- | @now < renewalTime <= notAfter@: nothing to do.
+    CertExpiryCurrent
+  | -- | @renewalTime <= now < notAfter@: cert-manager should be renewing.
+    CertExpiryRenewDue
+  | -- | @notAfter <= now@: the served certificate has expired.
+    CertExpiryExpired
+  | -- | A required status timestamp is absent or unparseable.
+    CertExpiryUnobservable
+  deriving (Eq, Show)
+
+certExpiryRungText :: CertExpiryRung -> String
+certExpiryRungText rung = case rung of
+  CertExpiryCurrent -> "certificate-current"
+  CertExpiryRenewDue -> "certificate-renew-due"
+  CertExpiryExpired -> "certificate-expired"
+  CertExpiryUnobservable -> "certificate-unobservable"
+
+-- | Read an RFC3339 @status@ timestamp field off the Certificate document.
+certStatusTime :: KeyMap.KeyMap Value -> Key.Key -> Maybe UTCTime
+certStatusTime statusObj key =
+  case KeyMap.lookup key statusObj of
+    Just (String value) -> iso8601ParseM (Text.unpack value)
+    _ -> Nothing
+
+-- | Classify the public-edge certificate's expiry from its cert-manager
+-- document at the given wall-clock instant. Expiry (from @notAfter@) is
+-- terminal and takes priority; then renewal-due (from @renewalTime@); a missing
+-- required timestamp is unobservable.
+classifyCertificateExpiry :: UTCTime -> Maybe Value -> CertExpiryRung
+classifyCertificateExpiry now maybeValue =
+  case maybeValue of
+    Just (Object obj)
+      | Just (Object statusObj) <- KeyMap.lookup "status" obj ->
+          classifyFromStatus statusObj
+    _ -> CertExpiryUnobservable
+ where
+  classifyFromStatus statusObj =
+    case certStatusTime statusObj "notAfter" of
+      Nothing -> CertExpiryUnobservable
+      Just notAfter
+        | now >= notAfter -> CertExpiryExpired
+        | otherwise ->
+            case certStatusTime statusObj "renewalTime" of
+              Nothing -> CertExpiryUnobservable
+              Just renewalTime
+                | now >= renewalTime -> CertExpiryRenewDue
+                | otherwise -> CertExpiryCurrent
 
 conditionReady :: [Value] -> String
 conditionReady [] = "unknown"

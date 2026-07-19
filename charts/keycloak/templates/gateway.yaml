@@ -20,7 +20,9 @@ spec:
     kind: ClusterIssuer
     name: {{ .Values.gateway.clusterIssuer | quote }}
   dnsNames:
-    - {{ .Values.gateway.host | quote }}
+    {{- range .Values.gateway.certDnsNames }}
+    - {{ . | quote }}
+    {{- end }}
 ---
 apiVersion: gateway.networking.k8s.io/v1
 kind: Gateway

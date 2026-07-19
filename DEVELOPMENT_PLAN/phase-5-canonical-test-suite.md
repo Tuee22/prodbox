@@ -1642,15 +1642,43 @@ cleanup across the whole suite run.
 - Link the qualification artifact to Standard O's scoped phase-completion rule and the separate
   deployment-qualification standard.
 
-## Sprint 5.20: Derived Restore Graph and Total Executor [📋 Planned]
+## Sprint 5.20: Derived Restore Graph and Total Executor [✅ Done]
 
-**Status**: Planned
+**Status**: Done — the pure `RestoreGraph.hs` module (derived edges + total executor + the three
+totality proofs) landed 2026-07-15, and the `TestRunner.hs` live wiring that replaces the fail-fast
+fold with this executor landed 2026-07-18. The end-to-end aggregate-report exercise through
+`prodbox test all` is the non-blocking Standard-O live axis.
+**Live-proof**: pending — the total executor keeping an independent app-chart restoration alive
+across a retained-SES failure is exercised end-to-end only by `prodbox test all`.
 **Deployment qualification**: pending
-**Implementation**: planned `src/Prodbox/Lifecycle/RestoreGraph.hs`; revisions to
-`src/Prodbox/TestRestore.hs` and `src/Prodbox/TestRunner.hs`
-**Independent Validation**: pure coverage/independence/orphan-scan suites that fail against the
-current flat-list wiring and pass against the derived graph; executor totality property with a fake
-interpreter; all pre-cluster.
+**Implementation**: ✅ **pure core + live wiring landed** — new `src/Prodbox/Lifecycle/RestoreGraph.hs`: a
+`RestoreNodeId`/`RestoreNode` graph whose `RequiresSuccess`/`RequiresAttempt` edges are DERIVED by a
+rule set over chart-dependency and storage-lifetime facts (each node tagged with a 4.51-A
+`StoreLifetime` transport + reads lifetime), `buildRestoreGraph`, and a total `runRestoreGraphWith`
+that runs every satisfiable node, records `NodeBlocked` with the offending ids, aggregates every
+outcome into a `RestoreReport`, and never stops early. The independence fix is structural: each
+app-chart restoration `RequiresSuccess` only the gateway restoration, never the retained-SES node
+(`ClusterRetained`), so a retained-SES failure cannot discard an independent chart. `RestoreChart`
+gained `Ord` (natural for its `Enum`). ✅ **Live wiring landed (2026-07-18)**: `restoreCycleActions`
+in `src/Prodbox/TestRunner.hs` now returns one `runDerivedRestoreGraph` action that drives the restore
+from `runRestoreGraphWith` over `buildRestoreGraphForPlan` (replacing the `map … restoreCycleSteps`
+fed to the fail-fast `runSequentially`); each node dispatches through the unchanged
+`restoreCycleStepActionWithGatewayStability` (preserving the runtime-stability recorder bracketing),
+and `projectRestoreReport` writes the full per-node outcome table and returns the first node failure's
+exit code. The whole cycle is one action so the surrounding suite fold still fails fast AFTER a failed
+restore while the restore INTERNALLY runs to completion. New pure bridges
+`restoreCycleStepNodeId` / `restoreCyclePlanRequirement` / `buildRestoreGraphForPlan` keep the
+graph derivation and the live dispatch on one bijection.
+**Independent Validation**: ✅ pure suites landed in `test/unit/RestoreGraphSuite.hs`: coverage
+(node set == derived expectation; a dropped node fails), independence (no chart-lifetime node
+`RequiresSuccess`-depends on the retained-SES node, and the negative fixture proving the check catches
+a wrongly-gated chart), orphan scan (no node reads retained state through a chart-lifetime transport),
+the total-executor property with a fake `Identity` interpreter — proving every satisfiable node
+runs, the independent app charts survive a retained-SES failure (the `F-RESTORE` proof), and every
+outcome lands in the aggregate report — and the **plan-wiring bijection** (every plan step maps to a
+distinct graph node id for both requirements, and `restoreCyclePlanRequirement` recovers the
+requirement from the plan) that proves the live executor's per-node dispatch is total. `prodbox dev
+check` exit 0, unit 1797/1797 (2026-07-18).
 **Docs to update**: `documents/engineering/lifecycle_reconciliation_doctrine.md`,
 `documents/engineering/integration_fixture_doctrine.md`, and
 `documents/engineering/unit_testing_policy.md`
@@ -1685,7 +1713,14 @@ position.
 
 ### Remaining Work
 
-- Implementation is planned; the code-owned closure needs no live cluster (Standard O).
+- ✅ The pure code-owned closure (`RestoreGraph.hs` + `RestoreGraphSuite.hs`) landed + validated
+  2026-07-15; it needs no live cluster (Standard O).
+- ✅ The `TestRunner.hs` wiring (`runDerivedRestoreGraph` + `projectRestoreReport`, replacing the
+  fail-fast fold) landed 2026-07-18 with the plan-wiring bijection proof; it typechecks warning-clean
+  and its dispatch totality is unit-proven pre-cluster.
+- 🧪 The end-to-end exercise — a real `prodbox test all` in which the total executor keeps an
+  independent app-chart restoration alive across a retained-SES failure and surfaces the aggregate
+  `RestoreReport` — is the non-blocking Standard-O live axis.
 - Sprint `5.18` remains separately blocked by Sprint `4.50` and later composes its capability-bound
   cleanup DAG over the same restore surface; the Foundation Epoch introduces no `Blocked by` edge
   between them.

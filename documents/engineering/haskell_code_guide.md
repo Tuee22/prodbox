@@ -405,6 +405,33 @@ default and config-selectable rollback until the native client's live-MinIO pari
 it is deleted through the legacy ledger. The signing algebra is pure and testable; the live parity is
 a Standard-O live-proof axis.
 
+### Native SigV4 AWS service clients (Sprint 1.62)
+
+The IAM, STS, Route 53, and Service Quotas clients follow the same pattern — **no `amazonka`, no new
+dependency**. `Prodbox.Aws.Native.Wire` hoists one shared signer over `Prodbox.Aws.SigV4` (with the
+signed header set folding in `x-amz-security-token`, `content-type`, and `x-amz-target`), a
+`NativeAwsSender` send seam (the sole toucher of the shared TLS `Manager`, injectable so fake
+protocol servers drive the true sign→classify pipeline pre-cluster), and the `AwsClientError`
+outcome classifier. Each service module (`Prodbox.Aws.Native.{Sts,Iam,Route53,ServiceQuotas}`)
+exposes a **closed record of operations** built by `mk*Client handle sender`, so a fake record drives
+tests; XML responses are hand-parsed via `Prodbox.Aws.Native.Xml` (the `ObjectStoreNative` substring
+extractor) and JSON via `aeson`.
+
+Two disciplines are load-bearing:
+
+- **Credentials are a validated linear handle**, `Prodbox.Aws.CredentialHandle`: phantom-indexed by
+  origin (`'OriginBase`/`'OriginAssumedRole`), unserializable, redacting every secret on `Show`,
+  with no exported base→session widening — a base handle becomes a session handle only through a real
+  (or fake) STS round trip, so `sts:AssumeRole`'s temporary session is a *distinct* handle at the
+  type level. Native clients take the handle as an argument and never read the `aws` CLI, profiles,
+  temp files, or Pod credential env; a source-scan unit test enforces the absence of every such seam.
+- **A mutation whose outcome is unconfirmed is never a false success.** `classifyOutcome` maps a
+  transport failure on the one `Mutating` op (`iam:CreateAccessKey`) whose bytes may have reached AWS
+  to `AwsAmbiguousOutcome`, and a 2xx whose one-time secret cannot be parsed likewise — the consumer
+  runs its reconcile (list/delete the orphaned key, re-mint), never a blind retry. Unknown dispatch
+  phases default to `PossiblySent` (the safe direction). All other ops are `Idempotent`. Live SigV4
+  parity against real AWS is a Standard-O axis carried by the Phase 2/4 consumers.
+
 ## Capability Classes and Service Errors
 
 Subsystem boundaries (object storage, cache, database) are abstracted through *argv-shaped*
